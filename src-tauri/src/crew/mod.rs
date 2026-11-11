@@ -277,6 +277,25 @@ pub fn crew_spawn_ticket(
     gate::issue_ticket(&*store.lock_conn()?, &session_id, &cli, &folder)
 }
 
+/// Round 6: the OpenCode 2.x bind. The service start and the session create happen only after this consumes the ticket
+/// `crew_spawn_ticket` minted for the same session, CLI and folder.
+#[tauri::command(async)]
+pub fn crew_bind_v2_session(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    cli: String,
+    folder: String,
+    ticket: Option<String>,
+) -> Result<(), String> {
+    gate::bind_v2_session(
+        &*store.lock_conn()?,
+        &session_id,
+        &cli,
+        &folder,
+        ticket.as_deref(),
+    )
+}
+
 /// WP-141: whether any saved crew policy, in any scope, has the lock on. A chat's default change is refused then.
 #[tauri::command(async)]
 pub fn crew_any_lock(store: State<'_, SessionStore>) -> Result<bool, String> {

@@ -30,6 +30,7 @@ createRoot(document.getElementById("root")!).render(
         rules: [],
         revision: 1,
         signedIn,
+        policyUnreadable: new URLSearchParams(window.location.search).has("unreadable"),
       }}
     />
   </StrictMode>,

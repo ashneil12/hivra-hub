@@ -166,3 +166,11 @@ export function crewSpawnTicket(input: { sessionId: string; cli: string; folder:
 export function crewAnyLock(): Promise<boolean> {
   return invoke<boolean>("crew_any_lock");
 }
+
+/**
+ * Round 6: the OpenCode 2.x bind (crew_bind_v2_session). The v2 service start and session create run only after this
+ * consumes the ticket crewSpawnTicket minted for the same session, CLI and folder. It refuses without a valid one.
+ */
+export function crewBindV2Session(input: { sessionId: string; cli: string; folder: string; ticket: string }): Promise<void> {
+  return invoke<void>("crew_bind_v2_session", input);
+}

@@ -59,7 +59,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            mono TEXT,
            project TEXT,
            locked_default TEXT,
-           granted_at INTEGER NOT NULL
+           granted_at INTEGER NOT NULL,
+           last_used INTEGER NOT NULL DEFAULT 0
          );
          CREATE TABLE IF NOT EXISTS crew_holds (
            delegation_id TEXT PRIMARY KEY,
@@ -579,14 +580,68 @@ pub struct Grant {
     pub locked_default: Option<String>,
 }
 
-/// Saves the decision for a session. A later launch of that session replaces it.
+/// How long a grant may go unused before it is pruned. Every judged start of the session refreshes it, so a worker
+/// that is still running, resumed or typed into keeps its decision. Sessions have no delete hook in the crew store.
+pub const GRANT_IDLE_MS: i64 = 30 * 24 * 60 * 60 * 1000;
+
+/// Saves the decision for a session. A later launch of that session replaces it. Grants idle past `GRANT_IDLE_MS` go.
 pub fn save_grant(conn: &Connection, session: &str, grant: &Grant, at: i64) -> Result<(), String> {
+    prune_grants(conn, at)?;
     conn.execute(
-        "INSERT OR REPLACE INTO crew_grants (session, mono, project, locked_default, granted_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT OR REPLACE INTO crew_grants (session, mono, project, locked_default, granted_at, last_used) VALUES (?1, ?2, ?3, ?4, ?5, ?5)",
         params![session, grant.mono, grant.project, grant.locked_default, at],
     )
     .map(|_| ())
     .map_err(|error| error.to_string())
+}
+
+/// Marks a session's grant as used at `at`, so the idle rule counts from its last judged start.
+pub fn touch_grant(conn: &Connection, session: &str, at: i64) -> Result<(), String> {
+    conn.execute(
+        "UPDATE crew_grants SET last_used = ?2 WHERE session = ?1",
+        params![session, at],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+/// Drops every grant unused since before `now - GRANT_IDLE_MS`. Returns how many went.
+pub fn prune_grants(conn: &Connection, now: i64) -> Result<usize, String> {
+    conn.execute(
+        "DELETE FROM crew_grants WHERE last_used < ?1",
+        params![now.saturating_sub(GRANT_IDLE_MS)],
+    )
+    .map_err(|error| error.to_string())
+}
+
+/// Where the Never use list that holds `cli` lives, in words a person can find in Crew Defaults: this Mono, this
+/// project (its folder), or everything. None when no saved scope lists it.
+pub(crate) fn never_use_scope(
+    conn: &Connection,
+    mono: Option<&str>,
+    project: Option<&str>,
+    cli: &str,
+) -> Result<Option<String>, String> {
+    let lists = |policy: Option<Value>| {
+        policy
+            .and_then(|policy| policy.get("neverUse").cloned())
+            .and_then(|list| list.as_array().cloned())
+            .is_some_and(|list| list.iter().any(|id| id.as_str() == Some(cli)))
+    };
+    if let Some(id) = mono.map(str::trim).filter(|id| !id.is_empty()) {
+        if lists(saved_policy(conn, "mono", id)?) {
+            return Ok(Some("this Mono".into()));
+        }
+    }
+    if let Some(id) = project.map(str::trim).filter(|id| !id.is_empty()) {
+        if lists(saved_policy(conn, "project", id)?) {
+            return Ok(Some(format!("this project ({id})")));
+        }
+    }
+    if lists(saved_policy(conn, "system", "system")?) {
+        return Ok(Some("everything (the system default)".into()));
+    }
+    Ok(None)
 }
 
 pub fn grant_of(conn: &Connection, session: &str) -> Result<Option<Grant>, String> {

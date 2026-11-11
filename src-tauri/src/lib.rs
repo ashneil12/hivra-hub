@@ -692,6 +692,7 @@ pub fn run() {
             crew::crew_route,
             crew::crew_launch_check,
             crew::crew_spawn_ticket,
+            crew::crew_bind_v2_session,
             crew::crew_any_lock,
             crew::crew_pick,
             crew::crew_on_failure,

@@ -1207,7 +1207,7 @@ Run the whole check again and report what you observed.`,
     // WP-141 round 6: an approved card never starts a worker on a CLI on Never use for the Lead's folder.
     const banned = new Set((await this.host!.neverUse?.(lead.cwd)) ?? []);
     const onNever = approved?.tasks.find((task) => banned.has(task.harness));
-    if (onNever) throw new Error(`${onNever.harness} is on Never use, so this plan was not started.`);
+    if (onNever) throw new Error(`${onNever.harness} is on Never use, so this plan was not started. Change it in Settings > Crew Defaults.`);
     allowedHarnesses = allowedHarnesses.filter((id) => !banned.has(id));
     const available = this.host!.choices().map((choice) => choice.harness);
     if (

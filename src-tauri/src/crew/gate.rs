@@ -62,7 +62,12 @@ pub fn check_launch(conn: &Connection, input: &LaunchCheck) -> Result<(), String
     let cli = input.cli.trim();
     let name = label_of(cli);
     if never_listed(&policy).iter().any(|id| id == cli) {
-        return Err(format!("{name} is on Never use, so it was not started."));
+        let scope =
+            store::never_use_scope(conn, input.mono.as_deref(), input.project.as_deref(), cli)?
+                .unwrap_or_else(|| "everything (the system default)".into());
+        return Err(format!(
+            "{name} is on Never use for {scope}, so it was not started. To change that, open Settings > Crew Defaults and edit Never use for {scope}."
+        ));
     }
     if !lock_on(&policy) {
         return Ok(());
@@ -144,25 +149,47 @@ pub fn record_grant(conn: &Connection, session: &str, input: &LaunchCheck) -> Re
     )
 }
 
-/// The policy in force for a session at a folder: the grant's project, else the project owning the folder, else the
-/// system's (through `policy_for`, which always reads the system scope).
-fn policy_in_force(
+/// The project a session's policy comes from: its grant's, else the one owning the folder.
+fn project_in_force(
     conn: &Connection,
     grant: Option<&Grant>,
     folder: &str,
+) -> Result<Option<String>, String> {
+    match grant.and_then(|grant| grant.project.clone()) {
+        Some(project) => Ok(Some(project)),
+        None => store::project_owning(conn, folder),
+    }
+}
+
+fn policy_of(
+    conn: &Connection,
+    grant: Option<&Grant>,
+    project: Option<&str>,
 ) -> Result<Value, String> {
-    let project = match grant.and_then(|grant| grant.project.clone()) {
-        Some(project) => Some(project),
-        None => store::project_owning(conn, folder)?,
-    };
-    store::policy_for(
+    store::policy_for(conn, grant.and_then(|grant| grant.mono.as_deref()), project).map_err(
+        |error| format!("The crew policy could not be read, so nothing was started ({error})."),
+    )
+}
+
+/// The refusal for a CLI on Never use. It names the CLI, the list that holds it and where to change it, so the person
+/// (and the Lead, which sees the same line in the chat) knows what to do.
+fn never_use_refusal(
+    conn: &Connection,
+    grant: Option<&Grant>,
+    project: Option<&str>,
+    cli: &str,
+) -> Result<String, String> {
+    let scope = store::never_use_scope(
         conn,
         grant.and_then(|grant| grant.mono.as_deref()),
-        project.as_deref(),
-    )
-    .map_err(|error| {
-        format!("The crew policy could not be read, so nothing was started ({error}).")
-    })
+        project,
+        cli,
+    )?
+    .unwrap_or_else(|| "everything (the system default)".into());
+    Ok(format!(
+        "{} is on Never use for {scope}, so it was not started. To change that, open Settings > Crew Defaults and edit Never use for {scope}.",
+        label_of(cli)
+    ))
 }
 
 /// The start judgment every agent CLI process passes: Never use for the CLI in force, and under the lock an `app-`
@@ -174,11 +201,17 @@ pub fn judge_start(
     folder: &str,
 ) -> Result<(), String> {
     let grant = store::grant_of(conn, session_of(session))?;
-    let policy = policy_in_force(conn, grant.as_ref(), folder)?;
+    let project = project_in_force(conn, grant.as_ref(), folder)?;
+    let policy = policy_of(conn, grant.as_ref(), project.as_deref())?;
     let cli = cli.trim();
     let name = label_of(cli);
     if never_listed(&policy).iter().any(|id| id == cli) {
-        return Err(format!("{name} is on Never use, so it was not started."));
+        return Err(never_use_refusal(
+            conn,
+            grant.as_ref(),
+            project.as_deref(),
+            cli,
+        )?);
     }
     if !is_agent_session(session) {
         return Ok(());
@@ -186,10 +219,16 @@ pub fn judge_start(
     // An agent session with no decision is never judged by its folder: under a lock in force anywhere it is refused.
     let Some(grant) = grant else {
         if lock_on(&policy) || store::any_lock(conn)? {
-            return Err("This agent launch has no gate decision, so it was not started.".into());
+            return Err("This agent launch has no gate decision, so it was not started. Start the worker again from its chat so it is granted its default.".into());
         }
         return Ok(());
     };
+    // Every judged start refreshes the grant, so the idle rule counts from the last start.
+    store::touch_grant(
+        conn,
+        session_of(session),
+        crate::session_store::now_millis(),
+    )?;
     if !lock_on(&policy) {
         return Ok(());
     }
@@ -226,6 +265,21 @@ pub fn issue_ticket(
         expires: now + TICKET_TTL,
     });
     Ok(id)
+}
+
+/// The check the OpenCode 2.x service start runs before its session is bound. It has no process to spawn, so the ticket
+/// is required outright and consumed here: a bind without a valid, unused ticket is refused.
+pub fn bind_v2_session(
+    conn: &Connection,
+    session: &str,
+    cli: &str,
+    folder: &str,
+    ticket: Option<&str>,
+) -> Result<(), String> {
+    if ticket.map(str::trim).filter(|id| !id.is_empty()).is_none() {
+        return Err("This OpenCode session has no crew gate ticket, so it was not started.".into());
+    }
+    judge_spawn(conn, session, cli, folder, ticket)
 }
 
 /// The check `harness_spawn` runs before any agent process starts: the start judgment for every session, then the

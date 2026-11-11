@@ -2436,13 +2436,14 @@ fn never_use_is_the_union_of_mono_project_and_system_and_the_lock_is_any_scope()
             },
         )
     };
-    assert_eq!(
-        check("grok", Some("grok")).unwrap_err(),
-        "Grok is on Never use, so it was not started."
+    assert!(
+        (check("grok", Some("grok")).unwrap_err()).starts_with("Grok is on Never use for "),
+        "unexpected refusal"
     );
-    assert_eq!(
-        check("claude", Some("claude")).unwrap_err(),
-        "Claude Code is on Never use, so it was not started."
+    assert!(
+        (check("claude", Some("claude")).unwrap_err())
+            .starts_with("Claude Code is on Never use for "),
+        "unexpected refusal"
     );
 }
 
@@ -2474,9 +2475,10 @@ fn the_launch_gate_refuses_a_banned_cli_an_off_default_launch_and_an_unreadable_
         0,
     )
     .unwrap();
-    assert_eq!(
-        check(&conn, "codex", Some("claude")).unwrap_err(),
-        "Codex is on Never use, so it was not started."
+    assert!(
+        (check(&conn, "codex", Some("claude")).unwrap_err())
+            .starts_with("Codex is on Never use for "),
+        "unexpected refusal"
     );
     assert!(check(&conn, "claude", Some("claude")).is_ok());
     store::set_policy(
@@ -2576,7 +2578,10 @@ fn a_banned_cli_gets_no_spawn_ticket_whatever_routed_it() {
     )
     .unwrap();
     let err = issue_ticket(&conn, "app-ban-spawn-1", "codex", "/tmp/ban-spawn").unwrap_err();
-    assert_eq!(err, "Codex is on Never use, so it was not started.");
+    assert!(
+        (err).starts_with("Codex is on Never use for "),
+        "unexpected refusal"
+    );
     assert!(issue_ticket(&conn, "app-ban-spawn-2", "claude", "/tmp/ban-spawn").is_ok());
 }
 
@@ -2766,9 +2771,9 @@ fn every_start_path_judges_never_use_at_the_spawn() {
     ];
     for (path, session, folder) in paths {
         let err = judge_spawn(&conn, session, "codex", folder, None).expect_err(path);
-        assert_eq!(
-            err, "Codex is on Never use, so it was not started.",
-            "{path}"
+        assert!(
+            err.starts_with("Codex is on Never use for "),
+            "{path}: {err}"
         );
         judge_start(&conn, session, "claude", folder)
             .unwrap_or_else(|err| panic!("{path} was refused a permitted CLI: {err}"));
@@ -2856,7 +2861,10 @@ fn the_grant_project_beats_the_folder_and_a_worktree_is_its_project() {
     )
     .unwrap();
     let err = judge_spawn(&conn, "app-r6-grant-1", "codex", "/tmp/r6-grant-b", None).unwrap_err();
-    assert_eq!(err, "Codex is on Never use, so it was not started.");
+    assert!(
+        (err).starts_with("Codex is on Never use for "),
+        "unexpected refusal"
+    );
     judge_spawn(
         &conn,
         "7d3e5c2a-lead-chat",
@@ -2910,9 +2918,9 @@ fn the_grant_project_beats_the_folder_and_a_worktree_is_its_project() {
     .unwrap();
     let from_worktree = judge_spawn(&conn, "7d3e5c2a-lead-chat", "codex", &worktree_key, None);
     let _ = std::fs::remove_dir_all(&root);
-    assert_eq!(
-        from_worktree.unwrap_err(),
-        "Codex is on Never use, so it was not started."
+    assert!(
+        (from_worktree.unwrap_err()).starts_with("Codex is on Never use for "),
+        "unexpected refusal"
     );
 }
 
@@ -3009,4 +3017,120 @@ fn ashs_explicit_save_replaces_a_corrupt_saved_policy() {
     assert!(!saved.policy_unreadable);
     assert_eq!(saved.policy["lockDefault"], json!(true));
     assert!(store::any_lock(&conn).unwrap());
+}
+
+/// WP-141 round 6: a Never use refusal names the CLI, the list that holds it, and where to change it. The text is the
+/// line the start returns, which the chat shows.
+#[test]
+fn a_never_use_refusal_names_the_cli_the_list_and_where_to_change_it() {
+    use super::gate::{check_launch, judge_start, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/r6-refusal",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let judged = judge_start(&conn, "7d3e5c2a-lead-chat", "codex", "/tmp/r6-refusal").unwrap_err();
+    assert!(
+        judged.starts_with("Codex is on Never use for this project (/tmp/r6-refusal)"),
+        "{judged}"
+    );
+    assert!(
+        judged.contains("open Settings > Crew Defaults and edit Never use"),
+        "{judged}"
+    );
+    let checked = check_launch(
+        &conn,
+        &LaunchCheck {
+            cli: "codex".into(),
+            mono: None,
+            project: Some("/tmp/r6-refusal".into()),
+            locked_default: None,
+        },
+    )
+    .unwrap_err();
+    assert!(checked.contains("Settings > Crew Defaults"), "{checked}");
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": false, "neverUse": ["grok"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let system = judge_start(&conn, "7d3e5c2a-lead-chat", "grok", "/tmp/r6-elsewhere").unwrap_err();
+    assert!(
+        system.starts_with("Grok is on Never use for everything"),
+        "{system}"
+    );
+}
+
+/// WP-141 round 6: an agent session with no decision under a lock is told to start the worker again, not just refused.
+#[test]
+fn an_ungranted_worker_under_the_lock_is_told_to_start_again() {
+    use super::gate::judge_start;
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let refused =
+        judge_start(&conn, "app-r6-ungranted-1", "claude", "/tmp/r6-ungranted").unwrap_err();
+    assert!(refused.contains("has no gate decision"), "{refused}");
+    assert!(
+        refused.contains("Start the worker again from its chat"),
+        "{refused}"
+    );
+}
+
+/// WP-141 round 6: the OpenCode 2.x bind requires a ticket and consumes it, so a bind without one, or a second bind
+/// with the same one, is refused.
+#[test]
+fn a_v2_session_bind_needs_a_ticket_and_uses_it_once() {
+    use super::gate::{bind_v2_session, issue_ticket};
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    let session = "app-r6-v2-1";
+    let no_ticket = bind_v2_session(&conn, session, "opencode", "/tmp/r6-v2", None).unwrap_err();
+    assert!(no_ticket.contains("no crew gate ticket"), "{no_ticket}");
+    let ticket = issue_ticket(&conn, session, "opencode", "/tmp/r6-v2").unwrap();
+    bind_v2_session(&conn, session, "opencode", "/tmp/r6-v2", Some(&ticket)).unwrap();
+    let reused =
+        bind_v2_session(&conn, session, "opencode", "/tmp/r6-v2", Some(&ticket)).unwrap_err();
+    assert!(reused.contains("already used"), "{reused}");
+}
+
+/// WP-141 round 6: grants idle for the window are pruned; a grant whose session was judged recently is kept.
+#[test]
+fn an_idle_grant_is_pruned_and_a_used_one_is_kept() {
+    use super::gate::{judge_start, record_grant, LaunchCheck};
+    use super::store::{prune_grants, GRANT_IDLE_MS};
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    let grant = |cli: &str| LaunchCheck {
+        cli: cli.into(),
+        mono: None,
+        project: Some("/tmp/r6-prune".into()),
+        locked_default: None,
+    };
+    record_grant(&conn, "app-r6-idle-1", &grant("claude")).unwrap();
+    record_grant(&conn, "app-r6-used-1", &grant("claude")).unwrap();
+    let long_ago = crate::session_store::now_millis() - GRANT_IDLE_MS - 1_000;
+    conn.execute("UPDATE crew_grants SET last_used = ?1", [long_ago])
+        .unwrap();
+    // A judged start refreshes its grant, so this one survives the prune.
+    judge_start(&conn, "app-r6-used-1", "claude", "/tmp/r6-prune").unwrap();
+    let pruned = prune_grants(&conn, crate::session_store::now_millis()).unwrap();
+    assert_eq!(pruned, 1);
+    assert!(store::grant_of(&conn, "app-r6-idle-1").unwrap().is_none());
+    assert!(store::grant_of(&conn, "app-r6-used-1").unwrap().is_some());
 }

@@ -41,3 +41,12 @@ test("crew defaults shows the lock, the roles, the lists and what is in force", 
   await expect(page.locator("[data-fallback]").nth(0)).toHaveAttribute("data-fallback", "claude");
   await expect(page.locator("[data-fallback]").nth(1)).toHaveAttribute("data-fallback", "grok");
 });
+
+test("crew defaults says when the saved rules could not be read, and clears it on the next save", async ({ page }) => {
+  await page.goto("/tests/browser/crew-defaults.html?unreadable=1");
+  const notice = page.getByRole("alert");
+  await expect(notice).toHaveText("Your crew rules could not be read. Agents are held until you save them again.");
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByText("Saved.")).toBeVisible();
+  await expect(notice).toHaveCount(0);
+});

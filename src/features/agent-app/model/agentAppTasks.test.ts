@@ -2932,6 +2932,17 @@ describe("parallel workers per project, with throttling (H8)", () => {
       expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
     });
 
+    // Round 6: a refused start returns the line that names the CLI and the place to change it. That is the tool result the chat shows.
+    it("a delegate refused for Never use returns the line that names the CLI and where to change it", async () => {
+      const { source, host, started, api } = lead();
+      const reason = "Codex is on Never use for this project (/work/app). To change that, open Settings > Crew Defaults and edit Never use for this project (/work/app).";
+      api.crewGate = vi.fn(async () => {
+        throw new Error(reason);
+      });
+      await expect(handleAgentApp(source, "refused-never", "tasks.delegate", { brief: "Build the title." }, host)).rejects.toThrow(reason);
+      expect(started).toEqual([]);
+    });
+
     // HIGH 2: a chat cannot change any default while the lock is on, the Mono's or the project's included.
     it("refuses a Mono or project default change from a chat while the lock is on", async () => {
       const { source, host, api } = lead();

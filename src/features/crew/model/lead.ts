@@ -16,6 +16,6 @@ export async function refuseNeverUseLead(
   const cli = target.cli?.trim();
   if (!cli) throw new Error(`${target.leadName}'s CLI is unknown, so it can't be briefed.`);
   if (policy.neverUse.includes(cli)) {
-    throw new Error(`${target.leadName} is on Never use, so it can't be briefed.`);
+    throw new Error(`${target.leadName} is on Never use, so it can't be briefed. Change it in Settings > Crew Defaults.`);
   }
 }

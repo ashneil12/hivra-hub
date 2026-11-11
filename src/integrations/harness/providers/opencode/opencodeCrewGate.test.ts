@@ -8,11 +8,13 @@ const invoked: string[] = [];
 let openCodeVersion = "opencode 1.14.19";
 let onStdout: ((line: string) => void) | undefined;
 let onSseEvent: ((event: Record<string, unknown>) => void) | undefined;
+let bindRefusal: string | undefined;
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string) => {
     invoked.push(command);
     if (command === "crew_spawn_ticket") return "ticket-1";
+    if (command === "crew_bind_v2_session" && bindRefusal) throw new Error(bindRefusal);
     if (command === "harness_spawn") {
       queueMicrotask(() => onStdout?.("opencode server listening on http://127.0.0.1:4096"));
       return 4242;
@@ -99,4 +101,31 @@ it("an agent session on OpenCode 2.x asks for its crew spawn ticket before it ru
   openCodeVersion = "opencode v2.0.15";
   await startTurn();
   expect(invoked).toContain("crew_spawn_ticket");
+});
+
+// Round 6: the ticket the OpenCode 2.x service start mints is consumed by the bind. A refused bind creates no session.
+it("a v2 session is not created when the bind refuses its crew ticket", async () => {
+  openCodeVersion = "opencode v2.0.15";
+  bindRefusal = "This crew gate ticket is unknown or was already used, so it was not started.";
+  let thrown: unknown;
+  void sendOpenCodeTurn({
+    sessionId: SESSION,
+    cwd: "/repo",
+    model: "opencode:openrouter/anthropic/claude-sonnet-4.6",
+    runtimeMode: "full-access",
+    text: "write the research phase",
+    attachments: [],
+    onEvent: () => {},
+  }).catch((error: unknown) => {
+    thrown = error;
+  });
+  for (let index = 0; index < 100 && thrown === undefined; index += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  bindRefusal = undefined;
+  expect(thrown).toBeInstanceOf(Error);
+  const creates = harnessHttp.mock.calls.filter(
+    ([input]) => input.method === "POST" && ["/api/session", "/session"].includes(new URL(input.url).pathname),
+  );
+  expect(creates).toEqual([]);
 });

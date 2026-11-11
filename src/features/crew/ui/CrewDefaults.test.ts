@@ -297,3 +297,49 @@ it("a late load does not turn the lock back off", async () => {
   });
   expect(container.querySelector<HTMLInputElement>('[aria-label="Always use my default"]')?.checked).toBe(true);
 });
+
+it("tells Ash when the saved crew rules could not be read, until he saves them again", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({
+        rules: [],
+        revision: 2,
+        policy: { lockDefault: false, neverUse: [], fallback: [] },
+        policyOwn: true,
+        policyUnreadable: true,
+        signedIn: [{ cli: "claude", installed: true, signedIn: true }],
+      });
+    }
+    if (cmd === "crew_rules_set") {
+      return Promise.resolve({
+        revision: 3,
+        rules: [],
+        policy: { lockDefault: false, neverUse: [], fallback: [] },
+        policyOwn: true,
+        policyUnreadable: true,
+        signedIn: [{ cli: "claude", installed: true, signedIn: true }],
+      });
+    }
+    if (cmd === "crew_policy_set") {
+      return Promise.resolve({
+        revision: 3,
+        rules: [],
+        policy: { lockDefault: false, neverUse: [], fallback: [] },
+        policyOwn: true,
+        policyUnreadable: false,
+        signedIn: [{ cli: "claude", installed: true, signedIn: true }],
+      });
+    }
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  const notice = "Your crew rules could not be read. Agents are held until you save them again.";
+  expect(container.querySelector("[data-crew-policy-unreadable]")?.textContent).toBe(notice);
+  const save = [...container.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Save");
+  await act(async () => {
+    save?.click();
+  });
+  await act(async () => undefined);
+  expect(container.querySelector("[data-crew-policy-unreadable]")).toBeNull();
+});

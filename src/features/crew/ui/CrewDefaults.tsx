@@ -31,6 +31,8 @@ type Loaded = {
   policy?: unknown;
   /** False when this scope has no policy of its own, so `policy` is the one it inherits. */
   policyOwn?: boolean;
+  /** Round 6: the saved policy does not parse. It loads empty, and the next save replaces it. */
+  policyUnreadable?: boolean;
   signedIn?: Presence[];
 };
 
@@ -39,6 +41,7 @@ export type CrewDefaultsInitial = {
   rules: CrewRule[];
   revision: number;
   signedIn: Presence[];
+  policyUnreadable?: boolean;
 };
 
 type Props = {
@@ -81,6 +84,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
   const [signedIn, setSignedIn] = useState<Presence[]>(initial?.signedIn ?? []);
   const [revision, setRevision] = useState(initial?.revision ?? 0);
   const [policyOwn, setPolicyOwn] = useState(true);
+  const [policyUnreadable, setPolicyUnreadable] = useState(initial?.policyUnreadable === true);
   const [notice, setNotice] = useState<string | null>(null);
   const [neverDraft, setNeverDraft] = useState("");
   const [fallbackCli, setFallbackCli] = useState("");
@@ -99,6 +103,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
     setSlots(roleSlotsFrom(loaded));
     setPolicy(sanitizePolicy(got.policy));
     setPolicyOwn(got.policyOwn !== false);
+    setPolicyUnreadable(got.policyUnreadable === true);
     policyEdited.current = false;
     if (Array.isArray(got.signedIn)) setSignedIn(got.signedIn);
     setRevision(typeof got.revision === "number" ? got.revision : 0);
@@ -207,6 +212,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
     setPolicy(clean);
     if (initial) {
       dirty.current = false;
+      setPolicyUnreadable(false);
       setNotice("Saved.");
       return;
     }
@@ -237,7 +243,8 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
         setNotice("Those settings couldn't be saved.");
         return;
       }
-      if (!policyEdited.current) {
+      // Round 6: an explicit save over an unreadable policy writes the policy too, so the stored one is replaced.
+      if (!policyEdited.current && !policyUnreadable) {
         // The lock and lists were not touched: keep what the scope had, and apply what the roles save returned.
         apply(wrote);
         dirty.current = false;
@@ -334,6 +341,11 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
       {extraRoles.length ? (
         <p className="text-[12px] text-content/70" data-role-extra={extraRoles.join(",")}>
           {extraRoles.map((role) => roleSlotName(role)).join(" and ")} {extraRoles.length === 1 ? "has" : "have"} a second rule on the rules page. It still applies, so it is named here rather than hidden.
+        </p>
+      ) : null}
+      {policyUnreadable ? (
+        <p role="alert" className="text-[13px] text-content" data-crew-policy-unreadable>
+          Your crew rules could not be read. Agents are held until you save them again.
         </p>
       ) : null}
       {place.scope === "project" && !policyOwn ? (
