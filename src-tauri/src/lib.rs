@@ -54,6 +54,8 @@ pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
 mod external_editor;
 mod firstmate;
+// Hivra WP-172: the checkpoint of a First Mate fan-out, kept so a crash mid-plan can resume.
+mod fanout_checkpoint;
 mod fs;
 mod gates;
 mod gitlab;
@@ -109,6 +111,8 @@ mod mono;
 mod mono_chat;
 mod mono_home;
 mod mono_transcript;
+// WP-134: the More agents list, its approvals and the environment its child gets.
+mod more_agents;
 mod notes;
 // WP-72: docs are notes, with blocks, versions and a tree.
 pub(crate) mod docs;
@@ -755,6 +759,13 @@ pub fn run() {
             worker_queue::worker_queue_import_local,
             worker_queue::worker_queue_claim,
             worker_queue::worker_queue_finish,
+            // Hivra WP-172: a fan-out's checkpoint (save, list for resume, remove when settled).
+            fanout_checkpoint::fanout_checkpoint_save,
+            fanout_checkpoint::fanout_checkpoint_list,
+            fanout_checkpoint::fanout_checkpoint_remove,
+            fanout_checkpoint::fanout_lease_acquire,
+            fanout_checkpoint::fanout_lease_renew,
+            fanout_checkpoint::fanout_lease_release,
             worker_queue::worker_settings,
             worker_queue::worker_limits_set,
             worker_queue::worker_model_set,
@@ -1037,6 +1048,11 @@ pub fn run() {
             harness::harness_resolve_antigravity,
             harness::harness_free_port,
             harness::harness_spawn,
+            // WP-134: the More agents list, its approvals (src-tauri/src/more_agents.rs).
+            more_agents::more_agents_read,
+            more_agents::more_agents_write,
+            more_agents::more_agents_approve,
+            more_agents::more_agents_check,
             codex_mono_store::codex_mono_store_prepare,
             codex_mono_store::codex_mono_store_copy,
             codex_mono_store::codex_mono_store_restore_agent_state,

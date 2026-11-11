@@ -1701,6 +1701,7 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::spend_ledger::ensure_table(conn)?; // WP-176
     crate::rooms::ensure_tables(conn)?;
     crate::worker_queue::ensure_tables(conn)?;
+    crate::fanout_checkpoint::ensure_tables(conn)?; // Hivra WP-172
     crate::ship::ensure_acceptance_table(conn)?;
     // WP-78: the activity log. In place, so an older build still opens this file.
     crate::activity::ensure_tables(conn)?;

@@ -15,6 +15,7 @@ import type { PrContent } from "../../../features/source-control/model/gitText";
 import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import type { NativeCommandProvider } from "./nativeCommands";
+import { registryAgentIdForSession, unlinkRegistryChat } from "../../../features/registry/model/registryList";
 import {
   clearWorkflowRuns,
   noteWorkflowRun,
@@ -255,7 +256,7 @@ function cancelIdlePark(sessionId: string): void {
 
 /** Whether the provider still runs work for this chat. A provider that throws is treated as busy: keep it warm. */
 function hasBackgroundWork(harness: HarnessId, sessionId: string): boolean {
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter?.hasBackgroundWork) return false;
   try {
     return adapter.hasBackgroundWork(sessionId) === true;
@@ -357,6 +358,57 @@ export function registerHarness(adapter: HarnessAdapter): void {
   adapters.set(adapter.id, adapter);
 }
 
+/**
+ * WP-134: an adapter one chat runs through instead of one of the eleven, for a More agents entry
+ * (src/integrations/harness/moreAgents/). Its id is the entry's own, never a HarnessId, so it is never registered by
+ * id, never listed with the eleven, and never reached through `getHarness`.
+ */
+export type SessionRouteAdapter = Omit<HarnessAdapter, "id"> & { id: string };
+
+const sessionRoutes = new Map<string, SessionRouteAdapter>();
+
+/** Route one chat's turns, stops and answers to `adapter`; null puts it back on its harness. */
+export function routeHarnessSession(
+  sessionId: string,
+  adapter: SessionRouteAdapter | null,
+): void {
+  if (adapter) sessionRoutes.set(sessionId, adapter);
+  else sessionRoutes.delete(sessionId);
+}
+
+export function sessionRoute(sessionId: string): SessionRouteAdapter | undefined {
+  return sessionRoutes.get(sessionId);
+}
+
+/** The routed adapter when the chat has one, else its harness's. A routed chat never falls back to the harness. */
+function adapterFor(
+  harness: HarnessId,
+  sessionId: string,
+): SessionRouteAdapter | undefined {
+  return sessionRoutes.get(sessionId) ?? adapters.get(harness);
+}
+
+function requireAdapterFor(
+  harness: HarnessId,
+  sessionId: string,
+): SessionRouteAdapter {
+  const adapter = adapterFor(harness, sessionId);
+  if (!adapter) {
+    throw new Error(`No harness adapter registered for "${harness}"`);
+  }
+  return adapter;
+}
+
+/** Whether this chat's adapter can take a follow-up mid-turn. A routed chat answers for itself. */
+export function canSteerHarnessSession(
+  harness: HarnessId,
+  sessionId: string,
+): boolean {
+  const adapter = adapterFor(harness, sessionId);
+  if (!adapter?.live) return false;
+  return adapter.canSteer !== false;
+}
+
 export function getHarness(id: HarnessId): HarnessAdapter | undefined {
   return adapters.get(id);
 }
@@ -391,7 +443,7 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
   return queueSessionOperation(input.sessionId, async () => {
     // Before the control port or any provider hears of the turn: a chat with no folder starts nothing.
     requireChatFolder(input.cwd);
-    const adapter = requireHarness(input.harness);
+    const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
     }
@@ -449,7 +501,7 @@ export async function stopHarnessTask(
   sessionId: string,
   taskId: string,
 ): Promise<boolean> {
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter?.live || !adapter.stopTask) return false;
   return adapter.stopTask(sessionId, taskId);
 }
@@ -462,7 +514,7 @@ export async function stopHarnessTask(
 export async function applyHarnessSettings(
   input: LiveSettingsInput & { harness: HarnessId },
 ): Promise<LiveSettingsOutcome> {
-  const adapter = getHarness(input.harness);
+  const adapter = adapterFor(input.harness, input.sessionId);
   if (!adapter?.live || !adapter.applySettings) return "idle";
   return adapter.applySettings(input);
 }
@@ -477,7 +529,7 @@ export function compactHarnessContext(
 ): Promise<void> {
   return queueSessionOperation(input.sessionId, async () => {
     requireChatFolder(input.cwd);
-    const adapter = requireHarness(input.harness);
+    const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
     }
@@ -516,7 +568,7 @@ export function rewindHarnessLastTurn(
 ): Promise<RewindLastTurnResult> {
   return queueSessionOperation(input.sessionId, async () => {
     requireChatFolder(input.cwd);
-    const adapter = requireHarness(input.harness);
+    const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.rewindLastTurn) {
       throw new Error(
         `${input.harness} does not support editing the last message`,
@@ -535,7 +587,7 @@ export function steerHarnessTurn(
   input: SteerTurnInput & { harness: HarnessId },
 ): Promise<void> {
   return queueSteerOperation(input.sessionId, async () => {
-    const adapter = requireHarness(input.harness);
+    const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
     }
@@ -553,7 +605,7 @@ export async function cancelHarnessTurn(
   harness: HarnessId,
   sessionId: string,
 ): Promise<void> {
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter?.live) return;
   cancelIdlePark(sessionId);
   await adapter.cancelTurn(sessionId);
@@ -567,7 +619,7 @@ export function respondHarnessApproval(
   requestId: number,
   decision: ApprovalDecision,
 ): boolean {
-  return getHarness(harness)?.respondApproval(sessionId, requestId, decision) === true;
+  return adapterFor(harness, sessionId)?.respondApproval(sessionId, requestId, decision) === true;
 }
 
 export function respondHarnessQuestion(
@@ -576,7 +628,7 @@ export function respondHarnessQuestion(
   requestId: number,
   reply: UserQuestionReply,
 ): void {
-  getHarness(harness)?.respondQuestion?.(sessionId, requestId, reply);
+  adapterFor(harness, sessionId)?.respondQuestion?.(sessionId, requestId, reply);
 }
 
 export function keepHarnessQuestionOpen(
@@ -584,7 +636,7 @@ export function keepHarnessQuestionOpen(
   sessionId: string,
   requestId: number,
 ): void {
-  getHarness(harness)?.keepQuestionOpen?.(sessionId, requestId);
+  adapterFor(harness, sessionId)?.keepQuestionOpen?.(sessionId, requestId);
 }
 
 export async function stopHarnessSession(
@@ -593,7 +645,7 @@ export async function stopHarnessSession(
 ): Promise<void> {
   cancelIdlePark(sessionId);
   idleParkEvents.delete(sessionId);
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter?.live) return;
   await adapter.stopSession(sessionId);
 }
@@ -603,14 +655,17 @@ export async function forgetHarnessSession(
   sessionId: string,
 ): Promise<void> {
   cancelIdlePark(sessionId);
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, sessionId);
   if (!adapter) return;
   await adapter.forgetSession(sessionId);
 }
 
 /** A deleted chat: every adapter drops what it still keeps for it. */
 export function dropHarnessSession(sessionId: string): void {
+  // A More agents chat keeps its link until it is dropped; the list entry stays.
+  if (registryAgentIdForSession(sessionId)) unlinkRegistryChat(sessionId);
   for (const adapter of adapters.values()) adapter.dropSession?.(sessionId);
+  sessionRoutes.get(sessionId)?.dropSession?.(sessionId);
 }
 
 export function bindHarnessSession(
@@ -624,7 +679,7 @@ export function bindHarnessSession(
   /** The chat's saved /goal, so a restart carries on with it. */
   goal?: SessionGoal,
 ): void {
-  const adapter = getHarness(harness);
+  const adapter = adapterFor(harness, threadId);
   adapter?.bindSession(threadId, providerSessionId, cwd, providerAccountId);
   if (goal) adapter?.restoreGoal?.(threadId, goal);
   if (!blocks || !adapter?.restoreTaskLists) return;

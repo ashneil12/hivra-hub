@@ -184,6 +184,23 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
   assert.equal(seeded.from, daily.file);
 });
 
+test("a seed clears the fan-out checkpoints and leases of the daily app, so a resume in a dev copy starts nothing of Ash's", async () => {
+  const { scrub } = await load();
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE fanout_checkpoints (owner TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (owner, id));
+    CREATE TABLE fanout_leases (owner TEXT NOT NULL, id TEXT NOT NULL, holder TEXT NOT NULL, until INTEGER NOT NULL, PRIMARY KEY (owner, id));
+    INSERT INTO fanout_checkpoints VALUES ('mono-ash', 'plan-a', 2, 1, '{"tasks":[]}');
+    INSERT INTO fanout_leases VALUES ('mono-ash', 'plan-a', 'window-a', 1);
+  `);
+  const cleared = scrub(db);
+  assert.equal(cleared.fanoutCheckpoints, 1);
+  assert.equal(cleared.fanoutLeases, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM fanout_checkpoints").get().n, 0);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM fanout_leases").get().n, 0);
+  db.close();
+});
+
 test("refuses the daily data folder, a link to it, and anything that isn't a dev slot's folder", async (t) => {
   const { seedDev, SeedRefusal } = await load();
   const root = home(t);
