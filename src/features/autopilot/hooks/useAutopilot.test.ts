@@ -9,6 +9,7 @@ import { setHubDataSource, type HubDataSource } from "../../hub/model/hubData";
 import { noteChats, resetWaitingChats, setWaitingChatsHost, waitingChats } from "../../hub/model/waitingChats";
 import { newSession, type Block, type Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
+import { PASS_UP_MS } from "../../chief/model/captain";
 import { refreshAutopilot, setAutopilotBackend } from "../model/autopilot";
 import { memoryAutopilot, type MemoryAutopilot } from "../model/memoryAutopilot";
 import { pruneAutopilotMemory, useAutopilot, type AutopilotMemory } from "./useAutopilot";
@@ -183,16 +184,19 @@ describe("useAutopilot", () => {
       session("nopick", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Which name do you prefer?" }] }),
     ]);
     // The waiting-chat door does not mark a pick confident, so neither question is stored as the captain's answer.
+    // Each is logged as held while the captain waits, and nothing is sent.
     expect(answers).toEqual([]);
     expect(approvals).toEqual([{ id: "tests", requestId: 9, decision: "allow" }]);
     const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
-    expect(byChat.pick).toBeUndefined();
+    expect(byChat.pick).toMatchObject({ kind: "question", outcome: "held" });
+    expect(byChat.pick.detail).toMatch(/engine is down/);
     expect(byChat.money).toMatchObject({ kind: "question", outcome: "held", red: "money" });
     expect(byChat.tests).toMatchObject({ kind: "approval", outcome: "taken", recommendation: "Allowed" });
     expect(byChat.force).toMatchObject({ kind: "approval", outcome: "held", red: "mass-destructive" });
     expect(byChat.exo).toBeUndefined();
     expect(sent.find((m) => m.id === "line")).toBeUndefined();
-    expect(byChat.line).toBeUndefined();
+    expect(byChat.line).toMatchObject({ kind: "question", outcome: "held" });
+    expect(byChat.line.detail).toMatch(/engine is down/);
     // A question with no recommendation never reaches Waiting on you (the gate holds it in the chat), so Autopilot
     // neither takes it nor hands it back.
     expect(sent.find((m) => m.id === "nopick")).toBeUndefined();
@@ -269,12 +273,13 @@ describe("useAutopilot", () => {
       line("ping", "Needs Ash: Ping Priya on Slack?\nMy pick: yes"),
       line("plain", "Needs Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag"),
     ]);
-    // A plain pick is not taken either: nobody marked it confident. The ones that send or publish are held.
+    // A plain pick is not taken either: nobody marked it confident. It is logged while the captain waits.
+    // The ones that send or publish are held, and nothing is sent.
     expect(sent.map((m) => m.id)).toEqual([]);
     const held = backend.entries.filter((e) => e.kind === "question" && e.outcome === "held").map((e) => e.chatId).sort();
-    expect(held).toEqual(["branch", "changelog", "mail", "merge", "migration", "notes", "ping", "public", "ship", "wire"]);
-    // Held ones stay on Today's waiting list for Ash, and so does the plain pick, which was not answered.
-    expect(waitingChats().map((c) => c.sessionId).sort()).toEqual([...held, "plain"].sort());
+    expect(held).toEqual(["branch", "changelog", "mail", "merge", "migration", "notes", "ping", "plain", "public", "ship", "wire"]);
+    // Held ones stay on Today's waiting list for Ash, including the plain pick, which was not answered.
+    expect(waitingChats().map((c) => c.sessionId).sort()).toEqual(held);
   });
 
   it("holds a saved question it can't read, instead of rejecting the hook (WP-101 fix round 2, item F)", async () => {
@@ -361,6 +366,46 @@ describe("useAutopilot", () => {
     expect(answers).toEqual([]);
     expect(approvals).toEqual([{ id: "worker", requestId: 9, decision: "allow" }]);
     expect(backend.entries.filter((e) => e.kind === "question")).toEqual([]);
+  });
+
+  it("logs a plain waiting pick, then passes it up once it has waited 10 minutes", async () => {
+    vi.useFakeTimers();
+    const start = new Date("2026-11-11T12:00:00Z").getTime();
+    vi.setSystemTime(start);
+    try {
+      await backend.set({ scopes: ["hivra"], untilMs: start + 48 * HOUR, by: "ash" });
+      await refreshAutopilot();
+      await act(async () => {
+        root.render(createElement(Harness, {
+          initial: [session("pick", "/home/user/projects/hivra", question("pick", "Which first?", [{ id: "a", label: "Alpha (Recommended)" }, { id: "b", label: "Beta" }]))],
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(waitingChats().map((chat) => chat.sessionId)).toContain("pick");
+      expect(backend.entries.some((e) => e.kind === "switch" && e.outcome === "on")).toBe(true);
+      const waiting = backend.entries.filter((e) => e.chatId === "pick" && e.kind === "question");
+      expect(waiting).toHaveLength(1);
+      expect(waiting[0]).toMatchObject({ outcome: "held" });
+      expect(waiting[0]?.detail).toMatch(/engine is down/);
+      expect(sent).toEqual([]);
+      expect(answers).toEqual([]);
+
+      vi.setSystemTime(start + PASS_UP_MS);
+      await act(async () => setAll((all) => [...all]));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      const rows = backend.entries.filter((e) => e.chatId === "pick" && e.kind === "question");
+      expect(rows).toHaveLength(2);
+      expect(rows[1]?.detail).toMatch(/Chief of Staff suggests|did not answer within/);
+      expect(sent).toEqual([]);
+      expect(answers).toEqual([]);
+      expect(waitingChats().some((chat) => chat.sessionId === "pick")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does nothing for questions while autopilot is off", async () => {

@@ -364,9 +364,15 @@ export function useAutopilot(options: {
           return { ok: false as const, reason: "the app couldn't answer this one" };
         });
         if (taken.ok) void log({ ...base, kind: "question", outcome: "taken" });
-        else if (captainAnswerHeld(taken.reason)) void log({ ...base, kind: "question", outcome: "held" });
-        // Couldn't deliver (the chat is busy or gone): try again in a while.
-        else retryAt.current.set(key, Date.now() + RETRY_MS);
+        else if (captainAnswerHeld(taken.reason)) void log({ ...base, kind: "question", outcome: "held", detail: taken.reason });
+        else {
+          // The captain is still waiting (the engine is down). One row, then try again, so the 10 minute pass-up
+          // gets its own row. A failed delivery stays a retry with no row, as before.
+          if (/engine is down|turn did not finish/i.test(taken.reason)) {
+            void log({ ...base, kind: "question", outcome: "held", detail: taken.reason, dedupe: `${key}:waiting` });
+          }
+          retryAt.current.set(key, Date.now() + RETRY_MS);
+        }
         return;
       }
       const handed = await answerInWords(chat.sessionId, handBackText(untilLabel)).catch((error: unknown) => {

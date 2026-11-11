@@ -277,8 +277,14 @@ export async function appCaptainContext(input: {
  * The waiting-chat door. A waiting chat has no decision key, so no standing row is applied.
  * autopilot.decide loads one when the call names a key.
  */
-export function appCaptainDoor(chat: { projectId?: string | null; question?: string }): CaptainContext {
+export function appCaptainDoor(chat: {
+  projectId?: string | null;
+  question?: string;
+  /** When the chat first asked. The 10 minute pass-up is counted from here, not from this read. */
+  askedAt?: number;
+}): CaptainContext {
   const project = chat.projectId ?? null;
+  const pendingSince = typeof chat.askedAt === "number" && Number.isFinite(chat.askedAt) ? chat.askedAt : undefined;
   return {
     rules: [],
     standing: null,
@@ -286,6 +292,9 @@ export function appCaptainDoor(chat: { projectId?: string | null; question?: str
     moneyOverLimit: moneyBlocked(project),
     monoId: chiefMonoId(),
     department: "The first mate",
+    // A waiting chat's own pick is not a confident one. Step 5 stays off.
+    confident: false,
+    ...(pendingSince === undefined ? {} : { pendingSince }),
   };
 }
 
