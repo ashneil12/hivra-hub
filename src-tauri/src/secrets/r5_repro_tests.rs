@@ -74,7 +74,16 @@ fn a_version_read_on_a_spent_card_never_answers_the_card_put_up_after_it() {
         .unwrap()
         .unwrap()
         .version;
-    crate::decisions::answer_seen(&mut conn, "", &key, "Once", None, Some(read), NOW + 1).unwrap();
+    crate::decisions::answer_seen(
+        &mut conn,
+        "",
+        &key,
+        "Once",
+        Some("person".into()),
+        Some(read),
+        NOW + 1,
+    )
+    .unwrap();
     assert!(matches!(
         prepare_run(
             &bench.vault,
@@ -99,8 +108,15 @@ fn a_version_read_on_a_spent_card_never_answers_the_card_put_up_after_it() {
     let card = crate::decisions::get(&conn, "", &key).unwrap().unwrap();
     assert!(card.question.contains("evil.example"), "{}", card.question);
     // A tap made on the first card carries the version that was read there.
-    let stale =
-        crate::decisions::answer_seen(&mut conn, "", &key, "Once", None, Some(read), NOW + 4);
+    let stale = crate::decisions::answer_seen(
+        &mut conn,
+        "",
+        &key,
+        "Once",
+        Some("person".into()),
+        Some(read),
+        NOW + 4,
+    );
     assert!(
         stale.is_err(),
         "a version read on the spent card (v{read}) answered the new card (v{}): {stale:?}",
@@ -153,7 +169,16 @@ fn only_the_word_once_grants_a_secret_run() {
         .unwrap()
         .unwrap()
         .version;
-    crate::decisions::answer_seen(&mut conn, "", &key, "no", None, Some(read), NOW + 1).unwrap();
+    crate::decisions::answer_seen(
+        &mut conn,
+        "",
+        &key,
+        "no",
+        Some("person".into()),
+        Some(read),
+        NOW + 1,
+    )
+    .unwrap();
     let outcome = prepare_run(
         &bench.vault,
         &mut conn,

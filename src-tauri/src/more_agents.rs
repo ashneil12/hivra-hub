@@ -5,6 +5,7 @@
 //! rules for display; this module is the last check before anything runs.
 
 use serde_json::{json, Value};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -304,21 +305,150 @@ pub(crate) fn set_enabled(data_dir: &Path, on: bool) -> Result<(), String> {
 pub(crate) const FILE_ARG_REFUSED: &str =
     "A file named in the arguments must exist and be a file, given by its absolute path. A folder is not pinned.";
 
-/// The text an argument may carry a path in: the argument itself, the part after `=`, or the rest of a short flag.
+/// The text an argument may carry a path in: the argument itself, the value of a plain `key=value` word, the part
+/// after `=` or a flag colon, both sides when a colon flag also has `=options` (`-javaagent:jar=opts`), the rest
+/// of a short flag, or the value again when a flag's value is itself `key=value` (`--config=key=/abs/file`).
+/// A Windows drive colon (`C:\foo`) is not a flag colon.
 fn candidates(arg: &str) -> Vec<&str> {
     if !arg.starts_with('-') {
+        if let Some((_, _, value)) = plain_assignment(arg) {
+            return vec![value];
+        }
         return vec![arg];
     }
     let mut out = Vec::new();
-    if let Some((_, value)) = arg.split_once('=') {
-        out.push(value);
+    if let Some(parts) = flag_parts(arg) {
+        if let Some(eq) = parts.eq {
+            if let Some(middle) = arg.get(parts.at + 1..eq) {
+                push_flag_value(&mut out, middle);
+            }
+            if let Some(tail) = arg.get(eq + 1..) {
+                push_flag_value(&mut out, tail);
+            }
+        } else if let Some(value) = arg.get(parts.at + 1..) {
+            push_flag_value(&mut out, value);
+        }
     }
     if arg.len() > 2 && !arg.starts_with("--") {
         if let Some(value) = arg.get(2..) {
-            out.push(value);
+            push_flag_value(&mut out, value);
         }
     }
     out
+}
+
+/// A flag value, or the inner value when that text is itself `key=value` (`--config=key=~/x`).
+fn push_flag_value<'a>(out: &mut Vec<&'a str>, value: &'a str) {
+    if let Some((_, _, inner)) = plain_assignment(value) {
+        out.push(inner);
+    } else {
+        out.push(value);
+    }
+}
+
+/// Where a flag's value starts. A colon that comes before `=` splits the file from its options
+/// (`-javaagent:/file.jar=opts`): both the middle and the tail are values. Otherwise the value is the text after
+/// `=` or after the colon. A drive colon is skipped.
+struct FlagParts {
+    at: usize,
+    /// A later `=` when `at` is a colon. `None` when the only separator is `=` or a colon.
+    eq: Option<usize>,
+}
+
+fn flag_parts(arg: &str) -> Option<FlagParts> {
+    if !arg.starts_with('-') {
+        return None;
+    }
+    let colon = first_nondrive_colon(arg);
+    let eq = arg.find('=');
+    match (colon, eq) {
+        (Some(colon), Some(eq)) if colon < eq => Some(FlagParts {
+            at: colon,
+            eq: Some(eq),
+        }),
+        (Some(colon), None) => Some(FlagParts {
+            at: colon,
+            eq: None,
+        }),
+        (_, Some(eq)) => Some(FlagParts { at: eq, eq: None }),
+        (None, None) => None,
+    }
+}
+
+/// A value is a URL only when it starts with a scheme and `://` (`https://example.com`). A `://` later in a
+/// path (`../../x://agent.mjs`, `/abs/x://f`) is not a URL: those characters are legal in a file name.
+fn starts_with_url(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut index = 0;
+    if index >= bytes.len() || !bytes[index].is_ascii_alphabetic() {
+        return false;
+    }
+    index += 1;
+    while index < bytes.len()
+        && (bytes[index].is_ascii_alphanumeric() || matches!(bytes[index], b'+' | b'-' | b'.'))
+    {
+        index += 1;
+    }
+    bytes.get(index..index + 3) == Some(b"://")
+}
+
+/// A non-URL word `[@…]key=value` whose key is a plain name (letters, digits, `_`, `.`, `-`). The three parts are
+/// the leading `@` marks, the key, and the value. `None` when the word is not that shape. A word that starts with
+/// a URL is not an assignment, so `https://host?x=1` is left whole. A `://` inside the value does not do that.
+fn plain_assignment(arg: &str) -> Option<(&str, &str, &str)> {
+    let rest = arg.trim_start_matches('@');
+    if starts_with_url(rest) {
+        return None;
+    }
+    let eq = rest.find('=')?;
+    let key = &rest[..eq];
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    {
+        return None;
+    }
+    let marks_len = arg.len() - rest.len();
+    Some((&arg[..marks_len], key, &rest[eq + 1..]))
+}
+
+fn first_nondrive_colon(arg: &str) -> Option<usize> {
+    let bytes = arg.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = bytes[from..].iter().position(|&byte| byte == b':') {
+        let at = from + rel;
+        if !is_drive_colon(bytes, at) {
+            return Some(at);
+        }
+        from = at + 1;
+    }
+    None
+}
+
+/// A colon that is a Windows drive letter (`C:\foo`), including after `=` , after another colon, or as the value of
+/// an attached short flag (`-IC:\foo`). Only Windows has drive letters. Elsewhere that colon separates a flag.
+fn is_drive_colon(bytes: &[u8], at: usize) -> bool {
+    #[cfg(not(windows))]
+    {
+        let _ = (bytes, at);
+        false
+    }
+    #[cfg(windows)]
+    {
+        if at == 0 || at + 1 >= bytes.len() {
+            return false;
+        }
+        let letter = bytes[at - 1];
+        let next = bytes[at + 1];
+        if !letter.is_ascii_alphabetic() || (next != b'/' && next != b'\\') {
+            return false;
+        }
+        if at == 1 || bytes[at - 2] == b'=' || bytes[at - 2] == b':' {
+            return true;
+        }
+        at == 3 && bytes[0] == b'-' && bytes[1] != b'-'
+    }
 }
 
 /// The programs that run code named by an argument: a loader flag, an inline program or an eval is only a risk for
@@ -381,29 +511,199 @@ fn canonical_file(path: &str) -> Result<String, String> {
     Ok(canonical.to_string_lossy().into_owned())
 }
 
-/// One argument as the child will get it, and the absolute files it names (whole, after `=`, or a short flag's value).
-fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
-    if Path::new(arg).is_absolute() {
-        let canonical = canonical_file(arg)?;
-        return Ok((canonical.clone(), vec![canonical]));
+/// A local `file:` URL decoded to a path. `None` when `value` is not a file URL. A file URL that is not a local file
+/// (a host other than localhost, or a broken percent escape) is an error, so it cannot slip through unpinned.
+/// A `?` or `#` is refused: a URL parser drops the query and the fragment, so pinning the text that includes them
+/// would pin a different file from the one the program opens (`agent.ts?v=1` beside `agent.ts`).
+fn file_url_target(value: &str) -> Result<Option<String>, String> {
+    let bytes = value.as_bytes();
+    if bytes.len() < 5 || !bytes[..5].eq_ignore_ascii_case(b"file:") {
+        return Ok(None);
     }
-    if arg.starts_with('-') {
-        if let Some((flag, value)) = arg.split_once('=') {
-            if Path::new(value).is_absolute() {
-                let canonical = canonical_file(value)?;
-                return Ok((format!("{flag}={canonical}"), vec![canonical]));
+    if bytes.contains(&b'?') || bytes.contains(&b'#') {
+        return Err(FILE_ARG_REFUSED.into());
+    }
+    let rest = &value[5..];
+    let (host, raw_path) = if let Some(after) = rest.strip_prefix("//") {
+        match after.find('/') {
+            Some(at) => (&after[..at], &after[at..]),
+            None => return Err(FILE_ARG_REFUSED.into()),
+        }
+    } else if rest.starts_with('/') {
+        ("", rest)
+    } else {
+        return Err(FILE_ARG_REFUSED.into());
+    };
+    if !host.is_empty() && !host.eq_ignore_ascii_case("localhost") {
+        return Err(FILE_ARG_REFUSED.into());
+    }
+    let decoded = percent_decode(raw_path)?;
+    if decoded.is_empty() || decoded == "/" {
+        return Err(FILE_ARG_REFUSED.into());
+    }
+    Ok(Some(file_url_path(&decoded)))
+}
+
+fn percent_decode(input: &str) -> Result<String, String> {
+    let bytes = input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err(FILE_ARG_REFUSED.into());
+            }
+            let hi = hex_digit(bytes[index + 1]).ok_or_else(|| FILE_ARG_REFUSED.to_string())?;
+            let lo = hex_digit(bytes[index + 2]).ok_or_else(|| FILE_ARG_REFUSED.to_string())?;
+            out.push((hi << 4) | lo);
+            index += 3;
+        } else {
+            out.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(out).map_err(|_| FILE_ARG_REFUSED.to_string())
+}
+
+fn hex_digit(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
+/// `file:///C:/dir/file` carries a leading slash in front of the drive. On Windows, drop it so the path is
+/// `C:/dir/file`. Anywhere else that slash is the root: `C:/x` would otherwise be read from the working folder.
+fn file_url_path(decoded: &str) -> String {
+    #[cfg(windows)]
+    {
+        let bytes = decoded.as_bytes();
+        if bytes.len() >= 3
+            && bytes[0] == b'/'
+            && bytes[1].is_ascii_alphabetic()
+            && bytes[2] == b':'
+        {
+            return decoded[1..].to_string();
+        }
+    }
+    decoded.to_string()
+}
+
+/// The canonical file a value names, when it is an absolute path or a local file URL. Fullwidth slashes are folded
+/// first, so the path that is pinned is the path a Windows API would open. A value that is not a path is not folded
+/// into the argument the child receives.
+fn canonical_of_value(value: &str) -> Result<Option<String>, String> {
+    let folded = fold_path(value);
+    let value = folded.as_ref();
+    if let Some(path) = file_url_target(value)? {
+        return Ok(Some(canonical_file(&path)?));
+    }
+    if Path::new(value).is_absolute() {
+        return Ok(Some(canonical_file(value)?));
+    }
+    Ok(None)
+}
+
+/// NFKC, so a fullwidth reverse solidus, equals or colon is the ASCII character. ASCII is left as it is.
+/// Yen (`¥`), the won sign (`₩`) and the division slash (`∕`) are not folded: Windows best-fit maps them to `\` and
+/// `/` (the won sign in code page 949), and a value that contains one is refused instead.
+fn fold_path(value: &str) -> Cow<'_, str> {
+    if value.is_ascii() {
+        Cow::Borrowed(value)
+    } else {
+        use unicode_normalization::UnicodeNormalization;
+        Cow::Owned(value.chars().nfkc().collect())
+    }
+}
+
+/// One argument as the child will get it, and the absolute files it names (whole, after `=` in a plain `key=value`
+/// word, after `=` or a flag colon, both the file and the options when a colon flag has `=options`, a short flag's
+/// value, a leading `@`, or the file a `file:` URL names). The pin is the path without `@`. The child still sees
+/// the `@`. Fullwidth `＝` and `：` are folded before the split. When nothing is pinned, the child gets the argument
+/// unchanged, not the folded form.
+fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
+    let folded = fold_path(arg);
+    let (text, pins) = pin_split(folded.as_ref())?;
+    if pins.is_empty() {
+        return Ok((arg.to_string(), Vec::new()));
+    }
+    Ok((text, pins))
+}
+
+fn pin_split(arg: &str) -> Result<(String, Vec<String>), String> {
+    if !arg.starts_with('-') {
+        if let Some((marks, key, value)) = plain_assignment(arg) {
+            if let Some((body, pins)) = rewrite_pinned(value)? {
+                return Ok((format!("{marks}{key}={body}"), pins));
+            }
+            return Ok((arg.to_string(), Vec::new()));
+        }
+        if let Some((text, pins)) = rewrite_pinned(arg)? {
+            return Ok((text, pins));
+        }
+        return Ok((arg.to_string(), Vec::new()));
+    }
+    if let Some(parts) = flag_parts(arg) {
+        let head = &arg[..parts.at];
+        let sep = arg.get(parts.at..parts.at + 1).unwrap_or("");
+        if let Some(eq) = parts.eq {
+            let middle = arg.get(parts.at + 1..eq).unwrap_or("");
+            let tail = arg.get(eq + 1..).unwrap_or("");
+            let (middle_body, mut pins) = rewrite_flag_value(middle)?;
+            let (tail_body, tail_pins) = rewrite_flag_value(tail)?;
+            pins.extend(tail_pins);
+            if !pins.is_empty() {
+                return Ok((format!("{head}{sep}{middle_body}={tail_body}"), pins));
+            }
+        } else if let Some(value) = arg.get(parts.at + 1..) {
+            let (body, pins) = rewrite_flag_value(value)?;
+            if !pins.is_empty() {
+                return Ok((format!("{head}{sep}{body}"), pins));
             }
         }
-        if arg.len() > 2 && !arg.starts_with("--") {
-            if let (Some(value), Some(head)) = (arg.get(2..), arg.get(..2)) {
-                if Path::new(value).is_absolute() {
-                    let canonical = canonical_file(value)?;
-                    return Ok((format!("{head}{canonical}"), vec![canonical]));
-                }
+    }
+    if arg.len() > 2 && !arg.starts_with("--") {
+        if let (Some(value), Some(head)) = (arg.get(2..), arg.get(..2)) {
+            let (body, pins) = rewrite_flag_value(value)?;
+            if !pins.is_empty() {
+                return Ok((format!("{head}{body}"), pins));
             }
         }
     }
     Ok((arg.to_string(), Vec::new()))
+}
+
+/// A flag value, pinned. When the value is itself `key=value` (`--config=key=/abs/file`), the inner value is
+/// pinned and `key=` stays in front of the canonical path. The child still sees the key.
+fn rewrite_flag_value(value: &str) -> Result<(String, Vec<String>), String> {
+    if let Some((marks, key, inner)) = plain_assignment(value) {
+        if let Some((body, pins)) = rewrite_pinned(inner)? {
+            return Ok((format!("{marks}{key}={body}"), pins));
+        }
+        return Ok((value.to_string(), Vec::new()));
+    }
+    rewrite_or_same(value)
+}
+
+/// `rewrite_pinned`, or the value unchanged when it names no absolute file.
+fn rewrite_or_same(value: &str) -> Result<(String, Vec<String>), String> {
+    if let Some((body, pins)) = rewrite_pinned(value)? {
+        Ok((body, pins))
+    } else {
+        Ok((value.to_string(), Vec::new()))
+    }
+}
+
+/// The canonical file `value` names, with any leading `@` kept in front. `None` when it is not an absolute file.
+fn rewrite_pinned(value: &str) -> Result<Option<(String, Vec<String>)>, String> {
+    let rest = value.trim_start_matches('@');
+    let marks = &value[..value.len() - rest.len()];
+    let Some(canonical) = canonical_of_value(rest)? else {
+        return Ok(None);
+    };
+    Ok(Some((format!("{marks}{canonical}"), vec![canonical])))
 }
 
 /// The pins for an argument list, each file with its SHA-256, and the arguments as the child gets them (paths made
@@ -440,10 +740,10 @@ fn remote_note(command: &str, args: &[String]) -> Option<String> {
         // A deno run of a file on this Mac is local; a URL or an npm:/jsr: specifier is fetched at start.
         "deno" => {
             first == "run"
-                && args.iter().any(|a| {
-                    a.starts_with("npm:")
-                        || a.starts_with("jsr:")
-                        || (a.contains("://") && !a.starts_with("file://"))
+                && args.iter().any(|arg| {
+                    arg.starts_with("npm:")
+                        || arg.starts_with("jsr:")
+                        || (starts_with_url(arg) && !is_file_url(arg))
                 })
         }
         _ => false,
@@ -451,6 +751,11 @@ fn remote_note(command: &str, args: &[String]) -> Option<String> {
     remote.then(|| {
         format!("This runs a package fetched by {name} at start; only {name} itself is pinned.")
     })
+}
+
+/// `file://` in any case. `FILE:///tmp/x` is a local file, not a fetch.
+fn is_file_url(arg: &str) -> bool {
+    arg.len() >= 7 && arg.as_bytes()[..7].eq_ignore_ascii_case(b"file://")
 }
 
 /// What is on disk. `approvals` maps an id to what the person allowed for it.
@@ -461,13 +766,18 @@ pub(crate) struct Stored {
     pub approvals: BTreeMap<String, Approval>,
 }
 
-/// A saved entry, checked, ready to start. `command` is the resolved executable.
+/// A saved entry, checked, ready to start. `command` is the canonical path that is executed.
+/// `argv0` is the path that was invoked, as a shell passes it. A shebang script does not see that name: the kernel
+/// passes the executed file, so `dirname` of the program stays the install folder.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Resolved {
     pub id: String,
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    pub argv0: Option<String>,
+    /// SHA-256 of the approved program. The disclaim launcher checks it immediately before exec.
+    pub sha256: String,
 }
 
 pub(crate) fn file_path(data_dir: &Path) -> PathBuf {
@@ -712,23 +1022,102 @@ fn inline_flag(arg: &str) -> bool {
 /// A relative file argument. Refused: a `..` segment, a `~` path, a leading `.`, or a script or config file name.
 /// A slash in a model name (`openai/gpt-4.1`) is not a path. A scoped package (`@scope/pkg`) and a URL are not paths.
 /// The child runs in an empty folder, so a relative word cannot reach a chat file. Every value an argument can carry
-/// is checked, not only the argument.
+/// is checked, not only the argument. A leading `@` is not a free pass: the same rule applies to what follows it.
+/// A rooted path with no drive (`\Users\ash`) and a drive-relative path (`C:foo`, `C:..\agent`) are refused too.
+/// Fullwidth `＝` and `：` are folded before the split, so they cannot hide a path.
 fn relative_file_arg(arg: &str) -> bool {
-    candidates(arg).into_iter().any(|value| {
-        !value.is_empty()
-            && !value.contains("://")
-            && !value.starts_with('@')
-            && !Path::new(value).is_absolute()
-            && (has_parent_segment(value)
-                || has_tilde(value)
-                || value.starts_with('.')
-                || names_a_script_or_config(value))
-    })
+    let folded = fold_path(arg);
+    candidates(folded.as_ref())
+        .into_iter()
+        .any(refused_path_value)
+}
+
+/// One value an argument can carry. A leading `@` is stripped and the rest is checked the same way, so `@../x` and
+/// `@~/x` are refused and `@scope/pkg` is not.
+fn refused_path_value(value: &str) -> bool {
+    let folded = fold_path(value);
+    path_is_refused(folded.as_ref())
+}
+
+fn path_is_refused(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    // Windows best-fit turns these into `\` and `/` (the won sign in code page 949). NFKC leaves them, so a value
+    // that contains one is refused.
+    if value
+        .chars()
+        .any(|c| c == '\u{00A5}' || c == '\u{20A9}' || c == '\u{2215}')
+    {
+        return true;
+    }
+    if let Some(rest) = value.strip_prefix('@') {
+        return path_is_refused(rest);
+    }
+    match file_url_target(value) {
+        Err(_) => return true,
+        Ok(Some(_)) => return false,
+        Ok(None) => {}
+    }
+    // A URL is not a path. `://` later in the text is a path (`../../x://agent.mjs`), so only a leading scheme counts.
+    if starts_with_url(value) {
+        return false;
+    }
+    if is_drive_relative(value) || is_rooted_without_drive(value) {
+        return true;
+    }
+    if Path::new(value).is_absolute() {
+        return false;
+    }
+    has_parent_segment(value)
+        || has_tilde(value)
+        || value.starts_with('.')
+        || names_a_script_or_config(value)
+}
+
+/// `C:foo` and `C:..\agent`: a drive letter, a colon, and no slash. `C:\foo` is absolute and is not this.
+/// A model tag (`o:latest`, `m:stable`, `x:nightly`) is not a path. `C:foo` and `d:bar` still are.
+/// `C:latest` is the same shape as a tag, so it is not caught here.
+fn is_drive_relative(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() < 2 || !bytes[0].is_ascii_alphabetic() || bytes[1] != b':' {
+        return false;
+    }
+    if bytes.len() > 2 && (bytes[2] == b'/' || bytes[2] == b'\\') {
+        return false;
+    }
+    !matches!(&value[2..], "latest" | "stable" | "nightly")
+}
+
+/// A root with no drive: `\Users\ash`, and on Windows `/Users/ash`. A UNC path (`\\server\share`) is not this.
+fn is_rooted_without_drive(value: &str) -> bool {
+    if value.starts_with("\\\\") || value.starts_with("//") {
+        return false;
+    }
+    if value.starts_with('\\') {
+        // `\t`, `\n` and `\r` are escapes (`--delimiter=\t`), not a file at the root of the current drive.
+        // `\Users\ash` and `\t\secret` are longer, so they stay refused.
+        let bytes = value.as_bytes();
+        if bytes.len() == 2 && matches!(bytes[1], b't' | b'n' | b'r') {
+            return false;
+        }
+        return true;
+    }
+    cfg!(windows) && value.starts_with('/')
 }
 
 /// `..` as its own path segment (`../x`, `foo/../x`), not a word that merely contains two dots.
+/// `C:..` is a parent segment too: the drive letter would otherwise hide the `..`.
 fn has_parent_segment(value: &str) -> bool {
-    value.split(['/', '\\']).any(|segment| segment == "..")
+    value.split(['/', '\\']).any(is_parent_segment)
+}
+
+fn is_parent_segment(segment: &str) -> bool {
+    if segment == ".." {
+        return true;
+    }
+    let bytes = segment.as_bytes();
+    bytes.len() == 4 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && &bytes[2..] == b".."
 }
 
 /// A home path: `~`, `~/x`, or a segment that starts with `~`.
@@ -762,14 +1151,20 @@ fn valid_id(id: &str) -> bool {
 }
 
 fn command_basename(command: &str) -> String {
-    let last = command.rsplit(['/', '\\']).next().unwrap_or("");
+    program_display_name(command).to_ascii_lowercase()
+}
+
+/// The program name the Allow card shows: the file name, without a Windows extension, in the case it was typed.
+fn program_display_name(command: &str) -> String {
+    let last = command.rsplit(['/', '\\']).next().unwrap_or(command);
     let lower = last.to_ascii_lowercase();
     for suffix in [".exe", ".cmd", ".bat"] {
         if let Some(stripped) = lower.strip_suffix(suffix) {
-            return stripped.to_string();
+            let end = last.len() - (lower.len() - stripped.len());
+            return last[..end].to_string();
         }
     }
-    lower
+    last.to_string()
 }
 
 /// Replace the list on top of `expected` (the revision the window read). Approvals are kept only for entries that
@@ -845,18 +1240,18 @@ pub(crate) fn set_approval(
     if allowed {
         let (checked_id, command, args) = checked_fields(&entry)?;
         let fp = fingerprint(&command, &args);
-        let path = resolve_command(&command, path_value)?;
+        let found = resolve_command(&command, path_value)?;
         // The window must have shown this command AND the file it resolves to now (a PATH change shows another file).
-        if shown != Some(shown_fingerprint(&command, &args, &path).as_str()) {
+        if shown != Some(shown_fingerprint(&command, &args, &found.path).as_str()) {
             return Err(SHOWN_CHANGED.into());
         }
-        let sha256 = file_sha256(Path::new(&path))?;
+        let sha256 = file_sha256(Path::new(&found.path))?;
         let (pins, _) = pin_set(&args)?;
         approvals.insert(
             checked_id,
             Approval {
                 fingerprint: fp,
-                path,
+                path: found.path,
                 sha256,
                 pins,
                 generation: String::new(),
@@ -900,8 +1295,8 @@ pub(crate) fn approved_spawn(
         .get(&checked_id)
         .filter(|approval| approval.fingerprint == fp)
         .ok_or(NOT_APPROVED)?;
-    let resolved = resolve_command(&command, path_value)?;
-    if !still_approved(approval, &fp, Some(&resolved)) {
+    let found = resolve_command(&command, path_value)?;
+    if !still_approved(approval, &fp, Some(&found.path)) {
         return Err(ON_DISK_CHANGED.into());
     }
     // Pins are taken again over the same arguments: a file that changed, moved behind a link, or appeared since the
@@ -910,9 +1305,10 @@ pub(crate) fn approved_spawn(
     if pins_now != approval.pins {
         return Err(ON_DISK_CHANGED.into());
     }
-    // Run the canonical file itself, hashed again immediately before the path is handed back. A launcher then still
-    // finds the files installed beside it. A write between this hash and the spawn can still change the file.
-    if file_sha256(Path::new(&resolved)).ok().as_deref() != Some(approval.sha256.as_str()) {
+    // Hashed again here, then once more immediately before spawn (confirm_before_spawn), after the run folder exists.
+    // The child runs the canonical path. A writer of the install folder can still change that file between this hash
+    // and the exec. Files beside the program are not checked.
+    if file_sha256(Path::new(&found.path)).ok().as_deref() != Some(approval.sha256.as_str()) {
         return Err(ON_DISK_CHANGED.into());
     }
     let name = entry
@@ -924,9 +1320,31 @@ pub(crate) fn approved_spawn(
     Ok(Resolved {
         id: checked_id,
         name,
-        command: resolved,
+        command: found.path,
         args: canonical_args,
+        argv0: found.argv0,
+        sha256: approval.sha256.clone(),
     })
+}
+
+/// The last hash in this process, of the program and of every pinned argument file. Called after the run folder
+/// exists and immediately before the spawn, and again before a text-file-busy retry. On macOS the disclaim
+/// launcher hashes the program once more, by path, then execs that path. That narrows the window for the program
+/// only. A swap after the launcher's hash can still run, and a pinned argument file is not hashed again there.
+/// A direct spawn has no launcher check, and a script is read again by its interpreter after exec. A writer can
+/// still win any of those gaps.
+pub(crate) fn confirm_before_spawn(data_dir: &Path, id: &str, command: &str) -> Result<(), String> {
+    let stored = read_stored(data_dir)?;
+    let approval = stored.approvals.get(id).ok_or(NOT_APPROVED)?;
+    if file_sha256(Path::new(command)).ok().as_deref() != Some(approval.sha256.as_str()) {
+        return Err(ON_DISK_CHANGED.into());
+    }
+    for (pin, sha) in &approval.pins {
+        if file_sha256(Path::new(pin)).ok().as_deref() != Some(sha.as_str()) {
+            return Err(ON_DISK_CHANGED.into());
+        }
+    }
+    Ok(())
 }
 
 /// The start of a More agents process. The webview names the entry by its id and nothing else: a command, an argument
@@ -1034,8 +1452,16 @@ pub(crate) fn remove_run_folder(data_dir: &Path, run_dir: &Path) -> Result<(), S
     Ok(())
 }
 
+/// The file a saved command names. `path` is canonical and is what is hashed and executed. `argv0` is the path that
+/// was invoked, as a shell passes it. A shebang script does not see it: the kernel passes the executed file, so an
+/// npm bin still finds the files beside the real file.
+struct CommandFile {
+    path: String,
+    argv0: Option<String>,
+}
+
 /// An absolute path that is a file, or a bare name found on `path_value`. Anything else is not started.
-fn resolve_command(command: &str, path_value: &str) -> Result<String, String> {
+fn resolve_command(command: &str, path_value: &str) -> Result<CommandFile, String> {
     let not_found = "This agent was not found. Check the command in More agents.";
     let candidate = if command.contains(['/', '\\']) {
         let path = PathBuf::from(command);
@@ -1067,7 +1493,17 @@ fn resolve_command(command: &str, path_value: &str) -> Result<String, String> {
     {
         return Err(SHELL_REFUSED.into());
     }
-    Ok(resolved.to_string_lossy().into_owned())
+    let argv0 = invoked_argv0(&candidate);
+    Ok(CommandFile {
+        path: resolved.to_string_lossy().into_owned(),
+        argv0,
+    })
+}
+
+/// argv[0] is the path that was invoked, as a shell passes it. The child still executes the canonical file.
+/// A shebang script does not see this name: the kernel passes the file that was executed.
+fn invoked_argv0(candidate: &Path) -> Option<String> {
+    candidate.to_str().map(str::to_string)
 }
 
 /// The file names a bare command may resolve to in one folder. Windows also tries the PATHEXT extensions.
@@ -1095,13 +1531,18 @@ fn still_approved(approval: &Approval, fp: &str, path: Option<&str>) -> bool {
 }
 
 /// SHA-256 of a file's bytes, hex. A file that cannot be read is not approved.
-/// On Unix the hash is cached by path, mtime, size, inode and ctime, so an in-place edit is seen even when the writer
-/// puts the mtime back. Windows has no ctime a user cannot reset, so it does not cache.
+/// The file is opened once. On Unix the cache key is that handle's mtime, size, inode and ctime, and the bytes are
+/// read through the same handle, so a swap between a stat and a later open cannot store one file's stamp with
+/// another's hash. Windows has no ctime a user cannot reset, so it does not cache.
 fn file_sha256(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
-    let meta = std::fs::metadata(path).map_err(|_| NOT_APPROVED.to_string())?;
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|_| NOT_APPROVED.to_string())?;
     #[cfg(unix)]
-    let stamp = FileStamp::of(&meta);
+    let stamp = {
+        let meta = file.metadata().map_err(|_| NOT_APPROVED.to_string())?;
+        FileStamp::of(&meta)
+    };
     #[cfg(unix)]
     if let Some((cached, sha)) = SHA_CACHE
         .lock()
@@ -1113,11 +1554,11 @@ fn file_sha256(path: &Path) -> Result<String, String> {
             return Ok(sha);
         }
     }
-    #[cfg(not(unix))]
-    let _ = meta;
     #[cfg(test)]
     HASHES.with(|h| h.set(h.get() + 1));
-    let bytes = std::fs::read(path).map_err(|_| NOT_APPROVED.to_string())?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|_| NOT_APPROVED.to_string())?;
     let sha: String = Sha256::digest(&bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
@@ -1184,10 +1625,12 @@ pub(crate) fn data_folder_notes(
             .iter()
             .any(|(path, _)| Path::new(path).starts_with(&folder))
         {
-            notes.insert(
-                id.clone(),
-                json!("This entry reads a file in the app's folder. If the agent rewrites that file, the next start needs a new approval."),
-            );
+            let line = "This entry reads a file in the app's folder. If the agent rewrites that file, the next start needs a new approval.";
+            let text = match notes.get(id).and_then(Value::as_str) {
+                Some(existing) if !existing.is_empty() => format!("{existing} {line}"),
+                _ => line.to_string(),
+            };
+            notes.insert(id.clone(), json!(text));
         }
     }
 }
@@ -1234,6 +1677,17 @@ pub(crate) fn restrict_env(cmd: &mut Command, path_value: &str) {
     cmd.env("PATH", path_value);
 }
 
+/// Clears the child's environment to the allow-list (restrict_env), then runs `after`, which adds the worker's approved
+/// secrets. The order matters: anything set before the clear is gone.
+pub(crate) fn restrict_env_then(
+    cmd: &mut Command,
+    path_value: &str,
+    after: impl FnOnce(&mut Command) -> Result<(), String>,
+) -> Result<(), String> {
+    restrict_env(cmd, path_value);
+    after(cmd)
+}
+
 /// What the list says, for the window: the entries as stored, the ids allowed to run as they are now, and for each
 /// entry the fingerprint the window must send back to allow it and the absolute file it resolves to (null if none).
 pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
@@ -1246,7 +1700,9 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
             continue;
         };
         let fp = fingerprint(&command, &args);
-        let path = resolve_command(&command, path_value).ok();
+        let path = resolve_command(&command, path_value)
+            .ok()
+            .map(|found| found.path);
         let shown = shown_fingerprint(&command, &args, path.as_deref().unwrap_or(""));
         // The list checks what the start checks: the same pins over the same arguments, so a re-pointed link
         // does not show as allowed.
@@ -1257,15 +1713,24 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
                 .approvals
                 .get(&id)
                 .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
+        // One note per entry. A package launcher that is itself a script (npx, bunx, uvx) says both: the fetch,
+        // and that the interpreter on the first line is read again. The two limits that are not pinned are always said.
+        let mut lines = Vec::new();
         if let Some(note) = remote_note(&command, &args) {
-            notes.insert(id.clone(), json!(note));
-        } else if path.as_deref().is_some_and(starts_with_shebang) {
-            // LOW-F: the interpreter on a script's first line is not pinned, so the card says so.
-            notes.insert(
-                id.clone(),
-                json!("This program is a script. The interpreter named on its first line is not pinned."),
+            lines.push(note);
+        }
+        if path.as_deref().is_some_and(starts_with_shebang) {
+            lines.push(
+                "This program is a script. The interpreter named on its first line is not pinned. The interpreter reads this script again after it starts, so a change in that gap runs without a new Allow."
+                    .to_string(),
             );
         }
+        let display = program_display_name(&command);
+        lines.push(format!(
+            "Files beside {display} aren't checked; an edit to them runs without a new Allow."
+        ));
+        lines.push("A writer of the install folder can still race the start.".to_string());
+        notes.insert(id.clone(), json!(lines.join(" ")));
         if allowed {
             approved.push(id.clone());
         }
@@ -1649,6 +2114,38 @@ mod tests {
             .unwrap()
             .ends_with("wp134-d"));
         assert!(shown["fingerprints"]["copilot"].as_str().is_some());
+        let note = shown["notes"]["copilot"].as_str().unwrap();
+        assert!(note.contains(
+            "Files beside wp134-d aren't checked; an edit to them runs without a new Allow."
+        ));
+        assert!(note.contains("A writer of the install folder can still race the start."));
+        assert!(note.contains(
+            "The interpreter reads this script again after it starts, so a change in that gap runs without a new Allow."
+        ));
+    }
+
+    /// npx, bunx and uvx are scripts that also fetch a package. The card says both, not only the fetch.
+    #[cfg(unix)]
+    #[test]
+    fn a_fetching_script_still_says_the_interpreter_is_reread() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        let path_value = bin.to_string_lossy().into_owned();
+        let mut agents = Vec::new();
+        for (id, name) in [("wp134", "npx"), ("wp134b", "bunx"), ("wp134c", "uvx")] {
+            make_tool(&bin, name, b"#!/bin/sh\n");
+            agents.push(entry(id, name, &["pkg"]));
+        }
+        write_agents(d.path(), 0, agents).expect("seed");
+        let shown = view(&read_stored(d.path()).expect("read"), &path_value);
+        for id in ["wp134", "wp134b", "wp134c"] {
+            let note = shown["notes"][id].as_str().expect("note");
+            assert!(note.contains("fetched"), "{id} lost the fetch line: {note}");
+            assert!(
+                note.contains("The interpreter reads this script again after it starts"),
+                "{id} hid the script re-read behind the fetch line: {note}"
+            );
+        }
     }
 
     #[cfg(unix)]
@@ -1763,15 +2260,17 @@ mod tests {
             .expect("approved and present");
         assert_eq!(run.id, "wp134b");
         let canonical = std::fs::canonicalize(&tool).expect("canonical");
+        let run_path = Path::new(&run.command);
         assert_eq!(
-            run.command,
-            canonical.to_string_lossy(),
-            "the approved file is not what runs"
+            run_path.parent(),
+            canonical.parent(),
+            "the approved program must run from its install folder"
         );
-        let data_real = std::fs::canonicalize(d.path()).expect("data");
-        assert!(
-            Path::new(&run.command).starts_with(&data_real),
-            "the approved program runs outside the data folder"
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(run_path).expect("run meta").ino(),
+            std::fs::metadata(&canonical).expect("file meta").ino(),
+            "the approved program must be the approved file, not a copy"
         );
         assert_eq!(
             file_sha256(Path::new(&run.command)).expect("copy"),
@@ -2143,7 +2642,14 @@ mod tests {
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_spawn(d.path(), "wp134", &path_value).expect("run");
         let original = std::fs::canonicalize(&tool).expect("canonical");
-        assert_eq!(Path::new(&run.command), original.as_path());
+        let run_path = Path::new(&run.command);
+        assert_eq!(run_path.parent(), original.parent());
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            std::fs::metadata(run_path).expect("run meta").ino(),
+            std::fs::metadata(&original).expect("file meta").ino(),
+            "a private copy would not be the approved file"
+        );
     }
 
     #[cfg(unix)]
@@ -2568,6 +3074,54 @@ mod tests {
         );
     }
 
+    /// A cross-folder link still passes the invoked path as argv[0], as a shell does. The child executes the
+    /// canonical file. A shebang does not see argv[0]; the kernel passes the executed file.
+    #[cfg(unix)]
+    #[test]
+    fn a_cross_folder_link_passes_the_invoked_path_as_argv0() {
+        let d = dir();
+        let real = make_tool(&d.path().join("lib"), "real-tool", b"#!/bin/sh\n");
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&real, bin.join("linked-tool")).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "linked-tool", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved");
+        let argv0 = run.argv0.expect("the invoked path");
+        assert!(argv0.ends_with("/linked-tool"), "{argv0}");
+        assert!(
+            run.command.ends_with("/real-tool"),
+            "the child runs the canonical file, got {}",
+            run.command
+        );
+    }
+
+    /// `bunx` is a same-folder link to `bun`, and bun picks its mode from argv[0]. The child runs the canonical file
+    /// and is told the name that was on PATH. A shebang script does not see that name (the kernel passes the file),
+    /// so the name the child sees is checked on a real binary in disclaim.rs.
+    #[cfg(unix)]
+    #[test]
+    fn a_same_folder_link_keeps_its_name_as_argv0() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        let bun = make_tool(&bin, "bun", b"#!/bin/sh\n");
+        std::os::unix::fs::symlink(&bun, bin.join("bunx")).expect("same-folder link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "bunx", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved");
+        let argv0 = run.argv0.expect("the invoked name");
+        assert!(argv0.ends_with("/bunx"), "{argv0}");
+        assert!(
+            Path::new(&run.command)
+                .file_name()
+                .is_some_and(|name| name == "bun"),
+            "the child runs the canonical file, got {}",
+            run.command
+        );
+    }
+
     // Review #231 r2 repro (MEDIUM, functional, same class as r5's dotted words): a model name with a slash is read as
     // a relative path and refused. `--model openai/gpt-4.1`, `--model=anthropic/claude-sonnet-4` (OpenRouter, opencode,
     // goose, aider style) and a Hugging Face id cannot be given at all, with or without `=`. The child now starts in its
@@ -2667,5 +3221,1184 @@ mod tests {
             Some(ON_DISK_CHANGED),
             "an edited pinned script ran on the old approval"
         );
+    }
+
+    /// Stated limit: a swap of the approved file after the last hash and before exec runs the swapped bytes.
+    /// The steps are the original repro. The run folder appears after `approved_start` (the last hash in this
+    /// test), the file is renamed over the approved name, and the program is spawned. There is no second copy of
+    /// the file, so that spawn runs the swapped bytes. The hash of the canonical path, when it is taken, sees the
+    /// swap. A file written in place of that path afterwards is not the approved bytes.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r3_limit_a_swap_after_the_last_hash_runs_the_swapped_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let bin = d.path().join("bin");
+        let tool = make_tool(&bin, "wp134-swap", b"#!/bin/sh\necho approved-bytes\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-swap", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_start(d.path(), "wp134", "", &[], false, &path_value)
+            .expect("starts as approved");
+        // What harness_spawn does next, and what a watcher sees: the run folder appears after the last hash.
+        let folder = run_folder(d.path()).expect("run folder");
+        let swap = bin.join(".wp134-swap.new");
+        std::fs::write(&swap, b"#!/bin/sh\necho swapped-bytes\n").expect("swap file");
+        std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::rename(&swap, &tool).expect("rename over the approved file");
+        let out = std::process::Command::new(&run.command)
+            .args(&run.args)
+            .current_dir(&folder)
+            .output()
+            .expect("spawn");
+        let _ = remove_run_folder(d.path(), &folder);
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
+            "a program swapped after the last hash did not run the swapped bytes"
+        );
+        // The path that will run is the canonical file, so this hash sees the rename. It used to pass because the
+        // child ran a separate link that still named the approved bytes.
+        assert!(
+            confirm_before_spawn(d.path(), "wp134", &run.command).is_err(),
+            "the hash of the canonical path did not see the swap"
+        );
+        std::fs::remove_file(&run.command).expect("drop the link");
+        std::fs::write(&run.command, b"#!/bin/sh\necho swapped-link\n").expect("new link");
+        assert!(
+            confirm_before_spawn(d.path(), "wp134", &run.command).is_err(),
+            "a replaced link still hashed as the approved file"
+        );
+    }
+
+    // Review #231 r3 repro (MEDIUM, pin scope), inverted on the lead's call: files beside the approved program are not
+    // pinned (pinning the package broke every launcher). The Allow card must say so, with the program's name.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r3_a_changed_file_beside_the_approved_program_needs_a_new_allow() {
+        let d = dir();
+        let pkg = d.path().join("lib").join("node_modules").join("fake-acp");
+        std::fs::create_dir_all(pkg.join("lib")).expect("pkg lib");
+        std::fs::write(pkg.join("lib").join("cli.sh"), b"echo approved-module\n").expect("cli");
+        let cli = make_tool(
+            &pkg.join("bin"),
+            "fake-acp-cli.sh",
+            b"#!/bin/sh\n. \"$(dirname \"$0\")/../lib/cli.sh\"\n",
+        );
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&cli, bin.join("fake-acp")).expect("PATH link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "fake-acp", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let shown = view(&read_stored(d.path()).expect("read"), &path_value);
+        let note = shown["notes"]["wp134"].as_str().unwrap_or("");
+        assert!(
+            note.contains(
+                "Files beside fake-acp aren't checked; an edit to them runs without a new Allow."
+            ),
+            "the Allow card does not say files beside the program are unchecked: {note}"
+        );
+    }
+
+    // Review #231 r3 repro (MEDIUM, pin bypass; not new in r3): `deno run file:///abs/agent.ts` runs a local file, and
+    // remote_note says so on purpose (a file:// URL is not remote, so no "only deno is pinned" line). But the URL is
+    // skipped by relative_file_arg (it holds `://`) and by pin_arg (it is not an absolute path), so the file is never
+    // hashed. The Allow card reads as a pinned local program; an edit to agent.ts runs on the old approval. Either
+    // refuse a file: URL or pin the file it names.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r3_a_deno_file_url_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "deno", b"#!/bin/sh\n");
+        let script = d.path().join("agent.ts");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let url = format!("file://{}", script.to_string_lossy());
+        let path_value = bin.to_string_lossy().into_owned();
+        let agent = entry("wp134", "deno", &["run", url.as_str()]);
+        if checked_fields(&agent).is_err() {
+            return; // Refused when it is added: nothing unpinned can run.
+        }
+        write_agents(d.path(), 0, vec![agent]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&script, b"require('cp').exec('xx')").expect("edit");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a deno entry ran a changed file:// script on the old approval"
+        );
+    }
+
+    // Review #231 r3 repro (MEDIUM, Windows, regression in c7e263cb4): the r2 rule refused any argument with `\` or `/`
+    // that was not absolute. The new rule refuses only `..`, `~`, a leading dot and a script name. On Windows
+    // `\Users\ash\agent` and `/Users/ash/agent` have a root but no drive, so Path::is_absolute is false: they are not
+    // refused, and pin_arg skips them, so an extensionless file (node, python and ruby run one) named that way runs
+    // from C:\Users\ash\agent unpinned. `C:..\agent` is drive-relative: its first segment is `C:..`, not `..`, so it
+    // leaves the run folder. On Unix these words are odd file names; refusing them costs nothing. The TypeScript mirror
+    // treats a leading `/` as absolute, so the window lets the forward-slash form through too.
+    #[test]
+    fn review_231_r3_a_rooted_or_drive_relative_windows_path_is_refused_or_pinned() {
+        for arg in [
+            "\\Users\\ash\\agent",
+            "\\tools\\agent",
+            "--config=\\Users\\ash\\cfg",
+            "C:..\\agent",
+        ] {
+            let args = vec![arg.to_string()];
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).is_err()
+                    || pin_set(&args).is_err(),
+                "{arg} is neither refused nor pinned"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn review_231_r3_a_forward_slash_rooted_path_on_windows_is_refused_or_pinned() {
+        let arg = "/Users/ash/agent";
+        assert!(!Path::new(arg).is_absolute());
+        let args = vec![arg.to_string()];
+        assert!(
+            checked_fields(&entry("wp134", "C:\\opt\\node.exe", &[arg])).is_err()
+                || pin_set(&args).is_err(),
+            "{arg} runs from the current drive's root, unpinned"
+        );
+    }
+
+    // Review #231 r3 repro (LOW, not new in r3): a value that starts with `@` is never checked, to let `@scope/pkg`
+    // through. `@../x` and `@~/x` are not package names. A tool that reads arguments from `@file` (argparse
+    // fromfile_prefix_chars, many CLIs) then takes them from an unpinned file outside the run folder.
+    #[test]
+    fn review_231_r3_a_parent_or_home_path_after_at_is_refused() {
+        for arg in ["@../args.txt", "@~/args", "--opts=@../args"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/wp134-tool", &[arg])).is_err(),
+                "{arg} is not a package name"
+            );
+        }
+        assert!(checked_fields(&entry("wp134", "/opt/npx", &["-y", "@scope/pkg"])).is_ok());
+    }
+
+    // A percent-encoded file: URL names the same local file as a plain one. The space must not hide it from the pin.
+    #[cfg(unix)]
+    #[test]
+    fn a_percent_encoded_file_url_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "deno", b"#!/bin/sh\n");
+        let script = d.path().join("my agent.ts");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let encoded = script.to_string_lossy().replace(' ', "%20");
+        let url = format!("file://{encoded}");
+        let path_value = bin.to_string_lossy().into_owned();
+        let agent = entry("wp134", "deno", &["run", url.as_str()]);
+        if checked_fields(&agent).is_err() {
+            return;
+        }
+        write_agents(d.path(), 0, vec![agent]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&script, b"require('cp').exec('xx')").expect("edit");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a percent-encoded file URL was not pinned"
+        );
+    }
+
+    // `C:foo` is drive-relative even when it has no `..` segment. It is not absolute, so it must be refused.
+    #[test]
+    fn a_drive_relative_path_without_a_parent_segment_is_refused() {
+        for arg in ["C:foo", "C:foo\\agent", "d:bar", "--config=C:foo"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).is_err(),
+                "{arg} is a drive-relative path"
+            );
+        }
+    }
+
+    // Review #241 r1 repro (HIGH, functional): the start runs a hard link named `.<file>.hivra-pin` instead of the
+    // approved file. npm installs an agent as <prefix>/bin/<name> -> ../lib/node_modules/<pkg>/dist/index.js in a
+    // package whose package.json says "type": "module" (gemini-cli, claude-code-acp, codex, qwen-code). Node picks ESM
+    // or CommonJS by the file extension, and `.hivra-pin` is not one it knows: ERR_UNKNOWN_FILE_EXTENSION, the agent
+    // never starts. On Apple Silicon /opt/homebrew is the user's own, so the link is made and every such agent breaks.
+    // The same rename breaks a .cjs/.mjs bin, a multi-call binary that reads its own name, and on Windows a .cmd shim
+    // (std runs a batch file through cmd.exe only by its .cmd/.bat extension).
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_an_esm_agent_installed_by_npm_starts_through_its_approved_path() {
+        let d = dir();
+        let pkg = d.path().join("lib").join("node_modules").join("esm-agent");
+        std::fs::create_dir_all(pkg.join("dist")).expect("pkg");
+        std::fs::write(
+            pkg.join("package.json"),
+            br#"{"name":"esm-agent","type":"module"}"#,
+        )
+        .expect("package.json");
+        let main = make_tool(
+            &pkg.join("dist"),
+            "index.js",
+            b"#!/usr/bin/env node\nimport { argv } from 'node:process';\nconsole.log('esm agent started', argv.length);\n",
+        );
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&main, bin.join("esm-agent")).expect("npm bin link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "esm-agent", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved");
+        let node_here = std::process::Command::new("node")
+            .arg("--version")
+            .output()
+            .is_ok_and(|out| out.status.success());
+        if node_here {
+            let out = std::process::Command::new(&run.command)
+                .args(&run.args)
+                .output()
+                .expect("spawn");
+            assert!(
+                String::from_utf8_lossy(&out.stdout).contains("esm agent started"),
+                "an npm-installed ESM agent did not start: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+        let canonical = std::fs::canonicalize(&main).expect("canonical");
+        assert_eq!(
+            Path::new(&run.command).file_name(),
+            canonical.file_name(),
+            "the approved program runs under another file name, so its extension and its own name change"
+        );
+    }
+
+    // Review #241 r1 repro (HIGH, same cause): a start, and every per-turn check (more_agents_check calls
+    // approved_spawn), writes `.<file>.hivra-pin` into the agent's install folder and never removes it. That is
+    // Ash's /opt/homebrew/lib/node_modules/<pkg>, ~/.local/bin, or an app bundle (a file added to a signed bundle
+    // breaks its seal; macOS App Management blocks or prompts on the write). The link also keeps an upgraded
+    // program's old bytes alive on disk. A start must not write into the folder it runs from.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_a_start_writes_nothing_into_the_install_folder() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-quiet", b"#!/bin/sh\necho ok\n");
+        let before: Vec<_> = std::fs::read_dir(&bin)
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-quiet", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        approved_spawn(d.path(), "wp134", &path_value).expect("approved");
+        let after: Vec<_> = std::fs::read_dir(&bin)
+            .expect("list")
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(after, before, "the start left a file in the install folder");
+    }
+
+    // Review #241 r1 repro (MEDIUM, reliability, same cause): every approved_spawn (a start, and the check before each
+    // turn of a running chat) deletes and re-creates the one shared link name. A second chat starting the same agent
+    // in that gap hashes or execs a path that is not there: confirm_before_spawn says the program changed on disk
+    // (asking Ash for a new Allow for nothing) or the spawn fails with "No such file or directory".
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_two_chats_starting_the_same_agent_do_not_refuse_each_other() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-shared", b"#!/bin/sh\necho ok\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-shared", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let data = d.path().to_path_buf();
+        let generation = TEST_GEN.with(|g| g.borrow().clone());
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let other = {
+            let (data, path_value, stop) = (data.clone(), path_value.clone(), stop.clone());
+            std::thread::spawn(move || {
+                TEST_KEY.with(|key| *key.borrow_mut() = Some(vec![7u8; 32]));
+                TEST_GEN.with(|g| *g.borrow_mut() = generation);
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let _ = approved_spawn(&data, "wp134", &path_value);
+                }
+            })
+        };
+        let mut failures = Vec::new();
+        for _ in 0..2000 {
+            let run = approved_spawn(&data, "wp134", &path_value).expect("approved");
+            if let Err(error) = confirm_before_spawn(&data, "wp134", &run.command) {
+                failures.push(error);
+            }
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        other.join().expect("other chat");
+        assert!(
+            failures.is_empty(),
+            "{} of 2000 starts were refused while another chat used the same agent: {:?}",
+            failures.len(),
+            failures.first()
+        );
+    }
+
+    // Review #241 r1 repro (MEDIUM, pin bypass; the r3 LOW fixed only for relative paths): a value after `@` is now
+    // checked as a path, but an absolute one is passed through, and pin_arg does not strip the `@`, so the file is
+    // never hashed. `java @/abs/agent.args` (and javac, gcc, clang, any argparse fromfile_prefix_chars tool) reads
+    // its options from that file: adding `-jar /tmp/x.jar` or `--yolo` to it runs on the old approval.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_an_absolute_file_after_at_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-tool", b"#!/bin/sh\n");
+        let args_file = d.path().join("agent.args");
+        std::fs::write(&args_file, b"--model safe\n").expect("args");
+        let path_value = bin.to_string_lossy().into_owned();
+        let whole = format!("@{}", args_file.to_string_lossy());
+        let after_eq = format!("--opts=@{}", args_file.to_string_lossy());
+        let agents: Vec<Value> = [("at1", whole.as_str()), ("at2", after_eq.as_str())]
+            .into_iter()
+            .map(|(id, arg)| entry(id, "wp134-tool", &[arg]))
+            .filter(|agent| checked_fields(agent).is_ok())
+            .collect();
+        if agents.is_empty() {
+            return; // Refused when added: nothing unpinned can run.
+        }
+        let ids: Vec<String> = agents
+            .iter()
+            .map(|a| a["id"].as_str().unwrap_or("").to_string())
+            .collect();
+        write_agents(d.path(), 0, agents).expect("seed");
+        for id in &ids {
+            approve(d.path(), id, &path_value).expect("approve");
+        }
+        std::fs::write(&args_file, b"--model safe --yolo\n").expect("edit");
+        for id in &ids {
+            assert!(
+                approved_spawn(d.path(), id, &path_value).is_err(),
+                "{id}: an edited @file ran on the old approval"
+            );
+        }
+    }
+
+    // Review #241 r1 repro (MEDIUM, pin bypass; not new in #241, same class as r3's file: URL): a flag that takes its
+    // value after a colon is not split. `java -javaagent:/abs/agent.jar -jar /abs/app.jar` pins app.jar but not the
+    // agent jar, which java loads and runs first, so an edit to it runs on the old approval. `--config:../x` and
+    // `-p:../x` (dotnet, msbuild and other colon-style CLIs) name a file outside the run folder and are not refused.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_a_file_after_a_colon_flag_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-jvm", b"#!/bin/sh\n");
+        let jar = d.path().join("agent.jar");
+        std::fs::write(&jar, b"approved-jar").expect("jar");
+        let path_value = bin.to_string_lossy().into_owned();
+        let arg = format!("-javaagent:{}", jar.to_string_lossy());
+        let agent = entry("wp134", "wp134-jvm", &[arg.as_str()]);
+        if checked_fields(&agent).is_ok() {
+            write_agents(d.path(), 0, vec![agent]).expect("seed");
+            approve(d.path(), "wp134", &path_value).expect("approve");
+            std::fs::write(&jar, b"changed-jar").expect("edit");
+            assert!(
+                approved_spawn(d.path(), "wp134", &path_value).is_err(),
+                "an edited -javaagent: jar ran on the old approval"
+            );
+        }
+        for relative in ["--config:../x", "-p:../x"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/wp134-jvm", &[relative])).is_err(),
+                "{relative} names a file outside the run folder"
+            );
+        }
+    }
+
+    /// `\t` is an escape, not a rooted path. `o:latest` is a model tag, not `C:foo`. The rooted and drive-relative
+    /// shapes stay refused, including a tag glued to a real path (`\t\secret`).
+    #[test]
+    fn an_escape_or_a_model_tag_is_not_a_windows_path() {
+        for arg in [
+            "--delimiter=\\t",
+            "--model=o:latest",
+            "o:stable",
+            "x:nightly",
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).is_ok(),
+                "{arg} was refused"
+            );
+        }
+        for arg in ["\\Users\\ash", "\\t\\secret", "C:foo", "d:bar"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).is_err(),
+                "{arg} was allowed"
+            );
+        }
+    }
+
+    /// A fullwidth reverse solidus folds to `\`, so this is the rooted path the check already refuses.
+    #[test]
+    fn a_fullwidth_backslash_path_is_refused() {
+        let arg = "\u{FF3C}Users\u{FF3C}ash";
+        assert_eq!(
+            checked_fields(&entry("wp134", "/opt/node", &[arg])).expect_err("was allowed"),
+            RELATIVE_REFUSED
+        );
+    }
+
+    /// The won sign is not folded. Windows best-fit (code page 949) maps it to `\`, so a value that holds one is refused.
+    #[test]
+    fn a_won_sign_path_is_refused() {
+        let arg = "\u{20A9}Users\u{20A9}ash";
+        assert_eq!(
+            checked_fields(&entry("wp134", "/opt/node", &[arg])).expect_err("was allowed"),
+            RELATIVE_REFUSED
+        );
+    }
+
+    /// `file:///C:/x` must not be read as `C:/x` relative to this process's working folder.
+    /// The decoded path stays absolute (`/C:/x`), so it cannot be joined onto the working folder.
+    /// This does not change the process working folder: another test reads it.
+    #[cfg(unix)]
+    #[test]
+    fn a_file_url_with_a_drive_letter_does_not_use_the_working_folder() {
+        let got = file_url_target("file:///C:/wp134-not-the-working-folder")
+            .expect("parse")
+            .expect("a file");
+        assert!(
+            got.starts_with("/C:/"),
+            "a drive-letter file URL lost its leading slash and would be read from the working folder: {got}"
+        );
+        assert!(
+            Path::new(&got).is_absolute(),
+            "the file URL was read relative to the working folder: {got}"
+        );
+        let cwd = std::env::current_dir().expect("cwd");
+        match canonical_of_value("file:///C:/wp134-not-the-working-folder") {
+            Ok(Some(path)) => assert!(
+                !Path::new(&path).starts_with(&cwd),
+                "the file URL resolved inside the working folder: {path}"
+            ),
+            Ok(None) => panic!("the file URL was not treated as a file"),
+            Err(_) => {}
+        }
+    }
+
+    /// `FILE://` is a local file. Only a real fetch (`https://`, `npm:`) is a remote note.
+    #[test]
+    fn an_uppercase_file_url_is_not_a_remote_fetch() {
+        let local = vec!["run".into(), "FILE:///tmp/agent.ts".into()];
+        assert!(remote_note("deno", &local).is_none());
+        let remote = vec!["run".into(), "HTTPS://example.com/a.ts".into()];
+        assert!(remote_note("deno", &remote).is_some());
+    }
+
+    /// Stated limit: a rename over the approved name after the last hash runs the swapped bytes.
+    /// The steps are the repro: start, run folder, `confirm_before_spawn`, rename, then spawn. That spawn does not
+    /// hash again, so the renamed bytes run. This is the race after the last hash.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r2_limit_a_rename_after_the_last_hash_runs_the_swapped_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let bin = d.path().join("bin");
+        let tool = make_tool(&bin, "wp134-tool", b"#!/bin/sh\necho approved-bytes\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_start(d.path(), "wp134", "", &[], false, &path_value)
+            .expect("starts as approved");
+        let folder = run_folder(d.path()).expect("run folder");
+        confirm_before_spawn(d.path(), "wp134", &run.command).expect("the last hash passes");
+        let swap = bin.join(".wp134-swap.new");
+        std::fs::write(&swap, b"#!/bin/sh\necho swapped-bytes\n").expect("swap file");
+        std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::rename(&swap, &tool).expect("rename over the approved name");
+        let out = crate::disclaim::command(
+            std::ffi::OsStr::new(&run.command),
+            None,
+            run.argv0.as_deref().map(std::ffi::OsStr::new),
+            None,
+        )
+        .args(&run.args)
+        .current_dir(&folder)
+        .output()
+        .expect("spawn");
+        let _ = remove_run_folder(d.path(), &folder);
+        assert!(
+            String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
+            "a program renamed over the approved name after the last hash did not run the swapped bytes"
+        );
+    }
+
+    /// Stated limit: a writer renaming over the approved name can still run its own bytes. This test is a direct
+    /// spawn, so the launcher's hash does not run here. Going through the launcher does not close the same race:
+    /// it hashes the program by path and then execs that path, and it never sees a pinned argument file. A swap
+    /// after the last hash can still run, through the launcher or not. The steps are the repro (approve, run
+    /// folder, `confirm_before_spawn`, then a direct spawn). The Allow card says a writer of the install folder
+    /// can still race the start.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r2_limit_a_writer_renaming_in_a_loop_can_run_its_own_bytes() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let d = dir();
+        let bin = d.path().join("bin");
+        let tool = make_tool(&bin, "wp134-tool", b"#!/bin/sh\necho approved-bytes\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let good = bin.join(".wp134-good");
+        std::fs::hard_link(&tool, &good).expect("keep the approved bytes");
+        let evil = make_tool(&bin, ".wp134-evil", b"#!/bin/sh\necho swapped-bytes\n");
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (stop, tmp, tool) = (stop.clone(), bin.join(".wp134-next"), tool.clone());
+            let (good, evil) = (good.clone(), evil.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    for source in [&evil, &good] {
+                        let _ = std::fs::remove_file(&tmp);
+                        if std::fs::hard_link(source, &tmp).is_ok() {
+                            let _ = std::fs::rename(&tmp, &tool);
+                        }
+                    }
+                }
+            })
+        };
+        let (mut refused, mut approved_ran, mut swapped_ran) = (0, 0, 0);
+        for _ in 0..3000 {
+            let Ok(run) = approved_start(d.path(), "wp134", "", &[], false, &path_value) else {
+                refused += 1;
+                continue;
+            };
+            let folder = run_folder(d.path()).expect("run folder");
+            if confirm_before_spawn(d.path(), "wp134", &run.command).is_err() {
+                refused += 1;
+                let _ = remove_run_folder(d.path(), &folder);
+                continue;
+            }
+            let out = crate::disclaim::command(
+                std::ffi::OsStr::new(&run.command),
+                None,
+                run.argv0.as_deref().map(std::ffi::OsStr::new),
+                None,
+            )
+            .args(&run.args)
+            .current_dir(&folder)
+            .output();
+            let _ = remove_run_folder(d.path(), &folder);
+            let stdout = out
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+                .unwrap_or_default();
+            if stdout.contains("swapped-bytes") {
+                swapped_ran += 1;
+                break;
+            }
+            if stdout.contains("approved-bytes") {
+                approved_ran += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = writer.join();
+        assert_ne!(
+            swapped_ran, 0,
+            "a looping writer did not run its own bytes on a direct spawn \
+             ({approved_ran} approved runs and {refused} refused starts)"
+        );
+    }
+
+    // Review #241 r2 repro (MEDIUM, the r1 colon-flag fix is partial). `-javaagent:<jar>=<options>` and
+    // `-agentpath:<library>=<options>` are the documented JVM forms with options. value_separator takes the `=` before
+    // it looks for a colon, so only `<options>` is checked: the jar (or native library) is neither pinned nor refused.
+    // java loads and runs it before main, so an edit to it runs on the old approval. `-javaagent:../x.jar=opts` and
+    // `--config:../x=y` name a file outside the run folder and are allowed.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r2_a_colon_flag_file_with_options_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-jvm", b"#!/bin/sh\n");
+        let jar = d.path().join("agent.jar");
+        let lib = d.path().join("libagent.so");
+        std::fs::write(&jar, b"approved-jar").expect("jar");
+        std::fs::write(&lib, b"approved-lib").expect("lib");
+        let path_value = bin.to_string_lossy().into_owned();
+        let java_agent = format!("-javaagent:{}=verbose", jar.to_string_lossy());
+        let agent_path = format!("-agentpath:{}=opts", lib.to_string_lossy());
+        let agents: Vec<Value> = [("ja", java_agent.as_str()), ("ap", agent_path.as_str())]
+            .into_iter()
+            .map(|(id, arg)| entry(id, "wp134-jvm", &[arg]))
+            .filter(|agent| checked_fields(agent).is_ok())
+            .collect();
+        let ids: Vec<String> = agents
+            .iter()
+            .map(|a| a["id"].as_str().unwrap_or("").to_string())
+            .collect();
+        if !agents.is_empty() {
+            write_agents(d.path(), 0, agents).expect("seed");
+            for id in &ids {
+                approve(d.path(), id, &path_value).expect("approve");
+            }
+            std::fs::write(&jar, b"changed-jar").expect("edit jar");
+            std::fs::write(&lib, b"changed-lib").expect("edit lib");
+            for id in &ids {
+                assert!(
+                    approved_spawn(d.path(), id, &path_value).is_err(),
+                    "{id}: an edited file after a colon flag with options ran on the old approval"
+                );
+            }
+        }
+        for relative in ["-javaagent:../x.jar=opts", "--config:../x=y"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/wp134-jvm", &[relative])).is_err(),
+                "{relative} names a file outside the run folder"
+            );
+        }
+    }
+
+    // Review #241 r2 repro (MEDIUM, not new in #241, same class as the r1 colon flag). A word that is not a flag but
+    // carries `key=<path>` is checked and pinned only as a whole word. `codex-acp -c key=value` (codex-style config
+    // overrides), `--set key=value` and `-D key=value` take a file this way: an absolute file after `=` is neither
+    // pinned nor refused, so an edit to it runs on the old approval, and `key=../x` names a file outside the run
+    // folder and is allowed.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r2_a_file_after_key_equals_in_a_plain_word_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-acp", b"#!/bin/sh\n");
+        let file = d.path().join("instructions.md");
+        std::fs::write(&file, b"approved instructions").expect("file");
+        let path_value = bin.to_string_lossy().into_owned();
+        let word = format!("instructions_file={}", file.to_string_lossy());
+        let agent = entry("wp134", "wp134-acp", &["-c", word.as_str()]);
+        if checked_fields(&agent).is_ok() {
+            write_agents(d.path(), 0, vec![agent]).expect("seed");
+            approve(d.path(), "wp134", &path_value).expect("approve");
+            std::fs::write(&file, b"changed instructions").expect("edit");
+            assert!(
+                approved_spawn(d.path(), "wp134", &path_value).is_err(),
+                "an edited file after key= ran on the old approval"
+            );
+        }
+        assert!(
+            checked_fields(&entry(
+                "wp134",
+                "/opt/wp134-acp",
+                &["-c", "instructions_file=../x"]
+            ))
+            .is_err(),
+            "key=../x names a file outside the run folder"
+        );
+    }
+
+    // Review #241 r2 repro (MEDIUM, not new in #241: the hash cache from #231 turns one won race into every start).
+    // file_sha256 takes its cache key from a stat of the path, then opens the path again to read the bytes. A writer
+    // that swaps the install folder with a folder of its own (one atomic rename: renameat2 RENAME_EXCHANGE on Linux,
+    // renamex_np RENAME_SWAP on macOS) while the app hashes can make the stat see its file and the read see the approved
+    // one. The cache then holds its file's stamp with the approved hash. A folder swap touches neither file, so that
+    // stamp stays true: with its file left in place, approved_spawn and confirm_before_spawn are cache hits, and every
+    // start runs its bytes with no new Allow until the app quits. Nothing has to be timed after the one win.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn review_241_r2_a_swap_between_the_stat_and_the_read_poisons_the_hash_cache() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        fn exchange(a: &Path, b: &Path) -> bool {
+            let (Ok(a), Ok(b)) = (
+                CString::new(a.as_os_str().as_bytes()),
+                CString::new(b.as_os_str().as_bytes()),
+            ) else {
+                return false;
+            };
+            // SAFETY: two NUL-terminated paths that outlive the call.
+            #[cfg(target_os = "linux")]
+            let rc = unsafe {
+                libc::renameat2(
+                    libc::AT_FDCWD,
+                    a.as_ptr(),
+                    libc::AT_FDCWD,
+                    b.as_ptr(),
+                    libc::RENAME_EXCHANGE,
+                )
+            };
+            // SAFETY: as above.
+            #[cfg(target_os = "macos")]
+            let rc = unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP) };
+            rc == 0
+        }
+        let d = dir();
+        let inst = d.path().join("inst");
+        let other = d.path().join("other");
+        let tool = make_tool(&inst, "wp134-tool", b"#!/bin/sh\necho approved-bytes\n");
+        make_tool(&other, "wp134-tool", b"#!/bin/sh\necho swapped-bytes\n");
+        if !(exchange(&inst, &other) && exchange(&inst, &other)) {
+            eprintln!("this file system cannot swap two folders; nothing to show");
+            return;
+        }
+        let path_value = inst.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let command = approved_start(d.path(), "wp134", "", &[], false, &path_value)
+            .expect("starts as approved")
+            .command;
+        let approved_in_place =
+            || std::fs::read(&tool).is_ok_and(|bytes| bytes.ends_with(b"approved-bytes\n"));
+        let mut poisoned = false;
+        for _ in 0..20_000 {
+            if !approved_in_place() {
+                exchange(&inst, &other);
+            }
+            let _ = file_sha256(Path::new(&command));
+            let stop = Arc::new(AtomicBool::new(false));
+            let swaps = Arc::new(AtomicUsize::new(0));
+            let swapper = {
+                let (stop, swaps) = (stop.clone(), swaps.clone());
+                let (inst, other) = (inst.clone(), other.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        if exchange(&inst, &other) {
+                            swaps.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                })
+            };
+            while swaps.load(Ordering::Relaxed) < 2 {
+                std::hint::spin_loop();
+            }
+            let _ = file_sha256(Path::new(&command));
+            stop.store(true, Ordering::Relaxed);
+            let _ = swapper.join();
+            if approved_in_place() {
+                exchange(&inst, &other);
+            }
+            if confirm_before_spawn(d.path(), "wp134", &command).is_ok() {
+                poisoned = true;
+                break;
+            }
+        }
+        let mut swapped_runs = 0;
+        if poisoned {
+            for _ in 0..5 {
+                let Ok(run) = approved_start(d.path(), "wp134", "", &[], false, &path_value) else {
+                    break;
+                };
+                let folder = run_folder(d.path()).expect("run folder");
+                let confirmed = confirm_before_spawn(d.path(), "wp134", &run.command).is_ok();
+                let out = confirmed.then(|| {
+                    std::process::Command::new(&run.command)
+                        .current_dir(&folder)
+                        .output()
+                });
+                let _ = remove_run_folder(d.path(), &folder);
+                if let Some(Ok(out)) = out {
+                    if String::from_utf8_lossy(&out.stdout).contains("swapped-bytes") {
+                        swapped_runs += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            !poisoned,
+            "the hash cache took the writer's file for the approved one: {swapped_runs} of 5 later starts then \
+             passed every check and ran its bytes"
+        );
+    }
+
+    /// A drive colon is only a drive on Windows. Elsewhere `-IC:\secret` is a flag colon, and `\secret` is a root
+    /// with no drive.
+    #[cfg(not(windows))]
+    #[test]
+    fn a_drive_colon_is_a_flag_separator_off_windows() {
+        assert_eq!(
+            checked_fields(&entry("wp134", "/opt/node", &["-IC:\\secret"]))
+                .expect_err("was allowed"),
+            RELATIVE_REFUSED
+        );
+    }
+
+    /// On Windows `-IC:\foo` is a drive path, not a flag colon, so it is not a relative file.
+    #[cfg(windows)]
+    #[test]
+    fn a_drive_colon_is_a_drive_on_windows() {
+        assert!(!relative_file_arg("-IC:\\foo"));
+    }
+
+    /// Fullwidth `＝` and `：` are folded before the split, so they cannot hide a relative file. Yen and the division
+    /// slash are refused in a value. An argument that pins nothing is returned unchanged.
+    #[test]
+    fn a_fullwidth_separator_is_folded_and_a_best_fit_slash_is_refused() {
+        for arg in [
+            "key\u{FF1D}../x",
+            "--config\u{FF1A}../x",
+            "-javaagent\u{FF1A}../x.jar=opts",
+            "\u{00A5}Users\u{00A5}ash",
+            "/tmp\u{2215}secret",
+            "--config=\u{00A5}Users",
+        ] {
+            assert_eq!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).expect_err("was allowed"),
+                RELATIVE_REFUSED,
+                "{arg} was allowed"
+            );
+        }
+        let plain = "key\u{FF1D}hello";
+        assert!(
+            checked_fields(&entry("wp134", "/opt/node", &[plain])).is_ok(),
+            "a fullwidth equals with no path was refused"
+        );
+        let (text, pins) = pin_arg(plain).expect("pin");
+        assert!(pins.is_empty());
+        assert_eq!(text, plain);
+    }
+
+    /// A fullwidth colon still pins the absolute file, and the child sees an ASCII colon.
+    #[test]
+    fn a_fullwidth_colon_pins_an_absolute_file() {
+        let d = dir();
+        let file = d.path().join("agent.jar");
+        std::fs::write(&file, b"jar").expect("jar");
+        let arg = format!("-javaagent\u{FF1A}{}", file.display());
+        let (text, pins) = pin_arg(&arg).expect("pin");
+        assert_eq!(pins.len(), 1);
+        assert!(
+            text.starts_with("-javaagent:"),
+            "the child did not see an ASCII colon: {text}"
+        );
+        assert!(
+            !text.contains('\u{FF1A}'),
+            "the folded colon was passed through: {text}"
+        );
+        assert!(
+            text.contains(&pins[0]),
+            "the pinned path is not what the child runs: {text}"
+        );
+    }
+
+    /// Runs `disclaim::main(args)` in a child of this test binary, the way the app runs `monocode disclaim-exec`,
+    /// with `cwd` as its folder. The child execs the program, so what it prints is the program's.
+    #[cfg(unix)]
+    fn through_launcher(args: &[String], cwd: &Path) -> std::process::Output {
+        std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .args([
+                "--exact",
+                "more_agents::tests::review_241_r3_launcher_child",
+                "--test-threads=1",
+                "--nocapture",
+                "-q",
+            ])
+            .env("REVIEW_241_R3_LAUNCHER", args.join("\u{1f}"))
+            .current_dir(cwd)
+            .output()
+            .expect("start the launcher")
+    }
+
+    /// The launcher child for `through_launcher`. Without its variable it does nothing.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_launcher_child() {
+        let Ok(raw) = std::env::var("REVIEW_241_R3_LAUNCHER") else {
+            return;
+        };
+        let args: Vec<std::ffi::OsString> = raw.split('\u{1f}').map(Into::into).collect();
+        std::process::exit(crate::disclaim::main(&args));
+    }
+
+    // Stated limit (review #241 r3). The launcher is given only the program's hash. A pinned argument file
+    // (`node /abs/agent.mjs`) is last hashed in the app by confirm_before_spawn, and the child reads it later.
+    // This start goes through the launcher (`disclaim::main` with `--expect-sha256`, in a child of this test
+    // binary) with the approved program unchanged. A rename over the pinned file after that hash still runs.
+    // The launcher narrows the window for the program only. A swap after the last hash can still run, through
+    // the launcher or not. Pinned argument files are last checked in the app. The steps are the repro.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_limit_a_pinned_file_swapped_after_the_last_hash_runs_through_the_launcher() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-runner", b"#!/bin/sh\n. \"$1\"\n");
+        let agents = d.path().join("agents");
+        std::fs::create_dir_all(&agents).expect("agents");
+        let agent = agents.join("agent.sh");
+        std::fs::write(&agent, b"echo approved-bytes\n").expect("agent");
+        let path_value = bin.to_string_lossy().into_owned();
+        let agent_arg = agent.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-runner", &[agent_arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        assert_eq!(
+            read_stored(d.path()).expect("read").approvals["wp134"]
+                .pins
+                .len(),
+            1,
+            "the agent file is pinned"
+        );
+        let run = approved_start(d.path(), "wp134", "", &[], false, &path_value)
+            .expect("starts as approved");
+        let folder = run_folder(d.path()).expect("run folder");
+        confirm_before_spawn(d.path(), "wp134", &run.command)
+            .expect("the last hash in the app passes");
+        let swap = agents.join(".agent.new");
+        std::fs::write(&swap, b"echo swapped-bytes\n").expect("swap file");
+        std::fs::rename(&swap, &agent).expect("rename over the pinned file");
+        let mut launcher = vec!["--expect-sha256".to_string(), run.sha256.clone()];
+        if let Some(argv0) = &run.argv0 {
+            launcher.push("--argv0".into());
+            launcher.push(argv0.clone());
+        }
+        launcher.push("--".into());
+        launcher.push(run.command.clone());
+        launcher.extend(run.args.iter().cloned());
+        let out = through_launcher(&launcher, &folder);
+        let _ = remove_run_folder(d.path(), &folder);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            stdout.contains("approved-bytes") || stdout.contains("swapped-bytes"),
+            "the launcher did not start the program: {stdout} {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            stdout.contains("swapped-bytes"),
+            "a pinned file renamed after the last hash did not run through the launcher"
+        );
+    }
+
+    // Stated limit (review #241 r3, the program itself). The launcher's last hash opens the program by path, reads
+    // it and closes it, then execs that path again (posix_spawnp on macOS, exec after the fallback here). A writer
+    // renaming two files over the approved name in a loop still gets its bytes run through the launcher with the
+    // approved hash. Both files are ELF programs, so this is not the `#!` re-read: `true` is the approved bytes,
+    // and `id` printing `uid=` is the writer's. The launcher narrows the window for the program only. A swap after
+    // that hash can still run. The steps are the repro.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn review_241_r3_limit_a_rename_loop_still_beats_the_launcher_hash() {
+        use sha2::{Digest, Sha256};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let (Ok(good_bytes), Ok(evil_bytes)) =
+            (std::fs::read("/usr/bin/true"), std::fs::read("/usr/bin/id"))
+        else {
+            eprintln!("no /usr/bin/true or /usr/bin/id; nothing to show");
+            return;
+        };
+        let d = dir();
+        let bin = d.path().join("bin");
+        let good = make_tool(&bin, ".wp134-good", &good_bytes);
+        let evil = make_tool(&bin, ".wp134-evil", &evil_bytes);
+        let tool = bin.join("wp134-tool");
+        std::fs::hard_link(&good, &tool).expect("the approved program");
+        let sha: String = Sha256::digest(&good_bytes)
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (stop, tmp, tool) = (stop.clone(), bin.join(".wp134-next"), tool.clone());
+            let (good, evil) = (good.clone(), evil.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    for source in [&evil, &good] {
+                        let _ = std::fs::remove_file(&tmp);
+                        if std::fs::hard_link(source, &tmp).is_ok() {
+                            let _ = std::fs::rename(&tmp, &tool);
+                        }
+                    }
+                }
+            })
+        };
+        let launcher = vec![
+            "--expect-sha256".to_string(),
+            sha,
+            "--".to_string(),
+            tool.to_string_lossy().into_owned(),
+        ];
+        let (mut refused, mut approved_ran, mut swapped_ran) = (0, 0, 0);
+        for _ in 0..2000 {
+            let out = through_launcher(&launcher, d.path());
+            if String::from_utf8_lossy(&out.stdout).contains("uid=") {
+                swapped_ran += 1;
+                break;
+            }
+            if out.status.success() {
+                approved_ran += 1;
+            } else {
+                refused += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = writer.join();
+        assert_ne!(
+            swapped_ran, 0,
+            "a looping writer did not run its own bytes through the launcher's hash \
+             ({approved_ran} approved runs and {refused} refused starts before it)"
+        );
+    }
+
+    // Review #241 r3 repro (MEDIUM, not new in r3; the MED-4 class). path_is_refused calls any value that holds `://`
+    // anywhere a URL and checks nothing else, and plain_assignment does not split such a word. `://` is a legal run of
+    // path characters (a folder named `x:` and an empty segment), so an absolute file after key= is not pinned and a
+    // relative file is allowed: node resolves `../../x://agent.mjs` from the run folder as a path.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_a_path_holding_a_url_marker_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-acp", b"#!/bin/sh\n");
+        let folder = d.path().join("x:");
+        std::fs::create_dir_all(&folder).expect("folder");
+        let file = folder.join("instructions.md");
+        std::fs::write(&file, b"approved instructions").expect("file");
+        let path_value = bin.to_string_lossy().into_owned();
+        let word = format!(
+            "instructions_file={}/x://instructions.md",
+            d.path().to_string_lossy()
+        );
+        let agent = entry("wp134", "wp134-acp", &["-c", word.as_str()]);
+        if checked_fields(&agent).is_ok() {
+            write_agents(d.path(), 0, vec![agent]).expect("seed");
+            approve(d.path(), "wp134", &path_value).expect("approve");
+            std::fs::write(&file, b"changed instructions").expect("edit");
+            assert!(
+                approved_spawn(d.path(), "wp134", &path_value).is_err(),
+                "an edited file named with :// after key= ran on the old approval"
+            );
+        }
+        for args in [
+            &["../../../../../../tmp/x://agent.mjs"][..],
+            &["-c", "instructions_file=../../../../tmp/x://y"][..],
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", args)).is_err(),
+                "a relative file holding :// was allowed: {args:?}"
+            );
+        }
+    }
+
+    // Review #241 r3 repro (MEDIUM, the MED-4 shape inside a flag value). candidates and pin_split split a flag at its
+    // first `=` and stop. `--config=key=/abs/file` is the same override as `-c key=/abs/file` (a clap `--config` takes
+    // `=value`), but only `key=/abs/file` is looked at, which is neither absolute nor split again: the file is not
+    // pinned, and an edit to it runs on the old approval. `--config=key=~/x` is allowed for the same reason.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_a_file_after_key_equals_in_a_flag_value_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-acp", b"#!/bin/sh\n");
+        let file = d.path().join("instructions.md");
+        std::fs::write(&file, b"approved instructions").expect("file");
+        let path_value = bin.to_string_lossy().into_owned();
+        let word = format!("--config=instructions_file={}", file.to_string_lossy());
+        let agent = entry("wp134", "wp134-acp", &[word.as_str()]);
+        if checked_fields(&agent).is_ok() {
+            write_agents(d.path(), 0, vec![agent]).expect("seed");
+            approve(d.path(), "wp134", &path_value).expect("approve");
+            std::fs::write(&file, b"changed instructions").expect("edit");
+            assert!(
+                approved_spawn(d.path(), "wp134", &path_value).is_err(),
+                "an edited file after --config=key= ran on the old approval"
+            );
+        }
+        assert!(
+            checked_fields(&entry(
+                "wp134",
+                "/opt/wp134-acp",
+                &["--config=instructions_file=~/x"]
+            ))
+            .is_err(),
+            "--config=key=~/x names a home file and was allowed"
+        );
+    }
+
+    // Review #241 r3 repro (MEDIUM, not new in r3). file_url_target decodes everything after the host as the path,
+    // `?` and `#` included. A URL parser does not: `file:///dir/agent.ts?v=1` is `/dir/agent.ts` with a query (the
+    // url crate's to_file_path, which deno uses for a local module, drops it, and so does node's fileURLToPath). With
+    // a file named `agent.ts?v=1` beside it, the app pins that file, and an edit to agent.ts, the file deno runs,
+    // starts on the old approval. Without that one extra file the start is refused, so this is the whole gap.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r3_a_file_url_with_a_query_pins_the_file_it_opens() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "deno", b"#!/bin/sh\n");
+        let script = d.path().join("agent.ts");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        std::fs::write(d.path().join("agent.ts?v=1"), b"console.log('decoy')").expect("decoy");
+        let url = format!("file://{}?v=1", script.to_string_lossy());
+        assert_eq!(
+            url::Url::parse(&url)
+                .expect("url")
+                .to_file_path()
+                .expect("a file path"),
+            script,
+            "a URL parser opens agent.ts"
+        );
+        let path_value = bin.to_string_lossy().into_owned();
+        let agent = entry("wp134", "deno", &["run", url.as_str()]);
+        if checked_fields(&agent).is_err() {
+            return; // Refused when it is added: nothing unpinned can run.
+        }
+        write_agents(d.path(), 0, vec![agent]).expect("seed");
+        if approve(d.path(), "wp134", &path_value).is_err() {
+            return; // Refused at the Allow: nothing unpinned can run.
+        }
+        std::fs::write(&script, b"require('cp').exec('xx')").expect("edit");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a deno entry ran an edited agent.ts, named by a file URL with a query, on the old approval"
+        );
+    }
+}
+
+#[cfg(test)]
+mod secrets_order_tests {
+    use super::*;
+
+    fn envs(cmd: &Command) -> std::collections::BTreeMap<String, Option<String>> {
+        cmd.get_envs()
+            .map(|(k, v)| {
+                (
+                    k.to_string_lossy().into_owned(),
+                    v.map(|v| v.to_string_lossy().into_owned()),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_more_agents_worker_keeps_its_approved_secret_and_only_the_allow_list() {
+        let mut cmd = Command::new("true");
+        cmd.env("MONOCODE_CONTROL_TOKEN", "app-only");
+        cmd.env("SOME_PARENT_SETTING", "parent");
+        restrict_env_then(&mut cmd, "/usr/bin:/bin", |cmd| {
+            cmd.env("STRIPE_API_KEY", "sk_test_stand_in");
+            Ok(())
+        })
+        .unwrap();
+        let env = envs(&cmd);
+        assert_eq!(
+            env.get("STRIPE_API_KEY"),
+            Some(&Some("sk_test_stand_in".to_string()))
+        );
+        assert_eq!(env.get("PATH"), Some(&Some("/usr/bin:/bin".to_string())));
+        assert!(!env.keys().any(|k| k.starts_with("MONOCODE_")), "{env:?}");
+        assert!(!env.contains_key("SOME_PARENT_SETTING"), "{env:?}");
+        for key in env.keys() {
+            assert!(
+                key == "PATH" || key == "STRIPE_API_KEY" || ALLOWED_ENV.contains(&key.as_str()),
+                "unexpected variable {key}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_secret_set_before_the_clear_is_dropped_which_is_why_it_goes_after() {
+        let mut cmd = Command::new("true");
+        cmd.env("STRIPE_API_KEY", "sk_test_stand_in");
+        restrict_env(&mut cmd, "/usr/bin:/bin");
+        assert!(!envs(&cmd).contains_key("STRIPE_API_KEY"));
     }
 }

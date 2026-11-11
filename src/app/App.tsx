@@ -6,6 +6,7 @@ import { launchRecovery, needsAnotherPass } from "../features/connections/model/
 import { settleTeleportLock } from "../features/connections/model/teleportLock";
 import { WINDOW_OWNER } from "../features/connections/model/teleportLocal";
 import { teleportStateOf } from "../features/connections/model/teleportState";
+import { startPendingReviews, type ReviewHooks } from "../features/security-review/model/launch";
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
 import { TerminalMirrorPane } from "../features/terminalMirror/ui/TerminalMirrorPane";
 import { useTerminalMirror } from "../features/terminalMirror/ui/useTerminalMirror";
@@ -70,6 +71,7 @@ import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerd
 import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
+  DELEGATIONS_CHANGED,
   tauriDelegations,
   type Delegation,
   type DelegationTracker,
@@ -77,7 +79,7 @@ import {
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
 import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
-import { refuseNeverUseLead } from "../features/crew/model/lead";
+import { cliForLeadBrief, refuseBriefedLeadHarness, refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
   briefSentAt,
@@ -126,7 +128,7 @@ import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
-import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
+import { leadFor, leadMono, leadSpecFor, leadWorkingFolder } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
@@ -1100,6 +1102,8 @@ import {
   type Automation,
   type AutomationRun,
 } from "../features/automations/model/automations";
+import { MissedScheduleNotice } from "../features/one-time-schedule/ui/OneTimeSchedulePanel";
+import { useOneTimeScheduleRunner } from "../features/one-time-schedule/ui/useOneTimeScheduleRunner";
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
 import type { QuickLaunch } from "../features/quick-composer/model/quickComposer";
 import { claimInboxAutomationRuns } from "../features/automations/model/automationEvents";
@@ -10973,6 +10977,8 @@ function Workspace({
           },
         });
         if (!lead) throw new Error(`${input.target.leadName}'s chat isn't available.`);
+        // The chat exists now, so judge the CLI it will run before the brief is launched.
+        await refuseBriefedLeadHarness(lead, input.target, input.fromMonoId, crewPolicyInForce);
         const fromName = monoLook(from).name;
         const text =
           typeof input.brief === "string"
@@ -11401,6 +11407,29 @@ function Workspace({
       cwd: () => folder,
     });
   }, []);
+  useEffect(() => {
+    // WP-203: the reviewer session for each security review the app recorded a running row for. The finish settles the row.
+    const started = new Set<string>();
+    const hooks: ReviewHooks = {
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      cwd: () => "~",
+    };
+    const run = () => {
+      void startPendingReviews(tauriDelegations, hooks, started).catch(() => undefined);
+    };
+    run();
+    let off: (() => void) | undefined;
+    void listen(DELEGATIONS_CHANGED, run)
+      .then((unlisten) => {
+        off = unlisten;
+      })
+      .catch(() => undefined);
+    return () => off?.();
+  }, []);
   const roomsHost = useRoomRunner({
     sessions,
     sessionsRef,
@@ -11543,6 +11572,34 @@ function Workspace({
       },
     });
   }, []);
+  // WP-128: one prompt at a chosen time. A closed app does not run it.
+  const oneTimeSchedules = useOneTimeScheduleRunner({
+    paused: () => shipHoldRef.current,
+    sessions: () =>
+      sessionsRef.current.map((session) => ({
+        id: session.id,
+        busy: Boolean(session.busy),
+      })),
+    projectPaths: () => {
+      const paths = recents.map((recent) => recent.path);
+      if (looksLikeProject(projectCwd)) paths.push(projectCwd);
+      return paths;
+    },
+    createChat: (folder) => {
+      const session = { ...newDefaultSession(folder), title: "Scheduled prompt" };
+      const nextSessions = [...sessionsRef.current, session];
+      sessionsRef.current = nextSessions;
+      setSessions(nextSessions);
+      appendTab(newTab(session.id), folder);
+      return session.id;
+    },
+    submit: (sessionId, prompt) =>
+      submitWithSettlement({
+        submit: (onSettled) => submitSession(sessionId, prompt, [], { onSettled }),
+        rejectionMessage: "The chat did not take the prompt.",
+        onSettled: () => undefined,
+      }),
+  });
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
@@ -15256,11 +15313,17 @@ function Workspace({
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
                 // WP-141 LOW 7: a Lead on Never use is not briefed, read from the Lead's own project, whatever the brief says.
-                await refuseNeverUseLead(
-                  { ...target, cli: sessionsRef.current.find((session) => session.id === findMono(target.leadId)?.sessionId)?.harness },
-                  mono.id,
-                  crewPolicyInForce,
-                );
+                // The CLI is the one the brief will run: the open chat, else the saved chat, else the chat a new session starts.
+                const cli = await cliForLeadBrief({
+                  mono: findMono(target.leadId),
+                  openSessions: sessionsRef.current,
+                  load: (id) => ensureOpenSessionRef.current(id),
+                  createDefault: async () => {
+                    const folder = leadWorkingFolder(target.leadId) ?? (await homeDir());
+                    return newDefaultSession(folder);
+                  },
+                });
+                await refuseNeverUseLead({ ...target, cli }, mono.id, crewPolicyInForce);
               },
               crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
               // WP-141: the one gate every worker and session launch passes before its process starts.
@@ -18887,6 +18950,10 @@ function Workspace({
                         cwd={projectCwd}
                         scopeProject={appViewScope}
                         recents={recents}
+                        chats={sessions.map((session) => ({
+                          id: session.id,
+                          title: session.title,
+                        }))}
                         onClose={onLeaveAutomations}
                         onToggleSidebar={onToggleSidebar}
                         onLaunch={(automation, run) =>
@@ -19099,6 +19166,8 @@ function Workspace({
           />
           {/* WP-123: fork a chat from one message. */}
           <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
+          {/* WP-128: a run the closed app missed. */}
+          <MissedScheduleNotice notices={oneTimeSchedules.notices} onDone={oneTimeSchedules.note} />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}

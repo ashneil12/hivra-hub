@@ -1,6 +1,8 @@
 use tauri::Manager;
 
 mod account_identity;
+// WP-61: Hivra Cloud. Off by default; no socket is opened until Ash turns it on.
+mod hivra_cloud;
 // WP-78: the activity log.
 mod activity;
 // WP-157: the work log. Not a numbered migration.
@@ -16,6 +18,8 @@ mod automations;
 pub mod autopilot;
 mod azure_devops;
 mod background_work;
+// WP-128: one prompt at a chosen time. Not a numbered migration, and it starts no thread.
+mod one_time_schedule;
 // WP-75: checked backups, one-item restore, and a full restore through the ship path.
 pub mod backups;
 mod chat_background;
@@ -36,7 +40,7 @@ mod github_issues;
 pub mod goal_graph;
 mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labelled GitHub issues become tasks.
            // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
-mod programme;
+mod programme; // WP-162: update a package branch from main, and the programme lead lease.
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
@@ -528,6 +532,7 @@ pub fn run() {
             outside::init(app.handle())?; // WP-79
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
+            one_time_schedule::init(app.handle()); // WP-128
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]
@@ -572,6 +577,13 @@ pub fn run() {
             dictation::dictation_support,
             dictation::dictation_start,
             dictation::dictation_stop,
+            // WP-61: Hivra Cloud (off by default).
+            hivra_cloud::hivra_cloud_status,
+            hivra_cloud::hivra_cloud_save,
+            hivra_cloud::hivra_cloud_sign_in,
+            hivra_cloud::hivra_cloud_sign_out,
+            hivra_cloud::hivra_cloud_account,
+            hivra_cloud::hivra_cloud_pair,
             mobile_access::mobile_status,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
@@ -674,6 +686,14 @@ pub fn run() {
             delivery::delivery_merges,
             delivery::delivery_events_open,
             delivery::delivery_events_consume,
+            // WP-162: update a package branch from main, and the lead lease.
+            programme::programme_update_settings_get,
+            programme::programme_update_settings_set,
+            programme::programme_bind_checkout,
+            programme::programme_update_from_main,
+            programme::programme_lead_acquire,
+            programme::programme_lead_heartbeat,
+            programme::programme_consider_conflict,
             // Hivra WP-81: the check before work goes to GitHub.
             delivery_gate::gate_setting_get,
             delivery_gate::gate_setting_set,
@@ -728,6 +748,8 @@ pub fn run() {
             steering::steering_settle,
             decisions::decisions_ask,
             decisions::decisions_answer,
+            // WP-215: a first mate notes a call it settled.
+            decisions::decisions_note,
             decisions::decisions_list,
             // WP-156: standing answers stay off until this setting is on.
             decisions::decisions_standing_enabled,
@@ -841,6 +863,16 @@ pub fn run() {
             automations::automations_claim_due,
             automations::automations_claim_event,
             automations::automation_run_update,
+            // WP-128: one prompt at a chosen time.
+            one_time_schedule::one_time_schedules_list,
+            one_time_schedule::one_time_schedules_create,
+            one_time_schedule::one_time_schedules_cancel,
+            one_time_schedule::one_time_schedules_miss_closed,
+            one_time_schedule::one_time_schedules_claim,
+            one_time_schedule::one_time_schedules_remember_session,
+            one_time_schedule::one_time_schedules_ack_fired,
+            one_time_schedule::one_time_schedules_release,
+            one_time_schedule::one_time_schedules_note,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,
