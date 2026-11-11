@@ -16,9 +16,12 @@
 //! Then a cheap model reads the brief's definition of done, the worker's report and the diff, and answers met, not met
 //! (with why) or unsure.
 //!
-//! The verdict, in order: any gate failed, or the model said not met: **failed** (the worker gets one fix round, then its
-//! first mate hears it failed). A gate that couldn't run, or a model that was unsure or didn't answer: **unsure**, never
-//! passed; its first mate decides (`task_accept`). Everything passed and the brief was met: **passed**. The verdict goes on
+//! The verdict, in order: any gate failed, a fact gap (WP-145), or the model said not met: **failed** (the worker gets
+//! one fix round, then its first mate hears it failed). Fact gaps are a failed check, a test that went stale after a
+//! later edit, a pass claim with no run after the last code edit, an open to-do, or an edited package no test reached.
+//! Docs-only edits are not coverage gaps. The model is not asked when a gap is already there. A gate that couldn't run,
+//! or a model that was unsure or didn't answer: **unsure**, never passed; its first mate decides (`task_accept`).
+//! Everything passed and the brief was met: **passed**. The verdict goes on
 //! the delegation row (`gate_verdict`, read by `derive_status`), and the evidence (commands, exit codes, output tails, the
 //! model's answer) is kept per round in `firstmate_gates`, beside the row.
 //!
@@ -284,6 +287,8 @@ pub struct RoundInput<'a> {
     pub now: i64,
     /// WP-81: the delivery gate runs this brief's project checks, so the checks gate does not.
     pub gate_owns_checks: bool,
+    /// WP-145: this turn's checks, edits and to-dos. Absent means the fact layer does not run.
+    pub facts: Option<&'a super::fact_gaps::FactTurn>,
 }
 
 pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
@@ -329,14 +334,19 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         None => {}
     }
     let overall = Outcome::aggregate(gates.iter().map(|g| g.outcome));
-    let check = (overall == Outcome::Passed || gates.is_empty())
+    // WP-145: a fact gap fails the claim. The model is not asked, and a gap is not "unsure".
+    let gaps = input
+        .facts
+        .map(|turn| super::fact_gaps::done_gaps_in(turn, Some(input.checkout)))
+        .unwrap_or_default();
+    let check = (gaps.is_empty() && (overall == Outcome::Passed || gates.is_empty()))
         .then(|| verdict_check(input, &repo, &gates, runners));
-    let verdict = match (overall, check.as_ref().map(|c| c.answer)) {
-        (Outcome::Failed, _) | (_, Some(Answer::NotMet)) => Verdict::Failed,
-        (_, Some(Answer::Met)) => Verdict::Passed,
+    let verdict = match (overall, gaps.is_empty(), check.as_ref().map(|c| c.answer)) {
+        (Outcome::Failed, _, _) | (_, false, _) | (_, _, Some(Answer::NotMet)) => Verdict::Failed,
+        (_, _, Some(Answer::Met)) => Verdict::Passed,
         _ => Verdict::Unsure,
     };
-    let summary = summary_of(&gates, check.as_ref(), verdict);
+    let summary = summary_of(&gates, check.as_ref(), verdict, &gaps);
     GateRecord {
         delegation_id: input.delegation_id.to_string(),
         round: input.round,
@@ -348,8 +358,17 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     }
 }
 
-fn summary_of(gates: &[GateResult], check: Option<&VerdictResult>, verdict: Verdict) -> String {
+fn summary_of(
+    gates: &[GateResult],
+    check: Option<&VerdictResult>,
+    verdict: Verdict,
+    gaps: &[String],
+) -> String {
     let mut lines = Vec::new();
+    // The first line is what the task card and the inbox show.
+    if !gaps.is_empty() {
+        lines.push(super::fact_gaps::fact_summary(gaps));
+    }
     for gate in gates {
         if gate.outcome != Outcome::Passed && gate.outcome != Outcome::Held {
             lines.push(format!(
@@ -1375,10 +1394,61 @@ pub struct RunInput {
     pub signed_off: bool,
     #[serde(default)]
     pub report: String,
+    /// WP-145: this turn's facts. A bad shape is read loosely and never fails the command.
+    #[serde(default)]
+    pub facts: Option<serde_json::Value>,
 }
 
-/// Runs a finished worker's gates and verdict check. `None`: its brief has no gates (the routes check alone runs as
-/// before, through `run_worker_gate`).
+/// What a plan-less turn does with the facts the webview sent.
+/// `firstmate_run_gates` is the only caller. A missing turn is not clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanlessFacts {
+    /// Facts are present and show no gap. A send-back may be cleared.
+    Clear,
+    /// The webview sent no facts. Do not clear a send-back and do not mark the row pending.
+    Keep,
+    /// The facts have a gap. Write the fact-only record.
+    Gaps,
+}
+
+fn planless_facts(
+    facts: Option<&super::fact_gaps::FactTurn>,
+    checkout: Option<&std::path::Path>,
+) -> PlanlessFacts {
+    match facts {
+        None => PlanlessFacts::Keep,
+        Some(turn) if super::fact_gaps::done_gaps_in(turn, checkout).is_empty() => {
+            PlanlessFacts::Clear
+        }
+        Some(_) => PlanlessFacts::Gaps,
+    }
+}
+
+/// A failed record for fact gaps when the brief stored no plan, so the routes check stays where it is.
+fn fact_only_record(
+    delegation_id: &str,
+    round: u32,
+    now: i64,
+    facts: &super::fact_gaps::FactTurn,
+    checkout: Option<&std::path::Path>,
+) -> Option<GateRecord> {
+    let gaps = super::fact_gaps::done_gaps_in(facts, checkout);
+    if gaps.is_empty() {
+        return None;
+    }
+    Some(GateRecord {
+        delegation_id: delegation_id.to_string(),
+        round,
+        at: now,
+        verdict: Verdict::Failed,
+        gates: Vec::new(),
+        check: None,
+        summary: super::fact_gaps::fact_summary(&gaps),
+    })
+}
+
+/// Runs a finished worker's gates and verdict check. `None`: its brief has no gates and the turn's facts show no
+/// gap (the routes check alone runs as before, through `run_worker_gate`).
 #[tauri::command]
 pub async fn firstmate_run_gates(
     app: AppHandle,
@@ -1387,11 +1457,13 @@ pub async fn firstmate_run_gates(
     tauri::async_runtime::spawn_blocking(move || {
         use tauri::Manager;
         let store = app.state::<SessionStore>();
+        let facts = input
+            .facts
+            .as_ref()
+            .map(super::fact_gaps::fact_turn_from_value);
         let (plan, row, gate_owns_checks) = {
             let conn = store.lock_conn()?;
-            let Some(plan) = plan_of(&conn, &input.delegation_id)? else {
-                return Ok(None);
-            };
+            let plan = plan_of(&conn, &input.delegation_id)?;
             let row = delegations::tree(&conn, &input.delegation_id)?
                 .into_iter()
                 .find(|r| r.id == input.delegation_id);
@@ -1405,6 +1477,35 @@ pub async fn firstmate_run_gates(
         let Some(row) = row else {
             return Ok(None);
         };
+        let checkout = crate::fs::expand_home(&input.checkout);
+        // No stored plan. Missing facts are not a clean turn: a send-back stays, and the row is not marked pending.
+        // A present turn with no gap clears a send-back, or the delivered row stays failed.
+        if plan.is_none() {
+            match planless_facts(facts.as_ref(), Some(checkout.as_path())) {
+                PlanlessFacts::Clear => {
+                    if row.gate_verdict.as_deref() == Some(GateVerdict::FAILED)
+                        && super::status::sent_back_on(&row)
+                    {
+                        let change = delegations::set_gate_verdict(
+                            &mut *store.lock_conn()?,
+                            &row.id,
+                            GateVerdict::PASSED,
+                            "the later facts show no gap",
+                            None,
+                            now_millis(),
+                        )?;
+                        if change.applied {
+                            let _ = app
+                                .emit(delegations::CHANGED, serde_json::json!({ "ids": [row.id] }));
+                            crate::tasks::emit_for_delegations(&app); // WP-70
+                        }
+                    }
+                    return Ok(None);
+                }
+                PlanlessFacts::Keep => return Ok(None),
+                PlanlessFacts::Gaps => {}
+            }
+        }
         let round = next_round(&*store.lock_conn()?, &row.id)?;
         // Pending while they run, so nothing reads the row as done in between.
         {
@@ -1421,7 +1522,6 @@ pub async fn firstmate_run_gates(
                 crate::tasks::emit_for_delegations(&app); // WP-70
             }
         }
-        let checkout = crate::fs::expand_home(&input.checkout);
         let runners = AppRunners {
             app: app.clone(),
             project_id: input.project_id.clone(),
@@ -1431,20 +1531,36 @@ pub async fn firstmate_run_gates(
                 .filter(|m| !m.trim().is_empty())
                 .unwrap_or_else(|| "haiku".into()),
         };
-        let record = run_round(
-            &RoundInput {
-                delegation_id: &row.id,
-                round,
-                checkout: &checkout,
-                plan: &plan,
-                brief: row.brief.as_deref().unwrap_or(""),
-                done_when: row.goal.as_deref().unwrap_or(""),
-                report: &input.report,
-                now: now_millis(),
-                gate_owns_checks,
-            },
-            &runners,
-        );
+        let now = now_millis();
+        let record = if let Some(plan) = &plan {
+            run_round(
+                &RoundInput {
+                    delegation_id: &row.id,
+                    round,
+                    checkout: &checkout,
+                    plan,
+                    brief: row.brief.as_deref().unwrap_or(""),
+                    done_when: row.goal.as_deref().unwrap_or(""),
+                    report: &input.report,
+                    now,
+                    gate_owns_checks,
+                    facts: facts.as_ref(),
+                },
+                &runners,
+            )
+        } else {
+            // Checked above: a plan-less turn only reaches here when the facts have a gap.
+            // A second empty read returns nothing rather than marking the row failed.
+            let Some(turn) = facts.as_ref() else {
+                return Ok(None);
+            };
+            let Some(record) =
+                fact_only_record(&row.id, round, now, turn, Some(checkout.as_path()))
+            else {
+                return Ok(None);
+            };
+            record
+        };
         let mut conn = store.lock_conn()?;
         push_record(&conn, &record)?;
         let change = delegations::set_gate_verdict(

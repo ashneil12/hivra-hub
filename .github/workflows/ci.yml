@@ -18,8 +18,11 @@ on:
     # its own nightly run in native.yml.
     - cron: '47 3 * * *'
 
+# Hivra: a new push to a pull request cancels its older run, and a new merge into main cancels the older main run that
+# is still waiting (every merge used to queue a full run, so the macOS runners spent the afternoon on superseded
+# commits). The pre-ship run and the nightly run keep their own group, so nothing cancels them.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}
   cancel-in-progress: true
 
 jobs:

@@ -44,6 +44,8 @@ const KINDS: Record<string, string> = {
   "permission.grant": "Permission",
   "sandbox.refuse": "Sandbox refused",
   "protected.report": "Protected files changed",
+  // WP-182: a change on a Mono's card.
+  "mono.settings": "Mono settings",
 };
 
 /** WP-178: the kind of a first mate's report of a protected or secret place it touched (checkoutGuard.ts). */

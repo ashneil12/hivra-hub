@@ -74,6 +74,8 @@ windows = { version = "0.62", features = ["UI_Notifications"] }
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
 tauri = { version = "2", features = ["tray-icon"] }
 block2 = "0.6.2"
+core-foundation = "0.10"
+security-framework = "3"
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-app-kit = { version = "0.3", features = ["NSAlert", "NSApplication", "NSAttributedString", "NSBezierPath", "NSButton", "NSColor", "NSControl", "NSDockTile", "NSEvent", "NSGraphics", "NSImage", "NSLayoutAnchor", "NSLayoutConstraint", "NSMenu", "NSMenuItem", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSUserInterfaceItemIdentification", "NSView", "NSVisualEffectView", "NSWindow", "block2", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", features = ["NSAttributedString", "NSDictionary", "NSGeometry", "NSError", "NSPathUtilities", "NSString"] }

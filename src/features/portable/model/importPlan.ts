@@ -152,6 +152,8 @@ export type MonoPlan = {
   missingFolders: string[];
   engineLabel: string;
   skillsMissing: string[];
+  /** WP-182: offered skill names that are not installed here. The names are still kept. */
+  offeredMissing: string[];
 };
 export type TeamPlan = { team: PortableTeam; state: "new" | "here"; conversations: number; newConversations: number };
 export type Plan = {
@@ -230,6 +232,7 @@ export function planImport(p: PendingImport, here: Here = hereNow()): Plan {
       missingFolders: missing,
       engineLabel: engineLabel(mono.engine),
       skillsMissing: mono.skills.filter((s) => p.skillsHere[s] === false),
+      offeredMissing: (mono.offeredSkills ?? []).filter((s) => p.skillsHere[s] === false),
     };
   });
   const teams: TeamPlan[] = doc.teams.map((team) => {
@@ -489,6 +492,9 @@ function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): Se
     projects: folders,
     ...(Object.keys(topics).length ? { topics } : {}),
     ...(mono.workerDefault ? { workerDefault: mono.workerDefault } : {}),
+    ...(typeof mono.engineFast === "boolean" ? { engineFast: mono.engineFast } : {}),
+    ...(mono.offeredSkills?.length ? { offeredSkills: mono.offeredSkills } : {}),
+    ...(mono.commands?.length ? { commands: mono.commands } : {}),
   };
 }
 

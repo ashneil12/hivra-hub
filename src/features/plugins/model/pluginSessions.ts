@@ -6,6 +6,10 @@ import { setCodexDeveloperInstructions, setCodexExtraConfig } from "../../../int
 import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import { browserAgentFor } from "../../browser/model/agent";
 import { plainEnglishEndings } from "../../firstmate/model/plainEnglish";
+import { HARNESSES, type HarnessId } from "../../sessions/model/session";
+import { loadSkills } from "../../skills/model/skills";
+import { monoForSession } from "../../monos/model/mono";
+import { monoSessionInstruction } from "../../monos/model/monoSession";
 import { mcodeInstallRoot, pstackInstallRoot, sessionInstruction } from "./pstackAutopilot";
 import { claudeAdditions, codexConfig, NO_WIRING, type PluginWiring } from "./pluginWiring";
 
@@ -24,12 +28,28 @@ export async function pluginWiringFor(cwd: string, sessionId?: string): Promise<
   }
 }
 
+function catalogHarness(engine: string | undefined): HarnessId {
+  return engine && (HARNESSES as readonly string[]).includes(engine) ? (engine as HarnessId) : "claude";
+}
+
 /** What a session is told about the skills of the plugins that are on for it, from one wiring read. */
-function instructionFor(wiring: PluginWiring): string {
-  return sessionInstruction({
+async function instructionFor(wiring: PluginWiring, cwd: string, sessionId?: string): Promise<string> {
+  const input = {
     pstackRoot: pstackInstallRoot(wiring.claudePluginDirs),
     mcodeRoot: mcodeInstallRoot(wiring.claudePluginDirs),
     plainEnglish: plainEnglishEndings(),
+  };
+  // WP-182: a Mono that names its skills is told only those. Unset keeps today's text.
+  if (!sessionId) return sessionInstruction(input);
+  const mono = monoForSession(sessionId);
+  if (!mono?.skills?.length) return sessionInstruction(input);
+  // A missed catalog is not a reason to drop the names. The instruction still lists each one.
+  const discovered = await loadSkills({ harness: catalogHarness(mono.engine), cwd }).catch(() => []);
+  return monoSessionInstruction({
+    ...input,
+    skills: mono.skills,
+    commands: mono.commands,
+    discovered: discovered.map((skill) => ({ name: skill.name, description: skill.description })),
   });
 }
 
@@ -42,12 +62,12 @@ export function registerPluginSessions(
     const wiring = await read(cwd, sessionId);
     return {
       additions: claudeAdditions(wiring),
-      append: instructionFor(wiring),
+      append: await instructionFor(wiring, cwd, sessionId),
     };
   });
-  setCodexDeveloperInstructions(async (cwd) => {
-    const wiring = await read(cwd);
-    return instructionFor(wiring);
+  setCodexDeveloperInstructions(async (cwd, sessionId) => {
+    const wiring = await read(cwd, sessionId);
+    return instructionFor(wiring, cwd, sessionId);
   });
 }
 

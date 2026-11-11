@@ -3083,6 +3083,33 @@ describe("parallel workers per project, with throttling (H8)", () => {
         remote.folders.delete(source.cwd);
       }
     });
+
+    // The chat that delegates is the parent session, as sessions.start passes it, so the child's grant keeps that chat's projects.
+    it("delegate_task passes the chat into the crew gate as the parent session", async () => {
+      const { source, host, api } = lead();
+      await handleAgentApp(source, "parent-local", "tasks.delegate", { brief: "Build the title." }, host);
+      expect(api.crewGate).toHaveBeenCalledWith(
+        expect.objectContaining({ parentSession: source.id, sessionId: `app-${source.id}-parent-local` }),
+      );
+    });
+
+    it("a remote brief passes the chat into the crew gate as the parent session", async () => {
+      const { source, host, api } = lead();
+      remote.folders.add(source.cwd);
+      try {
+        await handleAgentApp(source, "parent-remote", "tasks.delegate", { brief: "Build the title." }, host);
+        expect(api.crewGate).toHaveBeenNthCalledWith(
+          1,
+          expect.objectContaining({
+            parentSession: source.id,
+            cli: source.harness,
+            sessionId: `app-${source.id}-parent-remote`,
+          }),
+        );
+      } finally {
+        remote.folders.delete(source.cwd);
+      }
+    });
   });
 
   it("lets a coding-team chat's workers wait too, in its own project", async () => {
