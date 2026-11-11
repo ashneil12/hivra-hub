@@ -37,8 +37,9 @@ const fakeGuard = vi.hoisted(() => {
   };
 });
 
-// The listings as session_store.rs serves them (list_chats_in): a project lists only rows in that folder that hold a user
-// message (`has_user_message = 1`), and the folderless list only rows with no folder. Off by default, like the other files.
+// The listings as session_store.rs serves them (list_chats_in): a project lists only rows in that folder whose
+// `has_user_message` column is 1 (has_user_block: a user message, or a move notice), and the folderless list only rows
+// with no folder. Off by default, like the other files.
 const listing = vi.hoisted(() => ({ real: false }));
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -60,8 +61,11 @@ vi.mock("@tauri-apps/api/core", () => ({
         const rows = [...backend.values()];
         if (command === "session_list_linked") return [];
         if (command === "session_list_folderless") return rows.filter((row) => row.cwd === "").map((row) => ({ ...row }));
+        // has_user_block (session_store.rs): a user message, or a move notice (a moved chat keeps no transcript).
+        const listable = (block: Record<string, unknown>) =>
+          block.role === "user" || (typeof block.notice === "string" && block.notice.startsWith("teleport"));
         return rows
-          .filter((row) => row.cwd === args.cwd && row.blocks.some((block) => block.role === "user"))
+          .filter((row) => row.cwd === args.cwd && row.blocks.some(listable))
           .map((row) => ({ ...row }));
       }
       return [...backend.values()].map((row) => ({ ...row }));
