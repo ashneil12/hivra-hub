@@ -203,7 +203,10 @@ describe("argument rules match the app", () => {
     expect(argumentProblem("/usr/bin/python3", ["-m", "x"])).not.toBeNull();
     expect(argumentProblem("/usr/bin/python3", ["-Bm", "x"])).not.toBeNull();
     expect(argumentProblem("/opt/node", ["-pe", "1"])).not.toBeNull();
-    expect(argumentProblem("/usr/bin/python3", ["-m", "/abs/mod.py"])).toBeNull();
+    // `/abs/mod.py` is absolute on macOS and Linux only; on Windows a path with no drive is refused (see below).
+    expect(argumentProblem("/usr/bin/python3", ["-m", "/abs/mod.py"], "other")).toBeNull();
+    expect(argumentProblem("C:\\py\\python.exe", ["-m", "C:\\abs\\mod.py"], "win32")).toBeNull();
+    expect(argumentProblem("C:\\py\\python.exe", ["-m", "/abs/mod.py"], "win32")).not.toBeNull();
   });
 });
 
@@ -215,5 +218,136 @@ describe("review #231 r2: a provider/model name is not a path", () => {
     expect(argumentProblem("/opt/agent", ["--model", "openai/gpt-4.1"])).toBeNull();
     expect(argumentProblem("/opt/agent", ["--model=anthropic/claude-sonnet-4"])).toBeNull();
     expect(argumentProblem("/opt/agent", ["--model", "Qwen/Qwen2.5-Coder-32B-Instruct"])).toBeNull();
+  });
+});
+
+// Review #231 r3 repro (MEDIUM, Windows; mirror of review_231_r3_a_rooted_or_drive_relative_windows_path_is_refused_or_pinned
+// in more_agents.rs): a path with a root and no drive, or a drive-relative parent, is not absolute on Windows, so Rust
+// neither refuses nor pins it. The entry check here lets it through as well. (A leading `/` is absolute on macOS, so
+// the forward-slash form is left to the Rust check, review_231_r3_a_forward_slash_rooted_path_on_windows_is_refused_or_pinned.)
+describe("review #231 r3: a Windows path that is not absolute is not a model name", () => {
+  it("refuses a rooted path without a drive and a drive-relative parent", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["\\Users\\ash\\agent"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["--config=\\Users\\ash\\cfg"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["C:..\\agent"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["C:foo"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["--config=C:foo"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["/Users/ash/agent"], "win32")).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["/Users/ash/agent"], "darwin")).toBeNull();
+  });
+
+  it("refuses a parent or home path after @ and still allows a scoped package", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/npx", ["@../args.txt"])).not.toBeNull();
+    expect(argumentProblem("/opt/npx", ["@~/args"])).not.toBeNull();
+    expect(argumentProblem("/opt/npx", ["--opts=@../args"])).not.toBeNull();
+    expect(argumentProblem("/opt/npx", ["-y", "@scope/pkg"])).toBeNull();
+  });
+
+  it("refuses a relative file after a colon flag", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["--config:../x"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-p:../x"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-IC:\\foo"], "win32")).toBeNull();
+  });
+
+  it("allows an escape and a model tag, and refuses a fullwidth rooted path", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/agent", ["--delimiter=\\t"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--model=o:latest"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["o:stable"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["x:nightly"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["\\Users\\ash"])).not.toBeNull();
+    expect(argumentProblem("/opt/agent", ["\\t\\secret"])).not.toBeNull();
+    expect(argumentProblem("/opt/agent", ["C:foo"])).not.toBeNull();
+    const fullwidth = `${String.fromCharCode(0xff3c)}Users${String.fromCharCode(0xff3c)}ash`;
+    expect(argumentProblem("/opt/agent", [fullwidth])).not.toBeNull();
+  });
+
+  it("refuses a file URL that is not a local file, and allows one that is", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/deno", ["file:../x"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file://evil/x"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["FILE:///tmp/agent.ts"])).toBeNull();
+  });
+});
+
+// Review #241 r2 repro (MEDIUM). The window refuses what the app refuses, so the two relative shapes the app lets
+// through are let through here too: a colon flag whose file is followed by `=options` (`-javaagent:../x.jar=opts`,
+// `--config:../x=y`), and a plain `key=../x` word (`codex-acp -c key=value`, `--set key=value`).
+describe("review #241 r2: a relative file inside a flag with options or a key=value word is refused", () => {
+  it("refuses a relative file after a colon flag that also has =options", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/java", ["-javaagent:../x.jar=opts"])).not.toBeNull();
+    expect(argumentProblem("/opt/tool", ["--config:../x=y"])).not.toBeNull();
+  });
+
+  it("refuses a relative file after key= in a plain word", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/codex-acp", ["-c", "instructions_file=../x"])).not.toBeNull();
+  });
+});
+
+describe("a drive colon is only a drive on Windows", () => {
+  it("refuses -IC:\\secret off Windows and allows -IC:\\foo on Windows", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["-IC:\\secret"], "other")).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-IC:\\foo"], "win32")).toBeNull();
+  });
+
+  it("treats a drive path as absolute only on Windows", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["C:\\agent.mjs"], "other")).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["C:\\agent.mjs"], "win32")).toBeNull();
+    expect(argumentProblem("/opt/node", ["--require", "C:\\plugin.js"], "other")).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["--require", "C:\\plugin.js"], "win32")).toBeNull();
+  });
+});
+
+describe("fullwidth separators and Windows best-fit slashes", () => {
+  it("folds a fullwidth equals or colon before the split, and refuses yen, won and the division slash", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    const eq = `key${String.fromCharCode(0xff1d)}../x`;
+    const colon = `--config${String.fromCharCode(0xff1a)}../x`;
+    const yen = `${String.fromCharCode(0x00a5)}Users${String.fromCharCode(0x00a5)}ash`;
+    const slash = `/tmp${String.fromCharCode(0x2215)}secret`;
+    expect(argumentProblem("/opt/node", [eq])).not.toBeNull();
+    expect(argumentProblem("/opt/node", [colon])).not.toBeNull();
+    expect(argumentProblem("/opt/node", [yen])).not.toBeNull();
+    expect(argumentProblem("/opt/node", [slash])).not.toBeNull();
+    const won = `${String.fromCharCode(0x20a9)}Users${String.fromCharCode(0x20a9)}ash`;
+    expect(argumentProblem("/opt/node", [won])).not.toBeNull();
+    expect(argumentProblem("/opt/node", [`key${String.fromCharCode(0xff1d)}hello`])).toBeNull();
+  });
+});
+
+describe("a file URL is percent-decoded the way the app decodes it", () => {
+  it("refuses a broken escape and allows a decoded local path, including one that decodes to ..", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/deno", ["file:///tmp/%zz"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/%"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/%ff"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/my%20agent.ts"])).toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///%2e%2e/x"])).toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/agent.ts?v=1"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/agent.ts#section"])).not.toBeNull();
+  });
+});
+
+// Review #241 r3 repro (MEDIUM; mirrors of review_241_r3_a_path_holding_a_url_marker_is_pinned_or_refused and
+// review_241_r3_a_file_after_key_equals_in_a_flag_value_is_pinned_or_refused in more_agents.rs). The window calls any
+// value that holds `://` anywhere a URL, so a relative path with a `x://` run in it is allowed, and it looks at a flag
+// value only up to its first `=`, so `--config=key=~/x` is allowed.
+describe("review #241 r3: a relative file behind :// or inside a flag's key=value is refused", () => {
+  it("refuses ../../x://agent.mjs and key=../x://y", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["../../../../../../tmp/x://agent.mjs"])).not.toBeNull();
+    expect(argumentProblem("/opt/codex-acp", ["-c", "instructions_file=../../../../tmp/x://y"])).not.toBeNull();
+  });
+
+  it("refuses --config=key=~/x", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/codex-acp", ["--config=instructions_file=~/x"])).not.toBeNull();
   });
 });
