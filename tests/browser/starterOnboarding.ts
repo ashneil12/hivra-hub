@@ -1,5 +1,6 @@
-// WP-05: a fresh start offers the five starter templates, all unticked. Skip adds nobody.
-// A ticked one becomes an ordinary Mono, and the template id is never that Mono's id.
+// WP-05: a fresh start offers the five starter templates. Ash, 11 Nov: the Chief of Staff starts ticked, the other
+// four unticked. Skip with nothing ticked adds nobody. A ticked one becomes an ordinary Mono, and the template id is
+// never that Mono's id.
 import { expect, type Page } from "@playwright/test";
 
 export const STARTER_IDS = ["coordinator", "design-review", "planner", "record-keeper", "team-steward"] as const;
@@ -21,19 +22,22 @@ export async function openOnboarding(page: Page) {
   await dismissSetup(page);
 }
 
-/** The start step: five starter templates, none ticked, and no add-on. */
-export async function assertStartersUnticked(page: Page) {
-  await expect(page.locator("[data-hub-onboarding-team]")).toContainText("None are added unless you tick them");
+/** The start step: five starter templates, only the Chief of Staff ticked, and no add-on. */
+export async function assertStarterTicks(page: Page) {
+  await expect(page.locator("[data-hub-onboarding-team]")).toContainText("Chief of Staff is ticked to get you started. Only ticked ones are added.");
   await expect(page.locator("[data-hub-onboarding-starter]")).toHaveCount(STARTER_IDS.length);
   for (const id of STARTER_IDS) {
-    await expect(page.locator(`[data-hub-onboarding-starter="${id}"]`)).toHaveAttribute("aria-checked", "false");
+    await expect(page.locator(`[data-hub-onboarding-starter="${id}"]`)).toHaveAttribute("aria-checked", id === "coordinator" ? "true" : "false");
   }
   await expect(page.locator("[data-hub-onboarding-addon]")).toHaveCount(0);
   await expect(page.getByText("Pre-load a saved team")).toHaveCount(0);
 }
 
-/** Skip with nothing ticked: the card closes and none of the five are on the roster. */
+/** Untick the Chief of Staff and skip: the card closes and none of the five are on the roster. */
 export async function skipAddsNobody(page: Page) {
+  const box = page.locator('[data-hub-onboarding-starter="coordinator"]');
+  await box.click();
+  await expect(box).toHaveAttribute("aria-checked", "false");
   await page.locator("[data-hub-onboarding-skip]").click();
   await expect(page.locator("[data-hub-onboarding]")).toHaveCount(0);
   const names = (await roster(page)).map((mono) => mono.name);
@@ -41,15 +45,13 @@ export async function skipAddsNobody(page: Page) {
 }
 
 /**
- * A second launch (the first left the roster as it was). Ticking Chief of Staff and skipping adds one ordinary Mono.
- * Its id is not the template id, and the other four stay off the roster.
+ * A second launch (the first left the roster as it was). The Chief of Staff is ticked already, and skipping from the
+ * list adds it as one ordinary Mono. Its id is not the template id, and the other four stay off the roster.
  */
 export async function tickedBecomesOrdinaryMono(page: Page) {
   await openOnboarding(page);
   await page.locator("[data-hub-onboarding-next]").click();
-  const box = page.locator('[data-hub-onboarding-starter="coordinator"]');
-  await box.click();
-  await expect(box).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator('[data-hub-onboarding-starter="coordinator"]')).toHaveAttribute("aria-checked", "true");
   await page.locator("[data-hub-onboarding-skip]").click();
   await expect(page.locator("[data-hub-onboarding]")).toHaveCount(0);
   const monos = await roster(page);

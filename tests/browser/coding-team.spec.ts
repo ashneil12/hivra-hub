@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-import { openLocalHub } from "./localHub";
+import { openLocalHub, openProjectLead } from "./localHub";
 
 // The coding team is the main place Ash talks (Ash, 20 Oct: "mainly the coding team is the main place i want to talk
 // to"; "I don't talk to workers. I only talk to orchestrators."). The real app in a browser (hub-dev.html reading the
@@ -101,9 +101,9 @@ test("the coding team opens on its Lead, nests every chat's sub-chats, and opens
   await openLocalHub(page);
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
 
-  // Picking EXO lands in its coding team, on its Lead: the item reads Coding team, the Lead's row is pinned on top
-  // and current, and its chat is open beside the list.
-  await page.getByRole("button", { name: /^EXO/ }).first().click();
+  // Dropwave: picking EXO opens the project's home, and its first mate (under First mates) opens the coding team on
+  // its Lead: the Lead's row is pinned on top and current, and its chat is open beside the list.
+  await openProjectLead(page);
   await expect(leadRow(page)).toBeVisible({ timeout: 15_000 });
   await expect.poll(() => page.evaluate(() => localStorage.getItem("monocode:hub-nav"))).toContain('"item":"coding-team"');
   await expect(leadRow(page)).toContainText("EXO lead");
@@ -186,14 +186,13 @@ test("the coding team opens on its Lead, nests every chat's sub-chats, and opens
   await expect(page.locator("[data-delegated-chat]:visible").first()).toContainText("Open EXO coding team", { timeout: 10_000 });
   await shot(page, "5-sub-chat-open");
 
-  // Back to EXO: the coding team now opens on the chat Ash was in, and the Lead is one click away.
+  // Back to EXO: the project opens on its own home (Dropwave), and the Lead is one click away under First mates.
   await page.getByRole("button", { name: /^Hivra/ }).first().click();
   await page.getByRole("button", { name: /^EXO/ }).first().click();
-  await expect(leadRow(page)).toBeVisible();
-  await expect.poll(() => monoViewShown(page)).toBe(false);
-  await leadRow(page).locator("[data-session-card]").click();
+  await expect(page.locator("[data-home]")).toBeVisible();
+  await expect(leadRow(page)).toHaveCount(0);
+  await page.locator("[data-mono-rail-list]").getByText("EXO lead", { exact: true }).first().click();
   await expect.poll(() => monoViewShown(page)).toBe(true);
   await expect(leadRow(page).locator('[aria-current="true"]')).toBeVisible();
-  await expect(page.locator('[data-hub-item="coding-team"]')).toHaveAttribute("title", "EXO lead and your chats in EXO's code");
   await expect(page.locator('[data-hub-item="leadership-team"]')).toHaveAttribute("title", "The leadership team's group chat");
 });

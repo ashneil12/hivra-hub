@@ -103,7 +103,8 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
   useEffect(() => {
     let stopped = false;
     void listAutomations().then((list) => {
-      if (!stopped) setAutomations(list);
+      // A list that didn't come back as one (a test page's stand-in answers nothing) leaves the card empty, not Home broken.
+      if (!stopped) setAutomations(Array.isArray(list) ? list : []);
     }).catch(() => undefined);
     return () => {
       stopped = true;

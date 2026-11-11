@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { seedExampleRoster } from "./exampleRoster";
-import { openLocalHub } from "./localHub";
+import { openLocalHub, openProjectLead } from "./localHub";
 
 const SHOTS = process.env.B8_PROOF_DIR ?? "test-results/b8";
 const shot = async (page: Page, name: string) => {
@@ -174,7 +174,8 @@ test("Coding team: New session and back leaves no empty chat; double-click renam
   }, now);
   await openLocalHub(page, "&fakeClaude");
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
-  await page.getByRole("button", { name: /^EXO/ }).first().click();
+  // Dropwave: the project opens on its home; its first mate, under First mates, opens the coding team's chats.
+  await openProjectLead(page);
   await expect(page.locator("[data-coding-team-lead]")).toBeVisible({ timeout: 15_000 });
   const cards = () => page.locator("[data-session-card]").evaluateAll((els) => els.map((e) => e.getAttribute("data-session-card")));
   const listed = await cards();

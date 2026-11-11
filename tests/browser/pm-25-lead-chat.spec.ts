@@ -5,7 +5,8 @@ import fs from "node:fs";
 //   1. "Jump to latest" never covers text: it sits in the band the transcript keeps clear, and pinned to the end the
 //      last line rests above that band.
 //   2. A worker's card takes the replies' reading width (up to 640px), not a narrow pill.
-//   5. With the 1:1 open no sidebar project item is highlighted; with none open, Coding team is.
+//   5. With the 1:1 open no sidebar project item is highlighted; with none open, the open team is the only one
+//      (Dropwave dropped the Coding team row, so the proof uses the Leadership team).
 // Shots at 1512 and 2560 wide.
 //   PM_PROOF_SPEC=pm-25-lead-chat.spec.ts PM_PROOF_DIR=/workspace/pm-redo/proofs npx playwright test -c tests/browser/pm-screens.config.ts
 
@@ -91,9 +92,9 @@ for (const size of SIZES) {
     await page.screenshot({ path: `${SHOTS}/pm-25-5-sidebar-1to1-open-${size.width}.png` });
   });
 
-  test(`r25 ${size.width}: with no 1:1 open, Coding team is the one highlight`, async ({ page }) => {
+  test(`r25 ${size.width}: with no 1:1 open, the open team is the one highlight`, async ({ page }) => {
     await open(page, size, "?mono=0");
-    expect(await highlighted(page)).toEqual(["Coding team"]);
+    expect(await highlighted(page)).toEqual(["Leadership team"]);
     await page.mouse.move(5, 5);
     await page.screenshot({ path: `${SHOTS}/pm-25-5-sidebar-no-1to1-${size.width}.png` });
   });

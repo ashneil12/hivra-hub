@@ -41,9 +41,12 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const [name, setName] = useState("");
   // WP-05: starter Monos are offered unticked. Ticking one makes an ordinary Mono. None are added otherwise.
   // Dropwave: the one that reads every project (the Chief of Staff) leads the list and is marked Recommended, since
-  // Home and the top of the sidebar are built around it. Still unticked: none are added unless ticked.
+  // Home and the top of the sidebar are built around it. Ash, 11 Nov: it starts ticked. The others stay unticked, and
+  // nothing is added for a person who skipped before seeing this list (sawTeam).
   const offers = [...starterOffers()].sort((a, b) => Number(!!b.everyProject) - Number(!!a.everyProject));
-  const [ticked, setTicked] = useState<string[]>([]);
+  const chief = offers.find((offer) => offer.everyProject);
+  const [ticked, setTicked] = useState<string[]>(() => (chief ? [chief.id] : []));
+  const sawTeam = useRef(false);
   // WP-20: the CLIs on this Mac, a project, and a group. All optional. A project lands in its coding team.
   // A setup that already proved Claude Code (installed, signed in, one real reply) starts with it ticked: a fact, not a guess.
   const [clis, setClis] = useState<string[]>(() => (setupProved() ? ["claude"] : []));
@@ -117,7 +120,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
         }
         finishOnboarding();
         if (name.trim()) setUserName(name);
-        for (const id of ticked) addStarterMono(id);
+        if (sawTeam.current) for (const id of ticked) addStarterMono(id);
         onClose();
       });
       return;
@@ -125,7 +128,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     saveChosenClis(choice.clis);
     finishOnboarding();
     if (name.trim()) setUserName(name);
-    if (start === "fresh") for (const id of ticked) addStarterMono(id);
+    if (start === "fresh" && sawTeam.current) for (const id of ticked) addStarterMono(id);
     // A project is the unit of the hub (G1): the hub opens a project's own Today, or the first one; an app view
     // (New project, Restore) opens over it.
     if (next === "today") showProjectToday();
@@ -135,6 +138,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
 
   const kind = steps[step];
   const last = step === steps.length - 1;
+  if (kind === "start" && start === "fresh") sawTeam.current = true;
 
   return (
     <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-onboarding data-step={kind}>
@@ -187,7 +191,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
               </label>
               {projectError ? <p className="text-[13px] leading-5 text-content/75" data-hub-onboarding-error>{projectError}</p> : null}
               <Group label="Your team">
-                <p className="px-3 pb-1 text-[13px] text-content/75" data-hub-onboarding-team>A first mate runs a line of work for you. None are added unless you tick them.</p>
+                <p className="px-3 pb-1 text-[13px] text-content/75" data-hub-onboarding-team>A first mate runs a line of work for you. {chief ? `${chief.name} is ticked to get you started. Only ticked ones are added.` : "None are added unless you tick them."}</p>
                 {offers.map((offer) => (
                   <Check2 key={offer.id} id={offer.id} on={ticked.includes(offer.id)}
                     onClick={() => setTicked((cur) => cur.includes(offer.id) ? cur.filter((x) => x !== offer.id) : [...cur, offer.id])}

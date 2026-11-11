@@ -14,13 +14,13 @@ test("the chief chat answers across two projects and files nothing", async ({ pa
 
   await page.getByLabel("Ask").fill("how is EXO going?");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.locator("[data-home-you]")).toContainText("how is EXO going?");
-  await expect(page.locator("[data-home-reply]")).toContainText("EXO is fine.");
-  await expect(page.locator("body")).toHaveAttribute("data-tasks-created", "0");
-
-  await page.getByRole("button", { name: "Open full chat" }).click();
+  // Dropwave (Ash, 11 Nov): the box starts the conversation. The words go to the Chief of Staff's own chat, which
+  // opens, and the conversation carries on there, not in a second copy on Home.
+  await expect(page.locator("body")).toHaveAttribute("data-chief-heard", "how is EXO going?");
+  await expect(page.locator("body")).toHaveAttribute("data-mono-chat", /.+/);
   const opened = await page.locator("body").getAttribute("data-mono-chat");
   expect(opened).toBeTruthy();
   expect(opened).not.toBe("coordinator");
+  await expect(page.locator("[data-home-you]")).toHaveCount(0);
   await expect(page.locator("body")).toHaveAttribute("data-tasks-created", "0");
 });

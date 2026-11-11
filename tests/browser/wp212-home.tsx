@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { Sidebar } from "../../src/app/shell/Sidebar";
 import { UsageFooter } from "../../src/app/shell/UsageFooter";
 import type { CatalogPanel } from "../../src/features/panels/model/panelTabs";
-import { hideSection, parseArrangement, pinPanel, showSection, unpin, type HomeArrangement } from "../../src/features/home/model/arrangement";
+import { hideSection, parseArrangement, pinPanel, showSection, unpin, withCardOrder, type HomeArrangement } from "../../src/features/home/model/arrangement";
 import { moveHomeSection } from "../../src/features/home/model/arrangeHome";
 import { HomeScreen, type HomeChief } from "../../src/features/home/ui/HomeScreen";
 import { setHubDataSource, hubData } from "../../src/features/hub/model/hubData";
@@ -159,6 +159,8 @@ function Page() {
       onShow={(key) => keep(showSection(arrangement, key))}
       onPin={(plugin, panelId) => keep(pinPanel(arrangement, plugin, panelId))}
       onUnpin={(key) => keep(unpin(arrangement, key))}
+      // G5: the card order is part of the saved arrangement, as HomeView keeps it.
+      onReorder={(keys) => keep(withCardOrder(arrangement, keys))}
       onAsk={(text) => {
         setYou(text);
         setReply("EXO is fine.");

@@ -12,7 +12,15 @@ test("home keeps the strip, hides empty sections, and keeps a pinned panel", asy
   await expect(page.locator("[data-hub-home] button")).toHaveAttribute("aria-current", "true");
 
   await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
-  await expect(page.locator("[data-home-quiet]")).toHaveText("All quiet. Ask me anything, or hand work to any project.");
+  // Dropwave: Home reads the one Needs you list, so this page's three open asks show. The two sections with nothing
+  // in them (Working now, Done today) stay hidden, and Home doesn't say "All quiet" over a list that has rows.
+  const needs = page.locator("[data-home-section='needs-you']");
+  await expect(needs).toContainText("Should we ship?");
+  await expect(needs).toContainText("Which font?");
+  await expect(needs).toContainText("Read the spec");
+  await expect(page.locator("[data-home-quiet]")).toHaveCount(0);
+  await expect(page.locator("[data-home-section='moving-now']")).toHaveCount(0);
+  await expect(page.locator("[data-home-section='recent']")).toHaveCount(0);
   await expect(page.locator("[data-home-empty]")).toHaveCount(0);
   await expect(page.getByText("Nothing needs you.")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Projects" })).toHaveCount(0);
@@ -28,7 +36,7 @@ test("home keeps the strip, hides empty sections, and keeps a pinned panel", asy
   await expect(page.getByRole("switch", { name: "Show Done today" })).toHaveAttribute("aria-checked", "false");
   await page.getByRole("switch", { name: "Show Done today" }).click();
   await page.getByRole("button", { name: "Pin Example board" }).click();
-  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "panel:my-panels:board");
+  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "needs-you panel:my-panels:board");
   await expect(page.frameLocator("iframe[title='Example board']").getByText("Example: board")).toBeVisible();
 
   const pinned = page.locator("[data-home-section='panel:my-panels:board']");
@@ -38,7 +46,7 @@ test("home keeps the strip, hides empty sections, and keeps a pinned panel", asy
   await page.locator("[data-wp73-shell]").screenshot({ path: `docs/hivra/work/proofs/wp-73/${testInfo.project.name}.png` });
 
   await page.reload();
-  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "panel:my-panels:board");
+  await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "needs-you panel:my-panels:board");
   await expect(page.locator("[data-home-empty]")).toHaveCount(0);
 });
 

@@ -61,23 +61,30 @@ it("the name typed is what the team calls you", () => {
   expect(storedUserName()).toBe("Sam");
 });
 
-it("offers the starter Monos, none of them ticked, and adds none unless one is ticked", () => {
+it("offers the starter Monos with only the Chief of Staff ticked, and adds only what stays ticked", () => {
   act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
   act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
-  expect(container.querySelector("[data-hub-onboarding-team]")?.textContent).toContain("None are added unless you tick them");
+  expect(container.querySelector("[data-hub-onboarding-team]")?.textContent).toContain("Chief of Staff is ticked to get you started. Only ticked ones are added.");
   const boxes = [...container.querySelectorAll("[data-hub-onboarding-starter]")];
   expect(boxes.map((box) => box.getAttribute("data-hub-onboarding-starter"))).toEqual([
     "coordinator", "design-review", "planner", "record-keeper", "team-steward",
   ]);
-  expect(boxes.every((box) => box.getAttribute("aria-checked") === "false")).toBe(true);
+  // Ash, 11 Nov: the Chief of Staff starts ticked. The other four stay unticked (WP-05).
+  expect(boxes.map((box) => box.getAttribute("aria-checked"))).toEqual(["true", "false", "false", "false", "false"]);
   act(() => root.unmount());
   root = createRoot(container);
-  finish();
+  finish("Chief of Staff"); // unticked: nobody is added
   expect(listMonos()).toEqual([]);
 });
 
-it("a ticked starter Mono is an ordinary Mono, not the template id", () => {
-  finish("Chief of Staff");
+it("a person who skips before seeing the list gets nobody", () => {
+  act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
+  act(() => (container.querySelector("[data-hub-onboarding-skip]") as HTMLElement).click());
+  expect(listMonos()).toEqual([]);
+});
+
+it("the ticked Chief of Staff is an ordinary Mono, not the template id", () => {
+  finish();
   const added = listMonos();
   expect(added).toHaveLength(1);
   expect(added[0]?.name).toBe("Chief of Staff");
