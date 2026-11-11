@@ -81,6 +81,30 @@ pub(crate) fn project_of(checkout: &Path, project: &Path) -> bool {
 type StagedSide = (String, Option<Vec<u8>>);
 type WorkerPatch = (Vec<u8>, Vec<String>, String, Vec<StagedSide>);
 
+/// An index path a same-user process cannot plant ahead of time. The name is random and the file is created with
+/// `create_new`, then removed so `read-tree` can write a real index. An empty file is not a valid index.
+fn exclusive_index() -> Result<PathBuf, String> {
+    for _ in 0..8 {
+        let path = std::env::temp_dir().join(format!(
+            "monocode-land-{}.index",
+            uuid::Uuid::new_v4().simple()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(_) => {
+                std::fs::remove_file(&path).map_err(|error| error.to_string())?;
+                return Ok(path);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("the landing index could not be created".into())
+}
+
 /// The worker's whole change against where its copy started, as a binary patch, and the files it touches.
 fn worker_patch(checkout: &Path, project: &Path) -> Result<WorkerPatch, String> {
     let (ok, head, why) = git(project, &["rev-parse", "HEAD"], None, None)?;
@@ -95,12 +119,7 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<WorkerPatch, String> 
         ));
     }
     let base = String::from_utf8_lossy(&base).trim().to_string();
-    let index: PathBuf = std::env::temp_dir().join(format!(
-        "monocode-land-{}-{}.index",
-        std::process::id(),
-        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    ));
-    let _ = std::fs::remove_file(&index);
+    let index = exclusive_index()?;
     let result = (|| {
         let (ok, _, why) = git(checkout, &["read-tree", "HEAD"], Some(&index), None)?;
         if !ok {
@@ -532,6 +551,29 @@ mod tests {
             .output()
             .unwrap();
         assert!(String::from_utf8_lossy(&status.stdout).contains("?? new.txt"));
+    }
+
+    #[test]
+    fn a_landing_leaves_a_predictable_index_name_untouched() {
+        let (project, copy) = repo("index-name");
+        std::fs::write(copy.join("a.txt"), "two\n").unwrap();
+        let pid = std::process::id();
+        let mut planted = Vec::new();
+        for n in 0..8 {
+            let path = std::env::temp_dir().join(format!("monocode-land-{pid}-{n}.index"));
+            std::fs::write(&path, b"planted-secret").unwrap();
+            planted.push(path);
+        }
+        let landing = land(&copy, &project).unwrap();
+        assert_eq!(landing.outcome, "landed");
+        for path in &planted {
+            assert_eq!(
+                std::fs::read(path).unwrap(),
+                b"planted-secret",
+                "the landing index used a predictable name"
+            );
+            let _ = std::fs::remove_file(path);
+        }
     }
 
     #[test]
