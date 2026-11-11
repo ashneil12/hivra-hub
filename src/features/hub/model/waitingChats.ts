@@ -37,6 +37,8 @@ import { asksHowThingsStand } from "./statusAsk";
 import { leadFor } from "./hubLeads";
 import { forUser, forYou } from "./userName";
 import { questionVeto, UNREADABLE_REASON } from "../../autopilot/model/reviewerRules";
+import { captainDecide, type CaptainRule, type NamedAnswer } from "../../chief/model/captain";
+import { isPersonOnlyDecisionKey } from "./decisionKey";
 
 /** One chat waiting on Ash, as stored. */
 export type WaitingEntry = ChatQuestion & {
@@ -110,7 +112,7 @@ export type GateRecord = {
    * r80: what Ash actually answered, once he has: his own words when he typed them (they win over the agent's `pick`,
    * which is only its recommendation), the pick when he took it. Read this, never `pick`, for what was decided.
    */
-  answer?: { words: string; by: "words" | "pick"; at: number };
+  answer?: { words: string; by: "words" | "pick"; at: number; who?: string };
 };
 
 let entries: Record<string, WaitingEntry> | undefined;
@@ -430,7 +432,7 @@ async function answer(
   chat: WaitingChat,
   live: { reply: UserQuestionReply; words: string } | undefined,
   message: string,
-  given: { words: string; by: "words" | "pick" },
+  given: { words: string; by: "words" | "pick"; who?: string },
 ): Promise<TakeResult> {
   const h = host;
   if (!h) return { ok: false, reason: "The app isn't ready to answer yet. Open the chat instead." };
@@ -446,6 +448,41 @@ async function answer(
   drop(chat.sessionId);
   recordAnswer(chat.sessionId, chat.question, { ...given, at: Date.now() });
   return { ok: true, sent: message, chatName: chat.chatName };
+}
+
+export type CaptainDoorContext = {
+  decisionKey?: string;
+  /** The Chief of Staff mono. A blank, a person, or a page is not used. */
+  monoId?: string;
+  rules?: readonly CaptainRule[];
+  standing?: NamedAnswer | null;
+  learned?: NamedAnswer | null;
+  moneyOverLimit?: boolean;
+  turns?: readonly number[];
+  pendingSince?: number;
+  now?: number;
+  /** Step 5 unless this is false. Money, the red list and an owner key are still checked first. */
+  confident?: boolean;
+};
+
+/** The app, or a test, supplies standing answers and owner keys. Absent means the pick stands. */
+let captainDoor: ((chat: WaitingChat) => CaptainDoorContext) | null = null;
+
+export function setCaptainDoor(next: typeof captainDoor): () => void {
+  captainDoor = next;
+  return () => {
+    if (captainDoor === next) captainDoor = null;
+  };
+}
+
+/** A captain is `captain:<mono id>`. A person, a page, or an empty id is not one. "pager" is a mono id, not a page. */
+function captainMonoId(raw: unknown): string {
+  if (typeof raw !== "string") return "chief";
+  const id = raw.trim();
+  const folded = id.toLowerCase();
+  const page = folded === "page" || folded.startsWith("page:") || folded.startsWith("page/");
+  if (!id || folded === "user" || folded === "person" || page || id.includes(":") || id.includes("/")) return "chief";
+  return id;
 }
 
 /**
@@ -470,6 +507,51 @@ export async function takePick(
   // it answers can be the action ("Send it to Priya?"), and so can any option the card points back to.
   if (notAsh && chatQuestionVeto(chat))
     return { ok: false, reason: forYou("That one sends, deletes, moves money, publishes or changes access, so it waits for Ash.") };
+  // WP-215: the captain answers inside this door, after the red checks above. Ash himself does not go through it.
+  if (options.by === "autopilot") {
+    const extra = captainDoor?.(chat) ?? {};
+    // The same person-only keys a Page is refused (PR #235). A standing answer does not override them.
+    if (typeof extra.decisionKey === "string" && isPersonOnlyDecisionKey(extra.decisionKey)) {
+      return { ok: false, reason: forYou("Only you can answer that one. Open Needs you to answer it.") };
+    }
+    const monoId = captainMonoId(extra.monoId);
+    const decided = captainDecide({
+      project: chat.projectId ?? "",
+      monoId,
+      decisionKey: extra.decisionKey,
+      question: chat.question,
+      options: chat.options,
+      recommendation: chat.pick,
+      confident: extra.confident !== false,
+      rules: extra.rules,
+      standing: extra.standing ?? null,
+      learned: extra.learned ?? null,
+      moneyOverLimit: extra.moneyOverLimit === true,
+      switchOn: true,
+      now: extra.now ?? Date.now(),
+      turns: extra.turns,
+      pendingSince: extra.pendingSince,
+    });
+    if (decided.kind === "ask-owner") {
+      return { ok: false, reason: forYou(decided.line ?? "This one waits for the owner.") };
+    }
+    if (decided.kind === "waiting") {
+      return { ok: false, reason: forYou("The captain has not answered yet. It passes up if it is still open in 10 minutes.") };
+    }
+    const who = decided.answeredBy === `captain:${monoId}` ? decided.answeredBy : `captain:${monoId}`;
+    if (decided.answer !== chat.pick) {
+      const prompt = host?.liveQuestion(sessionId);
+      const live = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, decided.answer) : undefined;
+      return answer(chat, live && { reply: live, words: decided.answer }, wordsMessage(chat, decided.answer), {
+        words: decided.answer,
+        by: "pick",
+        who,
+      });
+    }
+    const prompt = host?.liveQuestion(sessionId);
+    const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
+    return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat), { words: chat.pick, by: "pick", who });
+  }
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
   return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat), { words: chat.pick, by: "pick" });

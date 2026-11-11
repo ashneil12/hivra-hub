@@ -120,7 +120,7 @@ export class LeadTickScheduler {
     // A busy or blocked Lead is looked at again next minute; nothing is recorded, so it is still due.
     if (leadBlockedReason(context.look)) return;
     const result = await this.deps.run(
-      { folder, shipOnGreen: setting.shipOnGreen, noted: before?.noted ?? [], now },
+      { folder, projectId: context.projectId, shipOnGreen: setting.shipOnGreen, noted: before?.noted ?? [], now },
       this.deps.ports(folder, context),
     );
     // Recorded first: if the record fails nothing is told, and the backoff keeps the next look from running it again.

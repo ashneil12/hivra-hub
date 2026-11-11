@@ -2662,6 +2662,90 @@ fn review225_the_block_does_not_carry_a_closing_fence() {
     );
 }
 
+/// A secret card is not a standing answer. Retiring it would put that card on the reuse path: the next ask reopens
+/// it, clears the person's answer, and the row can be ticked again. Before the fix, retire wrote `retired_at` and the
+/// following ask reopened the card.
+#[test]
+fn retire_refuses_a_secret_card() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let key = "secret/stripe-api-key/curl";
+    let asked = ask(&mut conn, ask_input("fm", key, &[]), 2).unwrap();
+    assert!(asked.created);
+    let seen = asked.decision.version;
+    answer_seen(
+        &mut conn,
+        "hivra",
+        key,
+        "Once",
+        Some("person".into()),
+        Some(seen),
+        3,
+    )
+    .unwrap();
+    let before = get(&conn, "hivra", key).unwrap().unwrap();
+    assert!(!before.standing);
+    assert!(!before.reuse_stopped);
+    assert!(before.retired_at.is_none());
+    assert_eq!(before.state, ANSWERED);
+
+    let outcome = retire(&mut conn, "hivra", key, "No longer used", 4);
+    assert!(
+        outcome.is_err(),
+        "retire applied a secret card: {outcome:?}"
+    );
+    let err = outcome.unwrap_err();
+    assert!(
+        err.contains("cannot be retired"),
+        "refusal should say the card cannot be retired, got {err}"
+    );
+
+    let after = get(&conn, "hivra", key).unwrap().unwrap();
+    assert_eq!(after.version, before.version);
+    assert_eq!(after.state, ANSWERED);
+    assert_eq!(after.answer.as_deref(), Some("Once"));
+    assert!(after.retired_at.is_none());
+    assert!(after.retired_reason.is_none());
+    assert!(!after.standing);
+    assert!(!after.reuse_stopped);
+
+    // The same card under another spelling, including invisible characters, is refused and left as it was.
+    for spelling in [
+        "SECRET/stripe-api-key/curl",
+        "  secret/stripe-api-key/curl  ",
+        "sec\u{200b}ret/stripe-api-key/curl",
+        "\u{ff53}\u{ff45}\u{ff43}\u{ff52}\u{ff45}\u{ff54}/stripe-api-key/curl",
+    ] {
+        let spelled = retire(&mut conn, "hivra", spelling, "No longer used", 5);
+        assert!(spelled.is_err(), "{spelling:?} was retired: {spelled:?}");
+    }
+    // A secret key that has no row is still refused, not a quiet no-op.
+    let missing = retire(&mut conn, "hivra", "secret/no-such/card", "Gone", 6);
+    assert!(
+        missing.is_err(),
+        "a missing secret key was retired: {missing:?}"
+    );
+    // A name that only starts with the word is an ordinary key. Missing, so nothing changes.
+    let ordinary = retire(&mut conn, "hivra", "secrets-policy", "The name changed", 7).unwrap();
+    assert!(!ordinary.applied);
+    assert!(ordinary.decision.is_none());
+
+    let still = get(&conn, "hivra", key).unwrap().unwrap();
+    assert_eq!(still.version, before.version);
+    assert!(still.retired_at.is_none());
+    assert!(!still.standing);
+    assert!(!still.reuse_stopped);
+
+    // Asking again must not reopen the card or clear the answer.
+    let again = ask(&mut conn, ask_input("fm", key, &[]), 8).unwrap();
+    assert!(!again.created);
+    assert_eq!(again.decision.state, ANSWERED);
+    assert_eq!(again.decision.answer.as_deref(), Some("Once"));
+    assert!(again.decision.retired_at.is_none());
+    assert!(!again.decision.standing);
+    assert!(!again.decision.reuse_stopped);
+}
+
 /// The Inbox list (and the brief) stop at 20 rows, but matching reads every active row: an older answer Ash cannot
 /// see or retire from the Inbox still answers.
 #[test]
