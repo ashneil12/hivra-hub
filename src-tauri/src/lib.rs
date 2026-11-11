@@ -842,6 +842,7 @@ pub fn run() {
             fs::git_unstage_all,
             fs::git_commit,
             fs::git_locate_files,
+            fs::git_canonical_paths,
             fs::git_head_message,
             fs::git_staged_context,
             fs::git_push,
