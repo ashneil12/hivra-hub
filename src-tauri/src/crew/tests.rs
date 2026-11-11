@@ -2662,3 +2662,44 @@ fn any_lock_sees_a_lock_in_any_scope() {
     .unwrap();
     assert!(store::any_lock(&conn).unwrap());
 }
+
+/// Review repro (PR #194 round 5): the spawn gate re-judges the project a launch was gated for. A worker gated into a
+/// project whose Never use lists Codex, whose process then starts in its own checkout (a worktree), or in Antigravity's
+/// binary folder, or after a restart with no grant, must not get a ticket for Codex. Today the ticket reads the policy
+/// of the process's folder only, and a folder that is no project's means the system policy alone.
+#[test]
+fn review_the_spawn_gate_judges_the_gated_project_not_only_the_process_folder() {
+    use super::gate::{issue_ticket, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/review-r5-project",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let session = "app-review-r5-worktree-1";
+    record_grant(
+        session,
+        &LaunchCheck {
+            cli: "claude".into(),
+            mono: None,
+            project: Some("/tmp/review-r5-project".into()),
+            locked_default: None,
+        },
+    )
+    .unwrap();
+    // The same session's process, in its own checkout of that project, asks for a Codex ticket.
+    let ticket = issue_ticket(
+        &conn,
+        session,
+        "codex",
+        "/tmp/review-r5-worktrees/project-task-1",
+    );
+    assert!(
+        ticket.is_err(),
+        "a CLI on the gated project's Never use got a spawn ticket: {ticket:?}"
+    );
+}
