@@ -667,8 +667,57 @@ function failureGaps(checks: readonly StoredCheck[]): string[] {
   return gaps;
 }
 
-function stale(checks: readonly StoredCheck[], edits: readonly FactEdit[]): boolean {
-  const last = lastCodeAt(edits);
+type PackageEdit = { pkg: string; path: string; at: number };
+
+/** First-seen order. The time and path are that package's last edit that is not docs. */
+function packageEdits(edits: readonly FactEdit[]): PackageEdit[] {
+  const order: string[] = [];
+  const latest = new Map<string, PackageEdit>();
+  for (const edit of edits) {
+    if (isDocsPath(edit.path)) continue;
+    const pkg = packageOf(edit.path);
+    if (!pkg) continue;
+    const prev = latest.get(pkg);
+    if (!prev) order.push(pkg);
+    if (!prev || edit.at >= prev.at) latest.set(pkg, { pkg, path: edit.path, at: edit.at });
+  }
+  const out: PackageEdit[] = [];
+  for (const pkg of order) {
+    const row = latest.get(pkg);
+    if (row) out.push(row);
+  }
+  return out;
+}
+
+function finishedAfterEdit(check: StoredCheck, target: PackageEdit): boolean {
+  return (
+    (check.status === "passed" || check.status === "failed") &&
+    check.at > target.at &&
+    testReaches(check.command, target.pkg, target.path)
+  );
+}
+
+function packageIsStale(checks: readonly StoredCheck[], target: PackageEdit): boolean {
+  let passedBefore = false;
+  let finishedAfter = false;
+  for (const check of checks) {
+    if (!isTestCommand(check.command) || !testReaches(check.command, target.pkg, target.path)) continue;
+    if (check.status === "passed" && check.at <= target.at) passedBefore = true;
+    if ((check.status === "passed" || check.status === "failed") && check.at > target.at) finishedAfter = true;
+  }
+  return passedBefore && !finishedAfter;
+}
+
+/**
+ * A file with no package. A later test still clears it: nothing names which package that test was for.
+ * Docs do not count.
+ */
+function bareEditIsStale(checks: readonly StoredCheck[], edits: readonly FactEdit[]): boolean {
+  let last: number | undefined;
+  for (const edit of edits) {
+    if (isDocsPath(edit.path) || packageOf(edit.path)) continue;
+    if (last === undefined || edit.at > last) last = edit.at;
+  }
   if (last === undefined) return false;
   const tests = checks.filter((check) => isTestCommand(check.command));
   const passedBefore = tests.some((check) => check.status === "passed" && check.at <= last);
@@ -676,6 +725,14 @@ function stale(checks: readonly StoredCheck[], edits: readonly FactEdit[]): bool
     (check) => (check.status === "passed" || check.status === "failed") && check.at > last,
   );
   return passedBefore && !finishedAfter;
+}
+
+function stalePackages(checks: readonly StoredCheck[], edits: readonly FactEdit[]): Set<string> {
+  const stale = new Set<string>();
+  for (const target of packageEdits(edits)) {
+    if (packageIsStale(checks, target)) stale.add(target.pkg);
+  }
+  return stale;
 }
 
 /** A finished check after the last code edit. With no code edit, a pass anywhere stands. A running check never does. */
@@ -713,21 +770,13 @@ function openTodos(todos: readonly FactTodo[]): string[] {
   return open;
 }
 
-/** Edited packages no finished test reached. Docs-only edits are skipped. */
+/** Edited packages no test finished after that package's last edit. Docs-only edits are skipped. */
 export function coverageGaps(turn: FactTurn): string[] {
   const clean = sanitize(turn);
-  const seen = new Set<string>();
   const gaps: string[] = [];
-  for (const edit of clean.edits) {
-    if (isDocsPath(edit.path)) continue;
-    const pkg = packageOf(edit.path);
-    if (!pkg || seen.has(pkg)) continue;
-    seen.add(pkg);
-    const reached = clean.checks.some(
-      (check) =>
-        (check.status === "passed" || check.status === "failed") && testReaches(check.command, pkg, edit.path),
-    );
-    if (!reached) gaps.push(`No test reached ${pkg}.`);
+  for (const target of packageEdits(clean.edits)) {
+    const reached = clean.checks.some((check) => finishedAfterEdit(check, target));
+    if (!reached) gaps.push(`No test reached ${target.pkg}.`);
   }
   return gaps;
 }
@@ -737,7 +786,10 @@ export function doneGaps(turn: FactTurn): string[] {
   const clean = sanitize(turn);
   const gaps = [...failureGaps(clean.checks)];
   if (maskedPassStandsIn(clean.checks)) gaps.push(MASKED);
-  if (stale(clean.checks, clean.edits)) gaps.push("Tests went stale after the last edit.");
+  const stalePkgs = stalePackages(clean.checks, clean.edits);
+  if (stalePkgs.size > 0 || bareEditIsStale(clean.checks, clean.edits)) {
+    gaps.push("Tests went stale after the last edit.");
+  }
   const claim = claimOf(clean.answer);
   if (claim && !claimHasEvidence(clean.checks, clean.edits)) {
     if (claim.tests) gaps.push("The answer says the tests passed, but no check ran after the last edit.");
@@ -746,7 +798,12 @@ export function doneGaps(turn: FactTurn): string[] {
   const open = openTodos(clean.todos);
   if (open.length === 1) gaps.push(`There is still an open to-do: ${open[0]}.`);
   else if (open.length > 1) gaps.push(`There are still ${open.length} open to-dos.`);
-  gaps.push(...coverageGaps(turn));
+  // A package that already went stale does not also get "no test reached". The stale sentence is that fact.
+  for (const gap of coverageGaps(turn)) {
+    const pkg = /^No test reached (.+)\.$/.exec(gap)?.[1];
+    if (pkg && stalePkgs.has(pkg)) continue;
+    gaps.push(gap);
+  }
   return gaps;
 }
 

@@ -514,3 +514,145 @@ describe("a flood of checks in the webview", () => {
     expect(doneGaps(facts)).toContain("A check failed this turn (npm test).");
   });
 });
+
+describe("leftover: coverage and stale follow the package", () => {
+  it("leftover: a test before the package's last edit does not cover it", () => {
+    expect(
+      coverageGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 1 }],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["No test reached web."]);
+    expect(
+      coverageGaps(
+        turn({
+          checks: [{ command: "npm test", status: "failed", at: 1 }],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["No test reached web."]);
+    expect(
+      coverageGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 2 }],
+          edits: [
+            { path: "packages/web/src/app.ts", at: 1 },
+            { path: "packages/web/src/later.ts", at: 3 },
+          ],
+        }),
+      ),
+    ).toEqual(["No test reached web."]);
+    expect(
+      coverageGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 4 }],
+          edits: [
+            { path: "packages/web/src/app.ts", at: 1 },
+            { path: "packages/web/src/later.ts", at: 3 },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 1 }],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [{ command: "npm test", status: "failed", at: 1 }],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["A check failed this turn (npm test).", "No test reached web."]);
+  });
+
+  it("leftover: a later test of another package does not clear stale", () => {
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npm test", status: "passed", at: 1 },
+            { command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 3 },
+          ],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "cargo test -p web", status: "passed", at: 1 },
+            { command: "cargo test -p crew", status: "failed", at: 3 },
+          ],
+          edits: [{ path: "crates/web/src/lib.rs", at: 2 }],
+        }),
+      ),
+    ).toEqual([
+      "A check failed this turn (cargo test -p crew).",
+      "Tests went stale after the last edit.",
+    ]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npm test", status: "passed", at: 1 },
+            { command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 4 },
+          ],
+          edits: [
+            { path: "packages/web/src/app.ts", at: 2 },
+            { path: "src/features/crew/row.ts", at: 3 },
+          ],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npm test", status: "passed", at: 1 },
+            { command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 3 },
+          ],
+          edits: [{ path: "src/features/crew/row.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [{ command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 2 }],
+          edits: [
+            { path: "src/features/crew/row.ts", at: 1 },
+            { path: "docs/guide.md", at: 3 },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 1 }],
+          edits: [{ path: "row.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npm test", status: "passed", at: 1 },
+            { command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 3 },
+          ],
+          edits: [{ path: "row.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual([]);
+  });
+});
