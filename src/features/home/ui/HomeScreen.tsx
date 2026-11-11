@@ -41,20 +41,23 @@ const ROW_ACTIONS = 3;
 // Blue primary (bg-accent, black text). Not the white primary-action fill.
 const PRIMARY_BUTTON = "shrink-0 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black";
 
-function NeedActions({ actions }: { actions: readonly { label: string; run: () => void }[] }) {
+function NeedActions({ actions }: { actions: readonly { label: string; run: () => void; title?: string }[] }) {
   return actions.slice(0, ROW_ACTIONS).map((action, index) => {
     const run = (event: { stopPropagation: () => void }) => {
       event.stopPropagation();
       action.run();
     };
-    // A stopped row, a red-line step and a page ask stay bordered. A safe approval keeps the blue button.
-    const bordered = action.label === "Open chat" || action.label === "Allow once" || action.label === "Review";
+    // A stopped row, a way out and a page ask stay bordered. A safe approval keeps the blue button.
+    const bordered = action.label === "Open chat" || action.label === "Open" || action.label === "Allow once" || action.label === "Review";
+    const name = action.title || action.label;
     if (index === 0 && !bordered) {
       return (
         <button
-          key={action.label}
+          key={`${index}:${action.label}`}
           type="button"
           data-needs-answer=""
+          title={name}
+          aria-label={name}
           className={PRIMARY_BUTTON}
           onClick={run}
         >
@@ -63,21 +66,88 @@ function NeedActions({ actions }: { actions: readonly { label: string; run: () =
       );
     }
     return (
-      <SecondaryButton key={action.label} {...(index === 0 ? { "data-needs-answer": "" } : {})} onClick={run}>
+      <SecondaryButton key={`${index}:${action.label}`} title={name} aria-label={name} {...(index === 0 ? { "data-needs-answer": "" } : {})} onClick={run}>
         {action.label}
       </SecondaryButton>
     );
   });
 }
 
+function kindChip(kind: string | undefined): { label: string; className: string } | undefined {
+  switch (kind) {
+    case "stopped":
+      return { label: "Stopped", className: "bg-red-400/15 text-red-400" };
+    case "merge":
+      return { label: "Ready to merge", className: "bg-emerald-400/15 text-emerald-300" };
+    case "question":
+      return { label: "Question", className: "bg-purple-400/15 text-purple-300" };
+    case "approval":
+      return { label: "Approval", className: "bg-amber-400/15 text-amber-200" };
+    case "review":
+      return { label: "Review", className: "bg-amber-400/15 text-amber-200" };
+    case "check":
+      return { label: "Check", className: "bg-content/10 text-content/70" };
+    default:
+      return undefined;
+  }
+}
+
+function ago(at: number, now = Date.now()): string | undefined {
+  if (!Number.isFinite(at) || at < 1_000_000_000_000) return undefined;
+  const mins = Math.max(0, Math.round((now - at) / 60_000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  if (hours < 48) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  if (days < 60) return `${days} d ago`;
+  return `${Math.round(days / 30)} mo ago`;
+}
+
+function sourceLine(who: string | undefined, at: number): string | undefined {
+  const name = who?.replace(/\s+/g, " ").trim();
+  const when = ago(at);
+  if (name && when) return `${name}, ${when}`;
+  return name || when;
+}
+
+function NeedText({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) => void }) {
+  const chip = line.projectName?.trim();
+  const source = line.needsKind ? sourceLine(line.who, line.at) : undefined;
+  const body = line.kind === "stopped" ? (
+    <span className="block truncate">
+      <span data-needs-stopped className="font-medium text-red-400">Stopped.</span>
+      {line.text ? ` ${line.text}` : null}
+    </span>
+  ) : (
+    <button
+      type="button"
+      aria-label={chip ? `${chip} · ${line.text}` : undefined}
+      className="block w-full truncate text-left"
+      onClick={() => onOpen(line)}
+    >
+      {line.text}
+    </button>
+  );
+  return (
+    <span className="min-w-0 flex-1">
+      {body}
+      {source ? <span data-needs-source className="block truncate text-[11px] text-content/45">{source}</span> : null}
+    </span>
+  );
+}
+
 function NeedRow({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) => void }) {
   const actions = line.actions ?? [];
   const chip = line.projectName?.trim();
+  const kind = kindChip(line.needsKind);
   if (actions.length === 0 && line.kind !== "stopped") {
+    const named = chip && !line.text.startsWith(`${chip} · `) ? `${chip} · ${line.text}` : undefined;
     return (
       <button
         type="button"
         data-home-line={line.kind}
+        aria-label={named}
         className="flex min-h-10 w-full items-center border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
         onClick={() => onOpen(line)}
       >
@@ -96,21 +166,12 @@ function NeedRow({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) =>
           {chip}
         </span>
       ) : null}
-      {line.kind === "stopped" ? (
-        <span className="min-w-0 flex-1">
-          <span data-needs-stopped className="font-medium text-red-400">Stopped.</span>
-          {line.text ? ` ${line.text}` : null}
+      {kind ? (
+        <span data-needs-kind={line.needsKind} className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium ${kind.className}`}>
+          {kind.label}
         </span>
-      ) : (
-        <button
-          type="button"
-          aria-label={chip ? `${chip} · ${line.text}` : undefined}
-          className="min-w-0 flex-1 truncate text-left"
-          onClick={() => onOpen(line)}
-        >
-          {line.text}
-        </button>
-      )}
+      ) : null}
+      <NeedText line={line} onOpen={onOpen} />
       <NeedActions actions={actions} />
     </div>
   );

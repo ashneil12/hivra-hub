@@ -37,7 +37,7 @@ export type HomeChat = {
   openedAt: number;
 };
 
-export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "builders" | "project" | "stopped";
+export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "page" | "builders" | "project" | "stopped";
 
 export type HomeLine = {
   id: string;
@@ -46,10 +46,14 @@ export type HomeLine = {
   projectId: string;
   /** Person-facing project name for a Needs you chip. Absent on other lines. */
   projectName?: string;
+  /** Who asked, for the quiet line under a Needs you row. */
+  who?: string;
+  /** The Needs you kind, for its chip. The row's own kind still decides where a click goes. */
+  needsKind?: string;
   target: string;
   at: number;
   /** At most two, primary first. A line with any is not itself a button. */
-  actions?: readonly { label: string; run: () => void }[];
+  actions?: readonly { label: string; run: () => void; title?: string }[];
 };
 
 export type HomeProject = { id: string; name: string; folder: string | null };

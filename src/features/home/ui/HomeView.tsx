@@ -42,17 +42,44 @@ import {
 const TASKS_CHANGED = "tasks://changed";
 
 function lineFromNeed(item: NeedsItem, projectName: (id: string) => string): HomeLine {
-  // A decision opens the inbox on its key. A plain question still opens its task.
   const decision = item.decisionKey?.trim();
-  const kind = item.kind === "stopped" ? "stopped" : item.kind === "review" ? "review" : decision ? "decision" : item.kind === "question" ? "question" : "decision";
+  const gate = item.gateKey?.trim();
+  const open = item.open;
   const projectId = item.projectId ?? "";
+  let kind: HomeLine["kind"] = "decision";
+  let target = decision || open?.id || item.key;
+  if (item.kind === "stopped") {
+    kind = "stopped";
+    target = open?.id || item.key;
+  } else if (open?.where === "chat") {
+    kind = "chat";
+    target = open.id;
+  } else if (open?.where === "page") {
+    kind = "page";
+    target = open.id;
+  } else if (item.kind === "check" && gate) {
+    kind = "decision";
+    target = gate;
+  } else if (decision) {
+    kind = "decision";
+    target = decision;
+  } else if (open?.where === "task") {
+    kind = "question";
+    target = open.id;
+  } else if (item.kind === "review") {
+    kind = "review";
+  } else if (item.kind === "question") {
+    kind = "question";
+  }
   return {
     id: item.key,
     kind,
     text: item.sentence,
     projectId,
+    who: item.who,
+    needsKind: item.kind,
     ...(projectId ? { projectName: projectName(projectId) } : {}),
-    target: decision || item.open?.id || item.key,
+    target,
     at: item.at,
     actions: item.actions.slice(0, 3),
   };
