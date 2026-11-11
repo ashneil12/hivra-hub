@@ -17,6 +17,9 @@ use crate::passwd_identity;
 
 // WP-134b: the More agents start. A child module so it shares this host's private pieces without widening them.
 
+/// The longest stdout line a harness child may send. A line past it stops the read (a child that never ends a line
+/// cannot grow the app's memory without bound).
+const MAX_STDOUT_LINE: usize = 8 * 1024 * 1024;
 const STDOUT_EVENT: &str = "harness-stdout";
 const STDERR_EVENT: &str = "harness-stderr";
 const EXIT_EVENT: &str = "harness-exit";
@@ -1212,8 +1215,23 @@ pub fn harness_spawn(
     let stdout_store = codex_store;
     let stdout_run = run.clone();
     thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            let Ok(line) = line else { break };
+        let mut reader = BufReader::new(stdout);
+        let mut raw = Vec::new();
+        loop {
+            raw.clear();
+            let read = (&mut reader)
+                .take((MAX_STDOUT_LINE + 1) as u64)
+                .read_until(b'\n', &mut raw);
+            if !matches!(read, Ok(n) if n > 0) {
+                break;
+            }
+            // A line past the cap is not read to its end: the reader stops here, and the child's pipe closes with it.
+            if raw.len() > MAX_STDOUT_LINE {
+                break;
+            }
+            let line = String::from_utf8_lossy(&raw)
+                .trim_end_matches(['\n', '\r'])
+                .to_string();
             if crate::harness_runs::ends_turn(&line) {
                 stdout_run
                     .lock()

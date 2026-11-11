@@ -123,6 +123,99 @@ pub(crate) struct Approval {
     pub fingerprint: String,
     pub path: String,
     pub sha256: String,
+    /// HMAC-SHA256 over the id, fingerprint, path and SHA-256, keyed with the install's approval key (Keychain). A
+    /// record that is edited by hand, or written without the key, does not verify and is dropped on read.
+    pub mac: String,
+}
+
+/// Keychain item for the approval key. Dev copies use `monocode-hub-dev:` through `hub_keychain`, like every app secret.
+#[cfg_attr(test, allow(dead_code))]
+const KEY_SERVICE: &str = "monocode-hub:more-agents-approval-key";
+#[cfg_attr(test, allow(dead_code))]
+const KEY_ACCOUNT: &str = "approvals";
+const NO_KEY: &str =
+    "The approval key is not available, so More agents approvals cannot be checked.";
+
+#[cfg(test)]
+thread_local! {
+    /// Tests use this fake key store on their own thread. A test never reaches the Keychain.
+    pub(crate) static TEST_KEY: std::cell::RefCell<Option<Vec<u8>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// The approval key. `create` makes one on first use (a write); a read never creates one.
+#[cfg(test)]
+fn approval_key(create: bool) -> Result<Vec<u8>, String> {
+    TEST_KEY.with(|key| {
+        let mut key = key.borrow_mut();
+        if key.is_none() && create {
+            *key = Some(new_key());
+        }
+        key.clone().ok_or_else(|| NO_KEY.to_string())
+    })
+}
+
+#[cfg(not(test))]
+fn approval_key(create: bool) -> Result<Vec<u8>, String> {
+    match crate::hub_keychain::read(KEY_SERVICE, KEY_ACCOUNT)? {
+        Some(text) => unhex(&text).ok_or_else(|| NO_KEY.to_string()),
+        None if create => {
+            let key = new_key();
+            crate::hub_keychain::store(KEY_SERVICE, KEY_ACCOUNT, &hex(&key))?;
+            Ok(key)
+        }
+        None => Err(NO_KEY.to_string()),
+    }
+}
+
+fn new_key() -> Vec<u8> {
+    [
+        uuid::Uuid::new_v4().as_bytes().as_slice(),
+        uuid::Uuid::new_v4().as_bytes().as_slice(),
+    ]
+    .concat()
+}
+
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg_attr(test, allow(dead_code))]
+fn unhex(text: &str) -> Option<Vec<u8>> {
+    if !text.len().is_multiple_of(2) {
+        return None;
+    }
+    (0..text.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok())
+        .collect()
+}
+
+/// HMAC-SHA256 of length-prefixed parts, hex. Written out over `sha2` so the crate set does not grow.
+fn mac(key: &[u8], parts: &[&str]) -> String {
+    use sha2::{Digest, Sha256};
+    let mut block = [0u8; 64];
+    if key.len() > 64 {
+        block[..32].copy_from_slice(&Sha256::digest(key));
+    } else {
+        block[..key.len()].copy_from_slice(key);
+    }
+    let ipad: Vec<u8> = block.iter().map(|b| b ^ 0x36).collect();
+    let opad: Vec<u8> = block.iter().map(|b| b ^ 0x5c).collect();
+    let mut inner = Sha256::new();
+    inner.update(&ipad);
+    for part in parts {
+        inner.update(format!("{}:", part.len()).as_bytes());
+        inner.update(part.as_bytes());
+    }
+    let mut outer = Sha256::new();
+    outer.update(&opad);
+    outer.update(inner.finalize());
+    hex(&outer.finalize())
+}
+
+/// The MAC an approval must carry to be honoured.
+fn approval_mac(key: &[u8], id: &str, fingerprint: &str, path: &str, sha256: &str) -> String {
+    mac(key, &[id, fingerprint, path, sha256])
 }
 
 /// What is on disk. `approvals` maps an id to what the person allowed for it.
@@ -174,7 +267,7 @@ pub(crate) fn read_stored(data_dir: &Path) -> Result<Stored, String> {
         .clone();
     // Approvals are read as untrusted: anything that is not a complete approval record is dropped, so an approval
     // written in the old format simply asks again.
-    let approvals = object
+    let mut approvals: BTreeMap<String, Approval> = object
         .get("approvals")
         .and_then(Value::as_object)
         .map(|map| {
@@ -188,12 +281,22 @@ pub(crate) fn read_stored(data_dir: &Path) -> Result<Stored, String> {
                             fingerprint: text("fingerprint")?,
                             path: text("path")?,
                             sha256: text("sha256")?,
+                            mac: text("mac")?,
                         },
                     ))
                 })
                 .collect()
         })
         .unwrap_or_default();
+    // An approval counts only if its MAC verifies under the install's key. With no key (or a missing one), none does.
+    if !approvals.is_empty() {
+        let key = approval_key(false).ok();
+        approvals.retain(|id, a| {
+            key.as_deref().is_some_and(|key| {
+                approval_mac(key, id, &a.fingerprint, &a.path, &a.sha256) == a.mac
+            })
+        });
+    }
     Ok(Stored {
         revision,
         agents,
@@ -210,7 +313,7 @@ fn save(data_dir: &Path, stored: &Stored) -> Result<(), String> {
         .map(|(id, a)| {
             (
                 id.clone(),
-                json!({ "fingerprint": a.fingerprint, "path": a.path, "sha256": a.sha256 }),
+                json!({ "fingerprint": a.fingerprint, "path": a.path, "sha256": a.sha256, "mac": a.mac }),
             )
         })
         .collect();
@@ -384,12 +487,15 @@ pub(crate) fn set_approval(
         }
         let path = resolve_command(&command, path_value)?;
         let sha256 = file_sha256(Path::new(&path))?;
+        let key = approval_key(true)?;
+        let mac = approval_mac(&key, &checked_id, &fp, &path, &sha256);
         stored.approvals.insert(
             checked_id,
             Approval {
                 fingerprint: fp,
                 path,
                 sha256,
+                mac,
             },
         );
     } else {
@@ -657,6 +763,8 @@ mod tests {
     }
 
     fn dir() -> Scratch {
+        // A fake key for this test thread: no test reads or writes the real Keychain.
+        TEST_KEY.with(|key| *key.borrow_mut() = Some(vec![7u8; 32]));
         let path = std::env::temp_dir().join(format!("wp134-more-agents-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("scratch dir");
         Scratch(path)
@@ -807,16 +915,11 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_relative_or_empty_path_folder_is_never_searched() {
-        let d = dir();
-        make_tool(&d.path().join("here"), "wp134-c", b"#!/bin/sh\n");
-        // The working folder is not an absolute PATH folder, so a file in it is not found.
-        let path_value = format!(
-            ":.:relative-dir:{}",
-            d.path().join("here-missing").display()
-        );
-        write_agents(d.path(), 0, vec![entry("wp134", "wp134-c", &[])]).expect("seed");
-        assert!(resolve_command("wp134-c", &path_value).is_err());
-        assert!(resolve_command("wp134-c", "./here").is_err());
+        // Cargo runs tests in the package folder, which holds Cargo.toml: a relative or empty PATH folder must not find it.
+        assert!(std::path::Path::new("Cargo.toml").is_file());
+        assert!(resolve_command("Cargo.toml", ".").is_err());
+        assert!(resolve_command("Cargo.toml", "").is_err());
+        assert!(resolve_command("Cargo.toml", "relative-dir:.").is_err());
     }
 
     #[test]
@@ -1019,5 +1122,108 @@ mod tests {
         let canonical = std::fs::canonicalize(&tool).expect("canonical");
         assert_eq!(run.command, canonical.to_string_lossy());
         assert_eq!(run.args, vec!["acp".to_string(), "--flag".to_string()]);
+    }
+
+    fn write_doc(dir: &Path, doc: &Value) {
+        std::fs::write(
+            file_path(dir),
+            serde_json::to_vec_pretty(doc).expect("json"),
+        )
+        .expect("write");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_hand_edited_approval_is_refused() {
+        let d = dir();
+        let tool = make_tool(&d.path().join("bin"), "wp134-k", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-k", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        // Point the record at another file, keeping the old MAC: it no longer verifies.
+        let mut doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(file_path(d.path())).unwrap()).unwrap();
+        doc["approvals"]["wp134"]["path"] = json!("/tmp/evil-agent");
+        write_doc(d.path(), &doc);
+        assert!(read_stored(d.path()).expect("read").approvals.is_empty());
+        assert_eq!(
+            approved_spawn(d.path(), "wp134", &path_value).expect_err("refused"),
+            NOT_APPROVED
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_approval_written_without_a_mac_is_dropped() {
+        let d = dir();
+        let tool = make_tool(&d.path().join("bin"), "wp134-m", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-m", &[])]).expect("seed");
+        let sha = file_sha256(&tool).expect("sha");
+        let fp = fingerprint(&tool.to_string_lossy(), &[]);
+        write_doc(
+            d.path(),
+            &json!({
+                "revision": 1,
+                "agents": [entry("wp134", "wp134-m", &[])],
+                "approvals": { "wp134": { "fingerprint": fp, "path": tool.to_string_lossy(), "sha256": sha } },
+            }),
+        );
+        assert!(read_stored(d.path()).expect("read").approvals.is_empty());
+        assert!(approved_spawn(d.path(), "wp134", &path_value).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn without_the_install_key_no_approval_counts() {
+        let d = dir();
+        let tool = make_tool(&d.path().join("bin"), "wp134-n", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-n", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        TEST_KEY.with(|key| *key.borrow_mut() = None);
+        assert!(read_stored(d.path()).expect("read").approvals.is_empty());
+        assert!(approved_spawn(d.path(), "wp134", &path_value).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_approval_cannot_be_moved_to_another_entry() {
+        let d = dir();
+        let tool = make_tool(&d.path().join("bin"), "wp134-o", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![
+                entry("wp134", "wp134-o", &[]),
+                entry("other", "wp134-o", &[]),
+            ],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let mut doc: Value =
+            serde_json::from_str(&std::fs::read_to_string(file_path(d.path())).unwrap()).unwrap();
+        let record = doc["approvals"]["wp134"].clone();
+        doc["approvals"]["other"] = record;
+        write_doc(d.path(), &doc);
+        assert!(!read_stored(d.path())
+            .expect("read")
+            .approvals
+            .contains_key("other"));
+        assert!(approved_spawn(d.path(), "other", &path_value).is_err());
+    }
+
+    #[test]
+    fn the_mac_depends_on_the_key_and_every_part() {
+        let base = approval_mac(b"key-one", "id", "fp", "/opt/a", "sha");
+        assert_eq!(base, approval_mac(b"key-one", "id", "fp", "/opt/a", "sha"));
+        assert_ne!(base, approval_mac(b"key-two", "id", "fp", "/opt/a", "sha"));
+        assert_ne!(
+            base,
+            approval_mac(b"key-one", "other", "fp", "/opt/a", "sha")
+        );
+        assert_ne!(base, approval_mac(b"key-one", "id", "fp", "/opt/b", "sha"));
+        assert_ne!(base, approval_mac(b"key-one", "id", "fp", "/opt/a", "sha2"));
     }
 }
