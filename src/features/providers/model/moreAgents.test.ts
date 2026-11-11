@@ -154,7 +154,7 @@ describe("More agents approvals", () => {
   it("asks the app to record or withdraw one entry's approval, and reads the list back", async () => {
     invoke.mockResolvedValueOnce({ revision: 2, agents: [good], approved: ["copilot"] });
     const list = await approveMoreAgent("copilot", true);
-    expect(invoke).toHaveBeenLastCalledWith("more_agents_approve", { id: "copilot", allowed: true });
+    expect(invoke).toHaveBeenLastCalledWith("more_agents_approve", { id: "copilot", allowed: true, shown: null });
     expect(list.approved).toEqual(["copilot"]);
   });
 });

@@ -35,7 +35,15 @@ export type MoreAgentRow =
   | { usable: false; id?: string; name?: string; reason: string; raw: unknown };
 
 /** `approved` is the ids whose current command the person has allowed to run (the app decides; this is for display). */
-export type MoreAgentsList = { revision: number; rows: MoreAgentRow[]; approved: string[] };
+export type MoreAgentsList = {
+  revision: number;
+  rows: MoreAgentRow[];
+  approved: string[];
+  /** The fingerprint the app shows for each entry; an allow sends it back so the app refuses a changed entry. */
+  fingerprints: Record<string, string>;
+  /** The absolute file each entry resolves to right now, or null when it is not found. */
+  resolved: Record<string, string | null>;
+};
 
 /** The words a person sees for each gap in the subset (WP-134's table). No dashes. */
 export const MORE_AGENT_COPY = {
@@ -207,13 +215,29 @@ export function suggestMoreAgentId(name: string): string {
     .slice(0, 48);
 }
 
-type StoredDocument = { revision: number; agents: unknown[]; approved?: unknown };
+type StoredDocument = {
+  revision: number;
+  agents: unknown[];
+  approved?: unknown;
+  fingerprints?: unknown;
+  resolved?: unknown;
+};
 
 function listFrom(doc: StoredDocument): MoreAgentsList {
   const approved = Array.isArray(doc.approved)
     ? doc.approved.filter((id): id is string => typeof id === "string")
     : [];
-  return { revision: doc.revision, rows: parseMoreAgentRows(doc.agents), approved };
+  const fingerprints: Record<string, string> = {};
+  if (doc.fingerprints && typeof doc.fingerprints === "object") {
+    for (const [id, fp] of Object.entries(doc.fingerprints)) if (typeof fp === "string") fingerprints[id] = fp;
+  }
+  const resolved: Record<string, string | null> = {};
+  if (doc.resolved && typeof doc.resolved === "object") {
+    for (const [id, path] of Object.entries(doc.resolved)) {
+      resolved[id] = typeof path === "string" ? path : null;
+    }
+  }
+  return { revision: doc.revision, rows: parseMoreAgentRows(doc.agents), approved, fingerprints, resolved };
 }
 
 export class MoreAgentsChangedError extends Error {
@@ -270,9 +294,12 @@ export function removeMoreAgent(list: MoreAgentsList, index: number): Promise<Mo
   );
 }
 
-/** The person's own tap: allow this entry's current command to run, or withdraw that allowance. */
-export async function approveMoreAgent(id: string, allowed: boolean): Promise<MoreAgentsList> {
-  const doc = await invoke<StoredDocument>("more_agents_approve", { id, allowed });
+/**
+ * The person's own tap: allow this entry to run as it is shown, or withdraw that allowance. `shown` is the
+ * fingerprint the window displayed; the app refuses an allow for any other command, arguments or file.
+ */
+export async function approveMoreAgent(id: string, allowed: boolean, shown?: string): Promise<MoreAgentsList> {
+  const doc = await invoke<StoredDocument>("more_agents_approve", { id, allowed, shown: shown ?? null });
   notify();
   return listFrom(doc);
 }

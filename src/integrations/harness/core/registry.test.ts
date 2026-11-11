@@ -388,6 +388,61 @@ describe("harness registry", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(stopSession).toHaveBeenCalledWith("s1");
   });
+  describe("idle park with background work", () => {
+    const turn = (sessionId: string) =>
+      sendHarnessTurn({
+        harness: "claude",
+        sessionId,
+        cwd: "/tmp",
+        model: "claude-sonnet",
+        text: "hi",
+        runtimeMode: "supervised",
+        onEvent: () => undefined,
+      });
+
+    it("does not park a chat whose CLI still runs a backgrounded shell or subagent", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      let busy = true;
+      registerHarness(
+        stub("claude", {
+          stopSession,
+          hasBackgroundWork: () => busy,
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+
+      await turn("s1");
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + 5 * 60_000);
+      expect(stopSession).not.toHaveBeenCalled();
+
+      // Once the work ends, the chat is parked after a full idle time, not at once.
+      busy = false;
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(stopSession).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + 60_000);
+      expect(stopSession).toHaveBeenCalledWith("s1");
+    });
+
+    it("skips a busy chat when the warm limit parks the longest-idle child", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      registerHarness(
+        stub("claude", {
+          stopSession,
+          hasBackgroundWork: (sessionId) => sessionId === "busy",
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => 1, keep: () => false });
+
+      await turn("busy");
+      await turn("quiet");
+      await turn("other");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(stopSession.mock.calls).toEqual([["quiet"], ["other"]]);
+    });
+  });
+
   describe("idle limit", () => {
     const turn = (sessionId: string) =>
       sendHarnessTurn({
@@ -602,6 +657,37 @@ describe("More agents session route", () => {
       expect(canSteerHarnessSession("cursor", "chat-routed")).toBe(false);
     } finally {
       routeHarnessSession("chat-routed", null);
+    }
+  });
+
+  it("does not idle-park a routed chat whose route still runs background work", async () => {
+    vi.useFakeTimers();
+    const cursorStop = vi.fn(async () => undefined);
+    registerHarness(stub("cursor", { stopSession: cursorStop }));
+    const routedStop = vi.fn(async () => undefined);
+    routeHarnessSession("chat-routed-bg", {
+      ...stub("cursor"),
+      id: "more-agents",
+      canSteer: false,
+      hasBackgroundWork: () => true,
+      stopSession: routedStop,
+    });
+    configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+    try {
+      await sendHarnessTurn({
+        sessionId: "chat-routed-bg",
+        cwd: "/tmp",
+        model: "",
+        runtimeMode: "default",
+        text: "hello",
+        onEvent: () => undefined,
+        harness: "cursor" as HarnessId,
+      } as unknown as SendTurnInput & { harness: HarnessId });
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + 5 * 60_000);
+      expect(routedStop).not.toHaveBeenCalled();
+      expect(cursorStop).not.toHaveBeenCalled();
+    } finally {
+      routeHarnessSession("chat-routed-bg", null);
     }
   });
 });

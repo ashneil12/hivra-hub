@@ -1,4 +1,4 @@
-# WP-134: ACP registry and long-tail providers: design only
+# WP-134: ACP registry and long-tail providers (More agents)
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |

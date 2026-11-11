@@ -52,7 +52,7 @@ pub(crate) const FIRST_CLASS_COMMANDS: [&str; 13] = [
 
 /// Environment names a More agents child may inherit. Everything else the app has (keys, tokens, the control
 /// endpoint) is removed before the spawn.
-const ALLOWED_ENV: [&str; 10] = [
+const ALLOWED_ENV: [&str; 16] = [
     "HOME",
     "USER",
     "LOGNAME",
@@ -61,9 +61,50 @@ const ALLOWED_ENV: [&str; 10] = [
     "LC_ALL",
     "LC_CTYPE",
     "TMPDIR",
+    "TEMP",
+    "TMP",
     "USERPROFILE",
     "SYSTEMROOT",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "PATHEXT",
+    "COMSPEC",
 ];
+
+/// Shells and their inline-program flags. A More agent is one program, never a shell that runs a string.
+const SHELLS: [&str; 12] = [
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "csh",
+    "tcsh",
+    "cmd",
+    "powershell",
+    "pwsh",
+    "env",
+];
+const INLINE_FLAGS: [&str; 9] = [
+    "-c",
+    "-e",
+    "--eval",
+    "-p",
+    "--print",
+    "/c",
+    "/k",
+    "-command",
+    "-encodedcommand",
+];
+pub(crate) const SHELL_REFUSED: &str =
+    "A shell cannot be a More agent. Point at the agent program itself.";
+pub(crate) const INLINE_REFUSED: &str =
+    "An agent cannot be started with an inline program (-c, -e, --eval or -p). Point at its program file.";
+pub(crate) const SHOWN_CHANGED: &str =
+    "This agent changed since you looked at it. Review it again before you allow it.";
+pub(crate) const ON_DISK_CHANGED: &str =
+    "This agent's program changed on disk since you allowed it. Allow it again in More agents.";
 
 pub(crate) const CHANGED: &str =
     "The list changed in another window (revision). Reload it and try again.";
@@ -75,12 +116,21 @@ pub(crate) const CORRUPT: &str = "The saved More agents list cannot be read. It 
 /// Serialises every read-modify-write of the file, so an approval and a list write cannot overwrite each other.
 static LOCK: Mutex<()> = Mutex::new(());
 
-/// What is on disk. `approvals` maps an id to the fingerprint of the command the person approved.
+/// What the person allowed for one entry: the fingerprint of its command and arguments, the file that resolved to at
+/// the time, and that file's SHA-256. A later spawn must match all three.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Approval {
+    pub fingerprint: String,
+    pub path: String,
+    pub sha256: String,
+}
+
+/// What is on disk. `approvals` maps an id to what the person allowed for it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Stored {
     pub revision: u64,
     pub agents: Vec<Value>,
-    pub approvals: BTreeMap<String, String>,
+    pub approvals: BTreeMap<String, Approval>,
 }
 
 /// A saved entry, checked, ready to start. `command` is the resolved executable.
@@ -122,13 +172,25 @@ pub(crate) fn read_stored(data_dir: &Path) -> Result<Stored, String> {
         .and_then(Value::as_array)
         .ok_or_else(|| CORRUPT.to_string())?
         .clone();
-    // Approvals are read as untrusted: anything that is not a plain id and fingerprint is dropped.
+    // Approvals are read as untrusted: anything that is not a complete approval record is dropped, so an approval
+    // written in the old format simply asks again.
     let approvals = object
         .get("approvals")
         .and_then(Value::as_object)
         .map(|map| {
             map.iter()
-                .filter_map(|(id, fp)| Some((id.clone(), fp.as_str()?.to_string())))
+                .filter_map(|(id, record)| {
+                    let record = record.as_object()?;
+                    let text = |key: &str| Some(record.get(key)?.as_str()?.to_string());
+                    Some((
+                        id.clone(),
+                        Approval {
+                            fingerprint: text("fingerprint")?,
+                            path: text("path")?,
+                            sha256: text("sha256")?,
+                        },
+                    ))
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -142,10 +204,20 @@ pub(crate) fn read_stored(data_dir: &Path) -> Result<Stored, String> {
 fn save(data_dir: &Path, stored: &Stored) -> Result<(), String> {
     std::fs::create_dir_all(data_dir)
         .map_err(|e| format!("Could not create the data folder: {e}"))?;
+    let approvals: serde_json::Map<String, Value> = stored
+        .approvals
+        .iter()
+        .map(|(id, a)| {
+            (
+                id.clone(),
+                json!({ "fingerprint": a.fingerprint, "path": a.path, "sha256": a.sha256 }),
+            )
+        })
+        .collect();
     let document = json!({
         "revision": stored.revision,
         "agents": stored.agents,
-        "approvals": stored.approvals,
+        "approvals": approvals,
     });
     let text = serde_json::to_string_pretty(&document).map_err(|e| e.to_string())?;
     let path = file_path(data_dir);
@@ -194,6 +266,9 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
             "This is one of Hivra's own agent CLIs. Set it up under Agent CLIs instead.".into(),
         );
     }
+    if SHELLS.contains(&command_basename(command).as_str()) {
+        return Err(SHELL_REFUSED.into());
+    }
     let args = match record.get("args") {
         None | Some(Value::Null) => Vec::new(),
         Some(Value::Array(items)) => items
@@ -212,6 +287,12 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
             .any(|arg| arg.len() > MAX_FIELD || arg.contains('\0'))
     {
         return Err("There are too many arguments, or one is too long.".into());
+    }
+    if args
+        .iter()
+        .any(|arg| INLINE_FLAGS.contains(&arg.to_ascii_lowercase().as_str()))
+    {
+        return Err(INLINE_REFUSED.into());
     }
     Ok((id.to_string(), command.to_string(), args))
 }
@@ -262,8 +343,10 @@ pub(crate) fn write_agents(
     for agent in &agents {
         if let Ok((id, command, args)) = checked_fields(agent) {
             let fp = fingerprint(&command, &args);
-            if current.approvals.get(&id) == Some(&fp) {
-                approvals.insert(id, fp);
+            if let Some(approval) = current.approvals.get(&id) {
+                if approval.fingerprint == fp {
+                    approvals.insert(id, approval.clone());
+                }
             }
         }
     }
@@ -276,8 +359,15 @@ pub(crate) fn write_agents(
     Ok(next)
 }
 
-/// Record or withdraw the person's approval for one entry, for the command it has now.
-pub(crate) fn set_approval(data_dir: &Path, id: &str, allowed: bool) -> Result<Stored, String> {
+/// Record or withdraw the person's approval for one entry. `shown` is the fingerprint the window displayed: an allow
+/// is refused unless it is the entry as it is now, so a change made in another window is never approved unseen.
+pub(crate) fn set_approval(
+    data_dir: &Path,
+    id: &str,
+    allowed: bool,
+    shown: Option<&str>,
+    path_value: &str,
+) -> Result<Stored, String> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut stored = read_stored(data_dir)?;
     let entry = stored
@@ -288,9 +378,20 @@ pub(crate) fn set_approval(data_dir: &Path, id: &str, allowed: bool) -> Result<S
         .ok_or("This agent is not in your list.")?;
     if allowed {
         let (checked_id, command, args) = checked_fields(&entry)?;
-        stored
-            .approvals
-            .insert(checked_id, fingerprint(&command, &args));
+        let fp = fingerprint(&command, &args);
+        if shown != Some(fp.as_str()) {
+            return Err(SHOWN_CHANGED.into());
+        }
+        let path = resolve_command(&command, path_value)?;
+        let sha256 = file_sha256(Path::new(&path))?;
+        stored.approvals.insert(
+            checked_id,
+            Approval {
+                fingerprint: fp,
+                path,
+                sha256,
+            },
+        );
     } else {
         stored.approvals.remove(id);
     }
@@ -312,10 +413,15 @@ pub(crate) fn approved_spawn(
         .ok_or("This agent is no longer in your list.")?;
     let (checked_id, command, args) = checked_fields(entry)?;
     let fp = fingerprint(&command, &args);
-    if stored.approvals.get(&checked_id) != Some(&fp) {
-        return Err(NOT_APPROVED.into());
-    }
+    let approval = stored
+        .approvals
+        .get(&checked_id)
+        .filter(|approval| approval.fingerprint == fp)
+        .ok_or(NOT_APPROVED)?;
     let resolved = resolve_command(&command, path_value)?;
+    if !still_approved(approval, &fp, Some(&resolved)) {
+        return Err(ON_DISK_CHANGED.into());
+    }
     let name = entry
         .get("name")
         .and_then(Value::as_str)
@@ -358,8 +464,10 @@ fn resolve_command(command: &str, path_value: &str) -> Result<String, String> {
         }
         path
     } else {
+        // Only absolute folders: an empty or relative PATH entry would find a file in the working folder.
         std::env::split_paths(path_value)
-            .map(|dir| dir.join(command))
+            .filter(|dir| dir.is_absolute())
+            .flat_map(|dir| path_candidates(&dir, command))
             .find(|candidate| candidate.is_file())
             .ok_or(not_found)?
     };
@@ -372,7 +480,38 @@ fn resolve_command(command: &str, path_value: &str) -> Result<String, String> {
             "This is one of Hivra's own agent CLIs. Set it up under Agent CLIs instead.".into(),
         );
     }
-    Ok(candidate.to_string_lossy().into_owned())
+    let resolved = std::fs::canonicalize(&candidate).map_err(|_| not_found.to_string())?;
+    Ok(resolved.to_string_lossy().into_owned())
+}
+
+/// The file names a bare command may resolve to in one folder. Windows also tries the PATHEXT extensions.
+fn path_candidates(dir: &Path, command: &str) -> Vec<PathBuf> {
+    let mut out = vec![dir.join(command)];
+    if cfg!(windows) {
+        let exts = std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into());
+        for ext in exts.split(';').filter(|e| !e.is_empty()) {
+            out.push(dir.join(format!("{command}{ext}")));
+        }
+    }
+    out
+}
+
+/// Whether an approval still stands: the same command and arguments, resolving to the same file, with the same bytes.
+fn still_approved(approval: &Approval, fp: &str, path: Option<&str>) -> bool {
+    let Some(path) = path else { return false };
+    approval.fingerprint == fp
+        && approval.path == path
+        && file_sha256(Path::new(path)).is_ok_and(|sha| sha == approval.sha256)
+}
+
+/// SHA-256 of a file's bytes, hex. A file that cannot be read is not approved.
+fn file_sha256(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).map_err(|_| NOT_APPROVED.to_string())?;
+    Ok(Sha256::digest(&bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect())
 }
 
 /// The fingerprint of the command the person approves: its command and its arguments, length-prefixed.
@@ -401,19 +540,34 @@ pub(crate) fn restrict_env(cmd: &mut Command, path_value: &str) {
     cmd.env("PATH", path_value);
 }
 
-/// What the list says, for the window: the entries as stored, and the ids whose current command is approved.
-pub(crate) fn view(stored: &Stored) -> Value {
-    let approved: Vec<String> = stored
-        .agents
-        .iter()
-        .filter_map(|agent| checked_fields(agent).ok())
-        .filter(|(id, command, args)| stored.approvals.get(id) == Some(&fingerprint(command, args)))
-        .map(|(id, _, _)| id)
-        .collect();
+/// What the list says, for the window: the entries as stored, the ids allowed to run as they are now, and for each
+/// entry the fingerprint the window must send back to allow it and the absolute file it resolves to (null if none).
+pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
+    let mut approved = Vec::new();
+    let mut fingerprints = serde_json::Map::new();
+    let mut resolved = serde_json::Map::new();
+    for agent in &stored.agents {
+        let Ok((id, command, args)) = checked_fields(agent) else {
+            continue;
+        };
+        let fp = fingerprint(&command, &args);
+        let path = resolve_command(&command, path_value).ok();
+        let allowed = stored
+            .approvals
+            .get(&id)
+            .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
+        if allowed {
+            approved.push(id.clone());
+        }
+        fingerprints.insert(id.clone(), json!(fp));
+        resolved.insert(id, json!(path));
+    }
     json!({
         "revision": stored.revision,
         "agents": stored.agents,
         "approved": approved,
+        "fingerprints": fingerprints,
+        "resolved": resolved,
     })
 }
 
@@ -424,7 +578,10 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 /// The list for the window: its revision, its entries as saved, and which ids are approved to run.
 #[tauri::command]
 pub fn more_agents_read(app: AppHandle) -> Result<Value, String> {
-    Ok(view(&read_stored(&data_dir(&app)?)?))
+    Ok(view(
+        &read_stored(&data_dir(&app)?)?,
+        &crate::harness::gui_search_path(),
+    ))
 }
 
 /// Replace the list if the window read the current revision. Approvals are not changed here.
@@ -434,17 +591,30 @@ pub fn more_agents_write(
     expected_revision: u64,
     agents: Vec<Value>,
 ) -> Result<Value, String> {
-    Ok(view(&write_agents(
-        &data_dir(&app)?,
-        expected_revision,
-        agents,
-    )?))
+    Ok(view(
+        &write_agents(&data_dir(&app)?, expected_revision, agents)?,
+        &crate::harness::gui_search_path(),
+    ))
 }
 
-/// The person's own tap: allow or withdraw one entry's current command.
+/// The person's own tap: allow or withdraw one entry. `shown` is the fingerprint the window displayed for it.
 #[tauri::command]
-pub fn more_agents_approve(app: AppHandle, id: String, allowed: bool) -> Result<Value, String> {
-    Ok(view(&set_approval(&data_dir(&app)?, &id, allowed)?))
+pub fn more_agents_approve(
+    app: AppHandle,
+    id: String,
+    allowed: bool,
+    shown: Option<String>,
+) -> Result<Value, String> {
+    Ok(view(
+        &set_approval(
+            &data_dir(&app)?,
+            &id,
+            allowed,
+            shown.as_deref(),
+            &crate::harness::gui_search_path(),
+        )?,
+        &crate::harness::gui_search_path(),
+    ))
 }
 
 #[cfg(test)]
@@ -551,24 +721,95 @@ mod tests {
         assert_eq!(std::fs::read(&path).expect("still there"), b"{ not json");
     }
 
+    /// Allow `id` the way the window does: the fingerprint it displayed is sent back with the allow.
+    fn approve(dir: &Path, id: &str, path_value: &str) -> Result<Stored, String> {
+        let stored = read_stored(dir)?;
+        let shown = view(&stored, path_value)["fingerprints"][id]
+            .as_str()
+            .map(str::to_string);
+        set_approval(dir, id, true, shown.as_deref(), path_value)
+    }
+
+    #[cfg(unix)]
+    fn make_tool(dir: &Path, name: &str, body: &[u8]) -> PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::create_dir_all(dir).expect("tool dir");
+        let tool = dir.join(name);
+        std::fs::write(&tool, body).expect("tool");
+        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        tool
+    }
+
     #[test]
-    fn an_entry_cannot_use_a_first_class_id_or_command() {
+    fn an_entry_cannot_use_a_first_class_id_command_or_shell() {
         let d = dir();
-        write_agents(d.path(), 0, vec![entry("copilot", "/opt/copilot", &[])]).expect("seed");
-        set_approval(d.path(), "copilot", true).expect("approve");
-        let stored = read_stored(d.path()).expect("read");
-        assert!(stored.approvals.contains_key("copilot"));
-        // Not a registry entry at all: the id is a first-class one.
-        write_agents(d.path(), 1, vec![entry("devin", "/opt/devin-helper", &[])]).expect("write");
-        assert!(approved_spawn(d.path(), "devin", "/usr/bin").is_err());
-        // The command is the Claude CLI under another name.
+        write_agents(d.path(), 0, vec![entry("devin", "/opt/devin-helper", &[])]).expect("seed");
+        assert!(checked_fields(&entry("devin", "/opt/devin-helper", &[])).is_err());
+        assert!(checked_fields(&entry("zed", "/usr/local/bin/claude", &[])).is_err());
+        assert_eq!(
+            checked_fields(&entry("zed", "/bin/sh", &["-x"])).expect_err("shell"),
+            SHELL_REFUSED
+        );
+        assert_eq!(
+            checked_fields(&entry("zed", "/opt/node", &["-e", "x"])).expect_err("inline"),
+            INLINE_REFUSED
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_allow_is_refused_unless_it_names_the_entry_as_shown() {
+        let d = dir();
+        let tool = make_tool(&d.path().join("bin"), "wp134-a", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
         write_agents(
             d.path(),
-            2,
-            vec![entry("zed", "/usr/local/bin/claude", &[])],
+            0,
+            vec![entry("wp134", &tool.to_string_lossy(), &["--acp"])],
         )
-        .expect("write");
-        assert!(approved_spawn(d.path(), "zed", "/usr/bin").is_err());
+        .expect("seed");
+        // A window that showed other arguments, or nothing, cannot allow this entry.
+        let other = fingerprint(&tool.to_string_lossy(), &["--other".to_string()]);
+        assert_eq!(
+            set_approval(d.path(), "wp134", true, Some(&other), &path_value).expect_err("stale"),
+            SHOWN_CHANGED
+        );
+        assert!(set_approval(d.path(), "wp134", true, None, &path_value).is_err());
+        assert!(read_stored(d.path()).expect("read").approvals.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_replaced_program_is_not_run_on_the_old_approval() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-b", b"#!/bin/sh\necho one\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-b", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        assert!(approved_spawn(d.path(), "wp134", &path_value).is_ok());
+        make_tool(&bin, "wp134-b", b"#!/bin/sh\necho two\n");
+        assert_eq!(
+            approved_spawn(d.path(), "wp134", &path_value).expect_err("changed"),
+            ON_DISK_CHANGED
+        );
+        let shown = view(&read_stored(d.path()).expect("read"), &path_value);
+        assert_eq!(shown["approved"], json!([]));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_relative_or_empty_path_folder_is_never_searched() {
+        let d = dir();
+        make_tool(&d.path().join("here"), "wp134-c", b"#!/bin/sh\n");
+        // The working folder is not an absolute PATH folder, so a file in it is not found.
+        let path_value = format!(
+            ":.:relative-dir:{}",
+            d.path().join("here-missing").display()
+        );
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-c", &[])]).expect("seed");
+        assert!(resolve_command("wp134-c", &path_value).is_err());
+        assert!(resolve_command("wp134-c", "./here").is_err());
     }
 
     #[test]
@@ -584,10 +825,6 @@ mod tests {
             approved_spawn(d.path(), "copilot", "/usr/bin").expect_err("not approved"),
             NOT_APPROVED
         );
-        set_approval(d.path(), "copilot", true).expect("approve");
-        let run = approved_spawn(d.path(), "copilot", "/usr/bin");
-        // The path is not on disk, so the entry is not runnable even when approved.
-        assert!(run.is_err());
     }
 
     #[test]
@@ -599,7 +836,7 @@ mod tests {
             vec![entry("copilot", "/opt/copilot", &["--acp"])],
         )
         .expect("seed");
-        set_approval(d.path(), "copilot", true).expect("approve");
+        set_approval(d.path(), "copilot", false, None, "/usr/bin").expect("withdraw");
         write_agents(
             d.path(),
             1,
@@ -613,7 +850,6 @@ mod tests {
     fn removing_and_adding_the_same_entry_needs_a_new_approval() {
         let d = dir();
         write_agents(d.path(), 0, vec![entry("copilot", "/opt/copilot", &[])]).expect("seed");
-        set_approval(d.path(), "copilot", true).expect("approve");
         write_agents(d.path(), 1, vec![]).expect("remove");
         write_agents(d.path(), 2, vec![entry("copilot", "/opt/copilot", &[])]).expect("re-add");
         assert!(read_stored(d.path()).expect("read").approvals.is_empty());
@@ -633,8 +869,7 @@ mod tests {
     fn a_relative_command_is_refused() {
         let d = dir();
         write_agents(d.path(), 0, vec![entry("copilot", "copilot-helper", &[])]).expect("seed");
-        set_approval(d.path(), "copilot", true).expect("approve");
-        let err = approved_spawn(d.path(), "copilot", "/usr/bin:/bin").expect_err("not resolvable");
+        let err = approved_spawn(d.path(), "copilot", "/usr/bin:/bin").expect_err("not approved");
         assert!(!err.is_empty());
     }
 
@@ -646,32 +881,36 @@ mod tests {
         assert_eq!(a, fingerprint("/opt/a", &["b c".to_string()]));
     }
 
+    #[cfg(unix)]
     #[test]
-    fn the_view_lists_only_approved_ids_for_their_current_command() {
+    fn the_view_lists_only_approved_ids_with_their_resolved_file_and_fingerprint() {
         let d = dir();
-        write_agents(d.path(), 0, vec![entry("copilot", "/opt/copilot", &[])]).expect("seed");
-        set_approval(d.path(), "copilot", true).expect("approve");
-        let stored = read_stored(d.path()).expect("read");
-        let shown = view(&stored);
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-d", b"#!/bin/sh\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("copilot", "wp134-d", &[])]).expect("seed");
+        approve(d.path(), "copilot", &path_value).expect("approve");
+        let shown = view(&read_stored(d.path()).expect("read"), &path_value);
         assert_eq!(shown["revision"], json!(1));
         assert_eq!(shown["approved"], json!(["copilot"]));
+        assert!(shown["resolved"]["copilot"]
+            .as_str()
+            .unwrap()
+            .ends_with("wp134-d"));
+        assert!(shown["fingerprints"]["copilot"].as_str().is_some());
     }
 
     #[cfg(unix)]
     #[test]
     fn an_approved_entry_runs_the_file_it_names_found_by_path_or_by_absolute_path() {
-        use std::os::unix::fs::PermissionsExt;
         let d = dir();
-        let bin = d.path().join("bin");
-        std::fs::create_dir_all(&bin).expect("bin dir");
-        let tool = bin.join("wp134-tool");
-        std::fs::write(&tool, b"#!/bin/sh\n").expect("tool");
-        std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755)).expect("chmod");
-        let path_value = bin.to_string_lossy().into_owned();
+        let tool = make_tool(&d.path().join("bin"), "wp134-tool", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        let canonical = std::fs::canonicalize(&tool).expect("canonical");
         write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &["--acp"])]).expect("seed");
-        set_approval(d.path(), "wp134", true).expect("approve");
+        approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved and present");
-        assert_eq!(run.command, tool.to_string_lossy());
+        assert_eq!(run.command, canonical.to_string_lossy());
         assert_eq!(run.args, vec!["--acp".to_string()]);
         write_agents(
             d.path(),
@@ -679,12 +918,12 @@ mod tests {
             vec![entry("wp134", &tool.to_string_lossy(), &["--acp"])],
         )
         .expect("absolute");
-        set_approval(d.path(), "wp134", true).expect("approve absolute");
+        approve(d.path(), "wp134", "/usr/bin").expect("approve absolute");
         assert_eq!(
             approved_spawn(d.path(), "wp134", "/usr/bin")
                 .expect("absolute path runs")
                 .command,
-            tool.to_string_lossy()
+            canonical.to_string_lossy()
         );
     }
 

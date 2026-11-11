@@ -1,4 +1,5 @@
 import { mobileUsageLimit } from "../../sessions/model/usageLimit";
+import { publishedApprovals } from "./mobilePairing";
 import { invoke } from "@tauri-apps/api/core";
 import {
   gitCommit,
@@ -102,18 +103,38 @@ export function mobileNewSession(cwd: string, runtimeMode?: RuntimeMode): Sessio
   return newDefaultSession(cwd, runtimeMode);
 }
 
-export async function mobileCatalog(
-  live: readonly Session[],
-  runtimeMode?: RuntimeMode,
-) {
-  const roster = listMonos();
-  const paths = [
+/** The project folders the phone can reach: recents, pinned projects, and each Mono's projects. */
+function mobileReachablePaths(roster: ReturnType<typeof listMonos>): string[] {
+  return [
     ...new Set([
       ...loadRecents().map((project) => project.path),
       ...loadPinnedProjects(),
       ...roster.flatMap((mono) => mono.projects),
     ]),
   ].filter((path) => path && path !== "~");
+}
+
+/**
+ * WP-111: the ids of every private chat in the reachable projects, saved or live. The phone's inbox
+ * and crew status leave these out, so a private question or worker never reaches it.
+ */
+export async function mobilePrivateSessionIds(live: readonly Session[]): Promise<Set<string>> {
+  const ids = new Set(live.filter((session) => session.private === true).map((session) => session.id));
+  const summaries = (
+    await Promise.all(
+      mobileReachablePaths(listMonos()).map((path) => listSessionsByProject(path).catch(() => [])),
+    )
+  ).flat();
+  for (const summary of summaries) if (summary.private === true) ids.add(summary.id);
+  return ids;
+}
+
+export async function mobileCatalog(
+  live: readonly Session[],
+  runtimeMode?: RuntimeMode,
+) {
+  const roster = listMonos();
+  const paths = mobileReachablePaths(roster);
   const colors = loadTabGroupColors();
   const mascots = loadTabGroupMascots();
   const projects = paths.map((path) => {
@@ -141,10 +162,12 @@ export async function mobileCatalog(
   ).flat();
   const sessions = new Map<string, ReturnType<typeof mobileSummary>>();
   for (const summary of summaries) {
+    // WP-111: a private chat is not on the phone's list, so it cannot be opened or routed to there.
     if (
       !summary.archived &&
       !summary.sidebarHidden &&
-      !summary.orchestrationLeadId
+      !summary.orchestrationLeadId &&
+      !summary.private
     )
       sessions.set(summary.id, mobileSummary(summary));
   }
@@ -153,6 +176,7 @@ export async function mobileCatalog(
       session.inboxAsk ||
       session.orchestrationLeadId ||
       session.sidebarHidden ||
+      session.private === true ||
       roster.some((mono) => mono.sessionId === session.id)
     )
       continue;
@@ -212,11 +236,40 @@ export async function mobileCatalog(
       };
     }),
   );
+  // WP-150: the calls a paired phone may approve. A Mono's own chat is not a session card.
+  // The poll itself does not return these. A Mono's room sessions are left out: answering
+  // one goes through the Mono relay, which the phone's direct approval does not use.
+  const approvals = publishedApprovalRows(
+    live,
+    new Set(sessions.keys()),
+    roster,
+  );
   return {
     projects,
     monos,
     sessions: [...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt),
+    approvals: approvals.rows,
+    ...(approvals.truncated ? { approvalsTruncated: true as const } : {}),
   };
+}
+
+/**
+ * WP-150: the calls the phone may show and answer, filtered the same way everywhere:
+ * a listed chat or a Mono's own one-to-one chat, never a room session. The catalog
+ * publishes these; `inbox.list` shows these, so it cannot offer a line the phone
+ * could never answer.
+ */
+export function publishedApprovalRows(
+  live: readonly Session[],
+  listedSessionIds: ReadonlySet<string>,
+  roster: readonly { sessionId?: string | null; roomSessions?: Record<string, string> }[],
+) {
+  return publishedApprovals(
+    live,
+    listedSessionIds,
+    new Set(roster.flatMap((mono) => (mono.sessionId ? [mono.sessionId] : []))),
+    new Set(roster.flatMap((mono) => Object.values(mono.roomSessions ?? {}))),
+  );
 }
 /** The worktree a session works in, so the phone shows its changes and files
  *  rather than the checkout's; none once the worktree is gone. */
