@@ -2023,10 +2023,11 @@ fn moved_away(blocks: &Value) -> Option<String> {
 }
 
 /// WP-177: the guard on every write of a chat's blocks. An ordinary save (an autosave, a quit, a stale window's copy) may
-/// not drop a freeze, may not change whether the chat is away, and may not drop a move note (a freeze ask, an incoming
-/// copy, a release still owed, or a refused move), so an old copy cannot bring a moved chat back and a quit cannot erase
-/// the note recovery needs. A move's own step is checked against the stored state: it may make only the change that step
-/// makes. A refusal names its reason with a prefix the webview reads.
+/// not drop or add a freeze, may not change whether the chat is away, and may not drop a move note (a freeze ask,
+/// an incoming copy, a release still owed, or a refused move) or add one of those except a freeze ask, so an old copy
+/// cannot bring a moved chat back, put a thawed freeze or a settled note back, or erase the note recovery needs. A
+/// freeze ask may still be planted by an ordinary save. Only a move's own step may add a freeze or any other note. A refusal
+/// names its reason with a prefix the webview reads.
 pub(crate) fn teleport_guard(
     previous: &Value,
     next: &Value,
@@ -2053,20 +2054,24 @@ pub(crate) fn teleport_guard(
                 "{TELEPORT_REFUSED}: this save would drop a chat move's freeze, so it was refused"
             ));
         }
+        if next_frozen.iter().any(|id| !stored_frozen.contains(id)) {
+            return Err(format!(
+                "{TELEPORT_REFUSED}: this save would add a chat move's freeze, so it was refused"
+            ));
+        }
         if stored_away != next_away {
             return Err(format!(
                 "{TELEPORT_REFUSED}: this save would change whether the chat is on another machine, so it was refused"
             ));
         }
         if !notes_same("") {
-            let dropped = [
+            let notes = [
                 "teleport-freeze-asked",
                 "teleport-incoming",
                 "teleport-release-owed",
                 "teleport-aborted",
-            ]
-            .into_iter()
-            .any(|notice| {
+            ];
+            let dropped = notes.iter().copied().any(|notice| {
                 let next_ids = ids_with_notice(next, notice);
                 ids_with_notice(previous, notice)
                     .iter()
@@ -2075,6 +2080,24 @@ pub(crate) fn teleport_guard(
             if dropped {
                 return Err(format!(
                     "{TELEPORT_REFUSED}: this save would drop a chat move's note, so it was refused"
+                ));
+            }
+            // A freeze ask may still arrive on an ordinary save: the older repro plants it with no step, and that save
+            // has to keep working. The live path uses the freeze-ask step. A freeze, an incoming copy, a release still
+            // owed, or a refused move may not be added back; only a move step may, so a stale window cannot put a
+            // thawed freeze or a settled note back.
+            let added = notes.iter().copied().any(|notice| {
+                if notice == "teleport-freeze-asked" {
+                    return false;
+                }
+                let stored_ids = ids_with_notice(previous, notice);
+                ids_with_notice(next, notice)
+                    .iter()
+                    .any(|id| !stored_ids.contains(id))
+            });
+            if added {
+                return Err(format!(
+                    "{TELEPORT_REFUSED}: this save would add a chat move's note, so it was refused"
                 ));
             }
         }
