@@ -97,7 +97,8 @@ Needs you count from the one list, plus the "working" count beside it. Nothing e
 A test passing is not the check; looking at it is. Every PR that changes something a person sees:
 
 1. **Before and after screenshots at 1440 × 900** of each screen it changes, from a browser spec with seeded example
-   data (`tests/browser/`, `page.screenshot`). These go in the PR. They hold example data only.
+   data (`tests/browser/`, `page.screenshot`). Commit them under `docs/hivra/work/shots/wp-<NNN>/before/` and
+   `after/` with the same file names, so a reviewer can put each pair side by side. They hold example data only.
 2. **The same screens in a dev copy** (`npm run hub:dev -- --seed`, a cleaned backup of Ash's chats). These hold Ash's
    real chats, so they **never go to GitHub** (the repo is public). They stay on the Mac under
    `~/Worktrees/ux-shots/<WP>/before|after/`, and the PR says where.
