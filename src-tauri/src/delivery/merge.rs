@@ -237,12 +237,6 @@ fn launch_or_wait(
             "Security review running for PR #{number} (head {short}). The merge waits for its answer."
         )));
     }
-    if let Some(failed) = super::review::failed_for(conn, repo, number, head)? {
-        return Ok(SecurityGate::Refuse(format!(
-            "The security review for head {short} failed: {}",
-            failed.error.unwrap_or_else(|| "no reason was given".into())
-        )));
-    }
     let Some(author) = super::review::author_of(conn, repo, number)? else {
         return Ok(SecurityGate::Refuse(format!(
             "{repo}#{number} is security-sensitive, and its author is not recorded, so no review can be started for head {short}."
@@ -322,22 +316,31 @@ fn security_gate(
             "A confirmed {blocking} finding is open on head {short}."
         )));
     }
-    if record.pending.is_empty() {
-        return Ok(SecurityGate::Pass);
-    }
-    // Candidates that need validation: one Inbox question for the head. Its answer decides; nothing merges until then.
+    // Every recorded review waits for the person's word on this head, clean or not: a pass is never the only gate (round 4
+    // MED-3). The answer must come from the person (decisions::person_only refuses any other answerer, and the gate checks
+    // who answered before it passes).
     let Some(project) = project else {
         return Ok(SecurityGate::Refuse(format!(
-            "{repo}#{number} has candidates that need validation on head {short}, and no project is known to ask about them."
+            "{repo}#{number} is security-sensitive, and no project is known to ask the person about head {short}."
         )));
     };
     let key = format!("{SECURITY_KEY}{head}");
-    let question = format!(
-        "Security review of {repo}#{number} (head {short}): {} candidate{} need validation: {}. Nothing is blocked until you answer; \"Hold the merge\" keeps it from merging.",
-        record.pending.len(),
-        if record.pending.len() == 1 { "" } else { "s" },
-        record.pending.join("; "),
-    );
+    let (question, options) = if record.pending.is_empty() {
+        (
+            format!("Security review of PR #{number} (head {short}) is clean. Approve the merge, or hold it."),
+            vec!["Approve".to_string(), "Hold the merge".to_string()],
+        )
+    } else {
+        (
+            format!(
+                "Security review of PR #{number} (head {short}): {} candidate{} need validation: {}. \"Looked at it\" lets it merge; \"Hold the merge\" keeps it from merging.",
+                record.pending.len(),
+                if record.pending.len() == 1 { "" } else { "s" },
+                record.pending.join("; "),
+            ),
+            vec!["Looked at it".to_string(), "Hold the merge".to_string()],
+        )
+    };
     match crate::decisions::get(conn, project, &key)? {
         None => {
             crate::decisions::ask(
@@ -348,7 +351,7 @@ fn security_gate(
                     project: Some(project.to_string()),
                     key,
                     question: question.clone(),
-                    options: vec!["Looked at it".into(), "Hold the merge".into()],
+                    options,
                     recommended: None,
                     task_ids: Vec::new(),
                 },
@@ -356,13 +359,23 @@ fn security_gate(
             )?;
             Ok(SecurityGate::Hold(question))
         }
-        Some(decision) => match decision.answer.as_deref() {
-            Some("Looked at it") if decision.state == crate::decisions::ANSWERED => Ok(SecurityGate::Pass),
-            Some(_) if decision.state == crate::decisions::ANSWERED => Ok(SecurityGate::Refuse(format!(
-                "The person held the merge of head {short} over its candidates that need validation."
-            ))),
-            _ => Ok(SecurityGate::Hold(question)),
-        },
+        Some(decision) => {
+            // Only the person's answer counts: a chat's or a machine's is held, whatever it says.
+            let by_person = matches!(
+                decision.answered_by.as_deref(),
+                Some("person") | Some("user")
+            );
+            if decision.state != crate::decisions::ANSWERED || !by_person {
+                return Ok(SecurityGate::Hold(question));
+            }
+            match decision.answer.as_deref() {
+                Some("Looked at it") | Some("Approve") => Ok(SecurityGate::Pass),
+                Some("Hold the merge") => Ok(SecurityGate::Refuse(format!(
+                    "The person held the merge of head {short}."
+                ))),
+                _ => Ok(SecurityGate::Hold(question)),
+            }
+        }
     }
 }
 

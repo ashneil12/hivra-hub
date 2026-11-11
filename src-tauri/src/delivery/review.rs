@@ -144,6 +144,19 @@ fn text_of(value: &Value) -> Option<String> {
     value.as_str().map(str::to_string)
 }
 
+/// A reviewer often wraps its JSON in one Markdown code fence. One fence is taken off; anything else is left as it is.
+fn strip_one_fence(text: &str) -> &str {
+    let trimmed = text.trim();
+    let Some(rest) = trimmed.strip_prefix("```") else {
+        return trimmed;
+    };
+    let rest = rest.strip_prefix("json").unwrap_or(rest);
+    match rest.strip_suffix("```") {
+        Some(inner) => inner.trim(),
+        None => trimmed,
+    }
+}
+
 /// The app's checks of one review result. `author` is the pull request's delivery builder; `reviewer` is the one the
 /// request id names.
 pub fn judge(author: &str, reviewer: &str, result: &str) -> Result<Judged, String> {
@@ -155,8 +168,8 @@ pub fn judge(author: &str, reviewer: &str, result: &str) -> Result<Judged, Strin
             "the same builder ({author}) cannot review its own change"
         ));
     }
-    let value: Value =
-        serde_json::from_str(result).map_err(|_| "the review's result is not JSON".to_string())?;
+    let value: Value = serde_json::from_str(strip_one_fence(result))
+        .map_err(|_| "the review's result is not JSON".to_string())?;
     let object = value
         .as_object()
         .ok_or("the review's result is not an object with a hunt, findings and a ledger")?;
@@ -297,10 +310,20 @@ pub fn pick_reviewer(
 ) -> Option<String> {
     let mut cooled: Vec<String> = never_use.to_vec();
     cooled.push(author.to_string());
-    crate::crew::resolve::default_cli_except(present, &cooled)
+    // Only a builder the app can start a session for can review: the launcher hosts Claude and Codex (launch.ts HOSTS).
+    // Any other signed-in CLI is passed over, so one that cannot run never takes the review.
+    let usable: Vec<crate::crew::resolve::Presence> = present
+        .iter()
+        .filter(|row| HOSTABLE.contains(&row.cli.as_str()))
+        .cloned()
+        .collect();
+    crate::crew::resolve::default_cli_except(&usable, &cooled)
         .and_then(|cli| known_builder(&cli))
         .filter(|reviewer| reviewer != author)
 }
+
+/// The reviewers the app can start a session for (launch.ts HOSTS).
+pub const HOSTABLE: [&str; 2] = ["claude", "codex"];
 
 /// The hex prefix every review request for one pull request and head shares, whatever the reviewer.
 fn key_prefix(repo: &str, number: u64, head: &str) -> String {
@@ -343,16 +366,6 @@ pub fn running_for(
     review_in_state(conn, repo, number, head, crate::delegations::RUNNING)
 }
 
-/// The review delegation for this head that failed, if any (its error is the reason the gate gives).
-pub fn failed_for(
-    conn: &Connection,
-    repo: &str,
-    number: u64,
-    head: &str,
-) -> Result<Option<crate::delegations::Delegation>, String> {
-    review_in_state(conn, repo, number, head, crate::delegations::FAILED)
-}
-
 /// The brief the reviewer gets: the pull request, its head, who wrote the change and what to return. The reviewer's
 /// result is the record the app writes; nothing is written to the checkout.
 fn brief_for(repo: &str, number: u64, head: &str, author: &str, reviewer: &str) -> String {
@@ -379,7 +392,7 @@ pub(crate) fn start(
 ) -> Result<crate::delegations::Delegation, String> {
     let request = request_id(repo, number, head, reviewer);
     let child = format!("review-{}", &request[REQUEST_PREFIX.len()..]);
-    crate::delegations::record(
+    let row = crate::delegations::record(
         conn,
         crate::delegations::RecordInput {
             owner_session: OWNER.into(),
@@ -391,7 +404,12 @@ pub(crate) fn start(
             ..Default::default()
         },
         now,
-    )
+    )?;
+    // A cancelled or failed attempt is not a dead end: the same request runs again as a new attempt.
+    if row.state == crate::delegations::CANCELLED || row.state == crate::delegations::FAILED {
+        return crate::delegations::reopen_review(conn, &row.id, now);
+    }
+    Ok(row)
 }
 
 /// The builder that did a delegation's work: the engine (`harness`) of the session it ran in. None when that engine is not a
@@ -710,6 +728,31 @@ mod tests {
             }))
             .unwrap();
         assert_eq!(parsed.delegation_id, None);
+    }
+
+    #[test]
+    fn one_code_fence_around_the_result_is_taken_off_and_nothing_more() {
+        let fenced = format!("```json\n{}\n```", clean("claude"));
+        assert!(judge("codex", "claude", &fenced).is_ok());
+        let double = format!("```\n```json\n{}\n```\n```", clean("claude"));
+        assert!(judge("codex", "claude", &double).is_err());
+    }
+
+    #[test]
+    fn only_a_builder_the_app_can_host_is_picked_to_review() {
+        use crate::crew::resolve::Presence;
+        let p = |cli: &str| Presence {
+            cli: cli.into(),
+            installed: true,
+            signed_in: true,
+        };
+        // grok is installed and signed in but cannot host a review session: it is passed over, not picked.
+        let present = [p("grok"), p("codex")];
+        assert_eq!(
+            pick_reviewer("claude", &present, &[]).as_deref(),
+            Some("codex")
+        );
+        assert_eq!(pick_reviewer("claude", &[p("grok")], &[]), None);
     }
 
     #[test]

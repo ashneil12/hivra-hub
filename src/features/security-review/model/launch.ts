@@ -51,6 +51,11 @@ export function decodeReviewKey(requestId: string): ReviewKey | null {
   return { repo: match[1]!, number: Number(match[2]), head: match[3]!, reviewer: match[4]! };
 }
 
+/** The owner's id, or a reviewer's own chat (its child id is review-<hex>): either is the app's, never a caller's. */
+export function isReviewSession(id: string): boolean {
+  return id === REVIEW_OWNER || /^review-[0-9a-f]+$/.test(id);
+}
+
 export function isReviewRow(row: Pick<Delegation, "ownerSession" | "requestId">): boolean {
   return row.ownerSession === REVIEW_OWNER && row.requestId.startsWith(REVIEW_REQUEST_PREFIX);
 }
@@ -107,8 +112,10 @@ export async function startPendingReviews(
   const open = await backend.listOpen();
   let count = 0;
   for (const row of open) {
-    if (row.state !== "running" || !isReviewRow(row) || started.has(row.id)) continue;
-    started.add(row.id);
+    // Keyed by generation: a review reopened as a new attempt starts again.
+    const key = `${row.id}:${row.generation}`;
+    if (row.state !== "running" || !isReviewRow(row) || started.has(key)) continue;
+    started.add(key);
     startReviewSession(row, hooks, backend);
     count += 1;
   }

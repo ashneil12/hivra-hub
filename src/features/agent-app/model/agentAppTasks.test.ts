@@ -3157,6 +3157,16 @@ describe("the control socket refuses a security review's request id and owner", 
     expect(started).toEqual([]);
   });
 
+  it("refuses a call from the reviewer's own chat, whose id is review-<hex>", async () => {
+    // The launcher names the reviewer's chat review-<hex> (the child session of a review), not the owner's id.
+    const { source, host, started } = fixture([]);
+    const asReviewer = { ...source, id: `review-${"6162".repeat(10)}` };
+    await expect(handleAgentApp(asReviewer, "r-chat", "tasks.delegate", { brief: "Build it" }, host)).rejects.toThrow(
+      /reserved for the app/,
+    );
+    expect(started).toEqual([]);
+  });
+
   it("refuses an ownerSession or reviewLaunch field a caller adds to tasks.delegate", async () => {
     const { source, host, started } = fixture([]);
     await expect(

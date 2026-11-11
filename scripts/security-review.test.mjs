@@ -692,7 +692,29 @@ const PLANNED_ALLOW_LIST = Object.freeze({
   "src-tauri/src/secrets/**": "WP-92 vault, PR #213",
   "src/features/secrets/**": "WP-92 vault UI, PR #213",
   "src-tauri/src/crew/gate.rs": "crew gate, PR #194",
-  "**/commit_guard.rs": "commit guard, PR #227",
+  "**/commit_guard*": "commit guard, PR #227",
+  "**/agent_sandbox*": "agent sandbox, PR #208",
+  "**/spend_ledger*": "spend ledger, PR #204",
+  "**/more_agents*": "more agents, PR #217",
+});
+
+test("round 4 HIGH-1: every file that names the review owner or request prefix is a security path", () => {
+  const tracked = spawnSync("git", ["ls-files"], { cwd: resolve(here, ".."), encoding: "utf8" }).stdout.split("\n");
+  const names = /\bREVIEW_OWNER\b|\bREQUEST_PREFIX\b|app-security-review|security-review-/;
+  const gated = (file) => neverMergeList.securityPaths.some((pattern) => globToRegExp(pattern).test(file));
+  const ungated = [];
+  for (const file of tracked) {
+    if (!file || file.startsWith("node_modules/") || !existsSync(resolve(here, "..", file))) continue;
+    if (file.endsWith(".test.mjs") || file.endsWith(".test.ts") || file.endsWith(".test.tsx")) continue;
+    let text;
+    try {
+      text = readFileSync(resolve(here, "..", file), "utf8");
+    } catch {
+      continue;
+    }
+    if (names.test(text) && !gated(file)) ungated.push(file);
+  }
+  assert.deepEqual(ungated, [], "every file naming the review owner or request prefix is gated");
 });
 
 test("H2: every security path names a tracked file, or a planned path another work package lands", () => {

@@ -48,12 +48,40 @@
     "src-tauri/src/secrets/**",
     "src/features/secrets/**",
     "src-tauri/src/crew/gate.rs",
-    "**/commit_guard.rs"
+    "src-tauri/src/delivery/**",
+    "src-tauri/src/delegations.rs",
+    "src-tauri/src/decisions.rs",
+    "src-tauri/src/mcp_server.rs",
+    "src-tauri/src/control_cli.rs",
+    "src-tauri/src/control.rs",
+    "src-tauri/src/firstmate/mcp.rs",
+    "src-tauri/src/delivery_gate/**",
+    "src-tauri/src/instance.rs",
+    "src/features/security-review/**",
+    "src/features/leadTick/model/ports.ts",
+    "src/features/agent-app/**",
+    "scripts/hub-ship*.mjs",
+    "src-tauri/src/ship.rs",
+    "src-tauri/src/platform/ship.rs",
+    "src-tauri/tauri*.conf.json",
+    "src-tauri/capabilities/**",
+    "src-tauri/Entitlements.plist",
+    ".github/workflows/**",
+    "src-tauri/src/attribution/**",
+    "src/features/autopilot/model/redList.ts",
+    "src/features/autopilot/model/decide.ts",
+    "**/commit_guard*",
+    "**/agent_sandbox*",
+    "**/spend_ledger*",
+    "**/more_agents*"
   ],
   "plannedPaths": [
     "src-tauri/src/secrets/**",
     "src/features/secrets/**",
     "src-tauri/src/crew/gate.rs",
-    "**/commit_guard.rs"
+    "**/commit_guard*",
+    "**/agent_sandbox*",
+    "**/spend_ledger*",
+    "**/more_agents*"
   ]
 }

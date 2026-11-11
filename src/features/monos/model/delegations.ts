@@ -10,6 +10,7 @@
 // - a resumed turn (auto-continue, a usage-limit resume, a later message in a cut-off child) re-attaches to the
 //   child's row and bumps its generation, so its report has its own receipt (`mono-completion-<request>-g<n>`).
 import { workerTitle } from "./workerTitle";
+import { isReviewRow } from "../../security-review/model/launch";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -958,6 +959,8 @@ export class DelegationTracker {
     for (const listed of rows) {
       await this.serial(async () => {
         const row = this.rows.get(listed.id) ?? listed;
+        // WP-203: the app's own security review is no chat's work. Boot leaves it alone: its launcher restarts it.
+        if (isReviewRow(row)) return;
         if (!isOwed(row)) return;
         const mono = this.host.isMono(row.ownerSession);
         const owner = mono ? await this.host.openOwner(row.ownerSession) : null;

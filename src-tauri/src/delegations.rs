@@ -3479,6 +3479,43 @@ mod tests {
     }
 }
 
+/// WP-203: a cancelled or failed review row becomes a new attempt. It runs again under a new generation, so a settle
+/// from the old attempt is refused as stale. Only the app's review row can be reopened here.
+pub(crate) fn reopen_review(
+    conn: &mut Connection,
+    id: &str,
+    now: i64,
+) -> Result<Delegation, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let mut row = get(&tx, id)?.ok_or("no such review")?;
+    if row.owner_session != crate::delivery::review::OWNER {
+        return Err("only the app's review can be reopened".into());
+    }
+    if row.state == CANCELLED || row.state == FAILED {
+        row.state = RUNNING.into();
+        row.generation += 1;
+        row.delivery = PENDING.into();
+        row.delivery_message = None;
+        row.error = None;
+        row.error_class = None;
+        row.result = None;
+        row.settled_at = None;
+        row.run_started_at = now;
+        row.note(
+            now,
+            "app",
+            "retried",
+            json!({ "generation": row.generation }),
+        );
+        row.touch(now);
+        save_row(&tx, &row)?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(row)
+}
+
 /// WP-203: the review owner is the app's alone, on every entry that records a delegation or lists one for a caller.
 #[cfg(test)]
 mod review_guard_tests {

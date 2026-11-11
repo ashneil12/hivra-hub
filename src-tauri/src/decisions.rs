@@ -476,6 +476,32 @@ fn is_review_key(key: &str) -> bool {
     key.starts_with("fresh-eyes/") || key.starts_with("fresh-eyes-start/")
 }
 
+/// The decision key as the person-only rules read it: Unicode whitespace trimmed, NFKC, format and default-ignorable
+/// characters (zero-width joiners, bidi marks, variation selectors) dropped, lower case. The same rules as the floor's
+/// name fold (delivery/protected.rs), so a spelling that looks like a protected key can't slip past one check and not the other.
+pub fn fold_key(key: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let trimmed = key.trim_matches(char::is_whitespace);
+    let ignorable = |c: char| {
+        matches!(c,
+            '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}'..='\u{1160}' | '\u{17B4}'..='\u{17B5}'
+            | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}'
+            | '\u{FFA0}' | '\u{E0000}'..='\u{E0FFF}')
+    };
+    trimmed
+        .nfkc()
+        .filter(|c| !ignorable(*c))
+        .collect::<String>()
+        .to_lowercase()
+}
+
+/// WP-203: a security review's question (`security-review/<head>`) is the person's to answer. A pass on a security path
+/// needs their word, so no chat or machine may answer it, not even the app.
+fn is_security_key(key: &str) -> bool {
+    key.starts_with("security-review/")
+}
+
 /// WP-91: the decision keys only the person may answer, whatever path asked.
 ///
 /// An irreversible step of an orchestration run is parked under `irreversible/<lead>/<task>`. A person answers it in
@@ -486,12 +512,18 @@ fn is_review_key(key: &str) -> bool {
 /// (`fresh-eyes-start/...`). A chat answering `ask_person` on its own review's key would take the question out of the
 /// person's Inbox, and the review ignores its answer anyway. The app itself may close them (`app:fresh-eyes`).
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
-    let review = is_review_key(key);
-    if !key.starts_with("irreversible/") && !review {
+    // Checked on the folded key, so no spelling of a protected key gets past the rules.
+    let folded = fold_key(key);
+    let review = is_review_key(&folded);
+    let security = is_security_key(&folded);
+    if !folded.starts_with("irreversible/") && !review && !security {
         return None;
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
         None | Some("user") | Some("person") => None,
+        Some(other) if security => Some(format!(
+            "Only the person answers a security review; {other} cannot. It holds the merge until they do."
+        )),
         Some(APP_CLOSER) if review => None,
         Some(other) if review => Some(format!(
             "Only the person answers a fresh-eyes review; {other} cannot. It waits in the Inbox until they do."
@@ -656,3 +688,48 @@ pub fn decisions_list(
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod person_only_fold_tests {
+    use super::*;
+
+    #[test]
+    fn a_security_review_key_is_person_only_in_any_spelling() {
+        for key in [
+            "security-review/abc",
+            "Security-Review/abc",
+            "\u{FF33}ecurity-review/abc",
+            "security\u{200B}-review/abc",
+            "  security-review/abc\u{FEFF}",
+            "SECURITY\u{00AD}-REVIEW/ABC",
+        ] {
+            assert!(
+                person_only(key, Some("chat:author-lead")).is_some(),
+                "{key:?} was answerable by a chat"
+            );
+            assert!(
+                person_only(key, Some("person")).is_none(),
+                "{key:?} refused the person"
+            );
+            assert!(
+                person_only(key, None).is_none(),
+                "{key:?} refused the person with no by"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_key_matches_the_rules_it_states() {
+        assert_eq!(fold_key("Security-Review/A"), "security-review/a");
+        assert_eq!(
+            fold_key("\u{FF33}ecurity\u{200B}-review"),
+            "security-review"
+        );
+        assert_eq!(fold_key("\u{3000}key\u{00A0}"), "key");
+    }
+
+    #[test]
+    fn an_ordinary_key_is_not_person_only() {
+        assert!(person_only("ask/ordinary", Some("chat:x")).is_none());
+    }
+}

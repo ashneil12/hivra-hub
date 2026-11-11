@@ -1856,7 +1856,15 @@ fn a_clean_review_for_the_exact_head_lets_the_security_pr_merge() {
         &[SECURITY_FILE],
     );
     let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
-    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
+    // A clean record waits for the person's word on the head (round 4 MED-3): it holds until Approve.
+    let held = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
+    assert!(
+        matches!(&held, MergeOutcome::NeedsYou { question, .. } if question.contains("is clean")),
+        "{held:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
+    person_answers(&s, &f.project, H1_SEC, "Approve");
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 12).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Merged { .. }),
         "{outcome:?}"
@@ -2016,7 +2024,7 @@ fn the_floor_off_decides_exactly_as_before() {
     remember_delivery(&s, &project, None, 7);
     let mut request = agent_merge("acme/web");
     request.project = Some("/not/the/delivery/project".into());
-    let gh = files_of(Ok(".github/workflows/x.yml\n"));
+    let gh = files_of(Ok(".claude/settings.json\n"));
     let merged = merge::merge(&s, &gh, request, 20).unwrap();
     assert!(
         matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("merge without asking")),
@@ -2069,12 +2077,12 @@ fn the_floor_names_at_most_five_files_and_an_unreadable_list_asks() {
         &shared_list(),
         allowed.clone(),
         true,
-        &ChangedFiles::Listed(vec![".github/workflows/x.yml".into()]),
+        &ChangedFiles::Listed(vec![".claude/settings.json".into()]),
         &[],
         "acme/web#7",
     );
     let question = asked_decision(&one);
-    assert!(question.contains(".github/workflows/x.yml"), "{question}");
+    assert!(question.contains(".claude/settings.json"), "{question}");
     assert!(!question.contains("more"), "{question}");
 
     assert_eq!(
@@ -2152,10 +2160,10 @@ fn yolo_merges_a_clean_diff_and_asks_for_a_protected_path() {
     );
     assert_eq!(clean.ran("pr", "merge").len(), 1);
 
-    let protected = files_of(Ok(".github/workflows/x.yml\n"));
+    let protected = files_of(Ok(".claude/settings.json\n"));
     let outcome = merge::merge(&s, &protected, request, 30).unwrap();
     let question = asked(&outcome);
-    assert!(question.contains(".github/workflows/x.yml"), "{question}");
+    assert!(question.contains(".claude/settings.json"), "{question}");
     assert!(question.contains("your word"), "{question}");
     assert!(protected.ran("pr", "merge").is_empty());
 }
@@ -2228,10 +2236,10 @@ fn an_extra_path_asks_and_a_glob_matches_nothing() {
         ),
         "a bare * matches nothing"
     );
-    let built_in = files_of(Ok(".github/workflows/x.yml\n"));
+    let built_in = files_of(Ok(".claude/settings.json\n"));
     let question = asked(&merge::merge(&s, &built_in, request, 50).unwrap());
     assert!(
-        question.contains(".github/workflows/x.yml"),
+        question.contains(".claude/settings.json"),
         "an extra * does not turn the built-in list off: {question}"
     );
 }
@@ -2243,7 +2251,7 @@ fn an_approval_of_this_head_still_merges_a_protected_diff() {
     set_mode(&s, &project, Some(Mode::Pr), true);
     turn_floor_on(&s, &project);
     remember_delivery(&s, &project, None, 7);
-    let gh = files_of(Ok(".github/workflows/x.yml\n"));
+    let gh = files_of(Ok(".claude/settings.json\n"));
     let first = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
     assert!(matches!(first, MergeOutcome::NeedsYou { .. }), "{first:?}");
     assert!(gh.ran("pr", "merge").is_empty());
@@ -2276,7 +2284,7 @@ fn the_persons_own_tap_merges_a_protected_diff_with_one_read_for_the_gate() {
     let s = store();
     set_mode(&s, &project, Some(Mode::Pr), true);
     turn_floor_on(&s, &project);
-    let gh = files_of(Ok(".github/workflows/x.yml\n"));
+    let gh = files_of(Ok(".claude/settings.json\n"));
     let request = MergeRequest {
         caller: Caller::Person {
             via: "Inbox".into(),
@@ -2409,7 +2417,7 @@ fn red_and_a_pull_request_with_no_checks_do_not_consult_the_floor() {
         "1111111111111111111111111111111111111111",
         vec![check("build", CheckStatus::Failure, true)],
     )]);
-    *red.files.lock().unwrap() = Some(Ok(".github/workflows/x.yml\n".into()));
+    *red.files.lock().unwrap() = Some(Ok(".claude/settings.json\n".into()));
     let refused = merge::merge(&s, &red, agent_merge("acme/web"), 20).unwrap();
     assert!(
         matches!(&refused, MergeOutcome::Refused { reason } if reason.contains("Red is never merged")),
@@ -2478,9 +2486,9 @@ fn a_mode_change_does_not_clear_the_floor_and_bad_extras_do_not_either() {
     let stored = settings::get(&s.lock_conn().unwrap(), project.to_str().unwrap()).unwrap();
     assert!(stored.protect_paths);
     assert!(stored.protected_extra.is_empty());
-    let protected = files_of(Ok(".github/workflows/x.yml\n"));
+    let protected = files_of(Ok(".claude/settings.json\n"));
     let question = asked(&merge::merge(&s, &protected, agent_merge("acme/web"), 20).unwrap());
-    assert!(question.contains(".github/workflows/x.yml"), "{question}");
+    assert!(question.contains(".claude/settings.json"), "{question}");
     let clean = files_of(Ok("readme.md\n"));
     assert!(matches!(
         merge::merge(&s, &clean, agent_merge("acme/web"), 30).unwrap(),
@@ -2573,10 +2581,10 @@ fn extra_protected_paths_only_add_and_a_stale_write_is_refused() {
     assert_eq!(
         super::protected::protected_hits(
             super::protected::shared_list().ok(),
-            &[".github/workflows/x.yml", "readme.md"],
+            &[".claude/settings.json", "readme.md"],
             &on.protected_extra
         ),
-        vec![".github/workflows/x.yml".to_string()]
+        vec![".claude/settings.json".to_string()]
     );
 }
 
@@ -2937,10 +2945,10 @@ fn the_no_checks_question_names_a_protected_file_too() {
     );
     read.changed_files = Some(1);
     let unchecked = FakeGithub::new(vec![read]);
-    *unchecked.files.lock().unwrap() = Some(Ok(".github/workflows/x.yml\n".into()));
+    *unchecked.files.lock().unwrap() = Some(Ok(".claude/settings.json\n".into()));
     let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 20).unwrap());
     assert!(question.contains("no checks"), "{question}");
-    assert!(question.contains(".github/workflows/x.yml"), "{question}");
+    assert!(question.contains(".claude/settings.json"), "{question}");
     assert!(unchecked.ran("pr", "merge").is_empty());
 }
 
@@ -3147,7 +3155,13 @@ fn the_gate_starts_a_review_to_another_builder_waits_for_its_settle_and_then_mer
         assert_eq!(record.reviewer, "claude");
         assert_eq!(record.author.as_deref(), Some("codex"));
     }
-    let merged = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
+    let waiting = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
+    assert!(
+        matches!(waiting, MergeOutcome::NeedsYou { .. }),
+        "{waiting:?}"
+    );
+    person_answers(&s, &f.project, H1_SEC, "Approve");
+    let merged = merge::merge_with(&s, &gh, security_request(&f.project), 31, &present).unwrap();
     assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
     assert_eq!(gh.ran("pr", "merge").len(), 1);
 }
@@ -3266,6 +3280,237 @@ fn the_launchers_settle_payload_passes_the_real_gate_and_writes_the_record() {
             .expect("the record");
         assert_eq!(record.status, "recorded");
     }
-    let merged = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
+    // The first merge after the record asks the person; their answer then lets the head through.
+    let asked = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
+    assert!(matches!(asked, MergeOutcome::NeedsYou { .. }), "{asked:?}");
+    person_answers(&s, &f.project, H1_SEC, "Approve");
+    let merged = merge::merge_with(&s, &gh, security_request(&f.project), 31, &present).unwrap();
     assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
+}
+
+/// The person answers the head's security question in the app (no chat answers it).
+fn person_answers(s: &SessionStore, project: &Path, head: &str, answer: &str) {
+    let mut conn = s.lock_conn().unwrap();
+    crate::decisions::answer(
+        &mut conn,
+        &project.display().to_string(),
+        &format!("security-review/{head}"),
+        answer,
+        None,
+        25,
+    )
+    .unwrap();
+}
+
+// ---- review/220-r4 repros (red at 2be26bc38) ---------------------------------------------------------------------------
+
+/// The needs-validation hold waits for "the person's answer", but any chat can answer that key: ask_person's `answer`
+/// field calls decisions::answer with `chat:<caller>`, and person_only() covers only irreversible/ and fresh-eyes/ keys.
+/// The author's Lead answers "Looked at it" for its own head and the candidates merge with no person.
+#[test]
+fn repro_220_r4_an_agent_answer_clears_the_needs_validation_hold() {
+    let pending = r#"[{"verdict":"needs_validation","title":"Token may leak to the phone","severity":{"overall_severity":"critical"}}]"#;
+    let key = format!("security-review/{H1_SEC}");
+    let f = fixture("r220r4-agent-answer");
+    let project = f.project.display().to_string();
+    let s = store();
+    record_review(&s, H1_SEC, pending, "claude", "codex", &[SECURITY_FILE]);
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    let first = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
+    assert!(matches!(&first, MergeOutcome::NeedsYou { .. }), "{first:?}");
+    // What ask_person({key, answer}) sends for a chat (steering.ts askPerson): by = chat:<the caller's session>.
+    let answered = {
+        let mut conn = s.lock_conn().unwrap();
+        crate::decisions::answer(
+            &mut conn,
+            &project,
+            &key,
+            "Looked at it",
+            Some("chat:author-lead".into()),
+            11,
+        )
+    };
+    let second = merge::merge(&s, &gh, security_request(&f.project), 12).unwrap();
+    assert!(
+        answered.is_err() && !matches!(second, MergeOutcome::Merged { .. }),
+        "a chat answered the person's security question ({answered:?}) and the head merged: {second:?}"
+    );
+}
+
+/// The gate's own record code is not a security path: review.rs (judge, record_settled, OWNER), delegations.rs (the
+/// owner guard and the settle hook), the launcher and the author derivation all change with no review.
+#[test]
+fn repro_220_r4_the_review_record_code_is_a_security_path() {
+    let missing: Vec<&str> = [
+        "src-tauri/src/delivery/review.rs",
+        "src-tauri/src/delegations.rs",
+        "src-tauri/src/delivery/deliver.rs",
+        "src-tauri/src/delivery/mod.rs",
+        "src-tauri/src/decisions.rs",
+        "src/features/security-review/model/launch.ts",
+    ]
+    .into_iter()
+    .filter(|file| {
+        !merge::security_paths()
+            .iter()
+            .any(|pattern| merge::glob_match(pattern, file))
+    })
+    .collect();
+    assert!(missing.is_empty(), "not security paths: {missing:?}");
+}
+
+/// End to end: the lead tick's switch merges a change to the review record code with no security review. With the floor
+/// on, delivery/** is held for a person's tap (still no review); delegations.rs (the owner guard and the settle hook) and
+/// decisions.rs (person_only) are not held at all. With the floor off (the default), review.rs merges too.
+#[test]
+fn repro_220_r4_a_change_to_the_review_record_code_is_not_merged_by_the_switch() {
+    let mut merged = Vec::new();
+    for (tag, file, floor) in [
+        ("r220r4-deleg-on", "src-tauri/src/delegations.rs", true),
+        ("r220r4-decide-on", "src-tauri/src/decisions.rs", true),
+        (
+            "r220r4-launch-on",
+            "src/features/security-review/model/launch.ts",
+            true,
+        ),
+        (
+            "r220r4-review-off",
+            "src-tauri/src/delivery/review.rs",
+            false,
+        ),
+    ] {
+        let s = if floor {
+            floor_pr(tag, 7, None).0
+        } else {
+            let project = floor_project(tag);
+            let s = store();
+            set_mode(&s, &project, Some(Mode::Pr), true);
+            remember_delivery(&s, &project, None, 7);
+            s
+        };
+        let gh = files_of(Ok(&format!("{file}\n")));
+        let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+        if matches!(outcome, MergeOutcome::Merged { .. }) {
+            merged.push(format!(
+                "{file} (floor {})",
+                if floor { "on" } else { "off" }
+            ));
+        }
+    }
+    assert!(
+        merged.is_empty(),
+        "the switch merged the review record code with no security review: {merged:?}"
+    );
+}
+
+/// Boot recovery cancels every open row whose owner is not a Mono chat (delegations.ts bootStep: "Its owner is gone."),
+/// so a restart mid-review cancels the app's review row. The gate then calls start() again, record() hands back the
+/// cancelled row for the same owner and request id, and the gate says "running" forever: no session is started for it
+/// (startPendingReviews takes running rows only) and the 60-minute stuck line never shows.
+#[test]
+fn repro_220_r4_a_review_cancelled_at_boot_is_not_reported_as_running() {
+    let s = store();
+    let f = fixture("r220r4-boot");
+    seed_author(&s, "codex");
+    let present = [
+        presence("codex", true, true),
+        presence("claude", true, true),
+    ];
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    merge::merge_with(&s, &gh, security_request(&f.project), 10, &present).unwrap();
+    let (id, _, _) = review_rows(&s)[0].clone();
+    {
+        let mut conn = s.lock_conn().unwrap();
+        crate::delegations::cancel(
+            &mut conn,
+            &[id],
+            Some("Its owner is gone.".into()),
+            Some("boot".into()),
+            11,
+        )
+        .unwrap();
+    }
+    let later = 10 + 2 * 60 * 60 * 1000;
+    let outcome =
+        merge::merge_with(&s, &gh, security_request(&f.project), later, &present).unwrap();
+    let running = review_rows(&s)
+        .iter()
+        .any(|(_, _, state)| state == "running");
+    let says_running = matches!(&outcome, MergeOutcome::NeedsYou { question, .. } if question.contains("Security review running"));
+    assert!(
+        running || !says_running,
+        "the gate says a review is running, and none is: {outcome:?} rows {:?}",
+        review_rows(&s)
+    );
+}
+
+#[test]
+fn a_failed_review_runs_again_as_a_new_attempt_and_its_old_settle_is_refused() {
+    // Round 5 L3: a review that failed is retried, not a permanent dead end; its old attempt can't settle the new one.
+    let s = store();
+    let f = fixture("sec-retry");
+    seed_author(&s, "codex");
+    let present = [
+        presence("codex", true, true),
+        presence("claude", true, true),
+    ];
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    merge::merge_with(&s, &gh, security_request(&f.project), 10, &present).unwrap();
+    let (id, _, _) = review_rows(&s)[0].clone();
+    {
+        let mut conn = s.lock_conn().unwrap();
+        let failed = crate::delegations::settle(
+            &mut conn,
+            crate::delegations::SettleInput {
+                id: id.clone(),
+                generation: 1,
+                state: "failed".into(),
+                result: None,
+                error: Some("rate limited".into()),
+                error_class: None,
+                retryable: None,
+                resets_at: None,
+                by: None,
+                self_review: None,
+            },
+            20,
+        )
+        .unwrap();
+        assert!(failed.applied);
+    }
+    let again = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
+    assert!(
+        matches!(&again, MergeOutcome::NeedsYou { question, .. } if question.contains("running")),
+        "{again:?}"
+    );
+    let conn = s.lock_conn().unwrap();
+    let (state, generation): (String, i64) = conn
+        .query_row(
+            "SELECT state, generation FROM delegations WHERE id = ?1",
+            [&id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!((state.as_str(), generation), ("running", 2));
+    drop(conn);
+    // The old attempt's settle (generation 1) is refused: only the current attempt can settle.
+    let mut conn = s.lock_conn().unwrap();
+    let stale = crate::delegations::settle(
+        &mut conn,
+        crate::delegations::SettleInput {
+            id,
+            generation: 1,
+            state: "completed".into(),
+            result: Some("{}".into()),
+            error: None,
+            error_class: None,
+            retryable: None,
+            resets_at: None,
+            by: None,
+            self_review: None,
+        },
+        31,
+    )
+    .unwrap();
+    assert!(!stale.applied, "an old attempt settled the new one");
 }
