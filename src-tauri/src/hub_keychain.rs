@@ -42,8 +42,25 @@ pub(crate) fn scoped_service(kind: Kind, service: &str) -> String {
     }
 }
 
+/// The More agents approval items (`monocode-hub:more-agents-*`) belong to the app's own code. A webview command
+/// cannot write, read or delete them: a deleted item would reset the approvals to nothing and bring a withdrawn one back.
+fn reserved(service: &str) -> bool {
+    let name = service
+        .strip_prefix(DEV_PREFIX)
+        .or_else(|| service.strip_prefix("monocode-hub:"))
+        .unwrap_or(service);
+    name.starts_with("more-agents")
+}
+
 fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
+    entry_with(service, account, false)
+}
+
+fn entry_with(service: &str, account: &str, internal: bool) -> Result<keyring::Entry, String> {
     check_service(service)?;
+    if !internal && reserved(service) {
+        return Err("The app keeps its own More agents approvals.".into());
+    }
     if account.is_empty() || account.len() > 200 {
         return Err("A login needs an account name.".into());
     }
@@ -57,6 +74,26 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
     let service = scoped_service(kind, service);
     keyring::Entry::new(&service, account)
         .map_err(|_| crate::platform::secrets::unreachable().to_string())
+}
+
+/// For the app's own More agents items only (see `reserved`).
+#[cfg(not(test))]
+pub(crate) fn read_internal(service: &str, account: &str) -> Result<Option<String>, String> {
+    match entry_with(service, account, true)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(crate::platform::secrets::not_read().into()),
+    }
+}
+
+#[cfg(not(test))]
+pub(crate) fn store_internal(service: &str, account: &str, secret: &str) -> Result<(), String> {
+    if secret.is_empty() {
+        return Err("Nothing to save.".into());
+    }
+    entry_with(service, account, true)?
+        .set_password(secret)
+        .map_err(|_| crate::platform::secrets::not_saved().to_string())
 }
 
 pub fn store(service: &str, account: &str, secret: &str) -> Result<(), String> {

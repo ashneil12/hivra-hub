@@ -129,7 +129,7 @@ pub(crate) struct Approval {
     pub pins: Vec<(String, String)>,
     /// The approval generation this record was issued in. The Keychain holds the current one, so a record kept from an
     /// earlier generation (a withdrawn approval put back, say) does not count.
-    pub generation: u64,
+    pub generation: String,
     /// HMAC-SHA256 over every field above, keyed with the install's approval key (Keychain). A record edited by hand,
     /// or written without the key, does not verify and is dropped on read.
     pub mac: String,
@@ -142,32 +142,34 @@ const GEN_ACCOUNT: &str = "approvals";
 
 #[cfg(test)]
 thread_local! {
-    pub(crate) static TEST_GEN: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(crate) static TEST_GEN: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 
 /// The current approval generation. Nothing in the data folder can move it back.
 #[cfg(test)]
-fn approval_generation() -> Result<u64, String> {
-    Ok(TEST_GEN.with(|g| g.get()))
+fn approval_generation() -> Result<Option<String>, String> {
+    Ok(TEST_GEN.with(|g| g.borrow().clone()))
 }
 
 #[cfg(test)]
-fn store_generation(generation: u64) -> Result<(), String> {
-    TEST_GEN.with(|g| g.set(generation));
+fn store_generation(generation: &str) -> Result<(), String> {
+    TEST_GEN.with(|g| *g.borrow_mut() = Some(generation.to_string()));
     Ok(())
 }
 
 #[cfg(not(test))]
-fn approval_generation() -> Result<u64, String> {
-    match crate::hub_keychain::read(GEN_SERVICE, GEN_ACCOUNT)? {
-        Some(text) => text.parse::<u64>().map_err(|_| NO_KEY.to_string()),
-        None => Ok(0),
-    }
+fn approval_generation() -> Result<Option<String>, String> {
+    crate::hub_keychain::read_internal(GEN_SERVICE, GEN_ACCOUNT)
 }
 
 #[cfg(not(test))]
-fn store_generation(generation: u64) -> Result<(), String> {
-    crate::hub_keychain::store(GEN_SERVICE, GEN_ACCOUNT, &generation.to_string())
+fn store_generation(generation: &str) -> Result<(), String> {
+    crate::hub_keychain::store_internal(GEN_SERVICE, GEN_ACCOUNT, generation)
+}
+
+/// A new generation: random, so a value that was used before (a reset item, a copy) never comes back.
+fn new_generation() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
 }
 
 /// Keychain item for the approval key. Dev copies use `monocode-hub-dev:` through `hub_keychain`, like every app secret.
@@ -198,11 +200,11 @@ fn approval_key(create: bool) -> Result<Vec<u8>, String> {
 
 #[cfg(not(test))]
 fn approval_key(create: bool) -> Result<Vec<u8>, String> {
-    match crate::hub_keychain::read(KEY_SERVICE, KEY_ACCOUNT)? {
+    match crate::hub_keychain::read_internal(KEY_SERVICE, KEY_ACCOUNT)? {
         Some(text) => unhex(&text).ok_or_else(|| NO_KEY.to_string()),
         None if create => {
             let key = new_key();
-            crate::hub_keychain::store(KEY_SERVICE, KEY_ACCOUNT, &hex(&key))?;
+            crate::hub_keychain::store_internal(KEY_SERVICE, KEY_ACCOUNT, &hex(&key))?;
             Ok(key)
         }
         None => Err(NO_KEY.to_string()),
@@ -263,26 +265,105 @@ fn approval_mac_of(key: &[u8], id: &str, a: &Approval) -> String {
         .map(|(path, sha)| format!("{path}\u{0}{sha}"))
         .collect::<Vec<_>>()
         .join("\u{1}");
-    let generation = a.generation.to_string();
     mac(
         key,
-        &[id, &a.fingerprint, &a.path, &a.sha256, &generation, &pins],
+        &[id, &a.fingerprint, &a.path, &a.sha256, &a.generation, &pins],
     )
 }
 
-/// The absolute file arguments that are files now, each with its SHA-256. An approval pins them, so a script named
-/// after the interpreter cannot be changed after the person allowed it.
-fn pins_for(args: &[String]) -> Result<Vec<(String, String)>, String> {
-    let mut pins = Vec::new();
-    for arg in args {
-        let path = Path::new(arg);
-        if path.is_absolute() && path.is_file() {
-            let canonical = std::fs::canonicalize(path).map_err(|_| NOT_APPROVED.to_string())?;
-            let sha = file_sha256(&canonical)?;
-            pins.push((canonical.to_string_lossy().into_owned(), sha));
+/// The loader flags: each loads a file as code or configuration, so its value must be an absolute, pinned file.
+const LOADER_FLAGS: [&str; 7] = [
+    "-m",
+    "-r",
+    "--require",
+    "--import",
+    "--loader",
+    "--env-file",
+    "--preload",
+];
+pub(crate) const LOADER_REFUSED: &str =
+    "A loader flag (-m, -r, --require, --import, --loader, --env-file, --preload) must name an absolute file.";
+pub(crate) const FILE_ARG_REFUSED: &str =
+    "A file named in the arguments must exist and be a file, given by its absolute path. A folder is not pinned.";
+
+/// The text an argument may carry a path in: the argument itself, the part after `=`, or the rest of a short flag.
+fn candidates(arg: &str) -> Vec<&str> {
+    if !arg.starts_with('-') {
+        return vec![arg];
+    }
+    let mut out = Vec::new();
+    if let Some((_, value)) = arg.split_once('=') {
+        out.push(value);
+    }
+    if arg.len() > 2 && !arg.starts_with("--") {
+        if let Some(value) = arg.get(2..) {
+            out.push(value);
         }
     }
-    Ok(pins)
+    out
+}
+
+fn loader_flag(arg: &str) -> bool {
+    let lower = arg.to_ascii_lowercase();
+    let flag = lower.split('=').next().unwrap_or("");
+    LOADER_FLAGS.contains(&flag)
+        || (arg.len() > 2 && !arg.starts_with("--") && matches!(arg.as_bytes()[1], b'm' | b'r'))
+}
+
+/// The canonical path of an argument that names a file. A folder, a missing path or a link to nothing is refused.
+fn canonical_file(path: &str) -> Result<String, String> {
+    let path = Path::new(path);
+    if !path.is_file() {
+        return Err(FILE_ARG_REFUSED.into());
+    }
+    let canonical = std::fs::canonicalize(path).map_err(|_| FILE_ARG_REFUSED.to_string())?;
+    Ok(canonical.to_string_lossy().into_owned())
+}
+
+/// One argument as the child will get it, and the absolute files it names (whole, after `=`, or a short flag's value).
+fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
+    if Path::new(arg).is_absolute() {
+        let canonical = canonical_file(arg)?;
+        return Ok((canonical.clone(), vec![canonical]));
+    }
+    if arg.starts_with('-') {
+        if let Some((flag, value)) = arg.split_once('=') {
+            if Path::new(value).is_absolute() {
+                let canonical = canonical_file(value)?;
+                return Ok((format!("{flag}={canonical}"), vec![canonical]));
+            }
+        }
+        if arg.len() > 2 && !arg.starts_with("--") {
+            if let (Some(value), Some(head)) = (arg.get(2..), arg.get(..2)) {
+                if Path::new(value).is_absolute() {
+                    let canonical = canonical_file(value)?;
+                    return Ok((format!("{head}{canonical}"), vec![canonical]));
+                }
+            }
+        }
+    }
+    Ok((arg.to_string(), Vec::new()))
+}
+
+/// The pins for an argument list, each file with its SHA-256, and the arguments as the child gets them (paths made
+/// canonical). The same call at approval and at spawn: the two lists must be equal, or nothing starts.
+/// Pinned files: each path with the SHA-256 it had.
+type Pins = Vec<(String, String)>;
+
+fn pin_set(args: &[String]) -> Result<(Pins, Vec<String>), String> {
+    let mut pins: Vec<(String, String)> = Vec::new();
+    let mut rewritten = Vec::new();
+    for arg in args {
+        let (text, paths) = pin_arg(arg)?;
+        for path in paths {
+            if !pins.iter().any(|(pinned, _)| pinned == &path) {
+                let sha = file_sha256(Path::new(&path))?;
+                pins.push((path, sha));
+            }
+        }
+        rewritten.push(text);
+    }
+    Ok((pins, rewritten))
 }
 
 /// A line for the Allow card when the entry fetches its program at start: only the launcher is pinned.
@@ -376,7 +457,7 @@ pub(crate) fn read_stored(data_dir: &Path) -> Result<Stored, String> {
                             path: text("path")?,
                             sha256: text("sha256")?,
                             pins,
-                            generation: record.get("generation")?.as_u64()?,
+                            generation: record.get("generation")?.as_str()?.to_string(),
                             mac: text("mac")?,
                         },
                     ))
@@ -387,8 +468,9 @@ pub(crate) fn read_stored(data_dir: &Path) -> Result<Stored, String> {
     // An approval counts only if its MAC verifies under the install's key. With no key (or a missing one), none does.
     if !approvals.is_empty() {
         let key = approval_key(false).ok();
-        let current = approval_generation().ok();
-        approvals.retain(|id, a| match (key.as_deref(), current) {
+        // A missing generation item means no approval counts (fail closed).
+        let current = approval_generation().ok().flatten();
+        approvals.retain(|id, a| match (key.as_deref(), current.as_deref()) {
             (Some(key), Some(current)) => {
                 a.generation == current && approval_mac_of(key, id, a) == a.mac
             }
@@ -510,6 +592,20 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
     if args.iter().any(|arg| relative_file_arg(arg)) {
         return Err(RELATIVE_REFUSED.into());
     }
+    for (index, arg) in args.iter().enumerate() {
+        if loader_flag(arg) {
+            let value = if let Some((_, value)) = arg.split_once('=') {
+                Some(value)
+            } else if arg.len() > 2 && !arg.starts_with("--") {
+                arg.get(2..)
+            } else {
+                args.get(index + 1).map(String::as_str)
+            };
+            if !value.is_some_and(|value| Path::new(value).is_absolute()) {
+                return Err(LOADER_REFUSED.into());
+            }
+        }
+    }
     Ok((id.to_string(), command.to_string(), args))
 }
 
@@ -529,14 +625,16 @@ fn inline_flag(arg: &str) -> bool {
     }
 }
 
-/// A relative path argument: the child would read it from the chat folder, which nothing pins. A scoped package name
-/// (`@scope/pkg`) and a URL are not paths.
+/// A relative path argument: the child would read it from the folder it runs in, which nothing pins. A scoped package
+/// name (`@scope/pkg`) and a URL are not paths. Every value an argument can carry is checked, not only the argument.
 fn relative_file_arg(arg: &str) -> bool {
-    let value = arg.split_once('=').map_or(arg, |(_, v)| v);
-    if value.contains("://") || value.starts_with('@') || !value.contains(['/', '\\']) {
-        return false;
-    }
-    !Path::new(value).is_absolute()
+    candidates(arg).into_iter().any(|value| {
+        !value.is_empty()
+            && !value.contains("://")
+            && !value.starts_with('@')
+            && !Path::new(value).is_absolute()
+            && value.contains(['/', '\\', '.'])
+    })
 }
 
 fn valid_id(id: &str) -> bool {
@@ -595,10 +693,10 @@ pub(crate) fn write_agents(
     if approvals.len() != current.approvals.len() {
         // An allowance was dropped (an edit or a removal): move the generation on, so a copy of it cannot come back.
         let key = approval_key(true)?;
-        let generation = approval_generation()? + 1;
-        store_generation(generation)?;
+        let generation = new_generation();
+        store_generation(&generation)?;
         for (id, a) in approvals.iter_mut() {
-            a.generation = generation;
+            a.generation = generation.clone();
             a.mac = approval_mac_of(&key, id, a);
         }
     }
@@ -638,7 +736,7 @@ pub(crate) fn set_approval(
         }
         let path = resolve_command(&command, path_value)?;
         let sha256 = file_sha256(Path::new(&path))?;
-        let pins = pins_for(&args)?;
+        let (pins, _) = pin_set(&args)?;
         approvals.insert(
             checked_id,
             Approval {
@@ -646,7 +744,7 @@ pub(crate) fn set_approval(
                 path,
                 sha256,
                 pins,
-                generation: 0,
+                generation: String::new(),
                 mac: String::new(),
             },
         );
@@ -654,10 +752,10 @@ pub(crate) fn set_approval(
         approvals.remove(id);
     }
     // Every change moves the generation on and re-MACs what is kept, so a withdrawn record cannot be put back.
-    let generation = approval_generation()? + 1;
-    store_generation(generation)?;
+    let generation = new_generation();
+    store_generation(&generation)?;
     for (aid, a) in approvals.iter_mut() {
-        a.generation = generation;
+        a.generation = generation.clone();
         a.mac = approval_mac_of(&key, aid, a);
     }
     stored.approvals = approvals;
@@ -688,6 +786,12 @@ pub(crate) fn approved_spawn(
     if !still_approved(approval, &fp, Some(&resolved)) {
         return Err(ON_DISK_CHANGED.into());
     }
+    // Pins are taken again over the same arguments: a file that changed, moved behind a link, or appeared since the
+    // approval refuses the start, and the child is given the canonical paths.
+    let (pins_now, canonical_args) = pin_set(&args)?;
+    if pins_now != approval.pins {
+        return Err(ON_DISK_CHANGED.into());
+    }
     let name = entry
         .get("name")
         .and_then(Value::as_str)
@@ -698,7 +802,7 @@ pub(crate) fn approved_spawn(
         id: checked_id,
         name,
         command: resolved,
-        args,
+        args: canonical_args,
     })
 }
 
@@ -718,6 +822,18 @@ pub(crate) fn approved_start(
         return Err(NO_COMMAND_FROM_APP.into());
     }
     approved_spawn(data_dir, more_agent, path_value)
+}
+
+/// The folder a More agents child runs in: app-owned and new for each start, so no file in the chat folder is a
+/// relative input to it.
+pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
+    let dir = data_dir
+        .join("more-agents")
+        .join("run")
+        .join(uuid::Uuid::new_v4().simple().to_string());
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Could not prepare the More agents folder: {e}"))?;
+    Ok(dir)
 }
 
 /// An absolute path that is a file, or a bare name found on `path_value`. Anything else is not started.
@@ -940,7 +1056,7 @@ mod tests {
     fn dir() -> Scratch {
         // A fake key for this test thread: no test reads or writes the real Keychain.
         TEST_KEY.with(|key| *key.borrow_mut() = Some(vec![7u8; 32]));
-        TEST_GEN.with(|g| g.set(0));
+        TEST_GEN.with(|g| *g.borrow_mut() = Some("gen-test".to_string()));
         let path = std::env::temp_dir().join(format!("wp134-more-agents-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("scratch dir");
         Scratch(path)
@@ -1399,7 +1515,7 @@ mod tests {
             path: "/opt/a".into(),
             sha256: "sha".into(),
             pins: vec![("/opt/s.mjs".into(), "pin".into())],
-            generation: 1,
+            generation: "gen-1".to_string(),
             mac: String::new(),
         };
         let base = approval_mac_of(b"key-one", "id", &a);
@@ -1423,7 +1539,7 @@ mod tests {
                 b"key-one",
                 "id",
                 &Approval {
-                    generation: 2,
+                    generation: "gen-2".to_string(),
                     ..a.clone()
                 }
             )
@@ -1510,6 +1626,145 @@ mod tests {
         assert!(
             approve(d.path(), "wp134", &path_value).is_err(),
             "a shell was approved through a symlink"
+        );
+    }
+
+    // Review r4 repro (MEDIUM): a bare file name is as relative as `./agent.mjs`. The child reads it from the chat
+    // folder, which nothing pins, yet only an argument with a slash is refused. `--env-file=.env` is the same.
+    #[test]
+    fn review_r4_a_bare_relative_file_argument_is_refused() {
+        for args in [
+            &["agent.mjs"][..],
+            &["--env-file=.env", "/opt/agent.mjs"][..],
+        ] {
+            assert_eq!(
+                checked_fields(&entry("wp134", "/opt/node", args))
+                    .err()
+                    .as_deref(),
+                Some(RELATIVE_REFUSED),
+                "{args:?} reads a file from the chat folder and is not refused"
+            );
+        }
+    }
+
+    // Review r4 repro (MEDIUM): the pin is taken on the symlink's target, but the child is given the link. Pointing the
+    // link at another file runs that file while the pin still matches.
+    #[cfg(unix)]
+    #[test]
+    fn review_r4_a_pinned_argument_behind_a_symlink_cannot_be_redirected() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let real = d.path().join("agent.mjs");
+        let evil = d.path().join("evil.mjs");
+        let link = d.path().join("current.mjs");
+        std::fs::write(&real, b"console.log('approved')").expect("script");
+        std::fs::write(&evil, b"require('child_process').exec('anything')").expect("evil");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        let link_arg = link.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-node", &[link_arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::remove_file(&link).expect("unlink");
+        std::os::unix::fs::symlink(&evil, &link).expect("relink");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "the argument now runs another file and still starts"
+        );
+    }
+
+    // Review r4 repro (MEDIUM): an absolute argument that was not a file at approval is never pinned, so a file put
+    // there afterwards runs unpinned.
+    #[cfg(unix)]
+    #[test]
+    fn review_r4_an_absolute_file_that_appears_after_approval_does_not_run() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let script = d.path().join("agent.mjs");
+        let path_value = bin.to_string_lossy().into_owned();
+        let script_arg = script.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-node", &[script_arg.as_str()])],
+        )
+        .expect("seed");
+        // Approval refuses a missing file; had it been allowed, the planted file must still not run.
+        let _ = approve(d.path(), "wp134", &path_value);
+        std::fs::write(&script, b"require('child_process').exec('anything')").expect("plant");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a file that appeared after approval runs unpinned"
+        );
+    }
+
+    // Review r4 repro (MEDIUM): an absolute file given as a flag value (`--import=/abs/hook.mjs`) is not pinned.
+    #[cfg(unix)]
+    #[test]
+    fn review_r4_an_absolute_file_given_as_a_flag_value_is_pinned() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let hook = d.path().join("hook.mjs");
+        std::fs::write(&hook, b"// approved hook").expect("hook");
+        let path_value = bin.to_string_lossy().into_owned();
+        let flag = format!("--import={}", hook.to_string_lossy());
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-node", &[flag.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&hook, b"require('child_process').exec('anything')").expect("swap");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "the hook changed after approval and still starts"
+        );
+    }
+
+    // Review r4 repro (MEDIUM): the generation is a counter that a missing Keychain item reads as 0. Once the item is
+    // gone (deleted, or a `monocode-hub:` connector sign-out names it), the counter climbs through the old values
+    // again and a record withdrawn at one of them verifies again.
+    #[cfg(unix)]
+    #[test]
+    fn review_r4_a_reset_generation_does_not_revive_a_withdrawn_record() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-a", b"#!/bin/sh\n");
+        make_tool(&bin, "wp134-b", b"#!/bin/sh\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![
+                entry("wp134a", "wp134-a", &[]),
+                entry("wp134b", "wp134-b", &[]),
+            ],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134a", &path_value).expect("approve a");
+        let file = file_path(d.path());
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+        let record = saved["approvals"]["wp134a"].clone();
+        set_approval(d.path(), "wp134a", false, None, &path_value).expect("withdraw");
+        // The Keychain item goes away: the next read is 0, and the next change issues generation 1 again.
+        TEST_GEN.with(|g| *g.borrow_mut() = None);
+        approve(d.path(), "wp134b", &path_value).expect("approve b");
+        let mut now: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+        now["approvals"]["wp134a"] = record;
+        std::fs::write(&file, serde_json::to_string(&now).expect("text")).expect("write");
+        assert!(
+            approved_spawn(d.path(), "wp134a", &path_value).is_err(),
+            "a withdrawn approval came back once the generation counter restarted"
         );
     }
 }

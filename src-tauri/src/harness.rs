@@ -20,6 +20,8 @@ use crate::passwd_identity;
 /// The longest stdout line a More agents child may send. A longer line stops that child's read, so a child that never
 /// ends a line cannot grow the app's memory without bound.
 const MAX_STDOUT_LINE: usize = 8 * 1024 * 1024;
+/// The longest stderr line a More agents child may send.
+const MAX_STDERR_LINE: usize = 64 * 1024;
 
 /// Reads stdout line by line and hands each line on until `on_line` says stop or the stream ends. With a cap, a line
 /// past it ends the read; without one, every line is read whole.
@@ -1143,6 +1145,12 @@ pub fn harness_spawn(
     );
     let mut cmd =
         crate::disclaim::command(std::ffi::OsStr::new(&command), disclaim_launcher.as_deref());
+    // A More agents child runs in its own empty folder, never the chat folder: nothing a chat holds is a relative input.
+    let spawn_dir = if more_run {
+        crate::more_agents::run_folder(&app.path().app_data_dir().map_err(|e| e.to_string())?)?
+    } else {
+        workdir.clone()
+    };
     if dev_claude {
         if let Some(config_dir) = crate::instance::dev_claude_config_dir()? {
             cmd.env("CLAUDE_CONFIG_DIR", &config_dir)
@@ -1151,7 +1159,7 @@ pub fn harness_spawn(
     }
     cmd.args(&devin_config)
         .args(&args)
-        .current_dir(&workdir)
+        .current_dir(&spawn_dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -1306,9 +1314,10 @@ pub fn harness_spawn(
 
     let stderr_app = app.clone();
     let stderr_id = session_id.clone();
+    // A More agents child's stderr is capped too, so a child that writes forever cannot grow the app's memory.
+    let stderr_cap = more_run.then_some(MAX_STDERR_LINE);
     thread::spawn(move || {
-        for line in BufReader::new(stderr).lines() {
-            let Ok(line) = line else { break };
+        read_stdout_lines(BufReader::new(stderr), stderr_cap, |line| {
             let _ = stderr_app.emit(
                 STDERR_EVENT,
                 HarnessLine {
@@ -1316,7 +1325,8 @@ pub fn harness_spawn(
                     line,
                 },
             );
-        }
+            true
+        });
     });
 
     let wait_app = app.clone();
