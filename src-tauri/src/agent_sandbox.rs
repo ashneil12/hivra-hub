@@ -3424,3 +3424,380 @@ mod review_r5_repro {
 #[cfg(test)]
 #[path = "agent_sandbox_spawn_audit.rs"]
 mod spawn_audit;
+
+/// Review r6 repro for PR #208 (WP-178), red at 520e3d4e3. Round 6 locked every known project's `.git` in the harness
+/// spawn and added unlink denies on the checkout and its parents up to home. These tests name what that leaves open.
+#[cfg(all(test, unix))]
+mod review_r6_repro {
+    use super::*;
+
+    fn filter_matches(line: &str, path: &str) -> bool {
+        if let Some(start) = line.find("(regex #\"") {
+            let rest = &line[start + "(regex #\"".len()..];
+            return rest.find("\")").is_some_and(|end| {
+                regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path))
+            });
+        }
+        for (open, subpath) in [("(literal \"", false), ("(subpath \"", true)] {
+            if let Some(start) = line.find(open) {
+                let rest = &line[start + open.len()..];
+                let Some(end) = rest.find('"') else {
+                    return false;
+                };
+                let named = &rest[..end];
+                return path == named
+                    || (subpath && path.starts_with(&format!("{}/", named.trim_end_matches('/'))));
+            }
+        }
+        false
+    }
+
+    /// A deny that covers moving `path` away: `file-write*` or `file-write-unlink` on that exact node.
+    fn denies_moving(profile: &str, path: &Path) -> bool {
+        let path = path.to_string_lossy();
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ")
+                && (line.contains("file-write*") || line.contains("file-write-unlink"))
+                && filter_matches(line, &path)
+        })
+    }
+
+    /// A deny that covers writing (and so replacing or deleting) `path`.
+    fn denies_write(profile: &str, path: &Path) -> bool {
+        let path = path.to_string_lossy();
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ")
+                && line.contains("file-write*")
+                && filter_matches(line, &path)
+        })
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("sbx-r6-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = crate::git_cmd::git()
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    /// A main checkout with one commit, so `git worktree add` works.
+    fn main_repo(main: &Path) {
+        std::fs::create_dir_all(main).unwrap();
+        git(main, &["init", "-q"]);
+        std::fs::write(main.join("a.txt"), "a\n").unwrap();
+        git(main, &["add", "a.txt"]);
+        git(main, &["commit", "-q", "-m", "a"]);
+    }
+
+    /// HIGH (HIGH-2 fix incomplete): a chat in a linked worktree locks its own folder and its parents, and the common
+    /// `.git` by path, but not the main checkout that holds that `.git`. `mv ~/Projects/main ~/Projects/m2; write
+    /// ~/Projects/m2/.git/hooks/pre-commit; mv ~/Projects/m2 ~/Projects/main` plants the hook every worktree of that
+    /// repository runs on Ash's next Git panel commit. The r5 test's comment names this case; its assertions did not.
+    #[test]
+    fn a_linked_worktrees_main_checkout_cannot_be_moved_to_reach_its_hooks() {
+        let home = scratch("wtmain");
+        let main = home.join("Projects").join("main");
+        let wt = home.join("Worktrees").join("wt");
+        main_repo(&main);
+        std::fs::create_dir_all(home.join("Worktrees")).unwrap();
+        git(&main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        let profile = profile_with_checkouts(&home, None, std::slice::from_ref(&wt)).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            denies_moving(&profile, &wt),
+            "precondition: the worktree itself is locked"
+        );
+        for node in [main.clone(), home.join("Projects")] {
+            assert!(
+                denies_moving(&profile, &node),
+                "{} can be renamed by an agent in the linked worktree; the common .git/hooks are then writable under the new name",
+                node.display()
+            );
+        }
+    }
+
+    /// HIGH (HIGH-2 fix incomplete): the parents are walked lexically, each one canonicalised. When a parent is a link
+    /// (`~/Projects -> ~/Dropbox/code`), the real chain's own parents (`~/Dropbox`) are never locked. Moving
+    /// `~/Dropbox` aside moves the real `.git` out from under every rule, and the hook is written under the new name.
+    #[test]
+    fn a_checkout_under_a_linked_folder_locks_the_real_parents_too() {
+        let home = scratch("linked");
+        let real = home.join("Dropbox").join("code");
+        let proj_real = real.join("proj");
+        std::fs::create_dir_all(&proj_real).unwrap();
+        git(&proj_real, &["init", "-q"]);
+        std::os::unix::fs::symlink(&real, home.join("Projects")).unwrap();
+        let checkout = home.join("Projects").join("proj");
+        let profile = profile_with_checkouts(&home, None, std::slice::from_ref(&checkout)).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            denies_moving(&profile, &real),
+            "precondition: the link's own target is locked"
+        );
+        let parent = home.join("Dropbox");
+        assert!(
+            denies_moving(&profile, &parent),
+            "{} can be renamed; the checkout's real .git then sits at a path no rule names",
+            parent.display()
+        );
+    }
+
+    /// HIGH (HIGH-2 fix incomplete): a checkout outside home locks only its own node (`push_ancestor_locks`). Its parent
+    /// (`/Volumes/Work`, `/Users/Shared/code`, a folder under /tmp) can be renamed, the hook written, and the parent
+    /// moved back. Locking a node the agent could never rename anyway costs nothing, so every parent up to `/` can be.
+    #[test]
+    fn a_checkout_outside_home_locks_its_parents_too() {
+        let root = scratch("outside");
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let checkout = root.join("Volumes").join("Work").join("proj");
+        std::fs::create_dir_all(&checkout).unwrap();
+        git(&checkout, &["init", "-q"]);
+        let profile = profile_with_checkouts(&home, None, std::slice::from_ref(&checkout)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            denies_moving(&profile, &checkout),
+            "precondition: the checkout node itself is locked"
+        );
+        let parent = root.join("Volumes").join("Work");
+        assert!(
+            denies_moving(&profile, &parent),
+            "{} can be renamed; the checkout's .git/hooks are then writable under the new name",
+            parent.display()
+        );
+    }
+
+    /// HIGH (HIGH-3 fix incomplete): the harness locks the chat's own folder and the `projects` list. Another chat's
+    /// linked worktree is neither. An agent rewrites `~/Worktrees/other/.git` (`gitdir: <a git dir it made>`, with
+    /// `objects/info/alternates` back to the real objects so the panel looks the same) or renames that folder, writes
+    /// it and moves it back. Ash's next Commit in the other chat's Git panel runs that git dir's hooks through
+    /// `git_with_hooks`, outside the sandbox. A repo that is a chat's folder but not a project is the same.
+    #[test]
+    fn another_chats_worktree_keeps_its_git_file_locked() {
+        let home = scratch("siblings");
+        let main = home.join("Projects").join("main");
+        let mine = home.join("Worktrees").join("mine");
+        let other = home.join("Worktrees").join("other");
+        main_repo(&main);
+        std::fs::create_dir_all(home.join("Worktrees")).unwrap();
+        git(&main, &["worktree", "add", "-q", mine.to_str().unwrap()]);
+        git(&main, &["worktree", "add", "-q", other.to_str().unwrap()]);
+        // What harness_spawn passes: the chat's own folder first, then every project folder.
+        let profile = profile_with_checkouts(&home, None, &[mine.clone(), main.clone()]).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            denies_write(&profile, &mine.join(".git")) && denies_moving(&profile, &mine),
+            "precondition: the chat's own worktree is locked"
+        );
+        let dot_git = other.join(".git");
+        assert!(
+            denies_write(&profile, &dot_git),
+            "{} can be rewritten to point at a git dir the agent made, whose hooks Ash's commit there runs",
+            dot_git.display()
+        );
+        assert!(
+            denies_moving(&profile, &other),
+            "{} can be renamed, its .git rewritten under the new name, and moved back",
+            other.display()
+        );
+    }
+
+    /// HIGH (HIGH-3 fix holds for one path only): round 6 passes every known project to `sandboxed_launch` in
+    /// `harness_spawn`. Every other wrap still names one folder or none: a More agents child (an agent CLI,
+    /// `more_agent_wrap`), an armed check (`watcher/checks.rs`, a command from the agent's folder every minute), a
+    /// project action an agent runs, the gate and verify scripts, the self-build check, and the verdict gate (`&[]`, no
+    /// `.git` denied at all). Code started there writes project B's `.git/hooks/pre-commit`, and Ash's next Commit in
+    /// B runs it outside the sandbox. This reads the call sites, as the r5 test for HIGH-3 does.
+    #[test]
+    fn every_sandbox_wrap_locks_every_known_projects_git_not_only_its_own_folder() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let own = include_str!("agent_sandbox.rs");
+        let body_of = |name: &str| -> String {
+            let Some(start) = own.find(&format!("pub fn {name}(")) else {
+                return String::new();
+            };
+            let rest = &own[start..];
+            rest[..rest.find("\n}\n").unwrap_or(rest.len())].to_string()
+        };
+        let mut files = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                } else if path.extension().is_some_and(|ext| ext == "rs") {
+                    let name = path.file_name().unwrap().to_string_lossy().to_string();
+                    if name != "tests.rs" && !name.ends_with("_tests.rs") {
+                        files.push(path);
+                    }
+                }
+            }
+        }
+        files.sort();
+        let mut narrow = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).unwrap();
+            for wrap in ["action_wrap", "more_agent_wrap"] {
+                let needle = format!("crate::agent_sandbox::{wrap}(");
+                let mut from = 0;
+                while let Some(at) = text[from..].find(&needle) {
+                    let start = from + at + needle.len();
+                    let mut depth = 1;
+                    let mut end = start;
+                    for (offset, c) in text[start..].char_indices() {
+                        match c {
+                            '(' => depth += 1,
+                            ')' => depth -= 1,
+                            _ => {}
+                        }
+                        if depth == 0 {
+                            end = start + offset;
+                            break;
+                        }
+                    }
+                    let args = &text[start..end];
+                    let one_or_none = args.contains("from_ref(") || args.contains("&[]");
+                    if one_or_none && !body_of(wrap).contains("project_folders") {
+                        let line = text[..start].lines().count();
+                        let rel = file
+                            .strip_prefix(&root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .to_string();
+                        narrow.push(format!(
+                            "{rel}:{line} {wrap}({})",
+                            args.split_whitespace().collect::<Vec<_>>().join(" ")
+                        ));
+                    }
+                    from = end;
+                }
+            }
+        }
+        assert!(
+            narrow.is_empty(),
+            "these wraps lock one checkout or none, so code they start can write every other project's .git/hooks:\n{}",
+            narrow.join("\n")
+        );
+    }
+
+    /// HIGH (new): the app's webview keeps its own storage under `~/Library/WebKit/<identifier>`, not in the data folder,
+    /// and the profile does not name it. localStorage there holds `monocode.providerBinaryPaths.v1` (an agent CLI's
+    /// path: at the next launch `warm_configured_binaries` checks it, and for grok, fx, pi, omp and cursor that check
+    /// runs `<path> --help` outside the sandbox) and `monocode:hub-bot-changes` (the `delivery` tag the HIGH-1 guard
+    /// reads). An agent edits the sqlite file with `/usr/bin/sqlite3`.
+    #[test]
+    fn the_apps_webview_storage_cannot_be_written() {
+        let profile = profile_with_checkouts(Path::new("/Users/test"), None, &[]).unwrap();
+        assert!(
+            denies_write(
+                &profile,
+                Path::new("/Users/test/Library/Application Support/com.ash.monocode-hub/settings/agent-sandbox")
+            ),
+            "precondition: the data folder is write-denied"
+        );
+        for path in [
+            "/Users/test/Library/WebKit/com.ash.monocode-hub/WebsiteData/Default/salt/salt/LocalStorage/localstorage.sqlite3",
+            "/Users/test/Library/WebKit/com.ash.monocode-hub/WebsiteData/LocalStorage/tauri_localhost_0.localstorage",
+            "/Users/test/Library/WebKit/com.ash.monocode-hub.dev.hub-x/WebsiteData/Default/salt/salt/LocalStorage/localstorage.sqlite3",
+        ] {
+            assert!(
+                denies_write(&profile, Path::new(path)),
+                "an agent can write the app's webview storage: {path}"
+            );
+        }
+    }
+
+    /// macOS probe of `a_linked_worktrees_main_checkout_cannot_be_moved_to_reach_its_hooks`, under the real profile:
+    /// the move, the write and the move back, from a chat whose folder is the linked worktree. Not run on Linux.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_moving_a_linked_worktrees_main_checkout_does_not_open_its_hooks() {
+        let home = scratch("mvmain");
+        let main = home.join("Projects").join("main");
+        let wt = home.join("Worktrees").join("wt");
+        main_repo(&main);
+        std::fs::create_dir_all(home.join("Worktrees")).unwrap();
+        git(&main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        let profile = profile_with_checkouts(&home, None, std::slice::from_ref(&wt)).unwrap();
+        let script = "cd \"$HOME/Projects\" && mv main m2 && mkdir -p m2/.git/hooks && \
+                      printf '#!/bin/sh\\ntrue\\n' > m2/.git/hooks/pre-commit && mv m2 main";
+        let _ = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile, "/bin/sh", "-c", script])
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        let planted = main.join(".git").join("hooks").join("pre-commit").exists()
+            || home
+                .join("Projects")
+                .join("m2")
+                .join(".git")
+                .join("hooks")
+                .join("pre-commit")
+                .exists();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            !planted,
+            "a hook was written into the main checkout's common .git by moving it, writing, and moving it back"
+        );
+    }
+
+    /// macOS probe of `the_apps_webview_storage_cannot_be_written`, under the real profile. Not run on Linux.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_the_apps_webview_storage_cannot_be_written() {
+        let home = scratch("webkit");
+        let store = home
+            .join("Library")
+            .join("WebKit")
+            .join("com.ash.monocode-hub")
+            .join("WebsiteData")
+            .join("LocalStorage");
+        std::fs::create_dir_all(&store).unwrap();
+        let file = store.join("localstorage.sqlite3");
+        std::fs::write(&file, "before").unwrap();
+        let profile = profile_with_checkouts(&home, None, &[]).unwrap();
+        let _ = Command::new(SANDBOX_EXEC)
+            .args([
+                "-p",
+                &profile,
+                "/bin/sh",
+                "-c",
+                "printf after > \"$1\"",
+                "sh",
+            ])
+            .arg(&file)
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        let seen = std::fs::read_to_string(&file).unwrap_or_default();
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(
+            seen, "before",
+            "a sandboxed agent wrote the app's webview storage"
+        );
+    }
+}

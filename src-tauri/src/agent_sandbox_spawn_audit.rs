@@ -1375,3 +1375,54 @@ fn skip_char_or_lifetime(bytes: &[u8], start: usize) -> usize {
         i
     }
 }
+
+/// Review r6 repro for PR #208 (WP-178), red at 520e3d4e3.
+mod review_r6_repro {
+    use super::*;
+
+    /// MED (the audit holds by luck): a start is only `Command::new` or an empty `.spawn()`. A command another module
+    /// builds (`delivery::child`, an allow-listed builder) and this function runs with `.output()` or `.status()`, or
+    /// hands to an allow-listed runner (`pr_watch::bounded::run`), is never a site. Two such starts ship today:
+    /// github_issues/gh.rs `run` (plain `gh` found on the login PATH, on the webview's issue poll, in a project folder)
+    /// and worktree_pool.rs `run_tool`. The reasons on `delivery/mod.rs child` ("git uses command_for") and on
+    /// `pr_watch/bounded.rs run` ("the check runner wraps", "the janitor's gh is contained") do not cover them.
+    #[test]
+    fn a_start_through_another_modules_command_builder_is_still_listed() {
+        let fixture = r#"
+            fn polled() {
+                let mut command = crate::delivery::child("gh");
+                command.args(["issue", "list"]);
+                let _ = command.output();
+            }
+            fn handed_on() {
+                let command = crate::delivery::child("gh");
+                let _ = crate::pr_watch::bounded::run(command, TIMEOUT);
+            }
+        "#;
+        let mut names: Vec<String> = classify("fixture.rs", fixture)
+            .into_iter()
+            .filter(|site| !site.wrapped)
+            .map(|site| site.func)
+            .collect();
+        names.sort();
+        names.dedup();
+        assert_eq!(
+            names,
+            vec!["handed_on".to_string(), "polled".to_string()],
+            "a start through another module's builder is not seen by the audit"
+        );
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+        let sites = collect(&root);
+        for (file, func) in [
+            ("github_issues/gh.rs", "run"),
+            ("worktree_pool.rs", "run_tool"),
+        ] {
+            assert!(
+                sites
+                    .iter()
+                    .any(|site| site.file == file && site.func == func),
+                "{file} {func} starts a process outside the sandbox and the audit does not list it"
+            );
+        }
+    }
+}

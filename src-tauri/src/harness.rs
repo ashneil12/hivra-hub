@@ -5824,3 +5824,130 @@ mod review_r5_repro {
         );
     }
 }
+
+/// Review r6 repro for PR #208 (WP-178), red at 520e3d4e3. Round 6 write-denied the fixed fallback folders searched
+/// before Homebrew. The app still finds programs it runs outside the sandbox in other home folders an agent can write.
+#[cfg(all(test, unix))]
+mod review_r6_repro {
+    use super::*;
+
+    fn filter_matches(line: &str, path: &str) -> bool {
+        let Some(start) = line.find("(regex #\"") else {
+            return false;
+        };
+        let rest = &line[start + "(regex #\"".len()..];
+        rest.find("\")")
+            .is_some_and(|end| regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path)))
+    }
+
+    fn denies_write(profile: &str, path: &Path) -> bool {
+        let path = path.to_string_lossy();
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ")
+                && line.contains("file-write*")
+                && filter_matches(line, &path)
+        })
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("hx-r6-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    /// HIGH (HIGH-4 fix incomplete): the login shell's PATH comes first in `gui_search_path`, ahead of Homebrew and
+    /// `/usr/bin`. pnpm (`~/Library/pnpm`), `n` (`~/n/bin`), a personal `~/bin`, pyenv, volta, deno, Windsurf and
+    /// Antigravity all put a home folder there. The profile denies only a fixed list, so an agent drops `git`, `ssh`,
+    /// `node` or `npm` into one of these. Ash's Git panel commit and push (`git_with_hooks`, never sandboxed, PATH set
+    /// to this search path), the self-build's `npm run hub:check-all`, the terminal mirror's `claude` and the issue
+    /// poll's `gh` then run the planted file. `tool_on_path` reads the app's own PATH, which a Finder launch keeps bare,
+    /// so it never sees these folders either. The cache is seeded the way the login shell read fills it; the empty
+    /// scratch folders go in front, so nothing else resolves differently.
+    #[test]
+    fn every_home_folder_on_the_login_path_is_write_denied() {
+        let home = scratch("loginpath");
+        let h = home.to_string_lossy().to_string();
+        let login = {
+            let mut cache = LOGIN_SHELL_ENV.lock().unwrap();
+            let map = cache.get_or_insert_with(HashMap::new);
+            let tail = map
+                .get("PATH")
+                .cloned()
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            let login = format!("{h}/bin:{h}/Library/pnpm:{h}/n/bin:{tail}");
+            map.insert("PATH".into(), login.clone());
+            login
+        };
+        let search = gui_search_path_from(Some(login), Some(h.clone()), None);
+        let dirs: Vec<PathBuf> = std::env::split_paths(&search).collect();
+        let system = dirs
+            .iter()
+            .position(|dir| dir == Path::new("/usr/bin"))
+            .expect("/usr/bin is searched");
+        let profile = crate::agent_sandbox::profile_with_checkouts(&home, None, &[]).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            denies_write(&profile, &home.join(".local/bin/git")),
+            "precondition: a listed fallback folder is write-denied"
+        );
+        let open: Vec<String> = dirs[..system]
+            .iter()
+            .filter(|dir| dir.starts_with(&home))
+            .map(|dir| dir.join("git"))
+            .filter(|planted| !denies_write(&profile, planted))
+            .map(|planted| planted.display().to_string())
+            .collect();
+        assert!(
+            open.is_empty(),
+            "an agent can plant git here, ahead of /usr/bin on the search path the app's unsandboxed git uses: {open:?}"
+        );
+    }
+
+    /// HIGH (HIGH-4 fix incomplete): the provider resolvers probe home folders round 6 did not deny (`~/n/bin`,
+    /// `~/.fx/bin`), and for grok, fx, pi and omp the probe of a file that does not carry the marker runs
+    /// `<file> --help` outside the sandbox (`grok_help_mentions_agent`, `fx_help_mentions_acp`,
+    /// `help_mentions_rpc_mode`). When that CLI is not installed elsewhere first, an agent's `~/n/bin/grok` runs the
+    /// next time the app resolves grok (the model catalog, Settings, a new chat's picker). Either the folder is denied,
+    /// or the probe starts inside the container.
+    #[test]
+    fn a_planted_cli_in_a_folder_the_resolvers_probe_cannot_run_outside_the_sandbox() {
+        let home = Path::new("/Users/test");
+        let profile = crate::agent_sandbox::profile_with_checkouts(home, None, &[]).unwrap();
+        let source = include_str!("harness.rs");
+        let contained = |name: &str| -> bool {
+            let Some(start) = source.find(&format!("fn {name}(")) else {
+                return false;
+            };
+            let rest = &source[start..];
+            let body = &rest[..rest.find("\n}\n").unwrap_or(rest.len())];
+            body.contains("contained_command") || body.contains("under_wrap")
+        };
+        assert!(
+            denies_write(&profile, &home.join(".grok/bin/grok")),
+            "precondition: a listed folder is write-denied"
+        );
+        let mut open = Vec::new();
+        for (planted, probe) in [
+            ("n/bin/grok", "grok_help_mentions_agent"),
+            (".fx/bin/fx", "fx_help_mentions_acp"),
+            ("n/bin/fx", "fx_help_mentions_acp"),
+            ("n/bin/pi", "help_mentions_rpc_mode"),
+            ("n/bin/omp", "help_mentions_rpc_mode"),
+        ] {
+            let path = home.join(planted);
+            if !denies_write(&profile, &path) && !contained(probe) {
+                open.push(format!("{} ({probe})", path.display()));
+            }
+        }
+        assert!(
+            open.is_empty(),
+            "an agent can plant these, and the resolver runs them with --help outside the sandbox: {open:?}"
+        );
+    }
+}
