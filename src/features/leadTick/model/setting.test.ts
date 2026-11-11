@@ -5,6 +5,7 @@ import {
   LEAD_TICK_DOC_KEY,
   MAX_INTERVAL_MINUTES,
   MIN_INTERVAL_MINUTES,
+  leaseMsForTick,
   readLeadTickSetting,
 } from "./setting";
 import { createLeadTickStore, NOTED_LIMIT } from "./store";
@@ -29,6 +30,15 @@ describe("lead tick setting", () => {
     expect(readLeadTickSetting({ intervalMinutes: "20" }).intervalMinutes).toBe(15);
     expect(readLeadTickSetting({ intervalMinutes: Number.NaN }).intervalMinutes).toBe(15);
     expect(readLeadTickSetting([]).intervalMinutes).toBe(15);
+  });
+
+  it("sets the lead lease to two tick intervals, and a bad interval cannot stretch it", () => {
+    expect(leaseMsForTick(60)).toBe(2 * 60 * 60_000);
+    expect(leaseMsForTick(5)).toBe(2 * 5 * 60_000);
+    expect(leaseMsForTick(60)).not.toBe(15 * 60 * 1000);
+    expect(leaseMsForTick(2)).toBe(2 * MIN_INTERVAL_MINUTES * 60_000);
+    expect(leaseMsForTick(100_000)).toBe(2 * MAX_INTERVAL_MINUTES * 60_000);
+    expect(leaseMsForTick(Number.NaN)).toBe(2 * DEFAULT_INTERVAL_MINUTES * 60_000);
   });
 });
 
