@@ -9,7 +9,7 @@ const rows: StandingAnswer[] = [
     project: "/work/proj",
     key: "keep",
     standingId: "S-4",
-    question: "Keep deleted sessions — or delete them?",
+    question: "Keep deleted sessions, or delete them?",
     answer: "Keep them for 30 days.",
     uses: 2,
   },
