@@ -196,9 +196,15 @@ pub fn rule_matches(rule: &Rule, labels: &[String], paths: &[String]) -> bool {
     !rule.labels.is_empty() || !rule.paths.is_empty()
 }
 
-pub fn merge_rules(mono: &[Rule], project: &[Rule], plugins: &[Rule]) -> Vec<Rule> {
+pub fn merge_rules(
+    mono: &[Rule],
+    project: &[Rule],
+    system: &[Rule],
+    plugins: &[Rule],
+) -> Vec<Rule> {
     mono.iter()
         .chain(project.iter())
+        .chain(system.iter())
         .chain(plugins.iter())
         .take(MAX_RULES)
         .cloned()

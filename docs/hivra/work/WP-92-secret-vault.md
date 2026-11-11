@@ -12,8 +12,10 @@ An agent that needs a key asks for it with a tool call. A form card appears in t
 value once, and it goes straight into the Mac's keychain. From then on "use my Stripe key" just works: the agent
 asks for it by name, and the app puts it in the one place the person approved — the environment of one named
 command (or one worker), or a gitignored `.env` in one worktree — and the agent only ever sees the command's
-output with the value taken out. The agent never sees the value itself, and the value never lands in a chat, a
-transcript, a log, the database, an export, or any file the person did not pick.
+output with the value taken out. The app never hands the value, or the grant that spends it, back to the agent, and the
+value never lands in a chat, a transcript, a log, the database, an export, or any file the person did not pick. What
+this does not stop is an agent that can run shell commands as the same user reading the value from the process table
+while a run or a worker holds it; see Known limits.
 
 The one sentence the package must keep true: **a secret's value exists in the person's keychain and in at most
 one place they chose with a tap — the environment of one approved command or worker, or a gitignored `.env` in
@@ -71,9 +73,9 @@ write a second copy of any of them.
 | `src-tauri/src/instance.rs` | `policy().daily_keychain`, `in_isolated_home`, `Kind::Daily` / `Kind::Dev` | Daily versus dev naming, and the in-memory vault a bench under an isolated HOME gets. |
 | `src-tauri/src/connectors/secrets.rs` | `Login` with a `Debug` that lists field names only, `secrets()`, `redact()` (longest value first, `•••`), and the `SecretStore` trait with a `Keychain` and an in-memory `Memory` | The shape of the vault: a value type whose `Debug` prints the name and never the bytes, a store trait with a keychain impl and a memory impl for tests, and the longest-first rule. The connectors' `redact` is left as it is. |
 | `src-tauri/src/connectors/signing.rs` | `hmac_sha256`, `sign`, `verify` (constant-time compare), `key()` read from the Keychain, a per-install key created on first use, never leaving Rust | The one-run grant: signed with `sign`/`verify` under its own item, created on first use, never handed to the webview. |
-| `src-tauri/src/connectors/launch.rs` | `monocode connector-run`: the app's own binary, signed arguments, refuses an unsigned call, the login in this process's memory only, a cleared environment for local servers, every printed line through `redact` | `monocode secret-run --grant <base64>` is this pattern for one command: same binary, same signed payload, same cleared environment, same redaction. |
+| `src-tauri/src/connectors/launch.rs` | `monocode connector-run`: the app's own binary, signed arguments, refuses an unsigned call, the login in this process's memory only, a cleared environment for local servers, every printed line through `redact` | `monocode secret-run --grant-stdin` is this pattern for one command: same binary, same signed payload (read from stdin, so it is never in the process list), same cleared environment, same redaction. |
 | `src-tauri/src/backups/mod.rs` | `spawn_helper` and `allow_env()`: `.env_clear()` plus an explicit allow-list | The child environment model for `secret-run` and for a worker that is given a secret. |
-| `src-tauri/src/harness.rs` | `login_shell_path()`, `cached_gui_search_path()` | The child's PATH when the app was started from Finder. |
+| `src-tauri/src/harness.rs` | `cached_gui_search_path()` | The PATH a Finder-started app gives its own CLI children. The vault's runs do not use it: they use `connectors::launch::safe_path()`. |
 | `src/features/portable/model/secretPatterns.json` | One pattern list (18 shapes, a secret-key name list, the `[secret removed]` marker) read by the webview and by Rust through `include_str!` | The vault runs this scrubber after its own needle scrub, and the composer, memory and export checks keep using it. One list; no second copy. |
 | `src/features/portable/model/secrets.ts` | `redactText`, `redactValue`, `hasSecretText`, `findSecrets`, `isSecretKey` | The net in the composer for a pasted key, and the memory and export gates. Nothing new is written for shaped keys. |
 | `src-tauri/src/portable.rs` | `scrubber()` (`Scrubber::redact_text`, `redact_value`, `findings`, `has_secret`), the final scan in `export()` ("still holds something that looks like a secret"), and the same scan on `history_bundle()` | The export: `secrets/index.json` plus one exact-value pass before the existing final scan. The final scan is unchanged. |
@@ -135,7 +137,8 @@ write a second copy of any of them.
      result is `{exitCode, stdout, stderr, timedOut, truncated}` after scrubbing.
 
    Name resolution: the chat's project scope first, then global. If both exist the project's wins and the result
-   says which it used. If neither does, the tool returns `state: "missing"` and the model calls `secrets.request`.
+   says which it used; the approval card, the Secrets page and the activity record say so too, in plain words
+   ("Everywhere" or "Project: <name>", and "This project's copy is used; there is also one for everywhere"). If neither does, the tool returns `state: "missing"` and the model calls `secrets.request`.
    "Use my Stripe key" therefore means: try `secrets.run` with the obvious slug; if it is missing, ask for it with
    that slug and a why.
 
@@ -158,19 +161,35 @@ write a second copy of any of them.
    `monocode-hub:secret-key:grant` (account `key`, created on first use, dev-scoped like every other key). The
    item is named so it can never be mistaken for a secret, whose names always carry a scope segment.
 
-   The MCP server runs its own binary as `monocode secret-run --grant <base64>`. That process verifies the
-   signature, refuses an expired grant (60 seconds), refuses a nonce it has already seen (a small file under the
-   copy's data folder), re-reads the secret (refusing if the version changed or the item is gone), checks no argv
-   element contains the value, then spawns the command with:
+   The app runs its own binary as `monocode secret-run --grant-stdin` (`secrets_grant` calls `run::spawn_run`), with
+   the grant written to that process's stdin, so it is in neither the argument list nor the environment that `ps` or
+   Activity Monitor can show. The grant is never returned to the webview, the control port or the agent. That process
+   verifies the signature, refuses an expired grant (60 seconds), refuses a nonce it has already seen (a small file
+   under the copy's data folder), re-reads the secret (refusing if the version changed or the item is gone), checks
+   that the pinned program still has the file identity it was approved with (refusing if the file was replaced),
+   checks no argv element contains the value, then spawns the pinned absolute program with:
 
-   - `env_clear()` and an allow-list only: the login shell's PATH (`harness::login_shell_path()`), HOME or
-     USERPROFILE, TMPDIR/TEMP/TMP, LANG/LC_ALL, TERM/SHELL, and on Windows SystemRoot, ComSpec, PATHEXT, HOMEDRIVE
-     and HOMEPATH — plus the one secret. No app token, no `MONOCODE_*`, no model keys, no other secret;
+   - `env_clear()` and an allow-list only: PATH is the fixed search path (`connectors::launch::safe_path()`, never the
+     caller's PATH and never a login shell's), HOME is the account's home from the user database, and TMPDIR/TEMP/TMP,
+     LANG/LC_ALL and TERM are copied from this process; on Windows SystemRoot, ComSpec, PATHEXT, HOMEDRIVE and HOMEPATH
+     as well. `SHELL` is never passed on. Plus the one secret. No app token, no `MONOCODE_*`, no model keys, no other
+     secret;
    - its own process group, killed as a group on timeout or on the app quitting;
    - stdout and stderr captured, never inherited.
 
    It writes one JSON object to stdout: the scrubbed streams, the exit code, `timedOut`, `truncated`, and nothing
-   else. The MCP server passes that back as the tool result. A timeout is reported as `timedOut: true` with the
+   else. The app passes that back as the tool result (`state: "ran"`), and the MCP server returns it unchanged; an answer
+   that carries a grant is refused, never spent.
+
+   **Pinning (round 2).** A program is pinned when the run is asked, not when it runs. A bare name is looked up once on
+   the fixed search path; a relative path (`./x`, `node_modules/.bin/x`) is refused; the canonical absolute path and the
+   file's identity (device, inode, size, modification time) go into the approval, the grant row and the signed payload.
+   A program inside the project, the run's folder, a temporary folder or a worktree is refused, because the agent can
+   write there. The identity also carries the change time and a SHA-256 of the file's bytes, so a rewrite that keeps the
+   size and restores the modification time is still a different program. A program in a folder the person owns gets a
+   warning on the card. The command's process group is ended when the command ends, not only on a timeout, so a
+   background child in that group does not keep the key past the run. A child that leaves the group (it calls setsid
+   or daemonizes) is not reached by that kill; see Known limits. A timeout is reported as `timedOut: true` with the
    output so far, not as a failure; a keychain refusal (the person clicked Deny on the system prompt) is "not now,
    try again", not "wrong secret". The app writes the run to the activity log (WP-78) with the name, scope, Mono,
    executable, exit code and duration — never the grant, never the value.
@@ -178,8 +197,11 @@ write a second copy of any of them.
 6. **The worker route: one worker's environment.** A first mate may name a secret for a worker it delegates:
    `delegate_task` gains `secrets: [{name, env}]` (at most 3). The app resolves each name through the same checks
    as step 5, with the worker's own CLI as the executable, and puts the values into that worker process's
-   environment only — the same cleared environment and allow-list as `secret-run`, never `MONOCODE_*`, never a
-   model key, never the app token. The card asks "Let <Mono> start a worker with Stripe API key in its
+   environment only. The worker keeps its own CLI's environment (see Known limits), but never `MONOCODE_*` (stripped
+   after the child is configured, last), never a model key, never the app token. The worker's approval is keyed
+   `worker:<cli>`, never the CLI's own name, so a grant for `secrets.run` does not spend it; the card offers Once and
+   No only. The scrub values stay with the app for the session's life, so a respawn (idle reclaim, crash, resume) still
+   scrubs its output; they are dropped when the app quits. The card asks "Let <Mono> start a worker with Stripe API key in its
    environment?" and says plainly that the whole worker session will hold the value, including anything it starts;
    the command route is the narrower one and the card recommends it. The worker's output and transcript go through
    the same scrub rule, and the worker still cannot ask for a secret itself: its first mate asks, approves, and
@@ -233,7 +255,9 @@ write a second copy of any of them.
    not on that list (gzip, base32, double base64, ROT13), one character at a time, or split across lines; it can
    write the value to a file, the clipboard or the network instead of stdout; a child it leaves behind keeps the
    environment after the run. The scrubber is a second line of defence, not the first. The first is that only an
-   executable the person approved ever gets the value at all.
+   executable the person approved ever gets the value at all. A worker's CLI also keeps a transcript of what it prints on
+   disk, so a value a worker prints stays there; the worker card says so (fix round 3, M3). For a worker the scrub values are kept for the session's
+   life, not the child's, so a respawn is scrubbed too (step 6); a worker's output is never shown unscrubbed.
 
 9. **Redaction: the value never lands in a transcript, an export or memory.**
    - **Transcript.** Three writers hold a chat's words: `sessions.blocks_json`, Claude Code's own transcript JSONL,
@@ -252,15 +276,34 @@ write a second copy of any of them.
    - **Activity log, logs and error messages.** No value, ever.
 
 10. **First use, and approvals.** The first time a Mono uses a given secret with a given executable, a small card
-    asks: "Let <Mono> run `stripe` with Stripe API key?" with Once, Always for this Mono, Always for this project
-    (the last only when the chat has a project), and No. Once writes a `once` grant for the Mono that is consumed
-    by the next spawn; Always writes an `always` grant for the Mono or for the project, and a project grant covers
-    every Mono working in that project. Resolution is the Mono's own grant first, then the project's. No writes
+    asks: "Let <Mono> run `/opt/homebrew/bin/stripe` with Stripe API key?" (the full pinned path) with Once, Always for
+    this Mono, Always for this project (the last only when the chat has a project), and No. The card's key is the
+    program file (its path and identity), and the card records the exact command it shows: an answer approves that
+    command only, checked before any grant, so another command with the same program asks again. Once writes a `once`
+    grant for the Mono that is consumed by the next spawn; Always writes an `always` grant for the Mono or for the
+    project, and a project grant covers every Mono working in that project. Round 3 binds Always to the full fingerprint
+    (arguments, environment name, folder and timeout): the same program with other arguments asks again, and the card
+    says "covers this exact command only". Round 2 refuses Always for shells, exec
+    wrappers (`env`, `nohup`, `timeout`, `sudo`, `xcrun` and similar), `git`, `gh`, `ssh`, `rsync`, `docker`, archive
+    tools, package managers and build tools, editors and pagers, and the worker CLIs (`claude`, `codex` and the rest):
+    each can run other code, so each asks every time while the setting is off. Resolution is the Mono's own grant first, then the project's. No writes
     nothing and returns "Ash said no" to the tool. An unanswered card behaves like an unanswered decision: the run
     returns "waiting for Ash's OK" and the turn ends. The default for a new secret is therefore ask each time, and
     the page says each secret's current mode and who holds it. The Mono that asked for the secret does not get a
     free pass: the approval is about what runs with it, not about who typed it. A `once` grant is deleted by
     compare-and-swap, so two runs racing it cannot both spend it.
+
+    The card always shows the whole command line (program and arguments, never the value) and names the program. The
+    approval stays per program, but a program that can run any code (`python`, `python3`, `node`, `deno`, `bun`,
+    `ruby`, `perl`, `php`, `make`, `xargs`, `awk`, `sed`, `find`, `osascript`, `npx`, `npm`, `pnpm`, `yarn`, `uv`,
+    `uvx`, `cargo`, `go`, `java`, `lua`, `Rscript`, `swift`; matched by basename, `.exe` ignored) gets a card that
+    offers Once only, with the line "This can run any code, so it asks every time." A setting on the Secrets page
+    (one value per install, off by default: "Let me choose 'Always' for programs that can run any code", with the
+    warning "'Always' lets an agent use this key for anything, without asking you. Leave this off unless you are
+    sure.") lets a person who knows the risk choose Always for those programs too; the card then shows the same
+    warning under its buttons. The app checks the setting where an `always` grant is written, so the webview cannot
+    go around it, and turning it off takes back the Always grants it had allowed. The card's words are the app's own:
+    an agent's `ask_person` cannot make a `secret/` card.
 
 11. **Resolution, rename, rotate, delete.** "Use my Stripe API key" is a slug lookup, so the card shows the slug it
     will store (`stripe-api-key`) and the person can edit the label only. Rename changes the label; the slug stays,
@@ -288,6 +331,8 @@ write a second copy of any of them.
     connector's settings moves an already-saved login into the vault (one click, one confirm) but nothing migrates
     silently. The connector still gets its launcher signature and its redaction; this only changes where its login
     comes from.
+    A connector whose server address is a field the person types (Zapier's and Composio's `{mcp_url}`) cannot use a
+    saved key at all: the key is never sent to an address the person typed, and the launch says so in plain words.
 
 14. **Dev copies and benches never see the daily secrets.** Every service name comes from
     `hub_keychain::scoped_service`, so a dev copy only ever forms `monocode-hub-dev:secret:…`, and the dev keychain
@@ -360,8 +405,8 @@ write a second copy of any of them.
   - two windows answering one request: one saves, the other is told it was already saved.
 - [ ] Webview tests: the card sends the value once and clears it; a save failure shows one sentence and no value;
     first use asks once, "Always for this Mono" and "Always for this project" stop the asking where they should,
-    "Once" asks again; a project secret wins over a global one and an ambiguous name is refused; rename keeps
-    grants; reveal is a tap and the value is gone when the row closes; delete removes the grants; the old "Needs Ash
+    "Once" asks again; a name saved globally and in a project uses the project's copy, and the card and the Secrets
+    page say which copy a run used; rename keeps grants; reveal is a tap and the value is gone when the row closes; delete removes the grants; the old "Needs Ash
     (provide)" path now opens the card.
 - [ ] Browser specs on Chromium and WebKit: the Secrets page (add, list with last 4, reveal on tap, rename, rotate,
     delete with confirm) and the chat card (paste, Save, and the value is absent from the page's text, the DOM
@@ -376,6 +421,101 @@ write a second copy of any of them.
 - [ ] Mac-only checks for Ash: the keychain prompt appears once for the app, "Always Allow" sticks across a
     rebuild with the pinned identity, and the granted run prints `[secret removed]` where the value would be.
 
+## Known limits
+
+These are by design, or cannot be closed inside this package. They are written here so they are a known edge, not an
+assumed one.
+
+- **A connector run reads the vault without a per-run grant.** A connector whose login points at a saved key
+  (`{"secret": "..."}`) gets the value in its own environment for as long as it runs. The person chose that when they
+  pointed the connector at the key. The "one approved run" sentence is literally true of commands and workers, not of
+  connectors.
+- **A value split across two writes can pass the scrubber.** The scrub is per chunk (and per line for a worker), so
+  a command that prints the first half of a key, flushes, and prints the second half is not caught. The first line of
+  defence is that only a program the person approved gets the key at all. A value printed over several lines is only
+  caught when it appears whole on one line (a PEM is caught line by line).
+- **The revealed value is in the page while it is shown.** Reveal puts the key in a field on screen until the row is
+  closed. Anything that can read the page (an extension, a screen recorder, DevTools) can read it while it is there.
+- **The value crosses the app's own bridge once.** When the person types a key, it goes from the page to Rust as one
+  command argument. No log line in the app writes it, but a console that logs the bridge would see it.
+- **Any script running in the app's own webview can call the vault's commands.** It could reveal a key, write a
+  grant or write a `.env`, and it could send `decisions_answer` as the person. The app does not run remote or
+  untrusted script in that webview; if that ever changed, this would be the first thing to close. The Rust side
+  already refuses what an agent can reach (a chat's answer to a secret card, an agent-made secret card, an "Always"
+  for a program that can run any code while the setting is off).
+- **An agent that can run shell commands can read the value from the process table.** A run's child has the value in its
+  environment for as long as it runs, and a worker's child has it for its whole life. On this Mac, any process running
+  as the same user can read another process's environment (`ps eww`, or `ps -E`), and on Linux `/proc/<pid>/environ`.
+  The agent's shell commands run as that same user, so for the length of an approved run, or of a worker's whole life,
+  an agent that runs shell commands can read the value. The vault therefore does not hold against that agent. What it
+  does hold against is the app's own return path: the value and the grant never reach the agent through the app's
+  answers, the control port or the output. Closing this needs approved runs to move out of the agent's reach (another
+  user, a sandbox, or a process the agent cannot read). That choice is open for Ash to decide; until he does, this is
+  the state.
+- **A worker keeps its own tool's environment.** The worker route adds the one approved variable and removes any
+  `MONOCODE_*` variable after the child is configured, but it does not clear the rest of the tool's environment (the
+  tool needs its own HOME, PATH and login). Step 6 says "cleared environment"; this is the narrower thing the code does,
+  and the difference is open for Ash to decide. The app's tokens stay out of an armed worker because the strip runs last.
+- **An agent that can build or run the app's own tools can read the vault as Ash.** Vault items are plain generic
+  passwords with the default access list, so any binary signed with the daily app's identity can read them. A worktree
+  agent can add a subcommand, build it with `npm run hub:build` (which signs with Ash's identity and the daily
+  identifier), and read every saved key without a card. Two things hold back part of this: the Keychain-reading
+  subcommands (`secret-run`, `connector-run`) refuse to run unless they run from `~/Applications/MonoCode Hub.app`, the
+  same check the app applies, and the Keychain is not read from a build run anywhere else. Neither closes it: a binary
+  placed in the app's folder, or a build that is copied there, still reads. The real fix needs per-read access control on
+  each vault item (so a read names the app's own binary and asks), and agent builds that are not signed with the daily
+  identity. It is already an open decision in Ash's decisions doc (section 2.x).
+- **`app.ship` lets a Mono install its own signed build (round 4, H4).** `app.ship` (`agentApp.ts`, `shipCaller`) checks only
+  that the caller is a Mono. A Mono can build a copy of the app signed with the daily identity, install it under
+  `~/Applications/MonoCode Hub.app/Contents/MacOS`, and pass the keychain-subcommand check (`instance.rs`, the refusal
+  for `secret-run` and `connector-run` outside the app's own folder). That copy then reads the vault without a card. The
+  check does not stop it, so this is a known limit until ship refuses agent callers. Open for Ash to decide (Scenario C).
+  The vault should not hold real keys until Ash decides that.
+- **A setsid or daemonized child outlives the run (round 4, H4).** The command's process group is ended when the command
+  ends. A child that calls `setsid`, or daemonizes, is in another group and is not reached by that kill. It keeps the
+  value in its environment after the run ends, until it exits by itself.
+- **The child has no account config (round 5).** `HOME`, `CURL_HOME` and `XDG_CONFIG_HOME` point at a folder the account
+  cannot write (`/var/empty` when that folder is sealed). `WGETRC` is `/dev/null`. The run does not make a home under the
+  temporary directory, and it does not delete `/var/empty`. If no sealed folder exists, the run is refused. "Use my own
+  config" is not offered. Windows keeps a private temporary home. Folder rules do not apply there.
+- **The child's PATH is system folders first (round 5).** A secret run's PATH starts with `/usr/bin`, `/bin`, `/usr/sbin`
+  and `/sbin`, then other folders the account cannot write. Connector launches are unchanged and still look in Homebrew
+  first, so a local connector finds Homebrew `python3` and `git`.
+- **Always is not offered (round 5).** A secret card offers Once and No only. A stored Always grant does not skip the card.
+  curl and wget can read config files and run helpers the card does not show, so they are not a special case. An app-built
+  curl that forces `-q` and allows only `--variable %ENV`, `--expand-header`, `-X`, `-H` and `-d` as literals plus one https
+  URL, and refuses `-K`, `--config`, `@file`, `--engine`, `--trace*`, `--libcurl`, `-o`, `-D`, `--stderr` and `--proxy`, is
+  how Always could return later. That form is not built. A card for curl, wget, or a program under Homebrew says the program
+  can read config files and run helpers.
+- **The writable-path check does not walk libraries (round 5).** It sees a folder on the way to the program after links are
+  resolved. It sees a Homebrew library beside the program only when the program itself is under Homebrew. A program in a
+  system folder can still load a Homebrew library this check never walks.
+- **Other platforms have no per-app store ACL (round 4, LOW).** On Windows and Linux the saved values have no per-app
+  access control like the Mac Keychain's. The folder rules in this list judge Unix permissions; on Windows they do not
+  apply.
+- **Another process running as the account reads a run's environment (round 4).** The card says so on every run. On
+  macOS `ps eww` and `ps -E` show a process's environment to any process of the same user, and on Linux
+  `/proc/<pid>/environ` does. That is the process-table hold of #201, and it is the same design limit as the agent-shell
+  bullet above.
+- **A program swapped in the instant between its check and its start is seen after it starts.** The identity is checked
+  before the spawn and again once the child has started; a change in that gap is caught and the run is stopped, but the
+  command may already have run. Closing the gap needs an exec from an open file descriptor, which the standard library
+  does not offer.
+- **A dev copy can be seeded with plaintext values through its environment.** `MONOCODE_SECRET_VAULT_SEED` exists for
+  tests under a temporary HOME and is read by dev copies only; a daily copy refuses it. It is removed from every harness
+  child's environment, so it reaches no CLI. A value placed there is visible to `ps` and to a crash report of that
+  process, so it is for dummy values.
+- **The export's history scan is by pattern only.** The exact-value pass skips binary files, and a memory repository's
+  git history (the `.bundle`) is scanned with the shared pattern list, not with the saved values. A value that is in
+  that history and has no known shape would not be caught. This predates the vault.
+- **Revoke does not cancel a grant that was already issued.** A signed grant lives 60 seconds and is spent once. If the
+  person revokes an approval inside that minute, a run that already holds its grant can still finish.
+- **A `.env` temp file is kept out of the work tree, not out of existence.** While a `.env` is being rewritten the
+  value is in a 0600 temp file (in git's own folder unless the person's ignore rules already cover `.env*`). It is
+  removed on every error path and when the write ends, but a process killed in that moment leaves it behind.
+- **Not run here.** The browser spec ran on Chromium only (Playwright's WebKit binary is not installed on this Mac),
+  nothing was compiled or run for Windows, and the macOS keychain prompt was not exercised: every test uses the
+  in-memory store.
 ## Addendum (10 Nov 2026): planted-secret acceptance tests
 
 Source: AgenticBench (agenticbench.org; no repo or licence file found). Ideas only, no probes or code copied.
