@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { Dispatch, RefObject, SetStateAction } from "react";
 import type { Session } from "../../features/sessions/model/session";
-import { applyTeleportRow } from "./teleportSessionState";
+import { registerSessionPersistFlush } from "../../features/sessions/model/sessionPersistFlush";
+import { acceptStoredTeleportRow, applyTeleportRow } from "./teleportSessionState";
 
 function session(id: string, title: string): Session {
   return { id, title, blocks: [], harness: "claude", model: "m", modelSettings: {}, runtimeMode: "default", cwd: "/p" } as unknown as Session;
@@ -56,6 +57,56 @@ describe("WP-177 HIGH A: App's session list takes the stored row after a move", 
     expect(ref.current[0].busy).toBe(true);
     expect(ref.current[0].blocks.map((block) => block.id)).toEqual(["u1", "a2", "teleported-back-m2"]);
     expect(ref.current[0].blocks.find((block) => block.id === "a2")?.text).toBe("half ");
+  });
+
+  it("replaces a stored move note where it already sits, and only appends a new one", () => {
+    const current = session("b", "live");
+    current.busy = true;
+    current.blocks = [
+      { id: "u1", role: "user", text: "hi" },
+      { id: "teleport-frozen-m1", role: "system", text: "old freeze", notice: "teleport-frozen" },
+      { id: "a2", role: "assistant", text: "half " },
+    ] as never;
+    const stored = session("b", "stale");
+    stored.blocks = [
+      { id: "u1", role: "user", text: "older" },
+      { id: "teleport-frozen-m1", role: "system", text: "new freeze", notice: "teleport-frozen" },
+      { id: "teleport-incoming-m2", role: "system", text: "copy", notice: "teleport-incoming" },
+    ] as never;
+    const ref = { current: [current] } as RefObject<Session[]>;
+    const setSessions = (() => undefined) as Dispatch<SetStateAction<Session[]>>;
+    applyTeleportRow(ref, setSessions, stored);
+    expect(ref.current[0].blocks.map((block) => block.id)).toEqual([
+      "u1",
+      "teleport-frozen-m1",
+      "a2",
+      "teleport-incoming-m2",
+    ]);
+    expect(ref.current[0].blocks.find((block) => block.id === "teleport-frozen-m1")?.text).toBe("new freeze");
+    expect(ref.current[0].blocks.find((block) => block.id === "a2")?.text).toBe("half ");
+  });
+
+  it("flushes the pending save before it reads, so an idle chat keeps the reply", async () => {
+    const current = session("b", "live");
+    current.blocks = [{ id: "a9", role: "assistant", text: "the last reply" }] as never;
+    const stored = session("b", "stored");
+    stored.blocks = [
+      { id: "u1", role: "user", text: "older" },
+      { id: "teleported-back-m2", role: "system", text: "Moved back", notice: "teleported-back" },
+    ] as never;
+    let readRow = stored;
+    const unregister = registerSessionPersistFlush(async (id) => {
+      if (id !== "b") return;
+      readRow = { ...stored, blocks: [...current.blocks, ...stored.blocks] };
+    });
+    const ref = { current: [current] } as RefObject<Session[]>;
+    const setSessions = (() => undefined) as Dispatch<SetStateAction<Session[]>>;
+    try {
+      await acceptStoredTeleportRow(ref, setSessions, "b", async () => readRow);
+      expect(ref.current[0].blocks.some((block) => block.id === "a9")).toBe(true);
+    } finally {
+      unregister();
+    }
   });
 
   it("a row for a chat App does not hold is not added as a new tab", () => {

@@ -1,7 +1,7 @@
 import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
-import { applyTeleportRow } from "./model/teleportSessionState";
+import { acceptStoredTeleportRow, applyTeleportRow } from "./model/teleportSessionState";
 import { launchRecovery, needsAnotherPass } from "../features/connections/model/teleportMove";
 import { settleTeleportLock } from "../features/connections/model/teleportLock";
 import { WINDOW_OWNER } from "../features/connections/model/teleportLocal";
@@ -3715,13 +3715,7 @@ function Workspace({
     const listening = listen<{ id: string }>("teleport-row-changed", (event) => {
       const id = event.payload?.id;
       if (!id) return;
-      void getSession(id)
-        .then((row) => {
-          if (!row) return;
-          settleTeleportLock(row);
-          applyTeleportRow(sessionsRef, setSessions, row);
-        })
-        .catch(() => undefined);
+      void acceptStoredTeleportRow(sessionsRef, setSessions, id, getSession, settleTeleportLock).catch(() => undefined);
     });
     return () => {
       void listening.then((unlisten) => unlisten());

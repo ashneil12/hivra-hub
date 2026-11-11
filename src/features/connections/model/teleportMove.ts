@@ -239,6 +239,8 @@ export async function launchRecovery(
   const lines = await recoverSavedMoves({ chatIds, port, local, remoteFor, owner: deps.owner, now: deps.now });
   if (deps.onRow) {
     for (const line of new Set(lines.map((l) => l.chatId))) {
+      // The same flush the plan uses. The row is read after it, so a reply saved in that flush is in the row.
+      await flushPendingSessionSave(line);
       const row = await getSession(line);
       if (row) deps.onRow(row);
     }
