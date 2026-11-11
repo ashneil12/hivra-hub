@@ -1095,6 +1095,8 @@ import {
   type Automation,
   type AutomationRun,
 } from "../features/automations/model/automations";
+import { MissedScheduleNotice } from "../features/one-time-schedule/ui/OneTimeSchedulePanel";
+import { useOneTimeScheduleRunner } from "../features/one-time-schedule/ui/useOneTimeScheduleRunner";
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
 import type { QuickLaunch } from "../features/quick-composer/model/quickComposer";
 import { claimInboxAutomationRuns } from "../features/automations/model/automationEvents";
@@ -11485,6 +11487,34 @@ function Workspace({
       },
     });
   }, []);
+  // WP-128: one prompt at a chosen time. A closed app does not run it.
+  const oneTimeSchedules = useOneTimeScheduleRunner({
+    paused: () => shipHoldRef.current,
+    sessions: () =>
+      sessionsRef.current.map((session) => ({
+        id: session.id,
+        busy: Boolean(session.busy),
+      })),
+    projectPaths: () => {
+      const paths = recents.map((recent) => recent.path);
+      if (looksLikeProject(projectCwd)) paths.push(projectCwd);
+      return paths;
+    },
+    createChat: (folder) => {
+      const session = { ...newDefaultSession(folder), title: "Scheduled prompt" };
+      const nextSessions = [...sessionsRef.current, session];
+      sessionsRef.current = nextSessions;
+      setSessions(nextSessions);
+      appendTab(newTab(session.id), folder);
+      return session.id;
+    },
+    submit: (sessionId, prompt) =>
+      submitWithSettlement({
+        submit: (onSettled) => submitSession(sessionId, prompt, [], { onSettled }),
+        rejectionMessage: "The chat did not take the prompt.",
+        onSettled: () => undefined,
+      }),
+  });
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
@@ -18830,6 +18860,10 @@ function Workspace({
                         cwd={projectCwd}
                         scopeProject={appViewScope}
                         recents={recents}
+                        chats={sessions.map((session) => ({
+                          id: session.id,
+                          title: session.title,
+                        }))}
                         onClose={onLeaveAutomations}
                         onToggleSidebar={onToggleSidebar}
                         onLaunch={(automation, run) =>
@@ -19042,6 +19076,8 @@ function Workspace({
           />
           {/* WP-123: fork a chat from one message. */}
           <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
+          {/* WP-128: a run the closed app missed. */}
+          <MissedScheduleNotice notices={oneTimeSchedules.notices} onDone={oneTimeSchedules.note} />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}

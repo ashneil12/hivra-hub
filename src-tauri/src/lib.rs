@@ -18,6 +18,8 @@ mod automations;
 pub mod autopilot;
 mod azure_devops;
 mod background_work;
+// WP-128: one prompt at a chosen time. Not a numbered migration, and it starts no thread.
+mod one_time_schedule;
 // WP-75: checked backups, one-item restore, and a full restore through the ship path.
 pub mod backups;
 mod chat_background;
@@ -530,6 +532,7 @@ pub fn run() {
             outside::init(app.handle())?; // WP-79
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
+            one_time_schedule::init(app.handle()); // WP-128
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]
@@ -860,6 +863,16 @@ pub fn run() {
             automations::automations_claim_due,
             automations::automations_claim_event,
             automations::automation_run_update,
+            // WP-128: one prompt at a chosen time.
+            one_time_schedule::one_time_schedules_list,
+            one_time_schedule::one_time_schedules_create,
+            one_time_schedule::one_time_schedules_cancel,
+            one_time_schedule::one_time_schedules_miss_closed,
+            one_time_schedule::one_time_schedules_claim,
+            one_time_schedule::one_time_schedules_remember_session,
+            one_time_schedule::one_time_schedules_ack_fired,
+            one_time_schedule::one_time_schedules_release,
+            one_time_schedule::one_time_schedules_note,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,
