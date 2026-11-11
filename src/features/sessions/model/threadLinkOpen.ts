@@ -2,7 +2,7 @@
 // on this computer is a message. Nothing here builds a web viewer.
 
 import { sameProjectPath } from "../../projects/model/recents";
-import { setComposerDraft } from "./draftCache";
+import { getComposerDraft, setComposerDraft } from "./draftCache";
 import { newSessionForProject, type Session } from "./session";
 import {
   parseThreadLink,
@@ -249,6 +249,9 @@ function folderOf(project: ThreadPromptProject | undefined): string | null {
 function isBlankProjectChat(session: ThreadPromptSession, folder: string): boolean {
   if (typeof session.cwd !== "string" || session.busy) return false;
   if (!Array.isArray(session.blocks) || session.blocks.length !== 0) return false;
+  // An unsent draft is not blank. A prompt link must not replace it.
+  const draft = getComposerDraft(session.id);
+  if (draft) return false;
   return sameProjectPath(session.cwd, folder);
 }
 

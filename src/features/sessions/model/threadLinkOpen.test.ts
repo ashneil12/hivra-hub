@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getComposerDraft } from "./draftCache";
+import { clearComposerDraft, getComposerDraft, setComposerDraft } from "./draftCache";
 import { newSession } from "./session";
 import {
   acceptThreadLink,
@@ -233,6 +233,22 @@ describe("resolve and open", () => {
 });
 
 describe("placePrompt", () => {
+  it("does not replace an unsent draft in a blank chat", () => {
+    const mine = beginThreadOpen();
+    const blank = { ...newSession("claude", FOLDER), blocks: [], busy: false };
+    setComposerDraft(blank.id, "half typed");
+    const here = world(() => [{ id: "exo", folder: FOLDER }], [blank]);
+    const used = promptHands();
+    placePrompt("exo", "Ship the notes", mine, here, used);
+    expect(getComposerDraft(blank.id)).toBe("half typed");
+    expect(used.added).toHaveLength(1);
+    expect(used.added[0]?.id).not.toBe(blank.id);
+    expect(getComposerDraft(used.added[0]!.id)).toBe("Ship the notes");
+    expect(used.focused).toEqual([used.added[0]!.id]);
+    clearComposerDraft(blank.id);
+    clearComposerDraft(used.added[0]!.id);
+  });
+
   it("fills a blank chat in the project and does not add another", () => {
     const mine = beginThreadOpen();
     const blank = { ...newSession("claude", `${FOLDER}/`), blocks: [], busy: false };
