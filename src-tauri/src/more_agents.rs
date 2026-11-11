@@ -2668,4 +2668,159 @@ mod tests {
             "an edited pinned script ran on the old approval"
         );
     }
+
+    // Review #231 r3 repro (MEDIUM, the documented hash-to-run window, made deterministic): `approved_spawn` takes its
+    // last hash, then `harness_spawn` makes `<data>/more-agents/run/<uuid>` (harness.rs, after reserve_spawn and the
+    // previous child's stop) and only then spawns, on macOS through the disclaim launcher, a whole extra process start.
+    // A same-user process that can write the approved file (a user-writable /opt/homebrew/bin, ~/.local/bin, a repo's
+    // build output) watches the run folder (kqueue, FSEvents, inotify): the folder appearing means the check is done.
+    // It renames its own file over the approved one, the start runs it with no new Allow, and it puts the original
+    // back. Nothing is shown. The same window, wider, covers a pinned argument file (`node /abs/agent.mjs`), which the
+    // child reads after it starts. Not new against main; r2's private copy had closed it for install-folder writers.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r3_a_program_swapped_once_the_run_folder_appears_runs_without_a_new_allow() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let bin = d.path().join("bin");
+        let tool = make_tool(&bin, "wp134-swap", b"#!/bin/sh\necho approved-bytes\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-swap", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_start(d.path(), "wp134", "", &[], false, &path_value)
+            .expect("starts as approved");
+        // What harness_spawn does next, and what a watcher sees: the run folder appears after the last hash.
+        let folder = run_folder(d.path()).expect("run folder");
+        let swap = bin.join(".wp134-swap.new");
+        std::fs::write(&swap, b"#!/bin/sh\necho swapped-bytes\n").expect("swap file");
+        std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::rename(&swap, &tool).expect("rename over the approved file");
+        let out = std::process::Command::new(&run.command)
+            .args(&run.args)
+            .current_dir(&folder)
+            .output()
+            .expect("spawn");
+        let _ = remove_run_folder(d.path(), &folder);
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
+            "a program swapped after the last hash ran with no new approval"
+        );
+    }
+
+    // Review #231 r3 repro (MEDIUM, pin scope; not new against main): only the resolved command file and absolute
+    // argument files are hashed. An installed launcher or agent is that file plus everything it loads from beside it
+    // (npx-cli.js loads ../lib/cli.js and all of npm; every npm bin loads its package's modules). A process that can
+    // write the install folder edits one of those files instead, with no race, and the next start runs the edit on the
+    // old approval. r2's private copy hid this only by breaking every such launcher. WP-134b-more-agents.md now says
+    // the launcher "finds the files beside it" but not that those files are unpinned, and the Allow card says nothing
+    // (compare the shebang note). Fix by pinning the package, or by saying it on the card and in the doc.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r3_a_changed_file_beside_the_approved_program_needs_a_new_allow() {
+        let d = dir();
+        let pkg = d.path().join("lib").join("node_modules").join("fake-acp");
+        std::fs::create_dir_all(pkg.join("lib")).expect("pkg lib");
+        std::fs::write(pkg.join("lib").join("cli.sh"), b"echo approved-module\n").expect("cli");
+        let cli = make_tool(
+            &pkg.join("bin"),
+            "fake-acp-cli.sh",
+            b"#!/bin/sh\n. \"$(dirname \"$0\")/../lib/cli.sh\"\n",
+        );
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&cli, bin.join("fake-acp")).expect("PATH link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "fake-acp", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(pkg.join("lib").join("cli.sh"), b"echo changed-module\n").expect("edit");
+        if let Ok(run) = approved_spawn(d.path(), "wp134", &path_value) {
+            let out = std::process::Command::new(&run.command)
+                .args(&run.args)
+                .output()
+                .expect("spawn");
+            assert!(
+                !String::from_utf8_lossy(&out.stdout).contains("changed-module"),
+                "a changed file the approved program loads ran on the old approval"
+            );
+        }
+    }
+
+    // Review #231 r3 repro (MEDIUM, pin bypass; not new in r3): `deno run file:///abs/agent.ts` runs a local file, and
+    // remote_note says so on purpose (a file:// URL is not remote, so no "only deno is pinned" line). But the URL is
+    // skipped by relative_file_arg (it holds `://`) and by pin_arg (it is not an absolute path), so the file is never
+    // hashed. The Allow card reads as a pinned local program; an edit to agent.ts runs on the old approval. Either
+    // refuse a file: URL or pin the file it names.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r3_a_deno_file_url_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "deno", b"#!/bin/sh\n");
+        let script = d.path().join("agent.ts");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let url = format!("file://{}", script.to_string_lossy());
+        let path_value = bin.to_string_lossy().into_owned();
+        let agent = entry("wp134", "deno", &["run", url.as_str()]);
+        if checked_fields(&agent).is_err() {
+            return; // Refused when it is added: nothing unpinned can run.
+        }
+        write_agents(d.path(), 0, vec![agent]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&script, b"require('cp').exec('xx')").expect("edit");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a deno entry ran a changed file:// script on the old approval"
+        );
+    }
+
+    // Review #231 r3 repro (MEDIUM, Windows, regression in c7e263cb4): the r2 rule refused any argument with `\` or `/`
+    // that was not absolute. The new rule refuses only `..`, `~`, a leading dot and a script name. On Windows
+    // `\Users\ash\agent` and `/Users/ash/agent` have a root but no drive, so Path::is_absolute is false: they are not
+    // refused, and pin_arg skips them, so an extensionless file (node, python and ruby run one) named that way runs
+    // from C:\Users\ash\agent unpinned. `C:..\agent` is drive-relative: its first segment is `C:..`, not `..`, so it
+    // leaves the run folder. On Unix these words are odd file names; refusing them costs nothing. The TypeScript mirror
+    // treats a leading `/` as absolute, so the window lets the forward-slash form through too.
+    #[test]
+    fn review_231_r3_a_rooted_or_drive_relative_windows_path_is_refused_or_pinned() {
+        for arg in [
+            "\\Users\\ash\\agent",
+            "\\tools\\agent",
+            "--config=\\Users\\ash\\cfg",
+            "C:..\\agent",
+        ] {
+            let args = vec![arg.to_string()];
+            assert!(
+                checked_fields(&entry("wp134", "/opt/node", &[arg])).is_err()
+                    || pin_set(&args).is_err(),
+                "{arg} is neither refused nor pinned"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn review_231_r3_a_forward_slash_rooted_path_on_windows_is_refused_or_pinned() {
+        let arg = "/Users/ash/agent";
+        assert!(!Path::new(arg).is_absolute());
+        let args = vec![arg.to_string()];
+        assert!(
+            checked_fields(&entry("wp134", "C:\\opt\\node.exe", &[arg])).is_err()
+                || pin_set(&args).is_err(),
+            "{arg} runs from the current drive's root, unpinned"
+        );
+    }
+
+    // Review #231 r3 repro (LOW, not new in r3): a value that starts with `@` is never checked, to let `@scope/pkg`
+    // through. `@../x` and `@~/x` are not package names. A tool that reads arguments from `@file` (argparse
+    // fromfile_prefix_chars, many CLIs) then takes them from an unpinned file outside the run folder.
+    #[test]
+    fn review_231_r3_a_parent_or_home_path_after_at_is_refused() {
+        for arg in ["@../args.txt", "@~/args", "--opts=@../args"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/wp134-tool", &[arg])).is_err(),
+                "{arg} is not a package name"
+            );
+        }
+        assert!(checked_fields(&entry("wp134", "/opt/npx", &["-y", "@scope/pkg"])).is_ok());
+    }
 }
