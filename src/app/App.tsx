@@ -5420,6 +5420,11 @@ function Workspace({
         restored.providerSessionId &&
         isLiveHarness(restored.harness)
       ) {
+        // WP-134b: a More agents chat binds its saved ACP session to its entry. The route is set first, in this same
+        // call, so the bind never reaches the harness the chat was saved with.
+        if (restored.registryAgentId) {
+          openMoreAgentSession(restored.id, restored.registryAgentId);
+        }
         bindHarnessSession(
           restored.harness,
           restored.id,
@@ -6334,6 +6339,9 @@ function Workspace({
         for (const session of kept) {
           const pending = session.pendingSwitch;
           if (pending?.fromProviderSessionId) {
+            if (session.registryAgentId) {
+              openMoreAgentSession(session.id, session.registryAgentId);
+            }
             bindHarnessSession(
               pending.from,
               session.id,

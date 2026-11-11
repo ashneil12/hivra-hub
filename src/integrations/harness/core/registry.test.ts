@@ -660,6 +660,27 @@ describe("More agents session route", () => {
     }
   });
 
+  it("binds a restored routed chat's ACP session to its route, never to the harness it was saved with", () => {
+    const claudeBinds: string[] = [];
+    registerHarness(stub("claude", { bindSession: (threadId) => { claudeBinds.push(threadId); } }));
+    const routedBinds: string[] = [];
+    routeHarnessSession("chat-restored", {
+      ...stub("claude"),
+      id: "more-agents",
+      canSteer: false,
+      bindSession: (threadId, providerSessionId) => {
+        routedBinds.push(`${threadId}:${providerSessionId}`);
+      },
+    });
+    try {
+      bindHarnessSession("claude", "chat-restored", "acp-42", "/tmp");
+      expect(routedBinds).toEqual(["chat-restored:acp-42"]);
+      expect(claudeBinds).toEqual([]);
+    } finally {
+      routeHarnessSession("chat-restored", null);
+    }
+  });
+
   it("does not idle-park a routed chat whose route still runs background work", async () => {
     vi.useFakeTimers();
     const cursorStop = vi.fn(async () => undefined);
