@@ -12,6 +12,7 @@ import {
   type ThreadLinkHands,
 } from "../model/threadLinkOpen";
 import { THREAD_LINK_MESSAGE } from "../model/threadLinks";
+import { GlassBackdrop } from "../../../app/shell/GlassBackdrop";
 
 const COPIED_MS = 1_500;
 
@@ -104,16 +105,19 @@ export function ThreadLinkNotice() {
     <div
       role="status"
       data-thread-link-notice=""
-      className="fixed top-14 left-1/2 z-50 w-[min(24rem,calc(100%-1.5rem))] -translate-x-1/2 rounded-lg border border-stroke bg-surface px-3 py-2 text-sm text-content shadow-lg"
+      className="fixed top-14 left-1/2 z-50 isolate w-[min(24rem,calc(100%-1.5rem))] -translate-x-1/2 overflow-hidden rounded-lg border border-content/10 text-sm text-content shadow-lg"
     >
-      <p>{current.message}</p>
-      <button
-        type="button"
-        className="mt-2 text-xs text-content/70 hover:text-content"
-        onClick={dismissThreadLink}
-      >
-        Close
-      </button>
+      <GlassBackdrop />
+      <div className="relative z-[1] px-3 py-2">
+        <p>{current.message}</p>
+        <button
+          type="button"
+          className="mt-2 text-xs text-content/70 hover:text-content"
+          onClick={dismissThreadLink}
+        >
+          Close
+        </button>
+      </div>
     </div>
   );
 }
