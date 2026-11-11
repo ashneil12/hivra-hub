@@ -486,3 +486,31 @@ describe("whole class", () => {
     ).toEqual(["Tests went stale after the last edit."]);
   });
 });
+
+describe("a flood of checks in the webview", () => {
+  // The facts the gate gets are cut to 40 here before Rust sees them, so repeats collapse here too.
+  it("forty type checks after a failing test do not drop the failure before it is sent", () => {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({
+        id: "edit",
+        role: "tool",
+        tool: { kind: "edit", title: "Edit", preview: { kind: "write", path: "src/features/crew/row.ts" } },
+      }),
+      block({ id: "test", role: "tool", tool: { command: "npm test", status: "failed" } }),
+    ];
+    for (let i = 0; i < 40; i++) {
+      blocks.push(block({ id: `tsc-${i}`, role: "tool", tool: { command: "npx tsc --noEmit", status: "completed" } }));
+    }
+    blocks.push(
+      block({
+        id: "other",
+        role: "tool",
+        tool: { command: "npx vitest run src/features/crew/other.test.ts", status: "completed" },
+      }),
+    );
+    const facts = factsFromBlocks(blocks, "");
+    expect(facts.checks.some((check) => check.command === "npm test" && check.status === "failed")).toBe(true);
+    expect(doneGaps(facts)).toContain("A check failed this turn (npm test).");
+  });
+});

@@ -587,6 +587,17 @@ function cleanAnswer(answer: unknown): string {
   return [...kept].slice(0, MAX_ANSWER).join("");
 }
 
+/**
+ * Only the latest run of each command decides anything (`failureGaps` reads the last one per display), so repeats
+ * collapse before the cap, as in Rust's `latest_per_command`. Forty type checks cannot push a failing test out of what
+ * is sent. Order is the order of each command's latest run.
+ */
+function latestPerCommand(checks: readonly StoredCheck[]): StoredCheck[] {
+  const last = new Map<string, number>();
+  checks.forEach((check, index) => last.set(check.display, index));
+  return checks.filter((check, index) => last.get(check.display) === index);
+}
+
 function sanitize(turn: FactTurn | undefined): {
   checks: StoredCheck[];
   edits: FactEdit[];
@@ -594,7 +605,11 @@ function sanitize(turn: FactTurn | undefined): {
   answer: string;
 } {
   return {
-    checks: asArray(turn?.checks).map(sanitizeCheck).filter((row): row is StoredCheck => !!row).slice(-MAX_CHECKS),
+    checks: latestPerCommand(
+      asArray(turn?.checks)
+        .map(sanitizeCheck)
+        .filter((row): row is StoredCheck => !!row),
+    ).slice(-MAX_CHECKS),
     edits: asArray(turn?.edits).map(sanitizeEdit).filter((row): row is FactEdit => !!row).slice(-MAX_EDITS),
     todos: asArray(turn?.todos).map(sanitizeTodo).filter((row): row is FactTodo => !!row).slice(0, MAX_TODOS),
     answer: cleanAnswer(turn?.answer),
