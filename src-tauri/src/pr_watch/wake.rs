@@ -349,6 +349,42 @@ fn change_lines(change: &Change, about: &About, frame: &Frame) -> Vec<String> {
             "- The branch now conflicts with {}.",
             frame.wrap(about.base_ref)
         )],
+        Change::BaseMoved {
+            to,
+            files,
+            cut_short,
+        } => {
+            if *cut_short && files.is_empty() {
+                vec![format!(
+                    "- {} moved to {} and changed more files than GitHub lists, so it may touch this pull request. Rebase onto it, push, and wait for green again.",
+                    frame.wrap(about.base_ref),
+                    short(to)
+                )]
+            } else {
+                let mut lines = vec![format!(
+                    "- {} moved to {} and changed files this pull request touches:",
+                    frame.wrap(about.base_ref),
+                    short(to)
+                )];
+                lines.extend(listed(files, |file| format!("  - {}", frame.wrap(file))));
+                lines.push("  Rebase onto it, push, and wait for green again.".into());
+                lines
+            }
+        }
+        Change::Behind { commits } => vec![match commits {
+            Some(1) => format!(
+                "- The branch is 1 commit behind {}: update it from main before merging.",
+                frame.wrap(about.base_ref)
+            ),
+            Some(n) if *n > 1 => format!(
+                "- The branch is {n} commits behind {}: update it from main before merging.",
+                frame.wrap(about.base_ref)
+            ),
+            _ => format!(
+                "- The branch is behind {}: update it from main before merging.",
+                frame.wrap(about.base_ref)
+            ),
+        }],
     }
 }
 
@@ -420,6 +456,8 @@ fn summary(change: &Change) -> &'static str {
         Change::ChecksPassed { .. } => "checks passed",
         Change::Remarks(_) => "new comments",
         Change::Conflicting => "merge conflict",
+        Change::BaseMoved { .. } => "main moved",
+        Change::Behind { .. } => "behind main",
     }
 }
 

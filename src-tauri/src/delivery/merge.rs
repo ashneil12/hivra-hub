@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 
 use super::github::Github;
 use crate::delegations;
+use crate::pr_watch::base;
 use crate::pr_watch::eval::{gate, Check, CheckStatus, Mergeability};
 use crate::pr_watch::github::{split_repo, PrRead, PrState};
 use crate::session_store::SessionStore;
@@ -165,6 +166,17 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
             "{pr} conflicts with its base; bring it up to date first."
         ));
     }
+    // WP-202: GitHub's own merge state. BEHIND is a branch that main has moved past; DIRTY is a conflict with main.
+    if read.merge_state.as_deref() == Some("BEHIND") {
+        return Decision::Refuse(format!(
+            "{pr} is behind main; update it from main, push, and wait for green again."
+        ));
+    }
+    if read.merge_state.as_deref() == Some("DIRTY") {
+        return Decision::Refuse(format!(
+            "{pr} conflicts with main; rebase, push, and wait for green again."
+        ));
+    }
     let (checks, required) = gate(&read.detail.checks);
     let which = if required { "required " } else { "" };
     let red: Vec<&Check> = checks
@@ -210,6 +222,54 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
             if no_checks { " (it has no checks)" } else { "" }
         )),
     }
+}
+
+/// The base check (WP-202) for the merge gate: `Some(reason)` holds the merge. Reads go through `gh`, never the database.
+fn base_hold(
+    gh: &dyn Github,
+    repo: &str,
+    number: u64,
+    green: Option<&str>,
+    read: &PrRead,
+) -> Option<String> {
+    base::hold(
+        &|path: &str| gh.run(None, &["api".to_string(), path.to_string()]),
+        repo,
+        number,
+        green,
+        read,
+    )
+}
+
+/// The second read before a merge (WP-202): the same judgement as the first, on what GitHub shows now. `Some(reason)`
+/// refuses; `None` lets the merge go on to `--match-head-commit`.
+fn settle_again(
+    gh: &dyn Github,
+    repo: &str,
+    number: u64,
+    head: &str,
+    open: Option<&str>,
+    allow: &Allow,
+    green: Option<&str>,
+) -> Option<String> {
+    let again = match gh.read_pr(repo, number) {
+        Ok(again) => again,
+        Err(error) => {
+            return Some(format!(
+                "{repo}#{number} couldn't be read again before the merge: {error}"
+            ))
+        }
+    };
+    if again.detail.head_sha.as_deref() != Some(head) {
+        return Some(format!(
+            "{repo}#{number} moved to a new head while it was being checked. Nothing was merged."
+        ));
+    }
+    match decide(&again, open, allow) {
+        Decision::Merge { .. } => {}
+        Decision::Refuse(reason) | Decision::Ask(reason) => return Some(reason),
+    }
+    base_hold(gh, repo, number, green, &again)
 }
 
 /// An open question on the work: a question on any task in its tree, or a WP-14 decision (state open)
@@ -413,6 +473,12 @@ pub fn merge(
     if number == 0 {
         return Err("number must be the pull request's number".into());
     }
+    // WP-202: the base the watch's last green run ran on, read before GitHub is asked (no lock held over the network).
+    let green = store.lock_conn().ok().and_then(|conn| {
+        crate::pr_watch::green_base(&conn, &repo, number)
+            .ok()
+            .flatten()
+    });
     let read = gh.read_pr(&repo, number);
     let conn = store.lock_conn()?;
     let read = match read {
@@ -494,7 +560,15 @@ pub fn merge(
             None => Allow::Nobody,
         },
     };
-    let decision = decide(&read, open.as_deref(), &allow);
+    // WP-202: main moved under the pull request since its last green run, and what it changed touches its files. It
+    // waits for a rebase and green again; a refusal already decided stays as it is.
+    let decision = match decide(&read, open.as_deref(), &allow) {
+        Decision::Refuse(reason) => Decision::Refuse(reason),
+        other => match base_hold(gh, &repo, number, green.as_deref(), &read) {
+            Some(reason) => Decision::Refuse(reason),
+            None => other,
+        },
+    };
     let allowed_by = match decision {
         Decision::Refuse(reason) => {
             record(
@@ -530,6 +604,31 @@ pub fn merge(
         Decision::Merge { allowed_by } => allowed_by,
     };
     drop(conn);
+    // WP-202: read again just before the merge (the WP-160 pattern): a move, a conflict or a red check that landed
+    // while the read above was judged holds it. `--match-head-commit` still pins the head.
+    if let Some(reason) = settle_again(
+        gh,
+        &repo,
+        number,
+        &head,
+        open.as_deref(),
+        &allow,
+        green.as_deref(),
+    ) {
+        let conn = store.lock_conn()?;
+        record(
+            &conn,
+            &repo,
+            number,
+            Some(&head),
+            "refused",
+            None,
+            &request.caller,
+            Some(&reason),
+            now,
+        )?;
+        return Ok(MergeOutcome::Refused { reason });
+    }
     let args: Vec<String> = [
         "pr",
         "merge",

@@ -108,6 +108,8 @@ pub(crate) mod fake {
         pub signed_in: bool,
         pub fail: Mutex<Vec<String>>,
         pub failed_log: String,
+        /// `gh api <path>` answers (WP-202): the first key the path contains answers, every time.
+        pub apis: Vec<(String, String)>,
     }
 
     impl FakeGithub {
@@ -120,7 +122,13 @@ pub(crate) mod fake {
                 signed_in: true,
                 fail: Mutex::new(Vec::new()),
                 failed_log: "build\tRun tests\terror: expected 2, got 3".into(),
+                apis: Vec::new(),
             }
+        }
+
+        pub fn with_api(mut self, key: &str, json: &str) -> Self {
+            self.apis.push((key.to_string(), json.to_string()));
+            self
         }
 
         pub fn ran(&self, first: &str, second: &str) -> Vec<Vec<String>> {
@@ -149,6 +157,15 @@ pub(crate) mod fake {
 
         fn run(&self, _dir: Option<&Path>, args: &[String]) -> Result<String, String> {
             self.runs.lock().unwrap().push(args.to_vec());
+            if args.first().map(String::as_str) == Some("api") {
+                let path = args.get(1).map(String::as_str).unwrap_or("");
+                return self
+                    .apis
+                    .iter()
+                    .find(|(key, _)| path.contains(key.as_str()))
+                    .map(|(_, json)| json.clone())
+                    .ok_or_else(|| format!("no answer for {path}"));
+            }
             if self
                 .fail
                 .lock()

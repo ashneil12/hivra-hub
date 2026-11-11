@@ -15,9 +15,10 @@ use serde::{Deserialize, Serialize};
 /// bot looping an agent that is replying to it.
 pub const WAKE_LIMIT: u32 = 10;
 
-/// What the watch remembers between reads (T3's `ThreadPullRequestWatch`).
+/// What the watch remembers between reads (T3's `ThreadPullRequestWatch`). Every field defaults, so an older stored
+/// memo reads with the new ones unset (WP-202: unset means unknown, and blocks nothing).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Memo {
     pub started_at: String,
     pub head_sha: Option<String>,
@@ -33,6 +34,16 @@ pub struct Memo {
     pub conflicting: bool,
     /// Comment-only wakes in a row.
     pub wakes: u32,
+    /// The base branch's tip the watch last judged (WP-202). A move from it is news when it touches the pull request.
+    pub base_sha: Option<String>,
+    /// The pull request's own changed files, read once per head: (head, files, cut short) (WP-202).
+    pub pr_files: Option<(String, Vec<String>, bool)>,
+    /// How far behind main the head was, read once per head and base: (head, base, commits) (WP-202).
+    pub behind_at: Option<(String, String, u32)>,
+    /// The base the last green read ran on (WP-202): the merge gate holds a move that touches the files since.
+    pub green_base: Option<String>,
+    /// Base news already told, as "behind <head> <base>" or "dirty <head> <base>" (WP-202, the newest kept).
+    pub told_base: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -119,9 +130,23 @@ pub struct Detail {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Change {
     ChecksFailed(Vec<Check>),
-    ChecksPassed { count: usize, required: bool },
+    ChecksPassed {
+        count: usize,
+        required: bool,
+    },
     Remarks(Vec<Remark>),
     Conflicting,
+    /// Main moved to `to` and changed `files` this pull request touches (WP-202). `cut_short`: GitHub listed only part
+    /// of the files, so the overlap is unknown and `files` may be empty.
+    BaseMoved {
+        to: String,
+        files: Vec<String>,
+        cut_short: bool,
+    },
+    /// The branch is behind main (WP-202): `commits` when GitHub counted them.
+    Behind {
+        commits: Option<u32>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -265,6 +290,8 @@ pub fn evaluate(watch: &Memo, detail: &Detail, remarks: Option<&[Remark]>) -> Re
             remark_ids,
             conflicting,
             wakes,
+            // The base fields are not this read's to change: they carry over, and `base::news` settles them.
+            ..watch.clone()
         },
         exhausted: comments_only && wakes >= WAKE_LIMIT,
     }

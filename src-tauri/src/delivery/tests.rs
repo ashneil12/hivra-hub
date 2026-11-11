@@ -159,8 +159,10 @@ fn pr(state: PrState, head: &str, checks: Vec<Check>) -> PrRead {
         merged_at: None,
         head_ref: "work".into(),
         base_ref: "main".into(),
+        base_tip: None,
         head_repo: Some("acme/web".into()),
         review_decision: None,
+        merge_state: None,
         labels: Vec::new(),
         detail: Detail {
             head_sha: Some(head.into()),
@@ -1507,4 +1509,124 @@ fn the_janitor_never_offers_to_remove_a_landed_but_unmerged_copy() {
     git(&f.project, &["checkout", "-q", "--", "a.txt"]);
     git(&f.project, &["merge", "-q", "--ff-only", "work"]);
     assert_eq!(teardown::guard(&f.project, &f.copy).unwrap(), Safe::Merged);
+}
+
+// ---- WP-202: main moving under a pull request, at the merge gate ---------------------------------------------------
+
+fn person_merge(repo: &str) -> MergeRequest {
+    MergeRequest {
+        repo: repo.into(),
+        number: 7,
+        caller: Caller::Person {
+            via: "inbox".into(),
+        },
+        project: None,
+        delegation_id: None,
+        method: Method::Merge,
+    }
+}
+
+/// A watch row that was last green on `base` (what the PR watch stores on a green read).
+fn green_base_row(store: &SessionStore, base: &str) {
+    store
+        .lock_conn()
+        .unwrap()
+        .execute(
+            "INSERT INTO pr_watches (id, owner_session, repo, repo_key, number, state, memo, next_read_at, created_at, updated_at)
+             VALUES ('w1', 'mono-hivra', 'acme/web', 'acme/web', 7, 'watching', ?1, 0, 0, 0)",
+            [serde_json::json!({ "greenBase": base }).to_string()],
+        )
+        .unwrap();
+}
+
+const MOVED_BY_SRC: &str = r#"{"files":[{"filename":"src/lib.rs"}],"ahead_by":0,"behind_by":0}"#;
+const MOVED_BY_DOCS: &str =
+    r#"{"files":[{"filename":"docs/notes.md"}],"ahead_by":0,"behind_by":0}"#;
+const PR_FILES: &str = r#"[{"filename":"src/lib.rs"},{"filename":"README.md"}]"#;
+
+#[test]
+fn decide_refuses_a_branch_behind_main_or_in_conflict_with_it_and_blocks_nothing_unread() {
+    let behind = PrRead {
+        merge_state: Some("BEHIND".into()),
+        ..green("h1")
+    };
+    let Decision::Refuse(reason) = decide(&behind, None, &person()) else {
+        panic!("behind main must refuse");
+    };
+    assert!(reason.contains("behind main"), "{reason}");
+    let dirty = PrRead {
+        merge_state: Some("DIRTY".into()),
+        ..green("h1")
+    };
+    let Decision::Refuse(reason) = decide(&dirty, None, &person()) else {
+        panic!("a dirty branch must refuse");
+    };
+    assert!(reason.contains("conflicts with main"), "{reason}");
+    let unread = PrRead {
+        merge_state: None,
+        ..green("h1")
+    };
+    assert!(
+        matches!(decide(&unread, None, &person()), Decision::Merge { .. }),
+        "a merge state that wasn't read holds nothing"
+    );
+}
+
+#[test]
+fn a_base_move_over_the_pull_requests_files_holds_the_merge_until_green_again() {
+    let s = store();
+    green_base_row(&s, "b1b1b1b");
+    let moved = PrRead {
+        base_tip: Some("b2b2b2b".into()),
+        ..green("h1")
+    };
+    let gh = FakeGithub::new(vec![moved.clone(), moved])
+        .with_api("compare/b1b1b1b...b2b2b2b", MOVED_BY_SRC)
+        .with_api("pulls/7/files", PR_FILES);
+    let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
+    assert!(
+        matches!(&out, MergeOutcome::Refused { reason } if reason.contains("src/lib.rs")),
+        "{out:?}"
+    );
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "nothing merges over a move"
+    );
+}
+
+#[test]
+fn a_base_move_that_misses_the_pull_request_still_merges() {
+    let s = store();
+    green_base_row(&s, "b1b1b1b");
+    let moved = PrRead {
+        base_tip: Some("b2b2b2b".into()),
+        ..green("h1")
+    };
+    let gh = FakeGithub::new(vec![moved.clone(), moved])
+        .with_api("compare/b1b1b1b...b2b2b2b", MOVED_BY_DOCS)
+        .with_api("pulls/7/files", PR_FILES);
+    assert!(
+        matches!(
+            merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap(),
+            MergeOutcome::Merged { .. }
+        ),
+        "a move that misses the pull request's files keeps shipping"
+    );
+}
+
+#[test]
+fn a_move_that_lands_between_the_read_and_the_merge_refuses() {
+    let s = store();
+    let first = green("h1");
+    let second = PrRead {
+        merge_state: Some("BEHIND".into()),
+        ..green("h1")
+    };
+    let gh = FakeGithub::new(vec![first, second]);
+    let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
+    assert!(
+        matches!(&out, MergeOutcome::Refused { reason } if reason.contains("behind main")),
+        "{out:?}"
+    );
+    assert!(gh.ran("pr", "merge").is_empty());
 }

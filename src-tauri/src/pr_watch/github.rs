@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::eval::{Check, CheckStatus, Detail, Mergeability, Remark, RemarkKind};
 
@@ -25,8 +25,8 @@ fn pull_request_query() -> String {
   rateLimit {{ remaining resetAt cost }} \
   repository(owner: $owner, name: $name) {{ nameWithOwner pullRequest(number: $number) {{ \
     number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} \
-    headRefOid headRefName baseRefName headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
-    labels(first: 100) {{ nodes {{ name }} }} \
+    headRefOid headRefName baseRefName baseRef {{ target {{ oid }} }} headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
+    labels(first: 100) {{ nodes {{ name }} }} mergeStateStatus \
     commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state contexts(first: 100) {{ totalCount \
       pageInfo {{ hasNextPage endCursor }} nodes {{ {CHECK_FIELDS} }} }} }} }} }} }} \
     comments(last: 50) {{ totalCount nodes {{ {REMARK_FIELDS} isMinimized }} }} \
@@ -69,9 +69,13 @@ pub struct PrRead {
     pub merged_at: Option<String>,
     pub head_ref: String,
     pub base_ref: String,
+    /// The base branch's current tip (`baseRef.target.oid`). `None` when GitHub shows no such branch.
+    pub base_tip: Option<String>,
     /// The repository the head branch is in (`headRepository`); `None` when GitHub shows none (a deleted fork).
     pub head_repo: Option<String>,
     pub review_decision: Option<String>,
+    /// GitHub's merge state (`mergeStateStatus`: BEHIND, DIRTY, CLEAN, ...). `None` when the read didn't say (WP-202).
+    pub merge_state: Option<String>,
     /// The label names (the first 100). The lead tick never merges a pull request labelled security-park.
     pub labels: Vec<String>,
     pub detail: Detail,
@@ -124,6 +128,11 @@ impl std::fmt::Display for ReadError {
 /// `gh api graphql`, as a seam: the real CLI, or recorded answers in tests.
 pub trait Gh: Send + Sync {
     fn graphql(&self, query: &str, vars: &[(&str, String)]) -> Result<String, String>;
+    /// `gh api <path>` for a REST path under `repos/` (WP-202). A seam that answers GraphQL only keeps the default, so
+    /// nothing falls back to REST by accident.
+    fn rest(&self, _path: &str) -> Result<String, String> {
+        Err("REST reads aren't available here".into())
+    }
 }
 
 /// The installed `gh`, signed in as the user. A dev copy may point `MONOCODE_PR_WATCH_GH` at a stand-in (the dev-slot
@@ -144,6 +153,30 @@ impl CliGh {
 }
 
 impl Gh for CliGh {
+    fn rest(&self, path: &str) -> Result<String, String> {
+        // A path is never a free command: under repos/, no traversal, no spaces, no flags.
+        let allowed = path.starts_with("repos/")
+            && !path.contains("..")
+            && path
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b"/._-?=&%,".contains(&b));
+        if !allowed {
+            return Err("not a repository path".into());
+        }
+        let program = Self::program().ok_or_else(|| {
+            "GitHub CLI (`gh`) is not installed, so MonoCode can't read pull requests.".to_string()
+        })?;
+        let mut command = Command::new(program);
+        command
+            .args(["api", path])
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GH_PAGER", "cat")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("NO_COLOR", "1");
+        crate::harness::apply_gui_env(&mut command);
+        run_with_timeout(command, GH_TIMEOUT)
+    }
+
     fn graphql(&self, query: &str, vars: &[(&str, String)]) -> Result<String, String> {
         let program = Self::program().ok_or_else(|| {
             "GitHub CLI (`gh`) is not installed, so MonoCode can't read pull requests.".to_string()
@@ -233,9 +266,15 @@ pub fn read(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, ReadError> {
         ("name", name.to_string()),
         ("number", number.to_string()),
     ];
-    let json = gh
-        .graphql(&pull_request_query(), &vars)
-        .map_err(|error| failure(&error))?;
+    let json = match gh.graphql(&pull_request_query(), &vars) {
+        Ok(json) => json,
+        // WP-202: GraphQL's budget is its own. The same facts over REST keep the watch true; only when REST fails too
+        // does the read pause like any rate limit.
+        Err(error) if rate_limited(&error) => {
+            return read_rest(gh, repo, number).map_err(|_| ReadError::RateLimited { until: None });
+        }
+        Err(error) => return Err(failure(&error)),
+    };
     let mut read = parse(&json)?;
     let mut cursor = next_page(&json);
     let mut pages = 0;
@@ -268,6 +307,113 @@ pub fn read(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, ReadError> {
         cursor = contexts.and_then(page_cursor);
     }
     Ok(read)
+}
+
+/// The same facts as the GraphQL read, over REST (WP-202). REST can't say which checks are required, so every check
+/// counts; it reads no comments or reviews, so `remarks` is None and nothing is told as new.
+fn read_rest(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, String> {
+    let (owner, name) = split_repo(repo).ok_or_else(|| format!("{repo} is not owner/name"))?;
+    let pr = rest_json(gh, &format!("repos/{owner}/{name}/pulls/{number}"))?;
+    let head_sha = pr
+        .pointer("/head/sha")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let mut checks: Vec<(Check, Option<i64>)> = Vec::new();
+    if let Some(sha) = head_sha.as_deref() {
+        let runs = rest_json(
+            gh,
+            &format!("repos/{owner}/{name}/commits/{sha}/check-runs?per_page=100"),
+        )?;
+        for run in items(&runs, "check_runs") {
+            let node = json!({
+                "name": run.get("name"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "detailsUrl": run.get("html_url"),
+                "startedAt": run.get("started_at"),
+                "completedAt": run.get("completed_at"),
+            });
+            checks.extend(check_of(&node));
+        }
+        let statuses = rest_json(gh, &format!("repos/{owner}/{name}/commits/{sha}/status"))?;
+        for status in items(&statuses, "statuses") {
+            let node = json!({
+                "context": status.get("context"),
+                "state": status.get("state"),
+                "targetUrl": status.get("target_url"),
+                "createdAt": status.get("created_at"),
+            });
+            checks.extend(check_of(&node));
+        }
+    }
+    let merged = pr.get("merged").and_then(Value::as_bool) == Some(true);
+    let state = if pr.get("state").and_then(Value::as_str) == Some("open") {
+        PrState::Open
+    } else if merged {
+        PrState::Merged
+    } else {
+        PrState::Closed
+    };
+    let mergeability = match pr.get("mergeable").and_then(Value::as_bool) {
+        Some(true) => Mergeability::Mergeable,
+        Some(false) => Mergeability::Conflicting,
+        None => Mergeability::Unknown,
+    };
+    Ok(PrRead {
+        repo: format!("{owner}/{name}"),
+        number,
+        url: text(&pr, "html_url").unwrap_or_default(),
+        title: text(&pr, "title").unwrap_or_default(),
+        state,
+        draft: pr.get("draft").and_then(Value::as_bool) == Some(true),
+        merge_sha: if merged {
+            text(&pr, "merge_commit_sha")
+        } else {
+            None
+        },
+        merged_at: text(&pr, "merged_at"),
+        head_ref: pr
+            .pointer("/head/ref")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        base_ref: pr
+            .pointer("/base/ref")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        base_tip: pr
+            .pointer("/base/sha")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        head_repo: pr
+            .pointer("/head/repo/full_name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        review_decision: None,
+        labels: items(&pr, "labels")
+            .iter()
+            .filter_map(|label| text(label, "name"))
+            .collect(),
+        detail: Detail {
+            head_sha,
+            checks: dedupe(checks),
+            mergeability,
+            viewer: None,
+            author: pr
+                .pointer("/user/login")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
+        merge_state: text(&pr, "mergeable_state").map(|state| state.to_ascii_uppercase()),
+        remarks: None,
+        rate: None,
+    })
+}
+
+fn rest_json(gh: &dyn Gh, path: &str) -> Result<Value, String> {
+    let answer = gh.rest(path)?;
+    serde_json::from_str(&answer).map_err(|_| format!("GitHub's answer for {path} was not JSON"))
 }
 
 fn failure(error: &str) -> ReadError {
@@ -446,6 +592,15 @@ fn remark_of(node: &Value, kind: RemarkKind, fallback_path: Option<&str>) -> Opt
     })
 }
 
+/// A REST list (a plain array under `key`), where GraphQL wraps its lists in `nodes`.
+fn items<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
 fn nodes<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value
         .get(key)
@@ -565,8 +720,13 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         merged_at: text(pr, "mergedAt"),
         head_ref: text(pr, "headRefName").unwrap_or_default(),
         base_ref: text(pr, "baseRefName").unwrap_or_default(),
+        base_tip: pr
+            .pointer("/baseRef/target/oid")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         head_repo,
         review_decision: text(pr, "reviewDecision"),
+        merge_state: text(pr, "mergeStateStatus"),
         labels: pr
             .pointer("/labels/nodes")
             .and_then(Value::as_array)
@@ -602,10 +762,12 @@ pub(crate) mod tests {
     /// A recorded read of cli/cli#14752: reviews and review threads.
     pub const RECORDED_REVIEWS: &str = include_str!("fixtures/cli-cli-14752.json");
 
-    /// `gh`, answering from recorded JSON; every call is kept.
+    /// `gh`, answering from recorded JSON; every call is kept. REST paths answer from `rest`, by the first key the path
+    /// contains (and keep answering: the same path can be read on every sweep).
     pub struct FakeGh {
         pub answers: Mutex<Vec<Result<String, String>>>,
         pub calls: Mutex<Vec<Vec<(String, String)>>>,
+        pub rest: Vec<(String, Result<String, String>)>,
     }
 
     impl FakeGh {
@@ -613,11 +775,25 @@ pub(crate) mod tests {
             Self {
                 answers: Mutex::new(answers),
                 calls: Mutex::new(Vec::new()),
+                rest: Vec::new(),
             }
+        }
+
+        pub fn with_rest(mut self, key: &str, answer: &str) -> Self {
+            self.rest.push((key.to_string(), Ok(answer.to_string())));
+            self
         }
     }
 
     impl Gh for FakeGh {
+        fn rest(&self, path: &str) -> Result<String, String> {
+            self.rest
+                .iter()
+                .find(|(key, _)| path.contains(key.as_str()))
+                .map(|(_, answer)| answer.clone())
+                .unwrap_or_else(|| Err(format!("no recorded REST answer for {path}")))
+        }
+
         fn graphql(&self, _query: &str, vars: &[(&str, String)]) -> Result<String, String> {
             self.calls.lock().unwrap().push(
                 vars.iter()
@@ -825,5 +1001,96 @@ pub(crate) mod tests {
         assert_eq!(split_repo("a/b/c"), None);
         assert_eq!(split_repo("../x"), None);
         assert_eq!(split_repo("o/r; rm"), None);
+    }
+
+    const REST_PULL: &str = r#"{"number":7,"html_url":"https://github.com/acme/web/pull/7","title":"Fix the save bug",
+      "state":"open","draft":false,"merged":false,"merge_commit_sha":null,"merged_at":null,"mergeable":true,
+      "mergeable_state":"behind","head":{"sha":"h7h7h7h","ref":"work","repo":{"full_name":"acme/web"}},
+      "base":{"ref":"main","sha":"b2b2b2b"},"labels":[{"name":"ready"}],"user":{"login":"ash"}}"#;
+    const REST_RUNS: &str = r#"{"total_count":2,"check_runs":[
+      {"name":"build","status":"completed","conclusion":"success","html_url":"https://github.com/acme/web/runs/1","started_at":"2026-11-01T10:00:00Z","completed_at":"2026-11-01T10:05:00Z"},
+      {"name":"lint","status":"in_progress","conclusion":null,"html_url":"https://github.com/acme/web/runs/2","started_at":"2026-11-01T10:00:00Z","completed_at":null}]}"#;
+    const REST_STATUS: &str = r#"{"state":"success","statuses":[]}"#;
+
+    #[test]
+    fn the_base_tip_and_merge_state_are_read_and_an_answer_without_them_blocks_nothing() {
+        let old = parse(RECORDED_REQUIRED).unwrap();
+        assert_eq!(
+            old.base_tip, None,
+            "an answer without the base reads as unknown"
+        );
+        assert_eq!(
+            old.merge_state, None,
+            "an answer without the merge state reads as unknown"
+        );
+        let mut value: Value = serde_json::from_str(RECORDED_REQUIRED).unwrap();
+        value["data"]["repository"]["pullRequest"]["baseRef"] =
+            json!({"target": {"oid": "b2b2b2b"}});
+        value["data"]["repository"]["pullRequest"]["mergeStateStatus"] = json!("BEHIND");
+        let read = parse(&value.to_string()).unwrap();
+        assert_eq!(read.base_tip.as_deref(), Some("b2b2b2b"));
+        assert_eq!(read.merge_state.as_deref(), Some("BEHIND"));
+        assert_eq!(
+            read.detail.checks, old.detail.checks,
+            "the new fields change no check"
+        );
+    }
+
+    #[test]
+    fn a_graphql_rate_limit_reads_the_same_facts_over_rest() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded for user".into())])
+            .with_rest("/pulls/7", REST_PULL)
+            .with_rest("/check-runs", REST_RUNS)
+            .with_rest("/status", REST_STATUS);
+        let got = read(&gh, "acme/web", 7).unwrap();
+        assert_eq!(got.state, PrState::Open);
+        assert_eq!(got.repo, "acme/web");
+        assert_eq!(got.head_ref, "work");
+        assert_eq!(got.base_ref, "main");
+        assert_eq!(got.base_tip.as_deref(), Some("b2b2b2b"));
+        assert_eq!(got.merge_state.as_deref(), Some("BEHIND"));
+        assert_eq!(got.labels, vec!["ready"]);
+        assert_eq!(got.detail.head_sha.as_deref(), Some("h7h7h7h"));
+        assert_eq!(got.detail.mergeability, Mergeability::Mergeable);
+        assert_eq!(got.detail.author.as_deref(), Some("ash"));
+        assert_eq!(
+            got.remarks, None,
+            "REST reads no comments: none are told as new"
+        );
+        let names: Vec<(&str, CheckStatus)> = got
+            .detail
+            .checks
+            .iter()
+            .map(|c| (c.name.as_str(), c.status))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("build", CheckStatus::Success),
+                ("lint", CheckStatus::Pending)
+            ]
+        );
+        assert!(
+            got.detail.checks.iter().all(|c| !c.required),
+            "REST can't say which checks are required, so every check counts"
+        );
+    }
+
+    #[test]
+    fn a_rest_read_that_fails_too_pauses_like_a_rate_limit() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded".into())]);
+        assert_eq!(
+            read(&gh, "acme/web", 7),
+            Err(ReadError::RateLimited { until: None })
+        );
+    }
+
+    #[test]
+    fn rest_paths_are_limited_to_repository_paths() {
+        assert!(CliGh.rest("user/keys").is_err());
+        assert!(CliGh.rest("repos/acme/web/../../user").is_err());
+        assert!(CliGh
+            .rest("repos/acme/web/pulls/7 --method DELETE")
+            .is_err());
     }
 }
