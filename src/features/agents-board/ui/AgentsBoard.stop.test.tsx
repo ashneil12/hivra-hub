@@ -56,11 +56,15 @@ describe("Agents board stop", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(onStop: (id: string) => void | Promise<void>, onOpen: (id: string) => void = () => undefined) {
+  function render(
+    onStop: (id: string) => void | Promise<void>,
+    onOpen: (id: string) => void = () => undefined,
+    next = tree,
+  ) {
     act(() => {
       root.render(
         createElement(AgentsBoard, {
-          tree,
+          tree: next,
           projects: [{ id: "hivra", name: "Hivra" }],
           now: NOW,
           lines: {},
@@ -69,6 +73,27 @@ describe("Agents board stop", () => {
           initialOpen: { "project-chat": true, job: true, other: true },
         }),
       );
+    });
+  }
+
+  function treeWith(jobState: "working" | "idle" | "needs-you" | "done", canStop = true) {
+    return buildAgentsTree({
+      now: NOW,
+      projects: [{ id: "hivra", name: "Hivra" }],
+      people: [
+        person({ id: "captain", role: "captain", name: "Chief of Staff", state: "idle" }),
+        person({ id: "project-chat", role: "project", name: "Example project", projectId: "hivra", state: "idle" }),
+        person({
+          id: "job",
+          role: "worker",
+          name: "Example worker",
+          projectId: "hivra",
+          parentId: "project-chat",
+          state: jobState,
+          canStop,
+          sessionId: "chat",
+        }),
+      ],
     });
   }
 
@@ -123,6 +148,35 @@ describe("Agents board stop", () => {
     act(() => row("job").click());
     expect(container.textContent).toContain("Stopped");
     expect(container.textContent).not.toContain("Stop Example worker?");
+  });
+
+  it("keeps Stopped while that row is quiet, then offers Stop once it is working again", async () => {
+    const working = treeWith("working");
+    let release: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    render(() => pending, () => undefined, working);
+    act(() => row("job").click());
+    click("Stop");
+    click("Stop");
+    await settle();
+    await act(async () => {
+      release();
+      await pending;
+    });
+    expect(container.textContent).toContain("Stopped");
+
+    render(() => undefined, () => undefined, working);
+    expect(container.textContent).toContain("Stopped");
+
+    render(() => undefined, () => undefined, treeWith("idle", false));
+    expect(container.textContent).toContain("Stopped");
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent === "Stop")).toBe(false);
+
+    render(() => undefined, () => undefined, working);
+    expect(container.textContent).not.toContain("Stopped");
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent === "Stop")).toBe(true);
   });
 
   it("says the stop failed and offers Stop again", async () => {

@@ -1,7 +1,7 @@
 // The one Agents board. A row opens its chat read-only: no composer, one Stop that asks once.
 // Stop stays on the row it was asked for. It says Stopped only after the stop succeeds.
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { boardChipCounts } from "../model/counts";
 import { loadOpenMap, rowOpen, saveOpenMap, type OpenMap } from "../model/expand";
 import { filterBoard, settledToday, type BoardFilter, type BoardStateFilter } from "../model/filter";
@@ -18,7 +18,7 @@ const CHIP: Record<BoardState, { label: string; own: string }> = {
 
 const COLUMNS = "14rem 15.5rem minmax(4rem, 1fr) 4.75rem 4.25rem 3.75rem 9rem";
 
-type StopEntry = { phase: StopPhase; error?: string };
+type StopEntry = { phase: StopPhase; error?: string; quiet?: boolean };
 
 export function AgentsBoard({
   tree,
@@ -42,12 +42,49 @@ export function AgentsBoard({
   const [selected, setSelected] = useState<string | null>(null);
   const [stops, setStops] = useState<Record<string, StopEntry>>({});
   const stopGen = useRef<Record<string, number>>({});
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
   const shown = useMemo(() => filterBoard(tree, filter, now), [tree, filter, now]);
   const counts = useMemo(() => boardChipCounts(tree, filter.projectId, now), [tree, filter.projectId, now]);
   const ids = useMemo(() => flattenBoard(shown).map((node) => node.id), [shown]);
   const current = selected ? flattenBoard(shown).find((node) => node.id === selected) ?? null : null;
   const entry = current ? stops[current.id] ?? { phase: "closed" as StopPhase } : { phase: "closed" as StopPhase };
   const asking = entry.phase === "asking" && current != null;
+
+  // Stopped stays until this row has been quiet and then starts working again.
+  // A row that is still working when the stop lands keeps Stopped; clearing it there would hide the result.
+  useEffect(() => {
+    const nodes = new Map(flattenBoard(tree).map((node) => [node.id, node]));
+    setStops((prev) => {
+      let changed = false;
+      const next: Record<string, StopEntry> = {};
+      for (const [id, entry] of Object.entries(prev)) {
+        if (entry.phase !== "stopped") {
+          next[id] = entry;
+          continue;
+        }
+        const node = nodes.get(id);
+        if (!node) {
+          next[id] = entry;
+          continue;
+        }
+        if (node.ownState !== "working") {
+          if (entry.quiet) next[id] = entry;
+          else {
+            next[id] = { ...entry, quiet: true };
+            changed = true;
+          }
+          continue;
+        }
+        if (entry.quiet) {
+          changed = true;
+          continue;
+        }
+        next[id] = entry;
+      }
+      return changed ? next : prev;
+    });
+  }, [tree]);
 
   function pick(id: string) {
     setSelected(id);
@@ -91,7 +128,13 @@ export function AgentsBoard({
           if (stopGen.current[id] !== gen) return;
           setStops((prev) => {
             const nowPhase = prev[id]?.phase ?? "closed";
-            return { ...prev, [id]: { phase: finishStop(nowPhase, true) } };
+            const phase = finishStop(nowPhase, true);
+            if (phase === nowPhase) return prev;
+            const node = flattenBoard(treeRef.current).find((item) => item.id === id);
+            return {
+              ...prev,
+              [id]: { phase, quiet: phase === "stopped" && !!node && node.ownState !== "working" },
+            };
           });
         },
         (error: unknown) => {
