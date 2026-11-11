@@ -13,6 +13,8 @@ export type MonoSessionInput = {
   /** Extra index entries (name, for, when, rel), so a skill outside pstack can be listed. */
   extra?: readonly unknown[];
   extraRoot?: string;
+  /** Skills the slash catalog found. A chosen name with no index line uses one of these. */
+  discovered?: readonly { name?: unknown; description?: unknown }[];
 };
 
 function named(skills: readonly string[] | undefined): string[] {
@@ -76,8 +78,25 @@ export function monoSessionInstruction(input: MonoSessionInput): string {
   const extraLines = input.extraRoot ? indexLines(input.extra, input.extraRoot) : undefined;
   const extra = extraLines && input.extraRoot ? `${input.extraRoot}\n${extraLines}` : undefined;
   const filtered = filterSkillBlock([body, extra].filter(Boolean).join("\n"), new Set(keep));
+  const have = new Set<string>();
+  for (const line of (filtered ?? "").split("\n")) {
+    const at = line.indexOf(" | ");
+    if (at > 0) have.add(line.slice(0, at));
+  }
+  const purposes = new Map<string, string>();
+  for (const row of input.discovered ?? []) {
+    if (!row || typeof row.name !== "string") continue;
+    const name = row.name.trim();
+    if (!name || purposes.has(name)) continue;
+    const description = typeof row.description === "string" ? row.description.replace(/\|/g, "/").replace(/\s+/g, " ").trim() : "";
+    if (description) purposes.set(name, description);
+  }
+  const extras = keep
+    .filter((name) => !have.has(name))
+    .map((name) => `${name} | ${purposes.get(name) ?? "Named by this Mono."}`);
+  const skillBody = [filtered, extras.length ? extras.join("\n") : undefined].filter(Boolean).join("\n");
   const parts: string[] = [];
-  if (filtered) parts.push(`${PSTACK_AUTOPILOT}\n${filtered}`);
+  if (skillBody) parts.push(`${PSTACK_AUTOPILOT}\n${skillBody}`);
   if (input.plainEnglish) {
     const plain = sessionInstruction({ plainEnglish: true });
     if (plain) parts.push(plain);
