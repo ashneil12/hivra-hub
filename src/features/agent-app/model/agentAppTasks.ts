@@ -1960,7 +1960,9 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
     throw new Error("This Mono doesn't work on that project.");
   // WP-141 HIGH 2: under Always use my default, no default (the Mono's, the project's or everyone's) is changed from a chat.
   // The lock is read for the Mono, the folder and every saved scope: a change anywhere it reaches is refused.
-  if (planned && ((await tasks.crewPolicy?.(owner.mono?.id, policyFolder))?.lock || (await tasks.crewAnyLock?.()) === true))
+  // Round 6: a host with no lock hook counts as locked, never as unlocked.
+  const anyLock = planned && (tasks.crewAnyLock ? (await tasks.crewAnyLock()) === true : true);
+  if (planned && ((await tasks.crewPolicy?.(owner.mono?.id, policyFolder))?.lock || anyLock))
     throw new Error(
       planned.scope === "system"
         ? "Always use my default is on, so the default for every worker can't be changed from here."

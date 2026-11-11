@@ -1062,6 +1062,7 @@ fn settings_reports_the_signed_in_list_it_is_given() {
         budget: None,
         policy: json!({ "lockDefault": false, "neverUse": [], "fallback": [] }),
         policy_own: true,
+        policy_unreadable: false,
     };
     let view = super::response(
         stored,
@@ -2539,6 +2540,7 @@ fn a_ticket_is_one_time_and_bound_to_its_session_cli_and_folder() {
     let conn = store.lock_conn().unwrap();
     let session = "app-ticket-bound-1";
     record_grant(
+        &conn,
         session,
         &LaunchCheck {
             cli: "claude".into(),
@@ -2595,6 +2597,7 @@ fn under_the_lock_a_spawn_needs_the_granted_default_and_nothing_else() {
         issue_ticket(&conn, "app-lock-spawn-1", "claude", "/tmp/lock-spawn").unwrap_err();
     assert!(no_grant.contains("has no gate decision"), "{no_grant}");
     record_grant(
+        &conn,
         "app-lock-spawn-2",
         &LaunchCheck {
             cli: "claude".into(),
@@ -2660,5 +2663,350 @@ fn any_lock_sees_a_lock_in_any_scope() {
         0,
     )
     .unwrap();
+    assert!(store::any_lock(&conn).unwrap());
+}
+
+/// Review repro (PR #194 round 5): the spawn gate re-judges the project a launch was gated for. A worker gated into a
+/// project whose Never use lists Codex, whose process then starts in its own checkout (a worktree), or in Antigravity's
+/// binary folder, or after a restart with no grant, must not get a ticket for Codex. Today the ticket reads the policy
+/// of the process's folder only, and a folder that is no project's means the system policy alone.
+#[test]
+fn review_the_spawn_gate_judges_the_gated_project_not_only_the_process_folder() {
+    use super::gate::{issue_ticket, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/review-r5-project",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let session = "app-review-r5-worktree-1";
+    record_grant(
+        &conn,
+        session,
+        &LaunchCheck {
+            cli: "claude".into(),
+            mono: None,
+            project: Some("/tmp/review-r5-project".into()),
+            locked_default: None,
+        },
+    )
+    .unwrap();
+    // The same session's process, in its own checkout of that project, asks for a Codex ticket.
+    let ticket = issue_ticket(
+        &conn,
+        session,
+        "codex",
+        "/tmp/review-r5-worktrees/project-task-1",
+    );
+    assert!(
+        ticket.is_err(),
+        "a CLI on the gated project's Never use got a spawn ticket: {ticket:?}"
+    );
+}
+
+/// WP-141 round 6: every agent CLI start judges Never use for that CLI, whichever path reached the spawn. Each path is
+/// the session shape it starts with: Ash's chat, the Lead's chat, a habit run, a fresh-eyes reviewer and an
+/// orchestration worker (UUIDs); a worker, a phase worker and an Antigravity child (`app-`, the child with `#n`).
+#[test]
+fn every_start_path_judges_never_use_at_the_spawn() {
+    use super::gate::{judge_spawn, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/r6-project",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let granted = LaunchCheck {
+        cli: "claude".into(),
+        mono: None,
+        project: Some("/tmp/r6-project".into()),
+        locked_default: None,
+    };
+    for session in [
+        "app-r6-worker-1",
+        "app-r6-phase-1-phase-run1",
+        "app-r6-antigravity-1",
+    ] {
+        record_grant(&conn, session, &granted).unwrap();
+    }
+    use super::gate::judge_start;
+    let paths = [
+        ("Ash's chat", "3f2a9c1e-ashs-chat", "/tmp/r6-project"),
+        ("the Lead's chat", "7d3e5c2a-lead-chat", "/tmp/r6-project"),
+        ("a habit run", "9b1f0e4d-habit-run", "/tmp/r6-project"),
+        (
+            "a fresh-eyes reviewer",
+            "c4a8d2f1-fresh-eyes",
+            "/tmp/r6-project",
+        ),
+        (
+            "an orchestration worker",
+            "e2b7f9a0-orch-worker",
+            "/tmp/r6-project",
+        ),
+        ("a worker", "app-r6-worker-1", "/tmp/r6-project"),
+        (
+            "a phase worker",
+            "app-r6-phase-1-phase-run1",
+            "/tmp/r6-project",
+        ),
+        (
+            "an Antigravity child",
+            "app-r6-antigravity-1#4",
+            "/tmp/r6-antigravity-binary",
+        ),
+    ];
+    for (path, session, folder) in paths {
+        let err = judge_spawn(&conn, session, "codex", folder, None).expect_err(path);
+        assert_eq!(
+            err, "Codex is on Never use, so it was not started.",
+            "{path}"
+        );
+        judge_start(&conn, session, "claude", folder)
+            .unwrap_or_else(|err| panic!("{path} was refused a permitted CLI: {err}"));
+    }
+}
+
+/// WP-141 round 6: the lock is for `app-` sessions. Under it an agent session must be granted its default, and a
+/// session with no decision is refused rather than judged by the folder it runs in. A Mono's or Ash's chat (a UUID)
+/// is not held to a grant, so it starts; the Never use list still applies to it.
+#[test]
+fn under_the_lock_an_agent_session_needs_its_grant_and_a_chat_does_not() {
+    use super::gate::{judge_start, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    judge_start(&conn, "7d3e5c2a-lead-chat", "claude", "/tmp/r6-lock").unwrap();
+    let no_grant = judge_start(&conn, "app-r6-lock-1", "claude", "/tmp/r6-lock").unwrap_err();
+    assert!(no_grant.contains("has no gate decision"), "{no_grant}");
+    record_grant(
+        &conn,
+        "app-r6-lock-2",
+        &LaunchCheck {
+            cli: "claude".into(),
+            mono: None,
+            project: Some("/tmp/r6-lock".into()),
+            locked_default: Some("claude".into()),
+        },
+    )
+    .unwrap();
+    judge_start(&conn, "app-r6-lock-2", "claude", "/tmp/r6-lock").unwrap();
+    let off = judge_start(&conn, "app-r6-lock-2", "grok", "/tmp/r6-lock").unwrap_err();
+    assert!(off.contains("the default is Claude Code"), "{off}");
+    // The Antigravity child is judged as its session: its `#n` is not a separate decision.
+    record_grant(
+        &conn,
+        "app-r6-lock-3",
+        &LaunchCheck {
+            cli: "antigravity".into(),
+            mono: None,
+            project: Some("/tmp/r6-lock".into()),
+            locked_default: Some("antigravity".into()),
+        },
+    )
+    .unwrap();
+    judge_start(
+        &conn,
+        "app-r6-lock-3#7",
+        "antigravity",
+        "/tmp/r6-antigravity-binary",
+    )
+    .unwrap();
+}
+
+/// WP-141 round 6: the policy in force is the most specific one: the grant's project first, then the project that owns
+/// the folder, then the system's. A worktree of a project shares its git common directory, so it is that project.
+#[test]
+fn the_grant_project_beats_the_folder_and_a_worktree_is_its_project() {
+    use super::gate::{judge_spawn, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/r6-grant-a",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    record_grant(
+        &conn,
+        "app-r6-grant-1",
+        &LaunchCheck {
+            cli: "claude".into(),
+            mono: None,
+            project: Some("/tmp/r6-grant-a".into()),
+            locked_default: None,
+        },
+    )
+    .unwrap();
+    let err = judge_spawn(&conn, "app-r6-grant-1", "codex", "/tmp/r6-grant-b", None).unwrap_err();
+    assert_eq!(err, "Codex is on Never use, so it was not started.");
+    judge_spawn(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "codex",
+        "/tmp/r6-grant-b",
+        None,
+    )
+    .unwrap();
+
+    let root = std::env::temp_dir().join(format!("r6-worktree-{}", uuid::Uuid::new_v4()));
+    let repo = root.join("repo");
+    let worktree = root.join("worktree");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let status = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=r6", "-c", "user.email=r6@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "git {args:?} failed");
+    };
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "r6-wt",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let repo_key = std::fs::canonicalize(&repo)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    let worktree_key = std::fs::canonicalize(&worktree)
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    store::set_policy(
+        &mut conn,
+        "project",
+        &repo_key,
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let from_worktree = judge_spawn(&conn, "7d3e5c2a-lead-chat", "codex", &worktree_key, None);
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        from_worktree.unwrap_err(),
+        "Codex is on Never use, so it was not started."
+    );
+}
+
+/// WP-141 round 6: a grant lives in the app database, so a restarted app still judges a resumed worker, or Ash typing
+/// into it, against the default it was granted. Reopening the database is the restart.
+#[test]
+fn a_grant_survives_a_restart_for_a_resumed_worker() {
+    use super::gate::{judge_start, record_grant, LaunchCheck};
+    let path = std::env::temp_dir().join(format!("r6-grants-{}.sqlite", uuid::Uuid::new_v4()));
+    {
+        let store = SessionStore::open(path.clone()).unwrap();
+        let mut conn = store.lock_conn().unwrap();
+        store::set_policy(
+            &mut conn,
+            "project",
+            "/tmp/r6-resume",
+            &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+            0,
+        )
+        .unwrap();
+        record_grant(
+            &conn,
+            "app-r6-resume-1#2",
+            &LaunchCheck {
+                cli: "claude".into(),
+                mono: None,
+                project: Some("/tmp/r6-resume".into()),
+                locked_default: Some("claude".into()),
+            },
+        )
+        .unwrap();
+    }
+    let store = SessionStore::open(path.clone()).unwrap();
+    let conn = store.lock_conn().unwrap();
+    let resumed = judge_start(
+        &conn,
+        "app-r6-resume-1",
+        "claude",
+        "/tmp/r6-resumed-elsewhere",
+    );
+    let off_default = judge_start(
+        &conn,
+        "app-r6-resume-1",
+        "grok",
+        "/tmp/r6-resumed-elsewhere",
+    );
+    let ungranted = judge_start(
+        &conn,
+        "app-r6-resume-2",
+        "claude",
+        "/tmp/r6-resumed-elsewhere",
+    );
+    drop(conn);
+    drop(store);
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("sqlite-wal"));
+    let _ = std::fs::remove_file(path.with_extension("sqlite-shm"));
+    assert!(resumed.is_ok(), "{resumed:?}");
+    assert!(off_default
+        .unwrap_err()
+        .contains("the default is Claude Code"));
+    assert!(ungranted.unwrap_err().contains("has no gate decision"));
+}
+
+/// WP-141 round 6 (LOW): a saved policy that does not parse still loads, flagged, so Ash's explicit save replaces it.
+/// Before, the load failed, the screen had no revision to save against, and the corrupt policy could not be fixed.
+#[test]
+fn ashs_explicit_save_replaces_a_corrupt_saved_policy() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/r6-corrupt-save",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE crew_rule_meta SET policy = 'not json' WHERE scope = 'project' AND scope_id = '/tmp/r6-corrupt-save'",
+        [],
+    )
+    .unwrap();
+    let loaded = store::get_rules(&conn, "project", "/tmp/r6-corrupt-save").unwrap();
+    assert!(loaded.policy_unreadable);
+    let saved = store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/r6-corrupt-save",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        loaded.revision,
+    )
+    .unwrap();
+    assert!(!saved.policy_unreadable);
+    assert_eq!(saved.policy["lockDefault"], json!(true));
     assert!(store::any_lock(&conn).unwrap());
 }

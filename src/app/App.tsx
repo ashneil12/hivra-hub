@@ -11091,6 +11091,8 @@ function Workspace({
         setSessions(sessionsRef.current);
       },
       submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      // WP-141 round 6: a reviewer is a launch like a worker: its CLI passes the crew gate before its session starts.
+      crewGate: (session) => crewLaunchCheck({ cli: session.harness, folder, sessionId: session.id }),
       stop: (sessionId) => {
         void onStopRef.current(sessionId, true);
       },
@@ -13222,6 +13224,8 @@ function Workspace({
           harness,
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
+      // WP-141 round 6: the CLIs on Never use for a folder, so an approved card is filtered before a worker starts.
+      neverUse: async (folder) => (await crewPolicyInForce(undefined, folder)).neverUse,
       // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
       decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
@@ -14939,7 +14943,11 @@ function Workspace({
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
                 // WP-141 LOW 7: a Lead on Never use is not briefed, read from the Lead's own project, whatever the brief says.
-                await refuseNeverUseLead(target, mono.id, crewPolicyInForce);
+                await refuseNeverUseLead(
+                  { ...target, cli: sessionsRef.current.find((session) => session.id === findMono(target.leadId)?.sessionId)?.harness },
+                  mono.id,
+                  crewPolicyInForce,
+                );
               },
               crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
               // WP-141: the one gate every worker and session launch passes before its process starts.

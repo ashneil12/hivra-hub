@@ -75,6 +75,8 @@ export type OrchestrationHost = {
   session(id: string): Session | undefined;
   sessions(): Session[];
   choices(): { harness: HarnessId; models: { id: string; name: string }[] }[];
+  /** WP-141 round 6: the CLIs on Never use for a folder, read from the crew policy in force there. */
+  neverUse?(folder: string): Promise<readonly string[]>;
   createWorker(
     run: OrchestrationRun,
     task: OrchestrationTask,
@@ -1202,6 +1204,11 @@ Run the whole check again and report what you observed.`,
     );
     if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 4)
       throw new Error("Choose 1 to 4 workers");
+    // WP-141 round 6: an approved card never starts a worker on a CLI on Never use for the Lead's folder.
+    const banned = new Set((await this.host!.neverUse?.(lead.cwd)) ?? []);
+    const onNever = approved?.tasks.find((task) => banned.has(task.harness));
+    if (onNever) throw new Error(`${onNever.harness} is on Never use, so this plan was not started.`);
+    allowedHarnesses = allowedHarnesses.filter((id) => !banned.has(id));
     const available = this.host!.choices().map((choice) => choice.harness);
     if (
       !allowedHarnesses.length ||

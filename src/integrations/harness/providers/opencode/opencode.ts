@@ -52,6 +52,7 @@ import {
   type OpenCodePart,
 } from "./opencodeProtocol";
 import { resolveOpenCodeV2Service } from "./opencodeService";
+import { crewSpawnTicket } from "../../../../features/crew/model/host";
 import {
   OpenCodeV2InboxTracker,
   type OpenCodeV2InboxOutcome,
@@ -406,6 +407,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 
   const { path } = await resolveOpenCodeBinaryImpl();
   const generation = await assertOpenCodeVersion(path, input.cwd);
+  // WP-141 round 6: an OpenCode 2.x service starts through harness_exec, not harness_spawn, so its crew judgment is asked here.
+  if (generation === "v2") await crewSpawnTicket({ sessionId: input.sessionId, cli: "opencode", folder: input.cwd });
 
   const liveRef: { current: Live | null } = { current: null };
   const service =

@@ -980,6 +980,7 @@ pub fn harness_spawn(
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
     crew_ticket: Option<String>,
+    store: State<'_, crate::session_store::SessionStore>,
 ) -> Result<u32, String> {
     let workdir = launch_preflight(
         &command,
@@ -989,7 +990,10 @@ pub fn harness_spawn(
     )?;
     // WP-141: an agent session's process needs the one-time ticket its crew gate issued for this session, CLI and folder.
     // Ash's own chats (no `app-` id) pass without one. The default CLI of a spawn with no provider is Claude Code.
-    crate::crew::gate::require_ticket(
+    // Round 6: judged for every session, Ash's and the Monos' chats included: Never use for this CLI in the policy the
+    // session's grant or its folder's project puts in force, and under the lock an `app-` session must be granted.
+    crate::crew::gate::judge_spawn(
+        &*store.lock_conn()?,
         &session_id,
         binary_provider.as_deref().unwrap_or("claude"),
         &cwd,

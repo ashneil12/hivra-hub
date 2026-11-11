@@ -171,6 +171,7 @@ function tasksHost(rows: Delegation[], clock = { now: 0 }) {
   const host: AgentAppTasksHost = {
     // WP-141 round 5: a permissive gate by default, so a test that is not about the gate can start its worker.
     crewGate: vi.fn(async () => undefined),
+    crewAnyLock: vi.fn(async () => false),
     owned: vi.fn(async (owner, query) => {
       const mine = rows.filter((entry) => entry.ownerSession === owner);
       if (!query.ids?.length && !query.requestIds?.length)
@@ -2918,6 +2919,17 @@ describe("parallel workers per project, with throttling (H8)", () => {
       await handleAgentApp(source, "gate-ok", "tasks.delegate", { brief: "Build the title." }, host);
       expect(api.crewGate).toHaveBeenCalledWith(expect.objectContaining({ cli: "claude", lockedDefault: "claude" }));
       expect(started).toHaveLength(1);
+    });
+
+    // Round 6 (LOW): a host with no lock hook counts as locked, so a chat's default change is refused, never let through.
+    it("refuses a default change when the host has no lock hook", async () => {
+      const { source, host, api } = lead();
+      api.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: false }));
+      delete (api as { crewAnyLock?: unknown }).crewAnyLock;
+      await expect(
+        handleAgentApp(source, "no-lock-hook", "tasks.workers", { scope: "mono", cli: "codex" }, host),
+      ).rejects.toThrow("Always use my default is on, so a Mono's or project's default can't be changed from here.");
+      expect(findMono("vg-game-lead")?.workerDefault).toBeUndefined();
     });
 
     // HIGH 2: a chat cannot change any default while the lock is on, the Mono's or the project's included.

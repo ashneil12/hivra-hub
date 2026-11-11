@@ -54,6 +54,13 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            to_cli TEXT,
            PRIMARY KEY (delegation_id, n)
          );
+         CREATE TABLE IF NOT EXISTS crew_grants (
+           session TEXT PRIMARY KEY,
+           mono TEXT,
+           project TEXT,
+           locked_default TEXT,
+           granted_at INTEGER NOT NULL
+         );
          CREATE TABLE IF NOT EXISTS crew_holds (
            delegation_id TEXT PRIMARY KEY,
            hold TEXT NOT NULL,
@@ -100,6 +107,9 @@ pub struct StoredRules {
     pub policy: Value,
     /// WP-141: false when this scope has no policy saved, so `policy` is the one it inherits.
     pub policy_own: bool,
+    /// Round 6: the scope's saved policy does not parse. `policy` is then the empty one, shown so Ash can save over it;
+    /// a launch still refuses (the policy is read there), so nothing runs on a policy nobody can see.
+    pub policy_unreadable: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -411,8 +421,12 @@ pub fn get_rules(conn: &Connection, scope: &str, scope_id: &str) -> Result<Store
     let rules = read_rules(conn, &scope, &scope_id)?;
     let (revision, budget, policy) = meta(conn, &scope, &scope_id)?;
     let policy_own = policy.is_some();
+    // Round 6: an unreadable saved policy still loads (empty, flagged) so Ash can save over it.
+    let policy_unreadable = policy_own && policy_value(policy.clone()).is_err();
     // A project with no policy of its own shows the system's, the one a route in it actually uses.
-    let policy = if policy_own || scope != "project" {
+    let policy = if policy_unreadable {
+        sanitize_policy(&Value::Null)
+    } else if policy_own || scope != "project" {
         policy_value(policy)?
     } else {
         saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null))
@@ -423,6 +437,7 @@ pub fn get_rules(conn: &Connection, scope: &str, scope_id: &str) -> Result<Store
         budget: parse_budget(budget),
         policy,
         policy_own,
+        policy_unreadable,
     })
 }
 
@@ -554,6 +569,89 @@ pub fn set_policy(
     }
     tx.commit().map_err(|e| e.to_string())?;
     get_rules(conn, &scope, &scope_id)
+}
+
+/// The gate's decision for one session, saved so a restart, a resumed worker or Ash typing into a worker still finds it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Grant {
+    pub mono: Option<String>,
+    pub project: Option<String>,
+    pub locked_default: Option<String>,
+}
+
+/// Saves the decision for a session. A later launch of that session replaces it.
+pub fn save_grant(conn: &Connection, session: &str, grant: &Grant, at: i64) -> Result<(), String> {
+    conn.execute(
+        "INSERT OR REPLACE INTO crew_grants (session, mono, project, locked_default, granted_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+        params![session, grant.mono, grant.project, grant.locked_default, at],
+    )
+    .map(|_| ())
+    .map_err(|error| error.to_string())
+}
+
+pub fn grant_of(conn: &Connection, session: &str) -> Result<Option<Grant>, String> {
+    conn.query_row(
+        "SELECT mono, project, locked_default FROM crew_grants WHERE session = ?1",
+        params![session],
+        |row| {
+            Ok(Grant {
+                mono: row.get(0)?,
+                project: row.get(1)?,
+                locked_default: row.get(2)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())
+}
+
+/// The git common directory of a folder that exists. A linked worktree and its main checkout share one.
+fn common_dir(folder: &std::path::Path) -> Option<std::path::PathBuf> {
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(folder)
+        .args(["rev-parse", "--git-common-dir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8(output.stdout).ok()?;
+    std::fs::canonicalize(folder.join(raw.trim())).ok()
+}
+
+/// The hub project that owns a folder: the one whose git common directory the folder shares (a worktree counts),
+/// else the deepest one the folder sits inside. None when no project owns it, so only the system's policy applies.
+pub(crate) fn project_owning(conn: &Connection, folder: &str) -> Result<Option<String>, String> {
+    let folder = folder.trim();
+    if folder.is_empty() {
+        return Ok(None);
+    }
+    let here = std::path::PathBuf::from(crate::delivery::settings::key(folder));
+    let here_common = common_dir(&here);
+    let mut statement = conn
+        .prepare("SELECT DISTINCT scope_id FROM crew_rule_meta WHERE scope = 'project'")
+        .map_err(|error| error.to_string())?;
+    let projects = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut inside: Option<(usize, String)> = None;
+    for project in projects {
+        let project = project.map_err(|error| error.to_string())?;
+        let root = std::path::PathBuf::from(&project);
+        if let (Some(mine), Some(theirs)) = (&here_common, common_dir(&root)) {
+            if *mine == theirs {
+                return Ok(Some(project));
+            }
+        }
+        if here.starts_with(&root) {
+            let depth = root.components().count();
+            if inside.as_ref().is_none_or(|(best, _)| depth > *best) {
+                inside = Some((depth, project));
+            }
+        }
+    }
+    Ok(inside.map(|(_, project)| project))
 }
 
 /// Far enough ahead that a real attempt is outside the cool-down. The command passes `now` to `route_at`.

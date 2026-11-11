@@ -117,3 +117,24 @@ describe("fresh-eyes sessions", () => {
     expect(freshEyesPort()).toBe(stub);
   });
 });
+
+describe("WP-141 round 6 (MED-E): a reviewer is a launch and passes the crew gate", () => {
+  it("a reviewer whose CLI the crew gate refuses is never sent", async () => {
+    const submitted: string[] = [];
+    const port = portFromHooks({
+      sessions: () => [],
+      add: () => {},
+      submit: (id) => {
+        submitted.push(id);
+        return true;
+      },
+      crewGate: () => {
+        throw new Error("Claude Code is on Never use, so it was not started.");
+      },
+      cwd: "/tmp/fresh-eyes-gate",
+      timeoutMs: 20,
+    });
+    await expect(port.ask(TURN)).rejects.toThrow("Never use");
+    expect(submitted).toEqual([]);
+  });
+});

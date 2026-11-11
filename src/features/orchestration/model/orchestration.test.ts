@@ -285,6 +285,15 @@ describe("local orchestration", () => {
       },
     ],
   });
+  // WP-141 round 6: an approved card on a CLI in Never use for the Lead's folder starts no worker.
+  it("refuses an approved card that names a CLI on Never use, before any worker starts", async () => {
+    const f = setup();
+    f.lead.busy = false;
+    f.host.neverUse = vi.fn(async () => ["codex"]);
+    await expect(f.manager.startApproved("lead", "card", proposal())).rejects.toThrow("codex is on Never use");
+    expect(f.host.createWorker).not.toHaveBeenCalled();
+  });
+
   it("starts exactly the approved assignments and preserves forward dependencies", async () => {
     const f = setup();
     f.lead.busy = false;

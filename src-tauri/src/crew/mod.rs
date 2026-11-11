@@ -46,6 +46,8 @@ pub(crate) struct RulesResponse {
     policy: serde_json::Value,
     /// WP-141: false when this scope has no policy of its own, so `policy` is the one it inherits.
     policy_own: bool,
+    /// Round 6: the saved policy does not parse; Ash's explicit save replaces it.
+    policy_unreadable: bool,
 }
 
 fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -> RulesResponse {
@@ -57,6 +59,7 @@ fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -
         signed_in,
         policy: stored.policy,
         policy_own: stored.policy_own,
+        policy_unreadable: stored.policy_unreadable,
     }
 }
 
@@ -251,13 +254,14 @@ pub fn crew_launch_check(
     input: gate::LaunchCheck,
     session_id: Option<String>,
 ) -> Result<(), String> {
-    gate::check_launch(&*store.lock_conn()?, &input)?;
+    let conn = store.lock_conn()?;
+    gate::check_launch(&conn, &input)?;
     match session_id
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
     {
-        Some(session) => gate::record_grant(session, &input),
+        Some(session) => gate::record_grant(&conn, session, &input),
         None => Ok(()),
     }
 }
