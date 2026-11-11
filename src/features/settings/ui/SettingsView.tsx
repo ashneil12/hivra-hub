@@ -27,6 +27,8 @@ import { CrewDefaults } from "../../crew/ui/CrewDefaults";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
 import { hubProjectIdFor } from "../../hub/model/hubData";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+// WP-162: update a conflicting package from main. Off until the person turns it on.
+import { ProgrammeUpdateSetting } from "../../programme/ui/ProgrammeUpdateSetting";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
 // WP-134b: More agents, off until the person switches it on.
@@ -776,6 +778,8 @@ export function SettingsView({
                   <CrewRulesPage cwd={cwd} hideWorkerDefault />
                   {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
                   <GateSetting project={cwd} />
+                  {/* WP-162: update a conflicting package from main. Off until the person turns it on. */}
+                  <ProgrammeUpdateSetting project={cwd} />
                   {/* WP-77: labelled GitHub issues become tasks. Off until the person turns it on. */}
                   <GithubIssuesSetting project={cwd} />
                 </>

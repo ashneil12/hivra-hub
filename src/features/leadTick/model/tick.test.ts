@@ -564,3 +564,79 @@ describe("lead tick: said-once keys", () => {
     expect(second.attention).toEqual([]);
   });
 });
+
+describe("lead tick: the programme lead lease (WP-162)", () => {
+  it("waits, and reads nothing, while another lead holds a fresh lock", async () => {
+    const ports = fake({ rows: [row({ status: "queued" })] });
+    ports.leadLease = async () => ({ kind: "refused", holder: "other", expiresAt: NOW + 60_000 });
+    const result = await runLeadTick(base, ports);
+    expect(result.line).toBe("Another First Mate holds the programme lead lock. This tick waits for it to expire.");
+    expect(ports.calls).toEqual([]);
+    expect(ports.rows[0].status).toBe("queued");
+  });
+
+  it("says a takeover of an expired lock and then ticks as usual", async () => {
+    const ports = fake({ rows: [row({ status: "queued" })], slot: { ok: false, reason: "full" } });
+    ports.leadLease = async () => ({ kind: "takenOver", previous: "old-lead" });
+    const result = await runLeadTick(base, ports);
+    expect(result.line).toContain("Took over the programme lead lock");
+    expect(ports.calls[0]).toBe("list");
+  });
+
+  it("says plainly when the lock cannot be checked, and tries again next tick", async () => {
+    const ports = fake({ rows: [row({ status: "queued" })] });
+    ports.leadLease = async () => {
+      throw new Error("db busy");
+    };
+    const result = await runLeadTick(base, ports);
+    expect(result.line).toBe("Couldn't check the programme lead lock. The next tick tries again.");
+    expect(ports.calls).toEqual([]);
+  });
+});
+
+describe("lead tick: a conflicting pull request (WP-162)", () => {
+  it("only reports while the setting is off, and asks once per head commit", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({ status: { mergeable: "conflicting" } })],
+    });
+    const asked: string[] = [];
+    ports.considerConflict = async (packageId, branch) => {
+      asked.push(`${packageId} ${branch}`);
+      return { kind: "reported", message: "This package conflicts with main. It was only reported. Nothing was merged or rebased." };
+    };
+    const first = await runLeadTick(base, ports);
+    expect(asked).toEqual(["a wp/200-thing"]);
+    expect(first.attention.join(" ")).toContain("#7 (WP-200): This package conflicts with main. It was only reported.");
+    expect(ports.calls).not.toContain("merge owner/app#7");
+
+    const second = await runLeadTick({ ...base, noted: first.noted }, ports);
+    expect(asked).toHaveLength(1);
+    expect(second.attention).toEqual([]);
+  });
+
+  it("says the branch was brought up to date when the setting is on", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({ status: { mergeable: "conflicting" } })],
+    });
+    ports.considerConflict = async () => ({ kind: "ran", ok: true, line: "Brought main into its branch and pushed it." });
+    const result = await runLeadTick(base, ports);
+    expect(result.attention).toEqual([]);
+    expect(result.line).toContain("#7 (WP-200): Brought main into its branch and pushed it.");
+  });
+
+  it("is not asked for a watch that already ended", async () => {
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({ state: "ended", endReason: "closed", status: { mergeable: "conflicting" } })],
+    });
+    let asked = 0;
+    ports.considerConflict = async () => {
+      asked += 1;
+      return { kind: "reported", message: "x" };
+    };
+    await runLeadTick(base, ports);
+    expect(asked).toBe(0);
+  });
+});
