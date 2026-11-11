@@ -1,3 +1,4 @@
+import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
@@ -823,7 +824,6 @@ import {
 import { AGENT_GONE, WAITS } from "../features/registry/model/registryCopy";
 import {
   START_REGISTRY_CHAT_EVENT,
-  linkRegistryChat,
   loadRegistryDocument,
   refreshRegistry,
   reportRegistryChatRefused,
@@ -1193,8 +1193,7 @@ import {
   subscribeNotesEnabled,
   type CollapsedProjectRailMode,
   type SettingsSectionId,
-  type FollowUpBehavior,
-} from "../features/settings/model/settings";
+  type FollowUpBehavior, syncMoreAgentsSwitch } from "../features/settings/model/settings";
 import {
   handleEditorFindKey,
   openFindInActiveEditor,
@@ -1240,6 +1239,7 @@ import type { InstalledUpdate } from "./model/updateNotice";
 
 import {
   bindResumedSessions,
+  bindRestoredHarness,
   closeBusyWindow,
   closeCurrentWindow,
   confirmReload,
@@ -3464,8 +3464,22 @@ function Workspace({
   // WP-134b: the More agents list the chat screens read is the app's own list. Read it at start, and again whenever
   // it changes in any window (Settings adds, allows, withdraws or removes an entry).
   useEffect(() => {
+    // The app's copy of the switch follows the saved setting from the start, so Rust agrees with what Settings shows.
+    void syncMoreAgentsSwitch(loadMoreAgentsEnabled());
     void refreshRegistry();
-    return subscribeRegistry(() => undefined);
+    const unsubscribe = subscribeRegistry(() => undefined);
+    // A change made in another window (a withdraw, a removal) re-reads the list here too, so this window stops runs.
+    let stopChanges: (() => void) | undefined;
+    let disposed = false;
+    void subscribeMoreAgentsChanges(() => void refreshRegistry()).then((stop) => {
+      if (disposed) stop();
+      else stopChanges = stop;
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      stopChanges?.();
+    };
   }, []);
 
   // WP-134b: Start a chat opens a More agents session. The harness stays one of the eleven.
@@ -3494,7 +3508,7 @@ function Workspace({
         ...newSession("claude", cwd),
         ...registrySessionFields(plan.agent, "claude"),
       };
-      if (!linkRegistryChat(session.id, plan.agent.id).ok) return;
+      // WP-134: the entry id is on the session and is saved with it. Browser storage is not the link.
       const tab = newTab(session.id);
       setSessions((prev) => [...prev, session]);
       appendTab(tab, cwd);
@@ -13527,15 +13541,8 @@ function Workspace({
               title: task.title,
             };
         const worker = { ...base, orchestrationLeadId: run.leadId };
-        if (worker.providerSessionId)
-          bindHarnessSession(
-            worker.harness,
-            worker.id,
-            worker.providerSessionId,
-            sessionWorkCwd(worker),
-            worker.providerAccountId,
-            worker.blocks,
-          );
+        // WP-134: a More agents worker is routed from the row before its saved ACP session is bound.
+        bindRestoredHarness(worker);
         await upsertSession(worker);
         const next = [...sessionsRef.current, worker];
         sessionsRef.current = next;

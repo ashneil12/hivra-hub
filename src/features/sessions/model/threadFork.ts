@@ -292,6 +292,10 @@ export function forkSessionAtMessage(
   if (source.worktreeRemoved) fork.worktreeRemoved = true;
   // WP-111: a fork of a private chat is private, and what was private before a switch stays unread.
   if (source.private === true) fork.private = true;
+  // A More agents chat is saved under the placeholder harness. The fork keeps the entry, or it would run as Claude.
+  if (typeof source.registryAgentId === "string" && source.registryAgentId) {
+    fork.registryAgentId = source.registryAgentId;
+  }
   const boundary = forkBoundary(source, index, blockIds, last.id);
   if (boundary) fork.privateBoundaryId = boundary;
   if (source.firstMate) fork.firstMate = true;
