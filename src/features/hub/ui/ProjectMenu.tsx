@@ -95,6 +95,7 @@ type Mode = { kind: "menu" } | { kind: "icon" } | { kind: "rename" } | { kind: "
  * then, below a divider, Remove from hub. Each opens a small popover in place; there is no settings page.
  */
 export function ProjectMenu({ project, anchor, onClose }: { project: HubProject; anchor: PopoverAnchor; onClose: () => void }) {
+  const [shareProblem, setShareProblem] = useState<string>();
   const [mode, setMode] = useState<Mode>({ kind: "menu" });
   const projects = hubData().listProjects();
   const ids = projects.map((p) => p.id);
@@ -131,9 +132,13 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
       {item("Rename", () => setMode({ kind: "rename" }))}
       {/* WP-80: off until Ash clicks. The team switch in Settings decides whether a shared project is sent. */}
       {item(project.shared ? "Stop sharing with my team" : "Share with my team", () => {
-        void setProjectShared(project, !project.shared).catch((reason) => console.error(reason));
-        onClose();
+        setShareProblem(undefined);
+        // A failed change stays on screen with the menu open, so Ash sees why it did not go through.
+        void setProjectShared(project, !project.shared).then(onClose, (reason) => setShareProblem(plainErrorText(reason)));
       })}
+      {shareProblem ? (
+        <p role="alert" className="px-2 py-1 text-[12px] leading-snug text-red-400">{shareProblem}</p>
+      ) : null}
       {item("Group", () => setMode({ kind: "group" }))}
       {item("Workers at once", () => setMode({ kind: "workers" }))}
       {item("Show folder in Finder", () => {
