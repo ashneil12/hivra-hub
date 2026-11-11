@@ -100,6 +100,8 @@ type Live = {
   model?: string;
   /** The finished turn's cost is judged once, not on every message. */
   ceilingNoted: boolean;
+  /** Who started the turn, for the spend gate. */
+  origin?: "person" | "automated";
   openCodeSessionId: string;
   cwd: string;
   runtimeMode: RuntimeMode;
@@ -653,6 +655,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
   settlePendingTurn(live);
   // After any finish that was waiting, this turn's cost has not been judged yet.
   live.ceilingNoted = false;
+  live.origin = input.origin;
 
   try {
     const inboxID = await live.client.promptAsync({
@@ -1507,6 +1510,7 @@ function noteOpenCodeCeiling(live: Live): void {
     sessionId: live.threadId,
     cwd: live.cwd,
     model: live.model,
+    origin: live.origin,
     harness: "opencode",
     metrics: cost == null ? null : { costUsd: cost },
   });

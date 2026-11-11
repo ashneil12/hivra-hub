@@ -233,7 +233,7 @@ type Live = {
   /** What this process was started with, as changed live since. */
   launch: ClaudeLaunch;
   /** The chat's model and settings for its latest turn (a dropped reasoning level is said against these). */
-  target?: { model?: string; modelSettings: Record<string, string> };
+  target?: { model?: string; modelSettings: Record<string, string>; origin?: "person" | "automated" };
   /** Control requests waiting on their answer, by request id. */
   pendingControls: Map<string, (response: ClaudeControlResponse) => void>;
   onEvent: (event: HarnessEvent) => void;
@@ -457,7 +457,7 @@ async function sendClaudeTurnOnce(input: SendTurnInput): Promise<void> {
   live.onEvent = input.onEvent;
   live.runtimeMode = input.runtimeMode;
   // WP-176: the ceiling is judged against this turn's model, not the one the process started with.
-  live.target = { model: input.model, modelSettings: input.modelSettings ?? {} };
+  live.target = { model: input.model, modelSettings: input.modelSettings ?? {}, origin: input.origin };
   live.turns = live.turns
     .catch(() => undefined)
     .then(async () => {
@@ -1867,6 +1867,7 @@ function noteBilledCeiling(live: Live, metrics: { costUsd?: number } | undefined
     sessionId: live.threadId,
     cwd: live.cwd,
     model: live.target?.model,
+    origin: live.target?.origin,
     harness: "claude",
     metrics: metrics ?? null,
   });

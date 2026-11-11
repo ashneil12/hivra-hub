@@ -72,8 +72,7 @@ describe("task ceiling on the row", () => {
       cwd: "/work/crew",
       model: "custom:paid",
       harness: "claude",
-      metrics: { costUsd: 5 },
-      unattended: true,
+      metrics: { costUsd: 5 }
     });
     expect(stopped.stopRun).toBe(true);
     const note = taskCeilingNote("/work/crew", "app-night");

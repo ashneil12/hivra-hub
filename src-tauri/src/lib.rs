@@ -47,6 +47,7 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
+mod spend_ledger;
 // WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
 mod dictation;
 pub mod disclaim;
@@ -686,6 +687,9 @@ pub fn run() {
             watcher::watcher_check_cancel,
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
+            spend_ledger::spend_ledger_append,
+            spend_ledger::spend_ledger_totals,
+            spend_ledger::spend_project_folder,
             crew::crew_rules_set,
             crew::crew_route,
             crew::crew_on_failure,

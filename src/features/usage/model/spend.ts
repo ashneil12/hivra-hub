@@ -1,5 +1,5 @@
 import { dayKey, type UsageSession } from "./history";
-import { addReportedCost, readTurnPrice } from "./cliCost";
+import { readTurnPrice } from "./cliCost";
 import { formatUsd, MAX_USD, MICRO, toMicro } from "./money";
 
 /**
@@ -286,28 +286,58 @@ export async function warnOnce(input: {
   }
 }
 
-/**
- * The period total, summed from usage rows. There is no counter to reset. `match` says whether a row's folder is the
- * limit's project, and `billed` says whether a turn's model is billed per token (a turn that reports $0 from such a
- * model is unpriced, never a $0 price). Empty session ids are not folded together.
- */
-export function periodSpend(
-  sessions: readonly UsageSession[] | null | undefined,
-  opts: { now: number; period: SpendPeriod; match: (cwd: string) => boolean; billed?: (model: string | undefined) => boolean },
+/** One project's spend on one session and one local day: what the ledger stores and the gate reads. */
+export type SpendDay = {
+  /** The project key the turn was written under: a hub id, or a folder when the project has none. */
+  projectKey: string;
+  sessionId: string;
+  /** Local day, YYYY-MM-DD. */
+  day: string;
+  micros: number;
+  priced: number;
+  unpriced: number;
+};
+
+const dayIn = (day: string, today: string, period: SpendPeriod): boolean =>
+  period === "day" ? day === today : day.slice(0, 7) === today.slice(0, 7);
+
+/** The period total from day records. `match` says whether a record's project key is the limit's project. */
+export function sumDays(
+  records: readonly SpendDay[] | null | undefined,
+  opts: { now: number; period: SpendPeriod; match: (projectKey: string) => boolean },
 ): Omit<SpendReading, "reportsCost"> {
-  if (sessions == null || !Number.isFinite(opts.now)) {
-    return { measuredUsd: 0, pricedTurns: 0, unpricedTurns: 0, unreadable: true };
+  const today = dayKey(opts.now);
+  if (records == null || !today) return { measuredUsd: 0, pricedTurns: 0, unpricedTurns: 0, unreadable: true };
+  let micros = 0;
+  let priced = 0;
+  let unpriced = 0;
+  for (const row of records) {
+    if (!row || !opts.match(row.projectKey) || !dayIn(row.day, today, opts.period)) continue;
+    micros += row.micros;
+    priced += row.priced;
+    unpriced += row.unpriced;
   }
+  return { measuredUsd: micros / MICRO, pricedTurns: priced, unpricedTurns: unpriced };
+}
+
+/**
+ * Day records from saved chat rows. Used by tests and by any reader that starts from chats. A turn with no price is
+ * counted apart; a $0 from a billed model is unpriced (see readTurnPrice).
+ */
+export function daysFromSessions(
+  sessions: readonly UsageSession[] | null | undefined,
+  billed: (model: string | undefined) => boolean,
+): SpendDay[] | null {
+  if (sessions == null) return null;
+  const out: SpendDay[] = [];
   const seenSessions = new Set<string>();
   const seenBlocks = new Set<string>();
-  const prices: ReturnType<typeof readTurnPrice>[] = [];
   for (const session of sessions) {
     if (!session || typeof session !== "object") continue;
     const sessionId = typeof session.id === "string" ? session.id : "";
     if (sessionId && seenSessions.has(sessionId)) continue;
     if (sessionId) seenSessions.add(sessionId);
-    const cwd = typeof session.cwd === "string" ? session.cwd : "";
-    if (!opts.match(cwd)) continue;
+    const projectKey = typeof session.cwd === "string" ? session.cwd : "";
     for (const block of session.blocks ?? []) {
       if (!block || block.role !== "user" || !block.turnMetrics) continue;
       const blockId = typeof block.id === "string" ? block.id : "";
@@ -318,11 +348,21 @@ export function periodSpend(
       }
       const stamp = typeof block.startedAt === "number" ? block.startedAt : typeof block.sentAt === "number" ? block.sentAt : undefined;
       if (stamp == null || !Number.isFinite(stamp)) continue;
-      const at = Math.min(stamp, opts.now);
-      if (!inPeriod(at, opts.now, opts.period)) continue;
+      const day = dayKey(stamp);
+      if (!day) continue;
       const model = block.turnModel?.name ?? session.model;
-      prices.push(readTurnPrice(block.turnMetrics, { billed: opts.billed?.(model) === true }));
+      const price = readTurnPrice(block.turnMetrics, { billed: billed(model) });
+      if (price.kind === "empty") continue;
+      const micros = price.kind === "priced" ? (toMicro(price.usd) ?? 0) : 0;
+      out.push({
+        projectKey,
+        sessionId,
+        day,
+        micros,
+        priced: price.kind === "priced" ? 1 : 0,
+        unpriced: price.kind === "priced" ? 0 : 1,
+      });
     }
   }
-  return addReportedCost(prices);
+  return out;
 }

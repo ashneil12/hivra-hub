@@ -145,8 +145,6 @@ fn failure<'a>(
         present: present(who),
         project: project.map(str::to_string),
         mono: mono.map(str::to_string),
-        target_billed: false,
-        person_ok: false,
     }
 }
 
@@ -953,49 +951,6 @@ fn account_failures_move_and_the_work_itself_does_not() {
 }
 
 #[test]
-fn a_reroute_onto_a_billed_model_waits_for_the_persons_ok() {
-    let current = Pick {
-        cli: some("claude"),
-        model: some("opus"),
-        effort: some("high"),
-    };
-    let who = present(&[("claude", true, true), ("codex", true, true)]);
-    let input = |target_billed: bool, person_ok: bool| FailureInput {
-        error_class: Some("usage_limit"),
-        text: None,
-        resets_at: Some(9_000),
-        now: 1_200,
-        current: &current,
-        present: &who,
-        ledger: &[],
-        budget: None,
-        target_billed,
-        person_ok,
-    };
-
-    // A subscription CLI still moves on its own, as WP-13 says.
-    let moved = decide(&input(false, false));
-    assert_eq!(moved.action, "reroute");
-    assert_eq!(moved.to.as_deref(), Some("codex"));
-
-    // A billed target without the person's OK stays with the first mate and is recorded as that.
-    let held = decide(&input(true, false));
-    assert_eq!(held.action, "first-mate");
-    assert_eq!(held.to, None);
-    assert_eq!(held.attempt.outcome, "first-mate");
-    assert_eq!(held.attempt.to, None);
-    assert_eq!(
-        held.reason,
-        "a billed model needs your OK before this task moves"
-    );
-
-    // Only an explicit OK moves it.
-    let approved = decide(&input(true, true));
-    assert_eq!(approved.action, "reroute");
-    assert_eq!(approved.to.as_deref(), Some("codex"));
-}
-
-#[test]
 fn the_classifier_keeps_the_puppetmaster_edges() {
     let output = "File \"production_authority.py\", line 3, in login\n    return login()\n    at run (/app/index.js:401:17)\ncommand not found";
     assert_eq!(
@@ -1472,8 +1427,6 @@ fn a_destination_is_not_skipped_just_because_an_earlier_try_named_it() {
         present: &who,
         ledger: &ledger,
         budget: Some(&json!(2)),
-        target_billed: false,
-        person_ok: false,
     });
     assert_eq!(decision.action, "reroute");
     assert_eq!(decision.to.as_deref(), Some("cursor"));

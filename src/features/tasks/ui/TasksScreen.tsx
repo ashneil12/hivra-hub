@@ -755,7 +755,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
               onOpenChat={(id) => window.dispatchEvent(new CustomEvent("hivra:open-task-chat", { detail: id }))}
               commits={commits}
               appUrl={appUrl}
-              ceiling={spendWatch ? taskCeilingNote(cwd, open.chatId) : null}
+              ceiling={spendWatch ? taskCeilingNote(open.projectId ?? cwd, open.chatId) : null}
             />
           </div>
         ) : null}

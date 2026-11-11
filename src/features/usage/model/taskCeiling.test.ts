@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { ceilingDecision, sanitizeTaskCeiling } from "./taskCeiling";
-import { periodSpend } from "./spend";
+import { daysFromSessions, sumDays, type SpendDay } from "./spend";
+
+function periodSpend(rows: UsageSession[] | null, opts: { now: number; period: "day" | "month"; match: (key: string) => boolean }) {
+  return sumDays(daysFromSessions(rows, () => false) as SpendDay[] | null, opts);
+}
 import type { UsageSession } from "./history";
 
 const soft = { hardUsd: 10, softAt: 0.8, dailyUsd: 4 };

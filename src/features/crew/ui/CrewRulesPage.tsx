@@ -306,7 +306,7 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       ) : null}
       {scope === "project" ? (
         <p className="text-[13px] text-content/70">
-          The lowest task ceiling on these rules is the one for this project. It never raises a ceiling already set.
+          The task ceiling for this project is the lowest one on these rules. Saving a higher number raises it, and a blank one clears it.
         </p>
       ) : null}
       {notice ? <p className="text-[13px] text-content/80">{notice}</p> : null}

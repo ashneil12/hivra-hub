@@ -202,7 +202,7 @@ it("shows the free disk pause on at 30 GB from the start, and lets the person tu
   expect(line()).toContain("free disk is below 50 GB");
 });
 
-it("a project rule can set a task ceiling, and loading a higher one does not raise it", async () => {
+it("a project rule sets its task ceiling on save; loading its rules does not change the enforced one", async () => {
   resetSpendGate();
   saveTaskCeiling("/work/app", { hardUsd: 4, dailyUsd: 2, softAt: 0.5 }, spendSnapshot().book.revision);
   let reads = 0;
@@ -223,8 +223,9 @@ it("a project rule can set a task ceiling, and loading a higher one does not rai
   await act(async () => undefined);
   const ceiling = container.querySelector<HTMLInputElement>('[aria-label="Task ceiling for rule 1"]');
   expect(ceiling?.value).toBe("10");
-  expect(container.textContent).toContain("It never raises a ceiling already set.");
+  expect(container.textContent).toContain("Saving a higher number raises it");
   expect(container.textContent).not.toMatch(/your bill/i);
+  // Loading shows the rule's number but enforces the one saved, until the person saves the rules.
   expect(ceilingForProject("/work/app")).toEqual({ hardUsd: 4, dailyUsd: 2, softAt: 0.5 });
 
   await act(async () => {

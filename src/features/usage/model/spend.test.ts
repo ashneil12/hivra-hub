@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { UsageSession } from "./history";
+import { daysFromSessions, sumDays, type SpendDay } from "./spend";
+import { isBilledModel } from "../../sessions/model/customModels";
 import {
   SPEND_LIMITS_KEY,
   bookFromStored,
@@ -8,7 +10,6 @@ import {
   formatMeasuredUsd,
   importSpendLimits,
   periodId,
-  periodSpend,
   putLimit,
   resetSpendWarnings,
   sanitizeSpendLimit,
@@ -28,6 +29,10 @@ function limit(over: Partial<ReturnType<typeof sanitizeSpendLimit>> = {}) {
     amountUsd: 50,
     ...over,
   })!;
+}
+
+function periodSpend(rows: UsageSession[] | null, opts: { now: number; period: "day" | "month"; match: (key: string) => boolean }) {
+  return sumDays(daysFromSessions(rows, isBilledModel) as SpendDay[] | null, opts);
 }
 
 describe("spend limits", () => {

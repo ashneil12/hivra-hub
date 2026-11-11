@@ -16,7 +16,7 @@ test("crew rules can be ordered, and a plugin rule stays underneath", async ({ p
   await page.getByLabel("Task ceiling for a new rule").fill("10");
   await page.getByRole("button", { name: "Add rule" }).click();
   await expect(page.getByLabel("Task ceiling for rule 1")).toHaveValue("10");
-  await expect(page.getByText("It never raises a ceiling already set.")).toBeVisible();
+  await expect(page.getByText("Saving a higher number raises it")).toBeVisible();
   await page.getByLabel("Labels for a new rule").fill("backend");
   await page.getByLabel("CLI for a new rule").selectOption("codex");
   await page.getByRole("button", { name: "Add rule" }).click();

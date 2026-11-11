@@ -54,13 +54,14 @@ function interrupted(): boolean {
   });
 }
 
-async function startTurn(sessionId: string, model: string) {
+async function startTurn(sessionId: string, model: string, origin: "person" | "automated" = "automated") {
   const events: HarnessEvent[] = [];
   const from = sent.length;
   const fresh = !onLine;
   const turn = sendClaudeTurn({
     sessionId,
     cwd: "/repo",
+    origin,
     model,
     modelSettings: {},
     runtimeMode: "full-access",
@@ -179,7 +180,7 @@ describe("a billed Claude turn and its ceiling", () => {
     setSpendClock(() => Date.parse("2026-11-10T15:00:00"));
     setSpendSessions([]);
     saveTaskCeiling("/repo", { dailyUsd: 1 }, spendSnapshot().book.revision);
-    const day = await startTurn("plain-chat", BILLED);
+    const day = await startTurn("plain-chat", BILLED, "person");
     report(2);
     await day.turn;
     expect(day.events.some((event) => event.type === "session.error")).toBe(false);

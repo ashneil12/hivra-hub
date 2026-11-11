@@ -5,7 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
-import { admitSpendTurn } from "../../../features/usage/model/spendGate";
+import { admitSpendTurn, spendGateActive } from "../../../features/usage/model/spendGate";
 import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -366,8 +366,10 @@ export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
     }
     // WP-176: the one admission point for spend. Every turn passes it, whatever started it (a person, a habit, a
     // worker or a task). A refused turn starts nothing, and the reason is what the chat shows.
-    const admitted = await admitSpendTurn({ sessionId: input.sessionId, cwd: input.cwd, harness: input.harness, model: input.model });
-    if (!admitted.ok) throw new Error(admitted.reason);
+    if (spendGateActive()) {
+      const admitted = await admitSpendTurn({ sessionId: input.sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: input.origin });
+      if (!admitted.ok) throw new Error(admitted.reason);
+    }
     cancelIdlePark(input.sessionId);
     const controlled = typeof isTauri === "function" && isTauri();
     if (controlled)
@@ -504,6 +506,11 @@ export function steerHarnessTurn(
     const adapter = requireHarness(input.harness);
     if (!adapter.live) {
       throw new Error(`${input.harness} is not connected yet`);
+    }
+    // WP-176: a steer is a turn too, so it passes the same admission (an automated steer over a limit is refused).
+    if (spendGateActive()) {
+      const admitted = await admitSpendTurn({ sessionId: input.sessionId, cwd: input.cwd, harness: input.harness, model: input.model, origin: input.origin });
+      if (!admitted.ok) throw new Error(admitted.reason);
     }
     cancelIdlePark(input.sessionId);
     await adapter.steerTurn(input);

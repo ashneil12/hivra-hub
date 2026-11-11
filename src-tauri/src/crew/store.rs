@@ -146,12 +146,6 @@ pub struct FailureQuery {
     pub project: Option<String>,
     #[serde(default)]
     pub mono: Option<String>,
-    /// WP-176. The move's target is billed per token. Missing means it is a subscription CLI.
-    #[serde(default)]
-    pub target_billed: bool,
-    /// WP-176. The person OK'd a move onto a billed model for this task.
-    #[serde(default)]
-    pub person_ok: bool,
 }
 
 /// A usage limit on a row that is still open. The row is not settled, and the text of the failure is not stored.
@@ -721,8 +715,6 @@ fn record_failure(
             present: &input.present,
             ledger: &ledger,
             budget: None,
-            target_billed: input.target_billed,
-            person_ok: input.person_ok,
         });
         return Ok(Err(result_of(&decision, false)));
     };
@@ -743,8 +735,6 @@ fn record_failure(
         present: &input.present,
         ledger: &ledger,
         budget: budget.as_ref(),
-        target_billed: input.target_billed,
-        person_ok: input.person_ok,
     });
     if decision.action == "resume" {
         return Ok(Err(result_of(&decision, false)));

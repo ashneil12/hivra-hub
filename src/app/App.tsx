@@ -9606,6 +9606,8 @@ function Workspace({
           }
           const sendTurn = (text: string, turnAttachments = prepared) =>
             sendHarnessTurn({
+              // WP-176: the composer is the only person's origin; every other turn is automated for the spend gate.
+              origin: "person",
               harness: current.harness,
               sessionId,
               cwd: workCwd,

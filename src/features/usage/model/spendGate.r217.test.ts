@@ -3,6 +3,7 @@
 // its folder name ("/work/monocode-hub"), so a key that only matches folders or ids fails here.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { UsageSession } from "./history";
+import { daysFromSessions } from "./spend";
 import {
   admitSpendTurn,
   chatMayWrite,
@@ -15,7 +16,6 @@ import {
   reviewReportedTurn,
   saveSpendLimit,
   saveTaskCeiling,
-  setSpendChatKind,
   setSpendClock,
   setSpendLoader,
   setSpendProjectLookup,
@@ -49,7 +49,6 @@ beforeEach(() => {
   resetSpendGate();
   setSpendClock(() => month);
   setSpendProjectLookup(lookup);
-  setSpendChatKind(() => "chat");
   events = [];
   wakes.length = 0;
   setSpendWarnSink({
@@ -87,7 +86,7 @@ describe("C2: limits and spend share one project key", () => {
 describe("C1: spend is read again, not frozen at the first read", () => {
   it("a limit moves from ok to over as spend grows after the first read", async () => {
     let rows: UsageSession[] = [row("chat", "/work/monocode-hub", 1)];
-    setSpendLoader(async () => rows);
+    setSpendLoader(async () => daysFromSessions(rows, () => false) ?? []);
     saveSpendLimit({ scope: "project", project: "hivra", period: "month", amountUsd: 10, warnAt: 0.8 }, 0, { by: "person" });
     judgeLaunch({ project: "hivra", harness: "claude" });
     await flush();
@@ -201,10 +200,9 @@ describe("MEDIUM 7: unreadable storage holds launches until the person replaces 
 
 describe("MEDIUM 9: unattended means a habit or worker, and the daily total is per project", () => {
   it("a worker's day total in one project does not count against another", async () => {
-    setSpendChatKind((id) => (id.startsWith("app-") ? "worker" : "chat"));
     setSpendSessions([row("other", "/work/other", 50)]);
     saveTaskCeiling("hivra", { dailyUsd: 10 }, 0);
-    expect((await admitSpendTurn({ sessionId: "app-x", cwd: "/work/monocode-hub", harness: "claude", model: "custom:acme-model" })).ok).toBe(true);
+    expect((await admitSpendTurn({ sessionId: "app-x", cwd: "/work/monocode-hub", harness: "claude", model: "custom:acme-model", origin: "automated" })).ok).toBe(true);
   });
 });
 
@@ -212,10 +210,9 @@ describe("MEDIUM 11: one admission point; automated runs refuse, person chats wa
   it("a worker over the limit is refused, a person's chat is allowed and warned", async () => {
     setSpendSessions([row("chat", "/work/monocode-hub", 50)]);
     saveSpendLimit({ scope: "project", project: "hivra", period: "month", amountUsd: 10, warnAt: 0.8 }, 0, { by: "person" });
-    setSpendChatKind((id) => (id.startsWith("app-") ? "worker" : "chat"));
-    const worker = await admitSpendTurn({ sessionId: "app-w", cwd: "/work/monocode-hub", harness: "claude" });
+    const worker = await admitSpendTurn({ sessionId: "app-w", cwd: "/work/monocode-hub", harness: "claude", origin: "automated" });
     expect(worker.ok).toBe(false);
-    const person = await admitSpendTurn({ sessionId: "person-chat", cwd: "/work/monocode-hub", harness: "claude" });
+    const person = await admitSpendTurn({ sessionId: "person-chat", cwd: "/work/monocode-hub", harness: "claude", origin: "person" });
     expect(person.ok).toBe(true);
   });
 });

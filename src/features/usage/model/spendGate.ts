@@ -1,36 +1,39 @@
 /**
- * WP-176. The stored limits, the usage rows, and the verdicts the launch and turn gates read.
+ * WP-176. The stored limits, the spend ledger, and the verdicts the launch and turn gates read.
  *
- * One admission point (`admitSpendTurn`) judges every turn before it starts, whatever started it: a habit, an
- * automation, a delegated worker, a person's chat. A project or app limit refuses only the automated runs and warns a
- * person's chat. A per-task ceiling on a billed model refuses any further turn of that run once its total is past the
- * cap. Nothing kills a run that is already going, except the per-task hard cap, which stops that run only.
+ * Spend comes from the app's ledger (src-tauri/src/spend_ledger.rs): one record per turn, written when the turn ends,
+ * with its project and whether its price was reported. Chat delete and trash never touch it. The gate reads day totals
+ * from the ledger every few seconds and adds this app's own turns that are not yet saved.
  *
- * Limits are keyed by the project's hub id. A folder or a working copy under it maps to that id, so a limit saved by
- * name, by folder or from Settings is the same limit.
+ * One admission point (`admitSpendTurn`) judges every turn before it starts. A turn is a person's only when the
+ * composer sent it (origin "person"). Anything else is automated, including turns of unknown origin: a limit refuses
+ * those and warns a person's chat. A per-task ceiling on a billed model refuses any further turn of that run once its
+ * total is past the cap.
+ *
+ * Limits are keyed by the project's hub id. A folder, a worktree or a pool slot maps to its project through git, so a
+ * limit saved by name, by folder or from Settings is the same limit.
  */
 
 import { pathKey } from "../../../shared/lib/paths";
 import { isBilledModel } from "../../sessions/model/customModels";
-import { addReportedCost, cliReportsCost, readTurnPrice, type TurnPrice } from "./cliCost";
-import type { UsageSession } from "./history";
+import { cliReportsCost, readTurnPrice } from "./cliCost";
+import { dayKey, type UsageSession } from "./history";
 import { formatUsd, MICRO, toMicro } from "./money";
 import {
   bookFromStored,
+  daysFromSessions,
   dropLimit,
   emptyBook,
   importSpendLimits,
-  inPeriod as inSpendPeriod,
-  periodSpend,
-  putLimit,
   resetSpendWarnings,
-  sameLimit,
   sanitizeSpendLimit,
   spendAllowed,
   spendStatusLine,
   subjectOf,
+  sumDays,
   warnOnce,
   type SpendBook,
+  type SpendDay,
   type SpendLimit,
   type SpendPeriod,
   type SpendReading,
@@ -42,29 +45,39 @@ import { ceilingDecision, sanitizeTaskCeiling, type CeilingVerdict, type TaskCei
 
 export type { SpendVerdict } from "./spend";
 
-const LOCAL_KEY = "monocode:spend-limits";
-/** Rows are read again after this long. A check in between uses what it has. */
+export const LOCAL_KEY = "monocode:spend-limits";
+/** Records are read again after this long. A check in between uses what it has. */
 const TTL_MS = 5_000;
-/** Rows older than this are not trusted: a check reports unreadable instead of an old total. */
+/** Records older than this are not trusted: a check reports unreadable instead of an old total. */
 const STALE_MS = 10 * 60_000;
 
 export const RAISE_LIMIT = "Raise limit";
 
 export type SpendWriter = "person" | "first-mate" | "habit" | "worker" | "checker";
-export type ChatKind = "chat" | "mono" | "team" | "habit" | "worker";
+/** Who started a turn. Only the composer is a person; everything else is automated. */
+export type TurnOrigin = "person" | "automated";
 
 export type SpendSinkEvent = { kind: string; summary: string; project: string };
 
-type Ledger = { key: string; sessionId: string; at: number; micros: number; priced: boolean };
+/** A turn this app has measured, kept until the ledger has it. */
+type Pending = { record: SpendDay; at: number; savedAt?: number };
 type Stored = { book: SpendBook; ceilings: Record<string, TaskCeiling> };
-type ProjectLookup = {
+export type ProjectLookup = {
   /** The hub id of the project a folder belongs to. */
   idOf(folder: string): string | undefined;
   /** The folder of a hub project id. */
   folderOf(id: string): string | undefined;
   /** The project's first mate chat, which hears a warning. */
   firstMateOf?(key: string): string | undefined;
+  /** The project a chat belongs to, when the chat itself says (a habit run runs from home, for example). */
+  projectOfSession?(sessionId: string): string | undefined;
+  /** The main checkout a working copy belongs to, from git. */
+  resolveFolder?(cwd: string): Promise<string>;
 };
+/** The ledger's writer. The app sets it; without one, turns stay in memory. */
+export type SpendPersist = (entry: { sessionId: string; projectKey: string; at: number; micros: number; priced: boolean }) => Promise<void>;
+/** The ledger's reader: day totals from `since` on. The app sets it; tests set records directly. */
+export type SpendLoader = (since: number) => Promise<SpendDay[]>;
 
 const UNSET: SpendVerdict = { status: "unset", reason: "" };
 const OK: SpendVerdict = { status: "ok", reason: "" };
@@ -82,22 +95,19 @@ let booted = false;
 let book: SpendBook = emptyBook();
 let ceilings: Record<string, TaskCeiling> = {};
 let storeUnreadable = false;
-let sessions: UsageSession[] | null = null;
+/** The ledger's day records, or null until one read has landed. */
+let records: SpendDay[] | null = null;
 let loadedAt = -Infinity;
-let loadFailed = false;
-let loader: ((now: number) => Promise<UsageSession[]>) | null = null;
+let loader: SpendLoader | null = null;
 let loading: Promise<void> | null = null;
+let persist: SpendPersist | null = null;
 let clock: () => number = () => Date.now();
 let sink: WarnSink | null = null;
 let lookup: ProjectLookup = NO_PROJECTS;
-let kindOf: (sessionId: string) => ChatKind = defaultKind;
+const folders = new Map<string, string>();
 const asked = new Set<string>();
-let ledger: Ledger[] = [];
+let pending: Pending[] = [];
 const listeners = new Set<() => void>();
-
-function defaultKind(id: string): ChatKind {
-  return id.startsWith("app-") ? "worker" : "chat";
-}
 
 function notify(): void {
   for (const listener of listeners) listener();
@@ -108,7 +118,8 @@ function notify(): void {
 const WORKTREES = "-worktrees";
 
 /**
- * The project folder a working copy belongs to. A worktree is `<folder>-worktrees/<branch>`; any other folder is itself.
+ * A heuristic for a working copy's folder, used only until git has answered: `<folder>-worktrees/<branch>` is the
+ * folder. Any other folder is itself.
  */
 export function projectFolderOfCwd(cwd: string): string {
   const text = cwd.trim().replace(/[\\/]+$/, "");
@@ -121,29 +132,66 @@ export function projectFolderOfCwd(cwd: string): string {
   return `${parent.slice(0, parentCut + 1)}${name.slice(0, -WORKTREES.length)}`;
 }
 
-/**
- * The key a project's limits and ceilings are stored under, and that a usage row is matched by: the hub id. A value
- * that is already a hub id stays. A folder or working copy maps to its hub id, or to its folder when it has none.
- */
+function folderOfCwdCached(cwd: string): string {
+  return folders.get(cwd.trim()) ?? projectFolderOfCwd(cwd);
+}
+
+/** The key a project's limits and ceilings are stored under: the hub id. A folder maps to it; a hub id stays. */
 export function spendKey(value: string): string {
   const text = value.trim();
   if (!text) return "";
   if (lookup.folderOf(text) !== undefined) return text;
-  const folder = projectFolderOfCwd(text);
+  const folder = folderOfCwdCached(text);
   return lookup.idOf(folder) ?? pathKey(folder);
+}
+
+async function folderOfCwd(cwd: string): Promise<string> {
+  const text = cwd.trim();
+  const known = folders.get(text);
+  if (known !== undefined) return known;
+  if (lookup.resolveFolder) {
+    try {
+      const folder = await lookup.resolveFolder(text);
+      if (folder) {
+        folders.set(text, folder);
+        return folder;
+      }
+    } catch {
+      /* git did not answer: the heuristic stands, and the next check asks again */
+    }
+  }
+  return projectFolderOfCwd(text);
+}
+
+/** Starts git's answer for a working copy without waiting for it. The next check uses it. */
+function askFolder(cwd: string): void {
+  const text = cwd.trim();
+  if (!lookup.resolveFolder || !text || folders.has(text)) return;
+  void folderOfCwd(text);
+}
+
+/** The project a turn belongs to, for a check that may wait for git. */
+async function keyForTurn(sessionId: string, cwd: string): Promise<string> {
+  const own = lookup.projectOfSession?.(sessionId);
+  if (own) return spendKey(own);
+  return spendKey(await folderOfCwd(cwd));
+}
+
+/** The same key without waiting. Asks git for the answer, so the next call has it. */
+function keyForTurnNow(sessionId: string, cwd: string): string {
+  const own = lookup.projectOfSession?.(sessionId);
+  if (own) return spendKey(own);
+  askFolder(cwd);
+  return spendKey(folderOfCwdCached(cwd));
 }
 
 /** Tests and the app register the hub's project lookup. The default knows no projects. */
 export function setSpendProjectLookup(next: ProjectLookup | null): void {
   lookup = next ?? NO_PROJECTS;
+  folders.clear();
 }
 
-/** The chat kind an admission reads. The default knows only workers (app- chats) and person chats. */
-export function setSpendChatKind(fn: ((sessionId: string) => ChatKind) | null): void {
-  kindOf = fn ?? defaultKind;
-}
-
-const automated = (kind: ChatKind): boolean => kind === "habit" || kind === "worker";
+const automated = (origin: TurnOrigin | undefined): boolean => origin !== "person";
 
 // ---- storage ------------------------------------------------------------------------------------------------------
 
@@ -160,8 +208,16 @@ function ceilingsFrom(raw: unknown): Record<string, TaskCeiling> {
 
 /** A file that cannot be parsed is unreadable, not an empty book to overwrite. */
 function readStored(): Stored | null {
+  let raw: string | null;
   try {
-    const raw = localStorage.getItem(LOCAL_KEY);
+    // No storage at all (a runtime without localStorage) holds no limits; that is not the same as a stored file that
+    // cannot be read, which holds launches.
+    if (typeof localStorage === "undefined") return { book: emptyBook(), ceilings: {} };
+    raw = localStorage.getItem(LOCAL_KEY);
+  } catch {
+    return { book: emptyBook(), ceilings: {} };
+  }
+  try {
     if (raw == null) return { book: emptyBook(), ceilings: {} };
     const value = JSON.parse(raw) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -187,7 +243,7 @@ function boot(): void {
   ceilings = stored.ceilings;
 }
 
-function persist(nextBook: SpendBook, nextCeilings: Record<string, TaskCeiling>): boolean {
+function persistStored(nextBook: SpendBook, nextCeilings: Record<string, TaskCeiling>): boolean {
   if (storeUnreadable) return false;
   try {
     const stored = readStored();
@@ -254,144 +310,165 @@ export function replaceUnreadableSpendStore(): boolean {
   storeUnreadable = false;
   book = emptyBook();
   ceilings = {};
-  const wrote = persist({ revision: 1, limits: [] }, {});
+  const wrote = persistStored({ revision: 1, limits: [] }, {});
   activity("spend.changed", "The unreadable spend limits were replaced with none. Set them again in Settings.", "app", "app");
   notify();
   return wrote;
 }
 
-// ---- usage rows ---------------------------------------------------------------------------------------------------
+/** Another window saved the limits. Read them again on the next check. */
+export function refreshSpendFromStorage(): void {
+  booted = false;
+  book = emptyBook();
+  ceilings = {};
+  resetSpendWarnings();
+  notify();
+}
+
+// ---- the ledger ---------------------------------------------------------------------------------------------------
 
 export function setSpendClock(next: (() => number) | null): void {
   clock = next ?? (() => Date.now());
 }
 
-/** Rows the gate reads, set directly. An app that has already read the rows uses this. */
-export function setSpendSessions(next: readonly UsageSession[] | null): void {
-  sessions = next == null ? null : [...next];
-  loadFailed = false;
+/** The ledger's day records, set directly. Tests use this; the app's loader sets them every TTL. */
+export function setSpendRecords(next: readonly SpendDay[] | null): void {
+  records = next == null ? null : [...next];
   loadedAt = clock();
-  ledger = ledger.filter((entry) => entry.at > loadedAt);
 }
 
-/** The app's own reader (the usage command). Tests inject one. Rows are read again every TTL. */
-export function setSpendLoader(next: ((now: number) => Promise<UsageSession[]>) | null): void {
+/** Chat rows as day records, for tests that start from chats. */
+export function setSpendSessions(next: readonly UsageSession[] | null): void {
+  setSpendRecords(daysFromSessions(next, isBilledModel));
+}
+
+/** The app's reader of the ledger. The app sets it at start (spendWiring.ts). */
+export function setSpendLoader(next: SpendLoader | null): void {
   loader = next;
+}
+
+/** The app's writer of a turn to the ledger. Without one, turns stay in memory. */
+export function setSpendPersist(next: SpendPersist | null): void {
+  persist = next;
+}
+
+function startOfMonth(now: number): number {
+  const date = new Date(now);
+  return new Date(date.getFullYear(), date.getMonth(), 1).getTime();
 }
 
 function refreshIfStale(): void {
   if (!loader || loading) return;
   const now = clock();
-  if (sessions !== null && now - loadedAt < TTL_MS) return;
+  if (records !== null && now - loadedAt < TTL_MS) return;
   const started = now;
-  loading = loader(started)
+  loading = loader(startOfMonth(now))
     .then((rows) => {
       if (!Array.isArray(rows)) return;
-      sessions = rows;
+      records = rows;
       loadedAt = started;
-      loadFailed = false;
-      ledger = ledger.filter((entry) => entry.at > started);
+      // A turn saved before this read began is in the rows now.
+      pending = pending.filter((row) => row.savedAt === undefined || row.savedAt > started);
       notify();
     })
     .catch(() => {
-      loadFailed = true;
+      /* a failed read keeps the last one; the staleness limit still applies */
     })
     .finally(() => {
       loading = null;
     });
+  for (const row of pending) if (row.savedAt === undefined) saveTurn(row);
 }
 
-/** The rows as of now, or null when they cannot be trusted. */
-function currentRows(): UsageSession[] | null {
-  if (sessions === null) return null;
+/** The day records as of now, or null when they cannot be trusted. Includes turns this app has not saved yet. */
+function currentRecords(): SpendDay[] | null {
+  if (records === null) return null;
   if (loader && clock() - loadedAt >= STALE_MS) return null;
-  return sessions;
+  return [...records, ...pending.map((row) => row.record)];
 }
 
 async function ensureLoaded(): Promise<void> {
   refreshIfStale();
-  const pending = loading;
-  if (pending) await pending;
+  const wait = loading;
+  if (wait) await wait;
 }
 
-/** A turn's price, recorded once when the turn ends. Rows read after it count it through the ledger. */
-function recordTurn(sessionId: string, key: string, price: TurnPrice): void {
-  if (price.kind === "priced") {
-    ledger.push({ key, sessionId, at: clock(), micros: Math.round(price.usd * MICRO), priced: true });
-  } else if (price.kind === "unpriced") {
-    ledger.push({ key, sessionId, at: clock(), micros: 0, priced: false });
-  }
+function saveTurn(row: Pending): void {
+  if (!persist) return;
+  const { record } = row;
+  persist({
+    sessionId: record.sessionId,
+    projectKey: record.projectKey,
+    at: row.at,
+    micros: record.micros,
+    priced: record.priced === 1,
+  })
+    .then(() => {
+      row.savedAt = clock();
+    })
+    .catch(() => {
+      /* kept in memory and tried again on the next read */
+    });
 }
 
-/** Turns this app has recorded since the rows were read, for one project (or all, with null) in a period. */
-function ledgerInPeriod(key: string | null, period: SpendPeriod, now: number) {
+/** A turn's price, written once when the turn ends. Counted at once; saved to the ledger in the background. */
+function recordTurn(sessionId: string, projectKey: string, price: ReturnType<typeof readTurnPrice>): void {
+  if (price.kind === "empty") return;
+  const at = clock();
+  const day = dayKey(at);
+  if (!day) return;
+  const micros = price.kind === "priced" ? (toMicro(price.usd) ?? 0) : 0;
+  const row: Pending = {
+    record: {
+      projectKey,
+      sessionId,
+      day,
+      micros,
+      priced: price.kind === "priced" ? 1 : 0,
+      unpriced: price.kind === "priced" ? 0 : 1,
+    },
+    at,
+  };
+  pending.push(row);
+  saveTurn(row);
+}
+
+/** One limit's reading: the ledger for its period and project. */
+function readingFor(limit: SpendLimit, reportsCost: boolean): SpendReading {
+  const key = limit.scope === "app" ? null : spendKey(limit.project);
+  const base = sumDays(currentRecords(), {
+    now: clock(),
+    period: limit.period,
+    match: key === null ? () => true : (projectKey) => spendKey(projectKey) === key,
+  });
+  return { ...base, reportsCost };
+}
+
+/** A run's total across all days, from the ledger. */
+export function sessionTotal(sessionId: string): { micros: number; priced: number; unpriced: number; unreadable: boolean } {
+  const rows = currentRecords();
+  if (rows === null) return { micros: 0, priced: 0, unpriced: 0, unreadable: true };
   let micros = 0;
   let priced = 0;
   let unpriced = 0;
-  for (const entry of ledger) {
-    if (key !== null && entry.key !== key) continue;
-    if (!inSpendPeriod(entry.at, now, period)) continue;
-    if (entry.priced) {
-      micros += entry.micros;
-      priced += 1;
-    } else {
-      unpriced += 1;
-    }
+  for (const row of rows) {
+    if (row.sessionId !== sessionId) continue;
+    micros += row.micros;
+    priced += row.priced;
+    unpriced += row.unpriced;
   }
-  return { micros, priced, unpriced };
-}
-
-/** One limit's reading: the usage rows for its period and project, plus this app's turns since the rows were read. */
-function readingFor(limit: SpendLimit, reportsCost: boolean): SpendReading {
-  const key = limit.scope === "app" ? null : spendKey(limit.project);
-  const now = clock();
-  const base = periodSpend(currentRows(), {
-    now,
-    period: limit.period,
-    match: key === null ? () => true : (cwd) => spendKey(cwd) === key,
-    billed: isBilledModel,
-  });
-  if (base.unreadable) return { ...base, reportsCost };
-  const extra = ledgerInPeriod(key, limit.period, now);
-  return {
-    measuredUsd: base.measuredUsd + extra.micros / MICRO,
-    pricedTurns: base.pricedTurns + extra.priced,
-    unpricedTurns: base.unpricedTurns + extra.unpriced,
-    reportsCost,
-  };
-}
-
-/** A run's total: every priced turn of its session in the rows, plus this app's turns since the rows were read. */
-export function sessionTotal(sessionId: string): { micros: number; priced: number; unpriced: number; unreadable: boolean } {
-  const rows = currentRows();
-  const prices: TurnPrice[] = [];
-  for (const session of rows ?? []) {
-    if (!session || session.id !== sessionId) continue;
-    for (const block of session.blocks ?? []) {
-      if (!block || block.role !== "user" || !block.turnMetrics) continue;
-      prices.push(readTurnPrice(block.turnMetrics, { billed: isBilledModel(block.turnModel?.name ?? session.model) }));
-    }
-  }
-  const fromRows = addReportedCost(prices);
-  let micros = toMicro(fromRows.measuredUsd) ?? 0;
-  let priced = fromRows.pricedTurns;
-  let unpriced = fromRows.unpricedTurns;
-  for (const entry of ledger) {
-    if (entry.sessionId !== sessionId) continue;
-    if (entry.priced) {
-      micros += entry.micros;
-      priced += 1;
-    } else {
-      unpriced += 1;
-    }
-  }
-  return { micros, priced, unpriced, unreadable: rows === null };
+  return { micros, priced, unpriced, unreadable: false };
 }
 
 // ---- limits -------------------------------------------------------------------------------------------------------
 
 function limitsFor(key: string): SpendLimit[] {
   return book.limits.filter((limit) => limit.scope === "app" || spendKey(limit.project) === key);
+}
+
+/** The stored limit for a project and period, matched by its key, so a folder and a hub id are one limit. */
+function findLimit(scope: SpendScope, key: string, period: SpendPeriod): SpendLimit | undefined {
+  return book.limits.find((row) => row.scope === scope && row.period === period && (scope === "app" || spendKey(row.project) === key));
 }
 
 function ceilingFor(key: string): TaskCeiling | null {
@@ -413,7 +490,7 @@ export function ceilingForProject(project: string): TaskCeiling | null {
   return ceilingFor(spendKey(project));
 }
 
-/** Who may write a limit. A chat may only lower one or set a first one; the whole app is Settings only. */
+/** Who may write a limit. A first mate may only set a first limit or lower one; the whole app is Settings only. */
 export function chatMayWrite(
   writer: SpendWriter,
   next: SpendLimit | null,
@@ -454,15 +531,17 @@ export function saveSpendLimit(
   const parsed = sanitizeSpendLimit(limit);
   if (!parsed) return { book, written: false };
   const clean = parsed.scope === "app" ? parsed : { ...parsed, project: spendKey(parsed.project) };
-  const existing = book.limits.find((row) => sameLimit(row, clean));
+  const existing = findLimit(clean.scope, clean.project, clean.period);
   const allowed = chatMayWrite(opts.by, clean, existing);
   if (!allowed.ok) return { book, written: false, reason: allowed.reason };
-  const put = putLimit(book, clean, expectedRevision);
-  if (!put.written) return { book, written: false };
-  const written = persist(put.book, ceilings);
+  const kept = book.limits.filter(
+    (row) => !(row.scope === clean.scope && row.period === clean.period && (clean.scope === "app" || spendKey(row.project) === clean.project)),
+  );
+  const nextBook = { revision: book.revision + 1, limits: [...kept, clean] };
+  const written = persistStored(nextBook, ceilings);
   if (written) {
     const when = clean.period === "day" ? "today" : "this month";
-    const target = clean.scope === "app" ? "app" : spendKey(clean.project);
+    const target = clean.scope === "app" ? "app" : clean.project;
     activity("spend.changed", `${whoWrote(opts.by)} set the spend limit for ${subjectOf(clean)} to ${formatUsd(clean.amountUsd)} ${when}.`, target, target);
   }
   return { book, written };
@@ -478,17 +557,17 @@ export function clearSpendLimit(
   boot();
   if (storeUnreadable) return { book, written: false, reason: UNREADABLE_STORE.reason };
   if (!adoptIfNewer(expectedRevision)) return { book, written: false };
-  const who = scope === "app" ? "" : spendKey(project);
-  const existing = book.limits.find((row) => row.scope === scope && row.project === who && row.period === period);
+  const key = scope === "app" ? "" : spendKey(project);
+  const existing = findLimit(scope, key, period);
   if (!existing) return { book, written: false };
   const allowed = chatMayWrite(opts.by, null, existing);
   if (!allowed.ok) return { book, written: false, reason: allowed.reason };
-  const dropped = dropLimit(book, scope, who, period, expectedRevision);
+  const dropped = dropLimit(book, scope, existing.project, period, expectedRevision);
   if (!dropped.written) return { book, written: false };
-  const written = persist(dropped.book, ceilings);
+  const written = persistStored(dropped.book, ceilings);
   if (written) {
-    const label = scope === "app" ? "the whole app" : who;
-    activity("spend.changed", `${whoWrote(opts.by)} cleared the spend limit for ${label}.`, who || "app", who || "app");
+    const label = scope === "app" ? "the whole app" : key;
+    activity("spend.changed", `${whoWrote(opts.by)} cleared the spend limit for ${label}.`, scope === "app" ? "app" : key, scope === "app" ? "app" : key);
   }
   return { book, written };
 }
@@ -506,7 +585,7 @@ export function saveTaskCeiling(project: string, ceiling: TaskCeiling | null, ex
     if (!clean) return { book, written: false };
     nextCeilings = { ...nextCeilings, [key]: clean };
   }
-  const written = persist({ ...book, revision: book.revision + 1 }, nextCeilings);
+  const written = persistStored({ ...book, revision: book.revision + 1 }, nextCeilings);
   if (written) {
     const text = ceiling?.hardUsd != null ? `a task ceiling of ${formatUsd(ceiling.hardUsd)}` : "no task ceiling";
     activity("spend.changed", `You set ${text} for this project.`, key, key);
@@ -547,7 +626,7 @@ export function applyProjectRuleCeiling(project: string, usd: number | null): vo
   );
 }
 
-/** Import only adds. A limit or ceiling already here is never raised. */
+/** Import only adds. A limit or ceiling already here is never raised. Logged when anything was added. */
 export function takeImportedSpend(raw: unknown): SpendBook {
   boot();
   if (storeUnreadable) return book;
@@ -570,7 +649,9 @@ export function takeImportedSpend(raw: unknown): SpendBook {
   }
   if (!changed) return book;
   const storedBook = next.revision !== book.revision ? next : { ...book, revision: book.revision + 1 };
-  persist(storedBook, merged);
+  if (persistStored(storedBook, merged)) {
+    activity("spend.changed", "Spend limits were imported. Limits already set were not raised.", "app", "app");
+  }
   return book;
 }
 
@@ -595,7 +676,7 @@ export function spendLimitsSetting(): string | null {
 
 /**
  * The verdict a new builder reads, and the queue re-reads. Over refuses for any CLI, because a CLI that reports no cost
- * cannot be a way around a limit that is already reached.
+ * cannot be a way around a limit that is already reached. Reads only: it sends no warning.
  */
 export function judgeLaunch(input: { project: string; harness: string; ownerSession?: string; warn?: boolean }): SpendVerdict {
   boot();
@@ -661,24 +742,34 @@ export function useLiveSpendSink(): void {
   };
 }
 
+/** True when a limit or a ceiling is set, or the stored limits cannot be read: only then does a turn need admission. */
+export function spendGateActive(): boolean {
+  boot();
+  return storeUnreadable || book.limits.length > 0 || Object.keys(ceilings).length > 0;
+}
+
 /**
- * The one admission point. Every turn passes it before it starts, whatever started it. Returns why a turn is refused.
- * A person's own chat is never refused by a limit: it is warned instead.
+ * The one admission point. Every turn passes it before it starts. Returns why a turn is refused. A person's own
+ * composer turn is never refused by a limit: it is warned instead. An automated turn over a limit, or past its
+ * run's ceiling, is refused. Unreadable storage refuses every automated turn.
  */
 export async function admitSpendTurn(input: {
   sessionId: string;
   cwd: string;
   harness: string;
   model?: string;
+  origin?: TurnOrigin;
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   boot();
-  const key = spendKey(input.cwd);
-  const isAutomated = automated(kindOf(input.sessionId));
+  const isAutomated = automated(input.origin);
+  // Nothing set, nothing stored that cannot be read: the common case answers without waiting, so a turn starts as it did.
+  if (!storeUnreadable && !book.limits.length && !Object.keys(ceilings).length) return { ok: true };
+  if (storeUnreadable) return isAutomated ? { ok: false, reason: UNREADABLE_STORE.reason } : { ok: true };
+  const key = await keyForTurn(input.sessionId, input.cwd);
   const billed = isBilledModel(input.model);
   const ceiling = ceilingFor(key);
   const limits = limitsFor(key);
   if (!limits.length && !ceiling) return { ok: true };
-  if (storeUnreadable) return isAutomated ? { ok: false, reason: UNREADABLE_STORE.reason } : { ok: true };
   await ensureLoaded();
 
   if (billed && ceiling?.hardUsd != null) {
@@ -711,16 +802,13 @@ export async function admitSpendTurn(input: {
   return { ok: true };
 }
 
-/** A project's day total from the rows, plus this app's turns today. Unreadable only when the rows never loaded. */
+/** A project's day total from the ledger. Unreadable when the ledger has never been read. */
 function dailyReading(key: string): { micros: number; unreadable: boolean } {
-  const now = clock();
-  const base = periodSpend(currentRows(), { now, period: "day", match: (cwd) => spendKey(cwd) === key, billed: isBilledModel });
-  const extra = ledgerInPeriod(key, "day", now);
-  const micros = (toMicro(base.measuredUsd) ?? 0) + extra.micros;
-  return { micros, unreadable: base.unreadable === true && loadFailed };
+  const base = sumDays(currentRecords(), { now: clock(), period: "day", match: (projectKey) => spendKey(projectKey) === key });
+  return { micros: toMicro(base.measuredUsd) ?? 0, unreadable: base.unreadable === true };
 }
 
-/** The ceiling line for a task row, and whether its run is held now. Derived from the rows, so a restart keeps it. */
+/** The ceiling line for a task row, and whether its run is held now. Derived from the ledger, so a restart keeps it. */
 export function taskCeilingNote(project: string, chatId?: string | null): { line: string; held: string } | null {
   boot();
   const ceiling = ceilingForProject(project);
@@ -737,7 +825,7 @@ export function taskCeilingNote(project: string, chatId?: string | null): { line
       held = `Task ceiling reached: ${formatUsd(task.micros / MICRO)} of ${formatUsd(ceiling.hardUsd)}. This run is held.`;
     }
   }
-  if (!held && chatId && ceiling.dailyUsd != null && automated(kindOf(chatId))) {
+  if (!held && chatId && ceiling.dailyUsd != null) {
     const daily = dailyReading(spendKey(project));
     if (!daily.unreadable && daily.micros >= Math.round(ceiling.dailyUsd * MICRO)) {
       held = `Daily ceiling reached: ${formatUsd(daily.micros / MICRO)} of ${formatUsd(ceiling.dailyUsd)} today. This run is held.`;
@@ -747,8 +835,8 @@ export function taskCeilingNote(project: string, chatId?: string | null): { line
 }
 
 /**
- * One finished turn on a billed model. Records its price and judges the run's total for the soft ask and the hard
- * stop. A project or app limit is not judged here: it is judged at admission.
+ * One finished turn. Records its price in the ledger, whatever the model, and judges the run's total for the soft ask
+ * and the hard stop. A project or app limit is not judged here: it is judged at admission.
  */
 export function reviewReportedTurn(input: {
   sessionId: string;
@@ -756,13 +844,16 @@ export function reviewReportedTurn(input: {
   model?: string;
   harness: string;
   metrics?: { costUsd?: number; inputTokens?: number; outputTokens?: number } | null;
-  unattended?: boolean;
+  /** Omitted means automated: a turn of unknown origin is treated as automated. */
+  origin?: TurnOrigin;
 }): CeilingVerdict {
   const idle: CeilingVerdict = { status: "unset", reason: "", stopRun: false, ask: false };
   boot();
-  if (!input.sessionId || !isBilledModel(input.model)) return idle;
-  const key = spendKey(input.cwd);
-  recordTurn(input.sessionId, key, readTurnPrice(input.metrics ?? undefined, { billed: true }));
+  if (!input.sessionId) return idle;
+  const billed = isBilledModel(input.model);
+  const key = keyForTurnNow(input.sessionId, input.cwd);
+  recordTurn(input.sessionId, key, readTurnPrice(input.metrics ?? undefined, { billed }));
+  if (!billed) return idle;
   const ceiling = ceilingFor(key);
   if (!ceiling) return idle;
   refreshIfStale();
@@ -776,7 +867,7 @@ export function reviewReportedTurn(input: {
     taskPricedTurns: task.priced,
     taskUnpricedTurns: task.unpriced,
     dailyMeasuredUsd: daily.unreadable ? Number.NaN : daily.micros / MICRO,
-    unattended: input.unattended ?? automated(kindOf(input.sessionId)),
+    unattended: automated(input.origin),
     asked: asked.has(input.sessionId),
     continued: false,
   });
@@ -792,17 +883,17 @@ export function resetSpendGate(): void {
   book = emptyBook();
   ceilings = {};
   storeUnreadable = false;
-  sessions = null;
+  records = null;
   loadedAt = -Infinity;
-  loadFailed = false;
   loader = null;
   loading = null;
+  persist = null;
   clock = () => Date.now();
   sink = null;
   lookup = NO_PROJECTS;
-  kindOf = defaultKind;
+  folders.clear();
   asked.clear();
-  ledger = [];
+  pending = [];
   resetSpendWarnings();
   try {
     localStorage.removeItem(LOCAL_KEY);
@@ -812,7 +903,7 @@ export function resetSpendGate(): void {
   notify();
 }
 
-/** Drop the in-memory book so the next read comes back from storage, as after a restart. Rows stay. */
+/** Drop the in-memory book so the next read comes back from storage, as after a restart. The ledger stays. */
 export function forgetSpendMemory(): void {
   booted = false;
   book = emptyBook();
@@ -827,12 +918,11 @@ export function forgetSpendMemory(): void {
  */
 export function spendLine(project: string, harness: string, scope: SpendScope = "project"): string {
   boot();
-  const key = spendKey(project);
-  const own = book.limits.find((row) => row.scope === scope && (scope === "app" || spendKey(row.project) === key));
+  const key = scope === "app" ? "" : spendKey(project);
+  const own = findLimit(scope, key, "month") ?? findLimit(scope, key, "day");
   const limit = own ?? (scope === "project" ? book.limits.find((row) => row.scope === "app") : undefined);
   if (!limit) return "No spend limit is set.";
   const reading = readingFor(limit, cliReportsCost(harness));
   if (reading.unreadable) return spendAllowed(reading, limit).reason;
   return spendStatusLine(reading, limit);
 }
-
