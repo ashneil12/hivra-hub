@@ -107,7 +107,7 @@ fn run_once(cmd: &mut Command, timeout: Duration) -> Result<String, Miss> {
 }
 
 fn git(repo: &Path, args: &[&str], timeout: Duration) -> Result<String, GitFail> {
-    let mut cmd = crate::delivery::child("git");
+    let mut cmd = crate::git_cmd::child_keep_hooks();
     cmd.arg("--no-pager").arg("-C").arg(repo).args(args);
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -385,7 +385,7 @@ mod tests {
         // short wait turned a rejection into a timeout. Wait long enough that only a
         // real hang times out. Rejected (not Unavailable) is the proof: run_limited
         // tries again only after a failed start, so a rejection returns on the first try.
-        let mut cmd = Command::new("git");
+        let mut cmd = crate::git_cmd::git_keep_hooks();
         cmd.arg("not-a-command");
         let result = super::run_limited(cmd, Duration::from_secs(60));
         assert!(

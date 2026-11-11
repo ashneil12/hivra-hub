@@ -146,5 +146,164 @@
       ".claude/.credentials.json",
       ".codex/auth.json"
     ]
-  }
+  },
+  "protectedGlobs": [
+    {
+      "pattern": ".git/hooks/**",
+      "why": "a git hook runs on the next commit, push or checkout"
+    },
+    {
+      "pattern": ".git/config",
+      "why": "git config can point hooks or fsmonitor at any command"
+    },
+    {
+      "pattern": ".git/modules/**/hooks/**",
+      "why": "a submodule's git hook runs on its next commit, push or checkout"
+    },
+    {
+      "pattern": ".git/modules/**/config",
+      "why": "a submodule's git config can point hooks or fsmonitor at any command"
+    },
+    {
+      "pattern": ".claude/settings.json",
+      "why": "Claude Code settings decide its permissions and hooks"
+    },
+    {
+      "pattern": ".claude/settings.local.json",
+      "why": "Claude Code local settings decide its permissions and hooks"
+    },
+    {
+      "pattern": ".claude/hooks/**",
+      "why": "Claude Code hooks run on its tool calls"
+    },
+    {
+      "pattern": ".claude/commands/**",
+      "why": "Claude Code commands run when someone types them"
+    },
+    {
+      "pattern": ".claude/skills/**",
+      "why": "Claude Code skills change what the agent is told to do"
+    },
+    {
+      "pattern": ".claude/agents/**",
+      "why": "Claude Code subagent definitions change what workers run"
+    },
+    {
+      "pattern": ".codex/config.toml",
+      "why": "Codex settings decide its sandbox and approvals"
+    },
+    {
+      "pattern": ".codex/skills/**",
+      "why": "Codex skills change what the agent is told to do"
+    },
+    {
+      "pattern": ".cursor/mcp.json",
+      "why": "Cursor MCP config starts commands on its own"
+    },
+    {
+      "pattern": ".cursor/rules/**",
+      "why": "Cursor rules change what the agent is told to do"
+    },
+    {
+      "pattern": ".cursor/skills/**",
+      "why": "Cursor skills change what the agent is told to do"
+    },
+    {
+      "pattern": ".opencode/opencode.json",
+      "why": "OpenCode settings decide what it runs"
+    },
+    {
+      "pattern": ".opencode/opencode.jsonc",
+      "why": "OpenCode settings decide what it runs"
+    },
+    {
+      "pattern": ".opencode/skills/**",
+      "why": "OpenCode skills change what the agent is told to do"
+    },
+    {
+      "pattern": ".agents/skills/**",
+      "why": "shared agent skills change what every CLI is told to do"
+    },
+    {
+      "pattern": ".hermes/skills/**",
+      "why": "Hermes skills change what the agent is told to do"
+    },
+    {
+      "pattern": ".devin/skills/**",
+      "why": "Devin skills change what the agent is told to do"
+    },
+    {
+      "pattern": ".config/devin/skills/**",
+      "why": "Devin skills change what the agent is told to do"
+    },
+    {
+      "pattern": ".gemini/antigravity/skills/**",
+      "why": "Antigravity skills change what the agent is told to do"
+    },
+    {
+      "pattern": "~/.gitconfig",
+      "why": "the person's global git config can point hooks or fsmonitor at any command",
+      "denyWrite": true
+    },
+    {
+      "pattern": "~/.config/git/**",
+      "why": "the person's global git config can point hooks or fsmonitor at any command",
+      "denyWrite": true
+    },
+    {
+      "pattern": "~/Library/LaunchAgents/**",
+      "why": "a LaunchAgent starts a command at every login",
+      "denyWrite": true
+    },
+    {
+      "pattern": "~/.claude/settings.json",
+      "why": "Claude Code settings decide its permissions and hooks",
+      "denyWrite": true
+    },
+    {
+      "pattern": "~/.claude/settings.local.json",
+      "why": "Claude Code local settings decide its permissions and hooks",
+      "denyWrite": true
+    },
+    {
+      "pattern": "~/.claude/hooks/**",
+      "why": "Claude Code hooks run on its tool calls",
+      "denyWrite": true
+    },
+    {
+      "pattern": "~/.claude/commands/**",
+      "why": "Claude Code commands run when someone types them"
+    },
+    {
+      "pattern": "~/.claude/skills/**",
+      "why": "Claude Code skills change what the agent is told to do"
+    },
+    {
+      "pattern": "~/.claude/agents/**",
+      "why": "Claude Code subagent definitions change what workers run"
+    },
+    {
+      "pattern": "~/.codex/config.toml",
+      "why": "Codex settings decide its sandbox and approvals",
+      "denyWrite": true
+    },
+    {
+      "pattern": "~/.codex/skills/**",
+      "why": "Codex skills change what the agent is told to do"
+    },
+    {
+      "pattern": "~/.cursor/mcp.json",
+      "why": "Cursor MCP config starts commands on its own",
+      "denyWrite": true
+    },
+    {
+      "pattern": "~/.cursor/rules/**",
+      "why": "Cursor rules change what the agent is told to do"
+    },
+    {
+      "pattern": "~/.config/opencode/**",
+      "why": "OpenCode settings decide what it runs",
+      "denyWrite": true
+    }
+  ]
 }

@@ -4,7 +4,6 @@
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde_json::json;
 
@@ -139,7 +138,7 @@ fn other_platform() -> &'static str {
 }
 
 fn git_cmd(dir: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = crate::git_cmd::git()
         .current_dir(dir)
         .args(args)
         .env("GIT_AUTHOR_NAME", "Hivra")

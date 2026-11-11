@@ -4591,7 +4591,7 @@ pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, S
 /// cached search path finds it without waiting on the login shell.
 /// WP-104: the health list reads `git --version` through this same command.
 pub(crate) fn git_cmd() -> Command {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git();
     crate::background_work::configure_child(&mut cmd);
     crate::hide_window_console(&mut cmd);
     cmd.env("PATH", crate::harness::cached_gui_search_path());
@@ -9292,7 +9292,7 @@ mod tests {
     #[test]
     fn list_dir_marks_ignored_with_git_semantics() {
         let dir = tmp("list-dir-git");
-        let init = Command::new("git")
+        let init = crate::git_cmd::git()
             .args(["init"])
             .current_dir(&dir.0)
             .output();
@@ -9347,7 +9347,7 @@ mod tests {
         std::fs::create_dir_all(dir.0.join("node_modules")).unwrap();
         std::fs::write(dir.0.join("node_modules").join("pkg.js"), "x\n").unwrap();
 
-        let init = Command::new("git")
+        let init = crate::git_cmd::git()
             .args(["init"])
             .current_dir(&dir.0)
             .output();
@@ -9355,7 +9355,7 @@ mod tests {
         if !init.status.success() {
             return;
         }
-        let add = Command::new("git")
+        let add = crate::git_cmd::git()
             .args(["add", "tracked.ts", ".gitignore"])
             .current_dir(&dir.0)
             .status();
@@ -9398,12 +9398,15 @@ mod tests {
     }
 
     fn init_git(dir: &Path, branch: &str, origin: Option<&str>) -> bool {
-        let init = Command::new("git").args(["init"]).current_dir(dir).output();
+        let init = crate::git_cmd::git()
+            .args(["init"])
+            .current_dir(dir)
+            .output();
         let Ok(init) = init else { return false };
         if !init.status.success() {
             return false;
         }
-        let head = Command::new("git")
+        let head = crate::git_cmd::git()
             .args(["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])
             .current_dir(dir)
             .status();
@@ -9411,7 +9414,7 @@ mod tests {
             return false;
         }
         if let Some(url) = origin {
-            let remote = Command::new("git")
+            let remote = crate::git_cmd::git()
                 .args(["remote", "add", "origin", url])
                 .current_dir(dir)
                 .status();
@@ -9455,7 +9458,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> bool {
-        Command::new("git")
+        crate::git_cmd::git()
             .args([
                 "-c",
                 "user.name=MonoCode",
@@ -10546,7 +10549,7 @@ mod tests {
         if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -10580,7 +10583,7 @@ mod tests {
         if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -10617,7 +10620,7 @@ mod tests {
         if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -10653,7 +10656,7 @@ mod tests {
         if !init_git_commit(&a.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -10666,7 +10669,7 @@ mod tests {
         if !git(&a.0, &["remote", "add", "origin", &origin_url])
             || !git(&a.0, &["push", "-u", "origin", "main"])
             || !git(&origin.0, &["symbolic-ref", "HEAD", "refs/heads/main"])
-            || Command::new("git")
+            || crate::git_cmd::git()
                 .args(["clone", "-b", "main", &origin_url, "."])
                 .current_dir(&b.0)
                 .status()
@@ -11947,7 +11950,7 @@ mod tests {
         if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()

@@ -455,7 +455,7 @@ fn check_branch(repo: &Path, branch: &str) -> Result<(), String> {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = crate::delivery::child("git");
+    let mut command = crate::git_cmd::child();
     crate::hide_window_console(&mut command);
     let output = command
         .current_dir(repo)
@@ -1231,7 +1231,7 @@ mod tests {
     }
 
     fn git_ok(cwd: &Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
+        let output = crate::git_cmd::git()
             .current_dir(cwd)
             .args(args)
             .env("GIT_AUTHOR_NAME", "Test")

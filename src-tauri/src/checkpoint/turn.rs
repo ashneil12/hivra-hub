@@ -596,7 +596,7 @@ fn resolve_edit_path(workspace: &Path, root: &Path, path: &str) -> Result<String
 }
 
 fn git_command(root: &Path, args: &[&str]) -> Command {
-    let mut command = Command::new("git");
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
     command
         .args(["--no-pager", "-C"])

@@ -907,18 +907,33 @@ pub fn record_first_mate_note(
     first_mate_name: &str,
     at: i64,
 ) -> Result<(), String> {
-    if first_mate_id.trim().is_empty() {
+    // Only the one kind a first mate's own report writes, so this command cannot record anything else (review r2 L1).
+    if kind != "protected.report" {
+        return Err("A first mate's row can only be a protected-path report.".into());
+    }
+    let id = strip_controls(first_mate_id);
+    if id.is_empty() {
         return Err("Say who did this.".into());
     }
+    let name = strip_controls(first_mate_name);
     record_actor_note(
         conn,
         kind,
         summary,
         project,
         target,
-        &Who::first_mate(first_mate_id.trim(), first_mate_name.trim()),
+        &Who::first_mate(id, name),
         at,
     )
+}
+
+/// A name as the log keeps it: the text without control characters (a newline or an escape in a name would break a row).
+fn strip_controls(text: &str) -> String {
+    text.chars()
+        .filter(|c| !c.is_control())
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 fn record_actor_note(

@@ -88,7 +88,7 @@ pub fn protected_area(path: &str) -> Option<&'static str> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
     let output = command
         .arg("-C")

@@ -460,7 +460,7 @@ fn capitalize(text: &str) -> String {
 
 /// Read-only git: no optional locks (status never rewrites the index), no prompts, plain English.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Result<(String, bool), String> {
-    let mut command = Command::new("git");
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
     let output = command
         .arg("-C")

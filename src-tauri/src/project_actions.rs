@@ -107,6 +107,9 @@ pub struct RunRequest<'a> {
     /// Start from [`ALLOWED_ENV`] rather than everything the app inherited. The finish-line check asks for this: a
     /// command from a proposal must not see the app's own secrets in its environment.
     pub env_clear: bool,
+    /// When the sandbox is on: the program and leading arguments that run the action's shell under it, for example
+    /// `sandbox-exec -p <profile>` (agent_sandbox::action_wrap). None runs the shell directly.
+    pub wrap: Option<Vec<std::ffi::OsString>>,
 }
 
 pub(crate) type Emit = Arc<dyn Fn(&str, Option<&str>, Option<&RunRecord>) + Send + Sync>;
@@ -449,10 +452,21 @@ fn command(request: &RunRequest<'_>) -> Command {
         command
     };
     #[cfg(not(windows))]
-    let mut command = {
-        let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg(&request.action.command);
-        command
+    let mut command = match &request.wrap {
+        Some(prefix) if !prefix.is_empty() => {
+            let mut command = Command::new(&prefix[0]);
+            command.args(&prefix[1..]);
+            command
+                .arg("/bin/sh")
+                .arg("-c")
+                .arg(&request.action.command);
+            command
+        }
+        _ => {
+            let mut command = Command::new("/bin/sh");
+            command.arg("-c").arg(&request.action.command);
+            command
+        }
     };
     crate::hide_window_console(&mut command);
     if request.env_clear {
@@ -582,6 +596,8 @@ pub(crate) fn run_action(
     })?;
     // WP-87: only a long-running action with a declared stack prepares ports and Compose.
     // Check and ship pass an empty env and do not start Docker.
+    // WP-178 (review r2 HIGH-2): while the sandbox is on, an action an agent or Setup starts runs under the profile.
+    let wrap = crate::agent_sandbox::action_wrap(Some(&data))?;
     let stack_env = if action.long_running && file.stack.is_some() {
         let started = crate::stacks::maybe_start(
             &crate::stacks::env_from_app(app)?,
@@ -609,6 +625,7 @@ pub(crate) fn run_action(
         stack_env,
         false,
         Some(emitter(app)),
+        wrap,
     )
 }
 
@@ -626,6 +643,7 @@ pub(crate) fn start_command(
     env: Vec<(String, String)>,
     env_clear: bool,
     emit: Option<Emit>,
+    wrap: Option<Vec<std::ffi::OsString>>,
 ) -> Result<RunRecord, String> {
     if let Some(running) = runs
         .list(Some(project_root))
@@ -647,6 +665,7 @@ pub(crate) fn start_command(
             path_env,
             env,
             env_clear,
+            wrap,
         },
         emit,
     )
@@ -841,6 +860,7 @@ mod tests {
                     path_env: None,
                     env: Vec::new(),
                     env_clear: false,
+                    wrap: None,
                 },
                 Some(emit),
             )
@@ -873,6 +893,7 @@ mod tests {
             path_env: None,
             env: Vec::new(),
             env_clear: false,
+            wrap: None,
         };
         let command = command(&request);
         let removed: Vec<String> = command
@@ -917,6 +938,7 @@ mod tests {
                 path_env: None,
                 env: Vec::new(),
                 env_clear: true,
+                wrap: None,
             },
             None,
         );
@@ -950,6 +972,7 @@ mod tests {
                     path_env: None,
                     env: Vec::new(),
                     env_clear: false,
+                    wrap: None,
                 },
                 None,
             )
@@ -971,6 +994,7 @@ mod tests {
                     path_env: None,
                     env: Vec::new(),
                     env_clear: false,
+                    wrap: None,
                 },
                 None,
             )

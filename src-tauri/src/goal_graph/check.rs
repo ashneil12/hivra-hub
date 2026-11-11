@@ -256,19 +256,23 @@ pub fn run(app: &AppHandle, cwd: &str, spec: &CheckSpec) -> Result<CheckRun, Str
     let (main, checkout) =
         crate::project_actions::checkout_of_project(&crate::fs::expand_home(cwd))?;
     let runs = app.state::<crate::project_actions::ActionRuns>();
+    // WP-178 (review r2 HIGH-2): a check command comes from a proposal, so it runs under the sandbox while it is on.
+    let data = crate::project_file::data_dir(app)?;
+    let wrap = crate::agent_sandbox::action_wrap(Some(&data))?;
     let record = crate::project_actions::start_command(
         &runs,
         &main,
         &checkout,
         &action_for(spec),
         "verify",
-        &crate::project_file::data_dir(app)?.join("action-runs"),
+        &data.join("action-runs"),
         Some(crate::harness::cached_gui_search_path()),
         Vec::new(),
         // A command from a proposal is untrusted, so it starts from an allow-listed environment: PATH, HOME and the
         // locale, plus the project variables the runner sets. Never the app's own secrets.
         true,
         Some(crate::project_actions::emitter(app)),
+        wrap,
     )?;
     let limit = Duration::from_secs(spec.timeout()) + Duration::from_secs(30);
     let finished = runs

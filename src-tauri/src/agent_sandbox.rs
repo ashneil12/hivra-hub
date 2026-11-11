@@ -1,54 +1,79 @@
-//! WP-178 item 3.1: the macOS sandbox profile for agent CLIs. Off by default; on by a setting.
+//! WP-178 item 3.1: the macOS sandbox profile for agent CLIs and project actions. Off by default; on by a setting.
 //!
 //! When the setting is on, `harness_spawn` starts each agent CLI as `/usr/bin/sandbox-exec -p <profile> <cli> <args…>`
-//! (`sandboxed_launch`). The profile is a denylist: everything is allowed except the secret places (SSH keys, GnuPG,
-//! cloud logins, keychains, password stores) and the shell profiles, and writes to `.git/hooks` and `.git/config` in any
-//! checkout. The secret places and shell profiles come from the shared list `src/shared/security/agentConfigPaths.json`
-//! (its `homeSecrets` section), the same file the after-turn check reads. The CLIs' own login files are in that section
-//! too, but only as reported places: the profile never denies them, because the CLI reads them to log in. A denylist
-//! leaks everything it does not list; that limit is written in docs/hivra/work/WP-178-agent-os-sandbox.md.
+//! (`sandboxed_launch`), and project actions and Setup run as `sandbox-exec -p <profile> /bin/sh -c <command>`
+//! (`action_wrap`). The profile is a denylist: everything is allowed except what it names:
 //!
-//! Matching is case-insensitive for ASCII (APFS is case-insensitive by default, so `~/.SSH` is `~/.ssh`). The NFKC and
-//! long-s rules of the after-turn check are not in the profile: macOS does not map those names onto the same folder.
+//! - the secret places (SSH keys, GnuPG, cloud logins, keychains, password stores) and the shell profiles, read and
+//!   written, and their real targets when they are links;
+//! - the person's global git config, LaunchAgents and the CLIs' settings and hooks (`denyWrite` in the shared list);
+//! - writes and links to `.git`, `.git/hooks`, `.git/config` and submodule hooks or config;
+//! - the app's own switch folder and `monocode.db` (so a sandboxed agent cannot turn the sandbox off for the next start);
+//! - running `launchctl`, `open`, `osascript` and `security`, and sending Apple events.
 //!
-//! Fail closed: before a sandboxed start, `sandbox-exec` runs `/usr/bin/true` under the same profile. If that does not
-//! start, the agent does not start. The app never falls back to an unsandboxed start while the setting is on. Each refusal
-//! to start is written to the activity log (`note_refusal`).
+//! The lists come from `src/shared/security/agentConfigPaths.json`, the same file the after-turn check reads. The CLIs'
+//! own login files are listed as reported places only: the profile never denies them, because the CLI reads them to log
+//! in. A denylist leaks everything it does not list: a copy of one of those programs under another name still runs, and
+//! so does anything outside the lists. docs/hivra/work/WP-178-agent-os-sandbox.md has the full list of what is not stopped.
+//!
+//! Matching is ASCII case-insensitive (APFS is case-insensitive by default). The NFKC and long-s rules of the after-turn
+//! check are not in the profile; the probes in the WP doc record what APFS folds here.
+//!
+//! Fail closed: before a sandboxed start, `sandbox-exec` runs `/usr/bin/true` under the same profile, and a start-up
+//! self-check proves the profile refuses known reads and writes in a temporary home. If either fails, nothing starts.
+//! The app never falls back to an unsandboxed start while the setting is on. Each refused start is written to the
+//! activity log (`note_refusal`).
 //!
 //! The switch: `<app data>/settings/agent-sandbox` containing `on`, or the environment `MONOCODE_AGENT_SANDBOX=1`. The
-//! environment wins over the file. Off unless one of them says on, and never on outside macOS. Settings > General has the
-//! toggle, which writes the file.
+//! environment can only turn the sandbox on: `0`, empty or `off` has no opinion and the file decides. A missing file is
+//! off. A file that cannot be read, or that says neither on nor off, is on: a guess never turns the sandbox off.
 
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::OnceLock;
 
 use serde::Serialize;
 use tauri::AppHandle;
 
 use crate::activity::{self, Who};
-use crate::delivery::protected::{home_secrets, HomeSecrets};
+use crate::delivery::protected::{home_secrets, protected_globs, HomeSecrets};
 use crate::project_file;
 
 pub const ENV_SWITCH: &str = "MONOCODE_AGENT_SANDBOX";
 pub const SETTING_FILE: &str = "agent-sandbox";
 pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 
-/// The secret places the after-turn check fingerprints (dirs and files, home-relative). The sandbox denies the secret
-/// dirs and files, and the CLIs' own login files are reported here and never denied.
-pub struct SecretPlaces {
-    pub dirs: Vec<String>,
-    pub files: Vec<String>,
+/// The daily app's data folder under home. A dev copy's folder (`com.ash.monocode-hub.dev.<slot>`) matches the same rule.
+const APP_DATA_UNDER_HOME: &str = "Library/Application Support/com.ash.monocode-hub";
+
+/// The programs an agent must not run: they reach the Keychain, login items, the browser or other apps' windows.
+const DENIED_PROGRAMS: [&str; 4] = [
+    "/bin/launchctl",
+    "/usr/bin/open",
+    "/usr/bin/osascript",
+    "/usr/bin/security",
+];
+
+/// What a secret place is denied: read, write and link (a hard link is a second name for the same file).
+const SECRET_OPS: &str = "file-read* file-write* file-link";
+/// What a protected write is denied: write and link.
+const WRITE_OPS: &str = "file-write* file-link";
+
+/// What the switch file says, as read.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SwitchFile {
+    Missing,
+    Unreadable,
+    Text(String),
 }
 
-pub fn secret_places() -> Result<SecretPlaces, String> {
-    let list = home_secrets()?;
-    let mut files = list.files.clone();
-    files.extend(list.cli_login_files.iter().cloned());
-    Ok(SecretPlaces {
-        dirs: list.dirs.clone(),
-        files,
-    })
+pub(crate) fn read_switch_file(data_dir: &Path) -> SwitchFile {
+    match std::fs::read_to_string(data_dir.join("settings").join(SETTING_FILE)) {
+        Ok(text) => SwitchFile::Text(text),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => SwitchFile::Missing,
+        Err(_) => SwitchFile::Unreadable,
+    }
 }
 
 fn word_on(value: &str) -> bool {
@@ -58,26 +83,48 @@ fn word_on(value: &str) -> bool {
     )
 }
 
-/// On when the environment switch or the setting file says on. The environment wins either way.
-pub(crate) fn switched_on(env: Option<&OsStr>, file: Option<&str>) -> bool {
-    if let Some(env) = env.and_then(OsStr::to_str) {
-        return word_on(env);
-    }
-    file.is_some_and(word_on)
+fn word_off(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "0" | "off" | "false" | "no"
+    )
 }
 
-/// Whether agent CLIs start under the sandbox profile: macOS only, and only when the setting says on. Off by default.
+/// The switch, decided. The environment can only turn the sandbox on; anything that does not say on has no opinion. A
+/// missing file is off; a file that cannot be read, or says neither on nor off, is on.
+pub(crate) fn decide(env: Option<&OsStr>, file: SwitchFile) -> bool {
+    if env.and_then(OsStr::to_str).is_some_and(word_on) {
+        return true;
+    }
+    match file {
+        SwitchFile::Missing => false,
+        SwitchFile::Unreadable => true,
+        SwitchFile::Text(text) => !word_off(&text),
+    }
+}
+
+/// The switch from its two sources, for tests that hold the file's text directly.
+#[cfg(test)]
+pub(crate) fn switched_on(env: Option<&OsStr>, file: Option<&str>) -> bool {
+    decide(
+        env,
+        file.map_or(SwitchFile::Missing, |text| {
+            SwitchFile::Text(text.to_string())
+        }),
+    )
+}
+
+/// Whether agent CLIs and project actions start under the sandbox: macOS only, and only when the switch says on.
 pub fn enabled(data_dir: Option<&Path>) -> bool {
     if !cfg!(target_os = "macos") {
         return false;
     }
     let env = std::env::var_os(ENV_SWITCH);
-    let file = data_dir
-        .and_then(|dir| std::fs::read_to_string(dir.join("settings").join(SETTING_FILE)).ok());
-    switched_on(env.as_deref(), file.as_deref())
+    let file = data_dir.map_or(SwitchFile::Missing, read_switch_file);
+    decide(env.as_deref(), file)
 }
 
-/// What the Settings toggle shows. `set_by_environment` means the environment decides, so the file cannot change it.
+/// What the Settings toggle shows. `set_by_environment` means the environment says on, so the file cannot turn it off.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
@@ -90,7 +137,9 @@ pub fn status(data_dir: Option<&Path>) -> Status {
     Status {
         supported: cfg!(target_os = "macos"),
         enabled: enabled(data_dir),
-        set_by_environment: std::env::var_os(ENV_SWITCH).is_some(),
+        set_by_environment: std::env::var_os(ENV_SWITCH)
+            .and_then(|value| value.into_string().ok())
+            .is_some_and(|value| word_on(&value)),
     }
 }
 
@@ -107,8 +156,8 @@ pub fn write_setting(data_dir: &Path, on: bool) -> Result<(), String> {
     })
 }
 
-/// A refusal to start under the sandbox, in the activity log (WP-78). The target is the chat; the reason is the start's
-/// own error, shortened. Nothing here reads a secret.
+/// A refused start under the sandbox, in the activity log (WP-78). The target is the chat; the reason is the start's own
+/// error, shortened. Nothing here reads a secret.
 pub fn note_refusal(data_dir: &Path, session_id: &str, reason: &str) {
     let summary = format!(
         "The agent did not start in the macOS sandbox. {}",
@@ -132,7 +181,7 @@ pub fn agent_sandbox_status(app: AppHandle) -> Result<Status, String> {
     Ok(status(Some(&data_dir)))
 }
 
-/// The Settings switch. It writes the same file `enabled` reads; the environment still wins when it is set.
+/// The Settings switch. It writes the same file `enabled` reads; the environment still wins when it says on.
 #[tauri::command(async)]
 pub fn agent_sandbox_set(app: AppHandle, enabled: bool) -> Result<Status, String> {
     if !cfg!(target_os = "macos") {
@@ -183,37 +232,195 @@ fn ci_regex(text: &str) -> String {
     out
 }
 
-/// One deny line for a home-relative name: a folder (and everything in it) or a single file.
-fn deny_line(home_regex: &str, name: &str, folder: bool) -> String {
-    let tail = if folder { "(/|$)" } else { "$" };
-    format!(
-        r#"(deny file-read* file-write* (regex #"^{home_regex}/{}{tail}"))"#,
-        ci_regex(name)
-    )
+/// A glob relative to home (`.claude/hooks/**`) as a regex: `**` any depth, `*` one segment, the rest literal.
+fn glob_regex(glob: &str) -> String {
+    glob.split('/')
+        .map(|segment| match segment {
+            "**" => ".*".to_string(),
+            "*" => "[^/]*".to_string(),
+            other => ci_regex(other),
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
-/// The denylist profile for `home`. Allow by default; deny reads and writes of the secret places and shell profiles
-/// (from the shared list); deny writes to `.git/hooks` and `.git/config` in any checkout (a worktree's git dir is under
-/// the main one's `.git`).
+/// The spellings of a folder the profile must match: as given (no trailing slash), the canonical path when the folder
+/// exists, and the `/private` form of the macOS links `/var`, `/tmp` and `/etc`. The kernel checks the resolved path.
+fn folder_forms(folder: &Path) -> Result<Vec<String>, String> {
+    let mut given = quote_path(folder)?;
+    while given.len() > 1 && given.ends_with('/') {
+        given.pop();
+    }
+    let mut forms = vec![given.clone()];
+    if let Ok(real) = std::fs::canonicalize(folder) {
+        let real = quote_path(&real)?;
+        if !forms.contains(&real) {
+            forms.push(real);
+        }
+    }
+    for top in ["/var", "/tmp", "/etc"] {
+        if given == top || given.starts_with(&format!("{top}/")) {
+            let private = format!("/private{given}");
+            if !forms.contains(&private) {
+                forms.push(private);
+            }
+        }
+    }
+    Ok(forms)
+}
+
+/// One deny line for a home-relative name (a folder and everything in it, or one file), in every spelling of home.
+fn push_home_entry(lines: &mut Vec<String>, forms: &[String], name: &str, folder: bool, ops: &str) {
+    let tail = if folder { "(/|$)" } else { "$" };
+    for form in forms {
+        lines.push(format!(
+            r#"(deny {ops} (regex #"^{}/{}{tail}"))"#,
+            ci_regex(form),
+            ci_regex(name)
+        ));
+    }
+}
+
+/// One deny line for an absolute path that a link resolves to.
+fn push_absolute(lines: &mut Vec<String>, path: &str, folder: bool, ops: &str) {
+    let tail = if folder { "(/|$)" } else { "$" };
+    lines.push(format!(
+        r#"(deny {ops} (regex #"^{}{tail}"))"#,
+        ci_regex(path)
+    ));
+}
+
+/// The real target of a secret place that is a link, when it lives somewhere else. Denying the target too means a write
+/// through another name (`~/.zshrc` into a dotfiles repo) is refused.
+fn push_real_target(lines: &mut Vec<String>, home: &Path, name: &str, folder: bool) {
+    let lexical = home.join(name);
+    if std::fs::symlink_metadata(&lexical).is_err() {
+        return;
+    }
+    let Ok(real) = std::fs::canonicalize(&lexical) else {
+        return;
+    };
+    if real == lexical {
+        return;
+    }
+    if let Some(text) = real
+        .to_str()
+        .filter(|t| !t.contains('"') && !t.contains('\\'))
+    {
+        push_absolute(lines, text, folder, SECRET_OPS);
+    }
+}
+
+/// The profile for `home`, with the app's own data folders under home protected (see `profile_text_for`).
+#[cfg(test)]
 pub fn profile_text(home: &Path) -> Result<String, String> {
+    profile_text_for(home, None)
+}
+
+/// The denylist profile for `home`. Allow by default. Denies, in order: the secret places and shell profiles (every
+/// spelling of home, and their real targets), the protected writes from the shared list, the app's switch folder and
+/// `monocode.db` (the default data folder under home and any dev copy's, plus `data_dir` when given), the git writes and
+/// links, the denied programs, and Apple events.
+pub fn profile_text_for(home: &Path, data_dir: Option<&Path>) -> Result<String, String> {
     let list = home_secrets()?;
-    let home = ci_regex(&quote_path(home)?);
+    let forms = folder_forms(home)?;
     let mut lines = vec!["(version 1)".to_string(), "(allow default)".to_string()];
-    push_denies(&mut lines, &home, list);
-    lines.push(r#"(deny file-write* (regex #"/\.git/hooks(/|$)"))"#.to_string());
-    lines.push(r#"(deny file-write* (regex #"/\.git/config$"))"#.to_string());
+    push_secret_places(&mut lines, home, &forms, list);
+    push_protected_writes(&mut lines, &forms)?;
+    push_app_data(&mut lines, &forms);
+    if let Some(data) = data_dir {
+        push_explicit_data(&mut lines, data)?;
+    }
+    push_git_writes(&mut lines);
+    for program in DENIED_PROGRAMS {
+        lines.push(format!(
+            r#"(deny process-exec (regex #"^{}$"))"#,
+            ci_regex(program)
+        ));
+    }
+    lines.push("(deny appleevent-send)".to_string());
     lines.push(String::new());
     Ok(lines.join("\n"))
 }
 
-/// The home-relative denies. `cli_login_files` is deliberately not read here: the CLI reads its own login file to log in.
-fn push_denies(lines: &mut Vec<String>, home_regex: &str, list: &HomeSecrets) {
+/// The secret places and shell profiles. `cli_login_files` is deliberately not here: the CLI reads its own login file to
+/// log in, so it is reported by the after-turn check and never denied.
+fn push_secret_places(lines: &mut Vec<String>, home: &Path, forms: &[String], list: &HomeSecrets) {
     for dir in &list.dirs {
-        lines.push(deny_line(home_regex, dir, true));
+        push_home_entry(lines, forms, dir, true, SECRET_OPS);
+        push_real_target(lines, home, dir, true);
     }
     for file in list.files.iter().chain(list.shell_profiles.iter()) {
-        lines.push(deny_line(home_regex, file, false));
+        push_home_entry(lines, forms, file, false, SECRET_OPS);
+        push_real_target(lines, home, file, false);
     }
+}
+
+/// The shared list's `denyWrite` globs under home: the person's global git config, LaunchAgents, and the CLIs' settings
+/// and hooks. Reads stay allowed; only a write or a link is refused.
+fn push_protected_writes(lines: &mut Vec<String>, forms: &[String]) -> Result<(), String> {
+    for glob in protected_globs()?.iter().filter(|glob| glob.deny_write) {
+        let Some(relative) = glob.pattern.strip_prefix("~/") else {
+            continue;
+        };
+        for form in forms {
+            lines.push(format!(
+                r#"(deny {WRITE_OPS} (regex #"^{}/{}$"))"#,
+                ci_regex(form),
+                glob_regex(relative)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The app's switch folder and `monocode.db` under home, in the daily folder and any dev copy's folder (their names share
+/// the prefix). Agent processes may not write them.
+fn push_app_data(lines: &mut Vec<String>, forms: &[String]) {
+    for form in forms {
+        let app = format!("{}/{}", ci_regex(form), ci_regex(APP_DATA_UNDER_HOME));
+        lines.push(format!(
+            r#"(deny {WRITE_OPS} (regex #"^{app}[^/]*/settings(/|$)"))"#
+        ));
+        lines.push(format!(
+            r#"(deny {WRITE_OPS} (regex #"^{app}[^/]*/monocode\.db(-wal|-shm|-journal)?$"))"#
+        ));
+    }
+}
+
+/// The switch folder and `monocode.db` of a data folder that is not under home (a test's, or a moved one).
+fn push_explicit_data(lines: &mut Vec<String>, data: &Path) -> Result<(), String> {
+    for form in folder_forms(data)? {
+        let base = ci_regex(&form);
+        lines.push(format!(
+            r#"(deny {WRITE_OPS} (regex #"^{base}/settings(/|$)"))"#
+        ));
+        lines.push(format!(
+            r#"(deny {WRITE_OPS} (regex #"^{base}/monocode\.db(-wal|-shm|-journal)?$"))"#
+        ));
+    }
+    Ok(())
+}
+
+/// Writes and links to `.git` itself (a linked worktree's `.git` file redirects git to a folder the agent wrote, and
+/// `mv .git` takes the repository away), to `.git/hooks`, `.git/config`, and a submodule's hooks and config.
+fn push_git_writes(lines: &mut Vec<String>) {
+    lines.push(format!(
+        r#"(deny {WRITE_OPS} (regex #"/{}$"))"#,
+        ci_regex(".git")
+    ));
+    lines.push(format!(
+        r#"(deny {WRITE_OPS} (regex #"/{}(/|$)"))"#,
+        ci_regex(".git/hooks")
+    ));
+    lines.push(format!(
+        r#"(deny {WRITE_OPS} (regex #"/{}$"))"#,
+        ci_regex(".git/config")
+    ));
+    lines.push(format!(
+        r#"(deny {WRITE_OPS} (regex #"/{}/[^/]+/(hooks(/|$)|config$)"))"#,
+        ci_regex(".git/modules")
+    ));
 }
 
 /// Starts `/usr/bin/true` under `profile` through `sandbox_exec`. Fails unless it exits 0, so a profile or launcher that
@@ -232,16 +439,115 @@ pub fn preflight_with(sandbox_exec: &Path, profile: &str) -> Result<(), String> 
     let why = String::from_utf8_lossy(&output.stderr).trim().to_string();
     Err(format!(
         "The agent did not start: the macOS sandbox could not start it, so it does not run without the sandbox. {why}"
-    ).trim_end().to_string())
+    )
+    .trim_end()
+    .to_string())
 }
 
-/// The program and the leading arguments that start `cli` under the sandbox, after the profile passes its preflight.
+/// Proves the profile refuses what it names, once per process, in a temporary home: a read of a secret folder, a read
+/// through a link to a secret, a write to the switch file and to `monocode.db`, and running `security`. An ordinary
+/// write in the same folder must still succeed, so a profile that refuses everything does not pass.
+pub fn self_check(sandbox_exec: &Path) -> Result<(), String> {
+    static CHECKED: OnceLock<Result<(), String>> = OnceLock::new();
+    // Only the real launcher's answer is kept for the process. Any other launcher (a test's stand-in) is checked afresh,
+    // so one stand-in's refusal can never stand in for the real sandbox.
+    if sandbox_exec != Path::new(SANDBOX_EXEC) {
+        return run_self_check(sandbox_exec);
+    }
+    CHECKED.get_or_init(|| run_self_check(sandbox_exec)).clone()
+}
+
+fn run_self_check(sandbox_exec: &Path) -> Result<(), String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let base = std::env::temp_dir().join(format!(
+        "agent-sandbox-self-check-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&base).map_err(|e| format!("agent sandbox self-check: {e}"))?;
+    let result = self_check_in(sandbox_exec, &base);
+    let _ = std::fs::remove_dir_all(&base);
+    result
+}
+
+fn self_check_in(sandbox_exec: &Path, base: &Path) -> Result<(), String> {
+    let base = std::fs::canonicalize(base).map_err(|e| format!("agent sandbox self-check: {e}"))?;
+    let home = base.join("home");
+    let data = home.join(APP_DATA_UNDER_HOME);
+    let io = |e: std::io::Error| format!("agent sandbox self-check: {e}");
+    std::fs::create_dir_all(home.join(".ssh")).map_err(io)?;
+    std::fs::create_dir_all(home.join("dotfiles")).map_err(io)?;
+    std::fs::create_dir_all(data.join("settings")).map_err(io)?;
+    std::fs::write(home.join(".ssh").join("probe"), "probe").map_err(io)?;
+    std::fs::write(home.join("dotfiles").join("zshrc"), "export A=1\n").map_err(io)?;
+    std::os::unix::fs::symlink(home.join("dotfiles").join("zshrc"), home.join(".zshrc"))
+        .map_err(io)?;
+    std::fs::write(data.join("settings").join(SETTING_FILE), "on\n").map_err(io)?;
+    std::fs::write(data.join("monocode.db"), "db").map_err(io)?;
+    let profile = profile_text_for(&home, Some(&data))?;
+
+    let run = |script: String| -> bool {
+        Command::new(sandbox_exec)
+            .args(["-p", &profile, "/bin/sh", "-c", &script])
+            .current_dir(&base)
+            .env("HOME", &home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    };
+    let must_refuse = [
+        (
+            "a read of ~/.ssh",
+            format!("cat '{}/.ssh/probe'", home.display()),
+        ),
+        (
+            "a read through the ~/.zshrc link",
+            format!("cat '{}/.zshrc'", home.display()),
+        ),
+        (
+            "a write to the switch file",
+            format!("echo off > '{}/settings/{SETTING_FILE}'", data.display()),
+        ),
+        (
+            "a write to monocode.db",
+            format!("echo x >> '{}/monocode.db'", data.display()),
+        ),
+        (
+            "running /usr/bin/security",
+            "/usr/bin/security -h".to_string(),
+        ),
+    ];
+    for (what, script) in must_refuse {
+        if run(script) {
+            return Err(format!(
+                "agent sandbox self-check failed: the profile allowed {what}, so no agent starts sandboxed"
+            ));
+        }
+    }
+    if !run(format!("echo ok > '{}/ok.txt'", base.display())) {
+        return Err(
+            "agent sandbox self-check failed: the profile refused an ordinary write, so no agent starts sandboxed"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+/// The program and the leading arguments that start `cli` under the sandbox, after the profile passes its preflight and
+/// the self-check.
 pub fn sandboxed_launch(
     cli: &OsStr,
     home: &Path,
+    data_dir: Option<&Path>,
     sandbox_exec: &Path,
 ) -> Result<(OsString, Vec<OsString>), String> {
-    let profile = profile_text(home)?;
+    let profile = profile_text_for(home, data_dir)?;
+    self_check(sandbox_exec)?;
     preflight_with(sandbox_exec, &profile)?;
     Ok((
         sandbox_exec.as_os_str().to_os_string(),
@@ -253,13 +559,31 @@ pub fn sandboxed_launch(
     ))
 }
 
+/// How a project action starts when the sandbox is on: `sandbox-exec -p <profile>` in front of its shell. Off, nothing.
+pub fn action_wrap(data_dir: Option<&Path>) -> Result<Option<Vec<OsString>>, String> {
+    if !enabled(data_dir) {
+        return Ok(None);
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+        "The action did not start: HOME is not set, so the macOS sandbox cannot be built."
+            .to_string()
+    })?;
+    let profile = profile_text_for(&home, data_dir)?;
+    self_check(Path::new(SANDBOX_EXEC))?;
+    preflight_with(Path::new(SANDBOX_EXEC), &profile)?;
+    Ok(Some(vec![
+        OsString::from(SANDBOX_EXEC),
+        OsString::from("-p"),
+        OsString::from(profile),
+    ]))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
-    /// The places this file named before the shared list held them (the old `agentSecretPaths.json`). Each one must
-    /// still be denied, so a drop from the shared list turns this red.
+    /// The places named before the shared list held them (the old `agentSecretPaths.json`). Each must still be denied,
+    /// so a drop from the shared list turns this red.
     const PREVIOUSLY_LISTED_DIRS: &[&str] = &[
         ".ssh",
         ".gnupg",
@@ -294,6 +618,25 @@ mod tests {
         ".codex/auth.json",
     ];
 
+    /// Whether the profile's deny lines refuse `op` on `path`, evaluated with the `regex` crate (the patterns use only
+    /// `^ $ [] () | \.`, which mean the same in SBPL's regex engine).
+    fn denies(profile: &str, op: &str, path: &str) -> bool {
+        profile.lines().any(|line| {
+            let line = line.trim();
+            if !line.starts_with("(deny ") || !line.contains(op) {
+                return false;
+            }
+            let Some(start) = line.find("(regex #\"") else {
+                return false;
+            };
+            let rest = &line[start + "(regex #\"".len()..];
+            let Some(end) = rest.find("\"))") else {
+                return false;
+            };
+            regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path))
+        })
+    }
+
     fn temp_home(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -308,37 +651,93 @@ mod tests {
     }
 
     #[test]
-    fn the_switch_is_off_by_default_and_a_setting_file_or_env_turns_it_on() {
+    fn the_switch_is_off_by_default_and_a_file_or_env_turns_it_on() {
         assert!(!switched_on(None, None));
         assert!(switched_on(None, Some("on\n")));
         assert!(!switched_on(None, Some("off")));
         assert!(switched_on(Some(OsStr::new("1")), None));
+    }
+
+    #[test]
+    fn the_environment_can_only_tighten_never_turn_the_sandbox_off() {
         assert!(
-            !switched_on(Some(OsStr::new("0")), Some("on")),
-            "the environment wins over the file"
+            switched_on(Some(OsStr::new("0")), Some("on\n")),
+            "MONOCODE_AGENT_SANDBOX=0 turns off a sandbox Ash switched on"
         );
+        assert!(switched_on(Some(OsStr::new("off")), Some("on")));
+        assert!(switched_on(Some(OsStr::new("")), Some("on")));
+        assert!(
+            !switched_on(Some(OsStr::new("0")), None),
+            "a zero env with no file has no opinion"
+        );
+    }
+
+    #[test]
+    fn an_unreadable_or_garbled_switch_file_reads_on() {
+        assert!(
+            decide(None, SwitchFile::Unreadable),
+            "a file that cannot be read is on"
+        );
+        assert!(
+            decide(None, SwitchFile::Text("maybe".to_string())),
+            "a garbled file is on"
+        );
+        assert!(
+            decide(None, SwitchFile::Text(String::new())),
+            "an empty file is on"
+        );
+        assert!(!decide(None, SwitchFile::Text("off".to_string())));
+        assert!(!decide(None, SwitchFile::Missing));
     }
 
     #[test]
     fn the_toggle_writes_the_file_the_switch_reads() {
         let data = temp_home("toggle");
         write_setting(&data, true).unwrap();
-        let text = std::fs::read_to_string(data.join("settings").join(SETTING_FILE)).unwrap();
-        assert!(switched_on(None, Some(&text)), "on is read back as on");
+        assert!(
+            decide(None, read_switch_file(&data)),
+            "on is read back as on"
+        );
         write_setting(&data, false).unwrap();
-        let text = std::fs::read_to_string(data.join("settings").join(SETTING_FILE)).unwrap();
-        assert!(!switched_on(None, Some(&text)), "off is read back as off");
+        assert!(
+            !decide(None, read_switch_file(&data)),
+            "off is read back as off"
+        );
         let _ = std::fs::remove_dir_all(&data);
     }
 
     #[test]
-    fn the_profile_denies_ssh_shell_profiles_and_git_hook_and_config_writes() {
+    fn the_profile_denies_ssh_shell_profiles_and_git_writes() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
-        let home = ci_regex("/Users/test");
-        assert!(profile.contains(&deny_line(&home, ".ssh", true)));
-        assert!(profile.contains(&deny_line(&home, ".zshrc", false)));
-        assert!(profile.contains(r#"(regex #"/\.git/hooks(/|$)")"#));
-        assert!(profile.contains(r#"(regex #"/\.git/config$")"#));
+        assert!(denies(
+            &profile,
+            "file-read*",
+            "/Users/test/.ssh/id_ed25519"
+        ));
+        assert!(denies(&profile, "file-write*", "/Users/test/.zshrc"));
+        assert!(denies(
+            &profile,
+            "file-write*",
+            "/Users/test/proj/.git/hooks/pre-commit"
+        ));
+        assert!(denies(
+            &profile,
+            "file-write*",
+            "/Users/test/proj/.git/config"
+        ));
+        assert!(
+            denies(&profile, "file-write*", "/Users/test/proj/.git"),
+            "mv .git is a write to .git"
+        );
+        assert!(
+            denies(&profile, "file-link", "/Users/test/.ssh/id_ed25519"),
+            "a hard link is denied"
+        );
+        assert!(denies(
+            &profile,
+            "file-write*",
+            "/Users/test/proj/.git/modules/x/hooks/pre-push"
+        ));
         assert!(
             profile.starts_with("(version 1)\n(allow default)"),
             "a denylist, not a deny-default profile"
@@ -348,10 +747,9 @@ mod tests {
     #[test]
     fn the_profile_covers_every_previously_listed_secret_place() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
-        let home = ci_regex("/Users/test");
         for dir in PREVIOUSLY_LISTED_DIRS {
             assert!(
-                profile.contains(&deny_line(&home, dir, true)),
+                denies(&profile, "file-read*", &format!("/Users/test/{dir}/inside")),
                 "the profile no longer denies the folder {dir}"
             );
         }
@@ -360,7 +758,7 @@ mod tests {
             .chain(PREVIOUSLY_LISTED_SHELL_PROFILES)
         {
             assert!(
-                profile.contains(&deny_line(&home, file, false)),
+                denies(&profile, "file-read*", &format!("/Users/test/{file}")),
                 "the profile no longer denies {file}"
             );
         }
@@ -375,16 +773,15 @@ mod tests {
                 list.cli_login_files.iter().any(|name| name == file),
                 "{file} is still reported"
             );
-            assert!(!profile.contains(&ci_regex(file)), "{file} is denied");
+            assert!(
+                !denies(&profile, "file-read*", &format!("/Users/test/{file}")),
+                "{file} is denied for reads"
+            );
+            assert!(
+                !denies(&profile, "file-write*", &format!("/Users/test/{file}")),
+                "{file} is denied for writes"
+            );
         }
-        // The shared list's folder rules hold `.claude` and `.codex` at any depth for the delivery floor. The sandbox
-        // reads only homeSecrets, so neither folder can reach the profile.
-        assert!(
-            !profile.contains("claude"),
-            "no Claude folder in the profile"
-        );
-        assert!(!profile.contains("codex"), "no Codex folder in the profile");
-        assert!(!profile.contains("auth"), "no auth file in the profile");
     }
 
     #[test]
@@ -397,6 +794,78 @@ mod tests {
     }
 
     #[test]
+    fn the_person_global_git_config_and_launch_agents_cannot_be_written() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        for path in [
+            "/Users/test/.gitconfig",
+            "/Users/test/.config/git/config",
+            "/Users/test/Library/LaunchAgents/com.x.plist",
+            "/Users/test/.claude/settings.json",
+            "/Users/test/.claude/settings.local.json",
+            "/Users/test/.codex/config.toml",
+            "/Users/test/.claude/hooks/on-stop.sh",
+        ] {
+            assert!(denies(&profile, "file-write*", path), "{path} is writable");
+        }
+    }
+
+    #[test]
+    fn the_app_switch_and_database_cannot_be_written_by_an_agent() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        let switch =
+            "/Users/test/Library/Application Support/com.ash.monocode-hub/settings/agent-sandbox";
+        assert!(
+            denies(&profile, "file-write*", switch),
+            "a sandboxed agent can write {switch}"
+        );
+        assert!(denies(
+            &profile,
+            "file-write*",
+            "/Users/test/Library/Application Support/com.ash.monocode-hub/monocode.db"
+        ));
+        assert!(denies(
+            &profile,
+            "file-write*",
+            "/Users/test/Library/Application Support/com.ash.monocode-hub.dev.slot/settings/agent-sandbox"
+        ));
+    }
+
+    #[test]
+    fn the_denied_programs_and_apple_events_are_refused() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        for program in [
+            "/bin/launchctl",
+            "/usr/bin/open",
+            "/usr/bin/osascript",
+            "/usr/bin/security",
+        ] {
+            assert!(
+                denies(&profile, "process-exec", program),
+                "{program} may run"
+            );
+        }
+        assert!(profile.contains("(deny appleevent-send)"));
+    }
+
+    #[test]
+    fn a_non_canonical_home_still_denies_the_resolved_ssh_path() {
+        let trailing = profile_text(Path::new("/Users/test/")).unwrap();
+        assert!(
+            denies(&trailing, "file-read*", "/Users/test/.ssh/id_ed25519"),
+            "HOME=/Users/test/ denies nothing"
+        );
+        let var = profile_text(Path::new("/var/folders/ab/T/home")).unwrap();
+        assert!(
+            denies(
+                &var,
+                "file-read*",
+                "/private/var/folders/ab/T/home/.ssh/id_ed25519"
+            ),
+            "a /var HOME misses the /private/var path the sandbox matches"
+        );
+    }
+
+    #[test]
     fn a_home_path_the_profile_cannot_quote_is_refused_not_guessed() {
         assert!(profile_text(Path::new("/Users/te\"st")).is_err());
         assert!(profile_text(Path::new("/Users/te\\st")).is_err());
@@ -405,7 +874,12 @@ mod tests {
     #[test]
     fn a_sandbox_that_fails_to_start_refuses_the_launch_and_never_runs_unsandboxed() {
         let home = temp_home("fail-closed");
-        let refused = sandboxed_launch(OsStr::new("claude"), &home, Path::new("/usr/bin/false"));
+        let refused = sandboxed_launch(
+            OsStr::new("claude"),
+            &home,
+            None,
+            Path::new("/usr/bin/false"),
+        );
         assert!(
             refused.is_err(),
             "a failed sandbox must refuse the start, got {refused:?}"
@@ -436,8 +910,25 @@ mod tests {
 
     #[test]
     fn the_switch_off_never_builds_a_sandbox_launch() {
-        // Off by default: `enabled` is false with no setting, so harness_spawn keeps the plain command.
-        assert!(!enabled(None));
+        assert!(
+            !enabled(None),
+            "off by default: no data folder, no environment switch"
+        );
+        assert!(matches!(action_wrap(None), Ok(None)));
+    }
+
+    #[cfg(target_os = "macos")]
+    fn run_under(profile: &str, cwd: &Path, home: &Path, script: &str) -> bool {
+        Command::new(SANDBOX_EXEC)
+            .args(["-p", profile, "/bin/sh", "-c", script])
+            .current_dir(cwd)
+            .env("HOME", home)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
     }
 
     #[cfg(target_os = "macos")]
@@ -445,7 +936,7 @@ mod tests {
     fn a_sandboxed_launch_wraps_the_cli_in_sandbox_exec_with_the_profile() {
         let home = temp_home("wrap");
         let (program, prefix) =
-            sandboxed_launch(OsStr::new("claude"), &home, Path::new(SANDBOX_EXEC)).unwrap();
+            sandboxed_launch(OsStr::new("claude"), &home, None, Path::new(SANDBOX_EXEC)).unwrap();
         assert_eq!(program, OsString::from(SANDBOX_EXEC));
         assert_eq!(prefix[0], OsString::from("-p"));
         assert_eq!(prefix[2], OsString::from("claude"));
@@ -454,32 +945,46 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[test]
+    fn the_self_check_passes_on_this_mac() {
+        assert_eq!(
+            run_self_check(Path::new(SANDBOX_EXEC)),
+            Ok(()),
+            "the start-up self-check passes under sandbox-exec"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
     fn under_the_real_profile_a_read_of_ssh_and_a_write_to_git_hooks_are_refused() {
-        use std::process::Stdio;
         let home = temp_home("refuse");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
         std::fs::write(home.join(".ssh").join("id_test"), "secret").unwrap();
         let project = home.join("project");
         std::fs::create_dir_all(project.join(".git").join("hooks")).unwrap();
-        let profile = profile_text(&home).unwrap();
-        let run = |script: String| {
-            Command::new(SANDBOX_EXEC)
-                .args(["-p", &profile, "/bin/sh", "-c", &script])
-                .current_dir(&project)
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status()
-                .unwrap()
-        };
-        let read_ssh = run(format!("cat '{}/.ssh/id_test'", home.display()));
-        assert!(!read_ssh.success(), "reading ~/.ssh must be refused");
-        let write_hook = run("echo x > .git/hooks/pre-commit".to_string());
-        assert!(!write_hook.success(), "writing .git/hooks must be refused");
-        let allowed = run("echo ok > allowed.txt".to_string());
+        let data = home.join(APP_DATA_UNDER_HOME);
+        std::fs::create_dir_all(data.join("settings")).unwrap();
+        let profile = profile_text_for(&home, Some(&data)).unwrap();
+        assert!(!run_under(
+            &profile,
+            &project,
+            &home,
+            &format!("cat '{}/.ssh/id_test'", home.display())
+        ));
+        assert!(!run_under(
+            &profile,
+            &project,
+            &home,
+            "echo x > .git/hooks/pre-commit"
+        ));
+        assert!(!run_under(
+            &profile,
+            &project,
+            &home,
+            "mv .git .gitx && mv .gitx .git"
+        ));
         assert!(
-            allowed.success(),
-            "a write inside the project outside the list must still work"
+            run_under(&profile, &project, &home, "echo ok > allowed.txt"),
+            "a write outside the list works"
         );
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -487,31 +992,69 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn under_the_real_profile_a_differently_cased_ssh_folder_is_refused_too() {
-        use std::process::Stdio;
         let home = temp_home("case");
         std::fs::create_dir_all(home.join(".ssh")).unwrap();
         std::fs::write(home.join(".ssh").join("id_case"), "secret").unwrap();
-        let profile = profile_text(&home).unwrap();
+        let data = home.join(APP_DATA_UNDER_HOME);
+        std::fs::create_dir_all(&data).unwrap();
+        let profile = profile_text_for(&home, Some(&data)).unwrap();
         // On a case-insensitive volume (APFS by default) `.SSH` is the same folder, so the read must be refused. On a
-        // case-sensitive volume the name does not resolve, and the test says so instead of passing silently.
-        if !home.join(".SSH").join("id_case").exists() {
-            eprintln!("skipped: this volume is case-sensitive");
-            let _ = std::fs::remove_dir_all(&home);
-            return;
-        }
-        let read = Command::new(SANDBOX_EXEC)
-            .args([
-                "-p",
+        // case-sensitive volume the name does not resolve, and the test returns instead of passing silently.
+        if home.join(".SSH").join("id_case").exists() {
+            assert!(!run_under(
                 &profile,
-                "/bin/cat",
-                &format!("{}/.SSH/id_case", home.display()),
-            ])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .unwrap();
-        assert!(!read.success(), "reading ~/.SSH must be refused");
+                &home,
+                &home,
+                &format!("/bin/cat '{}/.SSH/id_case'", home.display())
+            ));
+        }
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_the_switch_file_and_security_cannot_be_used() {
+        let home = temp_home("switch");
+        let data = home.join(APP_DATA_UNDER_HOME);
+        std::fs::create_dir_all(data.join("settings")).unwrap();
+        std::fs::write(data.join("settings").join(SETTING_FILE), "on\n").unwrap();
+        let profile = profile_text_for(&home, Some(&data)).unwrap();
+        assert!(!run_under(
+            &profile,
+            &home,
+            &home,
+            &format!("echo off > '{}/settings/{SETTING_FILE}'", data.display())
+        ));
+        assert!(!run_under(&profile, &home, &home, "/usr/bin/security -h"));
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_a_write_through_a_link_to_a_secret_target_is_refused() {
+        let home = temp_home("link");
+        let dotfiles = home.join("dotfiles");
+        std::fs::create_dir_all(&dotfiles).unwrap();
+        std::fs::write(dotfiles.join("zshrc"), "export A=1\n").unwrap();
+        std::os::unix::fs::symlink(dotfiles.join("zshrc"), home.join(".zshrc")).unwrap();
+        let data = home.join(APP_DATA_UNDER_HOME);
+        std::fs::create_dir_all(&data).unwrap();
+        let profile = profile_text_for(&home, Some(&data)).unwrap();
+        assert!(!run_under(
+            &profile,
+            &home,
+            &home,
+            &format!("echo x >> '{}/.zshrc'", home.display())
+        ));
+        assert!(
+            !run_under(
+                &profile,
+                &home,
+                &home,
+                &format!("echo x >> '{}/dotfiles/zshrc'", home.display())
+            ),
+            "the link's real target is denied too"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 }

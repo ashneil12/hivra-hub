@@ -327,17 +327,21 @@ fn run_command(
 ) -> Result<(crate::project_actions::RunRecord, f64), String> {
     let runs = app.state::<ActionRuns>();
     let started = std::time::Instant::now();
+    // WP-178 (review r2 HIGH-2): a verify run is an agent's own command, so it runs under the sandbox while it is on.
+    let data = project_file::data_dir(app)?;
+    let wrap = crate::agent_sandbox::action_wrap(Some(&data))?;
     let record = project_actions::start_command(
         &runs,
         main,
         checkout,
         action,
         "verify",
-        &project_file::data_dir(app)?.join("action-runs"),
+        &data.join("action-runs"),
         Some(crate::harness::cached_gui_search_path()),
         env,
         false,
         Some(project_actions::emitter(app)),
+        wrap,
     )?;
     let limit = Duration::from_secs(
         action

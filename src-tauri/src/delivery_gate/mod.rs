@@ -861,7 +861,7 @@ fn invoke(
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = crate::delivery::child("git")
+    let output = crate::git_cmd::child()
         .current_dir(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")

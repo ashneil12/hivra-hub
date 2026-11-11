@@ -2292,7 +2292,7 @@ mod tests {
         let made = w.worktree.clone().expect("the made worktree is remembered");
         assert!(made.ends_with("clone-worktrees/mc-pr-7"), "{made}");
         assert!(wake.text.contains(&format!("Checkout: {made} is at the pull request's head {} (MonoCode made this checkout for it), ready to fix.", &head[..7])), "{}", wake.text);
-        let checked_out = std::process::Command::new("git")
+        let checked_out = crate::git_cmd::git()
             .arg("-C")
             .arg(&made)
             .args(["rev-parse", "HEAD"])

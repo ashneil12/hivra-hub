@@ -175,7 +175,7 @@ pub(crate) fn make_project_folder(projects: &Path, id: &str) -> Result<PathBuf, 
     std::fs::write(folder.join("README.md"), format!("# {id}\n"))
         .map_err(|e| format!("Couldn't write its README: {e}"))?;
     // Git is optional: without it the folder is still a project, just not a repo yet.
-    let _ = std::process::Command::new("git")
+    let _ = crate::git_cmd::git()
         .args(["init", "-q"])
         .current_dir(&folder)
         .output();

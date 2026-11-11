@@ -5,7 +5,6 @@
 //! are never touched (a throwaway index is used), and nothing is committed in the project.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::Serialize;
 
@@ -37,7 +36,7 @@ fn git(
     stdin: Option<&[u8]>,
 ) -> Result<(bool, Vec<u8>, String), String> {
     use std::io::Write;
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git();
     cmd.arg("-C").arg(dir).args(args);
     if let Some(index) = index {
         cmd.env("GIT_INDEX_FILE", index);
@@ -272,7 +271,7 @@ fn merge3(ours: &[u8], base: &[u8], theirs: &[u8]) -> Result<Option<Vec<u8>>, St
         std::fs::write(&o, ours).map_err(|e| e.to_string())?;
         std::fs::write(&b, base).map_err(|e| e.to_string())?;
         std::fs::write(&t, theirs).map_err(|e| e.to_string())?;
-        let out = Command::new("git")
+        let out = crate::git_cmd::git()
             .arg("merge-file")
             .arg("-p")
             .arg(&o)
@@ -405,7 +404,7 @@ pub(crate) fn refresh(checkout: &Path, project: &Path) -> Result<Vec<String>, St
         let n = std::env::temp_dir().join(format!("monocode-now-{}-{tag}", std::process::id()));
         std::fs::write(&b, &start).map_err(|e| e.to_string())?;
         std::fs::write(&n, &now).map_err(|e| e.to_string())?;
-        let out = Command::new("git")
+        let out = crate::git_cmd::git()
             .arg("merge-file")
             .args([
                 "-L",
@@ -470,7 +469,7 @@ mod tests {
     use super::*;
 
     fn sh(dir: &Path, args: &[&str]) {
-        let ok = Command::new("git")
+        let ok = crate::git_cmd::git()
             .arg("-C")
             .arg(dir)
             .args(args)
@@ -527,7 +526,7 @@ mod tests {
         );
         assert_eq!(land(&copy, &project).unwrap().outcome, "already");
         // The worker's own index is untouched: new.txt is still untracked there.
-        let status = Command::new("git")
+        let status = crate::git_cmd::git()
             .arg("-C")
             .arg(&copy)
             .args(["status", "--porcelain"])
@@ -557,7 +556,7 @@ mod tests {
         sh(&project, &["commit", "-qam", "lines"]);
         sh(&copy, &["checkout", "-q", "--detach", "HEAD"]);
         let main = String::from_utf8(
-            Command::new("git")
+            crate::git_cmd::git()
                 .arg("-C")
                 .arg(&project)
                 .args(["rev-parse", "HEAD"])

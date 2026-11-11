@@ -1023,6 +1023,7 @@ pub fn harness_spawn(
                 crate::agent_sandbox::sandboxed_launch(
                     std::ffi::OsStr::new(&command),
                     &home,
+                    data_dir.as_deref(),
                     std::path::Path::new(crate::agent_sandbox::SANDBOX_EXEC),
                 )
             });

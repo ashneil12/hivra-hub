@@ -314,7 +314,7 @@ fn git_failing_does_not_drop_a_stored_credit() {
 }
 
 fn git(repo: &Path, env: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
-    let mut cmd = crate::delivery::child("git");
+    let mut cmd = crate::git_cmd::child_keep_hooks();
     cmd.arg("--no-pager").arg("-C").arg(repo).args(args);
     cmd.env("GIT_CONFIG_NOSYSTEM", "1");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -975,7 +975,7 @@ fn two_crews_installing_together_both_get_the_hook() {
         let global_b = made.global.clone();
         let a = std::thread::spawn(move || {
             let installed = super::hooks::install_for_repo(&left, &repo_a, &env_a);
-            let mut cmd = Command::new("git");
+            let mut cmd = crate::git_cmd::git_keep_hooks();
             cmd.env("HOME", &home_a).env("GIT_CONFIG_GLOBAL", &global_a);
             super::apply_crew_env(&mut cmd, &left, &repo_a, "chat-1", Some("task-1"));
             let pointed = cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT");
@@ -983,7 +983,7 @@ fn two_crews_installing_together_both_get_the_hook() {
         });
         let b = std::thread::spawn(move || {
             let installed = super::hooks::install_for_repo(&right, &repo_b, &env_b);
-            let mut cmd = Command::new("git");
+            let mut cmd = crate::git_cmd::git_keep_hooks();
             cmd.env("HOME", &home_b).env("GIT_CONFIG_GLOBAL", &global_b);
             super::apply_crew_env(&mut cmd, &right, &repo_b, "chat-2", Some("task-2"));
             let pointed = cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT");
@@ -1574,7 +1574,7 @@ fn a_failed_install_is_noted_and_the_crew_still_runs() {
     let made = GitRepo::new(&scratch);
     git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
     let secret = "hunter2-do-not-log";
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git_keep_hooks();
     cmd.env("HOME", &made.home)
         .env("GIT_CONFIG_GLOBAL", &made.global)
         .env("GIT_CONFIG_KEY_0", secret);
@@ -1611,7 +1611,7 @@ fn a_failed_install_is_noted_and_the_crew_still_runs() {
     // A good install says nothing.
     let data = scratch.path().join("data");
     fs::create_dir_all(&data).unwrap();
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git_keep_hooks();
     cmd.env("HOME", &made.home)
         .env("GIT_CONFIG_GLOBAL", &made.global);
     let mut quiet: Vec<String> = Vec::new();
@@ -2217,7 +2217,7 @@ fn crew_pairs<'a>(base: &[(&'a str, &'a str)], armed: &'a Armed) -> Vec<(&'a str
 }
 
 fn git_reading_system(repo: &Path, env: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
-    let mut cmd = crate::delivery::child("git");
+    let mut cmd = crate::git_cmd::child_keep_hooks();
     cmd.arg("--no-pager").arg("-C").arg(repo).args(args);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_OPTIONAL_LOCKS", "0");

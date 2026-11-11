@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, State};
@@ -49,7 +48,7 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     if crate::chat_folder::is_blank(root) {
         return Err(crate::chat_folder::NEEDS_FOLDER.into());
     }
-    let mut command = Command::new("git");
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
     let output = command
         .arg("-C")

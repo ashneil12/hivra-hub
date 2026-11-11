@@ -40,6 +40,7 @@ mod programme;
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
+mod git_cmd;
 // Hivra WP-81: a pinned tool, downloaded and checked, then the local gate before GitHub.
 mod delivery_gate;
 mod pinned_tool;

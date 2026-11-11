@@ -11,7 +11,6 @@
 //! fork is never checked out at all (mod.rs `apply`): anyone can open one and comment to wake the owner.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 /// Where a wake's checkout stands.
@@ -76,7 +75,7 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 /// git in `dir`, stopped (with what it started) if it hasn't finished within `timeout`.
 fn git_within(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
     command
         .arg("-C")

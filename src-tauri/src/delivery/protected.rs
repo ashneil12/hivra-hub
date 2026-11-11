@@ -127,6 +127,17 @@ struct SharedList {
     path_sequences: Vec<String>,
     hold_any_dot_segment: bool,
     home_secrets: HomeSecrets,
+    protected_globs: Vec<ProtectedGlob>,
+}
+
+/// One protected place (`protectedGlobs`): a glob that the after-turn check fingerprints and the TypeScript report names.
+/// `deny_write` marks a home path the sandbox refuses to write (the CLIs' and the person's own settings and hooks).
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProtectedGlob {
+    pub(crate) pattern: String,
+    #[serde(default)]
+    pub(crate) deny_write: bool,
 }
 
 /// The secret places, anchored at the home folder (`~/.ssh`, `~/.config/gh`). They are a separate section because the
@@ -148,6 +159,7 @@ pub(crate) struct Shared {
     sequences: Vec<Vec<String>>,
     hold_any_dot_segment: bool,
     home_secrets: HomeSecrets,
+    protected_globs: Vec<ProtectedGlob>,
 }
 
 const SHARED_LIST_JSON: &str = include_str!("../../../src/shared/security/agentConfigPaths.json");
@@ -186,6 +198,7 @@ fn load_shared(json: &str) -> Result<Shared, String> {
             .collect(),
         hold_any_dot_segment: list.hold_any_dot_segment,
         home_secrets: list.home_secrets,
+        protected_globs: list.protected_globs,
     })
 }
 
@@ -193,6 +206,11 @@ fn load_shared(json: &str) -> Result<Shared, String> {
 /// after-turn fingerprints, so both name the same places. Fails with the list's own error, which holds every path.
 pub(crate) fn home_secrets() -> Result<&'static HomeSecrets, String> {
     shared_list().map(|shared| &shared.home_secrets)
+}
+
+/// Every protected glob from the shared list (`protectedGlobs`), in list order.
+pub(crate) fn protected_globs() -> Result<&'static [ProtectedGlob], String> {
+    shared_list().map(|shared| shared.protected_globs.as_slice())
 }
 
 /// One name, compared the way Windows and macOS users read it: NFKC, then lower case, with the long s (U+017F, which
@@ -1284,9 +1302,14 @@ mod tests {
         )
         .is_err());
         assert!(load_shared(
-            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false,"homeSecrets":{"dirs":[],"files":[],"shellProfiles":[],"cliLoginFiles":[]}}"#
+            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false,"homeSecrets":{"dirs":[],"files":[],"shellProfiles":[],"cliLoginFiles":[]},"protectedGlobs":[]}"#
         )
         .is_ok());
+        // The protected globs are part of the list too: without them a list does not load.
+        assert!(load_shared(
+            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false,"homeSecrets":{"dirs":[],"files":[],"shellProfiles":[],"cliLoginFiles":[]}}"#
+        )
+        .is_err());
         assert!(
             load_shared(
                 r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"holdAnyDotSegment":false}"#

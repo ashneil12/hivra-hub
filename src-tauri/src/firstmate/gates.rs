@@ -411,7 +411,7 @@ struct Repo {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<(bool, Vec<u8>, i32), String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git();
     cmd.arg("-C")
         .arg(dir)
         .args(["-c", "core.quotepath=off"])

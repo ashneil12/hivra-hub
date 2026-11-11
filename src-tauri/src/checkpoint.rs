@@ -945,7 +945,7 @@ fn path_contains_symlink(root: &Path, relative: &str) -> bool {
 }
 
 fn git_head(root: &Path) -> Result<Vec<u8>, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
     let output = command
         .arg("-C")
@@ -1140,7 +1140,7 @@ fn calculate_session_stats(dir: &Path, manifest: &Manifest, relative: &str) -> O
 }
 
 fn diff_numstat(before: &Path, after: &Path) -> Option<(i64, i64)> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git();
     crate::hide_window_console(&mut cmd);
     let output = cmd
         .args(["diff", "--no-index", "--no-ext-diff", "--numstat", "--"])
@@ -1470,7 +1470,6 @@ fn validate_id(value: &str, label: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::io::ErrorKind;
-    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1503,7 +1502,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> bool {
-        Command::new("git")
+        crate::git_cmd::git()
             .args(args)
             .current_dir(dir)
             .env("GIT_AUTHOR_NAME", "monocode")
