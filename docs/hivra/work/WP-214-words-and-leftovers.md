@@ -35,7 +35,10 @@ on screen.
    footer.
 2. **The app's name in its own text** is Hivra in the Hub bundle. Use one helper that the Hub's copy reads. The bundle
    name, identifier, data folder and Dock name do **not** change here: that is the rename (WP-07 step 2), which comes
-   last and on its own. A dev copy's window title stays `Hivra Dev - <branch> @ <sha>`.
+   last and on its own.
+   **The window title** names the place you're in: "Home — Hivra", "Hivra · Coding team — Hivra", "Settings — Hivra".
+   It never shows a stale folder from the last chat (today it can read "vg-game — Hivra Dev …" on Home). A dev copy
+   keeps its `Hivra Dev - <branch> @ <sha>` in place of the trailing "Hivra", so it can still be told apart.
 3. **Settings, in twelve sections** (Hub bundle; upstream keeps its 28). The groups are:
 
    | Section | Holds today's |

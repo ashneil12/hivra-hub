@@ -73,7 +73,10 @@ folder paths in place of project names. Nothing showed what the coding team's wo
 7. **The composer** in the coding team chat shows one grey line under the box: "Lead: <model> · Workers: <model>",
    from the Crew defaults.
 8. **Names, not paths.** A chat, worker or session row shows the project's name, never its folder path. The folder
-   shows only in the project sidebar's header.
+   shows only in the project sidebar's header. A project has **one** name everywhere: the rail tile, the sidebar,
+   Home's tags and Needs you all show the project's own name, cut with an ellipsis by CSS when it's long. The
+   2-letter initials go only inside the tile's square. Today the rail says "Hub" and "Recall Check" while Home says
+   "MonoCode Hub" and "Recall Checker".
 9. Autopilot's log moves to Settings › Autopilot (WP-214 regroups Settings; here, only link it from the switch's menu).
 
 ## Done when
