@@ -68,8 +68,12 @@ function MapNodeView({
   node: MapNode;
   onOpen: (automationId: string) => void;
 }) {
+  // A switched-off node stays on the map. It does not open the editor.
   const open = node.automationId
-    ? () => onOpen(node.automationId)
+    ? () => {
+        if (node.disabled) return;
+        onOpen(node.automationId);
+      }
     : undefined;
   return (
     <foreignObject
