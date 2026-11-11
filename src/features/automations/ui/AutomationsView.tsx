@@ -102,6 +102,7 @@ import { defaultSessionChoice, firstEnabledHarness, modelsFor, preferredModelId,
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
+import { appPolicy } from "../../../app/model/appIdentity";
 import { createTauriOneTimeStore } from "../../one-time-schedule/model/oneTimeScheduleApi";
 import {
   OneTimeSchedulePanel,
@@ -450,8 +451,13 @@ function AutomationsContent({
       className="flex min-h-0 min-w-0 flex-1 text-content"
     >
       <aside className="flex w-[280px] shrink-0 flex-col border-r border-stroke">
-        {/* WP-128: schedule one prompt, once. */}
-        <OneTimeSchedulePanel chats={chats} projects={oneTimeProjects} store={oneTimeStore} />
+        {/* WP-128: schedule one prompt, once. A dev copy never runs it. */}
+        <OneTimeSchedulePanel
+          chats={chats}
+          projects={oneTimeProjects}
+          store={oneTimeStore}
+          runsHere={appPolicy().automations}
+        />
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
           <label className="relative flex h-7 min-w-0 flex-1 items-center">
             <Search className="pointer-events-none absolute left-2 size-3 shrink-0 text-content/40" />
