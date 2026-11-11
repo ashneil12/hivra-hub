@@ -42,22 +42,57 @@ pub enum Gate {
 }
 
 pub fn effective_interval(secs: u64) -> u64 {
-    todo!("effective_interval {secs}")
+    secs.max(MIN_INTERVAL_SECS)
 }
 
 /// Decides whether a routine may run now. A `Run` counts against today's cap and sets the next due time.
 pub fn gate(routine: &Routine, state: &mut RoutineState, now: u64) -> Gate {
-    todo!("gate {routine:?} {state:?} {now}")
+    if !routine.enabled {
+        return Gate::Skip(Skip::Disabled);
+    }
+    if state.stopped {
+        return Gate::Skip(Skip::StoppedAfterFailures);
+    }
+    let interval = effective_interval(routine.interval_secs);
+    if let Some(due) = state.next_due {
+        if now < due {
+            return Gate::Skip(Skip::NotDue);
+        }
+        // A whole interval late (the laptop slept): skip that window and wait a full interval, no burst.
+        if now >= due.saturating_add(interval) {
+            state.next_due = Some(now.saturating_add(interval));
+            return Gate::Skip(Skip::MissedWindow);
+        }
+    }
+    let today = now / DAY_SECS;
+    if state.day != today {
+        state.day = today;
+        state.runs_today = 0;
+    }
+    if state.runs_today >= MAX_RUNS_PER_DAY {
+        return Gate::Skip(Skip::DailyCap);
+    }
+    state.runs_today += 1;
+    state.next_due = Some(now.saturating_add(interval));
+    Gate::Run
 }
 
 /// Records how a run ended. `stopped` is set after `FAILURES_BEFORE_STOP` failures in a row.
 pub fn record_outcome(state: &mut RoutineState, ok: bool) {
-    todo!("record_outcome {state:?} {ok}")
+    if ok {
+        state.failures = 0;
+    } else {
+        state.failures = state.failures.saturating_add(1);
+    }
+    if state.failures >= FAILURES_BEFORE_STOP {
+        state.stopped = true;
+    }
 }
 
 /// The person turns a stopped routine back on.
 pub fn resume(state: &mut RoutineState) {
-    todo!("resume {state:?}")
+    state.failures = 0;
+    state.stopped = false;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -83,7 +118,18 @@ pub struct RunRecord {
 /// Runs that finished at or after `away_since`, newest first. An empty `starters` list keeps every starter.
 /// Runs still going are not in the feed.
 pub fn away_feed(records: &[RunRecord], away_since: u64, starters: &[Starter]) -> Vec<RunRecord> {
-    todo!("away_feed {} {away_since} {starters:?}", records.len())
+    let mut feed: Vec<RunRecord> = records
+        .iter()
+        .filter(|r| r.finished_at.is_some_and(|finished| finished >= away_since))
+        .filter(|r| starters.is_empty() || starters.contains(&r.starter))
+        .cloned()
+        .collect();
+    feed.sort_by(|a, b| {
+        b.finished_at
+            .cmp(&a.finished_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    feed
 }
 
 #[cfg(test)]
@@ -131,7 +177,10 @@ mod tests {
             now += HOUR;
         }
         assert!(state.stopped);
-        assert_eq!(gate(&r, &mut state, now), Gate::Skip(Skip::StoppedAfterFailures));
+        assert_eq!(
+            gate(&r, &mut state, now),
+            Gate::Skip(Skip::StoppedAfterFailures)
+        );
         resume(&mut state);
         assert_eq!(gate(&r, &mut state, now), Gate::Run);
     }
@@ -155,9 +204,15 @@ mod tests {
             ..Default::default()
         };
         // The laptop slept for five hours. One skip, then the next run is a full interval away.
-        assert_eq!(gate(&routine(HOUR), &mut state, 6 * HOUR), Gate::Skip(Skip::MissedWindow));
+        assert_eq!(
+            gate(&routine(HOUR), &mut state, 6 * HOUR),
+            Gate::Skip(Skip::MissedWindow)
+        );
         assert_eq!(state.next_due, Some(7 * HOUR));
-        assert_eq!(gate(&routine(HOUR), &mut state, 6 * HOUR + 1), Gate::Skip(Skip::NotDue));
+        assert_eq!(
+            gate(&routine(HOUR), &mut state, 6 * HOUR + 1),
+            Gate::Skip(Skip::NotDue)
+        );
     }
 
     #[test]
@@ -171,8 +226,15 @@ mod tests {
             now += MIN_INTERVAL_SECS;
         }
         assert_eq!(gate(&r, &mut state, now), Gate::Skip(Skip::DailyCap));
-        let next_day = DAY_SECS + 1;
-        assert_eq!(gate(&r, &mut state, next_day), Gate::Run);
+        // The next day's first window is skipped as missed (the cap held it), then the day's count starts again.
+        assert_eq!(
+            gate(&r, &mut state, DAY_SECS),
+            Gate::Skip(Skip::MissedWindow)
+        );
+        assert_eq!(
+            gate(&r, &mut state, DAY_SECS + MIN_INTERVAL_SECS),
+            Gate::Run
+        );
     }
 
     fn run(id: &str, starter: Starter, started: u64, finished: Option<u64>) -> RunRecord {

@@ -1,13 +1,20 @@
 //! The Hivra Cloud HTTP calls. Each call names a fixed route; no caller passes a URL. The bearer token goes only to
 //! the configured endpoint, redirects are never followed, and every answer is read as data.
 
+use std::io::Read;
+use std::time::Duration;
+
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use url::Url;
+
+use crate::connectors::oauth;
 
 pub const ACCOUNT_PATH: &str = "/v1/account";
 pub const PAIR_PATH: &str = "/v1/machines/pair";
 pub const ACCOUNT_TTL_SECS: u64 = 6 * 3600;
 pub const FAILURE_RETRY_SECS: u64 = 15 * 60;
+const MAX_REPLY_BYTES: u64 = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum CloudError {
@@ -21,7 +28,18 @@ pub enum CloudError {
 
 impl CloudError {
     pub fn message(&self) -> String {
-        todo!("message {self:?}")
+        match self {
+            CloudError::NotSetUp => "Hivra Cloud is not set up on this Mac.".to_string(),
+            CloudError::NotSignedIn => "Sign in to Hivra Cloud first.".to_string(),
+            CloudError::BadCode => {
+                "That pairing code isn't valid. Copy it again from Hivra Cloud.".to_string()
+            }
+            CloudError::Unreachable => "Couldn't reach Hivra Cloud. Try again later.".to_string(),
+            CloudError::Refused(code) => format!("Hivra Cloud refused the request ({code})."),
+            CloudError::BadReply => {
+                "Hivra Cloud sent an answer this app couldn't read.".to_string()
+            }
+        }
     }
 }
 
@@ -47,22 +65,82 @@ pub struct Client {
 }
 
 impl Client {
+    /// `base` must be an endpoint address (https, or loopback). The token is kept for this client only.
     pub fn new(base: Url, token: Option<String>) -> Result<Self, CloudError> {
-        todo!("Client::new {base} {}", token.is_some())
+        if !oauth::secure_or_loopback(base.as_str()) {
+            return Err(CloudError::NotSetUp);
+        }
+        let token = token
+            .filter(|t| !t.is_empty())
+            .ok_or(CloudError::NotSignedIn)?;
+        let agent = ureq::AgentBuilder::new()
+            .try_proxy_from_env(false)
+            .redirects(0)
+            .timeout_connect(Duration::from_secs(5))
+            .timeout_read(Duration::from_secs(20))
+            .build();
+        Ok(Client { base, token, agent })
+    }
+
+    fn url(&self, route: &str) -> Result<String, CloudError> {
+        self.base
+            .join(route)
+            .map(|url| url.to_string())
+            .map_err(|_| CloudError::BadReply)
+    }
+
+    fn send(&self, request: ureq::Request, body: Option<&Value>) -> Result<Value, CloudError> {
+        let request = request
+            .set("Authorization", &format!("Bearer {}", self.token))
+            .set("Accept", "application/json");
+        let result = match body {
+            Some(body) => request
+                .set("Content-Type", "application/json")
+                .send_string(&body.to_string()),
+            None => request.call(),
+        };
+        match result {
+            // ureq returns a 3xx as a normal answer when redirects are off: refuse it, never follow it.
+            Ok(response) if (200..300).contains(&response.status()) => {
+                read_json(response).ok_or(CloudError::BadReply)
+            }
+            Ok(response) => Err(CloudError::Refused(response.status())),
+            Err(ureq::Error::Status(code, _)) => Err(CloudError::Refused(code)),
+            Err(ureq::Error::Transport(_)) => Err(CloudError::Unreachable),
+        }
     }
 
     pub fn account(&self) -> Result<AccountInfo, CloudError> {
-        todo!("account")
+        let url = self.url(ACCOUNT_PATH)?;
+        let value = self.send(self.agent.get(&url), None)?;
+        serde_json::from_value(value).map_err(|_| CloudError::BadReply)
     }
 
+    /// Sends the one-time code only. No key, token or password goes in the body.
     pub fn pair(&self, code: &str) -> Result<PairedMachine, CloudError> {
-        todo!("pair {code}")
+        if !valid_pair_code(code) {
+            return Err(CloudError::BadCode);
+        }
+        let url = self.url(PAIR_PATH)?;
+        let body = serde_json::json!({ "code": code });
+        let value = self.send(self.agent.post(&url), Some(&body))?;
+        serde_json::from_value(value).map_err(|_| CloudError::BadReply)
     }
+}
+
+fn read_json(response: ureq::Response) -> Option<Value> {
+    let mut text = String::new();
+    response
+        .into_reader()
+        .take(MAX_REPLY_BYTES)
+        .read_to_string(&mut text)
+        .ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 /// Only letters, digits and dashes, 6 to 64 long: a one-time code, never a key.
 pub fn valid_pair_code(code: &str) -> bool {
-    todo!("valid_pair_code {code}")
+    (6..=64).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 /// What the app shows for the account: fresh, cached, unavailable, signed out, or off.
@@ -76,11 +154,38 @@ pub struct AccountView {
     pub notice: Option<String>,
 }
 
+impl AccountView {
+    /// A view with no account data: `off`, or `signed_out`.
+    pub fn without_account(status: &'static str) -> Self {
+        AccountView {
+            status,
+            plan: None,
+            machine_limit: None,
+            notice: None,
+        }
+    }
+
+    fn with_info(status: &'static str, info: &AccountInfo, notice: Option<String>) -> Self {
+        AccountView {
+            status,
+            plan: info.plan.clone(),
+            machine_limit: info.machine_limit,
+            notice,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct AccountCache {
     ok: Option<(u64, AccountInfo)>,
     failed_at: Option<u64>,
     notice_shown: bool,
+}
+
+impl Default for AccountCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl AccountCache {
@@ -99,10 +204,48 @@ impl AccountCache {
         now: u64,
         fetch: &mut dyn FnMut() -> Result<AccountInfo, CloudError>,
     ) -> AccountView {
-        todo!("view {now} {}", fetch().is_ok())
+        if let Some((at, info)) = &self.ok {
+            if now.saturating_sub(*at) < ACCOUNT_TTL_SECS {
+                return AccountView::with_info("cached", info, None);
+            }
+        }
+        let recently_failed = self
+            .failed_at
+            .is_some_and(|at| now.saturating_sub(at) < FAILURE_RETRY_SECS);
+        if !recently_failed {
+            match fetch() {
+                Ok(info) => {
+                    self.ok = Some((now, info.clone()));
+                    self.failed_at = None;
+                    return AccountView::with_info("fresh", &info, None);
+                }
+                Err(_) => self.failed_at = Some(now),
+            }
+        }
+        match &self.ok {
+            Some((_, info)) => AccountView::with_info("cached", info, None),
+            None => {
+                let notice = if self.notice_shown {
+                    None
+                } else {
+                    self.notice_shown = true;
+                    Some(
+                        "Hivra Cloud can't be reached right now. Your own machines still work."
+                            .to_string(),
+                    )
+                };
+                AccountView::without_account("unavailable").with_notice(notice)
+            }
+        }
     }
 }
 
+impl AccountView {
+    fn with_notice(mut self, notice: Option<String>) -> Self {
+        self.notice = notice;
+        self
+    }
+}
 #[cfg(test)]
 pub(crate) mod stub {
     //! Loopback stand-ins only: a stub cloud on 127.0.0.1 and a listener that records any connection to it.
@@ -158,7 +301,10 @@ pub(crate) mod stub {
                 let head = String::from_utf8_lossy(&data[..end]).to_string();
                 let length = head
                     .lines()
-                    .find_map(|l| l.strip_prefix("Content-Length: ").or(l.strip_prefix("content-length: ")))
+                    .find_map(|l| {
+                        l.strip_prefix("Content-Length: ")
+                            .or(l.strip_prefix("content-length: "))
+                    })
                     .and_then(|v| v.trim().parse::<usize>().ok())
                     .unwrap_or(0);
                 if data.len() >= end + 4 + length {
