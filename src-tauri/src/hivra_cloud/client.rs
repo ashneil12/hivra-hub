@@ -419,7 +419,6 @@ mod tests {
         assert_eq!(first.plan.as_deref(), Some("pro"));
         let second = cache.view(1_000 + ACCOUNT_TTL_SECS - 1, &mut fetch);
         assert_eq!(second.status, "cached");
-        drop(fetch);
         assert_eq!(calls, 1);
     }
 
@@ -439,7 +438,6 @@ mod tests {
         assert_eq!(soon.notice, None, "never nag twice");
         let later = cache.view(5_000 + FAILURE_RETRY_SECS, &mut fetch);
         assert_eq!(later.notice, None);
-        drop(fetch);
         assert_eq!(calls, 2, "one try, then one retry after the wait");
     }
 
