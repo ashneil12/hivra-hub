@@ -319,6 +319,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "mobile phone iphone qr pair code router device",
   },
   {
+    id: "hivra-cloud",
+    section: "connections",
+    label: "Hivra Cloud",
+    keywords: "cloud sign in pair machine address endpoint always on",
+  },
+  {
     id: "remote-machines",
     section: "connections",
     label: "Your machines",
