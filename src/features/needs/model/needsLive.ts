@@ -115,7 +115,7 @@ function stoppedFacts(rows: readonly NeedsYouRow[]): StoppedFact[] {
       projectId: row.projectId ?? undefined,
       monoId: row.lead ?? undefined,
       who,
-      at: worker?.since ?? 0,
+      at: worker?.since ?? job?.stuckWorker?.since ?? 0,
       sentence,
       about,
       forAsh: true,

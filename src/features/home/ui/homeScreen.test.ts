@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { defaultArrangement, hideSection, pinPanel } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
-import { HomeScreen } from "./HomeScreen";
+import { HomeScreen, needsAgo } from "./HomeScreen";
 
 const line = (over: Partial<HomeLine>): HomeLine => ({
   id: "n1",
@@ -255,15 +255,22 @@ it("shows a stopped worker as a chip, a red Stopped, the reason and a bordered O
       text: "Example: Out of credits",
       projectId: "vg-game",
       projectName: "EXO",
+      needsKind: "stopped",
+      who: "EXO lead",
+      at: Date.now() - 4 * 60_000,
       actions: [{ label: "Open chat", run: () => opened++ }],
     })],
   });
   const row = container.querySelector("[data-home-line='stopped']")!;
   expect(row.querySelector("[data-needs-chip]")?.textContent).toBe("EXO");
-  const word = row.querySelector("[data-needs-stopped]")!;
-  expect(word.textContent).toBe("Stopped.");
-  expect(word.className).toMatch(/text-red-400/);
+  const chip = row.querySelector("[data-needs-kind='stopped']")!;
+  expect(chip.textContent).toBe("Stopped");
+  expect(chip.className).toMatch(/text-red-400/);
+  // The chip already says Stopped. The reason does not say it again.
+  expect(row.querySelector("[data-needs-stopped]")).toBeNull();
   expect(row.textContent).toContain("Example: Out of credits");
+  expect(row.textContent).not.toContain("Stopped.");
+  expect(row.querySelector("[data-needs-source]")?.textContent).toMatch(/^EXO lead, \d+ min ago$/);
   expect(row.textContent).not.toMatch(/\bStuck\b/);
   const button = [...row.querySelectorAll("button")].find((item) => item.textContent === "Open chat")!;
   expect(button.className).toMatch(/\bborder\b/);
@@ -272,6 +279,26 @@ it("shows a stopped worker as a chip, a red Stopped, the reason and a bordered O
   expect(button.className).not.toMatch(/\bbg-accent\b/);
   act(() => button.click());
   expect(opened).toBe(1);
+});
+
+it("says minutes, hours and days, and never months inside a day", () => {
+  const now = 1_700_000_000_000;
+  const min = 60_000;
+  expect(needsAgo(now, now)).toBe("just now");
+  expect(needsAgo(now - 20_000, now)).toBe("just now");
+  expect(needsAgo(now - 4 * min, now)).toBe("4 min ago");
+  expect(needsAgo(now - 59 * min, now)).toBe("59 min ago");
+  expect(needsAgo(now - 60 * min, now)).toBe("1 hr ago");
+  expect(needsAgo(now - 90 * min, now)).toBe("2 hr ago");
+  expect(needsAgo(now - 23 * 60 * min, now)).toBe("23 hr ago");
+  expect(needsAgo(now - 3 * 24 * 60 * min, now)).toBe("3 d ago");
+  expect(needsAgo(now - 90 * 24 * 60 * min, now)).toBe("3 mo ago");
+  expect(needsAgo(0, now)).toBeUndefined();
+  expect(needsAgo(Number.NaN, now)).toBeUndefined();
+  expect(needsAgo(now + min, now)).toBe("just now");
+  for (let mins = 0; mins <= 24 * 60; mins += 1) {
+    expect(needsAgo(now - mins * min, now) ?? "").not.toMatch(/mo/);
+  }
 });
 
 it("draws row actions as buttons, the first filled and the rest bordered, at most three", () => {

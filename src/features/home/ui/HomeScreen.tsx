@@ -92,12 +92,14 @@ function kindChip(kind: string | undefined): { label: string; className: string 
   }
 }
 
-function ago(at: number, now = Date.now()): string | undefined {
-  if (!Number.isFinite(at) || at < 1_000_000_000_000) return undefined;
+/** A quiet age. Minutes, then hours, then days. Months only after two months, never inside a day. */
+export function needsAgo(at: number, now = Date.now()): string | undefined {
+  if (!Number.isFinite(at) || !Number.isFinite(now) || at < 1_000_000_000_000) return undefined;
   const mins = Math.max(0, Math.round((now - at) / 60_000));
   if (mins < 1) return "just now";
   if (mins < 60) return `${mins} min ago`;
   const hours = Math.round(mins / 60);
+  // A day is still hours or, past two days, days. Months start at 60 days.
   if (hours < 48) return `${hours} hr ago`;
   const days = Math.round(hours / 24);
   if (days < 60) return `${days} d ago`;
@@ -106,7 +108,7 @@ function ago(at: number, now = Date.now()): string | undefined {
 
 function sourceLine(who: string | undefined, at: number): string | undefined {
   const name = who?.replace(/\s+/g, " ").trim();
-  const when = ago(at);
+  const when = needsAgo(at);
   if (name && when) return `${name}, ${when}`;
   return name || when;
 }
@@ -115,10 +117,7 @@ function NeedText({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) =
   const chip = line.projectName?.trim();
   const source = line.needsKind ? sourceLine(line.who, line.at) : undefined;
   const body = line.kind === "stopped" ? (
-    <span className="block truncate">
-      <span data-needs-stopped className="font-medium text-red-400">Stopped.</span>
-      {line.text ? ` ${line.text}` : null}
-    </span>
+    <span className="block truncate">{line.text}</span>
   ) : (
     <button
       type="button"

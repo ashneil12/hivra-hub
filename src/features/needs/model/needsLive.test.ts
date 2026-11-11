@@ -268,6 +268,11 @@ it("puts the example mark back from the worker a stopped job carries", () => {
   // The job's own reason is already the plain line. The seeded fault still sits on the worker it carries.
   expect(sentence("Example: Out of credits")).toBe("Example: Out of credits");
   expect(sentence("402 Payment Required")).toBe("Out of credits");
+  // The age sits on the worker the job carries. A blank age is what made the row look undated.
+  const aged = needsYouQuiet(factsFromParts(parts({}, {
+    rows: [{ key: "job:app:upload-build", lead: "vg-game-lead", projectId: "vg-game", job: job("Example: Out of credits") }],
+  })), NOW)[0];
+  expect(aged?.at).toBe(NOW);
   const lone = needsYouQuiet(factsFromParts(parts({}, {
     rows: [{ key: "worker:upload-build:failed", lead: "vg-game-lead", projectId: "vg-game", worker: { ...stuck("Example: Out of credits"), line: "Out of credits" } }],
   })), NOW);
@@ -293,6 +298,19 @@ it("keeps a tracker task that was passed in with the other facts", () => {
     tasks: [{ id: "t1", projectId: "hivra", title: "Which font?", status: "In progress", source: "agent", assignee: null, needsYou: true, trashedAt: null, createdAt: 2 }],
   })), NOW);
   expect(list.map((item) => item.sentence)).toEqual(["Which font?"]);
+});
+
+it("a which question's buttons are the option's own words, and they send that option", () => {
+  const asked = decision("hivra", "windows-build", "Which Windows build should ship?");
+  asked.options = ["Ship 1.4.2", "Wait for 1.4.3"];
+  asked.recommended = "Ship 1.4.2";
+  const [item] = needsYou(factsFromParts(parts({ decisions: [asked] })), NOW);
+  expect(item?.actions.map((action) => action.label)).toEqual(["Ship 1.4.2", "Open"]);
+  const answer = vi.spyOn(tauriFirstMate, "answer").mockResolvedValue({ ok: true, version: 1 });
+  item?.actions[0]?.run();
+  expect(answer).toHaveBeenCalledTimes(1);
+  expect(answer).toHaveBeenCalledWith("hivra", "windows-build", "Ship 1.4.2");
+  answer.mockRestore();
 });
 
 it("opens a question that has no recommended option instead of guessing one", () => {
