@@ -172,6 +172,20 @@ fn read_pkt(stream: &mut TcpStream) -> Option<Vec<u8>> {
     Some(body)
 }
 
+fn pump(from: &mut impl Read, to: &mut impl std::io::Write) {
+    let mut buf = [0u8; 8192];
+    loop {
+        match from.read(&mut buf) {
+            Ok(0) | Err(_) => return,
+            Ok(n) => {
+                if to.write_all(&buf[..n]).and_then(|()| to.flush()).is_err() {
+                    return;
+                }
+            }
+        }
+    }
+}
+
 fn serve_decoy(
     stream: &TcpStream,
     decoy: &Path,
@@ -222,12 +236,10 @@ fn serve_decoy(
     let mut child_in = child.stdin.take().unwrap();
     let mut child_out = child.stdout.take().unwrap();
     let mut from_client = stream.try_clone().unwrap();
-    let to_child = std::thread::spawn(move || {
-        let _ = std::io::copy(&mut from_client, &mut child_in);
-    });
-    let to_client = std::thread::spawn(move || {
-        let _ = std::io::copy(&mut child_out, &mut stream);
-    });
+    // A plain read and write loop, not `io::copy`: on Linux `io::copy` between a socket and a pipe uses
+    // splice(2), which was seen holding the client's ls-refs request until the check timed out.
+    let to_child = std::thread::spawn(move || pump(&mut from_client, &mut child_in));
+    let to_client = std::thread::spawn(move || pump(&mut child_out, &mut stream));
     let _ = child.wait();
     let _ = to_child.join();
     let _ = to_client.join();

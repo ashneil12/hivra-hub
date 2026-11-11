@@ -599,7 +599,7 @@ mod tests {
                 format!("const KEY: &str = \"{key}\";\n"),
             )
             .unwrap();
-            let added = Command::new("git")
+            let added = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&copy_for_hook)
                 .env("GIT_INDEX_FILE", index)
