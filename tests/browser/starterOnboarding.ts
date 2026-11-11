@@ -4,7 +4,7 @@ import { expect, type Page } from "@playwright/test";
 
 export const STARTER_IDS = ["coordinator", "design-review", "planner", "record-keeper", "team-steward"] as const;
 
-const STARTER_NAMES = ["Coordinator", "Design review", "Planner", "Record keeper", "Team steward"] as const;
+const STARTER_NAMES = ["Chief of Staff", "Design review", "Planner", "Record keeper", "Team steward"] as const;
 
 async function dismissSetup(page: Page) {
   const notNow = page.getByRole("button", { name: "Not now" });
@@ -41,7 +41,7 @@ export async function skipAddsNobody(page: Page) {
 }
 
 /**
- * A second launch (the first left the roster as it was). Ticking Coordinator and skipping adds one ordinary Mono.
+ * A second launch (the first left the roster as it was). Ticking Chief of Staff and skipping adds one ordinary Mono.
  * Its id is not the template id, and the other four stay off the roster.
  */
 export async function tickedBecomesOrdinaryMono(page: Page) {
@@ -53,9 +53,9 @@ export async function tickedBecomesOrdinaryMono(page: Page) {
   await page.locator("[data-hub-onboarding-skip]").click();
   await expect(page.locator("[data-hub-onboarding]")).toHaveCount(0);
   const monos = await roster(page);
-  const made = monos.filter((mono) => mono.name === "Coordinator");
+  const made = monos.filter((mono) => mono.name === "Chief of Staff");
   expect(made).toHaveLength(1);
   expect(made[0]?.id).not.toBe("coordinator");
   const names = monos.map((mono) => mono.name);
-  for (const name of STARTER_NAMES) if (name !== "Coordinator") expect(names).not.toContain(name);
+  for (const name of STARTER_NAMES) if (name !== "Chief of Staff") expect(names).not.toContain(name);
 }

@@ -43,14 +43,14 @@ it("adds every starter, seats them, and adds nothing the second time", async () 
 });
 
 it("keeps a Mono already named like a starter, and still seats it", async () => {
-  const offer = starterOffers().find((item) => item.name === "Coordinator");
+  const offer = starterOffers().find((item) => item.name === "Chief of Staff");
   expect(offer).toBeDefined();
-  addMono({ id: "kept-coord", name: "Coordinator", mascot: "robot", color: "hsl(210 8% 58%)", projects: [], instructions: "mine, rewritten" });
+  addMono({ id: "kept-coord", name: "Chief of Staff", mascot: "robot", color: "hsl(210 8% 58%)", projects: [], instructions: "mine, rewritten" });
 
   const seated = await benchAshTeam({ project: "tally" });
-  expect(listMonos().filter((mono) => mono.name === "Coordinator")).toHaveLength(1);
+  expect(listMonos().filter((mono) => mono.name === "Chief of Staff")).toHaveLength(1);
   expect(findMono("kept-coord")?.instructions).toBe("mine, rewritten");
-  expect(seated.monos.find((mono) => mono.name === "Coordinator")?.id).toBe("kept-coord");
+  expect(seated.monos.find((mono) => mono.name === "Chief of Staff")?.id).toBe("kept-coord");
   expect(getChat("tally:leadership")?.memberIds).toContain("kept-coord");
   expect(listMonos()).toHaveLength(starterOffers().length);
 });

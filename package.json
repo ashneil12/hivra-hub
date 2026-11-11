@@ -8,6 +8,7 @@
     "dev:stable": "vite --mode stable",
     "build": "tsc && vite build",
     "preview": "vite preview",
+    "mockup:build": "node scripts/mockup-build.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:browser": "playwright test",

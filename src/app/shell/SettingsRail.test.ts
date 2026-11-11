@@ -14,6 +14,12 @@ it("draws a row for every Settings section, Work log included", () => {
   const onSelect = vi.fn();
   try {
     act(() => root.render(createElement(SettingsNav, { section: "work-log", onSelect, onClose: vi.fn() })));
+    // Dropwave (Ash, 11 Nov): Advanced is folded until asked for, so its rows only draw once it is opened.
+    const advanced = container.querySelector<HTMLButtonElement>('[data-settings-group="workspace"] button[aria-expanded]')!;
+    expect(advanced.getAttribute("aria-expanded")).toBe("false");
+    expect([...container.querySelectorAll("button")].some((button) => button.textContent === "Remote machines")).toBe(false);
+    act(() => advanced.click());
+    expect(advanced.getAttribute("aria-expanded")).toBe("true");
     const rows = [...container.querySelectorAll("button")];
     for (const section of SETTINGS_SECTIONS) {
       const row = rows.find((button) => button.textContent === section.label);

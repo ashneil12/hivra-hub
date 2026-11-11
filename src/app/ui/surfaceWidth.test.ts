@@ -48,7 +48,9 @@ describe("main surfaces fill the width", () => {
     // The composer, in the 1:1 and in a room, is never a centred capped box; the 1:1 dock uses the room's padding.
     expect(read("src/features/monos/ui/MonoComposer.tsx").split("\n").filter((line) => CAPPED.test(line))).toEqual([]);
     const pane = read("src/features/sessions/ui/SessionPane.tsx");
-    expect(pane).toContain('className={agent ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}');
+    // Dropwave (Ash 11 Nov): where every chat has one look, a first mate's chat takes the general chat's box instead.
+    expect(pane).toContain("const monoBox = !!agent && !ONE_CHAT_LOOK;");
+    expect(pane).toContain('className={monoBox ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}');
     expect(read("src/features/hub/ui/GroupChatView.tsx")).toContain('<div className="w-full shrink-0 px-6 pb-3 xl:px-8">');
     // A worker's delegated-chat card and its stuck card fill too (they capped at 768px).
     const notices = read("src/features/monos/ui/DelegationNotices.tsx");
@@ -67,7 +69,7 @@ describe("main surfaces fill the width", () => {
   });
 
   it("side padding is modest: 24px, 32px from xl", () => {
-    expect(read("src/features/pages/ui/PagesView.tsx")).toContain('className="w-full px-6 py-6 xl:px-8" data-pages-list');
+    expect(read("src/features/pages/ui/PagesView.tsx")).toContain('className="w-full px-6 pt-5 pb-10 xl:px-8" data-pages-list');
   });
 
   it("a Page preview has no diagonal Preview watermark: the bar under it says it is a preview", () => {

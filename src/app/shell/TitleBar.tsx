@@ -72,6 +72,7 @@ import {
   type AppView,
 } from "../../features/workspace/model/appViewTabs";
 import { windowTitleSuffix } from "../model/appIdentity";
+import { ONE_CHAT_LOOK } from "../../features/hub/model/hubBundle";
 
 const APP_VIEW_ICONS = {
   search: Search,
@@ -1407,6 +1408,38 @@ export const TitleBar = memo(TitleBarComponent);
 
 /** In a Mono's view the title bar names it and shows its status. */
 function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
+  const statusTone =
+    state.status === "needs-you"
+      ? "text-accent"
+      : state.status === "failed"
+        ? state.tone === "red"
+          ? "text-red-400"
+          : "text-amber-400"
+        : "text-content/45";
+  // Dropwave: the same strip as any other chat, with this first mate's chat as its one open tab.
+  if (ONE_CHAT_LOOK)
+    return (
+      <div data-mono-title className="flex h-full min-w-0 flex-1 items-center gap-1.5 pl-1.5 pr-2.5">
+        <div
+          data-title-tab
+          data-title-tab-active
+          className="flex h-7.5 w-56 min-w-40 shrink items-center gap-1.5 rounded-md bg-selection px-2 pr-2.5 text-content"
+        >
+          <PixelMascot
+            name={look.mascot}
+            color={look.color}
+            status={state.status}
+            still={state.status === "idle"}
+            className="size-3.5 shrink-0"
+          />
+          <span className="min-w-0 flex-1 truncate text-[13px] leading-tight">{look.name}</span>
+          <span data-mono-status={state.status} className={`shrink-0 text-[11px] ${statusTone}`}>
+            {MONO_STATUS_LABEL[state.status]}
+            {state.status === "failed" && state.activity ? ` · ${state.activity}` : ""}
+          </span>
+        </div>
+      </div>
+    );
   return (
     <div
       data-mono-title
@@ -1419,7 +1452,8 @@ function MonoTitle({ look, state }: { look: MonoLook; state: MonoState }) {
         still={state.status === "idle"}
         className="size-4 shrink-0"
       />
-      <span className="min-w-0 truncate text-[13px] font-medium text-content">
+      {/* The name keeps its room; in a narrow bar it is the role after it that shortens. */}
+      <span className="min-w-0 max-w-[70%] shrink-0 truncate text-[13px] font-medium text-content">
         {look.name}
       </span>
       {look.id && !isProjectLeadId(look.id) ? <MonoRoleLabel id={look.id} role={look.role} /> : null}

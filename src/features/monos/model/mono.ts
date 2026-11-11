@@ -53,6 +53,16 @@ export type Mono = {
    * never sit in its own 1:1 chat and deleting a room conversation drops them. Its 1:1 chat stays `sessionId`.
    */
   roomSessions?: Record<string, string>;
+  /**
+   * Dropwave: its own one-to-one chat for a project, keyed by the project's id. The Chief of Staff has one per project,
+   * geared to that project; `sessionId` stays its chat on Home, with everything in view.
+   */
+  projectSessions?: Record<string, string>;
+  /**
+   * Dropwave: more one-to-one chats with this same first mate ("New chat" beside its chat), oldest first. Each is its
+   * own conversation; `sessionId` stays the one its row on the rail opens.
+   */
+  chats?: string[];
   /** Replaces the mascot's own name. */
   name?: string;
   mascot: string;
@@ -297,10 +307,24 @@ function parseMono(value: unknown): Mono | undefined {
       (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
     ),
   );
+  const projectSessions = Object.fromEntries(
+    Object.entries(record(entry.projectSessions)).filter(
+      (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
+    ),
+  );
+  const chats = [
+    ...new Set(
+      (Array.isArray(entry.chats) ? entry.chats : []).filter(
+        (id): id is string => typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id) && id !== sessionId,
+      ),
+    ),
+  ];
   return {
     id: entry.id,
     ...(sessionId ? { sessionId } : {}),
     ...(Object.keys(roomSessions).length ? { roomSessions } : {}),
+    ...(Object.keys(projectSessions).length ? { projectSessions } : {}),
+    ...(chats.length ? { chats } : {}),
     ...(name ? { name } : {}),
     mascot: text("mascot") ?? PROJECT_MASCOTS[0].name,
     color: text("color") ?? TAB_GROUP_COLORS[1],
@@ -454,8 +478,51 @@ export function monoForSession(sessionId: string): Mono | undefined {
   const monos = listMonos();
   return (
     monos.find((mono) => mono.sessionId === sessionId) ??
-    monos.find((mono) => !!mono.roomSessions && Object.values(mono.roomSessions).includes(sessionId))
+    monos.find((mono) => !!mono.roomSessions && Object.values(mono.roomSessions).includes(sessionId)) ??
+    monos.find((mono) => !!mono.projectSessions && Object.values(mono.projectSessions).includes(sessionId)) ??
+    monos.find((mono) => !!mono.chats?.includes(sessionId))
   );
+}
+
+/** Dropwave: one of a first mate's further chats ("New chat"), not the one its row on the rail opens. */
+export function isMonoSideChat(sessionId: string): boolean {
+  return listMonos().some((mono) => !!mono.chats?.includes(sessionId));
+}
+
+/** A further chat with this first mate runs in `sessionId` from now on. Another first mate's chat is never taken. */
+export function saveMonoSideChat(monoId: string, sessionId: string): boolean {
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId) || monoForSession(sessionId)) return false;
+  return !!updateMono(monoId, (mono) => ({ ...mono, chats: [...(mono.chats ?? []), sessionId] }));
+}
+
+/** The first mate lets go of a further chat (it was deleted). Its main chat and its project chats are not touched. */
+export function forgetMonoSideChat(sessionId: string): void {
+  const owner = listMonos().find((mono) => !!mono.chats?.includes(sessionId));
+  if (!owner) return;
+  updateMono(owner.id, ({ chats = [], ...rest }) => {
+    const kept = chats.filter((id) => id !== sessionId);
+    return kept.length ? { ...rest, chats: kept } : rest;
+  });
+}
+
+/** Dropwave: the Mono's own chat for this project, once it has been opened there. */
+export function monoProjectSession(monoId: string, projectId: string): string | undefined {
+  return findMono(monoId)?.projectSessions?.[projectId];
+}
+
+/** The project a Mono's session is its own chat for, if it is one of those (not its chat on Home, not a room's). */
+export function monoSessionProject(sessionId: string): string | undefined {
+  for (const mono of listMonos())
+    for (const [projectId, id] of Object.entries(mono.projectSessions ?? {})) if (id === sessionId) return projectId;
+  return undefined;
+}
+
+/** This project's chat with the Mono runs in `sessionId` from now on. Another Mono's chat is never taken. */
+export function saveMonoProjectSession(monoId: string, projectId: string, sessionId: string): boolean {
+  const owner = monoForSession(sessionId);
+  if (owner && owner.id !== monoId) return false;
+  if (!projectId.trim() || findMono(monoId)?.sessionId === sessionId) return false;
+  return !!updateMono(monoId, (mono) => ({ ...mono, projectSessions: { ...mono.projectSessions, [projectId]: sessionId } }));
 }
 
 /** Where a Mono's session for one room conversation is kept (Mono.roomSessions). */
