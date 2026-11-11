@@ -38,6 +38,8 @@ export type DelegationTasksDeps = {
   questions?: QuestionRouter;
   hubProjectId?(folder: string): string | undefined;
   hubProjectFolder?(id: string): string | undefined;
+  /** WP-141 round 11: hub project folders, so a worktree finds the project's worker default. */
+  hubProjectRoots?(): readonly string[];
   nextChange?(ms: number): Promise<void>;
   now?(): number;
   /** Take a followed brief back out of its chat's queue, if it still waits there (followedBriefs.ts). */
@@ -46,6 +48,11 @@ export type DelegationTasksDeps = {
   briefLead?: AgentAppTasksHost["briefLead"];
   /** Whether the Lead a brief names exists, asked before a fresh-eyes review. */
   checkLead?: AgentAppTasksHost["checkLead"];
+  /** WP-141: the lock and Never use list in force (crew/model/host.ts crewPolicyInForce). */
+  crewPolicy?: AgentAppTasksHost["crewPolicy"];
+  /** WP-141: the gate every worker and session launch passes before its process starts (crew_launch_check). */
+  crewGate?: AgentAppTasksHost["crewGate"];
+  crewAnyLock?: AgentAppTasksHost["crewAnyLock"];
   /** WP-156: the project that Lead keeps, so the brief carries that project's standing answers. */
   leadProject?: AgentAppTasksHost["leadProject"];
   /** Where a Mono's work goes: its project's coding team, or its own team (hub/model/monoTeams.ts). */
@@ -54,6 +61,9 @@ export type DelegationTasksDeps = {
   pool?: AgentAppTasksHost["pool"];
   /** WP-13: which CLI, model and effort a delegated task uses. */
   crewRoute?: AgentAppTasksHost["crewRoute"];
+  /** WP-141: tasks.pick's crew pick and the Leads a Mono may brief. */
+  crewPick?: AgentAppTasksHost["crewPick"];
+  pickMonos?: AgentAppTasksHost["pickMonos"];
   /** Hivra WP-14: steering messages and decisions (firstmate/hooks/useSteering.ts). */
   firstMate?: AgentAppTasksHost["firstMate"];
   /** Hivra WP-172: a fan-out's checkpoint, so a plan cut short can be resumed (fanoutCheckpointStore.ts). */
@@ -160,7 +170,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.fanoutCheckpoints ? { fanoutCheckpoints: deps.fanoutCheckpoints } : {}),
     // Hivra WP-10: the depth cap, checked by the store before anything starts.
     ...(deps.backend.checkDepth
-      ? { checkDepth: (owner: string) => deps.backend.checkDepth!(owner) }
+      ? { checkDepth: (owner: string, opts?: { fanout?: boolean }) => deps.backend.checkDepth!(owner, opts) }
       : {}),
     // Declared, not judged (workerStall.ts never overwrites it): the row is Ash's until it moves.
     cannot: async (by, row, reason) => {
@@ -183,10 +193,15 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     },
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
     ...(deps.checkLead ? { checkLead: deps.checkLead } : {}),
+    ...(deps.crewPolicy ? { crewPolicy: deps.crewPolicy } : {}),
+    ...(deps.crewGate ? { crewGate: deps.crewGate } : {}),
+    ...(deps.crewAnyLock ? { crewAnyLock: deps.crewAnyLock } : {}),
     ...(deps.leadProject ? { leadProject: deps.leadProject } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),
+    ...(deps.crewPick ? { crewPick: deps.crewPick } : {}),
+    ...(deps.pickMonos ? { pickMonos: deps.pickMonos } : {}),
     // WP-144: off unless this project turned fresh-eyes review on. Reviewers run after this call returns (control.rs cuts
     // the app call at 35 s). The Inbox and the chat that asked come from the first mate's own backend.
     freshEyes: (input) =>
@@ -200,6 +215,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),
     ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
     ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
+    ...(deps.hubProjectRoots ? { hubProjectRoots: deps.hubProjectRoots } : {}),
     ...(deps.now ? { now: deps.now } : {}),
   };
 }
