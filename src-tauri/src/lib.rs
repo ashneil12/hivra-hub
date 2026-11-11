@@ -969,6 +969,7 @@ pub fn run() {
             pasteboard::clipboard_image,
             pasteboard::copy_file_to_clipboard,
             fs::clone_repo,
+            fs::resolve_existing_path,
             fs::read_file_preview,
             fs::stat_files,
             fs::inspect_paths,

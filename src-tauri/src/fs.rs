@@ -4783,6 +4783,364 @@ fn git_cmd_for_args(args: &[&str]) -> Command {
     git_cmd_for_args_with_path(args, crate::harness::gui_search_path)
 }
 
+/// Words of a path for the Codex file-change check. `.` and `..` are applied first, then the deepest prefix that
+/// exists is canonicalized and the missing tail is appended. An error means the path cannot be resolved: the caller
+/// asks instead of granting. Drive letters, UNC shares and backslashes are accepted. A Windows `\\?\` prefix is dropped.
+pub(crate) fn resolve_existing_place(input: &str, base: &str) -> Result<String, String> {
+    let lexical = lexical_absolute(input, base)?;
+    let kind = PathKind::parse(&lexical)?;
+    let parts = kind.parts();
+    for n in (0..=parts.len()).rev() {
+        let Some(prefix) = kind.prefix(n) else {
+            continue;
+        };
+        let Ok(real) = dunce::canonicalize(Path::new(&prefix)) else {
+            continue;
+        };
+        let mut out = trim_dir_slash(path_to_js(&real));
+        for part in &parts[n..] {
+            if !out.ends_with('/') {
+                out.push('/');
+            }
+            out.push_str(part);
+        }
+        return Ok(trim_dir_slash(out));
+    }
+    Err("The path could not be resolved.".into())
+}
+
+/// Resolve `path` against `base` for a file-change approval. The webview has no filesystem of its own.
+#[tauri::command]
+pub async fn resolve_existing_path(path: String, base: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || resolve_existing_place(&path, &base))
+        .await
+        .map_err(|_| "The path could not be resolved.".to_string())?
+}
+
+fn lexical_absolute(input: &str, base: &str) -> Result<String, String> {
+    if input.is_empty() || input.contains('\0') || base.contains('\0') {
+        return Err("The path could not be resolved.".into());
+    }
+    let owned = input.replace('\\', "/");
+    // `\\?\C:\...` and `\\?\UNC\server\...` are the same folders as the plain paths. Drop the prefix before the words.
+    let slash = without_verbatim(owned);
+    let root = {
+        let trimmed = trim_dir_slash(base.replace('\\', "/"));
+        if trimmed.is_empty() {
+            "/".to_string()
+        } else {
+            trimmed
+        }
+    };
+    let abs = if is_rooted(&slash) {
+        slash
+    } else if root == "/" {
+        format!("/{slash}")
+    } else {
+        format!("{root}/{slash}")
+    };
+    Ok(normalize_lexical(&abs))
+}
+
+fn without_verbatim(owned: String) -> String {
+    if let Some(rest) = owned.strip_prefix("//?/UNC/") {
+        return format!("//{rest}");
+    }
+    if let Some(rest) = owned.strip_prefix("//?/") {
+        return rest.to_string();
+    }
+    owned
+}
+
+fn is_rooted(path: &str) -> bool {
+    path.starts_with('/') || has_drive_prefix(path)
+}
+
+fn has_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes.len() == 2 || bytes[2] == b'/')
+}
+
+fn normalize_lexical(path: &str) -> String {
+    let unc = path.starts_with("//") && !path.starts_with("///");
+    let drive = (!path.starts_with('/') && has_drive_prefix(path)).then(|| path[..2].to_string());
+    let rest = if unc {
+        path.strip_prefix("//").unwrap_or(path)
+    } else if let Some(stripped) = path.strip_prefix('/') {
+        stripped
+    } else if drive.is_some() {
+        path[2..].trim_start_matches('/')
+    } else {
+        path
+    };
+    let mut stack: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            if stack.is_empty() {
+                if !path.starts_with('/') && drive.is_none() && !unc {
+                    stack.push("..");
+                }
+            } else if stack.last().copied() == Some("..") {
+                stack.push("..");
+            } else {
+                stack.pop();
+            }
+        } else {
+            stack.push(part);
+        }
+    }
+    let body = stack.join("/");
+    if unc {
+        if body.is_empty() {
+            "//".to_string()
+        } else {
+            format!("//{body}")
+        }
+    } else if path.starts_with('/') {
+        if body.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{body}")
+        }
+    } else if let Some(drive) = drive {
+        if body.is_empty() {
+            format!("{drive}/")
+        } else {
+            format!("{drive}/{body}")
+        }
+    } else if body.is_empty() {
+        ".".to_string()
+    } else {
+        body
+    }
+}
+
+fn trim_dir_slash(mut path: String) -> String {
+    if path == "/" || path == "//" {
+        return path;
+    }
+    while path.len() > 1 && path.ends_with('/') {
+        // `C:/` is the root of a drive. Dropping the slash would make it a relative name.
+        if has_drive_prefix(&path) && path.len() == 3 {
+            break;
+        }
+        path.pop();
+    }
+    path
+}
+
+enum PathKind {
+    Unix { parts: Vec<String> },
+    Drive { drive: String, parts: Vec<String> },
+    Unc { parts: Vec<String> },
+}
+
+impl PathKind {
+    fn parse(lexical: &str) -> Result<Self, String> {
+        if let Some(rest) = lexical.strip_prefix("//") {
+            if !rest.starts_with('/') {
+                let parts = split_parts(rest);
+                if parts.len() < 2 {
+                    return Err("The path could not be resolved.".into());
+                }
+                return Ok(Self::Unc { parts });
+            }
+        }
+        if let Some(rest) = lexical.strip_prefix('/') {
+            return Ok(Self::Unix {
+                parts: split_parts(rest),
+            });
+        }
+        if has_drive_prefix(lexical) {
+            let drive = lexical[..2].to_string();
+            let rest = lexical[2..].trim_start_matches('/');
+            return Ok(Self::Drive {
+                drive,
+                parts: split_parts(rest),
+            });
+        }
+        Err("The path could not be resolved.".into())
+    }
+
+    fn parts(&self) -> &[String] {
+        match self {
+            Self::Unix { parts } | Self::Drive { parts, .. } | Self::Unc { parts } => parts,
+        }
+    }
+
+    fn prefix(&self, n: usize) -> Option<String> {
+        let parts = self.parts();
+        if n > parts.len() {
+            return None;
+        }
+        match self {
+            Self::Unix { .. } => Some(if n == 0 {
+                "/".to_string()
+            } else {
+                format!("/{}", parts[..n].join("/"))
+            }),
+            Self::Drive { drive, .. } => Some(if n == 0 {
+                format!("{drive}/")
+            } else {
+                format!("{drive}/{}", parts[..n].join("/"))
+            }),
+            // A UNC path has no root above `//server/share`.
+            Self::Unc { .. } => {
+                if n < 2 {
+                    None
+                } else {
+                    Some(format!("//{}", parts[..n].join("/")))
+                }
+            }
+        }
+    }
+}
+
+fn split_parts(body: &str) -> Vec<String> {
+    body.split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod resolve_existing_tests {
+    use super::{lexical_absolute, path_to_js, resolve_existing_place};
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "resolve-existing-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_missing_tail_keeps_the_real_parent() {
+        let root = scratch("tail");
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let got =
+            resolve_existing_place(&path_to_js(&work.join("a.ts")), &path_to_js(&work)).unwrap();
+        let parent = resolve_existing_place(&path_to_js(&work), "/").unwrap();
+        assert_eq!(got, format!("{parent}/a.ts"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dotdot_is_applied_before_the_lookup_so_a_sibling_is_outside() {
+        let root = scratch("dotdot");
+        let work = root.join("work");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let climbed = format!("{}/../outside/secret", path_to_js(&work));
+        let got = resolve_existing_place(&climbed, &path_to_js(&work)).unwrap();
+        let secret = resolve_existing_place(&path_to_js(&outside.join("secret")), "/").unwrap();
+        let base = resolve_existing_place(&path_to_js(&work), "/").unwrap();
+        assert_eq!(got, secret);
+        assert_ne!(got, base);
+        assert!(
+            !got.starts_with(&format!("{base}/")),
+            "{got} was treated as inside {base}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_name_that_only_shares_a_prefix_is_a_different_folder() {
+        let root = scratch("prefix");
+        let work = root.join("work");
+        let secret = root.join("work-secret");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        let file =
+            resolve_existing_place(&path_to_js(&secret.join("a.ts")), &path_to_js(&work)).unwrap();
+        let base = resolve_existing_place(&path_to_js(&work), "/").unwrap();
+        assert!(
+            !file.starts_with(&format!("{base}/")),
+            "{file} inside {base}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_resolved_is_an_error() {
+        assert!(resolve_existing_place("a\0b", "/tmp").is_err());
+        assert!(resolve_existing_place("", "/tmp").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_drive_letter_is_not_a_folder_on_unix() {
+        assert!(resolve_existing_place("C:/no-such-drive/a.ts", "/").is_err());
+    }
+
+    #[test]
+    fn a_drive_path_drops_dotdot_before_any_lookup() {
+        assert_eq!(
+            lexical_absolute(r"C:\Work\..\elsewhere\a.ts", r"D:\ignored").unwrap(),
+            "C:/elsewhere/a.ts"
+        );
+        assert_eq!(
+            lexical_absolute(r"sub\a.ts", r"C:\Work").unwrap(),
+            "C:/Work/sub/a.ts"
+        );
+        assert_eq!(
+            lexical_absolute(r"\\server\Share\a", "/ignored").unwrap(),
+            "//server/Share/a"
+        );
+        assert_eq!(
+            lexical_absolute(r"\\?\C:\Work\a.ts", "/").unwrap(),
+            "C:/Work/a.ts"
+        );
+        assert_eq!(
+            lexical_absolute(r"\\?\UNC\server\Share\a", "/").unwrap(),
+            "//server/Share/a"
+        );
+        assert_eq!(lexical_absolute("a.ts", "/").unwrap(), "/a.ts");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_the_folder_is_followed_and_dotdot_is_not() {
+        let root = scratch("link");
+        let work = root.join("work");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, work.join("link")).unwrap();
+        let escaped = resolve_existing_place(
+            &path_to_js(&work.join("link").join("agent-sandbox")),
+            &path_to_js(&work),
+        )
+        .unwrap();
+        let target =
+            resolve_existing_place(&path_to_js(&outside.join("agent-sandbox")), "/").unwrap();
+        let base = resolve_existing_place(&path_to_js(&work), "/").unwrap();
+        assert_eq!(escaped, target);
+        assert!(!escaped.starts_with(&format!("{base}/")));
+        // `..` is removed from the words first, so `link/..` is the folder itself, not the link's target.
+        let stayed = resolve_existing_place(
+            &format!("{}/link/../inside.txt", path_to_js(&work)),
+            &path_to_js(&work),
+        )
+        .unwrap();
+        let inside = resolve_existing_place(&path_to_js(&work.join("inside.txt")), "/").unwrap();
+        assert_eq!(stayed, inside);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
 /// `canonicalize`, but in the form git and people can use. On Windows `std::fs::canonicalize` returns a verbatim path
 /// (`\\?\C:\...`) that git can't create worktrees in ("could not create leading directories of '//?/C:/...'") and
 /// `cmd` can't start in; this drops the prefix whenever the plain path means the same folder. Elsewhere it is

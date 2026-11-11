@@ -7,13 +7,18 @@
 import { mkdtempSync, mkdirSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { codexAutoFileChange } from "./codexProtocol";
 
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args: { path?: string; base?: string }) =>
+    import("./codexResolveMock").then((mod) => mod.invokeResolve(cmd, args)),
+}));
+
 describe("review r5: codexAutoFileChange while Hivra's sandbox is on", () => {
-  it("does not let a .. segment out of the workspace", () => {
+  it("does not let a .. segment out of the workspace", async () => {
     expect(
-      codexAutoFileChange(
+      await codexAutoFileChange(
         "auto-accept-edits",
         true,
         ["/work/../Users/ash/Library/Application Support/com.ash.monocode-hub/settings/agent-sandbox"],
@@ -22,7 +27,7 @@ describe("review r5: codexAutoFileChange while Hivra's sandbox is on", () => {
     ).toBeNull();
   });
 
-  it("does not follow a link inside the workspace that points out of it", () => {
+  it("does not follow a link inside the workspace that points out of it", async () => {
     const root = mkdtempSync(join(tmpdir(), "codex-r5-"));
     try {
       const work = join(root, "work");
@@ -31,7 +36,7 @@ describe("review r5: codexAutoFileChange while Hivra's sandbox is on", () => {
       mkdirSync(outside);
       symlinkSync(outside, join(work, "link"));
       expect(
-        codexAutoFileChange("auto-accept-edits", true, [join(work, "link", "agent-sandbox")], work),
+        await codexAutoFileChange("auto-accept-edits", true, [join(work, "link", "agent-sandbox")], work),
       ).toBeNull();
     } finally {
       rmSync(root, { recursive: true, force: true });

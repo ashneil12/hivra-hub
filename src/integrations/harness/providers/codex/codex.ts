@@ -1650,7 +1650,7 @@ async function handleServerRequest(
 
   const auto =
     mapped.kind === "file-change"
-      ? codexAutoFileChange(
+      ? await codexAutoFileChange(
           live.runtimeMode,
           live.hivraSandbox,
           fileChangePaths(params),

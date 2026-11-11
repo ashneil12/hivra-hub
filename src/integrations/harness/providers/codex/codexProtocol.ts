@@ -22,8 +22,7 @@ import {
 } from "../../core/preview";
 import { formatShellIntent, inferShellIntent } from "../../core/shellIntent";
 import { streamTextDelta } from "../../core/streamText";
-import { realpathSync } from "node:fs";
-import path from "node:path";
+import { invoke } from "@tauri-apps/api/core";
 import type { HarnessEvent } from "../../core/types";
 
 /** Codex approval / sandbox settings for thread/start and turn/start. */
@@ -85,57 +84,72 @@ export function codexGrantsPermissionsAutomatically(
  * Who may apply a file change without asking. While Hivra's sandbox is on, only an in-workspace change in
  * auto-accept-edits is automatic. No paths, or a path outside the workspace, asks. `/work-secret` is not inside `/work`.
  */
-export function codexAutoFileChange(
+export async function codexAutoFileChange(
   runtimeMode: RuntimeMode,
   hivraSandbox: boolean,
   paths: string[] | undefined,
   cwd: string,
   grantRoot?: string | null,
-): "allow" | null {
+): Promise<"allow" | null> {
   if (runtimeMode === "supervised" || runtimeMode === "auto") return null;
   if (runtimeMode === "full-access") return "allow";
   if (!hivraSandbox) return "allow";
   // An empty or non-string grant root is not a path we can check, so it asks. A root outside the workspace
-  // would widen the write, so that asks too, even when every named path is inside.
-  if (grantRoot != null && (grantRoot === "" || !pathInside(grantRoot, cwd))) return null;
+  // would widen the write, so that asks too, even when every named path is inside. A path that cannot be
+  // resolved asks as well: never grant it.
+  if (grantRoot != null && (grantRoot === "" || !(await pathInside(grantRoot, cwd)))) return null;
   if (!paths || paths.length === 0) return null;
-  if (paths.every((file) => pathInside(file, cwd))) return "allow";
+  const inside = await Promise.all(paths.map((file) => pathInside(file, cwd)));
+  if (inside.every(Boolean)) return "allow";
   return null;
 }
 
-/** `..` and `.` resolved on the lexical path, then the deepest existing parent followed if it is a link. */
-function pathInside(file: string, root: string): boolean {
-  if (!file || !root) return false;
-  const resolvedFile = resolveExisting(file, root);
-  const resolvedRoot = resolveExisting(root, "/");
-  if (!resolvedFile.startsWith("/") || !resolvedRoot.startsWith("/")) return false;
-  return resolvedFile === resolvedRoot || resolvedFile.startsWith(`${resolvedRoot}/`);
+/** A resolved path is inside a resolved root. Drive letters and UNC shares compare without case. */
+export function resolvedPathInside(file: string, root: string): boolean {
+  const left = foldResolved(file);
+  const right = foldResolved(root);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const boundary = right.endsWith("/") ? right : `${right}/`;
+  return left.startsWith(boundary);
 }
 
-function lexicalAbsolute(input: string, base: string): string {
-  const slash = input.replace(/\\/g, "/");
-  const root = base.replace(/\\/g, "/").replace(/\/+$/, "") || "/";
-  const abs = slash.startsWith("/") ? slash : path.posix.join(root, slash);
-  const norm = path.posix.normalize(abs);
-  return norm.length > 1 ? norm.replace(/\/+$/, "") : norm;
-}
-
-function resolveExisting(input: string, base: string): string {
-  const lexical = lexicalAbsolute(input, base);
-  const parts = lexical.split("/").filter((part) => part.length > 0);
-  for (let n = parts.length; n >= 0; n -= 1) {
-    const prefix = n === 0 ? "/" : `/${parts.slice(0, n).join("/")}`;
-    try {
-      const real = realpathSync(prefix).replace(/\\/g, "/");
-      const rest = parts.slice(n);
-      const joined = rest.length === 0 ? real : path.posix.join(real, ...rest);
-      const norm = path.posix.normalize(joined);
-      return norm.length > 1 ? norm.replace(/\/+$/, "") : norm;
-    } catch {
-      // This prefix is not on disk yet. Try the parent.
-    }
+function foldResolved(path: string): string {
+  let slash = path.replace(/\\/g, "/");
+  if (slash.startsWith("//?/UNC/")) slash = `//${slash.slice("//?/UNC/".length)}`;
+  else if (slash.startsWith("//?/")) slash = slash.slice("//?/".length);
+  const drive = /^[A-Za-z]:/.test(slash);
+  const unc = slash.startsWith("//");
+  let trimmed = slash;
+  if (!(drive && slash.length <= 3) && slash !== "/" && slash !== "//") {
+    trimmed = slash.replace(/\/+$/, "");
   }
-  return lexical;
+  if (drive && trimmed.length === 2) trimmed = `${trimmed}/`;
+  if (drive || unc) return trimmed.toLowerCase();
+  return trimmed;
+}
+
+/** `..` and `.` are applied where the file system is. A path that cannot be resolved is outside: the caller asks. */
+async function pathInside(file: string, root: string): Promise<boolean> {
+  if (!file || !root) return false;
+  try {
+    const resolvedFile = await resolveExisting(file, root);
+    const resolvedRoot = await resolveExisting(root, "/");
+    return resolvedPathInside(resolvedFile, resolvedRoot);
+  } catch {
+    return false;
+  }
+}
+
+async function resolveExisting(input: string, base: string): Promise<string> {
+  const resolved: unknown = await invoke("resolve_existing_path", {
+    path: input,
+    base,
+  });
+  if (typeof resolved !== "string" || resolved.length === 0) {
+    throw new Error("The path could not be resolved.");
+  }
+  return resolved;
 }
 
 const FIRST_MATE_CONFIG: CodexThreadConfig = {
