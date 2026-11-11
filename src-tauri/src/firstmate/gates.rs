@@ -337,7 +337,7 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     // WP-145: a fact gap fails the claim. The model is not asked, and a gap is not "unsure".
     let gaps = input
         .facts
-        .map(super::fact_gaps::done_gaps)
+        .map(|turn| super::fact_gaps::done_gaps_in(turn, Some(input.checkout)))
         .unwrap_or_default();
     let check = (gaps.is_empty() && (overall == Outcome::Passed || gates.is_empty()))
         .then(|| verdict_check(input, &repo, &gates, runners));
@@ -1367,14 +1367,40 @@ pub struct RunInput {
     pub facts: Option<serde_json::Value>,
 }
 
+/// What a plan-less turn does with the facts the webview sent.
+/// `firstmate_run_gates` is the only caller. A missing turn is not clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PlanlessFacts {
+    /// Facts are present and show no gap. A send-back may be cleared.
+    Clear,
+    /// The webview sent no facts. Do not clear a send-back and do not mark the row pending.
+    Keep,
+    /// The facts have a gap. Write the fact-only record.
+    Gaps,
+}
+
+fn planless_facts(
+    facts: Option<&super::fact_gaps::FactTurn>,
+    checkout: Option<&std::path::Path>,
+) -> PlanlessFacts {
+    match facts {
+        None => PlanlessFacts::Keep,
+        Some(turn) if super::fact_gaps::done_gaps_in(turn, checkout).is_empty() => {
+            PlanlessFacts::Clear
+        }
+        Some(_) => PlanlessFacts::Gaps,
+    }
+}
+
 /// A failed record for fact gaps when the brief stored no plan, so the routes check stays where it is.
 fn fact_only_record(
     delegation_id: &str,
     round: u32,
     now: i64,
     facts: &super::fact_gaps::FactTurn,
+    checkout: Option<&std::path::Path>,
 ) -> Option<GateRecord> {
-    let gaps = super::fact_gaps::done_gaps(facts);
+    let gaps = super::fact_gaps::done_gaps_in(facts, checkout);
     if gaps.is_empty() {
         return None;
     }
@@ -1419,30 +1445,34 @@ pub async fn firstmate_run_gates(
         let Some(row) = row else {
             return Ok(None);
         };
-        // No stored plan and nothing in the facts: the routes check still runs in the webview.
-        // A send-back from the previous round is cleared here, or the delivered row stays failed.
-        if plan.is_none()
-            && facts
-                .as_ref()
-                .is_none_or(|turn| super::fact_gaps::done_gaps(turn).is_empty())
-        {
-            if row.gate_verdict.as_deref() == Some(GateVerdict::FAILED)
-                && super::status::sent_back_on(&row)
-            {
-                let change = delegations::set_gate_verdict(
-                    &mut *store.lock_conn()?,
-                    &row.id,
-                    GateVerdict::PASSED,
-                    "the later facts show no gap",
-                    None,
-                    now_millis(),
-                )?;
-                if change.applied {
-                    let _ = app.emit(delegations::CHANGED, serde_json::json!({ "ids": [row.id] }));
-                    crate::tasks::emit_for_delegations(&app); // WP-70
+        let checkout = crate::fs::expand_home(&input.checkout);
+        // No stored plan. Missing facts are not a clean turn: a send-back stays, and the row is not marked pending.
+        // A present turn with no gap clears a send-back, or the delivered row stays failed.
+        if plan.is_none() {
+            match planless_facts(facts.as_ref(), Some(checkout.as_path())) {
+                PlanlessFacts::Clear => {
+                    if row.gate_verdict.as_deref() == Some(GateVerdict::FAILED)
+                        && super::status::sent_back_on(&row)
+                    {
+                        let change = delegations::set_gate_verdict(
+                            &mut *store.lock_conn()?,
+                            &row.id,
+                            GateVerdict::PASSED,
+                            "the later facts show no gap",
+                            None,
+                            now_millis(),
+                        )?;
+                        if change.applied {
+                            let _ = app
+                                .emit(delegations::CHANGED, serde_json::json!({ "ids": [row.id] }));
+                            crate::tasks::emit_for_delegations(&app); // WP-70
+                        }
+                    }
+                    return Ok(None);
                 }
+                PlanlessFacts::Keep => return Ok(None),
+                PlanlessFacts::Gaps => {}
             }
-            return Ok(None);
         }
         let round = next_round(&*store.lock_conn()?, &row.id)?;
         // Pending while they run, so nothing reads the row as done in between.
@@ -1460,7 +1490,6 @@ pub async fn firstmate_run_gates(
                 crate::tasks::emit_for_delegations(&app); // WP-70
             }
         }
-        let checkout = crate::fs::expand_home(&input.checkout);
         let runners = AppRunners {
             app: app.clone(),
             project_id: input.project_id.clone(),
@@ -1493,7 +1522,9 @@ pub async fn firstmate_run_gates(
             let Some(turn) = facts.as_ref() else {
                 return Ok(None);
             };
-            let Some(record) = fact_only_record(&row.id, round, now, turn) else {
+            let Some(record) =
+                fact_only_record(&row.id, round, now, turn, Some(checkout.as_path()))
+            else {
                 return Ok(None);
             };
             record

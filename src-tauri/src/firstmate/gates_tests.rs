@@ -588,7 +588,7 @@ fn fact_gaps_fail_the_claim_without_asking_the_model() {
 
 #[test]
 fn a_planless_turn_fails_on_fact_gaps_and_stays_quiet_when_there_are_none() {
-    let failed = fact_only_record("d-1", 2, 9, &stale_facts()).expect("a gap");
+    let failed = fact_only_record("d-1", 2, 9, &stale_facts(), None).expect("a gap");
     assert_eq!(failed.verdict, Verdict::Failed);
     assert!(failed.check.is_none());
     assert!(
@@ -603,7 +603,8 @@ fn a_planless_turn_fails_on_fact_gaps_and_stays_quiet_when_there_are_none() {
         "d-1",
         2,
         9,
-        &crate::firstmate::fact_gaps::FactTurn::default()
+        &crate::firstmate::fact_gaps::FactTurn::default(),
+        None,
     )
     .is_none());
     // A docs edit after a passing test is not a gap, so the routes check stays in the webview.
@@ -619,7 +620,7 @@ fn a_planless_turn_fails_on_fact_gaps_and_stays_quiet_when_there_are_none() {
         }],
         ..Default::default()
     };
-    assert!(fact_only_record("d-1", 2, 9, &docs).is_none());
+    assert!(fact_only_record("d-1", 2, 9, &docs, None).is_none());
 }
 
 // ---- evidence and the row -----------------------------------------------------------------------------------------------
@@ -879,7 +880,7 @@ fn r1_a_planless_turn_fixed_after_a_send_back_does_not_stay_failed() {
     let mut conn = store();
     let row = record_row(&mut conn);
     // Round 1, as the command does it: no stored plan, a fact gap, the fact-only record's verdict on the row.
-    let first = fact_only_record(&row.id, 1, 2, &stale_facts()).expect("a gap");
+    let first = fact_only_record(&row.id, 1, 2, &stale_facts(), None).expect("a gap");
     let applied = crate::delegations::set_gate_verdict(
         &mut conn,
         &row.id,
@@ -912,7 +913,7 @@ fn r1_a_planless_turn_fixed_after_a_send_back_does_not_stay_failed() {
         ..Default::default()
     };
     assert!(done_gaps(&fixed).is_empty());
-    assert!(fact_only_record(&row.id, 2, 4, &fixed).is_none());
+    assert!(fact_only_record(&row.id, 2, 4, &fixed, None).is_none());
     let settled = settle_done(&mut conn, &row);
     assert_eq!(
         settled.status,
@@ -981,4 +982,36 @@ fn r2_a_completed_settle_does_not_clear_a_failed_plan_gate_nothing_reran() {
         settled.status
     );
     let _ = &f.project;
+}
+
+// The command decides a plan-less turn through `planless_facts`. Missing facts are not a clean turn:
+// a send-back stays, and the row is not marked pending. A present turn with no gap still clears.
+#[test]
+fn a_missing_fact_turn_does_not_clear_a_send_back() {
+    use crate::firstmate::fact_gaps::{FactCheck, FactEdit, FactTurn};
+    assert_eq!(planless_facts(None, None), PlanlessFacts::Keep);
+    let fixed = FactTurn {
+        checks: vec![
+            FactCheck {
+                command: "npm test".into(),
+                status: "passed".into(),
+                at: 1.0,
+            },
+            FactCheck {
+                command: "npm test".into(),
+                status: "passed".into(),
+                at: 3.0,
+            },
+        ],
+        edits: vec![FactEdit {
+            path: "src/features/crew/row.ts".into(),
+            at: 2.0,
+        }],
+        ..Default::default()
+    };
+    assert_eq!(planless_facts(Some(&fixed), None), PlanlessFacts::Clear);
+    assert_eq!(
+        planless_facts(Some(&stale_facts()), None),
+        PlanlessFacts::Gaps
+    );
 }
