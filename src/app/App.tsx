@@ -33,7 +33,7 @@ import { hasMobileAttachments, mobileAttachments } from "../features/mobile/mode
 import {
   applyMobileChoice,
   mobileWorkspaceChoice,
-  mobileChoice,
+  applyMobileConfigure,
   mobileCatalog,
   mobilePrivateSessionIds,
   publishedApprovalRows,
@@ -814,6 +814,7 @@ import {
   type Session,
   type UsageLimit,
   type WorkspaceMode,
+  DEFAULT_RUNTIME_MODE,
 } from "../features/sessions/model/session";
 // WP-134b: a More agents chat never goes through the eleven CLIs.
 import { AGENT_GONE, WAITS } from "../features/registry/model/registryCopy";
@@ -1231,6 +1232,7 @@ import {
   workspaceSnapshotKey,
 } from "../features/workspace/model/workspaceSnapshot";
 import type { InstalledUpdate } from "./model/updateNotice";
+
 import {
   bindResumedSessions,
   closeBusyWindow,
@@ -8057,6 +8059,8 @@ function Workspace({
       if (!current) return;
       if (isPreparingHandoff(current)) return;
       const resolved = resolveModel(harness, model);
+      // Leaving fx resets the mode: fx's Full access is its only offer and must not carry to another CLI (WP-175).
+      const leavesFx = current.harness === "fx" && resolved.harness !== "fx";
       saveRecentModelChoice(resolved.harness, resolved.id);
       if (current.modelSettings) {
         saveLastModelSettings(current.modelSettings, "fill");
@@ -8093,7 +8097,7 @@ function Workspace({
                       ? resumeMonoUsageLimit(session)
                       : resumeUsageLimitedSession(session)
                     : session;
-                  return next;
+                  return leavesFx ? { ...next, runtimeMode: DEFAULT_RUNTIME_MODE } : next;
                 }),
               );
             });
@@ -11079,17 +11083,13 @@ function Workspace({
         return { sessionId: session.id };
       }
       if (method === "session.configure") {
-        // The phone's model sheet, through the same paths as the composer's
-        // pickers, so a provider switch hands off on the next send as here.
-        const choice = mobileChoice(params);
-        if (choice.harness && choice.model && (choice.harness !== session.harness || choice.model !== session.model))
-          onModelChange(session.id, choice.harness, choice.model);
-        if (choice.modelSettings) {
-          const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
-          onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
-        }
-        if (choice.runtimeMode) onRuntimeModeChange(session.id, choice.runtimeMode);
-        return { sessionId: session.id };
+        // The phone's model sheet, through the same paths as the composer's pickers (mobileWorkspace.applyMobileConfigure).
+        return applyMobileConfigure(session, params, {
+          openMode: (id) => sessionsRef.current.find((current) => current.id === id)?.runtimeMode,
+          onModelChange,
+          onModelSettingsChange,
+          onRuntimeModeChange,
+        });
       }
       if (method === "session.answerQuestion" || method === "session.keepQuestionOpen") {
         // As the composer's question card; only the question still waiting,

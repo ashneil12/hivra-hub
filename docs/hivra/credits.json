@@ -328,7 +328,7 @@
       "name": "Happy",
       "url": "https://github.com/slopus/happy",
       "licence": "MIT",
-      "gave": "one permission-mode resolution order and one mapping per CLI, written as Hivra's own matrix (ideas only; no Happy text or code copied)"
+      "gave": "one permission-mode resolution order, one mapping per CLI and one rule for a refused mode change, written as Hivra's own matrix (ideas only; no Happy text or code copied)"
     },
     {
       "name": "Paradev",
