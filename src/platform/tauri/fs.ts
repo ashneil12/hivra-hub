@@ -337,13 +337,22 @@ export function gitUnstageAll(cwd: string): Promise<void> {
   return invoke<void>("git_unstage_all", { cwd });
 }
 
-export type GitFileLocation = { root: string; relative: string };
+/**
+ * A path's checkout and its place in it. `linked` says the path's last part is a link, placed at its target (round 6).
+ * `dotGit` says the checkout's root holds a `.git` folder or file (round 7): git commands in a folder without one wait.
+ */
+export type GitFileLocation = { root: string; relative: string; linked?: boolean; dotGit?: boolean };
 
 /** Each path's repository root and repo-relative path, or null outside git. */
 export function gitLocateFiles(
   paths: string[],
 ): Promise<(GitFileLocation | null)[]> {
   return invoke<(GitFileLocation | null)[]>("git_locate_files", { paths });
+}
+
+/** Each path's canonical path, every link followed, or null when it can't be placed (round 7; a chat outside git). */
+export function gitCanonicalPaths(paths: string[]): Promise<(string | null)[]> {
+  return invoke<(string | null)[]>("git_canonical_paths", { paths });
 }
 
 /** Commit the index, or only `paths` (staging them first) when given. */
