@@ -41,12 +41,15 @@ import {
 import {
   DEFAULT_RUNTIME_MODE,
   HARNESS_TITLE,
-  RUNTIME_MODE_LABEL,
   type HarnessId,
   type RuntimeMode,
   harnessSupportsAttachments,
 } from "../../sessions/model/session";
 import { Popover } from "../../../shared/ui/Popover";
+import {
+  permissionCliForHarness,
+  runtimeModeCopy,
+} from "../../../integrations/harness/core/permissionMatrix";
 import { AttachmentChip } from "../../sessions/ui/AttachmentChip";
 import { quickLaunchAttachments } from "../model/quickAttachments";
 import { useQuickAttachments } from "./useQuickAttachments";
@@ -668,7 +671,6 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
           <span className="truncate">{model.name}</span>
           <ChevronDown className="size-3 shrink-0 opacity-60" />
         </button>
-        {model.harness !== "fx" ? (
           <button
             type="button"
             onMouseDown={(event) => event.preventDefault()}
@@ -681,10 +683,11 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
               mode={runtimeMode}
               className="size-3.5 shrink-0"
             />
-            <span className="truncate">{RUNTIME_MODE_LABEL[runtimeMode]}</span>
+            <span className="truncate">
+              {runtimeModeCopy(runtimeMode, permissionCliForHarness(model.harness)).label}
+            </span>
             <ChevronDown className="size-3 shrink-0 opacity-60" />
           </button>
-        ) : null}
         <span className="ml-auto flex shrink-0 items-center gap-3 text-[11px] text-content/45">
           {attachments.loading ? (
             <span role="status">Adding attachment…</span>
@@ -809,6 +812,7 @@ export function QuickComposer({ onShown }: { onShown: () => void }) {
           {picker === "permissions" ? (
             <QuickPermissions
               value={runtimeMode}
+              harness={model.harness}
               onChange={setRuntimeMode}
               onClose={closePicker}
             />

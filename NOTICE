@@ -308,6 +308,13 @@ Third-party components Hivra adds:
   Used in: src/features/memory/model/orderScan.ts, src/features/memory/model/LICENSE.row-bot
   external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one. Licence text in src/features/memory/model/LICENSE.row-bot.
 
+- tasklane's protected paths
+  Source: https://github.com/kunci115/tasklane
+  License: Apache-2.0
+  tasklane's LICENSE has no separate copyright line and the repo has no NOTICE file
+  Used in: src-tauri/src/delivery/protected.rs
+  crates/tasklane-core/src/paths.rs (protected_hits) rewritten in Rust for WP-158. Directory patterns match anywhere, secret extensions match, and a glob matches nothing. Hivra adds .hivra/, the hub tauri config files and the rule files, and compares built-in names without case. Rewritten from the work package because the upstream file was not in this worktree. The keyword floor in floor.rs is not included.
+
 - MiniMax Code's subagent-split-check, independent-review and taste-to-checks
   Source: https://github.com/MiniMax-AI/mcode-stack
   License: MIT

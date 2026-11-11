@@ -7,10 +7,14 @@
 //! 3. refuses while a decision on that work is open (a question on any task in its tree, or a WP-14
 //!    decision in state open waiting on any of those tasks);
 //! 4. merges with the person's word (their own tap, or an approval they gave for this exact head) or, when the project's
-//!    "merge without asking" switch is on, without it; otherwise it asks and merges nothing;
+//!    "merge without asking" switch is on, without it, unless that project has turned the protected-path floor on and
+//!    the diff touches a protected path or its file list could not be read; otherwise it asks and merges nothing;
 //! 5. merges only the head it judged (`gh pr merge --match-head-commit`), and logs every attempt with who allowed it.
 //!
 //! A pull request with no checks at all needs the person's word even when the switch is on: no checks is not green.
+//! When the project has turned the protected-path floor on (WP-158, off until then), the switch is not enough
+//! for a diff that touches a protected path, or whose changed files could not be read. The person's word for
+//! that exact head still merges it.
 //!
 //! Red is never merged (firstmate, `bin/fm-pr-merge.sh`).
 //!
@@ -485,6 +489,90 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
     }
 }
 
+fn named_files(hits: &[String]) -> String {
+    let shown: Vec<String> = hits
+        .iter()
+        .take(5)
+        .map(|hit| super::protected::show(hit))
+        .collect();
+    if hits.len() > 5 {
+        format!("{}, and {} more", shown.join(", "), hits.len() - 5)
+    } else {
+        shown.join(", ")
+    }
+}
+
+/// The protected-path floor. Off, the decision is unchanged, so a project that has not turned the floor on
+/// merges exactly as it did before. A refusal is unchanged: red still refuses. A pull request that would
+/// otherwise merge needs the person's word when its files are unread or touch a protected path. One that
+/// would ask (no checks, with the switch on) keeps its question and says what the floor found in it too.
+pub(crate) fn floor_decision(
+    shared: &Result<&super::protected::Shared, String>,
+    decision: Decision,
+    enabled: bool,
+    files: &super::protected::ChangedFiles,
+    extras: &[String],
+    pr: &str,
+) -> Decision {
+    if !enabled {
+        return decision;
+    }
+    if let Decision::Refuse(_) = &decision {
+        return decision;
+    }
+    // A list that would not load holds the pull request: the floor cannot judge it, so the person decides.
+    let shared = match shared {
+        Ok(list) => *list,
+        Err(error) => {
+            return ask_with(
+                decision,
+                format!(
+                    "{pr}'s protected-path list couldn't be loaded ({error}), so it needs your word to merge."
+                ),
+            )
+        }
+    };
+    let paths = match files {
+        super::protected::ChangedFiles::Unread { reason } => {
+            let reason = reason.trim();
+            let detail = if reason.is_empty() {
+                String::new()
+            } else {
+                format!(" {reason}")
+            };
+            return ask_with(
+                decision,
+                format!(
+                    "{pr}'s changed files couldn't be read, so it needs your word to merge.{detail}"
+                ),
+            );
+        }
+        super::protected::ChangedFiles::Listed(paths) => paths,
+    };
+    let hits = super::protected::protected_hits(Some(shared), paths, extras);
+    if hits.is_empty() {
+        return decision;
+    }
+    match decision {
+        Decision::Ask(question) => Decision::Ask(format!(
+            "{question} It also changes {}, which the protected-path floor holds, so it needs your word too.",
+            named_files(&hits)
+        )),
+        _ => Decision::Ask(format!(
+            "{pr} changes {}. It needs your word to merge.",
+            named_files(&hits)
+        )),
+    }
+}
+
+/// The floor's ask, added to a question the switch already asks, or on its own.
+fn ask_with(decision: Decision, ask: String) -> Decision {
+    match decision {
+        Decision::Ask(question) => Decision::Ask(format!("{question} {ask}")),
+        _ => Decision::Ask(ask),
+    }
+}
+
 /// An open question on the work: a question on any task in its tree, or a WP-14 decision (state open)
 /// waiting on any of those tasks. A waiting list that isn't a list of ids is skipped, not an error.
 pub fn open_decision(conn: &Connection, delegation_id: &str) -> Result<Option<String>, String> {
@@ -686,6 +774,9 @@ pub fn merge(
     if number == 0 {
         return Err("number must be the pull request's number".into());
     }
+    // The protected-path list is loaded before the store lock is taken. A list that will not load is an error value
+    // the floor turns into an ask, never a panic while the lock is held.
+    let shared = super::protected::shared_list();
     let read = gh.read_pr(&repo, number);
     // The changed files are read before the database is held (the same rule as the pull request read above).
     let changed = changed_files(gh, &repo, number);
@@ -750,6 +841,10 @@ pub fn merge(
         Some(id) => open_decision(&conn, id)?,
         None => None,
     };
+    let stored = match project.as_deref() {
+        Some(path) => Some(super::settings::get(&conn, path)?),
+        None => None,
+    };
     let allow = match &request.caller {
         Caller::Person { via } => Allow::Person {
             by: format!("person ({via})"),
@@ -758,14 +853,7 @@ pub fn merge(
             Some(by) => Allow::Person {
                 by: format!("{by} (approved this head)"),
             },
-            None if project
-                .as_deref()
-                .map(|p| super::settings::get(&conn, p))
-                .transpose()?
-                .is_some_and(|s| s.merge_without_asking) =>
-            {
-                Allow::Switch
-            }
+            None if stored.as_ref().is_some_and(|row| row.merge_without_asking) => Allow::Switch,
             None => Allow::Nobody,
         },
     };
@@ -790,7 +878,81 @@ pub fn merge(
         )?;
         return Ok(MergeOutcome::Refused { reason });
     }
-    let decision = decide(&read, open.as_deref(), &allow);
+    // The pull request must still be on the branch the delivery pushed. A head pointed at another branch is not the
+    // work the delivery judged, so it is refused. The delivery row is the only record of that branch.
+    // The check is the floor's: with the floor off the project decides exactly as before.
+    let floor_on = stored.as_ref().is_some_and(|row| row.protect_paths);
+    let decided = match delivery.as_ref().and_then(|row| row.branch.as_deref()) {
+        Some(expected) if floor_on && expected != read.head_ref => Decision::Refuse(format!(
+            "{repo}#{number} is on the branch {}, but its delivery pushed {}. Nothing was merged.",
+            super::protected::show(&read.head_ref),
+            super::protected::show(expected),
+        )),
+        _ => decide(&read, open.as_deref(), &allow),
+    };
+    // WP-158: only the switch consults the floor, and only once the project has turned it on. That covers a green
+    // merge and the no-checks question the switch still asks, so the question can name a protected file. The
+    // person's own tap, and an approval of this exact head, are already their word.
+    let consult = matches!(allow, Allow::Switch)
+        && stored.as_ref().is_some_and(|row| row.protect_paths)
+        && !matches!(decided, Decision::Refuse(_));
+    let decision = if consult {
+        let extras = stored
+            .as_ref()
+            .map(|row| row.protected_extra.clone())
+            .unwrap_or_default();
+        drop(conn);
+        // The list is for the base branch's current tip and the head this read saw. Without a tip there is nothing to pin it to.
+        let files = match read.base_tip.clone() {
+            None => super::protected::ChangedFiles::Unread {
+                reason: "GitHub didn't say where the base branch is now.".into(),
+            },
+            Some(base) => {
+                let listed = super::protected::changed_files_between(gh, &repo, &base, &head);
+                let again = gh.read_pr(&repo, number);
+                // The second read carries changedFiles and the base. The list is the whole diff only when
+                // both are unchanged, the count matches, and the head has not moved.
+                match again {
+                    Ok(again) if again.detail.head_sha.as_deref() != Some(head.as_str()) => {
+                        super::protected::ChangedFiles::Unread {
+                            reason: "the pull request's head changed while its files were read"
+                                .into(),
+                        }
+                    }
+                    Ok(again) if again.base_tip.as_deref() != Some(base.as_str()) => {
+                        super::protected::ChangedFiles::Unread {
+                            reason: "the pull request's base changed while its files were read"
+                                .into(),
+                        }
+                    }
+                    Ok(again) => super::protected::judge(listed, again.changed_files),
+                    Err(error) => super::protected::ChangedFiles::Unread { reason: error },
+                }
+            }
+        };
+        conn = store.lock_conn()?;
+        // A decision opened while the files were read (another window, the person) stops the merge too.
+        // The check above ran before that read.
+        let opened_meanwhile = match &delegation {
+            Some(id) => open_decision(&conn, id)?,
+            None => None,
+        };
+        match opened_meanwhile {
+            Some(question) => Decision::Refuse(format!(
+                "A decision on this work is still open: {question}. It merges once that is answered."
+            )),
+            None => floor_decision(
+                &shared,
+                decided,
+                true,
+                &files,
+                &extras,
+                &format!("{repo}#{number}"),
+            ),
+        }
+    } else {
+        decided
+    };
     let allowed_by = match decision {
         Decision::Refuse(reason) => {
             record(

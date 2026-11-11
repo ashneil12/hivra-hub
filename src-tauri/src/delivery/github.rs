@@ -110,6 +110,8 @@ pub(crate) mod fake {
         pub failed_log: String,
         /// What `gh pr view --json files` answers (the changed files of the pull request).
         pub files_json: Mutex<String>,
+        /// `gh api` answer for the changed-file list. None falls through to an empty success.
+        pub files: Mutex<Option<Result<String, String>>>,
     }
 
     impl FakeGithub {
@@ -123,6 +125,7 @@ pub(crate) mod fake {
                 fail: Mutex::new(Vec::new()),
                 failed_log: "build\tRun tests\terror: expected 2, got 3".into(),
                 files_json: Mutex::new("{\"files\":[]}".into()),
+                files: Mutex::new(None),
             }
         }
 
@@ -160,6 +163,11 @@ pub(crate) mod fake {
                 .any(|f| args.first() == Some(f) || args.get(1) == Some(f))
             {
                 return Err(format!("gh {} failed", args.join(" ")));
+            }
+            if args.first().map(String::as_str) == Some("api") {
+                if let Some(result) = self.files.lock().unwrap().clone() {
+                    return result;
+                }
             }
             match (
                 args.first().map(String::as_str),

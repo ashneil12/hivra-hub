@@ -259,6 +259,12 @@
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
     },
     {
+      "name": "tasklane",
+      "url": "https://github.com/kunci115/tasklane",
+      "licence": "Apache-2.0",
+      "gave": "a protected-path floor so CI, migrations, key files and git internals still need a person's word before a merge, even when merge without asking is on (WP-158)"
+    },
+    {
       "name": "mcode-stack",
       "url": "https://github.com/MiniMax-AI/mcode-stack",
       "licence": "MIT",
@@ -322,7 +328,7 @@
       "name": "Happy",
       "url": "https://github.com/slopus/happy",
       "licence": "MIT",
-      "gave": "one permission-mode resolution order and one mapping per CLI, written as Hivra's own matrix (ideas only; no Happy text or code copied)"
+      "gave": "one permission-mode resolution order, one mapping per CLI and one rule for a refused mode change, written as Hivra's own matrix (ideas only; no Happy text or code copied)"
     },
     {
       "name": "Paradev",
@@ -787,6 +793,14 @@
       "copyright": "Copyright 2026 Row-Bot Contributors",
       "where": "src/features/memory/model/orderScan.ts, src/features/memory/model/LICENSE.row-bot",
       "how": "external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one. Licence text in src/features/memory/model/LICENSE.row-bot."
+    },
+    {
+      "name": "tasklane's protected paths",
+      "url": "https://github.com/kunci115/tasklane",
+      "licence": "Apache-2.0",
+      "copyright": "tasklane's LICENSE has no separate copyright line and the repo has no NOTICE file",
+      "where": "src-tauri/src/delivery/protected.rs",
+      "how": "crates/tasklane-core/src/paths.rs (protected_hits) rewritten in Rust for WP-158. Directory patterns match anywhere, secret extensions match, and a glob matches nothing. Hivra adds .hivra/, the hub tauri config files and the rule files, and compares built-in names without case. Rewritten from the work package because the upstream file was not in this worktree. The keyword floor in floor.rs is not included."
     },
     {
       "name": "MiniMax Code's subagent-split-check, independent-review and taste-to-checks",
