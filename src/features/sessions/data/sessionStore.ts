@@ -1370,7 +1370,8 @@ block.notice === "teleported-back" ||
 block.notice === "teleport-frozen" ||
 block.notice === "teleport-incoming" ||
 block.notice === "teleport-aborted" ||
-      block.notice === "teleport-release-owed"
+      block.notice === "teleport-release-owed" ||
+      block.notice === "teleport-freeze-asked"
     ) {
       next.notice = block.notice;
     }

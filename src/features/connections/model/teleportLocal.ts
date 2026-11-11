@@ -20,6 +20,7 @@ import {
   abortedBlock,
   abortedMoves,
   chatLockedFromBlocks,
+  freezeAskedBlock,
   frozenBlock,
   frozenMoves,
   hasBlock,
@@ -49,7 +50,7 @@ export interface LocalChatPort {
 }
 
 const RUNS_HERE: readonly string[] = ["claude", "codex"];
-const MOVE_NOTICE = /^teleport-(frozen|incoming|aborted|release-owed)-/;
+const MOVE_NOTICE = /^teleport-(frozen|incoming|aborted|release-owed|freeze-asked)-/;
 
 /** The effort the chat actually stores. Codex keeps it as reasoningEffort; some models have none. */
 function effortOf(settings: Session["modelSettings"] | undefined): string {
@@ -397,6 +398,20 @@ export function localMoveEndpoint(options: {
       const id = `teleport-release-owed-${moveId}`;
       if (!session || !hasBlock(session.blocks, id)) return;
       // A plain save: the chat is already back, and dropping this note does not change who holds it.
+      await port.put(withBlocks(session, session.blocks.filter((block) => block.id !== id)));
+    },
+    async noteFreezeAsk(chatId, moveId, sourceId) {
+      const session = await port.get(chatId);
+      if (!session) return;
+      const id = `teleport-freeze-asked-${moveId}`;
+      if (hasBlock(session.blocks, id)) return;
+      // A plain save: the chat stays where it is. The note only remembers which move asked the other machine to freeze.
+      await port.put(withBlocks(session, [...session.blocks, freezeAskedBlock(moveId, sourceId)]));
+    },
+    async clearFreezeAsk(chatId, moveId) {
+      const session = await port.get(chatId);
+      const id = `teleport-freeze-asked-${moveId}`;
+      if (!session || !hasBlock(session.blocks, id)) return;
       await port.put(withBlocks(session, session.blocks.filter((block) => block.id !== id)));
     },
     async holds(chatId, moveId): Promise<Holds> {

@@ -542,7 +542,9 @@ export type Block = {
     /** WP-177: this machine refused a move id for good, so a late copy of that move is turned away. */
     | "teleport-aborted"
     /** WP-177: the chat is back here, and the other machine has not confirmed it dropped its copy. */
-    | "teleport-release-owed";
+    | "teleport-release-owed"
+    /** WP-177: this Mac asked the other machine to freeze, and has not heard back yet. */
+    | "teleport-freeze-asked";
   /** An agent-to-agent note on a system block (who messaged whom, got stuck, reported; monos/model/agentNotes.ts). */
   agentNote?: import("../../monos/model/agentNotes").AgentNote;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */

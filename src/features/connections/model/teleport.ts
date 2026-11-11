@@ -116,6 +116,13 @@ export interface MoveEndpoint {
   settleRelease?(chatId: string, moveId: string): Promise<void>;
   /** What this machine stores for the move: a live copy it activated, an incoming copy, or nothing. */
   holds(chatId: string, moveId: string): Promise<Holds>;
+  /**
+   * Remember, before the other machine is asked to freeze, that this move asked it to. A lost reply then still has a
+   * move id to thaw. Optional: a machine that is not this Mac leaves it unset.
+   */
+  noteFreezeAsk?(chatId: string, moveId: string, sourceId: string): Promise<void>;
+  /** Drop that note once the freeze reply arrived, or once the thaw did. */
+  clearFreezeAsk?(chatId: string, moveId: string): Promise<void>;
 }
 
 export interface FreezeRefusal {
@@ -557,13 +564,28 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
     );
   }
 
+  // The note is written before the freeze, on the machine that will recover. A lost reply still names the move.
+  try {
+    await to.noteFreezeAsk?.(chatId, moveId, from.id);
+  } catch (error) {
+    return failed("freeze", from.id, error);
+  }
   let frozen: boolean;
   try {
     frozen = await from.freeze(chatId, moveId, to.id);
   } catch (error) {
-    await from.thaw(chatId, moveId).catch(noop);
+    let thawed = false;
+    try {
+      await from.thaw(chatId, moveId);
+      thawed = true;
+    } catch {
+      thawed = false;
+    }
+    // The reply and the thaw were both lost: keep the note, so recovery can thaw this move id later.
+    if (thawed) await to.clearFreezeAsk?.(chatId, moveId).catch(noop);
     return failed("freeze", from.id, error);
   }
+  await to.clearFreezeAsk?.(chatId, moveId).catch(noop);
   if (!frozen) {
     const again = await from.read(chatId).catch(() => null);
     const why = again?.live ? freezeRefusal(again.live) : null;

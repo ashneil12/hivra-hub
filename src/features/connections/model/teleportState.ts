@@ -98,6 +98,33 @@ function asText(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/**
+ * Written on this Mac before the other machine is asked to freeze. If that reply is lost, recovery still has the move
+ * id and can thaw it. The text names the machine that was asked, and when.
+ */
+export function freezeAskedBlock(moveId: string, peer: string, at = Date.now()): Block {
+  return {
+    id: `teleport-freeze-asked-${moveId}`,
+    role: "system",
+    text: JSON.stringify({ peer, at }),
+    notice: "teleport-freeze-asked",
+  } as unknown as Block;
+}
+
+/** Freeze asks saved here whose reply never came back. `at` is a millisecond timestamp. */
+export function savedFreezeAsks(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string; at: number }> {
+  return session.blocks
+    .filter((b) => b.notice === "teleport-freeze-asked")
+    .map((b) => {
+      const meta = parseText(b.text);
+      return {
+        moveId: b.id.replace(/^teleport-freeze-asked-/, ""),
+        peer: asText(meta.peer),
+        at: typeof meta.at === "number" ? meta.at : 0,
+      };
+    });
+}
+
 /** The freezes saved in a chat, each with the machine it is for, its owner window and its start. A restart uses them. */
 export function savedFreezes(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string; owner: string; name: string; at: number }> {
   return session.blocks

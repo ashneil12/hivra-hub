@@ -5,7 +5,7 @@
 import type { Session } from "../../sessions/model/session";
 import { approvePlan, moveChat, planMove, recoverMove, type MoveEndpoint, type MovePlan, type MoveResult } from "./teleport";
 import { sessionToChat, type LocalChatPort } from "./teleportLocal";
-import { savedAborted, savedFreezes, savedIncoming, savedReleaseOwed } from "./teleportState";
+import { savedAborted, savedFreezeAsks, savedFreezes, savedIncoming, savedReleaseOwed } from "./teleportState";
 import { flushPendingSessionSave } from "../../sessions/model/sessionPersistFlush";
 
 /**
@@ -128,6 +128,21 @@ export async function recoverSavedMoves(input: {
         lines.push({ chatId, moveId: owed.moveId, status: "failed" });
       }
     }
+    // A freeze whose reply never came back. The other machine may still be frozen for this move id.
+    const asks = savedFreezeAsks(session);
+    for (const ask of asks) {
+      if (young(ask.at) || !ask.peer) {
+        lines.push({ chatId, moveId: ask.moveId, status: "skipped" });
+        continue;
+      }
+      try {
+        await input.remoteFor(ask.peer).thaw(chatId, ask.moveId);
+        await input.local.clearFreezeAsk?.(chatId, ask.moveId);
+        lines.push({ chatId, moveId: ask.moveId, status: "recovered" });
+      } catch {
+        lines.push({ chatId, moveId: ask.moveId, status: "failed" });
+      }
+    }
     for (const refused of savedAborted(session)) {
       if (!refused.peer) continue;
       try {
@@ -163,7 +178,7 @@ export async function findMovedChatIds(projectCwds: string[]): Promise<string[]>
   const found: string[] = [];
   for (const id of ids) {
     const row = await store.readSession(id);
-    if (row?.blocks.some((b) => b.notice === "teleport-frozen" || b.notice === "teleport-incoming" || b.notice === "teleport-aborted" || b.notice === "teleport-release-owed")) {
+    if (row?.blocks.some((b) => b.notice === "teleport-frozen" || b.notice === "teleport-incoming" || b.notice === "teleport-aborted" || b.notice === "teleport-release-owed" || b.notice === "teleport-freeze-asked")) {
       found.push(id);
     }
   }
