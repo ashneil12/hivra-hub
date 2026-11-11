@@ -426,6 +426,40 @@ pub(crate) fn record_decision(
     )
 }
 
+/// One standing-answer match. The source names the asker, the standing id and the time, so a later match is its own line
+/// and does not collapse into the decision's first summary.
+pub(crate) fn record_standing_match(
+    conn: &Connection,
+    project: &str,
+    standing_id: &str,
+    asker: &str,
+    question: &str,
+    at_ms: i64,
+) -> Result<Line, String> {
+    ensure_tables(conn).map_err(|e| e.to_string())?;
+    let standing_id = snippet(standing_id, 40);
+    let asker = snippet(asker, 120);
+    let question = snippet(question, 300);
+    let line =
+        format!("Standing answer {standing_id} matched a question from {asker}: {question}.");
+    let source = stable_source(
+        "standing-match",
+        &format!("standing-match:{project}:{standing_id}:{asker}:{at_ms}:{question}"),
+    );
+    append(
+        conn,
+        &NewLine {
+            project,
+            kind: "decision",
+            task_id: "",
+            line: &line,
+            at_ms,
+            offset_seconds: None,
+            source: &source,
+        },
+    )
+}
+
 /// One line a first mate wrote. The same chat, project, day, kind and line return the first row.
 /// The source is derived here, so a caller cannot choose an id that collides with a finished task.
 pub(crate) fn add_hand(

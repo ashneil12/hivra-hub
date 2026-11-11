@@ -1,7 +1,6 @@
 // What Home lists. One line each, no counts. A value from disk or another agent is untrusted.
 
 import { pathKey } from "../../../shared/lib/paths";
-import type { BuilderHoldNeed } from "../../monos/model/builderScale";
 import { HOME_CARD_LIMIT } from "../vendor/homeLayout";
 
 export type HomeTask = {
@@ -237,7 +236,7 @@ export function needsYouLines(
  * name in front. It leads Needs you: nothing new can start until the person frees space (or changes the floor).
  * Its action opens Settings > Worktrees > Clean up (`targetFor`).
  */
-export function builderHoldLine(need: BuilderHoldNeed): HomeLine {
+export function builderHoldLine(need: { id: string; text: string }): HomeLine {
   return {
     id: `builders:${need.id}`,
     kind: "builders",

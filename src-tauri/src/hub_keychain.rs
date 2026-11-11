@@ -43,8 +43,27 @@ pub(crate) fn scoped_service(kind: Kind, service: &str) -> String {
     }
 }
 
+/// The More agents approval items (`monocode-hub:more-agents-*`) belong to the app's own code. A webview command
+/// cannot write, read or delete them: a deleted item would reset the approvals to nothing and bring a withdrawn one back.
+fn reserved(service: &str) -> bool {
+    // Credential Manager names are not case-sensitive, so the reserve is not either.
+    let lower = service.to_ascii_lowercase();
+    let name = lower
+        .strip_prefix(DEV_PREFIX)
+        .or_else(|| lower.strip_prefix("monocode-hub:"))
+        .unwrap_or(&lower);
+    name.starts_with("more-agents")
+}
+
 fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
+    entry_with(service, account, false)
+}
+
+fn entry_with(service: &str, account: &str, internal: bool) -> Result<keyring::Entry, String> {
     check_service(service)?;
+    if !internal && reserved(service) {
+        return Err("The app keeps its own More agents approvals.".into());
+    }
     if account.is_empty() || account.len() > 200 {
         return Err("A login needs an account name.".into());
     }
@@ -60,20 +79,66 @@ fn entry(service: &str, account: &str) -> Result<keyring::Entry, String> {
         .map_err(|_| crate::platform::secrets::unreachable().to_string())
 }
 
+/// The Mac's own codes for "the person said no, or there was no one to ask": `errSecUserCanceled`, `errSecAuthFailed` and
+/// `errSecInteractionNotAllowed`. `keyring` hands them over as a platform failure whose inner error prints its `code`.
+const DENIED_CODES: [&str; 3] = ["-128", "-25293", "-25308"];
+
+/// Whether a platform failure is the person's "no" on a system prompt.
+fn denied_by_person(inner: &dyn std::fmt::Debug) -> bool {
+    let shown = format!("{inner:?}");
+    DENIED_CODES
+        .iter()
+        .any(|code| shown.contains(&format!("code: {code}")))
+}
+
+/// WP-92: the words for a store failure. `keyring` reports a store that won't let this process in (a locked one
+/// included) as `NoStorageAccess`, and a person clicking Deny on the system prompt as a platform failure carrying the
+/// Mac's own code. Those are two different things to do, so they keep two different sentences; every other failure keeps
+/// its own.
+fn refusal(err: keyring::Error, fallback: &'static str) -> String {
+    match err {
+        keyring::Error::NoStorageAccess(_) => crate::platform::secrets::locked().to_string(),
+        keyring::Error::PlatformFailure(inner) if denied_by_person(&inner) => {
+            crate::platform::secrets::denied().to_string()
+        }
+        _ => fallback.to_string(),
+    }
+}
+
+/// For the app's own More agents items only (see `reserved`).
+#[cfg(not(test))]
+pub(crate) fn read_internal(service: &str, account: &str) -> Result<Option<String>, String> {
+    match entry_with(service, account, true)?.get_password() {
+        Ok(secret) => Ok(Some(secret)),
+        Err(keyring::Error::NoEntry) => Ok(None),
+        Err(_) => Err(crate::platform::secrets::not_read().into()),
+    }
+}
+
+#[cfg(not(test))]
+pub(crate) fn store_internal(service: &str, account: &str, secret: &str) -> Result<(), String> {
+    if secret.is_empty() {
+        return Err("Nothing to save.".into());
+    }
+    entry_with(service, account, true)?
+        .set_password(secret)
+        .map_err(|_| crate::platform::secrets::not_saved().to_string())
+}
+
 pub fn store(service: &str, account: &str, secret: &str) -> Result<(), String> {
     if secret.is_empty() {
         return Err("Nothing to save.".into());
     }
     entry(service, account)?
         .set_password(secret)
-        .map_err(|_| crate::platform::secrets::not_saved().to_string())
+        .map_err(|err| refusal(err, crate::platform::secrets::not_saved()))
 }
 
 pub fn exists(service: &str, account: &str) -> Result<bool, String> {
     match entry(service, account)?.get_password() {
         Ok(_) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(_) => Err(crate::platform::secrets::not_checked().into()),
+        Err(err) => Err(refusal(err, crate::platform::secrets::not_checked())),
     }
 }
 
@@ -82,7 +147,7 @@ pub(crate) fn read(service: &str, account: &str) -> Result<Option<String>, Strin
     match entry(service, account)?.get_password() {
         Ok(secret) => Ok(Some(secret)),
         Err(keyring::Error::NoEntry) => Ok(None),
-        Err(_) => Err(crate::platform::secrets::not_read().into()),
+        Err(err) => Err(refusal(err, crate::platform::secrets::not_read())),
     }
 }
 
@@ -90,7 +155,7 @@ pub fn delete(service: &str, account: &str) -> Result<bool, String> {
     match entry(service, account)?.delete_credential() {
         Ok(()) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(_) => Err(crate::platform::secrets::not_removed().into()),
+        Err(err) => Err(refusal(err, crate::platform::secrets::not_removed())),
     }
 }
 
@@ -201,6 +266,27 @@ pub async fn connector_login_delete(service: String, account: String) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Review r5 check (should pass): the webview's doors refuse the More agents items, daily and dev names.
+    #[test]
+    fn review_r5_the_more_agents_items_are_reserved_from_the_webview() {
+        for service in [
+            "monocode-hub:more-agents-approval-key",
+            "monocode-hub:more-agents-approval-generation",
+            "monocode-hub-dev:more-agents-approval-generation",
+        ] {
+            assert!(store(service, "approvals", "x").is_err());
+            assert!(exists(service, "approvals").is_err());
+            assert!(delete(service, "approvals").is_err());
+        }
+    }
+
+    // Review r5 repro (LOW, Windows): Credential Manager target names are not case-sensitive, so a differently cased
+    // name reaches the same item there. The reserve check is case-sensitive.
+    #[test]
+    fn review_r5_the_reserve_ignores_case() {
+        assert!(reserved("monocode-hub:More-Agents-approval-generation"));
+    }
 
     #[test]
     fn only_the_apps_own_services_are_reachable() {
@@ -316,6 +402,67 @@ mod tests {
         ] {
             assert!(!connector_service_allowed(&internal), "{internal}");
         }
+    }
+
+    #[test]
+    fn a_store_that_wont_let_us_in_says_locked() {
+        // Constructed errors only: this never reaches the login keychain.
+        let locked = keyring::Error::NoStorageAccess(Box::new(std::io::Error::other("locked")));
+        assert_eq!(
+            refusal(locked, "fallback"),
+            crate::platform::secrets::locked()
+        );
+        let other = keyring::Error::PlatformFailure(Box::new(std::io::Error::other("nope")));
+        assert_eq!(refusal(other, "fallback"), "fallback");
+        let missing = keyring::Error::NoEntry;
+        assert_eq!(refusal(missing, "fallback"), "fallback");
+        // A locked store is "try again", never "wrong secret".
+        assert!(crate::platform::secrets::locked().contains("again"));
+        assert!(!crate::platform::secrets::locked().contains("wrong"));
+    }
+
+    /// A stand-in for the Mac's own error: it prints its code the way `security_framework::base::Error` does.
+    struct MacError(i32);
+
+    impl std::fmt::Debug for MacError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "Error {{ code: {}, message: \"x\" }}", self.0)
+        }
+    }
+
+    impl std::fmt::Display for MacError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "mac error")
+        }
+    }
+
+    impl std::error::Error for MacError {}
+
+    #[test]
+    fn a_person_clicking_deny_is_not_a_locked_keychain() {
+        // Constructed errors only: this never reaches the login keychain.
+        for code in [-128, -25293, -25308] {
+            let denied = keyring::Error::PlatformFailure(Box::new(MacError(code)));
+            let words = refusal(denied, "fallback");
+            assert_eq!(words, crate::platform::secrets::denied(), "code {code}");
+            assert_ne!(words, crate::platform::secrets::locked());
+        }
+        // Each has its own plain words, both say to try again, and neither says "wrong".
+        assert_ne!(
+            crate::platform::secrets::denied(),
+            crate::platform::secrets::locked()
+        );
+        assert!(crate::platform::secrets::denied().contains("try again"));
+        assert!(crate::platform::secrets::denied().contains("Allow"));
+        assert!(!crate::platform::secrets::denied().contains("wrong"));
+        // A locked or missing store keeps its own sentence, and any other code keeps the fallback.
+        let locked = keyring::Error::NoStorageAccess(Box::new(MacError(-25291)));
+        assert_eq!(
+            refusal(locked, "fallback"),
+            crate::platform::secrets::locked()
+        );
+        let other = keyring::Error::PlatformFailure(Box::new(MacError(-25299)));
+        assert_eq!(refusal(other, "fallback"), "fallback");
     }
 
     #[test]

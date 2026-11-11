@@ -3,10 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CLI_ORDER, EFFORTS, cliLabel } from "../model/clis";
-import { draftRule, moveRule, type RuleDraft } from "../model/rules";
+import { CREW_SAVED_EVENT, isRoleSlotRule, weaveRoleSlots } from "../model/policy";
+import { draftRule, moveRule, taskCeilingFromRules, type RuleDraft } from "../model/rules";
 import { defaultLine, type Presence } from "../model/resolve";
 import { WorkerDefaultControl } from "./WorkerDefaultControl";
 import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
+import { SpendLimitLine } from "../../usage/ui/SpendLimitLine";
+import { applyProjectRuleCeiling } from "../../usage/model/spendGate";
 
 export type ShownRule = {
   labels: string[];
@@ -14,6 +17,8 @@ export type ShownRule = {
   cli?: string;
   model?: string;
   effort?: string;
+  /** WP-176. Dollars. Missing means this rule sets no task ceiling. */
+  taskCeilingUsd?: number | null;
 };
 
 type Row = RuleDraft;
@@ -25,15 +30,28 @@ type Loaded = {
   signedIn?: Presence[];
 };
 
-const EMPTY: Row = { labels: "", paths: "", cli: "", model: "", effort: "" };
+const EMPTY: Row = { labels: "", paths: "", cli: "", model: "", effort: "", ceiling: "" };
+
+/** Role rows live on the defaults screen. They stay in the saved list, not in this editor. */
+function splitShown(rules: ShownRule[]): { shown: ShownRule[]; slots: ShownRule[] } {
+  const shown: ShownRule[] = [];
+  const slots: ShownRule[] = [];
+  for (const rule of rules) {
+    if (isRoleSlotRule(rule)) slots.push(rule);
+    else shown.push(rule);
+  }
+  return { shown, slots };
+}
 
 function toRow(rule: ShownRule): Row {
+  const ceiling = typeof rule.taskCeilingUsd === "number" && Number.isFinite(rule.taskCeilingUsd) ? String(rule.taskCeilingUsd) : "";
   return {
     labels: rule.labels.join(", "),
     paths: rule.paths.join(", "),
     cli: rule.cli ?? "",
     model: rule.model ?? "",
     effort: rule.effort ?? "",
+    ceiling,
   };
 }
 
@@ -47,18 +65,22 @@ type Props = {
   cwd?: string;
   /** When set, the page never calls the app. The browser spec and tests use this. */
   initial?: { rules: ShownRule[]; plugins: ShownRule[]; signedIn: Presence[] };
+  /** WP-141: the defaults screen already shows the worker default. */
+  hideWorkerDefault?: boolean;
 };
 
-export function CrewRulesPage({ cwd, initial }: Props) {
+export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
   const [scope, setScope] = useState<"project" | "mono">("project");
   const [monoId, setMonoId] = useState("");
-  const [rows, setRows] = useState<Row[]>(() => (initial?.rules ?? []).map(toRow));
+  const [rows, setRows] = useState<Row[]>(() => splitShown(initial?.rules ?? []).shown.map(toRow));
+  const heldRules = useRef<ShownRule[]>(initial?.rules ?? []);
   const [plugins, setPlugins] = useState<ShownRule[]>(initial?.plugins ?? []);
   const [signedIn, setSignedIn] = useState<Presence[]>(initial?.signedIn ?? []);
   const [draft, setDraft] = useState<Row>(EMPTY);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const loadGen = useRef(0);
+  const [reloadTick, setReloadTick] = useState(0);
   /** Unsaved row edits. A load that arrives after one must not put the old rows back. */
   const dirty = useRef(false);
   /** The scope a save in flight belongs to. A load for that same scope waits; a different scope does not. */
@@ -82,7 +104,10 @@ export function CrewRulesPage({ cwd, initial }: Props) {
     if (Array.isArray(got.plugins)) setPlugins(got.plugins);
     if (Array.isArray(got.signedIn)) setSignedIn(got.signedIn);
     if (dirty.current || saving.current === key) return;
-    setRows(Array.isArray(got.rules) ? got.rules.map(toRow) : []);
+    const loaded = Array.isArray(got.rules) ? got.rules : [];
+    const split = splitShown(loaded);
+    heldRules.current = loaded;
+    setRows(split.shown.map(toRow));
     setRevision(typeof got.revision === "number" ? got.revision : 0);
   }
 
@@ -108,7 +133,19 @@ export function CrewRulesPage({ cwd, initial }: Props) {
     return () => {
       alive = false;
     };
-  }, [initial, scope, monoId, cwd]);
+  }, [initial, scope, monoId, cwd, reloadTick]);
+
+  useEffect(() => {
+    const onSaved = (event: Event) => {
+      const detail = (event as CustomEvent<{ scope?: string; scopeId?: string }>).detail;
+      if (!detail || dirty.current || saving.current) return;
+      const id = scopeIdOf(scopeNow.current, monoNow.current, cwdNow.current);
+      if (detail.scope !== scopeNow.current || detail.scopeId !== id) return;
+      setReloadTick((tick) => tick + 1);
+    };
+    window.addEventListener(CREW_SAVED_EVENT, onSaved);
+    return () => window.removeEventListener(CREW_SAVED_EVENT, onSaved);
+  }, []);
 
   function changeRows(next: Row[] | ((current: Row[]) => Row[])) {
     dirty.current = true;
@@ -134,15 +171,31 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       setNotice(scope === "project" ? "Open a project first." : "Name the Mono first.");
       return;
     }
-    const rules = [];
+    const shown: ShownRule[] = [];
     for (const row of rows) {
       const made = draftRule(row);
       if (typeof made === "string") {
         setNotice(made);
         return;
       }
-      rules.push({ labels: made.labels, paths: made.paths, cli: made.cli ?? null, model: made.model ?? null, effort: made.effort ?? null });
+      shown.push({
+        labels: made.labels,
+        paths: made.paths,
+        cli: made.cli,
+        model: made.model,
+        effort: made.effort,
+        taskCeilingUsd: made.taskCeilingUsd ?? null,
+      });
     }
+    const woven = weaveRoleSlots(heldRules.current, shown);
+    const rules = woven.map((rule) => ({
+      labels: [...rule.labels],
+      paths: [...rule.paths],
+      cli: rule.cli ?? null,
+      model: rule.model ?? null,
+      effort: rule.effort ?? null,
+      taskCeilingUsd: rule.taskCeilingUsd ?? null,
+    }));
     const expected = revision;
     const key = `${savingScope}\0${savingId}`;
     saving.current = key;
@@ -178,6 +231,24 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       }
       setRevision(again.revision);
       if (Array.isArray(again.signedIn)) setSignedIn(again.signedIn);
+      heldRules.current = Array.isArray(again.rules) ? again.rules : heldRules.current;
+      window.dispatchEvent(new CustomEvent(CREW_SAVED_EVENT, { detail: { scope: savingScope, scopeId: savingId } }));
+      if (savingScope === "project") {
+        applyProjectRuleCeiling(
+          savingId,
+          taskCeilingFromRules(
+            woven.map((rule) => ({
+              labels: [...rule.labels],
+              paths: [...rule.paths],
+              cli: rule.cli,
+              model: rule.model,
+              effort: rule.effort,
+              ...(typeof rule.taskCeilingUsd === "number" ? { taskCeilingUsd: rule.taskCeilingUsd } : {}),
+              source: "person" as const,
+            })),
+          ),
+        );
+      }
       setNotice("Saved.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Those rules couldn't be saved.");
@@ -193,10 +264,13 @@ export function CrewRulesPage({ cwd, initial }: Props) {
         Each task uses the first rule that matches. Yours come first. A plugin's rules sit underneath.
       </p>
       <p className="text-[13px] text-content/80">{defaultLine(signedIn)}</p>
-      {/* WP-89: the default for every worker, above the rules list. */}
-      <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />
+      {/* WP-89: the default for every worker, above the rules list. WP-141 hides it when the defaults screen is above. */}
+      {hideWorkerDefault ? null : <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />}
       {/* WP-161: the shared ceiling and the pauses. Running builders are not stopped. */}
       <BuilderScaleControls showSharedMax />
+      {/* WP-176: the measured-cost limit for this project. A running builder is not stopped. */}
+      <SpendLimitLine project={cwd ?? ""} indexed />
+      <SpendLimitLine project="" scope="app" />
       <div className="flex gap-2" role="group" aria-label="Where these rules apply">
         <button
           type="button"
@@ -244,6 +318,11 @@ export function CrewRulesPage({ cwd, initial }: Props) {
               options={EFFORTS.map((effort) => [effort, effort])}
               onChange={(effort) => update(index, { effort })}
             />
+            <Field
+              label={`Task ceiling for rule ${index + 1}`}
+              value={row.ceiling ?? ""}
+              onChange={(ceiling) => update(index, { ceiling })}
+            />
             <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" aria-label={`Move rule ${index + 1} up`} disabled={index === 0} onClick={() => changeRows((current) => moveRule(current, index, -1))}>
               Move up
             </button>
@@ -262,6 +341,7 @@ export function CrewRulesPage({ cwd, initial }: Props) {
         <Select label="CLI for a new rule" value={draft.cli} options={CLI_ORDER.map((cli) => [cli, cliLabel(cli)])} onChange={(cli) => setDraft({ ...draft, cli })} />
         <Field label="Model for a new rule" value={draft.model} onChange={(model) => setDraft({ ...draft, model })} />
         <Select label="Effort for a new rule" value={draft.effort} options={EFFORTS.map((effort) => [effort, effort])} onChange={(effort) => setDraft({ ...draft, effort })} />
+        <Field label="Task ceiling for a new rule" value={draft.ceiling ?? ""} onChange={(ceiling) => setDraft({ ...draft, ceiling })} />
         <button type="button" className="rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base" onClick={add}>
           Add rule
         </button>
@@ -277,6 +357,11 @@ export function CrewRulesPage({ cwd, initial }: Props) {
             ))}
           </ul>
         </div>
+      ) : null}
+      {scope === "project" ? (
+        <p className="text-[13px] text-content/70">
+          The task ceiling for this project is the lowest one on these rules. Saving a higher number raises it, and a blank one clears it.
+        </p>
       ) : null}
       {notice ? <p className="text-[13px] text-content/80">{notice}</p> : null}
       {initial ? null : (

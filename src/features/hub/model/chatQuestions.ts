@@ -252,6 +252,38 @@ function lowerFirst(text: string): string {
   return /^[A-Z][a-z]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
 }
 
+/**
+ * WP-92: a finished chat's open "Needs Ash (provide)" ask, when what it asks for is a key. The chat then offers the
+ * secret form instead of the composer, so the value never becomes a message. Nothing while the turn still runs, and
+ * nothing once Ash answered it.
+ */
+export function keyAskFor(chat: ChatLike): { ask: string; name: string } | null {
+  if (chat.busy) return null;
+  const q = chatQuestion(chat);
+  if (!q || q.source !== "marker" || !q.provide || !keyAsk(q.provide)) return null;
+  return { ask: q.provide, name: secretNameFor(q.provide) };
+}
+
+const NAME_FILLER = new Set(["a", "an", "the", "new", "fresh", "another", "my", "your", "some", "one", "please"]);
+/** Where the name ends: what the key is for, not what it is ("… for Hivra"). */
+const NAME_STOP = new Set(["for", "from", "to", "so", "in", "on", "with", "and", "or", "that", "which", "at", "into"]);
+
+/** The vault name a key ask suggests: lower-case letters, digits and dashes, 1 to 64, or "secret" when none is left. */
+export function secretNameFor(ask: string): string {
+  const words = oneLine(ask)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const picked: string[] = [];
+  for (const word of words) {
+    if (picked.length && NAME_STOP.has(word)) break;
+    if (!NAME_FILLER.has(word)) picked.push(word);
+    if (picked.length >= 8) break;
+  }
+  const name = picked.join("-").slice(0, 64).replace(/^-+|-+$/g, "");
+  return name || "secret";
+}
+
 /** The last "Needs Ash:" line in an agent's text, with the "My pick:" line after it. */
 export function parseNeedsAsh(text: string): NeedsAshMarker | null {
   let found: RegExpExecArray | null = null;

@@ -20,6 +20,9 @@ export const CREDENTIAL_DENY_RULES: readonly string[] = [
   "Read(~/.claude/.credentials.json)",
   "Read(~/.claude.json)",
   "Read(~/.codex/auth.json)",
+  // Round 4, item 1: pi's and omp's login stores (API keys and OAuth tokens in plain JSON).
+  "Read(~/.pi/agent/auth.json)",
+  "Read(~/.omp/agent/auth.json)",
   "Read(~/.aws/credentials)",
   "Read(~/.netrc)",
   "Read(~/.ssh/**)",
@@ -44,6 +47,9 @@ export const HUB_DB_DENY_RULES: readonly string[] = [
   "Bash(*com.ash.monocode-hub*sqlite*)",
   "Read(~/Library/Application Support/com.ash.monocode-hub*/*.db*)",
   "Read(~/Library/WebKit/com.ash.monocode-hub*/**)",
+  // Round 6, HIGH-1: the copies a ship, a recovery and a backup leave in the Archive folder.
+  "Read(~/Archive/monocode/**/monocode.db*)",
+  "Bash(*Archive/monocode*monocode.db*)",
   // WP-129: the daily app's data folder holds its own records (chats, saved routes, key addresses). Hub chats never
   // write or edit it, and never run a command that names it. The pattern is the exact daily folder: a dev slot's
   // folder (com.ash.monocode-hub.dev.<slot>) keeps its agent-memory there and must stay writable. The app's file
@@ -57,22 +63,59 @@ export const HUB_DB_DENY_RULES: readonly string[] = [
 ];
 
 /** The app's data folder (the daily app or any dev slot) or its WebKit storage, then a database file in it. */
-const HUB_DB = /(?:Application Support\/com\.ash\.monocode-hub[^/\s"']*\/[^\s"';|&)]*\.(?:db|sqlite3?)(?:-wal|-shm)?\b|\/WebKit\/com\.ash\.monocode-hub)/i;
+const HUB_DB = /(?:Application Support\/com\.ash\.monocode-hub[^/\s"']*\/[^\s"';|&)]*\.(?:db|sqlite3?)(?:-wal|-shm)?\b|\/WebKit\/com\.ash\.monocode-hub|Archive\/monocode\/[^\s"';|&)]*monocode\.db)/i;
 /** A bare monocode.db read by a database tool from wherever the shell happens to be. */
 const HUB_DB_TOOL = /(^|[\s;&|(`$])(?:\/usr\/bin\/)?sqlite3\b[^;&|]*\bmonocode\.db\b/i;
 
 const KEYCHAIN = /(^|[\s;&|(`$])(\/usr\/bin\/)?security\s+(find-[\w-]+|dump-keychain|export|unlock-keychain)\b/;
-const SECRET_FILES = [
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.claude\/\.credentials/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.claude\.json\b/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.codex\/auth\.json/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.aws\/credentials/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.netrc\b/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.ssh\/(id_|.*key)/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.config\/gh\/hosts\.yml/,
-  /(~|\$HOME|\/Users\/[^/\s]+)\/\.local\/share\/claude-gpt\//,
-  /\/Library\/Keychains\//,
+/**
+ * The home folder in every spelling a login file's path takes: ~, $HOME, a Mac or Linux home (with the Mac's /.nofollow/
+ * and /.resolve/<n>/ prefixes), and a Windows drive (C:/Users/<me>). Matched against foldForSecrets' text (round 3, item 2).
+ */
+const HOME = String.raw`(?:~|\$\{?home\}?|%userprofile%|\/root|(?:[a-z]:)?(?:\/\.nofollow|\/\.resolve\/\d+)?\/(?:users|home)\/[^/\s]+)`;
+const SECRET_FILES: readonly RegExp[] = [
+  new RegExp(`${HOME}\\/\\.claude\\/\\.credentials`),
+  new RegExp(`${HOME}\\/\\.claude\\.json\\b`),
+  new RegExp(`${HOME}\\/\\.codex\\/auth\\.json`),
+  // Round 4, item 1: pi's and omp's login stores, the same as the deny rules above.
+  new RegExp(`${HOME}\\/\\.pi\\/agent\\/auth\\.json`),
+  new RegExp(`${HOME}\\/\\.omp\\/agent\\/auth\\.json`),
+  new RegExp(`${HOME}\\/\\.aws\\/credentials`),
+  new RegExp(`${HOME}\\/\\.netrc\\b`),
+  new RegExp(`${HOME}\\/\\.ssh\\/(id_|.*key)`),
+  new RegExp(`${HOME}\\/\\.config\\/gh\\/hosts\\.yml`),
+  new RegExp(`${HOME}\\/\\.local\\/share\\/claude-gpt\\/`),
+  // Windows: the same files under the Windows profile, with the 8.3 short names (CODEX~1, AUTH~1.JSO) a Windows path may use.
+  /\/\.?codex~\d\/auth~\d/,
+  // AppData stores: GitHub CLI, rclone, npm's configuration, and the browsers' saved passwords.
+  /\/appdata\/roaming\/github cli\/hosts\.yml/,
+  /\/appdata\/roaming\/rclone\/rclone\.conf/,
+  /\/appdata\/roaming\/npm\/etc\/npmrc/,
+  /\/appdata\/local\/(google\/chrome|microsoft\/edge)\/user data\/.*login data/,
+  /\/library\/keychains\//,
 ];
+
+/**
+ * A command or path as a Mac, Linux or Windows file system compares it for the login-file rules: lower case, one kind of
+ * slash, and trailing dots and spaces dropped per segment (`.codex.\\auth.json` is `.codex/auth.json`).
+ */
+/**
+ * Round 5, H1: a climb (`name/..`) is cancelled against the name before it, at any depth, so `a:b/../../.ssh/id_rsa` reads
+ * as `.ssh/id_rsa`. Names are split on "/" only, as the file system splits them.
+ */
+function collapseClimbs(text: string): string {
+  let out = text.replace(/\/\.(?=\/|$)/g, "");
+  let before: string;
+  do {
+    before = out;
+    out = out.replace(/\/[^/\s]+\/\.\.(?=\/|$|\s)/g, "");
+  } while (out !== before);
+  return out;
+}
+
+function foldForSecrets(text: string): string {
+  return text.toLowerCase().replace(/\\/g, "/").replace(/(?<=[^. /])[. ]+(?=\/|$)/gm, "");
+}
 const ENV_PATH = /(?:^|[\s"'=:(])((?:~|\$HOME|\/|\.\.)[^\s"';|&)]*\/\.env(?:\.[\w.-]+)?)(?=$|[\s"';|&)])/g;
 
 function expandHome(path: string, home?: string): string {
@@ -97,11 +140,18 @@ export function credentialBlock(
   const secret = secretActionBlock(call.command);
   if (secret) return secret;
   const texts = [call.command ?? "", ...(call.paths ?? [])].filter(Boolean);
-  for (const text of texts) {
-    if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
-    if (SECRET_FILES.some((re) => re.test(text))) return CREDENTIAL_BLOCK_MESSAGE;
-    if (HUB_DB.test(text) || HUB_DB_TOOL.test(text)) return HUB_DB_BLOCK_MESSAGE;
-    const padded = ` ${text}`;
+  for (const raw of texts) {
+    // Round 4, item 7: quotes are the shell's, not the path's (`"$HOME"/.codex`, `~/.co''dex`), so the text is read both as
+    // written and with its quotes taken out.
+    // Round 7, MED-E: a backslash escapes the next character in the shell (`Application\ Support`, `monocode.d\b`), so the
+    // text is read with its backslashes taken out as well, for every guard below.
+    for (const text of new Set([raw, raw.replace(/['"]/g, ""), raw.replace(/[\\'"]/g, "")])) {
+      if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
+      if (SECRET_FILES.some((re) => re.test(foldForSecrets(collapseClimbs(text))))) return CREDENTIAL_BLOCK_MESSAGE;
+      // Round 6, HIGH-1: the hub's store is read with its quotes taken out too (`'.../com.ash.monocode-h'ub/...`).
+      if (HUB_DB.test(text) || HUB_DB_TOOL.test(text)) return HUB_DB_BLOCK_MESSAGE;
+    }
+    const padded = ` ${raw}`;
     for (const match of padded.matchAll(ENV_PATH)) {
       if (!insideProject(match[1], cwd, home)) return CREDENTIAL_BLOCK_MESSAGE;
     }
@@ -141,6 +191,8 @@ export const SECRET_ACTION_DENY_RULES: readonly string[] = [
   "Bash(op read:*)",
   "Bash(op inject:*)",
   "Bash(op item get:*)",
+  // WP-92: the launcher is the app's own, signed call; a worker cannot run it itself.
+  "Bash(*monocode secret-run*)",
   "Bash(*infisical run*)",
   "Bash(*infisical export*)",
   "Bash(*dotenv run*)",
@@ -186,6 +238,9 @@ export const SECRET_ACTION_DENY_RULES: readonly string[] = [
 /** One shell segment's command start (after `cd x &&`, `;`, `|`, `$(`, a backtick, `sudo`, `npx`, `bunx`, `pnpm dlx`). */
 const AT = String.raw`(?:^|[\s;&|(\x60$])(?:(?:sudo|npx|bunx|pnpm\s+dlx|yarn\s+dlx|command)\s+(?:-\S+\s+)*)?`;
 const SECRET_ACTIONS: readonly RegExp[] = [
+  // The secret launcher, invoked from a shell line: `monocode secret-run`, or any `secret-run --grant...` (the grant is
+  // the app's own, never a worker's to carry). A word that merely names it is ordinary text.
+  new RegExp(String.raw`\bmonocode\S*\s+secret-run\b|\bsecret-run\s+--grant`, "i"),
   // a platform's env or secret store: loading, pulling, setting, removing, running with it injected
   new RegExp(String.raw`${AT}vercel\s+(?:env\s+(?:run|pull|add|rm|remove|update)|secrets?)\b`, "i"),
   new RegExp(String.raw`${AT}netlify\s+env:(?:get|set|import|unset|clone)\b`, "i"),

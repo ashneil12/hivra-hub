@@ -182,7 +182,10 @@ pub fn classify(read: &PrRead, changes: Option<&[Change]>) -> Vec<News> {
                 kind: Kind::CiGreen,
                 detail: None,
             }),
-            Change::Remarks(_) | Change::Conflicting => {}
+            Change::Remarks(_)
+            | Change::Conflicting
+            | Change::BaseMoved { .. }
+            | Change::Behind { .. } => {}
         }
     }
     news

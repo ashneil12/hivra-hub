@@ -3,7 +3,9 @@
 // text of every call (its question, options, recommendation, a tool's command) is read here. A miss here would be the
 // one way autopilot could do something on the list, so the patterns lean to holding: a held call costs Ash one tap, a
 // taken one can't be undone.
+import { foldDecisionKey } from "../../hub/model/decisionKey";
 import { forUser } from "../../hub/model/userName";
+import { credentialInWords, credentialInText } from "./credentialPaths";
 
 export type RedCategory =
   | "money"
@@ -71,7 +73,7 @@ const PATTERNS: Record<RedCategory, readonly RegExp[]> = {
     /\b(sudo\s+)?(reboot|poweroff)\b|\bshutdown\s+-[hr]\b/,
     /\bsystemctl\s+(restart|stop|disable|reboot|poweroff)\b/,
     /\bvercel\b.{0,40}(--prod\b|\bpromote\b|\brollback\b)/,
-    /\b(fly|flyctl|heroku|railway|render)\b.{0,40}\b(deploy|scale|restart|destroy)\b/,
+    /\b(fly|flyctl|[h]eroku|heroku|railway|render)\b.{0,40}\b(deploy|scale|restart|destroy)\b/,
     /\bmigrat(e|ion|ions)\b.{0,40}\b(prod|production|moltbot|live database|live db)\b/,
     /\bpromote (it |this |the build |canary )?to (prod|production|main)\b/,
   ],
@@ -107,7 +109,11 @@ const PATTERNS: Record<RedCategory, readonly RegExp[]> = {
     /\bcredentials?\b/,
     /\b(access|auth|bearer|refresh|session|github|gh|npm|pat|oauth|personal access) tokens?\b/,
     /\bssh[- ]?keys?\b|\bid_(rsa|ed25519)\b|\.pem\b/,
-    /\bkeychain\b|\bsecurity\s+(find|add|delete)-(generic|internet)-password\b/,
+    /\bkeychain(s)?\b|\bsecurity\s+(find|add|delete)-(generic|internet)-password\b/,
+    // WP-101: a file that holds a login, whatever command reads it (cat, find, stat, file, du, ls).
+    /\.netrc\b|\.pgpass\b|\.pypirc\b|\.npmrc\b/,
+    /\.gnupg\b|\.ssh\b|\.docker[\/]config\.json|\.kube[\/]config\b|\.aws[\/]credentials\b/,
+    /(^|[\s/])\.config[\/]gh\b|gh[\/]hosts\.yml\b/,
     /\bseed phrase\b|\bmnemonic\b|\bwallet (key|seed)\b/,
     /(^|[\s/'"`])\.env(\.[a-z]+)?\b/,
     /\b(2fa|mfa|otp|one[- ]time (code|password)|recovery codes?)\b/,
@@ -127,11 +133,25 @@ export function callText(...parts: (string | undefined | null)[]): string {
 
 /** The first red-list category the text touches, in the list's order, or null. */
 export function redListCategory(text: string): RedCategory | null {
-  const normalized = text.toLowerCase().replace(/\s+/g, " ");
+  const normalized = foldDecisionKey(text).replace(/\s+/g, " ").trim();
   for (const { id } of RED_LIST) {
     if (PATTERNS[id].some((pattern) => pattern.test(normalized))) return id;
+    // WP-101 fix round 2, item B: a path is checked segment by segment against the places and names a login lives
+    // under, which no fixed pattern can list.
+    if (id === "credentials" && credentialInText(normalized)) return id;
   }
   return null;
+}
+
+/**
+ * The first red-list category the words of a command touch, or null. A command is judged on the words the shell would
+ * pass (shellWords.ts), so a quoted path reads as the path it is: `cat ~/.ne"t"rc` names the netrc, and
+ * `cat ~/.s''sh/config` names the ssh config. `folder` is the chat's folder: a relative path that climbs out of it is
+ * resolved against it, so `cat ../../.zshrc` reads as the home file it is.
+ */
+export function redListInWords(words: readonly string[], folder?: string): RedCategory | null {
+  if (credentialInWords(words, folder)) return "credentials";
+  return redListCategory(words.join(" "));
 }
 
 /**

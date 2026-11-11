@@ -98,13 +98,38 @@ const mermaid = createLazyMermaidPlugin({
 
 const MARKDOWN_PLUGINS = { code: boundedCode, mermaid };
 
+type SanitizeSchema = {
+  protocols?: { href?: readonly string[] };
+};
+
+// WP-125: the default href list drops hivra:, so the link never reaches WorkspaceLink.
+function allowLocalThreadLinks(plugin: Pluggable): Pluggable {
+  if (!Array.isArray(plugin) || plugin.length < 2) return plugin;
+  const schema = plugin[1];
+  if (!schema || typeof schema !== "object") return plugin;
+  const protocols = (schema as SanitizeSchema).protocols;
+  const href = protocols?.href ?? [];
+  if (href.includes("hivra")) return plugin;
+  return [
+    plugin[0],
+    {
+      ...(schema as SanitizeSchema),
+      protocols: { ...protocols, href: [...href, "hivra"] },
+    },
+  ];
+}
+
+const MARKDOWN_SANITIZE = allowLocalThreadLinks(defaultRehypePlugins.sanitize);
+
 const MARKDOWN_HARDEN: Pluggable = [
   harden,
   {
     // MarkdownImage remains the final allowlist. The wildcard lets app-owned
     // relative note URLs reach that component without changing link parsing.
+    // WP-125: hivra: is a local link, not a web page. The colon is the URL protocol.
     allowedImagePrefixes: ["*"],
     allowedLinkPrefixes: ["*"],
+    allowedProtocols: ["hivra:"],
     allowDataImages: true,
     imageBlockPolicy: "remove" as const,
   },
@@ -112,7 +137,7 @@ const MARKDOWN_HARDEN: Pluggable = [
 
 const MARKDOWN_REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.raw,
-  defaultRehypePlugins.sanitize,
+  MARKDOWN_SANITIZE,
   MARKDOWN_HARDEN,
 ];
 
@@ -120,7 +145,7 @@ const MARKDOWN_REHYPE_PLUGINS: PluggableList = [
 // resolves them and keeps them inside the project.
 const DOCUMENT_REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.raw,
-  defaultRehypePlugins.sanitize,
+  MARKDOWN_SANITIZE,
   rehypeHoldImageSources,
   MARKDOWN_HARDEN,
   rehypeRestoreImageSources,
@@ -128,13 +153,14 @@ const DOCUMENT_REHYPE_PLUGINS: PluggableList = [
 
 const INBOX_MEDIA_REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.raw,
-  defaultRehypePlugins.sanitize,
+  MARKDOWN_SANITIZE,
   [
     harden,
     {
       defaultOrigin: "https://inbox.invalid",
       allowedImagePrefixes: INBOX_MEDIA_PREFIXES,
       allowedLinkPrefixes: ["*"],
+      allowedProtocols: ["hivra:"],
       allowDataImages: true,
       imageBlockPolicy: "remove" as const,
     },
@@ -316,6 +342,14 @@ function WorkspaceLink({
         if (file && onOpenFile) {
           event.preventDefault();
           onOpenFile(file.path, file.navigation);
+          return;
+        }
+        // WP-125: hand a hivra link to the opener. Never open it as a web page.
+        if (href && href.toLowerCase().startsWith("hivra:")) {
+          event.preventDefault();
+          window.dispatchEvent(
+            new CustomEvent("hivra:open-thread-link", { detail: href }),
+          );
           return;
         }
         event.preventDefault();

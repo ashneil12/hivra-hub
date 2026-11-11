@@ -89,6 +89,10 @@ export type Mono = {
   crewRules?: CrewRule[];
   /** WP-88: may read every project on this copy. Only a real true counts. */
   everyProject?: boolean;
+  /** WP-215: the starter template this Mono was added from. The Mono's own id is never that template id. */
+  templateId?: string;
+  /** WP-215: the captain. Set by the coordinator starter, so a renamed chief still hands work on. */
+  captain?: boolean;
   /** WP-89: the CLI, model and effort its workers use, when this Mono sets one. */
   workerDefault?: WorkerPick;
 };
@@ -288,6 +292,10 @@ function parseMono(value: unknown): Mono | undefined {
     ...(entry.muted === true ? { muted: true } : {}),
     // WP-88: a string or 1 from a hand-edited roster is not a grant to read every project.
     ...(entry.everyProject === true ? { everyProject: true } : {}),
+    ...(typeof entry.templateId === "string" && /^[A-Za-z0-9-]+$/.test(entry.templateId)
+      ? { templateId: entry.templateId }
+      : {}),
+    ...(entry.captain === true ? { captain: true } : {}),
     ...(crewRules ? { crewRules } : {}),
     ...(workerDefault ? { workerDefault } : {}),
     ...(instructions ? { instructions } : {}),

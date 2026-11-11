@@ -232,6 +232,14 @@ describe("delivering wakes", () => {
 });
 
 describe("the board", () => {
+  it("says how many commits behind main a green pull request is (WP-202)", () => {
+    const s = watch().status;
+    const green = { ...s, pending: 0, passed: true, failed: [] };
+    expect(prWatchLine(watch({ status: { ...green, behind: 3 } }))).toBe("Checks passed; 3 commits behind main");
+    expect(prWatchLine(watch({ status: { ...green, behind: 1 } }))).toBe("Checks passed; 1 commit behind main");
+    expect(prWatchLine(watch({ status: { ...green, behind: 0 } }))).toBe("Checks passed; waiting to merge");
+  });
+
   it("says where the pull request stands in a few words", () => {
     const s = watch().status;
     expect(prWatchLine(watch())).toBe("2 of 3 required checks done");

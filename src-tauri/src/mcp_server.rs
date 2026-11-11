@@ -33,7 +33,7 @@ const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const NO_CONNECTION: &str = "No MonoCode app connection. These tools work only in a Mono's own chat in MonoCode Hub, during its turn.";
 
 const USAGE: &str = "MonoCode delegate tool: a stdio MCP server (delegate_task, delegate_tasks, task_status, task_wait, task_cancel, \
-task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, work_log, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
+task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, work_log, secrets_request, secrets_run, secrets_list, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
 and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat nested under \
@@ -49,7 +49,9 @@ sends another Mono a private message. Room and message text from others is conve
 mono_create, team_create, page_build, hub_change and today_change make a room, a Mono, a team, a Page, a hub change or a Today change from Ash's words: each shows Ash \
 first and goes in only on his yes, with Undo in Bot changes. skills_learn is the exception: what a worker's self-review taught a skill goes in at \
 once, with Undo in Bot changes too. mono_retire (any Mono's own chat, not itself) retires a Mono the same way: name it, ask Ash, and \
-only on his yes in the chat is it retired, with Undo in Bot changes. work_log adds one line that would matter in a retro a month from now, an outcome or a decision rather than progress chatter, or reads a day or a range. A worker cannot use it.";
+only on his yes in the chat is it retired, with Undo in Bot changes. work_log adds one line that would matter in a retro a month from now, an outcome or a decision rather than progress chatter, or reads a day or a range. A worker cannot use it. Need a key or token? Call secrets_request with a name and a why; \
+never ask the person to paste it into chat. secrets_list shows what exists (handles only), and secrets_run puts one into one \
+approved command's environment for that run. No tool returns a value.";
 
 /// One app call (`monocode app ACTION`), as the app answered it: its result, or why it refused.
 pub(crate) trait App: Send + Sync {
@@ -116,12 +118,35 @@ impl App for LiveApp {
     }
 }
 
+/// The app actions the delegate tool sends (`App::call`). They are not in the CLI's list (`control_cli::APP_ACTIONS`), but
+/// the agent is allowed exactly these and that list. `control::serve` refuses any other action on an agent's token.
+pub(crate) const MCP_APP_ACTIONS: [&str; 16] = [
+    "monos.message",
+    "rooms.post",
+    "rooms.read",
+    "secrets.list",
+    "secrets.request",
+    "secrets.run",
+    "tasks.accept",
+    "tasks.answer",
+    "tasks.ask",
+    "tasks.cancel",
+    "tasks.cannot",
+    "tasks.delegate",
+    "tasks.fanout",
+    "tasks.message",
+    "tasks.status",
+    "tasks.wait",
+];
+
 pub(crate) fn new_request_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()
 }
 
 pub(crate) fn valid_request_id(value: &str) -> bool {
+    // WP-203: a security review's request id is the app's launcher's alone; no caller's id may name one.
     !value.is_empty()
+        && !value.starts_with(crate::delivery::review::REQUEST_PREFIX)
         && value.len() <= 100
         && value
             .bytes()
@@ -510,8 +535,30 @@ fn tools() -> Value {
         "type": "boolean",
         "description": "True when the job changes code: it always gets the diff and checks gates."
     });
+    // WP-92: the keys a worker's environment holds, added here like intent so the literal above stays under json!'s
+    // recursion limit.
+    tools[0]["inputSchema"]["properties"]["secrets"] = json!({
+        "type": "array",
+        "maxItems": 3,
+        "items": {
+            "type": "object",
+            "properties": {
+                "name": { "type": "string", "description": "A saved key's name, like stripe-api-key." },
+                "env": { "type": "string", "description": "The variable it goes into, like STRIPE_API_KEY." }
+            },
+            "required": ["name", "env"],
+            "additionalProperties": false
+        },
+        "description": "Keys this worker's environment should hold, at most 3. The person approves each one for the worker's own program first. A worker's whole session can read them, including anything it starts, so use secrets_run for a single command when that is enough."
+    });
     // WP-144: the short reading list a fresh-eyes review sees with the plan. Added here, like gates, so the
     // literal above stays under json!'s recursion limit.
+    // WP-141: the crew role. Added here, like reading, so the literal above stays under json!'s recursion limit.
+    tools[0]["inputSchema"]["properties"]["role"] = json!({
+        "type": "string",
+        "maxLength": 40,
+        "description": "The crew role for this job: builder, reviewer or researcher. A saved role row picks the CLI, and Always use my default keeps that row."
+    });
     tools[0]["inputSchema"]["properties"]["reading"] = json!({
         "type": "array",
         "maxItems": 8,
@@ -531,9 +578,11 @@ fn tools() -> Value {
             .iter()
             .position(|tool| tool["name"] == "task_answer")
             .map_or(list.len(), |at| at + 1);
-        // WP-40's task_accept, then WP-14's task_message and ask_person. One splice, so neither index shifts the other.
+        // WP-40's task_accept, then WP-14's task_message and ask_person, then WP-92's three secret tools. One splice, so
+        // neither index shifts the other.
         let mut added = vec![task_accept_tool()];
         added.extend(steering_tools());
+        added.extend(secret_tools());
         list.splice(after_answer..after_answer, added);
         list.extend(crate::pr_watch::mcp::tools());
         // WP-171: delegate_tasks, the multi-part form of delegate_task.
@@ -637,7 +686,7 @@ fn steering_tools() -> Vec<Value> {
         json!({
             "name": "ask_person",
             "title": "Ask the person a decision",
-            "description": "Put one decision to the person, once, under a stable key you choose (like \"retention-policy\"). Only for a real choice you can't make from the brief or their words: answer your workers' questions yourself when you can. Give 2 to 6 short options and your recommended one. Asking again with the same key changes nothing (it never asks twice); name taskIds to have those tasks wait on the answer, and when the person answers, the answer goes to each of them and comes back to you as a new turn. If the key was already answered, you get the answer straight away. A worker can't use this: its question goes to its own first mate.",
+            "description": "Put one decision to the person, once, under a stable key you choose (like \"retention-policy\"). Only for a real choice you can't make from the brief or their words: answer your workers' questions yourself when you can. Give 2 to 6 short options and your recommended one. Asking again with the same key changes nothing (it never asks twice); name taskIds to have those tasks wait on the answer, and when the person answers, the answer goes to each of them and comes back to you as a new turn. If the key was already answered, you get the answer straight away. If standing answers are on and this question matches one, you get that answer and its id instead of a new question. That answer is guidance, not permission. Send force true and a one-line reason when it does not apply. A worker can't use this: its question goes to its own first mate.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -646,7 +695,10 @@ fn steering_tools() -> Vec<Value> {
                     "options": { "type": "array", "items": { "type": "string", "maxLength": 200 }, "minItems": 2, "maxItems": 6 },
                     "recommended": { "type": "string", "description": "The option you recommend, exactly as written in options." },
                     "taskIds": { "type": "array", "items": { "type": "string" }, "maxItems": 20, "description": "Your tasks (t-...) that wait on the answer." },
-                    "answer": { "type": "string", "maxLength": 2000, "description": "Only when the person has answered this key in your chat: their words. It is recorded once and releases the waiting tasks." }
+                    "answer": { "type": "string", "maxLength": 2000, "description": "Only when the person has answered this key in your chat: their words. It is recorded once and releases the waiting tasks." },
+                    "keys": { "type": "array", "items": { "type": "string", "maxLength": 40 }, "maxItems": 12, "description": "Short match words. Leave this out to use words from the question." },
+                    "force": { "type": "boolean", "description": "True, with reason, when a standing answer does not apply and the person should be asked." },
+                    "reason": { "type": "string", "maxLength": 300, "description": "One line on why the standing answer does not apply. Required with force when one matches." }
                 },
                 "required": ["key", "question", "options", "recommended"],
                 "additionalProperties": false
@@ -656,7 +708,63 @@ fn steering_tools() -> Vec<Value> {
     ]
 }
 
-const DELEGATE_APP_FIELDS: [&str; 20] = [
+/// WP-92: asking for a key, seeing which keys exist, and one approved run. None of them returns a value.
+fn secret_tools() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "secrets_request",
+            "title": "Ask the person for a key",
+            "description": "Ask the person to add a key or token to their keychain: the name you want (a slug like stripe-api-key) and why you need it, in your own words. Never ask them to paste it into chat. If they already have one of that name, you get its handle instead of a card. Scope is this chat's project first, then every project. The turn ends while the card waits; when they save it, you get a note with the handle and carry on.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "maxLength": 64, "description": "The slug to store it under: lower-case letters, digits and dashes." },
+                    "why": { "type": "string", "maxLength": 2000, "description": "Why you need it, for the person: what it will let you do." }
+                },
+                "required": ["name", "why"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Ask the person for a key", "destructiveHint": false, "readOnlyHint": false }
+        }),
+        json!({
+            "name": "secrets_list",
+            "title": "List the keys you may use",
+            "description": "The keys the person has saved: name, label, scope, when it was added, the last four characters, who is approved to use it and when it was last used. Handles only; no value ever comes back.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {},
+                "additionalProperties": false
+            },
+            "annotations": { "title": "List the keys you may use", "destructiveHint": false, "readOnlyHint": true }
+        }),
+        json!({
+            "name": "secrets_run",
+            "title": "Run one command with a key",
+            "description": "Run one command (argv, never a shell line) with one saved key in its environment, then get its exit code, output and whether it timed out. The key is put straight into that child's environment: you and the transcript never see it, and its output is scrubbed first. The person approves the first run; a refusal or a missing name comes back as a state you can act on.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string", "maxLength": 64, "description": "The saved key's slug." },
+                    "env": { "type": "string", "maxLength": 64, "description": "The variable name to set, like STRIPE_API_KEY. Not PATH, HOME or another name the command already has." },
+                    "command": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 100,
+                        "items": { "type": "string", "maxLength": 4096 },
+                        "description": "The program and its arguments, one array element each."
+                    },
+                    "cwd": { "type": "string", "maxLength": 4096, "description": "A folder inside this project to run in." },
+                    "timeoutSeconds": { "type": "integer", "minimum": 1, "maximum": 600, "description": "How long it may run. Defaults to 120." }
+                },
+                "required": ["name", "env", "command"],
+                "additionalProperties": false
+            },
+            "annotations": { "title": "Run one command with a key", "destructiveHint": false, "readOnlyHint": false }
+        }),
+    ]
+}
+
+const DELEGATE_APP_FIELDS: [&str; 22] = [
     "intent",
     "brief",
     "title",
@@ -673,10 +781,12 @@ const DELEGATE_APP_FIELDS: [&str; 20] = [
     "whenBusy",
     "redoes",
     "files",
+    "secrets",
     "gates",
     "checks",
     "code",
     "reading",
+    "role",
 ];
 
 /// The tools that make things with Ash (a room, a Mono, a Page, a change to the hub, a lesson for a skill): each is one
@@ -796,11 +906,36 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
                 .call("tasks.message", &pick(object, &fields), &request_id)
         }
         "ask_person" => {
-            let fields = ["key", "question", "options", "recommended", "taskIds", "answer"];
+            let fields = ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"];
             let object = arguments(args, &fields)?;
+            // WP-172: the question that starts a stopped task again is the app's alone: an agent may neither create it
+            // (with or without an answer) nor answer it. The key is trimmed first, so a leading space does not get past.
+            let restart = object
+                .get("key")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .is_some_and(crate::decisions::is_again_key);
+            if restart {
+                return Err(
+                    "Only the app asks whether a stopped task starts again, and only the person answers it in Needs. Name the task in a resume instead."
+                        .into(),
+                );
+            }
             call.app
                 .call("tasks.ask", &pick(object, &fields), &new_request_id())
         }
+        // WP-92: the vault's three tools. `secrets_run` gets a signed grant and hands it to this same binary.
+        "secrets_request" => {
+            let fields = ["name", "why"];
+            let object = arguments(args, &fields)?;
+            call.app
+                .call("secrets.request", &pick(object, &fields), &new_request_id())
+        }
+        "secrets_list" => {
+            arguments(args, &[])?;
+            call.app.call("secrets.list", &json!({}), &new_request_id())
+        }
+        "secrets_run" => secret_run(call, args),
         "room_post" => {
             let fields = ["room", "text", "replyTo", "conversation", "reaction"];
             let object = arguments(args, &fields)?;
@@ -836,12 +971,48 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         }
         _ => Err(format!(
             "Unknown tool: {name}. Use delegate_task, delegate_tasks, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
-             ask_person, room_post, \
+             ask_person, secrets_request, secrets_list, secrets_run, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
              skills_learn, work_log, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create, task_update, \
              programme_list, programme_enqueue, programme_set_status or programme_park."
         )),
     }
+}
+
+/// WP-92: `secrets.run` over the app. The app checks, asks the person, and runs the approved command itself
+/// (`secrets::commands::secrets_grant`), so the answer is the scrubbed result, a missing, waiting or denied state, or a
+/// refusal. A signed grant is never sent here: one that arrived anyway is refused, not spent.
+fn secret_run(call: &mut Call, args: &Value) -> Result<Value, String> {
+    let fields = ["name", "env", "command", "cwd", "timeoutSeconds"];
+    let object = arguments(args, &fields)?;
+    let named = |key: &str| {
+        object
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|text| !text.trim().is_empty())
+            .ok_or_else(|| format!("{key} must be a short name"))
+    };
+    named("name")?;
+    named("env")?;
+    let command_ok = match object.get("command") {
+        Some(Value::Array(items)) => {
+            !items.is_empty()
+                && items
+                    .iter()
+                    .all(|part| part.as_str().map(|text| !text.is_empty()).unwrap_or(false))
+        }
+        _ => false,
+    };
+    if !command_ok {
+        return Err("command must be the program and its arguments, one array element each".into());
+    }
+    let outcome = call
+        .app
+        .call("secrets.run", &pick(object, &fields), &new_request_id())?;
+    if outcome.get("grant").is_some() {
+        return Err("MonoCode didn't run that command, so nothing was spent.".into());
+    }
+    Ok(outcome)
 }
 
 fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
@@ -1356,6 +1527,44 @@ mod tests {
         (outcome, seen)
     }
 
+    /// WP-172: an agent may not create a stopped task's restart decision, with or without an answer, nor answer one.
+    /// The key is trimmed before the check, so a leading space does not get past it. An ordinary decision still works.
+    #[test]
+    fn an_agent_neither_creates_nor_answers_a_restart_decision() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| Ok(json!({ "state": "open" })));
+        let ask = |key: &str, answer: Option<&str>| {
+            let mut args = json!({
+                "key": key,
+                "question": "Start api again?",
+                "options": ["Start it again", "Leave it stopped"],
+                "recommended": "Leave it stopped",
+            });
+            if let Some(answer) = answer {
+                args["answer"] = json!(answer);
+            }
+            run_tool(&app, "ask_person", args).0
+        };
+        let restart = "fanout-again/r1/api/f2_r1-api/0123456789abcdef";
+        for key in [restart.to_string(), format!("  {restart}")] {
+            let refused = ask(&key, None).unwrap_err();
+            assert!(
+                refused.contains("Only the app asks whether a stopped task starts again"),
+                "{refused}"
+            );
+            let refused = ask(&key, Some("Start it again")).unwrap_err();
+            assert!(
+                refused.contains("Only the app asks whether a stopped task starts again"),
+                "{refused}"
+            );
+        }
+        // Nothing reached the app.
+        assert!(app.actions().is_empty());
+        // An ordinary decision keeps its answer as before.
+        assert!(ask("retention-policy", Some("Keep 30 days")).is_ok());
+        assert_eq!(app.actions(), vec!["tasks.ask".to_string()]);
+    }
+
     #[test]
     fn it_answers_initialize_and_lists_the_tools() {
         let clock = Arc::new(FakeClock::default());
@@ -1401,6 +1610,9 @@ mod tests {
                 "task_accept",
                 "task_message",
                 "ask_person",
+                "secrets_request",
+                "secrets_list",
+                "secrets_run",
                 "room_post",
                 "room_read",
                 "mono_message",
@@ -1464,6 +1676,122 @@ mod tests {
         assert!(names.contains(&"delegate_tasks"));
         assert!(names.contains(&"task_message"));
         assert!(names.contains(&"ask_person"));
+        assert!(
+            names
+                .iter()
+                .all(|name| !name.contains("standing") && !name.contains("reuse")),
+            "an agent tool must not set standing answers: {names:?}"
+        );
+        let ask = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "ask_person")
+            .unwrap();
+        let props = ask["inputSchema"]["properties"].as_object().unwrap();
+        assert!(props.get("standing").is_none());
+        assert!(props.get("reuse").is_none());
+    }
+
+    #[test]
+    fn a_secret_run_without_a_grant_comes_back_as_its_state_and_spawns_nothing() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |action, input, _| {
+            assert_eq!(action, "secrets.run");
+            assert_eq!(input["name"], "stripe-api-key");
+            Ok(
+                json!({ "state": "waiting", "decisionKey": "secret/stripe-api-key/stripe", "name": "stripe-api-key", "scope": "global" }),
+            )
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "secrets_run",
+            json!({ "name": "stripe-api-key", "env": "STRIPE_API_KEY", "command": ["stripe", "customers", "list"] }),
+        );
+        let outcome = outcome.unwrap();
+        assert_eq!(outcome["state"], "waiting");
+        assert_eq!(outcome["decisionKey"], "secret/stripe-api-key/stripe");
+        assert!(outcome.get("grant").is_none());
+    }
+
+    #[test]
+    fn a_secret_run_answer_that_carries_a_grant_is_refused_not_spent() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "state": "granted", "grant": "eyJwYXlsb2FkIjoieCJ9.c2ln" }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "secrets_run",
+            json!({ "name": "stripe-api-key", "env": "STRIPE_API_KEY", "command": ["stripe"] }),
+        );
+        let error = outcome.unwrap_err();
+        assert!(!error.contains("eyJ"), "{error}");
+    }
+
+    #[test]
+    fn a_secret_run_result_passes_through_without_a_grant() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "state": "ran", "exitCode": 0, "stdout": "fine", "timedOut": false }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "secrets_run",
+            json!({ "name": "stripe-api-key", "env": "STRIPE_API_KEY", "command": ["stripe"] }),
+        );
+        let outcome = outcome.unwrap();
+        assert_eq!(outcome["stdout"], "fine");
+        assert!(outcome.get("grant").is_none());
+    }
+
+    #[test]
+    fn the_secret_tools_take_only_their_own_fields() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| Ok(json!({ "ok": true })));
+        let (clean, _) = run_tool(&app, "secrets_list", json!({}));
+        assert!(clean.is_ok());
+        let (unknown, _) = run_tool(
+            &app,
+            "secrets_request",
+            json!({ "name": "k", "why": "w", "value": "x" }),
+        );
+        assert!(unknown.unwrap_err().contains("Unknown fields: value"));
+        let (empty, _) = run_tool(&app, "secrets_run", json!({ "name": "k", "env": "K" }));
+        assert!(empty.is_err());
+    }
+
+    #[test]
+    fn a_delegation_names_a_workers_keys_and_the_schema_says_how_many() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |action, input, _| {
+            assert_eq!(action, "tasks.delegate");
+            assert_eq!(
+                input["secrets"],
+                json!([{ "name": "stripe-api-key", "env": "STRIPE_API_KEY" }])
+            );
+            Ok(json!({ "taskId": "t-1", "status": "running" }))
+        });
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({
+                "brief": "Run the stripe sync",
+                "goal": "The sync finishes",
+                "secrets": [{ "name": "stripe-api-key", "env": "STRIPE_API_KEY" }],
+            }),
+        );
+        assert!(outcome.is_ok());
+        let listed = tools();
+        let delegate = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "delegate_task")
+            .unwrap();
+        let secrets = &delegate["inputSchema"]["properties"]["secrets"];
+        assert_eq!(secrets["maxItems"], 3);
+        assert_eq!(secrets["items"]["required"], json!(["name", "env"]));
     }
 
     #[test]
@@ -1497,6 +1825,29 @@ mod tests {
         });
         let (outcome, _) = run_tool(&app, "delegate_task", json!({ "brief": "Build the title" }));
         assert_eq!(outcome.unwrap()["cliFallback"], line);
+    }
+
+    #[test]
+    fn delegate_task_refuses_a_security_review_request_id_before_any_app_call() {
+        // Entry: the MCP delegate tool. A caller that names a review request id gets no app call at all.
+        let calls = Arc::new(Mutex::new(Vec::<String>::new()));
+        let seen = calls.clone();
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, move |action, _, _| {
+            seen.lock().unwrap().push(action.to_string());
+            Ok(json!({ "taskId": "t-1", "childSessionId": "c", "status": "running" }))
+        });
+        let review_id = format!("{}6162", crate::delivery::review::REQUEST_PREFIX);
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({ "brief": "Build it", "clientRequestId": review_id }),
+        );
+        assert!(outcome.is_err(), "{outcome:?}");
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "no app call for a review id"
+        );
     }
 
     #[test]
@@ -2131,6 +2482,36 @@ mod tests {
         );
     }
 
+    /// A role on delegate_task is part of the brief the app keeps. It is not an unknown field.
+    #[test]
+    fn delegate_task_role_is_forwarded() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "taskId": "t-1", "childSessionId": "app-mono-r", "status": "running" }))
+        });
+        let listed = tools();
+        let delegate = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "delegate_task")
+            .unwrap();
+        assert!(delegate["inputSchema"]["properties"].get("role").is_some());
+        let (outcome, _) = run_tool(
+            &app,
+            "delegate_task",
+            json!({
+                "brief": "Fix the save bug",
+                "role": "Builder",
+                "clientRequestId": "r-role",
+            }),
+        );
+        assert!(outcome.is_ok(), "{outcome:?}");
+        let calls = app.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "tasks.delegate");
+        assert_eq!(calls[0].1["role"], json!("Builder"));
+    }
+
     /// WP-144: a fresh-eyes reading list is part of the brief the app keeps. It is not an unknown field.
     #[test]
     fn reading_is_forwarded_with_the_brief() {
@@ -2275,5 +2656,17 @@ mod tests {
         let text: Value =
             serde_json::from_str(last["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(text["settled"], json!(["t-1"]));
+    }
+
+    /// Round-5 review repro (PR #213), LOW: secret cards are Once or No, but the tool still tells the agent the person can
+    /// approve "once for always", so an agent asks the person for a choice the card does not have.
+    #[test]
+    fn review_213_r5_secrets_run_does_not_promise_always() {
+        let tool = secret_tools()
+            .into_iter()
+            .find(|tool| tool["name"] == "secrets_run")
+            .expect("secrets_run");
+        let words = tool["description"].as_str().unwrap().to_lowercase();
+        assert!(!words.contains("always"), "{words}");
     }
 }

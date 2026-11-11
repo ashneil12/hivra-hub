@@ -32,6 +32,7 @@ in Settings, under About.
 
 - [MonoCode](https://github.com/hardbeat920/monocode): the app Hivra is built on (projects, sessions on many CLIs, worktrees, Monos and the Inbox).
 - [firstmate](https://github.com/kunchenguid/firstmate): the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra.
+- [tstack (babysit-pr)](https://github.com/t3dotgg/tstack): the logic of the PR watch's base checks: main moving under a pull request, BEHIND and DIRTY, and the rate-limit fallback (WP-202, written fresh in Rust).
 - [pstack](https://github.com/cursor/plugins/tree/main/pstack): Lauren Tan's (poteto) skills for rigour and verification, shipped as the default plugin.
 - [DeepSeek super-agent prototype](https://github.com/deepseek-ai/dsh-superagent-prototype): a router that never does the work itself, workers that follow threads, a watchdog.
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): safe plugin installs, a static plugin index, Discover and Creator mode (ideas only).
@@ -69,10 +70,12 @@ in Settings, under About.
 - [T3 Code usage](https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/usage.md): always-on context remaining in an open chat, usage history filters by provider and model, and dollar figures labelled as estimates (WP-127), from docs/user/usage.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2.
 - [T3 Code html renders](https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/html-renders.md): sandboxed visual HTML replies in chat, from its html renders note at commit e85e0094dd4617a1eada1ad7961f2132a79e67b2 (ideas only, no code copied).
 - [T3 Code voice input](https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/voice-input.md): desktop dictation that writes into the draft and does not send, from its voice input note at commit e85e0094dd4617a1eada1ad7961f2132a79e67b2 (ideas only, no code copied).
+- [T3 Code prompt links](https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/prompt-links.md): local links that open a chat or fill a prompt on this computer, with no public guest link (WP-125).
 - [Aether](https://runaether.dev): ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code.
-- [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), the correction rule behind the rules tier (WP-103), and a scan that refuses text which looks like instructions aimed at the model (WP-111).
+- [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99); the correction rule behind the rules tier (WP-103); the MCP tool effect classifier, the reviewer rules for approvals, the plugin install scanner and a guard on proposed instruction edits (WP-101); and a scan that refuses text which looks like instructions aimed at the model (WP-111).
 - [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100).
 - [ccdeck](https://github.com/BarganConstantin/ccdeck): ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first.
+- [precedent-log](https://github.com/quotumorg/precedent-log): standing answers: show past answers before a new question, match a reworded question to an old answer, and list who relied on an answer when it is retired (ideas only).
 - [tasklane](https://github.com/kunci115/tasklane): a protected-path floor so CI, migrations, key files and git internals still need a person's word before a merge, even when merge without asking is on (WP-158).
 - [mcode-stack](https://github.com/MiniMax-AI/mcode-stack): team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117).
 - [Pierre](https://github.com/pierrecomputer/pierre): an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116).
@@ -105,6 +108,7 @@ in Settings, under About.
 - [AgenticBench](https://agenticbench.org): planted-secret checks on what a coding agent does with a machine and its data, as acceptance-test ideas for the secret vault (ideas only).
 - [Agentlas](https://github.com/agentlas-ai/agentlas-desktop): ideas only: an operating-system boundary around each agent's terminal, with secret paths and protected config paths (design first).
 - [Atomic Agent](https://github.com/AtomicBot-ai/atomic-agent): contracts for a multi-part fan-out (what each part owns, provides and requires, and the checks it must pass), dependency waves, the person's own request quoted in every worker brief, and a few prompt lines (WP-171).
+- [Cloudflare security-audit-skill](https://github.com/cloudflare/security-audit-skill): the structured security review: a coverage ledger, isolated hunters, a fresh verifier for each candidate, findings.json with two zero-dependency validators, and the reference notes for desktop IPC, supply chain and AI agents (WP-203).
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).

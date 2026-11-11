@@ -131,14 +131,33 @@ export type SettleDeps = {
   io: FileIo;
   /** The clock a miss is timed on; tests pin it. */
   now?(): number;
+  /**
+   * WP-172: the worker chat a plan's task has now. A task started again after its worker was stopped has a new one, and
+   * the waiting tasks' links still name the first. Undefined (or a throw) keeps the link's own chat.
+   */
+  current?(owner: string, plan: string, name: string): Promise<string | undefined>;
 };
 
 /**
  * Before the queue decides who starts: for each waiting task of a fan-out, read its providers' rows (from the store when
  * this window lacks them) and check what each finished one made. A damaged link is skipped here and held by
  * `fanoutDependency`; a provider that is not finished is left until it is.
+ *
+ * Returns, for each provider a waiting task named, the chat it is now (keyed by the chat its link names), so the lookup
+ * the queue reads can follow a provider that was started again.
  */
-export async function settleFanout(queue: readonly QueuedWorker[], deps: SettleDeps): Promise<void> {
+export async function settleFanout(queue: readonly QueuedWorker[], deps: SettleDeps): Promise<Map<string, string>> {
+  const resolved = new Map<string, string>();
+  const currentOf = new Map<string, Promise<string | undefined>>();
+  const currentSession = (owner: string, plan: string, name: string): Promise<string | undefined> => {
+    const key = `${owner}\n${plan}\n${name}`;
+    let found = currentOf.get(key);
+    if (!found) {
+      found = (deps.current?.(owner, plan, name) ?? Promise.resolve(undefined)).catch(() => undefined);
+      currentOf.set(key, found);
+    }
+    return found;
+  };
   for (const job of queue) {
     const raw = job.input?.fanout;
     if (raw === undefined) continue;
@@ -149,7 +168,9 @@ export async function settleFanout(queue: readonly QueuedWorker[], deps: SettleD
       continue;
     }
     for (const name of link.after) {
-      const session = link.tasks[name].session;
+      const planned = link.tasks[name].session;
+      const session = (await currentSession(job.ownerSession, link.plan, name)) ?? planned;
+      resolved.set(planned, session);
       let row = deps.row(session);
       if (!row && deps.fetchRow) {
         row = await deps.fetchRow(session, job.ownerSession).catch(() => undefined);
@@ -166,6 +187,7 @@ export async function settleFanout(queue: readonly QueuedWorker[], deps: SettleD
       verifications.set(session, { at: versionOf(row), result, checkedAt: now });
     }
   }
+  return resolved;
 }
 
 /**
