@@ -294,6 +294,11 @@ export function removeMoreAgent(list: MoreAgentsList, index: number): Promise<Mo
   );
 }
 
+/** Asks the app whether this entry may run now (approved as it is, file unchanged). Throws with the app's reason. */
+export async function checkMoreAgentApproval(id: string): Promise<void> {
+  await invoke("more_agents_check", { id });
+}
+
 /**
  * The person's own tap: allow this entry to run as it is shown, or withdraw that allowance. `shown` is the
  * fingerprint the window displayed; the app refuses an allow for any other command, arguments or file.

@@ -597,6 +597,13 @@ pub fn more_agents_write(
     ))
 }
 
+/// Whether an entry may run right now: approved as it is, and its file unchanged. A running agent is checked this
+/// way before each turn, so a withdrawn or edited entry stops answering.
+#[tauri::command]
+pub fn more_agents_check(app: AppHandle, id: String) -> Result<(), String> {
+    approved_spawn(&data_dir(&app)?, &id, &crate::harness::gui_search_path()).map(|_| ())
+}
+
 /// The person's own tap: allow or withdraw one entry. `shown` is the fingerprint the window displayed for it.
 #[tauri::command]
 pub fn more_agents_approve(
