@@ -8,8 +8,8 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 /** Builders that may author or review a change. A name outside this list is refused. */
 export const KNOWN_BUILDERS = Object.freeze(["claude", "codex", "grok", "devin", "human"]);
@@ -279,4 +279,115 @@ export function defaultReviewsRoot(cwd = process.cwd()) {
   const run = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, encoding: "utf8" });
   if (run.status !== 0) return null;
   return join(run.stdout.trim(), "hivra-security-review");
+}
+
+/** The one-line usage a builder sees when a flag is missing or wrong. */
+const USAGE = `Usage: node scripts/security-review/review.mjs --author <builder> --reviewer <builder>
+  [--base origin/main] [--head HEAD] [--paths a,b] [--candidates hunters.json] [--verifier "<command>"]
+  [--reviews <folder>] [--cap ${DEFAULT_FILE_CAP}]
+Each candidate goes to <command> on its own (JSON in on stdin, one record out on stdout).`;
+
+function parseCliArgs(argv) {
+  const opts = { base: "origin/main", head: "HEAD" };
+  const flags = {
+    "--base": "base",
+    "--head": "head",
+    "--author": "author",
+    "--reviewer": "reviewer",
+    "--candidates": "candidates",
+    "--verifier": "verifier",
+    "--reviews": "reviews",
+    "--paths": "paths",
+    "--cap": "cap",
+  };
+  for (let i = 0; i < argv.length; i++) {
+    const key = flags[argv[i]];
+    if (!key || i + 1 >= argv.length) return { error: USAGE };
+    opts[key] = argv[++i];
+  }
+  if (opts.cap !== undefined) opts.cap = Number(opts.cap);
+  return { opts };
+}
+
+/**
+ * The command line. Prints the run plan first, then where the findings went, or the one plain line that refused it.
+ * @param {string[]} argv
+ * @param {{ cwd?: string, out?: (line: string) => void, err?: (line: string) => void }} [io]
+ * @returns {Promise<number>} the exit code
+ */
+export async function runCli(argv, { cwd = process.cwd(), out = console.log, err = console.error } = {}) {
+  const parsed = parseCliArgs(argv);
+  if (parsed.error) {
+    err(parsed.error);
+    return 2;
+  }
+  const { opts } = parsed;
+  const top = spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd, encoding: "utf8" });
+  if (top.status !== 0) {
+    err("This is not a git checkout, so the changed files cannot be listed.");
+    return 1;
+  }
+  const repo = top.stdout.trim();
+  const resolved = spawnSync("git", ["rev-parse", "--verify", `${opts.head}^{commit}`], { cwd: repo, encoding: "utf8" });
+  if (resolved.status !== 0) {
+    err(`--head ${opts.head} is not a commit in this checkout.`);
+    return 1;
+  }
+  const head = resolved.stdout.trim();
+  const reviewsRoot = opts.reviews ? resolve(cwd, opts.reviews) : defaultReviewsRoot(repo);
+  if (!reviewsRoot) {
+    err("No review folder is known for this checkout. Pass --reviews <folder>.");
+    return 1;
+  }
+  let files;
+  try {
+    files = opts.paths ? opts.paths.split(",") : changedFiles({ base: opts.base, head, cwd: repo });
+  } catch (error) {
+    err(error.message);
+    return 1;
+  }
+  let candidates = [];
+  if (opts.candidates) {
+    try {
+      candidates = JSON.parse(readFileSync(resolve(cwd, opts.candidates), "utf8"));
+    } catch {
+      err("The candidates file is not readable JSON.");
+      return 1;
+    }
+    if (!Array.isArray(candidates)) {
+      err("The candidates file must be a JSON array of candidate records.");
+      return 1;
+    }
+  }
+  if (candidates.length > 0 && !opts.verifier) {
+    err('Each candidate needs a fresh verifier. Pass --verifier "<command>" that reads one candidate and prints its record.');
+    return 1;
+  }
+  const verifier = (candidate) => {
+    const ran = spawnSync("sh", ["-c", opts.verifier], { cwd: repo, input: JSON.stringify(candidate), encoding: "utf8", timeout: 600000 });
+    if (ran.status !== 0) throw new Error(`The verifier failed: ${(ran.stderr || "").trim() || `exit ${ran.status}`}`);
+    return JSON.parse(ran.stdout);
+  };
+  const run = await runReview({
+    root: reviewsRoot,
+    head,
+    author: opts.author,
+    reviewer: opts.reviewer,
+    files,
+    candidates,
+    verifier,
+    read: (file) => readFileSync(join(repo, file), "utf8"),
+    cap: opts.cap,
+    onPlan: (plan) => out(plan.line),
+  });
+  if (!run.ok) {
+    err(run.reason);
+    return 1;
+  }
+  out(`Findings for ${head} written to ${run.findingsPath} (${run.records} record${run.records === 1 ? "" : "s"}).`);
+  return 0;
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
+  runCli(process.argv.slice(2)).then((code) => process.exit(code));
 }

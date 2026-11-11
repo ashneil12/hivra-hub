@@ -504,3 +504,63 @@ test("the plan line states the count, the size and the worker default", () => {
   assert.match(plan.line, /gateway/);
   assert.doesNotMatch(plan.line, /subscription/i, "reviewers never run on the lead's own subscription");
 });
+
+// The command a builder runs: review.mjs against one change, with candidates from its hunters.
+const CLI = join(dir, "review.mjs");
+const cli = (args, cwd) => spawnSync(process.execPath, [CLI, ...args], { cwd, encoding: "utf8", timeout: 60000 });
+
+function changeRepo() {
+  const folder = mkdtempSync(join(tmpdir(), "wp203-cli-"));
+  const git = (...args) => {
+    const run = spawnSync("git", args, { cwd: folder, encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    return run.stdout.trim();
+  };
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "test@example.invalid");
+  git("config", "user.name", "test");
+  writeFileSync(join(folder, "base.txt"), "base\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "base");
+  git("checkout", "-q", "-b", "feature");
+  for (const name of ["one.ts", "two.rs", "three.md"]) writeFileSync(join(folder, name), `${name}\n`);
+  git("add", ".");
+  git("commit", "-q", "-m", "change");
+  return { folder, sha: git("rev-parse", "HEAD") };
+}
+
+test("the review command runs on a three-file change and writes findings for its head", { skip: process.platform === "win32" }, () => {
+  const { folder, sha } = changeRepo();
+  const reviews = mkdtempSync(join(tmpdir(), "wp203-reviews-"));
+  try {
+    const candidates = join(folder, "candidates.json");
+    writeFileSync(candidates, JSON.stringify([rejected()]));
+    const run = cli(["--base", "main", "--head", "feature", "--author", "claude", "--reviewer", "codex",
+      "--candidates", candidates, "--verifier", "cat", "--reviews", reviews], folder);
+    assert.equal(run.status, 0, run.stdout + run.stderr);
+    assert.match(run.stdout, /3 files/);
+    assert.match(run.stdout, /worker default/);
+    assert.equal(existsSync(join(reviews, sha, "findings.json")), true);
+    assert.equal(JSON.parse(readFileSync(join(reviews, sha, "run.json"), "utf8")).head, sha);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+    rmSync(reviews, { recursive: true, force: true });
+  }
+});
+
+test("candidates without a verifier are refused and nothing is written", { skip: process.platform === "win32" }, () => {
+  const { folder, sha } = changeRepo();
+  const reviews = mkdtempSync(join(tmpdir(), "wp203-reviews-"));
+  try {
+    const candidates = join(folder, "candidates.json");
+    writeFileSync(candidates, JSON.stringify([rejected()]));
+    const run = cli(["--base", "main", "--head", "feature", "--author", "claude", "--reviewer", "codex",
+      "--candidates", candidates, "--reviews", reviews], folder);
+    assert.equal(run.status, 1);
+    assert.match(run.stdout + run.stderr, /verifier/);
+    assert.equal(existsSync(join(reviews, sha)), false);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+    rmSync(reviews, { recursive: true, force: true });
+  }
+});
