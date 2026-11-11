@@ -92,6 +92,18 @@ describe("forkSessionAtMessage", () => {
     expect(source).toEqual(before);
   });
 
+  it("drops a move notice, so a fork does not keep a release owed", () => {
+    const source = chat([
+      block({ id: "note", role: "system", text: "{}", notice: "teleport-release-owed" }),
+      block({ id: "u1", role: "user", text: "continue" }),
+    ]);
+    const fork = forkSessionAtMessage(source, "u1", ids(["fork-1", "b1", "b2"]));
+    expect(fork).not.toBeNull();
+    expect(fork!.blocks.some((entry) => (entry.notice ?? "").startsWith("teleport"))).toBe(false);
+    expect(fork!.blocks.map((entry) => entry.text)).toEqual(["continue"]);
+    expect(source.blocks.some((entry) => entry.notice === "teleport-release-owed")).toBe(true);
+  });
+
   it("copies attachment metadata onto new rows and does not share them", () => {
     const file = attachment();
     const source = chat([
