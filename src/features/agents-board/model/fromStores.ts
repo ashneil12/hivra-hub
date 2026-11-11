@@ -105,6 +105,24 @@ export function mateStatus(
   return sessions.some((session) => session.id === sessionId && session.busy === true) ? "working" : "idle";
 }
 
+const FINISHED_STATUS = new Set(["failed", "done"]);
+const FINISHED_STATE = new Set(["failed", "cancelled", "stopped", "completed", "done"]);
+
+/**
+ * Stop only while the work is still going. The status chip can say Needs you for a failure,
+ * but a failed or finished worker has nothing left to stop. The status is the one to read;
+ * an older row with no status falls back to its state.
+ */
+function workerCanStop(row: { ownerSession?: string | null; status?: string | null; state?: string | null }): boolean {
+  if (!row.ownerSession?.trim()) return false;
+  const status = (row.status ?? "").trim().toLowerCase();
+  const raw = (row.state ?? "").trim().toLowerCase();
+  if (FINISHED_STATUS.has(status)) return false;
+  if (!status && FINISHED_STATE.has(raw)) return false;
+  const state = boardState(row);
+  return state === "working" || state === "needs-you";
+}
+
 /** A project chat, home chat or sub-chat can be stopped only while it is working and the app lent its Stop. */
 function sessionCanStop(status: string | null | undefined): boolean {
   return boardState({ status }) === "working" && agentsBoardSessionStopReady();
@@ -192,7 +210,7 @@ export function boardFromStores(source: BoardSource): {
       sessionId,
       prNumber: check?.prNumber ?? null,
       checks: check ? { failing: check.failing, pending: check.pending, passed: check.passed } : null,
-      canStop: !!row.ownerSession?.trim() && (state === "working" || state === "needs-you"),
+      canStop: workerCanStop(row),
     });
   }
 

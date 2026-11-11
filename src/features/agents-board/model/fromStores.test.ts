@@ -82,7 +82,7 @@ describe("boardFromStores", () => {
     expect(job?.checksLabel).toBe("checks green");
     expect(job?.children.map((node) => node.id)).toEqual(["sub-chat"]);
     expect(job?.rolledUp).toBe(false);
-    expect(job?.canStop).toBe(true);
+    expect(job?.canStop).toBe(false);
     expect(flattenBoard(board.tree).find((node) => node.id === "home-chat")?.canStop).toBe(false);
     expect(flattenBoard(board.tree).find((node) => node.id === "sub-chat")?.canStop).toBe(false);
     // Hivra and Coding only repeat this worker, so the chip stays 1. Home and the sub-chat are themselves working.
@@ -135,6 +135,43 @@ describe("boardFromStores", () => {
     expect(flattenBoard(after.tree).find((node) => node.id === "home-chat")?.canStop).toBe(false);
     expect(flattenBoard(after.tree).find((node) => node.id === "sub-chat")?.canStop).toBe(true);
     expect(flattenBoard(after.tree).find((node) => node.id === "job")?.canStop).toBe(true);
+  });
+});
+
+describe("worker Stop", () => {
+  it("is not offered on a failed or finished worker, and stays on work that is still going", () => {
+    const board = boardFromStores({
+      now: NOW,
+      projects: [{ id: "hivra", name: "Hivra" }],
+      sessions: [],
+      mates: [{ id: "lead", name: "Coding", projectId: "hivra", sessionId: "lead-chat" }],
+      delegations: [
+        { id: "failed", title: "Broken", project: "hivra", ownerSession: "lead-chat", status: "failed", state: "running", createdAt: NOW },
+        { id: "done", title: "Landed", project: "hivra", ownerSession: "lead-chat", status: "done", state: "running", createdAt: NOW },
+        { id: "cancelled", title: "Dropped", project: "hivra", ownerSession: "lead-chat", state: "cancelled", createdAt: NOW },
+        { id: "completed", title: "Finished", project: "hivra", ownerSession: "lead-chat", state: "completed", createdAt: NOW },
+        { id: "halted", title: "Halted", project: "hivra", ownerSession: "lead-chat", state: "stopped", createdAt: NOW },
+        { id: "old-fail", title: "Old", project: "hivra", ownerSession: "lead-chat", state: "failed", createdAt: NOW },
+        { id: "live", title: "Going", project: "hivra", ownerSession: "lead-chat", status: "working", createdAt: NOW },
+        { id: "ask", title: "Question", project: "hivra", ownerSession: "lead-chat", status: "needs-you", createdAt: NOW },
+        { id: "question", title: "Ask", project: "hivra", ownerSession: "lead-chat", state: "question", createdAt: NOW },
+        { id: "no-owner", title: "Loose", project: "hivra", status: "working", createdAt: NOW },
+      ],
+      checks: [],
+      costs: [],
+    });
+    const stop = (id: string) => flattenBoard(board.tree).find((node) => node.id === id)?.canStop;
+    expect(stop("failed")).toBe(false);
+    expect(stop("done")).toBe(false);
+    expect(stop("cancelled")).toBe(false);
+    expect(stop("completed")).toBe(false);
+    expect(stop("halted")).toBe(false);
+    expect(stop("old-fail")).toBe(false);
+    expect(stop("live")).toBe(true);
+    expect(stop("ask")).toBe(true);
+    expect(stop("question")).toBe(true);
+    expect(stop("no-owner")).toBe(false);
+    expect(flattenBoard(board.tree).find((node) => node.id === "failed")?.state).toBe("needs-you");
   });
 });
 
