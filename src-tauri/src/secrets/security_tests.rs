@@ -73,7 +73,7 @@ fn run_request(mono: &str) -> RunRequest {
         project: None,
         name: NAME.into(),
         env: "STRIPE_API_KEY".into(),
-        command: vec!["/usr/bin/true".into(), "customers".into(), "list".into()],
+        command: vec![harmless_program().into(), "customers".into(), "list".into()],
         cwd: None,
         timeout_seconds: None,
     }
@@ -1168,14 +1168,25 @@ fn base64_of_the_key_at_every_alignment_is_masked() {
 
 #[test]
 fn a_worker_card_says_its_transcript_keeps_what_it_prints() {
-    let text = worker::worker_card_question("Tally", "Stripe API key", "your global keys");
+    let text = worker::worker_card_question(
+        "Tally",
+        "Stripe API key",
+        "your global keys",
+        "STRIPE_API_KEY",
+    );
     assert!(text.contains("transcript"), "{text}");
+    assert!(text.contains("STRIPE_API_KEY"), "{text}");
 }
 
 #[test]
 fn a_worker_card_says_its_ai_can_read_the_key_and_send_it_anywhere() {
     // Round 4 (N8): the card names what the worker's AI can do with the key, before the person answers.
-    let text = worker::worker_card_question("Tally", "Stripe API key", "your global keys");
+    let text = worker::worker_card_question(
+        "Tally",
+        "Stripe API key",
+        "your global keys",
+        "STRIPE_API_KEY",
+    );
     assert!(text.contains("can read the key"), "{text}");
     assert!(text.contains("send it anywhere"), "{text}");
 }

@@ -1345,7 +1345,7 @@ fn run_request(project: Option<&str>, mono: &str) -> RunRequest {
         project: project.map(str::to_string),
         name: "stripe-api-key".into(),
         env: "STRIPE_API_KEY".into(),
-        command: vec!["/usr/bin/true".into(), "customers".into(), "list".into()],
+        command: vec![harmless_program().into(), "customers".into(), "list".into()],
         cwd: None,
         timeout_seconds: None,
     }
@@ -1370,7 +1370,7 @@ fn first_use_asks_once_and_an_always_answer_does_not_grant() {
         .unwrap()
         .unwrap();
     assert_eq!(asked.options, vec!["Once".to_string(), "No".to_string()]);
-    assert!(asked.question.contains("/usr/bin/true"));
+    assert!(asked.question.contains(harmless_program()));
     answer_card(
         &mut conn,
         "",

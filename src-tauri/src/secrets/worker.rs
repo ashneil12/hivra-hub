@@ -88,11 +88,12 @@ pub enum WorkerOutcome {
 
 /// The worker card's words. The whole worker session holds the value, and the CLI keeps a transcript of what it prints on
 /// disk, so a value it prints stays there (fix round 3, M3).
-pub fn worker_card_question(mono: &str, label: &str, whose: &str) -> String {
+pub fn worker_card_question(mono: &str, label: &str, whose: &str, env: &str) -> String {
     // Fix round 4 (N8): the worker's AI reads its own environment, so it can read the key and send it anywhere it can
     // reach (a web address, a memory, a room). The card says so, before the person answers.
+    // Fix round 6: the card names the variable the key is put in, so the person is not approving an unnamed slot.
     format!(
-        "Let {mono} start a worker with {label} ({whose}) in its environment? The worker's AI can read the key and send it anywhere it can reach: a web address, a memory, a note or a room. The whole worker session will hold the value, including anything it starts, and the CLI keeps a transcript of what it prints on disk, so a value it prints stays there. Running one command with it is narrower: ask for that instead."
+        "Let {mono} start a worker with {label} ({whose}) in the environment variable {env}? The worker's AI can read the key and send it anywhere it can reach: a web address, a memory, a note or a room. The whole worker session will hold the value, including anything it starts, and the CLI keeps a transcript of what it prints on disk, so a value it prints stays there. Running one command with it is narrower: ask for that instead."
     )
 }
 
@@ -213,11 +214,8 @@ pub fn prepare(
         if !names.insert(name.clone()) {
             return Err(format!("{name} is named twice."));
         }
-        if !valid_env_name(&wanted.env) {
-            return Err(
-                "The environment variable's name is capital letters, digits and underscores, like STRIPE_API_KEY."
-                    .into(),
-            );
+        if let Some(why) = env_name_refusal(&wanted.env) {
+            return Err(why);
         }
         if run::is_allowlisted_env(&wanted.env) {
             return Err(format!(
@@ -240,7 +238,8 @@ pub fn prepare(
                 scope: row.scope,
             });
         }
-        let question = worker_card_question(mono, &row.label, &scope_words(&row.scope));
+        let question =
+            worker_card_question(mono, &row.label, &scope_words(&row.scope), &wanted.env);
         // A worker's grant is its own: keyed by the worker entry, never the CLI's name, so a `secrets.run` grant for the
         // same CLI does not spend it. A worker CLI can run any code, so the card offers no "Always".
         let worker_key = format!("worker:{executable}");

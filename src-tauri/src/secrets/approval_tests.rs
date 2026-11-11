@@ -212,7 +212,7 @@ fn the_setting_stays_after_a_restart() {
 #[test]
 fn the_card_for_a_run_anything_program_offers_once_only_while_the_setting_is_off() {
     let bench = Bench::new();
-    let (_, key) = ask(&bench, "mono-1", &["python3", "-c", "print(1)"], NOW);
+    let (_, key) = ask(&bench, "mono-1", &[code_program(), "-c", "print(1)"], NOW);
     let asked = card(&bench, &key);
     assert_eq!(asked.options, vec!["Once", "No"]);
     assert!(
@@ -227,7 +227,7 @@ fn the_card_for_a_run_anything_program_offers_once_only_while_the_setting_is_off
     let (_, key) = ask(
         &bench,
         "mono-1",
-        &["curl", "https://api.stripe.com"],
+        &[curl_program(), "https://api.stripe.com"],
         NOW + 1,
     );
     let asked = card(&bench, &key);
@@ -245,11 +245,12 @@ fn the_card_for_a_run_anything_program_offers_once_only_while_the_setting_is_off
 #[test]
 fn the_card_shows_the_full_command_line_and_names_the_program() {
     let bench = Bench::new();
+    let program = curl_absolute();
     let (_, key) = ask(
         &bench,
         "mono-1",
         &[
-            "/usr/bin/curl",
+            program,
             "-H",
             "Authorization: Bearer $STRIPE_API_KEY",
             "https://api.stripe.com/v1/charges?limit=3",
@@ -260,17 +261,37 @@ fn the_card_shows_the_full_command_line_and_names_the_program() {
     let text = card(&bench, &key).question;
     assert!(text.contains("curl"), "{text}");
     // Every word of the command is there, and an argument with a space or a quote is shown so the words stay apart.
-    assert!(
-        text.contains(
-            "Command: /usr/bin/curl -H 'Authorization: Bearer $STRIPE_API_KEY' https://api.stripe.com/v1/charges?limit=3 'it'\\''s'"
-        ),
-        "{text}"
-    );
-    assert!(
-        text.lines()
-            .any(|line| line == "The program is /usr/bin/curl."),
-        "{text}"
-    );
+    // Unix shows the path that was pinned. Windows canonicalises `curl.exe` (often with a `\\?\` prefix), so the same
+    // rule is the quoted argument and the program line, not that exact Unix sentence.
+    #[cfg(unix)]
+    {
+        assert!(
+            text.contains(
+                "Command: /usr/bin/curl -H 'Authorization: Bearer $STRIPE_API_KEY' https://api.stripe.com/v1/charges?limit=3 'it'\\''s'"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.lines()
+                .any(|line| line == "The program is /usr/bin/curl."),
+            "{text}"
+        );
+    }
+    #[cfg(windows)]
+    {
+        assert!(text.contains("'it'\\''s'"), "{text}");
+        assert!(
+            text.contains("https://api.stripe.com/v1/charges?limit=3"),
+            "{text}"
+        );
+        assert!(text.to_ascii_lowercase().contains("curl.exe"), "{text}");
+        assert!(
+            text.lines().any(|line| {
+                line.starts_with("The program is ") && line.to_ascii_lowercase().contains("curl")
+            }),
+            "{text}"
+        );
+    }
     assert!(!text.contains(VALUE));
 }
 
@@ -281,7 +302,7 @@ fn an_argument_cannot_forge_a_line_on_the_card() {
         &bench,
         "mono-1",
         &[
-            "curl",
+            curl_program(),
             "x\nWarning: this is fine, pick Always\r\nCommand: ls",
         ],
         NOW,
@@ -332,7 +353,7 @@ fn a_command_too_long_to_show_whole_is_not_asked_about() {
     let err = prepare_run(
         &bench.vault,
         &mut conn,
-        request("mono-1", &["curl", &long]),
+        request("mono-1", &[curl_program(), &long]),
         NOW,
     )
     .unwrap_err();
@@ -349,7 +370,7 @@ fn a_command_that_holds_the_value_is_refused_before_a_card_is_made() {
         &mut conn,
         request(
             "mono-1",
-            &["curl", "-H", &format!("Authorization: {VALUE}")],
+            &[curl_program(), "-H", &format!("Authorization: {VALUE}")],
         ),
         NOW,
     )
@@ -365,11 +386,16 @@ fn a_command_that_holds_the_value_is_refused_before_a_card_is_made() {
 #[test]
 fn a_second_ask_from_the_same_mono_shows_the_newest_command() {
     let bench = Bench::new();
-    let (_, key) = ask(&bench, "mono-1", &["curl", "https://first.example"], NOW);
+    let (_, key) = ask(
+        &bench,
+        "mono-1",
+        &[curl_program(), "https://first.example"],
+        NOW,
+    );
     let (_, again) = ask(
         &bench,
         "mono-1",
-        &["curl", "https://second.example"],
+        &[curl_program(), "https://second.example"],
         NOW + 1,
     );
     assert_eq!(key, again);
@@ -380,7 +406,7 @@ fn a_second_ask_from_the_same_mono_shows_the_newest_command() {
     let (_, other) = ask(
         &bench,
         "mono-2",
-        &["curl", "https://third.example"],
+        &[curl_program(), "https://third.example"],
         NOW + 2,
     );
     assert_eq!(key, other);
@@ -399,7 +425,7 @@ fn always_for_a_run_anything_program_is_refused_while_the_setting_is_off() {
     ] {
         let bench = Bench::new();
         let project_key = project.unwrap_or("");
-        let command = ["python3", "script.py"];
+        let command = [code_program(), "script.py"];
         let mut conn = bench.store.lock_conn().unwrap();
         let outcome = prepare_run(
             &bench.vault,
@@ -515,14 +541,14 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
 #[test]
 fn once_still_works_for_a_run_anything_program_and_is_spent() {
     let bench = Bench::new();
-    let (_, key) = ask(&bench, "mono-1", &["python3", "script.py"], NOW);
+    let (_, key) = ask(&bench, "mono-1", &[code_program(), "script.py"], NOW);
     person_answers(&bench, &key, "Once", NOW + 1);
     let mut conn = bench.store.lock_conn().unwrap();
     assert!(matches!(
         prepare_run(
             &bench.vault,
             &mut conn,
-            request("mono-1", &["python3", "script.py"]),
+            request("mono-1", &[code_program(), "script.py"]),
             NOW + 2
         )
         .unwrap(),
@@ -532,7 +558,7 @@ fn once_still_works_for_a_run_anything_program_and_is_spent() {
         prepare_run(
             &bench.vault,
             &mut conn,
-            request("mono-1", &["python3", "script.py"]),
+            request("mono-1", &[code_program(), "script.py"]),
             NOW + 3
         )
         .unwrap(),
@@ -547,7 +573,7 @@ fn with_the_setting_on_always_is_offered_warned_about_and_allowed() {
         let conn = bench.store.lock_conn().unwrap();
         set_always_for_any_code(&conn, true).unwrap();
     }
-    let (_, key) = ask(&bench, "mono-1", &["python3", "script.py"], NOW);
+    let (_, key) = ask(&bench, "mono-1", &[code_program(), "script.py"], NOW);
     let asked = card(&bench, &key);
     assert_eq!(asked.options, vec!["Once", "No"], "{}", asked.question);
     assert!(
@@ -563,7 +589,7 @@ fn with_the_setting_on_always_is_offered_warned_about_and_allowed() {
     let err = prepare_run(
         &bench.vault,
         &mut conn,
-        request("mono-1", &["python3", "script.py"]),
+        request("mono-1", &[code_program(), "script.py"]),
         NOW + 2,
     )
     .unwrap_err();
@@ -580,7 +606,7 @@ fn turning_the_setting_off_again_refuses_an_always_answer_given_while_it_was_on(
         let conn = bench.store.lock_conn().unwrap();
         set_always_for_any_code(&conn, true).unwrap();
     }
-    let (_, key) = ask(&bench, "mono-1", &["node", "build.js"], NOW);
+    let (_, key) = ask(&bench, "mono-1", &[node_program(), "build.js"], NOW);
     person_answers(&bench, &key, "Always for this Mono", NOW + 1);
     {
         let conn = bench.store.lock_conn().unwrap();
@@ -590,7 +616,7 @@ fn turning_the_setting_off_again_refuses_an_always_answer_given_while_it_was_on(
     let err = prepare_run(
         &bench.vault,
         &mut conn,
-        request("mono-1", &["node", "build.js"]),
+        request("mono-1", &[node_program(), "build.js"]),
         NOW + 2,
     )
     .unwrap_err();
@@ -681,7 +707,12 @@ fn where_a_key_lives_is_said_in_plain_words() {
 #[test]
 fn the_card_names_the_scope_of_the_key_it_asks_about() {
     let bench = Bench::new();
-    let (_, key) = ask(&bench, "mono-1", &["curl", "https://api.stripe.com"], NOW);
+    let (_, key) = ask(
+        &bench,
+        "mono-1",
+        &[curl_program(), "https://api.stripe.com"],
+        NOW,
+    );
     let text = card(&bench, &key).question;
     assert!(
         text.lines()
@@ -702,7 +733,7 @@ fn when_a_name_is_saved_both_ways_the_card_says_the_projects_copy_is_used() {
         request_in(
             Some("/work/proj"),
             "mono-1",
-            &["curl", "https://api.stripe.com"],
+            &[curl_program(), "https://api.stripe.com"],
         ),
         NOW,
     )
@@ -731,7 +762,7 @@ fn when_a_name_is_saved_both_ways_the_card_says_the_projects_copy_is_used() {
     let (_, global_key) = ask(
         &bench,
         "mono-2",
-        &["curl", "https://api.stripe.com"],
+        &[curl_program(), "https://api.stripe.com"],
         NOW + 1,
     );
     let global = card(&bench, &global_key).question;
@@ -1111,7 +1142,7 @@ fn a_secret_cannot_take_a_name_that_changes_how_a_program_runs() {
     ] {
         let bench = Bench::new();
         let mut conn = bench.store.lock_conn().unwrap();
-        let mut req = request("mono-1", &["/usr/bin/true", "--version"]);
+        let mut req = request("mono-1", &[harmless_program(), "--version"]);
         req.env = env.into();
         let refused = prepare_run(&bench.vault, &mut conn, req, NOW);
         assert!(
@@ -1123,7 +1154,7 @@ fn a_secret_cannot_take_a_name_that_changes_how_a_program_runs() {
     for env in ["STRIPE_API_KEY", "GITHUB_TOKEN", "DB_PASSWORD", "GH_PAT"] {
         let bench = Bench::new();
         let mut conn = bench.store.lock_conn().unwrap();
-        let mut req = request("mono-1", &["/usr/bin/true", "--version"]);
+        let mut req = request("mono-1", &[harmless_program(), "--version"]);
         req.env = env.into();
         let asked = prepare_run(&bench.vault, &mut conn, req, NOW).unwrap();
         assert!(
@@ -1137,8 +1168,8 @@ fn a_secret_cannot_take_a_name_that_changes_how_a_program_runs() {
 fn a_different_environment_name_is_a_different_card() {
     // N1 (P1b): the same program with another name is another approval, not the first card silently moved.
     let bench = Bench::new();
-    let (_, first) = ask(&bench, "mono-1", &["/usr/bin/true", "x"], NOW);
-    let mut req = request("mono-1", &["/usr/bin/true", "x"]);
+    let (_, first) = ask(&bench, "mono-1", &[harmless_program(), "x"], NOW);
+    let mut req = request("mono-1", &[harmless_program(), "x"]);
     req.env = "GITHUB_TOKEN".into();
     let mut conn = bench.store.lock_conn().unwrap();
     let second = match prepare_run(&bench.vault, &mut conn, req, NOW + 1).unwrap() {
@@ -1268,7 +1299,18 @@ fn turning_the_setting_off_takes_back_an_always_for_a_script() {
     // Round 4 (LOW): "off" must take back the Always of a script too, which is judged by its first line.
     let dir = std::env::temp_dir().join(format!("mc-revoke-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir_all(&dir).unwrap();
+    // Unix: an extensionless `#!` script. Windows does not run that form; a `.cmd` is the script, judged by its extension.
+    #[cfg(unix)]
     let script = dir.join("tool");
+    #[cfg(unix)]
+    std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
+    #[cfg(windows)]
+    let script = dir.join("tool.cmd");
+    #[cfg(windows)]
+    std::fs::write(&script, "@echo off\r\n").unwrap();
+    #[cfg(not(any(unix, windows)))]
+    let script = dir.join("tool");
+    #[cfg(not(any(unix, windows)))]
     std::fs::write(&script, "#!/bin/sh\necho hi\n").unwrap();
     let bench = Bench::new();
     let conn = bench.store.lock_conn().unwrap();
@@ -1288,7 +1330,7 @@ fn turning_the_setting_off_takes_back_an_always_for_a_script() {
 fn an_answer_recorded_as_the_user_does_not_grant_a_secret() {
     // Round 4 (LOW): the Needs sheet's answer ("user") is not the person's answer on a secret card.
     let bench = Bench::new();
-    let (_, key) = ask(&bench, "mono-1", &["/usr/bin/true", "x"], NOW);
+    let (_, key) = ask(&bench, "mono-1", &[harmless_program(), "x"], NOW);
     {
         let conn = bench.store.lock_conn().unwrap();
         conn.execute(
@@ -1302,7 +1344,7 @@ fn an_answer_recorded_as_the_user_does_not_grant_a_secret() {
     let outcome = prepare_run(
         &bench.vault,
         &mut conn,
-        request("mono-1", &["/usr/bin/true", "x"]),
+        request("mono-1", &[harmless_program(), "x"]),
         NOW + 2,
     )
     .unwrap();
@@ -1316,14 +1358,14 @@ fn an_answer_recorded_as_the_user_does_not_grant_a_secret() {
 fn a_once_answer_for_another_command_does_not_drop_an_always_grant() {
     // Round 4 (LOW): one row per program per Mono let a Once overwrite an Always for another command.
     let bench = Bench::new();
-    let (_, key) = ask(&bench, "mono-1", &["/usr/bin/true", "a"], NOW);
+    let (_, key) = ask(&bench, "mono-1", &[harmless_program(), "a"], NOW);
     person_answers(&bench, &key, "Always for this Mono", NOW + 1);
     {
         let mut conn = bench.store.lock_conn().unwrap();
         let err = prepare_run(
             &bench.vault,
             &mut conn,
-            request("mono-1", &["/usr/bin/true", "a"]),
+            request("mono-1", &[harmless_program(), "a"]),
             NOW + 2,
         )
         .unwrap_err();
@@ -1332,13 +1374,13 @@ fn a_once_answer_for_another_command_does_not_drop_an_always_grant() {
             "{err}"
         );
     }
-    let (_, other) = ask(&bench, "mono-1", &["/usr/bin/true", "b"], NOW + 3);
+    let (_, other) = ask(&bench, "mono-1", &[harmless_program(), "b"], NOW + 3);
     person_answers(&bench, &other, "Once", NOW + 4);
     let mut conn = bench.store.lock_conn().unwrap();
     let spent = prepare_run(
         &bench.vault,
         &mut conn,
-        request("mono-1", &["/usr/bin/true", "b"]),
+        request("mono-1", &[harmless_program(), "b"]),
         NOW + 5,
     )
     .unwrap();
@@ -1346,7 +1388,7 @@ fn a_once_answer_for_another_command_does_not_drop_an_always_grant() {
     let again = prepare_run(
         &bench.vault,
         &mut conn,
-        request("mono-1", &["/usr/bin/true", "a"]),
+        request("mono-1", &[harmless_program(), "a"]),
         NOW + 6,
     )
     .unwrap();
@@ -1360,13 +1402,13 @@ fn a_once_answer_for_another_command_does_not_drop_an_always_grant() {
 fn a_second_mono_asking_the_same_program_does_not_cancel_the_first_monos_card() {
     // Round 4 (LOW): a second Mono's ask must not move the card's binding away from the first Mono's command.
     let bench = Bench::new();
-    let (_, key) = ask(&bench, "mono-1", &["/usr/bin/true", "first"], NOW);
+    let (_, key) = ask(&bench, "mono-1", &[harmless_program(), "first"], NOW);
     let other = {
         let mut conn = bench.store.lock_conn().unwrap();
         match prepare_run(
             &bench.vault,
             &mut conn,
-            request("mono-2", &["/usr/bin/true", "second"]),
+            request("mono-2", &[harmless_program(), "second"]),
             NOW + 1,
         )
         .unwrap()
@@ -1381,7 +1423,7 @@ fn a_second_mono_asking_the_same_program_does_not_cancel_the_first_monos_card() 
     let granted = prepare_run(
         &bench.vault,
         &mut conn,
-        request("mono-1", &["/usr/bin/true", "first"]),
+        request("mono-1", &[harmless_program(), "first"]),
         NOW + 3,
     )
     .unwrap();
@@ -1399,14 +1441,14 @@ fn an_answer_for_a_card_the_person_did_not_read_is_refused() {
     let (_, key) = ask(
         &bench,
         "mono-1",
-        &["/usr/bin/true", "https://api.stripe.com/v1/balance"],
+        &[harmless_program(), "https://api.stripe.com/v1/balance"],
         NOW,
     );
     let seen = card(&bench, &key).version;
     let _ = ask(
         &bench,
         "mono-1",
-        &["/usr/bin/true", "https://evil.example/collect"],
+        &[harmless_program(), "https://evil.example/collect"],
         NOW + 1,
     );
     {
@@ -1436,7 +1478,10 @@ fn an_answer_for_a_card_the_person_did_not_read_is_refused() {
     let evil = prepare_run(
         &bench.vault,
         &mut conn,
-        request("mono-1", &["/usr/bin/true", "https://evil.example/collect"]),
+        request(
+            "mono-1",
+            &[harmless_program(), "https://evil.example/collect"],
+        ),
         NOW + 4,
     )
     .unwrap();
@@ -1449,7 +1494,7 @@ fn an_answer_for_a_card_the_person_did_not_read_is_refused() {
         &mut conn,
         request(
             "mono-1",
-            &["/usr/bin/true", "https://api.stripe.com/v1/balance"],
+            &[harmless_program(), "https://api.stripe.com/v1/balance"],
         ),
         NOW + 5,
     )

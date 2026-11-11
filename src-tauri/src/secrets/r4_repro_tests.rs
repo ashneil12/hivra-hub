@@ -81,7 +81,7 @@ fn curl_and_wget_are_not_offered_always_and_the_card_says_they_read_config() {
     let outcome = prepare_run(
         &bench.vault,
         &mut conn,
-        request(&["curl", "https://example.test"]),
+        request(&[curl_program(), "https://example.test"]),
         NOW,
     )
     .unwrap();
@@ -105,7 +105,7 @@ fn curl_and_wget_are_not_offered_always_and_the_card_says_they_read_config() {
 #[test]
 fn an_always_answer_and_a_stored_always_grant_do_not_run_the_command() {
     let bench = Bench::new();
-    let (program, identity) = pin_program("/usr/bin/true", None, None).unwrap();
+    let (program, identity) = pin_program(harmless_program(), None, None).unwrap();
     let command = vec![program.clone(), "customers".to_string()];
     let fingerprint = run_fingerprint(
         &program,
@@ -142,7 +142,7 @@ fn an_always_answer_and_a_stored_always_grant_do_not_run_the_command() {
     let outcome = prepare_run(
         &bench.vault,
         &mut conn,
-        request(&["/usr/bin/true", "customers"]),
+        request(&[harmless_program(), "customers"]),
         NOW + 1,
     )
     .unwrap();
@@ -193,7 +193,7 @@ fn answering_a_secret_card_without_the_version_that_was_read_is_refused() {
     let outcome = prepare_run(
         &bench.vault,
         &mut conn,
-        request(&["/usr/bin/true", "x"]),
+        request(&[harmless_program(), "x"]),
         NOW,
     )
     .unwrap();

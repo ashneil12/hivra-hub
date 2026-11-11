@@ -16,7 +16,7 @@
 use std::collections::BTreeSet;
 use std::sync::Mutex;
 
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -31,6 +31,95 @@ pub mod store;
 pub mod worker;
 
 pub use store::Vault;
+
+/// A program the tests can pin that runs no code of its own. Unix keeps `/usr/bin/true`. On Windows that path is not
+/// absolute, so pin refuses it; `where.exe` ships with Windows and is not on the run-anything list.
+#[cfg(test)]
+pub(crate) fn harmless_program() -> &'static str {
+    #[cfg(unix)]
+    {
+        "/usr/bin/true"
+    }
+    #[cfg(windows)]
+    {
+        r"C:\Windows\System32\where.exe"
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "true"
+    }
+}
+
+/// A program the tests can pin that can run any code it is handed. Unix keeps a bare `python3` (looked up on the system
+/// path). Windows looks bare names up on that same Unix list, so the tests use `find.exe`, which is on the run-anything
+/// list and ships with Windows.
+#[cfg(test)]
+pub(crate) fn code_program() -> &'static str {
+    #[cfg(unix)]
+    {
+        "python3"
+    }
+    #[cfg(windows)]
+    {
+        r"C:\Windows\System32\find.exe"
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "python3"
+    }
+}
+
+/// Same as [`code_program`], for a test whose Unix fixture is `node`.
+#[cfg(test)]
+pub(crate) fn node_program() -> &'static str {
+    #[cfg(unix)]
+    {
+        "node"
+    }
+    #[cfg(windows)]
+    {
+        r"C:\Windows\System32\find.exe"
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "node"
+    }
+}
+
+/// curl, which the card says can read a config file. A bare name on Unix. An absolute `curl.exe` on Windows, because a
+/// bare name is looked up on the Unix search list there.
+#[cfg(test)]
+pub(crate) fn curl_program() -> &'static str {
+    #[cfg(unix)]
+    {
+        "curl"
+    }
+    #[cfg(windows)]
+    {
+        r"C:\Windows\System32\curl.exe"
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "curl"
+    }
+}
+
+/// The absolute curl a card-text test names. On Unix the question shows this path. On Windows, `curl.exe`.
+#[cfg(test)]
+pub(crate) fn curl_absolute() -> &'static str {
+    #[cfg(unix)]
+    {
+        "/usr/bin/curl"
+    }
+    #[cfg(windows)]
+    {
+        r"C:\Windows\System32\curl.exe"
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        "curl"
+    }
+}
 
 /// Every vault item's account name.
 pub const ACCOUNT: &str = "value";
@@ -407,6 +496,12 @@ fn ensure_tables_batch(conn: &Connection) -> rusqlite::Result<()> {
            project TEXT NOT NULL,
            decision_key TEXT NOT NULL,
            fingerprint TEXT NOT NULL,
+           PRIMARY KEY (project, decision_key)
+         );
+         CREATE TABLE IF NOT EXISTS secret_card_epochs (
+           project TEXT NOT NULL,
+           decision_key TEXT NOT NULL,
+           high_water INTEGER NOT NULL,
            PRIMARY KEY (project, decision_key)
          );",
     )
@@ -1338,6 +1433,49 @@ pub fn spend_once(
     Ok(changed == 1)
 }
 
+/// The next version number for one secret card. The counter survives the card being deleted, so a version that was
+/// already shown is never issued again (fix round 6). A gap is fine. A repeat is not.
+///
+/// The first number for a key that already has a decision is one past that decision's version, so an install from
+/// before this counter does not reissue a version the person has already seen.
+pub(crate) fn alloc_card_version(
+    conn: &Connection,
+    project: &str,
+    key: &str,
+) -> Result<i64, String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS secret_card_epochs (
+           project TEXT NOT NULL,
+           decision_key TEXT NOT NULL,
+           high_water INTEGER NOT NULL,
+           PRIMARY KEY (project, decision_key)
+         );",
+    )
+    .map_err(|e| e.to_string())?;
+    let current: i64 = conn
+        .query_row(
+            "SELECT version FROM decisions WHERE project = ?1 AND decision_key = ?2",
+            params![project, key],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .unwrap_or(0);
+    let seed = current.max(0) + 1;
+    conn.execute(
+        "INSERT INTO secret_card_epochs (project, decision_key, high_water) VALUES (?1, ?2, ?3)
+         ON CONFLICT (project, decision_key) DO UPDATE SET high_water = high_water + 1",
+        params![project, key, seed],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT high_water FROM secret_card_epochs WHERE project = ?1 AND decision_key = ?2",
+        params![project, key],
+        |row| row.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 pub fn revoke_grant(
     conn: &Connection,
     scope: &str,
@@ -1938,7 +2076,7 @@ pub const ALWAYS_WARNING: &str =
     "'Always' lets an agent use this key for anything, without asking you. Leave this off unless you are sure.";
 
 /// What a refused "Always" says.
-pub const ALWAYS_REFUSED: &str = "This can run any code, so it asks every time. To allow Always for programs like this, turn on \"Let me choose 'Always' for programs that can run any code\" on the Secrets page.";
+pub const ALWAYS_REFUSED: &str = "This can run any code, so it asks every time.";
 
 /// Whether a program can run any code it is handed, judged by its typed word and by its canonical path. A script is judged
 /// by the interpreter on its `#!` line (`npx` pins to a JavaScript file that runs `node`; a `#!/bin/sh` script is a shell).
@@ -2242,13 +2380,18 @@ pub enum ApprovalOutcome {
 ///
 /// Only the person's own answer counts. A row answered any other way (a chat forwarding an `ask_person` answer, or a
 /// write that got past them) is treated as not answered: nothing is granted and nothing is deleted.
-pub fn ensure_grant(
+/// A stored grant is spent in the same transaction that finds it. Only a Mono `once` grant counts, and only if this
+/// call deletes it. Anything else found here (a mode this code does not write) grants nothing. A crash cannot leave
+/// the row for a later run: the delete commits with the check, or not at all.
+fn take_stored_once(
     conn: &mut Connection,
-    input: Approval,
-    now: i64,
-) -> Result<ApprovalOutcome, String> {
-    if find_grant(
-        conn,
+    input: &Approval,
+) -> Result<Option<ApprovalOutcome>, String> {
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let found = find_grant(
+        &tx,
         &input.scope,
         &input.name,
         input.mono.as_deref(),
@@ -2256,10 +2399,44 @@ pub fn ensure_grant(
         &input.executable,
         &input.identity,
         &input.fingerprint,
-    )?
-    .is_some()
-    {
-        return Ok(ApprovalOutcome::Granted);
+    )?;
+    let Some(grant) = found else {
+        drop(tx);
+        return Ok(None);
+    };
+    let key = decision_key(&input.name, &input.key_source);
+    if grant.mode != "once" || grant.subject_kind != "mono" {
+        drop(tx);
+        return Ok(Some(ApprovalOutcome::Waiting { decision_key: key }));
+    }
+    let Some(mono) = input.mono.as_deref() else {
+        drop(tx);
+        return Err("Which Mono is asking?".into());
+    };
+    let spent = spend_once(
+        &tx,
+        &input.scope,
+        &input.name,
+        mono,
+        &input.executable,
+        &input.identity,
+        &input.fingerprint,
+    )?;
+    if !spent {
+        drop(tx);
+        return Ok(Some(ApprovalOutcome::Waiting { decision_key: key }));
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Some(ApprovalOutcome::Granted))
+}
+
+pub fn ensure_grant(
+    conn: &mut Connection,
+    input: Approval,
+    now: i64,
+) -> Result<ApprovalOutcome, String> {
+    if let Some(outcome) = take_stored_once(conn, &input)? {
+        return Ok(outcome);
     }
     let project = input.project.as_deref().unwrap_or("");
     let key = decision_key(&input.name, &input.key_source);
@@ -2294,6 +2471,13 @@ pub fn ensure_grant(
             if answer == "No" {
                 return Ok(ApprovalOutcome::Denied { decision_key: key });
             }
+            // Only the exact word "Once" grants. "no", or any other words, refuse and write no grant.
+            if answer != "Once"
+                && answer != "Always for this project"
+                && answer != "Always for this Mono"
+            {
+                return Ok(ApprovalOutcome::Denied { decision_key: key });
+            }
             let mono = asked_for;
             let granted = (|| -> Result<bool, String> {
                 if answer == "Always for this project" {
@@ -2325,9 +2509,13 @@ pub fn ensure_grant(
                         now,
                     )?;
                 } else {
-                    // "Once": it is spent here. Two racing runs cannot both spend it.
+                    // "Once", written and spent in one transaction. A stop between the two rolls the grant back, so it
+                    // cannot let every later run through.
+                    let tx = conn
+                        .transaction_with_behavior(TransactionBehavior::Immediate)
+                        .map_err(|e| e.to_string())?;
                     put_grant(
-                        conn,
+                        &tx,
                         &input.scope,
                         &input.name,
                         "mono",
@@ -2338,17 +2526,20 @@ pub fn ensure_grant(
                         "once",
                         now,
                     )?;
-                    if !spend_once(
-                        conn,
+                    let spent = spend_once(
+                        &tx,
                         &input.scope,
                         &input.name,
                         mono,
                         &input.executable,
                         &input.identity,
                         &input.fingerprint,
-                    )? {
+                    )?;
+                    if !spent {
+                        drop(tx);
                         return Ok(false);
                     }
+                    tx.commit().map_err(|e| e.to_string())?;
                 }
                 Ok(true)
             })();
@@ -2441,22 +2632,48 @@ fn binding_of(conn: &Connection, project: &str, key: &str) -> Result<Option<Stri
     .map_err(|e| e.to_string())
 }
 
-fn bind_card(conn: &Connection, project: &str, key: &str, fingerprint: &str) -> Result<(), String> {
+fn bind_card(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    fingerprint: &str,
+) -> Result<(), String> {
     // Fix round 4 (N1): a card bound to another command is a new version of that card. An answer given on the words the
     // person read carries that version, so it cannot be spent on a command they did not read.
-    if binding_of(conn, project, key)?.as_deref() != Some(fingerprint) {
-        conn.execute(
-            "UPDATE decisions SET version = version + 1 WHERE project = ?1 AND decision_key = ?2",
-            params![project, key],
-        )
+    // Fix round 6: the new version comes from the key's counter, which is not deleted with the card, so a spent card's
+    // version is never the next card's version. The binding moves only when that version move lands.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
+    if binding_of(&tx, project, key)?.as_deref() != Some(fingerprint) {
+        let old: Option<i64> = tx
+            .query_row(
+                "SELECT version FROM decisions WHERE project = ?1 AND decision_key = ?2",
+                params![project, key],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(old) = old {
+            let next = alloc_card_version(&tx, project, key)?;
+            let changed = tx
+                .execute(
+                    "UPDATE decisions SET version = ?3 WHERE project = ?1 AND decision_key = ?2 AND version = ?4",
+                    params![project, key, next, old],
+                )
+                .map_err(|e| e.to_string())?;
+            if changed != 1 {
+                return Err("The card changed while it was being bound. Try again.".into());
+            }
+        }
     }
-    conn.execute(
+    tx.execute(
         "INSERT INTO secret_card_bindings (project, decision_key, fingerprint) VALUES (?1, ?2, ?3)
          ON CONFLICT (project, decision_key) DO UPDATE SET fingerprint = excluded.fingerprint",
         params![project, key, fingerprint],
     )
     .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(())
 }
 

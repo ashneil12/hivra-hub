@@ -65,7 +65,7 @@ fn a_version_read_on_a_spent_card_never_answers_the_card_put_up_after_it() {
         prepare_run(
             &bench.vault,
             &mut conn,
-            request(&["/usr/bin/true", "https://api.stripe.com/v1/balance"]),
+            request(&[harmless_program(), "https://api.stripe.com/v1/balance"]),
             NOW,
         )
         .unwrap(),
@@ -79,7 +79,7 @@ fn a_version_read_on_a_spent_card_never_answers_the_card_put_up_after_it() {
         prepare_run(
             &bench.vault,
             &mut conn,
-            request(&["/usr/bin/true", "https://api.stripe.com/v1/balance"]),
+            request(&[harmless_program(), "https://api.stripe.com/v1/balance"]),
             NOW + 2,
         )
         .unwrap(),
@@ -90,7 +90,7 @@ fn a_version_read_on_a_spent_card_never_answers_the_card_put_up_after_it() {
         prepare_run(
             &bench.vault,
             &mut conn,
-            request(&["/usr/bin/true", "https://evil.example/collect"]),
+            request(&[harmless_program(), "https://evil.example/collect"]),
             NOW + 3,
         )
         .unwrap(),
@@ -112,7 +112,7 @@ fn a_version_read_on_a_spent_card_never_answers_the_card_put_up_after_it() {
         prepare_run(
             &bench.vault,
             &mut conn,
-            request(&["/usr/bin/true", "https://evil.example/collect"]),
+            request(&[harmless_program(), "https://evil.example/collect"]),
             NOW + 5,
         )
         .unwrap(),
@@ -144,7 +144,7 @@ fn only_the_word_once_grants_a_secret_run() {
         prepare_run(
             &bench.vault,
             &mut conn,
-            request(&["/usr/bin/true", "x"]),
+            request(&[harmless_program(), "x"]),
             NOW,
         )
         .unwrap(),
@@ -157,7 +157,7 @@ fn only_the_word_once_grants_a_secret_run() {
     let outcome = prepare_run(
         &bench.vault,
         &mut conn,
-        request(&["/usr/bin/true", "x"]),
+        request(&[harmless_program(), "x"]),
         NOW + 2,
     )
     .unwrap();
@@ -172,7 +172,7 @@ fn only_the_word_once_grants_a_secret_run() {
 #[test]
 fn a_stored_once_grant_lets_one_run_through_only() {
     let bench = Bench::new();
-    let (program, identity) = pin_program("/usr/bin/true", None, None).unwrap();
+    let (program, identity) = pin_program(harmless_program(), None, None).unwrap();
     let command = vec![program.clone(), "customers".to_string()];
     let fingerprint = run_fingerprint(
         &program,
@@ -195,7 +195,7 @@ fn a_stored_once_grant_lets_one_run_through_only() {
             prepare_run(
                 &bench.vault,
                 &mut conn,
-                request(&["/usr/bin/true", "customers"]),
+                request(&[harmless_program(), "customers"]),
                 NOW + at,
             )
             .unwrap(),

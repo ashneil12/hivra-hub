@@ -465,7 +465,13 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     if created || !added.is_empty() {
         decision.waiting.extend(added.iter().cloned());
         decision.updated_at = now;
-        decision.version += 1;
+        // A secret card's version comes from a counter that outlives the card, so a spent card's version is never
+        // given to the next one (fix round 6). Other decisions still count up from the row itself.
+        if is_secret_key(&key) {
+            decision.version = crate::secrets::alloc_card_version(&tx, &project, &key)?;
+        } else {
+            decision.version += 1;
+        }
         save(&tx, &decision)?;
     }
     tx.commit().map_err(|e| e.to_string())?;
@@ -543,7 +549,7 @@ pub fn check_ask_key(key: &str) -> Result<(), String> {
 /// Mono asked, or one already answered, is left alone.
 #[allow(clippy::too_many_arguments)]
 pub fn refresh_open(
-    conn: &Connection,
+    conn: &mut Connection,
     project: &str,
     key: &str,
     question: &str,
@@ -565,9 +571,15 @@ pub fn refresh_open(
     if card.question == question && card.options == options {
         return Ok(false);
     }
-    let changed = conn
+    // The new version is allocated with the word change, and only lands if the card is still the one that was read.
+    // A lost race spends a number. It does not reuse one.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let next = crate::secrets::alloc_card_version(&tx, project, key)?;
+    let changed = tx
         .execute(
-            "UPDATE decisions SET question = ?3, options = ?4, recommended = ?5, updated_at = ?6, version = version + 1
+            "UPDATE decisions SET question = ?3, options = ?4, recommended = ?5, updated_at = ?6, version = ?8
              WHERE project = ?1 AND decision_key = ?2 AND state = 'open' AND version = ?7",
             params![
                 project,
@@ -576,10 +588,12 @@ pub fn refresh_open(
                 json!(options).to_string(),
                 recommended,
                 now,
-                card.version
+                card.version,
+                next
             ],
         )
         .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(changed == 1)
 }
 
@@ -807,7 +821,12 @@ pub fn answer_seen(
     );
     decision.answered_at = Some(now);
     decision.updated_at = now;
-    decision.version += 1;
+    if is_secret_key(&decision.decision_key) {
+        decision.version =
+            crate::secrets::alloc_card_version(&tx, &decision.project, &decision.decision_key)?;
+    } else {
+        decision.version += 1;
+    }
     save(&tx, &decision)?;
     let mut released = Vec::new();
     let mut released_tasks = Vec::new();
