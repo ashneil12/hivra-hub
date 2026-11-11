@@ -278,17 +278,14 @@ function openDecision(decision: Decision, projectId: string | undefined): () => 
   return () => openFromHome({ kind: "inbox", projectId: projectId ?? "", decisionKey: decision.decisionKey });
 }
 
-/** A Mono's name, or the asker when the decision has no Mono. Never a blank. */
-function decisionWho(decision: Decision): string {
+/** A Mono's name, or the asker when that name is missing. Never a blank, and never a raw id. */
+export function decisionWho(decision: Decision): string {
   const mono = decision.askedByMono?.trim();
   if (mono) {
-    const named = monoName(mono, "");
-    if (named && named !== "Coding team") return named;
+    const named = personName(monoName(mono, ""));
+    if (named !== "Coding team") return named;
   }
-  const asked = decision.askedBy.trim();
-  if (!asked) return "Coding team";
-  const named = personName(asked);
-  return named === "Coding team" ? asked : named;
+  return personName(decision.askedBy);
 }
 
 function decisionFacts(

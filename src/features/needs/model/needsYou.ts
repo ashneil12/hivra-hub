@@ -505,10 +505,7 @@ function checkItem(fact: CheckFact, now: number): Draft | undefined {
     at: finite(fact.at, now),
     sentence,
     // A gate card is never a one tap, so the only control is Open.
-    actions: openAction(
-      oneTapButton({ gateCard: true, decisionKey: fact.gateKey, sentence, recommended: null })?.label ?? "Open",
-      fact.onOpen,
-    ),
+    actions: openAction("Open", fact.onOpen),
     open: fact.open,
     gateKey,
   };
