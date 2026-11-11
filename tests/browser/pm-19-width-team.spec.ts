@@ -59,7 +59,7 @@ for (const size of SIZES) {
     // WP-04 moved building a page to the Mono's chat (BUILD_MOVED); the app's dev keyword stub stands in for that
   // build here, as in agents-page, so the preview it draws is what this checks.
   await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
-  await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
+  await page.getByLabel("Describe the hub").fill("plan my week, with a calendar");
     await page.getByLabel("Send to a Mono").click();
     await expect(page.locator("[data-block-calendar]").first()).toBeVisible({ timeout: 30_000 });
     const p = await fill(page, "[data-pages-preview], [data-pages-open]");

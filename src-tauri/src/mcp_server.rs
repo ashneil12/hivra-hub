@@ -2114,7 +2114,7 @@ mod tests {
             .unwrap();
         let desc = page["description"].as_str().unwrap();
         assert!(desc.contains(
-            "from the hub and the project's own checkout (its local git log, task_status, files)"
+            "from the app and the project's own checkout (its local git log, task_status, files)"
         ));
         assert!(desc.contains("never from gh or anything else that reaches GitHub"));
     }

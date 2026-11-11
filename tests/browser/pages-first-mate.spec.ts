@@ -11,13 +11,13 @@ const fixture = (page: Page, what: "answer" | "endTurn" | "busy", arg?: unknown)
 
 async function ask(page: Page, text: string) {
   await page.goto("/tests/browser/pages-first-mate.html");
-  await page.locator('[data-pages-new] input[aria-label="Describe the page"]').fill(text);
+  await page.locator('[data-pages-new] input[aria-label="Describe the hub"]').fill(text);
   await page.locator("[data-pages-new] form button[type=submit]").click();
 }
 
 test("New page goes to Ed's own chat and Ed's page_build there is the preview to apply", async ({ page }) => {
   await ask(page, "a page of every agent");
-  await expect(page.locator('[data-pages-build-state="building"]')).toContainText("Ed is building your page in its chat");
+  await expect(page.locator('[data-pages-build-state="building"]')).toContainText("Ed is building your hub in its chat");
   await expect(page.locator("[data-pages-open-chat]")).toHaveText("Open Ed's chat");
   await expect.poll(async () => (await proof(page)).sent.length).toBe(1);
   const sent = (await proof(page)).sent[0];
@@ -37,7 +37,7 @@ test("Ed's turn ends without a page: the card says so with his words and Try aga
   await expect.poll(async () => (await proof(page)).sent.length).toBe(1);
   await fixture(page, "endTurn", "I can't see the agents from here.");
   const problem = page.locator('[data-pages-build-problem="no-page"]');
-  await expect(problem).toContainText("No page yet");
+  await expect(problem).toContainText("No hub yet");
   await expect(problem).toContainText("I can't see the agents from here.");
   await page.locator("[data-pages-try-again]").click();
   await expect.poll(async () => (await proof(page)).sent.length).toBe(2);
@@ -46,7 +46,7 @@ test("Ed's turn ends without a page: the card says so with his words and Try aga
 test("a busy first mate gets nothing sent and a Try again line", async ({ page }) => {
   await page.goto("/tests/browser/pages-first-mate.html");
   await fixture(page, "busy", true);
-  await page.locator('[data-pages-new] input[aria-label="Describe the page"]').fill("a page of every agent");
+  await page.locator('[data-pages-new] input[aria-label="Describe the hub"]').fill("a page of every agent");
   await page.locator("[data-pages-new] form button[type=submit]").click();
   await expect(page.locator('[data-pages-build-problem="busy"]')).toContainText("Ed is busy");
   await expect(page.locator("[data-pages-try-again]")).toBeVisible();

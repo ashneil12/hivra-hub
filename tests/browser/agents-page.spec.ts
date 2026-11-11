@@ -83,11 +83,11 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await expect.poll(async () => (await proof(page)).responds.length).toBe(1);
   const answered = (await proof(page)).responds[0];
   expect(answered).toMatchObject({ id: "w-d2", requestId: 7 });
-  expect(answered.reply.custom?.layout).toBe("Three, and label them by date\n\n(sent from the Agents page)");
+  expect(answered.reply.custom?.layout).toBe("Three, and label them by date\n\n(sent from the Agents hub)");
   // The worker is back at work, live: it leaves Needs you and shows under its Lead again.
   await expect(asking).toHaveCount(0);
   await expect(exo.locator(".worker", { hasText: "Pick the save slot layout" }).locator(".status")).toContainText("Working");
-  await expect(page.locator("[data-page-activity]")).toContainText("Answered “Pick the save slot layout”: “Three, and label them by date” · from the Agents page · just now");
+  await expect(page.locator("[data-page-activity]")).toContainText("Answered “Pick the save slot layout”: “Three, and label them by date” · from the Agents hub · just now");
 
   // Stop the save worker from its row: it is still running, so the delegation tree's own Stop takes it. The one that
   // needs Ash already finished (out of credits); Stop there says so and does not pretend it stopped.
@@ -107,7 +107,7 @@ test("the Agents page follows the agents live, and answers, takes a pick and sto
   await hivra.getByRole("button", { name: "Take it" }).click();
   // r97 (g): the pick reads as its option. "My pick: send it today" names "Send it to the waitlist today"
   // (chatQuestions.ts optionForPick; pageSources.test.ts: "the pick reads as its option").
-  await expect.poll(async () => (await proof(page)).sent).toEqual([{ id: "s-hivra", text: "Go with your pick: Send it to the waitlist today\n\n(sent from the Agents page)" }]);
+  await expect.poll(async () => (await proof(page)).sent).toEqual([{ id: "s-hivra", text: "Go with your pick: Send it to the waitlist today\n\n(sent from the Agents hub)" }]);
   await expect(hivra).toHaveCount(0);
   await expect(frame.locator('[data-list="working"] [data-item="a:hivra-lead"] .row .doing')).toHaveText("Shipping to the testers");
 

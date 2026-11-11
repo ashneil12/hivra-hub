@@ -226,7 +226,7 @@ test("C6: a Page's calendar block is react-day-picker on the theme's tokens", as
   // WP-04 moved building a page to the Mono's chat (BUILD_MOVED); the app's dev keyword stub stands in for that
   // build here, as in agents-page, so the preview it draws is what this checks.
   await page.evaluate(() => localStorage.setItem("monocode:pages-dev-stub", "1"));
-  await page.getByLabel("Describe the page").fill("plan my week, with a calendar");
+  await page.getByLabel("Describe the hub").fill("plan my week, with a calendar");
   await page.getByLabel("Send to a Mono").click();
   const calendar = page.locator("[data-block-calendar]").first();
   await expect(calendar).toBeVisible({ timeout: 30_000 });
