@@ -315,6 +315,137 @@ describe("autopilot.decide", () => {
     expect((taken as { answeredBy?: string }).answeredBy).not.toBe("captain:hivra-lead");
   });
 
+  it("does not answer a keyed call from another project's rule or standing answer", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const seen: unknown[] = [];
+    s.deps.captainContext = (input) => {
+      seen.push(input.key);
+      return {
+        rules: [{ when: "font", answer: "Example: Inter" }],
+        standing: { answer: "Example: Inter", label: "EXO menus" },
+      };
+    };
+    const worker = chat("worker-1", [], "/Users/someone/Projects/hivra");
+    const result = (await call(
+      worker,
+      "autopilot.decide",
+      {
+        question: "Which font?",
+        recommendation: "Example: Comic Sans",
+        project: "EXO",
+        key: "font/menu",
+        options: ["Example: Inter", "Example: Comic Sans"],
+      },
+      s,
+      "outsider",
+    )) as Record<string, unknown>;
+    expect(result.decision).toBe("held");
+    expect(result.answeredBy).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("Example: Inter");
+    expect(JSON.stringify(result)).not.toContain("EXO menus");
+    expect(seen).toEqual([undefined]);
+  });
+
+  it("passes the card version it read, and does not write when that version is missing", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const written: unknown[][] = [];
+    s.deps.captainContext = () => ({
+      monoId: "ada",
+      standing: { answer: "Keep it", label: "merge on green" },
+    });
+    s.deps.answerDecision = async (...args) => {
+      written.push(args);
+      return { applied: true };
+    };
+    const card = {
+      question: "Which font?",
+      options: ["Keep it", "Change it"],
+      recommended: "Keep it",
+      askedBy: "fm",
+      state: "open" as const,
+      version: 4,
+    };
+    s.deps.openCard = async () => card;
+    const taken = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "ver",
+    );
+    expect(taken).toMatchObject({ decision: "taken", answer: "Keep it" });
+    expect(written).toHaveLength(1);
+    expect(written[0]?.[0]).toBe("hivra");
+    expect(written[0]?.[1]).toBe("font");
+    expect(written[0]?.[2]).toBe("Keep it");
+    expect(written[0]?.[4]).toBe(4);
+    expect(written[0]?.[6]).toBe("hivra-chat");
+
+    s.deps.openCard = async () => ({ ...card, version: undefined });
+    const missing = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "miss",
+    )) as Record<string, unknown>;
+    expect(missing.decision).toBe("held");
+    expect(written).toHaveLength(1);
+
+    s.deps.openCard = async () => ({ ...card, version: Number.NaN });
+    const notANumber = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "nan",
+    )) as Record<string, unknown>;
+    expect(notANumber.decision).toBe("held");
+    expect(written).toHaveLength(1);
+
+    delete s.deps.openCard;
+    const unversioned = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "none",
+    );
+    expect(unversioned).toMatchObject({ decision: "taken", answer: "Keep it" });
+    expect(written).toHaveLength(2);
+    expect(written[1]?.[4]).toBeUndefined();
+  });
+
+  it("says a held captain answer is held, not that it waits", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    s.deps.captainContext = () => ({
+      monoId: "ada",
+      standing: { answer: "Keep it", label: "merge on green" },
+    });
+    const other = (await call(
+      chat("worker-1", [], "/Users/someone/Projects/hivra"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Keep it", project: "EXO", key: "font", options: ["Keep it"] },
+      s,
+      "other-project",
+    )) as Record<string, unknown>;
+    expect(other.decision).toBe("held");
+    expect(other.note).toBe("This call names another project's question, so it is held.");
+
+    const unwritten = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Keep it", project: "Hivra", key: "font", options: ["Keep it"] },
+      s,
+      "unwritten",
+    )) as Record<string, unknown>;
+    expect(unwritten.decision).toBe("held");
+    expect(unwritten.note).toBe("The decision store did not keep the captain's answer, so it is held.");
+  });
+
   it("status says what is on, for whom", async () => {
     const s = setup();
     await on(s, ["hivra"]);

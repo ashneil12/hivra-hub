@@ -288,6 +288,11 @@ impl CliGh {
         command.env("GH_PAGER", "cat");
         command.env("GIT_TERMINAL_PROMPT", "0");
         command.env("NO_COLOR", "1");
+        // The issue poll runs gh in a project folder. Contain it the same way as a project action.
+        let command = match issue_sandbox_prefix() {
+            Ok(prefix) => crate::agent_sandbox::under_wrap(command, prefix.as_deref()),
+            Err(_) => std::process::Command::new("/nonexistent/monocode-sandbox-refused"),
+        };
         let ran =
             crate::pr_watch::bounded::run(command, GH_TIMEOUT).map_err(|error| match error {
                 crate::pr_watch::bounded::Failed::TimedOut => {
@@ -306,6 +311,20 @@ impl CliGh {
             return Err(detail.to_string());
         }
         Ok(ran.stdout)
+    }
+}
+
+/// Prefix for the issue poll's `gh`, or nothing when the sandbox is off.
+/// Unit tests stay plain so they never read the real data folder. A profile that cannot be built refuses the start.
+fn issue_sandbox_prefix() -> Result<Option<Vec<std::ffi::OsString>>, String> {
+    #[cfg(test)]
+    {
+        Ok(None)
+    }
+    #[cfg(not(test))]
+    {
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        crate::agent_sandbox::action_wrap(data.as_deref(), &[])
     }
 }
 

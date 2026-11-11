@@ -178,7 +178,15 @@ describe("the captain's order", () => {
     expect(captainAnswerHeld("Chief of Staff suggests: Example: retry once")).toBe(true);
     expect(captainAnswerHeld("The captain is out of turns this hour.")).toBe(true);
     expect(captainAnswerHeld("This one is only the owner's.")).toBe(true);
+    expect(captainAnswerHeld("The captain did not answer within 10 minutes.")).toBe(true);
+    expect(captainAnswerHeld("The captain's pick was not one of the options.")).toBe(true);
     expect(captainAnswerHeld("couldn't take a message")).toBe(false);
     expect(captainAnswerHeld("the app couldn't answer this one")).toBe(false);
+    const waiting = captainDecide(ask());
+    const unfinished = captainDecide(ask({ turn: () => { throw new Error("cut"); } }));
+    expect(waiting).toMatchObject({ kind: "waiting" });
+    expect(unfinished).toMatchObject({ kind: "waiting" });
+    if (waiting.kind === "waiting") expect(captainAnswerHeld(waiting.reason)).toBe(false);
+    if (unfinished.kind === "waiting") expect(captainAnswerHeld(unfinished.reason)).toBe(false);
   });
 });

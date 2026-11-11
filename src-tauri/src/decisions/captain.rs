@@ -1355,4 +1355,92 @@ mod tests {
             );
         }
     }
+
+    // Review of PR #244, round 4: autopilot.decide reads the open card, runs the captain on it, and only then writes.
+    // The write names neither the version it read nor checks the answer against the stored card, so an answer worked
+    // out for one card lands on whatever the row holds by then (re-asked with other options after a retire, for one).
+    #[test]
+    fn review_r4_b_a_captain_answer_that_is_not_one_of_the_stored_cards_options_is_refused() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        cover(&conn, "*");
+        open_as(&mut conn, "hivra", "font-opts", "Which font?", "fm");
+        let out = answer_as_caller(
+            &mut conn,
+            "hivra",
+            "font-opts",
+            "Comic Sans",
+            Some("captain:ada".into()),
+            Some("standing answer: merge on green"),
+            Some("fm"),
+            NOW,
+        );
+        assert!(
+            out.is_err(),
+            "{:?}",
+            out.map(|o| o.decision.and_then(|d| d.answer))
+        );
+        assert_eq!(
+            get(&conn, "hivra", "font-opts").unwrap().unwrap().state,
+            OPEN
+        );
+    }
+
+    #[test]
+    fn a_captain_answer_names_the_version_it_read_and_one_stored_option() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        cover(&conn, "*");
+        open_as(&mut conn, "hivra", "font-ver", "Which font?", "fm");
+        let version = get(&conn, "hivra", "font-ver").unwrap().unwrap().version;
+
+        let stale = answer_as_caller_seen(
+            &mut conn,
+            "hivra",
+            "font-ver",
+            "Keep it",
+            Some("captain:ada".into()),
+            Some("standing answer: merge on green"),
+            Some(version + 1),
+            Some("fm"),
+            NOW,
+        );
+        assert!(stale.is_err(), "{stale:?}");
+        assert_eq!(
+            get(&conn, "hivra", "font-ver").unwrap().unwrap().state,
+            OPEN
+        );
+
+        open_as(&mut conn, "hivra", "font-case", "Which font?", "fm");
+        let case_version = get(&conn, "hivra", "font-case").unwrap().unwrap().version;
+        let wrong_case = answer_as_caller_seen(
+            &mut conn,
+            "hivra",
+            "font-case",
+            "keep it",
+            Some("captain:ada".into()),
+            Some("standing answer: merge on green"),
+            Some(case_version),
+            Some("fm"),
+            NOW,
+        );
+        assert!(wrong_case.is_err(), "{wrong_case:?}");
+        assert_eq!(
+            get(&conn, "hivra", "font-case").unwrap().unwrap().state,
+            OPEN
+        );
+
+        let taken = answer_as_caller_seen(
+            &mut conn,
+            "hivra",
+            "font-ver",
+            "Keep it",
+            Some("captain:ada".into()),
+            Some("standing answer: merge on green"),
+            Some(version),
+            Some("fm"),
+            NOW,
+        );
+        assert!(taken.as_ref().is_ok_and(|out| out.applied), "{taken:?}");
+    }
 }

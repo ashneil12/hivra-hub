@@ -1395,7 +1395,7 @@ fn git_github_status_for() -> GitHubStatus {
             authenticated: false,
         };
     };
-    let mut cmd = Command::new(program);
+    let mut cmd = crate::git_cmd::contained_command(&program);
     cmd.args(["auth", "status", "--active", "--hostname", "github.com"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
@@ -4735,7 +4735,7 @@ fn parse_github_rate_limit_backoff(json: &str) -> Result<Option<SystemTime>, Str
 fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
     let program = crate::harness::resolve_gui_binary("gh")
         .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
-    let mut cmd = Command::new(&program);
+    let mut cmd = crate::git_cmd::contained_command(&program);
     cmd.current_dir(root)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -4795,7 +4795,9 @@ pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, S
 /// cached search path finds it without waiting on the login shell.
 /// WP-104: the health list reads `git --version` through this same command.
 pub(crate) fn git_cmd() -> Command {
-    let mut cmd = Command::new("git");
+    // Panel reads and every other background git: no hooks, and inside the container while the sandbox is on.
+    // Ash's commit, push, pull and fetch go through `git_cmd_for_args`, which keeps the repo's hooks.
+    let mut cmd = crate::git_cmd::git();
     crate::background_work::configure_child(&mut cmd);
     crate::hide_window_console(&mut cmd);
     cmd.env("PATH", crate::harness::cached_gui_search_path());
@@ -4804,26 +4806,491 @@ pub(crate) fn git_cmd() -> Command {
     cmd
 }
 
-fn git_cmd_for_args_with_path(args: &[&str], gui_path: impl FnOnce() -> String) -> Command {
-    let mut cmd = git_cmd();
-    let args = args.strip_prefix(&["--literal-pathspecs"]).unwrap_or(args);
-    // `-c key=value` pairs come before the action. Skipping them keeps the login-shell PATH on a push.
-    let mut rest = args;
-    while rest.first() == Some(&"-c") && rest.len() >= 2 {
-        rest = &rest[2..];
-    }
-    if matches!(
-        rest.first().copied(),
-        Some("commit" | "push" | "pull" | "fetch" | "clone")
-    ) {
-        // Signers, hooks, and credential helpers may only be on the login-shell PATH.
-        cmd.env("PATH", gui_path());
-    }
+fn git_cmd_keeping_hooks() -> Command {
+    let mut cmd = crate::git_cmd::git_with_hooks();
+    crate::background_work::configure_child(&mut cmd);
+    crate::hide_window_console(&mut cmd);
     cmd
+}
+
+fn git_cmd_for_args_with_path(args: &[&str], gui_path: impl FnOnce() -> String) -> Command {
+    let mut stripped = args.strip_prefix(&["--literal-pathspecs"]).unwrap_or(args);
+    // `-c key=value` pairs come before the action. Skipping them keeps the login-shell PATH and the hooks on a push.
+    while stripped.first() == Some(&"-c") && stripped.len() >= 2 {
+        stripped = &stripped[2..];
+    }
+    let kind = stripped.first().copied();
+    if matches!(kind, Some("commit" | "push" | "pull" | "fetch")) {
+        // Signers, hooks and credential helpers may only be on the login-shell PATH. Hooks stay on.
+        let mut cmd = git_cmd_keeping_hooks();
+        cmd.env("PATH", gui_path());
+        return cmd;
+    }
+    if kind == Some("clone") {
+        // The login-shell PATH, so a helper on it can run. Hooks stay off: a cloned repo must not run one.
+        let mut cmd = git_cmd();
+        cmd.env("PATH", gui_path());
+        return cmd;
+    }
+    git_cmd()
 }
 
 fn git_cmd_for_args(args: &[&str]) -> Command {
     git_cmd_for_args_with_path(args, crate::harness::gui_search_path)
+}
+
+/// Words of a path for the Codex file-change check. `.` and `..` are applied first, then the deepest prefix that
+/// exists is canonicalized and the missing tail is appended. An error means the path cannot be resolved: the caller
+/// asks instead of granting. Drive letters, UNC shares and backslashes are accepted. A Windows `\\?\` prefix is dropped.
+pub(crate) fn resolve_existing_place(input: &str, base: &str) -> Result<String, String> {
+    let lexical = lexical_absolute(input, base)?;
+    let kind = PathKind::parse(&lexical)?;
+    let parts = kind.parts();
+    for n in (0..=parts.len()).rev() {
+        let Some(prefix) = kind.prefix(n) else {
+            continue;
+        };
+        let Ok(real) = dunce::canonicalize(Path::new(&prefix)) else {
+            continue;
+        };
+        let mut out = trim_dir_slash(path_to_js(&real));
+        for part in &parts[n..] {
+            if !out.ends_with('/') {
+                out.push('/');
+            }
+            out.push_str(part);
+        }
+        return Ok(trim_dir_slash(out));
+    }
+    Err("The path could not be resolved.".into())
+}
+
+/// The webview's `resolvedPathInside`: a resolved path is inside a resolved root, or it is the root.
+/// A path that only shares a prefix is not inside. Drive letters and UNC shares compare without case.
+/// The native command's review test is the caller, and that test is Unix (it plants a link).
+#[cfg(all(test, unix))]
+pub(crate) fn resolved_place_inside(file: &str, root: &str) -> bool {
+    let Some(left) = fold_resolved(file) else {
+        return false;
+    };
+    let Some(right) = fold_resolved(root) else {
+        return false;
+    };
+    if left == right {
+        return true;
+    }
+    let boundary = if right.ends_with('/') {
+        right
+    } else {
+        format!("{right}/")
+    };
+    left.starts_with(&boundary)
+}
+
+#[cfg(all(test, unix))]
+fn fold_resolved(path: &str) -> Option<String> {
+    if path.is_empty() {
+        return None;
+    }
+    let mut slash = path.replace('\\', "/");
+    if let Some(rest) = slash.strip_prefix("//?/UNC/") {
+        slash = format!("//{rest}");
+    } else if let Some(rest) = slash.strip_prefix("//?/") {
+        slash = rest.to_string();
+    }
+    let drive = slash.len() >= 2
+        && slash.as_bytes()[0].is_ascii_alphabetic()
+        && slash.as_bytes()[1] == b':';
+    let unc = slash.starts_with("//");
+    let mut trimmed = slash.clone();
+    let keep_slash = (drive && slash.len() <= 3) || slash == "/" || slash == "//";
+    if !keep_slash {
+        while trimmed.ends_with('/') && trimmed.len() > 1 {
+            trimmed.pop();
+        }
+    }
+    if drive && trimmed.len() == 2 {
+        trimmed.push('/');
+    }
+    if drive || unc {
+        trimmed.make_ascii_lowercase();
+    }
+    Some(trimmed)
+}
+
+/// Resolve `path` against `base` for a file-change approval. The webview has no filesystem of its own.
+#[tauri::command]
+pub async fn resolve_existing_path(path: String, base: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || resolve_existing_place(&path, &base))
+        .await
+        .map_err(|_| "The path could not be resolved.".to_string())?
+}
+
+fn lexical_absolute(input: &str, base: &str) -> Result<String, String> {
+    if input.is_empty() || input.contains('\0') || base.contains('\0') {
+        return Err("The path could not be resolved.".into());
+    }
+    let owned = input.replace('\\', "/");
+    // `\\?\C:\...` and `\\?\UNC\server\...` are the same folders as the plain paths. Drop the prefix before the words.
+    let slash = without_verbatim(owned);
+    let root = {
+        let trimmed = trim_dir_slash(base.replace('\\', "/"));
+        if trimmed.is_empty() {
+            "/".to_string()
+        } else {
+            trimmed
+        }
+    };
+    let abs = if is_rooted(&slash) {
+        slash
+    } else if root == "/" {
+        format!("/{slash}")
+    } else {
+        format!("{root}/{slash}")
+    };
+    Ok(normalize_lexical(&abs))
+}
+
+fn without_verbatim(owned: String) -> String {
+    if let Some(rest) = owned.strip_prefix("//?/UNC/") {
+        return format!("//{rest}");
+    }
+    if let Some(rest) = owned.strip_prefix("//?/") {
+        return rest.to_string();
+    }
+    owned
+}
+
+fn is_rooted(path: &str) -> bool {
+    path.starts_with('/') || has_drive_prefix(path)
+}
+
+fn has_drive_prefix(path: &str) -> bool {
+    let bytes = path.as_bytes();
+    bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes.len() == 2 || bytes[2] == b'/')
+}
+
+fn normalize_lexical(path: &str) -> String {
+    let unc = path.starts_with("//") && !path.starts_with("///");
+    let drive = (!path.starts_with('/') && has_drive_prefix(path)).then(|| path[..2].to_string());
+    let rest = if unc {
+        path.strip_prefix("//").unwrap_or(path)
+    } else if let Some(stripped) = path.strip_prefix('/') {
+        stripped
+    } else if drive.is_some() {
+        path[2..].trim_start_matches('/')
+    } else {
+        path
+    };
+    let mut stack: Vec<&str> = Vec::new();
+    for part in rest.split('/') {
+        if part.is_empty() || part == "." {
+            continue;
+        }
+        if part == ".." {
+            if stack.is_empty() {
+                if !path.starts_with('/') && drive.is_none() && !unc {
+                    stack.push("..");
+                }
+            } else if stack.last().copied() == Some("..") {
+                stack.push("..");
+            } else {
+                stack.pop();
+            }
+        } else {
+            stack.push(part);
+        }
+    }
+    let body = stack.join("/");
+    if unc {
+        if body.is_empty() {
+            "//".to_string()
+        } else {
+            format!("//{body}")
+        }
+    } else if path.starts_with('/') {
+        if body.is_empty() {
+            "/".to_string()
+        } else {
+            format!("/{body}")
+        }
+    } else if let Some(drive) = drive {
+        if body.is_empty() {
+            format!("{drive}/")
+        } else {
+            format!("{drive}/{body}")
+        }
+    } else if body.is_empty() {
+        ".".to_string()
+    } else {
+        body
+    }
+}
+
+fn trim_dir_slash(mut path: String) -> String {
+    if path == "/" || path == "//" {
+        return path;
+    }
+    while path.len() > 1 && path.ends_with('/') {
+        // `C:/` is the root of a drive. Dropping the slash would make it a relative name.
+        if has_drive_prefix(&path) && path.len() == 3 {
+            break;
+        }
+        path.pop();
+    }
+    path
+}
+
+enum PathKind {
+    Unix { parts: Vec<String> },
+    Drive { drive: String, parts: Vec<String> },
+    Unc { parts: Vec<String> },
+}
+
+impl PathKind {
+    fn parse(lexical: &str) -> Result<Self, String> {
+        if let Some(rest) = lexical.strip_prefix("//") {
+            if !rest.starts_with('/') {
+                let parts = split_parts(rest);
+                if parts.len() < 2 {
+                    return Err("The path could not be resolved.".into());
+                }
+                return Ok(Self::Unc { parts });
+            }
+        }
+        if let Some(rest) = lexical.strip_prefix('/') {
+            return Ok(Self::Unix {
+                parts: split_parts(rest),
+            });
+        }
+        if has_drive_prefix(lexical) {
+            let drive = lexical[..2].to_string();
+            let rest = lexical[2..].trim_start_matches('/');
+            return Ok(Self::Drive {
+                drive,
+                parts: split_parts(rest),
+            });
+        }
+        Err("The path could not be resolved.".into())
+    }
+
+    fn parts(&self) -> &[String] {
+        match self {
+            Self::Unix { parts } | Self::Drive { parts, .. } | Self::Unc { parts } => parts,
+        }
+    }
+
+    fn prefix(&self, n: usize) -> Option<String> {
+        let parts = self.parts();
+        if n > parts.len() {
+            return None;
+        }
+        match self {
+            Self::Unix { .. } => Some(if n == 0 {
+                "/".to_string()
+            } else {
+                format!("/{}", parts[..n].join("/"))
+            }),
+            Self::Drive { drive, .. } => Some(if n == 0 {
+                format!("{drive}/")
+            } else {
+                format!("{drive}/{}", parts[..n].join("/"))
+            }),
+            // A UNC path has no root above `//server/share`.
+            Self::Unc { .. } => {
+                if n < 2 {
+                    None
+                } else {
+                    Some(format!("//{}", parts[..n].join("/")))
+                }
+            }
+        }
+    }
+}
+
+fn split_parts(body: &str) -> Vec<String> {
+    body.split('/')
+        .filter(|part| !part.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+#[cfg(test)]
+mod resolve_existing_tests {
+    use super::{lexical_absolute, path_to_js, resolve_existing_place};
+    use std::path::PathBuf;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "resolve-existing-{tag}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn a_missing_tail_keeps_the_real_parent() {
+        let root = scratch("tail");
+        let work = root.join("work");
+        std::fs::create_dir_all(&work).unwrap();
+        let got =
+            resolve_existing_place(&path_to_js(&work.join("a.ts")), &path_to_js(&work)).unwrap();
+        let parent = resolve_existing_place(&path_to_js(&work), "/").unwrap();
+        assert_eq!(got, format!("{parent}/a.ts"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn dotdot_is_applied_before_the_lookup_so_a_sibling_is_outside() {
+        let root = scratch("dotdot");
+        let work = root.join("work");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let climbed = format!("{}/../outside/secret", path_to_js(&work));
+        let got = resolve_existing_place(&climbed, &path_to_js(&work)).unwrap();
+        let secret = resolve_existing_place(&path_to_js(&outside.join("secret")), "/").unwrap();
+        let base = resolve_existing_place(&path_to_js(&work), "/").unwrap();
+        assert_eq!(got, secret);
+        assert_ne!(got, base);
+        assert!(
+            !got.starts_with(&format!("{base}/")),
+            "{got} was treated as inside {base}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_name_that_only_shares_a_prefix_is_a_different_folder() {
+        let root = scratch("prefix");
+        let work = root.join("work");
+        let secret = root.join("work-secret");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&secret).unwrap();
+        let file =
+            resolve_existing_place(&path_to_js(&secret.join("a.ts")), &path_to_js(&work)).unwrap();
+        let base = resolve_existing_place(&path_to_js(&work), "/").unwrap();
+        assert!(
+            !file.starts_with(&format!("{base}/")),
+            "{file} inside {base}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_path_that_cannot_be_resolved_is_an_error() {
+        assert!(resolve_existing_place("a\0b", "/tmp").is_err());
+        assert!(resolve_existing_place("", "/tmp").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_drive_letter_is_not_a_folder_on_unix() {
+        assert!(resolve_existing_place("C:/no-such-drive/a.ts", "/").is_err());
+    }
+
+    #[test]
+    fn a_drive_path_drops_dotdot_before_any_lookup() {
+        assert_eq!(
+            lexical_absolute(r"C:\Work\..\elsewhere\a.ts", r"D:\ignored").unwrap(),
+            "C:/elsewhere/a.ts"
+        );
+        assert_eq!(
+            lexical_absolute(r"sub\a.ts", r"C:\Work").unwrap(),
+            "C:/Work/sub/a.ts"
+        );
+        assert_eq!(
+            lexical_absolute(r"\\server\Share\a", "/ignored").unwrap(),
+            "//server/Share/a"
+        );
+        assert_eq!(
+            lexical_absolute(r"\\?\C:\Work\a.ts", "/").unwrap(),
+            "C:/Work/a.ts"
+        );
+        assert_eq!(
+            lexical_absolute(r"\\?\UNC\server\Share\a", "/").unwrap(),
+            "//server/Share/a"
+        );
+        assert_eq!(lexical_absolute("a.ts", "/").unwrap(), "/a.ts");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_inside_the_folder_is_followed_and_dotdot_is_not() {
+        let root = scratch("link");
+        let work = root.join("work");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&outside, work.join("link")).unwrap();
+        let escaped = resolve_existing_place(
+            &path_to_js(&work.join("link").join("agent-sandbox")),
+            &path_to_js(&work),
+        )
+        .unwrap();
+        let target =
+            resolve_existing_place(&path_to_js(&outside.join("agent-sandbox")), "/").unwrap();
+        let base = resolve_existing_place(&path_to_js(&work), "/").unwrap();
+        assert_eq!(escaped, target);
+        assert!(!escaped.starts_with(&format!("{base}/")));
+        // `..` is removed from the words first, so `link/..` is the folder itself, not the link's target.
+        let stayed = resolve_existing_place(
+            &format!("{}/link/../inside.txt", path_to_js(&work)),
+            &path_to_js(&work),
+        )
+        .unwrap();
+        let inside = resolve_existing_place(&path_to_js(&work.join("inside.txt")), "/").unwrap();
+        assert_eq!(stayed, inside);
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    fn resolve_command(path: &str, base: &str) -> Result<String, String> {
+        tauri::async_runtime::block_on(super::resolve_existing_path(
+            path.to_string(),
+            base.to_string(),
+        ))
+    }
+
+    /// The same two cases as the webview review: a `..` segment, and a link inside the workspace that points out.
+    /// Both go through the native command and `resolved_place_inside`, including a grant root outside the workspace.
+    #[cfg(unix)]
+    #[test]
+    fn a_dotdot_segment_and_an_in_workspace_link_are_not_inside() {
+        let root = scratch("codex-r5");
+        let work = root.join("work");
+        let outside = root.join("outside");
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        let work_js = path_to_js(&work);
+        let base = resolve_command(&work_js, "/").unwrap();
+        let climbed = format!("{work_js}/../outside/secret");
+        let climbed = resolve_command(&climbed, &work_js).unwrap();
+        assert!(
+            !super::resolved_place_inside(&climbed, &base),
+            "{climbed} was inside {base}"
+        );
+        std::os::unix::fs::symlink(&outside, work.join("link")).unwrap();
+        let linked = resolve_command(
+            &path_to_js(&work.join("link").join("agent-sandbox")),
+            &work_js,
+        )
+        .unwrap();
+        assert!(
+            !super::resolved_place_inside(&linked, &base),
+            "{linked} was inside {base}"
+        );
+        let grant = resolve_command(&path_to_js(&outside), "/").unwrap();
+        assert!(
+            !super::resolved_place_inside(&grant, &base),
+            "a grant root outside the workspace was inside {base}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
 
 /// `canonicalize`, but in the form git and people can use. On Windows `std::fs::canonicalize` returns a verbatim path
@@ -4846,11 +5313,9 @@ fn no_blank_root(root: &Path) -> Result<(), String> {
 pub(crate) fn git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
     no_blank_root(root)?;
     let mut cmd = git_cmd_for_args(args);
+    cmd.arg("--no-pager").arg("-C").arg(root);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
     let output = cmd
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
-        .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -4881,11 +5346,10 @@ fn git_run(root: &Path, args: &[&str]) -> Option<String> {
 
 fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     no_blank_root(root).ok()?;
-    let output = git_cmd_for_args(args)
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
-        .args(args)
+    let mut cmd = git_cmd_for_args(args);
+    cmd.arg("--no-pager").arg("-C").arg(root);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
+    let output = cmd
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -4917,11 +5381,10 @@ pub(crate) fn git_output_capped(
     cancel: Option<&AtomicBool>,
 ) -> Option<(Vec<u8>, bool)> {
     no_blank_root(root).ok()?;
-    let mut child = git_cmd()
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
-        .args(args)
+    let mut cmd = git_cmd();
+    cmd.arg("--no-pager").arg("-C").arg(root);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
+    let mut child = cmd
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
@@ -7422,15 +7885,92 @@ pub async fn open_path_with_default_app(path: String) -> Result<(), String> {
             return Err("Expected an absolute file path".to_string());
         }
         std::fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        if path_is_launchable(&path)
+            || std::fs::canonicalize(&path).is_ok_and(|real| path_is_launchable(&real))
+        {
+            return Err("That file would launch a program, so it was not opened.".to_string());
+        }
         open::that(&path).map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
+/// A path LaunchServices would run rather than hand to an editor. `.app` matches any component, so a file inside
+/// a bundle is refused too. The other types match a component's own extension. A link is checked by the caller
+/// after canonicalize.
+fn path_is_launchable(path: &Path) -> bool {
+    const EXTS: &[&str] = &[
+        "command",
+        "tool",
+        "pkg",
+        "mpkg",
+        "dmg",
+        "sparseimage",
+        "sparsebundle",
+        "iso",
+        "workflow",
+        "wflow",
+        "scpt",
+        "scptd",
+        "applescript",
+        "terminal",
+        "action",
+        "kext",
+        "saver",
+        "inetloc",
+        "fileloc",
+        "webloc",
+    ];
+    path.components().any(|comp| {
+        let Some(name) = comp.as_os_str().to_str() else {
+            return false;
+        };
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".app") && lower != ".app" {
+            return true;
+        }
+        EXTS.iter().any(|ext| {
+            let suffix = format!(".{ext}");
+            lower.ends_with(&suffix) && lower != suffix
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_launchable_file_is_not_opened_with_the_default_app() {
+        assert!(path_is_launchable(Path::new("/tmp/Run.command")));
+        assert!(path_is_launchable(Path::new("/tmp/Evil.APP")));
+        assert!(path_is_launchable(Path::new(
+            "/tmp/Evil.app/Contents/MacOS/Evil"
+        )));
+        assert!(path_is_launchable(Path::new("/tmp/disk.dmg")));
+        assert!(path_is_launchable(Path::new("/tmp/job.workflow")));
+        assert!(!path_is_launchable(Path::new("/tmp/notes.txt")));
+        assert!(!path_is_launchable(Path::new("/tmp/.app")));
+        assert!(!path_is_launchable(Path::new("/tmp/.command")));
+        assert!(!path_is_launchable(Path::new("/tmp/readme.md")));
+    }
+
+    #[test]
+    fn the_git_panel_reads_turn_hooks_off_and_fsmonitor_stays_off() {
+        let args: Vec<String> = git_cmd()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|arg| arg == "core.fsmonitor=false"),
+            "{args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "core.hooksPath=/dev/null"),
+            "a panel read still runs hooks: {args:?}"
+        );
+    }
 
     #[test]
     fn only_video_containers_can_join_the_stream_scope() {
@@ -9577,7 +10117,7 @@ mod tests {
     #[test]
     fn list_dir_marks_ignored_with_git_semantics() {
         let dir = tmp("list-dir-git");
-        let init = Command::new("git")
+        let init = crate::git_cmd::git()
             .args(["init"])
             .current_dir(&dir.0)
             .output();
@@ -9632,7 +10172,7 @@ mod tests {
         std::fs::create_dir_all(dir.0.join("node_modules")).unwrap();
         std::fs::write(dir.0.join("node_modules").join("pkg.js"), "x\n").unwrap();
 
-        let init = Command::new("git")
+        let init = crate::git_cmd::git()
             .args(["init"])
             .current_dir(&dir.0)
             .output();
@@ -9640,7 +10180,7 @@ mod tests {
         if !init.status.success() {
             return;
         }
-        let add = Command::new("git")
+        let add = crate::git_cmd::git()
             .args(["add", "tracked.ts", ".gitignore"])
             .current_dir(&dir.0)
             .status();
@@ -9683,12 +10223,15 @@ mod tests {
     }
 
     fn init_git(dir: &Path, branch: &str, origin: Option<&str>) -> bool {
-        let init = Command::new("git").args(["init"]).current_dir(dir).output();
+        let init = crate::git_cmd::git()
+            .args(["init"])
+            .current_dir(dir)
+            .output();
         let Ok(init) = init else { return false };
         if !init.status.success() {
             return false;
         }
-        let head = Command::new("git")
+        let head = crate::git_cmd::git()
             .args(["symbolic-ref", "HEAD", &format!("refs/heads/{branch}")])
             .current_dir(dir)
             .status();
@@ -9696,7 +10239,7 @@ mod tests {
             return false;
         }
         if let Some(url) = origin {
-            let remote = Command::new("git")
+            let remote = crate::git_cmd::git()
                 .args(["remote", "add", "origin", url])
                 .current_dir(dir)
                 .status();
@@ -9740,7 +10283,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> bool {
-        Command::new("git")
+        crate::git_cmd::git()
             .args([
                 "-c",
                 "user.name=MonoCode",
@@ -11039,7 +11582,7 @@ mod tests {
         if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -11073,7 +11616,7 @@ mod tests {
         if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -11110,7 +11653,7 @@ mod tests {
         if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -11146,7 +11689,7 @@ mod tests {
         if !init_git_commit(&a.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -11159,7 +11702,7 @@ mod tests {
         if !git(&a.0, &["remote", "add", "origin", &origin_url])
             || !git(&a.0, &["push", "-u", "origin", "main"])
             || !git(&origin.0, &["symbolic-ref", "HEAD", "refs/heads/main"])
-            || Command::new("git")
+            || crate::git_cmd::git()
                 .args(["clone", "-b", "main", &origin_url, "."])
                 .current_dir(&b.0)
                 .status()
@@ -12197,6 +12740,29 @@ mod tests {
     }
 
     #[test]
+    fn a_push_with_leading_config_pairs_keeps_the_repos_hooks() {
+        // Main's WP-200 push passes `-c` pairs before the action; the sandbox branch must still treat it as Ash's push.
+        let prefixed = git_cmd_for_args_with_path(
+            &[
+                "-c",
+                "core.commitGraph=false",
+                "-c",
+                "pack.useBitmaps=false",
+                "push",
+            ],
+            || "gui-git-path".into(),
+        );
+        let args: Vec<String> = prefixed
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            !args.iter().any(|arg| arg == "core.hooksPath=/dev/null"),
+            "a -c prefixed push lost the repository's hooks: {args:?}"
+        );
+    }
+
+    #[test]
     fn signing_hint_ignores_other_errors() {
         let error = "nothing to commit, working tree clean".to_string();
         assert_eq!(with_signing_hint(error.clone()), error);
@@ -12454,7 +13020,7 @@ mod tests {
         if !init_git_commit(&repo.0, &[("a.txt", "alpha\n")]) {
             return;
         }
-        if Command::new("git")
+        if crate::git_cmd::git()
             .args(["init", "--bare"])
             .current_dir(&origin.0)
             .status()
@@ -12589,5 +13155,112 @@ mod app_data_guard_tests {
         assert!(rename_path_in(Some(data.clone()), &note_path, "renamed.txt").is_ok());
         assert!(work.join("renamed.txt").exists());
         let _ = std::fs::remove_dir_all(&base);
+    }
+}
+
+/// Review r3 repro for PR #208 (WP-178). `fs::git_cmd` now goes through `git_cmd::git()`, which sets
+/// `core.hooksPath=/dev/null` for every call, whether or not the sandbox is on. So a commit Ash makes from the Git
+/// panel no longer runs the repository's own pre-commit hook (Husky, lint-staged, a secret scanner). Red at 4417a9621.
+#[cfg(all(test, unix))]
+mod review_r3_repro {
+    use super::*;
+
+    #[test]
+    fn a_git_panel_commit_still_runs_the_repository_pre_commit_hook() {
+        use std::os::unix::fs::PermissionsExt;
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo = std::env::temp_dir().join(format!("fs-r3-{}-{nanos}", std::process::id()));
+        let marker = repo.join("hook-ran");
+        std::fs::create_dir_all(repo.join(".husky")).unwrap();
+        let hook = repo.join(".husky").join("pre-commit");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plain = |args: &[&str]| {
+            assert!(std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        };
+        plain(&["init", "-q"]);
+        plain(&["config", "core.hooksPath", ".husky"]);
+        plain(&["config", "user.name", "t"]);
+        plain(&["config", "user.email", "t@t"]);
+        plain(&["config", "commit.gpgsign", "false"]);
+
+        let committed = git_checked(&repo, &["commit", "--allow-empty", "-m", "from the panel"]);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&repo);
+        assert!(committed.is_ok(), "{committed:?}");
+        assert!(
+            ran,
+            "the Git panel's commit skipped the repository's pre-commit hook (core.hooksPath=/dev/null)"
+        );
+    }
+}
+
+/// Review r4 repro for PR #208 (WP-178). Round 4 moved every Git panel call (`fs::git_cmd`) to
+/// `git_cmd::git_with_hooks()`: never sandboxed, never contained, no `--attr-source`, no `core.attributesFile`. Those
+/// calls are not only Ash's commit, push and pull: the panel, the project sidebar and the Mono stall watch poll
+/// `git diff --numstat` on their own. A clean filter named by the checkout's `.gitattributes` (an ordinary file the agent
+/// writes) and defined in a config the agent can reach (a linked worktree's common `<main>/.git/config`, see
+/// `agent_sandbox::review_r4_repro`) runs outside the sandbox on the next poll. Red at 5eedc0d75.
+#[cfg(all(test, unix))]
+mod review_r4_repro {
+    use super::*;
+
+    #[test]
+    fn the_git_panels_automatic_diff_stats_never_run_a_clean_filter_from_the_checkout() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let repo = std::env::temp_dir().join(format!("fs-r4-{}-{nanos}", std::process::id()));
+        let marker = std::env::temp_dir().join(format!("fs-r4-ran-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&repo).unwrap();
+        let plain = |args: &[&str]| {
+            assert!(crate::git_cmd::git()
+                .arg("-C")
+                .arg(&repo)
+                .args([
+                    "-c",
+                    "user.name=t",
+                    "-c",
+                    "user.email=t@t",
+                    "-c",
+                    "commit.gpgsign=false"
+                ])
+                .args(args)
+                .status()
+                .unwrap()
+                .success());
+        };
+        plain(&["init", "-q"]);
+        std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
+        plain(&["add", "a.txt"]);
+        plain(&["commit", "-q", "-m", "a"]);
+        // What the agent writes: the filter in the repository config, the attribute in the working tree.
+        plain(&[
+            "config",
+            "filter.x.clean",
+            &format!("touch '{}'; cat", marker.display()),
+        ]);
+        std::fs::write(repo.join(".gitattributes"), "* filter=x\n").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(repo.join("a.txt"), "hello again\n").unwrap();
+
+        let _ = git_diff_stats_for(&repo);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&repo);
+        let _ = std::fs::remove_file(&marker);
+        assert!(
+            !ran,
+            "the Git panel's automatic diff stats ran the checkout's clean filter outside the sandbox"
+        );
     }
 }

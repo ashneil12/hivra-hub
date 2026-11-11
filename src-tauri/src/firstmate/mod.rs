@@ -19,6 +19,7 @@ pub mod checkout_guard;
 pub mod fact_gaps;
 pub mod gates;
 pub mod mcp;
+pub mod protected_paths;
 pub mod report;
 pub mod status;
 

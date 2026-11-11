@@ -20,7 +20,6 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -117,11 +116,13 @@ pub struct RevertOutcome {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<(bool, Vec<u8>), String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "core.quotepath=off"])
-        .args(args)
+    // A checkout whose git dir was pointed somewhere else is refused before git runs, so a filter in that config
+    // never starts. Read-only calls also ignore the checkout's attributes and textconv.
+    crate::git_cmd::ensure_contained(dir)?;
+    let mut cmd = crate::git_cmd::git();
+    cmd.arg("-C").arg(dir).args(["-c", "core.quotepath=off"]);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
+    let out = cmd
         .output()
         .map_err(|e| format!("git could not run: {e}"))?;
     Ok((out.status.success(), out.stdout))
@@ -349,4 +350,125 @@ pub fn revert(before: &Snapshot, flag: &Flag, paths: &[String]) -> Result<Revert
 #[cfg(test)]
 pub(crate) fn note_landing_for_test(project: &Path, files: &[String], at: i64) {
     note_landing_at(project, files, at);
+}
+
+/// Review r2 repro for PR #208 (WP-178): the sandbox profile denies writes to `.git/config` and `.git/hooks` only by
+/// path text. An agent in a linked worktree rewrites the worktree's `.git` file (not matched) to a git dir it wrote
+/// (its `config` is not under a `.git/` path either). The app's own after-turn `git status` then runs that config's
+/// `core.fsmonitor`, outside the sandbox. Red at 73263a6a7.
+#[cfg(test)]
+mod review_r2_repro {
+    use super::*;
+
+    #[test]
+    fn the_after_turn_snapshot_never_runs_a_command_from_a_redirected_git_dir() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("cg-r2-{}-{nanos}", std::process::id()));
+        let main = root.join("main");
+        let wt = root.join("wt");
+        let evil = root.join("evil-gitdir");
+        let marker = root.join("RAN-OUTSIDE-THE-SANDBOX");
+        std::fs::create_dir_all(&main).unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let ok = crate::git_cmd::git()
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        run(&main, &["init", "-q"]);
+        run(&main, &["commit", "-q", "--allow-empty", "-m", "x"]);
+        run(&main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        // What a sandboxed agent can do: neither path matches `/\.git/config$` or `/\.git/hooks(/|$)`.
+        run(&root, &["init", "-q", "--bare", evil.to_str().unwrap()]);
+        std::fs::write(
+            evil.join("config"),
+            format!(
+                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = {}\n\tfsmonitor = \"touch '{}'; false #\"\n",
+                wt.display(),
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(wt.join(".git"), format!("gitdir: {}\n", evil.display())).unwrap();
+
+        let _ = snapshot(&wt);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !ran,
+            "the app's own git status ran the agent's core.fsmonitor command outside the sandbox"
+        );
+    }
+}
+
+/// Review r3 repro for PR #208 (WP-178). `git_cmd` turns off only `core.fsmonitor` and `core.hooksPath`; every other
+/// config key that names a program still runs in the app's own git. The profile does not deny `.git/commondir`, so a
+/// sandboxed agent points the repository's common dir (and so its config) at a folder it wrote. Its `.gitattributes`
+/// names a clean filter there, and the app's after-turn `git status` runs that filter outside the sandbox. Red at
+/// 4417a9621.
+#[cfg(all(test, unix))]
+mod review_r3_repro {
+    use super::*;
+
+    #[test]
+    fn the_after_turn_snapshot_never_runs_a_clean_filter_from_a_redirected_common_dir() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("cg-r3-{}-{nanos}", std::process::id()));
+        let main = root.join("main");
+        let evil = root.join("agent-common-dir");
+        let marker = root.join("RAN-OUTSIDE-THE-SANDBOX");
+        std::fs::create_dir_all(&main).unwrap();
+        let run = |dir: &Path, args: &[&str]| {
+            let ok = crate::git_cmd::git()
+                .arg("-C")
+                .arg(dir)
+                .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                .args(args)
+                .status()
+                .unwrap()
+                .success();
+            assert!(ok, "git {args:?}");
+        };
+        run(&main, &["init", "-q"]);
+        std::fs::write(main.join("a.txt"), "hello\n").unwrap();
+        run(&main, &["add", "a.txt"]);
+        run(&main, &["commit", "-q", "-m", "a"]);
+
+        // What a sandboxed agent can write: none of these paths is denied by the profile.
+        std::fs::create_dir_all(&evil).unwrap();
+        std::os::unix::fs::symlink(main.join(".git/objects"), evil.join("objects")).unwrap();
+        std::os::unix::fs::symlink(main.join(".git/refs"), evil.join("refs")).unwrap();
+        std::fs::write(
+            evil.join("config"),
+            format!(
+                "[core]\n\trepositoryformatversion = 0\n\tbare = false\n[filter \"x\"]\n\tclean = \"touch '{}'; cat\"\n",
+                marker.display()
+            ),
+        )
+        .unwrap();
+        std::fs::write(main.join(".git/commondir"), format!("{}\n", evil.display())).unwrap();
+        std::fs::write(main.join(".gitattributes"), "* filter=x\n").unwrap();
+        // Same size, newer time: git status has to read the file through the filter.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        std::fs::write(main.join("a.txt"), "hello\n").unwrap();
+
+        let _ = snapshot(&main);
+        let ran = marker.exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !ran,
+            "the app's own git status ran the agent's clean filter outside the sandbox"
+        );
+    }
 }

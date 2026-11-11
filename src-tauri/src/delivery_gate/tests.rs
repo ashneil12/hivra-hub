@@ -86,7 +86,7 @@ impl Github for NoGh {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let output = crate::delivery::child("git")
+    let output = crate::git_cmd::child()
         .current_dir(dir)
         .arg("-c")
         .arg("protocol.file.allow=always")

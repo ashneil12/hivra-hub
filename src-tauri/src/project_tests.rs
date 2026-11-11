@@ -63,6 +63,11 @@ pub async fn run_project_tests(project: String) -> Result<Option<ProjectTestRun>
         if let Some(path) = crate::harness::login_shell_path() {
             cmd.env("PATH", path);
         }
+        // The app starts this itself, with no tap, and the script is one the agents wrote. Same wrap as a project action.
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        let prefix =
+            crate::agent_sandbox::action_wrap(data.as_deref(), std::slice::from_ref(&folder))?;
+        let cmd = crate::agent_sandbox::under_wrap(cmd, prefix.as_deref());
         let (ok, output) = run_collected(cmd, TEST_TIMEOUT, "test run");
         Ok(Some(ProjectTestRun {
             command: "npm test".into(),
@@ -114,5 +119,28 @@ mod tests {
         assert!(project_folder(root.to_str().unwrap()).is_ok());
         assert!(project_folder("/no/such/folder/anywhere").is_err());
         let _ = std::fs::remove_dir_all(&root);
+    }
+}
+
+/// Review r6 repro for PR #208 (WP-178), red at 520e3d4e3.
+#[cfg(test)]
+mod review_r6_repro {
+    /// HIGH (new): the spawn audit allows `run_project_tests` as "Ash's Run tests button ... not an agent turn". It is
+    /// also started with no tap: useFollowedBriefs.ts (r88, `hubTestRunDue`) runs it when a Lead rolls up landed work
+    /// without running the tests. It runs `npm test` in the project folder with the login PATH, outside the sandbox,
+    /// and the `test` script and the tests are files the agents wrote there. Ash's own project actions are wrapped
+    /// (only Ship and Run dev slot skip), so this start must be too.
+    #[test]
+    fn the_projects_test_run_starts_inside_the_agent_sandbox() {
+        let source = include_str!("project_tests.rs");
+        let start = source
+            .find("pub async fn run_project_tests(")
+            .expect("run_project_tests");
+        let rest = &source[start..];
+        let body = &rest[..rest.find("\n}\n").unwrap_or(rest.len())];
+        assert!(
+            body.contains("action_wrap") || body.contains("under_wrap"),
+            "npm test runs the agents' own test script outside the sandbox, and the app starts it by itself"
+        );
     }
 }

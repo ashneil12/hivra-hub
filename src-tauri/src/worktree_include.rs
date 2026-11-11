@@ -745,7 +745,7 @@ mod tests {
     }
 
     fn git(root: &std::path::Path, args: &[&str]) -> String {
-        let mut command = std::process::Command::new("git");
+        let mut command = crate::git_cmd::git();
         crate::hide_window_console(&mut command);
         let output = command
             .arg("-C")

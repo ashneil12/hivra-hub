@@ -3,9 +3,14 @@
 // (model/checkoutGuard.ts isFirstMate) are watched, so until WP-20/21 mark them this does nothing.
 import { useEffect, useRef } from "react";
 import type { Session } from "../../sessions/model/session";
-import { firstMateTurnGuard, isFirstMate, type FirstMateTurnGuard } from "../model/checkoutGuard";
+import {
+  firstMateTurnGuard,
+  isFirstMate,
+  noteProtectedReport,
+  type FirstMateTurnGuard,
+} from "../model/checkoutGuard";
 
-type Watched = Pick<Session, "id" | "busy" | "cwd" | "firstMate">;
+type Watched = Pick<Session, "id" | "busy" | "cwd" | "firstMate" | "title">;
 
 /** Which watched chats started or ended a turn since `before` (ids that were busy). */
 export function turnEdges(
@@ -37,6 +42,14 @@ export function useFirstMateCheckoutGuard(
     for (const id of edges.ended) {
       void guard.end(id).then((turn) => {
         if (turn) console.warn(`First mate edited its project: ${turn.flag.summary}`);
+      });
+      // WP-178 3.3/3.4: report only, never blocks or reverts.
+      // The report also goes to the activity log (WP-78): one row for the turn, naming the chat.
+      void guard.endProtected(id).then((report) => {
+        if (!report) return;
+        console.warn(`First mate turn touched protected paths: ${report.summary}`);
+        const session = sessions.find((s) => s.id === id);
+        if (session) void noteProtectedReport(session, report);
       });
     }
   }, [key, guard]);

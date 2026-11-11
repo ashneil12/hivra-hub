@@ -306,7 +306,7 @@ pub(crate) fn push_sha(
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let out = super::child("git")
+    let out = crate::git_cmd::child()
         .arg("-C")
         .arg(dir)
         .args(args)
