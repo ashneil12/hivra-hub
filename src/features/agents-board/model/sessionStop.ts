@@ -21,6 +21,17 @@ export function agentsBoardSessionStopReady(): boolean {
 }
 
 const NO_PATH = "This chat can't be stopped from here";
+const STILL_RUNNING = "it is still running. Open the chat and stop it there";
+
+/**
+ * tasks.cancel and the chat's tree Stop resolve with the chats whose Stop failed or timed out (`stopFailed`) and the
+ * ones whose workers couldn't be loaded (`unloaded`, stopTree.ts). Either means something may still run.
+ */
+function stopLeftRunning(result: unknown): boolean {
+  if (!result || typeof result !== "object") return false;
+  const { stopFailed, unloaded } = result as { stopFailed?: unknown; unloaded?: unknown };
+  return (Array.isArray(stopFailed) && stopFailed.length > 0) || (Array.isArray(unloaded) && unloaded.length > 0);
+}
 
 export async function stopBoardRow(
   id: string,
@@ -33,13 +44,14 @@ export async function stopBoardRow(
   if (row) {
     const owner = row.ownerSession?.trim();
     if (!owner) throw new Error(NO_PATH);
-    await crewCancel(owner, stopRequestId(row.id), {
+    const result = await crewCancel(owner, stopRequestId(row.id), {
       taskId: row.id,
       reason: "Stopped from the Agents board",
     });
+    if (stopLeftRunning(result)) throw new Error(STILL_RUNNING);
     return;
   }
   const session = input.sessions.find((item) => item.id === id);
   if (!session || !sessionStop) throw new Error(NO_PATH);
-  await sessionStop(session.id);
+  if (stopLeftRunning(await sessionStop(session.id))) throw new Error(STILL_RUNNING);
 }

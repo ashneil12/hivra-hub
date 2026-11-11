@@ -40,6 +40,7 @@ describe("stop", () => {
     expect(finishStop("stopped", false)).toBe("stopped");
     expect(stopFailureText("Example worker", "the worker is gone")).toBe("Couldn't stop Example worker: the worker is gone");
     expect(stopFailureText("  ", "")).toBe("Couldn't stop this chat: it did not stop");
+    expect(stopFailureText("Example worker", "the worker is Stuck")).toBe("Couldn't stop Example worker: the worker is stopped");
   });
 
   it("drops the ask when that row is gone", () => {

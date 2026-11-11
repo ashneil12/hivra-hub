@@ -11,7 +11,7 @@ import { currentPrWatches, usePrWatchesVersion } from "../../pr-watch/model/prWa
 import type { Block, Session } from "../../sessions/model/session";
 import { SessionStateContext } from "../../sessions/model/sessionStateStore";
 import { openBoardRow } from "../model/boardOpen";
-import { boardFromStores, type StoreCheck, type StoreSession } from "../model/fromStores";
+import { boardFromStores, mateStatus, type StoreCheck, type StoreSession } from "../model/fromStores";
 import { stopBoardRow } from "../model/sessionStop";
 import { flattenBoard } from "../model/tree";
 import { taskWords } from "../model/words";
@@ -42,12 +42,14 @@ export function AgentsBoardScreen() {
       sessions: boardSessions(sessions, delegations),
       mates: listed.map((project) => {
         const spec = leadSpecFor(project);
+        const sessionId = leadMono(spec)?.sessionId ?? null;
         return {
           id: spec.id,
           name: spec.name,
           projectId: project.id,
-          sessionId: leadMono(spec)?.sessionId ?? null,
+          sessionId,
           department: "coding",
+          status: mateStatus(sessionId, sessions),
         };
       }),
       delegations: delegations.map((row) => ({

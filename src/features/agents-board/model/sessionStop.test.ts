@@ -49,6 +49,27 @@ describe("stopBoardRow", () => {
     expect(stopped).toEqual(["project-chat", "sub-chat"]);
   });
 
+  it("does not call a stop done when the worker it names is still running", async () => {
+    // tasks.cancel resolves with the chats whose Stop failed or timed out (stopTree.ts), it does not throw.
+    registerCrewCancel(async () => ({ taskId: "job", status: "running", stopFailed: ["worker-chat"] }));
+    await expect(
+      stopBoardRow("job", { delegations: [{ id: "job", ownerSession: "lead" }], sessions: [] }),
+    ).rejects.toThrow("still running");
+    // The chat's own Stop on a Lead with work out is the tree stop, which says the same way.
+    setAgentsBoardSessionStop(async () => ({ stopped: ["project-chat"], cancelled: [], stopFailed: ["worker-chat"] }));
+    await expect(
+      stopBoardRow("project-chat", { delegations: [], sessions: [{ id: "project-chat" }] }),
+    ).rejects.toThrow("still running");
+    setAgentsBoardSessionStop(async () => ({ stopped: ["project-chat"], cancelled: [], stopFailed: [], unloaded: ["project-chat"] }));
+    await expect(
+      stopBoardRow("project-chat", { delegations: [], sessions: [{ id: "project-chat" }] }),
+    ).rejects.toThrow("still running");
+    registerCrewCancel(async () => ({ taskId: "job", status: "cancelled", stopFailed: [] }));
+    await expect(
+      stopBoardRow("job", { delegations: [{ id: "job", ownerSession: "lead" }], sessions: [] }),
+    ).resolves.toBeUndefined();
+  });
+
   it("lets a session stop failure through", async () => {
     setAgentsBoardSessionStop(async () => {
       throw new Error("still running");

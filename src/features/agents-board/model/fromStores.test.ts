@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { boardFromStores } from "./fromStores";
+import { boardFromStores, mateStatus } from "./fromStores";
 import { costUsdBySession } from "./cost";
 import { setAgentsBoardSessionStop } from "./sessionStop";
 import { flattenBoard } from "./tree";
@@ -135,6 +135,19 @@ describe("boardFromStores", () => {
     expect(flattenBoard(after.tree).find((node) => node.id === "home-chat")?.canStop).toBe(false);
     expect(flattenBoard(after.tree).find((node) => node.id === "sub-chat")?.canStop).toBe(true);
     expect(flattenBoard(after.tree).find((node) => node.id === "job")?.canStop).toBe(true);
+  });
+});
+
+describe("mateStatus", () => {
+  it("is Working while the first mate's own chat runs a turn", () => {
+    const sessions = [
+      { id: "lead-chat", busy: true },
+      { id: "other", busy: false },
+    ];
+    expect(mateStatus("lead-chat", sessions)).toBe("working");
+    expect(mateStatus("other", sessions)).toBe("idle");
+    expect(mateStatus("missing", sessions)).toBe("idle");
+    expect(mateStatus(null, sessions)).toBe("idle");
   });
 });
 

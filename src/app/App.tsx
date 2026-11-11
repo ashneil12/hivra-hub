@@ -13089,8 +13089,6 @@ function Workspace({
     },
     [flushHarnessEvents],
   );
-  // WP-219: a project chat or a sub-chat on the Agents board uses this same Stop.
-  useEffect(() => setAgentsBoardSessionStop((sessionId) => onStop(sessionId)), [onStop]);
   // The delegation tree (H4): workers' questions go to the Mono that delegated them, and Ash's Stop on a Mono with
   // work out stops everything beneath it (monos/hooks/useDelegationTree.ts).
   const delegationTree = useDelegationTree({
@@ -13109,6 +13107,9 @@ function Workspace({
     openSession: openReminderSession,
   });
   const onStopFromUser = delegationTree.stopFromUser;
+  // WP-219: a project chat or a sub-chat on the Agents board uses the Stop its own chat's button uses: on a chat with
+  // work out that is the tree Stop, so its workers stop too and their reports don't wake it again.
+  useEffect(() => setAgentsBoardSessionStop((sessionId) => onStopFromUser(sessionId)), [onStopFromUser]);
 
   // The real-Claude test bench (scripts/hub-realtest.mjs): a dev copy whose verify plan names a driver folder takes Ash's
   // scripted actions through the same handlers his composer, Stop button and rail use. No plan reaches the daily app.

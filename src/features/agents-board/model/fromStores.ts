@@ -96,6 +96,15 @@ function checkFor(id: string, sessionId: string | null, checks: readonly StoreCh
   return checks.find((check) => check.delegationId === id || (sessionId && check.sessionId === sessionId));
 }
 
+/** A first mate is Working while its own chat runs a turn, not only when a worker under it does. */
+export function mateStatus(
+  sessionId: string | null | undefined,
+  sessions: readonly { id: string; busy?: boolean }[],
+): "working" | "idle" {
+  if (!sessionId) return "idle";
+  return sessions.some((session) => session.id === sessionId && session.busy === true) ? "working" : "idle";
+}
+
 /** A project chat, home chat or sub-chat can be stopped only while it is working and the app lent its Stop. */
 function sessionCanStop(status: string | null | undefined): boolean {
   return boardState({ status }) === "working" && agentsBoardSessionStopReady();

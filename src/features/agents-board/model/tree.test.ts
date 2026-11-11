@@ -123,6 +123,23 @@ describe("buildAgentsTree", () => {
     ]);
   });
 
+  it("keeps a worker with no project or owner on the board, under the Chief of Staff", () => {
+    // A global Mono's job, or one whose folder is not a listed project, has nowhere else to go. It is not dropped.
+    const root = tree([
+      person({ id: "captain", role: "captain", name: "Chief of Staff" }),
+      person({ id: "loose", role: "worker", name: "Loose job", projectId: null, parentId: null, state: "needs-you", sessionId: "loose-chat" }),
+      person({ id: "loose-sub", role: "subchat", name: "Its sub-chat", parentId: "loose-chat", state: "working", sessionId: "loose-sub-chat" }),
+      person({ id: "job", role: "worker", name: "Job", projectId: "hivra", parentId: "gone", state: "working" }),
+    ]);
+    const loose = root.children.find((node) => node.id === "loose");
+    expect(loose?.state).toBe("needs-you");
+    expect(loose?.children.map((node) => node.id)).toEqual(["loose-sub"]);
+    expect(root.children.find((node) => node.projectId === "hivra")?.children.map((node) => node.id)).toEqual(["job"]);
+    expect(root.state).toBe("needs-you");
+    const ids = flattenBoard(root).map((node) => node.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("lists a person once when the same id or session arrives twice", () => {
     const root = tree([
       person({ id: "captain", role: "captain", name: "Chief of Staff" }),

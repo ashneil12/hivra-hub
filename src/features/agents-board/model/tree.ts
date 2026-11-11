@@ -232,6 +232,9 @@ export function buildAgentsTree(input: {
   }
 
   const rest = people.filter((person) => (person.role === "worker" || person.role === "subchat") && !used.has(person.id));
+  // A row whose parent and project are not on the board (a global Mono's job, a folder that is no listed project)
+  // goes under the Chief of Staff. It is never dropped: it may be the one that needs Ash.
+  const loose: BoardNode[] = [];
   let pending = rest;
   for (let guard = 0; pending.length && guard < rest.length + 1; guard++) {
     const next: BoardPerson[] = [];
@@ -248,21 +251,24 @@ export function buildAgentsTree(input: {
       watch(node);
     }
     if (next.length === pending.length) {
-      for (const person of next) {
+      // Nothing found its parent this pass. Place the rows whose parent is not waiting too, then try the rest again.
+      const waiting = new Set(next.flatMap((person) => [person.id, ...(person.sessionId ? [`session:${person.sessionId}`] : [])]));
+      const roots = next.filter((person) => !person.parentId || (!waiting.has(person.parentId) && !waiting.has(`session:${person.parentId}`)));
+      for (const person of roots.length ? roots : next) {
         const project = projectNodes.find((node) => node.projectId && node.projectId === person.projectId);
-        if (!project) continue;
         const node = take(person);
         if (!node) continue;
-        project.children.push(node);
+        (project ? project.children : loose).push(node);
         watch(node);
       }
-      break;
     }
-    pending = next;
+    pending = next.filter((person) => !used.has(person.id));
   }
 
   for (const project of projectNodes) sortCrew(project);
-  captain.children = [...homes, ...projectNodes];
+  loose.sort((a, b) => (b.createdAt ?? -1) - (a.createdAt ?? -1) || a.id.localeCompare(b.id));
+  loose.forEach(sortCrew);
+  captain.children = [...homes, ...projectNodes, ...loose];
   rollupStates(captain);
   return captain;
 }

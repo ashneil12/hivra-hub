@@ -34,6 +34,11 @@ export function stopTarget(id: string | null, ids: readonly string[]): string | 
 /** What the panel says when a stop did not happen. */
 export function stopFailureText(name: string, reason: string): string {
   const who = name.replace(/[—–]/g, ",").replace(/\s+/g, " ").trim() || "this chat";
-  const why = reason.replace(/[—–]/g, ", ").replace(/\s+/g, " ").trim() || "it did not stop";
+  const why =
+    reason
+      .replace(/[—–]/g, ", ")
+      .replace(/\bstuck\b/gi, "stopped")
+      .replace(/\s+/g, " ")
+      .trim() || "it did not stop";
   return `Couldn't stop ${who}: ${why}`;
 }
