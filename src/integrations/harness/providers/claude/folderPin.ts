@@ -2,7 +2,7 @@
 // app. Relative paths were judged in the launch folder after that. The pin drops once a move shows up, and stays dropped
 // across a resume. The tool input is never read for this.
 
-import { pathWithin } from "../../../../features/autopilot/model/safeApproval";
+import { pathWithin } from "../../../../features/autopilot/model/pathWithin";
 
 const MOVES_FOLDER = new Set(["EnterWorktree", "ExitWorktree"]);
 
