@@ -107,6 +107,7 @@ import {
 import { parseDoc } from "../../memory/model/doc";
 import { fadeNow, livedClockOf } from "../../memory/model/fade";
 import { searchStore, type StoreSearch } from "../../memory/model/rank";
+import type { SkillRoutePorts } from "../../selfBuild/model/skillRoute";
 import { appIdentity, type AppIdentity } from "../../../app/model/appIdentity";
 import {
   sendMode,
@@ -409,6 +410,8 @@ export type AgentAppHost = {
   markMemoryUsed?: (ids: readonly string[], at: number) => Promise<unknown>;
   /** WP-88: mate ids on this copy, for a wide recall. */
   mateIds?: () => readonly string[];
+  /** WP-242: where a skills.learn lesson goes. Absent: the saved setting and the real skill file (skillRoute.ts). */
+  skillRoute?: SkillRoutePorts;
   /** WP-70: the shared task list. The handler sets who is asking; the model cannot. */
   taskStore?(
     command: "tasks_list" | "tasks_get" | "tasks_create" | "tasks_update",

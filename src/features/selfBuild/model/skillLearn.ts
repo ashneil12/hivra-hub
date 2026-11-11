@@ -3,7 +3,7 @@
 // changes apply themselves, logged, never waiting for a click) and lands in Settings → Changes → Bot changes with Undo,
 // so "take that lesson out" rewrites the skill file back. Skills are real files under the user's home
 // (`.agents/skills/<name>/SKILL.md`), so what the bot learned outlives the chat.
-import { createPath, homeDir, readTextFile, writeTextFile } from "../../../platform/tauri/fs";
+import { createPath, homeDir, movePath, readTextFile, writeTextFile } from "../../../platform/tauri/fs";
 import { joinPath } from "../../../shared/lib/paths";
 import {
   blankSkillMarkdown,
@@ -14,12 +14,17 @@ import {
 } from "../../skills/model/skills";
 import { recordFlowChange } from "../../hub/model/botChanges";
 import { registerChangeKind } from "./changeFlow";
-import { forUser } from "../../hub/model/userName";
+import { forUser, userName } from "../../hub/model/userName";
+import { evictions, LET_GO_FOLDER, noteLearned, parseRegistry, REGISTRY_FILE } from "./learnedSkills";
+import { replaceOnce, sanitizeLesson } from "./lessonSafety";
 
 export const SKILL_LEARN = "skill-learn";
 
-/** What a row needs to put a lesson back out: which skill, and the exact bullet that was added. */
-type LessonPart = { skill: string; lesson: string };
+/**
+ * What a row needs to put a lesson back out: which skill, and the exact bullet that was added. WP-242: an edit also
+ * keeps the passage it replaced, so Undo puts that back.
+ */
+type LessonPart = { skill: string; lesson: string; was?: string };
 
 const LESSONS = /^##\s+lessons\s*$/i;
 
@@ -71,8 +76,10 @@ export function removeLesson(text: string, lesson: string): string | undefined {
   const at = lines.findIndex((line) => LESSONS.test(line.trim()));
   if (at < 0) return undefined;
   const end = nextHeading(lines, at + 1);
-  const found = lines.findIndex((line, i) => i > at && i < end && line.trim() === bullet);
-  if (found < 0) return undefined;
+  const matches = lines.flatMap((line, i) => (i > at && i < end && line.trim() === bullet ? [i] : []));
+  // WP-242: an edit must match exactly one passage. Two identical bullets cannot say which one is meant.
+  if (matches.length !== 1) return undefined;
+  const found = matches[0];
   const rest = lines.filter((_, i) => i !== found);
   const sectionEnd = nextHeading(rest, at + 1);
   const empty = rest.slice(at + 1, sectionEnd).every((line) => !line.trim());
@@ -89,7 +96,8 @@ registerChangeKind(SKILL_LEARN, {
     const part = data as LessonPart;
     const path = await skillPath(part.skill);
     const now = await readTextFile(path).catch(() => "");
-    const back = removeLesson(now, part.lesson);
+    const put = part.was !== undefined ? replaceOnce(now, `- ${part.lesson}`, `- ${part.was}`) : undefined;
+    const back = put ? (put.ok ? put.text : undefined) : removeLesson(now, part.lesson);
     if (back === undefined) throw new Error(forUser`${titleFromSkillName(part.skill)} has changed since, so that lesson wasn't taken out.`);
     await writeTextFile(path, back);
     invalidateSkills();
@@ -101,6 +109,13 @@ registerChangeKind(SKILL_LEARN, {
     const path = await skillPath(part.skill);
     const now = await readTextFile(path).catch(() => "");
     if (now.includes(`- ${part.lesson}`)) return;
+    if (part.was !== undefined) {
+      const put = replaceOnce(now, `- ${part.was}`, `- ${part.lesson}`);
+      if (!put.ok) throw new Error(put.reason);
+      await writeTextFile(path, put.text);
+      invalidateSkills();
+      return;
+    }
     const text = now.trim() ? now : blankSkillMarkdown(part.skill);
     await writeTextFile(path, addLesson(text, part.lesson));
     invalidateSkills();
@@ -120,13 +135,23 @@ export async function learnSkillLesson(input: {
   from?: string;
   /** The Mono filing it: the row's "bot". */
   by: string;
+  /**
+   * WP-242: the lesson replaces this passage of SKILL.md instead of being added. It must be in the file exactly once;
+   * otherwise nothing is written and a plain line says why.
+   */
+  replace?: string;
 }): Promise<LearnedLesson> {
   const skill = slugSkillName(input.skill);
   if (!isValidSkillName(skill)) throw new Error("skill must be lowercase letters, numbers and hyphens, like \"reviewing-a-diff\".");
-  const lesson = plainLesson(input.lesson);
-  if (!lesson) throw new Error("lesson must be the one plain sentence to keep, in Ash's words where you can.");
+  const plain = plainLesson(input.lesson);
+  if (!plain) throw new Error("lesson must be the one plain sentence to keep, in Ash's words where you can.");
+  // WP-242: every lesson is cleaned of personal details before it is saved, whichever path it came by.
+  const checked = sanitizeLesson(plain, lessonNames());
+  if (!checked.ok) throw new Error(checked.reason);
+  const lesson = checked.lesson;
   const path = await skillPath(skill);
   const before = await readTextFile(path).catch(() => "");
+  if (input.replace !== undefined) return editLesson(input, skill, lesson, path, before);
   if (before.includes(`- ${lesson}`)) {
     return {
       skill,
@@ -139,8 +164,10 @@ export async function learnSkillLesson(input: {
   if (!before.trim()) {
     await createPath(await homeDir(), `.agents/skills/${skill}`, true);
   }
-  await writeTextFile(path, addLesson(text, lesson));
+  const written = addLesson(text, lesson);
+  await writeTextFile(path, written);
   invalidateSkills();
+  await keepWithinCap(skill, written);
   const title = titleFromSkillName(skill);
   recordFlowChange({
     kind: SKILL_LEARN,
@@ -159,6 +186,73 @@ export async function learnSkillLesson(input: {
     path,
     note: forUser`It's in ${title} now, and Ash sees it in Settings → Changes → Bot changes with Undo.`,
   };
+}
+
+/** The person's own name, which a lesson never keeps (WP-242). */
+function lessonNames(): string[] {
+  const name = userName();
+  return name ? [name] : [];
+}
+
+/** WP-242: a lesson that replaces exactly one passage of the skill, with Undo putting the passage back. */
+async function editLesson(
+  input: { by: string; from?: string; replace?: string },
+  skill: string,
+  lesson: string,
+  path: string,
+  before: string,
+): Promise<LearnedLesson> {
+  const title = titleFromSkillName(skill);
+  const was = plainLesson(input.replace ?? "");
+  const put = replaceOnce(before, `- ${was}`, `- ${lesson}`);
+  if (!put.ok) throw new Error(forUser`${put.reason} (${title})`);
+  await writeTextFile(path, put.text);
+  invalidateSkills();
+  await keepWithinCap(skill, put.text);
+  recordFlowChange({
+    kind: SKILL_LEARN,
+    by: input.by,
+    title: lesson,
+    data: { skill, lesson, was } satisfies LessonPart,
+    line: forUser`${input.by} changed a lesson in ${title}`,
+    now: forUser`The old lesson is back in ${title}`,
+    undoneText: forUser`Undone: ${title} has its old lesson again.`,
+  });
+  return { skill, lesson, path, note: forUser`It's changed in ${title} now, and Ash sees it in Settings → Changes → Bot changes with Undo.` };
+}
+
+/**
+ * WP-242: records the skill just written and moves the least recently used learned skills out past the cap. Never
+ * fails the lesson: a record or a move that cannot be made is tried again on the next lesson.
+ */
+async function keepWithinCap(skill: string, written: string): Promise<void> {
+  try {
+    const home = await homeDir();
+    const file = joinPath(home, REGISTRY_FILE);
+    const now = Date.now();
+    const registry = noteLearned(parseRegistry(await readTextFile(file).catch(() => undefined)), skill, now, written);
+    const current: Record<string, string | undefined> = {};
+    for (const name of Object.keys(registry)) {
+      current[name] = await readTextFile(joinPath(home, `.agents/skills/${name}/SKILL.md`)).catch(() => undefined);
+    }
+    const { evict, registry: left } = evictions(registry, current, skill);
+    const kept = { ...left };
+    if (evict.length) {
+      const parent = await createPath(home, `${LET_GO_FOLDER}/${now}`, true);
+      for (const name of evict) {
+        try {
+          await movePath(joinPath(home, `.agents/skills/${name}`), parent);
+        } catch {
+          // Still in place: it stays on the record and goes next time.
+          kept[name] = registry[name];
+        }
+      }
+      invalidateSkills();
+    }
+    await writeTextFile(file, `${JSON.stringify(kept, null, 2)}\n`);
+  } catch {
+    // The cap is housekeeping; the lesson itself is saved.
+  }
 }
 
 /** Takes one lesson back out of that skill's own file. A missing file is left alone. */

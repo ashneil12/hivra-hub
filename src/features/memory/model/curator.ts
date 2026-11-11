@@ -6,6 +6,9 @@ import { bump, cleanEntities, emptyDoc, ENGINE_ID, FACT_KINDS, isDay, isForgotte
 import { touch } from "./fade";
 import { givesOrders } from "./orderScan";
 import { withContradiction } from "./review";
+import { noteSkillDropped } from "./health";
+import { sanitizeLesson } from "../../selfBuild/model/lessonSafety";
+import type { SkillMode } from "../../selfBuild/model/skillMode";
 
 /** Same sentence as skillLearn.plainLesson. Not imported: loading that module registers a change kind. */
 function oneSentence(raw: string): string {
@@ -36,6 +39,8 @@ export type CuratorContext = {
   by?: string;
   /** WP-103: the tier answering this turn, so the memory it writes can say where it came from. */
   via?: MemoryVia;
+  /** WP-242: how skills are learned. Off drops a skill proposal and counts it; absent is the default (Automatic). */
+  skills?: SkillMode;
 };
 
 /** WP-240: the typed details a curator may give with a new fact. Each is optional and checked on the way in. */
@@ -373,8 +378,13 @@ export function applyProposal(
   }
 
   if (chosen.kind === "skill") {
+    // WP-242: with skill learning Off, a proposal is dropped and counted on the health card.
+    if (ctx.skills === "off") return { doc: noteSkillDropped(doc), outcome: { status: "none", ignored } };
     const name = slugSkillName(chosen.name);
-    const lesson = oneSentence(chosen.lesson);
+    // WP-242: a lesson is cleaned of personal details before it is kept, and a step that sends outside is not kept.
+    const cleaned = sanitizeLesson(oneSentence(chosen.lesson));
+    if (!cleaned.ok && !mentionsSecret(chosen.lesson)) return { doc, outcome: { status: "dropped", reason: "invalid", ignored } };
+    const lesson = cleaned.ok ? cleaned.lesson : oneSentence(chosen.lesson);
     if (!isValidSkillName(name) || !lesson || mentionsSecret(lesson) || mentionsSecret(name)) {
       return { doc, outcome: { status: "dropped", reason: mentionsSecret(lesson) ? "secret" : "invalid", ignored } };
     }

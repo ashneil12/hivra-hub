@@ -91,6 +91,8 @@ export type MemoryHealth = {
   dropped: Record<DropReason, number>;
   /** When the curator last looked at a turn (ms). */
   lastRunAt?: number;
+  /** WP-242: lessons and skill proposals dropped because skill learning is Off. Absent means none. */
+  skillsDropped?: number;
 };
 
 export type MemoryDoc = {
@@ -396,6 +398,8 @@ function loadedHealth(value: unknown): MemoryHealth | undefined {
     },
   };
   if (finite(raw.lastRunAt)) health.lastRunAt = raw.lastRunAt;
+  const skillsDropped = count(raw.skillsDropped);
+  if (skillsDropped) health.skillsDropped = skillsDropped;
   return health;
 }
 

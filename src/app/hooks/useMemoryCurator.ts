@@ -24,6 +24,7 @@ import { askCrew } from "../../features/memory/model/crewBrief";
 import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { markLived } from "../../features/memory/model/fade";
 import { noteOutcome } from "../../features/memory/model/health";
+import { loadSkillMode } from "../../features/selfBuild/model/skillMode";
 
 /** WP-240: the one-line reply the explicit path gives, for whatever shows it. Detail: `{ sessionId, text }`. */
 export const MEMORY_REMEMBERED_EVENT = "monocode:memory-remembered";
@@ -272,6 +273,7 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
             const result = await runBatch(loadDoc, saveDoc, plan, base, ask, {
               now,
               via: choice.tier,
+              skills: loadSkillMode(),
               ...(engine ? { by: engine } : {}),
             });
             if (result.status !== "applied" || !plan.more) break;

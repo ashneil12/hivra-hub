@@ -32,6 +32,7 @@ import { noteBatch, noteDeferred } from "./health";
 import { repairDoc } from "./repair";
 import { commitDoc } from "./review";
 import { explicitProposal, ruleProposal } from "./ruleCurator";
+import type { SkillMode } from "../../selfBuild/model/skillMode";
 
 /** At most this many of the person's messages go to one call (Nod reads 40 too). */
 export const BATCH_SIZE = 40;
@@ -193,7 +194,7 @@ function withMarks(doc: MemoryDoc, plan: BatchPlan): MemoryDoc {
   return next;
 }
 
-export type BatchContext = { now: number; via?: MemoryVia; by?: string };
+export type BatchContext = { now: number; via?: MemoryVia; by?: string; skills?: SkillMode };
 
 /**
  * Applies one batch's reply on top of the doc it was planned from, with the repair pass, and moves the watermark in
@@ -230,6 +231,7 @@ export function applyBatch(
       now: ctx.now,
       ...(ctx.by ? { by: ctx.by } : {}),
       ...(ctx.via ? { via: ctx.via } : {}),
+      ...(ctx.skills ? { skills: ctx.skills } : {}),
     };
     const judged = applyProposal(next, turn, op.proposal);
     next = judged.doc;

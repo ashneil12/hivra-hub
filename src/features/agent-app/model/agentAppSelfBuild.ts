@@ -11,7 +11,7 @@ import { draftMono, makeDrafted } from "../../selfBuild/model/monoMake";
 import { handleMonoRetire } from "../../selfBuild/model/monoRetire";
 import { draftTeam, makeDraftedTeam } from "../../selfBuild/model/teamMake";
 import { keepFromChat, previewFromChat } from "../../selfBuild/model/pagesChat";
-import { learnSkillLesson } from "../../selfBuild/model/skillLearn";
+import { realSkillPorts, routeSkillLesson } from "../../selfBuild/model/skillRoute";
 import { applyTodayFromChat, todayFromChat } from "../../selfBuild/model/todayChat";
 import { creatorDraft, creatorState } from "../../creator/model/creator";
 import { CREATOR_DRAFT_EVENT } from "../../creator/model/creatorEvents";
@@ -27,7 +27,7 @@ export const SELF_BUILD_FIELDS: ReadonlyArray<readonly [string, readonly string[
   ["pages.build", ["project", "spec", "request", "previewId", "keep"]],
   ["hub.change", ["ask", "title", "changeId", "ready", "undo"]],
   ["today.change", ["ask", "projectOrder", "previewId", "apply"]],
-  ["skills.learn", ["skill", "lesson", "from"]],
+  ["skills.learn", ["skill", "lesson", "from", "replace"]],
   // WP-34: draft and state only. Preview, keep, undo, discard, approve and probe stay taps.
   ["creator.draft", ["id", "revision", "files"]],
   ["creator.state", ["id"]],
@@ -156,12 +156,19 @@ export async function handleSelfBuild(
         throw new Error('skill must be the skill\'s name, like "reviewing-a-diff".');
       if (typeof input.lesson !== "string" || !input.lesson.trim())
         throw new Error(forUser("lesson must be the one plain sentence worth keeping from that review."));
-      return learnSkillLesson({
-        skill: input.skill,
-        lesson: input.lesson,
-        from: typeof input.from === "string" ? input.from : undefined,
-        by: me.name,
-      });
+      if (input.replace !== undefined && (typeof input.replace !== "string" || !input.replace.trim()))
+        throw new Error("replace must be the exact lesson to change, as it is in the skill.");
+      // WP-242: Automatic, Ask first or Off, as set in Settings → Memory; every lesson is cleaned first.
+      return routeSkillLesson(
+        {
+          skill: input.skill,
+          lesson: input.lesson,
+          ...(typeof input.from === "string" ? { from: input.from } : {}),
+          ...(typeof input.replace === "string" ? { replace: input.replace } : {}),
+        },
+        me,
+        host.skillRoute ?? realSkillPorts(),
+      );
     }
     default:
       throw new Error(`Unknown action ${action}`);
