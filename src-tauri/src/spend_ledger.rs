@@ -542,6 +542,58 @@ mod tests {
     }
 
     #[test]
+    fn review_r5_another_projects_limit_does_not_hold_this_projects_verdict() {
+        // Review r5 repro: a limit keyed by another project's id is not this project's limit. The TS gate (limitsFor)
+        // never applies it to this project's turns; here it counts the whole ledger and holds every verdict.
+        let conn = db();
+        let now = now_ms();
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[{"scope":"project","project":"side-project","period":"month","amountUsd":5,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        append(&conn, &turn("chat", "hivra", now, 12_000_000, true)).unwrap();
+        assert!(
+            admit_automated(&conn, Some("hivra"), now).is_ok(),
+            "hivra has no limit of its own and no app limit is set"
+        );
+    }
+
+    #[test]
+    fn review_r5_spend_path_key_matches_ts_path_key() {
+        // Review r5: TS pathKey outputs for the same inputs (vitest, POSIX host), byte for byte.
+        let table: &[(&str, &str)] = &[
+            ("/Users/Ash/Repo", "/Users/Ash/Repo"),
+            ("/Users/Ash/Repo/", "/Users/Ash/Repo"),
+            ("/Users/Ash/Repo//", "/Users/Ash/Repo"),
+            ("/", "/"),
+            ("//", "/"),
+            ("///", "/"),
+            ("C:\\Users\\Ash\\Repo", "c:/users/ash/repo"),
+            ("C:/Users/Ash/Repo/", "c:/users/ash/repo"),
+            ("c:\\", "c:"),
+            ("C:", "c:"),
+            ("C:/", "c:"),
+            ("\\\\?\\C:\\Users\\Ash\\Repo", "//?/c:/users/ash/repo"),
+            ("\\\\Server\\Share\\Repo", "//server/share/repo"),
+            ("\\\\?\\UNC\\Server\\Share\\Repo", "//?/unc/server/share/repo"),
+            ("/home/ash/we\\ird", "/home/ash/we\\ird"),
+            (" /home/ash/repo ", " /home/ash/repo "),
+            ("/home/ash/repo ", "/home/ash/repo "),
+            ("C:foo", "C:foo"),
+            ("relative/Path/", "relative/Path"),
+            ("/Volumes/ÉTÉ/Repo", "/Volumes/ÉTÉ/Repo"),
+            ("//server/share/İstanbul", "//server/share/i̇stanbul"),
+            ("C:\\Straße\\ÉTÉ", "c:/straße/été"),
+            ("", "/"),
+        ];
+        let mut differ = Vec::new();
+        for (input, ts) in table {
+            let rust = spend_path_key(input);
+            if rust != *ts {
+                differ.push(format!("{input:?}: rust {rust:?} ts {ts:?}"));
+            }
+        }
+        assert!(differ.is_empty(), "differ:\n{}", differ.join("\n"));
+    }
+
+    #[test]
     fn a_verdict_runs_only_when_admitted_and_is_noted_unpriced() {
         // Round 5 LOW2: the verdict goes through admitted_verdict. Over the limit it runs nothing and notes nothing; a
         // folder-keyed limit (which this side cannot map) holds it too; under the limit it runs and is noted unpriced.
