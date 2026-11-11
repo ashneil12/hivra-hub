@@ -39,22 +39,28 @@ const MAX_PAGES_PER_KIND = 50;
 /**
  * Reads each run kind, then the older pages behind it. Stops when the caller
  * bails out (a newer load, or the screen went away) and returns what it has.
+ * When `held` already has runs, a kind stops at the first page that contains
+ * one of them, so a later activity event does not walk the older pages again.
  * A thrown read is the caller's problem: it should keep the rows already shown.
  */
 export async function collectRunPages(
   loadPage: (kind: string, before?: ActivityCursor) => Promise<unknown>,
   shouldStop: () => boolean = () => false,
+  held: readonly ActivityEntry[] = [],
 ): Promise<ActivityEntry[]> {
+  const known = new Set(held.map((entry) => entry.id));
   const pages: unknown[] = [];
+  if (held.length > 0) pages.push({ entries: held });
   for (const kind of RUN_KINDS) {
     let before: ActivityCursor | undefined;
     for (let page = 0; page < MAX_PAGES_PER_KIND; page += 1) {
       if (shouldStop()) return mergeRunPages(pages);
       const result = await loadPage(kind, before);
       pages.push(result);
-      const next = readPage(result).next;
-      if (!next) break;
-      before = next;
+      const read = readPage(result);
+      if (known.size > 0 && read.entries.some((entry) => known.has(entry.id))) break;
+      if (!read.next) break;
+      before = read.next;
     }
   }
   return mergeRunPages(pages);

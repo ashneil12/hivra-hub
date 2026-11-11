@@ -12,11 +12,20 @@ import {
 import { AutomationsView } from "./AutomationsView";
 
 const invoke = vi.hoisted(() => vi.fn());
+const activityListeners = vi.hoisted(() => [] as Array<() => void>);
 vi.mock("@tauri-apps/api/core", async (original) => ({
   ...(await original<typeof import("@tauri-apps/api/core")>()),
   invoke,
 }));
-vi.mock("@tauri-apps/api/event", () => ({ listen: async () => () => {} }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (_event: string, handler: () => void) => {
+    activityListeners.push(handler);
+    return () => {
+      const index = activityListeners.indexOf(handler);
+      if (index >= 0) activityListeners.splice(index, 1);
+    };
+  },
+}));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
     isMaximized: async () => false,
@@ -37,6 +46,7 @@ beforeEach(() => {
   });
   notifyAutomationsChanged();
   invoke.mockReset();
+  activityListeners.splice(0, activityListeners.length);
   container = document.createElement("div");
   document.body.append(container);
   root = createRoot(container);
@@ -132,4 +142,110 @@ it("lists only automations for the scoped project, plus project-less ones", asyn
   expect(shown("Here review")).toBe(true);
   expect(shown("Home review")).toBe(true);
   expect(shown("There review")).toBe(false);
+});
+
+type ActivityQuery = { kind?: string; before?: { seq?: number } };
+
+function automation(id: string, name: string, cwd: string): Automation {
+  return {
+    ...newAutomationDraft(cwd, "codex", "model"),
+    id,
+    name,
+    nextRunAt: 0,
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function runLine(
+  id: string,
+  kind: string,
+  summary: string,
+  project: string,
+  target: string,
+  seq: number,
+) {
+  return {
+    id,
+    seq,
+    kind,
+    actor: { role: "app" },
+    initiator: { role: "app" },
+    project,
+    target,
+    summary,
+    link: "",
+    at: seq,
+  };
+}
+
+async function openRuns() {
+  const tab = [...container.querySelectorAll('[role="tab"]')].find(
+    (element) => element.textContent === "Runs",
+  );
+  if (!(tab instanceof HTMLButtonElement)) throw new Error("missing runs tab");
+  await act(async () => {
+    tab.click();
+  });
+}
+
+it("a new activity line does not read the older pages again", async () => {
+  const newer = runLine(
+    "new",
+    "automation.started",
+    "Newer. Started by the 9:00 schedule.",
+    "/work/project",
+    "morning/run-2",
+    2,
+  );
+  const older = runLine(
+    "old",
+    "automation.started",
+    "Older. Started by the hourly schedule.",
+    "/work/project",
+    "morning/run-1",
+    1,
+  );
+  const queries: ActivityQuery[] = [];
+  invoke.mockImplementation(async (command: string, args?: { query?: ActivityQuery }) => {
+    if (command === "activity_list") {
+      const query = args?.query ?? {};
+      queries.push(query);
+      if (query.kind !== "automation.started") return { entries: [], next: null };
+      if (query.before) return { entries: [older], next: null };
+      return { entries: [newer], next: { at: newer.at, seq: newer.seq } };
+    }
+    if (command === "automations_list") {
+      return [automation("morning", "Morning", "/work/project")];
+    }
+    return [];
+  });
+  await act(async () =>
+    root.render(
+      createElement(AutomationsView, {
+        cwd: "/work/project",
+        recents: [],
+        onClose: vi.fn(),
+        onLaunch: vi.fn(),
+        onOpenSession: vi.fn(),
+      }),
+    ),
+  );
+  await openRuns();
+  await vi.waitFor(() => {
+    expect(container.textContent).toContain("Older. Started by the hourly schedule.");
+  });
+  const readBefore = queries.filter((query) => query.before).length;
+  expect(readBefore).toBeGreaterThan(0);
+  expect(activityListeners.length).toBeGreaterThan(0);
+  const mark = queries.length;
+  await act(async () => {
+    for (const handler of [...activityListeners]) handler();
+  });
+  await vi.waitFor(() => {
+    expect(queries.length).toBeGreaterThanOrEqual(mark + 3);
+  });
+  expect(queries.filter((query) => query.before).length).toBe(readBefore);
+  expect(container.textContent).toContain("Newer. Started by the 9:00 schedule.");
+  expect(container.textContent).toContain("Older. Started by the hourly schedule.");
 });

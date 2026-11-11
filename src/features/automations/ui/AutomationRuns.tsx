@@ -31,6 +31,8 @@ export function AutomationRuns({
   const [result, setResult] = useState<RunResult | "">("");
   const [problem, setProblem] = useState<string | null>(null);
   const generation = useRef(0);
+  // Runs already shown. A later activity event reads only until it meets one.
+  const held = useRef<ActivityEntry[]>([]);
 
   const load = useCallback(async () => {
     const mine = ++generation.current;
@@ -39,8 +41,10 @@ export function AutomationRuns({
         (kind, before) =>
           invoke("activity_list", { query: { kind, limit: 100, before } }),
         () => mine !== generation.current,
+        held.current,
       );
       if (mine !== generation.current) return;
+      held.current = next;
       setRows(next);
       setProblem(null);
     } catch {
