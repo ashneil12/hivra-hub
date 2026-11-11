@@ -269,6 +269,30 @@ describe("WP-177 MEDIUM D: a copy is accepted back only from the machine the cha
     await expect(mac.receive(CHAT, "m-y", copyFrom("some-other-host"))).rejects.toThrow(/went to another machine/);
   });
 
+  it("refuses a copy into a chat that was trashed, and refuses to open one there", async () => {
+    const port = memoryPort([session()]);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port, labelFor: () => "Studio box" });
+    await mac.freeze(CHAT, "m0", HOST);
+    await mac.release(CHAT, "m0", HOST);
+    port.all()[0].trashed = true;
+    await expect(mac.receive(CHAT, "m-trash", copyFrom(HOST))).rejects.toThrow(
+      /No saved chat row here to receive the move into/,
+    );
+    port.all()[0].trashed = false;
+    await mac.receive(CHAT, "m-trash", copyFrom(HOST));
+    port.all()[0].trashed = true;
+    await expect(mac.activate(CHAT, "m-trash")).rejects.toThrow(/No saved chat row here to open the move in/);
+  });
+
+  it("a thaw still clears a freeze on a trashed chat", async () => {
+    const port = memoryPort([session()]);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port });
+    await mac.freeze(CHAT, "m-thaw", HOST);
+    port.all()[0].trashed = true;
+    await mac.thaw(CHAT, "m-thaw");
+    expect(port.all()[0].blocks.some((block) => block.notice === "teleport-frozen")).toBe(false);
+  });
+
   it("on activation the host's session id is dropped and its move notices are stripped from the copy", async () => {
     const port = memoryPort([session()]);
     const mac = localMoveEndpoint({ machineId: "this-mac", port, labelFor: () => "Studio box" });

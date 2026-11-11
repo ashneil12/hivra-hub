@@ -326,7 +326,7 @@ export function localMoveEndpoint(options: {
     },
     async receive(chatId, moveId, payload): Promise<ReceiveReply> {
       const session = await port.get(chatId);
-      if (!session) throw new Error("No saved chat row here to receive the move into");
+      if (!session || session.trashed) throw new Error("No saved chat row here to receive the move into");
       if (payload.chat.chatId !== chatId) throw new Error("The move names a different chat than the one being moved");
       // Only a chat that was moved away from here takes a copy back, and only from the machine it went to.
       if (!teleportStateOf(session).moved) throw new Error("This chat is not moved away from here, so a copy would overwrite live work");
@@ -370,7 +370,7 @@ export function localMoveEndpoint(options: {
     },
     async activate(chatId, moveId) {
       const session = await port.get(chatId);
-      if (!session) throw new Error("No saved chat row here to open the move in");
+      if (!session || session.trashed) throw new Error("No saved chat row here to open the move in");
       if (hasBlock(session.blocks, `teleported-back-${moveId}`)) return;
       const copy = savedIncoming(session).find((c) => c.moveId === moveId);
       if (!copy) throw new Error("No copy of this chat is stored here to open");

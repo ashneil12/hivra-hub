@@ -241,6 +241,64 @@ describe("WP-177 startup recovery finds every move in the store", () => {
     const ids = await findMovedChatIds(["/projects/app"]);
     expect(ids).toContain("trashed-frozen");
   });
+
+  it("a copy is not accepted into a chat trashed after it moved away", async () => {
+    await upsertSession({ ...savedChat(), id: "trashed-back" } as Session);
+    const local = localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort(), labelFor: () => "Studio box" });
+    expect(await local.freeze("trashed-back", "m-back", HOST)).toBe(true);
+    await local.release("trashed-back", "m-back", HOST);
+    trashed.add("trashed-back");
+    const payload = {
+      chat: {
+        chatId: "trashed-back",
+        provider: "claude",
+        providerSessionId: "",
+        model: "test-model-1",
+        effort: "high",
+        title: "App chat",
+        transcript: "[]",
+        queued: [],
+      },
+      manifest: { format: "hivra-teleport-v1", chatId: "trashed-back", to: MAC, from: HOST },
+    } as never;
+    await expect(local.receive("trashed-back", "m-back-2", payload)).rejects.toThrow(
+      /No saved chat row here to receive the move into/,
+    );
+  });
+
+  it("reads the row it hands back after the pending reply is saved", async () => {
+    const { launchRecovery } = await import("./teleportMove");
+    const { registerSessionPersistFlush } = await import("../../sessions/model/sessionPersistFlush");
+    await upsertSession({ ...savedChat(), id: "flush-chat" } as Session);
+    unlockChat("flush-chat");
+    const local = localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort(), labelFor: () => "Studio box" });
+    expect(await local.freeze("flush-chat", "m-flush", HOST)).toBe(true);
+    const unregister = registerSessionPersistFlush(async (id) => {
+      if (id !== "flush-chat") return;
+      const row = backend.get(id);
+      if (!row || !Array.isArray(row.blocks)) return;
+      backend.set(id, {
+        ...row,
+        blocks: [...row.blocks, { id: "a-new", role: "assistant", text: "the last reply" }],
+      });
+    });
+    try {
+      const rows: Session[] = [];
+      await launchRecovery(["/projects/app"], {
+        port: sessionStoreChatPort(),
+        local,
+        remoteFor: () => {
+          throw new Error("no host");
+        },
+        onRow: (row) => rows.push(row),
+        now: Date.now(),
+      });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]?.blocks.some((block) => block.id === "a-new")).toBe(true);
+    } finally {
+      unregister();
+    }
+  });
 });
 
 describe("WP-177 M4: one chat's failure does not stop the others at launch", () => {

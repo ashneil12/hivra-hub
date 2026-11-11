@@ -671,6 +671,11 @@ export type Session = {
   monoTranscript?: { before: number | null; firstBlockId: string | null };
   /** True while a harness turn is in flight. */
   busy?: boolean;
+  /**
+   * Set when a move reads a chat that is in the trash. In memory only: a save never writes it.
+   * A copy is not accepted back into a trashed chat.
+   */
+  trashed?: boolean;
   /** The provider has accepted this turn and can take live follow-ups. */
   turnReady?: boolean;
   /**
