@@ -7,6 +7,7 @@ const bus = vi.hoisted(() => {
   type Handler = (event: { payload: unknown }) => void;
   return {
     current: "main",
+    noWindow: false,
     global: [] as Handler[],
     windows: new Map<string, Handler[]>(),
     emitTo(label: string, payload: unknown) {
@@ -15,6 +16,7 @@ const bus = vi.hoisted(() => {
     },
     reset() {
       this.current = "main";
+      this.noWindow = false;
       this.global = [];
       this.windows = new Map();
     },
@@ -36,21 +38,27 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 vi.mock("@tauri-apps/api/webviewWindow", () => ({
-  getCurrentWebviewWindow: () => ({
-    label: bus.current,
-    listen: (_name: string, handler: (event: { payload: unknown }) => void) => {
-      const list = bus.windows.get(bus.current) ?? [];
-      list.push(handler);
-      bus.windows.set(bus.current, list);
-      const label = bus.current;
-      return Promise.resolve(() => {
-        bus.windows.set(
-          label,
-          (bus.windows.get(label) ?? []).filter((h) => h !== handler),
-        );
-      });
-    },
-  }),
+  getCurrentWebviewWindow: () => {
+    if (bus.noWindow) throw new Error("no current window");
+    return {
+      label: bus.current,
+      listen: (
+        _name: string,
+        handler: (event: { payload: unknown }) => void,
+      ) => {
+        const list = bus.windows.get(bus.current) ?? [];
+        list.push(handler);
+        bus.windows.set(bus.current, list);
+        const label = bus.current;
+        return Promise.resolve(() => {
+          bus.windows.set(
+            label,
+            (bus.windows.get(label) ?? []).filter((h) => h !== handler),
+          );
+        });
+      },
+    };
+  },
 }));
 
 import { tauriDictationPort } from "./dictationPort";
@@ -100,5 +108,16 @@ describe("the desktop dictation port", () => {
       error: false,
     });
     expect(chunks).toEqual([]);
+  });
+
+  // MED (#216 follow-up): the composer subscribes on every mount. A window lookup that throws must not take the
+  // composer down with it; dictation just hears nothing.
+  it("a window lookup that throws does not throw out of subscribe", () => {
+    bus.noWindow = true;
+    let stop: (() => void) | undefined;
+    expect(() => {
+      stop = tauriDictationPort.subscribe(() => {});
+    }).not.toThrow();
+    expect(() => stop?.()).not.toThrow();
   });
 });

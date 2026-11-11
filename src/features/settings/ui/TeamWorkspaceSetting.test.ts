@@ -179,6 +179,21 @@ it("lists who is checked in at the team server while sharing is active", async (
   expect(host.textContent).toContain("Here now: ann, ben");
 });
 
+it("says which copy was kept when a sync found a conflict", async () => {
+  vi.mocked(invoke).mockResolvedValue({
+    ...OFF,
+    enabled: true,
+    endpoint: "https://team.example.test/v1",
+    endpointConfigured: true,
+    signedIn: true,
+    active: true,
+    conflicts: ["exo.name"],
+  });
+  await render();
+  expect(host.textContent).toContain("Kept your copy of exo.name.");
+  expect(host.textContent).not.toMatch(/[—–]/);
+});
+
 it("shows nobody here while the switch is off, and asks the server for nothing", async () => {
   vi.mocked(invoke).mockResolvedValue(OFF);
   await render();

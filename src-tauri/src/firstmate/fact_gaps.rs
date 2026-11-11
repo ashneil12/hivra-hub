@@ -1085,21 +1085,127 @@ fn failure_gaps(checks: &[StoredCheck]) -> Vec<String> {
     gaps
 }
 
-fn is_stale(checks: &[StoredCheck], edits: &[FactEdit]) -> bool {
-    let Some(last) = last_code_at(edits) else {
+struct PackageEdit {
+    pkg: String,
+    path: String,
+    at: f64,
+}
+
+/// First-seen order. The time and path are that package's last edit that is not docs.
+fn package_edits(edits: &[FactEdit]) -> Vec<PackageEdit> {
+    let mut order = Vec::new();
+    let mut latest: HashMap<String, PackageEdit> = HashMap::new();
+    for edit in edits {
+        if is_docs_path(&edit.path) {
+            continue;
+        }
+        let Some(pkg) = package_of(&edit.path) else {
+            continue;
+        };
+        let replace = match latest.get(&pkg) {
+            None => true,
+            Some(prev) => edit.at >= prev.at,
+        };
+        if !replace {
+            continue;
+        }
+        if !latest.contains_key(&pkg) {
+            order.push(pkg.clone());
+        }
+        latest.insert(
+            pkg.clone(),
+            PackageEdit {
+                pkg,
+                path: edit.path.clone(),
+                at: edit.at,
+            },
+        );
+    }
+    order
+        .into_iter()
+        .filter_map(|pkg| latest.remove(&pkg))
+        .collect()
+}
+
+fn test_reaches_check(
+    check: &StoredCheck,
+    target: &PackageEdit,
+    packages: &HashMap<String, String>,
+) -> bool {
+    is_test_command(&check.command)
+        && test_reaches(&check.command, &target.pkg, &target.path, packages)
+}
+
+fn finished_after_edit(
+    check: &StoredCheck,
+    target: &PackageEdit,
+    packages: &HashMap<String, String>,
+) -> bool {
+    (check.status == "passed" || check.status == "failed")
+        && check.at > target.at
+        && test_reaches_check(check, target, packages)
+}
+
+fn package_is_stale(
+    checks: &[StoredCheck],
+    target: &PackageEdit,
+    packages: &HashMap<String, String>,
+) -> bool {
+    let mut passed_before = false;
+    let mut finished_after = false;
+    for check in checks {
+        if !test_reaches_check(check, target, packages) {
+            continue;
+        }
+        if check.status == "passed" && check.at <= target.at {
+            passed_before = true;
+        }
+        if (check.status == "passed" || check.status == "failed") && check.at > target.at {
+            finished_after = true;
+        }
+    }
+    passed_before && !finished_after
+}
+
+/// A file with no package. A later test still clears it: nothing names which package that test was for.
+/// Docs do not count.
+fn bare_edit_is_stale(checks: &[StoredCheck], edits: &[FactEdit]) -> bool {
+    let mut last: Option<f64> = None;
+    for edit in edits {
+        if is_docs_path(&edit.path) || package_of(&edit.path).is_some() {
+            continue;
+        }
+        last = Some(match last {
+            Some(at) if at > edit.at => at,
+            _ => edit.at,
+        });
+    }
+    let Some(last) = last else {
         return false;
     };
-    let tests: Vec<&StoredCheck> = checks
-        .iter()
-        .filter(|check| is_test_command(&check.command))
-        .collect();
-    let passed_before = tests
-        .iter()
-        .any(|check| check.status == "passed" && check.at <= last);
-    let finished_after = tests
-        .iter()
-        .any(|check| (check.status == "passed" || check.status == "failed") && check.at > last);
+    let passed_before = checks.iter().any(|check| {
+        is_test_command(&check.command) && check.status == "passed" && check.at <= last
+    });
+    let finished_after = checks.iter().any(|check| {
+        is_test_command(&check.command)
+            && (check.status == "passed" || check.status == "failed")
+            && check.at > last
+    });
     passed_before && !finished_after
+}
+
+fn stale_packages(
+    checks: &[StoredCheck],
+    edits: &[FactEdit],
+    packages: &HashMap<String, String>,
+) -> HashSet<String> {
+    let mut stale = HashSet::new();
+    for target in package_edits(edits) {
+        if package_is_stale(checks, &target, packages) {
+            stale.insert(target.pkg);
+        }
+    }
+    stale
 }
 
 fn counts_as_evidence(check: &StoredCheck) -> bool {
@@ -1151,41 +1257,47 @@ fn open_todos(todos: &[FactTodo]) -> Vec<String> {
 
 fn coverage_with(turn: &FactTurn, packages: &HashMap<String, String>) -> Vec<String> {
     let clean = sanitize(turn);
-    let mut seen = HashSet::new();
     let mut gaps = Vec::new();
-    for edit in &clean.edits {
-        if is_docs_path(&edit.path) {
-            continue;
-        }
-        let Some(pkg) = package_of(&edit.path) else {
-            continue;
-        };
-        if !seen.insert(pkg.clone()) {
-            continue;
-        }
-        let reached = clean.checks.iter().any(|check| {
-            (check.status == "passed" || check.status == "failed")
-                && test_reaches(&check.command, &pkg, &edit.path, packages)
-        });
+    for target in package_edits(&clean.edits) {
+        let reached = clean
+            .checks
+            .iter()
+            .any(|check| finished_after_edit(check, &target, packages));
         if !reached {
+            let pkg = target.pkg;
             gaps.push(format!("No test reached {pkg}."));
         }
     }
     gaps
 }
 
-/// Edited packages no finished test reached. Docs-only edits are skipped.
+/// Edited packages no test finished after that package's last edit. Docs-only edits are skipped.
 pub fn coverage_gaps(turn: &FactTurn) -> Vec<String> {
     coverage_with(turn, &workspace_or_empty(None))
 }
 
-fn gaps_before_coverage(turn: &FactTurn) -> Vec<String> {
+/// A package that already went stale does not also get "no test reached". The stale sentence is that fact.
+fn without_stale_packages(gaps: Vec<String>, stale_pkgs: &HashSet<String>) -> Vec<String> {
+    gaps.into_iter()
+        .filter(|gap| {
+            !gap.strip_prefix("No test reached ")
+                .and_then(|rest| rest.strip_suffix('.'))
+                .is_some_and(|name| stale_pkgs.contains(name))
+        })
+        .collect()
+}
+
+fn gaps_before_coverage(
+    turn: &FactTurn,
+    packages: &HashMap<String, String>,
+) -> (Vec<String>, HashSet<String>) {
     let clean = sanitize(turn);
     let mut gaps = failure_gaps(&clean.checks);
     if masked_pass_stands_in(&clean.checks) {
         gaps.push(MASKED.to_string());
     }
-    if is_stale(&clean.checks, &clean.edits) {
+    let stale_pkgs = stale_packages(&clean.checks, &clean.edits, packages);
+    if !stale_pkgs.is_empty() || bare_edit_is_stale(&clean.checks, &clean.edits) {
         gaps.push(STALE.to_string());
     }
     if let Some(claim) = claim_of(&clean.answer) {
@@ -1204,6 +1316,15 @@ fn gaps_before_coverage(turn: &FactTurn) -> Vec<String> {
     } else if open.len() > 1 {
         gaps.push(format!("There are still {} open to-dos.", open.len()));
     }
+    (gaps, stale_pkgs)
+}
+
+fn done_gaps_with(turn: &FactTurn, packages: &HashMap<String, String>) -> Vec<String> {
+    let (mut gaps, stale_pkgs) = gaps_before_coverage(turn, packages);
+    gaps.extend(without_stale_packages(
+        coverage_with(turn, packages),
+        &stale_pkgs,
+    ));
     gaps
 }
 
@@ -1214,15 +1335,14 @@ pub(crate) fn done_gaps_in(turn: &FactTurn, checkout: Option<&Path>) -> Vec<Stri
     let Some(checkout) = checkout else {
         return done_gaps(turn);
     };
-    let mut gaps = gaps_before_coverage(turn);
-    gaps.extend(coverage_with(turn, &workspace_or_empty(Some(checkout))));
-    gaps
+    done_gaps_with(turn, &workspace_or_empty(Some(checkout)))
 }
 
 /// Every fact gap in this turn, in a stable order. Empty when the facts support done.
 pub fn done_gaps(turn: &FactTurn) -> Vec<String> {
-    let mut gaps = gaps_before_coverage(turn);
-    gaps.extend(coverage_gaps(turn));
+    let packages = workspace_or_empty(None);
+    let (mut gaps, stale_pkgs) = gaps_before_coverage(turn, &packages);
+    gaps.extend(without_stale_packages(coverage_gaps(turn), &stale_pkgs));
     gaps
 }
 
@@ -2079,5 +2199,168 @@ mod whole_class {
             answer: String::new(),
         });
         assert_eq!(gaps, vec![STALE.to_string()], "{gaps:?}");
+    }
+}
+
+/// A test covers a package only after that package's last edit. A later test of
+/// another package does not clear stale.
+#[cfg(test)]
+mod review_leftovers {
+    use super::*;
+
+    fn check(command: &str, status: &str, at: f64) -> FactCheck {
+        FactCheck {
+            command: command.to_string(),
+            status: status.to_string(),
+            at,
+        }
+    }
+
+    fn edit(path: &str, at: f64) -> FactEdit {
+        FactEdit {
+            path: path.to_string(),
+            at,
+        }
+    }
+
+    fn turn(checks: Vec<FactCheck>, edits: Vec<FactEdit>) -> FactTurn {
+        FactTurn {
+            checks,
+            edits,
+            todos: vec![],
+            answer: String::new(),
+        }
+    }
+
+    #[test]
+    fn a_test_before_the_packages_last_edit_does_not_cover_it() {
+        let early = coverage_gaps(&turn(
+            vec![check("npm test", "passed", 1.0)],
+            vec![edit("packages/web/src/app.ts", 2.0)],
+        ));
+        assert_eq!(early, vec!["No test reached web."]);
+        let failed = coverage_gaps(&turn(
+            vec![check("npm test", "failed", 1.0)],
+            vec![edit("packages/web/src/app.ts", 2.0)],
+        ));
+        assert_eq!(failed, vec!["No test reached web."]);
+        let not_the_last = coverage_gaps(&turn(
+            vec![check("npm test", "passed", 2.0)],
+            vec![
+                edit("packages/web/src/app.ts", 1.0),
+                edit("packages/web/src/later.ts", 3.0),
+            ],
+        ));
+        assert_eq!(not_the_last, vec!["No test reached web."]);
+        let after = coverage_gaps(&turn(
+            vec![check("npm test", "passed", 4.0)],
+            vec![
+                edit("packages/web/src/app.ts", 1.0),
+                edit("packages/web/src/later.ts", 3.0),
+            ],
+        ));
+        assert!(after.is_empty());
+        let stale = done_gaps(&turn(
+            vec![check("npm test", "passed", 1.0)],
+            vec![edit("packages/web/src/app.ts", 2.0)],
+        ));
+        assert_eq!(stale, vec![STALE.to_string()]);
+        let failed_turn = done_gaps(&turn(
+            vec![check("npm test", "failed", 1.0)],
+            vec![edit("packages/web/src/app.ts", 2.0)],
+        ));
+        assert_eq!(
+            failed_turn,
+            vec![
+                "A check failed this turn (npm test).".to_string(),
+                "No test reached web.".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_later_test_of_another_package_does_not_clear_stale() {
+        let other = done_gaps(&turn(
+            vec![
+                check("npm test", "passed", 1.0),
+                check(
+                    "npx vitest run src/features/crew/row.test.ts",
+                    "passed",
+                    3.0,
+                ),
+            ],
+            vec![edit("packages/web/src/app.ts", 2.0)],
+        ));
+        assert_eq!(other, vec![STALE.to_string()]);
+        let named = done_gaps(&turn(
+            vec![
+                check("cargo test -p web", "passed", 1.0),
+                check("cargo test -p crew", "failed", 3.0),
+            ],
+            vec![edit("crates/web/src/lib.rs", 2.0)],
+        ));
+        assert_eq!(
+            named,
+            vec![
+                "A check failed this turn (cargo test -p crew).".to_string(),
+                STALE.to_string(),
+            ]
+        );
+        let one_of_two = done_gaps(&turn(
+            vec![
+                check("npm test", "passed", 1.0),
+                check(
+                    "npx vitest run src/features/crew/row.test.ts",
+                    "passed",
+                    4.0,
+                ),
+            ],
+            vec![
+                edit("packages/web/src/app.ts", 2.0),
+                edit("src/features/crew/row.ts", 3.0),
+            ],
+        ));
+        assert_eq!(one_of_two, vec![STALE.to_string()]);
+        let same = done_gaps(&turn(
+            vec![
+                check("npm test", "passed", 1.0),
+                check(
+                    "npx vitest run src/features/crew/row.test.ts",
+                    "passed",
+                    3.0,
+                ),
+            ],
+            vec![edit("src/features/crew/row.ts", 2.0)],
+        ));
+        assert!(same.is_empty(), "{same:?}");
+        let docs = done_gaps(&turn(
+            vec![check(
+                "npx vitest run src/features/crew/row.test.ts",
+                "passed",
+                2.0,
+            )],
+            vec![
+                edit("src/features/crew/row.ts", 1.0),
+                edit("docs/guide.md", 3.0),
+            ],
+        ));
+        assert!(docs.is_empty(), "{docs:?}");
+        let bare = done_gaps(&turn(
+            vec![check("npm test", "passed", 1.0)],
+            vec![edit("row.ts", 2.0)],
+        ));
+        assert_eq!(bare, vec![STALE.to_string()]);
+        let bare_cleared = done_gaps(&turn(
+            vec![
+                check("npm test", "passed", 1.0),
+                check(
+                    "npx vitest run src/features/crew/row.test.ts",
+                    "passed",
+                    3.0,
+                ),
+            ],
+            vec![edit("row.ts", 2.0)],
+        ));
+        assert!(bare_cleared.is_empty(), "{bare_cleared:?}");
     }
 }

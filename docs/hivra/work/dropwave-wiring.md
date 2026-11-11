@@ -1,6 +1,6 @@
 # Dropwave frontend wiring list (first cut)
 
-Branch: `claude/project-thread-m12ut3` (PR #252), head `70c6ab4c` (main `3aef51a2` merged in). Written 11 Nov 18:45 UTC.
+Branch: `claude/project-thread-m12ut3` (PR #252), head `70c6ab4c` (main `3aef51a2` merged in). Written 11 Nov 18:45 UTC; G15 added 19:00.
 
 How to read it. "Works" means the screen reads and writes the app's real store or Rust command in the normal build, and
 that path existed on main before this branch. "Thin" means it works but the state is kept somewhere too weak for a
@@ -29,6 +29,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | G11 | A new extra chat with a first mate is titled by the default auto-title, and its row shows the first mate's name where a model name normally sits. | `Sidebar.tsx` `sideChatMark` | Nothing blocking. Optional: title from the first message at once. |
 | G12 | Onboarding's first-run choices and "setup proved" are in `localStorage` (`onboarding.ts`, `setupProof.ts`). Clearing the webview's storage shows the welcome again. | `src/features/hub/model/onboarding.ts`, `setupProof.ts` | Mirror "onboarded" into the database (a settings row) and treat an existing roster or project as "not first launch". |
 | G13 | Browser specs still drive the old screens (Coding team row, Today, the floating Copy chat link, the old Compare panel markup). | `tests/browser/*.spec.ts` | Update with the screens: see "Browser specs to update" below. |
+| G15 | **Missing, found after the first cut.** "New page" on the Pages screen (and "Change" on a kept page) takes the description and answers "Not connected yet": the build call behind it went with Ash OS (WP-04), and `buildOnce` returns `not-connected` unless the dev stub is on. A first mate can still build a page when asked in its own chat (`page_build`, `src/features/selfBuild/model/pagesChat.ts`). | `src/features/pages/model/buildPage.ts` `buildOnce`; `PagesView.tsx` lines around `buildPage(` and `rebuildPage(` | Send the description to the chosen first mate's own session as a page build ask and collect its `page_build` preview (the chat path already checks the spec with `checkBuiltSpec(…, {real: true})` and shows the preview on Pages), so the card on Pages and the chat are one path. Same for Change with the page's current spec. |
 | G14 | Orbit-style docs (block documents, WP-72) exist (`src/features/docs/*`) but have no entry in the Dropwave sidebar. | `ProjectRail.tsx` `placesNav` | Product call, not a bug: Ash wants these to come back later as pages ("hubs") or mods. No work until he asks. |
 
 ## Screen by screen
@@ -110,7 +111,8 @@ never reads it, so "example data" is not a state any real screen is in.
 | Control | Calls or reads | State |
 |---|---|---|
 | Project tabs (All, each project, Not tied to a project) | `pagesScope`, `allPages()` | Works |
-| New page (describe it, a first mate builds it, preview before keeping) | `buildPage` through the selected first mate's session | Works |
+| New page (describe it, a first mate builds it, preview before keeping) | `buildPage` → `buildOnce`, which has nothing behind it since Ash OS went | **Missing: G15.** Asking a first mate in its chat works. |
+| Change on a kept page | `rebuildPage` → the same `buildOnce` | **Missing: G15** |
 | Open a page, New page from inside one, the page's own 3-dot menu (pin, rename, delete) | `pages.ts` | Works; G8 |
 
 ### Settings

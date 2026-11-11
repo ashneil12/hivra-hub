@@ -74,9 +74,16 @@ export const tauriDictationPort: DictationPort = {
     let unlisten: UnlistenFn | null = null;
     let dead = false;
     if (!inDesktopApp()) return () => {};
+    // The composer subscribes on every mount: a window lookup that throws hears nothing instead of throwing.
+    let current: ReturnType<typeof getCurrentWebviewWindow>;
+    try {
+      current = getCurrentWebviewWindow();
+    } catch {
+      return () => {};
+    }
     // LOW 1 (round 3): this window's own listener. A global listen() also receives events emitted to other windows,
     // so another window's dictation words would reach this one.
-    void getCurrentWebviewWindow().listen<DictationChunk>(DICTATION_EVENT, (event) => {
+    void current.listen<DictationChunk>(DICTATION_EVENT, (event) => {
       const payload = event.payload;
       if (!payload || typeof payload.session !== "number" || typeof payload.text !== "string") return;
       onChunk({
