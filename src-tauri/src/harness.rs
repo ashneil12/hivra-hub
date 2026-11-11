@@ -602,6 +602,12 @@ pub fn harness_runtime_binary_paths(
         paths.insert("claude".into(), binary);
     }
     let paths = initialize_runtime_binary_paths(&host.runtime_binary_paths, paths);
+    for path in paths.values() {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            crate::agent_sandbox::note_configured_cli(&expand_home(trimmed));
+        }
+    }
     // The configured CLIs' identity checks run now, in the background, not on the first chat's turn.
     warm_configured_binaries(paths.clone());
     paths
@@ -2035,10 +2041,18 @@ mod more_agent_sandbox_tests {
                 args.iter().any(|arg| arg == "--flag"),
                 "the approved arguments stay on the command"
             );
-            let profile = args
-                .iter()
-                .find(|arg| arg.contains("(version 1)"))
-                .expect("the profile is an argument");
+            // A short profile is `-p <text>`. A long one (many worktrees) is `-f <file>`.
+            let profile = match args.iter().position(|arg| arg == "-f") {
+                Some(at) => {
+                    let path = args.get(at + 1).expect("the profile file follows -f");
+                    std::fs::read_to_string(path).expect("the profile file can be read")
+                }
+                None => args
+                    .iter()
+                    .find(|arg| arg.contains("(version 1)"))
+                    .expect("the profile is an argument")
+                    .clone(),
+            };
             let run_text = run.to_string_lossy();
             assert!(
                 profile.contains(&format!(
@@ -2049,13 +2063,13 @@ mod more_agent_sandbox_tests {
             // The run folder is `<data>/more-agents/run/<id>`, so three levels up is the data folder.
             let in_run = run.join("ok.txt");
             assert!(
-                under_profile(profile, &run, &home, "echo ok > ok.txt"),
+                under_profile(&profile, &run, &home, "echo ok > ok.txt"),
                 "the run folder is not writable under the profile"
             );
             assert_eq!(std::fs::read_to_string(&in_run).unwrap_or_default(), "ok\n");
             let planted = scratch.0.join("planted");
             assert!(
-                !under_profile(profile, &run, &home, "echo x > ../../../planted"),
+                !under_profile(&profile, &run, &home, "echo x > ../../../planted"),
                 "a file in the data folder, outside the run folder, was writable"
             );
             assert!(
@@ -3522,6 +3536,7 @@ fn resolve_configured_harness_binary(
             "Configured path is not a {provider} binary: {binary_path}"
         ));
     }
+    crate::agent_sandbox::note_configured_cli(&path);
     Ok(path)
 }
 
