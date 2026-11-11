@@ -1050,6 +1050,7 @@ fn clock_phrase(time: &str) -> Option<String> {
 }
 
 /// What started a run, in plain words. Never the prompt.
+/// The map uses the same phrases (`src/features/automations/model/mapLayout.ts`).
 fn started_by(automation: &Automation, run: &AutomationRun) -> String {
     if run.trigger == "manual" {
         return "you".to_string();

@@ -10716,6 +10716,8 @@ function Workspace({
             void updateAutomationRun(run.id, status, {
               sessionId: session.id,
               ...(outcome.error ? { error: outcome.error } : {}),
+              // WP-180a: the activity line maps this class to a sentence.
+              ...(outcome.errorClass ? { errorClass: outcome.errorClass } : {}),
             })
               .catch(() => undefined)
               .finally(releaseReservation);

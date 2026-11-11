@@ -73,6 +73,12 @@ import {
   type AutomationTrigger,
   type AutomationTriggerKind,
 } from "../model/automations";
+import { AutomationMap } from "./AutomationMap";
+import { AutomationRuns } from "./AutomationRuns";
+import {
+  AutomationScreenTabs,
+  type AutomationScreen,
+} from "./AutomationScreenTabs";
 import {
   AUTOMATION_TEMPLATE_CATEGORIES,
   templatesForCategory,
@@ -208,6 +214,8 @@ function AutomationsContent({
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<AutomationDraft | null>(null);
   const [pickerOpen, setPickerOpen] = useState(true);
+  // WP-180a: Runs and Map. The list and the editor below stay in their order.
+  const [screen, setScreen] = useState<AutomationScreen>("list");
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
   const logos = useTabGroupLogos();
@@ -215,6 +223,12 @@ function AutomationsContent({
   const [groupMascots] = useState(loadTabGroupMascots);
   const [groupColors] = useState(loadTabGroupColors);
   const [groupCustomColors] = useState(loadTabGroupCustomColors);
+  const openFromMap = (id: string) => {
+    setPickerOpen(false);
+    setDraft(null);
+    setSelectedId(id);
+    setScreen("list");
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -383,6 +397,16 @@ function AutomationsContent({
   const listLock = useLockOverscroll<HTMLDivElement>();
 
   return (
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
+      <AutomationScreenTabs screen={screen} onScreen={setScreen} />
+      {screen === "runs" ? (
+        <AutomationRuns
+          automations={scoped}
+          onOpenSession={onOpenSession}
+        />
+      ) : screen === "map" ? (
+        <AutomationMap automations={scoped} onOpen={openFromMap} />
+      ) : (
     <div className="flex min-h-0 min-w-0 flex-1 text-content">
       <aside className="flex w-[280px] shrink-0 flex-col border-r border-stroke">
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
@@ -500,6 +524,8 @@ function AutomationsContent({
           <AutomationPicker onBlank={beginBlank} onPick={beginFromTemplate} />
         )}
       </main>
+    </div>
+      )}
     </div>
   );
 }
