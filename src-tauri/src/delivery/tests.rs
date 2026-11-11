@@ -2933,3 +2933,63 @@ fn a_pattern_that_matches_nothing_is_refused_on_write_and_nothing_is_saved() {
     assert!(kept.protected_extra.is_empty());
     assert_eq!(kept.updated_at, None);
 }
+
+// ---- review/220-r1 repros (red at 82876e1b) ---------------------------------------------------------------------------
+
+/// WP-92's vault (#213) is src-tauri/src/secrets/**, not src-tauri/src/vault/**: a later change to it merges unreviewed.
+#[test]
+fn repro_220_a_change_to_the_wp92_vault_needs_a_security_review() {
+    let f = fixture("r220-vault");
+    let gh = security_gh(H1_SEC, &["src-tauri/src/secrets/store.rs"]);
+    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    assert!(
+        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("no security review")),
+        "{outcome:?}"
+    );
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "the vault merged with no review"
+    );
+}
+
+/// The gate's own list is neither a security path nor on the floor: the lead tick's switch merges a PR that empties
+/// `securityPaths` with no person and no review, and the next ship has no gate.
+#[test]
+fn repro_220_a_change_to_the_gates_own_list_is_not_merged_by_the_switch() {
+    let (s, _project) = floor_pr("r220-list", 7, None);
+    let gh = files_of(Ok("src/features/leadTick/model/neverMerge.json\n"));
+    let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+    assert!(
+        !matches!(outcome, MergeOutcome::Merged { .. }),
+        "the switch merged a change to the security path list: {outcome:?}"
+    );
+}
+
+/// The merge path does not run the validators: a findings file the review command could never write (an object, not
+/// the schema's array) carrying a confirmed critical is read as "no findings", and builders that differ only in case,
+/// or are not known builders, pass. All three are files anyone with the checkout can write by hand.
+#[test]
+fn repro_220_a_hand_written_review_the_validators_would_refuse_does_not_pass() {
+    let critical = r#"{"findings":[{"verdict":"confirmed","title":"Token leaks","severity":{"overall_severity":"critical"}}]}"#;
+    for (tag, findings, author, reviewer) in [
+        ("r220-object", critical, "claude", "codex"),
+        ("r220-case", "[]", "Claude", "claude"),
+        ("r220-unknown", "[]", "x", "y"),
+    ] {
+        let f = fixture(tag);
+        write_review(
+            &f.project,
+            H1_SEC,
+            findings,
+            author,
+            reviewer,
+            &[SECURITY_FILE],
+        );
+        let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+        let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+        assert!(
+            matches!(&outcome, MergeOutcome::Refused { .. }),
+            "{tag}: {outcome:?}"
+        );
+    }
+}

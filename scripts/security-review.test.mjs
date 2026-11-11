@@ -634,3 +634,50 @@ test("the gate refuses a change with a file the review did not cover", async () 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- review/220-r1 repros (red at 82876e1b) ----------------------------------------------------------------------------
+// The author of a change can clear the gate alone: one command, no hunt, no verifier, builders typed on the command line,
+// and a coverage ledger the command writes itself ("covered" for every file). The gate must not treat that as a review.
+test("repro 220-r1: the author's own empty run with self-declared builders does not clear the gate", async () => {
+  const root = scratch();
+  try {
+    const run = await runReview({
+      root,
+      head: HEAD,
+      author: "codex", // typed by whoever runs it; nothing checks it against who wrote the change
+      reviewer: "claude",
+      files: SENSITIVE,
+      candidates: [], // no hunt
+      verifier: () => {
+        throw new Error("never called");
+      },
+      read: fakeRead(),
+    });
+    assert.equal(run.ok, true, run.reason);
+    const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
+    assert.equal(gate.status, "refuse", "a run with no hunter output and no recorded reviewer is not a security review");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The WP-92 vault (#213) lives in src-tauri/src/secrets/ and src/features/secrets/; the list names vault/ folders that
+// do not exist. Approval auto-allow tables, the Keychain, the phone's port mapping and TLS, and the remote bootstrap
+// scripts are missing too, and so is the gate's own list and code.
+test("repro 220-r1: the vault, approval, keychain, phone and gate files are security paths", () => {
+  for (const file of [
+    "src-tauri/src/secrets/store.rs",
+    "src/features/secrets/ui/SecretsPage.tsx",
+    "src-tauri/src/hub_keychain.rs",
+    "src-tauri/src/watcher/safe_cmd.rs",
+    "src/features/autopilot/model/safeApproval.ts",
+    "src/features/sessions/model/childApproval.ts",
+    "src-tauri/src/mobile_router.rs",
+    "crates/mobile-link/src/tls.rs",
+    "src-tauri/src/remote_bootstrap.sh",
+    "src/features/leadTick/model/neverMerge.json",
+    "scripts/security-review/review.mjs",
+  ]) {
+    assert.notEqual(isSecuritySensitive({ files: [file], labels: [] }), "", `${file} merges with no review`);
+  }
+});
