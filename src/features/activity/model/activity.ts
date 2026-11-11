@@ -42,7 +42,12 @@ const KINDS: Record<string, string> = {
   "ship.trial": "Trial",
   "ship.rollback": "Rollback",
   "permission.grant": "Permission",
+  "sandbox.refuse": "Sandbox refused",
+  "protected.report": "Protected files changed",
 };
+
+/** WP-178: the kind of a first mate's report of a protected or secret place it touched (checkoutGuard.ts). */
+export const ACTIVITY_PROTECTED_REPORT = "protected.report";
 
 /** A blank filter means no filter. Surrounding spaces don't count. */
 function filled(value: string | undefined): string | undefined {

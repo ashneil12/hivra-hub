@@ -379,7 +379,10 @@ mod tests {
         }
         // The shared list's folder rules hold `.claude` and `.codex` at any depth for the delivery floor. The sandbox
         // reads only homeSecrets, so neither folder can reach the profile.
-        assert!(!profile.contains("claude"), "no Claude folder in the profile");
+        assert!(
+            !profile.contains("claude"),
+            "no Claude folder in the profile"
+        );
         assert!(!profile.contains("codex"), "no Codex folder in the profile");
         assert!(!profile.contains("auth"), "no auth file in the profile");
     }

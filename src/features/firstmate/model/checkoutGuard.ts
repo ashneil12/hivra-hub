@@ -6,6 +6,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { isMonoSession } from "../../monos/model/mono";
 import type { Session } from "../../sessions/model/session";
 import { checkTurnForProtectedPaths, type ProtectedTouchReport } from "../../../integrations/harness/core/protectedPaths";
+import { ACTIVITY_PROTECTED_REPORT } from "../../activity/model/activity";
 
 export type CheckoutSnapshot = {
   dir: string;
@@ -68,6 +69,29 @@ function keepTurnFingerprints(fresh: CheckoutFlag, turn: CheckoutFlag): Checkout
       return was ? { ...path, fingerprint: was.fingerprint ?? null } : path;
     }),
   };
+}
+
+/**
+ * The activity row for a first-mate turn that touched a protected or secret place (WP-178 item 4, WP-78). The row names
+ * the chat and carries the report's own words; the summary is kept under the log's 500-character limit.
+ */
+export function protectedActivityRow(
+  session: Pick<Session, "id" | "title" | "cwd">,
+  report: ProtectedTouchReport,
+) {
+  return {
+    kind: ACTIVITY_PROTECTED_REPORT,
+    summary: report.summary.slice(0, 480),
+    project: session.cwd,
+    target: session.id,
+    firstMateId: session.id,
+    firstMateName: session.title,
+  };
+}
+
+/** Writes the report's activity row. A locked log keeps the turn's work, so a failed write is not an error here. */
+export function noteProtectedReport(session: Pick<Session, "id" | "title" | "cwd">, report: ProtectedTouchReport) {
+  return invoke("activity_note_first_mate", protectedActivityRow(session, report)).catch(() => undefined);
 }
 
 export class FirstMateTurnGuard {
