@@ -2626,8 +2626,9 @@ mod tests {
         assert_eq!(swept.wakes.len(), 1, "{swept:?}");
         let wake = &open_wakes(&store)[0];
         assert!(
-            wake.text
-                .contains("(now b2b2b2b) changed files this pull request touches since the watch last saw it"),
+            wake.text.contains(
+                "(now b2b2b2b) changed files this pull request touches since the watch last saw it"
+            ),
             "{}",
             wake.text
         );

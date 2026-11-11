@@ -151,7 +151,9 @@ pub(crate) fn rest_path_allowed(path: &str) -> bool {
         && path
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"/._-?=&%,".contains(&b))
-        && path.split('/').all(|segment| segment != "." && segment != "..")
+        && path
+            .split('/')
+            .all(|segment| segment != "." && segment != "..")
 }
 
 impl CliGh {

@@ -72,7 +72,10 @@ enum Touch {
     Named(Vec<String>),
     /// GitHub listed only part of a file list: it may touch the pull request.
     /// `base_cut` is the compare list. `pull_cut` is the pull request's own list.
-    Unknown { base_cut: bool, pull_cut: bool },
+    Unknown {
+        base_cut: bool,
+        pull_cut: bool,
+    },
 }
 
 // ---- parsing (pure) ------------------------------------------------------------------------------------------------
@@ -1009,7 +1012,8 @@ mod tests {
         let got = facts(&get, "acme/web", 7, &memo, &read, false);
         let told = news(&mut memo, &read, &got, false);
         assert!(
-            told.iter().any(|change| matches!(change, Change::BaseMoved { .. })),
+            told.iter()
+                .any(|change| matches!(change, Change::BaseMoved { .. })),
             "a behind base is not a silent no-move: {told:?}"
         );
     }
@@ -1075,7 +1079,10 @@ mod tests {
             reason.contains("changed more files than GitHub lists"),
             "{reason}"
         );
-        assert!(!reason.contains("changed-file list was cut short"), "{reason}");
+        assert!(
+            !reason.contains("changed-file list was cut short"),
+            "{reason}"
+        );
     }
 
     /// The hold names the pull request's base branch, not a hard-coded main.

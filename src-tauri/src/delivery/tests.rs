@@ -2943,7 +2943,10 @@ fn r3_review_a_main_rename_of_the_pull_request_s_file_holds_the_merge() {
         matches!(&out, MergeOutcome::Refused { .. }),
         "main moved the pull request's file: {out:?}"
     );
-    assert!(gh.ran("pr", "merge").is_empty(), "nothing merges over a move");
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "nothing merges over a move"
+    );
 }
 
 /// An unanswered compare is not a merge base, and a fail listed for that path wins over a recorded answer.
@@ -2978,12 +2981,7 @@ fn the_delivery_fake_does_not_invent_a_merge_base() {
 #[test]
 fn a_question_opened_during_the_base_hold_stops_the_merge() {
     let s = store();
-    let delegation = task(
-        &mut s.lock_conn().unwrap(),
-        "lead-1",
-        "r-base",
-        "worker-1",
-    );
+    let delegation = task(&mut s.lock_conn().unwrap(), "lead-1", "r-base", "worker-1");
     let question_on = delegation.clone();
     let read = green("a1b2c3d");
     let gh = FakeGithub::new(vec![read.clone(), read]).with_api(
