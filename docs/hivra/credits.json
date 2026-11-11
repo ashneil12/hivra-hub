@@ -259,6 +259,12 @@
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
     },
     {
+      "name": "precedent-log",
+      "url": "https://github.com/quotumorg/precedent-log",
+      "licence": "MIT",
+      "gave": "standing answers: show past answers before a new question, match a reworded question to an old answer, and list who relied on an answer when it is retired (ideas only)"
+    },
+    {
       "name": "tasklane",
       "url": "https://github.com/kunci115/tasklane",
       "licence": "Apache-2.0",

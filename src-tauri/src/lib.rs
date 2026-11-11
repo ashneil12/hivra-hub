@@ -716,6 +716,14 @@ pub fn run() {
             decisions::decisions_ask,
             decisions::decisions_answer,
             decisions::decisions_list,
+            // WP-156: standing answers stay off until this setting is on.
+            decisions::decisions_standing_enabled,
+            decisions::decisions_standing_brief,
+            decisions::decisions_standing_list,
+            decisions::decisions_reuse_list,
+            decisions::decisions_set_standing_enabled,
+            decisions::decisions_retire,
+            decisions::decisions_set_standing,
             // WP-91: the goal graph's rules, its finish-line check and a worker's handoff.
             goal_graph::goal_graph_check_plan,
             goal_graph::goal_graph_check_repair,

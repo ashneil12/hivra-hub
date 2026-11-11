@@ -303,4 +303,56 @@ describe("ask_person and the decision Needs", () => {
     expect(again).toMatchObject({ state: "answered", answer: "Keep them 30 days" });
     expect(String(again.note)).toContain("don't ask again");
   });
+
+  it("passes match words through and returns a standing answer as guidance", async () => {
+    const store = fakeStore();
+    let seen: AskInput | undefined;
+    const ask = store.backend.ask.bind(store.backend);
+    store.backend.ask = async (input) => {
+      seen = input;
+      return ask(input);
+    };
+    const host = { backend: store.backend };
+    await askPerson(
+      { id: "fm" },
+      { ...input, keys: ["Session", 1], force: true, reason: "This one is about staging." },
+      { project: "hivra" },
+      [],
+      host,
+    );
+    expect(seen).toMatchObject({ keys: ["Session"], force: true, reason: "This one is about staging." });
+
+    store.backend.ask = async () => ({
+      decision: {
+        project: "hivra",
+        decisionKey: "retention",
+        question: input.question,
+        options: input.options,
+        recommended: input.recommended,
+        askedBy: "fm",
+        askedByMono: null,
+        waiting: [],
+        state: "answered",
+        answer: "Keep 30 days",
+        answeredBy: "user",
+        answeredAt: 3,
+        createdAt: 1,
+        updatedAt: 3,
+        version: 2,
+        standingId: "S-4",
+      },
+      created: false,
+      added: [],
+      released: [],
+      matched: true,
+      standingId: "S-4",
+    });
+    const matched = await askPerson({ id: "fm" }, input, { project: "hivra" }, [row()], host);
+    expect(matched).toMatchObject({ state: "answered", matched: true, standingId: "S-4", answer: "Keep 30 days" });
+    expect(String(matched.note)).toContain(
+      "A standing answer S-4 to a similar question: guidance, not permission",
+    );
+    expect(String(matched.note)).not.toMatch(/[—–]/);
+    expect(store.decisions).toHaveLength(1);
+  });
 });
