@@ -1437,7 +1437,9 @@ pub fn spend_once(
 /// already shown is never issued again (fix round 6). A gap is fine. A repeat is not.
 ///
 /// The first number for a key that already has a decision is one past that decision's version, so an install from
-/// before this counter does not reissue a version the person has already seen.
+/// before this counter does not reissue a version the person has already seen. When the counter already exists, the
+/// next number is one past the higher of the counter and the row, so a row that got ahead of the counter does not
+/// have an old version issued again.
 pub(crate) fn alloc_card_version(
     conn: &Connection,
     project: &str,
@@ -1461,11 +1463,13 @@ pub(crate) fn alloc_card_version(
         .optional()
         .map_err(|e| e.to_string())?
         .unwrap_or(0);
-    let seed = current.max(0) + 1;
+    // A missing row counts as version 0. A negative version counts as 0 too, same as the first insert.
+    let row_version = current.max(0);
+    let seed = row_version + 1;
     conn.execute(
         "INSERT INTO secret_card_epochs (project, decision_key, high_water) VALUES (?1, ?2, ?3)
-         ON CONFLICT (project, decision_key) DO UPDATE SET high_water = high_water + 1",
-        params![project, key, seed],
+         ON CONFLICT (project, decision_key) DO UPDATE SET high_water = MAX(high_water, ?4) + 1",
+        params![project, key, seed, row_version],
     )
     .map_err(|e| e.to_string())?;
     conn.query_row(
@@ -2904,6 +2908,8 @@ pub fn record_run(
 
 #[cfg(test)]
 mod approval_tests;
+#[cfg(test)]
+mod low_tests;
 #[cfg(test)]
 mod r4_repro_tests;
 #[cfg(test)]
