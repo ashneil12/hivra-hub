@@ -3,7 +3,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, it } from "vitest";
 
-const REMOVED = ["attentionCount", "useAttentionVersion", "useInboxUnseen"];
+const REMOVED = ["attentionCount", "useAttentionVersion", "useInboxUnseen", "waitingCount", "needsYouCountFor"];
 
 function files(dir: string): string[] {
   const out: string[] = [];

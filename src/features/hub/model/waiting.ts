@@ -9,7 +9,6 @@ import { pendingSignIns, signInProblem, signInState } from "./connectors";
 import { getTeam, openTeamsSettings, pendingMonoProposals } from "./hubTeams";
 import type { HubSelection } from "./hubNav";
 import type { Need, StuckState } from "./types";
-import { openRows, waitingChats } from "./waitingChats";
 
 export type WaitingItem = {
   id: string;
@@ -120,12 +119,6 @@ export function waitingOnAsh(projectId?: string): WaitingItem[] {
  * card used to add the Stuck section's rows. The rail badge now reads the one Needs you list.
  * Later is not counted: its own line says how many wait there. A row that ticked itself off no longer counts.
  */
-export function waitingCount(projectId: string): number {
-  // r100 (d): a card with several decisions counts each open one, so the badge equals the asks Ash can answer.
-  const asks = waitingChats(projectId).reduce((sum, chat) => sum + Math.max(1, openRows(chat).length), 0);
-  return waitingOnAsh(projectId).filter((i) => !i.done).length + asks;
-}
-
 export function findWaiting(id: string): WaitingItem | undefined {
   const ids = hubData().listProjects().map((p) => p.id);
   return [...waitingOnAsh(), ...ids.flatMap((pid) => projectRows(pid).later)].find((i) => i.id === id);
