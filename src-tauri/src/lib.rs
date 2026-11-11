@@ -696,6 +696,7 @@ pub fn run() {
             spend_ledger::spend_book_read,
             spend_ledger::spend_book_write,
             spend_ledger::spend_redo_links,
+            spend_ledger::spend_set_project_folders,
             crew::crew_rules_set,
             crew::crew_route,
             crew::crew_on_failure,

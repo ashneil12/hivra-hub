@@ -1,6 +1,7 @@
-//! WP-176: the app's own spend ledger. One row per turn, written when the turn ends, with the project it belongs to
-//! and whether its price was reported. Chat delete and trash never touch it, so a limit cannot be lowered by removing
-//! a chat. Nothing here estimates a price: `micros` is the CLI's measured cost, and `priced` is 0 when none was reported.
+//! WP-176: the app's own spend ledger. One row per turn, written when the turn ends, with the project it belongs to,
+//! whether its price was reported, and the CLI that reported it (`source`). Chat delete and trash never touch it, so a
+//! limit cannot be lowered by removing a chat. Nothing here estimates a price: `micros` is the CLI's measured cost, and
+//! `priced` is 0 when none was reported.
 
 use std::process::Command;
 
@@ -13,121 +14,19 @@ use crate::session_store::SessionStore;
 const MAX_TEXT: usize = 4096;
 /// One turn can cost this much at most. A larger figure is refused rather than stored.
 const MAX_MICROS: i64 = 1_000_000_000_000_000;
-
 /// The limits book could not be read or judged, so an automated turn is held.
 const BOOK_UNREADABLE: &str = "The spend limits could not be read, so this automated run is held.";
+/// A project limit that no known project matches, for a verdict that names no project: held, not guessed at.
+const UNPLACED_LIMIT: &str =
+    "A spend limit's project is not known yet, so this automated run is held.";
+/// The CLI whose reported cost is its price table's estimate.
+const CLAUDE: &str = "claude";
 
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
-}
-
-/// Refuses an automated turn (here: a first mate's verdict) when the app's limit, or the project's own limit, is
-/// reached on the ledger. A book that is missing its shape is unreadable, so it holds too. Nothing is written.
-pub fn admit_automated(conn: &Connection, project: Option<&str>, now: i64) -> Result<(), String> {
-    let Some((_, body)) = read_book(conn)? else {
-        return Ok(());
-    };
-    let value: serde_json::Value =
-        serde_json::from_str(&body).map_err(|_| BOOK_UNREADABLE.to_string())?;
-    let limits = value
-        .get("limits")
-        .and_then(|v| v.as_array())
-        .ok_or_else(|| BOOK_UNREADABLE.to_string())?;
-    for limit in limits {
-        let scope = limit.get("scope").and_then(|v| v.as_str()).unwrap_or("");
-        let period = limit.get("period").and_then(|v| v.as_str()).unwrap_or("");
-        let amount = limit
-            .get("amountUsd")
-            .and_then(|v| v.as_f64())
-            .filter(|v| v.is_finite() && *v > 0.0)
-            .ok_or_else(|| BOOK_UNREADABLE.to_string())?;
-        let since: i64 = conn
-            .query_row(
-                "SELECT CAST(strftime('%s', ?1 / 1000, 'unixepoch', 'localtime', ?2, 'utc') AS INTEGER) * 1000",
-                params![now, match period {
-                    "day" => "start of day",
-                    "month" => "start of month",
-                    _ => return Err(BOOK_UNREADABLE.to_string()),
-                }],
-                |row| row.get(0),
-            )
-            .map_err(|e| e.to_string())?;
-        let spent: i64 = match scope {
-            "app" => conn.query_row(
-                "SELECT COALESCE(SUM(micros), 0) FROM spend_ledger WHERE at >= ?1",
-                params![since],
-                |row| row.get(0),
-            ),
-            "project" => {
-                // A limit keyed by the project's id counts that project's turns. One keyed by a folder (the TS side maps
-                // it through git), or a verdict with no project id, cannot be matched here, so it counts the whole ledger:
-                // that holds the verdict early rather than letting it past the limit.
-                let stored = limit.get("project").and_then(|v| v.as_str()).unwrap_or("");
-                match project {
-                    Some(id) if stored == id => conn.query_row(
-                        "SELECT COALESCE(SUM(micros), 0) FROM spend_ledger WHERE at >= ?1 AND project_key = ?2",
-                        params![since, id],
-                        |row| row.get(0),
-                    ),
-                    _ => conn.query_row(
-                        "SELECT COALESCE(SUM(micros), 0) FROM spend_ledger WHERE at >= ?1",
-                        params![since],
-                        |row| row.get(0),
-                    ),
-                }
-            }
-            _ => return Err(BOOK_UNREADABLE.to_string()),
-        }
-        .map_err(|e| e.to_string())?;
-        let cap = (amount * 1_000_000.0).round() as i64;
-        if spent >= cap {
-            return Err(format!(
-                "Spend limit reached: ${:.2} of ${:.2} this {}. This automated run is held.",
-                spent as f64 / 1_000_000.0,
-                amount,
-                if period == "day" { "day" } else { "month" }
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// One automated verdict: admitted, run, then noted in the ledger as unpriced. A refused verdict runs nothing and notes
-/// nothing. The steps are passed in so the sequence is one function, and the test drives that same function.
-pub fn admitted_verdict(
-    admit: impl FnOnce() -> Result<(), String>,
-    run: impl FnOnce() -> Result<String, String>,
-    note: impl FnOnce() -> Result<(), String>,
-) -> Result<String, String> {
-    admit()?;
-    let out = run();
-    note()?;
-    out
-}
-
-/// Notes an automated call whose cost is not reported (a verdict): it is counted as unpriced and adds no money.
-pub fn note_unpriced(conn: &Connection, project: &str, now: i64) -> Result<(), String> {
-    append(
-        conn,
-        &TurnEntry {
-            session_id: format!("verdict-{}", uuid::Uuid::new_v4()),
-            project_key: project.to_string(),
-            at: now,
-            micros: 0,
-            priced: false,
-        },
-    )
-}
-
-#[tauri::command(async)]
-pub fn spend_redo_links(
-    store: State<'_, SessionStore>,
-) -> Result<Vec<crate::delegations::RedoLink>, String> {
-    let conn = store.lock_conn()?;
-    crate::delegations::redo_links(&conn)
 }
 
 pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
@@ -149,8 +48,20 @@ pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            id INTEGER PRIMARY KEY CHECK (id = 1),
            revision INTEGER NOT NULL,
            body TEXT NOT NULL
+         );
+         CREATE TABLE IF NOT EXISTS spend_project_folders (
+           id TEXT PRIMARY KEY,
+           folder TEXT NOT NULL
          );",
-    )
+    )?;
+    // WP-176 round 5: the CLI that reported each cost. Rows written before it have no source, so they stay unlabelled.
+    let has_source = conn
+        .prepare("SELECT 1 FROM pragma_table_info('spend_ledger') WHERE name = 'source'")?
+        .exists([])?;
+    if !has_source {
+        conn.execute_batch("ALTER TABLE spend_ledger ADD COLUMN source TEXT;")?;
+    }
+    Ok(())
 }
 
 /// The largest saved book the app accepts. A limits book is a short list; anything bigger is not written.
@@ -214,6 +125,9 @@ pub struct TurnEntry {
     pub at: i64,
     pub micros: i64,
     pub priced: bool,
+    /// The CLI that reported the cost ("claude" for Claude Code). None for a row written before it was kept.
+    #[serde(default)]
+    pub source: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -225,6 +139,7 @@ pub struct DayTotal {
     pub micros: i64,
     pub priced: i64,
     pub unpriced: i64,
+    pub source: Option<String>,
 }
 
 fn clean(entry: &TurnEntry) -> Result<(), String> {
@@ -243,28 +158,29 @@ fn clean(entry: &TurnEntry) -> Result<(), String> {
 pub fn append(conn: &Connection, entry: &TurnEntry) -> Result<(), String> {
     clean(entry)?;
     conn.execute(
-        "INSERT INTO spend_ledger (session_id, project_key, at, micros, priced) VALUES (?1, ?2, ?3, ?4, ?5)",
+        "INSERT INTO spend_ledger (session_id, project_key, at, micros, priced, source) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         params![
             entry.session_id,
             entry.project_key,
             entry.at,
             entry.micros,
-            if entry.priced { 1 } else { 0 }
+            if entry.priced { 1 } else { 0 },
+            entry.source
         ],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
 }
 
-/// Per project, session and local day, from `since` on. Unpriced turns are counted apart, never added as $0.
+/// Per project, session, local day and source, from `since` on. Unpriced turns are counted apart, never added as $0.
 pub fn totals(conn: &Connection, since: i64) -> Result<Vec<DayTotal>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT project_key, session_id,
                     strftime('%Y-%m-%d', at / 1000, 'unixepoch', 'localtime') AS day,
-                    SUM(micros), SUM(priced), SUM(1 - priced)
+                    SUM(micros), SUM(priced), SUM(1 - priced), source
                FROM spend_ledger WHERE at >= ?1
-              GROUP BY project_key, session_id, day
+              GROUP BY project_key, session_id, day, source
               ORDER BY project_key, session_id, day",
         )
         .map_err(|e| e.to_string())?;
@@ -277,6 +193,7 @@ pub fn totals(conn: &Connection, since: i64) -> Result<Vec<DayTotal>, String> {
                 micros: row.get(3)?,
                 priced: row.get(4)?,
                 unpriced: row.get(5)?,
+                source: row.get(6)?,
             })
         })
         .map_err(|e| e.to_string())?;
@@ -284,28 +201,37 @@ pub fn totals(conn: &Connection, since: i64) -> Result<Vec<DayTotal>, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The one form a folder takes as a ledger and limit key: a verbatim `\\?\` prefix is dropped, separators are `/`,
-/// a trailing separator is trimmed, and a Windows drive or UNC path is lowercased. It is the same as TS `pathKey`
-/// (src/shared/lib/paths.ts), so the ledger and the limits key a folder alike on every OS.
+/// The key of a folder, as TS `pathKey` gives it (src/shared/lib/paths.ts, on a POSIX host): a backslash is a separator
+/// only in a Windows-shaped path, a trailing separator is trimmed, and a Windows drive or UNC path is lowercased. The
+/// text is not trimmed. Verbatim `\\?\` forms keep their prefix, exactly as TS does, so the app never keys them: its
+/// canonical folders come from `dunce`, which drops the prefix.
 pub fn spend_path_key(text: &str) -> String {
-    let trimmed = text.trim();
-    let unprefixed = if let Some(rest) = trimmed.strip_prefix(r"\\?\UNC\") {
-        format!(r"\\{rest}")
-    } else if let Some(rest) = trimmed.strip_prefix(r"\\?\") {
-        rest.to_string()
+    let b = text.as_bytes();
+    let drive = b.len() >= 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && (b[2] == b'\\' || b[2] == b'/');
+    let windows_shaped = drive || text.starts_with("\\\\") || text.starts_with("//");
+    let slashed = if windows_shaped {
+        text.replace('\\', "/")
+    } else {
+        text.to_string()
+    };
+    let trimmed = slashed.trim_end_matches('/');
+    let normalized = if trimmed.is_empty() {
+        "/".to_string()
     } else {
         trimmed.to_string()
     };
-    let mut key = unprefixed.replace('\\', "/");
-    while key.len() > 1 && key.ends_with('/') {
-        key.pop();
-    }
-    let bytes = key.as_bytes();
-    let drive = bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':';
-    if drive || key.starts_with("//") {
-        key.to_lowercase()
+    let nb = normalized.as_bytes();
+    let drive_root = nb.len() >= 2
+        && nb[0].is_ascii_alphabetic()
+        && nb[1] == b':'
+        && (nb.len() == 2 || nb[2] == b'/');
+    if drive_root || normalized.starts_with("//") {
+        normalized.to_lowercase()
     } else {
-        key
+        normalized
     }
 }
 
@@ -340,15 +266,87 @@ pub fn project_folder_for(cwd: &str) -> String {
 /// The real path of a folder (symlinks resolved, so /var and /private/var are one folder). As written when it cannot be
 /// resolved, so a missing folder still compares as the text it was given.
 fn canonical_or_as_written(text: &str) -> String {
-    std::fs::canonicalize(text)
+    dunce::canonicalize(text)
         .ok()
         .and_then(|path| path.to_str().map(str::to_string))
         .unwrap_or_else(|| text.to_string())
 }
 
+/// A project the app knows: its hub id and its folder in the one key form (spend_path_key).
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectFolder {
+    pub id: String,
+    pub folder: String,
+}
+
+/// The projects the app has now, as the spend keys read them.
+pub fn read_projects(conn: &Connection) -> Result<Vec<ProjectFolder>, String> {
+    let mut stmt = conn
+        .prepare("SELECT id, folder FROM spend_project_folders ORDER BY id")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(ProjectFolder {
+                id: row.get(0)?,
+                folder: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+}
+
+/// Replaces the project list (the app sends it on each loader pass). The folders are stored in the one key form.
+pub fn write_projects(conn: &Connection, projects: &[ProjectFolder]) -> Result<(), String> {
+    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+    tx.execute("DELETE FROM spend_project_folders", [])
+        .map_err(|e| e.to_string())?;
+    for project in projects {
+        let id = project.id.trim();
+        if id.is_empty() || id.len() > MAX_TEXT {
+            continue;
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO spend_project_folders (id, folder) VALUES (?1, ?2)",
+            params![id, spend_path_key(&project.folder)],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())
+}
+
+/// The spend key of a value, as the app keys it (TS spendKey): a hub id stays; a folder maps to the id of the project
+/// whose folder it is; anything else keys as its folder in the one form. A basename match does not count.
+pub fn spend_key(value: &str, projects: &[ProjectFolder]) -> String {
+    let text = value.trim();
+    if text.is_empty() {
+        return String::new();
+    }
+    if projects.iter().any(|project| project.id == text) {
+        return text.to_string();
+    }
+    let folder = spend_path_key(text);
+    projects
+        .iter()
+        .find(|project| spend_path_key(&project.folder) == folder)
+        .map(|project| project.id.clone())
+        .unwrap_or(folder)
+}
+
 #[tauri::command(async)]
 pub fn spend_project_folder(cwd: String) -> Result<String, String> {
     Ok(project_folder_for(&cwd))
+}
+
+/// The app's project list for the spend keys, sent on each loader pass.
+#[tauri::command(async)]
+pub fn spend_set_project_folders(
+    store: State<'_, SessionStore>,
+    projects: Vec<ProjectFolder>,
+) -> Result<(), String> {
+    let conn = store.lock_conn()?;
+    write_projects(&conn, &projects)
 }
 
 #[tauri::command(async)]
@@ -391,6 +389,183 @@ pub fn spend_ledger_totals(
     totals(&conn, since)
 }
 
+/// Spend in the window from `since`, all of it, or only the rows whose key is `key` (both keys in the one form). Also
+/// whether any of it was priced by Claude Code, so the figure is labelled an estimate.
+fn window_spend(
+    conn: &Connection,
+    since: i64,
+    key: Option<&str>,
+    projects: &[ProjectFolder],
+) -> Result<(i64, bool), String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT project_key, SUM(micros), SUM(CASE WHEN priced = 1 AND source = 'claude' THEN 1 ELSE 0 END)
+               FROM spend_ledger WHERE at >= ?1 GROUP BY project_key",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![since], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, i64>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+    let mut spent = 0_i64;
+    let mut claude = false;
+    for row in rows {
+        let (project_key, micros, claude_priced) = row.map_err(|e| e.to_string())?;
+        if key.is_none_or(|want| spend_key(&project_key, projects) == want) {
+            spent += micros;
+            claude |= claude_priced > 0;
+        }
+    }
+    Ok((spent, claude))
+}
+
+fn estimate_note(claude: bool) -> &'static str {
+    if claude {
+        " Estimated from Claude Code's price table."
+    } else {
+        ""
+    }
+}
+
+/// Refuses an automated turn (here: a first mate's verdict) when a limit it falls under is reached on the ledger. The
+/// app's limit always applies. A project's limit applies to that project's turns only; a verdict that names no project
+/// is held only by a project limit no known project matches. A book that cannot be read holds too. Nothing is written.
+pub fn admit_automated(conn: &Connection, project: Option<&str>, now: i64) -> Result<(), String> {
+    let Some((_, body)) = read_book(conn)? else {
+        return Ok(());
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| BOOK_UNREADABLE.to_string())?;
+    let limits = value
+        .get("limits")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| BOOK_UNREADABLE.to_string())?;
+    let projects = read_projects(conn)?;
+    let verdict_key = project.map(|id| spend_key(id, &projects));
+    for limit in limits {
+        let scope = limit.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+        let period = limit.get("period").and_then(|v| v.as_str()).unwrap_or("");
+        let amount = limit
+            .get("amountUsd")
+            .and_then(|v| v.as_f64())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .ok_or_else(|| BOOK_UNREADABLE.to_string())?;
+        let since: i64 = conn
+            .query_row(
+                "SELECT CAST(strftime('%s', ?1 / 1000, 'unixepoch', 'localtime', ?2, 'utc') AS INTEGER) * 1000",
+                params![
+                    now,
+                    match period {
+                        "day" => "start of day",
+                        "month" => "start of month",
+                        _ => return Err(BOOK_UNREADABLE.to_string()),
+                    }
+                ],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let (spent, claude) = match scope {
+            "app" => window_spend(conn, since, None, &projects)?,
+            "project" => {
+                let stored = spend_key(
+                    limit.get("project").and_then(|v| v.as_str()).unwrap_or(""),
+                    &projects,
+                );
+                match verdict_key.as_deref() {
+                    Some(key) if key == stored => {
+                        window_spend(conn, since, Some(&stored), &projects)?
+                    }
+                    Some(_) => continue,
+                    None if projects.iter().all(|known| known.id != stored) => {
+                        return Err(UNPLACED_LIMIT.to_string())
+                    }
+                    None => continue,
+                }
+            }
+            _ => return Err(BOOK_UNREADABLE.to_string()),
+        };
+        let cap = (amount * 1_000_000.0).round() as i64;
+        if spent >= cap {
+            return Err(format!(
+                "Spend limit reached: ${:.2} of ${:.2} this {}. This automated run is held.{}",
+                spent as f64 / 1_000_000.0,
+                amount,
+                if period == "day" { "day" } else { "month" },
+                estimate_note(claude)
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One automated verdict: admitted, run, then noted in the ledger as unpriced. A refused verdict runs nothing and notes
+/// nothing. The steps are passed in so the sequence is one function.
+pub fn admitted_verdict(
+    admit: impl FnOnce() -> Result<(), String>,
+    run: impl FnOnce() -> Result<String, String>,
+    note: impl FnOnce() -> Result<(), String>,
+) -> Result<String, String> {
+    admit()?;
+    let out = run();
+    note()?;
+    out
+}
+
+/// The verdict's whole sequence, through the app's ledger. `with_ledger` lends the connection for one step at a time, so
+/// the store is not held while the CLI runs. AppRunners calls this; the test calls it with an in-memory connection.
+/// One step of the verdict, given the ledger's connection.
+pub type LedgerStep<'a> = dyn Fn(&Connection) -> Result<(), String> + 'a;
+
+pub fn gated_verdict(
+    with_ledger: &dyn Fn(&LedgerStep) -> Result<(), String>,
+    project: Option<&str>,
+    now: i64,
+    run: impl FnOnce() -> Result<String, String>,
+) -> Result<String, String> {
+    admitted_verdict(
+        || with_ledger(&|conn| admit_automated(conn, project, now)),
+        run,
+        || {
+            with_ledger(&|conn| {
+                note_unpriced(conn, project.unwrap_or("(no project)"), now, Some(CLAUDE))
+            })
+        },
+    )
+}
+
+/// Notes an automated call whose cost is not reported (a verdict): it is counted as unpriced and adds no money.
+pub fn note_unpriced(
+    conn: &Connection,
+    project: &str,
+    now: i64,
+    source: Option<&str>,
+) -> Result<(), String> {
+    append(
+        conn,
+        &TurnEntry {
+            session_id: format!("verdict-{}", uuid::Uuid::new_v4()),
+            project_key: project.to_string(),
+            at: now,
+            micros: 0,
+            priced: false,
+            source: source.map(str::to_string),
+        },
+    )
+}
+
+#[tauri::command(async)]
+pub fn spend_redo_links(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<crate::delegations::RedoLink>, String> {
+    let conn = store.lock_conn()?;
+    crate::delegations::redo_links(&conn)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +583,7 @@ mod tests {
             at,
             micros,
             priced,
+            source: None,
         }
     }
 
@@ -459,14 +635,184 @@ mod tests {
         assert!(totals(&conn, 0).unwrap().is_empty());
     }
 
+    fn projects_for_hivra() -> Vec<ProjectFolder> {
+        vec![ProjectFolder {
+            id: "hivra".into(),
+            folder: "/work/monocode-hub".into(),
+        }]
+    }
+
+    #[test]
+    fn spend_key_maps_a_folder_to_its_project_like_the_app() {
+        // The same cases as the app's spendKey tests (spendGate.r217 and review2): an id stays, a project folder is the
+        // project's id, a worktree pool slot or another folder keys as itself, and a basename match does not count.
+        let projects = projects_for_hivra();
+        assert_eq!(spend_key("hivra", &projects), "hivra");
+        assert_eq!(spend_key("/work/monocode-hub", &projects), "hivra");
+        assert_eq!(spend_key("/work/monocode-hub/", &projects), "hivra");
+        let slot = "/Users/ash/Worktrees/pool/monocode-hub-slot1";
+        assert_eq!(spend_key(slot, &projects), slot);
+        assert_eq!(
+            spend_key("/elsewhere/monocode-hub", &projects),
+            "/elsewhere/monocode-hub"
+        );
+        assert_eq!(spend_key("", &projects), "");
+        // Windows-shaped: the drive case and the separator style do not change the project.
+        let windows = vec![ProjectFolder {
+            id: "vg".into(),
+            folder: r"C:\Work\VG".into(),
+        }];
+        assert_eq!(spend_key("c:/work/vg", &windows), "vg");
+        assert_eq!(spend_key(r"C:\Work\VG", &windows), "vg");
+    }
+
+    #[test]
+    fn a_folder_keyed_limit_holds_only_its_own_project() {
+        // Round 5 LOW3: the limit is the project's, found through the project list, so the other project's turns and a
+        // verdict with no project are not counted against it.
+        let conn = db();
+        let now = now_ms();
+        write_projects(
+            &conn,
+            &[
+                ProjectFolder {
+                    id: "hivra".into(),
+                    folder: "/work/monocode-hub".into(),
+                },
+                ProjectFolder {
+                    id: "other".into(),
+                    folder: "/work/other".into(),
+                },
+            ],
+        )
+        .unwrap();
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[{"scope":"project","project":"/work/monocode-hub","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        append(
+            &conn,
+            &TurnEntry {
+                source: Some("claude".into()),
+                ..turn("a", "hivra", now, 12_000_000, true)
+            },
+        )
+        .unwrap();
+        append(
+            &conn,
+            &TurnEntry {
+                source: Some("claude".into()),
+                ..turn("b", "other", now, 12_000_000, true)
+            },
+        )
+        .unwrap();
+        assert!(
+            admit_automated(&conn, Some("hivra"), now).is_err(),
+            "its own project's spend holds it"
+        );
+        assert!(
+            admit_automated(&conn, Some("other"), now).is_ok(),
+            "another project's spend does not"
+        );
+        assert!(
+            admit_automated(&conn, None, now).is_ok(),
+            "a placed limit does not hold a verdict with no project"
+        );
+    }
+
+    #[test]
+    fn a_refusal_names_the_estimate_only_for_claude_spend() {
+        // Round 5 LOW4: the label follows the spend's source. Claude-priced spend is labelled; another CLI's is not.
+        let now = now_ms();
+        let book = r#"{"revision":1,"limits":[{"scope":"app","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#;
+        let claude = db();
+        write_book(&claude, 0, 1, book).unwrap();
+        append(
+            &claude,
+            &TurnEntry {
+                source: Some("claude".into()),
+                ..turn("chat", "hivra", now, 12_000_000, true)
+            },
+        )
+        .unwrap();
+        let refusal = admit_automated(&claude, Some("hivra"), now).unwrap_err();
+        assert!(
+            refusal.ends_with("Estimated from Claude Code's price table."),
+            "{refusal}"
+        );
+        let other = db();
+        write_book(&other, 0, 1, book).unwrap();
+        append(
+            &other,
+            &TurnEntry {
+                source: Some("opencode".into()),
+                ..turn("chat", "hivra", now, 12_000_000, true)
+            },
+        )
+        .unwrap();
+        let refusal = admit_automated(&other, Some("hivra"), now).unwrap_err();
+        assert!(!refusal.contains("Estimated"), "{refusal}");
+    }
+
+    #[test]
+    fn a_row_from_before_the_source_column_migrates_and_reads_unlabelled() {
+        // Round 5 LOW4: an old ledger gets the source column; its rows read with no source (unlabelled).
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE spend_ledger (
+               id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT NOT NULL, project_key TEXT NOT NULL,
+               at INTEGER NOT NULL, micros INTEGER NOT NULL, priced INTEGER NOT NULL);
+             INSERT INTO spend_ledger (session_id, project_key, at, micros, priced) VALUES ('old', 'hivra', 1700000000000, 2000000, 1);",
+        )
+        .unwrap();
+        ensure_table(&conn).unwrap();
+        let rows = totals(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].source, None);
+        assert_eq!(rows[0].micros, 2_000_000);
+    }
+
+    #[test]
+    fn the_app_seam_refuses_before_the_cli_runs_and_notes_the_call_after() {
+        // Round 5 gap: the seam AppRunners::verdict calls. Over the limit the CLI never runs; under it, it runs and the
+        // call is noted as an unpriced Claude call.
+        let conn = db();
+        let now = now_ms();
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[{"scope":"app","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        append(
+            &conn,
+            &TurnEntry {
+                source: Some("claude".into()),
+                ..turn("chat", "hivra", now, 12_000_000, true)
+            },
+        )
+        .unwrap();
+        let ran = std::cell::Cell::new(0);
+        let refused = gated_verdict(&|f| f(&conn), Some("hivra"), now, || {
+            ran.set(ran.get() + 1);
+            Ok("v".into())
+        });
+        assert!(refused.is_err());
+        assert_eq!(ran.get(), 0);
+        write_book(&conn, 1, 2, r#"{"revision":2,"limits":[{"scope":"app","period":"month","amountUsd":50,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        let ok = gated_verdict(&|f| f(&conn), Some("hivra"), now, || {
+            ran.set(ran.get() + 1);
+            Ok("v".into())
+        });
+        assert_eq!(ok, Ok("v".to_string()));
+        assert_eq!(ran.get(), 1);
+        let noted = totals(&conn, 0)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.session_id.starts_with("verdict-"))
+            .unwrap();
+        assert_eq!(
+            (noted.unpriced, noted.source.as_deref()),
+            (1, Some("claude"))
+        );
+    }
+
     #[test]
     fn a_folder_has_one_key_on_every_os() {
-        // Round 5 (Windows CI): git reports C:/..., canonicalize reports \\?\C:\..., and the TS key is pathKey. All of
-        // them must give the one key the ledger and the limits use. These inputs are Windows-shaped on every OS.
-        assert_eq!(
-            spend_path_key(r"\\?\C:\Users\Ash\main-repo"),
-            "c:/users/ash/main-repo"
-        );
+        // Round 5 (Windows CI): git reports C:/..., a backslash path is the same folder, and TS pathKey keys both alike.
+        // The app's canonical folders come from dunce, so the verbatim prefix never reaches a key.
         assert_eq!(
             spend_path_key("C:/Users/Ash/main-repo/"),
             "c:/users/ash/main-repo"
@@ -476,7 +822,7 @@ mod tests {
             "c:/users/ash/main-repo"
         );
         assert_eq!(
-            spend_path_key(r"\\?\UNC\Server\Share\Repo"),
+            spend_path_key(r"\\Server\Share\Repo"),
             "//server/share/repo"
         );
         assert_eq!(spend_path_key("/home/ash/repo/"), "/home/ash/repo");
@@ -528,7 +874,7 @@ mod tests {
         assert!(admit_automated(&conn, Some("hivra"), now).is_err());
         write_book(&conn, 1, 2, r#"{"revision":2,"limits":[{"scope":"app","period":"month","amountUsd":50,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
         assert!(admit_automated(&conn, Some("hivra"), now).is_ok());
-        note_unpriced(&conn, "hivra", now).unwrap();
+        note_unpriced(&conn, "hivra", now, Some("claude")).unwrap();
         let row = totals(&conn, 0)
             .unwrap()
             .into_iter()
@@ -539,6 +885,61 @@ mod tests {
         conn.execute("UPDATE spend_limit_book SET body = 'not json'", [])
             .unwrap();
         assert!(admit_automated(&conn, Some("hivra"), now).is_err());
+    }
+
+    #[test]
+    fn review_r5_another_projects_limit_does_not_hold_this_projects_verdict() {
+        // Review r5 repro: a limit keyed by another project's id is not this project's limit. The TS gate (limitsFor)
+        // never applies it to this project's turns; here it counts the whole ledger and holds every verdict.
+        let conn = db();
+        let now = now_ms();
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[{"scope":"project","project":"side-project","period":"month","amountUsd":5,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        append(&conn, &turn("chat", "hivra", now, 12_000_000, true)).unwrap();
+        assert!(
+            admit_automated(&conn, Some("hivra"), now).is_ok(),
+            "hivra has no limit of its own and no app limit is set"
+        );
+    }
+
+    #[test]
+    fn review_r5_spend_path_key_matches_ts_path_key() {
+        // Review r5: TS pathKey outputs for the same inputs (vitest, POSIX host), byte for byte.
+        let table: &[(&str, &str)] = &[
+            ("/Users/Ash/Repo", "/Users/Ash/Repo"),
+            ("/Users/Ash/Repo/", "/Users/Ash/Repo"),
+            ("/Users/Ash/Repo//", "/Users/Ash/Repo"),
+            ("/", "/"),
+            ("//", "/"),
+            ("///", "/"),
+            ("C:\\Users\\Ash\\Repo", "c:/users/ash/repo"),
+            ("C:/Users/Ash/Repo/", "c:/users/ash/repo"),
+            ("c:\\", "c:"),
+            ("C:", "c:"),
+            ("C:/", "c:"),
+            ("\\\\?\\C:\\Users\\Ash\\Repo", "//?/c:/users/ash/repo"),
+            ("\\\\Server\\Share\\Repo", "//server/share/repo"),
+            (
+                "\\\\?\\UNC\\Server\\Share\\Repo",
+                "//?/unc/server/share/repo",
+            ),
+            ("/home/ash/we\\ird", "/home/ash/we\\ird"),
+            (" /home/ash/repo ", " /home/ash/repo "),
+            ("/home/ash/repo ", "/home/ash/repo "),
+            ("C:foo", "C:foo"),
+            ("relative/Path/", "relative/Path"),
+            ("/Volumes/ÉTÉ/Repo", "/Volumes/ÉTÉ/Repo"),
+            ("//server/share/İstanbul", "//server/share/i̇stanbul"),
+            ("C:\\Straße\\ÉTÉ", "c:/straße/été"),
+            ("", "/"),
+        ];
+        let mut differ = Vec::new();
+        for (input, ts) in table {
+            let rust = spend_path_key(input);
+            if rust != *ts {
+                differ.push(format!("{input:?}: rust {rust:?} ts {ts:?}"));
+            }
+        }
+        assert!(differ.is_empty(), "differ:\n{}", differ.join("\n"));
     }
 
     #[test]
@@ -557,7 +958,7 @@ mod tests {
                     ran.set(ran.get() + 1);
                     Ok("verdict".to_string())
                 },
-                || note_unpriced(&conn, "hivra", now),
+                || note_unpriced(&conn, "hivra", now, Some("claude")),
             )
         };
         assert!(attempt().is_err());
@@ -580,10 +981,10 @@ mod tests {
             .find(|r| r.session_id.starts_with("verdict-"))
             .unwrap();
         assert_eq!((noted.micros, noted.priced, noted.unpriced), (0, 0, 1));
-        // A folder-keyed project limit cannot be matched to the project, so it holds the verdict too.
+        // A folder-keyed project limit that no known project matches does not hold this project's verdict; a verdict
+        // that names no project is held by it (the limit cannot be placed).
         write_book(&conn, 2, 3, r#"{"revision":3,"limits":[{"scope":"project","project":"/work/hivra","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
-        assert!(admit_automated(&conn, Some("hivra"), now).is_err());
-        // A project limit with no project id on the verdict is held as well.
+        assert!(admit_automated(&conn, Some("hivra"), now).is_ok());
         assert!(admit_automated(&conn, None, now).is_err());
     }
 
