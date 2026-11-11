@@ -83,6 +83,8 @@ export type StoredCaptainCard = {
   recommended?: string | null;
   askedBy: string;
   state?: string;
+  /** The card version that was read. Absent when the store did not give one. */
+  version?: number;
 };
 
 export type CaptainContext = {
@@ -180,12 +182,14 @@ async function loadOpenCard(project: string, key: string): Promise<StoredCaptain
     (row) => row?.state === "open" && row.project === project && foldDecisionKey(row.decisionKey) === wanted,
   );
   if (!hit || typeof hit.askedBy !== "string") return null;
+  const version = typeof hit.version === "number" && Number.isInteger(hit.version) ? hit.version : undefined;
   return {
     question: typeof hit.question === "string" ? hit.question : "",
     options: Array.isArray(hit.options) ? hit.options : [],
     recommended: hit.recommended,
     askedBy: hit.askedBy,
     state: hit.state,
+    ...(version === undefined ? {} : { version }),
   };
 }
 
@@ -665,7 +669,10 @@ export async function handleAutopilotApp(
       }
       if (captain.kind === "answer" && deps.answerDecision && key && project && inProject) {
         const heldNote = "The decision store did not keep the captain's answer, so it waits.";
-        if (deps.openCard && !fromCard) {
+        const seenVersion =
+          fromCard && typeof card?.version === "number" && Number.isInteger(card.version) ? card.version : undefined;
+        // A card was read, but it named no version: do not write an answer onto whatever the row is now.
+        if ((deps.openCard && !fromCard) || (fromCard && seenVersion === undefined)) {
           const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
           return {
             autopilot: "on",
@@ -680,7 +687,7 @@ export async function handleAutopilotApp(
           };
         }
         try {
-          const outcome = await deps.answerDecision(project, key, answer, captain.answeredBy, undefined, captain.reason, source.id);
+          const outcome = await deps.answerDecision(project, key, answer, captain.answeredBy, seenVersion, captain.reason, source.id);
           const refused =
             !!outcome && typeof outcome === "object" && "applied" in outcome && (outcome as { applied?: boolean }).applied === false;
           if (refused) {

@@ -1657,6 +1657,33 @@ pub(crate) fn answer_as_caller(
     answer_both(conn, project, key, answer, by, reason, None, caller, now)
 }
 
+/// [`answer_as_caller`] with the card version the captain read. A missing version is not a refusal.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_as_caller_seen(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    seen_version: Option<i64>,
+    caller: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    answer_both(
+        conn,
+        project,
+        key,
+        answer,
+        by,
+        reason,
+        seen_version,
+        caller,
+        now,
+    )
+}
+
 /// A captain answer from a chat. That chat may answer a card it asked, or a card its first mate asked.
 /// An empty caller is refused. A first mate does not answer a card its worker asked.
 fn captain_caller_may_answer(
@@ -1780,7 +1807,15 @@ fn answer_both(
     }
     // WP-215: a captain answer on the command path names the calling chat. It may answer a card that chat
     // asked, or a card its first mate asked. A missing caller fails closed. In-process tests pass none.
+    // The version it read, when it names one, must still be this card. A missing version is not a refusal:
+    // older callers pass none. Whether the answer is one of the stored options is checked after the red list,
+    // so a red card is still refused as a red card.
     if captain::is_captain(by.as_deref()) {
+        if let Some(seen) = seen_version {
+            if seen != decision.version {
+                return Err(CARD_CHANGED.into());
+            }
+        }
         if let Some(session) = caller {
             if !captain_caller_may_answer(&tx, &decision.asked_by, session)? {
                 return Err(
@@ -1800,6 +1835,14 @@ fn answer_both(
         now,
     )? {
         return Err(refusal);
+    }
+    // A captain answer that is not exactly one of the options on this card is not written. Exact, so a
+    // shorter or differently cased word is not an option. An empty list refuses every answer.
+    if captain::is_captain(by.as_deref()) && !decision.options.iter().any(|option| option == &answer) {
+        return Err(format!(
+            "Pick one of this card's options: {}.",
+            decision.options.join(", ")
+        ));
     }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);

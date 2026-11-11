@@ -347,6 +347,77 @@ describe("autopilot.decide", () => {
     expect(seen).toEqual([undefined]);
   });
 
+  it("passes the card version it read, and does not write when that version is missing", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const written: unknown[][] = [];
+    s.deps.captainContext = () => ({
+      monoId: "ada",
+      standing: { answer: "Keep it", label: "merge on green" },
+    });
+    s.deps.answerDecision = async (...args) => {
+      written.push(args);
+      return { applied: true };
+    };
+    const card = {
+      question: "Which font?",
+      options: ["Keep it", "Change it"],
+      recommended: "Keep it",
+      askedBy: "fm",
+      state: "open" as const,
+      version: 4,
+    };
+    s.deps.openCard = async () => card;
+    const taken = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "ver",
+    );
+    expect(taken).toMatchObject({ decision: "taken", answer: "Keep it" });
+    expect(written).toHaveLength(1);
+    expect(written[0]?.[0]).toBe("hivra");
+    expect(written[0]?.[1]).toBe("font");
+    expect(written[0]?.[2]).toBe("Keep it");
+    expect(written[0]?.[4]).toBe(4);
+    expect(written[0]?.[6]).toBe("hivra-chat");
+
+    s.deps.openCard = async () => ({ ...card, version: undefined });
+    const missing = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "miss",
+    )) as Record<string, unknown>;
+    expect(missing.decision).toBe("held");
+    expect(written).toHaveLength(1);
+
+    s.deps.openCard = async () => ({ ...card, version: Number.NaN });
+    const notANumber = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "nan",
+    )) as Record<string, unknown>;
+    expect(notANumber.decision).toBe("held");
+    expect(written).toHaveLength(1);
+
+    delete s.deps.openCard;
+    const unversioned = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Which font?", recommendation: "Change it", project: "Hivra", key: "font" },
+      s,
+      "none",
+    );
+    expect(unversioned).toMatchObject({ decision: "taken", answer: "Keep it" });
+    expect(written).toHaveLength(2);
+    expect(written[1]?.[4]).toBeUndefined();
+  });
+
   it("status says what is on, for whom", async () => {
     const s = setup();
     await on(s, ["hivra"]);

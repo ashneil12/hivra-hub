@@ -1385,4 +1385,65 @@ mod tests {
             OPEN
         );
     }
+
+    #[test]
+    fn a_captain_answer_names_the_version_it_read_and_one_stored_option() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        cover(&conn, "*");
+        open_as(&mut conn, "hivra", "font-ver", "Which font?", "fm");
+        let version = get(&conn, "hivra", "font-ver").unwrap().unwrap().version;
+
+        let stale = answer_as_caller_seen(
+            &mut conn,
+            "hivra",
+            "font-ver",
+            "Keep it",
+            Some("captain:ada".into()),
+            Some("standing answer: merge on green"),
+            Some(version + 1),
+            Some("fm"),
+            NOW,
+        );
+        assert!(stale.is_err(), "{stale:?}");
+        assert_eq!(
+            get(&conn, "hivra", "font-ver").unwrap().unwrap().state,
+            OPEN
+        );
+
+        open_as(&mut conn, "hivra", "font-case", "Which font?", "fm");
+        let case_version = get(&conn, "hivra", "font-case").unwrap().unwrap().version;
+        let wrong_case = answer_as_caller_seen(
+            &mut conn,
+            "hivra",
+            "font-case",
+            "keep it",
+            Some("captain:ada".into()),
+            Some("standing answer: merge on green"),
+            Some(case_version),
+            Some("fm"),
+            NOW,
+        );
+        assert!(wrong_case.is_err(), "{wrong_case:?}");
+        assert_eq!(
+            get(&conn, "hivra", "font-case").unwrap().unwrap().state,
+            OPEN
+        );
+
+        let taken = answer_as_caller_seen(
+            &mut conn,
+            "hivra",
+            "font-ver",
+            "Keep it",
+            Some("captain:ada".into()),
+            Some("standing answer: merge on green"),
+            Some(version),
+            Some("fm"),
+            NOW,
+        );
+        assert!(
+            taken.as_ref().is_ok_and(|out| out.applied),
+            "{taken:?}"
+        );
+    }
 }
