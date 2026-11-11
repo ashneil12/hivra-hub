@@ -1375,13 +1375,18 @@ fn still_approved(approval: &Approval, fp: &str, path: Option<&str>) -> bool {
 }
 
 /// SHA-256 of a file's bytes, hex. A file that cannot be read is not approved.
-/// On Unix the hash is cached by path, mtime, size, inode and ctime, so an in-place edit is seen even when the writer
-/// puts the mtime back. Windows has no ctime a user cannot reset, so it does not cache.
+/// The file is opened once. On Unix the cache key is that handle's mtime, size, inode and ctime, and the bytes are
+/// read through the same handle, so a swap between a stat and a later open cannot store one file's stamp with
+/// another's hash. Windows has no ctime a user cannot reset, so it does not cache.
 fn file_sha256(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
-    let meta = std::fs::metadata(path).map_err(|_| NOT_APPROVED.to_string())?;
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).map_err(|_| NOT_APPROVED.to_string())?;
     #[cfg(unix)]
-    let stamp = FileStamp::of(&meta);
+    let stamp = {
+        let meta = file.metadata().map_err(|_| NOT_APPROVED.to_string())?;
+        FileStamp::of(&meta)
+    };
     #[cfg(unix)]
     if let Some((cached, sha)) = SHA_CACHE
         .lock()
@@ -1393,11 +1398,11 @@ fn file_sha256(path: &Path) -> Result<String, String> {
             return Ok(sha);
         }
     }
-    #[cfg(not(unix))]
-    let _ = meta;
     #[cfg(test)]
     HASHES.with(|h| h.set(h.get() + 1));
-    let bytes = std::fs::read(path).map_err(|_| NOT_APPROVED.to_string())?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|_| NOT_APPROVED.to_string())?;
     let sha: String = Sha256::digest(&bytes)
         .iter()
         .map(|byte| format!("{byte:02x}"))
