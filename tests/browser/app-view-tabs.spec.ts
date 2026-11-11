@@ -1,5 +1,9 @@
 import { expect, test } from "@playwright/test";
 
+// WP-210 named the Inbox row for what it holds: its button reads "Needs you" (with the count when there is one).
+// The view, its tab and its close button are still the Inbox.
+const viewButton = (view: string) => new RegExp(view === "inbox" ? "^needs you" : `^${view}`, "i");
+
 test.use({ viewport: { width: 1300, height: 900 } });
 
 test.beforeEach(async ({ page }) => {
@@ -48,7 +52,7 @@ test("app tabs retain their state and keep usage and resource pressure in the fo
 
   for (const view of ["inbox", "search", "notes", "automations"]) {
     await nav
-      .getByRole("button", { name: new RegExp(`^${view}`, "i") })
+      .getByRole("button", { name: viewButton(view) })
       .click();
     await expect(appTab(view)).toHaveAttribute("data-title-tab-active", "true");
     await expect(page.locator(`[data-app-${view}]`)).toBeVisible();
@@ -130,7 +134,7 @@ test("closing a tab selects its neighbor across app and session tabs", async ({
     page.locator(`[data-title-tab-id="${id}"] [data-title-tab]`);
   for (const view of ["inbox", "search", "notes", "automations"]) {
     await nav
-      .getByRole("button", { name: new RegExp(`^${view}`, "i") })
+      .getByRole("button", { name: viewButton(view) })
       .click();
     await expect(tab(`app-view:${view}`)).toHaveAttribute(
       "data-title-tab-active",
@@ -283,7 +287,7 @@ test("sidebar session selection switches away from app tabs", async ({
   // Both selecting an existing tab and reopening a closed tab must reveal it.
   for (const view of ["inbox", "search", "notes", "automations"]) {
     await nav
-      .getByRole("button", { name: new RegExp(`^${view}`, "i") })
+      .getByRole("button", { name: viewButton(view) })
       .click();
     await expect(page.locator(`[data-app-${view}]`)).toBeVisible();
     await sessionCard.click();
@@ -339,7 +343,7 @@ test("new tabs append chronologically across sessions and app views", async ({
   );
   for (const view of ["inbox", "notes"]) {
     await nav
-      .getByRole("button", { name: new RegExp(`^${view}`, "i") })
+      .getByRole("button", { name: viewButton(view) })
       .click();
     await expect(tab(`app-view:${view}`)).toHaveAttribute(
       "data-title-tab-active",
@@ -378,7 +382,7 @@ test("new tabs append chronologically across sessions and app views", async ({
   expected.push(secondNew);
   await expect.poll(tabIds).toEqual(expected);
 
-  await nav.getByRole("button", { name: /^inbox/i }).click();
+  await nav.getByRole("button", { name: viewButton("inbox") }).click();
   await expect(tab("app-view:inbox")).toHaveAttribute(
     "data-title-tab-active",
     "true",
@@ -391,7 +395,7 @@ test("new tabs append chronologically across sessions and app views", async ({
     .getByRole("button", { name: "Close Inbox", exact: true })
     .click();
   await expect(tab("app-view:inbox")).toHaveCount(0);
-  await nav.getByRole("button", { name: /^inbox/i }).click();
+  await nav.getByRole("button", { name: viewButton("inbox") }).click();
   await expect
     .poll(tabIds)
     .toEqual([

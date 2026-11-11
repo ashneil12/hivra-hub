@@ -57,6 +57,8 @@ test("a typed answer reaches the question; a failed turn shows on the rail and a
     );
   });
   await openLocalHub(page, "&fakeClaude");
+  // Dropwave: Home lists no first mates. They are in a project, so open EXO first.
+  await page.getByRole("button", { name: /^EXO/ }).first().click();
   await expect(leadRow(page)).toBeVisible({ timeout: 30_000 });
 
   // 1. The Lead asks Ash with AskUserQuestion.

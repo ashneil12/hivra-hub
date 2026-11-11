@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-import { openLocalHub } from "./localHub";
+import { openLocalHub, openProjectLead } from "./localHub";
 
 // WP-137 (docs/hivra/work/WP-137-workspace-chrome.md): groups on the project strip, "Show only this group", a split
 // beside the open chat, and a second window. The real app in a browser reading its own local store, with three chats in
@@ -58,8 +58,9 @@ async function seed(page: Page, now: number) {
 }
 
 async function openExo(page: Page) {
-  await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
-  await strip(page).getByRole("button", { name: /^EXO/ }).first().click();
+  // Dropwave: EXO opens on its own home; the chat list is beside its lead's chat.
+  await expect(strip(page).getByRole("button", { name: /^EXO/ }).first()).toBeVisible({ timeout: 60_000 });
+  await openProjectLead(page);
   await expect.poll(() => chatOrder(page), { timeout: 15_000 }).toEqual(EXPECTED_CHATS);
 }
 

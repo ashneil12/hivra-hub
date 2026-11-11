@@ -55,6 +55,7 @@ const session: HomeChiefSession = { id: "chief-session", blocks };
 setHomeChiefHost({
   ensure: async () => ({ id: "chief-session" }),
   submit: async (_sessionId, text) => {
+    document.body.dataset.chiefHeard = text;
     blocks.push({ role: "user", text });
     blocks.push({ role: "assistant", text: "EXO is fine." });
     notifyHomeChief();

@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { EXAMPLE_PROJECTS, openLocalHub } from "./localHub";
+import { EXAMPLE_PROJECTS, openLocalHub, openProjectLead } from "./localHub";
 
 // WP-06: what Today, Being built and Needs you showed, and WP-15 kept, is on the Crew tab or in the Inbox
 // of the real app shell (hub-dev.html), not only on the crew fixture page. The hourly digest is WP-15's own spec.
@@ -92,9 +92,9 @@ test("work that left Today and Being built is on the crew or in the inbox", asyn
     },
   );
   await openLocalHub(page);
-  await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
-
-  await page.getByRole("button", { name: /^EXO/ }).first().click();
+  // Dropwave: a project opens on its own home, and its first mates are listed there. The lead's row opens its chat.
+  await expect(page.getByRole("button", { name: /^EXO/ }).first()).toBeVisible({ timeout: 60_000 });
+  await openProjectLead(page);
   await expect(page.getByRole("main").getByRole("heading", { name: "EXO lead" })).toBeVisible({ timeout: 15_000 });
 
   await page.getByRole("tablist", { name: "Workspace" }).getByRole("tab", { name: "Crew" }).click();
@@ -122,7 +122,7 @@ test("work that left Today and Being built is on the crew or in the inbox", asyn
 
   // The project's Inbox, not the retired Today item.
   const sidebar = page.getByRole("navigation", { name: "Projects" }).nth(1);
-  await sidebar.getByRole("button", { name: /^Needs you/ }).click();
+  await sidebar.getByRole("button", { name: /^Inbox/ }).click();
   await expect(page.getByRole("region", { name: "Inbox" })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("[data-inbox-kind=decision]")).toContainText("Ship it now?");
   await expect(page.locator("[data-inbox-kind=decision]")).toContainText("Open the chat");
@@ -143,12 +143,20 @@ test("a project with no code folder does not keep the previous workspace", async
     ...EXAMPLE_PROJECTS,
     { id: "sketch", name: "Sketch", shortName: "Sketch", iconShape: "book", folder: null },
   ]);
-  await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
-
-  await page.getByRole("button", { name: /^EXO/ }).first().click();
+  // Dropwave: a project opens on its own home, and its first mates are listed there. The lead's row opens its chat.
+  await expect(page.getByRole("button", { name: /^EXO/ }).first()).toBeVisible({ timeout: 60_000 });
+  await openProjectLead(page);
   await expect(page.getByRole("main").getByRole("heading", { name: "EXO lead" })).toBeVisible({ timeout: 15_000 });
 
+  // Dropwave: any project opens on its own home, so Sketch shows its home and EXO's chat is gone.
   await page.locator("[data-hub-strip]").getByRole("button", { name: "Sketch", exact: true }).click();
+  await expect(page.locator("[data-home]").getByRole("heading", { name: "Sketch" })).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("main").getByRole("heading", { name: "EXO lead" })).toHaveCount(0);
+
+  // A stored coding-team item on Sketch is still the no-code page, not a workspace.
+  await page.evaluate(() =>
+    (window as unknown as { __devHubSelect(s: unknown): Promise<void> }).__devHubSelect({ project: "sketch", item: "coding-team" }),
+  );
   await expect(page.locator("[data-hub-no-code]")).toContainText("This project has no code folder yet.");
   await expect(page.getByRole("main").getByRole("heading", { name: "EXO lead" })).toHaveCount(0);
 });

@@ -21,7 +21,7 @@ import "../../src/styles/index.css";
 
 // Round 25 proof fixture (browser preview, not Ash's Mac; made-up data labelled Example:): a Lead's 1:1 in the real
 // SessionPane with two worker cards and a long reply, beside the real sidebar project items. `?mono=0` shows the
-// sidebar with no 1:1 open (Coding team highlighted), the default shows it with the 1:1 open (nothing highlighted there).
+// sidebar with no 1:1 open (the open team highlighted; Dropwave dropped the Coding team row), the default shows it with the 1:1 open (nothing highlighted there).
 
 Object.assign(window, {
   __TAURI_EVENT_PLUGIN_INTERNALS__: { unregisterListener: () => {} },
@@ -89,7 +89,7 @@ function Fixture() {
   return (
     <div style={{ display: "flex", height: "100vh", width: "100vw" }}>
       <aside data-r25-sidebar style={{ width: 240, flexShrink: 0, paddingTop: 12 }} className="border-r border-content/10">
-        <HubProjectItems selection={{ project: PROJECT.id, item: "coding-team" }} onPick={noop} monoOpen={monoOpen} />
+        <HubProjectItems selection={{ project: PROJECT.id, item: "leadership" }} onPick={noop} monoOpen={monoOpen} />
       </aside>
       <main style={{ position: "relative", flex: 1, minWidth: 0 }}>
         <SessionPane
