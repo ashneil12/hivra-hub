@@ -5434,6 +5434,7 @@ fn already_exists(label: &str) -> String {
 pub fn create_path(parent: String, name: String, is_dir: bool) -> Result<String, String> {
     let parent_dir = expand_home(&parent);
     let dest = resolve_under(&parent_dir, &name)?;
+    guard_app_data(&dest)?;
     let label = file_label(&dest, &name);
 
     if dest.exists() {
@@ -6777,6 +6778,61 @@ pub async fn mobile_read_text_file(root: String, relative: String) -> Result<Str
     .map_err(|e| e.to_string())?
 }
 
+/// This copy's own data folder: the app's chats, its keys' records and its saved routes. The generic file commands
+/// never write, move, copy or remove anything inside it (WP-129), the same way they never touch the instance lock.
+fn app_data_folder() -> Option<PathBuf> {
+    let identifier = crate::instance::current().identifier.clone();
+    crate::instance::data_dir(&identifier)
+}
+
+pub(crate) fn guard_app_data(path: &Path) -> Result<(), String> {
+    match app_data_folder() {
+        None => Ok(()),
+        Some(data) => guard_app_data_in(&data, path),
+    }
+}
+
+/// `path` with its real location. The longest leading part that exists is resolved the way the OS resolves it
+/// (symlinks included); the parts after it are read in turn, `..` stepping back and each level that now exists
+/// resolved too, so a symlink or `..` cannot step out of (or into) the folder even through missing levels (WP-129).
+fn resolved_location(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let parts: Vec<Component> = path.components().collect();
+    for cut in (1..=parts.len()).rev() {
+        let head: PathBuf = parts[..cut].iter().map(|part| part.as_os_str()).collect();
+        let Ok(real) = std::fs::canonicalize(&head) else {
+            continue;
+        };
+        let mut resolved = real;
+        for part in &parts[cut..] {
+            match part {
+                Component::ParentDir => {
+                    resolved.pop();
+                }
+                Component::CurDir => {}
+                other => resolved.push(other.as_os_str()),
+            }
+            if let Ok(real) = std::fs::canonicalize(&resolved) {
+                resolved = real;
+            }
+        }
+        return resolved;
+    }
+    path.to_path_buf()
+}
+
+/// The check behind `guard_app_data`, with the folder given. Refuses any path at or under `data`.
+pub(crate) fn guard_app_data_in(data: &Path, path: &Path) -> Result<(), String> {
+    let data = std::fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
+    if resolved_location(path).starts_with(&data) {
+        return Err(format!(
+            "{} is inside MonoCode Hub's own data folder. The app keeps that folder itself.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Atomically replace a text file from a temporary file in the same directory.
 #[tauri::command]
 pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
@@ -6795,6 +6851,7 @@ fn write_text_file_sync(path: &str, content: &str) -> Result<(), String> {
 
     let requested = expand_home(path);
     crate::instance::guard_lock_file(&requested)?;
+    guard_app_data(&requested)?;
     let destination = if requested.exists() {
         std::fs::canonicalize(&requested).map_err(|e| format!("{}: {e}", requested.display()))?
     } else {
@@ -6932,8 +6989,17 @@ fn copy_recursive(from: &Path, to: &Path) -> Result<(), String> {
 }
 
 fn rename_path_sync(path: &str, name: &str) -> Result<String, String> {
+    rename_path_in(app_data_folder(), path, name)
+}
+
+/// The rename with the app's data folder given (None: there is none to keep). The source and the destination are both
+/// checked against it, so a name that reaches into the folder through a link is refused (WP-129).
+fn rename_path_in(data: Option<PathBuf>, path: &str, name: &str) -> Result<String, String> {
     let from = expand_home(path);
     crate::instance::guard_lock_file(&from)?;
+    if let Some(data) = &data {
+        guard_app_data_in(data, &from)?;
+    }
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
@@ -6941,6 +7007,9 @@ fn rename_path_sync(path: &str, name: &str) -> Result<String, String> {
         .parent()
         .ok_or_else(|| "File has no parent directory.".to_string())?;
     let dest = resolve_under(parent, name)?;
+    if let Some(data) = &data {
+        guard_app_data_in(data, &dest)?;
+    }
     if same_entry(&from, &dest) {
         if from == dest {
             return Ok(from.to_string_lossy().into_owned());
@@ -6984,6 +7053,7 @@ pub async fn rename_path(path: String, name: String) -> Result<String, String> {
 fn delete_path_sync(path: &str) -> Result<(), String> {
     let path = expand_home(path);
     crate::instance::guard_lock_file(&path)?;
+    guard_app_data(&path)?;
     if !path.exists() {
         return Err(format!("{}: No such file or directory", path.display()));
     }
@@ -7011,10 +7081,12 @@ fn dir_contains(dir: &Path, dest_parent: &Path) -> bool {
 fn copy_path_sync(from: &str, dest_parent: &str) -> Result<String, String> {
     let from = expand_home(from);
     crate::instance::guard_lock_file(&from)?;
+    guard_app_data(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
     let dest_parent = expand_home(dest_parent);
+    guard_app_data(&dest_parent)?;
     if !dest_parent.is_dir() {
         return Err(format!("{} is not a folder", dest_parent.display()));
     }
@@ -7040,10 +7112,12 @@ pub async fn copy_path(from: String, dest_parent: String) -> Result<String, Stri
 fn move_path_sync(from: &str, dest_parent: &str) -> Result<String, String> {
     let from = expand_home(from);
     crate::instance::guard_lock_file(&from)?;
+    guard_app_data(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
     let dest_parent = expand_home(dest_parent);
+    guard_app_data(&dest_parent)?;
     if !dest_parent.is_dir() {
         return Err(format!("{} is not a folder", dest_parent.display()));
     }
@@ -12009,5 +12083,81 @@ mod tests {
         assert!(git_diff_index_for(blank).files.is_empty());
         assert!(git_commit_selected_for(blank, "message", &["a.txt".into()]).is_err());
         assert!(git_push_for(blank).is_err());
+    }
+}
+
+#[cfg(test)]
+mod app_data_guard_tests {
+    use super::*;
+
+    #[test]
+    fn the_generic_file_commands_refuse_paths_inside_the_app_data_folder() {
+        let data = std::env::temp_dir().join(format!("wp129-fs-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(data.join("model-key-hosts")).unwrap();
+        for inside in [
+            data.join("model-key-hosts"),
+            data.join("model-key-hosts").join("custom-1"),
+            data.join("monocode.db"),
+            data.join("new-file.json"),
+        ] {
+            assert!(
+                guard_app_data_in(&data, &inside).is_err(),
+                "{}",
+                inside.display()
+            );
+        }
+        // Outside the folder, and a sibling that only shares its name's start, are not refused.
+        let sibling = data.with_file_name(format!(
+            "{}-other",
+            data.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(guard_app_data_in(&data, &sibling.join("x")).is_ok());
+        assert!(guard_app_data_in(&data, &std::env::temp_dir().join("x")).is_ok());
+        let _ = std::fs::remove_dir_all(&data);
+    }
+
+    /// WP-129 L4 (lead review, 11 Nov): a path whose missing levels run through a symlink into the data folder is
+    /// refused. The check used to resolve only one missing level, so `link/new/deeper/file` was taken as outside.
+    #[test]
+    #[cfg(unix)]
+    fn a_path_through_a_link_with_missing_levels_is_refused() {
+        let base = std::env::temp_dir().join(format!("wp129-l4-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = base.join("data");
+        let outside = base.join("outside");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::os::unix::fs::symlink(&data, outside.join("link")).unwrap();
+        assert!(guard_app_data_in(&data, &outside.join("link/new/deeper/file.json")).is_err());
+        // A `..` after a missing level does not step out of the folder either.
+        assert!(guard_app_data_in(&data, &outside.join("missing/../link/new/x")).is_err());
+        // Missing levels outside the folder stay allowed.
+        assert!(guard_app_data_in(&data, &outside.join("new/deeper/file.json")).is_ok());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// WP-129 L4: a rename's destination is checked as well as its source. A folder that is a symlink into the
+    /// data folder must not take a file in from outside.
+    #[test]
+    #[cfg(unix)]
+    fn a_rename_into_a_link_to_the_app_data_folder_is_refused() {
+        let base = std::env::temp_dir().join(format!("wp129-l4-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let data = base.join("data");
+        let work = base.join("work");
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        std::os::unix::fs::symlink(&data, work.join("into-data")).unwrap();
+        let note = work.join("note.txt");
+        std::fs::write(&note, "x").unwrap();
+        let note_path = note.to_string_lossy().into_owned();
+        assert!(rename_path_in(Some(data.clone()), &note_path, "into-data/moved.txt").is_err());
+        assert!(note.exists(), "the refused rename moved the file anyway");
+        assert!(!data.join("moved.txt").exists());
+        // A rename that stays outside the folder still works.
+        assert!(rename_path_in(Some(data.clone()), &note_path, "renamed.txt").is_ok());
+        assert!(work.join("renamed.txt").exists());
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

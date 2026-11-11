@@ -683,6 +683,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "pacman snake arcade grid fun",
   },
   {
+    id: "text-generation",
+    section: "providers",
+    label: "Short text",
+    keywords: "title commit branch openrouter ollama deepseek",
+  },
+  {
     id: "agent-clis",
     section: "providers",
     label: "Agent CLIs",

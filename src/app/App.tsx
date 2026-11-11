@@ -567,8 +567,9 @@ import {
   compactHarnessContext,
   rewindHarnessLastTurn,
   forgetHarnessSession,
-  generateHarnessTitle,
-  generateHarnessBranchName,
+  // WP-129: titles and branch names try the short text model first.
+  generateTitleWithTextModel,
+  generateBranchWithTextModel,
   migrateMonoCodexSession,
   isLiveHarness,
   latestTurnNeedsHarnessLogin,
@@ -9135,7 +9136,7 @@ function Workspace({
         }
         const titleMessage =
           harnessText || attachments.map((file) => file.name).join(", ");
-        void generateHarnessTitle(current.harness, {
+        void generateTitleWithTextModel(current.harness, {
           sessionId,
           cwd: workCwd,
           message: titleMessage,
@@ -9284,7 +9285,7 @@ function Workspace({
 
           const branchMessage =
             harnessText || attachments.map((file) => file.name).join(", ");
-          void generateHarnessBranchName(
+          void generateBranchWithTextModel(
             pickTextHarness(current.harness),
             workCwd,
             branchMessage,
