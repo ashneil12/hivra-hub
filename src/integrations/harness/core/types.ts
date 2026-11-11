@@ -174,6 +174,8 @@ export type HarnessEvent =
       preview?: ToolPreview;
       /** Exactly what it would run, when the provider can say. */
       call?: ApprovalCall;
+      /** WP-150: true when `call` carries every argument the tool runs with. The phone publishes only those. */
+      callComplete?: boolean;
       /** WP-122: the child that asked, so the answer is sent to its port. */
       child?: { name: string; sessionPort: string; detail?: string };
     }

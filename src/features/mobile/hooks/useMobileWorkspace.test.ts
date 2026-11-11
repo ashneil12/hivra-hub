@@ -97,6 +97,55 @@ describe("new mobile session publication", () => {
     });
   });
 
+  it("runs a phone approval only while Rust still holds it open", async () => {
+    // WP-150 L1: an approval that timed out, was answered, or lost its device must not run in the window.
+    desktop.invoke.mockImplementation(async (method: string) => {
+      if (method === "mobile_status") return { enabled: false };
+      if (method === "mobile_admits") return false;
+      return undefined;
+    });
+    act(() => {
+      root.render(createElement(Probe));
+    });
+    await flush();
+    request({
+      payload: {
+        id: "closed",
+        commandId: "approve-1",
+        method: "session.approve",
+        params: { conversationId: "chat-1", requestId: 7, tool: "Bash" },
+      },
+    });
+    await flush();
+    expect(desktop.invoke).toHaveBeenCalledWith("mobile_admits", { id: "closed" });
+    expect(command).not.toHaveBeenCalled();
+    expect(desktop.invoke).toHaveBeenCalledWith("mobile_reply", {
+      id: "closed",
+      response: { ok: false, error: "This approval is no longer open on the phone." },
+    });
+
+    desktop.invoke.mockImplementation(async (method: string) => {
+      if (method === "mobile_status") return { enabled: false };
+      if (method === "mobile_admits") return true;
+      return undefined;
+    });
+    command.mockResolvedValue({ requestId: 7, decision: "allow" });
+    request({
+      payload: {
+        id: "open",
+        commandId: "approve-2",
+        method: "session.approve",
+        params: { conversationId: "chat-1", requestId: 7, tool: "Bash" },
+      },
+    });
+    await flush();
+    expect(command).toHaveBeenCalledTimes(1);
+    expect(desktop.invoke).toHaveBeenCalledWith("mobile_reply", {
+      id: "open",
+      response: { ok: true, result: { requestId: 7, decision: "allow" } },
+    });
+  });
+
   it("makes a new session routable before returning its ID to the phone", async () => {
     const published = deferred<void>();
     desktop.invoke.mockImplementation(async (method: string) => {

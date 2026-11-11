@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 // ash-day steps 13-16: the bench clicks Apply, Discard, Undo or Cancel the way Ash does, and never a delete.
 import { afterEach, expect, it } from "vitest";
-import { clickButton, visibleButtons } from "./verifyDriver";
+import { clickButton, NEVER_CLICK, visibleButtons } from "./verifyDriver";
 
 afterEach(() => {
   document.body.innerHTML = "";
@@ -35,4 +35,12 @@ it("sees and clicks the change bar's buttons, which sit in their own root outsid
   document.getElementById("apply")!.addEventListener("click", () => (applied = true));
   expect(clickButton("Apply").ok).toBe(true);
   expect(applied).toBe(true);
+});
+
+it("the bench never clicks Dictate or Continue, because either one opens the microphone", () => {
+  expect(NEVER_CLICK.test("Dictate")).toBe(true);
+  expect(NEVER_CLICK.test("Continue")).toBe(true);
+  document.body.innerHTML = `<main><button>Dictate</button><button>Continue</button></main>`;
+  expect(clickButton("Dictate").ok).toBe(false);
+  expect(clickButton("Continue").ok).toBe(false);
 });
