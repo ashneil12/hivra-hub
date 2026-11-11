@@ -44,11 +44,16 @@ export const HUB_DB_DENY_RULES: readonly string[] = [
   "Bash(*com.ash.monocode-hub*sqlite*)",
   "Read(~/Library/Application Support/com.ash.monocode-hub*/*.db*)",
   "Read(~/Library/WebKit/com.ash.monocode-hub*/**)",
-  // WP-129: the app's data folder holds its own records (chats, saved routes, key addresses). Hub chats never write
-  // or edit it, and never run a command that names it. The app's file commands refuse it too.
-  "Write(~/Library/Application Support/com.ash.monocode-hub*/**)",
-  "Edit(~/Library/Application Support/com.ash.monocode-hub*/**)",
-  "Bash(*Application Support/com.ash.monocode-hub*)",
+  // WP-129: the daily app's data folder holds its own records (chats, saved routes, key addresses). Hub chats never
+  // write or edit it, and never run a command that names it. The pattern is the exact daily folder: a dev slot's
+  // folder (com.ash.monocode-hub.dev.<slot>) keeps its agent-memory there and must stay writable. The app's file
+  // commands refuse the daily folder too.
+  "Write(~/Library/Application Support/com.ash.monocode-hub/**)",
+  "Edit(~/Library/Application Support/com.ash.monocode-hub/**)",
+  "Bash(*Application Support/com.ash.monocode-hub/*)",
+  "Bash(*Application Support/com.ash.monocode-hub\"*)",
+  "Bash(*Application Support/com.ash.monocode-hub'*)",
+  "Bash(*Application Support/com.ash.monocode-hub)",
 ];
 
 /** The app's data folder (the daily app or any dev slot) or its WebKit storage, then a database file in it. */
