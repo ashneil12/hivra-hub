@@ -963,9 +963,9 @@ pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
             Ok(meta) if meta.file_type().is_symlink() => {
                 // remove_file drops a symlink. A Windows directory junction is a symlink remove_file
                 // refuses; remove_dir drops the junction and not the folder it points at.
-                if std::fs::remove_file(folder).is_err() {
-                    std::fs::remove_dir(folder).map_err(err)?;
-                }
+                std::fs::remove_file(folder)
+                    .or_else(|_| std::fs::remove_dir(folder))
+                    .map_err(err)?;
             }
             _ => {}
         }
