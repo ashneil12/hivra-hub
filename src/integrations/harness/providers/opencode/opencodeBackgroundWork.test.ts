@@ -40,8 +40,13 @@ vi.mock("../../core/child", () => ({
   },
 }));
 
-const { sendOpenCodeTurn, stopOpenCodeSession, __openCodeTestReset, openCodeHasBackgroundWork } =
-  await import("./opencode");
+const {
+  cancelOpenCodeTurn,
+  sendOpenCodeTurn,
+  stopOpenCodeSession,
+  __openCodeTestReset,
+  openCodeHasBackgroundWork,
+} = await import("./opencode");
 const { openCodeAdapter } = await import("./opencodeAdapter");
 
 async function waitFor(predicate: () => boolean, label: string) {
@@ -151,6 +156,16 @@ describe("opencode background work", () => {
     });
     expect(openCodeHasBackgroundWork("opencode-bg")).toBe(true);
     idle("child_retry");
+    expect(openCodeHasBackgroundWork("opencode-bg")).toBe(false);
+  });
+
+  it("releases its running children when the turn is cancelled", async () => {
+    const { done } = await startTurn();
+    task("a", "child_a");
+    task("b", "child_b");
+    expect(openCodeHasBackgroundWork("opencode-bg")).toBe(true);
+    await cancelOpenCodeTurn("opencode-bg");
+    await done;
     expect(openCodeHasBackgroundWork("opencode-bg")).toBe(false);
   });
 

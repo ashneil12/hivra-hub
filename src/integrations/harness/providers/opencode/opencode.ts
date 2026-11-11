@@ -337,6 +337,8 @@ export async function cancelOpenCodeTurn(sessionId: string): Promise<void> {
   for (const [, pending] of live.questions)
     pending.resolve({ kind: "skipped" });
   live.questions.clear();
+  // The cancelled turn's children are no longer work the chat waits on. Late child events are muted anyway.
+  live.runningChildren.clear();
   await live.client.abortSession(live.openCodeSessionId);
   finishActiveTurn(live, [
     { type: "message.completed" },
