@@ -18,6 +18,7 @@ export function StuckPanel({
   title,
   stuck,
   jobs = [],
+  asks = [],
   now,
   showLead,
   onClose,
@@ -28,13 +29,15 @@ export function StuckPanel({
   stuck: readonly StuckWorker[];
   /** r51: the red rows with no worker behind them (a job its Lead gave up on, a Lead that can't answer), from the same list. */
   jobs?: readonly Worker[];
+  /** Questions and approvals from the one Needs you list, so the panel matches the red number. */
+  asks?: readonly { id: string; sentence: string; actions: readonly { label: string; run: () => void }[] }[];
   now: number;
   /** Name the Mono each worker answers to (the folded section lists several Monos' workers). */
   showLead?: boolean;
   onClose: () => void;
 }) {
-  // r51: the header, the rows and the rail chip that opened this are one list (needsYouRows.ts needsYouPanel).
-  const count = stuck.length + jobs.length;
+  // The header counts the workers plus the asks the red number includes.
+  const count = stuck.length + jobs.length + asks.length;
   return (
     <Popover
       anchor={anchor}
@@ -67,6 +70,24 @@ export function StuckPanel({
         />
         {jobs.map((w) => (
           <NeedsYouJobRow key={w.id} job={w} onOpened={onClose} />
+        ))}
+        {asks.map((ask) => (
+          <div key={ask.id} className="flex items-start gap-2 rounded-lg px-2 py-1.5" data-stuck-panel-ask={ask.id}>
+            <div className="min-w-0 flex-1 truncate text-[13px] text-content/85">{ask.sentence}</div>
+            {ask.actions.slice(0, 2).map((action) => (
+              <button
+                key={action.label}
+                type="button"
+                className="shrink-0 text-[12px] text-content/80"
+                onClick={() => {
+                  action.run();
+                  onClose();
+                }}
+              >
+                {action.label}
+              </button>
+            ))}
+          </div>
         ))}
         {count ? null : (
           <div className="px-2 py-2 text-[13px] text-content/60" data-stuck-panel-empty>

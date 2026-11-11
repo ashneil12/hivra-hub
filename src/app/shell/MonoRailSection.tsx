@@ -42,6 +42,7 @@ import {
   subscribeMonoRailCollapsed,
 } from "../../features/settings/model/settings";
 import { StuckPanel } from "../../features/monos/ui/StuckPanel";
+import { monoPanelAsks } from "./monoPanelAsks";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { monoBackgroundKey } from "../../features/monos/model/monoBackground";
 import {
@@ -275,6 +276,7 @@ export function MonoRailSection({
   const allStuck = needsYouPanel(shownRows).workers;
   const panel = stuckPanel ? needsYouPanel(stuckPanel.monoId ? needsYouFor(needsRows, stuckPanel.monoId) : shownRows) : undefined;
   const panelStuck = panel?.workers ?? [];
+  const panelAsks = stuckPanel ? monoPanelAsks(needsItems, stuckPanel.monoId, shownIds) : [];
   const panelMono = stuckPanel?.monoId ? findMono(stuckPanel.monoId) : undefined;
   const menuMono = menu ? findMono(menu.id) : undefined;
   const menuTeam = rank && menuMono ? teamFor({ id: menuMono.id, name: monoLook(menuMono).name }, hubData().listProjects()) : undefined;
@@ -613,6 +615,7 @@ export function MonoRailSection({
           title={panelMono ? monoLook(panelMono).name : "Monos"}
           stuck={panelStuck}
           jobs={panel?.jobs}
+          asks={panelAsks}
           now={now}
           showLead={!stuckPanel.monoId}
           onClose={() => setStuckPanel(undefined)}
