@@ -2033,16 +2033,31 @@ fn a_person_only_key_is_never_marked_listed_or_reused() {
         ("lead", "secret/token-2"),
     ];
     for (n, (asker, key)) in keys.iter().enumerate() {
-        ask(&mut conn, ask_input(asker, key, &[]), 2 + n as i64).unwrap();
-        answer(
-            &mut conn,
-            "hivra",
-            key,
-            "Keep 30 days",
-            Some("user".into()),
-            20 + n as i64,
-        )
-        .unwrap();
+        let asked = ask(&mut conn, ask_input(asker, key, &[]), 2 + n as i64).unwrap();
+        // A secret card accepts only `person`, and only for the version that was read. The other
+        // person-only keys still take the Needs sheet's `user`.
+        if is_secret_key(key) {
+            answer_seen(
+                &mut conn,
+                "hivra",
+                key,
+                "Keep 30 days",
+                Some("person".into()),
+                Some(asked.decision.version),
+                20 + n as i64,
+            )
+            .unwrap();
+        } else {
+            answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Keep 30 days",
+                Some("user".into()),
+                20 + n as i64,
+            )
+            .unwrap();
+        }
         let refused = set_standing(&mut conn, "hivra", key, true, 40 + n as i64).unwrap_err();
         assert!(
             refused.to_lowercase().contains("never reused"),
