@@ -1120,6 +1120,7 @@ import {
 } from "../features/automations/model/automations";
 import { automationRunErrorClass } from "../features/automations/model/runFailure";
 // WP-244: one run of an automation at a time, and a watched one skips the model when nothing changed.
+import { EMPTY_TURN_FAILED, EMPTY_TURN_NOTE, emptyTurnStep } from "../features/sessions/model/emptyTurn";
 import { startAutomationRun } from "../features/automations/model/automationQuiet";
 import { MissedScheduleNotice } from "../features/one-time-schedule/ui/OneTimeSchedulePanel";
 import { useOneTimeScheduleRunner } from "../features/one-time-schedule/ui/useOneTimeScheduleRunner";
@@ -1396,6 +1397,8 @@ type SubmitOptions = ComposerTurnOptions & {
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
   projectLocationReady?: boolean;
+  /** WP-245: this turn is the one retry after an empty turn; empty again, it is shown as failed. */
+  emptyRetried?: boolean;
 };
 
 type Submit = (
@@ -10471,11 +10474,51 @@ function Workspace({
         .finally(() => {
           editedResend?.reject();
           if (editedResend) editedResends.finish(sessionId);
-          options?.onSettled?.(
+          let outcome: ControlOutcome =
             turnGen.current.get(sessionId) !== gen
               ? { status: "cancelled", text: controlText }
-              : controlOutcome,
-          );
+              : controlOutcome;
+          // WP-245: a turn that ended with no words and no tool call gets one retry with a short note; empty again,
+          // it shows as failed instead of leaving a silent chat. Whoever waits on the turn hears the retry's outcome.
+          const step =
+            outcome.status === "completed"
+              ? emptyTurnStep(
+                  sessionsRef.current.find((s) => s.id === sessionId),
+                  outcome,
+                  text,
+                  !!options?.emptyRetried,
+                )
+              : "settle";
+          if (step === "retry") {
+            const settle = options?.onSettled;
+            const first = outcome;
+            window.setTimeout(() => {
+              const chat = sessionsRef.current.find((s) => s.id === sessionId);
+              if (!chat || chat.busy || chat.queuedMessages?.length) {
+                settle?.(first);
+                return;
+              }
+              const accepted = submitSessionRef.current(sessionId, EMPTY_TURN_NOTE, [], {
+                // The app's own note: an automated turn (no origin), shown as an app note line.
+                emptyRetried: true,
+                ...(settle ? { onSettled: settle } : {}),
+              });
+              if (accepted === false) settle?.(first);
+              else if (typeof accepted !== "boolean")
+                void Promise.resolve(accepted)
+                  .then((ok) => {
+                    if (!ok) settle?.(first);
+                  })
+                  .catch(() => settle?.(first));
+            }, 0);
+            return;
+          }
+          if (step === "failed") {
+            outcome = { status: "failed", text: "", error: EMPTY_TURN_FAILED };
+            enqueueHarnessEvent(sessionId, { type: "session.error", message: EMPTY_TURN_FAILED });
+            flushHarnessEvents();
+          }
+          options?.onSettled?.(outcome);
         });
       return true;
     },

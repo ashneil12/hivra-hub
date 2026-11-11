@@ -94,6 +94,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Members, add or remove a first mate | `addMember`, `removeMember` (`hubChats.ts`) | Works; G7 |
 | Conversations (new, rename, delete) | `startConversation`, `renameConversation`, `deleteConversation` | Works; G7 |
 | Sending a message, who answers | `sendMessage` → the group runner set in `App.tsx` (each member's own session through `ensureMonoRoomSession`) | Works |
+| Several seats answering one message (held, then landing together; "No answer from ...") | `roomConductor.ts` gathers (`openGather`, `releaseGather`); `GroupChatView.tsx` `data-hub-msg-held`, `data-hub-msg-gather` (WP-245) | Works |
 | Goal button | `startGoal`, `roomGoal` | Works |
 | Council mode switch | `CouncilSwitch` → `CouncilRoom`, `requestCouncil` | Works; G9 |
 | Who answers, Lead | Moved to Settings, Teams (`RoomResponder.tsx`: `setRoomResponder`, `setRoomLead`) | Works |
