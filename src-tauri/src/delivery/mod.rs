@@ -371,4 +371,6 @@ pub fn delivery_events_consume(
 }
 
 #[cfg(test)]
+mod review_227_r6_tests;
+#[cfg(test)]
 mod tests;
