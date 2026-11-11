@@ -15,6 +15,7 @@
 //   unread count and no notification.
 // A check for a chat outside the hub has nothing to deliver here: Ash OS hands it back on that chat's own next Ash OS
 // call. Ash OS lists only checks for chats the app runs; one naming a chat this app doesn't have is left alone too.
+import { heldFor } from "../../sessions/model/chatHold";
 import type { Block, MonoCheck, Session } from "../../sessions/model/session";
 import { claimEvidenceOf, lastReply, type ClaimEvidence } from "./claimEvidence";
 import { CHECKER_MONO_ID } from "./hubMcp";
@@ -120,23 +121,12 @@ export function hasCheck(session: Pick<Session, "blocks" | "queuedMessages">, id
 }
 
 /**
- * A chat takes a check only when it is idle and nothing else is waiting: no turn running, nothing queued (Ash's own
- * messages go first), no question or approval open, no usage limit, no worktree or harness change on the way.
+ * A chat takes a check only when it is idle and nothing else is waiting: nothing queued (Ash's own messages go first)
+ * and none of `WAITS_ON.check` (chatHold.ts): no turn running or cut, no question or approval open, no usage limit, no
+ * worktree, handoff or harness change on the way.
  */
 export function takesCheck(session: Session): boolean {
-  return (
-    !session.busy &&
-    !session.queuedMessages?.length &&
-    !session.usageLimit &&
-    !session.pendingQuestion &&
-    !session.pendingSwitch &&
-    !session.worktreePreparing &&
-    !session.worktreeRemoved &&
-    !session.editingQueuedMessageId &&
-    session.queueStatus !== "paused" &&
-    session.queueStatus !== "resuming" &&
-    !session.blocks.some((block) => block.approval && !block.approval.decided)
-  );
+  return !session.queuedMessages?.length && !heldFor(session, "check");
 }
 
 /** The turn now running (or last run) in this chat is a check. */
