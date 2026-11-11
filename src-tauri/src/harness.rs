@@ -6001,3 +6001,7 @@ mod review_r6_repro {
         );
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "harness_review_r7_repro.rs"]
+mod review_r7_repro;
