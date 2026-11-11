@@ -13,6 +13,7 @@ import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { workersLabel } from "../model/workingNow";
 import { HOME_STAGGER_MS } from "../vendor/homeLayout";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
+import { OneTapNotice } from "../../needs/ui/OneTapNotice";
 import "./home.css";
 
 const CHIEF_NAME = "Chief of Staff";
@@ -638,6 +639,7 @@ export function HomeScreen({
             </button>
           ) : null}
         </header>
+        <OneTapNotice />
         {known && custom ? (
           <div
             ref={panelRef}

@@ -21,6 +21,24 @@ it("returns the recommended option's own words, shortened, with the full text as
   expect(tap?.answer).toBe(LONG);
 });
 
+it("reads the recommended option's own words for the red list, not only the question", () => {
+  expect(oneTapButton({
+    recommended: "Refund the customer",
+    options: ["Refund the customer", "Leave it"],
+    sentence: "Which should I do?",
+  })).toBeNull();
+  // Another option can be on the red list. The tap sends the recommended one, and that one is safe.
+  expect(oneTapButton({
+    recommended: "Leave it",
+    options: ["Refund the customer", "Leave it"],
+    sentence: "Which should I do?",
+  })).toEqual({ label: "Leave it", title: "Leave it", answer: "Leave it" });
+  expect(oneTapButton({
+    recommended: "Refund the customer",
+    options: ["Refund the customer"],
+  })).toBeNull();
+});
+
 it("returns nothing when there is no recommendation, or it is not one of the options", () => {
   expect(oneTapButton({ recommended: null, options: ["Yes", "No"] })).toBeNull();
   expect(oneTapButton({ recommended: "   ", options: ["Yes"] })).toBeNull();

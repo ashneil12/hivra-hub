@@ -11,6 +11,7 @@ import { openFromHome } from "../../home/model/opener";
 import { foldFirstMate } from "../model/inboxFold";
 import { projectIdOf, useNeedsYou } from "../model/needsLive";
 import type { NeedsItem } from "../model/needsYou";
+import { OneTapNotice } from "./OneTapNotice";
 
 /** Every row, most urgent first (Home's order), not Home's first five. */
 export function inboxNeedsOrder(items: readonly NeedsItem[]): NeedsItem[] {
@@ -38,10 +39,11 @@ export function InboxNeeds({ firstMate = null }: { firstMate?: FirstMateFold | n
     const node = list.current?.querySelector("[data-selected='true']");
     if (node instanceof HTMLElement && typeof node.scrollIntoView === "function") node.scrollIntoView({ block: "nearest" });
   }, [selected, rows.length]);
-  if (rows.length === 0) return null;
+  if (rows.length === 0) return <OneTapNotice />;
   const many = projects.length > 1;
   return (
     <section aria-label="Needs you" data-inbox-needs={rows.length} className="flex flex-col gap-1 border-b border-stroke px-1.5 pb-2 pt-2">
+      <OneTapNotice />
       <h2 className="flex items-center gap-1.5 px-1.5 text-xs leading-5 text-content/60">
         <span className="size-1.5 rounded-full" style={{ background: NEEDS_YOU_RED }} />
         Needs you

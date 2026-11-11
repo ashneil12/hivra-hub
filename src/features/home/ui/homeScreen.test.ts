@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { noteOneTapRefusal, resetOneTapRefusal } from "../../needs/model/oneTapNotice";
 import { defaultArrangement, hideSection, pinPanel } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
 import { HomeScreen, dropCard, orderCards, type HomeChief, type HomeDone, type HomeNeed, type HomeWork } from "./HomeScreen";
@@ -25,6 +26,7 @@ beforeEach(() => {
   root = createRoot(container);
 });
 afterEach(() => {
+  resetOneTapRefusal();
   act(() => root.unmount());
   container.remove();
 });
@@ -61,6 +63,12 @@ function draw(props: Partial<Parameters<typeof HomeScreen>[0]> = {}) {
     }));
   });
 }
+
+it("says why a one tap was refused", () => {
+  noteOneTapRefusal("That chat isn't waiting any more.");
+  draw();
+  expect(container.querySelector("[data-needs-refusal]")?.textContent).toBe("That chat isn't waiting any more.");
+});
 
 it("with nothing to show, the chief says all quiet inside the card", () => {
   draw();

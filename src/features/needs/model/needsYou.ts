@@ -243,8 +243,9 @@ export function accessAsk(sentence: string): boolean {
   return /\b(?:page|plugin)\b/i.test(sentence) && /\basks\b/i.test(sentence);
 }
 
-function riskyStep(sentence: string): boolean {
-  if (redListCategory(callText(sentence))) return true;
+/** The question and the recommended option. A red word in either one holds the tap. */
+function riskyStep(sentence: string, recommended = ""): boolean {
+  if (redListCategory(callText(sentence, recommended))) return true;
   const reason = questionVeto({ question: sentence });
   return reason != null && RISKY_REASON.has(reason);
 }
@@ -263,8 +264,8 @@ export function shortenOneTap(text: string): string {
 /**
  * The one button a row may show beside Open. Null unless every condition holds:
  * there is a recommended option, the label is that option's own words, the key
- * is not person-only, the step is not on the red list, and the words are not a
- * way out (Open, Review, Open chat, Dismiss) or Allow always.
+ * is not person-only, neither the question nor that option is on the red list,
+ * and the words are not a way out (Open, Review, Open chat, Dismiss) or Allow always.
  */
 export function oneTapButton(input: {
   recommended?: string | null;
@@ -279,8 +280,8 @@ export function oneTapButton(input: {
   if (key && isPersonOnlyDecisionKey(key)) return null;
   if (input.risky) return null;
   const sentence = input.sentence?.replace(/\s+/g, " ").trim() ?? "";
-  if (sentence && riskyStep(sentence)) return null;
   const recommended = input.recommended?.replace(/\s+/g, " ").trim() ?? "";
+  if (riskyStep(sentence, recommended)) return null;
   if (!recommended) return null;
   if (input.options && !input.options.includes(recommended)) return null;
   const folded = recommended.toLowerCase();
@@ -504,10 +505,7 @@ function checkItem(fact: CheckFact, now: number): Draft | undefined {
     at: finite(fact.at, now),
     sentence,
     // A gate card is never a one tap, so the only control is Open.
-    actions: openAction(
-      oneTapButton({ gateCard: true, decisionKey: fact.gateKey, sentence, recommended: null })?.label ?? "Open",
-      fact.onOpen,
-    ),
+    actions: openAction("Open", fact.onOpen),
     open: fact.open,
     gateKey,
   };
