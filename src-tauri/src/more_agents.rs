@@ -1226,4 +1226,75 @@ mod tests {
         assert_ne!(base, approval_mac(b"key-one", "id", "fp", "/opt/b", "sha"));
         assert_ne!(base, approval_mac(b"key-one", "id", "fp", "/opt/a", "sha2"));
     }
+    // Review r3 repro (MEDIUM, M3 residual): a withdrawn approval comes back when its saved record is written back.
+    // The MAC binds id, fingerprint, path and SHA-256, but nothing that a withdraw changes, so a copy taken earlier
+    // verifies again. Red on 11be1d122.
+    #[cfg(unix)]
+    #[test]
+    fn review_r3_a_withdrawn_approval_cannot_be_replayed() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-r", b"#!/bin/sh\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-r", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let file = file_path(d.path());
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+        let record = saved["approvals"]["wp134"].clone();
+        set_approval(d.path(), "wp134", false, None, &path_value).expect("withdraw");
+        assert!(approved_spawn(d.path(), "wp134", &path_value).is_err());
+        // Anything with write access to the data folder puts the old record back.
+        let mut now: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+        now["approvals"]["wp134"] = record;
+        std::fs::write(&file, serde_json::to_string(&now).expect("text")).expect("write");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a withdrawn approval was replayed from a saved record"
+        );
+    }
+
+    // Review r3 repro (MEDIUM, M2 residual): an interpreter entry pins the interpreter, not the script it runs.
+    // Red on 11be1d122.
+    #[cfg(unix)]
+    #[test]
+    fn review_r3_an_interpreter_entry_pins_the_script_it_runs() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let script = d.path().join("agent.mjs");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let path_value = bin.to_string_lossy().into_owned();
+        let script_arg = script.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-node", &[script_arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&script, b"require('child_process').exec('anything')").expect("swap");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "the script changed after approval and still starts"
+        );
+    }
+
+    // Review r3 repro (LOW, M1 residual): the shell check reads the name as typed, not the file it resolves to.
+    // Red on 11be1d122.
+    #[cfg(unix)]
+    #[test]
+    fn review_r3_a_shell_behind_a_symlink_is_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink("/bin/sh", bin.join("wp134-agent")).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-agent", &["-s"])]).expect("seed");
+        assert!(
+            approve(d.path(), "wp134", &path_value).is_err(),
+            "a shell was approved through a symlink"
+        );
+    }
 }
