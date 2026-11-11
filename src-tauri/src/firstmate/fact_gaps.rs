@@ -85,24 +85,22 @@ struct StoredCheck {
     at: f64,
 }
 
-fn check_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)(?:^|[\s;&|(])(?:npx\s+)?(?:vitest|jest|pytest|playwright|cypress|tsc|eslint|biome|ruff|mypy)\b|(?:^|[\s;&|(])cargo\s+(?:test|check|clippy|nextest)\b|(?:^|[\s;&|(])go\s+test\b|(?:^|[\s;&|(])swift\s+test\b|(?:^|[\s;&|(])make\s+(?:test|check|verify)\b|(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|typecheck|[\w:-]*:test|[\w:-]*:check)\b",
-        )
-        .expect("check command pattern")
-    })
+/// What one command actually runs. A name in a sentence or a filename is not a run.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CommandRole {
+    /// A lint, a type check or a build. It can fail the turn. It does not cover a package.
+    Check,
+    /// A test runner. It covers packages and it can fail the turn.
+    Test,
 }
 
-fn test_re() -> &'static Regex {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| {
-        Regex::new(
-            r"(?i)(?:^|[\s;&|(])(?:npx\s+)?(?:vitest|jest|pytest|playwright|cypress)\b|(?:^|[\s;&|(])cargo\s+(?:test|nextest)\b|(?:^|[\s;&|(])go\s+test\b|(?:^|[\s;&|(])swift\s+test\b|(?:^|[\s;&|(])make\s+test\b|(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|[\w:-]*:test)\b",
-        )
-        .expect("test command pattern")
-    })
+struct Invocation {
+    program: String,
+    args: Vec<String>,
+    /// A `cd` earlier in the same command, when there was one.
+    cwd: Option<String>,
+    /// True when this command's output is piped. The pipe's exit status is not the runner's.
+    piped: bool,
 }
 
 fn negated_re() -> &'static Regex {
@@ -161,7 +159,11 @@ fn is_docs_path(path: &str) -> bool {
     if segments.is_empty() {
         return false;
     }
-    if segments[0].eq_ignore_ascii_case("docs") {
+    // Any segment, so an absolute path (`/work/repo/docs/credits.json`) is still docs. `src/docs.ts` is not.
+    if segments
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("docs"))
+    {
         return true;
     }
     let base = segments[segments.len() - 1].to_lowercase();
@@ -221,21 +223,262 @@ fn package_of(path: &str) -> Option<String> {
     valid_package(&segments[segments.len() - 2])
 }
 
-fn command_tokens(command: &str) -> Vec<String> {
-    command
-        .split_whitespace()
-        .map(|token| token.trim_matches(|c| c == '"' || c == '\'').to_string())
-        .filter(|token| !token.is_empty())
-        .collect()
+/// Newlines become `&&` before other control characters are stripped, so a second line stays its own command.
+fn command_text(raw: &str) -> String {
+    let mut separated = String::new();
+    for c in raw.chars() {
+        if c == '\n' || c == '\r' {
+            separated.push_str(" && ");
+        } else if c == '\t' {
+            separated.push(' ');
+        } else if !c.is_control() {
+            separated.push(c);
+        }
+    }
+    one_line(&separated, MAX_COMMAND)
+}
+
+fn tokenize(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    for c in text.chars() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else {
+                cur.push(c);
+            }
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+            continue;
+        }
+        if c.is_whitespace() {
+            if !cur.is_empty() {
+                out.push(std::mem::take(&mut cur));
+            }
+            continue;
+        }
+        cur.push(c);
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
+fn split_statements(command: &str) -> Vec<String> {
+    let chars: Vec<char> = command.chars().collect();
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    let mut quote: Option<char> = None;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+            i += 1;
+            continue;
+        }
+        let next = chars.get(i + 1).copied();
+        let separator =
+            (c == '&' && next == Some('&')) || (c == '|' && next == Some('|')) || c == ';';
+        if separator {
+            out.push(chars[start..i].iter().collect());
+            i += if c == ';' { 1 } else { 2 };
+            start = i;
+            continue;
+        }
+        i += 1;
+    }
+    out.push(chars[start..].iter().collect());
+    out
+}
+
+fn split_pipes(statement: &str) -> Vec<String> {
+    let chars: Vec<char> = statement.chars().collect();
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut i = 0;
+    let mut quote: Option<char> = None;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            i += 1;
+            continue;
+        }
+        if c == '"' || c == '\'' {
+            quote = Some(c);
+            i += 1;
+            continue;
+        }
+        if c == '|' && chars.get(i + 1).copied() != Some('|') {
+            out.push(chars[start..i].iter().collect());
+            i += 1;
+            start = i;
+            continue;
+        }
+        if c == '|' {
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    out.push(chars[start..].iter().collect());
+    out
+}
+
+fn program_and_args(tokens: Vec<String>) -> (String, Vec<String>) {
+    let mut i = 0;
+    while i < tokens.len() {
+        let token = &tokens[i];
+        if !token.starts_with('-')
+            && token.contains('=')
+            && !token.contains('/')
+            && !token.contains('\\')
+        {
+            i += 1;
+            continue;
+        }
+        break;
+    }
+    if i >= tokens.len() {
+        return (String::new(), Vec::new());
+    }
+    (tokens[i].clone(), tokens[i + 1..].to_vec())
+}
+
+fn invocations(command: &str) -> Vec<Invocation> {
+    let mut cwd: Option<String> = None;
+    let mut out = Vec::new();
+    for statement in split_statements(command) {
+        let stages = split_pipes(&statement);
+        let piped = stages.len() > 1;
+        let Some(stage) = stages.first() else {
+            continue;
+        };
+        let (program, args) = program_and_args(tokenize(stage));
+        if program.is_empty() {
+            continue;
+        }
+        let invocation = Invocation {
+            program: program.clone(),
+            args,
+            cwd: cwd.clone(),
+            piped,
+        };
+        if !piped && program.eq_ignore_ascii_case("cd") {
+            if let Some(dir) = invocation.args.first() {
+                if !dir.starts_with('-') {
+                    cwd = Some(dir.clone());
+                }
+            }
+        }
+        out.push(invocation);
+    }
+    out
+}
+
+fn first_positional(args: &[String]) -> Option<&str> {
+    args.iter()
+        .find(|arg| !arg.starts_with('-'))
+        .map(String::as_str)
+}
+
+fn npm_role(args: &[String]) -> Option<CommandRole> {
+    let script = if args
+        .first()
+        .is_some_and(|arg| arg.eq_ignore_ascii_case("run"))
+    {
+        args.get(1)
+    } else {
+        args.first()
+    }?;
+    let script = script.to_lowercase();
+    if script == "test" || script.ends_with(":test") || script == "check" {
+        // `npm run check` is this repo's full check: it runs the tests.
+        return Some(CommandRole::Test);
+    }
+    if script == "lint" || script == "typecheck" || script.ends_with(":check") {
+        return Some(CommandRole::Check);
+    }
+    None
+}
+
+fn cargo_role(args: &[String]) -> Option<CommandRole> {
+    match first_positional(args).map(str::to_lowercase).as_deref() {
+        Some("test" | "nextest") => Some(CommandRole::Test),
+        Some("check" | "clippy" | "build") => Some(CommandRole::Check),
+        _ => None,
+    }
+}
+
+fn role_of(invocation: &Invocation) -> Option<CommandRole> {
+    let program = invocation.program.to_lowercase();
+    let tool = if program == "npx" {
+        first_positional(&invocation.args)
+            .unwrap_or("")
+            .to_lowercase()
+    } else {
+        program
+    };
+    match tool.as_str() {
+        "vitest" | "jest" | "pytest" | "playwright" | "cypress" => Some(CommandRole::Test),
+        "tsc" | "eslint" | "biome" | "ruff" | "mypy" => Some(CommandRole::Check),
+        "cargo" => cargo_role(&invocation.args),
+        "go" | "swift" => {
+            if first_positional(&invocation.args)
+                .is_some_and(|arg| arg.eq_ignore_ascii_case("test"))
+            {
+                Some(CommandRole::Test)
+            } else {
+                None
+            }
+        }
+        "make" => match first_positional(&invocation.args)
+            .map(str::to_lowercase)
+            .as_deref()
+        {
+            Some("test") => Some(CommandRole::Test),
+            Some("check" | "verify") => Some(CommandRole::Check),
+            _ => None,
+        },
+        "npm" | "pnpm" | "yarn" | "bun" => npm_role(&invocation.args),
+        _ => None,
+    }
+}
+
+fn counts_as_check(command: &str, status: &str) -> bool {
+    invocations(command).into_iter().any(|invocation| {
+        role_of(&invocation).is_some() && (status == "failed" || !invocation.piped)
+    })
+}
+
+fn is_test_command(command: &str) -> bool {
+    invocations(command)
+        .iter()
+        .any(|invocation| !invocation.piped && role_of(invocation) == Some(CommandRole::Test))
 }
 
 fn looks_like_path(token: &str) -> bool {
     (token.contains('/') || token.contains('\\')) && !token.starts_with('-')
 }
 
-fn path_tokens(command: &str) -> Vec<String> {
+fn path_tokens(tokens: &[String]) -> Vec<String> {
     let mut out = Vec::new();
-    for token in command_tokens(command) {
+    for token in tokens {
         if let Some(rest) = token.strip_prefix('-') {
             if let Some(value) = rest.split_once('=').map(|(_, value)| value) {
                 if looks_like_path(value) {
@@ -244,15 +487,14 @@ fn path_tokens(command: &str) -> Vec<String> {
             }
             continue;
         }
-        if looks_like_path(&token) {
-            out.push(token);
+        if looks_like_path(token) {
+            out.push(token.clone());
         }
     }
     out
 }
 
-fn named_packages(command: &str) -> Vec<String> {
-    let tokens = command_tokens(command);
+fn named_packages(tokens: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     for (i, token) in tokens.iter().enumerate() {
         if token == "-p" || token == "--package" {
@@ -271,12 +513,88 @@ fn named_packages(command: &str) -> Vec<String> {
     out
 }
 
-fn test_reaches(command: &str, pkg: &str) -> bool {
-    if !test_re().is_match(command) {
+fn parent_dir(path: &str) -> Option<String> {
+    let segments = segments_of(path);
+    if segments.len() < 2 {
+        return None;
+    }
+    Some(segments[..segments.len() - 1].join("/"))
+}
+
+fn manifest_dir(args: &[String]) -> Option<String> {
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        if let Some(value) = arg.strip_prefix("--manifest-path=") {
+            return parent_dir(value);
+        }
+        if arg == "--manifest-path" {
+            return args.get(i + 1).and_then(|path| parent_dir(path));
+        }
+        i += 1;
+    }
+    None
+}
+
+fn path_under(root: &str, path: &str) -> bool {
+    let root_segs = segments_of(root);
+    let path_segs = segments_of(path);
+    if root_segs.is_empty() || path_segs.len() <= root_segs.len() {
         return false;
     }
-    let named = named_packages(command);
-    let paths = path_tokens(command);
+    root_segs
+        .iter()
+        .zip(path_segs.iter())
+        .all(|(root_part, path_part)| root_part.eq_ignore_ascii_case(path_part))
+}
+
+/// `crates/<name>`, `packages/<name>` or `apps/<name>`, when the path is inside one.
+fn workspace_member(path: &str) -> Option<String> {
+    let segments = segments_of(path);
+    for i in 0..segments.len().saturating_sub(1) {
+        let dir = segments[i].to_lowercase();
+        if dir == "crates" || dir == "packages" || dir == "apps" {
+            return valid_package(&segments[i + 1]);
+        }
+    }
+    None
+}
+
+/// The crate root of a `cargo test`, from `--manifest-path` or an earlier `cd`. None for any other command.
+fn cargo_root(invocation: &Invocation) -> Option<String> {
+    if !invocation.program.eq_ignore_ascii_case("cargo") {
+        return None;
+    }
+    let sub = invocation.args.first()?.to_lowercase();
+    if sub != "test" && sub != "nextest" {
+        return None;
+    }
+    manifest_dir(&invocation.args).or_else(|| invocation.cwd.clone())
+}
+
+fn cargo_root_covers(invocation: &Invocation, root: &str, edited: &str) -> bool {
+    if !path_under(root, edited) {
+        return false;
+    }
+    // A file under crates/, packages/ or apps/ is its own package. A bare cargo test does not cover it
+    // unless `-p` names it. The crate at the manifest root (this repo's `src-tauri/src`) is not one of those.
+    if let Some(member) = workspace_member(edited) {
+        return named_packages(&invocation.args)
+            .iter()
+            .any(|name| name == &member);
+    }
+    true
+}
+
+fn invocation_reaches(invocation: &Invocation, pkg: &str, edited: &str) -> bool {
+    if invocation.piped || role_of(invocation) != Some(CommandRole::Test) {
+        return false;
+    }
+    if let Some(root) = cargo_root(invocation) {
+        return cargo_root_covers(invocation, &root, edited);
+    }
+    let named = named_packages(&invocation.args);
+    let paths = path_tokens(&invocation.args);
     if named.is_empty() && paths.is_empty() {
         return true;
     }
@@ -286,6 +604,12 @@ fn test_reaches(command: &str, pkg: &str) -> bool {
     paths
         .iter()
         .any(|path| package_of(path).as_deref() == Some(pkg))
+}
+
+fn test_reaches(command: &str, pkg: &str, edited: &str) -> bool {
+    invocations(command)
+        .iter()
+        .any(|invocation| invocation_reaches(invocation, pkg, edited))
 }
 
 fn status_word(status: &str) -> Option<&'static str> {
@@ -302,8 +626,8 @@ fn sanitize_check(raw: &FactCheck) -> Option<StoredCheck> {
     if !raw.at.is_finite() {
         return None;
     }
-    let command = one_line(&raw.command, MAX_COMMAND);
-    if command.is_empty() || !check_re().is_match(&command) {
+    let command = command_text(&raw.command);
+    if command.is_empty() || !counts_as_check(&command, status) {
         return None;
     }
     let display = take_chars(&command, MAX_DISPLAY).trim_end().to_string();
@@ -354,18 +678,8 @@ struct CleanTurn {
 
 fn sanitize(turn: &FactTurn) -> CleanTurn {
     CleanTurn {
-        checks: turn
-            .checks
-            .iter()
-            .filter_map(sanitize_check)
-            .take(MAX_CHECKS)
-            .collect(),
-        edits: turn
-            .edits
-            .iter()
-            .filter_map(sanitize_edit)
-            .take(MAX_EDITS)
-            .collect(),
+        checks: keep_last(turn.checks.iter().filter_map(sanitize_check), MAX_CHECKS),
+        edits: keep_last(turn.edits.iter().filter_map(sanitize_edit), MAX_EDITS),
         todos: turn
             .todos
             .iter()
@@ -374,6 +688,15 @@ fn sanitize(turn: &FactTurn) -> CleanTurn {
             .collect(),
         answer: clean_answer(&turn.answer),
     }
+}
+
+fn keep_last<T>(items: impl IntoIterator<Item = T>, max: usize) -> Vec<T> {
+    let mut items: Vec<T> = items.into_iter().collect();
+    if items.len() > max {
+        let extra = items.len() - max;
+        items.drain(..extra);
+    }
+    items
 }
 
 fn last_code_at(edits: &[FactEdit]) -> Option<f64> {
@@ -439,7 +762,7 @@ fn is_stale(checks: &[StoredCheck], edits: &[FactEdit]) -> bool {
     };
     let tests: Vec<&StoredCheck> = checks
         .iter()
-        .filter(|check| test_re().is_match(&check.command))
+        .filter(|check| is_test_command(&check.command))
         .collect();
     let passed_before = tests
         .iter()
@@ -488,7 +811,7 @@ pub fn coverage_gaps(turn: &FactTurn) -> Vec<String> {
         }
         let reached = clean.checks.iter().any(|check| {
             (check.status == "passed" || check.status == "failed")
-                && test_reaches(&check.command, &pkg)
+                && test_reaches(&check.command, &pkg, &edit.path)
         });
         if !reached {
             gaps.push(format!("No test reached {pkg}."));
@@ -955,5 +1278,191 @@ mod tests {
         });
         let gaps = done_gaps(&fact_turn_from_value(&value));
         assert_eq!(gaps, vec![TESTS_CLAIM.to_string()]);
+    }
+}
+
+/// Review round 1 (PR #232): failing repros. Each test states what the gate should do.
+#[cfg(test)]
+mod review_r1 {
+    use super::*;
+
+    fn check(command: &str, status: &str, at: f64) -> FactCheck {
+        FactCheck {
+            command: command.to_string(),
+            status: status.to_string(),
+            at,
+        }
+    }
+
+    fn edit(path: &str, at: f64) -> FactEdit {
+        FactEdit {
+            path: path.to_string(),
+            at,
+        }
+    }
+
+    fn facts(checks: Vec<FactCheck>, edits: Vec<FactEdit>, answer: &str) -> FactTurn {
+        FactTurn {
+            checks,
+            edits,
+            todos: vec![],
+            answer: answer.to_string(),
+        }
+    }
+
+    // HIGH: this repo's documented Rust test command never reaches an edited module, so verified work is sent back
+    // and, on the identical retry, delivery fails.
+    #[test]
+    fn r1_the_repos_own_cargo_test_reaches_an_edited_rust_module() {
+        let gaps = done_gaps(&facts(
+            vec![check(
+                "cargo test --manifest-path src-tauri/Cargo.toml -p monocode --lib firstmate",
+                "passed",
+                2.0,
+            )],
+            vec![edit("src-tauri/src/firstmate/gates.rs", 1.0)],
+            "",
+        ));
+        assert!(gaps.is_empty(), "{gaps:?}");
+        let root = done_gaps(&facts(
+            vec![check(
+                "cd src-tauri && cargo test -p monocode",
+                "passed",
+                2.0,
+            )],
+            vec![edit("src-tauri/src/delegations.rs", 1.0)],
+            "",
+        ));
+        assert!(root.is_empty(), "{root:?}");
+    }
+
+    // HIGH: `npm run check` (AGENTS.md: run it before calling anything done) runs vitest and cargo test, but is not a
+    // test run here, so every edited package is "not reached".
+    #[test]
+    fn r1_npm_run_check_reaches_the_edited_package() {
+        let gaps = done_gaps(&facts(
+            vec![check("npm run check", "passed", 2.0)],
+            vec![edit("src/features/crew/row.ts", 1.0)],
+            "",
+        ));
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    // HIGH: the caps keep the oldest entries. Past 80 edits the last edit is dropped, so a stale test is not seen.
+    #[test]
+    fn r1_a_turn_past_the_edit_cap_still_sees_its_last_edit() {
+        let mut edits: Vec<FactEdit> = (0..80)
+            .map(|at| edit("src/features/crew/row.ts", at as f64))
+            .collect();
+        edits.push(edit("src/features/crew/row.ts", 200.0));
+        let gaps = done_gaps(&facts(
+            vec![check("npx vitest run", "passed", 100.0)],
+            edits,
+            "",
+        ));
+        assert!(gaps.contains(&STALE.to_string()), "{gaps:?}");
+    }
+
+    // HIGH: past 40 checks every later run is dropped, so a fresh test after the last edit is never seen and a
+    // correct worker is refused twice (delivery failed).
+    #[test]
+    fn r1_a_turn_past_the_check_cap_still_sees_its_last_test() {
+        let mut checks: Vec<FactCheck> = (0..40)
+            .map(|at| check("npx tsc --noEmit", "passed", at as f64))
+            .collect();
+        checks.push(check("npx vitest run", "passed", 60.0));
+        let gaps = done_gaps(&facts(
+            checks,
+            vec![edit("src/features/crew/row.ts", 50.0)],
+            "",
+        ));
+        assert!(gaps.is_empty(), "{gaps:?}");
+    }
+
+    // MED: a command that only names a runner counts as a passing, project-wide test run.
+    #[test]
+    fn r1_reading_a_vitest_config_or_echoing_npm_test_is_not_a_test_run() {
+        for fake in [
+            "cat vitest.config.ts",
+            "echo npm test",
+            "git commit -m \"fix row, ran npm test\"",
+        ] {
+            let gaps = done_gaps(&facts(
+                vec![
+                    check("npx vitest run", "passed", 1.0),
+                    check(fake, "passed", 3.0),
+                ],
+                vec![edit("src/features/crew/row.ts", 2.0)],
+                "",
+            ));
+            assert_eq!(gaps, vec![STALE.to_string()], "{fake}");
+        }
+    }
+
+    // MED: the exit status of `| tail` hides a failing suite; it should not back a pass claim.
+    #[test]
+    fn r1_a_test_piped_into_tail_is_not_evidence_of_a_pass() {
+        let gaps = done_gaps(&facts(
+            vec![check("npm test 2>&1 | tail -20", "passed", 2.0)],
+            vec![edit("src/features/crew/row.ts", 1.0)],
+            "All tests passed.",
+        ));
+        assert!(!gaps.is_empty(), "a masked exit status was taken as a pass");
+    }
+
+    // MED: `one_line` strips the newline before it splits, so a multi-line command is glued into one word and a
+    // failing check vanishes.
+    #[test]
+    fn r1_a_multi_line_failing_check_is_still_a_failure() {
+        let gaps = done_gaps(&facts(
+            vec![
+                check("npm test", "passed", 1.0),
+                check("cd src-tauri\ncargo test", "failed", 2.0),
+            ],
+            vec![edit("src/features/crew/row.ts", 0.0)],
+            "",
+        ));
+        assert!(
+            gaps.iter()
+                .any(|gap| gap.starts_with("A check failed this turn")),
+            "{gaps:?}"
+        );
+    }
+
+    // LOW: a failing build is not a check, so it never fails the claim.
+    #[test]
+    fn r1_a_failing_build_is_a_failed_check() {
+        let gaps = done_gaps(&facts(
+            vec![
+                check("npm test", "passed", 2.0),
+                check(
+                    "cargo build --manifest-path src-tauri/Cargo.toml",
+                    "failed",
+                    3.0,
+                ),
+            ],
+            vec![edit("src/features/crew/row.ts", 1.0)],
+            "",
+        ));
+        assert!(
+            gaps.iter()
+                .any(|gap| gap.starts_with("A check failed this turn")),
+            "{gaps:?}"
+        );
+    }
+
+    // MED: Claude's edit paths are absolute, so the `docs/` rule (first segment) never matches and a non-Markdown
+    // file under docs/ is code: a stale test and a coverage gap.
+    #[test]
+    fn r1_a_docs_folder_edit_with_an_absolute_path_is_still_docs() {
+        let gaps = done_gaps(&facts(
+            vec![check("npm test", "passed", 1.0)],
+            vec![edit(
+                "/Users/ash/Worktrees/hub-x/docs/hivra/credits.json",
+                2.0,
+            )],
+            "",
+        ));
+        assert!(gaps.is_empty(), "{gaps:?}");
     }
 }

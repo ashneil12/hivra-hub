@@ -8,13 +8,17 @@
 
 import type { Block } from "../../sessions/model/session";
 
-/** A check command, same shape as the claim card's check list, narrowed to a test, a type check, a lint or a build. */
-const CHECK_COMMAND =
-  /(?:^|[\s;&|(])(?:npx\s+)?(?:vitest|jest|pytest|playwright|cypress|tsc|eslint|biome|ruff|mypy)\b|(?:^|[\s;&|(])cargo\s+(?:test|check|clippy|nextest)\b|(?:^|[\s;&|(])go\s+test\b|(?:^|[\s;&|(])swift\s+test\b|(?:^|[\s;&|(])make\s+(?:test|check|verify)\b|(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|check|lint|typecheck|[\w:-]*:test|[\w:-]*:check)\b/i;
+/** A lint, a type check or a build fails the turn. A test also covers a package. */
+type CommandRole = "check" | "test";
 
-/** Coverage only counts a test runner. A type check or a lint can still fail the turn. */
-const TEST_COMMAND =
-  /(?:^|[\s;&|(])(?:npx\s+)?(?:vitest|jest|pytest|playwright|cypress)\b|(?:^|[\s;&|(])cargo\s+(?:test|nextest)\b|(?:^|[\s;&|(])go\s+test\b|(?:^|[\s;&|(])swift\s+test\b|(?:^|[\s;&|(])make\s+test\b|(?:^|[\s;&|(])(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:test|[\w:-]*:test)\b/i;
+type Invocation = {
+  program: string;
+  args: string[];
+  /** A `cd` earlier in the same command, when there was one. */
+  cwd?: string;
+  /** True when this command's output is piped. The pipe's exit status is not the runner's. */
+  piped: boolean;
+};
 
 const DOC_EXT = new Set(["md", "mdx", "rst", "adoc", "txt"]);
 const DOC_NAME = new Set(["readme", "license", "licence", "notice", "changelog", "contributing", "authors"]);
@@ -89,7 +93,8 @@ function segmentsOf(path: string): string[] {
 export function isDocsPath(path: string): boolean {
   const segments = segmentsOf(path);
   if (segments.length === 0) return false;
-  if (segments[0].toLowerCase() === "docs") return true;
+  // Any segment, so an absolute path is still docs. `src/docs.ts` is not: its last segment is the filename.
+  if (segments.some((part) => part.toLowerCase() === "docs")) return true;
   const base = segments[segments.length - 1].toLowerCase();
   const dot = base.lastIndexOf(".");
   const ext = dot >= 0 ? base.slice(dot + 1) : "";
@@ -129,13 +134,195 @@ function looksLikePath(token: string): boolean {
   return /[/\\]/.test(token) && !token.startsWith("-");
 }
 
-function commandTokens(command: string): string[] {
-  return command.split(/\s+/).map((token) => token.replace(/^["']|["']$/g, "")).filter(Boolean);
+/** Newlines become `&&` before other control characters are stripped, so a second line stays its own command. */
+function commandText(raw: string): string {
+  const separated = raw.replace(/\r\n|\n|\r/g, " && ").replace(/\t/g, " ");
+  return oneLine(separated, MAX_COMMAND);
 }
 
-function pathTokens(command: string): string[] {
+function tokenize(text: string): string[] {
   const out: string[] = [];
-  for (const token of commandTokens(command)) {
+  let cur = "";
+  let quote: '"' | "'" | undefined;
+  for (const c of text) {
+    if (quote) {
+      if (c === quote) quote = undefined;
+      else cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      continue;
+    }
+    if (/\s/.test(c)) {
+      if (cur) out.push(cur);
+      cur = "";
+      continue;
+    }
+    cur += c;
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+function splitOutsideQuotes(text: string, at: (chars: string[], i: number) => number): string[] {
+  const chars = [...text];
+  const out: string[] = [];
+  let start = 0;
+  let i = 0;
+  let quote: '"' | "'" | undefined;
+  while (i < chars.length) {
+    const c = chars[i];
+    if (quote) {
+      if (c === quote) quote = undefined;
+      i += 1;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      i += 1;
+      continue;
+    }
+    const width = at(chars, i);
+    if (width > 0) {
+      out.push(chars.slice(start, i).join(""));
+      i += width;
+      start = i;
+      continue;
+    }
+    i += 1;
+  }
+  out.push(chars.slice(start).join(""));
+  return out;
+}
+
+function splitStatements(command: string): string[] {
+  return splitOutsideQuotes(command, (chars, i) => {
+    const c = chars[i];
+    const next = chars[i + 1];
+    if ((c === "&" && next === "&") || (c === "|" && next === "|")) return 2;
+    if (c === ";") return 1;
+    return 0;
+  });
+}
+
+function splitPipes(statement: string): string[] {
+  return splitOutsideQuotes(statement, (chars, i) => {
+    if (chars[i] === "|" && chars[i + 1] !== "|") return 1;
+    return 0;
+  });
+}
+
+function programAndArgs(tokens: string[]): { program: string; args: string[] } {
+  let i = 0;
+  while (i < tokens.length) {
+    const token = tokens[i];
+    if (!token.startsWith("-") && token.includes("=") && !token.includes("/") && !token.includes("\\")) {
+      i += 1;
+      continue;
+    }
+    break;
+  }
+  if (i >= tokens.length) return { program: "", args: [] };
+  return { program: tokens[i], args: tokens.slice(i + 1) };
+}
+
+function invocations(command: string): Invocation[] {
+  let cwd: string | undefined;
+  const out: Invocation[] = [];
+  for (const statement of splitStatements(command)) {
+    const stages = splitPipes(statement);
+    const piped = stages.length > 1;
+    const stage = stages[0];
+    if (stage === undefined) continue;
+    const { program, args } = programAndArgs(tokenize(stage));
+    if (!program) continue;
+    const invocation: Invocation = { program, args, cwd, piped };
+    if (!piped && program.toLowerCase() === "cd") {
+      const dir = args[0];
+      if (dir && !dir.startsWith("-")) cwd = dir;
+    }
+    out.push(invocation);
+  }
+  return out;
+}
+
+function firstPositional(args: readonly string[]): string | undefined {
+  return args.find((arg) => !arg.startsWith("-"));
+}
+
+function npmRole(args: readonly string[]): CommandRole | undefined {
+  const script = args[0]?.toLowerCase() === "run" ? args[1] : args[0];
+  if (!script) return undefined;
+  const name = script.toLowerCase();
+  // `npm run check` is this repo's full check: it runs the tests.
+  if (name === "test" || name.endsWith(":test") || name === "check") return "test";
+  if (name === "lint" || name === "typecheck" || name.endsWith(":check")) return "check";
+  return undefined;
+}
+
+function cargoRole(args: readonly string[]): CommandRole | undefined {
+  switch (firstPositional(args)?.toLowerCase()) {
+    case "test":
+    case "nextest":
+      return "test";
+    case "check":
+    case "clippy":
+    case "build":
+      return "check";
+    default:
+      return undefined;
+  }
+}
+
+function roleOf(invocation: Invocation): CommandRole | undefined {
+  const program = invocation.program.toLowerCase();
+  const tool = program === "npx" ? (firstPositional(invocation.args)?.toLowerCase() ?? "") : program;
+  switch (tool) {
+    case "vitest":
+    case "jest":
+    case "pytest":
+    case "playwright":
+    case "cypress":
+      return "test";
+    case "tsc":
+    case "eslint":
+    case "biome":
+    case "ruff":
+    case "mypy":
+      return "check";
+    case "cargo":
+      return cargoRole(invocation.args);
+    case "go":
+    case "swift":
+      return firstPositional(invocation.args)?.toLowerCase() === "test" ? "test" : undefined;
+    case "make": {
+      const target = firstPositional(invocation.args)?.toLowerCase();
+      if (target === "test") return "test";
+      if (target === "check" || target === "verify") return "check";
+      return undefined;
+    }
+    case "npm":
+    case "pnpm":
+    case "yarn":
+    case "bun":
+      return npmRole(invocation.args);
+    default:
+      return undefined;
+  }
+}
+
+function countsAsCheck(command: string, status: CheckStatus): boolean {
+  return invocations(command).some((invocation) => roleOf(invocation) !== undefined && (status === "failed" || !invocation.piped));
+}
+
+function isTestCommand(command: string): boolean {
+  return invocations(command).some((invocation) => !invocation.piped && roleOf(invocation) === "test");
+}
+
+function pathTokens(tokens: readonly string[]): string[] {
+  const out: string[] = [];
+  for (const token of tokens) {
     if (token.startsWith("-")) {
       const eq = token.indexOf("=");
       const value = eq >= 0 ? token.slice(eq + 1) : "";
@@ -147,8 +334,7 @@ function pathTokens(command: string): string[] {
   return out;
 }
 
-function namedPackages(command: string): string[] {
-  const tokens = commandTokens(command);
+function namedPackages(tokens: readonly string[]): string[] {
   const out: string[] = [];
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
@@ -162,18 +348,65 @@ function namedPackages(command: string): string[] {
   return out;
 }
 
-function isTestCommand(command: string): boolean {
-  return TEST_COMMAND.test(command);
+function parentDir(path: string): string | undefined {
+  const segments = segmentsOf(path);
+  if (segments.length < 2) return undefined;
+  return segments.slice(0, -1).join("/");
 }
 
-/** A project-wide test reaches every package. A path or a `-p` name reaches only what it names. */
-function testReaches(command: string, pkg: string): boolean {
-  if (!isTestCommand(command)) return false;
-  const named = namedPackages(command);
-  const paths = pathTokens(command);
+function manifestDir(args: readonly string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg.startsWith("--manifest-path=")) return parentDir(arg.slice("--manifest-path=".length));
+    if (arg === "--manifest-path") return parentDir(args[i + 1] ?? "");
+  }
+  return undefined;
+}
+
+function pathUnder(root: string, path: string): boolean {
+  const rootSegs = segmentsOf(root);
+  const pathSegs = segmentsOf(path);
+  if (rootSegs.length === 0 || pathSegs.length <= rootSegs.length) return false;
+  return rootSegs.every((part, i) => part.toLowerCase() === pathSegs[i]?.toLowerCase());
+}
+
+function workspaceMember(path: string): string | undefined {
+  const segments = segmentsOf(path);
+  for (let i = 0; i < segments.length - 1; i++) {
+    const dir = segments[i].toLowerCase();
+    if (dir === "crates" || dir === "packages" || dir === "apps") return validPackage(segments[i + 1]);
+  }
+  return undefined;
+}
+
+function cargoRoot(invocation: Invocation): string | undefined {
+  if (invocation.program.toLowerCase() !== "cargo") return undefined;
+  const sub = invocation.args[0]?.toLowerCase();
+  if (sub !== "test" && sub !== "nextest") return undefined;
+  return manifestDir(invocation.args) ?? invocation.cwd;
+}
+
+function cargoRootCovers(invocation: Invocation, root: string, edited: string): boolean {
+  if (!pathUnder(root, edited)) return false;
+  const member = workspaceMember(edited);
+  if (!member) return true;
+  return namedPackages(invocation.args).some((name) => name === member);
+}
+
+function invocationReaches(invocation: Invocation, pkg: string, edited: string): boolean {
+  if (invocation.piped || roleOf(invocation) !== "test") return false;
+  const root = cargoRoot(invocation);
+  if (root) return cargoRootCovers(invocation, root, edited);
+  const named = namedPackages(invocation.args);
+  const paths = pathTokens(invocation.args);
   if (named.length === 0 && paths.length === 0) return true;
   if (named.some((name) => name === pkg)) return true;
   return paths.some((path) => packageOf(path) === pkg);
+}
+
+/** A project-wide test reaches every package. A path, a `-p` name, or a cargo root reaches only what it covers. */
+function testReaches(command: string, pkg: string, edited: string): boolean {
+  return invocations(command).some((invocation) => invocationReaches(invocation, pkg, edited));
 }
 
 function sanitizeCheck(raw: unknown): StoredCheck | undefined {
@@ -183,8 +416,8 @@ function sanitizeCheck(raw: unknown): StoredCheck | undefined {
   if (!CHECK_STATUS.has(row.status)) return undefined;
   if (typeof row.at !== "number" || !Number.isFinite(row.at)) return undefined;
   if (typeof row.command !== "string") return undefined;
-  const command = oneLine(row.command, MAX_COMMAND);
-  if (!command || !CHECK_COMMAND.test(command)) return undefined;
+  const command = commandText(row.command);
+  if (!command || !countsAsCheck(command, row.status)) return undefined;
   const display = [...command].slice(0, MAX_DISPLAY).join("").trimEnd();
   return { command, display, status: row.status, at: row.at };
 }
@@ -220,8 +453,8 @@ function sanitize(turn: FactTurn | undefined): {
   answer: string;
 } {
   return {
-    checks: asArray(turn?.checks).map(sanitizeCheck).filter((row): row is StoredCheck => !!row).slice(0, MAX_CHECKS),
-    edits: asArray(turn?.edits).map(sanitizeEdit).filter((row): row is FactEdit => !!row).slice(0, MAX_EDITS),
+    checks: asArray(turn?.checks).map(sanitizeCheck).filter((row): row is StoredCheck => !!row).slice(-MAX_CHECKS),
+    edits: asArray(turn?.edits).map(sanitizeEdit).filter((row): row is FactEdit => !!row).slice(-MAX_EDITS),
     todos: asArray(turn?.todos).map(sanitizeTodo).filter((row): row is FactTodo => !!row).slice(0, MAX_TODOS),
     answer: cleanAnswer(turn?.answer),
   };
@@ -250,7 +483,7 @@ export function claimOf(answer: string): PassClaim | undefined {
   const text = cleanAnswer(answer);
   let tests = false;
   let build = false;
-  for (const raw of text.split(/\r?\n/)) {
+  for (const raw of text.split(/\r\n|\n|\r/)) {
     const line = raw.trim();
     if (!line) continue;
     if (claimsWord(line, /\btests?\b/i)) tests = true;
@@ -318,7 +551,8 @@ export function coverageGaps(turn: FactTurn): string[] {
     if (!pkg || seen.has(pkg)) continue;
     seen.add(pkg);
     const reached = clean.checks.some(
-      (check) => (check.status === "passed" || check.status === "failed") && testReaches(check.command, pkg),
+      (check) =>
+        (check.status === "passed" || check.status === "failed") && testReaches(check.command, pkg, edit.path),
     );
     if (!reached) gaps.push(`No test reached ${pkg}.`);
   }
@@ -391,6 +625,24 @@ function editPaths(block: Block): string[] {
   return out;
 }
 
+/** A `sed -i` (or `--in-place`) writes the files after its script. The script itself is not a path. */
+function shellEditPaths(command: string): string[] {
+  if (!command) return [];
+  const out: string[] = [];
+  for (const invocation of invocations(commandText(command))) {
+    if (invocation.piped || invocation.program.toLowerCase() !== "sed") continue;
+    const inplace = invocation.args.some(
+      (arg) => arg === "-i" || arg.startsWith("-i") || arg === "--in-place" || arg.startsWith("--in-place="),
+    );
+    if (!inplace) continue;
+    const operands = invocation.args.filter((arg) => !arg.startsWith("-"));
+    for (const file of operands.slice(1)) {
+      if (looksLikePath(file) || /\.[A-Za-z0-9]+$/.test(file)) out.push(file);
+    }
+  }
+  return out;
+}
+
 function commandOf(block: Block): string {
   const tool = block.tool;
   if (!tool) return "";
@@ -433,10 +685,13 @@ export function factsFromBlocks(blocks: readonly Block[], answer: string): FactT
   turn.forEach((block, at) => {
     const command = commandOf(block);
     const status = statusOf(block.tool?.status);
-    if (command && status && CHECK_COMMAND.test(command)) {
+    if (command && status && countsAsCheck(commandText(command), status)) {
       checks.push({ command, status, at });
     }
     for (const path of editPaths(block)) edits.push({ path, at });
+    for (const path of shellEditPaths(command)) {
+      if (!edits.some((edit) => edit.path === path && edit.at === at)) edits.push({ path, at });
+    }
     if (block.taskList) {
       todos = block.taskList.items.flatMap((item) => {
         const text = item.text?.trim() ?? "";

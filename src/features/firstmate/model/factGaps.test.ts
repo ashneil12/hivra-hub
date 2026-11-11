@@ -313,3 +313,66 @@ describe("facts from blocks", () => {
     expect(factsFromBlocks(blocks, "").checks).toEqual([{ command: "npm test", status: "running", at: 0 }]);
   });
 });
+
+// Review round 1 (PR #232): failing repros. Each test states what the gate should do.
+describe("review r1", () => {
+  // MED: Claude's edit preview path is absolute, so the docs/ rule never matches it.
+  it("r1: a docs/ edit recorded with an absolute path is still docs", () => {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({
+        role: "tool",
+        tool: { command: "npm test", status: "completed", preview: { kind: "shell", title: "npm test" } },
+      }),
+      block({
+        role: "tool",
+        tool: {
+          kind: "edit",
+          title: "Edit",
+          preview: { kind: "write", path: "/Users/ash/Worktrees/hub-x/docs/hivra/credits.json" },
+        },
+      }),
+    ];
+    expect(doneGaps(factsFromBlocks(blocks, ""))).toEqual([]);
+  });
+
+  // HIGH: the caps keep the first 40 checks, so a test after the last edit in a long turn is never sent to Rust.
+  it("r1: a long turn still sends its latest test run", () => {
+    const blocks: Block[] = [block({ role: "user", text: "do it" })];
+    for (let i = 0; i < 40; i++) {
+      blocks.push(block({ id: `tsc-${i}`, role: "tool", tool: { command: "npx tsc --noEmit", status: "completed" } }));
+    }
+    blocks.push(
+      block({
+        id: "edit",
+        role: "tool",
+        tool: { kind: "edit", title: "Edit", preview: { kind: "write", path: "src/features/crew/row.ts" } },
+      }),
+    );
+    blocks.push(block({ id: "vitest", role: "tool", tool: { command: "npx vitest run", status: "completed" } }));
+    const facts = factsFromBlocks(blocks, "");
+    expect(facts.checks.at(-1)?.command).toBe("npx vitest run");
+    expect(doneGaps(facts)).toEqual([]);
+  });
+
+  // LOW (parity): Rust's claim_of splits a lone \r; the TS one does not.
+  it("r1: claimOf splits a lone carriage return like Rust", () => {
+    expect(claimOf("Not run yet.\rAll tests passed.")).toEqual({ tests: true });
+  });
+});
+
+describe("review r1: edits the facts miss", () => {
+  // LOW: an edit made through the shell after the last test is not an edit, so the test never goes stale.
+  it("r1: a sed -i edit after the last test makes it stale", () => {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({ id: "t", role: "tool", tool: { command: "npx vitest run", status: "completed" } }),
+      block({
+        id: "sed",
+        role: "tool",
+        tool: { kind: "execute", command: "sed -i 's/a/b/' src/features/crew/row.ts", status: "completed" },
+      }),
+    ];
+    expect(doneGaps(factsFromBlocks(blocks, ""))).toEqual(["Tests went stale after the last edit."]);
+  });
+});
