@@ -2919,3 +2919,144 @@ fn review225_r2_asking_the_matched_key_after_a_match_does_not_fail() {
         exact.err()
     );
 }
+
+/// review/220-r7 probe: at the store, only the person ("user" or "person", exactly, after trimming) answers a security
+/// review. Every other answerer (a Page, autopilot, a chat, a captain, the app's closer, either gate) and every spelling
+/// of the key (case, fullwidth, invisible characters, white space, a leading slash, percent-encoding) is refused or finds
+/// nothing, through the same path the Tauri command takes (answer_and_relay), and the question stays open.
+#[test]
+fn probe_220_r7_only_the_person_answers_a_security_review_at_the_store() {
+    let store = store();
+    let key = "security-review/acme/web#7@a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    let rest = &key["security-review/".len()..];
+    {
+        let mut conn = store.lock_conn().unwrap();
+        ask(
+            &mut conn,
+            AskInput {
+                question: "Security review of PR #7: 1 candidate needs validation.".into(),
+                options: vec!["Looked at it".into(), "Hold the merge".into()],
+                recommended: None,
+                ..ask_input("security-gate", key, &[])
+            },
+            1,
+        )
+        .unwrap();
+    }
+    let fullwidth: String = key
+        .chars()
+        .map(|c| {
+            if c.is_ascii_graphic() {
+                char::from_u32(c as u32 + 0xFEE0).unwrap()
+            } else {
+                c
+            }
+        })
+        .collect();
+    let spellings = vec![
+        key.to_string(),
+        key.to_uppercase(),
+        format!("Security-Review/{rest}"),
+        fullwidth,
+        format!("\u{200B}{key}"),
+        format!("security\u{00AD}-review/{rest}"),
+        format!("  {key}\u{FEFF}"),
+        format!("{key}\u{2060}"),
+        format!("\u{0890}{key}"),
+        format!("/{key}"),
+        format!("security-review%2F{rest}"),
+        key.replace('/', "%2F")
+            .replace('#', "%23")
+            .replace('@', "%40"),
+    ];
+    let callers = [
+        "page:pg_made_by_a_mono",
+        "page:",
+        "autopilot",
+        "chat:author-lead",
+        "chat:",
+        "captain:c1",
+        "app:fresh-eyes",
+        "app:security-review",
+        "gate",
+        "security-gate",
+        "User",
+        "USER",
+        "Person",
+        "\u{FF55}\u{FF53}\u{FF45}\u{FF52}",
+        "user\u{200B}",
+        "\u{200B}user",
+        "users",
+        "user:page",
+        "person (inbox)",
+        "mono:lead",
+        "first-mate",
+        "ash",
+    ];
+    for spelling in &spellings {
+        for by in callers {
+            for word in ["Looked at it", "Hold the merge"] {
+                if let Ok(out) =
+                    answer_and_relay(&store, "hivra", spelling, word, Some(by.to_string()), 2)
+                {
+                    assert!(!out.applied, "{by:?} answered {spelling:?}: {out:?}");
+                }
+            }
+            let stored = get(&store.lock_conn().unwrap(), "hivra", key)
+                .unwrap()
+                .unwrap();
+            assert_eq!(stored.state, OPEN, "{by:?} via {spelling:?}");
+            assert!(stored.answered_by.is_none(), "{by:?} via {spelling:?}");
+        }
+    }
+    // Nobody named is not the person either.
+    assert!(answer_and_relay(&store, "hivra", key, "Looked at it", None, 3).is_err());
+    // The person's own answer still lands, and is the only one stored.
+    let out = answer_and_relay(
+        &store,
+        "hivra",
+        key,
+        "Looked at it",
+        Some(" user ".into()),
+        4,
+    )
+    .unwrap();
+    assert!(out.applied);
+    let stored = get(&store.lock_conn().unwrap(), "hivra", key)
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.answered_by.as_deref(), Some("user"));
+}
+
+/// review/220-r7 probe: nobody but the security gate opens or rewords a security review, in any asker spelling a session
+/// id could take. "Security-Gate" folds to the gate's own name, so the asker must be the app's literal.
+#[test]
+fn probe_220_r7_only_the_gate_opens_a_security_review() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let key = "security-review/acme/web#8@b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2";
+    for asker in [
+        "gate",
+        "author-lead",
+        "page:pg_made_by_a_mono",
+        "autopilot",
+        "app-security-review",
+        "review-00",
+        "security-gate-2",
+        "security_gate",
+    ] {
+        let err = ask(
+            &mut conn,
+            AskInput {
+                question: "Approve?".into(),
+                options: vec!["Approve".into(), "Hold the merge".into()],
+                recommended: Some("Approve".into()),
+                ..ask_input(asker, key, &[])
+            },
+            1,
+        )
+        .unwrap_err();
+        assert!(err.contains("Only the gate"), "{asker}: {err}");
+    }
+    assert!(get(&conn, "hivra", key).unwrap().is_none());
+}

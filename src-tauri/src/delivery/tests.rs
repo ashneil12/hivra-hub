@@ -4095,3 +4095,49 @@ mod repro_220_r6_hub_change_lane {
         );
     }
 }
+
+// ---- review/220-r7 probe -----------------------------------------------------------------------------------------------
+
+/// End to end through the Tauri command's own path: a Page, autopilot, a captain or a chat answering the gate's question
+/// leaves the merge held; the person's answer is what lets it through.
+#[test]
+fn probe_220_r7_no_answerer_but_the_person_lets_the_gate_through() {
+    let pending = r#"[{"verdict":"needs_validation","title":"Token may leak to the phone","severity":{"overall_severity":"critical"}}]"#;
+    let key = format!("security-review/acme/web#7@{H1_SEC}");
+    let f = fixture("r220r7-probe");
+    let project = settings::key(f.project.to_str().unwrap());
+    let s = store();
+    set_mode(&s, &f.project, Some(Mode::Pr), true);
+    remember_delivery(&s, &f.project, None, 7);
+    record_review(&s, H1_SEC, pending, "claude", "codex", &[SECURITY_FILE]);
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    let first = merge::merge(&s, &gh, agent_merge("acme/web"), 10).unwrap();
+    assert!(matches!(&first, MergeOutcome::NeedsYou { .. }), "{first:?}");
+    for by in [
+        "page:pg_made_by_a_mono",
+        "autopilot",
+        "captain:c1",
+        "chat:author-lead",
+        "User",
+        "security-gate",
+    ] {
+        let answered = crate::decisions::answer_and_relay(
+            &s,
+            &project,
+            &key,
+            "Looked at it",
+            Some(by.into()),
+            11,
+        );
+        assert!(answered.is_err(), "{by}: {answered:?}");
+        let again = merge::merge(&s, &gh, agent_merge("acme/web"), 12).unwrap();
+        assert!(
+            !matches!(again, MergeOutcome::Merged { .. }),
+            "{by}: {again:?}"
+        );
+    }
+    crate::decisions::answer_and_relay(&s, &project, &key, "Looked at it", Some("user".into()), 13)
+        .unwrap();
+    let last = merge::merge(&s, &gh, agent_merge("acme/web"), 14).unwrap();
+    assert!(matches!(last, MergeOutcome::Merged { .. }), "{last:?}");
+}
