@@ -106,6 +106,10 @@ type Live = {
   sessionParentById: Map<string, string | undefined>;
   /** Child session id -> the agent tool row that spawned it. */
   subagentSessions: Map<string, string>;
+  /** Child sessions still running. A parent idle does not clear these. */
+  runningChildren: Set<string>;
+  /** Children that already went idle or errored, including before they were bound. */
+  settledChildren: Set<string>;
   subagentModels: Map<string, string>;
   /** Child parts that arrived before their row was known. */
   pendingSubagent: Map<string, OpenCodePart[]>;
@@ -334,6 +338,8 @@ export async function cancelOpenCodeTurn(sessionId: string): Promise<void> {
   for (const [, pending] of live.questions)
     pending.resolve({ kind: "skipped" });
   live.questions.clear();
+  // The cancelled turn's children are no longer work the chat waits on. Late child events are muted anyway.
+  live.runningChildren.clear();
   await live.client.abortSession(live.openCodeSessionId);
   finishActiveTurn(live, [
     { type: "message.completed" },
@@ -365,6 +371,18 @@ export async function stopOpenCodeSession(sessionId: string): Promise<void> {
   }
   unwatchChild(sessionId);
   await killChild(sessionId).catch(() => undefined);
+}
+
+/**
+ * OpenCode has no backgrounded shell: a bash tool is part of the session that
+ * goes idle. Busy while a child session has not gone idle or errored, or while
+ * a v2 prompt is still awaited. The awaited prompt is usually cleared before
+ * the turn promise resolves, so the idle park mostly sees the children.
+ */
+export function openCodeHasBackgroundWork(sessionId: string): boolean {
+  const live = liveByThread.get(sessionId);
+  if (!live) return false;
+  return live.runningChildren.size > 0 || live.awaitedInbox !== null;
 }
 
 export async function forgetOpenCodeSession(sessionId: string): Promise<void> {
@@ -496,6 +514,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       nextApprovalUiId: 1,
       sessionParentById: new Map(),
       subagentSessions: new Map(),
+      runningChildren: new Set(),
+      settledChildren: new Set(),
       subagentModels: new Map(),
       pendingSubagent: new Map(),
       partById: new Map(),
@@ -837,6 +857,14 @@ async function handleEvent(
   }
 
   const payloadSessionId = eventSessionId(event);
+  if (
+    payloadSessionId &&
+    payloadSessionId !== live.openCodeSessionId &&
+    childSessionEnded(type, properties)
+  ) {
+    settleChild(live, payloadSessionId);
+    return;
+  }
   if (payloadSessionId && payloadSessionId !== live.openCodeSessionId) {
     if (
       type === "message.updated" ||
@@ -1221,6 +1249,27 @@ function trackSubagentRow(
   }
 }
 
+/** A child idle or error. A retry, and any other status, is still working. */
+function childSessionEnded(
+  type: string,
+  properties: Record<string, unknown>,
+): boolean {
+  if (type === "session.idle" || type === "session.error") return true;
+  if (type !== "session.status") return false;
+  return asRecord(properties.status)?.type === "idle";
+}
+
+const SETTLED_CHILD_CAP = 256;
+
+function settleChild(live: Live, sessionId: string): void {
+  live.runningChildren.delete(sessionId);
+  if (live.settledChildren.has(sessionId)) return;
+  live.settledChildren.add(sessionId);
+  if (live.settledChildren.size <= SETTLED_CHILD_CAP) return;
+  const oldest = live.settledChildren.keys().next().value;
+  if (oldest !== undefined) live.settledChildren.delete(oldest);
+}
+
 function bindSubagentSession(
   live: Live,
   sessionId: string,
@@ -1228,6 +1277,7 @@ function bindSubagentSession(
 ): void {
   if (live.subagentSessions.get(sessionId) === callId) return;
   live.subagentSessions.set(sessionId, callId);
+  if (!live.settledChildren.has(sessionId)) live.runningChildren.add(sessionId);
   const model = live.subagentModels.get(sessionId);
   if (model)
     live.onEvent({

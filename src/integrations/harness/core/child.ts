@@ -403,6 +403,10 @@ export async function spawnChild(
     ...(crewTicket ? { crewTicket } : {}),
     ...(crewFolder ? { crewFolder } : {}),
   });
+  notePid(sessionId, pid);
+}
+
+function notePid(sessionId: string, pid: unknown): void {
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
   const exits = pendingExit.get(sessionId);
@@ -411,6 +415,41 @@ export async function spawnChild(
   if (!exited) return;
   livePid.delete(sessionId);
   exitHandlers.get(sessionId)?.(exited.code);
+}
+
+/**
+ * WP-134: start a More agents entry. The webview names the entry only; Rust reads the saved list and runs that entry's
+ * own command and arguments through the same spawn path as the eleven CLIs (src-tauri/src/more_agents.rs).
+ */
+export async function spawnMoreAgentChild(
+  sessionId: string,
+  agentId: string,
+  cwd: string,
+): Promise<void> {
+  livePid.delete(sessionId);
+  pendingExit.delete(sessionId);
+  ownedChildren.add(sessionId);
+  let pid: unknown;
+  try {
+    // WP-141: an agent session's More agents start needs its crew ticket too, judged under the entry's own id.
+    const crewTicket = sessionId.startsWith("app-")
+      ? await invoke<string>("crew_spawn_ticket", { sessionId, cli: agentId, folder: cwd })
+      : undefined;
+    pid = await invoke<number>("harness_spawn", {
+      sessionId,
+      command: "",
+      args: [],
+      cwd,
+      moreAgent: agentId,
+      ...(crewTicket ? { crewTicket } : {}),
+    });
+  } catch (error) {
+    // A start that was refused holds no output: nothing a process printed after this is shown.
+    ownedChildren.delete(sessionId);
+    lineBuffer.delete(sessionId);
+    throw error;
+  }
+  notePid(sessionId, pid);
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {
