@@ -315,6 +315,38 @@ describe("autopilot.decide", () => {
     expect((taken as { answeredBy?: string }).answeredBy).not.toBe("captain:hivra-lead");
   });
 
+  it("does not answer a keyed call from another project's rule or standing answer", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const seen: unknown[] = [];
+    s.deps.captainContext = (input) => {
+      seen.push(input.key);
+      return {
+        rules: [{ when: "font", answer: "Example: Inter" }],
+        standing: { answer: "Example: Inter", label: "EXO menus" },
+      };
+    };
+    const worker = chat("worker-1", [], "/Users/someone/Projects/hivra");
+    const result = (await call(
+      worker,
+      "autopilot.decide",
+      {
+        question: "Which font?",
+        recommendation: "Example: Comic Sans",
+        project: "EXO",
+        key: "font/menu",
+        options: ["Example: Inter", "Example: Comic Sans"],
+      },
+      s,
+      "outsider",
+    )) as Record<string, unknown>;
+    expect(result.decision).toBe("held");
+    expect(result.answeredBy).toBeUndefined();
+    expect(JSON.stringify(result)).not.toContain("Example: Inter");
+    expect(JSON.stringify(result)).not.toContain("EXO menus");
+    expect(seen).toEqual([undefined]);
+  });
+
   it("status says what is on, for whom", async () => {
     const s = setup();
     await on(s, ["hivra"]);

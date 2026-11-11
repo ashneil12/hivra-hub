@@ -579,9 +579,15 @@ export async function handleAutopilotApp(
         };
       }
       // WP-215: the captain answers inside this door. Off already returned. A red call already returned held.
+      // The standing answer for a named key is loaded only after this chat is shown to work in that project.
       const key = text(input.key, "key", 200, false);
-      const ctx = (await deps.captainContext?.({ project, question, key })) ?? {};
       const inProject = !!project && callerProject(source, host, deps) === project;
+      const ctx =
+        (await deps.captainContext?.({
+          project,
+          question,
+          ...(inProject && key ? { key } : {}),
+        })) ?? {};
       let card: StoredCaptainCard | null | undefined;
       if (deps.openCard && key && project && inProject) {
         try {
@@ -594,21 +600,21 @@ export async function handleAutopilotApp(
       const captain = captainDecide({
         project: project ?? "",
         monoId: ctx.monoId?.trim() || chiefMonoId() || "chief",
-        decisionKey: key ?? ctx.decisionKey,
+        decisionKey: key ?? (inProject ? ctx.decisionKey : undefined),
         question: fromCard ? card!.question : question,
         options: fromCard ? [...(card!.options ?? [])] : Array.isArray(input.options) ? (input.options as string[]) : undefined,
         recommendation: fromCard ? (card!.recommended ?? "") : recommendation,
-        confident: ctx.confident === true,
+        confident: inProject && ctx.confident === true,
         why,
         department: ctx.department,
-        rules: ctx.rules,
-        standing: ctx.standing ?? null,
-        learned: ctx.learned ?? null,
+        rules: inProject ? ctx.rules : [],
+        standing: inProject ? (ctx.standing ?? null) : null,
+        learned: inProject ? (ctx.learned ?? null) : null,
         moneyOverLimit: ctx.moneyOverLimit === true,
         switchOn: true,
         now,
-        turns: ctx.turns,
-        pendingSince: ctx.pendingSince,
+        turns: inProject ? ctx.turns : undefined,
+        pendingSince: inProject ? ctx.pendingSince : undefined,
       });
       if (captain.kind === "ask-owner") {
         const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
@@ -625,7 +631,38 @@ export async function handleAutopilotApp(
           note: captain.line ? `${captain.line} ${captain.reason}` : captain.reason,
         };
       }
+      // A keyed call outside this chat's project never takes, and a captain answer that is not written never takes.
+      if (key && project && !inProject) {
+        const heldNote = "This call names another project's question, so it waits.";
+        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+        return {
+          autopilot: "on",
+          until: new Date(verdict.until).toISOString(),
+          untilLabel,
+          decision: "held",
+          act: "ask",
+          red: null,
+          reason: heldNote,
+          ...(logged ? { logged: logged.id } : {}),
+          note: heldNote,
+        };
+      }
       const answer = captain.kind === "answer" ? captain.answer : verdict.answer;
+      if (captain.kind === "answer" && key && project && !(deps.answerDecision && inProject)) {
+        const heldNote = "The decision store did not keep the captain's answer, so it waits.";
+        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+        return {
+          autopilot: "on",
+          until: new Date(verdict.until).toISOString(),
+          untilLabel,
+          decision: "held",
+          act: "ask",
+          red: null,
+          reason: heldNote,
+          ...(logged ? { logged: logged.id } : {}),
+          note: heldNote,
+        };
+      }
       if (captain.kind === "answer" && deps.answerDecision && key && project && inProject) {
         const heldNote = "The decision store did not keep the captain's answer, so it waits.";
         if (deps.openCard && !fromCard) {
