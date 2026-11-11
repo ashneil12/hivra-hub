@@ -66,8 +66,10 @@ describe("More agents entries", () => {
     expect(parseMoreAgentEntry({ ...good, protocol: "acp-v2" }).ok).toBe(false);
     expect(parseMoreAgentEntry({ ...good, protocol: undefined }).ok).toBe(false);
     expect(parseMoreAgentEntry({ ...good, args: "--acp --verbose" }).ok).toBe(false);
-    const parsed = parseMoreAgentEntry({ ...good, args: ["$HOME", "a b", "~/x"] });
-    expect(parsed.ok && parsed.entry.args).toEqual(["$HOME", "a b", "~/x"]);
+    const parsed = parseMoreAgentEntry({ ...good, args: ["$HOME", "a b"] });
+    expect(parsed.ok && parsed.entry.args).toEqual(["$HOME", "a b"]);
+    // "~/x" is not expanded by anything that starts the agent, so it names a relative path and is refused.
+    expect(parseMoreAgentEntry({ ...good, args: ["~/x"] }).ok).toBe(false);
   });
 
   it("refuses ids that are not plain slugs and commands that are not one line", () => {
@@ -179,3 +181,26 @@ describe("a change made in another window reaches this window", () => {
   });
 });
 
+
+describe("argument rules match the app", () => {
+  it("allows versions, dotted values, addresses and ordinary flags", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/npx", ["some-acp-agent@1.2.3", "--acp"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--model=gpt-4.1"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--host", "127.0.0.1"])).toBeNull();
+    expect(argumentProblem("/opt/uvx", ["agent==0.3.1"])).toBeNull();
+    expect(argumentProblem("/opt/claude", ["-m", "sonnet"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["-mode", "fast"])).toBeNull();
+  });
+
+  it("refuses a relative file, an inline program and a loader that names no absolute file", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["agent.mjs"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["--env-file=.env"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-r", "./x"])).not.toBeNull();
+    expect(argumentProblem("/usr/bin/python3", ["-m", "x"])).not.toBeNull();
+    expect(argumentProblem("/usr/bin/python3", ["-Bm", "x"])).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["-pe", "1"])).not.toBeNull();
+    expect(argumentProblem("/usr/bin/python3", ["-m", "/abs/mod.py"])).toBeNull();
+  });
+});

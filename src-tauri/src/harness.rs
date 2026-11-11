@@ -29,8 +29,9 @@ pub(crate) fn read_stdout_lines<R: BufRead>(
     mut reader: R,
     cap: Option<usize>,
     mut on_line: impl FnMut(String) -> bool,
-) {
+) -> usize {
     let mut raw = Vec::new();
+    let mut dropped = 0;
     loop {
         raw.clear();
         let read = match cap {
@@ -42,8 +43,11 @@ pub(crate) fn read_stdout_lines<R: BufRead>(
         if !matches!(read, Ok(n) if n > 0) {
             break;
         }
-        if cap.is_some_and(|max| raw.len() > max) {
-            break;
+        // A line past the cap is dropped to its end, and the read goes on with the next line.
+        if cap.is_some_and(|max| raw.len() > max && raw.last() != Some(&b'\n')) {
+            skip_to_newline(&mut reader);
+            dropped += 1;
+            continue;
         }
         let line = String::from_utf8_lossy(&raw)
             .trim_end_matches(['\n', '\r'])
@@ -52,12 +56,48 @@ pub(crate) fn read_stdout_lines<R: BufRead>(
             break;
         }
     }
+    dropped
+}
+
+/// Discards bytes up to and including the next newline, without holding them.
+fn skip_to_newline<R: BufRead>(reader: &mut R) {
+    loop {
+        let (done, used) = match reader.fill_buf() {
+            Ok([]) | Err(_) => return,
+            Ok(buf) => match buf.iter().position(|&b| b == b'\n') {
+                Some(at) => (true, at + 1),
+                None => (false, buf.len()),
+            },
+        };
+        reader.consume(used);
+        if done {
+            return;
+        }
+    }
 }
 
 #[cfg(test)]
 mod stdout_cap_tests {
     use super::read_stdout_lines;
     use std::io::Cursor;
+
+    // Review r5 repro (LOW): a stderr line past the cap ends the stderr read, so the pipe closes and the child's next
+    // stderr write fails (EPIPE or SIGPIPE: Node throws, Rust's eprintln! panics, Go exits). One long log line ends the
+    // agent. A stderr reader should drop the rest of that line and read on.
+    #[test]
+    fn review_r5_a_long_stderr_line_does_not_end_the_read() {
+        let big = "x".repeat(65 * 1024);
+        let input = format!("{big}\nnext\n");
+        let mut got = Vec::new();
+        read_stdout_lines(Cursor::new(input.into_bytes()), Some(64 * 1024), |line| {
+            got.push(line);
+            true
+        });
+        assert!(
+            got.iter().any(|line| line == "next"),
+            "the read ended at the long line"
+        );
+    }
 
     #[test]
     fn a_claude_line_of_nine_mebibytes_is_delivered_whole_and_the_session_goes_on() {
@@ -74,11 +114,11 @@ mod stdout_cap_tests {
     }
 
     #[test]
-    fn a_more_agents_line_past_the_cap_ends_the_read() {
+    fn a_more_agents_line_past_the_cap_is_dropped_counted_and_the_read_goes_on() {
         let big = "x".repeat(9 * 1024 * 1024);
         let input = format!("first\n{big}\nnext\n");
         let mut got = Vec::new();
-        read_stdout_lines(
+        let dropped = read_stdout_lines(
             Cursor::new(input.into_bytes()),
             Some(8 * 1024 * 1024),
             |line| {
@@ -86,7 +126,22 @@ mod stdout_cap_tests {
                 true
             },
         );
-        assert_eq!(got, vec!["first".to_string()]);
+        // The over-cap line is not delivered. It is counted, so the caller can post its one status line.
+        assert_eq!(got, vec!["first".to_string(), "next".to_string()]);
+        assert_eq!(dropped, 1);
+    }
+
+    #[test]
+    fn a_claude_path_with_no_cap_drops_nothing_and_delivers_the_big_line() {
+        let big = "x".repeat(9 * 1024 * 1024);
+        let input = format!("{big}\n");
+        let mut got = Vec::new();
+        let dropped = read_stdout_lines(Cursor::new(input.into_bytes()), None, |line| {
+            got.push(line);
+            true
+        });
+        assert_eq!(dropped, 0);
+        assert_eq!(got.len(), 1);
     }
 }
 const STDOUT_EVENT: &str = "harness-stdout";
@@ -1295,9 +1350,11 @@ pub fn harness_spawn(
     // Only a More agents child is capped. A Claude or Codex line can carry a large base64 payload (a PDF or an image),
     // and cutting it would end the session, so those lines are read whole, as they always were.
     let stdout_cap = more_run.then_some(MAX_STDOUT_LINE);
+    let status_app = app.clone();
+    let status_id = session_id.clone();
     thread::spawn(move || {
         let _routed_session = routed_session;
-        read_stdout_lines(BufReader::new(stdout), stdout_cap, |line| {
+        let dropped = read_stdout_lines(BufReader::new(stdout), stdout_cap, |line| {
             if crate::harness_runs::ends_turn(&line) {
                 stdout_run
                     .lock()
@@ -1314,6 +1371,16 @@ pub fn harness_spawn(
             }
             stdout_tx.send(line).is_ok()
         });
+        // One status line for the run's dropped lines, on the stderr channel so the ACP reader never sees it.
+        if dropped > 0 {
+            let _ = status_app.emit(
+                STDERR_EVENT,
+                HarnessLine {
+                    session_id: status_id.clone(),
+                    line: format!("A line over the length limit was dropped ({dropped})."),
+                },
+            );
+        }
     });
 
     let stderr_app = app.clone();

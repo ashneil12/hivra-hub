@@ -1190,8 +1190,7 @@ import {
   subscribeNotesEnabled,
   type CollapsedProjectRailMode,
   type SettingsSectionId,
-  type FollowUpBehavior,
-} from "../features/settings/model/settings";
+  type FollowUpBehavior, syncMoreAgentsSwitch } from "../features/settings/model/settings";
 import {
   handleEditorFindKey,
   openFindInActiveEditor,
@@ -3449,6 +3448,8 @@ function Workspace({
   // WP-134b: the More agents list the chat screens read is the app's own list. Read it at start, and again whenever
   // it changes in any window (Settings adds, allows, withdraws or removes an entry).
   useEffect(() => {
+    // The app's copy of the switch follows the saved setting from the start, so Rust agrees with what Settings shows.
+    void syncMoreAgentsSwitch(loadMoreAgentsEnabled());
     void refreshRegistry();
     const unsubscribe = subscribeRegistry(() => undefined);
     // A change made in another window (a withdraw, a removal) re-reads the list here too, so this window stops runs.

@@ -1035,6 +1035,7 @@ pub fn run() {
             more_agents::more_agents_read,
             more_agents::more_agents_write,
             more_agents::more_agents_approve,
+            more_agents::more_agents_set_enabled,
             more_agents::more_agents_check,
             codex_mono_store::codex_mono_store_prepare,
             codex_mono_store::codex_mono_store_copy,

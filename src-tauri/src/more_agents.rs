@@ -272,17 +272,35 @@ fn approval_mac_of(key: &[u8], id: &str, a: &Approval) -> String {
 }
 
 /// The loader flags: each loads a file as code or configuration, so its value must be an absolute, pinned file.
-const LOADER_FLAGS: [&str; 7] = [
+const LOADER_FLAGS: [&str; 8] = [
     "-m",
     "-r",
     "--require",
     "--import",
     "--loader",
+    "--experimental-loader",
     "--env-file",
     "--preload",
 ];
 pub(crate) const LOADER_REFUSED: &str =
     "A loader flag (-m, -r, --require, --import, --loader, --env-file, --preload) must name an absolute file.";
+pub(crate) const OFF_REFUSED: &str =
+    "More agents is off. Switch it on in Settings to run this agent.";
+const ENABLED_FILE: &str = "more-agents-enabled";
+
+/// The More agents switch as the app keeps it: a file in the app's folder that the webview writes when the person
+/// flips the setting. Off unless the file says on.
+pub(crate) fn enabled(data_dir: &Path) -> bool {
+    std::fs::read_to_string(data_dir.join(ENABLED_FILE)).is_ok_and(|text| text.trim() == "on")
+}
+
+/// Writes the switch. Only the app's own command calls this.
+pub(crate) fn set_enabled(data_dir: &Path, on: bool) -> Result<(), String> {
+    std::fs::create_dir_all(data_dir).map_err(|e| format!("Could not save the switch: {e}"))?;
+    std::fs::write(data_dir.join(ENABLED_FILE), if on { "on" } else { "off" })
+        .map_err(|e| format!("Could not save the switch: {e}"))
+}
+
 pub(crate) const FILE_ARG_REFUSED: &str =
     "A file named in the arguments must exist and be a file, given by its absolute path. A folder is not pinned.";
 
@@ -303,11 +321,54 @@ fn candidates(arg: &str) -> Vec<&str> {
     out
 }
 
-fn loader_flag(arg: &str) -> bool {
+/// The programs that run code named by an argument: a loader flag, an inline program or an eval is only a risk for
+/// these. Any other program keeps its own `-m`, `-r` and `-c`, which it reads as its own options.
+fn interpreter_command(command: &str) -> bool {
+    let name = command_basename(command);
+    matches!(
+        name.as_str(),
+        "node"
+            | "nodejs"
+            | "bun"
+            | "deno"
+            | "ruby"
+            | "perl"
+            | "php"
+            | "uv"
+            | "uvx"
+            | "tsx"
+            | "ts-node"
+    ) || name.starts_with("python")
+}
+
+/// The loader flag an argument is, if it is one: a long flag, or a short cluster of up to three letters that holds m or r
+/// (`-m`, `-Bm`, `-um`). Returns the index of that letter in a short cluster, or None.
+fn loader_flag_position(arg: &str) -> Option<LoaderFlag> {
     let lower = arg.to_ascii_lowercase();
     let flag = lower.split('=').next().unwrap_or("");
-    LOADER_FLAGS.contains(&flag)
-        || (arg.len() > 2 && !arg.starts_with("--") && matches!(arg.as_bytes()[1], b'm' | b'r'))
+    if LOADER_FLAGS.contains(&flag) {
+        return Some(LoaderFlag::Long {
+            attached: arg.contains('='),
+        });
+    }
+    if arg.starts_with('-') && !arg.starts_with("--") && (2..=4).contains(&arg.len()) {
+        let letters = &arg[1..];
+        if letters.chars().all(|c| c.is_ascii_alphabetic()) {
+            if let Some(at) = letters.find(['m', 'r', 'M', 'R']) {
+                return Some(LoaderFlag::Short {
+                    letter_last: at + 1 == letters.len(),
+                });
+            }
+        }
+    }
+    None
+}
+
+enum LoaderFlag {
+    /// A long flag; `attached` when its value follows `=`, else the next argument.
+    Long { attached: bool },
+    /// A short cluster; `letter_last` when the loader letter ends it, so the value is the next argument.
+    Short { letter_last: bool },
 }
 
 /// The canonical path of an argument that names a file. A folder, a missing path or a link to nothing is refused.
@@ -593,10 +654,12 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
     {
         return Err("There are too many arguments, or one is too long.".into());
     }
-    if args.iter().any(|arg| inline_flag(arg))
-        || (command_basename(command) == "php" && args.iter().any(|arg| arg == "-r"))
-        || (matches!(command_basename(command).as_str(), "deno" | "bun")
-            && args.iter().any(|arg| arg == "eval"))
+    let interpreter = interpreter_command(command);
+    if interpreter
+        && (args.iter().any(|arg| inline_flag(arg))
+            || (command_basename(command) == "php" && args.iter().any(|arg| arg == "-r"))
+            || (matches!(command_basename(command).as_str(), "deno" | "bun")
+                && args.iter().any(|arg| arg == "eval")))
     {
         return Err(INLINE_REFUSED.into());
     }
@@ -604,13 +667,19 @@ fn checked_fields(entry: &Value) -> Result<(String, String, Vec<String>), String
         return Err(RELATIVE_REFUSED.into());
     }
     for (index, arg) in args.iter().enumerate() {
-        if loader_flag(arg) {
-            let value = if let Some((_, value)) = arg.split_once('=') {
-                Some(value)
-            } else if arg.len() > 2 && !arg.starts_with("--") {
-                arg.get(2..)
-            } else {
-                args.get(index + 1).map(String::as_str)
+        if !interpreter {
+            continue;
+        }
+        if let Some(flag) = loader_flag_position(arg) {
+            let value = match flag {
+                LoaderFlag::Long { attached: true } => arg.split_once('=').map(|(_, value)| value),
+                LoaderFlag::Long { attached: false } => args.get(index + 1).map(String::as_str),
+                LoaderFlag::Short { letter_last: true } => args.get(index + 1).map(String::as_str),
+                LoaderFlag::Short { letter_last: false } => {
+                    let letters = &arg[1..];
+                    let at = letters.find(['m', 'r', 'M', 'R']).unwrap_or(0);
+                    arg.get(at + 2..)
+                }
             };
             if !value.is_some_and(|value| Path::new(value).is_absolute()) {
                 return Err(LOADER_REFUSED.into());
@@ -648,8 +717,23 @@ fn relative_file_arg(arg: &str) -> bool {
             && !value.contains("://")
             && !value.starts_with('@')
             && !Path::new(value).is_absolute()
-            && value.contains(['/', '\\', '.'])
+            && (value.contains(['/', '\\'])
+                || value.starts_with('.')
+                || names_a_script_or_config(value))
     })
+}
+
+/// A bare file name by its extension: `agent.mjs`, `settings.json`. A version (`pkg@1.2.3`), a model (`gpt-4.1`)
+/// or an address (`127.0.0.1`) does not end in one of these.
+fn names_a_script_or_config(value: &str) -> bool {
+    const EXTENSIONS: [&str; 22] = [
+        "mjs", "cjs", "js", "jsx", "ts", "tsx", "py", "rb", "pl", "php", "lua", "sh", "json",
+        "yaml", "yml", "toml", "ini", "env", "conf", "cfg", "wasm", "txt",
+    ];
+    let lower = value.to_ascii_lowercase();
+    lower
+        .rsplit_once('.')
+        .is_some_and(|(_, ext)| EXTENSIONS.contains(&ext))
 }
 
 fn valid_id(id: &str) -> bool {
@@ -785,6 +869,9 @@ pub(crate) fn approved_spawn(
     id: &str,
     path_value: &str,
 ) -> Result<Resolved, String> {
+    if !enabled(data_dir) {
+        return Err(OFF_REFUSED.into());
+    }
     let stored = read_stored(data_dir)?;
     let entry = stored
         .agents
@@ -848,12 +935,48 @@ pub(crate) fn approved_start(
 /// The folder a More agents child runs in: app-owned and new for each start, so no file in the chat folder is a
 /// relative input to it.
 pub(crate) fn run_folder(data_dir: &Path) -> Result<PathBuf, String> {
-    let dir = data_dir
-        .join("more-agents")
-        .join("run")
-        .join(uuid::Uuid::new_v4().simple().to_string());
-    std::fs::create_dir_all(&dir)
-        .map_err(|e| format!("Could not prepare the More agents folder: {e}"))?;
+    let err = |e: std::io::Error| format!("Could not prepare the More agents folder: {e}");
+    let base = data_dir.join("more-agents");
+    let run = base.join("run");
+    // The app's own folders only: a link where one of them should be is replaced (the link, never its target) or
+    // refused, so the child never starts inside a folder an agent can write.
+    for folder in [&base, &run] {
+        match std::fs::symlink_metadata(folder) {
+            Ok(meta) if meta.file_type().is_symlink() && folder == &base => {
+                return Err("The More agents folder is a link, so it is not used.".into());
+            }
+            Ok(meta) if meta.file_type().is_symlink() => {
+                std::fs::remove_file(folder).map_err(err)?;
+            }
+            _ => {}
+        }
+    }
+    let mut builder = std::fs::DirBuilder::new();
+    builder.recursive(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
+    builder.create(&run).map_err(err)?;
+    // Folders from earlier starts are not needed once they are an hour old; a fresh one may be a start in progress.
+    if let Ok(entries) = std::fs::read_dir(&run) {
+        for entry in entries.flatten() {
+            let old = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|age| age > std::time::Duration::from_secs(3600));
+            if old {
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    let dir = run.join(uuid::Uuid::new_v4().simple().to_string());
+    builder.create(&dir).map_err(err)?;
+    // An empty package.json stops npm's search for a project above this folder.
+    std::fs::write(dir.join("package.json"), b"{}").map_err(err)?;
     Ok(dir)
 }
 
@@ -1012,6 +1135,29 @@ thread_local! {
     static HASHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
+/// The Allow card's line for an entry that reads a file in the app's own folder (`--config <app folder>/settings.json`).
+/// If the agent rewrites that file on a run, the next start no longer matches the pin and needs a new approval.
+pub(crate) fn data_folder_notes(
+    stored: &Stored,
+    data_dir: &Path,
+    notes: &mut serde_json::Map<String, Value>,
+) {
+    // Pins are canonical paths, so the folder is compared canonical too (macOS links /var to /private/var).
+    let folder = std::fs::canonicalize(data_dir).unwrap_or_else(|_| data_dir.to_path_buf());
+    for (id, approval) in &stored.approvals {
+        if approval
+            .pins
+            .iter()
+            .any(|(path, _)| Path::new(path).starts_with(&folder))
+        {
+            notes.insert(
+                id.clone(),
+                json!("This entry reads a file in the app's folder. If the agent rewrites that file, the next start needs a new approval."),
+            );
+        }
+    }
+}
+
 /// Whether a file starts with `#!`, a script whose interpreter the app does not pin.
 fn starts_with_shebang(path: &str) -> bool {
     use std::io::Read;
@@ -1068,10 +1214,15 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
         let fp = fingerprint(&command, &args);
         let path = resolve_command(&command, path_value).ok();
         let shown = shown_fingerprint(&command, &args, path.as_deref().unwrap_or(""));
-        let allowed = stored
-            .approvals
-            .get(&id)
-            .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
+        // The list checks what the start checks: the same pins over the same arguments, so a re-pointed link
+        // does not show as allowed.
+        let pins_match = pin_set(&args)
+            .is_ok_and(|(pins, _)| stored.approvals.get(&id).is_some_and(|a| a.pins == pins));
+        let allowed = pins_match
+            && stored
+                .approvals
+                .get(&id)
+                .is_some_and(|a| still_approved(a, &fp, path.as_deref()));
         if let Some(note) = remote_note(&command, &args) {
             notes.insert(id.clone(), json!(note));
         } else if path.as_deref().is_some_and(starts_with_shebang) {
@@ -1105,12 +1256,21 @@ fn data_dir(app: &AppHandle) -> Result<PathBuf, String> {
 #[tauri::command]
 pub async fn more_agents_read(app: AppHandle) -> Result<Value, String> {
     off_main(move || {
-        Ok(view(
-            &read_stored(&data_dir(&app)?)?,
-            &crate::harness::gui_search_path(),
-        ))
+        let dir = data_dir(&app)?;
+        let stored = read_stored(&dir)?;
+        let mut shown = view(&stored, &crate::harness::gui_search_path());
+        if let Some(notes) = shown["notes"].as_object_mut() {
+            data_folder_notes(&stored, &dir, notes);
+        }
+        Ok(shown)
     })
     .await
+}
+
+/// The person's switch for More agents, written by the app when Settings changes it.
+#[tauri::command]
+pub async fn more_agents_set_enabled(app: AppHandle, on: bool) -> Result<(), String> {
+    off_main(move || set_enabled(&data_dir(&app)?, on)).await
 }
 
 /// Runs the work on a blocking thread: the hashing of a program must not hold up the window.
@@ -1212,6 +1372,7 @@ mod tests {
         TEST_GEN.with(|g| *g.borrow_mut() = Some("gen-test".to_string()));
         let path = std::env::temp_dir().join(format!("wp134-more-agents-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).expect("scratch dir");
+        set_enabled(&path, true).expect("switch on for the test");
         Scratch(path)
     }
 
@@ -2063,5 +2224,164 @@ mod tests {
         // An approval recorded, then the generation item is gone (a deleted Keychain item reads as absent).
         TEST_GEN.with(|g| *g.borrow_mut() = None);
         assert!(read_stored(d.path()).expect("read").approvals.is_empty());
+    }
+
+    // Review r5 check (should pass): a space-separated loader value and an attached short value are both pinned, and
+    // the child is given the canonical path, not the link.
+    #[cfg(unix)]
+    #[test]
+    fn review_r5_space_separated_and_attached_values_are_pinned_and_canonical() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let hook = d.path().join("hook.mjs");
+        let req = d.path().join("req.cjs");
+        let link = d.path().join("hook-link.mjs");
+        std::fs::write(&hook, b"// hook").expect("hook");
+        std::fs::write(&req, b"// req").expect("req");
+        std::os::unix::fs::symlink(&hook, &link).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        let link_arg = link.to_string_lossy().into_owned();
+        let attached = format!("-r{}", req.to_string_lossy());
+        write_agents(
+            d.path(),
+            0,
+            vec![entry(
+                "wp134",
+                "wp134-node",
+                &["--import", link_arg.as_str(), attached.as_str()],
+            )],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let canonical_hook = std::fs::canonicalize(&hook).expect("canon");
+        assert_eq!(run.args[1], canonical_hook.to_string_lossy());
+        std::fs::write(&req, b"require('child_process').exec('anything')").expect("swap");
+        assert!(approved_spawn(d.path(), "wp134", &path_value).is_err());
+    }
+
+    // Review r5 repro (LOW): `-m` inside a short-flag cluster (`python3 -Bm mod`, `-um mod`) loads a module by name and
+    // is not seen as a loader flag, because only the second character is checked.
+    #[test]
+    fn review_r5_a_loader_flag_inside_a_cluster_is_refused() {
+        for cluster in ["-Bm", "-um", "-Im"] {
+            assert_eq!(
+                checked_fields(&entry("wp134", "/opt/python3", &[cluster, "agentmod"]))
+                    .err()
+                    .as_deref(),
+                Some(LOADER_REFUSED),
+                "{cluster} agentmod loads a module by name"
+            );
+        }
+    }
+
+    // Review r5 repro (MEDIUM, functional): a dot alone now makes an argument a relative file, so a version-pinned
+    // package, a dotted model name and an address are refused.
+    #[test]
+    fn review_r5_a_dotted_word_that_is_not_a_path_is_accepted() {
+        for args in [
+            &["some-acp-agent@1.2.3", "--acp"][..],
+            &["--model=gpt-4.1"][..],
+            &["--host", "127.0.0.1"][..],
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/npx", args)).is_ok(),
+                "{args:?} is refused as a relative file"
+            );
+        }
+    }
+
+    // Review r5 repro (LOW): the run folder is made with `create_dir_all`, which follows a link planted at
+    // `<data>/more-agents/run`, so the child can start inside a folder an agent writes; and it is not private (0700).
+    #[cfg(unix)]
+    #[test]
+    fn review_r5_the_run_folder_stays_inside_the_data_folder_and_is_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let data = d.path().join("data");
+        let outside = d.path().join("project");
+        std::fs::create_dir_all(data.join("more-agents")).expect("data");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::os::unix::fs::symlink(&outside, data.join("more-agents").join("run")).expect("plant");
+        let run = run_folder(&data).expect("run folder");
+        let real = std::fs::canonicalize(&run).expect("canon");
+        let mode = std::fs::metadata(&run).expect("meta").permissions().mode() & 0o777;
+        assert!(
+            real.starts_with(std::fs::canonicalize(&data).expect("canon data")) && mode == 0o700,
+            "run folder is {real:?} with mode {mode:o}"
+        );
+    }
+
+    #[test]
+    fn the_switch_off_refuses_every_more_agents_spawn() {
+        let d = dir();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "/opt/approved-agent", &[])],
+        )
+        .expect("seed");
+        set_enabled(d.path(), false).expect("off");
+        assert_eq!(
+            approved_spawn(d.path(), "wp134", "/usr/bin").expect_err("off"),
+            OFF_REFUSED
+        );
+        // Off is the default: a folder that never saw the switch refuses too.
+        std::fs::remove_file(d.path().join(ENABLED_FILE)).expect("remove");
+        assert!(!enabled(d.path()));
+        assert!(approved_spawn(d.path(), "wp134", "/usr/bin").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_pinned_file_in_the_app_folder_is_named_on_the_card() {
+        let d = dir();
+        let config = d.path().join("settings.json");
+        std::fs::write(&config, b"{}").expect("config");
+        let tool = make_tool(&d.path().join("bin"), "wp134-cfg", b"#!/bin/sh\n");
+        let path_value = tool.parent().unwrap().to_string_lossy().into_owned();
+        let arg = format!("--config={}", config.to_string_lossy());
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-cfg", &[arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let stored = read_stored(d.path()).expect("read");
+        let mut notes = serde_json::Map::new();
+        data_folder_notes(&stored, d.path(), &mut notes);
+        assert!(notes["wp134"]
+            .as_str()
+            .unwrap()
+            .contains("needs a new approval"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_re_pointed_link_is_not_shown_as_allowed() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-link", b"#!/bin/sh\n");
+        let real = d.path().join("agent.js");
+        let evil = d.path().join("evil.js");
+        let link = d.path().join("current.js");
+        std::fs::write(&real, b"ok").expect("real");
+        std::fs::write(&evil, b"bad").expect("evil");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        let arg = link.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-link", &[arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::remove_file(&link).expect("unlink");
+        std::os::unix::fs::symlink(&evil, &link).expect("relink");
+        let shown = view(&read_stored(d.path()).expect("read"), &path_value);
+        assert_eq!(shown["approved"], json!([]));
     }
 }
