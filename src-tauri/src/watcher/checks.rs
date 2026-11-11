@@ -765,7 +765,12 @@ mod tests {
     fn matching_text_wakes_even_when_the_exit_is_not_zero() {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let check = set(&mut conn, input("rg -n ready src", "ready", "the word"), 0).unwrap();
+        // A walk (rg) runs only from a folder at least three levels deep, so this check gets its own folder: the temp
+        // folder itself is `/tmp` on Linux, one level deep.
+        let dir = TempDir::new("project");
+        let mut ready = input("rg -n ready src", "ready", "the word");
+        ready.cwd = dir.path();
+        let check = set(&mut conn, ready, 0).unwrap();
         let mut script = Script::exit(1, "not yet");
         script.stderr = "build is ready\r\n".into();
         // stdout does not match; stderr does. An empty pattern would not.
