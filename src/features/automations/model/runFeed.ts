@@ -4,6 +4,7 @@ import {
   type ActivityCursor,
   type ActivityEntry,
 } from "../../activity/model/activity";
+import { inProjectScope } from "../../projects/model/projectScope";
 
 /** The three lines `automation_run_update` writes. `activity_list` takes one kind at a time. */
 export const RUN_KINDS = [
@@ -80,13 +81,17 @@ export function mergeRunPages(pages: readonly unknown[]): ActivityEntry[] {
 
 export function visibleRuns(
   entries: readonly ActivityEntry[],
-  filter: { automationId?: string; result?: RunResult | "" },
+  filter: { automationId?: string; result?: RunResult | ""; project?: string },
 ): ActivityEntry[] {
   const automationId = filter.automationId?.trim() ?? "";
   const result = filter.result ?? "";
+  const project = filter.project?.trim() ?? "";
   return entries.filter((entry) => {
     if (result && runResult(entry.kind) !== result) return false;
     if (automationId && automationIdFromTarget(entry.target) !== automationId) return false;
+    // The same rule as the automations list: this project, plus a run that is
+    // not filed under a project. A blank scope keeps every run.
+    if (project && !inProjectScope(entry.project, project)) return false;
     return true;
   });
 }

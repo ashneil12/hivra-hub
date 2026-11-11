@@ -189,6 +189,76 @@ async function openRuns() {
   });
 }
 
+it("shows runs for the open project and not another project's", async () => {
+  const rows = [
+    runLine(
+      "here",
+      "automation.started",
+      "Here review. Started by the 9:00 schedule.",
+      "/work/project",
+      "here/run-1",
+      4,
+    ),
+    runLine(
+      "slash",
+      "automation.started",
+      "Slash review. Started by the 9:00 schedule.",
+      "/work/project/",
+      "slash/run-1",
+      3,
+    ),
+    runLine(
+      "there",
+      "automation.started",
+      "There review. Started by the hourly schedule.",
+      "/work/other",
+      "there/run-1",
+      2,
+    ),
+    runLine(
+      "home",
+      "automation.started",
+      "Home review. Started by the schedule.",
+      "~",
+      "home/run-1",
+      1,
+    ),
+  ];
+  invoke.mockImplementation(async (command: string, args?: { query?: ActivityQuery }) => {
+    if (command === "activity_list") {
+      const kind = args?.query?.kind;
+      return { entries: rows.filter((row) => row.kind === kind), next: null };
+    }
+    if (command === "automations_list") {
+      return [
+        automation("here", "Here review", "/work/project"),
+        automation("there", "There review", "/work/other"),
+        automation("home", "Home review", "~"),
+      ];
+    }
+    return [];
+  });
+  await act(async () =>
+    root.render(
+      createElement(AutomationsView, {
+        cwd: "/work/project",
+        scopeProject: "/work/project",
+        recents: [],
+        onClose: vi.fn(),
+        onLaunch: vi.fn(),
+        onOpenSession: vi.fn(),
+      }),
+    ),
+  );
+  await openRuns();
+  await vi.waitFor(() => {
+    expect(container.textContent).toContain("Here review. Started by the 9:00 schedule.");
+  });
+  expect(container.textContent).toContain("Slash review. Started by the 9:00 schedule.");
+  expect(container.textContent).toContain("Home review. Started by the schedule.");
+  expect(container.textContent).not.toContain("There review. Started by the hourly schedule.");
+});
+
 it("a new activity line does not read the older pages again", async () => {
   const newer = runLine(
     "new",

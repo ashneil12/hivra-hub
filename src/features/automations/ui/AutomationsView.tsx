@@ -430,6 +430,7 @@ function AutomationsContent({
         >
           <AutomationRuns
             automations={scoped}
+            scopeProject={scopeProject}
             onOpenSession={onOpenSession}
           />
         </div>

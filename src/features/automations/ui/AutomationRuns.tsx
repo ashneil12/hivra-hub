@@ -21,9 +21,12 @@ import {
  */
 export function AutomationRuns({
   automations,
+  scopeProject,
   onOpenSession,
 }: {
   automations: readonly Automation[];
+  /** The open project. Empty shows every project's runs. */
+  scopeProject?: string;
   onOpenSession: (sessionId: string) => void | Promise<void>;
 }) {
   const [rows, setRows] = useState<ActivityEntry[]>([]);
@@ -73,7 +76,7 @@ export function AutomationRuns({
     };
   }, [load]);
 
-  const shown = visibleRuns(rows, { automationId, result });
+  const shown = visibleRuns(rows, { automationId, result, project: scopeProject });
   const filtering = automationId !== "" || result !== "";
   const names = [...automations]
     .filter((automation) => automation.id.trim() !== "")

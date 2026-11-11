@@ -182,4 +182,75 @@ describe("run feed", () => {
     expect(merged.map((row) => row.id)).toEqual(["new", "old"]);
     expect(calls.some((call) => call.includes(":"))).toBe(false);
   });
+
+  it("keeps runs for the open project, a trailing slash, and a project-less run", () => {
+    const rows = [
+      entry({
+        id: "here",
+        kind: "automation.started",
+        summary: "Here.",
+        project: "/work/project",
+      }),
+      entry({
+        id: "slash",
+        kind: "automation.started",
+        summary: "Slash.",
+        project: "/work/project/",
+      }),
+      entry({
+        id: "win",
+        kind: "automation.completed",
+        summary: "Win.",
+        project: "C:\\Work\\Project",
+      }),
+      entry({
+        id: "there",
+        kind: "automation.failed",
+        summary: "There.",
+        project: "/work/other",
+        target: "other/run-9",
+      }),
+      entry({
+        id: "nested",
+        kind: "automation.started",
+        summary: "Nested.",
+        project: "/work/project/sub",
+        target: "nested/run-3",
+      }),
+      entry({
+        id: "home",
+        kind: "automation.started",
+        summary: "Home.",
+        project: "~",
+        target: "home/run-4",
+      }),
+      entry({
+        id: "blank",
+        kind: "automation.failed",
+        summary: "Blank.",
+        project: "",
+        target: "blank/run-5",
+      }),
+    ];
+    expect(visibleRuns(rows, { project: "/work/project" }).map((row) => row.id)).toEqual([
+      "here",
+      "slash",
+      "home",
+      "blank",
+    ]);
+    expect(visibleRuns(rows, { project: "c:/work/project" }).map((row) => row.id)).toEqual([
+      "win",
+      "home",
+      "blank",
+    ]);
+    expect(visibleRuns(rows, {}).map((row) => row.id)).toEqual([
+      "here",
+      "slash",
+      "win",
+      "there",
+      "nested",
+      "home",
+      "blank",
+    ]);
+  });
 });
