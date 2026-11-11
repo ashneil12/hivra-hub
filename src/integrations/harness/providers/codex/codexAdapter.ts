@@ -10,6 +10,7 @@ import {
   sendCodexTurn,
   steerCodexTurn,
   stopCodexSession,
+  codexHasBackgroundWork,
 } from "./codex";
 import {
   generateCodexBranchName,
@@ -41,6 +42,7 @@ export const codexAdapter: HarnessAdapter = {
   respondQuestion: respondCodexQuestion,
   keepQuestionOpen: keepCodexQuestionOpen,
   stopSession: stopCodexSession,
+  hasBackgroundWork: codexHasBackgroundWork,
   forgetSession: forgetCodexSession,
   bindSession: bindCodexSession,
   refreshCatalog: refreshCodexCatalog,
