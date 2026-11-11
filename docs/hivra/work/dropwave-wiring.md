@@ -71,13 +71,14 @@ never reads it, so "example data" is not a state any real screen is in.
 |---|---|---|
 | Same cards as Home, scoped to the project | same sources, filtered by `projectId` | Works |
 | First mates list (name, role line, "3 working · 1 needs you") | roster (`listMonos`), `useNeedsYou`, delegation rows | Works |
-| + beside First mates | new first mate (drafted in chat, made on yes) | Works |
+| + beside First mates ("New first mate") | a name and what it looks after: `onCreateMono(projects, profile)` in `App.tsx` (`createMono`, `saveMonoName`, `saveMonoRole`), joined to the project in view; or one already made: `joinableMonos` + `addMonoProject` (`MonoRailSection.tsx`) | Works |
 | Teams list, + New group chat, delete a team chat | `hubChats.ts` (`listChats`, `createChat`, `deleteChat`) | Works; G7 |
 
 ### One-to-one chat (Chief of Staff, a Lead, any first mate)
 | Control | Calls or reads | State |
 |---|---|---|
-| Chat list on the left with one chat pinned on top | `codingTeamList` in `App.tsx`; who is pinned from `projectFront` | Works; G4 |
+| Chat list on the left, the open first mate's main chat on top | `codingTeamList` in `App.tsx`; who is in front from `projectFront` | Works; G4 |
+| Whose chats: the first mate's own, or Everyone | `chatListScope.ts` (`inChatListScope`: a chat belongs to the first mate it is stamped with, or the one that started it, through `monoForSession` and the delegation rows); kept in `localStorage` | Works |
 | New chat (while a first mate's chat is open) | `startMonoSideChat` → a new session stamped as that first mate's, saved in `Mono.chats` | Works; G1, G2, G11 |
 | An extra chat's row (mascot, the first mate's name) and opening it | `isMonoSideChat`, `openMonoSideChat` in `App.tsx` | Works |
 | Chat row menu: rename, pin, delete, Copy chat link | existing session actions; `chatLink` (`sessions/model/threadLinks.ts`, `hivra://local/chat/<id>`) | Works |
@@ -101,7 +102,9 @@ never reads it, so "example data" is not a state any real screen is in.
 ### Inbox
 | Control | Calls or reads | State |
 |---|---|---|
-| Needs you section at the top | `InboxNeeds` → `useNeedsYou()`; button runs the row's action; a row opens `needTarget` | Works; G10 |
+| All, Asks and each source's tab | `inboxShow.ts` (`useInboxShow`, `inboxParts`); kept in `localStorage`; a line from Home that leads to an ask switches a source's tab back to All (`opener.ts`) | Works |
+| Needs you section at the top | `InboxNeeds` → `useNeedsYou()`; button runs the row's action; a row's words open its card beside the list | Works; G10 |
+| A row's card: the ask, who and when, its answers, Open chat, a reply box | `NeedDetail.tsx`; answers are the row's own `actions`; Open is `needPlace` → `openFromHome` (or `openMonoChat`); the reply is `sendToChat(needChatId(…))` (`waitingChats.ts`) | Works. Open chat lands on the chat's latest message, which is the ask while it waits; there is no jump to an older message yet. |
 | First-mate decisions, results, failures; digest line | `FirstMateInboxPanel` (`tauriFirstMate.decisions`, `.answer`, `delivery_list`) | Works |
 | Plugin installs waiting for a yes | `PluginApprovals` | Works |
 | GitHub, GitLab, Linear, Jira, Azure DevOps items; filters; Add connection | upstream Inbox (`gh` on the Mac, tracker tokens) | Works when a connection exists; empty with a "connect" line otherwise |
@@ -131,7 +134,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Control | Calls or reads | State |
 |---|---|---|
 | The four setup checks | `checkHubSetup` (`setupProof.ts`): Claude Code installed, signed in, a folder, one real round trip | Works |
-| Welcome, start (project, CLIs, starter first mates), look, done | `HubOnboarding.tsx` → `createProject`, `addStarterMono`, `applyThemePreset`, `finishOnboarding` | Works; being reworded and shortened on this branch now; G12 |
+| One thing a step: welcome (your name), the first project (or a restore), its first mates, the coding tools, a look, done (says back what was chosen) | `HubOnboarding.tsx` → `createProject`, `addStarterMono(id, [project])` (a picked first mate joins the first project; the Chief of Staff belongs to none), `saveChosenClis`, `applyThemePreset`, `finishOnboarding` | Works; G12. A restore skips the first mates and tools steps. |
 
 ## Browser specs to update (G13)
 - `tests/browser/wp22-groups.spec.ts`: done on this branch (the harness mounts the team settings beside the room).
