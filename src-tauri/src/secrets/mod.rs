@@ -1437,7 +1437,9 @@ pub fn spend_once(
 /// already shown is never issued again (fix round 6). A gap is fine. A repeat is not.
 ///
 /// The first number for a key that already has a decision is one past that decision's version, so an install from
-/// before this counter does not reissue a version the person has already seen.
+/// before this counter does not reissue a version the person has already seen. When the counter already exists, the
+/// next number is one past the higher of the counter and the row, so a row that got ahead of the counter does not
+/// have an old version issued again.
 pub(crate) fn alloc_card_version(
     conn: &Connection,
     project: &str,
@@ -1461,11 +1463,13 @@ pub(crate) fn alloc_card_version(
         .optional()
         .map_err(|e| e.to_string())?
         .unwrap_or(0);
-    let seed = current.max(0) + 1;
+    // A missing row counts as version 0. A negative version counts as 0 too, same as the first insert.
+    let row_version = current.max(0);
+    let seed = row_version + 1;
     conn.execute(
         "INSERT INTO secret_card_epochs (project, decision_key, high_water) VALUES (?1, ?2, ?3)
-         ON CONFLICT (project, decision_key) DO UPDATE SET high_water = high_water + 1",
-        params![project, key, seed],
+         ON CONFLICT (project, decision_key) DO UPDATE SET high_water = MAX(high_water, ?4) + 1",
+        params![project, key, seed, row_version],
     )
     .map_err(|e| e.to_string())?;
     conn.query_row(
@@ -2481,20 +2485,27 @@ pub fn ensure_grant(
             let mono = asked_for;
             let granted = (|| -> Result<bool, String> {
                 if answer == "Always for this project" {
-                    if let Some(project) = input.project.as_deref() {
-                        put_grant(
-                            conn,
-                            &input.scope,
-                            &input.name,
-                            "project",
-                            project,
-                            &input.executable,
-                            &input.identity,
-                            &input.fingerprint,
-                            "always",
-                            now,
-                        )?;
-                    }
+                    // No project means put_grant is not called. Falling through from here used to grant the run.
+                    let Some(project) = input.project.as_deref() else {
+                        if !input.executable.starts_with("worker:")
+                            && runs_any_for(&input.executable)
+                        {
+                            return Err(ALWAYS_REFUSED.into());
+                        }
+                        return Err(ALWAYS_NOT_OFFERED.into());
+                    };
+                    put_grant(
+                        conn,
+                        &input.scope,
+                        &input.name,
+                        "project",
+                        project,
+                        &input.executable,
+                        &input.identity,
+                        &input.fingerprint,
+                        "always",
+                        now,
+                    )?;
                 } else if answer == "Always for this Mono" {
                     put_grant(
                         conn,
@@ -2539,6 +2550,24 @@ pub fn ensure_grant(
                         drop(tx);
                         return Ok(false);
                     }
+                    // The card is cleared in this same transaction, and only while it is still the version that was
+                    // read. Anything but that one row means the card moved or is already gone: drop the transaction
+                    // so the grant rolls back, and wait. The next check reads the card that is there now.
+                    let cleared = tx
+                        .execute(
+                            "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2 AND version = ?3",
+                            params![project, key, decision.version],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if cleared != 1 {
+                        drop(tx);
+                        return Ok(false);
+                    }
+                    tx.execute(
+                        "DELETE FROM secret_card_bindings WHERE project = ?1 AND decision_key = ?2",
+                        params![project, key],
+                    )
+                    .map_err(|e| e.to_string())?;
                     tx.commit().map_err(|e| e.to_string())?;
                 }
                 Ok(true)
@@ -2549,25 +2578,18 @@ pub fn ensure_grant(
                 Err(why) => {
                     if why == ALWAYS_REFUSED || why == ALWAYS_NOT_OFFERED {
                         // An "Always" the person's setting does not allow grants nothing and is not kept: the next run
-                        // is asked again, on the card that offers what is allowed.
+                        // is asked again, on the card that offers what is allowed. Only the version that was read goes,
+                        // so a newer card is left for that next check.
                         let _ = conn.execute(
-                            "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2",
-                            params![project, key],
+                            "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2 AND version = ?3",
+                            params![project, key, decision.version],
                         );
                     }
                     return Err(why);
                 }
             }
-            // The answer has become a grant: clear the card so the next run (after a revoke, or a second once) asks
-            // again. A "No" stays answered, so the person is not asked over and over.
-            let _ = conn.execute(
-                "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2",
-                params![project, key],
-            );
-            let _ = conn.execute(
-                "DELETE FROM secret_card_bindings WHERE project = ?1 AND decision_key = ?2",
-                params![project, key],
-            );
+            // Once already cleared its card inside the grant transaction, at the version that was read.
+            // Always never reaches here: put_grant refuses it, and a project Always with no project refuses too.
             Ok(ApprovalOutcome::Granted)
         }
         _ => {
@@ -2905,9 +2927,13 @@ pub fn record_run(
 #[cfg(test)]
 mod approval_tests;
 #[cfg(test)]
+mod low_tests;
+#[cfg(test)]
 mod r4_repro_tests;
 #[cfg(test)]
 mod r5_repro_tests;
+#[cfg(test)]
+mod review_246_r1_repro;
 #[cfg(test)]
 mod security_tests;
 #[cfg(test)]
