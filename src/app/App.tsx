@@ -297,6 +297,7 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { setAgentsBoardSessionStop } from "../features/agents-board/model/sessionStop";
 import { placePrompt, rememberPromptSession } from "../features/sessions/model/threadLinkOpen";
 import { ThreadLinkNotice, useThreadLinkOpener } from "../features/sessions/ui/ThreadLinkActions";
 import {
@@ -13139,6 +13140,9 @@ function Workspace({
     openSession: openReminderSession,
   });
   const onStopFromUser = delegationTree.stopFromUser;
+  // WP-219: a project chat or a sub-chat on the Agents board uses the Stop its own chat's button uses: on a chat with
+  // work out that is the tree Stop, so its workers stop too and their reports don't wake it again.
+  useEffect(() => setAgentsBoardSessionStop((sessionId) => onStopFromUser(sessionId)), [onStopFromUser]);
 
   // The real-Claude test bench (scripts/hub-realtest.mjs): a dev copy whose verify plan names a driver folder takes Ash's
   // scripted actions through the same handlers his composer, Stop button and rail use. No plan reaches the daily app.
