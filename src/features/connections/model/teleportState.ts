@@ -76,8 +76,13 @@ export function copyForMoved(host: string, time: string): string {
  * names the machine the move is for, the window that froze the chat (its owner) and when (M1): recovery skips a young
  * freeze and never thaws another window's move.
  */
-export function frozenBlock(moveId: string, peer: string, owner = "", at = new Date().toISOString()): Block {
-  return { id: `teleport-frozen-${moveId}`, role: "system", text: JSON.stringify({ peer, owner, at }), notice: "teleport-frozen" } as unknown as Block;
+export function frozenBlock(moveId: string, peer: string, owner = "", at = new Date().toISOString(), name = ""): Block {
+  return {
+    id: `teleport-frozen-${moveId}`,
+    role: "system",
+    text: JSON.stringify({ peer, owner, at, ...(name ? { name } : {}) }),
+    notice: "teleport-frozen",
+  } as unknown as Block;
 }
 
 function parseText(text: string): Record<string, unknown> {
@@ -94,7 +99,7 @@ function asText(value: unknown): string {
 }
 
 /** The freezes saved in a chat, each with the machine it is for, its owner window and its start. A restart uses them. */
-export function savedFreezes(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string; owner: string; at: number }> {
+export function savedFreezes(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string; owner: string; name: string; at: number }> {
   return session.blocks
     .filter((b) => b.notice === "teleport-frozen")
     .map((b) => {
@@ -103,6 +108,7 @@ export function savedFreezes(session: Pick<Session, "blocks">): Array<{ moveId: 
         moveId: b.id.replace(/^teleport-frozen-/, ""),
         peer: asText(meta.peer),
         owner: asText(meta.owner),
+        name: asText(meta.name),
         at: Date.parse(asText(meta.at)) || 0,
       };
     });
@@ -138,6 +144,31 @@ export function savedAborted(session: Pick<Session, "blocks">): Array<{ moveId: 
 /** The move ids this machine has refused for good. */
 export function abortedMoves(blocks: Block[]): string[] {
   return blocks.filter((b) => b.notice === "teleport-aborted").map((b) => b.id.replace(/^teleport-aborted-/, ""));
+}
+
+/** The chat is open here, and the other machine still has to confirm it dropped its copy. */
+export function releaseOwedBlock(moveId: string, peer: string, name = "", at = Date.now()): Block {
+  return {
+    id: `teleport-release-owed-${moveId}`,
+    role: "system",
+    text: JSON.stringify({ peer, name, at }),
+    notice: "teleport-release-owed",
+  } as unknown as Block;
+}
+
+/** Release debts saved on this Mac: the peer still to ask, and when the debt was taken. */
+export function savedReleaseOwed(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string; name: string; at: number }> {
+  return session.blocks
+    .filter((b) => b.notice === "teleport-release-owed")
+    .map((b) => {
+      const meta = parseText(b.text);
+      return {
+        moveId: b.id.replace(/^teleport-release-owed-/, ""),
+        peer: asText(meta.peer),
+        name: asText(meta.name),
+        at: typeof meta.at === "number" ? meta.at : 0,
+      };
+    });
 }
 
 export function hasBlock(blocks: Block[], id: string): boolean {

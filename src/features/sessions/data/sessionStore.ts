@@ -127,6 +127,9 @@ type SessionRecord = {
   automationId?: string | null;
   /** The open /goal saved with the chat (session_store.rs `goal_json`). */
   goal?: unknown;
+  /** WP-177: the moved chat still owes its first turn the chat so far. */
+  moveBriefOwed?: boolean;
+  movedFrom?: string;
   archived?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -157,6 +160,8 @@ type SessionUpsertPayload = {
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
   goal?: SessionGoal;
+  moveBriefOwed?: boolean;
+  movedFrom?: string;
 };
 
 /** Only real chats belong in project history — blank tabs stay ephemeral. */
@@ -221,6 +226,11 @@ function persistableMeta(
       : {}),
     // Only a goal still open is saved; a met, cleared or stopped one is dropped from the row, so it never comes back.
     ...(openGoal(session.goal) ? { goal: openGoal(session.goal) } : {}),
+    // WP-177: without these the stored row forgets that the next turn must carry the chat so far.
+    ...(session.moveBriefOwed === true ? { moveBriefOwed: true } : {}),
+    ...(session.movedFrom && session.movedFrom.trim()
+      ? { movedFrom: session.movedFrom.trim().slice(0, 200) }
+      : {}),
   };
 }
 
@@ -756,6 +766,31 @@ export function findMonoTranscript(
 export async function getSession(sessionId: string): Promise<Session | null> {
   const session = await readSession(sessionId);
   return session ? repairSession(session) : null;
+}
+
+/**
+ * WP-177: the row a move hashes. The sidebar read drops tool output over 512 bytes, which would make a plan taken from
+ * the window disagree with the move. This read keeps that output. A build or a test double without the command falls
+ * back to the sidebar read, so both sides of the move still hash the same bytes.
+ */
+export async function readSessionForMove(sessionId: string): Promise<Session | null> {
+  try {
+    const record = await invoke<SessionRecord | null>("session_get_for_move", { sessionId });
+    if (record && typeof record === "object" && typeof record.id === "string") {
+      const session = recordToSession(record);
+      syncTeleportLock(session);
+      if (teleportStateOf(session).moved) movedSessionIds.set(session.id, movedAtOf(session));
+      return repairSession(session);
+    }
+  } catch {
+    // Test doubles and older builds have no full-row command.
+  }
+  try {
+    return await getSession(sessionId);
+  } catch {
+    // No desktop store here (the browser fixture). The caller keeps the chat it already holds.
+    return null;
+  }
 }
 
 /** Read the saved conversation without waiting for optional provider-log repairs. */
@@ -1334,7 +1369,8 @@ block.notice === "teleported" ||
 block.notice === "teleported-back" ||
 block.notice === "teleport-frozen" ||
 block.notice === "teleport-incoming" ||
-block.notice === "teleport-aborted"
+block.notice === "teleport-aborted" ||
+      block.notice === "teleport-release-owed"
     ) {
       next.notice = block.notice;
     }
@@ -1800,6 +1836,10 @@ function recordToSession(record: SessionRecord): Session {
     }),
     // Its /goal, if one was still open: the Goal row is back, and the harness carries on with it once bound.
     ...(goal ? { goal } : {}),
+    ...(record.moveBriefOwed === true ? { moveBriefOwed: true } : {}),
+    ...(typeof record.movedFrom === "string" && record.movedFrom.trim()
+      ? { movedFrom: record.movedFrom.trim().slice(0, 200) }
+      : {}),
     ...(record.monoTranscript ? { monoTranscript: record.monoTranscript } : {}),
     busy: false,
     orchestrationLeadId:

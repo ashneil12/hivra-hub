@@ -10,7 +10,7 @@ import { startRecapChat } from "../model/teleportRecap";
 import { completeMove, planMove, type MoveEndpoint, type MovePlan, type MoveRefusal, type MoveResult } from "../model/teleport";
 import { TeleportNotice } from "./TeleportNotice";
 import { moveResultMessage } from "./teleportCopy";
-import { localMoveEndpoint } from "../model/teleportLocal";
+import { localMoveEndpoint, newMoveId } from "../model/teleportLocal";
 import { sshMoveEndpoint } from "../model/teleportSsh";
 import { remoteRequest } from "../model/connections";
 import { sessionStoreChatPort } from "../data/teleportStorePort";
@@ -46,12 +46,73 @@ type Phase =
   | { kind: "refused"; refusal: MoveRefusal; hostId: string }
   | { kind: "done"; hostId: string; result: MoveResult }
   | { kind: "unknown"; hostId: string; moveId: string; from: MoveEndpoint; to: MoveEndpoint; message: string }
+  | { kind: "partial"; hostId: string; moveId: string; from: MoveEndpoint; to: MoveEndpoint; message: string }
   | { kind: "failed"; message: string };
+
+type RememberedPhase = {
+  kind: "unknown" | "partial";
+  hostId: string;
+  moveId: string;
+  message: string;
+  direction: "out" | "back";
+};
+
+const rememberedPhases = new Map<string, RememberedPhase>();
+
+function phaseKey(chatId: string): string {
+  return `hivra-teleport-phase:${chatId}`;
+}
+
+function rememberPhase(chatId: string, phase: RememberedPhase | null): void {
+  if (!phase) rememberedPhases.delete(chatId);
+  else rememberedPhases.set(chatId, phase);
+  try {
+    if (!phase) sessionStorage.removeItem(phaseKey(chatId));
+    else sessionStorage.setItem(phaseKey(chatId), JSON.stringify(phase));
+  } catch {
+    // A private window still keeps the phase for this process.
+  }
+}
+
+function rememberedPhase(chatId: string): RememberedPhase | null {
+  const live = rememberedPhases.get(chatId);
+  if (live) return live;
+  try {
+    const raw = sessionStorage.getItem(phaseKey(chatId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<RememberedPhase>;
+    if ((parsed.kind !== "unknown" && parsed.kind !== "partial") || typeof parsed.moveId !== "string" || typeof parsed.hostId !== "string") {
+      return null;
+    }
+    const phase: RememberedPhase = {
+      kind: parsed.kind,
+      hostId: parsed.hostId,
+      moveId: parsed.moveId,
+      message: typeof parsed.message === "string" ? parsed.message : "",
+      direction: parsed.direction === "back" ? "back" : "out",
+    };
+    rememberedPhases.set(chatId, phase);
+    return phase;
+  } catch {
+    return null;
+  }
+}
 
 export function TeleportMovePanel(props: TeleportMovePanelProps) {
   const { session, hosts, endpointsFor, saveAndOpen, onRow, loadRow = getSession, direction = "out" } = props;
   const [phase, setPhase] = useState<Phase>({ kind: "idle" });
   const [hostId, setHostId] = useState<string>(hosts[0]?.id ?? "");
+  const endpointsRef = useRef(endpointsFor);
+  endpointsRef.current = endpointsFor;
+  // A remount loses component state. An unknown or partial move is remembered so Retry is still there.
+  useEffect(() => {
+    const saved = rememberedPhase(session.id);
+    if (!saved || saved.direction !== direction) return;
+    const { local, remote } = endpointsRef.current(saved.hostId);
+    const from = saved.direction === "back" ? remote : local;
+    const to = saved.direction === "back" ? local : remote;
+    setPhase({ kind: saved.kind, hostId: saved.hostId, moveId: saved.moveId, from, to, message: saved.message });
+  }, [session.id, direction]);
   const hostName = hosts.find((h) => h.id === hostId)?.name ?? hostId;
   const back = direction === "back";
   // A ref, not state: a second click in the same tick must not start a second move.
@@ -90,7 +151,7 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
     if (phase.kind !== "plan" || approvingRef.current) return;
     approvingRef.current = true;
     setApproving(true);
-    const moveId = `move-${Date.now()}`;
+    const moveId = newMoveId();
     try {
       const { result } = await approveAndMove({
         session,
@@ -102,11 +163,21 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
         at: new Date().toISOString(),
       });
       await refreshRow();
-      if (result.status === "moved") setPhase({ kind: "done", hostId: phase.hostId, result });
-      else if (result.status === "refused") setPhase({ kind: "refused", refusal: result.refusal, hostId: phase.hostId });
-      else if (result.status === "unknown") {
-        setPhase({ kind: "unknown", hostId: phase.hostId, moveId, from: phase.from, to: phase.to, message: moveResultMessage(result) });
-      } else setPhase({ kind: "failed", message: moveResultMessage(result) });
+      if (result.status === "moved") {
+        rememberPhase(session.id, null);
+        setPhase({ kind: "done", hostId: phase.hostId, result });
+      } else if (result.status === "refused") {
+        rememberPhase(session.id, null);
+        setPhase({ kind: "refused", refusal: result.refusal, hostId: phase.hostId });
+      } else if (result.status === "unknown" || result.status === "partial") {
+        const message = moveResultMessage(result, direction);
+        const next = { kind: result.status, hostId: phase.hostId, moveId, from: phase.from, to: phase.to, message } as Phase;
+        rememberPhase(session.id, { kind: result.status, hostId: phase.hostId, moveId, message, direction });
+        setPhase(next);
+      } else {
+        rememberPhase(session.id, null);
+        setPhase({ kind: "failed", message: moveResultMessage(result, direction) });
+      }
     } catch (error) {
       setPhase({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -117,15 +188,23 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
 
   // The retry checks the move again with the same endpoints and move id: it finishes the move, or it says it cannot yet.
   const retry = async () => {
-    if (phase.kind !== "unknown" || approvingRef.current) return;
+    if ((phase.kind !== "unknown" && phase.kind !== "partial") || approvingRef.current) return;
     approvingRef.current = true;
     setApproving(true);
     try {
       const result = await completeMove({ chatId: session.id, from: phase.from, to: phase.to, moveId: phase.moveId });
       await refreshRow();
-      if (result.status === "moved") setPhase({ kind: "done", hostId: phase.hostId, result });
-      else if (result.status === "unknown") setPhase({ ...phase, message: moveResultMessage(result) });
-      else setPhase({ kind: "failed", message: moveResultMessage(result) });
+      if (result.status === "moved") {
+        rememberPhase(session.id, null);
+        setPhase({ kind: "done", hostId: phase.hostId, result });
+      } else if (result.status === "unknown" || result.status === "partial") {
+        const message = moveResultMessage(result, direction);
+        rememberPhase(session.id, { kind: result.status, hostId: phase.hostId, moveId: phase.moveId, message, direction });
+        setPhase({ ...phase, message });
+      } else {
+        rememberPhase(session.id, null);
+        setPhase({ kind: "failed", message: moveResultMessage(result, direction) });
+      }
     } catch (error) {
       setPhase({ ...phase, message: error instanceof Error ? error.message : String(error) });
     } finally {
@@ -169,7 +248,7 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
             {verb}: the saved messages and the title{phase.plan.queued.length ? `, with ${phase.plan.queued.length} queued message(s)` : ""}.{" "}
             {back
               ? "It continues in a fresh session here, started from a brief of the saved messages. The host keeps no live copy after this."
-              : "It continues in a fresh session there, started from a brief of the saved messages. This Mac keeps only a marker."}
+              : "It continues in a fresh session there, started from a brief of the saved messages. The host keeps it in its home directory. This Mac keeps only a marker."}
           </p>
           {phase.plan.queued.length > 0 && (
             <ul data-testid="teleport-plan-queued" style={{ margin: "0 0 4px", paddingLeft: 18 }}>
@@ -179,7 +258,7 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
             </ul>
           )}
           <p style={{ margin: "0 0 6px" }} data-testid="teleport-plan-redactions">
-            Values redacted before the move: {phase.plan.redactions}
+            Values redacted before the move: {phase.plan.redactions}. Redaction is permanent once this Mac releases its copy.
           </p>
           <div style={{ display: "flex", gap: 8 }}>
             <button type="button" data-testid="teleport-approve" onClick={approve} disabled={approving}>
@@ -213,8 +292,8 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
         </p>
       )}
 
-      {phase.kind === "unknown" && (
-        <div role="alert" data-testid="teleport-unknown">
+      {(phase.kind === "unknown" || phase.kind === "partial") && (
+        <div role="alert" data-testid={phase.kind === "partial" ? "teleport-partial" : "teleport-unknown"}>
           <p style={{ margin: "0 0 6px" }}>{phase.message}</p>
           <p style={{ margin: "0 0 6px" }}>This chat stays locked here until the move is checked.</p>
           <button type="button" data-testid="teleport-retry" onClick={retry} disabled={approving}>

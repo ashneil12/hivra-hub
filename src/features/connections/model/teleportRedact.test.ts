@@ -65,6 +65,27 @@ describe("WP-177 redaction before a move (shared secret list)", () => {
     expect(out.redactions).toBeGreaterThanOrEqual(2);
   });
 
+  it("a letters-only password is redacted once, not twice", () => {
+    const out = redactChat(chat({ transcript: JSON.stringify([{ id: "b", role: "user", text: "password=correcthorse" }]) }));
+    expect(out.chat.transcript).not.toContain("correcthorse");
+    expect(out.chat.transcript).not.toContain("[secret removed] removed]");
+    expect(out.redactions).toBe(1);
+  });
+
+  it.each([
+    ["DB_PASS", "DB_PASS=s3cret-value", "s3cret-value"],
+    ["ENCRYPTION_KEY", "ENCRYPTION_KEY=letters-only-key", "letters-only-key"],
+    ["JWT_SIGNING_KEY", "JWT_SIGNING_KEY=signing-key-value", "signing-key-value"],
+    ["cookie session", "Cookie: session=abc123session", "abc123session"],
+    ["netrc password", "machine example.com\npassword hunter2netrc", "hunter2netrc"],
+    ["authorization token", "Authorization: token deadbeefcafebabe", "deadbeefcafebabe"],
+    ["mysql password", "mysql -phunter2sql -h db", "hunter2sql"],
+  ])("%s is redacted", (_label, text, fragment) => {
+    const out = redactChat(chat({ transcript: JSON.stringify([{ id: "b", role: "assistant", text }]) }));
+    expect(out.chat.transcript).not.toContain(fragment);
+    expect(out.redactions).toBeGreaterThan(0);
+  });
+
   it("a plan with nothing secret reports zero redactions", async () => {
     const planned = await planMove(chat({}), "this-mac", "host-a");
     if (!planned.ok) throw new Error("plan");

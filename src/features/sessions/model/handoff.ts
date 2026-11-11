@@ -2,6 +2,7 @@ import { isEditTool } from "../../../integrations/harness/core/preview";
 import { specOf } from "../../firstmate/model/brief";
 import { compactCiRepairContext } from "../../inbox/model/ciRepair";
 import { limitSection } from "../../../shared/lib/jsonText";
+import { buildPortableTranscript } from "./midThreadSwitch";
 import { displayPath } from "../../../shared/lib/paths";
 import { sameProviderAccountId } from "../../providers/model/providerAccounts";
 import {
@@ -413,14 +414,34 @@ export function wrapRecoveredPrompt(brief: string, text: string): string {
 }
 
 /**
- * WP-177: the first prompt of a moved chat that has no provider conversation yet. The chat so far is rebuilt from the
- * saved messages with the same brief and wrapper as the recovery after a lost conversation (wrapRecoveredPrompt), then the
- * turn's own text. Once the provider has a session id the turn resumes it, so nothing is added. Used by the host engine
- * and the desktop send path alike, so a moved chat behaves the same on either machine.
+ * WP-177: the first prompt of a moved chat that has no provider conversation yet. The newest saved messages are kept
+ * whole, up to the portable bound, under a lead that says the chat moved. Recovery of a lost transcript stays on
+ * wrapRecoveredPrompt. Once the provider has a session id the turn resumes it, so nothing is added.
  */
+/** The machine named on the move-back note, or the one stored with the chat. */
+function movedFromName(session: Session): string {
+  const stored = session.movedFrom?.trim();
+  if (stored) return stored;
+  for (let index = session.blocks.length - 1; index >= 0; index -= 1) {
+    const line = (session.blocks[index]?.text ?? "").split("\n").find((part) => part.startsWith("From: "));
+    const name = line?.slice("From: ".length).trim();
+    if (name) return name;
+  }
+  return "another machine";
+}
+
 export function movedChatPrompt(session: Session, text: string, request: string = text): string {
   if (!session.moveBriefOwed || session.providerSessionId) return text;
-  return recoveredChatPrompt(session, text, request);
+  // A moved chat keeps the newest messages whole, up to the portable bound. Recovery of a lost transcript stays on the smaller brief.
+  // The turn being sent is not part of the chat so far, when it was already saved as the last user message.
+  const prior = session.blocks.filter((block, index) => {
+    const last = index === session.blocks.length - 1;
+    return !(last && block.role === "user" && block.text.trim() === request.trim());
+  });
+  const transcript = buildPortableTranscript(prior);
+  const lead = `You are continuing this chat, moved from ${movedFromName(session)}. This is not a new task. The messages below are the chat so far. Continue from them and do not say you have no prior context.`;
+  if (!transcript.trim()) return `${lead}\n\n${text}`;
+  return `${lead}\n\n<chat_so_far>\n${transcript}\n</chat_so_far>\n\n${text}`;
 }
 
 /**

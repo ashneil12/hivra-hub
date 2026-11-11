@@ -5,7 +5,8 @@
 import type { Session } from "../../sessions/model/session";
 import { approvePlan, moveChat, planMove, recoverMove, type MoveEndpoint, type MovePlan, type MoveResult } from "./teleport";
 import { sessionToChat, type LocalChatPort } from "./teleportLocal";
-import { savedAborted, savedFreezes, savedIncoming } from "./teleportState";
+import { savedAborted, savedFreezes, savedIncoming, savedReleaseOwed } from "./teleportState";
+import { flushPendingSessionSave } from "../../sessions/model/sessionPersistFlush";
 
 /**
  * A freeze or a copy this young may still be a move another window is running. Recovery leaves it for a later pass (M1).
@@ -19,9 +20,32 @@ export interface RecoveryLine {
   status: RecoveryStatus;
 }
 
-/** The plan for a chat as the app holds it. `busy` comes from the app's live state, not from the saved row. */
-export function planFromSession(session: Session, from: string, to: string) {
-  return planMove(sessionToChat(session), from, to);
+/**
+ * The plan for a chat. The stored row is what the move hashes, so the plan is taken from that same read (after this
+ * window's pending save is flushed). `busy` still comes from the window: the row does not know a turn is in flight.
+ */
+function leadOrCrew(session: Session): boolean {
+  if (session.orchestrationLeadId) return true;
+  return session.blocks.some((block) => !!block.orchestrationLeadId || !!block.orchestration);
+}
+
+export async function planFromSession(session: Session, from: string, to: string) {
+  await flushPendingSessionSave(session.id);
+  const { readSessionForMove } = await import("../../sessions/data/sessionStore");
+  const stored = await readSessionForMove(session.id);
+  const base = stored ? ({ ...stored, busy: session.busy === true } as Session) : session;
+  // A Lead or a crew chat is not one conversation. Moving it would split the run across machines.
+  if (leadOrCrew(base) || leadOrCrew(session)) {
+    return {
+      ok: false as const,
+      refusal: {
+        reason: "cannot-resume" as const,
+        message: "A Lead chat or a crew chat cannot move. Start a new chat from a recap instead.",
+        recapOffered: true,
+      },
+    };
+  }
+  return planMove(sessionToChat(base), from, to);
 }
 
 /** Approve with a person's click, then move. A gesture that is not a real trusted click moves nothing and throws. */
@@ -64,7 +88,9 @@ export async function recoverSavedMoves(input: {
     const session = await input.port.get(chatId);
     if (!session) continue;
     for (const freeze of savedFreezes(session)) {
-      if ((input.owner && freeze.owner === input.owner) || young(freeze.at)) {
+      // A young freeze may still be a move in progress, including one this window started. An older one is recovered
+      // even when this window froze it: a result that was never shown otherwise stays frozen until restart.
+      if (young(freeze.at)) {
         lines.push({ chatId, moveId: freeze.moveId, status: "skipped" });
         continue;
       }
@@ -88,6 +114,20 @@ export async function recoverSavedMoves(input: {
       }
     }
     // A refused move whose source could not be thawed then: the thaw is retried on every pass (it is idempotent).
+    // A move back whose release did not finish: the chat is here, and the other machine may still hold a copy.
+    for (const owed of savedReleaseOwed(session)) {
+      if (!owed.peer) continue;
+      if (young(owed.at)) {
+        lines.push({ chatId, moveId: owed.moveId, status: "skipped" });
+        continue;
+      }
+      try {
+        const result = await recoverMove({ chatId, moveId: owed.moveId, from: input.remoteFor(owed.peer), to: input.local });
+        lines.push({ chatId, moveId: owed.moveId, status: result.status });
+      } catch {
+        lines.push({ chatId, moveId: owed.moveId, status: "failed" });
+      }
+    }
     for (const refused of savedAborted(session)) {
       if (!refused.peer) continue;
       try {
@@ -123,7 +163,7 @@ export async function findMovedChatIds(projectCwds: string[]): Promise<string[]>
   const found: string[] = [];
   for (const id of ids) {
     const row = await store.readSession(id);
-    if (row?.blocks.some((b) => b.notice === "teleport-frozen" || b.notice === "teleport-incoming" || b.notice === "teleport-aborted")) {
+    if (row?.blocks.some((b) => b.notice === "teleport-frozen" || b.notice === "teleport-incoming" || b.notice === "teleport-aborted" || b.notice === "teleport-release-owed")) {
       found.push(id);
     }
   }

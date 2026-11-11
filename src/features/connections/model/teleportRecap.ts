@@ -6,14 +6,21 @@ import type { Block, Session } from "../../sessions/model/session";
 
 export function recapChatFrom(session: Session): Session {
   const brief = buildDeterministicHandoff(session);
-  const block: Block = { id: `recap-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`, role: "user", text: brief };
+  const block: Block = { id: `recap-${crypto.randomUUID()}`, role: "user", text: brief };
+  // A new chat, not a copy of the old one's Lead, crew or automation fields. The brief is queued so the next idle
+  // turn sends it to the model; a block alone would only sit in the transcript.
   return {
-    ...session,
     id: `chat-${crypto.randomUUID()}`,
+    harness: session.harness,
+    model: session.model,
+    modelSettings: { ...(session.modelSettings ?? {}) },
+    runtimeMode: session.runtimeMode,
     title: `Recap of ${session.title}`,
-    providerSessionId: undefined,
+    cwd: session.cwd,
     blocks: [block],
-    queuedMessages: [],
+    providerSessionId: undefined,
+    queuedMessages: [{ id: `recap-send-${crypto.randomUUID()}`, text: brief, attachments: [] }],
+    queueStatus: "active",
     busy: false,
   } as unknown as Session;
 }

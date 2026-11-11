@@ -540,7 +540,9 @@ export type Block = {
     /** WP-177: a moved copy is stored here, not yet activated (the move's id is in the block id). */
     | "teleport-incoming"
     /** WP-177: this machine refused a move id for good, so a late copy of that move is turned away. */
-    | "teleport-aborted";
+    | "teleport-aborted"
+    /** WP-177: the chat is back here, and the other machine has not confirmed it dropped its copy. */
+    | "teleport-release-owed";
   /** An agent-to-agent note on a system block (who messaged whom, got stuck, reported; monos/model/agentNotes.ts). */
   agentNote?: import("../../monos/model/agentNotes").AgentNote;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
@@ -708,6 +710,8 @@ export type Session = {
    * sends the chat so far with the text (movedChatPrompt), until the provider gives it a session id.
    */
   moveBriefOwed?: boolean;
+  /** WP-177: the machine this chat was moved from, for the first turn's brief. */
+  movedFrom?: string;
   /** Named local credential profile used by Claude or Codex. */
   providerAccountId?: string;
   /** Context-window level reported by the harness. Absent until it reports. */

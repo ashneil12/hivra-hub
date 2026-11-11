@@ -42,12 +42,14 @@ export function teleportRefusalCopy(refusal: Pick<MoveRefusal, "reason" | "messa
 }
 
 /** What the person reads after a move attempt. A partial or unknown move is never described as "stayed where it was". */
-export function moveResultMessage(result: { status: string; message?: string }): string {
+export function moveResultMessage(result: { status: string; message?: string }, direction: "out" | "back" = "out"): string {
   switch (result.status) {
     case "moved":
       return "Moved. The chat now runs on the other machine.";
     case "partial":
-      return "The host has the chat, and this Mac has not released its copy yet. Retry to finish the move.";
+      return direction === "back"
+        ? "This Mac has the chat, and the host has not released its copy yet. Retry to finish the move."
+        : "The host has the chat, and this Mac has not released its copy yet. Retry to finish the move.";
     case "unknown":
       return "The result is unknown: the host may already have the chat. The chat stays locked here until it is checked. Retry to check.";
     case "failed":

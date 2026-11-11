@@ -32,12 +32,14 @@ export interface ChatSnapshot {
   queued: readonly string[];
   turnRunning: boolean;
   approvalPending: boolean;
+  /** Settings the chat actually has (Codex keeps its effort as reasoningEffort). Absent keys are not invented. */
+  modelSettings?: Record<string, string>;
 }
 
 /** The fields a target receives. Built by allow list, never by copying the whole chat. */
 export type TransferChat = Pick<
   ChatSnapshot,
-  "chatId" | "provider" | "providerSessionId" | "model" | "effort" | "title" | "transcript" | "queued"
+  "chatId" | "provider" | "providerSessionId" | "model" | "effort" | "title" | "transcript" | "queued" | "modelSettings"
 >;
 
 /** Who holds a chat, and its live copy if this machine is the one that runs it. */
@@ -107,6 +109,11 @@ export interface MoveEndpoint {
   activate(chatId: string, moveId: string): Promise<void>;
   /** Drop this machine's transcript and record the new owner. Only after the target activated. */
   release(chatId: string, moveId: string, to: string): Promise<void>;
+  /**
+   * The target drops its "release owed" note once the source has released. Optional: a machine that never records one
+   * leaves it unset. Idempotent.
+   */
+  settleRelease?(chatId: string, moveId: string): Promise<void>;
   /** What this machine stores for the move: a live copy it activated, an incoming copy, or nothing. */
   holds(chatId: string, moveId: string): Promise<Holds>;
 }
@@ -224,7 +231,9 @@ export async function sha256Hex(text: string): Promise<string> {
 
 // The shared list keeps a value only when it mixes letters and digits, so a letters-only password would pass it. A move
 // is stricter: any value written after a secret-looking name is redacted, whatever its characters.
-const ASSIGNED_ANY = /((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key)(?:\\)?["']?\s*[:=]\s*(?:\\)?["']?)([^\s"',}\]\\]{6,})/gi;
+// `[` is excluded so a value already replaced with "[secret removed]" is not matched again (that used to count twice
+// and leave "removed]" in the text). Names here cover assignments the shared list skips when the value is letters only.
+const ASSIGNED_ANY = /((?:password|passwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|db[_-]?pass|encryption[_-]?key|jwt[_-]?signing[_-]?key)(?:\\)?["']?\s*[:=]\s*(?:\\)?["']?)([^\s"',}\]\\[]{6,})/gi;
 
 function redactAny(text: string): { text: string; count: number } {
   let count = 0;
@@ -241,6 +250,10 @@ const BASIC_AUTH = /\b(Basic)\s+[A-Za-z0-9+/=]{8,}/g;
 const PEM_TO_END = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
 const BASE64_PEM = /LS0tLS1CRUdJTi[A-Za-z0-9+/=]{16,}/g;
 const PRIVATE_KEY_HEADER = /PRIVATE KEY-----|LS0tLS1CRUdJTi[A-Za-z0-9+/=]*UFJJVkFURS/;
+const COOKIE_SESSION = /Cookie\s*:\s*session=([^\s;]{6,})/gi;
+const NETRC_PASSWORD = /(^|[\n\r])([ \t]*password[ \t]+)([^\s]{6,})/gi;
+const MYSQL_PASSWORD = /(mysql\s+-p)(\S{4,})/gi;
+const AUTH_TOKEN = /Authorization\s*:\s*token\s+[A-Fa-f0-9]{8,}/gi;
 
 function redactExtra(text: string): { text: string; count: number } {
   let count = 0;
@@ -255,6 +268,22 @@ function redactExtra(text: string): { text: string; count: number } {
   out = out.replace(BASE64_PEM, () => {
     count += 1;
     return "[secret removed]";
+  });
+  out = out.replace(COOKIE_SESSION, () => {
+    count += 1;
+    return "Cookie: session=[secret removed]";
+  });
+  out = out.replace(NETRC_PASSWORD, (_match, lead: string, head: string) => {
+    count += 1;
+    return `${lead}${head}[secret removed]`;
+  });
+  out = out.replace(MYSQL_PASSWORD, (_match, head: string) => {
+    count += 1;
+    return `${head}[secret removed]`;
+  });
+  out = out.replace(AUTH_TOKEN, () => {
+    count += 1;
+    return "Authorization: token [secret removed]";
   });
   return { text: out, count };
 }
@@ -376,6 +405,7 @@ function pickTransferChat(chat: ChatSnapshot): TransferChat {
     title: chat.title,
     transcript: chat.transcript,
     queued: [...chat.queued],
+    ...(chat.modelSettings && Object.keys(chat.modelSettings).length > 0 ? { modelSettings: { ...chat.modelSettings } } : {}),
   };
 }
 
@@ -504,8 +534,11 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
   }
 
   let resume: CanResume;
+  let back: CanResume;
   try {
     resume = await to.canResume(record.live.provider, record.live.model, record.live.effort);
+    // A provider the source cannot run again must not leave: the chat could not be moved back.
+    back = await from.canResume(record.live.provider, record.live.model, record.live.effort);
   } catch (error) {
     return failed("resume-check", from.id, error);
   }
@@ -513,6 +546,13 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
     return refuse(
       "cannot-resume",
       `The other machine cannot resume this chat's transcript: ${resume.reason}. Start a new chat from a recap instead.`,
+      true,
+    );
+  }
+  if (!back.ok) {
+    return refuse(
+      "cannot-resume",
+      `This machine could not take the chat back later: ${back.reason}. Start a new chat from a recap instead.`,
       true,
     );
   }
@@ -525,6 +565,9 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
     return failed("freeze", from.id, error);
   }
   if (!frozen) {
+    const again = await from.read(chatId).catch(() => null);
+    const why = again?.live ? freezeRefusal(again.live) : null;
+    if (why) return refuse(why.reason, why.message);
     return refuse("held-elsewhere", "Another move or a resume already holds this chat. Its result shows when it finishes.");
   }
   const undoFreeze = () => from.thaw(chatId, moveId).catch(noop);
@@ -608,6 +651,7 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
       message: error instanceof Error ? error.message : String(error),
     };
   }
+  await to.settleRelease?.(chatId, moveId).catch(noop);
   return { status: "moved", chatId, from: from.id, to: to.id, manifest: payload.manifest };
 }
 
@@ -647,6 +691,7 @@ export async function recoverMove(input: { chatId: string; moveId: string; from:
         return { status: "partial", stage: "release", chatId, to: to.id, moveId, message: error instanceof Error ? error.message : String(error) };
       }
     }
+    await to.settleRelease?.(chatId, moveId).catch(noop);
     return { status: "moved", chatId, to: to.id, from: from.id };
   }
   try {

@@ -854,6 +854,7 @@ import {
   waitsOnCutTurn,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
+import { registerSessionPersistFlush } from "../features/sessions/model/sessionPersistFlush";
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   resumeUsageLimitedSession,
@@ -3248,7 +3249,27 @@ function Workspace({
     };
     observe();
     const unsubscribe = sessionState.observe(observe);
+    // WP-177: a move hashes the stored row, so this window writes its pending save for that one chat before the plan.
+    const unregisterFlush = registerSessionPersistFlush(async (sessionId) => {
+      const session = pendingPersist.current.get(sessionId);
+      if (!session) return;
+      pendingPersist.current.delete(sessionId);
+      if (
+        removingSessionIds.current.has(session.id) ||
+        switchingWorktrees.current.has(session.id)
+      )
+        return;
+      const fingerprint = persistFingerprint(session);
+      if (lastPersisted.current.get(session.id) === fingerprint) return;
+      const summary = await upsertSession(session).catch(() => null);
+      if (!summary) return;
+      lastPersisted.current.set(session.id, fingerprint);
+      if (summary.cwd === sidebarCwdRef.current) {
+        setHistory((current) => mergeProjectHistorySummary(current, summary));
+      }
+    });
     return () => {
+      unregisterFlush();
       unsubscribe();
       if (timer !== undefined) window.clearTimeout(timer);
     };

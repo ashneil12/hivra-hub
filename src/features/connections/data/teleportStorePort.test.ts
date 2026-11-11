@@ -4,6 +4,8 @@ import type { Session } from "../../sessions/model/session";
 const store = new Map<string, Session>();
 vi.mock("../../sessions/data/sessionStore", () => ({
   getSession: vi.fn(async (id: string) => store.get(id) ?? null),
+  // The move reads the full row, not the truncated sidebar read (WP-177).
+  readSessionForMove: vi.fn(async (id: string) => store.get(id) ?? null),
   upsertSession: vi.fn(async (session: Session) => {
     store.set(session.id, session);
     return null;
