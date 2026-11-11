@@ -29,6 +29,13 @@ function text(params: Record<string, unknown>, key: string, label: string): stri
   return value;
 }
 
+/** Like text, but an empty value is allowed. A chat with no effort setting can still move. */
+function optionalText(params: Record<string, unknown>, key: string, label: string): string {
+  const value = params[key];
+  if (value == null || value === "") return "";
+  return text(params, key, label);
+}
+
 function chatId(params: Record<string, unknown>): string {
   const value = text(params, "chatId", "chat id");
   if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value)) throw new Error("Invalid chat id");
@@ -60,7 +67,11 @@ export async function teleportRpc(
       await store.thaw(chatId(params), text(params, "moveId", "move id"), device);
       return { ok: true };
     case "teleport.canResume":
-      return store.canResume(text(params, "provider", "provider") as Provider, text(params, "model", "model") || "", text(params, "effort", "effort") || "");
+      return store.canResume(
+        text(params, "provider", "provider") as Provider,
+        text(params, "model", "model"),
+        optionalText(params, "effort", "effort"),
+      );
     case "teleport.receive":
       return store.receive(chatId(params), text(params, "moveId", "move id"), payload(params), device);
     case "teleport.discard":

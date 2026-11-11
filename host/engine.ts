@@ -33,6 +33,7 @@ import type { HostProvider } from "./providers";
 import { HostStore } from "./store";
 import { parseRemoteAttachments, resolveAttachments } from "./attachments";
 import { movedChatPrompt } from "../src/features/sessions/model/handoff";
+import { registerHostChatStop } from "./teleport/providerStop";
 
 // Streamed output is written in batches. Anything a user may need to act on
 // (approvals, questions, errors, completion) is written immediately.
@@ -268,6 +269,8 @@ export class HostEngine {
   >();
   private retryTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private closing = false;
+  /** WP-177: drops this engine's provider-stop registration when it closes. */
+  private unregisterStop: (() => void) | null = null;
   /** WP-60: listeners told when a turn finishes, including while the desktop is away. */
   private settledListeners: Array<
     (session: HostSession, info: TurnSettlement) => void
@@ -298,6 +301,18 @@ export class HostEngine {
           value.session.cwd,
         );
     }
+    // A move's release stops the provider through this, because the teleport store does not hold the providers.
+    this.unregisterStop = registerHostChatStop((chatId) => {
+      let held: HostSession;
+      try {
+        held = this.store.session(chatId);
+      } catch {
+        return;
+      }
+      const provider = this.providers[held.session.harness];
+      if (!provider) return;
+      void provider.stop(chatId);
+    });
   }
 
   /** WP-60: the host first mate settles its own brief when this turn finishes. */
@@ -549,6 +564,11 @@ export class HostEngine {
             },
           };
         } else if (command.type === "send" || command.type === "compact") {
+          // Frozen for a move, or already released back to the Mac. The host must not run a second copy.
+          if (value.teleportHeld)
+            throw new Error(
+              "This chat is moving or has moved to another machine. Nothing was sent.",
+            );
           if (value.status === "running")
             throw new Error("This session is already running");
           if (command.type === "compact" && !provider.compact)
@@ -961,6 +981,8 @@ export class HostEngine {
 
   async close(): Promise<void> {
     this.closing = true;
+    this.unregisterStop?.();
+    this.unregisterStop = null;
     for (const timer of this.retryTimers.values()) clearTimeout(timer);
     this.retryTimers.clear();
     await Promise.all(

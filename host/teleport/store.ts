@@ -64,6 +64,10 @@ export interface HostChatSessions {
    * no session for the chat.
    */
   current?(chatId: string): TransferChat | null;
+  /** The host session's real turn and approval, so a move back can refuse a chat that is still working. */
+  activity?(chatId: string): { turnRunning: boolean; approvalPending: boolean } | null;
+  /** Freeze and release hold the copy so the engine refuses turns. Thaw clears it. */
+  hold?(chatId: string, held: boolean): void;
 }
 
 export interface HostTeleportOptions {
@@ -90,6 +94,7 @@ function pick(chat: TransferChat): TransferChat {
     title: chat.title,
     transcript: chat.transcript,
     queued: [...chat.queued],
+    ...(chat.modelSettings && Object.keys(chat.modelSettings).length > 0 ? { modelSettings: { ...chat.modelSettings } } : {}),
   };
 }
 
@@ -150,8 +155,15 @@ export class HostTeleportStore {
     // starting point). Without a session port, or when the host holds no session for it, the copy received is used.
     const running = stored.live && stored.owner === this.options.selfId ? this.options.sessions?.current?.(chatId) : null;
     const source = running ?? stored.live;
+    const activity =
+      stored.live && stored.owner === this.options.selfId ? (this.options.sessions?.activity?.(chatId) ?? null) : null;
     const live: ChatSnapshot | null = source
-      ? { ...pick(source), queued: [...source.queued], turnRunning: false, approvalPending: false }
+      ? {
+          ...pick(source),
+          queued: [...source.queued],
+          turnRunning: activity?.turnRunning ?? false,
+          approvalPending: activity?.approvalPending ?? false,
+        }
       : null;
     return { owner: stored.owner ?? "", live };
   }
@@ -174,7 +186,11 @@ export class HostTeleportStore {
   async freeze(chatId: string, moveId: string, device: string, peer: string): Promise<boolean> {
     const stored = this.load(chatId);
     if (!stored?.live || stored.frozenBy || stored.device !== device) return false;
+    const activity = this.options.sessions?.activity?.(chatId);
+    // A turn or an approval still running would finish on a copy the Mac has already read. Refuse the freeze.
+    if (activity?.turnRunning || activity?.approvalPending) return false;
     this.save(chatId, { ...stored, frozenBy: moveId, frozenDevice: device, frozenTo: peer });
+    this.options.sessions?.hold?.(chatId, true);
     return true;
   }
 
@@ -182,6 +198,7 @@ export class HostTeleportStore {
     const stored = this.load(chatId);
     if (stored?.frozenBy === moveId && stored.frozenDevice === device) {
       this.save(chatId, { ...stored, frozenBy: null, frozenDevice: null, frozenTo: null });
+      this.options.sessions?.hold?.(chatId, false);
     }
   }
 
@@ -189,7 +206,8 @@ export class HostTeleportStore {
     if (!this.options.providers.includes(provider)) {
       return { ok: false, reason: `this host does not run ${provider}` };
     }
-    if (!model || !effort) return { ok: false, reason: "the chat has no model or effort to resume with" };
+    // Effort may be absent: a Codex chat keeps it under another name, and some models have none.
+    if (!model) return { ok: false, reason: "the chat has no model to resume with" };
     return { ok: true };
   }
 
@@ -269,7 +287,12 @@ export class HostTeleportStore {
    */
   async abort(chatId: string, moveId: string, device: string): Promise<"aborted" | "live"> {
     const stored = this.load(chatId);
+    // A different device is refused. A live copy with no device recorded is refused too: it is not free for every caller.
     if (stored && stored.device !== null && stored.device !== device) throw new Error("This chat belongs to another device");
+    if (stored?.live && stored.device !== device) throw new Error("This chat belongs to another device");
+    if (stored?.incoming?.moveId === moveId && stored.incoming.device !== device) {
+      throw new Error("This chat belongs to another device");
+    }
     if (stored?.activatedBy === moveId && stored.owner === this.options.selfId) return "live";
     const base: StoredChat = stored ?? {
       owner: null,
@@ -296,8 +319,10 @@ export class HostTeleportStore {
     if (!stored || stored.frozenBy !== moveId) throw new Error("This move did not freeze the chat");
     if (stored.frozenDevice !== device) throw new Error("This move was started by another device");
     if (stored.frozenTo !== to) throw new Error("The release names a destination other than the one the move froze for");
-    this.save(chatId, { ...stored, owner: to, device: null, live: null, frozenBy: null, frozenDevice: null, frozenTo: null, activatedBy: null });
-    // The chat lives on the Mac again, so the host's copy is archived, not run.
+    // Keep the releasing device so a later read by anyone else learns nothing, not even who holds the chat.
+    this.save(chatId, { ...stored, owner: to, device, live: null, frozenBy: null, frozenDevice: null, frozenTo: null, activatedBy: null });
+    // The chat lives on the Mac again. Hold the copy (no new turn) and stop its provider, then archive it.
+    this.options.sessions?.hold?.(chatId, true);
     this.options.sessions?.close(chatId);
   }
 }

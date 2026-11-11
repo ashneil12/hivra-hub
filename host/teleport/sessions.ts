@@ -4,37 +4,45 @@
 // move carries no provider transcript). Releasing the chat back to the Mac archives the host copy, so it is not run twice.
 
 import { homedir } from "node:os";
-import type { Session } from "../../src/features/sessions/model/session";
+import { hasPendingApproval, type Session } from "../../src/features/sessions/model/session";
 import type { HostSession } from "../../src/features/connections/model/protocol";
 import type { TransferChat } from "../../src/features/connections/model/teleport";
 import type { HostStore } from "../store";
+import { stopHostChat } from "./providerStop";
+import { copyBlocks } from "../../src/features/connections/model/teleportLocal";
 import type { HostChatSessions } from "./store";
 
 /** The host project that holds chats moved here from a Mac. */
 export const MOVED_PROJECT_NAME = "Moved from a Mac";
 
-/** The saved messages of a copy, checked to be a list of messages before the host saves them. */
-function savedMessages(transcript: string): unknown[] {
-  const parsed = JSON.parse(transcript) as unknown;
-  if (!Array.isArray(parsed)) throw new Error("The copy's messages are not a list, so nothing was opened");
-  return parsed;
-}
-
 export function hostChatSessions(store: HostStore): HostChatSessions {
   return {
     open(chat: TransferChat, moveId: string): void {
+      try {
+        // A chat already open here is left as it is. Replacing it would drop turns the host has run.
+        if (!store.session(chat.chatId).archived) return;
+      } catch {
+        // No host session yet: this arrival creates one.
+      }
+      // A previous copy of this chat id may still have a warm provider. Stop it before the fresh session starts.
+      stopHostChat(chat.chatId);
       const project =
         store.projects().find((candidate) => candidate.name === MOVED_PROJECT_NAME) ??
         store.addProject(homedir(), MOVED_PROJECT_NAME);
+      const settings = { ...(chat.modelSettings ?? {}) };
+      if (chat.effort && !settings.effort && !settings.reasoningEffort) settings.effort = chat.effort;
       const session = {
         id: chat.chatId,
         harness: chat.provider,
         model: chat.model,
-        modelSettings: chat.effort ? { effort: chat.effort } : {},
+        modelSettings: settings,
+        // The first turn's brief names where the chat came from.
+        movedFrom: "a Mac",
         runtimeMode: "default",
         title: chat.title,
+        // The host account's home directory: that is where this process runs, not the Mac's project folder.
         cwd: project.cwd,
-        blocks: savedMessages(chat.transcript),
+        blocks: copyBlocks(chat.transcript),
         // The first turn here carries the chat so far to the CLI (movedChatPrompt), since the copy has no provider session.
         moveBriefOwed: true,
         queuedMessages: chat.queued.map((text, index) => ({ id: `${chat.chatId}-queued-${index}`, text, attachments: [] })),
@@ -61,12 +69,39 @@ export function hostChatSessions(store: HostStore): HostChatSessions {
       );
     },
     close(chatId: string): void {
+      // Stop before the archive, so a later move out cannot resume this process.
+      stopHostChat(chatId);
       try {
         store.session(chatId);
       } catch {
         return; // no host copy was ever opened for this chat
       }
       store.updateSession(chatId, { archived: true });
+    },
+    activity(chatId: string): { turnRunning: boolean; approvalPending: boolean } | null {
+      let value: HostSession;
+      try {
+        value = store.session(chatId);
+      } catch {
+        return null;
+      }
+      const session = value.session as Session;
+      return {
+        turnRunning: value.status === "running",
+        approvalPending: hasPendingApproval(session.blocks) || session.pendingQuestion != null,
+      };
+    },
+    hold(chatId: string, held: boolean): void {
+      let value: HostSession;
+      try {
+        value = store.session(chatId);
+      } catch {
+        return;
+      }
+      store.save(
+        { ...value, teleportHeld: held, revision: value.revision + 1, updatedAt: Date.now() },
+        { type: "teleport.hold", held },
+      );
     },
     current(chatId: string): TransferChat | null {
       let value;
@@ -82,7 +117,10 @@ export function hostChatSessions(store: HostStore): HostChatSessions {
         provider: session.harness as TransferChat["provider"],
         providerSessionId: session.providerSessionId ?? "",
         model: session.model,
-        effort: session.modelSettings?.effort ?? "",
+        effort: session.modelSettings?.effort || session.modelSettings?.reasoningEffort || "",
+        ...(session.modelSettings && Object.keys(session.modelSettings).length > 0
+          ? { modelSettings: { ...session.modelSettings } }
+          : {}),
         title: session.title,
         transcript: JSON.stringify(session.blocks.filter((block) => !block.draft)),
         queued: (session.queuedMessages ?? []).map((message) => message.text),

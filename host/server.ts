@@ -18,8 +18,15 @@ import { HostFirstMate } from "./firstmate/service";
 import { HostTeleportStore } from "./teleport/store";
 import { isTeleportMethod, teleportRpc } from "./teleport/rpc";
 import { createHash as teleportHash } from "node:crypto";
-// WP-177: the paired device behind a bearer token, as a hash: the token itself is never stored or compared here.
-const deviceOf = (token: string) => teleportHash("sha256").update(token).digest("hex");
+// WP-177: the paired device. A stable device key survives a new bearer token, so re-pairing does not orphan a moved chat.
+// The token itself is never stored. A call with no key still uses the token hash, for an older desktop.
+const deviceOf = (token: string, params: Record<string, unknown>) => {
+  const claimed = typeof params.deviceKey === "string" ? params.deviceKey : "";
+  if (/^[A-Za-z0-9]{16,80}$/.test(claimed)) {
+    return teleportHash("sha256").update(`device:${claimed}`).digest("hex");
+  }
+  return teleportHash("sha256").update(token).digest("hex");
+};
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
@@ -656,7 +663,7 @@ export function createHostServer(
           case "teleport.release":
           case "teleport.abort":
             if (!isTeleportMethod(input.method)) throw new Error("Unsupported host method");
-            result = await teleportRpc(teleport, input.method, params, deviceOf(token));
+            result = await teleportRpc(teleport, input.method, params, deviceOf(token, params));
             break;
           default:
             throw new Error("Unsupported host method");
