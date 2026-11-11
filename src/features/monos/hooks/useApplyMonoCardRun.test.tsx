@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { modelsFromClaudeListModels } from "../../../integrations/harness/providers/claude/claudeCatalog";
 import { resetHarnessModelOverlays, setHarnessModels } from "../../sessions/model/models";
 import { addMono } from "../model/mono";
-import { queueCardRun, resetCardRunsForTests } from "../model/monoRun";
+import { peekCardRun, queueCardRun, resetCardRunsForTests } from "../model/monoRun";
 import { useApplyMonoCardRun } from "./useApplyMonoCardRun";
 
 const rows = [
@@ -85,6 +85,15 @@ afterEach(() => {
   resetHarnessModelOverlays();
   resetCardRunsForTests();
   vi.unstubAllGlobals();
+});
+
+it("puts the run back when the session does not take the model", async () => {
+  onModelChange.mockReturnValue(false);
+  await act(async () => {
+    root.render(createElement(Probe, { busy: false }));
+  });
+  expect(onModelSettingsChange).not.toHaveBeenCalled();
+  expect(peekCardRun("ada")?.monoId).toBe("ada");
 });
 
 it("keeps compatible context and fast when a queued model change applies", async () => {

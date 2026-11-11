@@ -65,7 +65,7 @@ type Props = {
   runtimeMode: RuntimeMode;
   busy?: boolean;
   initialSection?: MonoSettingsSection;
-  onModelChange: (harness: HarnessId, model: string) => void;
+  onModelChange: (harness: HarnessId, model: string) => void | boolean;
   onModelSettingsChange: (settings: Record<string, string>) => void;
   onRuntimeModeChange: (mode: RuntimeMode) => void;
   onReset?: () => Promise<void>;
