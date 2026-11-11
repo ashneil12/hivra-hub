@@ -2,7 +2,6 @@
 //! for `gh`), the merge refusals, and the teardown guard.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use super::deliver::{self, DeliverInput};
 use super::events::{self, Kind, News};
@@ -39,7 +38,7 @@ fn temp(tag: &str) -> Temp {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args([
@@ -63,7 +62,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 }
 
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    Command::new("git")
+    crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args(args)

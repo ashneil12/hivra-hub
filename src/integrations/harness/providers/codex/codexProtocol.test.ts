@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, join, sep } from "node:path";
+import { describe, expect, it, vi } from "vitest";
 import {
   addCodexTurnUsage,
   buildThreadStartParams,
@@ -9,10 +12,42 @@ import {
   mapApprovalRequest,
   mapCodexNotification,
   mapCodexSubagentSteps,
+  codexSkipsOuterSandbox,
+  codexAutoFileChange,
+  codexGrantsPermissionsAutomatically,
+  resolvedPathInside,
   runtimeModeToCodexConfig,
   toCodexApprovalDecision,
 } from "./codexProtocol";
 import { parseCodexModelList } from "./codexCatalog";
+
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (cmd: string, args: { path?: string; base?: string }) =>
+    import("./codexResolveMock").then((mod) => mod.invokeResolve(cmd, args)),
+}));
+
+describe("codexSkipsOuterSandbox", () => {
+  it("skips when Codex already sandboxes the chat, and keeps the wrap for full access", () => {
+    expect(codexSkipsOuterSandbox({ firstMate: true, runtimeMode: "full-access" })).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "supervised" })).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "auto" })).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "auto-accept-edits" })).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "full-access" })).toBe(false);
+    expect(codexSkipsOuterSandbox({})).toBe(false);
+  });
+
+  it("keeps the outer wrap for auto modes while Hivra's sandbox is on", () => {
+    expect(codexSkipsOuterSandbox({ runtimeMode: "auto", hivraSandbox: true })).toBe(false);
+    expect(
+      codexSkipsOuterSandbox({ runtimeMode: "auto-accept-edits", hivraSandbox: true }),
+    ).toBe(false);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "supervised", hivraSandbox: true })).toBe(true);
+    expect(
+      codexSkipsOuterSandbox({ firstMate: true, runtimeMode: "auto", hivraSandbox: true }),
+    ).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "full-access", hivraSandbox: true })).toBe(false);
+  });
+});
 
 describe("runtimeModeToCodexConfig", () => {
   it("maps supervised to untrusted read-only", () => {
@@ -54,6 +89,62 @@ describe("runtimeModeToCodexConfig", () => {
       approvalsReviewer: "auto_review",
       sandboxPolicy: { type: "workspaceWrite" },
     });
+  });
+
+  it("asks Ash to review while Hivra's sandbox is on, even in auto", async () => {
+    expect(runtimeModeToCodexConfig("auto", false, false, true).approvalsReviewer).toBe("user");
+    expect(
+      runtimeModeToCodexConfig("auto-accept-edits", false, false, true).approvalsReviewer,
+    ).toBe("user");
+    expect(codexGrantsPermissionsAutomatically("auto", true)).toBe(false);
+    expect(codexGrantsPermissionsAutomatically("auto-accept-edits", true)).toBe(false);
+    expect(codexGrantsPermissionsAutomatically("auto", false)).toBe(true);
+    const root = mkdtempSync(join(tmpdir(), "codex-auto-"));
+    const work = join(root, "work");
+    const outside = join(root, "outside");
+    const elsewhere = join(root, "elsewhere");
+    mkdirSync(work);
+    mkdirSync(outside);
+    mkdirSync(elsewhere);
+    mkdirSync(join(work, "sub"));
+    const secret = join(outside, "secret");
+    const file = join(work, "a.ts");
+    const climbed = work + sep + ".." + sep + basename(elsewhere);
+    try {
+      expect(
+        await codexAutoFileChange("auto-accept-edits", true, [secret], work),
+      ).toBeNull();
+      expect(
+        await codexAutoFileChange("auto-accept-edits", true, undefined, work),
+      ).toBeNull();
+      expect(
+        await codexAutoFileChange("auto-accept-edits", true, [file], work),
+      ).toBe("allow");
+      expect(await codexAutoFileChange("auto-accept-edits", false, [secret], work)).toBe(
+        "allow",
+      );
+      // A grant root outside the workspace widens the write even when every named path is inside.
+      expect(await codexAutoFileChange("auto-accept-edits", true, [file], work, elsewhere)).toBeNull();
+      expect(
+        await codexAutoFileChange("auto-accept-edits", true, [file], work, climbed),
+      ).toBeNull();
+      expect(await codexAutoFileChange("auto-accept-edits", true, [file], work, "")).toBeNull();
+      expect(await codexAutoFileChange("auto-accept-edits", true, [join(work, "sub", "a.ts")], work, join(work, "sub"))).toBe(
+        "allow",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("compares a Windows path inside its folder without caring about case or slashes", () => {
+    expect(resolvedPathInside("C:/Work/a.ts", "c:/work")).toBe(true);
+    expect(resolvedPathInside("C:\\Work\\a.ts", "C:/work")).toBe(true);
+    expect(resolvedPathInside("C:/work-secret/a.ts", "C:/work")).toBe(false);
+    expect(resolvedPathInside("D:/work/a.ts", "C:/work")).toBe(false);
+    expect(resolvedPathInside("C:/work/a.ts", "C:/")).toBe(true);
+    expect(resolvedPathInside("//Server/Share/a", "//server/share")).toBe(true);
+    expect(resolvedPathInside("/Work/a.ts", "/work")).toBe(false);
   });
 
   it("opens the sandbox network only for a lead, which needs the control socket", () => {

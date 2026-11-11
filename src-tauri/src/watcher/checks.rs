@@ -535,6 +535,20 @@ fn run_in(command: &str, pattern: &str, cwd: &Path, search: &str) -> Attempt {
     let Some(mut cmd) = command_for(&words, cwd, search, cfg!(windows)) else {
         return Attempt::Wait;
     };
+    // A check an agent armed runs code from its folder (a rustup toolchain path, an npm script). A wrap that cannot
+    // be built waits, the same as a missing program: a timeout is not a final failure. Tests call `run_in` directly
+    // and must not read the daily data folder, so the wrap is not compiled into them.
+    #[cfg(not(test))]
+    {
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        let checkout = cwd.to_path_buf();
+        match crate::agent_sandbox::action_wrap(data.as_deref(), std::slice::from_ref(&checkout)) {
+            Ok(prefix) => {
+                cmd = crate::agent_sandbox::under_wrap(cmd, prefix.as_deref());
+            }
+            Err(_) => return Attempt::Wait,
+        }
+    }
     crate::background_work::configure_child(&mut cmd);
     crate::harness::apply_gui_env(&mut cmd);
     let finished = match crate::pr_watch::bounded::run(cmd, RUN_TIMEOUT) {
@@ -1282,5 +1296,35 @@ mod tests {
         assert!(again.is_empty());
         assert_eq!(queue::open(&conn).unwrap().len(), 1);
         assert!(!dump(&conn).contains(SECRET));
+    }
+}
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(test)]
+mod review_r5_repro {
+    /// HIGH (new): `monocode app timers.check {"command":"npm test"}` from a Mono's or a team's chat (agentAppTimers.ts)
+    /// stores the command with the chat's folder, and the watcher runs it every minute through `LiveRunner`: no shell,
+    /// but no sandbox either. `npm test`, `npm run check|lint|build`, `cargo test|check|clippy` (build.rs, proc macros)
+    /// and `node --test` all run code the agent wrote in that folder. The agent sets `"test": "printf off > …/settings/
+    /// agent-sandbox"` in package.json, arms the check and ends its turn; within a minute the app turns the sandbox off
+    /// (or plants a LaunchAgent, or reads ~/.ssh) outside the sandbox. Verify runs and goal checks are wrapped
+    /// (`action_wrap`); this runner is not. The seam is `agent_sandbox::action_wrap` / `under_wrap`; a unit test cannot
+    /// turn the sandbox on off macOS, so this reads the live runner.
+    ///
+    /// At 1f0314dec main's WP-101 table allows only reads plus `cargo fmt --check`. That one still runs code the agent
+    /// chose: rustup's `cargo` proxy honours `[toolchain] path = "<folder>"` in the chat folder's `rust-toolchain.toml`
+    /// and runs `<folder>/bin/cargo`, outside the sandbox, every minute. The runner must still be wrapped.
+    #[test]
+    fn a_check_an_agent_armed_runs_under_the_agent_sandbox() {
+        let source = include_str!("checks.rs");
+        let start = source
+            .find("impl Runner for LiveRunner")
+            .expect("LiveRunner");
+        let end = source.find("#[cfg(test)]\nmod tests").expect("tests");
+        let live = &source[start..end];
+        assert!(
+            live.contains("agent_sandbox::"),
+            "a check an agent armed (npm test, cargo test, node --test in its own folder) runs outside the sandbox"
+        );
     }
 }

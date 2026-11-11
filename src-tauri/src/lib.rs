@@ -44,10 +44,12 @@ mod programme; // WP-162: update a package branch from main, and the programme l
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
+mod git_cmd;
 // Hivra WP-81: a pinned tool, downloaded and checked, then the local gate before GitHub.
 mod delivery_gate;
 mod pinned_tool;
 // Hivra WP-13: crew rules, routing and reroute.
+mod agent_sandbox;
 mod crew;
 mod devin_config;
 mod devin_usage;
@@ -681,6 +683,7 @@ pub fn run() {
             firstmate::firstmate_set_question_owner,
             firstmate::firstmate_parse_report,
             firstmate::firstmate_checkout_snapshot,
+            firstmate::protected_paths::firstmate_protected_fingerprints,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
             // Hivra WP-40: completion and verdict gates.
@@ -1019,6 +1022,7 @@ pub fn run() {
             pasteboard::clipboard_image,
             pasteboard::copy_file_to_clipboard,
             fs::clone_repo,
+            fs::resolve_existing_path,
             fs::read_file_preview,
             fs::stat_files,
             fs::inspect_paths,
@@ -1347,6 +1351,9 @@ pub fn run() {
             attribution::attribution_for_commits,
             // WP-89: a worker-default change, beside the activity list.
             activity::activity_note,
+            activity::activity_note_first_mate,
+            agent_sandbox::agent_sandbox_status,
+            agent_sandbox::agent_sandbox_set,
             // WP-50: past chats, only with a person's OK, drafted for review.
             history_import::history_import_roots,
             history_import::history_import_list,

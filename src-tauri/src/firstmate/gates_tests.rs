@@ -3,12 +3,11 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use super::*;
 
 fn sh(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args([

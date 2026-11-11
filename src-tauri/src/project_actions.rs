@@ -107,6 +107,9 @@ pub struct RunRequest<'a> {
     /// Start from [`ALLOWED_ENV`] rather than everything the app inherited. The finish-line check asks for this: a
     /// command from a proposal must not see the app's own secrets in its environment.
     pub env_clear: bool,
+    /// When the sandbox is on: the program and leading arguments that run the action's shell under it, for example
+    /// `sandbox-exec -p <profile>` (agent_sandbox::action_wrap). None runs the shell directly.
+    pub wrap: Option<Vec<std::ffi::OsString>>,
 }
 
 pub(crate) type Emit = Arc<dyn Fn(&str, Option<&str>, Option<&RunRecord>) + Send + Sync>;
@@ -444,15 +447,28 @@ const ALLOWED_ENV: [&str; 7] = [
 fn command(request: &RunRequest<'_>) -> Command {
     #[cfg(windows)]
     let mut command = {
+        // The sandbox exists only on macOS, so no wrap is ever set here; a stray one is ignored, never half-applied.
+        debug_assert!(request.wrap.is_none(), "the agent sandbox is macOS only");
         let mut command = Command::new("cmd");
         command.arg("/C").arg(&request.action.command);
         command
     };
     #[cfg(not(windows))]
-    let mut command = {
-        let mut command = Command::new("/bin/sh");
-        command.arg("-c").arg(&request.action.command);
-        command
+    let mut command = match &request.wrap {
+        Some(prefix) if !prefix.is_empty() => {
+            let mut command = Command::new(&prefix[0]);
+            command.args(&prefix[1..]);
+            command
+                .arg("/bin/sh")
+                .arg("-c")
+                .arg(&request.action.command);
+            command
+        }
+        _ => {
+            let mut command = Command::new("/bin/sh");
+            command.arg("-c").arg(&request.action.command);
+            command
+        }
     };
     crate::hide_window_console(&mut command);
     if request.env_clear {
@@ -582,7 +598,27 @@ pub(crate) fn run_action(
     })?;
     // WP-87: only a long-running action with a declared stack prepares ports and Compose.
     // Check and ship pass an empty env and do not start Docker.
-    let stack_env = if action.long_running && file.stack.is_some() {
+    // WP-178: while the sandbox is on, an action an agent starts runs under the profile. Only Ash's own tap
+    // (`trigger == "app"`) skips the wrap for Ship and Run dev slot.
+    let wrap = if crate::agent_sandbox::skip_action_sandbox(&action.id, &action.name, trigger) {
+        None
+    } else {
+        crate::agent_sandbox::action_wrap(Some(&data), std::slice::from_ref(&checkout))?
+    };
+    // Only a long-running action starts Compose. Refusing every action in a project that declares a stack would
+    // also refuse Check, which never calls Compose.
+    let starts_stack = action.long_running && file.stack.is_some();
+    if crate::agent_sandbox::agent_stack_refused(
+        crate::agent_sandbox::enabled(Some(&data)),
+        trigger,
+        starts_stack,
+    ) {
+        return Err(
+            "This action starts a stack, and the agent sandbox is on. Start it from the app, not from an agent."
+                .into(),
+        );
+    }
+    let stack_env = if starts_stack {
         let started = crate::stacks::maybe_start(
             &crate::stacks::env_from_app(app)?,
             &main,
@@ -609,6 +645,7 @@ pub(crate) fn run_action(
         stack_env,
         false,
         Some(emitter(app)),
+        wrap,
     )
 }
 
@@ -626,6 +663,7 @@ pub(crate) fn start_command(
     env: Vec<(String, String)>,
     env_clear: bool,
     emit: Option<Emit>,
+    wrap: Option<Vec<std::ffi::OsString>>,
 ) -> Result<RunRecord, String> {
     if let Some(running) = runs
         .list(Some(project_root))
@@ -647,6 +685,7 @@ pub(crate) fn start_command(
             path_env,
             env,
             env_clear,
+            wrap,
         },
         emit,
     )
@@ -841,6 +880,7 @@ mod tests {
                     path_env: None,
                     env: Vec::new(),
                     env_clear: false,
+                    wrap: None,
                 },
                 Some(emit),
             )
@@ -873,6 +913,7 @@ mod tests {
             path_env: None,
             env: Vec::new(),
             env_clear: false,
+            wrap: None,
         };
         let command = command(&request);
         let removed: Vec<String> = command
@@ -917,6 +958,7 @@ mod tests {
                 path_env: None,
                 env: Vec::new(),
                 env_clear: true,
+                wrap: None,
             },
             None,
         );
@@ -950,6 +992,7 @@ mod tests {
                     path_env: None,
                     env: Vec::new(),
                     env_clear: false,
+                    wrap: None,
                 },
                 None,
             )
@@ -971,6 +1014,7 @@ mod tests {
                     path_env: None,
                     env: Vec::new(),
                     env_clear: false,
+                    wrap: None,
                 },
                 None,
             )

@@ -99,6 +99,7 @@ import {
 import { Popover } from "../../../shared/ui/Popover";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { JiraSettings } from "./JiraSettings";
+import { AgentSandboxSetting } from "./AgentSandboxSetting";
 import {
   CONTEXT_CEILING_CHOICES,
   DEFAULT_CONTEXT_CEILING,
@@ -1209,6 +1210,7 @@ function GeneralPage({
             />
           </Row>
         )}
+        {IS_MAC && <AgentSandboxSetting />}
         <Row
           id="working-agents"
           label="Working agents"
