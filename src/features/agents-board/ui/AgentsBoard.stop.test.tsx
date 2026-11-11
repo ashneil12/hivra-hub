@@ -205,6 +205,24 @@ describe("Agents board stop", () => {
     expect([...container.querySelectorAll("button")].some((item) => item.textContent === "Stop")).toBe(true);
   });
 
+  it("does not use Needs you red for the stop confirm or a failure", async () => {
+    render(async () => {
+      throw new Error("the worker is gone");
+    });
+    act(() => row("job").click());
+    click("Stop");
+    const ask = container.querySelector("[data-stop-ask]");
+    const confirm = [...(ask?.querySelectorAll("button") ?? [])].find((item) => item.textContent === "Stop");
+    if (!confirm) throw new Error("no confirm");
+    expect(confirm.className).not.toMatch(/e5484d|ff6b6b|text-red|bg-red/);
+    expect(row("job").innerHTML).toMatch(/e5484d|ff6b6b/);
+    click("Stop");
+    await settle();
+    const failure = [...container.querySelectorAll("p")].find((item) => item.textContent?.includes("Couldn't stop"));
+    if (!failure) throw new Error("no failure");
+    expect(failure.className).not.toMatch(/e5484d|ff6b6b|text-red|bg-red/);
+  });
+
   it("opens a needs-you row from the row and from the panel", () => {
     const opened: string[] = [];
     render(() => undefined, (id) => opened.push(id));

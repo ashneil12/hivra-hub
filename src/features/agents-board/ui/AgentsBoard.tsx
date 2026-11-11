@@ -217,7 +217,7 @@ export function AgentsBoard({
               {asking ? (
                 <div role="dialog" aria-label="Stop this chat" data-stop-ask className="flex items-center gap-2">
                   <p className="mr-auto text-[13px]">Stop {current.name}?</p>
-                  <button type="button" className="rounded-md bg-[#e5484d] px-3 py-1.5 text-[13px] text-white" onClick={confirm}>
+                  <button type="button" className="rounded-md border border-white/40 bg-white/15 px-3 py-1.5 text-[13px]" onClick={confirm}>
                     Stop
                   </button>
                   <button type="button" className="rounded-md px-3 py-1.5 text-[13px] text-white/70" onClick={() => setStops((prev) => ({ ...prev, [current.id]: { phase: cancelStop(entry.phase) } }))}>
@@ -230,7 +230,7 @@ export function AgentsBoard({
                 <p className="text-[13px] text-white/70">Stopped</p>
               ) : entry.phase === "failed" ? (
                 <div className="flex flex-col items-start gap-2">
-                  <p className="text-[13px] text-[#e5484d]">{entry.error}</p>
+                  <p className="text-[13px] text-white/80">{entry.error}</p>
                   {current.canStop ? (
                     <button type="button" className="rounded-md border border-white/15 px-3 py-1.5 text-[13px]" onClick={askStop}>
                       Stop
