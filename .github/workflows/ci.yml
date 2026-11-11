@@ -202,8 +202,36 @@ jobs:
           key: host-runtime-v1-${{ runner.os }}-${{ runner.arch }}-native-${{ hashFiles('host/package.mjs') }}
       - run: npm run host:package
 
+  # Hivra (11 Nov 2026): decides on a Linux runner whether a pull request needs the macOS Rust half
+  # (scripts/ci-rust-changed.mjs). A web-only pull request then never takes a macOS runner: before this, it waited 20 to
+  # 40 minutes in the five-runner macOS queue only to skip the Rust steps. A push, the pre-ship run and any doubt say
+  # run=true; an empty answer keeps the Rust half too.
+  rust-plan:
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.rust.outputs.run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The pull request diff is read from the merge commit's first parent.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Does this pull request change anything the Rust checks read?
+        id: rust
+        env:
+          RUST_CHECK_EVENT: ${{ github.event_name }}
+        run: node scripts/ci-rust-changed.mjs >> "$GITHUB_OUTPUT"
+
   check:
     if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    needs: rust-plan
     # Hivra: the web tests and the Rust checks ran one after the other in one job (about 24 minutes on Windows).
     # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
     # macOS stays one runner. When every OS runs, the web half and the Rust half run at the same time in that job,
@@ -221,7 +249,7 @@ jobs:
         # The Rust half stays on macOS: on Linux it needs the WebKitGTK packages from Ubuntu's mirror, and on
         # 11 Nov 2026 that mirror stopped resolving from GitHub's runners for hours, failing every Linux job that
         # installs packages. The host and ship tests need no packages, so they run on Linux on a PR.
-        include: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '[{"os":"macos-latest","part":"all"},{"os":"ubuntu-latest","part":"web"},{"os":"ubuntu-latest","part":"rust"},{"os":"windows-latest","part":"web","shard":"1/2"},{"os":"windows-latest","part":"web","shard":"2/2"},{"os":"windows-latest","part":"rust"}]' || '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"},{"os":"macos-latest","part":"rust"}]') }}
+        include: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '[{"os":"macos-latest","part":"all"},{"os":"ubuntu-latest","part":"web"},{"os":"ubuntu-latest","part":"rust"},{"os":"windows-latest","part":"web","shard":"1/2"},{"os":"windows-latest","part":"web","shard":"2/2"},{"os":"windows-latest","part":"rust"}]' || needs.rust-plan.outputs.run == 'false' && '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"}]' || '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"},{"os":"macos-latest","part":"rust"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -574,7 +602,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [release-channel, mobile, browser, host, check, ship, appimage, rpm-changes, rpm, rpm-clean-install]
+    needs: [release-channel, mobile, browser, host, rust-plan, check, ship, appimage, rpm-changes, rpm, rpm-clean-install]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
