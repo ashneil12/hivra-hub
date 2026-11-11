@@ -82,7 +82,9 @@ async function verdict(block: any, folder: string): Promise<string> {
 const TMP = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "r201r7-")));
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
-describe("HIGH (f6f99aefd): a backslash is read as a folder separator on a Mac, where it is a letter of a name", () => {
+// POSIX-only: on Windows a backslash IS a separator, so the Mac reading these tests prove does not happen there. The
+// Windows counterpart, with the platform passed explicitly, runs on every OS below.
+describe.skipIf(process.platform === "win32")("HIGH (f6f99aefd): a backslash is read as a folder separator on a Mac, where it is a letter of a name", () => {
   it("does not allow a Write whose climb leaves the chat's checkout (a\\b\\c/../.. climbs above the chat on POSIX)", async () => {
     const home = `${TMP}/home`;
     const chat = `${home}/Projects/app`;
@@ -165,5 +167,21 @@ describe("round 8: option values and every suffix of a short-option cluster coun
     fs.writeFileSync(`${TMP}/mb2/secret/netrc`, "x\n");
     fs.symlinkSync(`${TMP}/mb2/secret/netrc`, `${chat}/notes`);
     expect(await verdict(bash("file -bfnotes"), chat)).toMatch(/^held/);
+  });
+});
+
+// Round 8 (CI, windows-latest): the Windows reading of the same climbs, with the platform passed explicitly, so it runs on
+// every OS. On Windows a backslash separates, so a\b\c\..\..\X under a Windows chat stays inside the chat, and a drive or
+// UNC climb out of it is held.
+describe("round 8: the Windows reading of a backslash climb, by an explicit platform", () => {
+  const chat = "C:\\Users\\dev\\Projects\\app";
+  it("keeps a climb that stays inside a Windows chat inside it", () => {
+    expect(pathWithin(`${chat}\\a\\b\\c\\..\\..\\src\\index.ts`, chat, true, true)).toBe(true);
+    expect(editInside(`${chat}\\a\\b\\c\\..\\..\\src\\index.ts`, chat)).toBeNull();
+  });
+  it("holds a climb that leaves a Windows chat through a drive or a UNC share", () => {
+    expect(pathWithin(`${chat}\\a\\..\\..\\..\\..\\other\\x.ts`, chat, true, true)).toBe(false);
+    expect(editInside(`${chat}\\..\\..\\..\\other\\x.ts`, chat)).not.toBeNull();
+    expect(pathWithin("\\\\server\\share\\other\\x.ts", "\\\\server\\share\\chat", true, true)).toBe(false);
   });
 });

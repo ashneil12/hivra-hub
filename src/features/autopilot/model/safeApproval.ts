@@ -140,9 +140,29 @@ export function pathWithin(
   caseless = ignoresCase(folder),
   windows = windowsShaped(folder) || windowsShaped(real),
 ): boolean {
-  const r = comparablePath(real, caseless, windows).split("/");
-  const f = comparablePath(folder, caseless, windows).split("/");
-  return r.length >= f.length && f.every((part, i) => r[i] === part);
+  const r = lexicalParts(comparablePath(real, caseless, windows));
+  const f = lexicalParts(comparablePath(folder, caseless, windows));
+  return !!r && !!f && r.length >= f.length && f.every((part, i) => r[i] === part);
+}
+
+/**
+ * The parts of a comparable path with `.` and `..` taken by words (round 8): a `..` after a name goes up one name. A climb
+ * past the root is null, so the path is never inside anything. A root (`/` or a drive) is the first part and can't be climbed.
+ */
+function lexicalParts(text: string): string[] | null {
+  const parts = text.split("/");
+  const rooted = parts[0] === "" || /^[a-z]:$/i.test(parts[0]);
+  const out: string[] = rooted ? [parts[0]] : [];
+  for (const part of rooted ? parts.slice(1) : parts) {
+    if (part === "" || part === ".") continue;
+    if (part === "..") {
+      if (out.length <= (rooted ? 1 : 0)) return null;
+      out.pop();
+      continue;
+    }
+    out.push(part);
+  }
+  return out;
 }
 
 /** Whether an edit to `path` may go ahead in `folder`; why not otherwise. */
