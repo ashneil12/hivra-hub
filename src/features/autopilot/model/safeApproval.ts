@@ -373,6 +373,17 @@ export function searchStartsOutside(call: ApprovalCall | undefined, folder: stri
   const raws: (string | undefined)[] = call.paths === undefined ? [undefined] : (call.paths as string[]);
   const forms = raws.map((raw) => openedSearchPath(raw, folder, call.folderPinned === true));
   if (forms.some((form) => "why" in form)) return true;
+  // Round 12: an absolute start outside the chat folder waits, read the Windows way (a drive path is absolute).
+  // walkHeld used to see only a leading "/", so `C:\Users\dev` from a chat in `C:\Users\dev\Projects\app` was allowed.
+  const windows = !!folder && windowsShaped(folder);
+  if (
+    !!folder &&
+    forms.some((form) => {
+      const opened = (form as { path: string }).path;
+      return absoluteOn(opened, windows) && !pathWithin(opened, folder);
+    })
+  )
+    return true;
   const home = (folder ?? "").replace(/[\\/]+$/, "");
   const starts = forms.map((form) => {
     const opened = (form as { path: string }).path;

@@ -657,11 +657,25 @@ function normalise(path: string): string[] | null {
 const startsWith = (parts: readonly string[], prefix: readonly string[]) =>
   prefix.length <= parts.length && prefix.every((part, i) => parts[i] === part);
 
-/** The chat's folder as parts; null when there is none or it is too shallow to be a chat's own. */
+/** A drive path, `C:\` or `C:/`. A backslash is a separator only for one of these, or a UNC share (round 8). */
+const DRIVE_ABS = /^[a-z]:[\\/]/i;
+
+/** Whether a chat folder is a Windows path: a drive or a UNC share (`\\server`). `//` on a Mac stays a name. */
+function windowsFolder(folder: string | undefined): boolean {
+  return !!folder && (DRIVE_ABS.test(folder) || folder.startsWith("\\\\"));
+}
+
+/**
+ * The chat's folder as parts; null when there is none or it is too shallow to be a chat's own.
+ * A Windows folder (round 12) keeps its drive and reads `\` as a separator, compared in lower case, so `c:\` and `C:\`
+ * are one folder. A Mac or Linux folder is unchanged: only a leading `/` counts, and a backslash is a letter.
+ */
 function folderParts(folder: string | undefined): string[] | null {
-  const root = folder?.replace(/\/+$/, "");
-  if (!root || !root.startsWith("/")) return null;
-  const parts = normalise(root);
+  if (!folder) return null;
+  const windows = windowsFolder(folder);
+  const root = (windows ? folder.replace(/\\/g, "/") : folder).replace(/\/+$/, "");
+  if (!root || (!windows && !root.startsWith("/"))) return null;
+  const parts = normalise(windows ? root.toLowerCase() : root);
   return parts && parts.length >= 3 ? parts : null;
 }
 
@@ -722,6 +736,7 @@ export function walkHeld(words: readonly string[], folder: string | undefined, t
   if (!projectFolder(folder)) return true;
   const base = foldedFolder(folder);
   const root = folderParts(folder);
+  const windows = windowsFolder(folder);
   // A search's pattern is not a path: its first bare word, unless a -e or -f option names the pattern (round 4; the
   // same rule credentialInWords and the Rust timer check read). A Grep or Glob call's paths are walked from, so
   // searchStartsOutside passes them under `find`, which has no pattern.
@@ -739,12 +754,19 @@ export function walkHeld(words: readonly string[], folder: string | undefined, t
     if (startsAtPlaceParent(startOf(arg, timer ? null : base))) return true;
     if (!root) {
       // No folder known: only a relative place below the working folder can be shown to stay inside it.
-      if (arg.startsWith("/")) return true;
-      const rel = normalise(`/${arg}`);
-      if (!rel || arg.split("/").includes("..")) return true;
+      // A drive or UNC path is absolute too (round 12): it used to be read as a relative name, so a search of
+      // `C:\...` from a chat on the same drive was allowed.
+      if (arg.startsWith("/") || DRIVE_ABS.test(arg) || arg.startsWith("\\\\")) return true;
+      const relText = windows ? arg.replace(/\\/g, "/") : arg;
+      const rel = normalise(`/${relText}`);
+      if (!rel || relText.split("/").includes("..")) return true;
       continue;
     }
-    const place = normalise(arg.startsWith("/") ? arg : `/${[...root, arg].join("/")}`);
+    // Round 12: a drive or UNC start is anchored, not joined under the chat as a relative name. `\` separates only
+    // for a Windows chat folder, and the parts are lower case so `c:\` inside `C:\` stays inside.
+    const piece = windows ? arg.replace(/\\/g, "/").toLowerCase() : arg;
+    const anchored = piece.startsWith("/") || (windows && (DRIVE_ABS.test(arg) || arg.startsWith("\\\\")));
+    const place = normalise(anchored ? piece : `/${[...root, piece].join("/")}`);
     if (!place || place.length < 3) return true;
     if (!startsWith(place, root)) return true;
   }
