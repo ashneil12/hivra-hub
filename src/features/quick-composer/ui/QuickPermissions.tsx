@@ -52,7 +52,8 @@ export function QuickPermissions({
   const id = useId();
   const cli = permissionCliForHarness(harness);
   const modes = offeredRuntimeModes(cli);
-  const [active, setActive] = useState(Math.max(0, modes.indexOf(value)));
+  // -1 when the chat's mode is not offered here (fx's Supervised): Enter then picks nothing.
+  const [active, setActive] = useState(modes.indexOf(value));
   useEffect(() => {
     root.current?.focus({ preventScroll: true });
   }, []);
@@ -82,7 +83,7 @@ export function QuickPermissions({
           );
         } else if (event.key === "Enter" || event.key === " ") {
           event.preventDefault();
-          pick(modes[active]);
+          if (modes[active]) pick(modes[active]);
         }
       }}
     >

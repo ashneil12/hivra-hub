@@ -104,67 +104,93 @@ export const PERMISSION_SNAPSHOT_BEFORE_WP175: PermissionTable = {
   },
 };
 
-export function cliPermissionSetting(cli: PermissionCli, row: PermissionRowKey): string {
-  return PERMISSION_MATRIX[cli][row].setting;
-}
+const hasOwn = (object: object, key: string) => Object.prototype.hasOwnProperty.call(object, key);
 
 /**
- * The order in which a session's mode is chosen: the live mode the chat runs
- * on, then its saved mode, then the phone or server payload, then Supervised.
- * Anything that is not a Hivra mode is skipped. There is no sandbox step.
+ * The setting a CLI gets for a row. Only the table's own rows count: a name such
+ * as `constructor` or `__proto__` falls back to Supervised, so it never yields
+ * an undefined setting (which Claude would read as "use the user's defaultMode").
  */
-export function resolveRuntimeMode(sources: {
-  live?: unknown;
-  saved?: unknown;
-  payload?: unknown;
-}): RuntimeMode {
-  for (const candidate of [sources.live, sources.saved, sources.payload]) {
-    if (typeof candidate === "string" && (RUNTIME_MODES as string[]).includes(candidate)) {
-      return candidate as RuntimeMode;
-    }
-  }
-  return "supervised";
+export function cliPermissionSetting(cli: PermissionCli, row: PermissionRowKey): string {
+  if (!hasOwn(PERMISSION_MATRIX, cli)) throw new Error(`No permission table for ${String(cli)}`);
+  const cells = PERMISSION_MATRIX[cli];
+  return (hasOwn(cells, row) ? cells[row] : cells.supervised).setting;
+}
+
+/** A Hivra mode, or undefined for anything else. */
+function asRuntimeMode(value: unknown): RuntimeMode | undefined {
+  return typeof value === "string" && (RUNTIME_MODES as string[]).includes(value)
+    ? (value as RuntimeMode)
+    : undefined;
 }
 
 /**
- * The mode a phone request leaves a chat on (WP-175 4.1). The chat's own mode is
- * its live mode, else its saved mode. A phone payload that differs from it may
- * only tighten it: the stricter of the two wins, so the phone can never loosen a
- * chat. With no chat mode to protect (a new chat), the payload is taken, then
+ * Strictness of a row on a CLI: the table's rank where the CLI has a table, else
+ * Hivra's own order. Lower is stricter. Comparing Hivra's order alone is wrong on
+ * Antigravity, where Auto is its default (rank 0) and stricter than auto-accept
+ * edits (rank 1).
+ */
+export function permissionRank(cli: PermissionCli | null, row: PermissionRowKey): number {
+  return cli ? PERMISSION_MATRIX[cli][row].rank : hivraRank(row);
+}
+
+/** Strictness across Hivra modes: plan is below Supervised, Full access is the top. */
+function hivraRank(row: PermissionRowKey): number {
+  if (row === "plan") return -1;
+  return RUNTIME_MODES.indexOf(row);
+}
+
+/**
+ * The phone's mode change for a chat (WP-175 4.1). The chat's own mode is its
+ * live mode, else its saved mode; a present but unknown value counts as
+ * Supervised. A phone pick may only tighten it: the stricter one on this CLI
+ * wins, and a tie keeps the chat's own mode. `accepted` is false when the pick
+ * was looser (or tied) and the chat stays where it was, so the caller can tell
+ * the phone. With no chat mode to protect (a new chat), the pick is taken, then
  * Supervised.
  */
-export function resolvePhoneRuntimeMode(sources: {
-  live?: unknown;
-  saved?: unknown;
-  payload?: unknown;
-}): RuntimeMode {
-  const own = resolveOwnMode(sources.live, sources.saved);
-  const requested = resolveOwnMode(sources.payload);
-  if (own === undefined) return requested ?? "supervised";
-  if (requested === undefined) return own;
-  return RUNTIME_MODES.indexOf(requested) < RUNTIME_MODES.indexOf(own) ? requested : own;
+export function phoneModeChange(
+  cli: PermissionCli | null,
+  sources: { live?: unknown; saved?: unknown; payload?: unknown },
+): { mode: RuntimeMode; accepted: boolean } {
+  const own = chatMode(sources.live, sources.saved);
+  const requested = asRuntimeMode(sources.payload);
+  if (own === undefined) return { mode: requested ?? "supervised", accepted: true };
+  if (requested === undefined) return { mode: own, accepted: true };
+  const mode = permissionRank(cli, requested) < permissionRank(cli, own) ? requested : own;
+  return { mode, accepted: mode === requested };
 }
 
-function resolveOwnMode(...candidates: unknown[]): RuntimeMode | undefined {
+/** The mode a phone request leaves a chat on. See phoneModeChange. */
+export function resolvePhoneRuntimeMode(
+  cli: PermissionCli | null,
+  sources: { live?: unknown; saved?: unknown; payload?: unknown },
+): RuntimeMode {
+  return phoneModeChange(cli, sources).mode;
+}
+
+function chatMode(...candidates: unknown[]): RuntimeMode | undefined {
   for (const candidate of candidates) {
-    if (typeof candidate === "string" && (RUNTIME_MODES as string[]).includes(candidate)) {
-      return candidate as RuntimeMode;
-    }
+    if (candidate === undefined || candidate === null) continue;
+    return asRuntimeMode(candidate) ?? "supervised";
   }
   return undefined;
 }
 
 /**
- * What a mode is called on one CLI (WP-175 4.2 and 4.3). Only where the shared
- * Hivra name would mislead: fx's Supervised does not ask before it acts, and
- * Antigravity's Auto is its default mode with no AI review.
+ * What a mode is called on one CLI (WP-175 4.2 and 4.3). fx approves its own
+ * requests in every mode, so every stored mode says so; Antigravity's Auto is
+ * its default mode with no AI review. Other CLIs keep the shared Hivra copy.
  */
+const FX_HONEST_COPY = {
+  label: "fx approves its own requests",
+  hint: "fx runs its own code mode and approves its requests in code. Nothing is asked before it acts.",
+};
 const CLI_MODE_COPY: Partial<Record<PermissionCli, Partial<Record<RuntimeMode, { label: string; hint: string }>>>> = {
   fx: {
-    supervised: {
-      label: "fx approves its own requests",
-      hint: "fx runs its own code mode and approves its requests in code. Nothing is asked before it acts.",
-    },
+    supervised: FX_HONEST_COPY,
+    "auto-accept-edits": FX_HONEST_COPY,
+    auto: FX_HONEST_COPY,
   },
   antigravity: {
     auto: {
@@ -189,7 +215,7 @@ export function runtimeModeCopy(
   mode: RuntimeMode,
   cli: PermissionCli | null,
 ): { label: string; hint: string } {
-  const own = cli ? CLI_MODE_COPY[cli]?.[mode] : undefined;
+  const own = cli && hasOwn(CLI_MODE_COPY, cli) ? CLI_MODE_COPY[cli]?.[mode] : undefined;
   return own ?? { label: RUNTIME_MODE_LABEL[mode], hint: RUNTIME_MODE_HINT[mode] };
 }
 
@@ -199,41 +225,39 @@ export function offeredRuntimeModes(cli: PermissionCli | null): RuntimeMode[] {
   return offered ? RUNTIME_MODES.filter((mode) => offered.includes(mode)) : [...RUNTIME_MODES];
 }
 
-/** Strictness across Hivra modes: plan is below Supervised, Full access is the top. */
-function hivraRank(row: PermissionRowKey): number {
-  if (row === "plan") return -1;
-  return RUNTIME_MODES.indexOf(row);
-}
-
 export type RefusedModeChange =
   | { action: "wait"; message: string }
   | { action: "keep"; message: string };
 
+function modeLabel(mode: PermissionRowKey, cli: PermissionCli | null): string {
+  return mode === "plan" ? "Plan" : runtimeModeCopy(mode, cli).label;
+}
+
 /**
  * One rule for a mode change a CLI refused. `current` is the mode the process
- * last confirmed, or null when none is known.
+ * last confirmed, or null when none is known. Strictness is the CLI's own rank.
  *
  * - A refused downgrade, or any refusal with no known current mode, ends the turn
  *   as waiting. The turn never runs on the looser mode.
- * - A refused upgrade keeps the current (stricter) mode, the turn goes on, and
- *   the message says so.
+ * - A refused upgrade, or a refused change to an equally strict setting, keeps
+ *   the current mode, the turn goes on, and the message says so.
  */
 export function refusedModeChange(
   current: PermissionRowKey | null,
   target: PermissionRowKey,
+  cli: PermissionCli | null = null,
 ): RefusedModeChange {
-  const targetLabel = target === "plan" ? "Plan" : RUNTIME_MODE_LABEL[target];
+  const targetLabel = modeLabel(target, cli);
   if (current === null) {
     return {
       action: "wait",
       message: `Couldn't switch this chat to ${targetLabel}, so its turn is waiting. Choose a mode and send again.`,
     };
   }
-  if (hivraRank(target) > hivraRank(current)) {
-    const currentLabel = current === "plan" ? "Plan" : RUNTIME_MODE_LABEL[current];
+  if (permissionRank(cli, target) >= permissionRank(cli, current)) {
     return {
       action: "keep",
-      message: `Couldn't switch this chat to ${targetLabel}; it stays on ${currentLabel}.`,
+      message: `Couldn't switch this chat to ${targetLabel}; it stays on ${modeLabel(current, cli)}.`,
     };
   }
   return {
@@ -273,6 +297,7 @@ export class ModeChangeRefused extends Error {
 export async function changeMode(opts: {
   current: PermissionRowKey | null;
   target: PermissionRowKey;
+  cli: PermissionCli;
   send: () => Promise<unknown>;
   ignoreUnsupported?: boolean;
 }): Promise<
@@ -286,7 +311,7 @@ export async function changeMode(opts: {
   } catch (error) {
     if (isTransportFailure(error)) throw error;
     if (opts.ignoreUnsupported && isUnsupportedControl(error)) return { outcome: "unsupported" };
-    const decision = refusedModeChange(opts.current, opts.target);
+    const decision = refusedModeChange(opts.current, opts.target, opts.cli);
     if (decision.action === "wait") {
       const detail = error instanceof Error ? error.message : String(error);
       throw new ModeChangeRefused(`${decision.message} (${detail})`);

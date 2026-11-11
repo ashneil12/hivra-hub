@@ -644,6 +644,7 @@ async function applyRuntimeMode(
   const result = await changeMode({
     current: live.appliedMode ?? null,
     target,
+    cli: "antigravity",
     send: () =>
       live.acp.request(
         "session/set_mode",

@@ -320,7 +320,8 @@ describe("fx: a refused mode change follows the one rule (WP-175)", () => {
     await waitFor(() => parse().some((m) => m.method === "session/prompt"), "prompt 2");
     reply(parse().find((m) => m.method === "session/prompt")!.id, { stopReason: "end_turn" });
     await turn2;
-    const notice = events.find((e) => e.type === "notice" && /stays on Supervised/.test(e.text));
+    // fx names Supervised for what it does (WP-175): both modes are fx's one code mode, so the refusal keeps it.
+    const notice = events.find((e) => e.type === "notice" && /stays on fx approves its own requests/.test(e.text));
     expect(notice).toBeDefined();
   });
 });

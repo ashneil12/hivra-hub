@@ -1,10 +1,27 @@
 import { promptBlocks, type PromptContentBlock } from "../../../../features/sessions/model/attachments";
 import type { AgentModel, ModelSetting } from "../../../../features/sessions/model/models";
-import type { Attachment, RuntimeMode, ToolPreview } from "../../../../features/sessions/model/session";
+import { RUNTIME_MODES, type Attachment, type RuntimeMode, type ToolPreview } from "../../../../features/sessions/model/session";
 import { nativeCommandInvocation, type NativeCommand } from "../../core/nativeCommands";
-import { cliPermissionSetting } from "../../core/permissionMatrix";
+import { PERMISSION_MATRIX, cliPermissionSetting, type PermissionRowKey } from "../../core/permissionMatrix";
 import type { HarnessEvent } from "../../core/types";
 import { asRecord, eventsFromAcpUpdate, stringField } from "../antigravity/antigravityProtocol";
+
+/**
+ * The row Devin reports it is on (WP-175). Two rows can share a setting (Supervised
+ * and auto-accept edits both send accept-edits), so a reported setting keeps the
+ * current row only when that row has it; otherwise it names the one row that has
+ * it, or nothing (unknown, so a refusal waits).
+ */
+export function devinRowForSetting(
+  setting: string,
+  current: PermissionRowKey | null | undefined,
+): PermissionRowKey | null {
+  if (current && cliPermissionSetting("devin", current) === setting) return current;
+  const rows = [...RUNTIME_MODES, "plan" as const].filter(
+    (row) => PERMISSION_MATRIX.devin[row].setting === setting,
+  );
+  return rows.length === 1 ? rows[0] : null;
+}
 
 export const DEVIN_AUTH_HELP =
   "Run `devin auth login` in a terminal, then retry.";

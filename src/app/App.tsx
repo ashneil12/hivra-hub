@@ -34,6 +34,7 @@ import {
   applyMobileChoice,
   mobileWorkspaceChoice,
   mobileChoice,
+  mobileConfigureMode,
   mobileCatalog,
   mobilePrivateSessionIds,
   publishedApprovalRows,
@@ -814,6 +815,7 @@ import {
   type Session,
   type UsageLimit,
   type WorkspaceMode,
+  DEFAULT_RUNTIME_MODE,
 } from "../features/sessions/model/session";
 // WP-113: attention for the optional chat list inbox. Off passes no sessions.
 import { useChatListInbox } from "../features/settings/model/displayPrefs";
@@ -1218,7 +1220,7 @@ import {
   workspaceSnapshotKey,
 } from "../features/workspace/model/workspaceSnapshot";
 import type { InstalledUpdate } from "./model/updateNotice";
-import { resolvePhoneRuntimeMode } from "../integrations/harness/core/permissionMatrix";
+
 import {
   bindResumedSessions,
   closeBusyWindow,
@@ -7988,6 +7990,8 @@ function Workspace({
       if (!current) return;
       if (isPreparingHandoff(current)) return;
       const resolved = resolveModel(harness, model);
+      // Leaving fx resets the mode: fx's Full access is its only offer and must not carry to another CLI (WP-175).
+      const leavesFx = current.harness === "fx" && resolved.harness !== "fx";
       saveRecentModelChoice(resolved.harness, resolved.id);
       if (current.modelSettings) {
         saveLastModelSettings(current.modelSettings, "fill");
@@ -8024,7 +8028,7 @@ function Workspace({
                       ? resumeMonoUsageLimit(session)
                       : resumeUsageLimitedSession(session)
                     : session;
-                  return next;
+                  return leavesFx ? { ...next, runtimeMode: DEFAULT_RUNTIME_MODE } : next;
                 }),
               );
             });
@@ -10981,18 +10985,18 @@ function Workspace({
         // The phone's model sheet, through the same paths as the composer's
         // pickers, so a provider switch hands off on the next send as here.
         const choice = mobileChoice(params);
+        // WP-175: the phone may tighten this chat's mode, never loosen it. Checked before anything changes, so a
+        // refused pick leaves the chat as it was and the phone is told, and resets its pick (mobileConfigureMode).
+        const openNow = sessionsRef.current.find((current) => current.id === session.id);
+        const plan = mobileConfigureMode(session, openNow?.runtimeMode, choice);
+        if (plan.error) throw new Error(plan.error);
         if (choice.harness && choice.model && (choice.harness !== session.harness || choice.model !== session.model))
           onModelChange(session.id, choice.harness, choice.model);
         if (choice.modelSettings) {
           const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
           onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
         }
-        // WP-175: the phone's mode is the stricter of the chat's own mode and its pick, so it can tighten a chat, never loosen it.
-        if (choice.runtimeMode) {
-          const openNow = sessionsRef.current.find((current) => current.id === session.id);
-          const next = resolvePhoneRuntimeMode({ live: openNow?.runtimeMode, saved: session.runtimeMode, payload: choice.runtimeMode });
-          if (next !== (openNow?.runtimeMode ?? session.runtimeMode)) onRuntimeModeChange(session.id, next);
-        }
+        if (plan.mode && plan.mode !== (openNow?.runtimeMode ?? session.runtimeMode)) onRuntimeModeChange(session.id, plan.mode);
         return { sessionId: session.id };
       }
       if (method === "session.answerQuestion" || method === "session.keepQuestionOpen") {

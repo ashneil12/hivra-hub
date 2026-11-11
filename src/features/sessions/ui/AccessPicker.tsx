@@ -52,9 +52,8 @@ export function AccessPicker({
   const modes = offeredRuntimeModes(cli);
   const current = runtimeModeCopy(value, cli);
   const [open, setOpen] = useState(false);
-  const [active, setActive] = useState(() =>
-    Math.max(0, modes.indexOf(value)),
-  );
+  // -1 when the chat's mode is not offered here (fx's Supervised): Enter then picks nothing.
+  const [active, setActive] = useState(() => modes.indexOf(value));
   const root = useRef<HTMLDivElement>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -67,7 +66,7 @@ export function AccessPicker({
 
   useEffect(() => {
     if (!open) return;
-    setActive(Math.max(0, modes.indexOf(value)));
+    setActive(modes.indexOf(value));
   }, [open, value]);
 
   const pick = (mode: RuntimeMode) => {

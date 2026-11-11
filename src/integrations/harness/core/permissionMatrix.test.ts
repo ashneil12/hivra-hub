@@ -3,14 +3,16 @@ import {
   PERMISSION_CLIS,
   PERMISSION_MATRIX,
   PERMISSION_SNAPSHOT_BEFORE_WP175,
+  type PermissionCli,
   cliPermissionSetting,
   isTransportFailure,
   isUnsupportedControl,
   offeredRuntimeModes,
   permissionCliForHarness,
+  permissionRank,
+  phoneModeChange,
   refusedModeChange,
   resolvePhoneRuntimeMode,
-  resolveRuntimeMode,
   runtimeModeCopy,
 } from "./permissionMatrix";
 import { RUNTIME_MODES, type RuntimeMode } from "../../../features/sessions/model/session";
@@ -87,86 +89,95 @@ describe("permission matrix: one table, every CLI", () => {
   });
 });
 
-describe("resolution order", () => {
-  it("takes the live mode, then the saved mode, then the payload, then Supervised", () => {
-    expect(resolveRuntimeMode({ live: "auto", saved: "full-access", payload: "full-access" })).toBe("auto");
-    expect(resolveRuntimeMode({ saved: "auto-accept-edits", payload: "full-access" })).toBe("auto-accept-edits");
-    expect(resolveRuntimeMode({ payload: "full-access" })).toBe("full-access");
-    expect(resolveRuntimeMode({})).toBe("supervised");
-  });
-
-  it("skips values that are not a Hivra mode", () => {
-    expect(resolveRuntimeMode({ live: "yolo" as RuntimeMode, saved: null, payload: "bypassPermissions" as RuntimeMode })).toBe("supervised");
-  });
-});
-
-describe("one rule for a refused mode change", () => {
-  it("a refused downgrade ends the turn as waiting", () => {
-    const decision = refusedModeChange("full-access", "supervised", false);
-    expect(decision.action).toBe("wait");
-    expect(decision.message).toMatch(/waiting/);
-  });
-
-  it("a refused change with no known current mode waits (fail closed)", () => {
-    expect(refusedModeChange(null, "auto", false).action).toBe("wait");
-  });
-
-  it("a refused upgrade keeps the current mode and says so", () => {
-    const decision = refusedModeChange("supervised", "full-access", false);
-    expect(decision.action).toBe("keep");
-    expect(decision.message).toMatch(/stays on Supervised/);
-  });
-
-  it("a refused plan turn waits when leaving a looser mode", () => {
-    expect(refusedModeChange("full-access", "plan", true).action).toBe("wait");
-  });
-
-  it("classifies transport failures apart from refusals", () => {
-    expect(isTransportFailure(new Error("request timed out"))).toBe(true);
-    expect(isTransportFailure(new Error("child exited"))).toBe(true);
-    expect(isTransportFailure(new Error("Invalid mode"))).toBe(false);
-    expect(isUnsupportedControl(new Error("Method not found"))).toBe(true);
-    expect(isUnsupportedControl(new Error("Invalid mode"))).toBe(false);
-  });
-});
-
 describe("the phone path can never loosen a chat's mode (WP-175 4.1)", () => {
   it("a phone pick looser than the chat's saved mode leaves the chat on the saved mode", () => {
-    expect(resolvePhoneRuntimeMode({ saved: "supervised", payload: "full-access" })).toBe("supervised");
-    expect(resolvePhoneRuntimeMode({ live: "auto-accept-edits", saved: "auto-accept-edits", payload: "full-access" })).toBe("auto-accept-edits");
+    expect(resolvePhoneRuntimeMode("claude", { saved: "supervised", payload: "full-access" })).toBe("supervised");
+    expect(resolvePhoneRuntimeMode("claude", { live: "auto-accept-edits", saved: "auto-accept-edits", payload: "full-access" })).toBe("auto-accept-edits");
   });
 
   it("a phone pick stricter than the chat's saved mode is taken", () => {
-    expect(resolvePhoneRuntimeMode({ saved: "full-access", payload: "supervised" })).toBe("supervised");
-    expect(resolvePhoneRuntimeMode({ live: "full-access", saved: "full-access", payload: "auto" })).toBe("auto");
+    expect(resolvePhoneRuntimeMode("claude", { saved: "full-access", payload: "supervised" })).toBe("supervised");
+    expect(resolvePhoneRuntimeMode("claude", { live: "full-access", saved: "full-access", payload: "auto" })).toBe("auto");
   });
 
-  it("the chat's live mode outranks its saved mode, and the stricter of the two with the payload wins", () => {
-    expect(resolvePhoneRuntimeMode({ live: "auto", saved: "full-access", payload: "full-access" })).toBe("auto");
-    expect(resolvePhoneRuntimeMode({ live: "full-access", saved: "auto", payload: "auto-accept-edits" })).toBe("auto-accept-edits");
+  it("the chat's live mode outranks its saved mode", () => {
+    expect(resolvePhoneRuntimeMode("claude", { live: "auto", saved: "full-access", payload: "full-access" })).toBe("auto");
+    expect(resolvePhoneRuntimeMode("claude", { live: "full-access", saved: "auto", payload: "auto-accept-edits" })).toBe("auto-accept-edits");
   });
 
   it("with no chat mode to protect, the payload is taken, then Supervised", () => {
-    expect(resolvePhoneRuntimeMode({ payload: "full-access" })).toBe("full-access");
-    expect(resolvePhoneRuntimeMode({ payload: "bypassPermissions" as RuntimeMode })).toBe("supervised");
-    expect(resolvePhoneRuntimeMode({})).toBe("supervised");
+    expect(resolvePhoneRuntimeMode("claude", { payload: "full-access" })).toBe("full-access");
+    expect(resolvePhoneRuntimeMode("claude", { payload: "bypassPermissions" })).toBe("supervised");
+    expect(resolvePhoneRuntimeMode("claude", {})).toBe("supervised");
   });
 
-  it("never returns a mode looser than the chat's own, for any pair of Hivra modes", () => {
-    for (const own of RUNTIME_MODES) {
-      for (const payload of RUNTIME_MODES) {
-        const next = resolvePhoneRuntimeMode({ saved: own, payload });
-        expect(RUNTIME_MODES.indexOf(next), `${own} + ${payload}`).toBeLessThanOrEqual(RUNTIME_MODES.indexOf(own));
-      }
-    }
+  it("a garbled chat mode counts as Supervised, so the pick cannot loosen it", () => {
+    expect(resolvePhoneRuntimeMode("claude", { saved: "yolo", payload: "full-access" })).toBe("supervised");
+    expect(phoneModeChange("claude", { saved: "yolo", payload: "full-access" }).accepted).toBe(false);
+  });
+
+  it("reports whether the pick was taken, so the phone can be told when it was not", () => {
+    expect(phoneModeChange("claude", { saved: "supervised", payload: "full-access" })).toEqual({ mode: "supervised", accepted: false });
+    expect(phoneModeChange("claude", { saved: "full-access", payload: "auto" })).toEqual({ mode: "auto", accepted: true });
+    expect(phoneModeChange("claude", { saved: "auto", payload: undefined })).toEqual({ mode: "auto", accepted: true });
   });
 });
 
-describe("honest mode names on fx and Antigravity (WP-175 4.2 and 4.3)", () => {
+describe("the phone's mode is ranked on each CLI, not by Hivra's order (WP-175 HIGH)", () => {
+  it("Antigravity: Auto is its default, stricter than auto-accept edits, so a pick of auto-accept edits cannot loosen Auto", () => {
+    expect(permissionRank("antigravity", "auto")).toBeLessThan(permissionRank("antigravity", "auto-accept-edits"));
+    expect(resolvePhoneRuntimeMode("antigravity", { live: "auto", saved: "auto", payload: "auto-accept-edits" })).toBe("auto");
+    expect(phoneModeChange("antigravity", { live: "auto", saved: "auto", payload: "auto-accept-edits" }).accepted).toBe(false);
+  });
+
+  it("a tie keeps the chat's own mode (Antigravity Supervised and Auto share the default setting)", () => {
+    expect(resolvePhoneRuntimeMode("antigravity", { saved: "supervised", payload: "auto" })).toBe("supervised");
+    expect(resolvePhoneRuntimeMode("fx", { saved: "auto", payload: "supervised" })).toBe("auto");
+  });
+
+  for (const cli of PERMISSION_CLIS) {
+    it(`${cli}: the resulting setting is never looser than the chat's own, for every pair of modes`, () => {
+      for (const own of RUNTIME_MODES) {
+        for (const payload of RUNTIME_MODES) {
+          const next = resolvePhoneRuntimeMode(cli, { saved: own, payload });
+          const ownRank = PERMISSION_MATRIX[cli][own].rank;
+          const nextRank = PERMISSION_MATRIX[cli][next].rank;
+          expect(nextRank, `${cli} ${own} + ${payload} -> ${next}`).toBeLessThanOrEqual(ownRank);
+          const payloadRank = PERMISSION_MATRIX[cli][payload].rank;
+          if (payloadRank < ownRank) expect(next, `${cli} ${own} + ${payload}`).toBe(payload);
+          else expect(next, `${cli} ${own} + ${payload}`).toBe(own);
+        }
+      }
+    });
+  }
+});
+
+describe("cliPermissionSetting never yields an undefined setting (WP-175 LOW 6)", () => {
+  it("falls back to the Supervised row for names that are not table rows", () => {
+    for (const row of ["constructor", "__proto__", "toString", "hasOwnProperty", "nope"]) {
+      expect(cliPermissionSetting("claude", row as RuntimeMode), row).toBe("default");
+      expect(cliPermissionSetting("antigravity", row as RuntimeMode), row).toBe("default");
+    }
+  });
+
+  it("still throws for a CLI with no table, rather than guessing one", () => {
+    expect(() => cliPermissionSetting("nope" as PermissionCli, "auto")).toThrow();
+  });
+});
+
+describe("honest mode names on fx and Antigravity (WP-175 4.2, 4.3 and MED 3)", () => {
   it("names fx's Supervised for what it does, not as Supervised", () => {
     const copy = runtimeModeCopy("supervised", "fx");
     expect(copy.label).toBe("fx approves its own requests");
     expect(copy.hint).toMatch(/fx/);
+  });
+
+  it("gives fx honest copy for every stored mode, since fx approves its own requests in each", () => {
+    for (const mode of ["supervised", "auto-accept-edits", "auto"] as const) {
+      expect(runtimeModeCopy(mode, "fx").label, mode).toBe("fx approves its own requests");
+      expect(runtimeModeCopy(mode, "fx").hint, mode).not.toMatch(/AI reviewer|ask before other/);
+    }
+    expect(runtimeModeCopy("full-access", "fx").label).toBe("Full access");
   });
 
   it("names Antigravity's Auto for what it runs, not as an AI-reviewed Auto", () => {
@@ -195,5 +206,47 @@ describe("honest mode names on fx and Antigravity (WP-175 4.2 and 4.3)", () => {
     expect(permissionCliForHarness("claude")).toBe("claude");
     expect(permissionCliForHarness("codex")).toBeNull();
     expect(permissionCliForHarness(undefined)).toBeNull();
+  });
+});
+
+describe("one rule for a refused mode change", () => {
+  it("a refused downgrade ends the turn as waiting", () => {
+    const decision = refusedModeChange("full-access", "supervised");
+    expect(decision.action).toBe("wait");
+    expect(decision.message).toMatch(/waiting/);
+  });
+
+  it("a refused change with no known current mode waits (fail closed)", () => {
+    expect(refusedModeChange(null, "auto").action).toBe("wait");
+  });
+
+  it("a refused upgrade keeps the current mode and says so", () => {
+    const decision = refusedModeChange("supervised", "full-access");
+    expect(decision.action).toBe("keep");
+    expect(decision.message).toMatch(/stays on Supervised/);
+  });
+
+  it("a refused plan turn waits when leaving a looser mode", () => {
+    expect(refusedModeChange("full-access", "plan").action).toBe("wait");
+  });
+
+  it("on Antigravity, a refused switch from Auto to auto-accept edits keeps Auto (its setting is the stricter one)", () => {
+    const decision = refusedModeChange("auto", "auto-accept-edits", "antigravity");
+    expect(decision.action).toBe("keep");
+    expect(decision.message).toMatch(/stays on Default \(no AI review\)/);
+  });
+
+  it("names the CLI's own mode in the refusal, not Hivra's shared name", () => {
+    const decision = refusedModeChange("supervised", "auto", "antigravity");
+    expect(decision.message).toMatch(/Default \(no AI review\)/);
+    expect(decision.message).not.toMatch(/\bAuto\b/);
+  });
+
+  it("classifies transport failures apart from refusals", () => {
+    expect(isTransportFailure(new Error("request timed out"))).toBe(true);
+    expect(isTransportFailure(new Error("child exited"))).toBe(true);
+    expect(isTransportFailure(new Error("Invalid mode"))).toBe(false);
+    expect(isUnsupportedControl(new Error("Method not found"))).toBe(true);
+    expect(isUnsupportedControl(new Error("Invalid mode"))).toBe(false);
   });
 });

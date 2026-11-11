@@ -65,12 +65,18 @@ Happy is MIT, `Copyright (c) 2026 Happy Coder Contributors`. This package ports 
 
 ## Decisions
 
-- **Phone path can only tighten a chat (4.1).** `resolvePhoneRuntimeMode` takes the chat's own mode (live, else saved) and the phone's pick. If both exist, the stricter one is used, so a phone pick of Full access on a Supervised chat leaves it Supervised, and a phone pick of Supervised on a Full access chat tightens it. The phone's `session.configure` calls it. With no chat mode to protect (a new chat), the pick is taken, then Supervised.
-- **New chats from the phone take the stricter of the default and the pick (decided by Ash).** A new chat starts from the default it would have had on the desktop, then the phone's pick is applied with the same rule. The default is the active session's mode, else Supervised: the code has no separate project or Mono default mode setting.
-- **fx Supervised is named for what it does (4.2).** It reads "fx approves its own requests" with a hint that nothing is asked before fx acts. The behaviour is unchanged and still a known gap.
-- **fx is offered with Full access only (4.2, for now).** The mode picker on fx chats (composer, quick composer, automations, Mono settings, phone sheet) offers Full access alone. The picker was hidden for fx before, so an fx chat showed no mode at all. It now shows the true mode.
-- **Antigravity's Auto is named for what it runs (4.3).** It reads "Default (no AI review)", and its hint says its approvals are not reviewed by an AI. The setting is unchanged. Claude, Devin and the other harnesses keep the shared labels.
-- **Known gaps stay open.** fx Supervised does not ask before it acts (approval handling is WP-14 and WP-146 territory, not touched here). Antigravity default has no AI review, now named as such.
+- **Strictness is the CLI's own rank (review 2, HIGH).** A phone pick or a refused change is compared by `PERMISSION_MATRIX[cli][mode].rank`, not by Hivra's order. Antigravity's Auto runs as its default, which is stricter than auto-accept edits, so a pick of auto-accept edits never loosens an Auto chat. A tie keeps the chat's own mode. Hivra's order is used only for a harness with no table.
+- **The phone can only tighten a chat (4.1).** `phoneModeChange` takes the chat's own mode (live, else saved; an unknown value counts as Supervised) and the phone's pick. The stricter one wins. When the pick is looser or tied, the configure call returns an error that names the mode the chat stays on, and the phone resets its pick. Checked before anything changes, so a refused pick leaves the chat as it was.
+- **New chats from the phone take the stricter of the default and the pick (decided by Ash).** The default is the active session's mode, else Supervised: the code has no separate project or Mono default mode setting. The same rank rule applies.
+- **Leaving fx resets the mode to Supervised.** fx's Full access is its only offer and must not carry to another CLI. Applies to the desktop model change and the phone configure.
+- **fx approves its own requests in every stored mode (MED 3).** Supervised, auto-accept edits and Auto all read "fx approves its own requests", with a hint that nothing is asked before fx acts. Full access reads "Full access". The phone's model sheet and the desktop picker show the same names.
+- **fx is offered with Full access only (4.2, for now, decided by Ash).** The picker on fx offers Full access alone. A chat that is not on Full access still shows its honest name, and Enter on it picks nothing.
+- **Antigravity's Auto is named for what it runs (4.3).** It reads "Default (no AI review)", and its hint says its approvals are not reviewed by an AI. Its setting is unchanged. Claude, Devin and other harnesses keep the shared labels.
+- **Refusals name the CLI's mode.** The refusal notice uses the CLI's own name for each mode.
+- **Devin's reported mode (LOW 8).** A `current_mode_update` sets the row the CLI reports. A setting two rows share is not enough to tell which, so the mode is unknown and a refusal waits.
+- **fx ignores only "method not found" on set_mode (LOW 9, intended).** Any other set_mode refusal on a fresh fx turn ends that turn as waiting. This fails safe.
+- **The phone reads the desktop's modes for each harness (MED 2).** The catalog sends `runtimeModesByHarness` (every mode, with its CLI name and an `offered` flag). The phone's picker uses the chat's own harness and shows only offered modes. The phone's mobile/ code is not type-checked or tested here (no node_modules in this worktree).
+- **Known gaps stay open.** fx Supervised does not ask before it acts (WP-14 and WP-146, decided by Ash to leave as is). Antigravity default has no AI review, now named as such.
 
 ## Done when
 

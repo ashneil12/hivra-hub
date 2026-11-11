@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { newDefaultSession, newSession } from "../../sessions/model/session";
-import { applyMobileChoice, mobileQuestionReply } from "./mobileWorkspace";
+import { applyMobileChoice, mobileConfigureMode, mobileQuestionReply } from "./mobileWorkspace";
 
 const prompt = {
   requestId: 1,
@@ -107,5 +107,53 @@ describe("a new chat from the phone takes the stricter of the default and the pi
   it("keeps the default when the phone sends no mode", () => {
     const session = newDefaultSession("~", "auto-accept-edits");
     expect(applyMobileChoice(session, {}).runtimeMode).toBe("auto-accept-edits");
+  });
+});
+
+describe("the phone's configure call for an open chat (WP-175 MED 4 and the App wiring)", () => {
+  it("returns an error when the pick is looser, so the phone resets its pick", () => {
+    const result = mobileConfigureMode({ harness: "claude", runtimeMode: "supervised" }, "supervised", { runtimeMode: "full-access" });
+    expect(result.mode).toBeUndefined();
+    expect(result.error).toMatch(/can only tighten this chat's mode/);
+    expect(result.error).toMatch(/stays on Supervised/);
+  });
+
+  it("uses the CLI's own name in that error (Antigravity Auto is its default)", () => {
+    const result = mobileConfigureMode({ harness: "antigravity", runtimeMode: "auto" }, "auto", { runtimeMode: "auto-accept-edits" });
+    expect(result.error).toMatch(/stays on Default \(no AI review\)/);
+  });
+
+  it("applies a stricter pick", () => {
+    expect(mobileConfigureMode({ harness: "claude", runtimeMode: "full-access" }, "full-access", { runtimeMode: "auto" })).toEqual({
+      targetHarness: "claude",
+      mode: "auto",
+    });
+  });
+
+  it("does nothing to the mode when the phone sends none", () => {
+    expect(mobileConfigureMode({ harness: "claude", runtimeMode: "auto" }, "auto", {})).toEqual({ targetHarness: "claude" });
+  });
+
+  it("leaving fx starts from Supervised, so fx's Full access never carries to another CLI", () => {
+    const result = mobileConfigureMode({ harness: "fx", runtimeMode: "full-access" }, "full-access", {
+      harness: "claude",
+      runtimeMode: "full-access",
+    });
+    expect(result.targetHarness).toBe("claude");
+    expect(result.error).toMatch(/stays on Supervised/);
+  });
+
+  it("takes a pick on the new CLI's ranks when leaving fx for a stricter one", () => {
+    expect(
+      mobileConfigureMode({ harness: "fx", runtimeMode: "full-access" }, "full-access", { harness: "claude", runtimeMode: "supervised" }),
+    ).toEqual({ targetHarness: "claude", mode: "supervised" });
+  });
+});
+
+describe("a new Antigravity chat from the phone takes the CLI's rank (WP-175 HIGH)", () => {
+  it("does not loosen Auto to auto-accept edits on Antigravity", () => {
+    const session = newDefaultSession("~", "auto");
+    session.harness = "antigravity";
+    expect(applyMobileChoice(session, { runtimeMode: "auto-accept-edits" }).runtimeMode).toBe("auto");
   });
 });

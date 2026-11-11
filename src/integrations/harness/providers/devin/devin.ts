@@ -49,6 +49,7 @@ import {
   devinPermissionCommand,
   devinPromptBlocks,
   devinRestoreError,
+  devinRowForSetting,
   devinSessionMissing,
   devinSessionTitle,
   devinStartupError,
@@ -608,6 +609,7 @@ async function applyRuntimeMode(
   const result = await changeMode({
     current: live.appliedMode ?? null,
     target,
+    cli: "devin",
     send: () =>
       live.rpc.request(
         "session/set_mode",
@@ -690,7 +692,12 @@ function handleUpdate(
   }
   if (update?.sessionUpdate === "current_mode_update") {
     const mode = update.currentModeId;
-    if (typeof mode === "string") live.modeId = mode as DevinModeId;
+    if (typeof mode === "string") {
+      live.modeId = mode as DevinModeId;
+      // The CLI's own report is what it runs on now. A setting two rows share is not
+      // enough to tell which one, so the mode is unknown (and a refusal waits).
+      live.appliedMode = devinRowForSetting(mode, live.appliedMode) ?? undefined;
+    }
     return;
   }
   const tool = devinToolInfo(params);

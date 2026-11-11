@@ -416,6 +416,7 @@ async function applyRuntimeMode(
   const result = await changeMode({
     current: live.appliedMode ?? null,
     target,
+    cli: "fx",
     ignoreUnsupported: true,
     send: () =>
       live.acp.request(
