@@ -95,7 +95,7 @@ export type FirstMateBackend = {
   list(query: { childSession?: string; ownerSession?: string }): Promise<SteerMessage[]>;
   settle(id: string, outcome: SteerOutcome): Promise<{ applied: boolean; message: SteerMessage | null }>;
   ask(input: AskInput): Promise<AskOutcome>;
-  answer(project: string, key: string, answer: string, by?: string): Promise<AnswerOutcome>;
+  answer(project: string, key: string, answer: string, by: string): Promise<AnswerOutcome>;
   decisions(answered?: number): Promise<Decision[]>;
 };
 

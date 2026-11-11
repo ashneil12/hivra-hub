@@ -174,7 +174,7 @@ export function FirstMateInboxPanel({
     let applied = false;
     let threw = false;
     try {
-      const outcome = await tauriFirstMate.answer(item.project, item.key, answerText);
+      const outcome = await tauriFirstMate.answer(item.project, item.key, answerText, "user");
       applied = outcome.applied;
     } catch {
       // A timeout is not a final no. The decision stays open and is tried again.

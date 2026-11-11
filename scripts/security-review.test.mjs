@@ -694,8 +694,14 @@ const PLANNED_ALLOW_LIST = Object.freeze({
   "src-tauri/src/crew/gate.rs": "crew gate, PR #194",
   "**/commit_guard*": "commit guard, PR #227",
   "**/agent_sandbox*": "agent sandbox, PR #208",
-  "**/spend_ledger*": "spend ledger, PR #204",
-  "**/more_agents*": "more agents, PR #217",
+  "**/spend_ledger*": "spend ledger, PR #217",
+  "**/more_agents*": "more agents, PR #204",
+  "src/features/commit-guard/**": "commit guard, hyphen path, PR #227",
+  "src/integrations/harness/moreAgents/**": "more agents, camelCase path, PR #204",
+  "src/features/providers/model/moreAgents.ts": "more agents module, PR #204",
+  "scripts/agent-sandbox-probe.mjs": "agent sandbox probe, PR #208",
+  "**/commit_guard/**": "commit guard module folder, PR #227",
+  "**/agent_sandbox/**": "agent sandbox module folder, PR #208",
 });
 
 test("round 4 HIGH-1: every file that names the review owner or request prefix is a security path", () => {
