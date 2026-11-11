@@ -168,19 +168,28 @@ pub async fn programme_consider_conflict(
         tick::Next::Done(tick) => return Ok(tick),
         tick::Next::Update(plan) => plan,
         tick::Next::Find { branch } => {
+            let gated = {
+                let conn = store.lock_conn()?;
+                update::gate_package_branch(&conn, &package_id, &branch)?
+            };
+            let branch = match gated {
+                update::Gate::Reported(message) => {
+                    return Ok(Tick::Reported { message });
+                }
+                update::Gate::Proceed(branch) => branch,
+            };
             let folder = std::path::PathBuf::from(&project);
             let lookup = branch.clone();
             let found = tauri::async_runtime::spawn_blocking(move || {
-                update::branch_worktree(&folder, &lookup)
+                update::adopt_worktree(&folder, &lookup)
             })
             .await
             .map_err(|error| error.to_string())??;
-            let Some(worktree) = found else {
-                return Ok(Tick::Reported {
-                    message:
-                        "No worktree has this package's branch checked out. Nothing was changed."
-                            .into(),
-                });
+            let worktree = match found {
+                update::Claim::Reported(message) => {
+                    return Ok(Tick::Reported { message });
+                }
+                update::Claim::Worktree(path) => path,
             };
             let conn = store.lock_conn()?;
             tick::record(

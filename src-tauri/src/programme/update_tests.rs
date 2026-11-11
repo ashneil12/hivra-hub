@@ -810,6 +810,112 @@ fn the_tick_finds_the_package_worktree_by_its_branch_and_updates_it() {
 }
 
 #[test]
+fn an_update_does_not_run_while_the_packages_builder_is_live() {
+    let lab = Lab::open("pkg");
+    lab.commit(&lab.package, "pkg.txt", "pkg\n");
+    lab.push(&lab.package, "pkg");
+    lab.commit(&lab.main, "trunk.txt", "trunk\n");
+    lab.push(&lab.main, "main");
+    let before = lab.sha(&lab.package, "HEAD");
+    let main_sha = lab.sha(&lab.main, "refs/heads/main");
+    let conn = memory();
+    lab.bind(&conn, "pkg");
+    conn.execute(
+        "INSERT INTO programme_packages (
+            id, project_id, wp, title, brief_path, branch, status, security_park, priority, notes,
+            park_reason, version, created_at, updated_at, claimed_at, finished_at
+         ) VALUES ('pkg-1', 'crew', 'WP-162', 'Update', 'docs/wp.md', 'pkg', 'building', 0, 0, '', NULL, 1, 1, 1, 1, NULL)",
+        [],
+    )
+    .unwrap();
+
+    match update::update_from_main(&conn, "pkg-1").unwrap().outcome {
+        Outcome::Refused { reason } => {
+            assert!(reason.to_ascii_lowercase().contains("builder"), "{reason}");
+        }
+        other => panic!("expected a refusal while the builder is live, got {other:?}"),
+    }
+    assert_eq!(lab.sha(&lab.package, "HEAD"), before, "the update ran");
+    assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+    assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+
+    conn.execute(
+        "UPDATE programme_packages SET status = 'pr_open' WHERE id = 'pkg-1'",
+        [],
+    )
+    .unwrap();
+    match update::update_from_main(&conn, "pkg-1").unwrap().outcome {
+        Outcome::Updated { .. } => {}
+        other => panic!("expected the update once the builder is done, got {other:?}"),
+    }
+    assert_ne!(lab.sha(&lab.package, "HEAD"), before);
+    assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+}
+
+fn insert_package(conn: &Connection, id: &str, wp: &str, branch: &str) {
+    conn.execute(
+        "INSERT INTO programme_packages (
+            id, project_id, wp, title, brief_path, branch, status, security_park, priority, notes,
+            park_reason, version, created_at, updated_at, claimed_at, finished_at
+         ) VALUES (?1, 'crew', ?2, 'Update', 'docs/wp.md', ?3, 'pr_open', 0, 0, '', NULL, 1, 1, 1, NULL, NULL)",
+        rusqlite::params![id, wp, branch],
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_lead_cannot_claim_a_worktree_that_was_not_made_for_the_package() {
+    let lab = Lab::open("pkg");
+    let conn = memory();
+    insert_package(&conn, "pkg-1", "WP-162", "wp/162");
+    match update::claim_worktree(&conn, &lab.main, "pkg-1", "pkg").unwrap() {
+        update::Claim::Reported(message) => {
+            assert!(
+                message.to_ascii_lowercase().contains("not")
+                    && message.to_ascii_lowercase().contains("package"),
+                "{message}"
+            );
+        }
+        update::Claim::Worktree(path) => panic!("adopted {} for WP-162", path.display()),
+    }
+    assert!(checkout::get(&conn, "pkg-1").unwrap().is_none());
+
+    match update::claim_worktree(&conn, &lab.main, "pkg-1", "wp/162b-update-leftovers").unwrap() {
+        update::Claim::Reported(_) => {}
+        update::Claim::Worktree(path) => panic!("adopted {} for WP-162", path.display()),
+    }
+
+    match update::claim_worktree(&conn, &lab.main, "missing", "pkg").unwrap() {
+        update::Claim::Reported(message) => {
+            assert!(
+                message
+                    .to_ascii_lowercase()
+                    .contains("not on the programme"),
+                "{message}"
+            );
+        }
+        update::Claim::Worktree(path) => panic!("guessed {} with no programme row", path.display()),
+    }
+
+    let real = lab.root.join("wp-162");
+    let real_path = real.to_string_lossy().into_owned();
+    git(
+        &lab.main,
+        &["worktree", "add", "-b", "wp/162", &real_path, "main"],
+    );
+    match update::claim_worktree(&conn, &lab.main, "pkg-1", "wp/162").unwrap() {
+        update::Claim::Worktree(path) => {
+            assert_eq!(
+                fs::canonicalize(&path).unwrap(),
+                fs::canonicalize(&real).unwrap()
+            );
+        }
+        update::Claim::Reported(message) => panic!("the package worktree was refused: {message}"),
+    }
+    assert!(checkout::get(&conn, "pkg-1").unwrap().is_none());
+}
+
+#[test]
 fn migrate_creates_the_programme_tables() {
     let store = crate::session_store::SessionStore::open_in_memory().unwrap();
     let conn = store.lock_conn().unwrap();
