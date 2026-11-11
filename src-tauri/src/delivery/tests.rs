@@ -3888,11 +3888,11 @@ fn repro_220_r5_the_switch_merges_a_change_to_who_answered() {
     );
 }
 
-/// The gate passes on any answered decision under `(project, security-review/<head>)`: it never checks that it asked it
-/// (asked_by "security-gate"), nor that the answer is to the question it would ask now. A top-level chat asks that key first with its
-/// own wording ("rename a button?", options Approve/No); the gate's later ask changes nothing (one key, one question); the
-/// person's "Approve" to the chat's question passes a head whose review has a critical candidate that needs validation,
-/// and the candidate is never put to them. The lead tick then merges by the switch.
+/// A top-level chat asks `security-review/<head>` first, in its own words, so the person's later "Approve" would
+/// answer the chat and pass a head that still has a critical candidate. The attack is now refused at the ask.
+/// repro_220_r6_a_chat_cannot_open_the_gate_key_in_any_spelling covers the same attack on the round 6 key.
+/// The steps after the ask answered that decision and then merged. They cannot run once the ask is refused,
+/// because no decision is stored.
 #[test]
 fn repro_220_r5_a_chat_that_asks_the_gate_key_first_words_the_persons_approval() {
     let f = fixture("r220r5-preask");
@@ -3903,7 +3903,7 @@ fn repro_220_r5_a_chat_that_asks_the_gate_key_first_words_the_persons_approval()
     let key = format!("security-review/{H1_SEC}");
     {
         let mut conn = s.lock_conn().unwrap();
-        crate::decisions::ask(
+        let err = crate::decisions::ask(
             &mut conn,
             crate::decisions::AskInput {
                 asked_by: "author-lead".into(),
@@ -3917,22 +3917,16 @@ fn repro_220_r5_a_chat_that_asks_the_gate_key_first_words_the_persons_approval()
             },
             5,
         )
-        .unwrap();
+        .unwrap_err();
+        assert!(
+            err.contains("Only the gate asks a security review"),
+            "{err}"
+        );
     }
-    // The person answers the question the Inbox shows them.
-    person_answers(&s, &f.project, H1_SEC, "Approve");
-    let pending = r#"[{"verdict":"needs_validation","title":"Token may leak to the phone","severity":{"overall_severity":"critical"}}]"#;
-    record_review(&s, H1_SEC, pending, "claude", "codex", &[SECURITY_FILE]);
-    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
-    let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 30).unwrap();
-    let shown = crate::decisions::get(&s.lock_conn().unwrap(), &project, &key)
-        .unwrap()
-        .unwrap();
+    let stored = crate::decisions::get(&s.lock_conn().unwrap(), &project, &key).unwrap();
     assert!(
-        !matches!(outcome, MergeOutcome::Merged { .. }),
-        "merged on the answer to a chat's question {:?} (asked by {}); the critical candidate was never shown: {outcome:?}",
-        shown.question,
-        shown.asked_by
+        stored.is_none(),
+        "a refused ask left a decision: {stored:?}"
     );
 }
 
