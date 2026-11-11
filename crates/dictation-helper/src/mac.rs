@@ -137,6 +137,19 @@ pub(crate) fn gate() -> Result<(), &'static str> {
     }
 }
 
+/// The setting file, read again after the permission prompt. A test build does not read it, so the microphone stays
+/// closed there.
+fn setting_text_now() -> Option<String> {
+    #[cfg(not(test))]
+    {
+        saved_setting_text()
+    }
+    #[cfg(test)]
+    {
+        None
+    }
+}
+
 /// The setting file in the Hub's application-support folder, read only by a real helper. A test build does not call
 /// this, so a test cannot read the daily app's folder. None when this process is not the helper bundle, the home is
 /// empty or walks upwards, or the file cannot be read. A missing file is off.
@@ -214,13 +227,19 @@ pub fn run(tx: Sender<Input>, rx: Receiver<Input>) {
         return;
     }
     // M1: the Hub may stop, or drop the connection, while a permission prompt is up. Then the microphone stays
-    // closed. mic_may_open is the same rule the unit test pins.
+    // closed. The setting file is read again here, so turning dictation off during the prompt refuses too.
     let stopped_during_prompt = matches!(
         rx.try_recv(),
         Ok(Input::Closed) | Ok(Input::Cmd(Command::Stop))
     );
-    if !protocol::mic_may_open(stopped_during_prompt) {
-        return;
+    let setting = setting_text_now();
+    match protocol::after_prompt(stopped_during_prompt, setting.as_deref()) {
+        protocol::AfterPrompt::Closed => return,
+        protocol::AfterPrompt::Refused => {
+            emit(&Event::Refused { reason: "not_here" });
+            return;
+        }
+        protocol::AfterPrompt::Open => {}
     }
     let started = Instant::now();
     let words = Arc::new(Mutex::new(started));

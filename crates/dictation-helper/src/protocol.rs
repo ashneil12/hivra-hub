@@ -233,6 +233,27 @@ pub fn mic_may_open(stopped_during_prompt: bool) -> bool {
     !stopped_during_prompt
 }
 
+/// What to do once the permission prompt has returned. The setting file is read again here: a stop during the prompt
+/// keeps the microphone closed, and a file that no longer says `on` refuses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AfterPrompt {
+    /// A stop or a dropped connection arrived during the prompt.
+    Closed,
+    /// The setting is missing or is not the word on.
+    Refused,
+    Open,
+}
+
+pub fn after_prompt(stopped_during_prompt: bool, setting_text: Option<&str>) -> AfterPrompt {
+    if !mic_may_open(stopped_during_prompt) {
+        return AfterPrompt::Closed;
+    }
+    if !allows_dictation(DICTATION_ENABLED, setting_text) {
+        return AfterPrompt::Refused;
+    }
+    AfterPrompt::Open
+}
+
 /// Where a session's events go. The XPC service sets this to the peer connection. With none set, events are written
 /// to stdout, which is the switched-off refusal and the smoke test, not a command channel.
 type LineSink = Arc<dyn Fn(&str) + Send + Sync>;
@@ -463,6 +484,37 @@ mod tests {
         assert!(
             mic_may_open(false),
             "a prompt that ends without a stop may open the microphone"
+        );
+    }
+
+    // The setting is read again after the prompt returns. A file that no longer says on keeps the microphone closed.
+    #[test]
+    fn the_setting_is_read_again_after_the_prompt() {
+        assert_eq!(after_prompt(false, Some("on")), AfterPrompt::Open);
+        assert_eq!(
+            after_prompt(false, Some("  on\r\n")),
+            AfterPrompt::Open,
+            "whitespace around on is still on"
+        );
+        assert_eq!(
+            after_prompt(true, Some("on")),
+            AfterPrompt::Closed,
+            "a stop during the prompt wins even when the setting stays on"
+        );
+        assert_eq!(after_prompt(false, Some("off")), AfterPrompt::Refused);
+        assert_eq!(after_prompt(false, Some("ON")), AfterPrompt::Refused);
+        assert_eq!(after_prompt(false, Some("")), AfterPrompt::Refused);
+        assert_eq!(after_prompt(false, Some("on\0")), AfterPrompt::Refused);
+        assert_eq!(after_prompt(false, Some("on\noff")), AfterPrompt::Refused);
+        assert_eq!(
+            after_prompt(false, None),
+            AfterPrompt::Refused,
+            "a missing file after the prompt is off"
+        );
+        assert_eq!(
+            after_prompt(true, None),
+            AfterPrompt::Closed,
+            "a stop is not turned into a refusal"
         );
     }
 
