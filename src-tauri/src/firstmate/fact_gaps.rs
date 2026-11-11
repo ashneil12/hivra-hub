@@ -986,7 +986,10 @@ struct CleanTurn {
 
 fn sanitize(turn: &FactTurn) -> CleanTurn {
     CleanTurn {
-        checks: keep_last(turn.checks.iter().filter_map(sanitize_check), MAX_CHECKS),
+        checks: keep_last(
+            latest_per_command(turn.checks.iter().filter_map(sanitize_check)),
+            MAX_CHECKS,
+        ),
         edits: keep_last(turn.edits.iter().filter_map(sanitize_edit), MAX_EDITS),
         todos: turn
             .todos
@@ -996,6 +999,24 @@ fn sanitize(turn: &FactTurn) -> CleanTurn {
             .collect(),
         answer: clean_answer(&turn.answer),
     }
+}
+
+/// Only the latest run of each command decides anything (`failure_gaps` reads the last one per display, and a later
+/// run of the same command is always the fresher one), so repeats collapse before the cap. Forty quick type checks are
+/// then one entry and cannot push an earlier failing test out. Order is the order of each command's latest run.
+fn latest_per_command(items: impl IntoIterator<Item = StoredCheck>) -> Vec<StoredCheck> {
+    let items: Vec<StoredCheck> = items.into_iter().collect();
+    let mut last: HashMap<&str, usize> = HashMap::new();
+    for (index, check) in items.iter().enumerate() {
+        last.insert(check.display.as_str(), index);
+    }
+    let keep: std::collections::HashSet<usize> = last.into_values().collect();
+    items
+        .into_iter()
+        .enumerate()
+        .filter(|(index, _)| keep.contains(index))
+        .map(|(_, check)| check)
+        .collect()
 }
 
 fn keep_last<T>(items: impl IntoIterator<Item = T>, max: usize) -> Vec<T> {
