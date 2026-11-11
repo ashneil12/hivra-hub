@@ -62,7 +62,7 @@ describe("Agents board theme", () => {
     });
     const board = container.querySelector("[data-agents-board]");
     if (!(board instanceof HTMLElement)) throw new Error("no board");
-    const painted = board.innerHTML.replaceAll("#e5484d", "").replaceAll("#ff6b6b", "");
+    const painted = board.innerHTML.replace(/#e5484d/g, "").replace(/#ff6b6b/g, "");
     expect(painted).not.toMatch(/#(?:141416|1b1b1d|f2f2f2|3b82f6|60a5fa)|(?:text|bg|border)-white|emerald-/);
     expect(board.className).toContain("bg-background-base");
     expect(board.className).toContain("text-content");

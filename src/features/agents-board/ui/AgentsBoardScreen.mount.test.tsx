@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { act, createElement, useEffect } from "react";
-import { createRoot, type Root } from "react-dom/client";
+import { createRoot } from "react-dom/client";
 import { expect, it, vi } from "vitest";
 import { noteCodingTeamChat, resetCodingTeamChats } from "../../hub/model/codingTeam";
 import { setHubDataSource } from "../../hub/model/hubData";
@@ -25,7 +25,7 @@ function chat(): Session {
     harness: "claude",
     model: "test",
     modelSettings: {},
-    runtimeMode: "local",
+    runtimeMode: "supervised",
     cwd: "/tmp/hivra",
   } as Session;
 }

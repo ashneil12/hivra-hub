@@ -32,7 +32,7 @@ function chat(id: string, reads: { n: number }): Session {
     harness: "claude",
     model: "test",
     modelSettings: {},
-    runtimeMode: "local",
+    runtimeMode: "supervised",
     cwd: "/tmp/hivra",
   } as Session;
 }
