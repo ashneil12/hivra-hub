@@ -196,6 +196,12 @@ WP-40's gates; it adds no second run model. It starts when 40 and 82 merge, and 
 | [174](work/WP-174-idle-reclaim-and-hibernation.md) | Idle reclaim and hibernation, a quiet chat gives back its process | M | 11, 146 | no |
 | Follow-up to [160](work/WP-160-lead-tick.md) | The lead tick opens the PR watch and the delivery row itself, so Ship on green can merge without asking | S | 160 | no |
 
+The WP-174 follow-up is done. Codex, OpenCode, Cursor, Hermes, Devin, Pi and omp report a running subagent or
+detached task (Codex: open agent rows until the turn closes them; OpenCode: child sessions until idle or error;
+Cursor: background agent tools, including a late cursor/task; Hermes: the background map while the session is live;
+Devin: a started subagent until it completes; Pi and omp: a subagent whose async state is running). Grok, fx and
+antigravity report none, because their ACP handling has no signal for work that outlives the prompt.
+
 ### Wave M: overnight suggestions and atomic-agent (10 Nov 2026)
 
 Four packages from the 10 Nov overnight scout and the atomic-agent study. Each has a brief and none is started. All
