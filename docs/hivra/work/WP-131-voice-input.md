@@ -26,13 +26,12 @@ T3 documents voice input in [voice-input.md](https://github.com/pingdotgg/t3code
 
 ## What this slice does on each platform
 
-- **macOS:** off in this build. The Dictate button and the Dictate row in the plus menu are shown only where the
-  desktop recogniser is available, so they are hidden here. The recogniser is not in the main app: the microphone
-  usage strings and the audio-input entitlement were removed from the Hub, because a child process of the app would
-  inherit a microphone grant the app holds (project actions, git hooks, setup scripts). The planned path is a helper
-  bundle inside the app with its own usage strings, entitlement and disclaimed start. That helper is not built yet.
-  The composer code (the explain step, the waiting state with Cancel, the draft write that keeps Undo, the partial
-  marking and the never-send rule) stays tested with a fake recogniser, ready for the helper.
+- **macOS:** dictation is off until Settings, Composer, Dictation is turned on. That switch is off when its file is
+  missing. Turning it on registers the helper (`Contents/Helpers/MonoCode Dictation.app`); turning it off unregisters
+  the helper and stops a session. The microphone stays in the helper. The Hub never holds the usage strings or the
+  audio-input entitlement. A dev copy, and a bundle without the helper, still answer that dictation is not in this
+  version, so the composer hides Dictate. Words go into the draft and nothing is sent until Send. Recognition stays
+  on the device. The live check (the owner taps Allow once, and the words land in the draft) is still the owner's.
 - **Windows:** no dictation in this slice. The control is hidden, not shown as a broken button.
 - **Linux:** no dictation in this slice. The control is hidden. A Linux path is a follow-up (see PR.md).
 - **Phone:** unchanged. The phone's own dictation bar is not touched by this slice.
