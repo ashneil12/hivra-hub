@@ -219,6 +219,14 @@ export async function stopDevinSession(sessionId: string): Promise<void> {
   await killChild(sessionId).catch(() => undefined);
 }
 
+/**
+ * No shell signal and no follow-up after the prompt. Busy only while a
+ * subagent that reported an agent id has started and not completed.
+ */
+export function devinHasBackgroundWork(sessionId: string): boolean {
+  return liveByThread.get(sessionId)?.devinSubagents.hasRunning() ?? false;
+}
+
 export async function forgetDevinSession(sessionId: string): Promise<void> {
   resumeByThread.delete(sessionId);
   commandsByThread.delete(sessionId);
