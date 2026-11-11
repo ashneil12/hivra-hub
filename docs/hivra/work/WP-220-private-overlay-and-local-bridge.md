@@ -1,4 +1,4 @@
-# WP-220: A private network for Hivra boxes, and a bridge to your own computer (plan only)
+# WP-220: Private networking that costs Hivra nothing (plan only)
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
@@ -11,243 +11,193 @@ critical finding before it merges.
 
 ## Goal
 
-Two things, designed together because they pull in opposite directions:
+Ash, 11 Nov 2026: Hivra should not pay for anyone's network. Anyone who launches a computer should be safe by default,
+and connecting their own private network (Tailscale, Headscale, NetBird or plain WireGuard) should be easy and
+optional. In practice:
 
-1. **Every Hivra box sits on a private overlay network** and answers nothing on the public internet. The owner reaches
-   it over SSH through the overlay, from a laptop or a phone. A box cannot reach other boxes, and cannot reach the
-   owner's laptop or phone.
-2. **A hosted agent can still reach the owner's own computer when the owner says so.** The test case, a customer ask:
-   "run `uname` on my Mac" from a cloud agent returns `Darwin` and exit code 0. That works only while the owner has a
-   bridge switched on, the owner can switch it off at any time, and it never turns the overlay into a flat network.
+1. **Safe by default, for free.** Every computer Hivra launches answers nothing on the public internet, cannot reach
+   other people's computers, and cannot reach the owner's laptop or phone. This must cost Hivra nothing per user.
+2. **Bring your own private network, in one step.** An owner who wants SSH from their laptop or phone pastes one key
+   (Tailscale or Headscale today, NetBird and WireGuard later), and Hivra applies a safe policy for them.
+3. **Reach a machine at home without opening ports.** Hosted Hivra never connects *into* a home network. The home
+   machine connects *out*.
+4. **Let a cloud agent run a command on the owner's own computer, only while the owner allows it.** The test case, a
+   customer ask: "run `uname` on my Mac" from a cloud agent returns `Darwin` and exit code 0.
 
-It also answers the question on the hosted app's "Connect a machine on your network" screen, which today says hosted
-Hivra cannot reach a home network. Section 6 is the plan for changing that safely.
+## What hosted Hivra already has (read 11 Nov 2026, `ashneil12/hivra` main at 07d3374)
 
-## Why
+Most of the free, safe-by-default part is already built. This plan finishes it rather than adding a new network.
 
-- The usual way a VPS gets broken into is an open port (SSH, the site, a forgotten admin panel). Agents now find these
-  faster than people patch them, so keys alone are not enough.
-- A widely shared Hetzner hardening recipe (late October 2026, Pieter Levels, repeated in many replies) fixes this with
-  outbound-only tunnels: a private overlay for admin access, Cloudflare Tunnel for public web traffic, and the cloud
-  firewall emptied so nothing inbound is allowed. It is Hivra's exact shape: boxes on Hetzner, an owner on a Mac and a
-  phone.
-- The same threads carry two warnings this plan must not skip. First, a fresh tailnet is a flat network: install the
-  client everywhere and a broken box can reach every other box and the owner's devices. Second, an agent that empties
-  the firewall before the overlay works locks the owner out of their own server.
-- The October 2026 "Tailworm" report found eleven issues in Tailscale SSH, Serve, the DERP client and Headscale. All
-  needed an attacker already inside the tailnet with Tailscale SSH or Serve allowed by policy. Tailscale fixed them in
-  client v1.104.4. The lesson is about policy, not panic: least-privilege access rules are what stop "inside the
-  tailnet" from meaning "inside every machine".
-
-## What Hivra already has (read first)
-
-- **WP-133** (design, accepted): the machine that holds the work is the source of truth; reach it over SSH, then a LAN
-  or a tailnet the person runs, then an opt-in relay that cannot read the session. Anything that listens beyond
-  loopback stays off until the person turns it on. This package keeps all of that and adds the box side.
-- **WP-149, WP-150, WP-195a**: the phone pairs by one-time code over QUIC with mutual TLS, and prefers the LAN or
-  Tailscale. `open_router` (UPnP) stays a conscious choice. Nothing here widens it.
-- **Hosted Hivra already joins a computer to the owner's own tailnet** (the private-access panel on an agent's Manage
-  page). The owner pastes their own auth key; the guest runs `tailscale up --ssh=false --accept-routes=false
-  --advertise-exit-node=false`; the public view always reports `sshEnabled: false`. Good defaults. Two gaps: the client
-  is installed from Tailscale's install script with no version floor, and whatever the box can reach is decided by the
-  owner's own tailnet policy, which is often still the allow-all starter policy.
-- **Hosted Hivra refuses private addresses** when it connects to a server (`HIVRA_INFRA_ALLOW_PRIVATE_NETWORKS` is off
-  on hosted). That is correct and stays: the control plane must never be pointed at someone's home network.
-- **WP-203**: the structured hard review this package's build PRs must pass.
-
-## 1. The Hetzner pattern (outbound-only)
-
-Every box ends up like this:
-
-| Traffic | Path | Inbound port on the box |
+| Piece | Where | State |
 | --- | --- | --- |
-| Owner's SSH and admin | OpenSSH over the overlay, keys only | none on the public interface |
-| Public web (if a box serves a site) | Cloudflare Tunnel (`cloudflared`, outbound) with Cloudflare's WAF in front | none |
-| Overlay itself | Outbound to the control plane and peers; DERP relay if no direct path | none |
-| Updates, model APIs, git | Outbound as today | none |
+| Hosted computers are VMs on a private NAT bridge behind each Proxmox host, with no public address of their own | `dashboard/src/lib/services/proxmox-instance-service.ts` (`PROXMOX_PRIVATE_SUBNET_PREFIX`) | live |
+| Computers on the same host cannot reach each other (`table bridge hermes_vm_isolation`: tap-to-tap drops) | `dashboard/src/lib/services/proxmox/script-builders.ts` | live; checked before guest Docker access is enabled |
+| Computers cannot reach the host, its SSH or the Proxmox UI; cannot reach private, CGNAT or link-local ranges over the WAN; the Proxmox UI accepts tailnet traffic only; host sshd is key-only | `dashboard/scripts/proxmox-host-perimeter-guard.sh` | audit by default, `--apply` at host standup |
+| "Join my tailnet" on a computer's Manage page: the owner pastes a Tailscale auth key or a Headscale pre-auth key, with an optional Headscale server address; the guest runs `tailscale up --ssh=false --accept-routes=false --advertise-exit-node=false` | `components/hivra/HivraPrivateAccessPanel.tsx`, `app/api/hivra/agents/[id]/private-access/tailscale/route.ts`, `lib/hivra/tailscale-private-access.ts` | live on Ubuntu desktop computers |
+| An outbound connector for home or office machines, and a relay that joins Hivra's SSH to it end to end (the relay cannot read the session; the pinned host key is checked every time) | `services/host-connector/`, `services/host-relay-worker/` (Cloudflare Worker, SQLite Durable Object) | built and tested, **not deployed**, not wired to the control plane |
+| An older per-instance Tailscale endpoint | `app/api/instances/[id]/private-access/tailscale/route.ts` | no screen calls it; it still accepts `enableSsh` (Tailscale SSH) and free-form tags |
 
-The Hetzner Cloud firewall attached to the box has **no inbound rules** (Hetzner drops everything inbound when a
-firewall has no inbound rules). Robot (dedicated) servers get the equivalent Robot firewall rule set.
+The gaps this plan closes:
 
-### The lockout rule
+- **The owner's tailnet decides what the computer can reach.** A new tailnet starts with an allow-all policy, so a
+  computer joined to it can reach the owner's laptop and phone. Hivra tags nothing and tells the owner nothing.
+- **No client version floor.** The guest installs whatever Tailscale's install script serves.
+- **The home-machine path is built but switched off,** so the "Connect a machine on your network" screen still says
+  hosted Hivra can't do it.
+- **The legacy endpoint can still turn on Tailscale SSH.**
 
-The order is fixed, and an agent never runs it end to end on its own:
+## What costs what
 
-1. Install the overlay client and join the box (tagged, see section 2).
-2. **Prove SSH over the overlay** from the owner's Mac and from the phone, with the public SSH path still open as a
-   fallback. Record the proof (the overlay address used, `ssh -o BatchMode=yes box-overlay true` exit 0).
-3. If the box serves public HTTP(S), bring up Cloudflare Tunnel and prove the site works through it.
-4. The agent **writes a firewall plan** (current rules, rules to remove, the rollback command, the Hetzner console or
-   rescue-mode path if it goes wrong) and **stops**. A human reads it and applies it, or explicitly tells the agent to
-   apply that exact plan.
-5. After the change, prove from a network that is **not** on the overlay that 22, 80 and 443 are dark, and prove SSH
-   over the overlay still works.
+The rule: Hivra never runs a shared overlay network for everyone, and never pays per user for one.
 
-Step 4 is never in the same unattended run as step 1. If step 2 fails, the firewall is not touched.
-
-## 2. Access rules: deny by default
-
-A policy file is written before the first box joins. The starter allow-all policy is never live, not even for an hour.
-
-Tags (tags identify machines, not people):
-
-| Tag | Who carries it |
-| --- | --- |
-| `tag:hivra-box` | Every Hivra box (hosted or the owner's own server) |
-| `tag:hivra-bridge` | A bridge process on the owner's computer, only while the owner has it switched on (section 4) |
-| owner devices | The owner's laptop and phone, as user devices (untagged, owned by the owner's identity) |
-
-Grants:
-
-| From | To | Ports | Default |
+| Option | Cost to Hivra | Cost to the owner | Notes |
 | --- | --- | --- | --- |
-| Owner's devices | `tag:hivra-box` | TCP 22 (OpenSSH) | on |
-| Owner's devices | `tag:hivra-box` | one named app port, if WP-195a's host needs it | off until that package ships |
-| `tag:hivra-box` | `tag:hivra-box` | anything | **never** without a later, written need |
-| `tag:hivra-box` | owner's devices | anything | **never** |
-| `tag:hivra-box` | `tag:hivra-bridge` | the bridge's one port | only for the owner's own boxes, only while the bridge is on |
+| Hivra's own isolation (private bridge, nftables, host guard) | nothing beyond the servers Hivra already runs | nothing | Already the default. Every computer gets it. |
+| Owner's own **Tailscale** tailnet | nothing | free on Tailscale's Personal plan for personal use (up to 6 users, 50 tagged devices); a business owner needs their own paid plan | Tailscale's client is BSD-3-Clause. Hivra stays out of the licence question because the tailnet is the owner's, not Hivra's. |
+| Owner's own **Headscale** server | nothing | their own small server | BSD-3-Clause. Single tailnet per server by design; that is fine because it is the owner's. They also choose a DERP relay plan (Tailscale's public map or their own). |
+| Owner's own **NetBird** (cloud or self-hosted) | nothing | free tier or their own server | Client mostly BSD-3-Clause; the server parts are AGPLv3. That only matters if Hivra hosts or ships the server, which it doesn't. |
+| Plain **WireGuard** to the owner's devices | nothing (a forwarded UDP port per computer on the host) | nothing | No coordination server, no relay. Each computer is its own small hub for its owner's devices only. Later option, see below. |
+| The home-machine **relay** (connector + Worker) | Cloudflare Workers; built to fit the free plan with SQLite Durable Objects. Check Cloudflare's daily limits before a large launch; past them, Cloudflare's paid Workers plan is a flat monthly fee, not per user | nothing | Carries SSH only, end to end. |
+| Hivra running Headscale or NetBird **for everyone** | a control server, relay bandwidth, on-call, and Hivra holding the keys to every customer's network | nothing | **Rejected.** It is not free at scale, Headscale is built for one tailnet per server, and it makes Hivra the single place to attack. |
 
-Policy tests live in the same file (`tests` / `sshTests` in Tailscale's huJSON format, which Headscale also reads), so
-a bad edit is rejected before it is saved:
+## The plan
 
-- the owner's phone can reach a box on 22;
-- a box cannot reach another box on 22, 80, 443 or the bridge port;
-- a box cannot reach the owner's laptop or phone on any port;
-- a box of one owner cannot reach another owner's bridge.
+### 1. Safe by default (every computer, free, automatic)
 
-Also: one-off, tagged, pre-authorised auth keys for each box, minted at provisioning and never stored in an image,
-a repo or a brief; key expiry on for user devices; device approval on.
+Nothing to switch on. What exists stays, plus:
 
-## 3. Choosing the overlay
+- Run `proxmox-host-perimeter-guard.sh --check` on every host as part of the fleet health check, and alert when a host
+  drifts from it. The isolation table and the guard are the real default; they must not silently go missing.
+- A computer never gets a public SSH port. Hivra reaches it the way it does today; the owner reaches it through Hivra or
+  through their own private network (step 2).
+- Add a guest-side rule on computers that join a private network: the computer may answer connections that come in
+  over `tailscale0` (or `wg0`), but may not start new ones to other tailnet devices. This is defence in depth only: a
+  computer an attacker controls as root can remove it, which is why step 2 also writes the owner's tailnet policy.
 
-| | Tailscale (SaaS) | Headscale | NetBird | Raw WireGuard |
-| --- | --- | --- | --- | --- |
-| Licence | Client BSD-3-Clause; control plane closed | BSD-3-Clause; uses official Tailscale clients | Client mostly BSD-3-Clause; `management/`, `signal/`, `relay/`, `combined/` are AGPLv3 | Kernel GPL-2.0; wireguard-go MIT |
-| Cost | Personal $0 but **non-commercial only**; Standard $8 and Premium $18 per user per month | A small VPS plus our time; free | Cloud plan, or self-host for free | Free, but we build everything else |
-| NAT traversal and relays | Global DERP network included | Use Tailscale's public DERP map or run our own DERP | Own relay (self-host) or theirs | None. We would build discovery, NAT traversal and relays |
-| Phone clients | Official iOS and Android | Official Tailscale apps (custom login server) | Official apps | WireGuard app, manual keys |
-| Access rules | huJSON grants, tags, tests | Same policy format (a subset; check per release) | Its own groups and policies | Hand-written firewall rules per peer |
-| Who holds the keys | Tailscale's control plane decides which keys trust which; Tailnet Lock reduces that | We do | We do (self-host) | We do |
-| Fit | Fine for Ash's own lab on a paid plan; wrong default for a shipped product on Personal | Best fit for the product | Good fallback; AGPL obligations if Hivra hosts or ships the server parts | Too much to build for a first version |
+### 2. Bring your own private network, in one step
 
-**Recommendation for the pilot: Headscale**, on a small dedicated VPS that is itself behind the same outbound-only
-pattern, with the official Tailscale clients pinned to **>= 1.104.4** (current stable at writing: 1.104.6). For DERP,
-start on Tailscale's public DERP map and plan our own DERP on one public Hetzner box before more than a handful of
-customers depend on it; measure how often phones fall back to a relay during the pilot.
+Keep the existing panel and make it safe and obvious:
 
-Why not the others first:
+1. **One screen, four choices:** Tailscale, Headscale, NetBird, WireGuard. Tailscale and Headscale exist today. NetBird
+   joins with its setup key the same way. WireGuard is the later option below. It works like connecting your own
+   Composio account: the account is the owner's, Hivra only connects to it. **Switching** is one action on the same
+   screen: pick another provider, paste its key, and Hivra leaves the old network and joins the new one, with the
+   computer's own access through Hivra unaffected throughout.
+2. **Hivra mints nothing and stores no long-lived key.** The owner makes the key in their own admin page; the panel
+   says how: a one-off, pre-approved key with the tag `tag:hivra`. The key goes to the computer once, over the existing
+   guest channel, and is never stored.
+3. **Version floor.** After install the guest checks `tailscale version` and refuses to join below **1.104.4** (the
+   release that fixed the October 2026 "Tailworm" findings in Tailscale SSH and Serve). Current stable at writing:
+   1.104.6. NetBird gets its own floor when it is added.
+4. **Always off:** Tailscale SSH, Funnel (it publishes to the public internet), exit nodes, subnet routes. The owner
+   reaches the computer with normal OpenSSH over their private network, keys only. Retire the legacy
+   `/api/instances/[id]/private-access/tailscale` endpoint, or make it refuse `enableSsh` and free-form tags.
+5. **A ready-made policy, shown after the computer joins**, to paste into the owner's tailnet policy file. Deny by
+   default, with tests so a bad edit is refused:
+   - the owner's own devices may reach `tag:hivra` on TCP 22 only;
+   - `tag:hivra` may not reach any device, including other `tag:hivra` computers;
+   - tests: the owner's phone reaches a computer on 22; a computer cannot reach the owner's laptop or phone; a computer
+     cannot reach another computer.
+   Hivra checks what it can see from the computer (can it open a connection to another device on the tailnet?) and
+   shows **"Your tailnet lets this computer reach your other devices"** with a one-click copy of the policy until it
+   can't. Hivra does not take admin access to the owner's tailnet to write the policy itself.
+6. If the owner uses Tailscale's hosted plan, the panel suggests **Tailnet Lock** (new devices must be signed by one of
+   the owner's own devices).
 
-- **Tailscale SaaS on Personal** is non-commercial. Hivra is a product. A paid business tailnet is fine for Ash's own
-  machines, and remains the right answer for an owner who brings their own tailnet (as hosted Hivra already allows),
-  but Hivra should not run customers on our own Personal tailnet.
-- **NetBird** is the fallback if Headscale plus official clients proves a bad fit. Record the AGPL parts in any later
-  build PR.
-- **Raw WireGuard** gives up NAT traversal, relays, phone onboarding and the policy language. Not for the first version.
+### 3. A machine at home, with no ports opened
 
-If Hivra stays on Tailscale SaaS anywhere (Ash's own fleet, or a paid tailnet), turn on **Tailnet Lock** so a new node
-cannot join until one of our own trusted nodes signs its key.
+Wire up what is already built:
 
-### Off in every design
+1. Deploy the relay Worker behind a flag that is off by default, Canary first.
+2. "Connect a machine on your network" gives a one-command install of `hivra-connector` on that machine. It dials out
+   to the relay; nothing on the home router changes.
+3. When Hivra needs that machine it dials out to the relay too, with a 60-second single-use ticket. SSH runs end to
+   end; the pinned host key is checked on every session; revoke stops the connector.
+4. The screen copy changes from "Hosted Hivra cannot connect to your local network" to the connector steps, only when
+   the flag is on.
+5. `HIVRA_INFRA_ALLOW_PRIVATE_NETWORKS` stays off on hosted. The control plane is never pointed at a home address.
 
-- **Tailscale SSH: off.** Use OpenSSH over the overlay with keys and no passwords, bound to the overlay address. This
-  avoids the Tailworm class of bugs (an SSH session reaching root-only sockets such as Docker's or `tailscaled`'s).
-- **Funnel: off.** It publishes a tailnet service to the public internet, the opposite of an empty firewall. Public
-  traffic goes through Cloudflare Tunnel. **Serve** (tailnet-only) is allowed later for a private web UI, under the
-  same rules.
-- **Exit nodes and subnet routes: off** on boxes (hosted Hivra already passes `--advertise-exit-node=false
-  --accept-routes=false`).
-- **Client version floor: 1.104.4.** The install step checks `tailscale version` after install and refuses to join
-  below the floor. Today hosted Hivra installs whatever the install script serves; the build package adds the check.
+An owner who already has Tailscale, Headscale or NetBird on that home machine can use that instead; the connector is
+for people who have nothing.
 
-## 4. The bridge to your own computer
+### 4. A cloud agent running a command on your own computer
 
-The box must not reach the owner's computer, yet the customer ask needs a cloud agent to run a command there. The
-answer is a **bridge the owner starts on their own computer**, not a network path.
+The computer must not reach the owner's laptop, yet the customer ask needs exactly that. The answer is a **bridge the
+owner switches on**, not a network path, and it rides the same outbound connector as step 3, so it costs nothing extra:
 
-How it works:
+1. The owner switches on "Let my cloud agents run commands on this Mac" in the Hub app (or a small CLI). The connector
+   on the Mac opens one extra outbound channel to the relay. Nothing listens on the Mac.
+2. It speaks one narrow protocol: `exec` with an argument list, a working folder inside an allowed folder, a time
+   limit and an output cap. It returns stdout, stderr and the exit code. No interactive shell, port forwarding or file
+   transfer in the first version.
+3. Each request carries a short-lived ticket for one agent on one computer. The Mac shows the command and by default
+   asks the owner to approve it; "allow this agent for the next hour" is the only shortcut. There is no "allow forever".
+4. Every request is logged on the Mac: which computer, which agent, the command, the exit code, approved or denied.
+5. **Revoke** is one switch. Quitting the app or closing the laptop has the same effect.
 
-1. The owner switches on "Let my cloud agents run commands on this Mac" in the Hub app (or a small CLI for people
-   without the app). This starts a bridge process on the Mac.
-2. The bridge is its own overlay node, embedded with **`tsnet`** (Tailscale's Go library; it works the same against
-   Headscale). It joins as `tag:hivra-bridge` with a one-off key, under its own identity, separate from the Mac's
-   normal client. The Mac's own client, if any, stays untouched.
-3. The bridge listens on one port on its overlay address only. It speaks one narrow protocol: `exec` with an argument
-   list, a working directory inside an allowed folder, a time limit and an output cap. It returns stdout, stderr and
-   the exit code. No interactive shell, no port forwarding, no file transfer in the first version.
-4. The access rules (section 2) let only the owner's own boxes reach that port, and only while the bridge node exists.
-5. Each request carries a short-lived token the Hub mints for one agent on one box. The bridge checks it, shows the
-   command in the Hub, and by default asks the owner to approve it. The owner can choose "allow this agent for the
-   next hour" (time-boxed) or "always ask". There is no "allow forever" in the first version.
-6. Every request is logged on the Mac (who, which box, which agent, the command, the exit code, approve or deny).
-7. **Revoke** is one switch: the bridge stops, its node is deleted from the overlay, and its tokens stop working. Closing
-   the laptop or quitting the app has the same effect.
+The test: with the bridge on and the owner approving, a hosted agent's `uname` returns `Darwin` and exit 0. With it off,
+the request fails with "the bridge on your Mac is off", and nothing on the Mac is listening.
 
-The test: with the bridge on and the owner approving, a hosted agent's `uname` returns `Darwin` and exit 0. With the
-bridge off, the same request fails with a plain "the bridge on your Mac is off" message, and a network probe from the
-box to the Mac's overlay address finds nothing open.
+Owners who run their own tailnet can choose to run the same bridge as a tagged `tsnet` node (Tailscale's embeddable Go
+library, which also works with Headscale) instead of through the relay. The same rules apply: one port, exec only,
+approval, log, revoke, and the policy lets only that owner's `tag:hivra` computers reach it.
 
-What this is not: not putting the Mac on a flat tailnet, not "all boxes can SSH to the Mac", not Tailscale SSH, not
-Funnel, and not the hosted control plane reaching into the home network.
+What this is not: not putting the Mac on a flat network, not "computers can SSH to the Mac", not Tailscale SSH, not
+Funnel.
 
-Phones are the same class: a phone on the overlay can reach boxes; boxes never reach the phone. The phone talks to
-agents through the existing pairing (WP-150, WP-195a), not through a bridge.
+Phones are the same: a phone may reach computers; computers never reach the phone. The phone talks to agents through
+the existing pairing (WP-150, WP-195a).
 
-## 5. Automatic overlay for every server
+### 5. Later: plain WireGuard with no account anywhere
 
-When this ships, provisioning a box (hosted or bring-your-own server) does the overlay step without the owner doing
-anything, but the firewall step stays gated:
+For owners who want no third party at all: the computer runs WireGuard as a small hub for that owner's own devices
+only. The host forwards one UDP port per computer; WireGuard ignores any packet not signed by a known key, so the port
+looks closed to scanners. The panel shows a QR code for the phone and a config file for the laptop. Free, no
+coordination server, no relay, and isolation comes from the shape (each computer only knows its owner's devices). The
+cost is convenience: one tunnel per computer. Build it only if owners ask.
 
-1. Provisioning mints a one-off tagged key, installs the pinned client, joins as `tag:hivra-box`, and records the
-   overlay address.
-2. The app shows "Private network: on" for that box and the overlay address next to the SSH command.
-3. "Close public ports" is a separate button. It runs the lockout-rule checks (section 1, steps 2 and 5), shows the
-   firewall plan, and applies it only when the owner presses Apply. A box with failed checks cannot close its ports.
-4. For an owner who already runs their own tailnet, the existing "join my tailnet" panel stays, with a warning if the
-   owner's policy has no tests and a link to a ready-made policy snippet matching section 2.
+### Owners' own servers and Hivra's fleet
 
-Hosted Hivra's own fleet servers follow the same steps, run by a human, one server at a time, after the pilot.
+For a server the owner adds (not a Hivra VM), the same choices apply. Closing its public ports is a separate, gated
+step, because an agent that empties a firewall before the private path works locks the owner out:
 
-## 6. Hosted Hivra and a machine on your home network
+1. Join the private network (step 2) or install the connector (step 3).
+2. **Prove SSH works over it** from the owner's laptop and phone, with the public path still open.
+3. The agent writes a firewall plan (rules to remove, rollback, the provider's console or rescue path) and **stops**.
+   The owner presses Apply after reading it.
+4. Prove from outside that 22, 80 and 443 are closed and SSH over the private path still works.
 
-Today's screen is right: hosted Hivra cannot and should not open a connection into a home network. With this package,
-the way in becomes outbound from the home side:
+Public websites, if any, go through Cloudflare Tunnel (outbound only, free plan). Hivra's own Proxmox hosts follow the
+same steps, done by a person, one host at a time.
 
-- **A box the owner wants to add at home** runs the same pinned client and joins the owner's Hivra overlay as a
-  tagged box. Hosted Hivra's agents then treat it as any other box on the overlay. No home router port is opened.
-- **The owner's own computer** uses the bridge (section 4), not a box enrolment.
-- The hosted control plane does **not** join the overlay as a peer that can reach boxes. It provisions over the paths
-  it uses today and asks the box to report its overlay state. If a later need appears, it gets its own tag and its own
-  written grant.
-- `HIVRA_INFRA_ALLOW_PRIVATE_NETWORKS` stays off on hosted.
+## Pilot (after Ash okays this page)
 
-The screen copy changes only when the build ships. Until then it stays as it is.
+On throwaway machines only: one new Hetzner Cloud VM created for the pilot and deleted after, a Canary computer made for
+the pilot, and Ash's Mac. No customer computer, no production host.
 
-## 7. Pilot (after Ash okays this page)
-
-On throwaway machines only: one new Hetzner Cloud VM created for the pilot and deleted after, and Ash's Mac. No
-production box, no customer box, no fleet server.
-
-1. Headscale on a small throwaway VPS, the section 2 policy and its tests loaded first.
-2. Join the pilot VM and Ash's phone; prove SSH over the overlay from Mac and phone.
-3. Write the firewall plan; Ash applies it; prove 22, 80 and 443 are dark from outside and SSH still works inside.
-4. Prove the denials: VM to Mac, VM to phone, and (with a second throwaway VM) VM to VM all fail.
-5. Run the bridge as a manual prototype on the Mac; prove `uname` returns `Darwin` and exit 0 with approval, and fails
-   with the bridge off.
-6. Write up results, relay rates for the phone, and anything that changes this plan, as a reply on this page's PR.
+1. Join the Canary computer to a tailnet with the step 2 policy and its tests; prove SSH from Mac and phone; prove the
+   computer cannot reach the Mac, the phone or a second pilot computer.
+2. Same with a Headscale server on the throwaway VM.
+3. Deploy the relay to Canary behind its flag; enrol the throwaway VM with the connector as if it were at home; prove
+   SSH through the relay and that revoke stops it.
+4. Prototype the bridge on the Mac; prove `uname` returns `Darwin` and exit 0 with approval, and fails with it off.
+5. Note the relay's usage against Cloudflare's free limits, and anything that changes this plan, on this page's PR.
 
 ## Build packages that follow (not started)
 
-- **WP-220a** Overlay enrolment for boxes, with the version floor and tagged one-off keys (hosted and Hub host).
-- **WP-220b** The "Close public ports" flow with the lockout checks and a human Apply.
-- **WP-220c** The bridge on the owner's computer (`tsnet`, exec protocol, approval, log, revoke).
-- **WP-220d** Hosted Hivra's "join my tailnet" panel: version floor and policy warning.
+- **WP-220a** Private-network panel: version floor, `tag:hivra`, the ready-made policy and the "can reach your
+  devices" check, NetBird, retire the legacy endpoint (hosted).
+- **WP-220b** The guest-side outbound rule and the fleet check of the host guard (hosted).
+- **WP-220c** Turn on the connector and relay for home machines, flag off by default (hosted).
+- **WP-220d** The exec bridge on the owner's computer (Hub app and connector).
+- **WP-220e** Plain WireGuard per computer (only if owners ask).
 
 Each is Grok OK: no, ships behind a flag that is off by default, and needs the WP-203 hard review before merge.
 
 ## Done when
 
 - [ ] Ash has read this page and okayed it, or said what to change.
-- [ ] The pilot in section 7 has run on throwaway machines, with the proofs attached.
+- [ ] The pilot has run on throwaway machines, with the proofs attached.
 - [ ] The build packages above have their own pages.
 
 ## Sources
@@ -258,5 +208,4 @@ Each is Grok OK: no, ships behind a flag that is off by default, and needs the W
   Lock, pricing (read 11 Nov 2026).
 - Tailscale's "Tailscale SSH: findings and fixes" post and security bulletins from TS-2026-015; the independent
   tailworm.com report.
-- Headscale (github.com/juanfont/headscale), NetBird (github.com/netbirdio/netbird), wireguard-go,
-  cloudflared.
+- Headscale (github.com/juanfont/headscale), NetBird (github.com/netbirdio/netbird), wireguard-go, cloudflared.
