@@ -24,8 +24,70 @@ pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
            micros INTEGER NOT NULL,
            priced INTEGER NOT NULL
          );
-         CREATE INDEX IF NOT EXISTS spend_ledger_at ON spend_ledger(at);",
+         CREATE INDEX IF NOT EXISTS spend_ledger_at ON spend_ledger(at);
+         CREATE TRIGGER IF NOT EXISTS spend_ledger_no_update BEFORE UPDATE ON spend_ledger
+           BEGIN SELECT RAISE(ABORT, 'The spend ledger is append-only.'); END;
+         CREATE TRIGGER IF NOT EXISTS spend_ledger_no_delete BEFORE DELETE ON spend_ledger
+           BEGIN SELECT RAISE(ABORT, 'The spend ledger is append-only.'); END;
+         CREATE TABLE IF NOT EXISTS spend_limit_book (
+           id INTEGER PRIMARY KEY CHECK (id = 1),
+           revision INTEGER NOT NULL,
+           body TEXT NOT NULL
+         );",
     )
+}
+
+/// The largest saved book the app accepts. A limits book is a short list; anything bigger is not written.
+const MAX_BOOK: usize = 1_000_000;
+
+/// The stored limits book: its revision and its JSON text. None until a book was first saved.
+pub fn read_book(conn: &Connection) -> Result<Option<(i64, String)>, String> {
+    let mut stmt = conn
+        .prepare("SELECT revision, body FROM spend_limit_book WHERE id = 1")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?;
+    match rows.next() {
+        Some(row) => row.map(Some).map_err(|e| e.to_string()),
+        None => Ok(None),
+    }
+}
+
+/// Saves the book only when the stored revision is still `expected` (0 when no book is stored). The body must be a JSON
+/// object that names the same revision, so the row cannot say one thing and hold another.
+pub fn write_book(
+    conn: &Connection,
+    expected: i64,
+    revision: i64,
+    body: &str,
+) -> Result<(), String> {
+    if body.len() > MAX_BOOK {
+        return Err("The spend limits are too large to save.".into());
+    }
+    if revision <= expected || revision < 1 {
+        return Err("The spend limits revision does not move forward.".into());
+    }
+    let value: serde_json::Value = serde_json::from_str(body)
+        .map_err(|_| "The spend limits are not a readable book.".to_string())?;
+    if value.get("revision").and_then(|v| v.as_i64()) != Some(revision) {
+        return Err("The spend limits revision does not match the book.".into());
+    }
+    let changed = conn
+        .execute(
+            "INSERT INTO spend_limit_book (id, revision, body) VALUES (1, ?1, ?2)
+             ON CONFLICT(id) DO UPDATE SET revision = excluded.revision, body = excluded.body
+               WHERE spend_limit_book.revision = ?3",
+            params![revision, body, expected],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err("The spend limits changed in another window. Reload them before saving.".into())
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -122,15 +184,24 @@ pub fn project_folder_for(cwd: &str) -> String {
         Ok(out) if out.status.success() => {
             let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
             if common.is_empty() {
-                return text.to_string();
+                return canonical_or_as_written(text);
             }
             match common.strip_suffix("/.git") {
                 Some(parent) if !parent.is_empty() => parent.to_string(),
                 _ => common,
             }
         }
-        _ => text.to_string(),
+        _ => canonical_or_as_written(text),
     }
+}
+
+/// The real path of a folder (symlinks resolved, so /var and /private/var are one folder). As written when it cannot be
+/// resolved, so a missing folder still compares as the text it was given.
+fn canonical_or_as_written(text: &str) -> String {
+    std::fs::canonicalize(text)
+        .ok()
+        .and_then(|path| path.to_str().map(str::to_string))
+        .unwrap_or_else(|| text.to_string())
 }
 
 #[tauri::command(async)]
@@ -142,6 +213,31 @@ pub fn spend_project_folder(cwd: String) -> Result<String, String> {
 pub fn spend_ledger_append(store: State<'_, SessionStore>, entry: TurnEntry) -> Result<(), String> {
     let conn = store.lock_conn()?;
     append(&conn, &entry)
+}
+
+/// The stored book as the app's database holds it: its revision and its JSON text.
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BookRow {
+    pub revision: i64,
+    pub body: String,
+}
+
+#[tauri::command(async)]
+pub fn spend_book_read(store: State<'_, SessionStore>) -> Result<Option<BookRow>, String> {
+    let conn = store.lock_conn()?;
+    Ok(read_book(&conn)?.map(|(revision, body)| BookRow { revision, body }))
+}
+
+#[tauri::command(async)]
+pub fn spend_book_write(
+    store: State<'_, SessionStore>,
+    expected: i64,
+    revision: i64,
+    body: String,
+) -> Result<(), String> {
+    let conn = store.lock_conn()?;
+    write_book(&conn, expected, revision, &body)
 }
 
 #[tauri::command(async)]
@@ -219,6 +315,53 @@ mod tests {
         assert!(append(&conn, &turn("a", "hivra", 1, -1, true)).is_err());
         assert!(append(&conn, &turn("a", "hivra", 1, MAX_MICROS + 1, true)).is_err());
         assert!(totals(&conn, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn the_ledger_refuses_an_update_or_a_delete() {
+        // WP-176 round 3: a recorded turn is append-only. Neither a reader nor a later write may rewrite or remove it.
+        let conn = db();
+        append(
+            &conn,
+            &turn("a", "hivra", 1_700_000_000_000, 2_000_000, true),
+        )
+        .unwrap();
+        assert!(conn
+            .execute("UPDATE spend_ledger SET micros = 0", [])
+            .is_err());
+        assert!(conn.execute("DELETE FROM spend_ledger", []).is_err());
+        assert_eq!(totals(&conn, 0).unwrap()[0].micros, 2_000_000);
+    }
+
+    #[test]
+    fn the_limits_book_saves_only_over_the_revision_it_read() {
+        // WP-176 round 3: the book lives in the app database. A write must name the revision it replaces, so two
+        // windows cannot both save over the same one, and a missing row is revision 0.
+        let conn = db();
+        assert!(read_book(&conn).unwrap().is_none());
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[]}"#).unwrap();
+        assert_eq!(read_book(&conn).unwrap().unwrap().0, 1);
+        assert!(write_book(&conn, 0, 1, r#"{"revision":1,"limits":[]}"#).is_err());
+        write_book(&conn, 1, 2, r#"{"revision":2,"limits":[]}"#).unwrap();
+        assert_eq!(read_book(&conn).unwrap().unwrap().0, 2);
+        assert!(write_book(&conn, 2, 3, r#"{"revision":9,"limits":[]}"#).is_err());
+        assert!(write_book(&conn, 2, 3, "not json").is_err());
+    }
+
+    #[test]
+    fn a_folder_reached_through_a_symlink_resolves_to_its_real_path() {
+        // WP-176 round 3: macOS temp folders are symlinks (/var -> /private/var). Both sides must compare real paths.
+        let dir = std::env::temp_dir().join(format!("wp176-link-{}", std::process::id()));
+        let real = dir.join("real-folder");
+        std::fs::create_dir_all(&real).unwrap();
+        let link = dir.join("linked-folder");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let expected = std::fs::canonicalize(&real).unwrap();
+        assert_eq!(
+            project_folder_for(link.to_str().unwrap()),
+            expected.to_str().unwrap()
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
