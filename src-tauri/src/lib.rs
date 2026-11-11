@@ -1082,6 +1082,8 @@ pub fn run() {
             session_store::session_search,
             session_store::cancel_session_search,
             session_store::session_get,
+            // WP-177: a move reads the full row. The sidebar read still shortens tool output.
+            session_store::session_get_for_move,
             // WP-111: ids of chats memory must not read.
             session_store::session_private_keys,
             session_store::session_tool_detail,

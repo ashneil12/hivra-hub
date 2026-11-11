@@ -282,6 +282,12 @@ pub struct SessionUpsert {
     /// save leaves it out, and the guard then refuses any save that drops a freeze or changes where the chat is.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub teleport: Option<TeleportWrite>,
+    /// WP-177: the next turn must carry the chat so far. Omitted on a save that does not owe one, which clears it.
+    #[serde(default)]
+    pub move_brief_owed: bool,
+    /// WP-177: the machine the chat was moved from, for the first turn's lead. Empty stores nothing.
+    #[serde(default)]
+    pub moved_from: Option<String>,
 }
 
 /// WP-177: the step a chat move takes with this write, so the guard can check it is that step's own change only.
@@ -385,6 +391,12 @@ pub struct SessionRecord {
     /// WP-111: messages at or before this id stay unread after privacy is switched off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_boundary_id: Option<String>,
+    /// WP-177: the next turn must carry the chat so far.
+    #[serde(default)]
+    pub move_brief_owed: bool,
+    /// WP-177: the machine the chat was moved from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_from: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -714,6 +726,17 @@ pub fn session_get(
         crate::tool_detail::omit_large_details(&mut record.blocks);
     }
     Ok(record)
+}
+
+/// WP-177: the row a move hashes. Unlike `session_get`, tool output is not shortened, so the plan and the move agree.
+#[tauri::command(async)]
+pub fn session_get_for_move(
+    store: State<'_, SessionStore>,
+    session_id: String,
+) -> Result<Option<SessionRecord>, String> {
+    validate_id(&session_id, "session")?;
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    get_session(&conn, &session_id).map_err(|e| e.to_string())
 }
 
 /// WP-111: ids of chats memory must not read.
@@ -1454,6 +1477,9 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
         ("private_boundary_id", "TEXT"),
         // Added in place, not as a numbered migration, so an older build (a ship rollback) still opens this database.
         ("goal_json", "TEXT"),
+        // WP-177: the next turn carries the chat so far, and the lead names where it came from.
+        ("move_brief_owed", "INTEGER NOT NULL DEFAULT 0"),
+        ("moved_from", "TEXT"),
     ] {
         ensure_session_column(conn, column, decl)?;
     }
@@ -2126,8 +2152,8 @@ pub(crate) fn upsert_session(
            context_used, context_window, worktree_cwd, has_user_message,
            linked_work_item_json, provider_account_id, worktree_removed, is_draft,
            automation_id, queued_messages_json, queue_status, sidebar_hidden, goal_json,
-           private_chat, private_boundary_id
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
+           private_chat, private_boundary_id, move_brief_owed, moved_from
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
          ON CONFLICT(id) DO UPDATE SET
            cwd = excluded.cwd,
            harness = excluded.harness,
@@ -2151,7 +2177,9 @@ pub(crate) fn upsert_session(
            queued_messages_json = excluded.queued_messages_json,
            queue_status = excluded.queue_status,
            sidebar_hidden = excluded.sidebar_hidden,
-           goal_json = excluded.goal_json",
+           goal_json = excluded.goal_json,
+           move_brief_owed = excluded.move_brief_owed,
+           moved_from = excluded.moved_from",
         params![
             session.id,
             session.cwd,
@@ -2180,6 +2208,13 @@ pub(crate) fn upsert_session(
             goal_json(session.goal.as_ref()),
             i64::from(session.private_chat),
             stored_boundary(session.private_boundary_id.as_deref()),
+            i64::from(session.move_brief_owed),
+            session
+                .moved_from
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.chars().take(200).collect::<String>()),
         ],
     )?;
 
@@ -2889,7 +2924,8 @@ fn get_session_record(
                 context_used, context_window, branch, worktree_cwd,
                 linked_work_item_json, provider_account_id, worktree_removed,
                 automation_id, queued_messages_json, queue_status, sidebar_hidden,
-                goal_json, archived, private_chat, private_boundary_id
+                goal_json, archived, private_chat, private_boundary_id,
+                move_brief_owed, moved_from
          FROM sessions
          WHERE id = ?1 AND inbox_ask IS NULL
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')"
@@ -2944,6 +2980,12 @@ fn get_session_record(
                 archived: row.get::<_, i64>(23)? != 0,
                 private_chat: row.get::<_, i64>(24)? != 0,
                 private_boundary_id: boundary_for_read(row.get(25)?),
+                move_brief_owed: row.get::<_, i64>(26)? != 0,
+                moved_from: {
+                    let raw: Option<String> = row.get(27)?;
+                    raw.map(|value| value.trim().chars().take(200).collect::<String>())
+                        .filter(|value| !value.is_empty())
+                },
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
             })
@@ -3367,6 +3409,8 @@ mod tests {
             private_chat: false,
             private_boundary_id: None,
             teleport: None,
+            move_brief_owed: false,
+            moved_from: None,
         }
     }
 
@@ -5532,6 +5576,38 @@ mod teleport_guard_tests {
 
     fn conflict(error: rusqlite::Error) -> bool {
         error.to_string().starts_with("teleport-conflict")
+    }
+
+    #[test]
+    fn a_move_brief_is_kept_and_a_later_save_clears_it() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut session = chat(Value::Array(base()));
+        session.move_brief_owed = true;
+        session.moved_from = Some("  Studio box  ".into());
+        upsert_session(&conn, &session).unwrap();
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert!(row.move_brief_owed);
+        assert_eq!(row.moved_from.as_deref(), Some("Studio box"));
+
+        session.move_brief_owed = false;
+        session.moved_from = Some("   ".into());
+        upsert_session(&conn, &session).unwrap();
+        let cleared = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert!(!cleared.move_brief_owed);
+        assert_eq!(cleared.moved_from, None);
+
+        session.moved_from = Some("n".repeat(250));
+        upsert_session(&conn, &session).unwrap();
+        let capped = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert_eq!(
+            capped
+                .moved_from
+                .as_deref()
+                .map(str::chars)
+                .map(Iterator::count),
+            Some(200)
+        );
     }
 
     #[test]

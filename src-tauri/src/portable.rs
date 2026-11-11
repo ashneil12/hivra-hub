@@ -3688,6 +3688,8 @@ fn insert_session_as(
             _ => Some("private-boundary-unreadable".to_string()),
         },
         teleport: None,
+        move_brief_owed: false,
+        moved_from: None,
     };
     session_store::upsert_session(conn, &session)?;
     note_named_folder(conn, id, &folders)?;

@@ -135,6 +135,8 @@ fn add_session(
             private_chat: false,
             private_boundary_id: None,
             teleport: None,
+            move_brief_owed: false,
+            moved_from: None,
         },
     )
     .unwrap();
