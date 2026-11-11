@@ -5,14 +5,16 @@ import { newSession, type Session } from "../../sessions/model/session";
 import { CAPTAIN_CHARTER } from "../../chief/model/charter";
 import type { AgentFilePath } from "../../monos/model/monoFiles";
 
-const delegated = vi.hoisted(() => ({ calls: 0, failFirst: false }));
+const delegated = vi.hoisted(() => ({ calls: 0, failFirst: false, failAlways: false }));
 vi.mock("./agentAppTasks", async (actual) => {
   const real = await actual<typeof import("./agentAppTasks")>();
   return {
     ...real,
     handleTasks: vi.fn(async () => {
       delegated.calls += 1;
-      if (delegated.failFirst && delegated.calls === 1) throw new Error("The lead is busy. Try again in a minute.");
+      if (delegated.failAlways || (delegated.failFirst && delegated.calls === 1)) {
+        throw new Error("The lead is busy. Try again in a minute.");
+      }
       return { taskId: `D-${delegated.calls}`, childSessionId: "app-chief-r4-handoff", status: "running" };
     }),
   };
@@ -31,6 +33,7 @@ function chat(id: string, cwd = "/Users/someone"): Session {
 afterEach(() => {
   delegated.calls = 0;
   delegated.failFirst = false;
+  delegated.failAlways = false;
 });
 
 describe("captain.handoff retried (review of PR #244, round 4)", () => {
@@ -54,6 +57,27 @@ describe("captain.handoff retried (review of PR #244, round 4)", () => {
     const second = await handleAgentApp(chat("chief"), "h2", "captain.handoff", INPUT, hostForOneCall());
     expect(second).toMatchObject({ delegationId: "D-2" });
     expect(filed).toHaveLength(1);
+  });
+
+  it("drops a handoff that keeps failing, so the next try files a new task", async () => {
+    delegated.failAlways = true;
+    const filed: string[] = [];
+    const hostForOneCall = () =>
+      ({
+        isMono: (id: string) => id === "chief",
+        monoOf: () => ({ id: "ada", name: "Chief of Staff", captain: true, projects: [PROJECT] }),
+        taskStore: vi.fn(async () => {
+          const id = `T-${filed.length + 1}`;
+          filed.push(id);
+          return { task: { id } };
+        }),
+        tasks: {},
+      }) as unknown as Host;
+    await expect(handleAgentApp(chat("chief"), "h1", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
+    await expect(handleAgentApp(chat("chief"), "h2", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
+    expect(filed).toEqual(["T-1"]);
+    await expect(handleAgentApp(chat("chief"), "h3", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
+    expect(filed).toEqual(["T-1", "T-2"]);
   });
 });
 

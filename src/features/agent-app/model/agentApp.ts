@@ -160,18 +160,19 @@ function handoffMemory(sessionId: string): {
   forget(key: string): void;
 } {
   const id = sessionId.trim();
-  let kept = handoffOrphans.get(id);
-  if (!kept) {
-    kept = new Map();
-    handoffOrphans.set(id, kept);
-  }
-  const box = kept;
   return {
-    recall: (key) => box.get(key),
+    recall: (key) => handoffOrphans.get(id)?.get(key),
     remember: (key, taskId) => {
+      let box = handoffOrphans.get(id);
+      if (!box) {
+        box = new Map();
+        handoffOrphans.set(id, box);
+      }
       box.set(key, taskId);
     },
     forget: (key) => {
+      const box = handoffOrphans.get(id);
+      if (!box) return;
       box.delete(key);
       if (box.size === 0) handoffOrphans.delete(id);
     },
