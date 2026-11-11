@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -716,7 +716,7 @@ pub struct GhPr {
 /// The pull requests whose head is `branch` in `state` (`merged`, `closed`, `open` or `all`), read-only, with a
 /// timeout. Pull requests from forks are not found: only the repository's own branches.
 pub fn gh_prs_for_branch(worktree: &Path, branch: &str, state: &str) -> Result<Vec<GhPr>, String> {
-    let mut command = Command::new("gh");
+    let mut command = crate::git_cmd::contained_command("gh");
     crate::hide_window_console(&mut command);
     let mut child = command
         .current_dir(worktree)
