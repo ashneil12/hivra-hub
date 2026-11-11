@@ -18,6 +18,7 @@ import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../../sessions/model/s
 import { projectKey } from "../../../shared/lib/paths";
 import { hubData } from "./hubData";
 import { forUser } from "./userName";
+import { appTeamsStore, type TeamsDoc, type TeamsStore } from "./hubTeamsStore";
 
 export const OPEN_TEAMS_EVENT = "monocode:open-teams";
 /** Leave Settings for a hub view (App.tsx listens), e.g. a team's room. */
@@ -61,45 +62,62 @@ export type MonoProposal = {
   monoId?: string;
 };
 
-type Stored = { teams: Team[]; proposals: MonoProposal[] };
+type Stored = TeamsDoc;
 
-const KEY = "monocode:hub-teams";
 const EVENT = "monocode:hub-teams-changed";
-let state: Stored = load();
 let version = 0;
 
-function load(): Stored {
-  try {
-    const raw = JSON.parse(localStorage.getItem(KEY) ?? "null") as Partial<Stored> | null;
-    return {
-      teams: Array.isArray(raw?.teams) ? raw.teams : [],
-      // A Mono is made in chat with Ash now (mono_create); an old proposal still waiting is closed, not shown.
-      proposals: Array.isArray(raw?.proposals) ? raw.proposals.map((p) => (p?.status === "pending" ? { ...p, status: "declined" as const } : p)) : [],
-    };
-  } catch {
-    return { teams: [], proposals: [] };
+// G7: kept in the app's database (the local hub document `hub-teams`, hubTeamsStore.ts), not this window's storage.
+// The old key's teams come across once when the store is first read.
+let store: TeamsStore | undefined;
+function teamsStore(): TeamsStore {
+  if (!store) {
+    store = appTeamsStore();
+    watch(store);
   }
+  return store;
+}
+function watch(next: TeamsStore): void {
+  next.subscribe(() => {
+    version++;
+    window.dispatchEvent(new CustomEvent(EVENT));
+  });
+  void next.load().catch(() => undefined);
+}
+/** What this window shows: the saved teams with its own changes on their way. */
+function current(): Stored {
+  return teamsStore().view();
 }
 
-function save(next: Stored): void {
-  state = next;
-  try {
-    localStorage.setItem(KEY, JSON.stringify(next));
-  } catch {
-    /* best effort */
-  }
-  version++;
-  window.dispatchEvent(new CustomEvent(EVENT));
+/** One change, shown at once and saved on top of the latest record. A save that fails takes it back and says so. */
+function save(change: (doc: Stored) => Stored): Promise<void> {
+  return teamsStore().change(change).catch(() => undefined);
 }
 
-/** Tests start clean. */
+/** Adds a team once: made again on top of another window's change, it is not added twice. */
+const withTeam = (team: Team) => (doc: Stored): Stored => (doc.teams.some((t) => t.id === team.id) ? doc : { ...doc, teams: [...doc.teams, team] });
+
+/** Every team change asked so far has been saved (or given up). */
+export function teamsSettled(): Promise<void> {
+  const s = teamsStore();
+  return s.load().then(() => s.settled(), () => s.settled());
+}
+
+/** Tests: read and write teams through this store. */
+export function setTeamsStoreForTest(next: TeamsStore): void {
+  store = next;
+  watch(next);
+}
+
+/** Tests start clean: a fresh store (in memory outside the app), which copies the old key across once. */
 export function resetTeamsForTests(): void {
-  state = load();
+  store = undefined;
 }
 
 export function useHubTeamsVersion(): number {
   return useSyncExternalStore(
     (cb) => {
+      teamsStore();
       window.addEventListener(EVENT, cb);
       return () => window.removeEventListener(EVENT, cb);
     },
@@ -109,16 +127,16 @@ export function useHubTeamsVersion(): number {
 }
 
 export function listTeams(): Team[] {
-  return state.teams;
+  return current().teams;
 }
 export function getTeam(id: string): Team | undefined {
-  return state.teams.find((t) => t.id === id);
+  return current().teams.find((t) => t.id === id);
 }
 export function teamOf(monoId: string): Team | undefined {
-  return state.teams.find((t) => t.memberIds.includes(monoId));
+  return current().teams.find((t) => t.memberIds.includes(monoId));
 }
 export function pendingMonoProposals(): MonoProposal[] {
-  return state.proposals.filter((p) => p.status === "pending");
+  return current().proposals.filter((p) => p.status === "pending");
 }
 /** The engine a Mono's conversation starts on (`Mono.engine`, read by monoWorkspace.ts); absent is the app default. */
 export function monoEngine(monoId: string): HarnessId | undefined {
@@ -143,7 +161,7 @@ function cleanName(name: unknown, what: string, max = 40): string {
  */
 export function createTeam(input: { name: string; brief: string; projects: string[]; memberIds?: string[] }): Team {
   const name = cleanName(input.name, "A team");
-  if (state.teams.some((t) => t.name.toLowerCase() === name.toLowerCase())) throw new Error(`There is already a ${name} team.`);
+  if (current().teams.some((t) => t.name.toLowerCase() === name.toLowerCase())) throw new Error(`There is already a ${name} team.`);
   if (!input.projects.length) throw new Error("Pick at least one project for the team.");
   const memberIds = [...new Set(input.memberIds ?? [])].filter((id) => listMonos().some((m) => m.id === id));
   const id = `team-${slug(name)}-${crypto.randomUUID().slice(0, 6)}`;
@@ -159,7 +177,7 @@ export function createTeam(input: { name: string; brief: string; projects: strin
     roomProjectId,
     createdAt: new Date().toISOString(),
   };
-  save({ ...state, teams: [...state.teams, team] });
+  void save(withTeam(team));
   return team;
 }
 
@@ -171,7 +189,7 @@ export function retireTeam(teamId: string): Team | undefined {
   const team = getTeam(teamId);
   if (!team) return undefined;
   if (team.roomChatId) deleteChat(team.roomChatId);
-  save({ ...state, teams: state.teams.filter((t) => t.id !== teamId) });
+  void save((doc) => ({ ...doc, teams: doc.teams.filter((t) => t.id !== teamId) }));
   return team;
 }
 
@@ -183,7 +201,7 @@ export function restoreTeam(team: Team): Team {
   if (!roomProjectId) throw new Error("That team has no project to put its room in.");
   const room = createChat(roomProjectId, `${team.name} team`, team.memberIds);
   const back: Team = { ...team, roomChatId: room.id, roomProjectId };
-  save({ ...state, teams: [...state.teams, back] });
+  void save(withTeam(back));
   return back;
 }
 
@@ -279,7 +297,10 @@ export async function addNamedMono(teamId: string | undefined, input: MonoSpec, 
     throw error;
   }
   if (team) {
-    save({ ...state, teams: state.teams.map((t) => (t.id === team.id ? { ...t, memberIds: [...t.memberIds, mono.id] } : t)) });
+    void save((doc) => ({
+      ...doc,
+      teams: doc.teams.map((t) => (t.id === team.id && !t.memberIds.includes(mono.id) ? { ...t, memberIds: [...t.memberIds, mono.id] } : t)),
+    }));
     if (team.roomChatId) deps.addToRoom(team.roomChatId, mono.id);
   }
   return mono;
@@ -297,7 +318,7 @@ export function proposeMono(
   if (pendingMonoProposals().some((p) => p.spec.name.toLowerCase() === spec.name.toLowerCase()))
     throw new Error(forUser`${spec.name} is already waiting for Ash's okay.`);
   const teamName = input.team?.trim();
-  const team = teamName ? state.teams.find((t) => t.name.toLowerCase() === teamName.toLowerCase() || t.id === teamName) : undefined;
+  const team = teamName ? current().teams.find((t) => t.name.toLowerCase() === teamName.toLowerCase() || t.id === teamName) : undefined;
   const proposal: MonoProposal = {
     id: `proposal-${crypto.randomUUID().slice(0, 8)}`,
     ...(team ? { teamId: team.id } : teamName ? { teamName: cleanName(teamName, "A team") } : {}),
@@ -306,7 +327,7 @@ export function proposeMono(
     at: new Date().toISOString(),
     status: "pending",
   };
-  save({ ...state, proposals: [...state.proposals, proposal] });
+  void save((doc) => (doc.proposals.some((p) => p.id === proposal.id) ? doc : { ...doc, proposals: [...doc.proposals, proposal] }));
   return proposal;
 }
 
@@ -315,20 +336,20 @@ export function proposeMono(
  * then the Mono. Only Ash's tap calls this.
  */
 export async function approveProposal(id: string, hubProjects: string[] = [], deps: MakeDeps = appDeps): Promise<Mono> {
-  const proposal = state.proposals.find((p) => p.id === id && p.status === "pending");
+  const proposal = current().proposals.find((p) => p.id === id && p.status === "pending");
   if (!proposal) throw new Error("That proposal isn't waiting any more.");
   let teamId = proposal.teamId;
   if (!teamId && proposal.teamName) {
-    const existing = state.teams.find((t) => t.name.toLowerCase() === proposal.teamName!.toLowerCase());
+    const existing = current().teams.find((t) => t.name.toLowerCase() === proposal.teamName!.toLowerCase());
     teamId = existing?.id ?? createTeam({ name: proposal.teamName, brief: "", projects: hubProjects }).id;
   }
   const mono = await addNamedMono(teamId, proposal.spec, deps);
-  save({ ...state, proposals: state.proposals.map((p) => (p.id === id ? { ...p, status: "approved", monoId: mono.id } : p)) });
+  void save((doc) => ({ ...doc, proposals: doc.proposals.map((p) => (p.id === id ? { ...p, status: "approved" as const, monoId: mono.id } : p)) }));
   return mono;
 }
 
 export function declineProposal(id: string): void {
-  save({ ...state, proposals: state.proposals.map((p) => (p.id === id && p.status === "pending" ? { ...p, status: "declined" } : p)) });
+  void save((doc) => ({ ...doc, proposals: doc.proposals.map((p) => (p.id === id && p.status === "pending" ? { ...p, status: "declined" as const } : p)) }));
 }
 
 /** Project names an agent gave, as folders: one of the hub's (id, name or folder) or one of `own`. */
