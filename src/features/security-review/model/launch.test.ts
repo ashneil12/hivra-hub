@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import settleFixture from "./fixtures/settle-completed.json";
 import type { Delegation, DelegationsBackend, SettleInput } from "../../monos/model/delegations";
 import {
   decodeReviewKey,
@@ -154,5 +155,16 @@ describe("the Inbox and Lead tick line", () => {
       reviewer: "claude",
     });
     expect(decodeReviewKey("security-review-zz")).toBeNull();
+  });
+});
+
+describe("the settle the launcher sends matches the shared fixture the Rust gate test replays", () => {
+  it("a completed reviewer settles with exactly the fixture's state, generation and result", async () => {
+    const { hooks, submitted } = fakeHarness();
+    const { backend, settled } = fakeBackend();
+    startReviewSession(reviewRow(), hooks, backend);
+    submitted[0]!.onSettled!({ status: "completed", text: settleFixture.result });
+    await Promise.resolve();
+    expect(settled).toEqual([{ id: "d-review", ...settleFixture }]);
   });
 });

@@ -3227,3 +3227,45 @@ fn a_review_running_past_an_hour_is_stuck_and_still_holds_the_merge() {
         "a stuck review never merges"
     );
 }
+
+/// The settle the TypeScript launcher sends for a completed reviewer (src/features/security-review/model/fixtures). The
+/// launcher's test asserts the same payload, so this replays the real contract through the real settle and gate.
+const LAUNCHER_SETTLE: &str =
+    include_str!("../../../src/features/security-review/model/fixtures/settle-completed.json");
+
+#[test]
+fn the_launchers_settle_payload_passes_the_real_gate_and_writes_the_record() {
+    let s = store();
+    let f = fixture("sec-cross-layer");
+    seed_author(&s, "codex");
+    let present = [
+        presence("codex", true, true),
+        presence("claude", true, true),
+    ];
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+
+    // The gate starts the review row and holds.
+    let held = merge::merge_with(&s, &gh, security_request(&f.project), 10, &present).unwrap();
+    assert!(matches!(held, MergeOutcome::NeedsYou { .. }), "{held:?}");
+    let (id, _, _) = review_rows(&s)[0].clone();
+
+    // The app's session finishes and settles the row with the launcher's payload.
+    let mut payload: serde_json::Value = serde_json::from_str(LAUNCHER_SETTLE).unwrap();
+    payload["id"] = serde_json::json!(id);
+    let input: crate::delegations::SettleInput = serde_json::from_value(payload).unwrap();
+    {
+        let mut conn = s.lock_conn().unwrap();
+        crate::delegations::settle(&mut conn, input, 20).unwrap();
+    }
+
+    // The record exists, and the gate now passes.
+    {
+        let conn = s.lock_conn().unwrap();
+        let record = crate::delivery::review::lookup(&conn, "acme/web", 7, H1_SEC)
+            .unwrap()
+            .expect("the record");
+        assert_eq!(record.status, "recorded");
+    }
+    let merged = merge::merge_with(&s, &gh, security_request(&f.project), 30, &present).unwrap();
+    assert!(matches!(merged, MergeOutcome::Merged { .. }), "{merged:?}");
+}
