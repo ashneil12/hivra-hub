@@ -1039,6 +1039,77 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
+    /// A tracked hook (`core.hooksPath=.husky`, the way Husky ships one) runs inside the `git commit` that the sandboxed
+    /// CLI starts. Under the profile it is refused the write to the switch file. The same hook without the sandbox writes
+    /// it, so the control shows the test can see a write.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_tracked_hook_under_a_sandboxed_commit_cannot_write_the_switch_file() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = temp_home("hook-commit");
+        let data = home.join(APP_DATA_UNDER_HOME);
+        std::fs::create_dir_all(data.join("settings")).unwrap();
+        let switch = data.join("settings").join(SETTING_FILE);
+        let repo = home.join("repo");
+        std::fs::create_dir_all(repo.join(".husky")).unwrap();
+        let result = home.join("hook-result");
+        let hook = repo.join(".husky").join("pre-commit");
+        std::fs::write(
+            &hook,
+            format!(
+                "#!/bin/sh\nif echo off > '{s}' 2>/dev/null; then echo wrote > '{r}'; else echo refused > '{r}'; fi\nexit 0\n",
+                s = switch.display(),
+                r = result.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let git = |args: &[&str]| {
+            assert!(
+                Command::new("git")
+                    .arg("-C")
+                    .arg(&repo)
+                    .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+                    .args(args)
+                    .status()
+                    .unwrap()
+                    .success(),
+                "git {args:?}"
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "core.hooksPath", ".husky"]);
+        let commit = ["commit", "-q", "--allow-empty", "-m", "crew"];
+        let profile = profile_text_for(&home, Some(&data)).unwrap();
+
+        // Sandboxed: the commit and its hook run under the profile.
+        std::fs::write(&switch, "on\n").unwrap();
+        let sandboxed = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile, "git", "-C"])
+            .arg(&repo)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t"])
+            .args(commit)
+            .env("HOME", &home)
+            .status()
+            .unwrap();
+        assert!(sandboxed.success(), "the sandboxed commit still lands");
+        assert_eq!(
+            std::fs::read_to_string(&result).unwrap().trim(),
+            "refused",
+            "the hook wrote the switch"
+        );
+        assert_eq!(std::fs::read_to_string(&switch).unwrap(), "on\n");
+
+        // Control: the same hook without the sandbox writes the switch, so a refusal above is a real refusal.
+        git(&["commit", "-q", "--allow-empty", "-m", "control"]);
+        assert_eq!(
+            std::fs::read_to_string(&result).unwrap().trim(),
+            "wrote",
+            "the control hook could not write"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn under_the_real_profile_a_write_through_a_link_to_a_secret_target_is_refused() {
