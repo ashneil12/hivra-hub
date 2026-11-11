@@ -134,6 +134,18 @@ pub(crate) mod fake {
             self
         }
 
+        /// A merge-base answer for tests that never set one. Appended last, so a key registered
+        /// earlier still wins. `run` does not invent this.
+        pub fn steady(self) -> Self {
+            self.with_api(
+                "per_page=1",
+                &format!(
+                    r#"{{"status":"identical","ahead_by":0,"behind_by":0,"merge_base_commit":{{"sha":"{}"}},"files":[]}}"#,
+                    "ba5e".repeat(10)
+                ),
+            )
+        }
+
         pub fn ran(&self, first: &str, second: &str) -> Vec<Vec<String>> {
             self.runs
                 .lock()
@@ -160,23 +172,6 @@ pub(crate) mod fake {
 
         fn run(&self, _dir: Option<&Path>, args: &[String]) -> Result<String, String> {
             self.runs.lock().unwrap().push(args.to_vec());
-            if args.first().map(String::as_str) == Some("api") {
-                let path = args.get(1).map(String::as_str).unwrap_or("");
-                if let Some((_, json)) = self
-                    .apis
-                    .iter()
-                    .find(|(key, _)| path.contains(key.as_str()))
-                {
-                    return Ok(json.clone());
-                }
-                // Unanswered merge-base reads say the branch took main at the shared test main, so nothing holds.
-                if path.contains("compare/") && path.contains("per_page=1") {
-                    return Ok(format!(
-                        r#"{{"status":"ahead","ahead_by":1,"behind_by":0,"merge_base_commit":{{"sha":"{}"}},"files":[]}}"#,
-                        "ba5e".repeat(10)
-                    ));
-                }
-            }
             if self
                 .fail
                 .lock()
@@ -187,6 +182,14 @@ pub(crate) mod fake {
                 return Err(format!("gh {} failed", args.join(" ")));
             }
             if args.first().map(String::as_str) == Some("api") {
+                let path = args.get(1).map(String::as_str).unwrap_or("");
+                if let Some((_, json)) = self
+                    .apis
+                    .iter()
+                    .find(|(key, _)| path.contains(key.as_str()))
+                {
+                    return Ok(json.clone());
+                }
                 if let Some(result) = self.files.lock().unwrap().clone() {
                     return result;
                 }

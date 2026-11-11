@@ -1149,7 +1149,7 @@ fn agent_merge(repo: &str) -> MergeRequest {
 #[test]
 fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
     let s = store();
-    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]).steady();
     let asked = merge::merge(&s, &gh, agent_merge("acme/web"), 10).unwrap();
     assert!(
         matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "1111111111111111111111111111111111111111"),
@@ -1171,7 +1171,7 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
         20,
     )
     .unwrap();
-    let moved = FakeGithub::new(vec![green("2222222222222222222222222222222222222222")]);
+    let moved = FakeGithub::new(vec![green("2222222222222222222222222222222222222222")]).steady();
     assert!(matches!(
         merge::merge(&s, &moved, agent_merge("acme/web"), 30).unwrap(),
         MergeOutcome::NeedsYou { .. }
@@ -1347,7 +1347,7 @@ fn an_agent_merge_uses_only_the_delivery_record() {
     remember_delivery(&s, &quiet.project, None, 7);
     let mut borrow = agent_merge("acme/web");
     borrow.project = Some(loud.project.to_string_lossy().into());
-    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]).steady();
     let asked = merge::merge(&s, &gh, borrow, 10).unwrap();
     assert!(
         matches!(&asked, MergeOutcome::NeedsYou { .. }),
@@ -1363,7 +1363,8 @@ fn an_agent_merge_uses_only_the_delivery_record() {
     let gh = FakeGithub::new(vec![
         green("1111111111111111111111111111111111111111"),
         green("1111111111111111111111111111111111111111"),
-    ]);
+    ])
+    .steady();
     let asked = merge::merge(&s, &gh, named.clone(), 20).unwrap();
     assert!(
         matches!(&asked, MergeOutcome::NeedsYou { head_sha, .. } if head_sha == "1111111111111111111111111111111111111111"),
@@ -1408,7 +1409,7 @@ fn the_switch_merges_green_without_asking_and_never_red() {
     assert!(red.ran("pr", "merge").is_empty());
     assert!(activity_at(&s, 10).is_empty(), "a red check merges nothing");
 
-    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]).steady();
     let merged = merge::merge(&s, &gh, request, 20).unwrap();
     assert!(
         matches!(&merged, MergeOutcome::Merged { allowed_by, .. } if allowed_by.contains("merge without asking"))
@@ -1522,7 +1523,8 @@ fn an_open_wp14_decision_on_the_trees_task_blocks_the_merge() {
     let gh = FakeGithub::new(vec![
         green("1111111111111111111111111111111111111111"),
         green("1111111111111111111111111111111111111111"),
-    ]);
+    ])
+    .steady();
     let request = MergeRequest {
         caller: Caller::Person {
             via: "Inbox".into(),
@@ -1568,7 +1570,7 @@ fn the_inbox_merge_button_goes_through_the_same_path() {
         activity_at(&s, 10).is_empty(),
         "a refused tap is not a merge"
     );
-    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]);
+    let gh = FakeGithub::new(vec![green("1111111111111111111111111111111111111111")]).steady();
     merge::by_person(&s, &gh, "acme/web", 7, Method::Squash, "Inbox", 20).unwrap();
     assert!(gh.ran("pr", "merge")[0].contains(&"--squash".to_string()));
     let log = merge::log(&s.lock_conn().unwrap(), "acme/web", 7).unwrap();
@@ -1711,7 +1713,7 @@ fn files_of(body: Result<&str, &str>) -> FakeGithub {
         Ok(text) => Ok(text.to_string()),
         Err(text) => Err(text.to_string()),
     });
-    gh
+    gh.steady()
 }
 
 fn asked(outcome: &MergeOutcome) -> String {
@@ -2030,7 +2032,8 @@ fn a_moved_head_is_not_merged_on_the_file_list_of_the_old_one() {
     let gh = FakeGithub::new(vec![
         green("1111111111111111111111111111111111111111"),
         green("2222222222222222222222222222222222222222"),
-    ]);
+    ])
+    .steady();
     *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
     let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
     let question = asked(&outcome);
@@ -2151,7 +2154,7 @@ fn red_and_a_pull_request_with_no_checks_do_not_consult_the_floor() {
         vec![],
     );
     read.changed_files = Some(1);
-    let unchecked = FakeGithub::new(vec![read]);
+    let unchecked = FakeGithub::new(vec![read]).steady();
     *unchecked.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
     let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 30).unwrap());
     assert!(question.contains("no checks"), "{question}");
@@ -2416,7 +2419,8 @@ fn a_base_that_moves_while_the_files_are_read_is_asked_again() {
     let gh = FakeGithub::new(vec![
         green("1111111111111111111111111111111111111111"),
         moved,
-    ]);
+    ])
+    .steady();
     *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
     let question = asked(&merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap());
     assert!(question.contains("base changed"), "{question}");
@@ -2475,7 +2479,7 @@ fn the_head_branch_check_belongs_to_the_floor() {
     remember_delivery(&s, &project, None, 7);
     let mut read = green("1111111111111111111111111111111111111111");
     read.head_ref = "someone-else".into();
-    let gh = FakeGithub::new(vec![read]);
+    let gh = FakeGithub::new(vec![read]).steady();
     *gh.files.lock().unwrap() = Some(Ok("readme.md\n".into()));
     let merged = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
     assert!(
@@ -2624,7 +2628,7 @@ fn the_no_checks_question_names_a_protected_file_too() {
         vec![],
     );
     read.changed_files = Some(1);
-    let unchecked = FakeGithub::new(vec![read]);
+    let unchecked = FakeGithub::new(vec![read]).steady();
     *unchecked.files.lock().unwrap() = Some(Ok(".github/workflows/x.yml\n".into()));
     let question = asked(&merge::merge(&s, &unchecked, agent_merge("acme/web"), 20).unwrap());
     assert!(question.contains("no checks"), "{question}");
@@ -2780,7 +2784,7 @@ fn a_move_that_lands_between_the_read_and_the_merge_refuses() {
         merge_state: Some("DIRTY".into()),
         ..green("a1b2c3d")
     };
-    let gh = FakeGithub::new(vec![first, second]);
+    let gh = FakeGithub::new(vec![first, second]).steady();
     let out = merge::merge(&s, &gh, person_merge("acme/web"), 10).unwrap();
     assert!(
         matches!(&out, MergeOutcome::Refused { reason } if reason.contains("conflicts with main")),
@@ -2940,6 +2944,34 @@ fn r3_review_a_main_rename_of_the_pull_request_s_file_holds_the_merge() {
         "main moved the pull request's file: {out:?}"
     );
     assert!(gh.ran("pr", "merge").is_empty(), "nothing merges over a move");
+}
+
+/// An unanswered compare is not a merge base, and a fail listed for that path wins over a recorded answer.
+#[test]
+fn the_delivery_fake_does_not_invent_a_merge_base() {
+    let gh = FakeGithub::new(vec![]);
+    let path = format!(
+        "repos/acme/web/compare/{}...a1b2c3d?per_page=1",
+        "ba5e".repeat(10)
+    );
+    let body = gh
+        .run(None, &["api".into(), path.clone()])
+        .unwrap_or_default();
+    assert!(
+        !body.contains("merge_base_commit"),
+        "an unanswered compare is not a merge base: {body}"
+    );
+
+    let gh = FakeGithub::new(vec![]).with_api(
+        "per_page=1",
+        r#"{"status":"identical","merge_base_commit":{"sha":"abc1234"},"files":[]}"#,
+    );
+    gh.fail.lock().unwrap().push(path.clone());
+    let failed = gh.run(None, &["api".into(), path]);
+    assert!(
+        failed.is_err(),
+        "the fail list is checked before recorded answers: {failed:?}"
+    );
 }
 
 /// The floor is off. A question opened while the base hold has the store lock released still stops the merge.
