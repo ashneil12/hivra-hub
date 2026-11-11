@@ -109,19 +109,19 @@ Ash approved the lead's picks. Each one below is what the code does now.
    It names what changed in `.git/hooks`, `.git/config` and the secret places, and never blocks or reverts anything.
    The fingerprints for `.git/hooks` and `.git/config` are content hashes. The secret places are size and modified time
    only, never content, so the check does not read keys.
-5. **Secret-paths list: report only, in the same after-turn check.** The list lives in one shared file,
-   `src/shared/security/agentSecretPaths.json`. The TypeScript check and the Rust sandbox profile both read it, so they
-   cannot drift. The CLI's own login files (`~/.claude.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`) are
+5. **Secret-paths list: report only, in the same after-turn check.** The list is the `homeSecrets` section of the
+   shared list `src/shared/security/agentConfigPaths.json` (the file the delivery floor reads too). The TypeScript check
+   and the Rust sandbox profile both read it, so they cannot drift. It is home-anchored, not matched at any depth, so
+   the sandbox never denies a folder such as `<repo>/.git` or `~/.claude`. The CLI's own login files (`~/.claude.json`, `~/.claude/.credentials.json`, `~/.codex/auth.json`) are
    reported but not denied by the sandbox, because the CLI reads them to log in, and a denial would stop it from
    starting. That is a gap Ash should decide on.
 
 Not built in this round, on purpose:
-- A settings toggle in the app UI. The setting is a file and an environment switch, as `disclaim` is. A toggle needs
-  SettingsView, which this package keeps hook-only.
-- Refusal entries in the activity log (WP-78). A refusal shows as the process error; the log row is not wired.
-- The shared list from PR #201 (`src/shared/security/agentConfigPaths.json`). It is on that PR's branch and not on
-  main, so it is not imported here. The sandbox's secret list is its own file until #201 merges; then the two should
-  be reconciled.
+- Built later in this round: a Settings > General switch (it writes the same file the app reads), activity rows for a
+  refused start (`sandbox.refuse`) and for a first-mate turn that touched a protected or secret place
+  (`protected.report`), and the reconciled shared list (one list, `homeSecrets`).
+- A refusal of an individual read or write is not logged. `sandbox-exec` does not report a denied access to the app,
+  so only a refused start and the after-turn report reach the activity log.
 - Confinement for the user's own terminal (WP-44 and the terminal module). Only the agent CLI process is started under
   the profile, not every shell the terminal opens.
 
