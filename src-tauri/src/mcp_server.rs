@@ -2577,4 +2577,16 @@ mod tests {
             serde_json::from_str(last["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(text["settled"], json!(["t-1"]));
     }
+
+    /// Round-5 review repro (PR #213), LOW: secret cards are Once or No, but the tool still tells the agent the person can
+    /// approve "once for always", so an agent asks the person for a choice the card does not have.
+    #[test]
+    fn review_213_r5_secrets_run_does_not_promise_always() {
+        let tool = secret_tools()
+            .into_iter()
+            .find(|tool| tool["name"] == "secrets_run")
+            .expect("secrets_run");
+        let words = tool["description"].as_str().unwrap().to_lowercase();
+        assert!(!words.contains("always"), "{words}");
+    }
 }

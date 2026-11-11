@@ -2686,6 +2686,8 @@ mod approval_tests;
 #[cfg(test)]
 mod r4_repro_tests;
 #[cfg(test)]
+mod r5_repro_tests;
+#[cfg(test)]
 mod security_tests;
 #[cfg(test)]
 mod tests;
