@@ -28,6 +28,7 @@ import {
   codexAutoFileChange,
   codexGrantsPermissionsAutomatically,
   codexSkipsOuterSandbox,
+  hivraSandboxEnabled,
   buildTurnSteerParams,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
@@ -691,6 +692,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
   );
 
+  const hivraSandbox = await readHivraSandbox();
   await spawnChild(
     input.sessionId,
     path,
@@ -708,7 +710,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     codexSkipsOuterSandbox({
       runtimeMode: input.runtimeMode,
       firstMate: input.firstMate,
-      hivraSandbox: (await loadAgentSandbox().catch(() => null))?.enabled === true,
+      hivraSandbox,
     }),
   );
 
@@ -736,7 +738,6 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     const model = nativeModelId(input.model);
     const serviceTier = input.modelSettings?.serviceTier;
     const effort = input.modelSettings?.reasoningEffort;
-    const hivraSandbox = await readHivraSandbox();
 
     let threadId: string | undefined;
     let didResume = false;
@@ -1832,14 +1833,14 @@ async function readHivraSandbox(): Promise<boolean> {
   try {
     inApp = isTauri();
   } catch {
-    return false;
+    return hivraSandboxEnabled(false, null);
   }
-  if (!inApp) return false;
+  if (!inApp) return hivraSandboxEnabled(false, null);
   try {
     const status = await loadAgentSandbox();
-    return status.enabled === true;
+    return hivraSandboxEnabled(true, status);
   } catch {
-    return true;
+    return hivraSandboxEnabled(true, null);
   }
 }
 
