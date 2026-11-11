@@ -137,8 +137,8 @@ import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRoom
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { DOC_FIELDS, handleDocs } from "./agentDocs";
 import { handleActivity, handleMemoryRecall } from "../../chief/model/tools";
-import { captainCanRead, captainHandoff, delegationId, filedTaskId } from "../../chief/model/handoff";
-import { hasCaptainCharter } from "../../chief/model/charter";
+import { captainCanRead, captainHandoff, delegationId, filedTaskId, handoffGoal } from "../../chief/model/handoff";
+import { hasCaptainCharter, isCaptainMono, withLockedRole } from "../../chief/model/charter";
 import { recordNote } from "../../chief/model/notes";
 import { checkBrief } from "../../firstmate/model/brief";
 import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "../../docs/gateway";
@@ -146,6 +146,31 @@ import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "
 /** What a Mono hears if it reaches for the old proposal path. */
 /** Hivra WP-10: the definition of done for a hub change's worker (its brief says what to build and check). */
 export const SELF_BUILD_GOAL = "The change is made in the preview copy, the checks its brief names pass, and the report says how to see it.";
+
+/** A handoff that filed and then failed to delegate, keyed by the host so a retry on that host reuses the task. */
+const handoffOrphans = new WeakMap<object, Map<string, string>>();
+
+function handoffMemory(host: object): {
+  recall(key: string): string | undefined;
+  remember(key: string, taskId: string): void;
+  forget(key: string): void;
+} {
+  let kept = handoffOrphans.get(host);
+  if (!kept) {
+    kept = new Map();
+    handoffOrphans.set(host, kept);
+  }
+  const box = kept;
+  return {
+    recall: (key) => box.get(key),
+    remember: (key, id) => {
+      box.set(key, id);
+    },
+    forget: (key) => {
+      box.delete(key);
+    },
+  };
+}
 
 export const MONO_ONE_WAY = "There is one way to make a Mono: mono_create, in your chat with Ash. Draft it with him, he says yes, and it is made. Nothing is filed on Settings > Teams any more.";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
@@ -979,11 +1004,12 @@ async function handleSoul(
   if (hasCaptainCharter(before.text) && !hasCaptainCharter(input.text)) {
     throw new Error("The captain charter is fixed. Edit the personality beside it.");
   }
+  const nextSoul = hasCaptainCharter(input.text) ? withLockedRole(input.text) : input.text;
   try {
     const hash = await host.writeAgentFile(
       monoId,
       "SOUL.md",
-      input.text,
+      nextSoul,
       expectedHash,
     );
     const bot = selfWriter(host, monoId);
@@ -993,7 +1019,7 @@ async function handleSoul(
       file: "SOUL.md",
       line: `${bot} changed its soul`,
       before: before.text ?? "",
-      after: input.text,
+      after: nextSoul,
       run: source.id,
     });
     return { file: "SOUL.md", updated: true, hash };
@@ -1668,12 +1694,13 @@ export async function handleAgentApp(
     if (typeof input.text !== "string" || input.text.length > 240_000)
       throw new Error("text must be a string under 240000 characters");
     const current = await host.readAgentFile(mono, "SOUL.md");
-    if (hasCaptainCharter(current.text) && !hasCaptainCharter(input.text)) {
+    const nextSoul = hasCaptainCharter(input.text) ? withLockedRole(input.text) : input.text;
+    if (hasCaptainCharter(current.text) && !hasCaptainCharter(nextSoul)) {
       throw new Error("The captain charter is fixed. Edit the personality beside it.");
     }
     return mergeSoul(
       caller,
-      { mono, text: input.text, expectedHash: requiredString(input.expectedHash, "expectedHash", 128) },
+      { mono, text: nextSoul, expectedHash: requiredString(input.expectedHash, "expectedHash", 128) },
       files,
       templates,
       host.now?.() ?? new Date(),
@@ -1682,14 +1709,14 @@ export async function handleAgentApp(
   // WP-215: file the task, then hand it to the project's first mate.
   if (action === "captain.handoff") {
     const mono = host.monoOf?.(source.id);
-    if (!host.isMono(source.id) || (mono?.name ?? "").trim() !== "Chief of Staff") {
+    if (!host.isMono(source.id) || !isCaptainMono(mono)) {
       throw new Error("Only the Chief of Staff hands work on.");
     }
     const project = requiredString(input.project, "project", 4096);
     const title = requiredString(input.title, "title", 300);
     const brief = requiredString(input.brief, "brief", 8000);
     const lead = handoffLead(project, host);
-    const goal = brief;
+    const goal = handoffGoal(title, brief);
     const problem = checkBrief({ intent: brief, spec: brief, done: goal });
     if (problem) throw new Error(problem);
     // The probe, the brief and the lead are settled before anything is filed, so a retry cannot file a second task.
@@ -1702,7 +1729,16 @@ export async function handleAgentApp(
         brief,
       },
       {
-        canRead: (named) => captainCanRead(mono, named),
+        canRead: (named) =>
+          captainCanRead(mono, named, async () => {
+            if (!mono?.id || !host.agentFiles) return undefined;
+            try {
+              return (await host.agentFiles(mono.id)).soul;
+            } catch {
+              return undefined;
+            }
+          }),
+        ...handoffMemory(host),
         createTask: async (task) => {
           const created = await handleTaskStore(source, "tasks.create", {
             title: task.title,

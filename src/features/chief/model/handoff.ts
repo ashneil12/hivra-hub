@@ -1,19 +1,43 @@
 // WP-215: one handoff. File the task, then hand it to the project's first mate. No model call.
 
-import { readsEveryProject, type ScopeMono } from "./scope";
+import { readsEveryProject, scopeOpen, type ScopeMono } from "./scope";
 import { handoffLine } from "./captain";
 
 export const DEFAULT_DEPARTMENT = "Coding";
 
 export type HandoffMono = ScopeMono & { projects?: readonly string[] };
 
-/** The chief can read a project it is on, or every project when its scope says so. */
-export function captainCanRead(mono: HandoffMono | null | undefined, project: string): boolean {
-  if (!mono) return false;
-  if (readsEveryProject(mono)) return true;
+function onProjectList(mono: HandoffMono, project: string): boolean {
   const wanted = project.trim();
   if (!wanted) return false;
   return (mono.projects ?? []).some((item) => item.trim() === wanted);
+}
+
+/**
+ * The chief can read a project it is on, or every project when its scope says so.
+ * The soul file counts when the roster copy does not carry the line (`scopeOpen`).
+ * Without a soul reader this stays synchronous, the same check as before.
+ */
+export function captainCanRead(
+  mono: HandoffMono | null | undefined,
+  project: string,
+  readSoul?: () => Promise<string | null | undefined>,
+): boolean | Promise<boolean> {
+  if (!mono) return false;
+  const listed = onProjectList(mono, project);
+  if (!readSoul) return readsEveryProject(mono) || listed;
+  return scopeOpen(mono, readSoul).then((open) => open || listed);
+}
+
+/**
+ * The finish condition, not a second copy of the brief.
+ * The title is the condition when it says something the brief does not.
+ */
+export function handoffGoal(title: string, brief: string): string {
+  const name = title.trim();
+  const words = brief.trim();
+  if (name && name !== words) return `Done when ${name} is finished and the change keeps what it should.`;
+  return "Done when the change is in and the check that covers it passes.";
 }
 
 export type HandoffInput = {
@@ -24,10 +48,19 @@ export type HandoffInput = {
 };
 
 export type HandoffDeps = {
-  canRead: (project: string) => boolean;
+  canRead: (project: string) => boolean | Promise<boolean>;
   createTask: (task: { project: string; title: string; brief: string }) => Promise<{ id: string }>;
   delegate: (task: { project: string; title: string; brief: string; department: string; taskId: string }) => Promise<{ id: string }>;
+  /** A task already filed for this same handoff, so a retry does not file another. */
+  recall?(key: string): string | undefined;
+  remember?(key: string, taskId: string): void;
+  forget?(key: string): void;
 };
+
+/** One handoff, whatever request id the retry uses. */
+export function handoffRequestKey(input: { project: string; department: string; title: string; brief: string }): string {
+  return `${input.project}\n${input.department}\n${input.title}\n${input.brief}`;
+}
 
 export type HandoffResult = {
   taskId: string;
@@ -51,12 +84,23 @@ export async function captainHandoff(input: HandoffInput, deps: HandoffDeps): Pr
   const title = required(input.title, "The title");
   const brief = required(input.brief, "The brief");
   const department = input.department?.trim() || DEFAULT_DEPARTMENT;
-  if (!deps.canRead(project)) throw new Error("The Chief of Staff cannot read that project.");
-  const filed = await deps.createTask({ project, title, brief });
-  const taskId = required(filed?.id ?? "", "The filed task");
-  const handed = await deps.delegate({ project, title, brief, department, taskId });
-  const delegationId = required(handed?.id ?? "", "The handoff");
-  return { taskId, delegationId, department, line: handoffLine(department, title) };
+  if (!(await deps.canRead(project))) throw new Error("The Chief of Staff cannot read that project.");
+  const key = handoffRequestKey({ project, department, title, brief });
+  let taskId = deps.recall?.(key);
+  if (!taskId) {
+    const filed = await deps.createTask({ project, title, brief });
+    taskId = required(filed?.id ?? "", "The filed task");
+    deps.remember?.(key, taskId);
+  }
+  try {
+    const handed = await deps.delegate({ project, title, brief, department, taskId });
+    const delegationId = required(handed?.id ?? "", "The handoff");
+    deps.forget?.(key);
+    return { taskId, delegationId, department, line: handoffLine(department, title) };
+  } catch (error) {
+    // The filed id stays remembered, so the retry hands that task on instead of filing another.
+    throw error;
+  }
 }
 
 /** The id `tasks_create` returns lives on the task, not on the wrapper. */

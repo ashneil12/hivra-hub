@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { captainCanRead, captainHandoff, delegationId, filedTaskId } from "./handoff";
+import { checkBrief } from "../../firstmate/model/brief";
+import { captainCanRead, captainHandoff, delegationId, filedTaskId, handoffGoal } from "./handoff";
 import { EVERY_PROJECT_LINE } from "./scope";
 
 const chief = { everyProject: true, instructions: `Role\n${EVERY_PROJECT_LINE}\n`, projects: [] as string[] };
@@ -47,6 +48,26 @@ describe("captain.handoff", () => {
     expect(captainCanRead({ projects: ["hivra"] }, "hivra")).toBe(true);
     expect(captainCanRead({ projects: ["hivra"] }, "exo")).toBe(false);
     expect(captainCanRead(undefined, "hivra")).toBe(false);
+  });
+
+  it("reads the soul file when the roster copy has no line, and a failed read stays closed", async () => {
+    const mono = { everyProject: true, instructions: "no line", projects: [] as string[] };
+    await expect(captainCanRead(mono, "exo", async () => EVERY_PROJECT_LINE)).resolves.toBe(true);
+    await expect(
+      captainCanRead(mono, "exo", async () => {
+        throw new Error("gone");
+      }),
+    ).resolves.toBe(false);
+  });
+
+  it("the goal is the finish condition, not the brief again", () => {
+    const title = "Fix the save bug";
+    const brief = "The save button loses the last edit. Make it keep it.";
+    const goal = handoffGoal(title, brief);
+    expect(goal).not.toBe(brief);
+    expect(goal).not.toBe(title);
+    expect(checkBrief({ intent: brief, spec: brief, done: goal })).toBeUndefined();
+    expect(handoffGoal(brief, brief)).not.toBe(brief);
   });
 
   it("reads the filed id from the task, and the delegation id from the row", () => {
