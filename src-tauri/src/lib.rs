@@ -113,6 +113,7 @@ mod page_http;
 mod pasteboard;
 mod pi_usage;
 // WP-76: one trash for chats, Monos, projects, notes, docs and tasks.
+mod team_workspace;
 mod trash;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
@@ -559,6 +560,7 @@ pub fn run() {
             dictation::dictation_start,
             dictation::dictation_stop,
             mobile_access::mobile_status,
+            team_workspace::team_workspace_status,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
             mobile_access::mobile_cancel_invite,
