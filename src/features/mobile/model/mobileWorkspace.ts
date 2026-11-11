@@ -53,10 +53,9 @@ import {
 } from "../../sessions/data/sessionStore";
 import {
   HARNESSES,
+  DEFAULT_RUNTIME_MODE,
   HARNESS_TITLE,
   RUNTIME_MODES,
-  RUNTIME_MODE_HINT,
-  RUNTIME_MODE_LABEL,
   hasPendingApproval,
   newDefaultSession,
   sessionDisplayTitle,
@@ -73,6 +72,13 @@ import {
   resolveModel,
 } from "../../sessions/model/models";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
+import {
+  offeredRuntimeModes,
+  permissionCliForHarness,
+  phoneModeChange,
+  resolvePhoneRuntimeMode,
+  runtimeModeCopy,
+} from "../../../integrations/harness/core/permissionMatrix";
 import { mobileTranscript } from "./mobileTranscript";
 import {
   CUSTOM_OPTION_ID,
@@ -419,11 +425,11 @@ export async function mobileModels(
         settings: entry.settings ?? [],
       })),
     ),
-    runtimeModes: RUNTIME_MODES.map((id) => ({
-      id,
-      label: RUNTIME_MODE_LABEL[id],
-      hint: RUNTIME_MODE_HINT[id],
-    })),
+    runtimeModes: runtimeModesFor(current.harness),
+    // Every mode on every harness's CLI, named as that CLI names it, with whether the picker offers it (WP-175).
+    runtimeModesByHarness: Object.fromEntries(
+      HARNESSES.map((harness) => [harness, allRuntimeModesFor(harness)]),
+    ),
     ...mobileProviderAccounts(current.cwd),
     current: {
       harness: current.harness,
@@ -433,6 +439,23 @@ export async function mobileModels(
       providerAccountId: mobileSessionAccountId(current),
     },
   };
+}
+
+/** Every Hivra mode on a harness's CLI, with that CLI's names, and whether the picker offers it (WP-175). */
+function allRuntimeModesFor(harness: HarnessId) {
+  const cli = permissionCliForHarness(harness);
+  const offered = offeredRuntimeModes(cli);
+  return RUNTIME_MODES.map((id) => {
+    const copy = runtimeModeCopy(id, cli);
+    return { id, label: copy.label, hint: copy.hint, offered: offered.includes(id) };
+  });
+}
+
+/** The modes a picker offers on a harness's CLI, with that CLI's names and hints (WP-175). */
+function runtimeModesFor(harness: HarnessId) {
+  return allRuntimeModesFor(harness)
+    .filter((mode) => mode.offered)
+    .map(({ id, label, hint }) => ({ id, label, hint }));
 }
 
 /** A model sheet choice from the phone, keeping only what is well formed. */
@@ -500,6 +523,62 @@ export function mobileQuestionReply(
   return rebuilt.kind === "answered" ? rebuilt : undefined;
 }
 
+/**
+ * A phone's model sheet change for an open chat (WP-175). `mode` is the mode the
+ * chat ends on when the sheet picked one; `error` is the message the phone gets
+ * when its pick was looser than the chat allows. Leaving fx starts from Supervised,
+ * as onModelChange resets the chat, so fx's Full access never carries across.
+ */
+export function mobileConfigureMode(
+  chat: { harness: HarnessId; runtimeMode: RuntimeMode },
+  openMode: RuntimeMode | undefined,
+  choice: { harness?: HarnessId; runtimeMode?: RuntimeMode },
+): { targetHarness: HarnessId; mode?: RuntimeMode; error?: string } {
+  const targetHarness = choice.harness ?? chat.harness;
+  if (!choice.runtimeMode) return { targetHarness };
+  const leavingFx = chat.harness === "fx" && targetHarness !== "fx";
+  const cli = permissionCliForHarness(targetHarness);
+  const change = phoneModeChange(cli, {
+    live: leavingFx ? DEFAULT_RUNTIME_MODE : openMode,
+    saved: leavingFx ? DEFAULT_RUNTIME_MODE : chat.runtimeMode,
+    payload: choice.runtimeMode,
+  });
+  if (!change.accepted)
+    return {
+      targetHarness,
+      error: `The phone can only tighten this chat's mode. It stays on ${runtimeModeCopy(change.mode, cli).label}.`,
+    };
+  return { targetHarness, mode: change.mode };
+}
+
+/**
+ * The phone's model sheet for an open chat, as App's session.configure runs it (WP-175). The mode is checked
+ * first, so a refused pick changes nothing: no model switch, no settings, no mode.
+ */
+export function applyMobileConfigure(
+  session: Session,
+  params: Record<string, unknown>,
+  deps: {
+    openMode: (sessionId: string) => RuntimeMode | undefined;
+    onModelChange: (sessionId: string, harness: HarnessId, model: string) => void;
+    onModelSettingsChange: (sessionId: string, settings: Record<string, string>) => void;
+    onRuntimeModeChange: (sessionId: string, mode: RuntimeMode) => void;
+  },
+): { sessionId: string } {
+  const choice = mobileChoice(params);
+  const openNow = deps.openMode(session.id);
+  const plan = mobileConfigureMode(session, openNow, choice);
+  if (plan.error) throw new Error(plan.error);
+  if (choice.harness && choice.model && (choice.harness !== session.harness || choice.model !== session.model))
+    deps.onModelChange(session.id, choice.harness, choice.model);
+  if (choice.modelSettings) {
+    const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
+    deps.onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
+  }
+  if (plan.mode && plan.mode !== (openNow ?? session.runtimeMode)) deps.onRuntimeModeChange(session.id, plan.mode);
+  return { sessionId: session.id };
+}
+
 /** A new session from the phone, set to the model sheet's choice if it made one. */
 export function applyMobileChoice(
   session: Session,
@@ -518,7 +597,8 @@ export function applyMobileChoice(
       model,
       choice.modelSettings ?? session.modelSettings,
     ),
-    runtimeMode: choice.runtimeMode ?? session.runtimeMode,
+    // WP-175: the stricter of the default the chat starts from and the phone's pick.
+    runtimeMode: resolvePhoneRuntimeMode(permissionCliForHarness(model.harness), { saved: session.runtimeMode, payload: choice.runtimeMode }),
   };
 }
 
