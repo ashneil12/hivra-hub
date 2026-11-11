@@ -660,81 +660,137 @@ pub fn grant_of(conn: &Connection, session: &str) -> Result<Option<Grant>, Strin
     .map_err(|error| error.to_string())
 }
 
-type CommonDirs = std::collections::HashMap<std::path::PathBuf, std::path::PathBuf>;
-static COMMON_DIRS: std::sync::Mutex<Option<CommonDirs>> = std::sync::Mutex::new(None);
+/// A checkout: the git common directory it shares with its worktrees, and its top-level folder. Both canonical.
+#[derive(Clone, Debug, PartialEq)]
+struct Checkout {
+    common: std::path::PathBuf,
+    top: std::path::PathBuf,
+}
 
-/// The git common directory of a folder. A linked worktree and its main checkout share one. None for a folder that does
-/// not exist or is not a git repository. Any other git failure on a folder that exists is an error, so the gate fails
-/// closed rather than reading the folder as no project's. A found directory is cached per folder.
-fn common_dir(folder: &std::path::Path) -> Result<Option<std::path::PathBuf>, String> {
-    if !folder.exists() {
-        return Ok(None);
-    }
-    if let Ok(cache) = COMMON_DIRS.lock() {
-        if let Some(found) = cache.as_ref().and_then(|map| map.get(folder)) {
-            return Ok(Some(found.clone()));
-        }
-    }
+/// The `.git` entry (a folder, or a file in a linked worktree) of the nearest ancestor that has one. None means no git
+/// here, so no git command runs for the folder at all.
+fn git_entry(folder: &std::path::Path) -> Option<std::path::PathBuf> {
+    folder
+        .ancestors()
+        .map(|dir| dir.join(".git"))
+        .find(|entry| entry.exists())
+}
+
+type CheckoutCache =
+    std::collections::HashMap<std::path::PathBuf, (Option<std::time::SystemTime>, Checkout)>;
+static CHECKOUTS: std::sync::Mutex<Option<CheckoutCache>> = std::sync::Mutex::new(None);
+
+/// The checkout a folder is in, or None when it is not in one. A `.git` entry that git cannot read is an error, so
+/// the judgment that needs it fails closed. The result is cached per folder and keyed by that `.git` entry's modified
+/// time, so a checkout that changes is read again. Git runs with the C locale, so its messages do not depend on it.
+fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
     let unreadable = || {
         format!(
             "The git folder of {} could not be read, so nothing was started.",
             folder.display()
         )
     };
+    if !folder.exists() {
+        return Ok(None);
+    }
+    let Some(entry) = git_entry(folder) else {
+        return Ok(None);
+    };
+    let stamp = std::fs::metadata(&entry)
+        .and_then(|meta| meta.modified())
+        .ok();
+    if let Ok(cache) = CHECKOUTS.lock() {
+        if let Some((seen, found)) = cache.as_ref().and_then(|map| map.get(folder)) {
+            if *seen == stamp {
+                return Ok(Some(found.clone()));
+            }
+        }
+    }
     let output = std::process::Command::new("git")
         .arg("-C")
         .arg(folder)
-        .args(["rev-parse", "--git-common-dir"])
+        .args(["rev-parse", "--git-common-dir", "--show-toplevel"])
+        .env("LC_ALL", "C")
+        .env("LANGUAGE", "C")
         .output()
         .map_err(|_| unreadable())?;
     if !output.status.success() {
-        if String::from_utf8_lossy(&output.stderr).contains("not a git repository") {
-            return Ok(None);
-        }
         return Err(unreadable());
     }
-    let raw = String::from_utf8(output.stdout).map_err(|_| unreadable())?;
-    let common = std::fs::canonicalize(folder.join(raw.trim())).map_err(|_| unreadable())?;
-    if let Ok(mut cache) = COMMON_DIRS.lock() {
+    let text = String::from_utf8(output.stdout).map_err(|_| unreadable())?;
+    let mut lines = text.lines();
+    let (Some(common), Some(top)) = (lines.next(), lines.next()) else {
+        return Err(unreadable());
+    };
+    let found = Checkout {
+        common: std::fs::canonicalize(folder.join(common.trim())).map_err(|_| unreadable())?,
+        top: std::fs::canonicalize(top.trim()).map_err(|_| unreadable())?,
+    };
+    if let Ok(mut cache) = CHECKOUTS.lock() {
         cache
             .get_or_insert_with(Default::default)
-            .insert(folder.to_path_buf(), common.clone());
+            .insert(folder.to_path_buf(), (stamp, found.clone()));
     }
-    Ok(Some(common))
+    Ok(Some(found))
 }
 
-/// The hub project that owns a folder: the one whose git common directory the folder shares (a worktree counts),
-/// else the deepest one the folder sits inside. None when no project owns it.
-pub(crate) fn project_owning(conn: &Connection, folder: &str) -> Result<Option<String>, String> {
+/// Every hub project that owns a folder. A project owns a folder when the folder is inside the project's folder, or
+/// when both are in one checkout (a worktree included) and the folder sits inside the same part of the checkout as the
+/// project's folder, so a package project maps to its package in each worktree. A project whose git cannot be read
+/// fails the judgment only when it could own the folder; an unrelated project never does.
+pub(crate) fn projects_owning(conn: &Connection, folder: &str) -> Result<Vec<String>, String> {
     let folder = folder.trim();
     if folder.is_empty() {
-        return Ok(None);
+        return Ok(Vec::new());
     }
     let here = std::path::PathBuf::from(crate::delivery::settings::key(folder));
-    let here_common = common_dir(&here)?;
     let mut statement = conn
         .prepare("SELECT DISTINCT scope_id FROM crew_rule_meta WHERE scope = 'project'")
         .map_err(|error| error.to_string())?;
-    let projects = statement
+    let roots = statement
         .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<String>>>()
         .map_err(|error| error.to_string())?;
-    let mut inside: Option<(usize, String)> = None;
-    for project in projects {
-        let project = project.map_err(|error| error.to_string())?;
-        let root = std::path::PathBuf::from(&project);
-        if let (Some(mine), Some(theirs)) = (&here_common, common_dir(&root)?) {
-            if *mine == theirs {
-                return Ok(Some(project));
-            }
-        }
+    let mut owners = Vec::new();
+    let mut here_checkout: Option<Option<Checkout>> = None;
+    for root_key in roots {
+        let root = std::path::PathBuf::from(&root_key);
         if here.starts_with(&root) {
-            let depth = root.components().count();
-            if inside.as_ref().is_none_or(|(best, _)| depth > *best) {
-                inside = Some((depth, project));
+            owners.push(root_key);
+            continue;
+        }
+        // Only a root that could share a checkout with the folder is read with git.
+        if git_entry(&root).is_none() || git_entry(&here).is_none() {
+            continue;
+        }
+        let mine = match &here_checkout {
+            Some(known) => known.clone(),
+            None => {
+                let read = checkout_of(&here)?;
+                here_checkout = Some(read.clone());
+                read
             }
+        };
+        let Some(mine) = mine else { continue };
+        let Some(theirs) = checkout_of(&root)? else {
+            continue;
+        };
+        if mine.common != theirs.common {
+            continue;
+        }
+        let root_canon = std::fs::canonicalize(&root).map_err(|error| error.to_string())?;
+        let (Ok(here_in), Ok(root_in)) = (
+            here.strip_prefix(&mine.top),
+            root_canon.strip_prefix(&theirs.top),
+        ) else {
+            continue;
+        };
+        if here_in.starts_with(root_in) {
+            owners.push(root_key);
         }
     }
-    Ok(inside.map(|(_, project)| project))
+    Ok(owners)
 }
 
 /// Every project that owns one of the folders, each once, in the order given. A folder no project owns adds nothing.
@@ -744,7 +800,7 @@ pub(crate) fn projects_owning_all(
 ) -> Result<Vec<String>, String> {
     let mut projects: Vec<String> = Vec::new();
     for folder in folders {
-        if let Some(owner) = project_owning(conn, folder)? {
+        for owner in projects_owning(conn, folder)? {
             if !projects.contains(&owner) {
                 projects.push(owner);
             }
@@ -753,8 +809,6 @@ pub(crate) fn projects_owning_all(
     Ok(projects)
 }
 
-/// The policy in force for a launch in the given projects: the Mono's, every project's, then the system's. Round 7:
-/// the union of all of them, so a project's Never use is never shed by another scope.
 pub(crate) fn policy_for_all(
     conn: &Connection,
     mono: Option<&str>,

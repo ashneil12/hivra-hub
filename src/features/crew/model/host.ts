@@ -9,6 +9,9 @@ import { isCli, isEffort } from "./clis";
 import type { Route } from "./resolve";
 import type { CrewRouteQuery } from "./taskRoute";
 import { sanitizePolicy } from "./policy";
+import { routeDefaults } from "./workerDefault";
+import { monoForSession } from "../../monos/model/mono";
+import { hasHeadlessChildBackend } from "../../../integrations/harness/core/child";
 import type { CrewPickAnswer, CrewPickQuery } from "../../agent-app/model/agentAppTasks";
 import type { LeadTarget } from "../../hub/model/leadershipDelegation";
 
@@ -180,7 +183,38 @@ export function crewBindV2Session(input: { sessionId: string; cli: string; folde
  * crew gate runs, the webview. The headless host has no window and no gate, so it skips here and the app enforces it.
  */
 export async function judgeV2Session(input: { sessionId: string; folder: string }): Promise<void> {
-  if (typeof window === "undefined") return;
+  if (typeof window === "undefined") {
+    // The headless host runs its own child backend and has no gate; anywhere else a missing window means no gate.
+    if (hasHeadlessChildBackend()) return;
+    throw new Error("The crew gate is unavailable, so nothing was started.");
+  }
   const ticket = await crewSpawnTicket({ sessionId: input.sessionId, cli: "opencode", folder: input.folder });
   await crewBindV2Session({ sessionId: input.sessionId, cli: "opencode", folder: input.folder, ticket });
+}
+
+/**
+ * Round 8 (MED-C): the crew policy in force for a plan the Lead starts in a folder. It reads the Lead's own Mono, and
+ * the locked default the route picks for that Mono and folder, so a plan is judged against that default rather than
+ * the Lead's own CLI. A route that can't be read fails the plan closed.
+ */
+export async function crewPolicyForLead(
+  folder: string,
+  leadId: string,
+): Promise<{ neverUse: string[]; lock: boolean; lockedDefault?: string }> {
+  const mono = monoForSession(leadId);
+  const policy = await crewPolicyInForce(mono?.id, folder);
+  if (!policy.lock) return { neverUse: policy.neverUse, lock: false };
+  let route: Route;
+  try {
+    route = await crewRouteFor({
+      labels: [],
+      paths: [],
+      project: folder,
+      ...(mono?.id ? { mono: mono.id } : {}),
+      defaults: routeDefaults({ mono: mono?.workerDefault }),
+    });
+  } catch (error) {
+    throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
+  }
+  return { neverUse: policy.neverUse, lock: true, ...(route.cli ? { lockedDefault: route.cli } : {}) };
 }

@@ -77,7 +77,7 @@ export type OrchestrationHost = {
   sessions(): Session[];
   choices(): { harness: HarnessId; models: { id: string; name: string }[] }[];
   /** WP-141 round 6: the CLIs on Never use for a folder, read from the crew policy in force there. */
-  crewPolicy?(folder: string): Promise<{ neverUse: readonly string[]; lock: boolean }>;
+  crewPolicy?(folder: string, leadId: string): Promise<{ neverUse: readonly string[]; lock: boolean; lockedDefault?: string }>;
   createWorker(
     run: OrchestrationRun,
     task: OrchestrationTask,
@@ -1205,17 +1205,21 @@ Run the whole check again and report what you observed.`,
     );
     if (!Number.isInteger(maxWorkers) || maxWorkers < 1 || maxWorkers > 4)
       throw new Error("Choose 1 to 4 workers");
-    // WP-141 round 7: an approved card is judged by the crew policy in force for the Lead's folder. A CLI on Never use is
-    // refused by name; under Always use my default the plan may only use the Lead's own CLI (the lock applies to plans too).
-    const policy = (await this.host!.crewPolicy?.(lead.cwd)) ?? { neverUse: [], lock: false };
+    // WP-141 round 8 (MED-C): an approved card is judged by the crew policy for the Lead's folder and the Lead's Mono. A
+    // CLI on Never use is refused by name. Under Always use my default every worker uses the locked default the route
+    // picks for that folder, whatever the Lead itself runs on.
+    const policy = (await this.host!.crewPolicy?.(lead.cwd, leadId)) ?? { neverUse: [], lock: false };
     const banned = new Set(policy.neverUse);
     const onNever = approved?.tasks.find((task) => banned.has(task.harness));
     if (onNever)
       throw new Error(`${cliLabel(onNever.harness)} is on Never use, so this plan was not started. Change it in Settings > Crew Defaults.`);
     if (policy.lock) {
-      const off = [...allowedHarnesses, ...(approved?.tasks.map((task) => task.harness) ?? [])].find((id) => id !== lead.harness);
+      if (!policy.lockedDefault)
+        throw new Error("Always use my default is on, and no default CLI can take this plan, so it was not started. Change it in Settings > Crew Defaults.");
+      const want = policy.lockedDefault;
+      const off = [...allowedHarnesses, ...(approved?.tasks.map((task) => task.harness) ?? [])].find((id) => id !== want);
       if (off)
-        throw new Error(`Always use my default is on, so this plan can only start workers on ${cliLabel(lead.harness)}. ${cliLabel(off)} was not started. Change it in Settings > Crew Defaults.`);
+        throw new Error(`Always use my default is on, so this plan can only start workers on ${cliLabel(want)}. ${cliLabel(off)} was not started. Change it in Settings > Crew Defaults.`);
     }
     allowedHarnesses = allowedHarnesses.filter((id) => !banned.has(id));
     const available = this.host!.choices().map((choice) => choice.harness);

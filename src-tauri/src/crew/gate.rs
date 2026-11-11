@@ -131,19 +131,14 @@ fn poisoned() -> String {
 /// `check_launch`, so a restart, a resumed worker or Ash typing into a worker is judged against the same default.
 /// The folder is stored as the project that owns it, when one does, so the grant names the project, not a worktree.
 pub fn record_grant(conn: &Connection, session: &str, input: &LaunchCheck) -> Result<(), String> {
-    let project = match input
+    // Round 8: the folder is stored as given. Every project that owns it is read again at each judgment, so a grant
+    // made in a nested package keeps that package's Never use next to its enclosing project's.
+    let project = input
         .project
         .as_deref()
         .map(str::trim)
         .filter(|id| !id.is_empty())
-    {
-        Some(folder) => Some(
-            store::project_owning(conn, folder)
-                .map_err(unreadable)?
-                .unwrap_or_else(|| folder.to_string()),
-        ),
-        None => None,
-    };
+        .map(str::to_string);
     let grant = Grant {
         mono: input
             .mono
@@ -313,6 +308,24 @@ pub fn judge_spawn(
 ) -> Result<(), String> {
     judge_start(conn, session, cli, folder)?;
     require_ticket(session, cli, folder, ticket)
+}
+
+/// Round 8: the spawn check with the folder the crew judges and the folder the process runs in. Both are judged, so a
+/// launch whose binary or process folder is a banned project is refused even when its crew folder is not. The ticket
+/// is bound to the crew folder, as it always was.
+pub fn judge_spawn_in(
+    conn: &Connection,
+    session: &str,
+    cli: &str,
+    crew_folder: &str,
+    spawn_cwd: &str,
+    ticket: Option<&str>,
+) -> Result<(), String> {
+    judge_start(conn, session, cli, crew_folder)?;
+    if spawn_cwd != crew_folder {
+        judge_start(conn, session, cli, spawn_cwd)?;
+    }
+    require_ticket(session, cli, crew_folder, ticket)
 }
 
 /// The ticket check. An `app-` session needs its ticket, which is spent here. Ash's own chats need none.

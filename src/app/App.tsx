@@ -70,7 +70,7 @@ import {
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
-import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
 import { refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
@@ -13225,7 +13225,7 @@ function Workspace({
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
       // WP-141 round 6: the CLIs on Never use for a folder, so an approved card is filtered before a worker starts.
-      crewPolicy: (folder) => crewPolicyInForce(undefined, folder),
+      crewPolicy: (folder, leadId) => crewPolicyForLead(folder, leadId),
       // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
       decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {

@@ -993,11 +993,12 @@ pub fn harness_spawn(
     // Ash's own chats (no `app-` id) pass without one. The default CLI of a spawn with no provider is Claude Code.
     // Round 6: judged for every session, Ash's and the Monos' chats included: Never use for this CLI in the policy the
     // session's grant or its folder's project puts in force, and under the lock an `app-` session must be granted.
-    crate::crew::gate::judge_spawn(
+    crate::crew::gate::judge_spawn_in(
         &*store.lock_conn()?,
         &session_id,
         binary_provider.as_deref().unwrap_or("claude"),
         crew_folder.as_deref().unwrap_or(&cwd),
+        &cwd,
         crew_ticket.as_deref(),
     )?;
 

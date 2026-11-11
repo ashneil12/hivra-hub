@@ -3272,33 +3272,6 @@ fn a_project_is_saved_and_read_under_one_key_on_every_os() {
     assert_eq!(loaded.policy["neverUse"], json!(["codex"]));
 }
 
-/// WP-141 round 7 (MED-3): a git failure on a folder that exists fails the judgment closed. It is not read as a folder
-/// that no project owns, which would fall back to the system policy alone.
-#[cfg(unix)]
-#[test]
-fn a_git_error_on_an_existing_folder_fails_closed() {
-    use super::gate::judge_start;
-    use std::os::unix::fs::PermissionsExt;
-    let store = memory();
-    let mut conn = store.lock_conn().unwrap();
-    store::set_policy(
-        &mut conn,
-        "project",
-        "/tmp/r7-med3-project",
-        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
-        0,
-    )
-    .unwrap();
-    let dir = std::env::temp_dir().join(format!("r7-med3-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o000)).unwrap();
-    let judged = judge_start(&conn, "7d3e5c2a-lead-chat", "claude", dir.to_str().unwrap());
-    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
-    let _ = std::fs::remove_dir_all(&dir);
-    let err = judged.expect_err("a git error must refuse the launch");
-    assert!(err.contains("could not be read"), "{err}");
-}
-
 /// WP-141 round 7 (LOW): a lock refusal names Settings > Crew Defaults, so the person knows where the lock is changed.
 #[test]
 fn a_lock_refusal_names_where_to_change_it() {
@@ -3330,5 +3303,174 @@ fn a_lock_refusal_names_where_to_change_it() {
     assert!(
         refused.contains("Change it in Settings > Crew Defaults"),
         "{refused}"
+    );
+}
+
+/// Review repro (PR #194 round 7, HIGH-C): a project inside another project's repository keeps its own Never use.
+/// `project_owning` returns the FIRST project whose git common directory the folder shares, before it looks at which
+/// project the folder actually sits in. With a hub project at a repository's root and another at a package inside it
+/// (one repo, two projects), a launch or spawn in the package's own folder is judged by the root project alone, and
+/// `record_grant` stores the root as the grant's project, so the package's Never use never applies. In round 6 the
+/// launch gate still read the package's own saved policy.
+#[test]
+fn review_r7_a_nested_project_in_the_same_repository_keeps_its_never_use() {
+    use super::gate::{check_launch, issue_ticket, judge_spawn, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let root = std::env::temp_dir().join(format!("review-r7-nested-{}", uuid::Uuid::new_v4()));
+    let repo = root.join("repo");
+    let package = repo.join("packages").join("app");
+    std::fs::create_dir_all(&package).unwrap();
+    let out = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git init failed");
+    let key = |path: &std::path::Path| {
+        std::fs::canonicalize(path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let (repo_key, package_key) = (key(&repo), key(&package));
+    // The repository's root project has a saved policy of its own (nothing banned) ...
+    store::set_policy(
+        &mut conn,
+        "project",
+        &repo_key,
+        &json!({ "lockDefault": false, "neverUse": [], "fallback": ["claude"] }),
+        0,
+    )
+    .unwrap();
+    // ... and the package, a hub project of its own, bans Codex.
+    store::set_policy(
+        &mut conn,
+        "project",
+        &package_key,
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let owner = store::projects_owning(&conn, &package_key);
+    let chat = judge_spawn(&conn, "5e0c1d2b-ashs-chat", "codex", &package_key, None);
+    let gated = LaunchCheck {
+        cli: "codex".into(),
+        mono: None,
+        project: Some(package_key.clone()),
+        locked_default: None,
+    };
+    let launch = check_launch(&conn, &gated);
+    let session = "app-review-r7-nested-1";
+    let _ = record_grant(&conn, session, &gated);
+    let spawn = issue_ticket(&conn, session, "codex", &package_key)
+        .and_then(|ticket| judge_spawn(&conn, session, "codex", &package_key, Some(&ticket)));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let passed: Vec<&str> = [
+        ("a chat's spawn in the package", chat.is_ok()),
+        ("the launch gate for the package", launch.is_ok()),
+        ("a granted worker's spawn in the package", spawn.is_ok()),
+    ]
+    .into_iter()
+    .filter_map(|(what, ok)| ok.then_some(what))
+    .collect();
+    assert!(
+        passed.is_empty(),
+        "Codex is on the package project's Never use, yet these passed: {passed:?} (owner read as {owner:?})"
+    );
+}
+
+/// WP-141 round 8 (MED-A): a project whose git cannot be read fails the judgment only when it could own the folder. A
+/// broken project elsewhere refuses no unrelated folder. (A `.git` file with garbage in it, so the test runs as root too.)
+#[test]
+fn a_broken_project_elsewhere_does_not_refuse_an_unrelated_folder() {
+    use super::gate::judge_start;
+    let root = std::env::temp_dir().join(format!("r8-broken-{}", uuid::Uuid::new_v4()));
+    let broken = root.join("broken");
+    let plain = root.join("plain");
+    std::fs::create_dir_all(&broken).unwrap();
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(broken.join(".git"), "garbage\n").unwrap();
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        broken.to_str().unwrap(),
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let judged = judge_start(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "codex",
+        plain.to_str().unwrap(),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    judged.expect("an unrelated folder is not refused by another project's broken git");
+}
+
+/// WP-141 round 8 (MED-A): a `.git` entry git cannot read, on a project that could own the folder, fails the judgment
+/// closed with a plain line, not a silent system-only policy.
+#[test]
+fn a_git_error_on_a_candidate_project_fails_closed() {
+    use super::gate::judge_start;
+    let root = std::env::temp_dir().join(format!("r8-candidate-{}", uuid::Uuid::new_v4()));
+    let project = root.join("project");
+    let folder = root.join("folder");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(project.join(".git"), "garbage\n").unwrap();
+    std::fs::write(folder.join(".git"), "garbage\n").unwrap();
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        project.to_str().unwrap(),
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let judged = judge_start(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "claude",
+        folder.to_str().unwrap(),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let err = judged.expect_err("a candidate project whose git cannot be read refuses the launch");
+    assert!(err.contains("could not be read"), "{err}");
+}
+
+/// WP-141 round 8 (LOW): the spawn check judges the crew folder and the folder the process runs in. A clean crew folder
+/// does not clear a banned process folder.
+#[test]
+fn a_banned_process_folder_is_refused_even_when_the_crew_folder_is_clean() {
+    use super::gate::judge_spawn_in;
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/r8-banned",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let err = judge_spawn_in(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "codex",
+        "/tmp/r8-crew-clean",
+        "/tmp/r8-banned/package",
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.starts_with("Codex is on Never use for this project"),
+        "{err}"
     );
 }

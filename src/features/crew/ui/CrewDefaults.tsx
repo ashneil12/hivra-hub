@@ -295,6 +295,7 @@ export function CrewDefaults({ cwd, projectId, initial }: Props) {
     <section className="flex flex-col gap-4" data-setting-id="crew-defaults">
       <h2 className="text-sm font-medium text-content">Crew defaults</h2>
       <p className="text-[13px] text-content/70">What the crew uses unless a task names something else.</p>
+      <p className="text-[12px] text-content/70">These rules apply to chats on this Mac. Remote hosts are not judged by them yet.</p>
       <fieldset className="flex flex-col gap-1">
         <legend className="text-[13px] font-medium text-content">Where this is saved</legend>
         <label className="flex items-center gap-2 text-[13px] text-content">

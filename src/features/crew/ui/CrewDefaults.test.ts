@@ -343,3 +343,21 @@ it("tells Ash when the saved crew rules could not be read, until he saves them a
   await act(async () => undefined);
   expect(container.querySelector("[data-crew-policy-unreadable]")).toBeNull();
 });
+
+it("says that these rules apply to chats on this Mac, not to remote hosts", async () => {
+  invokeMock.mockImplementation((cmd: string) => {
+    if (cmd === "crew_rules_get") {
+      return Promise.resolve({
+        rules: [],
+        revision: 1,
+        policy: { lockDefault: false, neverUse: [], fallback: [] },
+        policyOwn: true,
+        signedIn: [{ cli: "claude", installed: true, signedIn: true }],
+      });
+    }
+    return Promise.resolve(undefined);
+  });
+  show();
+  await act(async () => undefined);
+  expect(container.textContent).toContain("These rules apply to chats on this Mac. Remote hosts are not judged by them yet.");
+});
