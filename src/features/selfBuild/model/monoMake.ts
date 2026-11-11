@@ -17,7 +17,7 @@ import {
 import { ASK_ASH_FIRST } from "./ashSaid";
 import SOUL_TEMPLATE from "../templates/SOUL.md?raw";
 import { forUser } from "../../hub/model/userName";
-import { isChiefOfStaffName } from "../../chief/model/charter";
+import { hasCaptainCharter, isChiefOfStaffName } from "../../chief/model/charter";
 
 /**
  * A Mono makes a new Mono with Ash, Dr Eggbot style (ash-day step 13): it asks him a few questions, drafts the one
@@ -276,6 +276,8 @@ export function draftMono(
     ...(given ? { soul: given } : {}),
     skills,
   });
+  // A new Mono is not the captain. A draft that would carry the charter is not saved.
+  if (hasCaptainCharter(soul)) throw new Error("Only the captain carries the charter. This soul was not saved.");
   const listed = skillsOf(soul);
   if (knownSkills) {
     const unknown = listed.filter((s) => !knownSkills.has(s));
