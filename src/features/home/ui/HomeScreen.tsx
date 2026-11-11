@@ -1,23 +1,29 @@
 // Home. The chief's own chat, then Needs you, Working now and Done today.
 // Projects, the usage line and the morning summary are not on this screen.
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { sectionKey, type HomeArrangement, type SectionRef } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
+import { HOME_ACTION_CAP } from "../model/needActions";
 import { FREE_UP_SPACE } from "../../monos/model/builderScale";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
-import { ArrowUp } from "../../../shared/ui/icons";
+import { ArrowUp, Check, ChevronDown, ChevronUp } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { workersLabel } from "../model/workingNow";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import "./home.css";
 
+const CHIEF_NAME = "Chief of Staff";
+
 const TITLE: Record<string, string> = {
   "needs-you": "Needs you",
   "moving-now": "Working now",
   recent: "Done today",
 };
+
+const PRIMARY_BUTTON = "shrink-0 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black";
+const QUIET_BUTTON = "shrink-0 rounded-md border border-content/20 px-2.5 py-1 text-[12px] text-content";
 
 export type HomeNeed = {
   key: string;
@@ -64,17 +70,31 @@ function titleOf(ref: SectionRef, catalog: readonly CatalogPanel[]): string {
 
 function Tag({ name }: { name?: string }) {
   if (!name) return null;
-  return <span data-home-project className="shrink-0 text-content/60">{name}</span>;
+  return (
+    <span data-home-project className="shrink-0 rounded border border-stroke px-1.5 py-0.5 text-[11px] text-content/80">
+      {name}
+    </span>
+  );
 }
 
 function NeedRow({ row }: { row: HomeNeed }) {
-  const actions = row.actions.slice(0, 2);
+  if (row.stopped) {
+    const open = row.actions[0]?.onClick ?? row.onOpen;
+    return (
+      <div data-home-line="need" className="flex min-h-10 w-full flex-wrap items-center gap-2 border-t border-stroke px-3 py-2 text-[13px] text-content">
+        <Tag name={row.project} />
+        <span data-home-stopped className="shrink-0 font-medium" style={{ color: NEEDS_YOU_RED }}>Stopped.</span>
+        <span className="min-w-0 flex-1">{row.sentence}</span>
+        <button type="button" data-home-action="Open chat" className={QUIET_BUTTON} onClick={open}>
+          Open chat
+        </button>
+      </div>
+    );
+  }
+  const actions = row.actions.slice(0, HOME_ACTION_CAP);
   const body = (
     <>
       <Tag name={row.project} />
-      {row.stopped ? (
-        <span data-home-mark="needs-you" className="shrink-0" style={{ color: NEEDS_YOU_RED }}>Needs you</span>
-      ) : null}
       <span className="min-w-0 flex-1">{row.sentence}</span>
     </>
   );
@@ -83,7 +103,7 @@ function NeedRow({ row }: { row: HomeNeed }) {
       <button
         type="button"
         data-home-line="need"
-        className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
+        className="flex min-h-10 w-full items-center gap-2 border-t border-stroke px-3 py-2 text-left text-[13px] text-content hover:bg-content/8"
         onClick={row.onOpen}
       >
         {body}
@@ -91,16 +111,16 @@ function NeedRow({ row }: { row: HomeNeed }) {
     );
   }
   return (
-    <div data-home-line="need" className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-[13px] text-content">
-      <button type="button" className="flex min-w-0 flex-1 items-center gap-3 text-left" onClick={row.onOpen}>
+    <div data-home-line="need" className="flex min-h-10 w-full flex-wrap items-center gap-2 border-t border-stroke px-3 py-2 text-[13px] text-content">
+      <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={row.onOpen}>
         {body}
       </button>
-      {actions.map((action) => (
+      {actions.map((action, index) => (
         <button
           key={action.label}
           type="button"
           data-home-action={action.label}
-          className="shrink-0 text-[12px] text-content underline-offset-2 hover:underline"
+          className={index === 0 ? PRIMARY_BUTTON : QUIET_BUTTON}
           onClick={action.onClick}
         >
           {action.label}
@@ -110,17 +130,42 @@ function NeedRow({ row }: { row: HomeNeed }) {
   );
 }
 
-// The chat's one-tap option (StuckWorkerCard), so a suggested reply reads as a button.
-const OPTION_CHIP =
-  "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
-
-function speakerName(name: string): string {
-  return name.trim() || "Chief of Staff";
-}
-
 function youBubbleClass(text: string): string {
   const single = !text.includes("\n");
   return `user-message-bubble relative min-w-0 w-fit max-w-[min(100%,36rem)] bg-content/10 px-3 py-2 font-sans text-sm whitespace-pre-wrap break-words text-content ${single ? "rounded-full" : "rounded-xl"}`;
+}
+
+function ChiefAvatar() {
+  return (
+    <span
+      data-home-avatar="chief"
+      className="grid size-7 shrink-0 place-items-center rounded-full text-[11px] font-semibold text-black"
+      style={{ backgroundColor: "var(--color-skill)" }}
+    >
+      CS
+    </span>
+  );
+}
+
+function ChiefIdentity({ scope }: { scope?: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <span data-home-chief data-home-speaker="chief" className="shrink-0 text-[13px] font-semibold text-content">
+        {CHIEF_NAME}
+      </span>
+      {scope ? <span className="shrink-0 text-[12px] text-content/60" aria-hidden="true">·</span> : null}
+      {scope ? <span data-home-scope className="min-w-0 truncate text-[12px] text-content/60">{scope}</span> : null}
+    </div>
+  );
+}
+
+function NameLine({ scope }: { scope?: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <ChiefAvatar />
+      <ChiefIdentity scope={scope} />
+    </div>
+  );
 }
 
 function ChiefExchange({ chief }: { chief: HomeChief }) {
@@ -128,45 +173,56 @@ function ChiefExchange({ chief }: { chief: HomeChief }) {
   const showChief = Boolean(chief.reply || chief.streaming || chief.options.length > 0);
   if (!showYou && !showChief) return null;
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3 px-3 pt-3">
       {showYou ? (
         <div data-home-you className="flex flex-col items-end gap-1 pl-14">
-          <span data-home-speaker="you" className="font-sans text-[12px] text-content/60">You</span>
+          <span data-home-speaker="you" className="sr-only">You</span>
           <div data-chat-message-role="user" className={youBubbleClass(chief.you ?? "")}>{chief.you}</div>
         </div>
       ) : null}
       {showChief ? (
-        <div data-home-reply data-chat-message-role="assistant" className="flex min-w-0 flex-col items-start gap-1">
-          <span data-home-speaker="chief" className="font-sans text-[12px] text-content/60">{speakerName(chief.name)}</span>
-          {chief.reply ? (
-            <div
-              data-home-reply-text
-              data-home-streaming={chief.streaming ? "" : undefined}
-              className="min-w-0 w-full font-sans text-sm leading-6 text-content"
-            >
-              <AgentMarkdown text={chief.reply} streaming={chief.streaming} revealOnMount={false} />
-            </div>
-          ) : chief.streaming ? (
-            <p data-home-streaming className="zen-thinking-pulse font-sans text-sm text-content/50">Thinking</p>
-          ) : null}
-          {chief.options.length > 0 ? (
-            <div className="mt-1 flex flex-wrap gap-2" role="group" aria-label="Suggested replies">
-              {chief.options.map((option) => (
+        <div data-home-reply data-chat-message-role="assistant" className="flex min-w-0 items-start gap-2">
+          <ChiefAvatar />
+          <div className="flex min-w-0 flex-1 flex-col items-start gap-2">
+            <ChiefIdentity scope={chief.scope} />
+            {chief.reply ? (
+              <div
+                data-home-reply-text
+                data-home-streaming={chief.streaming ? "" : undefined}
+                className="min-w-0 w-full font-sans text-sm leading-6 text-content"
+              >
+                <AgentMarkdown text={chief.reply} streaming={chief.streaming} revealOnMount={false} />
+              </div>
+            ) : chief.streaming ? (
+              <p data-home-streaming className="zen-thinking-pulse font-sans text-sm text-content/50">Thinking</p>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Suggested replies">
+              {chief.options.map((option, index) => (
                 <button
                   key={option.id}
                   type="button"
                   data-home-option={option.id}
                   aria-label={option.label}
-                  className={OPTION_CHIP}
+                  className={index === 0 ? PRIMARY_BUTTON : QUIET_BUTTON}
                   onClick={() => chief.onOption(option.id)}
                 >
                   {option.label}
                 </button>
               ))}
+              <button
+                type="button"
+                data-home-action="open-chat"
+                className="px-1 text-[13px] text-content/80"
+                onClick={chief.onOpenChat}
+              >
+                Open full chat
+              </button>
             </div>
-          ) : null}
+          </div>
         </div>
-      ) : null}
+      ) : (
+        <NameLine scope={chief.scope} />
+      )}
     </div>
   );
 }
@@ -174,6 +230,7 @@ function ChiefExchange({ chief }: { chief: HomeChief }) {
 function ChiefBox({ chief, onAsk }: { chief: HomeChief; onAsk: (text: string) => void }) {
   const [text, setText] = useState("");
   const ready = text.trim().length > 0;
+  const talking = Boolean(chief.you || chief.reply || chief.streaming || chief.options.length > 0);
   if (chief.missing) {
     return (
       <div data-home-start="" data-home-no-chief className="flex flex-col items-start gap-2">
@@ -190,13 +247,14 @@ function ChiefBox({ chief, onAsk }: { chief: HomeChief; onAsk: (text: string) =>
     );
   }
   return (
-    <div data-home-start="" className="flex flex-col gap-2">
-      <div>
-        <p data-home-chief className="text-[14px] text-content">{chief.name}</p>
-        {chief.scope ? <p data-home-scope className="text-[12px] text-content/60">{chief.scope}</p> : null}
-      </div>
+    <div data-home-start="" className="flex flex-col rounded-lg border border-stroke">
+      {talking ? <ChiefExchange chief={chief} /> : (
+        <div className="px-3 pt-3">
+          <NameLine scope={chief.scope} />
+        </div>
+      )}
       <form
-        className="flex items-center gap-2 rounded-xl border border-stroke bg-content/[0.03] py-1.5 pr-1.5 pl-4 transition-colors focus-within:border-content/30"
+        className="mt-3 flex items-center gap-2 border-t border-stroke py-1.5 pr-1.5 pl-4"
         onSubmit={(event) => {
           event.preventDefault();
           if (!ready) return;
@@ -216,21 +274,41 @@ function ChiefBox({ chief, onAsk }: { chief: HomeChief; onAsk: (text: string) =>
           aria-label="Send"
           title="Send"
           disabled={!ready}
-          className="primary-action grid size-7 shrink-0 place-items-center rounded-md transition-[background-color,color,transform] duration-150 active:scale-90 disabled:cursor-default"
+          className={`grid size-7 shrink-0 place-items-center rounded-md transition-colors disabled:cursor-default ${ready ? "bg-accent text-black" : "bg-content/10 text-content/45"}`}
         >
           <ArrowUp className="size-3.5" strokeWidth={2} aria-hidden />
         </button>
       </form>
-      <ChiefExchange chief={chief} />
-      <button
-        type="button"
-        data-home-action="open-chat"
-        className="self-start text-[12px] text-content/70 underline-offset-2 hover:underline"
-        onClick={chief.onOpenChat}
-      >
-        Open full chat
-      </button>
     </div>
+  );
+}
+
+function SectionMark({ kind }: { kind: string }) {
+  if (kind === "recent") {
+    return (
+      <span data-home-mark="done" className="grid size-4 shrink-0 place-items-center" style={{ color: "var(--color-status-ok)" }}>
+        <Check className="size-3.5" aria-hidden />
+      </span>
+    );
+  }
+  if (kind !== "needs-you" && kind !== "moving-now") return null;
+  const mark = kind === "needs-you" ? "needs-you" : "working";
+  const color = kind === "needs-you" ? NEEDS_YOU_RED : "var(--color-accent)";
+  return <span data-home-mark={mark} className="size-2 shrink-0 rounded-full" style={{ backgroundColor: color }} />;
+}
+
+function ShowSwitch({ title, on, onToggle }: { title: string; on: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-label={`Show ${title}`}
+      aria-checked={on}
+      onClick={onToggle}
+      className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}
+    >
+      <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-[left] ${on ? "left-4.5" : "left-0.5"}`} />
+    </button>
   );
 }
 
@@ -244,7 +322,6 @@ export function HomeScreen({
   workingTotal,
   done,
   onSeeNeeds,
-  onSeeDone,
   arrangement,
   catalog,
   known,
@@ -267,7 +344,6 @@ export function HomeScreen({
   workingTotal: number;
   done: readonly HomeDone[];
   onSeeNeeds: () => void;
-  onSeeDone: () => void;
   arrangement: HomeArrangement;
   catalog: readonly CatalogPanel[];
   known: boolean;
@@ -282,6 +358,27 @@ export function HomeScreen({
   renderPanel?: (panel: CatalogPanel) => ReactNode;
 }) {
   const [custom, setCustom] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!custom) return;
+    const onDown = (event: MouseEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (panelRef.current?.contains(target)) return;
+      if (toggleRef.current?.contains(target)) return;
+      setCustom(false);
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setCustom(false);
+    };
+    document.addEventListener("mousedown", onDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [custom]);
   const filled: Record<string, boolean> = {
     "needs-you": needs.length + builders.length > 0,
     "moving-now": working.length > 0,
@@ -301,58 +398,76 @@ export function HomeScreen({
   return (
     <div data-home data-home-order={visible.map(sectionKey).join(" ")} className="min-h-0 min-w-0 flex-1 overflow-y-auto text-content">
       <div className="mx-auto flex flex-col gap-6 px-6 pt-12 pb-8" style={{ maxWidth: HOME_MAX_WIDTH }}>
-        <header data-home-header className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <h1 className="text-[18px] font-medium text-content">Home</h1>
-            {date ? <p data-home-date className="text-[13px] text-content/60">{date}</p> : null}
-          </div>
+        <header data-home-header className="flex items-baseline gap-3">
+          <h1 className="text-[18px] font-medium text-content">Home</h1>
+          {date ? <p data-home-date className="min-w-0 flex-1 truncate text-[13px] text-content/60">{date}</p> : <span className="flex-1" />}
           {known ? (
-            <button
-              type="button"
-              data-home-action="customize"
-              aria-expanded={custom}
-              className="text-[13px] text-content underline-offset-2 hover:underline"
-              onClick={() => setCustom((open) => !open)}
-            >
-              Customize
-            </button>
+            <div className="relative">
+              <button
+                ref={toggleRef}
+                type="button"
+                data-home-action="customize"
+                aria-expanded={custom}
+                className="rounded-md border border-stroke px-2.5 py-1 text-[13px] text-content hover:bg-content/8"
+                onClick={() => setCustom((open) => !open)}
+              >
+                Customize
+              </button>
+              {custom ? (
+                <div
+                  ref={panelRef}
+                  data-home-customize
+                  role="dialog"
+                  aria-label="Customize"
+                  className="absolute right-0 z-20 mt-2 flex w-72 flex-col gap-1 rounded-lg border border-stroke bg-background-base p-2 shadow-lg"
+                >
+                  {arranged.map((ref) => {
+                    const key = sectionKey(ref);
+                    const title = titleOf(ref, catalog);
+                    const shown = !arrangement.hidden.includes(key);
+                    return (
+                      <div key={key} className="flex items-center gap-1.5 px-1 py-1">
+                        <span className="min-w-0 flex-1 truncate text-[13px] text-content">{title}</span>
+                        <button type="button" aria-label={`Move ${title} up`} className="grid size-6 place-items-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, -1)}>
+                          <ChevronUp className="size-3.5" aria-hidden />
+                        </button>
+                        <button type="button" aria-label={`Move ${title} down`} className="grid size-6 place-items-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, 1)}>
+                          <ChevronDown className="size-3.5" aria-hidden />
+                        </button>
+                        <ShowSwitch title={title} on={shown} onToggle={() => (shown ? onHide(key) : onShow(key))} />
+                        {ref.kind === "panel" ? (
+                          <button type="button" aria-label={`Unpin ${title}`} className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onUnpin(key)}>
+                            Unpin
+                          </button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                  {offered.map((panel) => (
+                    <div key={`${panel.plugin}:${panel.panelId}`} className="flex items-center gap-2 px-1 py-1">
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-content/70">{panel.title}</span>
+                      <button
+                        type="button"
+                        aria-label={`Pin ${panel.title}`}
+                        className={QUIET_BUTTON}
+                        onClick={() => onPin(panel.plugin, panel.panelId)}
+                      >
+                        Pin
+                      </button>
+                    </div>
+                  ))}
+                  <button
+                    type="button"
+                    className="mt-1 self-end rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black"
+                    onClick={() => setCustom(false)}
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </header>
-        {custom ? (
-          <div data-home-customize className="flex flex-col items-start gap-1">
-            {arranged.map((ref) => {
-              const key = sectionKey(ref);
-              const title = titleOf(ref, catalog);
-              if (arrangement.hidden.includes(key)) {
-                return (
-                  <button key={key} type="button" className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onShow(key)}>
-                    {`Show ${title}`}
-                  </button>
-                );
-              }
-              return (
-                <div key={key} className="flex items-center gap-3">
-                  <button type="button" className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onMove(key, -1)}>{`Move ${title} up`}</button>
-                  <button type="button" className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onMove(key, 1)}>{`Move ${title} down`}</button>
-                  <button type="button" className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onHide(key)}>{`Hide ${title}`}</button>
-                  {ref.kind === "panel" ? (
-                    <button type="button" className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onUnpin(key)}>{`Unpin ${title}`}</button>
-                  ) : null}
-                </div>
-              );
-            })}
-            {offered.map((panel) => (
-              <button
-                key={`${panel.plugin}:${panel.panelId}`}
-                type="button"
-                className="text-[12px] text-content/70 underline-offset-2 hover:underline"
-                onClick={() => onPin(panel.plugin, panel.panelId)}
-              >
-                {`Pin ${panel.title}`}
-              </button>
-            ))}
-          </div>
-        ) : null}
         {known ? <ChiefBox chief={chief} onAsk={onAsk} /> : null}
         {visible.map((ref, index) => {
           const key = sectionKey(ref);
@@ -366,15 +481,15 @@ export function HomeScreen({
               className="home-enter rounded-lg border border-stroke"
               style={{ animationDelay: `${index * HOME_STAGGER_MS}ms` }}
             >
-              <header className="flex items-center gap-3 px-3 py-2">
-                <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-content">{title}</h2>
+              <header className="flex items-center gap-2 px-3 py-2">
+                <SectionMark kind={key} />
+                <h2 className="truncate text-[13px] font-medium text-content">{title}</h2>
                 {key === "needs-you" && needsTotal > 0 ? <span data-home-count={needsTotal} className="text-[12px] text-content/60">{needsTotal}</span> : null}
                 {key === "moving-now" ? <span data-home-workers className="text-[12px] text-content/60">{workersLabel(workingTotal)}</span> : null}
+                {key === "recent" ? <span data-home-done className="text-[12px] text-content/60">{done.length}</span> : null}
+                <span className="min-w-0 flex-1" />
                 {key === "needs-you" && needsTotal > 0 ? (
-                  <button type="button" data-home-see="needs" className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={onSeeNeeds}>See all</button>
-                ) : null}
-                {key === "recent" ? (
-                  <button type="button" data-home-see="done" className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={onSeeDone}>See all</button>
+                  <button type="button" data-home-see="needs" className="text-[12px] text-accent" onClick={onSeeNeeds}>See all</button>
                 ) : null}
               </header>
               {key === "needs-you" ? (

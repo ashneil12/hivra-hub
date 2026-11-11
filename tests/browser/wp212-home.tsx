@@ -29,20 +29,23 @@ function loadArrangement(): HomeArrangement {
 
 function Page() {
   const [arrangement, setArrangement] = useState(loadArrangement);
-  const [you, setYou] = useState("");
-  const [reply, setReply] = useState("");
+  const [you, setYou] = useState(empty ? "" : "Example: what's blocking Hivra?");
+  const [reply, setReply] = useState(empty ? "" : "Example: Hivra is waiting on the notes.");
+  const [options, setOptions] = useState<{ id: string; label: string }[]>(
+    empty ? [] : [{ id: "yes", label: "Yes, do that" }, { id: "now", label: "Not now" }],
+  );
   function keep(next: HomeArrangement) {
     localStorage.setItem(KEY, JSON.stringify(next));
     setArrangement(next);
   }
   const chief: HomeChief = {
     missing: false,
-    name: "Coordinator",
+    name: "Chief of Staff",
     scope: "read all 7 projects",
     you: you || undefined,
     reply: reply || undefined,
     streaming: false,
-    options: reply ? [{ id: "ok", label: "Sounds good" }] : [],
+    options,
     onAdd: () => undefined,
     onOpenChat: () => {
       document.body.dataset.opened = "chief-1";
@@ -54,11 +57,21 @@ function Page() {
       date="Wednesday 11 November"
       chief={chief}
       needs={empty ? [] : [
-        { key: "n1", project: "Crew", sentence: "Should we ship the notes?", stopped: false, actions: [], onOpen: () => undefined },
+        {
+          key: "n1",
+          project: "EXO",
+          sentence: "Example: Should we ship the notes?",
+          stopped: false,
+          actions: [
+            { label: "Yes", onClick: () => undefined },
+            { label: "Not yet", onClick: () => undefined },
+          ],
+          onOpen: () => undefined,
+        },
         {
           key: "n2",
-          project: "Crew",
-          sentence: "The notes worker stopped.",
+          project: "Hivra",
+          sentence: "Example: The notes worker stopped.",
           stopped: true,
           actions: [{ label: "Open Ada's chat", onClick: () => undefined }],
           onOpen: () => undefined,
@@ -67,25 +80,22 @@ function Page() {
       needsTotal={empty ? 0 : 2}
       builders={[]}
       working={empty ? [] : [{
-        key: "crew",
-        project: "Crew",
-        text: "4 workers: chat move fixes, PR watch, commit guard, crew locks",
+        key: "hivra",
+        project: "Hivra",
+        text: "Example: 4 workers: chat move fixes, PR watch, commit guard, crew locks",
         since: "since 03:40",
         onOpen: () => undefined,
       }]}
       workingTotal={empty ? 0 : 4}
       done={empty ? [] : [{
         key: "m1",
-        project: "Crew",
-        text: "Merged the notes",
+        project: "EXO",
+        text: "Example: Merged the notes",
         time: "09:05",
         onOpen: () => undefined,
       }]}
       onSeeNeeds={() => {
         document.body.dataset.opened = "needs";
-      }}
-      onSeeDone={() => {
-        document.body.dataset.opened = "done";
       }}
       arrangement={arrangement}
       catalog={catalog}
@@ -100,6 +110,7 @@ function Page() {
       onAsk={(text) => {
         setYou(text);
         setReply("EXO is fine.");
+        setOptions([{ id: "ok", label: "Sounds good" }]);
       }}
       renderPanel={() => <p>Example: board</p>}
     />

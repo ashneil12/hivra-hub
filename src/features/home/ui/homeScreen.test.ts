@@ -79,8 +79,8 @@ it("with nothing to show, says nothing needs you and keeps the chat", () => {
 });
 
 it("hides an empty section and shows one that has a line", () => {
-  const needs: HomeNeed[] = [{ key: "n1", sentence: "Should we ship?", stopped: false, actions: [], onOpen: () => undefined }];
-  const working: HomeWork[] = [{ key: "w1", text: "1 worker: notes", since: "since 03:40" }];
+  const needs: HomeNeed[] = [{ key: "n1", sentence: "Example: Should we ship?", stopped: false, actions: [], onOpen: () => undefined }];
+  const working: HomeWork[] = [{ key: "w1", text: "Example: 1 worker: notes", since: "since 03:40" }];
   draw({ needs, needsTotal: 1, working, workingTotal: 1 });
   expect(container.querySelector("[data-home-section='needs-you']")).not.toBeNull();
   expect(container.querySelector("[data-home-section='moving-now']")).not.toBeNull();
@@ -89,15 +89,26 @@ it("hides an empty section and shows one that has a line", () => {
   expect(container.querySelector("[data-home-empty]")).toBeNull();
   expect(container.querySelector("[data-home-section='moving-now'] h2")?.textContent).toBe("Working now");
   expect(container.querySelector("[data-home-section='needs-you'] h2")?.textContent).toBe("Needs you");
+  const needsHead = container.querySelector("[data-home-section='needs-you'] header")!;
+  const title = needsHead.querySelector("h2")!;
+  const count = needsHead.querySelector("[data-home-count]")!;
+  expect(title.compareDocumentPosition(count) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(needsHead.querySelector("[data-home-mark='needs-you']")).not.toBeNull();
+  expect(container.querySelector("[data-home-section='moving-now'] [data-home-mark='working']")).not.toBeNull();
+  const see = needsHead.querySelector("[data-home-see='needs']")!;
+  expect(see.className).toContain("text-accent");
 });
 
 it("shows at most the rows it was given, and the count is the whole list", () => {
-  const needs: HomeNeed[] = [{ key: "n1", project: "Crew", sentence: "Should we ship?", stopped: false, actions: [], onOpen: () => undefined }];
+  const needs: HomeNeed[] = [{ key: "n1", project: "Hivra", sentence: "Example: Should we ship?", stopped: false, actions: [], onOpen: () => undefined }];
   let seen = 0;
   draw({ needs, needsTotal: 6, onSeeNeeds: () => { seen += 1; } });
   expect(container.querySelectorAll("[data-home-line='need']")).toHaveLength(1);
   expect(container.querySelector("[data-home-count='6']")?.textContent).toBe("6");
-  expect(container.querySelector("[data-home-project]")?.textContent).toBe("Crew");
+  const tag = container.querySelector("[data-home-project]")!;
+  expect(tag.textContent).toBe("Hivra");
+  expect(tag.className).toContain("border");
+  expect(container.textContent).not.toContain("Crew");
   act(() => container.querySelector<HTMLButtonElement>("[data-home-see='needs']")!.click());
   expect(seen).toBe(1);
 });
@@ -133,20 +144,39 @@ it("does not say nothing needs you before the first load", () => {
   expect(container.querySelector("[data-home-empty]")).toBeNull();
 });
 
-it("keeps customize on one button: hide, show, and pin", () => {
+it("keeps customize on one button: a panel of switches, not a wall of links", () => {
   const arrangement = pinPanel(hideSection(defaultArrangement(), "needs-you"), "my-panels", "missing");
+  let moved = "";
   draw({
-    needs: [{ key: "n1", sentence: "Should we ship?", stopped: false, actions: [], onOpen: () => undefined }],
+    needs: [{ key: "n1", sentence: "Example: Should we ship?", stopped: false, actions: [], onOpen: () => undefined }],
     needsTotal: 1,
     arrangement,
+    onMove: (key, dir) => { moved = `${key}:${dir}`; },
     catalog: [{ plugin: "my-panels", panelId: "board", title: "Example board", spec: { kind: "bespoke", title: "Example board", html: "<p>Example</p>", permissions: [] } }],
   });
   expect(container.querySelector("[data-home-section='needs-you']")).toBeNull();
-  expect(container.textContent).not.toContain("Show Needs you");
+  expect(container.querySelector("[data-home-customize]")).toBeNull();
   expect(container.textContent).not.toContain("Pin a panel");
   act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
-  expect(container.textContent).toContain("Show Needs you");
-  expect(container.textContent).toContain("Pin Example board");
+  const panel = container.querySelector("[data-home-customize]")!;
+  expect(panel.getAttribute("role")).toBe("dialog");
+  const showNeeds = panel.querySelector<HTMLButtonElement>("[role='switch'][aria-label='Show Needs you']")!;
+  expect(showNeeds.getAttribute("aria-checked")).toBe("false");
+  expect(showNeeds.tabIndex).not.toBe(-1);
+  const up = panel.querySelector<HTMLButtonElement>("[aria-label='Move Working now up']")!;
+  expect(up.tabIndex).not.toBe(-1);
+  act(() => up.click());
+  expect(moved).toBe("moving-now:-1");
+  expect(panel.querySelector("[aria-label='Unpin Pinned panel']")).not.toBeNull();
+  expect(panel.querySelector("[aria-label='Pin Example board']")).not.toBeNull();
+  expect(container.textContent).not.toContain("Move Working now up");
+  act(() => panel.querySelector<HTMLButtonElement>("button")!);
+  const done = [...panel.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Done")!;
+  act(() => done.click());
+  expect(container.querySelector("[data-home-customize]")).toBeNull();
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
+  act(() => document.body.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })));
+  expect(container.querySelector("[data-home-customize]")).toBeNull();
   expect(container.querySelector("[data-home-section='panel:my-panels:missing']")?.textContent).toContain("This panel is not available.");
 });
 
@@ -174,8 +204,18 @@ it("names the chief, the scope, and opens the same chat", () => {
   draw({
     chief: { ...chief, scope: "read all 7 projects", you: "how is EXO going?", reply: "EXO is fine.", onOpenChat: () => { opened += 1; } },
   });
-  expect(container.querySelector("[data-home-chief]")?.textContent).toBe("Coordinator");
-  expect(container.querySelector("[data-home-scope]")?.textContent).toBe("read all 7 projects");
+  const card = container.querySelector("[data-home-start]")!;
+  expect(card.className).toContain("border");
+  expect(card.querySelector("[data-home-avatar='chief']")?.textContent).toBe("CS");
+  expect(card.querySelector("[data-home-chief]")?.textContent).toBe("Chief of Staff");
+  expect(card.querySelector("[data-home-chief]")?.className).toMatch(/font-semibold|font-bold/);
+  const scope = card.querySelector("[data-home-scope]")!;
+  expect(scope.textContent).toBe("read all 7 projects");
+  expect(scope.className).toContain("text-content/60");
+  expect(card.querySelector("[data-home-chief]")?.parentElement).toBe(scope.parentElement);
+  const form = card.querySelector("form")!;
+  expect(card.querySelector("[data-home-you]")!.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(card.querySelector("[data-home-reply]")!.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   expect(container.querySelector("[data-home-you] .user-message-bubble")?.textContent).toBe("how is EXO going?");
   expect(container.querySelector("[data-home-reply]")?.textContent).toContain("EXO is fine.");
   act(() => container.querySelector<HTMLButtonElement>("[data-home-action='open-chat']")!.click());
@@ -184,16 +224,16 @@ it("names the chief, the scope, and opens the same chat", () => {
 
 it("labels each line with who said it, and sets Ash's line apart", () => {
   draw({
-    chief: { ...chief, you: "how is EXO going?", reply: "EXO is fine." },
+    chief: { ...chief, name: "Coordinator", you: "how is EXO going?", reply: "EXO is fine." },
   });
   expect(container.querySelector("[data-home-speaker='you']")?.textContent).toBe("You");
-  expect(container.querySelector("[data-home-speaker='chief']")?.textContent).toBe("Coordinator");
-  expect(container.querySelector("[data-home-reply]")?.textContent).not.toMatch(/chief-of-staff/);
-  const you = container.querySelector("[data-home-you]")!;
-  expect(you.className).toContain("items-end");
-  expect(you.querySelector(".user-message-bubble")?.textContent).toBe("how is EXO going?");
-  draw({ chief: { ...chief, name: " ", you: "hi", reply: "ok" } });
+  expect(container.querySelector("[data-home-speaker='you']")?.className).toContain("sr-only");
   expect(container.querySelector("[data-home-speaker='chief']")?.textContent).toBe("Chief of Staff");
+  expect(container.querySelector("[data-home-reply]")?.textContent).not.toMatch(/chief-of-staff/);
+  expect(container.querySelector("[data-home-reply]")?.textContent).not.toContain("Coordinator");
+  const you = container.querySelector("[data-home-you]")!;
+  expect(you.className).toMatch(/items-end|justify-end/);
+  expect(you.querySelector(".user-message-bubble")?.textContent).toBe("how is EXO going?");
 });
 
 it("a suggested reply is a button under the reply", () => {
@@ -213,7 +253,7 @@ it("a suggested reply is a button under the reply", () => {
   expect((option.getAttribute("aria-label") ?? option.textContent) || "").toContain("Sounds good");
   expect(option.tabIndex).not.toBe(-1);
   expect(option.className).toContain("rounded-md");
-  expect(option.className).toContain("bg-content/8");
+  expect(option.className).toContain("bg-accent");
   const text = container.querySelector("[data-home-reply-text]")!;
   expect(text.compareDocumentPosition(option) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   act(() => option.click());
@@ -238,11 +278,12 @@ it("does not leave an empty box before the first word", () => {
   expect(container.querySelector("[data-home-streaming]")?.textContent).toContain("Thinking");
 });
 
-it("a stopped row is red Needs you, never Stuck, and its action is not the row", () => {
+it("a stopped row says Stopped, then the reason, then Open chat", () => {
   const clicked: string[] = [];
   const needs: HomeNeed[] = [{
     key: "stopped:1",
-    sentence: "The notes worker stopped.",
+    project: "Hivra",
+    sentence: "Example: The notes worker stopped.",
     stopped: true,
     actions: [{ label: "Open Ada's chat", onClick: () => clicked.push("action") }],
     onOpen: () => clicked.push("open"),
@@ -250,24 +291,84 @@ it("a stopped row is red Needs you, never Stuck, and its action is not the row",
   draw({ needs, needsTotal: 1 });
   const row = container.querySelector("[data-home-line='need']")!;
   expect(row.tagName).toBe("DIV");
-  expect(row.textContent).toContain("Needs you");
+  expect(row.textContent).not.toContain("Needs you");
   expect(row.textContent).not.toContain("Stuck");
   expect(container.textContent).not.toContain("Stuck");
-  const mark = row.querySelector<HTMLElement>("[data-home-mark='needs-you']")!;
-  expect(["rgb(255, 107, 107)", "#ff6b6b", "rgb(255,107,107)"]).toContain(mark.style.color);
-  act(() => row.querySelector<HTMLButtonElement>("[data-home-action=\"Open Ada's chat\"]")!.click());
+  const stopped = row.querySelector<HTMLElement>("[data-home-stopped]")!;
+  expect(stopped.textContent).toBe("Stopped.");
+  expect(["rgb(255, 107, 107)", "#ff6b6b", "rgb(255,107,107)"]).toContain(stopped.style.color);
+  expect(row.textContent?.indexOf("Stopped.")).toBeLessThan(row.textContent?.indexOf("Example: The notes worker stopped.") ?? -1);
+  const button = row.querySelector<HTMLButtonElement>("[data-home-action='Open chat']")!;
+  expect(button.className).toContain("border");
+  expect(button.className).not.toContain("bg-accent");
+  act(() => button.click());
   expect(clicked).toEqual(["action"]);
 });
 
+it("a question row shows its own actions, the first one blue", () => {
+  const clicked: string[] = [];
+  const needs: HomeNeed[] = [{
+    key: "q1",
+    project: "EXO",
+    sentence: "Example: Should we ship the notes?",
+    stopped: false,
+    actions: [
+      { label: "Yes", onClick: () => clicked.push("yes") },
+      { label: "Not yet", onClick: () => clicked.push("not") },
+      { label: "Later", onClick: () => clicked.push("later") },
+      { label: "Never", onClick: () => clicked.push("never") },
+    ],
+    onOpen: () => clicked.push("open"),
+  }];
+  draw({ needs, needsTotal: 1 });
+  const row = container.querySelector("[data-home-line='need']")!;
+  const buttons = [...row.querySelectorAll<HTMLButtonElement>("[data-home-action]")];
+  expect(buttons.map((button) => button.getAttribute("data-home-action"))).toEqual(["Yes", "Not yet", "Later"]);
+  expect(buttons[0]?.className).toContain("bg-accent");
+  expect(buttons[1]?.className).toContain("border");
+  expect(buttons[1]?.className).not.toContain("bg-accent");
+  act(() => buttons[0]?.click());
+  act(() => buttons[1]?.click());
+  expect(clicked).toEqual(["yes", "not"]);
+});
+
 it("shows working and done lines, with the worker count and the time", () => {
-  const working: HomeWork[] = [{ key: "crew", project: "Crew", text: "4 workers: chat move fixes, PR watch, commit guard, crew locks", since: "since 03:40", onOpen: () => undefined }];
-  const done: HomeDone[] = [{ key: "m1", project: "Crew", text: "Merged the notes", time: "09:05", onOpen: () => undefined }];
-  let seen = 0;
-  draw({ working, workingTotal: 4, done, onSeeDone: () => { seen += 1; } });
+  const working: HomeWork[] = [{ key: "hivra", project: "Hivra", text: "Example: 4 workers: chat move fixes, PR watch, commit guard, crew locks", since: "since 03:40", onOpen: () => undefined }];
+  const done: HomeDone[] = [{ key: "m1", project: "EXO", text: "Example: Merged the notes", time: "09:05", onOpen: () => undefined }];
+  draw({ working, workingTotal: 4, done });
+  const workingHead = container.querySelector("[data-home-section='moving-now'] header")!;
+  expect(workingHead.querySelector("h2")?.compareDocumentPosition(workingHead.querySelector("[data-home-workers]")!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   expect(container.querySelector("[data-home-workers]")?.textContent).toBe("4 workers");
   expect(container.querySelector("[data-home-since]")?.textContent).toBe("since 03:40");
-  expect(container.querySelector("[data-home-section='recent'] h2")?.textContent).toBe("Done today");
+  const doneHead = container.querySelector("[data-home-section='recent'] header")!;
+  expect(doneHead.querySelector("h2")?.textContent).toBe("Done today");
+  expect(doneHead.querySelector("[data-home-mark='done']")).not.toBeNull();
+  expect(doneHead.querySelector("[data-home-done]")?.textContent).toBe("1");
   expect(container.querySelector("[data-home-time]")?.textContent).toBe("09:05");
-  act(() => container.querySelector<HTMLButtonElement>("[data-home-see='done']")!.click());
-  expect(seen).toBe(1);
+  expect(container.querySelector("[data-home-see='done']")).toBeNull();
+  expect(container.textContent).not.toContain("Crew");
+});
+
+it("with no exchange, the card is the name line and the composer", () => {
+  draw({ chief: { ...chief, name: "Coordinator", scope: "read all 7 projects" } });
+  const card = container.querySelector("[data-home-start]")!;
+  expect(card.querySelector("[data-home-you]")).toBeNull();
+  expect(card.querySelector("[data-home-reply]")).toBeNull();
+  expect(card.querySelector("[data-home-action='open-chat']")).toBeNull();
+  expect(card.querySelector("[data-home-avatar='chief']")?.textContent).toBe("CS");
+  expect(card.querySelector("[data-home-chief]")?.textContent).toBe("Chief of Staff");
+  expect(card.querySelector("form")).not.toBeNull();
+});
+
+it("the send arrow turns blue once there is text", () => {
+  draw();
+  const send = container.querySelector<HTMLButtonElement>("button[aria-label='Send']")!;
+  expect(send.className).not.toContain("bg-accent");
+  const input = container.querySelector<HTMLInputElement>("input[aria-label='Ask']")!;
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => {
+    set!.call(input, "hello");
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  expect(container.querySelector("button[aria-label='Send']")?.className).toContain("bg-accent");
 });

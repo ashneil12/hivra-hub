@@ -17,6 +17,7 @@ import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workL
 import { hideSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { moveHomeSection } from "../model/arrangeHome";
 import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
+import { needActions } from "../model/needActions";
 import { homeDateLabel } from "../model/dateLabel";
 import { doneToday, projectTag } from "../model/doneToday";
 import { latestExchange } from "../model/exchange";
@@ -306,7 +307,7 @@ export function HomeView() {
     project: item.projectId ? label(item.projectId) : undefined,
     sentence: item.sentence,
     stopped: item.kind === "stopped",
-    actions: item.actions.map((action) => ({ label: action.label, onClick: () => action.run() })),
+    actions: needActions(item),
     onOpen: () => openNeed(item),
   }));
   const workRows: HomeWork[] = lines.map((line) => ({
@@ -340,7 +341,6 @@ export function HomeView() {
       workingTotal={running}
       done={doneRows}
       onSeeNeeds={() => see({ kind: "needs" })}
-      onSeeDone={() => see({ kind: "settings", section: "work-log", anchor: "" })}
       arrangement={snap ? arrangement : { order: [], hidden: [], savedAt: 0 }}
       catalog={snap?.catalog ?? []}
       known={snap != null}

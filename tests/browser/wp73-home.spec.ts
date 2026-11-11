@@ -23,9 +23,9 @@ test("home keeps the strip, hides empty sections, and keeps a pinned panel", asy
   await page.getByRole("button", { name: "Customize" }).click();
   await expect(page.getByRole("button", { name: "Move Working now up" })).toBeVisible();
   await expect(page.getByText("Pin a panel")).toHaveCount(0);
-  await page.getByRole("button", { name: "Hide Done today" }).click();
-  await expect(page.getByRole("button", { name: "Show Done today" })).toBeVisible();
-  await page.getByRole("button", { name: "Show Done today" }).click();
+  await page.getByRole("switch", { name: "Show Done today" }).click();
+  await expect(page.getByRole("switch", { name: "Show Done today" })).toHaveAttribute("aria-checked", "false");
+  await page.getByRole("switch", { name: "Show Done today" }).click();
   await page.getByRole("button", { name: "Pin Example board" }).click();
   await expect(page.locator("[data-home]")).toHaveAttribute("data-home-order", "panel:my-panels:board");
   await expect(page.frameLocator("iframe[title='Example board']").getByText("Example: board")).toBeVisible();
