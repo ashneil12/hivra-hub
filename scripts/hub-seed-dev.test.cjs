@@ -64,6 +64,8 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO automation_event_claims VALUES ('auto-1', 'e1', 9);
     CREATE TABLE session_reminders (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, due_at INTEGER NOT NULL CHECK (due_at > 0), fired_at INTEGER);
     INSERT INTO session_reminders VALUES ('s3', 100, NULL);
+    CREATE TABLE one_time_schedules (id TEXT PRIMARY KEY, body_json TEXT NOT NULL, status TEXT NOT NULL, run_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, claim_token TEXT, claim_until INTEGER);
+    INSERT INTO one_time_schedules VALUES ('once-1', '{}', 'scheduled', 200, 1, NULL, NULL);
     CREATE TABLE orchestration_runs (lead_id TEXT PRIMARY KEY, state TEXT NOT NULL);
     CREATE TABLE orchestration_sidebar (lead_id TEXT PRIMARY KEY, summary TEXT NOT NULL);
     CREATE TABLE orchestration_workers (session_id TEXT PRIMARY KEY, lead_id TEXT NOT NULL);
@@ -159,6 +161,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     automationEventClaims: 1,
     automations: 1,
     reminders: 1,
+    oneTimeSchedules: 1,
     orchestrationRuns: 1,
     orchestrationSidebar: 1,
     orchestrationWorkers: 1,
@@ -191,7 +194,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     { id: "s2", title: "Chat two", blocks_json: '[{"role":"user","text":"yo"}]', provider_session_id: null, queued_messages_json: "[]", queue_status: null },
     { id: "s3", title: "Chat three", blocks_json: "[]", provider_session_id: null, queued_messages_json: "[]", queue_status: null },
   ]);
-  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "imported_chat_folders", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes", "secrets", "secret_grants", "secret_requests", "secret_env_writes", "secret_settings"])
+  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "imported_chat_folders", "automations", "automation_runs", "automation_event_claims", "session_reminders", "one_time_schedules", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes", "secrets", "secret_grants", "secret_requests", "secret_env_writes", "secret_settings"])
     assert.deepEqual(rows(copy, `SELECT count(*) AS n FROM ${table}`), [{ n: 0 }], table);
   assert.deepEqual(
     rows(copy, "SELECT key FROM hub_local_docs ORDER BY key"),

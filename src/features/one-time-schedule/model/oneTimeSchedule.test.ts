@@ -227,6 +227,35 @@ describe("one-time schedule", () => {
     expect(fired?.status).toBe("fired");
   });
 
+  it("gives each claim its own token, so a stale runner's release leaves a later claim alone", async () => {
+    // The app's runner passes no tokens. Two runners (a reload after a claim expired) must not share one.
+    const store = createMemoryOneTimeStore();
+    const row = await scheduled(store);
+    let failFirst: (error: Error) => void = () => undefined;
+    const first = tickOneTimeSchedules({
+      mode: "open",
+      now: row.runAt,
+      store,
+      claimHoldMs: 1_000,
+      send: () => new Promise<void>((_resolve, reject) => (failFirst = reject)),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const second = tickOneTimeSchedules({
+      mode: "open",
+      now: row.runAt + 2_000,
+      store,
+      claimHoldMs: 60_000,
+      send: () => new Promise<void>(() => undefined),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const held = (await store.list())[0]?.claim?.token;
+    expect(held).toBeTruthy();
+    failFirst(new RetryableScheduleError("That chat is busy."));
+    await first;
+    expect((await store.list())[0]?.claim?.token).toBe(held);
+    void second;
+  });
+
   it("sends a project run in a new chat, and reuses that chat if the send has to retry", async () => {
     const store = createMemoryOneTimeStore();
     const row = await store.create(

@@ -365,7 +365,8 @@ export async function tickOneTimeSchedules(options: {
   for (const row of rows) {
     if (row.status !== "scheduled" || row.runAt > options.now) continue;
     if (row.claim && row.claim.until > options.now) continue;
-    const token = options.tokens?.[tokenIndex] ?? `token-${tokenIndex + 1}`;
+    // A fresh token per claim: a stale runner's ack or release must not land on a later claim.
+    const token = options.tokens?.[tokenIndex] ?? crypto.randomUUID();
     tokenIndex += 1;
     let claimed: OneTimeSchedule | null;
     try {
