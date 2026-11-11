@@ -44,7 +44,8 @@ function row(over: Partial<Delegation>): Delegation {
   };
 }
 
-it("drops a bad needs row and keeps two actions at most", () => {
+it("drops a bad needs row and keeps three actions at most", () => {
+  let picked = "";
   const items = needsYou({
     items: [
       { key: "question:1", kind: "question", who: "Ada", at: 2, sentence: "Which font?", actions: [], open: { kind: "inbox" } },
@@ -59,13 +60,30 @@ it("drops a bad needs row and keeps two actions at most", () => {
           { label: "One", run: () => undefined },
           { label: "Two", run: () => undefined },
           { label: "Three", run: () => undefined },
+          { label: "Four", run: () => undefined },
         ],
         open: { kind: "chat", id: "c1" },
       },
+      {
+        key: "question:notes",
+        kind: "question",
+        at: 3,
+        sentence: "Example: Should we ship the notes?",
+        actions: [
+          { label: "Yes", run: () => { picked = "yes"; } },
+          { label: "Not yet", run: () => { picked = "not"; } },
+        ],
+        open: { kind: "inbox" },
+      },
     ],
   }, Date.now());
-  expect(items.map((item) => item.key)).toEqual(["stopped:2", "question:1"]);
-  expect(items[0].actions.map((action) => action.label)).toEqual(["One", "Two"]);
+  expect(items.map((item) => item.key)).toEqual(["stopped:2", "question:1", "question:notes"]);
+  expect(items[0].actions.map((action) => action.label)).toEqual(["One", "Two", "Three"]);
+  const notes = items.find((item) => item.key === "question:notes");
+  notes?.actions[0]?.run();
+  expect(picked).toBe("yes");
+  notes?.actions[1]?.run();
+  expect(picked).toBe("not");
 });
 
 it("counts running workers the same way a project filter does", () => {

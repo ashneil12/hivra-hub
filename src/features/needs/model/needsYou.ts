@@ -80,7 +80,7 @@ function readItem(value: unknown): NeedsItem | undefined {
   const actions: NeedsAction[] = [];
   if (Array.isArray(row.actions)) {
     for (const action of row.actions) {
-      if (actions.length >= 2) break;
+      if (actions.length >= 3) break;
       if (!action || typeof action !== "object") continue;
       const label = (action as { label?: unknown }).label;
       const run = (action as { run?: unknown }).run;
