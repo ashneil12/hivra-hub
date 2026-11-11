@@ -1324,15 +1324,19 @@ pub fn harness_spawn(
     // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain. This runs
     // after configure_child, so the app's MONOCODE_* variables it just set are stripped again for an armed worker (M3).
     // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
-    {
+    // A More agents child gets its environment cleared below, so its secrets are applied after that clear instead.
+    let apply_secrets = |cmd: &mut Command| -> Result<(), String> {
         let store = app.state::<crate::session_store::SessionStore>();
         crate::secrets::worker::apply_to_child(
             &session_id,
             crate::secrets::store::active(),
-            &mut cmd,
+            cmd,
             &store,
             crate::session_store::now_millis(),
-        )?;
+        )
+    };
+    if !more_run {
+        apply_secrets(&mut cmd)?;
     }
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     // WP-86: stamp this crew's commits. A failure here must not stop the crew.
@@ -1356,9 +1360,10 @@ pub fn harness_spawn(
             task.as_deref(),
         );
     }
-    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
+    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list, then the
+    // secrets the person approved for this worker (WP-92). Applying them before the clear dropped them.
     if more_run {
-        crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
+        crate::more_agents::restrict_env_then(&mut cmd, &gui_search_path(), apply_secrets)?;
     }
     let mut child = child_or_reap(
         spawn_managed(&mut cmd),
