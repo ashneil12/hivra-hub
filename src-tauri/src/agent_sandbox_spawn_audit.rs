@@ -499,6 +499,16 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "read_process_folders",
         "/usr/sbin/lsof -d cwd, to see which folders have a program in them before anything is deleted. Linux reads /proc and starts nothing.",
     ),
+    (
+        "secrets/run.rs",
+        "spawn_run",
+        "Starts this app's own secret-run helper, the same binary, with a cleared environment. The command an agent chose is execute_controlled, which runs under the agent sandbox. Sandboxing this helper would deny it the database and the keychain, or that command would inherit an allow for them.",
+    ),
+    (
+        "secrets/run.rs",
+        "kill_group",
+        "taskkill of a process group this app started. Unix uses libc::kill and starts no process.",
+    ),
 ];
 
 struct Site {

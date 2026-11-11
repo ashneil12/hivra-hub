@@ -176,7 +176,7 @@ impl Gh for CliGh {
         let program = Self::program().ok_or_else(|| {
             "GitHub CLI (`gh`) is not installed, so MonoCode can't read pull requests.".to_string()
         })?;
-        let mut command = Command::new(program);
+        let mut command = crate::git_cmd::contained_command(&program);
         command
             .args(["api", path])
             .env("GH_PROMPT_DISABLED", "1")
@@ -184,6 +184,9 @@ impl Gh for CliGh {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("NO_COLOR", "1");
         crate::harness::apply_gui_env(&mut command);
+        // The GUI environment puts the login PATH first. A secret-style path puts the system folders and Homebrew
+        // ahead of anything the account can write, and it has to be set after that environment or it is overwritten.
+        command.env("PATH", crate::secrets::run::search_path());
         run_with_timeout(command, GH_TIMEOUT)
     }
 
@@ -1386,5 +1389,22 @@ pub(crate) mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn rest_runs_gh_contained_with_the_system_path_first() {
+        let src = include_str!("github.rs");
+        let start = src.find("fn rest(&self, path: &str)").unwrap();
+        let end = src[start..].find("fn graphql(").unwrap() + start;
+        let body = &src[start..end];
+        assert!(
+            body.contains("contained_command"),
+            "gh api is not contained"
+        );
+        let gui = body
+            .find("apply_gui_env")
+            .expect("the GUI environment is set");
+        let path = body.find("search_path()").expect("PATH is not replaced");
+        assert!(path > gui, "PATH must be set after the GUI environment");
     }
 }
