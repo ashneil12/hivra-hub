@@ -12117,6 +12117,7 @@ mod app_data_guard_tests {
     /// WP-129 L4 (lead review, 11 Nov): a path whose missing levels run through a symlink into the data folder is
     /// refused. The check used to resolve only one missing level, so `link/new/deeper/file` was taken as outside.
     #[test]
+    #[cfg(unix)]
     fn a_path_through_a_link_with_missing_levels_is_refused() {
         let base = std::env::temp_dir().join(format!("wp129-l4-link-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
@@ -12136,6 +12137,7 @@ mod app_data_guard_tests {
     /// WP-129 L4: a rename's destination is checked as well as its source. A folder that is a symlink into the
     /// data folder must not take a file in from outside.
     #[test]
+    #[cfg(unix)]
     fn a_rename_into_a_link_to_the_app_data_folder_is_refused() {
         let base = std::env::temp_dir().join(format!("wp129-l4-rename-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
