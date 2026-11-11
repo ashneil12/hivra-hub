@@ -3800,4 +3800,47 @@ mod review_r6_repro {
             "a sandboxed agent wrote the app's webview storage"
         );
     }
+
+    /// HIGH (the r5 MED for sourced files is fixed for three names only): a login zsh also runs files outside the list.
+    /// oh-my-zsh's `compinit` sources `~/.zcompdump-<host>-<version>` (it lives in home, not in `~/.oh-my-zsh`), and
+    /// p10k's standard snippet at the top of `.zshrc` sources `~/.cache/p10k-instant-prompt-<user>.zsh`. The profile
+    /// already assumes both tools (`.oh-my-zsh`, `.p10k.zsh`). A `.zshrc` names more (`~/.fzf.zsh`, OrbStack's
+    /// `~/.orbstack/shell/init.zsh`). An agent appends a line to any of them; Ash's next terminal in the app (`pty.rs`,
+    /// a login shell, never wrapped), Terminal.app, and the login-shell probe run it. The probe runs in the container,
+    /// which has no `.git` deny, so from there it writes any repository's hooks for Ash's next commit.
+    #[test]
+    fn the_files_a_login_shell_sources_cannot_be_written() {
+        let home = scratch("sourced");
+        std::fs::write(
+            home.join(".zshrc"),
+            "if [[ -r \"${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh\" ]]; then\n  \
+             source \"${XDG_CACHE_HOME:-$HOME/.cache}/p10k-instant-prompt-${(%):-%n}.zsh\"\nfi\n\
+             export ZSH=\"$HOME/.oh-my-zsh\"\nsource $ZSH/oh-my-zsh.sh\n\
+             [ -f ~/.fzf.zsh ] && source ~/.fzf.zsh\n\
+             source ~/.orbstack/shell/init.zsh 2>/dev/null || :\n",
+        )
+        .unwrap();
+        let profile = profile_with_checkouts(&home, None, &[]).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            denies_write(&profile, &home.join(".zshrc")),
+            "precondition: .zshrc itself is write-denied"
+        );
+        let open: Vec<String> = [
+            ".zcompdump",
+            ".zcompdump-mac-5.9",
+            ".cache/p10k-instant-prompt-ash.zsh",
+            ".fzf.zsh",
+            ".orbstack/shell/init.zsh",
+        ]
+        .iter()
+        .map(|name| home.join(name))
+        .filter(|path| !denies_write(&profile, path))
+        .map(|path| path.display().to_string())
+        .collect();
+        assert!(
+            open.is_empty(),
+            "a login shell sources these, and an agent can write them: {open:?}"
+        );
+    }
 }
