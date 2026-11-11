@@ -31,7 +31,6 @@
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::OnceLock;
 
 use serde::Serialize;
 use tauri::AppHandle;
@@ -456,7 +455,7 @@ pub fn self_check(_sandbox_exec: &Path) -> Result<(), String> {
 
 #[cfg(target_os = "macos")]
 pub fn self_check(sandbox_exec: &Path) -> Result<(), String> {
-    static CHECKED: OnceLock<Result<(), String>> = OnceLock::new();
+    static CHECKED: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
     // Only the real launcher's answer is kept for the process. Any other launcher (a test's stand-in) is checked afresh,
     // so one stand-in's refusal can never stand in for the real sandbox.
     if sandbox_exec != Path::new(SANDBOX_EXEC) {

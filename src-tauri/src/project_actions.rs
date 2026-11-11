@@ -447,6 +447,8 @@ const ALLOWED_ENV: [&str; 7] = [
 fn command(request: &RunRequest<'_>) -> Command {
     #[cfg(windows)]
     let mut command = {
+        // The sandbox exists only on macOS, so no wrap is ever set here; a stray one is ignored, never half-applied.
+        debug_assert!(request.wrap.is_none(), "the agent sandbox is macOS only");
         let mut command = Command::new("cmd");
         command.arg("/C").arg(&request.action.command);
         command
