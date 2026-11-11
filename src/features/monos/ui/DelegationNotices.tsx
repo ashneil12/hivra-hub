@@ -225,7 +225,9 @@ export function DelegationWaitingLine({
   ]
     .filter(Boolean)
     .join(" · ");
-  const needsYouPart = needsYou.length ? `${needsYou.length} needs you: ${names(needsYou)}` : undefined;
+  // The card above already says Needs you. The red footer would say it again.
+  const cardOnScreen = stuck.some((worker) => worker.kind !== "asking" && stuckOwner(worker) === "needs-you");
+  const needsYouPart = needsYou.length && !cardOnScreen ? `${needsYou.length} needs you: ${names(needsYou)}` : undefined;
   // Briefs have their own lines: "Waiting on N" counts only the rest.
   const others = count - briefs.length;
   const line = named || (needsYouPart ? "" : others > 0 ? `Waiting on ${others}` : undefined);

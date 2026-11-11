@@ -4,6 +4,7 @@
 // coding team or a Mono's own team: hub/model/codingTeamList.ts, monoTeams.ts) and, since r88 (Ash, B13), nested under
 // their Lead in the Monos rail too (MonoRailSection.tsx, its own fold).
 import { useState } from "react";
+import { useNeedsYou } from "../../needs/model/needsLive";
 import { CheckCircle, ChevronDown, CircleAlert, CircleX, Clock, Loader, Trash2 } from "../../../shared/ui/icons";
 import type { ChildChat } from "../model/delegationView";
 import { shownSubChats, subChatsOpen, toggleSubChats, type subChatAttention } from "../model/subChats";
@@ -105,7 +106,7 @@ export function SubChatList({
   // r91 (Critiquito: one word for a stalled worker everywhere): a stalled one is counted as "stalled", not "with its Lead".
   const stalledCount = stopped.filter((s) => s.kind === "stalled" && stuckOwner(s) === "with-lead").length;
   const withLeadCount = owned("with-lead") - stalledCount;
-  const needsYouCount = owned("needs-you");
+  const needsYouCount = useNeedsYou().filter((item) => item.monoId === owner).length;
   const attrs = ATTRS;
   return (
     <div className="ml-5 flex flex-col gap-px border-l border-content/10 pb-0.5 pl-1.5">

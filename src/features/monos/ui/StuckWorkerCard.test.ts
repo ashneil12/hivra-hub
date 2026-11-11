@@ -169,9 +169,7 @@ describe("stuck workers in the Lead's chat", () => {
     const line = container.querySelector("[data-delegation-working]")!;
     // r30b: never "stuck": the stalled one is its Lead's (grey), the billing refusal is the red needs you.
     expect(line.textContent).toBe("1 working: Job w1 · 1 waiting: Job w2 · 1 with EXO lead: Job w3");
-    const needs = container.querySelector("[data-delegation-needs-you]")!;
-    expect(needs.textContent).toBe("· 1 needs you: Job w4");
-    expect(needs.className).toContain("text-red-400");
+    expect(container.querySelector("[data-delegation-needs-you]")).toBeNull();
     expect(line.getAttribute("title")).toBe("Delegated 4: 1 working, 1 waiting, 1 with its Lead, 1 failed");
   });
 
