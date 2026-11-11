@@ -239,15 +239,14 @@ pub fn facts(get: Get, repo: &str, number: u64, memo: &Memo, read: &PrRead, stal
     };
     match cached {
         Some(n) => facts.behind = Some(n),
-        None => match compare(get, repo, head, base) {
-            Ok(c) => {
+        // The behind count is informational. A miss must not mark the whole read unread:
+        // that waits RETRY_AFTER and drops the base-moved wake.
+        None => {
+            if let Ok(c) = compare(get, repo, head, base) {
                 facts.behind = Some(c.ahead_by);
                 facts.cache_behind = Some((head.into(), base.into(), c.ahead_by));
             }
-            // The behind count is informational. A miss must not mark the whole read unread:
-            // that waits RETRY_AFTER and drops the base-moved wake.
-            Err(_) => {}
-        },
+        }
     }
     let Some(old) = memo.base_sha.as_deref() else {
         return facts;
