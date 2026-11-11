@@ -6,7 +6,7 @@ import "../../src/styles/index.css";
 
 const KEY = "wp80.team-workspace.fixture";
 
-type Saved = { enabled: boolean; endpoint: string; signedIn: boolean };
+type Saved = { enabled: boolean; endpoint: string; signedIn: boolean; conflicts?: string[] };
 
 function read(): Saved {
   try {
@@ -24,6 +24,7 @@ function status(saved: Saved) {
     endpointConfigured,
     signedIn: saved.signedIn,
     active: saved.enabled && endpointConfigured && saved.signedIn,
+    conflicts: Array.isArray(saved.conflicts) ? saved.conflicts : [],
   };
 }
 

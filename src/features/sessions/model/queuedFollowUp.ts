@@ -1,4 +1,5 @@
 import { TurnNotReadyError } from "../../../integrations/harness/core/types";
+import { isChatLocked } from "../../connections/model/teleportLock";
 import { canSteerQueuedHead, queuedHead } from "./messageQueue";
 import type { QueuedMessage, Session } from "./session";
 
@@ -18,6 +19,7 @@ export async function deliverQueuedFollowUp<T>(options: {
     return (
       options.isCurrentTurn() &&
       !!session &&
+      !isChatLocked(session.id) &&
       queuedHead(session) === options.message &&
       canSteerQueuedHead(session)
     );

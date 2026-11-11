@@ -1,3 +1,7 @@
+import { TeleportHeaderBand } from "../../connections/ui/TeleportNotice";
+import { AppTeleportPanel } from "../../connections/ui/TeleportMovePanel";
+import { chatLocked, teleportStateOf } from "../../connections/model/teleportState";
+import { isChatLocked, syncTeleportLock } from "../../connections/model/teleportLock";
 import { GripVertical, X } from "../../../shared/ui/icons";
 import type { LayoutNode, SplitDir } from "../../workspace/model/layout";
 import { PaneSplitButtons, PaneSplitCorner } from "../../workspace/ui/PaneSplitButtons";
@@ -264,6 +268,10 @@ export type SessionPaneProps = {
     reply: UserQuestionReply,
   ) => void;
   onQuestionInteraction?: (sessionId: string, requestId: number) => void;
+  /** WP-177: the stored row after a chat move, so the app's session list holds the moved state. */
+  onTeleportRow?: (row: Session) => void;
+  /** WP-177: opens a new chat (the recap) in the app. */
+  onOpenChat?: (session: Session) => void;
   onOpenFile: (path: string) => void;
   onOpenDiff: (
     path?: string,
@@ -403,6 +411,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onApproval,
   onQuestionReply,
   onQuestionInteraction,
+  onTeleportRow,
+  onOpenChat,
   onOpenFile,
   onOpenDiff,
   onCommitChanges,
@@ -750,10 +760,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
     : session.busy && cannotRedirect
       ? cantRedirectTurn(session.harness)
       : undefined;
+  // WP-177: a chat frozen by a move, or moved away, takes no message here (the composer is disabled, not just refused).
+  const teleportComposerLocked = chatLocked(session) || isChatLocked(session.id);
   const composer = (
     <Composer
       key={session.id}
-      disabled={workspaceSwitchingSessionId === session.id}
+      disabled={workspaceSwitchingSessionId === session.id || teleportComposerLocked}
       remoteSession={remoteSession}
       remoteFeatures={remoteFeatures}
       allowedModelHarnesses={allowedModelHarnesses}
@@ -959,6 +971,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
         globalBackgroundEffect === "gradient-blur") ? (
         <GradientBlurBackground />
       ) : null}
+      <AppTeleportPanel session={session} onRow={onTeleportRow} onOpen={onOpenChat} />
+      {(() => {
+        const moved = teleportStateOf(session);
+        // The saved state is the truth after a restart: a moved or frozen chat stays locked, a settled one unlocks.
+        syncTeleportLock(session);
+        return moved.moved ? (
+          <TeleportHeaderBand
+            host={moved.host}
+            time={new Date(moved.at).toLocaleString()}
+          />
+        ) : null;
+      })()}
       {modelWelcome && visible ? (
         modelWelcome.kind === "astra" ? (
           <AstraWelcome key={modelWelcome.run} onDone={dismissModelWelcome} />

@@ -15,6 +15,7 @@ import type { PrContent } from "../../../features/source-control/model/gitText";
 import { hasLiveCatalog } from "../../../features/sessions/model/models";
 import type { UserQuestionReply } from "../../../features/sessions/model/userQuestion";
 import type { NativeCommandProvider } from "./nativeCommands";
+import { assertChatAcceptsTurns } from "../../../features/connections/model/teleportLock";
 import { registryAgentIdForSession, unlinkRegistryChat } from "../../../features/registry/model/registryList";
 import {
   clearWorkflowRuns,
@@ -441,6 +442,12 @@ export function setTurnTextDecorator(fn: ((sessionId: string, text: string) => s
 }
 
 export function sendHarnessTurn(input: SendTurnInput & { harness: HarnessId }) {
+  // WP-177: a chat that is moving or has moved sends nothing; the refusal is the same promise a failed send gives.
+  try {
+    assertChatAcceptsTurns(input.sessionId);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   input = { ...input, text: decorateTurnText(input.sessionId, input.text) };
   return queueSessionOperation(input.sessionId, async () => {
     // Before the control port or any provider hears of the turn: a chat with no folder starts nothing.
@@ -529,6 +536,12 @@ export function canCompactHarnessContext(id: HarnessId): boolean {
 export function compactHarnessContext(
   input: CompactContextInput & { harness: HarnessId },
 ): Promise<void> {
+  // WP-177: a moved or frozen chat compacts nothing; the refusal is the same promise a failed compact gives.
+  try {
+    assertChatAcceptsTurns(input.sessionId);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return queueSessionOperation(input.sessionId, async () => {
     requireChatFolder(input.cwd);
     const adapter = requireAdapterFor(input.harness, input.sessionId);
@@ -568,6 +581,12 @@ export function canRewindHarnessLastTurn(id: HarnessId): boolean {
 export function rewindHarnessLastTurn(
   input: RewindLastTurnInput & { harness: HarnessId },
 ): Promise<RewindLastTurnResult> {
+  // WP-177: a moved chat's provider thread is not rolled back here; the refusal is the same as for a send.
+  try {
+    assertChatAcceptsTurns(input.sessionId);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return queueSessionOperation(input.sessionId, async () => {
     requireChatFolder(input.cwd);
     const adapter = requireAdapterFor(input.harness, input.sessionId);
@@ -588,6 +607,11 @@ export function rewindHarnessLastTurn(
 export function steerHarnessTurn(
   input: SteerTurnInput & { harness: HarnessId },
 ): Promise<void> {
+  try {
+    assertChatAcceptsTurns(input.sessionId);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   return queueSteerOperation(input.sessionId, async () => {
     const adapter = requireAdapterFor(input.harness, input.sessionId);
     if (!adapter.live) {

@@ -3265,7 +3265,9 @@ fn workspace_rows(
                 file["title"].as_str().unwrap_or("Chat").to_string(),
             )
         };
-        let kept = insert_session(env, conn, &target, &title, &file, rules)?;
+        // WP-177: a copy with a new id never resumes the file's provider conversation, which may live on another machine.
+        let is_copy = target != id.clone();
+        let kept = insert_session_as(env, conn, &target, &title, &file, rules, is_copy)?;
         report.folders_cleared += usize::from(kept.cleared);
         report.tool_paths_dropped += kept.paths_dropped;
         paths_left_out += kept.files_left_out;
@@ -3665,6 +3667,7 @@ fn drop_imported_file_paths(value: &mut Value) -> usize {
 }
 
 /// Adds the chat to the store. Returns what it lost on the way in (`Kept`).
+#[cfg(test)]
 fn insert_session(
     env: &Env,
     conn: &Connection,
@@ -3672,6 +3675,32 @@ fn insert_session(
     title: &str,
     file: &Value,
     rules: &FolderRules,
+) -> rusqlite::Result<Kept> {
+    insert_session_as(env, conn, id, title, file, rules, false)
+}
+
+/// A copy is a new chat, so it does not keep the source chat's move notices.
+fn strip_copy_move_notices(blocks: &mut Value) {
+    let Some(list) = blocks.as_array_mut() else {
+        return;
+    };
+    list.retain(|block| {
+        !block
+            .get("notice")
+            .and_then(Value::as_str)
+            .is_some_and(|notice| notice.starts_with("teleport"))
+    });
+}
+
+/// `is_copy`: the chat was added under a new id (a copy), which never resumes the file's provider conversation (WP-177).
+fn insert_session_as(
+    env: &Env,
+    conn: &Connection,
+    id: &str,
+    title: &str,
+    file: &Value,
+    rules: &FolderRules,
+    is_copy: bool,
 ) -> rusqlite::Result<Kept> {
     let engine = &file["engine"];
     let harness = engine["harness"].as_str().unwrap_or("claude").to_string();
@@ -3688,6 +3717,7 @@ fn insert_session(
         .as_str()
         .filter(|psid| {
             !env.dev
+                && !is_copy
                 && harness == "claude"
                 && !private
                 && !work_folder.is_empty()
@@ -3696,6 +3726,10 @@ fn insert_session(
         })
         .map(str::to_string);
     let mut blocks = file.get("blocks").cloned().unwrap_or(json!([]));
+    // WP-177: a copy is a new chat. A move note belongs to the chat that was mid-move, not to this copy.
+    if is_copy {
+        strip_copy_move_notices(&mut blocks);
+    }
     let files_left_out = drop_imported_file_paths(&mut blocks);
     let paths_dropped = rules.confine_tool_paths(&mut blocks, &folders.roots);
     let session = SessionUpsert {
@@ -3730,6 +3764,9 @@ fn insert_session(
             Value::String(value) => crate::session_store::boundary_for_read(Some(value.clone())),
             _ => Some("private-boundary-unreadable".to_string()),
         },
+        teleport: None,
+        move_brief_owed: false,
+        moved_from: None,
     };
     session_store::upsert_session(conn, &session)?;
     note_named_folder(conn, id, &folders)?;

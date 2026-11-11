@@ -109,6 +109,14 @@ describe("the captain charter", () => {
     expect(next).not.toContain("```");
   });
 
+  it("does not squeeze blank lines inside another section's code fence", () => {
+    const fence = "```\nkeep\n\n\n\nthis gap\n```";
+    const soul = `# Soul\n\n## Notes\n${fence}\n\n## Personality\n${CAPTAIN_CHARTER}\n`;
+    const next = withLockedRole(soul);
+    expect(next).toContain("keep\n\n\n\nthis gap");
+    expect(roleBodies(next)).toEqual([CAPTAIN_CHARTER]);
+  });
+
   it("refuses an unclosed comment or an unclosed fence", () => {
     expect(() => withLockedRole(`# Soul\n\n<!--\n## Role\n${CAPTAIN_CHARTER}\n`)).toThrow(/unclosed comment or code fence/);
     expect(() => withLockedRole(`# Soul\n\n\`\`\`\n## Role\n${CAPTAIN_CHARTER}\n`)).toThrow(/unclosed comment or code fence/);

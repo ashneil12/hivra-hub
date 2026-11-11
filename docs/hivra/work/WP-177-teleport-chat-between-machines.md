@@ -1,4 +1,4 @@
-# WP-XX: Teleport a chat between this Mac and a host
+# WP-177: Teleport a chat between this Mac and a host
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
@@ -18,12 +18,14 @@ What exists today: `src-tauri/src/provider_session_transfer.rs` copies a Claude 
 
 - WP-60 (leases and idempotent launch keys: a live holder is not replaced, and a dead one counts as released) and WP-61.
 - WP-121 (the resume case and the recap fallback, with no silent switch).
-- WP-133, which owns the laptop-closed transport and the relay. Not yet written; this WP waits for its transport decision.
+- WP-133 (design only, `docs/hivra/work/WP-133-remote-parity.md`), which owns the laptop-closed transport and the relay. This WP builds only the SSH host connection and does not decide the relay.
 - `src-tauri/src/provider_session_transfer.rs` for the transcript copy rules.
 - Cloudroom's README (ideas only, no code copied): the split of harness from core, and teleport as freeze, move history, resume.
 - PLAN.md, "From Aether": the subscription gap, which applies here too.
 
 ## Build
+
+**What is carried, stated plainly.** A move carries the chat's saved messages, its model, effort, title and queued messages. It does not carry the CLI's own transcript file. The target starts a fresh CLI session from the saved messages, and the notice says so ("continues in a fresh session there, started from the saved messages"). The recap is the fallback when the target cannot resume. This keeps the move to files Hivra already saves, and it is what the tests prove.
 
 1. A move is a custody handover, not a copy. The source freezes the chat, the transcript and Hivra's own record of the chat are copied, the target records the chat as its own, and only then does the source let go. A lease from WP-60 names the owner at each step, so a reconnect race cannot leave the chat running twice.
 2. Freeze rules: refuse while a turn is running or an approval is pending. Never inject into a blocked chat. Offer "finish this turn, then move" instead. A chat with queued messages keeps them with the move.
