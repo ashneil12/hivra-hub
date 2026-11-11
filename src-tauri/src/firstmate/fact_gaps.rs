@@ -1277,23 +1277,14 @@ pub fn coverage_gaps(turn: &FactTurn) -> Vec<String> {
 }
 
 /// A package that already went stale does not also get "no test reached". The stale sentence is that fact.
-fn push_coverage(
-    gaps: &mut Vec<String>,
-    turn: &FactTurn,
-    packages: &HashMap<String, String>,
-    stale_pkgs: &HashSet<String>,
-) {
-    for gap in coverage_with(turn, packages) {
-        if let Some(pkg) = gap
-            .strip_prefix("No test reached ")
-            .and_then(|rest| rest.strip_suffix('.'))
-        {
-            if stale_pkgs.contains(pkg) {
-                continue;
-            }
-        }
-        gaps.push(gap);
-    }
+fn without_stale_packages(gaps: Vec<String>, stale_pkgs: &HashSet<String>) -> Vec<String> {
+    gaps.into_iter()
+        .filter(|gap| {
+            !gap.strip_prefix("No test reached ")
+                .and_then(|rest| rest.strip_suffix('.'))
+                .is_some_and(|name| stale_pkgs.contains(name))
+        })
+        .collect()
 }
 
 fn gaps_before_coverage(
@@ -1330,7 +1321,10 @@ fn gaps_before_coverage(
 
 fn done_gaps_with(turn: &FactTurn, packages: &HashMap<String, String>) -> Vec<String> {
     let (mut gaps, stale_pkgs) = gaps_before_coverage(turn, packages);
-    push_coverage(&mut gaps, turn, packages, &stale_pkgs);
+    gaps.extend(without_stale_packages(
+        coverage_with(turn, packages),
+        &stale_pkgs,
+    ));
     gaps
 }
 
@@ -1346,7 +1340,10 @@ pub(crate) fn done_gaps_in(turn: &FactTurn, checkout: Option<&Path>) -> Vec<Stri
 
 /// Every fact gap in this turn, in a stable order. Empty when the facts support done.
 pub fn done_gaps(turn: &FactTurn) -> Vec<String> {
-    done_gaps_with(turn, &workspace_or_empty(None))
+    let packages = workspace_or_empty(None);
+    let (mut gaps, stale_pkgs) = gaps_before_coverage(turn, &packages);
+    gaps.extend(without_stale_packages(coverage_gaps(turn), &stale_pkgs));
+    gaps
 }
 
 fn lower_first(text: &str) -> String {
