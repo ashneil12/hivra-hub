@@ -138,6 +138,9 @@ export function fakeClaudeBackend(): ChildBackend {
       await later(150);
       return say(sessionId, allowed ? `Going with your answer: ${Object.values(answers ?? {}).join("; ")}. Building it now.` : "Understood, I won't ask that.");
     }
+    // The design mockup (src/dev/mockup) answers in its own words.
+    const custom = (window as unknown as { __fakeClaudeReply?: (prompt: string) => string | undefined }).__fakeClaudeReply?.(prompt);
+    if (custom) return say(sessionId, custom);
     return say(sessionId, prompt.includes("Continue from where you left off") ? "Picked up where I left off: all green." : "All green: 14 tests pass.");
   }
 
