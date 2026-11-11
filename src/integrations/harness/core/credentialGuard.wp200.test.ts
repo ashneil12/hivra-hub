@@ -12,7 +12,8 @@ const skips = [
   "git push --no-verify origin main",
   "git push origin main --no-verify",
   "git push --no-v origin main",
-  "git push -n origin main",
+  "git commit -nm wip",
+  "git commit -anm wip",
   "git commit --no-verify -m wip",
   "git commit -n -m wip",
   "cd repo && git push --no-verify",
@@ -29,6 +30,7 @@ const skips = [
 
 const ordinary = [
   "git push origin main",
+  "git push -n origin main",
   "git push -u origin wp/200-commit-secret-scan",
   "git commit -m \"fix the gate\"",
   "git status --short",

@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import { credentialBlock } from "./credentialGuard";
 
 const held = [
-  "git push -n origin main",
   "git commit -n -m wip",
-  "git push origin main -n",
+  "git commit -nm wip",
+  "git commit -anm wip",
   'git commit -m "x" -n',
   "git push --'no-verify'",
   "git push --no-'verify'",
@@ -13,6 +13,9 @@ const held = [
 ];
 
 const ordinary = [
+  "git push -n origin main",
+  "git push origin main -n",
+  "git commit -mn not-a-skip",
   "git commit -m wip && grep -n TODO a.ts",
   "git push origin main | grep -n rejected",
   "git push && pytest -n 4",

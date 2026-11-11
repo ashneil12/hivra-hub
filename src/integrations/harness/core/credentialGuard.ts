@@ -19,8 +19,6 @@ export const GIT_HOOK_BLOCK_MESSAGE =
 /** Claude Code deny rules for the same skips (every Claude process and hub chat carries them). */
 export const GIT_HOOK_DENY_RULES: readonly string[] = [
   "Bash(*git*push*--no-v*)",
-  "Bash(git push -n)",
-  "Bash(git push -n *)",
   "Bash(*git*commit*--no-v*)",
   "Bash(git commit -n)",
   "Bash(git commit -n *)",
@@ -125,8 +123,11 @@ function shellWords(segment: string): string[] {
 }
 
 /**
- * `-n` or `--no-v…` on the git push or commit itself. A commit message is not a flag (`-m` and `--message` take the
- * next word). Words after `--` are not flags. A later command in the same line is not this git's arguments.
+ * `--no-v…` on the git push or commit itself, or `-n` on a commit (there `-n` is `--no-verify`; on a push it is
+ * `--dry-run` and is not held). A combined short cluster counts (`commit -nm`, `commit -anm`). A short option that
+ * takes a value (`-m`, `-F`, `-c`, `-C`) consumes the rest of its cluster when it is not the last letter (`-mn` is
+ * the message "n", not `-n`), otherwise the next word. Words after `--` are not flags. A later command in the same
+ * line is not this git's arguments.
  */
 function gitPushOrCommitSkips(command: string): boolean {
   for (const segment of shellSegments(command)) {
@@ -136,13 +137,29 @@ function gitPushOrCommitSkips(command: string): boolean {
     const args = words.slice(gitAt + 1);
     const verbAt = args.findIndex((arg) => arg === "push" || arg === "commit");
     if (verbAt < 0) continue;
+    const commit = args[verbAt] === "commit";
     for (let i = verbAt + 1; i < args.length; i++) {
       const arg = args[i];
       if (arg === "--") break;
-      if (arg === "-n" || arg.startsWith("--no-v")) return true;
-      if (arg === "-m" || arg === "--message" || arg === "-F" || arg === "--file") {
+      if (arg.startsWith("--no-v")) return true;
+      if (arg === "--message" || arg === "--file") {
         i += 1;
+        continue;
       }
+      if (arg.startsWith("--")) continue;
+      if (!arg.startsWith("-") || arg.length < 2) continue;
+      const cluster = arg.slice(1);
+      let takesNext = false;
+      for (let c = 0; c < cluster.length; c++) {
+        const flag = cluster[c];
+        if (commit && flag === "n") return true;
+        if (commit && (flag === "m" || flag === "F" || flag === "c" || flag === "C")) {
+          if (c < cluster.length - 1) break;
+          takesNext = true;
+          break;
+        }
+      }
+      if (takesNext) i += 1;
     }
   }
   return false;
