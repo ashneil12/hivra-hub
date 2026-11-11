@@ -1,9 +1,12 @@
-import { expect, test } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { expect, test, type Page } from "@playwright/test";
 import { openLocalHub, type SeedProject } from "./localHub";
 
-// WP-210: one Needs you list. The first run of this file, against unchanged code, writes the before shots.
-// Example data only. Never Ash's chats.
+// WP-210: one Needs you list. Example data only. Never Ash's chats.
+// Shots land in after/. The before shots are taken from the unchanged code, separately.
 test.use({ viewport: { width: 1440, height: 900 } });
+
+const AFTER = "docs/hivra/work/shots/wp-210/after";
 
 const PROJECTS: SeedProject[] = [
   { id: "vg-game", name: "EXO", shortName: "EXO", iconShape: "gamepad", folder: "/Users/example/Projects/vg-game" },
@@ -34,20 +37,80 @@ function decision(project: string, key: string, question: string, at: number) {
   };
 }
 
-test("rail and home with the example needs list", async ({ page }) => {
+// EXO's one item is a stopped worker, so the rail chip, the header and the Mono line share one count.
+function stoppedWorker(ownerSession: string) {
+  return {
+    id: "upload-build",
+    ownerSession,
+    ownerMono: "vg-game-lead",
+    batchId: "turn-1",
+    parentId: null,
+    rootId: "upload-build",
+    childSession: "example-worker-chat",
+    requestId: "example-request",
+    generation: 1,
+    project: "vg-game",
+    title: "Upload the playtest build",
+    brief: "Upload the playtest build",
+    goal: null,
+    askIds: [],
+    state: "failed",
+    errorClass: "billing",
+    error: "Out of credits",
+    retryable: null,
+    resetsAt: null,
+    result: null,
+    pendingQuestion: null,
+    delivery: "pending",
+    deliveryMessage: null,
+    createdAt: NOW - 60_000,
+    updatedAt: NOW - 60_000,
+    settledAt: NOW - 60_000,
+    log: [],
+    version: 1,
+    mirroredVersion: 1,
+    mirrorError: null,
+  };
+}
+
+async function seedStoppedWorker(page: Page): Promise<void> {
+  await expect
+    .poll(
+      () =>
+        page.evaluate(() => {
+          const roster = JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as Array<{ id: string; sessionId?: string }>;
+          return roster.find((mono) => mono.id === "vg-game-lead")?.sessionId ?? "";
+        }),
+      { timeout: 20_000 },
+    )
+    .not.toBe("");
+  const ownerSession = await page.evaluate(() => {
+    const roster = JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as Array<{ id: string; sessionId?: string }>;
+    return roster.find((mono) => mono.id === "vg-game-lead")!.sessionId!;
+  });
+  await page.evaluate((row) => {
+    localStorage.setItem("monocode:dev-delegations", JSON.stringify([row]));
+    (window as unknown as { __devDelegationsChanged(): void }).__devDelegationsChanged();
+  }, stoppedWorker(ownerSession));
+}
+
+test("rail, home, header, mono line and inbox share one Needs you list", async ({ page }, testInfo) => {
   test.setTimeout(180_000);
+  const shoot = testInfo.project.name === "chromium";
+  if (shoot) mkdirSync(AFTER, { recursive: true });
+
   await page.addInitScript((decisions) => {
     localStorage.setItem("monocode.colorScheme", "dark");
     localStorage.setItem("monocode:dev-decisions", JSON.stringify(decisions));
   }, [
     decision("hivra", "windows-build", "The Windows build stopped after 3 tries.", NOW - 50_000),
     decision("hivra", "merge-217", "Ready to merge #217.", NOW - 40_000),
-    decision("vg-game", "hit-flash", "Ship the hit flash?", NOW - 30_000),
     decision("nibbii", "npm-publish", "frank wants to run npm publish in nibbii-web.", NOW - 20_000),
     decision("safetube", "weekly-views", "The Weekly views page asks to read YouTube stats.", NOW - 10_000),
   ]);
   await openLocalHub(page, "", PROJECTS);
   await expect(page.locator("[data-hub-strip]")).toBeVisible({ timeout: 60_000 });
+  await seedStoppedWorker(page);
   await page.locator("[data-hub-home]").getByRole("button", { name: "Home" }).click();
   await expect(page.locator("[data-home]")).toBeVisible({ timeout: 30_000 });
   await expect(page.locator("[data-home-loading]")).toHaveCount(0, { timeout: 30_000 });
@@ -60,24 +123,57 @@ test("rail and home with the example needs list", async ({ page }) => {
     await expect(rail("safetube")).toHaveAttribute("data-needs-count", "1");
     await expect(page.locator("[data-home-needs-count]")).toHaveAttribute("data-home-needs-count", total);
     await expect(page.locator("[data-sidebar-needs-count]")).toHaveAttribute("data-sidebar-needs-count", total);
-    const header = page.locator("[data-hub-project-header]");
-    const id = await header.getAttribute("data-project-id");
-    expect(id).toBeTruthy();
-    await expect(header.locator("[data-project-needs]")).toHaveAttribute("data-project-needs", (await rail(id!).getAttribute("data-needs-count")) ?? "");
     const marks = page.locator("[data-inbox-needs]");
     await expect(marks.first()).toHaveAttribute("data-inbox-needs", total);
     const count = await marks.count();
     for (let i = 1; i < count; i++) await expect(marks.nth(i)).toHaveAttribute("data-inbox-needs", total);
+    const chip = rail("hivra");
+    await expect(chip).toHaveCSS("background-color", "rgb(229, 72, 77)");
   };
 
   await agree("5", "2");
-  const beforeDir = process.env.WP210_SHOTS ?? "docs/hivra/work/shots/wp-210/before";
-  await page.screenshot({ path: `${beforeDir}/home.png` });
-  await page.locator("[data-hub-strip]").screenshot({ path: `${beforeDir}/rail.png` });
 
+  const needs = page.locator("[data-home-section='needs-you']");
+  await needs.scrollIntoViewIfNeeded();
+  const needsText = (await needs.innerText()).replace(/\s+/g, " ");
+  expect(needsText).not.toMatch(/\bStuck\b/);
+  expect(needsText).not.toMatch(/[0-9a-f]{8}-[0-9a-f-]{8,}/i);
+  expect(needsText).toContain("Open EXO lead's chat");
+  expect(needsText).toContain("Failed: billing refused");
+
+  const monoLine = page.locator("[data-mono-rail]").getByRole("button", { name: "1 needs you. See what needs you for EXO lead" });
+  await expect(monoLine).toBeVisible();
+
+  if (shoot) {
+    await page.screenshot({ path: `${AFTER}/home.png` });
+    await page.locator("[data-hub-strip]").screenshot({ path: `${AFTER}/rail.png` });
+    await page.locator("[data-inbox-needs]").first().screenshot({ path: `${AFTER}/inbox.png` });
+  }
+
+  await page.locator("[data-hub-strip]").getByRole("button", { name: "EXO", exact: true }).click();
+  const header = page.locator("[data-hub-project-header]");
+  await expect(header).toHaveAttribute("data-project-id", "vg-game");
+  await expect(header.locator("[data-project-needs]")).toHaveAttribute("data-project-needs", "1");
+  if (shoot) await header.screenshot({ path: `${AFTER}/header.png` });
+
+  await monoLine.click();
+  const panel = page.locator("[data-stuck-panel]");
+  await expect(panel).toBeVisible();
+  await expect(panel).toContainText("Needs you");
+  await expect(panel).toContainText("Open EXO lead's chat");
+  await expect(panel).toContainText("Failed: billing refused");
+  const panelText = (await panel.innerText()).replace(/\s+/g, " ");
+  expect(panelText).not.toMatch(/\bStuck\b/);
+  expect(panelText).not.toMatch(/[0-9a-f]{8}-[0-9a-f-]{8,}/i);
+  const chipWord = panel.locator("[data-hub-chip]");
+  await expect(chipWord).toHaveText("Needs you");
+  await expect(chipWord).toHaveCSS("color", "rgb(255, 107, 107)");
+  if (shoot) await page.screenshot({ path: `${AFTER}/mono.png` });
+
+  await page.locator("[data-hub-home]").getByRole("button", { name: "Home" }).click();
+  await expect(page.locator("[data-home]")).toBeVisible();
   await page.locator("[data-needs-project='hivra'] [data-needs-answer]").first().click();
   await agree("4", "1");
-  const afterDir = beforeDir.replace(/\/before\/?$/, "/after");
-  await page.screenshot({ path: `${afterDir}/home.png` });
-  await page.locator("[data-hub-strip]").screenshot({ path: `${afterDir}/rail.png` });
+  await expect(page.locator("[data-home-section='needs-you']")).not.toContainText("The Windows build stopped after 3 tries.");
+  if (shoot) await page.screenshot({ path: `${AFTER}/answered.png` });
 });
