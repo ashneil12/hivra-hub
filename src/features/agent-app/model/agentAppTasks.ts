@@ -100,14 +100,14 @@ import {
 } from "../../firstmate/model/fanoutCheckpoint";
 import { windowHolder, type FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
 import { boundRequest, readOriginalRequest } from "../../firstmate/model/originalRequest";
-import { fanoutSection, parseFanoutLink, planFanout, taskRequestId } from "../../firstmate/model/fanoutWaves";
+import { fanoutSection, parseFanoutLink, planFanout, restartRequestId, taskRequestId } from "../../firstmate/model/fanoutWaves";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import { gateRequest, type GateRequest } from "../../firstmate/model/completionGates";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
 import { remoteProjectFor } from "../../connections/model/remoteProjects";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
-import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
+import { askPerson, askPersonRecorded, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
 import { taskProjectOf } from "../../tasks/model/agentTasks";
 import {
   bridgeFamily,
@@ -1368,23 +1368,23 @@ const CHECKPOINT_NOTE =
   "Could not save this plan's progress, so it cannot be resumed if the app stops. Tell Ash in one line.";
 
 /**
- * A checkpoint writer for one plan: each change is saved as the next revision. A failed save never fails the plan, but
- * it is remembered, so the owner is told once that the plan cannot be resumed.
+ * A checkpoint writer for one plan: each change is saved as the next revision. A failed or refused save never fails the
+ * plan by itself, but it is remembered, so the owner is told once that the plan cannot be resumed. The write answers
+ * whether it was saved, for the one caller that must not go on without it (a resume's own number).
  */
 function planWriter(store: FanoutCheckpointStore | undefined, owner: string, first: FanoutCheckpoint | undefined) {
   let current = first;
   let failed = false;
   return {
     get: () => current,
-    /** WP-172: the checkpoint note for the result, when a write failed. */
+    /** WP-172: the checkpoint note for the result, when a write failed or was refused. */
     note: (): { checkpointNote: string } | Record<string, never> => (failed ? { checkpointNote: CHECKPOINT_NOTE } : {}),
-    async write(change: (cp: FanoutCheckpoint) => FanoutCheckpoint): Promise<void> {
-      if (!store || !current) return;
+    async write(change: (cp: FanoutCheckpoint) => FanoutCheckpoint): Promise<boolean> {
+      if (!store || !current) return false;
       current = change(current);
-      await store.save(owner, current).catch(() => {
-        failed = true;
-        return false;
-      });
+      const saved = await store.save(owner, current).catch(() => false);
+      if (!saved) failed = true;
+      return saved;
     },
     /** Once every task has started or been refused, the plan is no longer offered for a resume. */
     async finish(): Promise<void> {
@@ -1417,6 +1417,7 @@ function childOf(owner: string, plan: FanoutCheckpoint, name: string): string {
 }
 
 const PLAN_READ_FAILED = "Could not read this plan's tasks, so nothing was started or changed. Try again.";
+const RESUME_NOT_SAVED = "Could not save this plan's resume, so nothing was started again. Try again.";
 
 /**
  * WP-172: one plan's rows, in one read: the store refuses more than 20 requests at once, so a plan is never read with
@@ -1429,22 +1430,41 @@ async function readPlanRows(owner: string, plan: FanoutCheckpoint, tasks: AgentA
   });
 }
 
-/** The children still waiting in this window's worker queue, or held for review: their jobs have no row yet. */
+/**
+ * The children still waiting in this window's worker queue, or held for review: their jobs have no row yet. A read that
+ * fails throws: a held brief taken for "no job" would look stopped, and a second worker would start for it.
+ */
 async function waitingChildren(owner: string, tasks: AgentAppTasksHost): Promise<Set<string>> {
   const waiting = new Set<string>();
   for (const entry of tasks.pool?.queued(owner) ?? []) waiting.add(entry.job.id);
-  const held = tasks.freshEyesWaiting ? await tasks.freshEyesWaiting(owner).catch(() => []) : [];
-  for (const entry of held) waiting.add(entry.childSessionId);
+  if (tasks.freshEyesWaiting) {
+    const held = await tasks.freshEyesWaiting(owner).catch(() => {
+      throw new Error(HELD_READ_FAILED);
+    });
+    for (const entry of held) waiting.add(entry.childSessionId);
+  }
   return waiting;
 }
+
+const HELD_READ_FAILED = "Could not read which tasks are held for review, so nothing was started or changed. Try again.";
 
 /** The yes and no a stopped task's decision offers (WP-14). Asked under a stable key, so asking again changes nothing. */
 const AGAIN_YES = "Start it again";
 const AGAIN_NO = "Leave it stopped";
 
 /**
- * WP-14: asks Ash whether a stopped task starts again, as a decision of its own. True only when Ash has answered yes;
- * the model's `confirm` alone never starts a worker. Without a first mate's decision store, nothing can be asked.
+ * WP-172: the decision that starts a stopped task again. It names the plan, the task and the request id the stopped start
+ * had, so each stop asks afresh: a yes given for one stop starts nothing after a second one. Every part is one of the
+ * plan's own names (letters, digits, - and _), so the parts never run into each other.
+ */
+export function fanoutAgainKey(plan: string, name: string, stopped: string): string {
+  return `fanout-again/${plan}/${name}/${stopped}`;
+}
+
+/**
+ * WP-14: asks Ash whether a stopped task starts again, as a decision of its own. True only when Ash has answered yes, and
+ * not through a chat (a chat's answer is the model's, whatever the words); the model's `confirm` alone never starts a
+ * worker. Without a first mate's decision store, nothing can be asked.
  */
 async function askAgain(
   source: Session,
@@ -1454,10 +1474,10 @@ async function askAgain(
   firstMate: FirstMateTasksHost | undefined,
 ): Promise<boolean> {
   if (!firstMate) return false;
-  const out = await askPerson(
+  const { result, answeredBy } = await askPersonRecorded(
     source,
     {
-      key: `fanout-again-${plan.id.slice(0, 50)}-${name}`,
+      key: fanoutAgainKey(plan.id, name, requestOf(plan, name)),
       question: `Start the "${name}" task again? Its worker stopped or went missing, and a repeat can do its work twice.`,
       options: [AGAIN_YES, AGAIN_NO],
       recommended: AGAIN_NO,
@@ -1466,7 +1486,8 @@ async function askAgain(
     [],
     firstMate,
   );
-  return out.state === "answered" && out.answer === AGAIN_YES;
+  if (answeredBy?.startsWith("chat:")) return false;
+  return result.state === "answered" && result.answer === AGAIN_YES;
 }
 
 async function fanout(
@@ -1518,8 +1539,10 @@ async function resumeFanout(
   const rowOf = rowsOfPlan(source.id, found, owned);
   const plan: ResumePlan = planResume(found, rowOf, (name) => waiting.has(childOf(source.id, found, name)));
   const writer = planWriter(store, source.id, found);
-  await writer.write((cp) => ({ ...cp, resumes: cp.resumes + 1, revision: cp.revision + 1, updatedAt: now }));
-  // The resume's number: a start again in this resume takes a request id no earlier start of the task had.
+  // The resume's number is saved before anything starts. A resume whose number was not saved starts nothing: the next
+  // one would take the same number, and a start again under it could revive a row that was stopped.
+  const counted = await writer.write((cp) => ({ ...cp, resumes: cp.resumes + 1, revision: cp.revision + 1, updatedAt: now }));
+  if (!counted) throw new Error(RESUME_NOT_SAVED);
   const generation = found.resumes + 1;
   for (const adopted of plan.adopt)
     await writer.write((cp) => noteStarted(cp, adopted.name, { taskId: adopted.taskId, childSession: adopted.childSession, status: adopted.state }, now));
@@ -1548,7 +1571,10 @@ async function resumeFanout(
   // In the plan's own order, so the waves still run in order.
   for (const task of found.tasks.filter((entry) => send.has(entry.name))) {
     // A start again gets a request id of its own; any other start keeps the one it had (a crashed one is adopted by it).
-    const sentAs = restart.has(task.name) ? taskRequestId(found.id, `${task.name}-r${generation}`) : requestOf(found, task.name);
+    const sentAs = restart.has(task.name) ? restartRequestId(found.id, task.name, generation) : requestOf(found, task.name);
+    // A start again is recorded as the stopped task it was first: a task still marked started would keep its old request
+    // id, and the tasks waiting on it would look for the stopped chat.
+    if (restart.has(task.name)) await writer.write((cp) => noteStopped(cp, task.name, now));
     await writer.write((cp) => noteStarting(cp, task.name, now, sentAs));
     try {
       const out = (await delegate(

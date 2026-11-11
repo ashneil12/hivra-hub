@@ -79,15 +79,25 @@ export const NEW_PLAN_GRACE_MS = 60_000;
  * `requestId-name` collides with a plain delegate_task, and `req1-a` + `b` collides with `req1` + `a-b`.
  * The length of the request id is written in front, so one string has only one split.
  */
-export function taskRequestId(requestId: string, name: string): string {
+export function taskRequestId(requestId: string, name: string, max = 100): string {
   const task = name.slice(0, 96);
   let kept = requestId;
   for (let guard = 0; guard < 5; guard++) {
     const id = `f${String(kept.length)}_${kept}-${task}`;
-    if (id.length <= 100) return id;
-    kept = kept.slice(0, Math.max(0, kept.length - (id.length - 100)));
+    if (id.length <= max) return id;
+    kept = kept.slice(0, Math.max(0, kept.length - (id.length - max)));
   }
-  return `f${String(kept.length)}_${kept}-${task}`.slice(0, 100);
+  return `f${String(kept.length)}_${kept}-${task}`.slice(0, max);
+}
+
+/**
+ * WP-172: the request id of a task's start again, the `generation`-th resume of its plan. It starts with `r<generation>`,
+ * where a task's own start starts with `f`, so no task's first start (a sibling named `api-r1` included) can take it,
+ * and each generation has an id of its own.
+ */
+export function restartRequestId(requestId: string, name: string, generation: number): string {
+  const head = `r${String(generation)}`;
+  return `${head}${taskRequestId(requestId, name, 100 - head.length)}`;
 }
 
 export type PlannedFanout = {

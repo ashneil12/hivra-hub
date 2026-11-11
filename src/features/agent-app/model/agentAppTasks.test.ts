@@ -23,6 +23,7 @@ import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import {
   briefPrompt,
+  fanoutAgainKey,
   markAppDelegate,
   portOfBrief,
   WORKER_PORT_BASE,
@@ -47,6 +48,7 @@ import {
 } from "../../monos/model/workerPool";
 import { isOpenDelegation } from "../../monos/model/delegations";
 import { fanoutDependency, forgetVerifications, settleFanout, verificationOf } from "../../firstmate/model/fanoutChecks";
+import { fanoutHost } from "../../firstmate/host/fanoutHost";
 import type { DependencyLookup } from "../../firstmate/model/fanoutWaves";
 import { addMono, findMono, updateMono } from "../../monos/model/mono";
 import { setLineRulesSource } from "../../crew/model/lineRules";
@@ -3278,7 +3280,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     expect(store.saved.has("mono-exo|r1")).toBe(true);
 
     // The yes is Ash's answer to the decision the resume asked (WP-14), not the model's word.
-    await decisions.backend.answer(PROJECT, "fanout-again-r1-api", YES);
+    await decisions.backend.answer(PROJECT, "fanout-again/r1/api/f2_r1-api", YES);
     const second = (await handleRaw(f.source, "resume-3", "tasks.fanout", { resume: "r1", confirm: ["api"] }, f.host)) as {
       tasks: { name: string; status: string }[];
     };
@@ -3286,7 +3288,8 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     // A start again goes under a request id of its own (the stopped row is not revived), so only the docs id is the old one.
     expect(f.started.map((call) => call[1])).toHaveLength(2);
     expect(f.started[0][1]).toBe("app-mono-exo-f2_r1-docs");
-    expect(f.started[1][1]).toMatch(/^app-mono-exo-f2_/);
+    // The second resume's number is 2 (the first resume already counted), so its restart id carries it.
+    expect(f.started[1][1]).toBe("app-mono-exo-r2f2_r1-api");
     expect(f.started[1][1]).not.toBe("app-mono-exo-f2_r1-api");
   });
 
@@ -3463,8 +3466,13 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     return { ...f, rows, pump };
   }
 
-  /** The first mate's decision store (WP-14) as the app keeps it: asking again under a key changes nothing. */
-  function decisionsOf(api: AgentAppTasksHost) {
+  /**
+   * The first mate's decision store (WP-14) as the app keeps it: asking again under a key changes nothing, and a
+   * restart decision (`fanout-again/...`) takes only the person's answer (person_only in decisions.rs). `enforce: false`
+   * keeps a chat's answer as the store's own, to test the second gate in askAgain.
+   */
+  function decisionsOf(api: AgentAppTasksHost, options: { enforce?: boolean } = {}) {
+    const enforce = options.enforce ?? true;
     const store = new Map<string, Record<string, unknown>>();
     const backend = {
       ask: vi.fn(async (input: { key: string; question: string; options: string[]; taskIds?: string[]; project?: string }) => {
@@ -3490,9 +3498,12 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
         store.set(input.key, decision);
         return { decision, created: true, added: input.taskIds ?? [], released: [] };
       }),
-      answer: vi.fn(async (_project: string, key: string, answer: string) => {
+      // `by` is who answers: absent is the person (the app's own answer), a chat or autopilot is a machine.
+      answer: vi.fn(async (_project: string, key: string, answer: string, by?: string) => {
+        if (enforce && key.startsWith("fanout-again/") && by !== undefined && by !== "user" && by !== "person")
+          throw new Error(`Only the person answers whether a stopped task starts again; ${by} cannot. It waits in Needs until they do.`);
         const decision = store.get(key)!;
-        Object.assign(decision, { state: "answered", answer, answeredBy: "chat:mono-exo" });
+        Object.assign(decision, { state: "answered", answer, answeredBy: by ?? "person" });
         return { applied: true, decision, released: [], releasedTasks: [] };
       }),
       decisions: vi.fn(async () => [...store.values()]),
@@ -3539,8 +3550,8 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     }) as unknown as AgentAppHost["start"];
     // Ash's yes to the decision for api, given before the resume: the test is about the restart, not the question.
     const decisions = decisionsOf(f.api);
-    await decisions.backend.ask({ key: "fanout-again-r3-api", question: "Start api again?", options: [YES, NO], taskIds: [] });
-    await decisions.backend.answer(PROJECT, "fanout-again-r3-api", YES);
+    await decisions.backend.ask({ key: "fanout-again/r3/api/f2_r3-api", question: "Start api again?", options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, "fanout-again/r3/api/f2_r3-api", YES);
     const out = (await handleRaw(f.source, "resume-h2b", "tasks.fanout", { resume: "r3", confirm: ["api"] }, f.host)) as {
       tasks: { name: string; status: string }[];
     };
@@ -3622,16 +3633,16 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
 
   it("confirming a stopped task needs Ash's answer to that task's decision: an unanswered or unanswered-yes task starts nothing (MED 6)", async () => {
     const rows = [
-      row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r10-api", requestId: "app-mono-exo-f2_r10-api", state: "cancelled" }),
-      row({ id: "t-docs", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r10-docs", requestId: "app-mono-exo-f2_r10-docs", state: "cancelled" }),
+      row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r10-api", requestId: "app-mono-exo-f3_r10-api", state: "cancelled" }),
+      row({ id: "t-docs", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r10-docs", requestId: "app-mono-exo-f3_r10-docs", state: "cancelled" }),
     ];
     const f = fixture(rows);
     const store = memCheckpoints();
     store.saved.set(
       "mono-exo|r10",
       seededPlan("mono-exo", "r10", {
-        api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f2_r10-api" },
-        docs: { state: "stopped", taskId: "t-docs", childSession: "app-mono-exo-f2_r10-docs" },
+        api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r10-api" },
+        docs: { state: "stopped", taskId: "t-docs", childSession: "app-mono-exo-f3_r10-docs" },
       }),
     );
     f.api.fanoutCheckpoints = store;
@@ -3641,11 +3652,11 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
       tasks: { name: string; status: string }[];
     };
     expect(asked.tasks.map((task) => task.status)).toEqual(["needs your yes", "needs your yes"]);
-    expect([...decisions.store.keys()].sort()).toEqual(["fanout-again-r10-api", "fanout-again-r10-docs"]);
+    expect([...decisions.store.keys()].sort()).toEqual(["fanout-again/r10/api/f3_r10-api", "fanout-again/r10/docs/f3_r10-docs"]);
     expect(f.started).toEqual([]);
 
     // Ash answers for api only: that one starts, and docs still waits for its own answer.
-    await decisions.backend.answer(PROJECT, "fanout-again-r10-api", YES);
+    await decisions.backend.answer(PROJECT, "fanout-again/r10/api/f3_r10-api", YES);
     const answered = (await handleRaw(f.source, "resume-m6b", "tasks.fanout", { resume: "r10", confirm: ["api", "docs"] }, f.host)) as {
       tasks: { name: string; status: string }[];
     };
@@ -3655,7 +3666,7 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     ]);
     // Only api is sent, under a request id of its own: the stopped worker's row is not revived.
     expect(f.started.map((call) => call[1])).toHaveLength(1);
-    expect(f.started[0][1]).not.toBe("app-mono-exo-f2_r10-api");
+    expect(f.started[0][1]).not.toBe("app-mono-exo-f3_r10-api");
   });
 
   it("refuses a resume that also names tasks, rather than ignoring them (LOW)", async () => {
@@ -3665,5 +3676,197 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
       handleRaw(f.source, "resume-low", "tasks.fanout", { resume: "r1", tasks: [api] }, f.host),
     ).rejects.toThrow(/leave out tasks/);
     expect(f.started).toEqual([]);
+  });
+
+  // WP-172 review round 2 (MED 6): the model cannot give the yes that restarts a stopped task.
+  it("an agent cannot answer a stopped task's restart decision itself: its answer is refused and nothing starts", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    f.api.fanoutCheckpoints = store;
+    decisionsOf(f.api);
+    // The first mate makes up the decision under the key the app asks under, and "answers" it in one ask_person call.
+    await expect(
+      handleRaw(
+        f.source,
+        "ask-fab",
+        "tasks.ask",
+        { key: "fanout-again/r11/api/f3_r11-api", question: "Carry on?", options: [YES, NO], recommended: YES, answer: YES },
+        f.host,
+      ),
+    ).rejects.toThrow(/Only the person answers/);
+    const out = (await handleRaw(f.source, "resume-fab", "tasks.fanout", { resume: "r11", confirm: ["api"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    // Ash never saw or answered anything: the stopped api never starts again, and it still needs his yes. (docs was never
+    // started, so the resume sends it, as before.)
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f3_r11-docs"]);
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+  });
+
+  it("a chat's answer on a restart decision never starts the task, even where the store kept it", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    f.api.fanoutCheckpoints = store;
+    // A store that takes the chat's answer as it is (the app's own store refuses it; this is the second gate).
+    decisionsOf(f.api, { enforce: false });
+    await handleRaw(
+      f.source,
+      "ask-fab2",
+      "tasks.ask",
+      { key: "fanout-again/r11/api/f3_r11-api", question: "Carry on?", options: [YES, NO], recommended: YES, answer: YES },
+      f.host,
+    );
+    const out = (await handleRaw(f.source, "resume-fab2", "tasks.fanout", { resume: "r11", confirm: ["api"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f3_r11-docs"]);
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+  });
+
+  /**
+   * The app's own fan-out host (firstmate/host/fanoutHost.ts), with the plan store the window uses: a provider started
+   * again is found through the plan's record, the way the app finds it.
+   */
+  function deliveredPlan() {
+    resetWorkerPool();
+    forgetVerifications();
+    const rows: Delegation[] = [];
+    const f = fixture(rows);
+    const files: Record<string, string> = {};
+    const time = { now: 1_000 };
+    const io = { exists: async (path: string) => path in files, read: async (path: string) => files[path] ?? null };
+    const fanout = fanoutHost({
+      rows: () => rows,
+      fetch: async () => undefined,
+      folder: () => PROJECT,
+      io,
+      now: () => time.now,
+      checkpoints: () => f.api.fanoutCheckpoints,
+    });
+    const open = () => rows.filter(isOpenDelegation);
+    f.api.pool = workerPoolHost({ openRows: open, room: () => ({ room: true }), dependency: fanout.dependency, card: () => {} });
+    const pump = () =>
+      pumpWorkers({
+        openRows: open,
+        room: () => ({ room: true }),
+        dependency: fanout.dependency,
+        settle: fanout.settle,
+        start: (job) => handleRaw(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
+      });
+    return { ...f, rows, files, time, pump };
+  }
+
+  // WP-172 review round 2 (HIGH): a provider started again is the one its waiting task looks for.
+  it("the original provider delivering starts the task that waits for it (control)", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    await handleRaw(q.source, "h7c", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    expect(q.rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f3_h7c-api"]);
+    Object.assign(q.rows[0], { state: "completed", status: "done", gateVerdict: "passed", version: 2 });
+    q.files[`${PROJECT}/src/api/score.ts`] = 'app.get("/api/score", handler)';
+    q.time.now += 120_000;
+    await q.pump();
+    expect(q.rows.some((entry) => entry.childSession === "app-mono-exo-f3_h7c-board")).toBe(true);
+  });
+
+  it("a provider stopped and started again on Ash's yes is the one its waiting task looks for", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    const decisions = decisionsOf(q.api);
+    await handleRaw(q.source, "h7", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    expect(q.rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f2_h7-api"]);
+    // Ash stops api, then says yes to starting it again, and the first mate resumes naming it.
+    Object.assign(q.rows[0], { state: "cancelled", version: 2 });
+    await decisions.backend.ask({ key: "fanout-again/h7/api/f2_h7-api", question: "Start api again?", options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, "fanout-again/h7/api/f2_h7-api", YES);
+    const out = (await handleRaw(q.source, "resume-h7", "tasks.fanout", { resume: "h7", confirm: ["api"] }, q.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "started" });
+    const again = q.rows.find((entry) => entry.state === "running" && entry.childSession.includes("-api"));
+    expect(again).toBeDefined();
+    // The restarted api delivers: done, its checks passed, the route on disk.
+    Object.assign(again!, { state: "completed", status: "done", gateVerdict: "passed", version: 2 });
+    q.files[`${PROJECT}/src/api/score.ts`] = 'app.get("/api/score", handler)';
+    q.time.now += 120_000;
+    await q.pump();
+    expect(q.rows.some((entry) => entry.childSession === "app-mono-exo-f2_h7-board")).toBe(true);
+  });
+
+  // WP-172 review round 2 (MED): one yes covers one stop. Each stop asks under the request id it stopped.
+  it("one yes does not start a task again after Ash stops it a second time", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    const decisions = decisionsOf(q.api);
+    await handleRaw(q.source, "h8", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    Object.assign(q.rows[0], { state: "cancelled", version: 2 });
+    await decisions.backend.ask({ key: "fanout-again/h8/api/f2_h8-api", question: "Start api again?", options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, "fanout-again/h8/api/f2_h8-api", YES);
+    await handleRaw(q.source, "resume-h8a", "tasks.fanout", { resume: "h8", confirm: ["api"] }, q.host);
+    const again = q.rows.find((entry) => entry.state === "running" && entry.childSession.includes("-api"))!;
+    // Ash stops the restarted worker too.
+    Object.assign(again, { state: "cancelled", version: 3 });
+    const before = q.rows.length;
+    const out = (await handleRaw(q.source, "resume-h8b", "tasks.fanout", { resume: "h8", confirm: ["api"] }, q.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(q.rows.length).toBe(before);
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+    // The second stop has a decision of its own, under the request id it stopped (the restarted one).
+    expect(decisions.store.has("fanout-again/h8/api/r1f2_h8-api")).toBe(true);
+  });
+
+  // WP-172 review round 2 (MED 3, LOW): a held brief whose read fails is not taken for a stopped one.
+  it("a failed read of the tasks held for review refuses the resume, so a held task is never started a second time", async () => {
+    const f = fixture([]);
+    const store = memCheckpoints();
+    store.saved.set(
+      "mono-exo|r12",
+      seededPlan("mono-exo", "r12", { api: { state: "queued", childSession: "app-mono-exo-f2_r12-api" } }),
+    );
+    f.api.fanoutCheckpoints = store;
+    f.api.freshEyesWaiting = vi.fn(async () => {
+      throw new Error("store unavailable");
+    });
+    await expect(handleRaw(f.source, "resume-r12", "tasks.fanout", { resume: "r12" }, f.host)).rejects.toThrow(
+      /Could not read which tasks are held/,
+    );
+    expect(f.started).toEqual([]);
+    expect(store.saved.get("mono-exo|r12")?.tasks.find((task) => task.name === "api")?.state).toBe("queued");
+  });
+
+  // WP-172 review round 2 (LOW): a resume whose number is not saved starts nothing.
+  it("a resume whose number the store refuses to save starts nothing", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    // The store refuses the save of the resume's number (its copy is newer).
+    const save = store.save;
+    store.save = vi.fn(async (owner: string, cp: FanoutCheckpoint) => (cp.resumes === 1 ? false : save(owner, cp)));
+    f.api.fanoutCheckpoints = store;
+    const decisions = decisionsOf(f.api);
+    await decisions.backend.ask({ key: "fanout-again/r11/api/f3_r11-api", question: "Start api again?", options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, "fanout-again/r11/api/f3_r11-api", YES);
+    await expect(handleRaw(f.source, "resume-r11", "tasks.fanout", { resume: "r11", confirm: ["api"] }, f.host)).rejects.toThrow(
+      /Could not save this plan's resume/,
+    );
+    expect(f.started).toEqual([]);
+  });
+
+  // WP-172 review round 2 (LOW): a stop's decision key names the plan, the task and the stopped request id.
+  it("a restart decision's key names the plan, the task and the stopped request id, and no two share one", () => {
+    expect(fanoutAgainKey("r1", "api", "f2_r1-api")).toBe("fanout-again/r1/api/f2_r1-api");
+    // Plan and task names that run together (fix-auth + api, fix + auth-api) are two decisions.
+    expect(fanoutAgainKey("fix-auth", "api", "f8_fix-auth-api")).not.toBe(fanoutAgainKey("fix", "auth-api", "f8_fix-auth-api"));
+    // A long plan id is never cut short into the same key as another (the old key kept 50 characters).
+    const long = "p".repeat(90);
+    expect(fanoutAgainKey(`${long}a`, "api", "x")).not.toBe(fanoutAgainKey(`${long}b`, "api", "x"));
+    // Each stop of a task asks again: its stopped request id differs.
+    expect(fanoutAgainKey("r1", "api", "f2_r1-api")).not.toBe(fanoutAgainKey("r1", "api", "r1f2_r1-api"));
   });
 });
