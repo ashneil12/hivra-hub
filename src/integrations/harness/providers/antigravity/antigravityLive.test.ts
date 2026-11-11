@@ -220,6 +220,26 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
     expect(mock.kill).toHaveBeenCalledWith(genKey);
   });
 
+  it("a refused upgrade keeps the current mode, says so, and the turn still runs (WP-175)", async () => {
+    mock.autoPrompt = true;
+    await provider.send(input);
+    mock.sent.length = 0;
+    events.length = 0;
+    mock.fail.add("session/set_mode");
+    await provider.send({ ...input, runtimeMode: "full-access" });
+    expect(mock.sent.some((m) => m.method === "session/prompt")).toBe(true);
+    expect(events.some((e) => e.type === "notice" && /stays on Supervised/.test(e.text))).toBe(true);
+  });
+
+  it("a refused downgrade ends the turn as waiting and sends no prompt (WP-175)", async () => {
+    mock.autoPrompt = true;
+    await provider.send({ ...input, runtimeMode: "full-access" });
+    mock.sent.length = 0;
+    mock.fail.add("session/set_mode");
+    await expect(provider.send(input)).rejects.toThrow(/waiting/);
+    expect(mock.sent.some((m) => m.method === "session/prompt")).toBe(false);
+  });
+
   it.each(["resume", "load", "new"])("uses the %s branch of session recovery without replay", async (branch) => {
     provider.bind("thread", "saved-session", "/repo");
     if (branch !== "resume") mock.fail.add("session/resume");

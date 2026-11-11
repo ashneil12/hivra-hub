@@ -430,9 +430,14 @@ fn canonical_relative(path: &Path) -> String {
         .join("/")
 }
 
-/// What two spellings of one file have in common (a case-insensitive disk keeps one file under both).
+/// What two spellings of one file have in common (a case-insensitive disk keeps one file under both): each name folded
+/// the way `folders::fold_name` folds it.
 fn fold(canonical: &str) -> String {
-    canonical.to_lowercase()
+    canonical
+        .split('/')
+        .map(folders::fold_name)
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// A memory folder or id that is one plain name.
@@ -3385,6 +3390,8 @@ fn workspace_rows(
             }
             let version = row.get("version").and_then(Value::as_i64).unwrap_or(1);
             row.insert("mirrored_version".into(), json!(version));
+            // Marked as an import's row, whatever the file says: a marked row never lends a chat a worktree (chat_media).
+            row.insert("imported".into(), json!(1));
             if insert_row(conn, "delegations", &row)? {
                 report.delegations_added += 1;
             }
@@ -3986,12 +3993,10 @@ fn prunable_path(relative: &str) -> bool {
     hidden || instruction
 }
 
-/// How a path component is compared when two spellings may be one folder: case-folded (a case-insensitive disk), with
-/// trailing dots and spaces dropped (Windows reads `monos.` and `monos ` as `monos`).
+/// How a path component is compared when two spellings may be one folder (`folders::fold_name`: case-folded, compatibility
+/// forms and the long s folded, trailing dots and spaces dropped).
 fn fold_part(part: &std::ffi::OsStr) -> String {
-    part.to_string_lossy()
-        .trim_end_matches(['.', ' '])
-        .to_lowercase()
+    folders::fold_name(&part.to_string_lossy())
 }
 
 fn folded(path: &Path) -> Vec<String> {
@@ -4212,7 +4217,7 @@ fn restore_history(
         let name = path.rsplit('/').next().unwrap_or(path);
         if let Some(known) = GIT_CONTROL_FILES
             .iter()
-            .find(|known| name.eq_ignore_ascii_case(known))
+            .find(|known| folders::fold_name(name) == **known)
         {
             dropped_paths.push(path.to_string());
             if !dropped.iter().any(|d| d == known) {
@@ -4222,29 +4227,13 @@ fn restore_history(
             pruned_paths.push(path.to_string());
         }
     }
-    // The index without them, then the files out of the index: they are never in the folder when git checks the rest
-    // out, so they can't act on it.
+    // The index is the tree as the export has it, and the files that must not be restored leave the index before anything
+    // is checked out: a file that is never in the index is never written to the folder, not even for a moment, so it can
+    // never act on it. Each removal is a commit of its own, made while nothing is configured (this same isolated git). A
+    // commit that fails refuses the restore, so no deletion is left uncommitted for a later checkout to undo.
     if !ok(git().arg("-C").arg(target).args(["read-tree", "HEAD"])) {
         return Err(HistoryRefusal::Failed);
     }
-    if !dropped_paths.is_empty()
-        && !ok(git()
-            .arg("-C")
-            .arg(target)
-            .args(["rm", "--cached", "--quiet", "--"])
-            .args(dropped_paths.iter().map(|path| format!(":(literal){path}"))))
-    {
-        return Err(HistoryRefusal::Failed);
-    }
-    if !ok(git()
-        .arg("-C")
-        .arg(target)
-        .args(["checkout-index", "--all", "--force"]))
-    {
-        return Err(HistoryRefusal::Failed);
-    }
-    // Their removal is a commit of its own, made while nothing is configured (this same isolated git). A commit that
-    // fails refuses the restore, so no deletion is left uncommitted for a later checkout to undo.
     let commit = |message: &str| {
         ok(git()
             .arg("-C")
@@ -4255,21 +4244,39 @@ fn restore_history(
             .args(["commit", "--quiet", "--no-verify", "--no-gpg-sign", "-m"])
             .arg(message))
     };
+    // A long list goes to git as a pathspec file on standard input: as arguments, a few thousand names overflow the
+    // argument list. Literal, so no name is read as a pattern.
+    let remove_from_index = |paths: &[String]| {
+        pathspecs_from_stdin(
+            git().arg("-C").arg(target).args([
+                "--literal-pathspecs",
+                "rm",
+                "--cached",
+                "--quiet",
+                "--pathspec-from-file=-",
+                "--pathspec-file-nul",
+            ]),
+            paths,
+        )
+    };
     // Left in HEAD, the control files would be one `git reset --hard` (under the machine's own config, filters and all)
     // from coming back and acting on the folder.
-    if !dropped_paths.is_empty() && !commit(CONTROL_FILES_REMOVED) {
+    let control_removed = dropped_paths.is_empty()
+        || (remove_from_index(dropped_paths.as_slice()) && commit(CONTROL_FILES_REMOVED));
+    if !control_removed {
         return Err(HistoryRefusal::Failed);
     }
-    // The instruction and hidden files are taken out of the folder and of HEAD in a commit of their own, in every folder.
-    let pruned_and_committed = || {
-        ok(git()
-            .arg("-C")
-            .arg(target)
-            .args(["rm", "--quiet", "--"])
-            .args(pruned_paths.iter().map(|path| format!(":(literal){path}"))))
-            && commit(INSTRUCTIONS_REMOVED)
-    };
-    if !pruned_paths.is_empty() && !pruned_and_committed() {
+    // The instruction and hidden files are taken out of HEAD in a commit of their own, in every folder.
+    let instructions_removed = pruned_paths.is_empty()
+        || (remove_from_index(pruned_paths.as_slice()) && commit(INSTRUCTIONS_REMOVED));
+    if !instructions_removed {
+        return Err(HistoryRefusal::Failed);
+    }
+    if !ok(git()
+        .arg("-C")
+        .arg(target)
+        .args(["checkout-index", "--all", "--force"]))
+    {
         return Err(HistoryRefusal::Failed);
     }
     // And should one come back by another way, git-lfs in this folder fetches nothing and runs no filter.
@@ -4298,6 +4305,31 @@ fn restore_history(
         control: dropped,
         pruned: pruned_paths,
     })
+}
+
+/// Runs `command` with `paths` on its standard input, NUL-separated, for a `--pathspec-from-file=-` form. True when git
+/// succeeds (and the list was written whole).
+fn pathspecs_from_stdin(command: &mut Command, paths: &[String]) -> bool {
+    use std::io::Write;
+    use std::process::Stdio;
+    let Ok(mut child) = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let mut list: Vec<u8> = Vec::new();
+    for path in paths {
+        list.extend_from_slice(path.as_bytes());
+        list.push(0);
+    }
+    let written = child
+        .stdin
+        .take()
+        .is_some_and(|mut stdin| stdin.write_all(&list).is_ok());
+    child.wait().is_ok_and(|status| status.success()) && written
 }
 
 /// What a restored history left out: the files that tell git what to run or fetch (`control`), and the instruction,
