@@ -184,8 +184,9 @@ export function registryAgentIdForSession(sessionId: string, store?: RegistrySto
 type LinkStore = RegistryStore & { removeItem?(key: string): void };
 
 /**
- * Copies each browser link onto the session row once. A link whose write fails stays for the next start.
- * A missing chat or a bad id is dropped. After this, the row is the link and browser storage is not read for it.
+ * Copies each browser link onto the session row when that column is empty. The browser links stay, so a build from
+ * before this one can still read them after a rollback. Adoption only fills an empty column. A link whose write fails
+ * is tried again on the next start.
  */
 export async function moveRegistryChatLinks(
   adopt: (sessionId: string, agentId: string) => Promise<unknown>,
@@ -194,35 +195,15 @@ export async function moveRegistryChatLinks(
   const resolved = resolveStore(store);
   if (!resolved) return;
   const links = readLinks(resolved);
-  const ids = Object.keys(links);
-  const dropKey = () => {
-    const removable = resolved as LinkStore;
-    if (typeof removable.removeItem !== "function") return;
-    try {
-      removable.removeItem(REGISTRY_CHAT_LINKS_KEY);
-    } catch {
-      // The next start tries again. A row that already has the entry is left as it is.
-    }
-  };
-  if (ids.length === 0) {
-    if (resolved.getItem(REGISTRY_CHAT_LINKS_KEY) != null) dropKey();
-    return;
-  }
-  const kept: Record<string, string> = {};
-  for (const sessionId of ids) {
+  for (const sessionId of Object.keys(links)) {
     const agentId = links[sessionId];
     if (!agentId) continue;
     try {
       await adopt(sessionId, agentId);
     } catch {
-      kept[sessionId] = agentId;
+      // The row write failed. The browser copy stays, and the next start tries again.
     }
   }
-  if (Object.keys(kept).length === 0) {
-    dropKey();
-    return;
-  }
-  writeLinks(resolved, kept);
 }
 
 export function requestRegistryChat(
