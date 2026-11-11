@@ -2998,8 +2998,13 @@ function UserMessageBlock({
     if (overflows) setExpanded((value) => !value);
   };
 
+  // WP-245: a message still waiting says why, in one quiet line under it.
   const deliveryControl =
-    delivery && delivery.status !== "pending" ? (
+    delivery?.status === "pending" && delivery.waitReason ? (
+      <div className="flex max-w-full items-center gap-2 px-3 pt-1 font-sans text-xs text-content/60" data-message-wait>
+        <span role="status">{delivery.waitReason}</span>
+      </div>
+    ) : delivery && delivery.status !== "pending" ? (
       <div className="flex max-w-full items-center gap-2 px-3 pt-1 font-sans text-xs text-content/50">
         <span role={delivery.error ? "alert" : "status"}>
           {delivery.error ? `Not sent · ${delivery.error}` : "Not sent"}

@@ -84,6 +84,7 @@ import {
   nextHabitRunAt,
   type Habit,
 } from "../../monos/model/monoHabits";
+import { parseWatch, watchText } from "../../automations/model/quietWatch";
 import {
   memoryWithinBudget,
   MonoFileConflict,
@@ -513,8 +514,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ["tree.zoom", ["id", "n", "at"]],
   ["tree.date", ["id"]],
   ["habits.list", []],
-  ["habits.add", ["name", "instructions", "schedule"]],
-  ["habits.update", ["id", "name", "instructions", "schedule", "enabled"]],
+  ["habits.add", ["name", "instructions", "schedule", "watch"]],
+  ["habits.update", ["id", "name", "instructions", "schedule", "enabled", "watch"]],
   ["habits.run", ["id"]],
   ["habits.remove", ["id"]],
   ["chat.card", [...CARD_FIELDS]],
@@ -1400,11 +1401,13 @@ function habitView(habit: Habit) {
     schedule: habitScheduleLabel(habit.schedule),
     enabled: habit.enabled,
     nextRun: habit.enabled ? new Date(habit.nextRunAt).toLocaleString() : null,
+    // WP-244: what it watches; a run is skipped without a model call while that is unchanged.
+    ...(habit.watch ? { watch: watchText(habit.watch) } : {}),
     ...(habitRunningSince(habit.id) != null ? { running: true } : {}),
     ...(habit.lastRunAt
       ? {
           lastRun: new Date(habit.lastRunAt).toLocaleString(),
-          lastOutcome: habit.lastOutcome,
+          lastOutcome: habit.runs?.[0]?.unchanged ? "quiet, unchanged" : habit.lastOutcome,
           ...(habit.lastError ? { lastError: habit.lastError } : {}),
         }
       : {}),
@@ -1438,11 +1441,12 @@ async function handleHabits(
       const name = requiredString(input.name, "name", 80);
       const instructions = requiredString(input.instructions, "instructions", 4_000);
       const schedule = habitSchedule(input.schedule);
+      const watch = parseWatch(input.watch);
       const habit = await habits.update(monoId, (list) => {
         if (list.length >= HABITS_MAX)
           throw new Error(`A Mono can have at most ${HABITS_MAX} habits`);
         const created = newHabit(
-          { name, instructions, schedule },
+          { name, instructions, schedule, ...(watch ? { watch } : {}) },
           now.getTime(),
         );
         return { habits: [...list, created], result: created };
@@ -1469,10 +1473,15 @@ async function handleHabits(
       };
       if (input.enabled !== undefined && typeof input.enabled !== "boolean")
         throw new Error("enabled must be true or false");
+      // WP-244: a new watch starts with no look; "" or null takes it off.
+      const watch = input.watch === undefined ? undefined : parseWatch(input.watch);
       const habit = await habits.update(monoId, (list) => {
         const current = find(list);
+        const { watch: _watch, watchSeen: _seen, ...unwatched } = current;
+        const keep = input.watch === undefined || (watch && JSON.stringify(watch) === JSON.stringify(current.watch));
         const next: Habit = {
-          ...current,
+          ...(keep ? current : unwatched),
+          ...(!keep && watch ? { watch } : {}),
           ...patch,
           ...(input.enabled === undefined
             ? {}

@@ -390,9 +390,14 @@ Actions:
                   hourly (with "minute"), daily, weekdays or weekly (with
                   "dayOfWeek", 0 = Sunday); time is local 24-hour HH:MM.
                   Each run is a hidden session that posts to this chat only
-                  when it has something worth saying.
+                  when it has something worth saying. Optional "watch": an
+                  https address, "github:owner/repo is:pr is:open" or a file
+                  path; while it is unchanged since a run that went well,
+                  the run is skipped with no model call, and a run that goes
+                  ahead is shown its Before and Now.
   habits.update  {"id":"...","name":"...","instructions":"...",
-                  "schedule":{...},"enabled":false}  Change or pause one.
+                  "schedule":{...},"enabled":false,"watch":""}  Change or
+                  pause one; "watch":"" takes the watch off.
   habits.run     {"id":"..."}  Run one within a minute, to try it out.
   habits.remove  {"id":"..."}
   chat.card      Mono or habit only. Post a card to the Mono's chat:

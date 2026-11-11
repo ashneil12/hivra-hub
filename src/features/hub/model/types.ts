@@ -334,6 +334,8 @@ export type ChatMessage = {
    * Monos answering get them as they would in their own chat, and they are still there after a restart.
    */
   attachments?: RoomAttachment[];
+  /** WP-245: one of several answers to the same message of Ash's that landed together (roomConductor.ts Gather). */
+  gather?: string;
 };
 
 /** A file on a room message: where it is on disk and what it is (never its bytes; those are read when a turn sends it). */

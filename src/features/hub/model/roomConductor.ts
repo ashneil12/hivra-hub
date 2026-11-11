@@ -157,6 +157,25 @@ type Wake = {
   goal?: { role: "lead" | "member"; turn: number; instruction?: string; ashAnswered?: boolean };
   /** The goal turn's outcome was taken up (its post, or its silence), so the run moves on once. */
   stepped?: boolean;
+  /** WP-245: one of several seats answering the same message of Ash's; its post waits for the others (Gather). */
+  gather?: string;
+};
+/**
+ * WP-245: one message of Ash's that several seats answer at once (he named several, the auto pick chose several, or an
+ * "everyone" room's other seats chime in). Each answer is held as a live message until every seat has answered (or
+ * stayed quiet, or failed) or GATHER_MS passed; then they land together, in seat order, and the room names any seat
+ * that didn't answer in time. A late answer lands on its own when it comes.
+ */
+type Gather = {
+  id: string;
+  convId: string;
+  gen: number;
+  members: string[];
+  /** Seats that are through: their post is held, or they said nothing, or failed. */
+  done: Set<string>;
+  held: Map<string, () => void>;
+  timer?: ReturnType<typeof setTimeout>;
+  closed?: boolean;
 };
 /** WP-22: a goal run in one conversation (roomModes.ts). */
 type GoalRun = {
@@ -182,6 +201,8 @@ export type RoomDraft = {
   quiet: boolean;
   pick: { by: ChatPickSource; why: string };
   startedAt: number;
+  /** WP-245: its turn is over and its words wait for the others answering the same message. */
+  held?: true;
 };
 type Draft = RoomDraft & { wakeId: string; gen: number };
 type PauseReason = "ceiling" | "stopped";
@@ -214,13 +235,15 @@ type RoomRun = {
   drafts: Map<string, Draft>;
   /** WP-22: conversations whose auto pick is out, with the generation it belongs to. */
   deciding: Map<string, number>;
+  /** WP-245: answers being gathered, by gather id. */
+  gathers: Map<string, Gather>;
 };
 const rooms = new Map<string, RoomRun>();
 
 function roomOf(chatId: string): RoomRun {
   let r = rooms.get(chatId);
   if (!r) {
-    r = { queue: [], running: new Map(), threads: new Map(), idle: [], retries: new Map(), posts: new Map(), drafts: new Map(), deciding: new Map() };
+    r = { queue: [], running: new Map(), threads: new Map(), idle: [], retries: new Map(), posts: new Map(), drafts: new Map(), deciding: new Map(), gathers: new Map() };
     rooms.set(chatId, r);
   }
   return r;
@@ -547,6 +570,8 @@ function onAsh(chatId: string, convId: string): boolean {
 function turnRoom(chatId: string, convId: string): void {
   const r = roomOf(chatId);
   const t = threadOf(r, convId);
+  // WP-245: answers already written stay in the room, even though Ash moved on before the others answered.
+  flushGathers(chatId, convId);
   t.gen++;
   pruneDrafts(r);
   Object.assign(t, { posts: 0, chimed: new Set(), paused: undefined, note: undefined, hint: undefined });
@@ -570,11 +595,17 @@ function answerWith(chatId: string, convId: string, batch: readonly ChatMessage[
   if (!first) return;
   r.pick = first;
   const trigger = batch[batch.length - 1].id;
-  enqueue(chatId, { id: newWakeId(first.id), monoId: first.id, convId, kind: "answer", by: first.by, why: first.why, trigger, gen: t.gen, batch: batch.map((m) => m.id) });
+  const gather = rest.length ? openGather(chatId, convId, t.gen, picks.map((p) => p.id)) : undefined;
+  const joined = [
+    enqueue(chatId, { id: newWakeId(first.id), monoId: first.id, convId, kind: "answer", by: first.by, why: first.why, trigger, gen: t.gen, batch: batch.map((m) => m.id), ...(gather ? { gather } : {}) }),
+  ];
   for (const p of rest) {
     t.chimed.add(p.id);
-    enqueue(chatId, { id: newWakeId(p.id), monoId: p.id, convId, kind: "chime", by: p.by, why: p.why, other: nameOf(first.id), trigger, gen: t.gen, picked: true });
+    joined.push(
+      enqueue(chatId, { id: newWakeId(p.id), monoId: p.id, convId, kind: "chime", by: p.by, why: p.why, other: nameOf(first.id), trigger, gen: t.gen, picked: true, ...(gather ? { gather } : {}) }),
+    );
   }
+  if (gather) keepGathered(chatId, gather, joined);
 }
 
 /**
@@ -808,15 +839,125 @@ export function simulateReplies(chatId: string, convId?: string): void {
 const RANK: Record<TurnKind, number> = { goal: 4, answer: 4, back: 3, reply: 2, chime: 1 };
 
 /** One waiting turn per seat and conversation: a newer wake updates it (the stronger kind wins). */
-function enqueue(chatId: string, wake: Wake): void {
+function enqueue(chatId: string, wake: Wake): Wake {
   const r = roomOf(chatId);
   const same = r.queue.find((w) => w.monoId === wake.monoId && w.convId === wake.convId);
   if (!same) {
     r.queue.push(wake);
-    return;
+    return wake;
   }
   if (RANK[wake.kind] >= RANK[same.kind]) Object.assign(same, { ...wake, id: same.id });
   else same.trigger = wake.trigger ?? same.trigger;
+  return same;
+}
+
+// ---- Gathered answers (WP-245) -------------------------------------------------------------------------------------
+
+/** How long the room holds the answers that came in for the ones still being written. */
+export const GATHER_MS = 3 * 60_000;
+let gatherMs = GATHER_MS;
+let gathering = true;
+/** Tests and proofs: a shorter wait. */
+export function setRoomGatherTimeout(ms: number | undefined): void {
+  gatherMs = ms ?? GATHER_MS;
+}
+/** On by default; off, every answer lands as soon as it is written (the room before WP-245). */
+export function setRoomGathering(on: boolean): void {
+  gathering = on;
+}
+let gatherSeq = 0;
+
+/** Several seats are about to answer one message of Ash's: hold their answers until all are in (or the wait ends). */
+function openGather(chatId: string, convId: string, gen: number, members: readonly string[]): string | undefined {
+  const unique = [...new Set(members)];
+  if (!gathering || unique.length < 2) return undefined;
+  const r = roomOf(chatId);
+  const g: Gather = { id: `gather-${++gatherSeq}`, convId, gen, members: unique, done: new Set(), held: new Map() };
+  g.timer = setTimeout(() => releaseGather(chatId, g, true), gatherMs);
+  r.gathers.set(g.id, g);
+  return g.id;
+}
+
+/** A seat whose waiting turn kept an older wake (a stronger kind already queued) isn't part of the gather. */
+function keepGathered(chatId: string, id: string, wakes: readonly Wake[]): void {
+  const g = roomOf(chatId).gathers.get(id);
+  if (!g) return;
+  g.members = g.members.filter((m) => wakes.some((w) => w.monoId === m && w.gather === id));
+  if (g.members.length < 2) releaseGather(chatId, g, false);
+}
+
+function gatherOf(chatId: string, wake: Wake): Gather | undefined {
+  const g = wake.gather ? roomOf(chatId).gathers.get(wake.gather) : undefined;
+  return g && !g.closed && g.members.includes(wake.monoId) ? g : undefined;
+}
+
+/** The seat is through (quiet, failed, or its post went out another way): the gather may be complete. */
+function gatherDone(chatId: string, wake: Wake): void {
+  const g = gatherOf(chatId, wake);
+  if (!g) return;
+  g.done.add(wake.monoId);
+  if (g.members.every((m) => g.done.has(m))) releaseGather(chatId, g, false);
+}
+
+/**
+ * Hold a finished answer for its gather: it stays on screen as a held live message (its words, "Waiting for the others
+ * to answer") and `post` puts it in the room when the gather lands. False when the turn isn't part of an open gather.
+ */
+function holdForGather(chatId: string, wake: Wake, me: Seat, text: string, id: string | undefined, post: (id: string) => void): boolean {
+  const g = gatherOf(chatId, wake);
+  if (!g) return false;
+  const r = roomOf(chatId);
+  const shown = id ?? newMessageId(me.id);
+  r.drafts.set(`held:${wake.id}`, {
+    id: shown,
+    wakeId: wake.id,
+    gen: wake.gen,
+    monoId: me.id,
+    convId: wake.convId,
+    text,
+    ...(wake.trigger ? { replyTo: wake.trigger } : {}),
+    quiet: wake.kind === "chime" || wake.kind === "reply",
+    pick: { by: wake.by, why: wake.why },
+    startedAt: Date.now(),
+    held: true,
+  });
+  g.held.set(me.id, () => {
+    r.drafts.delete(`held:${wake.id}`);
+    post(shown);
+  });
+  notify();
+  gatherDone(chatId, wake);
+  return true;
+}
+
+/** The answers land together, in seat order; a seat still writing when the wait ended is named. */
+function releaseGather(chatId: string, g: Gather, timedOut: boolean): void {
+  if (g.closed) return;
+  g.closed = true;
+  if (g.timer) clearTimeout(g.timer);
+  const r = roomOf(chatId);
+  r.gathers.delete(g.id);
+  const late = timedOut ? g.members.filter((m) => !g.done.has(m)) : [];
+  for (const m of g.members) g.held.get(m)?.();
+  if (late.length && g.held.size) {
+    const names = late.map(nameOf);
+    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+    const secs = Math.max(1, Math.round(gatherMs / 1000));
+    const wait = secs >= 120 ? `${Math.round(secs / 60)} minutes` : secs === 1 ? "a second" : `${secs} seconds`;
+    appendMessage(chatId, g.convId, {
+      id: newMessageId("app"),
+      from: "app",
+      kind: "system",
+      text: `No answer from ${list} within ${wait}.`,
+    });
+  }
+  notify();
+  pump(chatId);
+}
+
+/** Ash moved the conversation on (or stopped it): whatever was held lands now. */
+function flushGathers(chatId: string, convId?: string): void {
+  for (const g of [...roomOf(chatId).gathers.values()]) if (!convId || g.convId === convId) releaseGather(chatId, g, false);
 }
 
 function pump(chatId: string): void {
@@ -880,6 +1021,7 @@ async function start(chatId: string, wake: Wake): Promise<void> {
   const me = seats.find((s) => s.id === wake.monoId);
   const conv = chat?.conversations.find((c) => c.id === wake.convId);
   if (!chat || !me || !conv || !runner) {
+    gatherDone(chatId, wake);
     // WP-22: a goal turn for a seat that has left ends the run, with a line, rather than leaving it waiting forever.
     if (wake.kind === "goal" && !stale(r, wake)) endGoal(chatId, wake.convId, "blocked", `${nameOf(wake.monoId)} isn't in the room any more`);
     settleIfIdle(chatId);
@@ -972,6 +1114,8 @@ async function start(chatId: string, wake: Wake): Promise<void> {
     // Ash must never be left without an answer: the host that finished its own work without one says so.
     else if (wake.kind === "answer" && !running.answered && end.status === "done")
       noteFor(chatId, wake, me, `${me.name} finished its own work without answering here.`);
+    // WP-245: a wake answered from the Mono's own chat posted there (room_post) or not at all: either way it is through.
+    gatherDone(chatId, wake);
   }
   pump(chatId);
 }
@@ -1112,6 +1256,7 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
     const ack = !!text.trim() && !/^\W*NO_REPLY/i.test(text.trim()) && !/\n\W*NO_REPLY\W*$/i.test(text.trim());
     if (wake.trigger && (ack || wake.kind === "answer")) react(chatId, wake.trigger, me.id, ack ? emoji : "👍", true);
     answered();
+    gatherDone(chatId, wake);
     if (wake.kind === "answer") {
       const chat = getChat(chatId);
       if (chat) roomTurn(chatId, wake, seatsOf(chat), me.name);
@@ -1119,17 +1264,24 @@ function land(chatId: string, wake: Wake, me: Seat, text: string, id?: string): 
     }
     return;
   }
-  const posted = appendMessage(chatId, wake.convId, {
-    ...(id ? { id } : {}),
-    from: me.id,
-    kind: "mono",
-    text: cleanPost(text, me.name),
-    ...(wake.trigger ? { replyTo: wake.trigger } : {}),
-    pick: { by: wake.by, why: wake.why },
-    ...(wake.kind === "chime" || wake.kind === "reply" ? { quiet: true } : {}),
-  });
+  const words = cleanPost(text, me.name);
+  const post = (shown: string | undefined, gather?: string) => {
+    const posted = appendMessage(chatId, wake.convId, {
+      ...(shown ? { id: shown } : {}),
+      from: me.id,
+      kind: "mono",
+      text: words,
+      ...(wake.trigger ? { replyTo: wake.trigger } : {}),
+      pick: { by: wake.by, why: wake.why },
+      ...(wake.kind === "chime" || wake.kind === "reply" ? { quiet: true } : {}),
+      ...(gather ? { gather } : {}),
+    });
+    if (posted) afterPost(chatId, posted.convId, posted.message, wake);
+  };
   answered();
-  if (posted) afterPost(chatId, posted.convId, posted.message, wake);
+  // WP-245: one of several answers to the same message waits for the others, then they land together.
+  if (holdForGather(chatId, wake, me, words, id, (shown) => post(shown, wake.gather))) return;
+  post(id);
 }
 
 /** Never silent: a turn that failed, ran out of budget or couldn't start says so in the thread. */
@@ -1137,6 +1289,7 @@ function failed(chatId: string, wake: Wake, me: Seat, error: string): void {
   // WP-22: a goal turn already taken up (it posted, or the run ended) has nothing left to fail.
   if (wake.kind === "goal" && wake.stepped) return;
   notice(chatId, wake, me, failureNotice(me.name, error, me.engine));
+  gatherDone(chatId, wake);
   if (wake.kind === "goal") endGoal(chatId, wake.convId, "blocked", `${me.name}'s turn failed`);
 }
 
@@ -1235,11 +1388,17 @@ function roomTurn(chatId: string, wake: Wake, seats: readonly Seat[], other: str
   const t = threadOf(roomOf(chatId), wake.convId);
   if (t.gen !== wake.gen || t.paused) return;
   const ash = wake.batch[wake.batch.length - 1];
-  for (const seat of everyoneElse(seats, wake.monoId)) {
-    if (named.includes(seat.id) || t.chimed.has(seat.id)) continue;
+  const chiming = everyoneElse(seats, wake.monoId).filter((seat) => !named.includes(seat.id) && !t.chimed.has(seat.id));
+  // WP-245: the other seats' answers to the whole room land together.
+  const gather = openGather(chatId, wake.convId, t.gen, chiming.map((seat) => seat.id));
+  const joined: Wake[] = [];
+  for (const seat of chiming) {
     t.chimed.add(seat.id);
-    enqueue(chatId, { id: newWakeId(seat.id), monoId: seat.id, convId: wake.convId, kind: "chime", by: "room", why: forUser("Ash wrote to the whole room"), other, trigger: ash, gen: t.gen });
+    joined.push(
+      enqueue(chatId, { id: newWakeId(seat.id), monoId: seat.id, convId: wake.convId, kind: "chime", by: "room", why: forUser("Ash wrote to the whole room"), other, trigger: ash, gen: t.gen, ...(gather ? { gather } : {}) }),
+    );
   }
+  if (gather) keepGathered(chatId, gather, joined);
 }
 
 function pauseText(t: Thread, reason: PauseReason): string {
@@ -1260,6 +1419,7 @@ function pause(chatId: string, convId: string, reason: PauseReason): void {
 /** Ash's Stop: every room turn in the conversation (all of them without one) stops, and the room waits for him. */
 export function stopRoom(chatId: string, convId?: string): void {
   const r = roomOf(chatId);
+  flushGathers(chatId, convId);
   const touched = new Set<string>();
   for (const w of r.queue) if (w.kind !== "back" && (!convId || w.convId === convId)) touched.add(w.convId);
   for (const run of r.running.values()) if (run.wake.kind !== "back" && (!convId || run.wake.convId === convId)) touched.add(run.wake.convId);
@@ -1456,6 +1616,9 @@ export function postBack(input: { chatId: string; convId: string; monoId: string
 
 /** Tests: forget every room's turns. */
 export function resetConductorForTests(): void {
+  for (const r of rooms.values()) for (const g of r.gathers.values()) if (g.timer) clearTimeout(g.timer);
   rooms.clear();
+  gatherMs = GATHER_MS;
+  gathering = true;
   runner = undefined;
 }

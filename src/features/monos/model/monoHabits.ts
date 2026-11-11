@@ -10,6 +10,7 @@ import { USAGE_LIMIT_RESUME_GRACE_MS } from "../../sessions/model/usageLimit";
 import { withFirstMateContract } from "../../firstmate/model/contract";
 import type { MonoLook } from "./mono";
 import { unkeptPromise } from "../vendor/unkeptPromise";
+import { parseSeen, parseWatch, type ScheduleWatch, type WatchSeen } from "../../automations/model/quietWatch";
 import { checklistNotice, openParts, openPartsNudge, routineParts } from "../vendor/routineChecklist";
 import {
   MonoFileConflict,
@@ -54,6 +55,13 @@ export type Habit = {
   runRequested?: boolean;
   /** The suggestion card in the chat it was started from. */
   fromCard?: string;
+  /**
+   * WP-244: the one thing this habit watches (a web address, a GitHub query, a file). When it is unchanged since a run
+   * that went well, the run is skipped without a model call. Opt-in: a habit without one always runs.
+   */
+  watch?: ScheduleWatch;
+  /** What the app saw on the last look (4 KB at most), for the next run's "Before". */
+  watchSeen?: WatchSeen;
 };
 
 export type HabitOutcome = "posted" | "quiet" | "failed";
@@ -66,6 +74,8 @@ export type HabitRun = {
   /** What it told the user, when it did. */
   report?: string;
   error?: string;
+  /** WP-244: quiet because its watch hadn't changed: no model was called. */
+  unchanged?: true;
 };
 
 /** Runs kept per habit. */
@@ -144,9 +154,23 @@ export function parseHabits(text: string | null | undefined): Habit[] {
       ...(Array.isArray(value.runs) ? { runs: parseRuns(value.runs) } : {}),
       ...(value.runRequested === true ? { runRequested: true } : {}),
       ...(isString(value.fromCard) ? { fromCard: value.fromCard } : {}),
+      ...watchFields(value),
     });
   }
   return habits;
+}
+
+/** A watch the app can no longer read is dropped: the habit runs as it did before it had one. */
+function watchFields(value: Record<string, unknown>): Pick<Habit, "watch" | "watchSeen"> {
+  let watch: ScheduleWatch | undefined;
+  try {
+    watch = parseWatch(value.watch);
+  } catch {
+    return {};
+  }
+  if (!watch) return {};
+  const seen = parseSeen(value.watchSeen);
+  return { watch, ...(seen ? { watchSeen: seen } : {}) };
 }
 
 function parseRuns(value: unknown[]): HabitRun[] {
@@ -166,6 +190,7 @@ function parseRuns(value: unknown[]): HabitRun[] {
       outcome,
       ...(isString(run.report) ? { report: run.report } : {}),
       ...(isString(run.error) ? { error: run.error } : {}),
+      ...(run.unchanged === true ? { unchanged: true as const } : {}),
     });
   }
   return runs.slice(0, HABIT_RUNS_KEPT);
@@ -216,13 +241,15 @@ export function habitSchedule(value: unknown): HabitSchedule {
 }
 
 /** What it takes to start a habit, from the CLI or the panel. */
-export type HabitDraft = Pick<Habit, "name" | "instructions" | "schedule">;
+export type HabitDraft = Pick<Habit, "name" | "instructions" | "schedule"> & Partial<Pick<Habit, "watch">>;
 
 /** A new, enabled habit first due at its next time after `now`. */
 export function newHabit(draft: HabitDraft, now: number): Habit {
+  const { watch, ...rest } = draft;
   return {
     id: crypto.randomUUID(),
-    ...draft,
+    ...rest,
+    ...(watch ? { watch } : {}),
     enabled: true,
     createdAt: now,
     nextRunAt: nextHabitRunAt(draft.schedule, now),
@@ -291,6 +318,10 @@ export function afterRun(
     startedAt?: number;
     /** No run before this (usageLimitHold): the next is the first one after. */
     notBefore?: number;
+    /** WP-244: skipped because its watch hadn't changed. */
+    unchanged?: boolean;
+    /** WP-244: what to keep of the watch's last look (undefined keeps what is there). */
+    watchSeen?: WatchSeen;
   },
 ): Habit {
   const { runRequested, ...scheduled } = habit;
@@ -317,9 +348,11 @@ export function afterRun(
       ? { report: outcome.report.slice(0, REPORT_KEPT_CHARS) }
       : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.unchanged ? { unchanged: true as const } : {}),
   };
   return {
     ...rest,
+    ...(outcome.watchSeen && rest.watch ? { watchSeen: outcome.watchSeen } : {}),
     lastRunAt: now,
     lastOutcome: outcome.kind,
     ...(outcome.error ? { lastError: outcome.error } : {}),
@@ -430,6 +463,13 @@ export function habitReport(text: string): string | undefined {
   // A run that narrated before deciding to stay quiet ends on the marker.
   if (trimmed.endsWith(QUIET_MARKER) && trimmed.length < 400) return undefined;
   return trimmed.replace(new RegExp(`\\s*${QUIET_MARKER}\\s*$`), "").trim();
+}
+
+/** WP-244: the one line a failed run posts to the chat, so a habit never fails without a word. */
+export function habitFailedLine(name: string, error: string | undefined): string {
+  const reason = (error ?? "").split("\n").map((line) => line.trim()).find(Boolean) ?? "the run did not finish";
+  const short = reason.length > 200 ? `${reason.slice(0, 199)}…` : reason;
+  return `My habit "${name}" couldn't finish: ${short.replace(/[.\s]+$/, "")}.`;
 }
 
 /** The habit posts that the Mono's own session has not seen yet. */
