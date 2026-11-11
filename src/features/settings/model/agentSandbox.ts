@@ -24,9 +24,10 @@ export const AGENT_SANDBOX_DESCRIPTION =
   "settings and hooks of Claude Code and Codex, the named checkout's .git (hooks, config and attributes, including a " +
   "linked worktree's common directory), the tool folders the app runs programs from, the cron and at tables, the " +
   "installed MonoCode Hub.app, and Hivra's data folder. It blocks creating login items, opening other apps, and " +
-  "running crontab, at and hdiutil. It blocks the Docker socket. It does not block a copy of a tool under another " +
+  "running crontab, at and hdiutil. It blocks the Docker, Colima, OrbStack and Podman sockets. It blocks writes to " +
+  "oh-my-zsh, p10k and nvm, which a login shell reads. It does not block a copy of a tool under another " +
   "name. It does not cover other files, the network or other programs, so it is a list of known places, not a full " +
-  "cage. Other projects' repos are not listed. Keychain items the security tool can read are not covered. Codex " +
+  "cage. Every project the app knows has its .git locked, not only the chat's folder. Keychain items the security tool can read are not covered. Codex " +
   "chats that use Codex's own sandbox are not wrapped, because macOS refuses a sandbox inside a sandbox, and those " +
   "chats can read secrets and widen their own sandbox. While this sandbox is on, those chats ask before a permission " +
   "or a file change outside the workspace. A full access Codex chat is wrapped. Expect these to fail under it: git " +

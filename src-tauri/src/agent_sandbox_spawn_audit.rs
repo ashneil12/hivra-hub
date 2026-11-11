@@ -1,0 +1,1377 @@
+//! Every process start under `src-tauri/src` is wrapped in the agent sandbox, or named in `ALLOW` with a reason.
+//!
+//! A start is `Command::new` or a process `.spawn()` (nothing inside the parentheses, turbofish allowed).
+//! It is not a start when it sits in a comment or a string, when `.spawn(...)` takes arguments (a thread, a
+//! rayon scope, or some other method), or when it is test-only. Test-only means a `#[cfg(test)]` function,
+//! a `#[cfg(test)]` module body, or a file brought in by `#[cfg(test)] mod` (including `tests.rs`). Those are
+//! not in the binary.
+//!
+//! Wrapped means the smallest function that contains the start also contains a sandbox marker
+//! (`contained_command`, `under_wrap`, `sandboxed_launch`, `action_wrap`, `more_agent_wrap`,
+//! `SANDBOX_EXEC`, `sandbox-exec`), or the function is one of those. A marker only inside a nested function
+//! does not cover the outer one. `git_cmd::command_for` counts as wrapped because it starts `sandbox-exec`
+//! when the setting is on. Its plain branch is the setting being off, and Ash's own Commit, Push and Pull.
+
+use std::collections::HashSet;
+use std::fs;
+use std::path::{Path, PathBuf};
+
+const MARKERS: &[&str] = &[
+    "contained_command",
+    "under_wrap",
+    "sandboxed_launch",
+    "action_wrap",
+    "more_agent_wrap",
+    "SANDBOX_EXEC",
+    "sandbox-exec",
+];
+
+/// `file` is relative to `src-tauri/src` with `/` separators. `function` is the smallest function that
+/// contains the start. The reason says why that start is safe without the agent sandbox around it.
+const ALLOW: &[(&str, &str, &str)] = &[
+    (
+        "agent_sandbox.rs",
+        "preflight_with",
+        "Runs /usr/bin/true under the sandbox-exec path it was given, to prove the profile starts. The parameter is named sandbox_exec, so the marker scan misses it.",
+    ),
+    (
+        "agent_sandbox.rs",
+        "self_check_in",
+        "The sandbox self-check. Starts that same launcher on a fixed probe script in a temporary home.",
+    ),
+    (
+        "attribution/git.rs",
+        "run_once",
+        "Spawns a Command the caller built. Callers are the app's own git reads, with an allow-listed environment.",
+    ),
+    (
+        "attribution/git.rs",
+        "stop",
+        "kill or taskkill of a pid this app started.",
+    ),
+    (
+        "autopilot.rs",
+        "bootout",
+        "/bin/launchctl bootout of this app's own LaunchAgent. Fixed program and args.",
+    ),
+    (
+        "autopilot.rs",
+        "bootstrap",
+        "/bin/launchctl bootstrap of the watcher plist this app wrote.",
+    ),
+    (
+        "autopilot.rs",
+        "launch_domain",
+        "/bin/launchctl print gui/<uid>, to choose gui or user. Fixed program.",
+    ),
+    (
+        "autopilot.rs",
+        "loaded",
+        "/bin/launchctl print of this app's own label.",
+    ),
+    (
+        "autopilot.rs",
+        "watch_main",
+        "/usr/bin/open of the bundle running.json names, and only when that path is an existing .app, after a crash.",
+    ),
+    (
+        "backups/mod.rs",
+        "spawn_app",
+        "This app's own executable, environment cleared to an allow list, to reopen after a restore.",
+    ),
+    (
+        "backups/mod.rs",
+        "spawn_helper",
+        "This app's own executable with the fixed argument backup-restore. Environment cleared to an allow list.",
+    ),
+    (
+        "browser/engine.rs",
+        "fetch_chromium",
+        "node on playwright/cli.js inside the browser data folder, arguments install chromium. Any other path is refused.",
+    ),
+    (
+        "browser/mod.rs",
+        "command_line",
+        "ps, or a fixed PowerShell CIM query, for one pid's command line. Two copies, one reason.",
+    ),
+    (
+        "browser/mod.rs",
+        "kill_one",
+        "taskkill of a browser pid this app recorded. Unix uses libc::kill and starts no process.",
+    ),
+    (
+        "browser/mod.rs",
+        "list_group",
+        "ps -g, or a fixed PowerShell parent query, for one process group this app recorded.",
+    ),
+    (
+        "browser/mod.rs",
+        "process_start",
+        "node on the app's own start-time helper for one pid. Windows reads the process times and starts nothing.",
+    ),
+    (
+        "browser/mod.rs",
+        "process_state",
+        "ps -o state= for one pid.",
+    ),
+    (
+        "browser/mod.rs",
+        "spawn_recorded",
+        "Spawns the browser Command the caller built. The child is recorded only after its command line carries the token this app minted.",
+    ),
+    (
+        "connectors/check.rs",
+        "stdio_handshake",
+        "Spawns stdio_command: the connector Ash configured, environment cleared, to run initialize and tools/list.",
+    ),
+    (
+        "connectors/launch.rs",
+        "stdio_command",
+        "Builds that connector command. Environment is cleared to an allow list. Not an agent shell.",
+    ),
+    (
+        "delivery/mod.rs",
+        "child",
+        "The app's scrubbed child. While the sandbox is on, git uses git_cmd::command_for, which starts sandbox-exec instead of this.",
+    ),
+    (
+        "delivery_gate/mod.rs",
+        "ensure_daemon",
+        "Spawns the no-mistakes tool through delivery::child. Arguments are daemon run --root, never daemon start.",
+    ),
+    (
+        "delivery_gate/mod.rs",
+        "invoke",
+        "Spawns that same tool for a fixed subcommand (axi run and the other listed ones).",
+    ),
+    (
+        "disclaim.rs",
+        "command",
+        "Builds the disclaim launcher. An agent CLI is already sandbox-exec before this wraps it.",
+    ),
+    (
+        "disclaim.rs",
+        "plain_exec",
+        "The disclaim helper runs the argv it was itself started with. Unix and the other copy share this name.",
+    ),
+    (
+        "external_editor.rs",
+        "launch_editor_sync",
+        "/usr/bin/open -a of an editor Ash picked, or that editor's own program, on a folder that exists.",
+    ),
+    (
+        "fs.rs",
+        "git_hash_object",
+        "Spawns git_cmd(), which is git_cmd::git(): the container profile while the sandbox is on, no hooks. Arguments are hash-object.",
+    ),
+    (
+        "fs.rs",
+        "git_ignored_names",
+        "Same git_cmd(). Arguments are check-ignore.",
+    ),
+    (
+        "fs.rs",
+        "git_output_capped",
+        "Same git_cmd(), with the read-only arguments the caller passed and GIT_TERMINAL_PROMPT=0.",
+    ),
+    (
+        "fs.rs",
+        "reveal_path_sync",
+        "open -R, explorer, or xdg-open, of a path Ash asked to show. Fixed programs.",
+    ),
+    (
+        "gates.rs",
+        "run_collected",
+        "Spawns a Command the caller built. run_script calls under_wrap first. project_tests also calls it for Ash's npm test button, which is not an agent turn.",
+    ),
+    (
+        "harness.rs",
+        "exec_output",
+        "Command::new after provider_start_allowed. Callers are the MCP binary probe and harness_update of a resolved harness CLI, not an agent turn.",
+    ),
+    (
+        "harness.rs",
+        "fx_help_mentions_acp",
+        "The resolved fx binary with --help. bench_refuses_path skips it, and isolate_child clears the environment.",
+    ),
+    (
+        "harness.rs",
+        "grok_help_mentions_agent",
+        "The resolved grok binary with --help. Same bench refusal and cleared environment.",
+    ),
+    (
+        "harness.rs",
+        "help_mentions_rpc_mode",
+        "The resolved pi binary with --help. Same bench refusal and cleared environment.",
+    ),
+    (
+        "harness.rs",
+        "read_harness_parents",
+        "ps for the parent of pids this app already listed.",
+    ),
+    (
+        "harness.rs",
+        "signal_tree",
+        "kill or taskkill of a pid in a tree this app started.",
+    ),
+    (
+        "harness.rs",
+        "snapshot_from_ps",
+        "ps of argv only. It does not ask for the environment.",
+    ),
+    (
+        "harness.rs",
+        "spawn_managed",
+        "The one place a harness child is started. An agent CLI is sandbox-exec before it reaches here. The help probes are the app's own.",
+    ),
+    (
+        "harness.rs",
+        "spawn_retrying_text_file_busy",
+        "The same start, retried when the executable is busy.",
+    ),
+    (
+        "inbox_media.rs",
+        "github_auth_token",
+        "gh auth token, fixed arguments, so the app can read its own login. The token is not logged.",
+    ),
+    (
+        "land.rs",
+        "git",
+        "Spawns git_command, which uses git_cmd::git(): the container profile while the sandbox is on.",
+    ),
+    (
+        "local_services/emulate.rs",
+        "probe_node_within",
+        "node --version on this copy's PATH. A missing Node is a notice.",
+    ),
+    (
+        "local_services/emulate.rs",
+        "ps_column",
+        "ps -o of one column for one pid.",
+    ),
+    (
+        "local_services/emulate.rs",
+        "start",
+        "node on the stand-in tool, arguments start --seed --host 127.0.0.1. The environment is cleared to an allow list. An agent cannot start a stack while the sandbox is on.",
+    ),
+    (
+        "macos.rs",
+        "relaunch_from_dev_bundle",
+        "codesign of the dev bundle this debug build just wrote, then exec of that bundle's own binary. It refuses an identifier that is not a dev copy.",
+    ),
+    (
+        "macos.rs",
+        "write_dev_bundle_icons",
+        "/usr/bin/touch of that same bundle, so Finder notices the new icon.",
+    ),
+    (
+        "notifications.rs",
+        "open_settings",
+        "open of the system Notifications settings URL, or cmd start ms-settings:notifications. Fixed. Two copies, one reason.",
+    ),
+    (
+        "pasteboard.rs",
+        "wl_paste",
+        "wl-paste --type of one mime, to read the clipboard a focused client is already allowed to see.",
+    ),
+    (
+        "platform/relaunch.rs",
+        "run_powershell",
+        "System32 powershell -Command - of the relaunch watcher script this app wrote.",
+    ),
+    (
+        "platform/relaunch.rs",
+        "systemctl",
+        "systemctl, or MONOCODE_SHIP_SYSTEMCTL, with the arguments this app passes to remove its own unit.",
+    ),
+    (
+        "platform/ship.rs",
+        "run_task",
+        "System32 powershell of the ship service script this app stored. The environment is allow-listed.",
+    ),
+    (
+        "platform/ship.rs",
+        "spawn_app_env",
+        "The shipped bundle's own monocode binary, to reopen after a ship.",
+    ),
+    (
+        "platform/ship.rs",
+        "systemctl",
+        "systemctl --user link and start of the unit this ship stored.",
+    ),
+    (
+        "platform/wake.rs",
+        "hold",
+        "systemd-inhibit with the app's own wake reason.",
+    ),
+    (
+        "plugins/creator.rs",
+        "talk",
+        "A program inside the plugin, or a known interpreter running a ./ script inside it, while Ash installs it. The environment is cleared.",
+    ),
+    (
+        "plugins/install.rs",
+        "run_steps",
+        "A plugin's install steps, while Ash installs it. The environment is cleared down to proxy variables and PLUGIN_ROOT.",
+    ),
+    (
+        "plugins/source.rs",
+        "command",
+        "Builds git or npm for a plugin Ash is installing. stdin is null. The caller starts it.",
+    ),
+    (
+        "plugins/wiring.rs",
+        "prepare_launch",
+        "Builds the command for one plugin server Ash installed and left switched on. A plugin that is off or unknown is refused. The caller starts it.",
+    ),
+    (
+        "portable.rs",
+        "pathspecs_from_stdin",
+        "Spawns the Command the caller built. Callers pass git() (the container profile while the sandbox is on) and feed pathspecs on stdin.",
+    ),
+    (
+        "pr_watch/bounded.rs",
+        "run",
+        "Spawns a Command the caller built and kills its process group at a deadline. The check runner wraps in run_in before it calls this. The janitor's gh is contained_command in its own function.",
+    ),
+    (
+        "project_actions.rs",
+        "command",
+        "When wrap is set, the prefix is action_wrap (sandbox-exec). The plain shell is the sandbox off, or Ash's Ship and Run dev slot. Windows is cmd /C and never wraps.",
+    ),
+    (
+        "project_actions.rs",
+        "spawn",
+        "Spawns the Command that command() built.",
+    ),
+    (
+        "project_tests.rs",
+        "run_project_tests",
+        "Ash's Run tests button. npm test in the project folder. Not an agent turn.",
+    ),
+    (
+        "pty.rs",
+        "ps_label",
+        "ps -o args= for one pid, to label a terminal.",
+    ),
+    (
+        "pty.rs",
+        "spawn_unix",
+        "Ash's own terminal login shell. The files a login shell sources are write-denied. Not wrapped on purpose.",
+    ),
+    (
+        "pty.rs",
+        "terminate",
+        "taskkill of a terminal pid this app owns. Unix uses libc::kill and starts no process.",
+    ),
+    (
+        "quick_composer.rs",
+        "capture_screenshot",
+        "/usr/sbin/screencapture -i -x -t png into the app's own screenshot path.",
+    ),
+    (
+        "rate_limits.rs",
+        "run_with_timeout",
+        "Spawns the Command the caller built. The only caller here is security_run.",
+    ),
+    (
+        "rate_limits.rs",
+        "security_delete",
+        "security with this app's keychain delete arguments. The sandbox leaves security allowed on purpose.",
+    ),
+    (
+        "rate_limits.rs",
+        "security_run",
+        "security find-generic-password for this app's own keychain item. Same reason.",
+    ),
+    (
+        "remote_ssh.rs",
+        "command",
+        "ssh with fixed options, including ForwardAgent=no, PermitLocalCommand=no, ControlMaster=no and ControlPath=none.",
+    ),
+    (
+        "remote_ssh.rs",
+        "device_name",
+        "scutil --get ComputerName, or hostname. Fixed programs and arguments.",
+    ),
+    (
+        "remote_ssh.rs",
+        "run_remote_command",
+        "Spawns the ssh that command() built.",
+    ),
+    (
+        "remote_ssh.rs",
+        "start_with_command",
+        "Spawns that ssh as a forward from 127.0.0.1 to the remote port.",
+    ),
+    (
+        "resources.rs",
+        "process_snapshot",
+        "/bin/ps -axww of pid, ppid, cpu, rss and command. It does not ask for the environment.",
+    ),
+    (
+        "self_build.rs",
+        "npm",
+        "npm run of a script in the hub checkout, for this app's own check and build. An agent's undo of a rebuild part is refused before this runs.",
+    ),
+    (
+        "self_build.rs",
+        "stop_process",
+        "/bin/ps of one pid. It signals only when that command line names the preview folder.",
+    ),
+    (
+        "self_build.rs",
+        "vite",
+        "The worktree's own node_modules vite, or node on that vite.js, for a preview Ash opened.",
+    ),
+    (
+        "ship.rs",
+        "designated_requirement",
+        "/usr/bin/codesign -d -r- of this app or a staged build.",
+    ),
+    (
+        "ship.rs",
+        "output_within",
+        "Spawns the Command the caller built. ship_start's command is node on scripts/hub-ship.mjs in a checkout whose package name is monocode-desktop.",
+    ),
+    (
+        "ship.rs",
+        "reopen",
+        "/usr/bin/open -n of the shipped app, or that bundle's own binary. startup checks the record's mac before it calls this.",
+    ),
+    (
+        "ship.rs",
+        "restart_runner",
+        "/bin/launchctl of the ship's plist, or node on the runner the ship stored. A record this app did not write is refused.",
+    ),
+    (
+        "ship.rs",
+        "ship_start",
+        "node on scripts/hub-ship.mjs. A chat's ship is refused while the sandbox is on (agent_ship_refused).",
+    ),
+    (
+        "ship.rs",
+        "verify_staged",
+        "/usr/bin/codesign --verify --strict --deep of the staged build, after its designated requirement matched this app's.",
+    ),
+    (
+        "spend_ledger.rs",
+        "project_folder_for",
+        "git rev-parse --path-format=absolute --git-common-dir. Fixed arguments.",
+    ),
+    (
+        "stacks.rs",
+        "output_within",
+        "Spawns the Command the caller built. scrubbed builds it with env_clear, and an agent cannot start a stack while the sandbox is on.",
+    ),
+    (
+        "stacks.rs",
+        "run_timed",
+        "Spawns that same scrubbed command.",
+    ),
+    (
+        "stacks.rs",
+        "scrubbed",
+        "Command::new of the Compose or Docker program Ash started, with the environment cleared.",
+    ),
+    (
+        "terminal_mirror.rs",
+        "run",
+        "Starts claude only, with an allow-listed environment. The versions directory a swapped binary would need is write-denied.",
+    ),
+    (
+        "watcher/checks.rs",
+        "command_for",
+        "Builds the check command and does not start it. run_in wraps it with action_wrap and under_wrap before it runs. Tests call this and stay unsandboxed.",
+    ),
+    (
+        "windows.rs",
+        "spawn_in_job",
+        "Spawns the Command the caller built, inside a Windows job so its children die with it. The caller names the program.",
+    ),
+    (
+        "worktree_autoclean.rs",
+        "output_within",
+        "Spawns the Command the caller built. The caller is read_process_folders, which runs /usr/sbin/lsof.",
+    ),
+    (
+        "worktree_autoclean.rs",
+        "read_process_folders",
+        "/usr/sbin/lsof -d cwd, to see which folders have a program in them before anything is deleted. Linux reads /proc and starts nothing.",
+    ),
+];
+
+struct Site {
+    file: String,
+    func: String,
+    line: usize,
+    wrapped: bool,
+}
+
+struct Func {
+    name: String,
+    start: usize,
+    end: usize,
+    test_only: bool,
+}
+
+struct Decl {
+    name: String,
+    path_attr: Option<String>,
+}
+
+struct Scan<'a> {
+    file: &'a str,
+    masked: &'a str,
+    funcs: &'a [Func],
+    test_mods: &'a [(usize, usize)],
+}
+
+enum Item {
+    File,
+    Inline { body: usize, end: usize },
+    None,
+}
+
+#[test]
+fn every_process_start_is_wrapped_or_explained() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src");
+    assert!(root.is_dir(), "missing {}", root.display());
+    let sites = collect(&root);
+    let mut fresh = Vec::new();
+    for site in &sites {
+        if site.wrapped
+            || ALLOW
+                .iter()
+                .any(|row| row.0 == site.file && row.1 == site.func)
+        {
+            continue;
+        }
+        fresh.push(format!("{} {} (line {})", site.file, site.func, site.line));
+    }
+    fresh.sort();
+    fresh.dedup();
+    let dump = std::env::temp_dir().join("hivra-wp178-spawn-sites.txt");
+    let _ = fs::write(&dump, fresh.join("\n"));
+    assert!(
+        fresh.is_empty(),
+        "a process start is neither wrapped nor explained ({}). Wrote {}.\n{}",
+        fresh.len(),
+        dump.display(),
+        fresh.join("\n")
+    );
+    for (file, func, why) in ALLOW {
+        assert!(!why.trim().is_empty(), "{file} {func} has an empty reason");
+        assert!(
+            sites
+                .iter()
+                .any(|site| site.file == *file && site.func == *func && !site.wrapped),
+            "allow list names {file} {func}, which is gone or now wrapped"
+        );
+    }
+}
+
+#[test]
+fn the_scanner_ignores_comments_strings_tests_and_nested_markers() {
+    let src = r##"
+        fn real() { Command::new("git"); }
+        fn wrapped() { Command::new(SANDBOX_EXEC); }
+        fn mentioned() { let _ = "Command::new"; }
+        fn rawish() { let _ = r#"Command::new("x")"#; }
+        fn commented() { /* Command::new("x") { } */ }
+        // Command::new("nope")
+        #[cfg(test)]
+        fn only_test() { Command::new("t"); }
+        #[cfg(not(test))]
+        fn not_a_test() { Command::new("git"); }
+        #[cfg(test)]
+        mod tests {
+            fn inside() { Command::new("x"); }
+        }
+        fn threaded() { scope.spawn(|| {}); }
+        fn uses_thread() { std::thread::spawn(|| {}); }
+        fn launched() { cmd.spawn(); }
+        fn multi() {
+            command
+                .spawn()
+        }
+        fn outer() {
+            fn inner() { let _ = SANDBOX_EXEC; }
+            Command::new("outer");
+        }
+    "##;
+    let sites = classify("fixture.rs", src);
+    assert!(sites
+        .iter()
+        .any(|site| site.func == "wrapped" && site.wrapped));
+    let mut names: Vec<_> = sites
+        .iter()
+        .filter(|site| !site.wrapped)
+        .map(|site| site.func.as_str())
+        .collect();
+    names.sort();
+    names.dedup();
+    assert_eq!(
+        names,
+        vec!["launched", "multi", "not_a_test", "outer", "real"]
+    );
+}
+
+#[test]
+fn a_cfg_test_declaration_is_a_separate_file_and_a_production_mod_is_not() {
+    let src = r#"
+        #[cfg(test)]
+        mod tests;
+        mod project_tests;
+        #[cfg(all(test, unix))]
+        #[path = "extra_tests.rs"]
+        mod extra;
+        #[cfg(test)]
+        mod inline {
+            fn inside() { Command::new("x"); }
+        }
+    "#;
+    let decls = test_mod_decls(src);
+    let mut names: Vec<_> = decls.iter().map(|decl| decl.name.as_str()).collect();
+    names.sort();
+    assert_eq!(names, vec!["extra", "tests"]);
+    let extra = decls.iter().find(|decl| decl.name == "extra").unwrap();
+    assert_eq!(extra.path_attr.as_deref(), Some("extra_tests.rs"));
+}
+
+fn collect(root: &Path) -> Vec<Site> {
+    let skip = test_only_rels(root);
+    let mut files = Vec::new();
+    gather_rs(root, &mut files);
+    let mut sites = Vec::new();
+    for path in files {
+        let Some(rel) = rel_path(root, &path) else {
+            continue;
+        };
+        if skip.contains(&rel) {
+            continue;
+        }
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
+        sites.extend(classify(&rel, &text));
+    }
+    sites
+}
+
+fn classify(file: &str, src: &str) -> Vec<Site> {
+    let masked = mask(src);
+    let funcs = functions(&masked);
+    let test_mods = test_module_ranges(&masked);
+    let scan = Scan {
+        file,
+        masked: &masked,
+        funcs: &funcs,
+        test_mods: &test_mods,
+    };
+    let mut found = Vec::new();
+    find_sites(&scan, &mut found);
+    found
+}
+
+fn test_only_rels(root: &Path) -> HashSet<String> {
+    let mut files = Vec::new();
+    gather_rs(root, &mut files);
+    let mut skip = HashSet::new();
+    for path in files {
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(dir) = path.parent() else {
+            continue;
+        };
+        for decl in test_mod_decls(&text) {
+            let Some(resolved) = resolve_decl(dir, &decl) else {
+                continue;
+            };
+            let Some(rel) = rel_path(root, &resolved) else {
+                continue;
+            };
+            skip.insert(rel);
+        }
+    }
+    skip
+}
+
+fn test_mod_decls(src: &str) -> Vec<Decl> {
+    let masked = mask(src);
+    let bytes = masked.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        if !keyword_at(bytes, i, "mod") {
+            i += 1;
+            continue;
+        }
+        let start = attribute_start(&masked, i);
+        if !is_test_cfg(&masked[start..i]) {
+            i += 3;
+            continue;
+        }
+        let name_at = skip_ws(bytes, i + 3);
+        let name = read_ident(bytes, name_at);
+        if name.is_empty() {
+            i += 3;
+            continue;
+        }
+        match following_item(bytes, name_at + name.len()) {
+            Item::File => {
+                out.push(Decl {
+                    name,
+                    path_attr: path_attr(&src[start..i]),
+                });
+                i = name_at + 1;
+            }
+            Item::Inline { body, .. } => i = body + 1,
+            Item::None => i += 3,
+        }
+    }
+    out
+}
+
+fn resolve_decl(dir: &Path, decl: &Decl) -> Option<PathBuf> {
+    if let Some(rel) = &decl.path_attr {
+        if rel.is_empty() || rel.contains("..") || Path::new(rel).is_absolute() {
+            return None;
+        }
+        let joined = dir.join(rel);
+        return joined.is_file().then_some(joined);
+    }
+    let rs = dir.join(format!("{}.rs", decl.name));
+    if rs.is_file() {
+        return Some(rs);
+    }
+    let nested = dir.join(&decl.name).join("mod.rs");
+    nested.is_file().then_some(nested)
+}
+
+fn gather_rs(dir: &Path, out: &mut Vec<PathBuf>) {
+    let entries =
+        fs::read_dir(dir).unwrap_or_else(|error| panic!("read {}: {error}", dir.display()));
+    let mut paths = Vec::new();
+    for entry in entries {
+        paths.push(entry.unwrap_or_else(|error| panic!("{error}")).path());
+    }
+    paths.sort();
+    for path in paths {
+        if path.is_dir() {
+            gather_rs(&path, out);
+        } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+            out.push(path);
+        }
+    }
+}
+
+fn rel_path(root: &Path, path: &Path) -> Option<String> {
+    path.strip_prefix(root).ok().map(|suffix| {
+        suffix
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy())
+            .collect::<Vec<_>>()
+            .join("/")
+    })
+}
+
+fn find_sites(scan: &Scan, found: &mut Vec<Site>) {
+    let bytes = scan.masked.as_bytes();
+    let command = b"Command::new";
+    let mut i = 0;
+    while let Some(rel) = find_at(&bytes[i..], command) {
+        let at = i + rel;
+        if token_at(bytes, at, command.len()) {
+            push_site(scan, at, found);
+        }
+        i = at + command.len();
+    }
+    let spawn = b".spawn";
+    i = 0;
+    while let Some(rel) = find_at(&bytes[i..], spawn) {
+        let at = i + rel;
+        if empty_spawn(bytes, at + spawn.len()) {
+            push_site(scan, at, found);
+        }
+        i = at + spawn.len();
+    }
+}
+
+fn push_site(scan: &Scan, at: usize, found: &mut Vec<Site>) {
+    if scan
+        .test_mods
+        .iter()
+        .any(|&(start, end)| contained(start, end, at))
+    {
+        return;
+    }
+    if scan
+        .funcs
+        .iter()
+        .any(|func| func.test_only && contained(func.start, func.end, at))
+    {
+        return;
+    }
+    let Some(func) = scan
+        .funcs
+        .iter()
+        .filter(|func| !func.test_only && contained(func.start, func.end, at))
+        .min_by_key(|func| func.end - func.start)
+    else {
+        found.push(Site {
+            file: scan.file.to_string(),
+            func: "<outside>".to_string(),
+            line: line_no(scan.masked, at),
+            wrapped: false,
+        });
+        return;
+    };
+    found.push(Site {
+        file: scan.file.to_string(),
+        func: func.name.clone(),
+        line: line_no(scan.masked, func.start),
+        wrapped: function_wrapped(scan.masked, func, scan.funcs),
+    });
+}
+
+fn contained(start: usize, end: usize, at: usize) -> bool {
+    at >= start && at < end
+}
+
+fn function_wrapped(masked: &str, func: &Func, funcs: &[Func]) -> bool {
+    if MARKERS.contains(&func.name.as_str()) {
+        return true;
+    }
+    let mut bytes = masked.as_bytes()[func.start..func.end].to_vec();
+    let base = func.start;
+    for other in funcs {
+        if other.start > func.start && other.end <= func.end {
+            let from = other.start - base;
+            let to = (other.end - base).min(bytes.len());
+            for byte in &mut bytes[from..to] {
+                if *byte != b'\n' {
+                    *byte = b' ';
+                }
+            }
+        }
+    }
+    has_marker(&String::from_utf8(bytes).expect("function text stays utf-8"))
+}
+
+fn has_marker(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    MARKERS.iter().any(|marker| {
+        let needle = marker.as_bytes();
+        let mut i = 0;
+        while let Some(rel) = find_at(&bytes[i..], needle) {
+            let at = i + rel;
+            if token_at(bytes, at, needle.len()) {
+                return true;
+            }
+            i = at + needle.len();
+        }
+        false
+    })
+}
+
+fn functions(masked: &str) -> Vec<Func> {
+    let bytes = masked.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 2 < bytes.len() {
+        if keyword_at(bytes, i, "fn") {
+            let name_at = skip_ws(bytes, i + 2);
+            let name = read_ident(bytes, name_at);
+            if !name.is_empty() {
+                if let Item::Inline { body, end } = following_item(bytes, name_at + name.len()) {
+                    let test_only = is_test_cfg(&masked[attribute_start(masked, i)..i]);
+                    out.push(Func {
+                        name,
+                        start: i,
+                        end,
+                        test_only,
+                    });
+                    i = body + 1;
+                    continue;
+                }
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+fn test_module_ranges(masked: &str) -> Vec<(usize, usize)> {
+    let bytes = masked.as_bytes();
+    let mut ranges = Vec::new();
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        if keyword_at(bytes, i, "mod") {
+            let start = attribute_start(masked, i);
+            if is_test_cfg(&masked[start..i]) {
+                let name_at = skip_ws(bytes, i + 3);
+                let name = read_ident(bytes, name_at);
+                if !name.is_empty() {
+                    if let Item::Inline { body, end } = following_item(bytes, name_at + name.len())
+                    {
+                        ranges.push((body, end));
+                        i = body + 1;
+                        continue;
+                    }
+                }
+            }
+        }
+        i += 1;
+    }
+    ranges
+}
+
+fn following_item(bytes: &[u8], mut i: usize) -> Item {
+    let mut paren = 0i32;
+    let mut bracket = 0i32;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => paren += 1,
+            b')' => paren -= 1,
+            b'[' => bracket += 1,
+            b']' => bracket -= 1,
+            b';' if paren == 0 && bracket == 0 => return Item::File,
+            b'{' if paren == 0 && bracket == 0 => {
+                let Some(end) = match_brace(bytes, i) else {
+                    return Item::None;
+                };
+                return Item::Inline { body: i, end };
+            }
+            _ => {}
+        }
+        if paren < 0 || bracket < 0 {
+            return Item::None;
+        }
+        i += 1;
+    }
+    Item::None
+}
+
+fn match_brace(bytes: &[u8], open: usize) -> Option<usize> {
+    let mut depth = 0i32;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn empty_spawn(bytes: &[u8], mut i: usize) -> bool {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b'<' {
+        let mut depth = 0i32;
+        while i < bytes.len() {
+            match bytes[i] {
+                b'<' => depth += 1,
+                b'>' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        i += 1;
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+    }
+    if i >= bytes.len() || bytes[i] != b'(' {
+        return false;
+    }
+    i += 1;
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i < bytes.len() && bytes[i] == b')'
+}
+
+fn is_test_cfg(attrs: &str) -> bool {
+    let flat: String = attrs
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
+    let mut rest = flat.as_str();
+    while let Some(at) = rest.find("cfg(") {
+        let after = &rest[at + 4..];
+        if after.starts_with("test)")
+            || after.starts_with("all(test")
+            || after.starts_with("any(test")
+        {
+            return true;
+        }
+        if (after.starts_with("all(") || after.starts_with("any(")) && cfg_group_names_test(after) {
+            return true;
+        }
+        rest = &rest[at + 4..];
+    }
+    false
+}
+
+fn cfg_group_names_test(after: &str) -> bool {
+    let Some(open) = after.find('(') else {
+        return false;
+    };
+    let mut depth = 1i32;
+    let mut token = String::new();
+    for ch in after[open + 1..].chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                token.clear();
+            }
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return token == "test";
+                }
+                token.clear();
+            }
+            ',' if depth == 1 => {
+                if token == "test" {
+                    return true;
+                }
+                token.clear();
+            }
+            _ if depth == 1 && (ch.is_ascii_alphanumeric() || ch == '_') => token.push(ch),
+            _ => token.clear(),
+        }
+    }
+    false
+}
+
+fn attribute_start(masked: &str, at: usize) -> usize {
+    let bytes = masked.as_bytes();
+    let mut i = at;
+    loop {
+        while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+            i -= 1;
+        }
+        if i == 0 {
+            return 0;
+        }
+        if bytes[i - 1] == b']' {
+            match attr_open(bytes, i - 1) {
+                Some(start) => {
+                    i = start;
+                    continue;
+                }
+                None => return i,
+            }
+        }
+        if bytes[i - 1] == b'"' {
+            i = walk_back_string(bytes, i - 1);
+            continue;
+        }
+        if bytes[i - 1] == b')' {
+            match matching_open(bytes, i - 1, b'(', b')') {
+                Some(open) => {
+                    i = open;
+                    continue;
+                }
+                None => return i,
+            }
+        }
+        let mut consumed = false;
+        for word in ["pub", "async", "unsafe", "const", "extern"] {
+            if ends_with_word(bytes, i, word) {
+                i -= word.len();
+                consumed = true;
+                break;
+            }
+        }
+        if !consumed {
+            return i;
+        }
+    }
+}
+
+fn attr_open(bytes: &[u8], close: usize) -> Option<usize> {
+    let bracket = matching_open(bytes, close, b'[', b']')?;
+    (bracket > 0 && bytes[bracket - 1] == b'#').then_some(bracket - 1)
+}
+
+fn matching_open(bytes: &[u8], close: usize, open_byte: u8, close_byte: u8) -> Option<usize> {
+    let mut depth = 1i32;
+    let mut i = close;
+    while i > 0 && depth > 0 {
+        i -= 1;
+        if bytes[i] == close_byte {
+            depth += 1;
+        } else if bytes[i] == open_byte {
+            depth -= 1;
+        }
+    }
+    (depth == 0).then_some(i)
+}
+
+fn walk_back_string(bytes: &[u8], close: usize) -> usize {
+    let mut i = close;
+    while i > 0 {
+        i -= 1;
+        if bytes[i] == b'"' && !escaped(bytes, i) {
+            return i;
+        }
+    }
+    0
+}
+
+fn escaped(bytes: &[u8], at: usize) -> bool {
+    let mut slashes = 0;
+    let mut i = at;
+    while i > 0 && bytes[i - 1] == b'\\' {
+        slashes += 1;
+        i -= 1;
+    }
+    slashes % 2 == 1
+}
+
+fn path_attr(attrs: &str) -> Option<String> {
+    let bytes = attrs.as_bytes();
+    let mut i = 0;
+    while i + 4 < bytes.len() {
+        if keyword_at(bytes, i, "path") {
+            let mut j = skip_ws(bytes, i + 4);
+            if j < bytes.len() && bytes[j] == b'=' {
+                j = skip_ws(bytes, j + 1);
+                if j < bytes.len() && bytes[j] == b'"' {
+                    let start = j + 1;
+                    let mut end = start;
+                    while end < bytes.len() && bytes[end] != b'"' {
+                        end += 1;
+                    }
+                    return Some(attrs[start..end].to_string());
+                }
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+fn ends_with_word(bytes: &[u8], end: usize, word: &str) -> bool {
+    let word = word.as_bytes();
+    if end < word.len() {
+        return false;
+    }
+    let start = end - word.len();
+    &bytes[start..end] == word && (start == 0 || !is_ident(bytes[start - 1]))
+}
+
+fn keyword_at(bytes: &[u8], i: usize, word: &str) -> bool {
+    let word = word.as_bytes();
+    i + word.len() <= bytes.len()
+        && &bytes[i..i + word.len()] == word
+        && token_at(bytes, i, word.len())
+}
+
+fn token_at(bytes: &[u8], at: usize, len: usize) -> bool {
+    let before = at == 0 || !is_ident(bytes[at - 1]);
+    let after = at + len;
+    before && (after >= bytes.len() || !is_ident(bytes[after]))
+}
+
+fn read_ident(bytes: &[u8], mut i: usize) -> String {
+    if i + 1 < bytes.len() && bytes[i] == b'r' && bytes[i + 1] == b'#' {
+        i += 2;
+    }
+    let start = i;
+    while i < bytes.len() && is_ident(bytes[i]) {
+        i += 1;
+    }
+    String::from_utf8_lossy(&bytes[start..i]).into_owned()
+}
+
+fn skip_ws(bytes: &[u8], mut i: usize) -> usize {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i
+}
+
+fn is_ident(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+fn line_no(src: &str, at: usize) -> usize {
+    src[..at].bytes().filter(|byte| *byte == b'\n').count() + 1
+}
+
+fn find_at(hay: &[u8], needle: &[u8]) -> Option<usize> {
+    hay.windows(needle.len())
+        .position(|window| window == needle)
+}
+
+fn mask(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out = vec![b' '; bytes.len()];
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            let start = i;
+            i += 2;
+            while i < bytes.len() && bytes[i] != b'\n' {
+                i += 1;
+            }
+            keep_newlines(&mut out, bytes, start, i);
+            continue;
+        }
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            let start = i;
+            i = skip_block_comment(bytes, i);
+            keep_newlines(&mut out, bytes, start, i);
+            continue;
+        }
+        if bytes[i] == b'"' {
+            let start = i;
+            i = if let Some(hashes) = raw_hashes(bytes, i) {
+                skip_raw(bytes, i, hashes)
+            } else {
+                skip_normal_string(bytes, i)
+            };
+            keep_newlines(&mut out, bytes, start, i);
+            continue;
+        }
+        if bytes[i] == b'\'' {
+            let start = i;
+            i = skip_char_or_lifetime(bytes, i);
+            keep_newlines(&mut out, bytes, start, i);
+            continue;
+        }
+        out[i] = bytes[i];
+        i += 1;
+    }
+    let masked = String::from_utf8(out).expect("masked rust source stays utf-8");
+    debug_assert_eq!(masked.len(), src.len());
+    masked
+}
+
+fn keep_newlines(out: &mut [u8], bytes: &[u8], from: usize, to: usize) {
+    for i in from..to.min(bytes.len()) {
+        if bytes[i] == b'\n' {
+            out[i] = b'\n';
+        }
+    }
+}
+
+fn skip_block_comment(bytes: &[u8], start: usize) -> usize {
+    let mut i = start + 2;
+    let mut depth = 1i32;
+    while i < bytes.len() && depth > 0 {
+        if bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'*' {
+            depth += 1;
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'*' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            depth -= 1;
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    i
+}
+
+fn skip_normal_string(bytes: &[u8], start: usize) -> usize {
+    let mut i = start + 1;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'"' {
+            return i + 1;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+fn skip_raw(bytes: &[u8], quote: usize, hashes: usize) -> usize {
+    let mut i = quote + 1;
+    while i < bytes.len() {
+        if bytes[i] == b'"'
+            && i + 1 + hashes <= bytes.len()
+            && bytes[i + 1..i + 1 + hashes]
+                .iter()
+                .all(|byte| *byte == b'#')
+        {
+            return i + 1 + hashes;
+        }
+        i += 1;
+    }
+    bytes.len()
+}
+
+fn raw_hashes(bytes: &[u8], quote: usize) -> Option<usize> {
+    let mut j = quote;
+    let mut hashes = 0usize;
+    while j > 0 && bytes[j - 1] == b'#' {
+        hashes += 1;
+        j -= 1;
+    }
+    if j == 0 || bytes[j - 1] != b'r' {
+        return None;
+    }
+    let r_at = j - 1;
+    match r_at.checked_sub(1).map(|at| bytes[at]) {
+        None => Some(hashes),
+        Some(byte) if !is_ident(byte) => Some(hashes),
+        Some(b'b' | b'c') => {
+            let prefix = r_at - 1;
+            (prefix == 0 || !is_ident(bytes[prefix - 1])).then_some(hashes)
+        }
+        _ => None,
+    }
+}
+
+fn skip_char_or_lifetime(bytes: &[u8], start: usize) -> usize {
+    if start + 1 >= bytes.len() {
+        return bytes.len();
+    }
+    let next = bytes[start + 1];
+    if next.is_ascii_alphabetic() || next == b'_' {
+        if start + 2 < bytes.len() && bytes[start + 2] == b'\'' {
+            return start + 3;
+        }
+        let mut i = start + 1;
+        while i < bytes.len() && is_ident(bytes[i]) {
+            i += 1;
+        }
+        return i;
+    }
+    let mut i = start + 1;
+    while i < bytes.len() && bytes[i] != b'\'' {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        i += 1;
+    }
+    if i < bytes.len() {
+        i + 1
+    } else {
+        i
+    }
+}

@@ -58,13 +58,15 @@ const APP_DATA_UNDER_HOME: &str = "Library/Application Support/com.ash.monocode-
 
 /// Programs refused by path. `security` is not here: Claude Code logs in through it (review r4, H3). A copy of one of
 /// these under another name is not caught by this list; `job-creation` and `lsopen` cover what the copy would do.
-const DENIED_PROGRAMS: [&str; 6] = [
+const DENIED_PROGRAMS: [&str; 7] = [
     "/bin/launchctl",
     "/usr/bin/open",
     "/usr/bin/osascript",
     "/usr/bin/crontab",
     "/usr/bin/at",
     "/usr/sbin/hdiutil",
+    // macOS 26 moved the tool here. The old path stays denied for earlier systems.
+    "/usr/bin/hdiutil",
 ];
 
 /// Unlink of the home directory node. A macOS probe checks that `rm` of a file inside home still works; if it does not,
@@ -495,7 +497,8 @@ fn profile_scoped(
     let forms = folder_forms(home)?;
     let mut seen = BTreeSet::new();
     let mut lines = vec!["(version 1)".to_string(), "(allow default)".to_string()];
-    push_secret_places(&mut lines, home, &forms, list, &mut seen)?;
+    push_secret_places(&mut lines, home, &forms, list, &mut seen, !deny_git)?;
+    push_sourced_places(&mut lines, home, &forms);
     push_protected_writes(&mut lines, home, &forms, &mut seen)?;
     push_app_data(&mut lines, home, &forms, &mut seen)?;
     if let Some(data) = data_dir {
@@ -506,8 +509,9 @@ fn profile_scoped(
     push_tool_places(&mut lines, home);
     push_cron_tables(&mut lines);
     push_docker_sockets(&mut lines, home)?;
+    push_disk_services(&mut lines);
     if deny_git {
-        push_git_writes(&mut lines, checkouts)?;
+        push_git_writes(&mut lines, home, checkouts, &mut seen)?;
     }
     for program in DENIED_PROGRAMS {
         lines.push(format!(
@@ -556,9 +560,12 @@ fn push_secret_places(
     forms: &[String],
     list: &HomeSecrets,
     seen: &mut BTreeSet<String>,
+    container: bool,
 ) -> Result<(), String> {
     for dir in &list.dirs {
-        let ops = if dir == "Library/Keychains" {
+        // The container is the app's own git and the login-shell probe. It has to read `~/.config/gh` so `gh` can
+        // log in, and it must not be able to change it. The agent profile still cannot read it.
+        let ops = if dir == "Library/Keychains" || (container && dir == ".config/gh") {
             WRITE_OPS
         } else {
             SECRET_OPS
@@ -573,22 +580,34 @@ fn push_secret_places(
         lock_relative(lines, home, file, false, seen)?;
     }
     for file in &list.shell_profiles {
+        // A container login shell reads its own profile to find Homebrew. Writes stay denied, so an agent cannot
+        // plant a command there for the app's next git or the terminal.
+        let ops = if container { WRITE_OPS } else { SECRET_OPS };
         if file.contains('*') {
             for form in forms {
                 lines.push(format!(
-                    r#"(deny {SECRET_OPS} (regex #"^{}/{}$"))"#,
+                    r#"(deny {ops} (regex #"^{}/{}$"))"#,
                     ci_regex(form),
                     glob_regex(file)
                 ));
             }
             lock_relative(lines, home, file, true, seen)?;
         } else {
-            push_home_entry(lines, forms, file, false, SECRET_OPS);
-            push_real_target(lines, home, file, false, SECRET_OPS);
+            push_home_entry(lines, forms, file, false, ops);
+            push_real_target(lines, home, file, false, ops);
             lock_relative(lines, home, file, false, seen)?;
         }
     }
     Ok(())
+}
+
+/// Files a login shell sources after the profile (`~/.zshrc` pulls these in). Writes only: the app terminal and the
+/// container probe still read them, and an agent cannot replace them.
+fn push_sourced_places(lines: &mut Vec<String>, home: &Path, forms: &[String]) {
+    for (name, folder) in [(".oh-my-zsh", true), (".p10k.zsh", false), (".nvm", true)] {
+        push_home_entry(lines, forms, name, folder, WRITE_OPS);
+        push_real_target(lines, home, name, folder, WRITE_OPS);
+    }
 }
 
 /// The shared list's `denyWrite` globs under home. A glob with no `*` is one file: a link's target is denied too, and
@@ -781,6 +800,21 @@ fn push_tool_places(lines: &mut Vec<String>, home: &Path) {
         push_home_entry(lines, &forms, ".local/bin", true, WRITE_OPS);
         push_home_entry(lines, &forms, ".cargo/bin", true, WRITE_OPS);
         push_home_entry(lines, &forms, ".cargo/env", false, WRITE_OPS);
+        // Searched before Homebrew when the login PATH is missing. A planted `gh` or `git-lfs` here would run outside
+        // the sandbox. The folder tail covers a binary dropped inside.
+        for dir in [
+            ".claude/local",
+            ".local/share/claude",
+            ".opencode/bin",
+            ".grok/bin",
+            ".npm-global/bin",
+            ".bun/bin",
+            "AppData/Roaming/npm",
+            "AppData/Local/Yarn/bin",
+            "scoop/shims",
+        ] {
+            push_home_entry(lines, &forms, dir, true, WRITE_OPS);
+        }
         push_home_entry(
             lines,
             &forms,
@@ -792,6 +826,8 @@ fn push_tool_places(lines: &mut Vec<String>, home: &Path) {
     for dir in TOOL_DIRS {
         push_absolute(lines, dir, true, WRITE_OPS);
     }
+    push_absolute(lines, "/opt/homebrew/etc/gitconfig", false, WRITE_OPS);
+    push_absolute(lines, "/opt/homebrew/lib/node_modules", true, WRITE_OPS);
     for name in TOOL_BINARIES {
         let Some(path) = tool_on_path(name) else {
             continue;
@@ -821,7 +857,44 @@ fn push_docker_sockets(lines: &mut Vec<String>, home: &Path) -> Result<(), Strin
             r#"(deny network-outbound (remote unix-socket (literal "{sock}")))"#
         ));
     }
+    // Colima, OrbStack and Podman speak the same API on their own sockets. None of them is started here.
+    lines.push(format!(
+        r#"(deny network-outbound (remote unix-socket (subpath "{home_text}/.colima")))"#
+    ));
+    lines.push(format!(
+        r#"(deny network-outbound (remote unix-socket (subpath "{home_text}/.orbstack/run")))"#
+    ));
+    lines.push(format!(
+        r#"(deny network-outbound (remote unix-socket (subpath "{home_text}/.local/share/containers")))"#
+    ));
+    for sock in [
+        "/var/run/podman/podman.sock",
+        "/private/var/run/podman/podman.sock",
+        "/run/podman/podman.sock",
+    ] {
+        lines.push(format!(
+            r#"(deny network-outbound (remote unix-socket (literal "{sock}")))"#
+        ));
+    }
     Ok(())
+}
+
+/// A copied `hdiutil` keeps Apple's signature. The attach is done by the disk image service, so the data folder's
+/// write deny is never asked. The sandboxed process still has to look that service up.
+fn push_disk_services(lines: &mut Vec<String>) {
+    let names = [
+        "com.apple.DiskArbitration.diskarbitrationd",
+        "com.apple.diskimages.diskarbitrationd",
+        "com.apple.diskimages.dskd",
+        "com.apple.diskimages.fsck",
+        "com.apple.diskimagesiod",
+    ];
+    let body = names
+        .iter()
+        .map(|name| format!(r#"(global-name "{name}")"#))
+        .collect::<Vec<_>>()
+        .join(" ");
+    lines.push(format!("(deny mach-lookup {body})"));
 }
 
 /// The first `name` on `PATH`. Not run: only `metadata`, so a directory that is not executable is still named.
@@ -840,10 +913,20 @@ fn tool_on_path(name: &str) -> Option<PathBuf> {
 /// that repo's `.git`. A linked worktree's `.git` file is read, the git dir it names is locked, and so is the common
 /// dir that file's `commondir` points at (where the config, hooks and attributes actually live). A checkout that does
 /// not exist yet still locks the lexical `<checkout>/.git`. A temp clone that was not named is not locked.
-fn push_git_writes(lines: &mut Vec<String>, checkouts: &[PathBuf]) -> Result<(), String> {
+fn push_git_writes(
+    lines: &mut Vec<String>,
+    home: &Path,
+    checkouts: &[PathBuf],
+    seen: &mut BTreeSet<String>,
+) -> Result<(), String> {
     for checkout in checkouts {
         let root = repo_root(checkout);
         deny_one_git(lines, &root.join(".git"))?;
+        // Renaming the checkout, or a parent up to home, moves `.git` out from under the write deny.
+        push_ancestor_locks(lines, home, &root, seen)?;
+        if &root != checkout {
+            push_ancestor_locks(lines, home, checkout, seen)?;
+        }
         if let Some(gitdir) = read_gitdir(&root) {
             deny_one_git(lines, &gitdir)?;
             if let Some(common) = read_commondir(&gitdir) {
@@ -905,6 +988,17 @@ fn deny_one_git(lines: &mut Vec<String>, git: &Path) -> Result<(), String> {
                 ci_regex(name)
             ));
         }
+        // The directory nodes themselves. Moving `worktrees` (or one worktree, `modules` or `info`) aside, writing
+        // the denied file under the new name, and moving it back skips a rule that names only the file.
+        for suffix in ["/worktrees", "/modules", "/info"] {
+            lines.push(format!(
+                r#"(deny file-write-unlink (regex #"^{base}{}$"))"#,
+                ci_regex(suffix)
+            ));
+        }
+        lines.push(format!(
+            r#"(deny file-write-unlink (regex #"^{base}{worktrees}/[^/]+$"))"#
+        ));
     }
     Ok(())
 }
@@ -1242,6 +1336,18 @@ pub fn more_agent_wrap(
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    /// Off macOS the profile is never built, and nothing is wrapped. This is the Windows check: the quote panic
+    /// cannot fire because no test here builds a profile, and the sandbox says it is off.
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn the_sandbox_reports_itself_off_off_macos() {
+        assert!(!enabled(None), "the sandbox is on off macOS");
+        let got = status(None);
+        assert!(!got.supported);
+        assert!(!got.enabled);
+    }
+
     #[cfg(target_os = "macos")]
     use std::ffi::OsString;
     use std::path::{Path, PathBuf};
@@ -1372,6 +1478,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&data);
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_profile_denies_ssh_shell_profiles_and_git_writes() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1446,6 +1553,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_profile_covers_every_previously_listed_secret_place() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1481,6 +1589,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_cli_own_login_files_are_reported_and_never_denied_so_the_cli_can_still_log_in() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1510,6 +1619,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_person_global_git_config_and_launch_agents_cannot_be_written() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1526,6 +1636,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_app_switch_and_database_cannot_be_written_by_an_agent() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1547,6 +1658,7 @@ mod tests {
         ));
     }
 
+    #[cfg(unix)]
     #[test]
     fn the_denied_programs_and_apple_events_are_refused() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1565,6 +1677,7 @@ mod tests {
         assert!(profile.contains("(deny lsopen)"));
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_non_canonical_home_still_denies_the_resolved_ssh_path() {
         let trailing = profile_text(Path::new("/Users/test/")).unwrap();
@@ -1898,6 +2011,7 @@ mod tests {
 
     /// Review r4 (H1): renaming the data folder, or a parent of it, must be refused. A write anywhere in the data
     /// folder (a gate script, a ship state file) must be refused too. Red until the profile locks those paths.
+    #[cfg(unix)]
     #[test]
     fn the_data_folder_cannot_be_renamed_and_nothing_inside_it_can_be_written() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1941,6 +2055,7 @@ mod tests {
     }
 
     /// Review r4 (H1): a write deny on `~/Library/LaunchAgents/foo` does not stop `mv ~/Library` or `mv ~/.config`.
+    #[cfg(unix)]
     #[test]
     fn renaming_a_parent_cannot_move_a_protected_path_out_of_the_profile() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1960,6 +2075,7 @@ mod tests {
 
     /// Review r4 (H1, H3): `security` stays runnable so a CLI can log in. Login items and Launch Services opens are
     /// refused by operation, not only by the program's path.
+    #[cfg(unix)]
     #[test]
     fn security_stays_allowed_and_job_creation_and_lsopen_are_refused() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1973,6 +2089,7 @@ mod tests {
     }
 
     /// Review r4 (H3): a read deny on the keychains folder breaks `security`. Writes stay denied.
+    #[cfg(unix)]
     #[test]
     fn keychains_can_be_read_and_cannot_be_written() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -1988,6 +2105,7 @@ mod tests {
     }
 
     /// Review r4 (M3): `.git` denies must not apply to every repository on disk, or `git init` in a temp folder fails.
+    #[cfg(unix)]
     #[test]
     fn a_profile_with_no_checkout_does_not_deny_every_git_directory() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -2006,6 +2124,7 @@ mod tests {
     }
 
     /// Review r4 (LOW): the shell profiles the list missed.
+    #[cfg(unix)]
     #[test]
     fn the_extra_shell_profiles_are_denied() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -2086,6 +2205,7 @@ mod tests {
 
     /// Nested `include.path` / `includeIf.path`, with `%(prefix)` meaning the directory of the file that included it.
     /// A cycle stops, and the ninth nested file is not read.
+    #[cfg(unix)]
     #[test]
     fn a_nested_gitconfig_include_follows_prefix_and_stops_at_the_cap() {
         let home = temp_home("gitconfig-nest");
@@ -2130,6 +2250,7 @@ mod tests {
 
     /// Tool directories and the installed app are write-denied. `/usr/bin` is not. crontab, at and hdiutil cannot be
     /// executed, and the cron tables and Docker sockets are named.
+    #[cfg(unix)]
     #[test]
     fn tool_dirs_cron_docker_and_the_installed_app_are_denied() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -2154,6 +2275,7 @@ mod tests {
         assert!(denies(&profile, "process-exec", "/usr/bin/crontab"));
         assert!(denies(&profile, "process-exec", "/usr/bin/at"));
         assert!(denies(&profile, "process-exec", "/usr/sbin/hdiutil"));
+        assert!(denies(&profile, "process-exec", "/usr/bin/hdiutil"));
         assert!(profile.contains(
             "(deny network-outbound (remote unix-socket (subpath \"/Users/test/.docker/run\")))"
         ));
@@ -2165,6 +2287,134 @@ mod tests {
         ));
     }
 
+    /// The app's own git and the login-shell probe use the container profile. They read shell profiles and `gh`'s
+    /// config, and they cannot change them. The agent profile still cannot read those files.
+    #[cfg(unix)]
+    #[test]
+    fn the_container_can_read_shell_profiles_and_gh_config_but_not_write_them() {
+        let agent = profile_text(Path::new("/Users/test")).unwrap();
+        let container = container_profile(Path::new("/Users/test"), None).unwrap();
+        for path in [
+            "/Users/test/.zshrc",
+            "/Users/test/.zprofile",
+            "/Users/test/.config/gh/config.yml",
+        ] {
+            assert!(
+                denies(&agent, "file-read*", path),
+                "the agent profile can read {path}"
+            );
+            assert!(
+                !denies(&container, "file-read*", path),
+                "the container cannot read {path}"
+            );
+            assert!(
+                denies(&container, "file-write*", path),
+                "the container can write {path}"
+            );
+        }
+        assert!(denies(
+            &container,
+            "file-read*",
+            "/Users/test/.ssh/id_ed25519"
+        ));
+    }
+
+    /// A login shell sources these after the profile. Writes are denied on both profiles. Reads stay allowed, so the
+    /// terminal and the container probe still start.
+    #[cfg(unix)]
+    #[test]
+    fn a_login_shells_sourced_files_and_the_homebrew_gitconfig_cannot_be_written() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        for path in [
+            "/Users/test/.oh-my-zsh/oh-my-zsh.sh",
+            "/Users/test/.p10k.zsh",
+            "/Users/test/.nvm/nvm.sh",
+            "/opt/homebrew/etc/gitconfig",
+            "/opt/homebrew/lib/node_modules/codex/bin",
+        ] {
+            assert!(denies(&profile, "file-write*", path), "{path}");
+        }
+        let container = container_profile(Path::new("/Users/test"), None).unwrap();
+        assert!(denies(
+            &container,
+            "file-write*",
+            "/Users/test/.oh-my-zsh/oh-my-zsh.sh"
+        ));
+        assert!(!denies(
+            &container,
+            "file-read*",
+            "/Users/test/.oh-my-zsh/oh-my-zsh.sh"
+        ));
+        assert!(profile.contains("(deny mach-lookup"));
+        assert!(profile.contains("(global-name \"com.apple.DiskArbitration.diskarbitrationd\")"));
+        assert!(profile.contains(
+            "(deny network-outbound (remote unix-socket (subpath \"/Users/test/.colima\")))"
+        ));
+        assert!(profile.contains(
+            "(deny network-outbound (remote unix-socket (subpath \"/Users/test/.orbstack/run\")))"
+        ));
+        assert!(profile.contains(
+            "(deny network-outbound (remote unix-socket (literal \"/var/run/podman/podman.sock\")))"
+        ));
+    }
+
+    /// The sockets are bound here, under a temporary home. Docker, Colima, OrbStack and Podman are not started.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_sandboxed_process_cannot_connect_to_the_runtime_sockets() {
+        // sun_path holds 104 bytes. A temp dir under /var/folders is already longer than that once the podman
+        // socket name is added, so these listeners live under /private/tmp. Nothing is mounted and no runtime is started.
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let home = PathBuf::from(format!(
+            "/private/tmp/h178s{:08x}",
+            (nanos as u64) ^ u64::from(std::process::id())
+        ));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let sockets = [
+            home.join(".docker/run/docker.sock"),
+            home.join(".colima/default/docker.sock"),
+            home.join(".orbstack/run/docker.sock"),
+            home.join(".local/share/containers/podman/machine/podman.sock"),
+        ];
+        let mut listeners = Vec::new();
+        for sock in &sockets {
+            std::fs::create_dir_all(sock.parent().unwrap()).unwrap();
+            listeners.push(std::os::unix::net::UnixListener::bind(sock).unwrap());
+        }
+        let profile = profile_text(&home).unwrap();
+        for sock in &sockets {
+            assert!(
+                std::os::unix::net::UnixStream::connect(sock).is_ok(),
+                "the probe socket was not listening: {}",
+                sock.display()
+            );
+            let script = format!(
+                "use IO::Socket::UNIX; IO::Socket::UNIX->new(Peer => '{}') or exit 1;",
+                sock.display()
+            );
+            let status = Command::new(SANDBOX_EXEC)
+                .args(["-p", &profile, "/usr/bin/perl", "-e", &script])
+                .current_dir(&home)
+                .env("HOME", &home)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .status()
+                .unwrap();
+            assert!(
+                !status.success(),
+                "a sandboxed process connected to {}",
+                sock.display()
+            );
+        }
+        drop(listeners);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(unix)]
     #[test]
     fn an_explicit_checkout_is_denied_even_under_tmp_and_the_container_denies_no_git_dir() {
         let named =
@@ -2262,11 +2512,15 @@ mod tests {
         std::fs::create_dir_all(&mount).unwrap();
         let dmg_s = dmg.to_string_lossy().into_owned();
         let mount_s = mount.to_string_lossy().into_owned();
-        let probes: [(&str, Vec<&str>); 3] = [
+        let probes: [(&str, Vec<&str>); 4] = [
             ("/usr/bin/crontab", vec!["-l"]),
             ("/usr/bin/at", vec!["-l"]),
             (
                 "/usr/sbin/hdiutil",
+                vec!["attach", &dmg_s, "-mountpoint", &mount_s],
+            ),
+            (
+                "/usr/bin/hdiutil",
                 vec!["attach", &dmg_s, "-mountpoint", &mount_s],
             ),
         ];
@@ -2547,6 +2801,7 @@ mod review_r3_repro {
 
     /// HIGH-1 is still open: `mv "~/Library/Application Support/com.ash.monocode-hub" …x` is a write to the folder
     /// itself, which no rule names. The switch file then reads Missing, which is off, for the very next start.
+    #[cfg(unix)]
     #[test]
     fn renaming_the_data_folder_or_a_parent_of_it_is_refused() {
         let profile = profile_text(Path::new(HOME)).unwrap();
@@ -2565,6 +2820,7 @@ mod review_r3_repro {
 
     /// The `denyWrite` globs under home name only what is inside a folder. Renaming the folder (or a parent) out, editing
     /// it and renaming it back is never matched: a LaunchAgent, a global git config, a Claude hook.
+    #[cfg(unix)]
     #[test]
     fn renaming_a_protected_folder_or_its_parent_is_refused() {
         let profile = profile_text(Path::new(HOME)).unwrap();
@@ -2585,6 +2841,7 @@ mod review_r3_repro {
 
     /// The app runs what its data folder says, outside the profile: a worker gate (`gates/<project>.json` and its
     /// script, run when a delegated worker reports done) and a ship record (`ship/current.json`, run at the next start).
+    #[cfg(unix)]
     #[test]
     fn the_rest_of_the_data_folder_cannot_be_written() {
         let profile = profile_text(Path::new(HOME)).unwrap();
@@ -2606,6 +2863,7 @@ mod review_r3_repro {
 
     /// `.git/commondir` (and a linked worktree's `commondir`) tells git where the config is. The profile denies
     /// `.git/config` but not these, so the agent points git at a config it wrote (see checkout_guard's r3 repro).
+    #[cfg(unix)]
     #[test]
     fn a_git_common_dir_redirect_cannot_be_written() {
         let profile =
@@ -2664,6 +2922,7 @@ mod review_r3_repro {
 
     /// L2: a submodule's git dir is `.git/modules/<name>`, and a name is its path (`vendor/lib`), so it often has a
     /// slash; nested submodules sit under `.git/modules/<a>/modules/<b>`. The profile allows one segment only.
+    #[cfg(unix)]
     #[test]
     fn a_submodule_with_a_slash_in_its_name_has_its_hooks_and_config_denied() {
         let profile =
@@ -3089,15 +3348,21 @@ mod review_r5_repro {
         std::fs::write(src.join(SETTING_FILE), "off\n").unwrap();
         let image = root.join("img.dmg");
         // Made outside the sandbox to keep the probe short; the agent can make it inside with the same copy.
-        let made = std::process::Command::new("/usr/sbin/hdiutil")
+        // macOS 26 keeps hdiutil at /usr/bin. Earlier systems keep /usr/sbin. Copy whichever is here.
+        let hdiutil = ["/usr/bin/hdiutil", "/usr/sbin/hdiutil"]
+            .into_iter()
+            .find(|path| Path::new(path).is_file())
+            .expect("hdiutil");
+        let made = std::process::Command::new(hdiutil)
             .args(["create", "-quiet", "-fs", "HFS+", "-srcfolder"])
             .arg(&src)
             .arg(&image)
+            .current_dir(&root)
             .status()
             .unwrap();
         assert!(made.success(), "hdiutil create");
         let copy = home.join("h");
-        std::fs::copy("/usr/sbin/hdiutil", &copy).unwrap();
+        std::fs::copy(hdiutil, &copy).unwrap();
         let profile = profile_text_for(&home, Some(&data)).unwrap();
         let _ = std::process::Command::new(SANDBOX_EXEC)
             .args(["-p", &profile])
@@ -3105,13 +3370,15 @@ mod review_r5_repro {
             .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
             .arg(&settings)
             .arg(&image)
+            .current_dir(&root)
             .env("HOME", &home)
             .status()
             .unwrap();
         let seen = std::fs::read_to_string(settings.join(SETTING_FILE)).unwrap_or_default();
-        let _ = std::process::Command::new("/usr/sbin/hdiutil")
+        let _ = std::process::Command::new(hdiutil)
             .args(["detach", "-quiet", "-force"])
             .arg(&settings)
+            .current_dir(&root)
             .status();
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(
@@ -3152,3 +3419,8 @@ mod review_r5_repro {
         );
     }
 }
+
+// Round 6: every process start is wrapped, or named with a reason. Test-only, so it is not in the binary.
+#[cfg(test)]
+#[path = "agent_sandbox_spawn_audit.rs"]
+mod spawn_audit;
