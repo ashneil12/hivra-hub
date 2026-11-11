@@ -1211,3 +1211,105 @@ fn the_joined_name_survives_saving_the_switch_and_is_kept_out_of_the_token_store
     assert!(load_config(&path).token.is_empty());
     let _ = std::fs::remove_dir_all(dir);
 }
+
+// --- review of PR #221: a pull never takes a local-only field, and never empties a project ----
+
+#[test]
+fn a_pulled_value_never_replaces_the_local_folder_id_or_shared_flag() {
+    let (ann, ben, _server) = two_members();
+    let a1 = sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    // Another member (or a bad server) writes the fields that never sync.
+    ben.put_fields(
+        "project:exo",
+        &[
+            ("folder", 0, "\"/Users/someone-else/elsewhere\""),
+            ("id", 0, "\"other\""),
+            ("shared", 0, "false"),
+        ],
+    )
+    .unwrap();
+
+    let a2 = sync_round(&ann, &a1.doc, &a1.state).unwrap();
+    let mine = &a2.doc["projects"][0];
+    assert_eq!(mine["id"], "exo", "a pull replaced the project id");
+    assert_eq!(
+        mine["folder"], "/opt/local-only/projects/exo",
+        "a pull replaced the local folder"
+    );
+    assert_eq!(mine["shared"], true, "a pull replaced the shared flag");
+
+    // A device that pulls the project for the first time takes no folder from the server either.
+    let b1 = sync_round(&ben, &doc_with(vec![]), &SyncState::default()).unwrap();
+    let pulled = &b1.doc["projects"][0];
+    assert_eq!(pulled["id"], "exo");
+    assert!(
+        pulled.get("folder").is_none(),
+        "a folder path came from the server"
+    );
+    assert_eq!(pulled["shared"], true);
+}
+
+#[test]
+fn a_server_that_does_not_have_the_project_never_empties_it_locally() {
+    let (ann, _ben, _server) = two_members();
+    let a1 = sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    // The team server address changes (or the server lost the project): the sync state still names the old revisions.
+    let (fresh, _other, fresh_server) = two_members();
+    let a2 = sync_round(&fresh, &a1.doc, &a1.state).unwrap();
+    let mine = record(&a2.doc, "exo");
+    assert_eq!(mine["name"], "EXO", "the project's name was deleted");
+    assert_eq!(mine["shortName"], "EXO", "the short name was deleted");
+    assert_eq!(mine["tasks"], json!([]), "a field was deleted");
+    // The project is sent to the server that lacked it.
+    let guard = fresh_server.lock().unwrap();
+    assert!(
+        guard
+            .docs
+            .get("project:exo")
+            .is_some_and(|f| f.contains_key("name")),
+        "the project was not sent to the new server"
+    );
+}
+
+#[test]
+fn the_settings_status_reads_no_token_while_the_switch_is_off() {
+    let dir = std::env::temp_dir().join(format!("tw-status-off-{}", Uuid::new_v4()));
+    let path = dir.join(CONFIG_FILE);
+    save_config(&path, false, "https://team.example.test/v1").unwrap();
+    let status = status_at(&path, &NeverRead);
+    assert!(!status.enabled && !status.active && !status.signed_in);
+    assert_eq!(status.endpoint, "https://team.example.test/v1");
+    assert!(!status_at(&dir.join("missing.json"), &NeverRead).enabled);
+
+    // On, the token is read so the screen can say whether this device has joined.
+    save_config(&path, true, "https://team.example.test/v1").unwrap();
+    let store = MemoryStore::default();
+    remember_token(&store, "device-token").unwrap();
+    assert!(status_at(&path, &store).active);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_app_sends_only_to_https_and_plain_http_is_for_the_test_stand_in() {
+    for raw in [
+        "http://127.0.0.1:4010",
+        "http://localhost:4010",
+        "http://[::1]:4010",
+        "http://sync.example.test/v1",
+    ] {
+        assert!(endpoint_rules(raw, false).is_err(), "{raw} was accepted");
+    }
+    assert!(endpoint_rules("https://sync.example.test/v1", false).is_ok());
+    assert!(endpoint_rules("http://127.0.0.1:4010", true).is_ok());
+    assert!(endpoint_rules("http://sync.example.test/v1", true).is_err());
+}

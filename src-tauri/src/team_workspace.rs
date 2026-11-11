@@ -390,8 +390,13 @@ pub fn agent_board<'a>(scope: &AgentScope, projects: &'a [LocalProject]) -> Vec<
     projects.iter().filter(|p| p.shared).collect()
 }
 
-/// Endpoint rules: https, or plain http only to this machine, and never with credentials in the address.
+/// Endpoint rules: https, and never with credentials in the address. Plain http to this machine is for the loopback
+/// stand-in in the tests only; the app itself never sends to a plain http address.
 pub fn validate_endpoint(raw: &str) -> Result<Url, String> {
+    endpoint_rules(raw, cfg!(test))
+}
+
+fn endpoint_rules(raw: &str, loopback_http: bool) -> Result<Url, String> {
     let url =
         Url::parse(raw.trim()).map_err(|e| format!("the endpoint is not a valid address: {e}"))?;
     if !url.username().is_empty() || url.password().is_some() {
@@ -399,8 +404,8 @@ pub fn validate_endpoint(raw: &str) -> Result<Url, String> {
     }
     match url.scheme() {
         "https" => Ok(url),
-        "http" if is_this_machine(&url) => Ok(url),
-        _ => Err("the endpoint must be https, or http on this machine".into()),
+        "http" if loopback_http && is_this_machine(&url) => Ok(url),
+        _ => Err("the endpoint must be an https address".into()),
     }
 }
 
@@ -730,6 +735,11 @@ fn parse_body(body: &str) -> Option<Value> {
     }
 }
 
+/// The id, the shared flag and the local folder never leave the machine, and a pull never takes them either.
+fn synced_field(name: &str) -> bool {
+    !matches!(name, "id" | "folder" | "shared")
+}
+
 /// The fields a project record syncs. The id, the shared flag and the local folder never leave the machine.
 fn record_fields(record: &Value) -> BTreeMap<String, Value> {
     record
@@ -737,9 +747,7 @@ fn record_fields(record: &Value) -> BTreeMap<String, Value> {
         .map(|fields| {
             fields
                 .iter()
-                .filter(|(name, value)| {
-                    !matches!(name.as_str(), "id" | "folder" | "shared") && !value.is_null()
-                })
+                .filter(|(name, value)| synced_field(name) && !value.is_null())
                 .map(|(name, value)| (name.clone(), value.clone()))
                 .collect()
         })
@@ -793,6 +801,9 @@ pub fn sync_round(
         let mut record = json!({ "id": id, "shared": true });
         let base = state.projects.entry(id.clone()).or_default();
         for (name, (rev, body)) in fields {
+            if !synced_field(&name) {
+                continue;
+            }
             let value = parse_body(&body);
             if let Some(value) = &value {
                 record[name.as_str()] = value.clone();
@@ -822,7 +833,8 @@ pub fn sync_round(
             continue;
         };
         let doc_id = format!("{PROJECT_DOC_PREFIX}{id}");
-        let server = remote.read_fields(&doc_id)?;
+        let mut server = remote.read_fields(&doc_id)?;
+        server.retain(|name, _| synced_field(name));
         let local = record_fields(&doc["projects"][index]);
         let base_map = state.projects.get(&id).cloned().unwrap_or_default();
         let names: BTreeSet<String> = local
@@ -843,13 +855,25 @@ pub fn sync_round(
                 Some((rev, body)) => (*rev, parse_body(body)),
                 None => (0, None),
             };
+            // A field the server has no record of (a new server, or one that lost the project) is not another
+            // member's removal: the local value stays and is sent again. Only an explicit removal is taken.
+            let on_server = server.contains_key(&name);
             let local_changed = mine != base.value;
-            let server_changed = server_rev != base.rev;
+            let server_changed = on_server && server_rev != base.rev;
             match (local_changed, server_changed) {
+                (false, false) if !on_server && mine.is_some() => {
+                    writes.push((name, 0, mine, false))
+                }
                 (false, false) => {}
                 (false, true) => takes.push((name, server_value, server_rev)),
                 (true, moved) => {
-                    let base_rev = if moved { server_rev } else { base.rev };
+                    let base_rev = if !on_server {
+                        0
+                    } else if moved {
+                        server_rev
+                    } else {
+                        base.rev
+                    };
                     writes.push((name, base_rev, mine, moved && server_value != base.value));
                 }
             }
@@ -1070,12 +1094,19 @@ fn config_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path
         .join(CONFIG_FILE))
 }
 
+/// The status for the settings screen. With the switch off the token store is not read, so opening Settings never
+/// touches the Keychain for a feature that is off.
+pub fn status_at(path: &Path, store: &dyn TokenStore) -> Status {
+    let config = load_config(path);
+    if !config.enabled {
+        return status_for(&config);
+    }
+    status_for(&load_signed_in_config(path, store))
+}
+
 #[tauri::command]
 pub fn team_workspace_status(app: tauri::AppHandle) -> Result<Status, String> {
-    Ok(status_for(&load_signed_in_config(
-        &config_path(&app)?,
-        &Keychain,
-    )))
+    Ok(status_at(&config_path(&app)?, &Keychain))
 }
 
 /// Saves the switch and endpoint that Ash sets in Settings. Off writes no network call.
@@ -1085,8 +1116,10 @@ pub fn team_workspace_save(
     enabled: bool,
     endpoint: String,
 ) -> Result<Status, String> {
-    let config = save_config(&config_path(&app)?, enabled, &endpoint)?;
-    Ok(status_for(&config))
+    let path = config_path(&app)?;
+    save_config(&path, enabled, &endpoint)?;
+    // The saved file plus, only while on, whether this device holds a token: a joined device stays joined on screen.
+    Ok(status_at(&path, &Keychain))
 }
 
 /// Accepts an invitation against the configured endpoint and keeps the token it returns. Off refuses before any call.

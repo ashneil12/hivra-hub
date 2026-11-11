@@ -122,12 +122,12 @@ it("saves a server address with the switch and shows it is in use once a token i
 it("goes back to off when the app refuses the change, and says why", async () => {
   vi.mocked(invoke).mockResolvedValueOnce(OFF);
   await render();
-  vi.mocked(invoke).mockRejectedValueOnce("the endpoint must be https, or http on this machine");
+  vi.mocked(invoke).mockRejectedValueOnce("the endpoint must be an https address");
   await act(async () => {
     toggle().click();
   });
   expect(toggle().checked).toBe(false);
-  expect(host.textContent).toContain("the endpoint must be https, or http on this machine");
+  expect(host.textContent).toContain("the endpoint must be an https address");
 });
 
 it("joins with an invitation only once the switch is on and an address is saved", async () => {

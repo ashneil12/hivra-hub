@@ -40,14 +40,14 @@ endpoint in `team-workspace.json` (app data folder). Both default to off and emp
   random token, stored only as a SHA-256 hash, valid 7 days, one use. Nobody invites an owner or someone at their own
   level. Members are removed or re-roled only by someone who outranks them; an owner is never removed.
 - **Accept flow over the wire:** `Client::accept` posts the invitation to the shared machine and receives a per-device
-  workspace token and a role. `team_workspace_accept` keeps the token in `team-workspace.json`.
+  workspace token and a role. `team_workspace_accept` keeps the token in the Keychain, never in `team-workspace.json`.
 - **Authenticated payload:** every request after accept carries `Authorization: Bearer <token>`. The server takes the
   person from the token, never from the body. A request with no token is not sent.
 - **Off switch:** `sync_outbound` and `Client::from_config` return before any request unless `enabled` is true and
-  the endpoint is set. Endpoints must be https, or http to this machine only, with no credentials. Redirects are not
-  followed, and only a 2xx answer counts as sent.
+  the endpoint is set. Endpoints must be https (plain http only to the loopback stand-in in tests), with no
+  credentials. Redirects are not followed, and only a 2xx answer counts as sent.
 - **Settings:** `team_workspace_save` writes the switch and endpoint (a bad endpoint writes nothing). The status
-  command reads the file, makes no request, and never shows the token.
+  command reads the file, reads the Keychain only while the switch is on, makes no request, and never shows the token.
 - **Private projects:** only shared projects enter a push. A private project's body and id are filtered out before
   serialising.
 - **Co-editing (simplified):** documents have a revision. A write names the revision it saw; a stale write gets a
@@ -67,7 +67,9 @@ endpoint in `team-workspace.json` (app data folder). Both default to off and emp
   the app polls every 15 seconds. A round pulls shared projects another member made, and merges each field against
   the server revision and this device's last-agreed value (`sync_round`): a local edit is never replaced by a pulled
   value, a field only the other side changed is taken, and a field both sides changed keeps the local value and is
-  listed in `conflicts`. The local folder and the shared flag never leave the machine.
+  listed in `conflicts`. The local folder and the shared flag never leave the machine, and a pull never takes the id,
+  folder or shared flag. A field the server has no record of (a new server address, or a server that lost the project)
+  is sent again, never removed locally; only an explicit removal (`null` at a newer revision) is taken.
 - **Share control (built):** "Share with my team" in the project menu sets `shared` on that project, on Ash's click
   only. Unsharing stops syncing and keeps the project locally.
 - **Presence (built, list only):** Settings shows "Here now" from the server's presence list while sharing is active.
@@ -75,6 +77,11 @@ endpoint in `team-workspace.json` (app data folder). Both default to off and emp
 - **Tasks and docs (not wired):** the task store (`src-tauri/src/tasks/store.rs`) and the docs store
   (`src-tauri/src/docs.rs`) do not sync. Each has its own tables, revisions and history, so they need their own
   mapping. The field merge runs only on the project record.
+- **Agents on the shared board (not wired):** `agent_for` and `agent_board` exist and are tested, but no first mate
+  uses them yet.
+- **Control-port actions (not added, on purpose):** joining, the switch and sharing a project are the person's taps
+  only. Every action in `APP_ACTIONS` (`src-tauri/src/control_cli.rs`) is reachable from agent sessions, so
+  `team.join` or `project.share` there would hand those steps to agents; a person-only channel is needed first.
 - **Live editing with Yjs, and presence cursors:** not built; the revision check and presence list are the stand-in.
 - **Two dev copies on one machine:** not run. The control socket only exposes `app.*` actions, with no way to accept
   an invitation or share a project, and the windows were not driven. The round is proven against the loopback
