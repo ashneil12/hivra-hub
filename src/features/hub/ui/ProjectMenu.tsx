@@ -6,7 +6,7 @@ import {
   Star, StickyNote, Terminal, Wrench, Zap, type IconComponent,
 } from "../../../shared/ui/icons";
 import { hubData, liveHubStore } from "../model/hubData";
-import { archiveCheck, archiveProject, renameProjectEverywhere, setProjectShape, type ArchiveCheck } from "../model/projectActions";
+import { archiveCheck, archiveProject, renameProjectEverywhere, setProjectShape, setProjectShared, type ArchiveCheck } from "../model/projectActions";
 import {
   isImageFileName, pendingUndo, projectFileActions, projectIcon, projectLead, removeFromHub, setProjectIcon,
   swapProjects, useProjectPrefsVersion, type ProjectIconChoice,
@@ -129,6 +129,11 @@ export function ProjectMenu({ project, anchor, onClose }: { project: HubProject;
       onDismiss={onClose} onContextMenu={(e) => e.preventDefault()} className="p-1" data-project-menu>
       {item("Change icon", () => setMode({ kind: "icon" }))}
       {item("Rename", () => setMode({ kind: "rename" }))}
+      {/* WP-80: off until Ash clicks. The team switch in Settings decides whether a shared project is sent. */}
+      {item(project.shared ? "Stop sharing with my team" : "Share with my team", () => {
+        void setProjectShared(project, !project.shared).catch((reason) => console.error(reason));
+        onClose();
+      })}
       {item("Group", () => setMode({ kind: "group" }))}
       {item("Workers at once", () => setMode({ kind: "workers" }))}
       {item("Show folder in Finder", () => {

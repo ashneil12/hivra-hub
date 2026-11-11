@@ -21,6 +21,8 @@ export type HubProject = {
   folder: string | null;
   /** Shelved in Ash OS's registry. Not on the strip. */
   parked?: boolean;
+  /** Ash turned on "Share with my team" for this project. Only his click sets it. */
+  shared?: boolean;
 };
 
 /** Everything a project has, listed where Monocode's sidebar lists Projects. */
