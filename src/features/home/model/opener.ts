@@ -2,6 +2,7 @@
 
 import { openDocsMode } from "../../docs/docsMode";
 import { openCodingTeam, projectHasCodeFolder, setHubSelection } from "../../hub/model/hubNav";
+import { inboxShow, setInboxShow } from "../../needs/model/inboxShow";
 import { requestOpenPage } from "../../pages/model/pages";
 import type { SettingsSectionId } from "../../settings/model/settings";
 import { queueHomeDecision, queueHomeDoc, queueHomeTask } from "./pending";
@@ -47,6 +48,7 @@ function decisionProject(projectId: string, projects: readonly HomeProjectRef[])
 export function applyHomeOpen(target: HomeOpenTarget, hands: HomeOpenHands): void {
   if (target.kind === "inbox") {
     hands.closeChrome();
+    showAsks();
     queueHomeDecision(decisionProject(target.projectId, hands.projects()), target.decisionKey);
     hands.openInbox();
     return;
@@ -54,6 +56,7 @@ export function applyHomeOpen(target: HomeOpenTarget, hands: HomeOpenHands): voi
   // WP-212: Needs you, the whole list. No decision is queued, so the inbox opens on its own.
   if (target.kind === "needs") {
     hands.closeChrome();
+    showAsks();
     hands.openInbox();
     return;
   }
@@ -92,6 +95,11 @@ export function applyHomeOpen(target: HomeOpenTarget, hands: HomeOpenHands): voi
   }
   hands.closeChrome();
   hands.openTeam(target.projectId);
+}
+
+/** A line that leads to an ask must find the asks there, even when the Inbox was left on one source's work items. */
+function showAsks(): void {
+  if (inboxShow() === "items") setInboxShow("all");
 }
 
 let opener: ((target: HomeOpenTarget) => void) | undefined;

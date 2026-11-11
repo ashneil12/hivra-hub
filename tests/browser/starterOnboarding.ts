@@ -15,6 +15,18 @@ async function dismissSetup(page: Page) {
 const roster = (page: Page) =>
   page.evaluate(() => JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { id: string; name?: string }[]);
 
+/**
+ * Continue until the card is on this step. Ash, 11 Nov: one thing a step (welcome, start: the project, team: the first
+ * mates, tools: the coding tools, theme, done).
+ */
+export async function toOnboardingStep(page: Page, step: "start" | "team" | "tools" | "theme" | "done") {
+  const card = page.locator("[data-hub-onboarding]");
+  for (let i = 0; i < 8 && (await card.getAttribute("data-step")) !== step; i += 1) {
+    await page.locator("[data-hub-onboarding-next]").click();
+  }
+  await expect(card).toHaveAttribute("data-step", step);
+}
+
 /** The onboarding card, on its first step. */
 export async function openOnboarding(page: Page) {
   await page.goto("/hub-dev.html?onboarding");
@@ -22,8 +34,9 @@ export async function openOnboarding(page: Page) {
   await dismissSetup(page);
 }
 
-/** The start step: five starter templates, only the Chief of Staff ticked, and no add-on. */
+/** The first mates step (it walks there): five starter templates, only the Chief of Staff ticked, and no add-on. */
 export async function assertStarterTicks(page: Page) {
+  await toOnboardingStep(page, "team");
   await expect(page.locator("[data-hub-onboarding-team]")).toContainText("Chief of Staff is ticked to get you started. Only ticked ones are added.");
   await expect(page.locator("[data-hub-onboarding-starter]")).toHaveCount(STARTER_IDS.length);
   for (const id of STARTER_IDS) {
@@ -50,7 +63,7 @@ export async function skipAddsNobody(page: Page) {
  */
 export async function tickedBecomesOrdinaryMono(page: Page) {
   await openOnboarding(page);
-  await page.locator("[data-hub-onboarding-next]").click();
+  await toOnboardingStep(page, "team");
   await expect(page.locator('[data-hub-onboarding-starter="coordinator"]')).toHaveAttribute("aria-checked", "true");
   await page.locator("[data-hub-onboarding-skip]").click();
   await expect(page.locator("[data-hub-onboarding]")).toHaveCount(0);

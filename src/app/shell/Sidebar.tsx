@@ -29,6 +29,7 @@ import { TerminalMark } from "../../features/terminalMirror/ui/TerminalMark";
 import { terminalStatusText } from "../../features/terminalMirror/model/list";
 import { confirmDelete } from "../../shared/ui/ConfirmDelete";
 import { leadRenameRow, subChatsByParent } from "../../features/hub/model/codingTeamList";
+import { inChatListScope, setChatListScope, useChatListScope } from "../../features/hub/model/chatListScope";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Archive,
@@ -499,7 +500,19 @@ export type CodingTeamList = {
   /** A project's coding team (its Lead pinned) or a Mono's own team (the Mono pinned). */
   kind: "coding" | "mono";
   /** The chat that owns the team: the project's Lead, or the Mono whose team it is. */
-  lead?: {
+  lead?: TeamLeadRow;
+  /**
+   * A project's chats are shared by the Chief of Staff and the project's Lead. This is the one not on top: listed only
+   * under "Everyone" (chatListScope.ts), and opening it puts it on top.
+   */
+  other?: TeamLeadRow;
+};
+
+/** A first mate's main chat as the row on top of its list. */
+export type TeamLeadRow = {
+    /** Whose list this is (chatListScope.ts): the first mate, and whether the folder's plain chats are theirs. */
+    monoId: string;
+    plainChats: boolean;
     /** Its chat as a row (a stand-in id until its chat exists). */
     session: SessionSummary;
     /** Its mascot, in the provider mark's place. */
@@ -516,7 +529,6 @@ export type CodingTeamList = {
      */
     chatTitle?: string;
     onOpen: () => void;
-  };
 };
 
 function openNotesFromSidebar(notesActive: boolean, docsMode: boolean, open?: () => void) {
@@ -904,6 +916,26 @@ function SidebarComponent({
   const worktreeFocus = useWorktreeFocus(cwd);
   const focusedWorktree = remoteProject ? undefined : worktreeFocus;
   useSyncExternalStore(subscribeMonos, monosSnapshot);
+  // Dropwave (Ash, 11 Nov): a first mate's list holds that first mate's chats. A project's Lead and the Chief of Staff
+  // share the project's folder, so "Everyone" (the switch above the list) is what shows both.
+  const delegationRows = useDelegationRows();
+  const chatScope = useChatListScope();
+  const scopeOwner = codingTeam?.kind === "coding" ? codingTeam.lead : undefined;
+  const startedBy = new Map<string, string>();
+  if (scopeOwner && chatScope === "own") {
+    const at = new Map<string, number>();
+    for (const row of delegationRows) {
+      if ((at.get(row.childSession) ?? -1) > row.createdAt) continue;
+      at.set(row.childSession, row.createdAt);
+      startedBy.set(row.childSession, row.ownerSession);
+    }
+  }
+  const inScope = (sessionId: string) =>
+    !scopeOwner ||
+    inChatListScope(chatScope, scopeOwner, sessionId, {
+      monoOf: (id) => monoForSession(id)?.id,
+      startedBy: (id) => startedBy.get(id),
+    });
   const listableSessions = mergeFolderSessionSummaries(
     projectSessions,
     remoteProject ? [] : openSessions,
@@ -912,6 +944,7 @@ function SidebarComponent({
     (session) =>
       // A first mate's main chat is its pinned row. Its further chats (Dropwave: "New chat" beside it) are listed.
       (!isMonoSession(session.id) || isMonoSideChat(session.id)) &&
+      inScope(session.id) &&
       !("ephemeral" in session && session.ephemeral) &&
       !isHabitRun(session.id) &&
       !session.orchestrationLeadId &&
@@ -977,7 +1010,6 @@ function SidebarComponent({
   // like an orchestrator's agents, rather than listing them on their own. A
   // coding team nests every chat a chat started under the chat Ash talks to
   // (its sub-chats), from its delegation rows and its started chats' ids.
-  const delegationRows = useDelegationRows();
   const teamSubChats = codingTeam
     ? subChatsByParent(
         [
@@ -2175,7 +2207,7 @@ function SidebarComponent({
 
   // The coding team's Lead: a row like any chat's, with its mascot and a pin,
   // that opens its chat in the coding team, its sub-chats folded under it.
-  const renderLeadCard = (lead: NonNullable<CodingTeamList["lead"]>) => {
+  const renderLeadCard = (lead: TeamLeadRow) => {
     const subChats = teamSubChats?.byParent.get(lead.session.id) ?? [];
     const stuck = [...subChatAttention(subChats, now).stuck.values()];
     const renameRow = onRenameSession ? leadRenameRow(lead) : undefined;
@@ -2194,7 +2226,9 @@ function SidebarComponent({
           />
         ) : (
         <SessionCard
-          session={lead.session}
+          // Dressed like the first mate's other chats (Ash, 11 Nov): its mascot and name on the top line, and this
+          // one is its main chat. The narrow list has one line, so there the name stays.
+          session={inset ? lead.session : { ...lead.session, title: "Main chat" }}
           isActive={lead.active}
           isSelected={false}
           busy={lead.busy}
@@ -2203,6 +2237,7 @@ function SidebarComponent({
           needsApproval={false}
           dense={inset}
           mark={lead.mark}
+          markLabel={lead.session.title}
           badge={stuck.length ? <StuckMark stuck={stuck} hideOnHover={false} /> : undefined}
           statusLabel={lead.statusLabel}
           now={now}
@@ -3099,6 +3134,35 @@ function SidebarComponent({
             <div>
               {/* A team's owner (a coding team's Lead, or the Mono whose team it is), pinned at the top: its default
                   chat (Ash, 20 Oct). */}
+              {scopeOwner ? (
+                <div
+                  role="group"
+                  aria-label="Whose chats"
+                  data-chat-scope={chatScope}
+                  className={`flex items-center gap-1 ${inset ? "px-2 pt-1" : "px-1.5 pt-1.5"}`}
+                >
+                  {(
+                    [
+                      ["own", scopeOwner.session.title, `Only chats with ${scopeOwner.session.title}`],
+                      ["all", "Everyone", "Every chat in this project"],
+                    ] as const
+                  ).map(([scope, label, hint]) => (
+                    <button
+                      key={scope}
+                      type="button"
+                      title={hint}
+                      aria-pressed={chatScope === scope}
+                      data-chat-scope-option={scope}
+                      onClick={() => setChatListScope(scope)}
+                      className={`h-6 min-w-0 truncate rounded-md px-2 text-[12px] ${
+                        chatScope === scope ? "bg-content/12 text-content" : "text-content/60 hover:bg-content/5 hover:text-content"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
               {teamLead &&
               !filtersActive &&
               (!searchNarrowed ||
@@ -3110,6 +3174,12 @@ function SidebarComponent({
                 >
                   {/* Keyed by its chat: another team's owner is another row, not this one's title changing. */}
                   <li key={teamLead.session.id}>{renderLeadCard(teamLead)}</li>
+                  {/* Everyone: the other first mate who shares this project's chats. Opening it puts it on top. */}
+                  {scopeOwner && chatScope === "all" && codingTeam?.other ? (
+                    <li key={codingTeam.other.session.id} data-coding-team-other={codingTeam.other.monoId}>
+                      {renderLeadCard(codingTeam.other)}
+                    </li>
+                  ) : null}
                 </ul>
               ) : null}
               {/*

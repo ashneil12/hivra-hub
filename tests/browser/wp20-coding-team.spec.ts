@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { toOnboardingStep } from "./starterOnboarding";
 
 // WP-20: first launch chooses the CLIs on this Mac and a project, then lands in that project's coding team.
 // Monos and a group are offered and stay off unless ticked.
@@ -11,18 +12,20 @@ test("first launch lands in the new project's coding team", async ({ page }) => 
   const notNow = page.getByRole("button", { name: "Not now" });
   if (await notNow.isVisible().catch(() => false)) await notNow.click();
   await expect(page.getByText("What should your team call you?")).toBeVisible();
-  await page.locator("[data-hub-onboarding-next]").click();
+  // One thing a step: the project, then its first mates, then the coding tools.
+  await toOnboardingStep(page, "start");
+  await page.locator("[data-hub-onboarding-project]").fill("Field notes");
+  await toOnboardingStep(page, "team");
   await expect(page.locator("[data-hub-onboarding-team]")).toContainText("Only ticked ones are added");
+  await expect(page.locator("[data-hub-onboarding-group]")).toHaveAttribute("aria-checked", "false");
+  await expect(page.locator("[data-hub-onboarding-starter]")).toHaveCount(5);
+  await toOnboardingStep(page, "tools");
   // Dropwave: a setup that already proved Claude Code (this page's stand-in does) starts with it ticked; the other
   // tools stay off.
   const claude = page.locator('[data-hub-onboarding-cli="claude"]');
   await expect(claude).toHaveAttribute("aria-checked", "true");
   await expect(page.locator('[data-hub-onboarding-cli="codex"]')).toHaveAttribute("aria-checked", "false");
-  await expect(page.locator("[data-hub-onboarding-group]")).toHaveAttribute("aria-checked", "false");
-  await expect(page.locator("[data-hub-onboarding-starter]")).toHaveCount(5);
-  await page.locator("[data-hub-onboarding-project]").fill("Field notes");
-  await page.locator("[data-hub-onboarding-next]").click();
-  await page.locator("[data-hub-onboarding-next]").click();
+  await toOnboardingStep(page, "done");
   await page.locator("[data-hub-onboarding-done]").click();
   await expect(card).toHaveCount(0);
 

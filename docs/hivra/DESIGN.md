@@ -43,7 +43,9 @@ Example text in a mockup or a test starts with "Example:" and never contains a r
    `src/features/hub/model/homeScope.ts`).
 2. **Sidebar** (`src/app/shell/ProjectRail.tsx`), always in this order:
    Search; **Home**; **Chief of Staff** (`HubTopNav.tsx`); Inbox; Notes; Automations; Pages; pinned pages;
-   **First mates** (`MonoRailSection.tsx`, inside a project only: "no first mates on Home"); **Teams**
+   **First mates** (`MonoRailSection.tsx`, inside a project only: "no first mates on Home"; its + is "New first
+   mate": a name and what it looks after, or one already made added to this project. A project starts with the Chief
+   of Staff and its lead; every other first mate is the person's choice); **Teams**
    (`HubProjectItems.tsx`, inside a project only); Settings at the bottom.
 3. **Main area**: whatever the sidebar row opens. Only the open thing is highlighted, in one place.
 4. **Right panel**: a chat's sessions, notes, history and changes. Code tools (Git, files, changes, worktrees) stay
@@ -58,8 +60,12 @@ name. Opening the Chief of Staff from Home keeps Home selected.
    existing one. Look in `src/shared/ui/` first: `Popover`, `Modal`, `ConfirmDelete`, `SecondaryButton`,
    `SearchableSelect`, `PaneHeader`, `icons`. A sidebar row is a `RailAction` (`src/app/shell/RailAction.tsx`).
 2. **One chat look.** Every one-to-one chat (Chief of Staff, a Lead, any first mate, a plain chat) is the same layout:
-   the chat list on the left with one chat pinned on top, the same composer, tab strip and footer (`ONE_CHAT_LOOK`,
+   the chat list on the left, the same composer, tab strip and footer (`ONE_CHAT_LOOK`,
    `src/features/hub/model/hubBundle.ts`). Never give one kind of chat its own header or message box.
+   **The list is the open first mate's own**: its main chat on top (marked "Main chat"), then its other chats and the
+   chats it started. A two-way switch above the list (the first mate's name, Everyone) brings in the rest of the
+   project's chats; the choice is kept (`src/features/hub/model/chatListScope.ts`). A chat never shows under a first
+   mate it does not belong to.
 3. **Always say who you are talking to.** A chat's header, its row in the list and its empty state carry the first
    mate's name and mascot, never a model name or the word "Chat" alone.
 4. **The gallery look for list screens** (Pages, Automations, Settings lists): full width with `px-6 pt-5 pb-10
@@ -89,13 +95,22 @@ name. Opening the Chief of Staff from Home keeps Home selected.
     cards, no example rows in the real app.
 13. **Every control keeps a test hook.** A `data-…` attribute on anything a test or a first mate would click, and an
     `aria-label` on every icon-only button. When a control moves, its hook moves with it.
+14. **A row that needs you opens its own card, where it is.** In the Inbox a Needs you row opens beside the list
+    (`src/features/needs/ui/NeedDetail.tsx`): what was asked, who asked and when, the row's own answers (the one-tap
+    answer filled, the rest quiet), the way to the chat or page it came from, and a box that sends a few words to that
+    chat. A row never throws the person onto another screen without saying where. The Inbox's tabs read All, Asks,
+    then each source: asks and work items stay apart (`src/features/needs/model/inboxShow.ts`).
+15. **A flow asks one thing a step.** First run (`HubOnboarding.tsx`) goes welcome, the first project, its first
+    mates, the coding tools, a look, done; each step has one heading and one choice, nothing is required, and the
+    last step says back what was chosen before anything opens. A list a person chooses from says what each choice
+    does in full under its name, never cut short.
 
 ## 5. Where things are
 
 | Screen | File |
 |---|---|
 | Home (cards, Chief of Staff box) | `src/features/home/ui/HomeScreen.tsx` (drawing), `HomeView.tsx` (wiring) |
-| Needs you (the one list) | `src/features/needs/model/needsLive.ts`, `needsYou.ts`; in the Inbox: `src/features/needs/ui/InboxNeeds.tsx` |
+| Needs you (the one list) | `src/features/needs/model/needsLive.ts`, `needsYou.ts`; in the Inbox: `src/features/needs/ui/InboxNeeds.tsx` (rows), `NeedDetail.tsx` (a row's card) |
 | Sidebar | `src/app/shell/ProjectRail.tsx`, `Sidebar.tsx` (chat list), `MonoRailSection.tsx`, `src/features/hub/ui/HubTopNav.tsx`, `HubProjectItems.tsx` |
 | What is selected | `src/features/hub/model/hubNav.ts` (`HubSelection`), `homeScope.ts` |
 | A first mate and its chats | `src/features/monos/model/mono.ts`, `monoWorkspace.ts` |

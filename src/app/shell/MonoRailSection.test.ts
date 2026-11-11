@@ -135,7 +135,7 @@ it("counts a mono's unread replies, except the one open", () => {
   expect(badge()).toBeNull();
 });
 
-it("hub, clean first launch: no default team, no intro card, no blue switch, one create button", async () => {
+it("hub, clean first launch: no default team, no intro card, no blue switch, one create button (New first mate)", async () => {
   vi.resetModules();
   const { addMono } = await import("../../features/monos/model/mono");
   const { hubMonoRank } = await import("../../features/hub/model/hubData");
@@ -151,7 +151,7 @@ it("hub, clean first launch: no default team, no intro card, no blue switch, one
   expect(intro()).toBeNull();
   expect(container.querySelector('[role="switch"]')).toBeNull();
   expect(container.querySelector(".bg-accent")).toBeNull();
-  expect([...container.querySelectorAll("button")].filter((b) => /create mono|new mono/i.test(b.getAttribute("aria-label") ?? b.textContent ?? ""))).toHaveLength(1);
+  expect([...container.querySelectorAll("button")].filter((b) => /create mono|new mono|new first mate/i.test(b.getAttribute("aria-label") ?? b.textContent ?? ""))).toHaveLength(1);
   for (const [id, name] of [["ada", "Ada"], ["bo", "Bo"], ["ed", "Ed"], ["cam", "Cam"]] as const)
     addMono({ id, name, mascot: "robot", color: "gray", projects: [] });
   render({ rank: hubMonoRank });

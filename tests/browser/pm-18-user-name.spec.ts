@@ -22,11 +22,12 @@ test("fresh install onboarding: your name, and no pre-load", async ({ page }) =>
   await noAsh();
 
   await page.locator("[data-hub-onboarding-next]").click();
-  await assertStarterTicks(page);
-  await expect(page.getByText("The first mono you talk to about work.").first()).toBeVisible();
+  // The project step carries the ready-made pages line; the first mates are the step after it.
   const line = page.locator("[data-hub-onboarding-dashboards]");
   const box = await line.boundingBox();
   expect(box && box.height).toBeLessThan(24); // one line: "Org / ops" doesn't wrap
+  await assertStarterTicks(page);
+  await expect(page.getByText("The first mono you talk to about work.").first()).toBeVisible();
   await noAsh();
   await skipAddsNobody(page);
   await tickedBecomesOrdinaryMono(page);

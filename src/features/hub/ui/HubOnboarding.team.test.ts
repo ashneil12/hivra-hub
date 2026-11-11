@@ -38,16 +38,23 @@ function typeName(value: string) {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 }
+const stepNow = () => container.querySelector("[data-hub-onboarding]")?.getAttribute("data-step");
+/** Continue until the card is on this step (one thing a step: welcome, start, team, tools, theme, done). */
+function to(step: string) {
+  for (let i = 0; i < 8 && stepNow() !== step; i += 1) act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  expect(stepNow()).toBe(step);
+}
 function finish(pick?: string, name?: string) {
   act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
   expect(container.textContent).toContain("What should your team call you?");
   if (name) typeName(name);
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  to("start");
   expect(container.textContent).not.toMatch(/\bAsh\b/);
-  expect(container.textContent).not.toMatch(/pre-load|saved team/i); // step 2: no pre-load offered
+  expect(container.textContent).not.toMatch(/pre-load|saved team/i); // no pre-load offered
+  to("team");
+  expect(container.textContent).not.toMatch(/\bAsh\b|pre-load|saved team/i);
   if (pick) act(() => button(pick).click());
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  to("done");
   act(() => (container.querySelector("[data-hub-onboarding-done]") as HTMLElement).click());
 }
 
@@ -63,7 +70,7 @@ it("the name typed is what the team calls you", () => {
 
 it("offers the starter Monos with only the Chief of Staff ticked, and adds only what stays ticked", () => {
   act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  to("team");
   expect(container.querySelector("[data-hub-onboarding-team]")?.textContent).toContain("Chief of Staff is ticked to get you started. Only ticked ones are added.");
   const boxes = [...container.querySelectorAll("[data-hub-onboarding-starter]")];
   expect(boxes.map((box) => box.getAttribute("data-hub-onboarding-starter"))).toEqual([
@@ -96,31 +103,34 @@ it("a project that cannot be made stays on the card, with what was entered", asy
   const closed = vi.fn();
   act(() => root.render(createElement(HubOnboarding, { onClose: closed })));
   typeName("Sam");
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
-  act(() => (container.querySelector('[data-hub-onboarding-cli="codex"]') as HTMLElement).click());
+  to("start");
   const project = container.querySelector("[data-hub-onboarding-project]") as HTMLInputElement;
   const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
   act(() => {
     set.call(project, "Field notes");
     project.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  to("team");
   act(() => (container.querySelector("[data-hub-onboarding-group]") as HTMLElement).click());
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  to("tools");
+  act(() => (container.querySelector('[data-hub-onboarding-cli="codex"]') as HTMLElement).click());
+  to("done");
   await act(async () => {
     (container.querySelector("[data-hub-onboarding-done]") as HTMLElement).click();
   });
   expect(closed).not.toHaveBeenCalled();
   expect(localStorage.getItem("monocode:hub-onboarded")).not.toBe("1");
   expect(storedUserName()).toBe("");
+  // Back on the project step, with the name still there; the ticks on the later steps are kept too.
+  expect(stepNow()).toBe("start");
   expect(container.querySelector("[data-hub-onboarding-error]")?.textContent).toMatch(/could not be made/i);
   expect((container.querySelector("[data-hub-onboarding-project]") as HTMLInputElement).value).toBe("Field notes");
-  expect(container.querySelector('[data-hub-onboarding-cli="codex"]')?.getAttribute("aria-checked")).toBe("true");
-  expect(container.querySelector("[data-hub-onboarding-group]")?.getAttribute("aria-checked")).toBe("true");
-
   setHubDataSource(mockHubData);
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  to("team");
+  expect(container.querySelector("[data-hub-onboarding-group]")?.getAttribute("aria-checked")).toBe("true");
+  to("tools");
+  expect(container.querySelector('[data-hub-onboarding-cli="codex"]')?.getAttribute("aria-checked")).toBe("true");
+  to("done");
   await act(async () => {
     (container.querySelector("[data-hub-onboarding-done]") as HTMLElement).click();
   });
@@ -129,18 +139,70 @@ it("a project that cannot be made stays on the card, with what was entered", asy
   expect(storedUserName()).toBe("Sam");
 });
 
-it("offers the CLIs, a project and a group on the same step, and none are required", () => {
+// Ash, 11 Nov: onboarding "doesn't carry you through a proper setup flow". One thing a step, and none is required.
+it("carries a person through one thing a step: the project, its first mates, the tools, and none is required", () => {
   act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
-  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 1 of 4");
-  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
-  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 2 of 4");
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 1 of 6");
+  to("start");
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 2 of 6");
+  expect(container.querySelector("[data-hub-onboarding-project]")).toBeTruthy();
+  expect(container.querySelectorAll("[data-hub-onboarding-starter]")).toHaveLength(0);
+  expect(container.querySelectorAll("[data-hub-onboarding-cli]")).toHaveLength(0);
+  to("team");
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 3 of 6");
+  expect(container.querySelectorAll("[data-hub-onboarding-starter]")).toHaveLength(5);
+  expect(container.querySelector("[data-hub-onboarding-group]")?.getAttribute("aria-checked")).toBe("false");
+  // Each one says what it does, in full, under its name.
+  expect(container.querySelector('[data-hub-onboarding-starter="planner"]')?.textContent).toContain("Keeps the board: owner, state, evidence.");
+  to("tools");
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 4 of 6");
   const clis = [...container.querySelectorAll("[data-hub-onboarding-cli]")];
   expect(clis.map((box) => box.getAttribute("data-hub-onboarding-cli"))).toContain("claude");
   // Dropwave: a setup that already proved Claude Code starts with it ticked; nothing else is, and it can be unticked.
   const tickedClis = clis.filter((box) => box.getAttribute("aria-checked") === "true").map((box) => box.getAttribute("data-hub-onboarding-cli"));
   expect(setupProved()).toBe(true);
   expect(tickedClis).toEqual(["claude"]);
-  expect(container.querySelector("[data-hub-onboarding-group]")?.getAttribute("aria-checked")).toBe("false");
-  expect(container.querySelector("[data-hub-onboarding-project]")).toBeTruthy();
-  expect(container.querySelectorAll("[data-hub-onboarding-starter]")).toHaveLength(5);
+  to("done");
+  // The last step says back what was set up.
+  const summary = container.querySelector("[data-hub-onboarding-summary]")?.textContent ?? "";
+  expect(summary).toContain("First mates: Chief of Staff");
+  expect(summary).toContain("Coding tools: Claude Code");
+});
+
+it("the first mates picked join the first project, so its list shows them; the Chief of Staff belongs to none", async () => {
+  setHubDataSource(mockHubData);
+  const closed = vi.fn();
+  act(() => root.render(createElement(HubOnboarding, { onClose: closed })));
+  to("start");
+  const project = container.querySelector("[data-hub-onboarding-project]") as HTMLInputElement;
+  const set = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => {
+    set.call(project, "Field notes");
+    project.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  to("team");
+  expect(container.querySelector("[data-hub-onboarding-team]")?.textContent).toContain("They join Field notes.");
+  act(() => (container.querySelector('[data-hub-onboarding-starter="planner"]') as HTMLElement).click());
+  to("done");
+  expect(container.querySelector("[data-hub-onboarding-summary]")?.textContent).toContain("Project: Field notes");
+  expect(container.querySelector("[data-hub-onboarding-summary]")?.textContent).toContain("First mates: Chief of Staff, Planner");
+  await act(async () => {
+    (container.querySelector("[data-hub-onboarding-done]") as HTMLElement).click();
+  });
+  expect(closed).toHaveBeenCalled();
+  const added = listMonos();
+  const planner = added.find((mono) => mono.name === "Planner");
+  const chiefMono = added.find((mono) => mono.name === "Chief of Staff");
+  expect(planner?.projects).toHaveLength(1);
+  expect(planner?.projects[0]).toContain("field-notes");
+  expect(chiefMono?.projects).toEqual([]);
+});
+
+it("a restore skips the first mates and the tools: the export brings them", () => {
+  act(() => root.render(createElement(HubOnboarding, { onClose: () => undefined })));
+  to("start");
+  act(() => button("Restore from an export").click());
+  expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 2 of 4");
+  act(() => (container.querySelector("[data-hub-onboarding-next]") as HTMLElement).click());
+  expect(stepNow()).toBe("theme");
 });
