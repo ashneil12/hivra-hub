@@ -2627,7 +2627,7 @@ mod tests {
         let wake = &open_wakes(&store)[0];
         assert!(
             wake.text
-                .contains("moved to b2b2b2b and changed files this pull request touches"),
+                .contains("(now b2b2b2b) changed files this pull request touches since this branch last took it"),
             "{}",
             wake.text
         );
@@ -2692,14 +2692,14 @@ mod tests {
         assert!(open_wakes(&store).is_empty());
     }
 
-    /// The check runs of the fixture head, as if they ran on `base` (WP-202: the merge gate reads this from GitHub).
-    fn checks_on(base: &str) -> String {
-        json!({
-            "total_count": 1,
-            "check_runs": [{ "name": "build", "status": "completed", "conclusion": "success",
-                             "pull_requests": [{ "base": { "sha": base } }] }]
-        })
-        .to_string()
+    /// The merge base of the fixture head and main B2 (where the branch last took main), as GitHub's compare says it.
+    fn took_main_at(base: &str) -> (String, String) {
+        (
+            format!("compare/{B2}...{HEAD}"),
+            json!({ "status": "ahead", "ahead_by": 1, "behind_by": 1,
+                    "merge_base_commit": { "sha": base }, "files": [] })
+            .to_string(),
+        )
     }
 
     /// The merge gate's view of the fixture head, judged from GitHub's answers on `gh` (no stored state).
@@ -2708,9 +2708,10 @@ mod tests {
         base::hold(&|p: &str| gh.rest(p), "cli/cli", 14716, HEAD, &read)
     }
 
-    /// The checks ran on main B1; main has moved to B2 over src/lib.rs since.
-    fn checks_ran_on_b1(gh: FakeGh) -> FakeGh {
-        gh.with_rest(&format!("commits/{HEAD}/check-runs"), &checks_on(B1))
+    /// The branch last took main at B1; main has moved to B2 over src/lib.rs since.
+    fn took_b1(gh: FakeGh) -> FakeGh {
+        let (key, answer) = took_main_at(B1);
+        gh.with_rest(&key, &answer)
     }
 
     #[test]
@@ -2724,7 +2725,7 @@ mod tests {
         )
         .unwrap();
         let mut paused = 0;
-        let gh = checks_ran_on_b1(moves_to_b2(
+        let gh = took_b1(moves_to_b2(
             FakeGh::new(vec![Ok(based(B2))]),
             &["src/lib.rs"],
             1,
@@ -2733,7 +2734,7 @@ mod tests {
         assert_eq!(swept.wakes.len(), 1, "the move is told: {swept:?}");
         assert!(
             held_at_merge(&gh).is_some(),
-            "checks ran on B1 and main changed src/lib.rs since: the merge must wait"
+            "the branch took main at B1 and main changed src/lib.rs since: the merge must wait"
         );
     }
 
@@ -2748,7 +2749,7 @@ mod tests {
         )
         .unwrap();
         let mut paused = 0;
-        let gh = checks_ran_on_b1(moves_to_b2(
+        let gh = took_b1(moves_to_b2(
             FakeGh::new(vec![Ok(based(B2))]),
             &["src/lib.rs"],
             1,
@@ -2756,7 +2757,7 @@ mod tests {
         run(&store, &gh, T0 + 7 * 60 * 60_000, &mut paused);
         assert!(
             held_at_merge(&gh).is_some(),
-            "a stale baseline must not move the checked main"
+            "a stale baseline must not move the merge base"
         );
     }
 
@@ -2777,7 +2778,7 @@ mod tests {
             T0 + 60_000,
         )
         .unwrap();
-        let gh = checks_ran_on_b1(moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1));
+        let gh = took_b1(moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1));
         assert!(
             held_at_merge(&gh).is_some(),
             "a second watch must not clear the hold"
@@ -2806,7 +2807,7 @@ mod tests {
             T0 + 60_000,
         )
         .unwrap();
-        let gh = checks_ran_on_b1(moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1));
+        let gh = took_b1(moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1));
         assert!(
             held_at_merge(&gh).is_some(),
             "unwatching must not clear the hold"

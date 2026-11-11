@@ -169,10 +169,10 @@ pub(crate) mod fake {
                 {
                     return Ok(json.clone());
                 }
-                // Unanswered check runs ran on the main the shared test pull request is based on, so nothing holds.
-                if path.contains("check-runs") {
+                // Unanswered merge-base reads say the branch took main at the shared test main, so nothing holds.
+                if path.contains("compare/") && path.contains("per_page=1") {
                     return Ok(format!(
-                        r#"{{"total_count":1,"check_runs":[{{"name":"build","status":"completed","conclusion":"success","pull_requests":[{{"base":{{"sha":"{}"}}}}]}}]}}"#,
+                        r#"{{"status":"ahead","ahead_by":1,"behind_by":0,"merge_base_commit":{{"sha":"{}"}},"files":[]}}"#,
                         "ba5e".repeat(10)
                     ));
                 }

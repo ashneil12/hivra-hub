@@ -1285,4 +1285,50 @@ pub(crate) mod tests {
             got.detail.checks
         );
     }
+
+    /// r2 check (M2 edges): exactly 100 is one page, 101 is two, and a total GitHub doesn't deliver is an error.
+    #[test]
+    fn r2_rest_pages_reads_the_page_edges_and_refuses_a_short_total() {
+        let page = |total: usize, from: usize, to: usize| {
+            json!({
+                "total_count": total,
+                "check_runs": (from..to).map(|i| json!({ "name": format!("c{i}") })).collect::<Vec<_>>(),
+            })
+            .to_string()
+        };
+        let path = "repos/acme/web/commits/h/check-runs";
+        let gh = FakeGh::new(vec![]).with_rest("&page=1", &page(100, 0, 100));
+        assert_eq!(
+            rest_pages(&|p: &str| gh.rest(p), path, "check_runs")
+                .unwrap()
+                .items
+                .len(),
+            100
+        );
+        let gh = FakeGh::new(vec![])
+            .with_rest("&page=1", &page(101, 0, 100))
+            .with_rest("&page=2", &page(101, 100, 101));
+        assert_eq!(
+            rest_pages(&|p: &str| gh.rest(p), path, "check_runs")
+                .unwrap()
+                .items
+                .len(),
+            101
+        );
+        let gh = FakeGh::new(vec![])
+            .with_rest("&page=1", &page(101, 0, 100))
+            .with_rest("&page=2", &page(101, 0, 0));
+        assert!(rest_pages(&|p: &str| gh.rest(p), path, "check_runs").is_err());
+        // No total_count: read until an empty page.
+        let gh = FakeGh::new(vec![])
+            .with_rest("&page=1", r#"{"check_runs":[{"name":"a"}]}"#)
+            .with_rest("&page=2", r#"{"check_runs":[]}"#);
+        assert_eq!(
+            rest_pages(&|p: &str| gh.rest(p), path, "check_runs")
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
+    }
 }

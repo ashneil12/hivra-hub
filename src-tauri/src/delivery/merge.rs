@@ -174,7 +174,7 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
     // changes touch this pull request is judged at merge time (base.rs), so a pull request that misses them ships.
     if read.merge_state.as_deref() == Some("DIRTY") {
         return Decision::Refuse(format!(
-            "{pr} conflicts with main; rebase, push, and wait for green again."
+            "{pr} conflicts with main; merge main into it, resolve the conflicts, push, and wait for green again."
         ));
     }
     let (checks, required) = gate(&read.detail.checks);
@@ -224,8 +224,8 @@ pub fn decide(read: &PrRead, open_decision: Option<&str>, allow: &Allow) -> Deci
     }
 }
 
-/// The base check (WP-202) for the merge gate: `Some(reason)` holds the merge. It reads GitHub only (the checks' own
-/// main, the compare, the files), never the database, and it runs after the store lock is released.
+/// The base check (WP-202) for the merge gate: `Some(reason)` holds the merge. It reads GitHub only (the merge base, the
+/// compare, the files), never the database, and it runs with the store lock released.
 fn base_hold(
     gh: &dyn Github,
     repo: &str,
@@ -712,6 +712,20 @@ pub fn merge(
         }
     } else {
         decided
+    };
+    // WP-202 (L1): the base hold runs before any question is asked. A pull request that main has moved under is refused,
+    // never "is green. Merge it?" first. Its GitHub reads run with the store lock released.
+    let decision = match decision {
+        Decision::Refuse(reason) => Decision::Refuse(reason),
+        other => {
+            drop(conn);
+            let held = base_hold(gh, &repo, number, &head, &read);
+            conn = store.lock_conn()?;
+            match held {
+                Some(reason) => Decision::Refuse(reason),
+                None => other,
+            }
+        }
     };
     let allowed_by = match decision {
         Decision::Refuse(reason) => {

@@ -1,9 +1,14 @@
 //! The base branch under a watched pull request (WP-202): when main moved, whether what it changed touches the pull
-//! request's own files, how far behind main the branch is, and which main the pull request's checks last ran on.
+//! request's own files, and how far behind main the branch is.
+//!
+//! The rule is "main changed <files> since this branch last took main; merge main into it". "Last took main" is the
+//! merge base of the branch and main, read from GitHub's git data (compare's `merge_base_commit`). It is never read
+//! from check runs: a check run's recorded base is the pull request's base, not the main it tested, and a repo with no
+//! CI, a status-only CI or a fork has no such run at all.
 //!
 //! Every fact comes from GitHub through a `get` (a REST path to its JSON), so the sweep and the merge gate read the
-//! same way. Nothing here writes to GitHub, and nothing is stored as "green": the merge gate asks GitHub, at merge
-//! time, which main the head's checks ran on. A missing or unreadable fact holds the merge rather than passing it.
+//! same way. Nothing here writes to GitHub, and nothing is stored as "green". A missing or unreadable fact holds the
+//! merge rather than passing it.
 
 use super::eval::{Change, Memo};
 use super::github::PrRead;
@@ -164,38 +169,22 @@ fn pull_files(get: Get, repo: &str, number: u64) -> Result<(Vec<String>, bool), 
     ))?)
 }
 
-/// The main commit each of the head's check runs ran on (their `pull_requests[].base.sha`), read from every page.
-/// `Ok(None)`: no run says. `Err`: the runs disagree, or the list can't be read whole. Either way the merge waits.
-pub fn checks_base(get: Get, repo: &str, head: &str) -> Result<Option<String>, String> {
-    if !is_sha(head) {
-        return Err("the head is not a commit id".into());
+/// The merge base of `base` and `head`: the commit the branch last took main at (compare's `merge_base_commit`). `None`
+/// when GitHub doesn't say. The `per_page=1` is only there so that this call's path is not the one the floor's file
+/// list reads (the floor counts its own calls; the hold's calls carry a query string).
+pub fn merge_base(get: Get, repo: &str, base: &str, head: &str) -> Result<Option<String>, String> {
+    if !is_sha(base) || !is_sha(head) {
+        return Err("a commit id is not a commit id".into());
     }
-    let paged = super::github::rest_pages(
-        get,
-        &format!("repos/{repo}/commits/{head}/check-runs"),
-        "check_runs",
-    )?;
-    let mut bases: Vec<String> = Vec::new();
-    for run in &paged.items {
-        let Some(prs) = run
-            .get("pull_requests")
-            .and_then(serde_json::Value::as_array)
-        else {
-            continue;
-        };
-        for pr in prs {
-            if let Some(sha) = pr.pointer("/base/sha").and_then(serde_json::Value::as_str) {
-                if !bases.iter().any(|b| b == sha) {
-                    bases.push(sha.to_string());
-                }
-            }
-        }
-    }
-    match bases.len() {
-        0 => Ok(None),
-        1 => Ok(bases.pop()),
-        _ => Err("the checks ran on more than one main".into()),
-    }
+    let json: serde_json::Value = serde_json::from_str(&get(&format!(
+        "repos/{repo}/compare/{base}...{head}?per_page=1"
+    ))?)
+    .map_err(|_| "GitHub's compare answer was not JSON".to_string())?;
+    Ok(json
+        .pointer("/merge_base_commit/sha")
+        .and_then(serde_json::Value::as_str)
+        .filter(|sha| is_sha(sha))
+        .map(str::to_string))
 }
 
 /// Everything the network says for one open pull request this read: main's move, the pull request's files, how far
@@ -367,9 +356,9 @@ pub fn settle_stale(memo: &mut Memo, read: &PrRead) {
 // ---- the merge gate -------------------------------------------------------------------------------------------------
 
 /// The merge gate's base check (WP-202), read from GitHub at merge time and never from the database. `Some(reason)`
-/// holds the merge. It holds when main moved since the main the head's checks ran on and what it changed touches this
-/// pull request, and whenever the answer is unknown: no base, no checks that say which main they ran on, a rewritten
-/// main, or a read that failed. A move that misses the pull request's files holds nothing.
+/// holds the merge. It holds when main changed the files this pull request touches since the branch last took main, and
+/// whenever the answer is unknown: no base, no merge base, a rewritten main, or a read that failed. A move that misses
+/// the pull request's files holds nothing, and a branch that has main already holds nothing.
 pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Option<String> {
     let pr = format!("{repo}#{number}");
     let Some(base) = read.base_tip.as_deref() else {
@@ -377,22 +366,26 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
             "{pr}'s base branch couldn't be read, so it waits. Try again."
         ));
     };
-    let green = match checks_base(get, repo, head) {
+    let took = match merge_base(get, repo, base, head) {
         Ok(Some(sha)) => sha,
         Ok(None) => {
             return Some(format!(
-                "{pr}'s checks don't say which main they ran on, so it waits for a run on the current main."
+                "{pr}'s merge base with main couldn't be read, so it waits. Try again."
             ))
         }
-        Err(error) => return Some(format!("{pr}'s checks couldn't be checked ({error}), so it waits. Try again.")),
+        Err(error) => {
+            return Some(format!(
+                "{pr} couldn't be checked against main ({error}), so it waits. Try again."
+            ))
+        }
     };
-    if green == base {
+    if took == base {
         return None;
     }
-    let moved = match compare(get, repo, &green, base) {
+    let moved = match compare(get, repo, &took, base) {
         Ok(c) if c.status == "diverged" => {
             return Some(format!(
-                "main was rewritten since {pr}'s checks ran, so it waits for a run on the new main."
+                "main was rewritten since this branch last took main, so {pr} waits. Merge main into it, push, and wait for green again."
             ))
         }
         Ok(c) => Moved {
@@ -402,7 +395,7 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
         },
         Err(error) => {
             return Some(format!(
-                "{pr} couldn't be checked against main's changes since its checks ran ({error}), so it waits. Try again."
+                "{pr} couldn't be checked against main's changes ({error}), so it waits. Try again."
             ))
         }
     };
@@ -414,14 +407,15 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
             ))
         }
     };
+    let tail = "merge main into it, push, and wait for green again. On GitHub, the pull request's Update branch button does the merge for you.";
     match touch(&moved, &pr_files) {
         Touch::None => None,
         Touch::Named(files) => Some(format!(
-            "main moved since {pr}'s checks ran, and changed {}. Rebase onto main, push, and wait for green again.",
+            "main changed {} since this branch last took main; {tail}",
             files.join(", ")
         )),
         Touch::Unknown => Some(format!(
-            "main moved since {pr}'s checks ran and changed more files than GitHub lists, so it may touch this pull request. Rebase onto main, push, and wait for green again."
+            "main changed more files than GitHub lists since this branch last took main, so it may touch this pull request; {tail}"
         )),
     }
 }
@@ -492,16 +486,6 @@ mod tests {
             "files": files.iter().map(|n| serde_json::json!({ "filename": n })).collect::<Vec<_>>(),
             "ahead_by": ahead,
             "behind_by": 0,
-        })
-        .to_string()
-    }
-
-    /// Check runs that ran on `base`, one page.
-    fn checks_on(base: &str) -> String {
-        serde_json::json!({
-            "total_count": 1,
-            "check_runs": [{ "name": "build", "status": "completed", "conclusion": "success",
-                             "pull_requests": [{ "base": { "sha": base } }] }]
         })
         .to_string()
     }
@@ -748,16 +732,29 @@ mod tests {
         assert_eq!(memo.told_base, vec![format!("behind {H1} {B2}")]);
     }
 
+    /// The merge base of the branch and main: where the branch last took main.
+    fn took_main_at(base: &str) -> (String, String) {
+        (
+            format!("compare/{B2}...{H1}"),
+            serde_json::json!({ "status": "ahead", "ahead_by": 1, "behind_by": 1,
+                "merge_base_commit": { "sha": base }, "files": [] })
+            .to_string(),
+        )
+    }
+
     #[test]
-    fn the_merge_hold_holds_a_move_over_the_files_since_the_checks_ran_on_the_old_main() {
+    fn the_merge_hold_holds_a_move_over_the_files_since_the_branch_last_took_main() {
         let get = canned(vec![
-            (checks_key(), checks_on(B1)),
+            took_main_at(B1),
             (moved_key(), compare_json(&["src/lib.rs"], 0)),
-            ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+            (
+                "pulls/7/files".into(),
+                files_json(&["src/lib.rs", "README.md"]),
+            ),
         ]);
         let reason = hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).expect("held");
         assert!(
-            reason.contains("src/lib.rs") && reason.contains("Rebase onto main"),
+            reason.contains("src/lib.rs") && reason.contains("merge main into it"),
             "{reason}"
         );
     }
@@ -765,7 +762,7 @@ mod tests {
     #[test]
     fn the_merge_hold_lets_a_move_that_misses_the_pull_request_through() {
         let get = canned(vec![
-            (checks_key(), checks_on(B1)),
+            took_main_at(B1),
             (moved_key(), compare_json(&["docs/notes.md"], 0)),
             ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
         ]);
@@ -773,54 +770,38 @@ mod tests {
     }
 
     #[test]
-    fn the_merge_hold_lets_a_pull_request_through_when_its_checks_ran_on_the_current_main() {
-        let get = canned(vec![(checks_key(), checks_on(B2))]);
+    fn the_merge_hold_lets_a_branch_that_already_has_main_through() {
+        let get = canned(vec![took_main_at(B2)]);
         assert_eq!(hold(&get, "acme/web", 7, H1, &open(H1, B2, None)), None);
     }
 
     #[test]
-    fn the_merge_hold_holds_when_the_checks_do_not_say_which_main_they_ran_on() {
-        let none = canned(vec![(
-            checks_key(),
-            r#"{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"success","pull_requests":[]}]}"#
-                .into(),
+    fn the_merge_hold_holds_when_the_merge_base_or_the_base_branch_is_unknown() {
+        let no_base = canned(vec![(
+            format!("compare/{B2}...{H1}"),
+            r#"{"status":"ahead","ahead_by":1,"files":[]}"#.into(),
         )]);
         assert!(
-            hold(&none, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
-            "unknown holds"
+            hold(&no_base, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
+            "no merge base holds"
         );
-        let split = canned(vec![(
-            checks_key(),
-            r#"{"total_count":2,"check_runs":[
-                {"name":"a","pull_requests":[{"base":{"sha":"b1b1b1b"}}]},
-                {"name":"b","pull_requests":[{"base":{"sha":"b9b9b9b"}}]}]}"#
-                .into(),
-        )]);
-        assert!(
-            hold(&split, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
-            "runs on two mains hold"
-        );
-    }
-
-    #[test]
-    fn the_merge_hold_holds_when_the_base_branch_is_unknown_or_the_move_cannot_be_read() {
-        let get = canned(vec![(checks_key(), checks_on(B1))]);
-        let no_tip = PrRead {
+        let unknown_tip = PrRead {
             base_tip: None,
             ..open(H1, B2, None)
         };
         assert!(
-            hold(&get, "acme/web", 7, H1, &no_tip).is_some(),
+            hold(&no_base, "acme/web", 7, H1, &unknown_tip).is_some(),
             "an unknown base holds"
         );
-        let reason = hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).expect("held");
+        let unreadable = canned(vec![]);
+        let reason = hold(&unreadable, "acme/web", 7, H1, &open(H1, B2, None)).expect("held");
         assert!(reason.contains("couldn't be"), "{reason}");
     }
 
     #[test]
-    fn the_merge_hold_holds_a_rewritten_main_since_the_checks_ran() {
+    fn the_merge_hold_holds_a_rewritten_main_since_the_branch_last_took_it() {
         let get = canned(vec![
-            (checks_key(), checks_on(B1)),
+            took_main_at(B1),
             (
                 moved_key(),
                 r#"{"status":"diverged","ahead_by":1,"behind_by":1,"files":[]}"#.into(),
@@ -834,6 +815,60 @@ mod tests {
     fn a_commit_id_that_is_not_hex_never_reaches_a_path() {
         let get = canned(vec![]);
         assert!(compare(&get, "acme/web", "../../user", B2).is_err());
-        assert!(checks_base(&get, "acme/web", "../../user").is_err());
+        assert!(merge_base(&get, "acme/web", B2, "../../user").is_err());
+    }
+
+    /// r2 HIGH: GitHub leaves a check run's `pull_requests` empty for a fork's pull request, and a repo with no CI or a
+    /// status-only CI has no check runs at all. The hold then says "waits for a run on the current main", but no run
+    /// will ever carry the base, so it holds for good, with main exactly where the branch left it (its merge base, and
+    /// GitHub's recorded `pulls/7` base, are main's tip). WP-202 is out of scope for "blocking pull requests that do not
+    /// touch the moved files", and nothing moved here.
+    #[test]
+    fn r2_an_unmoved_main_holds_nothing_when_no_check_run_carries_a_pull_request_base() {
+        let unmoved = |checks: &str| {
+            canned(vec![
+                (checks_key(), checks.to_string()),
+                ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+                (
+                    format!("compare/{B2}...{H1}"),
+                    serde_json::json!({ "status": "ahead", "ahead_by": 1, "behind_by": 0,
+                        "merge_base_commit": { "sha": B2 }, "files": [{ "filename": "src/lib.rs" }] })
+                    .to_string(),
+                ),
+                (behind_key(), compare_json(&[], 0)),
+                ("pulls/7".into(), serde_json::json!({ "base": { "sha": B2 } }).to_string()),
+            ])
+        };
+        let no_ci = unmoved(r#"{"total_count":0,"check_runs":[]}"#);
+        assert_eq!(
+            hold(&no_ci, "acme/web", 7, H1, &open(H1, B2, None)),
+            None,
+            "no CI and main unmoved: nothing to hold"
+        );
+        let fork = unmoved(
+            r#"{"total_count":1,"check_runs":[{"name":"build","status":"completed","conclusion":"success","pull_requests":[]}]}"#,
+        );
+        assert_eq!(
+            hold(&fork, "acme/web", 7, H1, &open(H1, B2, None)),
+            None,
+            "a fork's green run on the current main: nothing to hold"
+        );
+    }
+
+    /// r3 MED: the hold's words say the rule: main changed these files since the branch last took main.
+    #[test]
+    fn r3_the_hold_says_main_changed_files_since_the_branch_last_took_main() {
+        let get = canned(vec![
+            (format!("compare/{B2}...{H1}"), r#"{"status":"ahead","ahead_by":1,"behind_by":1,"merge_base_commit":{"sha":"b1b1b1b"},"files":[]}"#.into()),
+            (moved_key(), compare_json(&["src/lib.rs"], 0)),
+            ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+        ]);
+        let reason = hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).expect("held");
+        assert!(
+            reason.contains(
+                "main changed src/lib.rs since this branch last took main; merge main into it"
+            ),
+            "{reason}"
+        );
     }
 }

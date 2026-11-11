@@ -356,32 +356,32 @@ fn change_lines(change: &Change, about: &About, frame: &Frame) -> Vec<String> {
         } => {
             if *cut_short && files.is_empty() {
                 vec![format!(
-                    "- {} moved to {} and changed more files than GitHub lists, so it may touch this pull request. Rebase onto it, push, and wait for green again.",
+                    "- {} (now {}) changed more files than GitHub lists since this branch last took it, so it may touch this pull request. Merge main into the branch, push, and wait for green again.",
                     frame.wrap(about.base_ref),
                     short(to)
                 )]
             } else {
                 let mut lines = vec![format!(
-                    "- {} moved to {} and changed files this pull request touches:",
+                    "- {} (now {}) changed files this pull request touches since this branch last took it:",
                     frame.wrap(about.base_ref),
                     short(to)
                 )];
                 lines.extend(listed(files, |file| format!("  - {}", frame.wrap(file))));
-                lines.push("  Rebase onto it, push, and wait for green again.".into());
+                lines.push("  Merge main into the branch, push, and wait for green again.".into());
                 lines
             }
         }
         Change::Behind { commits } => vec![match commits {
             Some(1) => format!(
-                "- The branch is 1 commit behind {}: update it from main before merging.",
+                "- The branch is 1 commit behind {}: merge main into it before merging.",
                 frame.wrap(about.base_ref)
             ),
             Some(n) if *n > 1 => format!(
-                "- The branch is {n} commits behind {}: update it from main before merging.",
+                "- The branch is {n} commits behind {}: merge main into it before merging.",
                 frame.wrap(about.base_ref)
             ),
             _ => format!(
-                "- The branch is behind {}: update it from main before merging.",
+                "- The branch is behind {}: merge main into it before merging.",
                 frame.wrap(about.base_ref)
             ),
         }],
