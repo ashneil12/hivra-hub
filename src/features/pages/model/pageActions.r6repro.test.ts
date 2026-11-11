@@ -55,3 +55,31 @@ it("r6: a Page's tap does not answer a security review as the person", async () 
   await Promise.all(pending);
   expect(answered, "a page's tap was stored as the person's answer to the security review").toEqual([]);
 });
+
+it("a Page's tap on an ordinary decision answers as the page, not the person", async () => {
+  const ordinary: Decision = {
+    ...security,
+    project: "/tmp/example/web",
+    decisionKey: "copy/headline",
+    question: "Which headline?",
+    options: ["Headline A", "Headline B"],
+  };
+  const answered: Array<[string, string, string, string]> = [];
+  const source = delegationDecisions(async () => [], {
+    decisions: async () => [ordinary],
+    answer: async (project, key, answer, by) => {
+      answered.push([project, key, answer, by]);
+      return { applied: true, decision: { ...ordinary, state: "answered", answer, answeredBy: by }, released: [], releasedTasks: [] };
+    },
+  });
+  const pending: Promise<unknown>[] = [];
+  const d = {
+    answerNeed: (id: string, answer: Record<string, unknown>) => {
+      pending.push(source.act("answer", { id, ...answer }).catch((error: unknown) => error));
+    },
+  } as unknown as PageActionDeps;
+  const ctx = { pageId: "pg_made_by_a_mono", pageTitle: "Release status" };
+  await runPageAction("agents.answer", { needId: decisionNeedId(ordinary), text: "Headline A" }, ctx, d);
+  await Promise.all(pending);
+  expect(answered).toEqual([[ordinary.project, "copy/headline", "Headline A", "page:pg_made_by_a_mono"]]);
+});

@@ -169,9 +169,10 @@ function chatName(chatId: string, d: PageActionDeps): string {
   const r = rowForChat(chatId, d);
   return r?.title ? quoteOf(r.title) : "that chat";
 }
-// A Page answers as itself, never as the person (review 220-r6, HIGH-1). A key only the person answers (a delivery
-// check, an irreversible step, a fresh-eyes review, a fan-out restart) is refused here with a plain reason, and
-// decisions.rs refuses the `page:<id>` answer again if a spelling slips past this check.
+// A Page answers as itself, never as the person (review 220-r6, HIGH-1). A key only the person answers (a security
+// review, a delivery check, an irreversible step, a fresh-eyes review, a fan-out restart, a secret) is refused here
+// with a plain reason. decisions.rs `person_only` refuses a `page:<id>` answer on those keys except a secret, which
+// this check refuses on its own.
 const ONLY_YOU = "Only you can answer that one. Open Needs you to answer it.";
 const ONLY_YOU_CHAT = "Only you can answer that one. Open the chat to answer it.";
 function refusePersonOnly(needId: string, ctx: ActionContext): void {
