@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -460,12 +460,12 @@ fn capitalize(text: &str) -> String {
 
 /// Read-only git: no optional locks (status never rewrites the index), no prompts, plain English.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Result<(String, bool), String> {
-    let mut command = Command::new("git");
+    crate::git_cmd::ensure_contained(dir)?;
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
+    command.arg("-C").arg(dir);
+    crate::git_cmd::extend_readonly(&mut command, args);
     let output = command
-        .arg("-C")
-        .arg(dir)
-        .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
@@ -716,7 +716,7 @@ pub struct GhPr {
 /// The pull requests whose head is `branch` in `state` (`merged`, `closed`, `open` or `all`), read-only, with a
 /// timeout. Pull requests from forks are not found: only the repository's own branches.
 pub fn gh_prs_for_branch(worktree: &Path, branch: &str, state: &str) -> Result<Vec<GhPr>, String> {
-    let mut command = Command::new("gh");
+    let mut command = crate::git_cmd::contained_command("gh");
     crate::hide_window_console(&mut command);
     let mut child = command
         .current_dir(worktree)
@@ -2718,5 +2718,28 @@ mod tests {
         assert_eq!(human_age(HOUR_MS), "1 hour");
         assert_eq!(human_age(30 * HOUR_MS), "30 hours");
         assert_eq!(human_age(9 * DAY_MS), "9 days");
+    }
+}
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(test)]
+mod review_r5_repro {
+    /// HIGH (H-E still open): round 5 moved the PR watch's and the Git panel's `gh` into `contained_command`, but the
+    /// worktree sweep (worktree_autoclean, every 15 minutes and 2 minutes after launch, no tap) still runs
+    /// `Command::new("gh")` plain, with the cached GUI PATH, in a worktree an agent wrote. Whatever `gh` that PATH finds
+    /// first, and whatever it loads, runs outside the sandbox. The seam is `contained_command`; a unit test cannot see the
+    /// container (`contain_now` is plain in tests), so this reads the function.
+    #[test]
+    fn the_sweeps_gh_pr_list_runs_contained() {
+        let source = include_str!("worktree_janitor.rs");
+        let start = source
+            .find("pub fn gh_prs_for_branch(")
+            .expect("gh_prs_for_branch");
+        let body = &source[start..start + 400];
+        assert!(
+            body.contains("contained_command"),
+            "the sweep's gh pr list starts outside the sandbox: {}",
+            body.lines().nth(1).unwrap_or("")
+        );
     }
 }

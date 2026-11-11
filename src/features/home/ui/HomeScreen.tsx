@@ -72,7 +72,7 @@ export type HomeNeed = {
   stopped: boolean;
   /** A merge, a gate check, or a question that asks to ship. After stopped rows, before other questions. */
   blocksShip?: boolean;
-  actions: { label: string; onClick: () => void }[];
+  actions: { label: string; title?: string; onClick: () => void }[];
   onOpen: () => void;
 };
 
@@ -192,6 +192,9 @@ function NeedRow({ row }: { row: HomeNeed }) {
           key={action.label}
           type="button"
           data-home-action={action.label}
+          {...(index === 0 ? { "data-needs-answer": "" } : {})}
+          title={action.title ?? action.label}
+          aria-label={action.title ?? action.label}
           className={index === 0 ? PRIMARY_BUTTON : QUIET_BUTTON}
           onClick={action.onClick}
         >

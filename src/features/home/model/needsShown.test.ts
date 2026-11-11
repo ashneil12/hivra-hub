@@ -1,6 +1,5 @@
 import { expect, it } from "vitest";
 import type { NeedsItem } from "../../needs/model/needsYou";
-import { needsCount, setNeedsYouItems } from "../../needs/model/needsYou";
 import { HOME_NEEDS_SHOWN, needsRank, needsShown } from "./needsShown";
 
 function item(n: number): NeedsItem {
@@ -12,7 +11,6 @@ function item(n: number): NeedsItem {
     at: n,
     sentence: `Question ${n}`,
     actions: [],
-    open: { kind: "inbox" },
   };
 }
 
@@ -21,7 +19,6 @@ function row(over: Partial<NeedsItem> & Pick<NeedsItem, "key" | "kind" | "at" | 
     projectId: "crew",
     who: "Ada",
     actions: [],
-    open: { kind: "inbox" },
     ...over,
   };
 }
@@ -52,13 +49,10 @@ it("leads with a stopped or failed row, then what blocks a ship, then questions"
   ]);
 });
 
-it("shows the five oldest and counts every one", () => {
+it("shows the five oldest of the one list", () => {
   const items = [3, 1, 2, 6, 5, 4].map(item);
-  setNeedsYouItems(items);
-  expect(needsShown(items, 0).map((row) => row.at)).toEqual([1, 2, 3, 4, 5]);
+  expect(needsShown(items).map((row) => row.at)).toEqual([1, 2, 3, 4, 5]);
   expect(HOME_NEEDS_SHOWN).toBe(5);
-  expect(needsCount()).toBe(6);
-  expect(needsCount("crew")).toBe(6);
-  expect(needsCount("other")).toBe(0);
-  setNeedsYouItems([]);
+  // The list itself is not changed: Home's count is its whole length.
+  expect(items).toHaveLength(6);
 });

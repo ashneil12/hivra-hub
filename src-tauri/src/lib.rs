@@ -1,6 +1,8 @@
 use tauri::Manager;
 
 mod account_identity;
+// WP-61: Hivra Cloud. Off by default; no socket is opened until Ash turns it on.
+mod hivra_cloud;
 // WP-78: the activity log.
 mod activity;
 // WP-157: the work log. Not a numbered migration.
@@ -16,6 +18,8 @@ mod automations;
 pub mod autopilot;
 mod azure_devops;
 mod background_work;
+// WP-128: one prompt at a chosen time. Not a numbered migration, and it starts no thread.
+mod one_time_schedule;
 // WP-75: checked backups, one-item restore, and a full restore through the ship path.
 pub mod backups;
 mod chat_background;
@@ -36,19 +40,22 @@ mod github_issues;
 pub mod goal_graph;
 mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labelled GitHub issues become tasks.
            // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
-mod programme;
+mod programme; // WP-162: update a package branch from main, and the programme lead lease.
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
+mod git_cmd;
 // Hivra WP-81: a pinned tool, downloaded and checked, then the local gate before GitHub.
 mod delivery_gate;
 mod pinned_tool;
 // Hivra WP-13: crew rules, routing and reroute.
+mod agent_sandbox;
 mod crew;
 mod devin_config;
 mod devin_usage;
 mod spend_ledger;
-// WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
+// WP-131b: desktop dictation into the composer draft; the microphone is held by a helper app, never sends.
+// Off in this build (dictation::ENABLED is false): the helper is never found, checked or started.
 mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
@@ -84,6 +91,7 @@ mod hub_plugin;
 mod inbox_media;
 pub mod instance;
 // WP-07: the name a person reads. Not the bundle name.
+pub mod commit_guard;
 mod display_name;
 mod jira;
 mod jsonc;
@@ -124,6 +132,7 @@ mod page_http;
 mod pasteboard;
 mod pi_usage;
 // WP-76: one trash for chats, Monos, projects, notes, docs and tasks.
+mod team_workspace;
 mod trash;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
@@ -468,6 +477,8 @@ pub fn run() {
         .manage(window_transfer::WindowTransferState::new())
         .manage(live_turns::LiveTurns::default())
         .setup(move |app| {
+            // WP-80: while the team switch is on, pick up other members' changes every few seconds (off costs a file read).
+            team_workspace::start_polling(app.handle().clone());
             // Windows: still here, so no running copy took over this launch (instance::claim).
             if !claim.owner {
                 instance::claim_after_handoff(&identity, &version, &claim.data_dir);
@@ -480,6 +491,8 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-200: the person-approved allows of the commit guard live in this copy's data folder, nowhere else.
+            commit_guard::set_allow_store(claim.data_dir.join("commit-guard-allows.json"));
             // WP-90: this copy's proxy answers every stack name, loopback only. A dev copy
             // keeps its own registry and takes the next free port above 7400.
             let dev_copy = identity.kind != instance::Kind::Daily;
@@ -528,6 +541,7 @@ pub fn run() {
             outside::init(app.handle())?; // WP-79
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
+            one_time_schedule::init(app.handle()); // WP-128
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]
@@ -567,12 +581,29 @@ pub fn run() {
         .on_menu_event(|app, event| {
             menu::dispatch(app, event.id().as_ref());
         })
+        // WP-131b: a page that starts loading again (reload, navigation) loses its dictation session.
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                dictation::window_lost(webview.app_handle(), webview.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
-            // WP-131: desktop dictation.
+            // WP-131b: desktop dictation (the helper in Contents/Helpers holds the microphone).
             dictation::dictation_support,
             dictation::dictation_start,
             dictation::dictation_stop,
+            // WP-61: Hivra Cloud (off by default).
+            hivra_cloud::hivra_cloud_status,
+            hivra_cloud::hivra_cloud_save,
+            hivra_cloud::hivra_cloud_sign_in,
+            hivra_cloud::hivra_cloud_sign_out,
+            hivra_cloud::hivra_cloud_account,
+            hivra_cloud::hivra_cloud_pair,
             mobile_access::mobile_status,
+            team_workspace::team_workspace_status,
+            team_workspace::team_workspace_save,
+            team_workspace::team_workspace_accept,
+            team_workspace::team_workspace_presence,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
             mobile_access::mobile_cancel_invite,
@@ -652,6 +683,7 @@ pub fn run() {
             firstmate::firstmate_set_question_owner,
             firstmate::firstmate_parse_report,
             firstmate::firstmate_checkout_snapshot,
+            firstmate::protected_paths::firstmate_protected_fingerprints,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
             // Hivra WP-40: completion and verdict gates.
@@ -674,6 +706,14 @@ pub fn run() {
             delivery::delivery_merges,
             delivery::delivery_events_open,
             delivery::delivery_events_consume,
+            // WP-162: update a package branch from main, and the lead lease.
+            programme::programme_update_settings_get,
+            programme::programme_update_settings_set,
+            programme::programme_bind_checkout,
+            programme::programme_update_from_main,
+            programme::programme_lead_acquire,
+            programme::programme_lead_heartbeat,
+            programme::programme_consider_conflict,
             // Hivra WP-81: the check before work goes to GitHub.
             delivery_gate::gate_setting_get,
             delivery_gate::gate_setting_set,
@@ -843,6 +883,16 @@ pub fn run() {
             automations::automations_claim_due,
             automations::automations_claim_event,
             automations::automation_run_update,
+            // WP-128: one prompt at a chosen time.
+            one_time_schedule::one_time_schedules_list,
+            one_time_schedule::one_time_schedules_create,
+            one_time_schedule::one_time_schedules_cancel,
+            one_time_schedule::one_time_schedules_miss_closed,
+            one_time_schedule::one_time_schedules_claim,
+            one_time_schedule::one_time_schedules_remember_session,
+            one_time_schedule::one_time_schedules_ack_fired,
+            one_time_schedule::one_time_schedules_release,
+            one_time_schedule::one_time_schedules_note,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,
@@ -874,6 +924,10 @@ pub fn run() {
             fs::git_range_context,
             fs::git_pr_status,
             fs::git_pr_create,
+            commit_guard::commit_guard_allow,
+            commit_guard::commit_guard_allows,
+            commit_guard::commit_guard_refusal,
+            commit_guard::commit_guard_remove,
             fs::git_github_status,
             fs::github_monocode_star_status,
             fs::github_star_monocode,
@@ -968,6 +1022,7 @@ pub fn run() {
             pasteboard::clipboard_image,
             pasteboard::copy_file_to_clipboard,
             fs::clone_repo,
+            fs::resolve_existing_path,
             fs::read_file_preview,
             fs::stat_files,
             fs::inspect_paths,
@@ -1115,6 +1170,10 @@ pub fn run() {
             session_store::session_search,
             session_store::cancel_session_search,
             session_store::session_get,
+            // WP-177: a move reads the full row. The sidebar read still shortens tool output.
+            session_store::session_get_for_move,
+            // WP-177: recovery lists chats that still carry a move note, including one in the trash.
+            session_store::session_list_moved,
             // WP-111: ids of chats memory must not read.
             session_store::session_private_keys,
             session_store::session_tool_detail,
@@ -1296,6 +1355,9 @@ pub fn run() {
             attribution::attribution_for_commits,
             // WP-89: a worker-default change, beside the activity list.
             activity::activity_note,
+            activity::activity_note_first_mate,
+            agent_sandbox::agent_sandbox_status,
+            agent_sandbox::agent_sandbox_set,
             // WP-50: past chats, only with a person's OK, drafted for review.
             history_import::history_import_roots,
             history_import::history_import_list,
@@ -1365,6 +1427,7 @@ pub fn run() {
             ..
         } => {
             window::forget_quit_window(handle, &label);
+            dictation::window_lost(handle, &label);
             let other_window = window::workspace_windows(handle)
                 .iter()
                 .any(|window| window.label() != label);

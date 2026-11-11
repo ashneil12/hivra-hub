@@ -86,7 +86,7 @@ impl Github for NoGh {
 }
 
 fn git(dir: &Path, args: &[&str]) -> String {
-    let output = crate::delivery::child("git")
+    let output = crate::git_cmd::child()
         .current_dir(dir)
         .arg("-c")
         .arg("protocol.file.allow=always")
@@ -335,6 +335,7 @@ fn a_code_briefs_delivery_runs_the_checks_exactly_once_and_records_the_layer() {
             report: "Named it.",
             now: 4,
             gate_owns_checks: owns,
+            facts: None,
         },
         &counter,
     );

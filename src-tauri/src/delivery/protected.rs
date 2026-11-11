@@ -126,6 +126,30 @@ struct SharedList {
     path_suffixes: Vec<String>,
     path_sequences: Vec<String>,
     hold_any_dot_segment: bool,
+    home_secrets: HomeSecrets,
+    protected_globs: Vec<ProtectedGlob>,
+}
+
+/// One protected place (`protectedGlobs`): a glob that the after-turn check fingerprints and the TypeScript report names.
+/// `deny_write` marks a home path the sandbox refuses to write (the CLIs' and the person's own settings and hooks).
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProtectedGlob {
+    pub(crate) pattern: String,
+    #[serde(default)]
+    pub(crate) deny_write: bool,
+}
+
+/// The secret places, anchored at the home folder (`~/.ssh`, `~/.config/gh`). They are a separate section because the
+/// shared `dirs` and `files` match at any depth, and a sandbox that denied those would deny `<repo>/.git` and
+/// `~/.claude/.credentials.json`'s folder too. `cli_login_files` are reported but never denied: the CLI reads them to log in.
+#[derive(Clone, Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct HomeSecrets {
+    pub(crate) dirs: Vec<String>,
+    pub(crate) files: Vec<String>,
+    pub(crate) shell_profiles: Vec<String>,
+    pub(crate) cli_login_files: Vec<String>,
 }
 
 pub(crate) struct Shared {
@@ -134,6 +158,20 @@ pub(crate) struct Shared {
     suffixes: Vec<Vec<String>>,
     sequences: Vec<Vec<String>>,
     hold_any_dot_segment: bool,
+    home_secrets: HomeSecrets,
+    protected_globs: Vec<ProtectedGlob>,
+}
+
+impl Shared {
+    /// The shared list's file names, folded. Read by the commit guard (WP-200), so it compares names the way the floor does.
+    pub(crate) fn file_names(&self) -> &[String] {
+        &self.files
+    }
+
+    /// The shared list's folder names, folded. Read by the commit guard (WP-200).
+    pub(crate) fn folder_names(&self) -> &[String] {
+        &self.dirs
+    }
 }
 
 const SHARED_LIST_JSON: &str = include_str!("../../../src/shared/security/agentConfigPaths.json");
@@ -171,7 +209,20 @@ fn load_shared(json: &str) -> Result<Shared, String> {
             .map(|run| segments(run))
             .collect(),
         hold_any_dot_segment: list.hold_any_dot_segment,
+        home_secrets: list.home_secrets,
+        protected_globs: list.protected_globs,
     })
+}
+
+/// The home-anchored secret places from the same shared list (`homeSecrets`). Read by the sandbox profile and by the
+/// after-turn fingerprints, so both name the same places. Fails with the list's own error, which holds every path.
+pub(crate) fn home_secrets() -> Result<&'static HomeSecrets, String> {
+    shared_list().map(|shared| &shared.home_secrets)
+}
+
+/// Every protected glob from the shared list (`protectedGlobs`), in list order.
+pub(crate) fn protected_globs() -> Result<&'static [ProtectedGlob], String> {
+    shared_list().map(|shared| shared.protected_globs.as_slice())
 }
 
 /// One name, compared the way Windows and macOS users read it: NFKC, then lower case, with the long s (U+017F, which
@@ -199,6 +250,11 @@ fn segments(text: &str) -> Vec<String> {
         .map(fold)
         .filter(|segment| !segment.is_empty())
         .collect()
+}
+
+/// A repo path as folded segments, the floor's own fold (WP-200: the commit guard reads it). `None` for an empty path.
+pub(crate) fn folded_segments(raw: &str) -> Option<Vec<String>> {
+    repo_path(raw).map(|path| path.lower)
 }
 
 struct RepoPath {
@@ -1266,10 +1322,20 @@ mod tests {
             r#"{"version":2,"files":[],"dirs":[],"pathSuffixes":[],"holdAnyDotSegment":false}"#
         )
         .is_err());
+        // The home-secrets section is part of the list: a list without it does not load, so every path is held.
         assert!(load_shared(
             r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false}"#
         )
+        .is_err());
+        assert!(load_shared(
+            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false,"homeSecrets":{"dirs":[],"files":[],"shellProfiles":[],"cliLoginFiles":[]},"protectedGlobs":[]}"#
+        )
         .is_ok());
+        // The protected globs are part of the list too: without them a list does not load.
+        assert!(load_shared(
+            r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"pathSequences":[],"holdAnyDotSegment":false,"homeSecrets":{"dirs":[],"files":[],"shellProfiles":[],"cliLoginFiles":[]}}"#
+        )
+        .is_err());
         assert!(
             load_shared(
                 r#"{"version":1,"files":[],"dirs":[],"pathSuffixes":[],"holdAnyDotSegment":false}"#

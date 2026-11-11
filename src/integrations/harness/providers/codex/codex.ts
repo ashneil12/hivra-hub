@@ -1,3 +1,5 @@
+import { isTauri } from "@tauri-apps/api/core";
+import { loadAgentSandbox } from "../../../../features/settings/model/agentSandbox";
 import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
@@ -23,6 +25,9 @@ import {
   asRecord,
   buildThreadStartParams,
   buildTurnStartParams,
+  codexAutoFileChange,
+  codexGrantsPermissionsAutomatically,
+  codexSkipsOuterSandbox,
   buildTurnSteerParams,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
@@ -104,6 +109,8 @@ type Live = {
   /** WP-41: the developer instructions this process started or resumed with. */
   instructionKey: string;
   runtimeMode: RuntimeMode;
+  /** Snapshot of Hivra's agent sandbox when this thread started. Off outside the app. */
+  hivraSandbox: boolean;
   planning: boolean;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, PendingApproval>;
@@ -535,7 +542,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing?.codexStore ??
     resumeByThread.get(input.sessionId)?.codexStore;
   // WP-41: a running thread is resumed when the pstack index or the plain-English ending changed.
-  const developerInstructions = await codexDeveloperInstructions(input.cwd);
+  // WP-182: pass the session so a Mono's own skill list can be applied.
+  const developerInstructions = await codexDeveloperInstructions(input.cwd, input.sessionId);
   const instructionKey = developerInstructions?.trim() ?? "";
   if (
     existing &&
@@ -694,6 +702,14 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
     "codex",
     codexStore,
+    undefined,
+    undefined,
+    undefined,
+    codexSkipsOuterSandbox({
+      runtimeMode: input.runtimeMode,
+      firstMate: input.firstMate,
+      hivraSandbox: (await loadAgentSandbox().catch(() => null))?.enabled === true,
+    }),
   );
 
   try {
@@ -720,6 +736,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     const model = nativeModelId(input.model);
     const serviceTier = input.modelSettings?.serviceTier;
     const effort = input.modelSettings?.reasoningEffort;
+    const hivraSandbox = await readHivraSandbox();
 
     let threadId: string | undefined;
     let didResume = false;
@@ -734,6 +751,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           model,
           serviceTier,
           developerInstructions,
+          hivraSandbox,
         });
         const opened = await rpc.request<{ thread?: { id?: string } }>(
           "thread/resume",
@@ -764,6 +782,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         model,
         serviceTier,
         developerInstructions,
+        hivraSandbox,
       });
       const opened = await rpc.request<{ thread?: { id?: string } }>(
         "thread/start",
@@ -791,6 +810,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       codexStore,
       instructionKey,
       runtimeMode: input.runtimeMode,
+      hivraSandbox,
       planning: input.intent === "plan",
       onEvent: input.onEvent,
       approvals: new Map(),
@@ -857,6 +877,7 @@ async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
     effort,
     serviceTier,
     intent: input.intent,
+    hivraSandbox: live.hivraSandbox,
   });
 
   if (Array.isArray(params.input) && params.input.length === 0) {
@@ -1618,16 +1639,27 @@ async function handleServerRequest(
       }
       return;
     }
-    // auto / auto-accept: grant requested permissions for the turn.
-    const rec = asRecord(params);
-    await live.rpc.respond(id, {
-      scope: "turn",
-      permissions: rec?.permissions ?? {},
-    });
-    return;
+    // auto / auto-accept grant requested permissions, unless Hivra's sandbox is on. Then this falls through and asks.
+    if (codexGrantsPermissionsAutomatically(live.runtimeMode, live.hivraSandbox)) {
+      const rec = asRecord(params);
+      await live.rpc.respond(id, {
+        scope: "turn",
+        permissions: rec?.permissions ?? {},
+      });
+      return;
+    }
   }
 
-  const auto = autoApproval(live.runtimeMode, mapped.kind);
+  const auto =
+    mapped.kind === "file-change"
+      ? await codexAutoFileChange(
+          live.runtimeMode,
+          live.hivraSandbox,
+          fileChangePaths(params),
+          live.cwd,
+          fileChangeGrantRoot(params),
+        )
+      : autoApproval(live.runtimeMode, mapped.kind);
   if (auto) {
     await live.rpc.respond(id, {
       decision: toCodexApprovalDecision(auto, mapped.kind),
@@ -1765,6 +1797,50 @@ function waitApproval(
   }).finally(() => {
     live.approvals.delete(uiId);
   });
+}
+
+/**
+ * `grantRoot` on a file-change approval widens the write to that folder. Missing is no extra grant. A value that is
+ * not a string cannot be checked, so it comes back empty and the caller asks.
+ */
+function fileChangeGrantRoot(params: unknown): string | null | undefined {
+  const value = asRecord(params)?.grantRoot;
+  if (value == null) return undefined;
+  if (typeof value !== "string") return "";
+  return value;
+}
+
+/** Paths on a file-change approval. Missing, empty, or a change with no path fails closed (ask) while the sandbox is on. */
+function fileChangePaths(params: unknown): string[] | undefined {
+  const changes = asRecord(params)?.changes;
+  if (!Array.isArray(changes)) return undefined;
+  const paths: string[] = [];
+  for (const change of changes) {
+    const path = stringField(asRecord(change), "path");
+    if (!path) return undefined;
+    paths.push(path);
+  }
+  return paths;
+}
+
+/**
+ * Hivra's sandbox, read once when a Codex thread starts. Outside the app this stays off, so tests do not ask.
+ * Inside the app, a failed read fails closed (on): a chat must not grant itself a permission we could not check.
+ */
+async function readHivraSandbox(): Promise<boolean> {
+  let inApp = false;
+  try {
+    inApp = isTauri();
+  } catch {
+    return false;
+  }
+  if (!inApp) return false;
+  try {
+    const status = await loadAgentSandbox();
+    return status.enabled === true;
+  } catch {
+    return true;
+  }
 }
 
 function autoApproval(

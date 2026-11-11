@@ -1,7 +1,6 @@
 // Live Agents board. Counts, cost, time and checks come from the stores. A missing figure stays missing.
 
 import { useContext, useEffect, useMemo, useState, useSyncExternalStore } from "react";
-import { crewCancel, stopRequestId } from "../../crew/model/cancel";
 import { codingTeamChatProject, useCodingTeamVersion } from "../../hub/model/codingTeam";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { isGlobalProject } from "../../hub/model/hubProjects";
@@ -11,7 +10,10 @@ import type { Delegation } from "../../monos/model/delegations";
 import { currentPrWatches, usePrWatchesVersion } from "../../pr-watch/model/prWatchBoard";
 import type { Block, Session } from "../../sessions/model/session";
 import { SessionStateContext } from "../../sessions/model/sessionStateStore";
-import { boardFromStores, type StoreCheck, type StoreSession } from "../model/fromStores";
+import { openBoardRow } from "../model/boardOpen";
+import { boardFromStores, mateStatus, type StoreCheck, type StoreSession } from "../model/fromStores";
+import { stopBoardRow } from "../model/sessionStop";
+import { flattenBoard } from "../model/tree";
 import { taskWords } from "../model/words";
 import { AgentsBoard } from "./AgentsBoard";
 
@@ -40,12 +42,14 @@ export function AgentsBoardScreen() {
       sessions: boardSessions(sessions, delegations),
       mates: listed.map((project) => {
         const spec = leadSpecFor(project);
+        const sessionId = leadMono(spec)?.sessionId ?? null;
         return {
           id: spec.id,
           name: spec.name,
           projectId: project.id,
-          sessionId: leadMono(spec)?.sessionId ?? null,
+          sessionId,
           department: "coding",
+          status: mateStatus(sessionId, sessions),
         };
       }),
       delegations: delegations.map((row) => ({
@@ -76,8 +80,12 @@ export function AgentsBoardScreen() {
       projects={board.projects}
       now={now}
       lines={lines}
-      onStop={(id) => {
-        void stopRow(id, delegations);
+      onStop={(id) => stopBoardRow(id, { delegations, sessions })}
+      onOpen={(id) => {
+        const node = flattenBoard(board.tree).find((item) => item.id === id);
+        if (!node) return;
+        const owner = delegations.find((row) => row.id === id)?.ownerSession ?? null;
+        openBoardRow(node, owner);
       }}
     />
   );
@@ -173,17 +181,4 @@ function textLines(blocks: readonly Block[]): string[] {
     if (text) lines.push(text);
   }
   return lines.slice(-12);
-}
-
-async function stopRow(id: string, delegations: readonly Delegation[]): Promise<void> {
-  const row = delegations.find((item) => item.id === id);
-  if (!row?.ownerSession) return;
-  try {
-    await crewCancel(row.ownerSession, stopRequestId(row.id), {
-      taskId: row.id,
-      reason: "Stopped from the Agents board",
-    });
-  } catch {
-    /* confirmed, and this window has no cancel path */
-  }
 }

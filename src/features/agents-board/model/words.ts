@@ -86,6 +86,15 @@ export function prNumberOf(value: number | null | undefined): number | null {
   return value;
 }
 
+/** How a parent says what is under it. Not a chip: the row's own state keeps the chip. */
+export function rollupText(count: number, state: BoardState): string | null {
+  if (!Number.isInteger(count) || count <= 0) return null;
+  if (state === "needs-you") return count === 1 ? "1 needs you below" : `${count} need you below`;
+  if (state === "working") return count === 1 ? "1 working" : `${count} working`;
+  if (state === "done") return count === 1 ? "1 done" : `${count} done`;
+  return count === 1 ? "1 idle" : `${count} idle`;
+}
+
 /** The chip. A failed or cancelled worker is Needs you. The word stuck is never a state. */
 export function boardState(input: { status?: string | null; state?: string | null }): BoardState {
   const status = (input.status ?? "").trim().toLowerCase();

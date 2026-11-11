@@ -2,6 +2,7 @@
 
 import { openDocsMode } from "../../docs/docsMode";
 import { openCodingTeam, projectHasCodeFolder, setHubSelection } from "../../hub/model/hubNav";
+import { requestOpenPage } from "../../pages/model/pages";
 import type { SettingsSectionId } from "../../settings/model/settings";
 import { queueHomeDecision, queueHomeDoc, queueHomeTask } from "./pending";
 
@@ -11,6 +12,7 @@ export type HomeOpenTarget =
   | { kind: "task"; projectId: string; id: string }
   | { kind: "doc"; id: string }
   | { kind: "chat"; id: string; projectId: string }
+  | { kind: "page"; id: string }
   | { kind: "coding"; projectId: string }
   | { kind: "settings"; section: SettingsSectionId; anchor: string }
   | { kind: "url"; href: string };
@@ -78,6 +80,11 @@ export function applyHomeOpen(target: HomeOpenTarget, hands: HomeOpenHands): voi
     hands.openSession(target.id);
     return;
   }
+  if (target.kind === "page") {
+    requestOpenPage(target.id);
+    window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" }));
+    return;
+  }
   if (target.kind === "settings") {
     hands.closeChrome();
     hands.openSettings(target.section, target.anchor);
@@ -116,6 +123,11 @@ export function openFromHome(target: HomeOpenTarget): void {
     window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "notes" }));
     return;
   }
+  if (target.kind === "page") {
+    requestOpenPage(target.id);
+    window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" }));
+    return;
+  }
   if (target.kind === "url") openHttp(target.href);
   // A settings line, or Needs you, needs the workspace's hands. Without them there is nowhere to open it.
 }
@@ -130,6 +142,7 @@ export function targetFor(line: { kind: string; projectId: string; target: strin
   if (line.kind === "decision") return { kind: "inbox", projectId: line.projectId, decisionKey: line.target };
   if (line.kind === "doc") return { kind: "doc", id: line.target };
   if (line.kind === "chat") return { kind: "chat", id: line.target, projectId: line.projectId };
+  if (line.kind === "page") return { kind: "page", id: line.target };
   if (line.kind === "coding" || line.kind === "project") return { kind: "coding", projectId: line.projectId };
   // WP-176: a spend pause opens the limit. A disk pause still opens Clean up.
   if (line.kind === "builders" && line.target === "builders-spend") {

@@ -139,8 +139,8 @@ test("Monos show people, not work: briefs live in coding teams, a Mono's own wor
     },
     { list: rows(chats, now), chatsList: sessions(chats, now) },
   );
-  // The project's Today is the sidebar's Inbox now (G1: no central area; hubNav.ts showProjectToday).
-  await page.getByRole("button", { name: "Inbox", exact: true }).first().click();
+  // The project's Today is the sidebar's Needs you item now (G1: no central area; hubNav.ts showProjectToday).
+  await page.getByRole("button", { name: /^Needs you/ }).first().click();
   await page.mouse.move(900, 500);
 
   // 1. The rail: no sub-chats under anyone, a Lead included; one line each says what it has out.
@@ -231,8 +231,8 @@ test("Monos show people, not work: briefs live in coding teams, a Mono's own wor
   await shot(page, "5-alfreds-worker-in-its-team");
 
   // 6. From Alfred's chat on its own, the Team button opens the team; pressed again, the chat stands alone.
-  // The project's Today is the sidebar's Inbox now (G1: no central area; hubNav.ts showProjectToday).
-  await page.getByRole("button", { name: "Inbox", exact: true }).first().click();
+  // The project's Today is the sidebar's Needs you item now (G1: no central area; hubNav.ts showProjectToday).
+  await page.getByRole("button", { name: /^Needs you/ }).first().click();
   await railRow(page, "Alfred").click();
   await expect.poll(() => monoViewShown(page)).toBe(true);
   const teamButton = page.locator("[data-mono-view-team]:visible");

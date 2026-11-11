@@ -156,4 +156,25 @@ describe("WP-141 round 7 (MED-2): a reviewer is gated against the reviewed proje
     await port.ask({ ...TURN, folder: "/work/reviewed" });
     expect(gate).toHaveBeenCalledWith(expect.objectContaining({ harness: expect.any(String) }), "/work/reviewed");
   });
+
+  it("passes the chat that asked as the reviewer's parent", async () => {
+    const gate = vi.fn(async () => undefined);
+    const port = portFromHooks({
+      sessions: () => [],
+      add: () => {},
+      submit: (_id, _text, _history, options) => {
+        options.onSettled?.({ status: "completed", text: "FINDING: none" });
+        return true;
+      },
+      crewGate: gate,
+      cwd: "~",
+      timeoutMs: 1000,
+    });
+    await port.ask({ ...TURN, folder: "/work/reviewed", parentSession: "chat-1" });
+    expect(gate).toHaveBeenCalledWith(
+      expect.objectContaining({ harness: expect.any(String) }),
+      "/work/reviewed",
+      "chat-1",
+    );
+  });
 });

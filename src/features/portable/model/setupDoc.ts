@@ -5,7 +5,7 @@ import { userName } from "../../hub/model/userName";
 import { projectKey } from "../../../shared/lib/paths";
 import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { listCustomModels, type CustomModel } from "../../sessions/model/customModels";
-import { defaultMonoName, listMonos, monoEngine, parseMonoEngine, type Mono, type MonoEngine } from "../../monos/model/mono";
+import { cardNames, defaultMonoName, listMonos, monoEngine, parseMonoEngine, type Mono, type MonoEngine } from "../../monos/model/mono";
 import { allKeptPages, type Page } from "../../pages/model/pages";
 import { DEFAULT_TEAM, isDefaultTeamMono } from "../../hub/model/builtInMonos";
 import { allConnectors, keychainService, loginLivesOn, type Connector } from "../../hub/model/connectors";
@@ -62,6 +62,12 @@ export type PortableMono = {
   useSidebarFolders?: boolean;
   /** WP-89: the CLI, model and effort its workers use. Absent when this Mono sets none. */
   workerDefault?: WorkerPick;
+  /** WP-182: fast mode for its own chat. Absent when this Mono does not set it. */
+  engineFast?: boolean;
+  /** WP-182: skill names it is offered. Not SOUL.md's skill list (`skills`). Absent means everything installed. */
+  offeredSkills?: string[];
+  /** WP-182: slash command names it is offered. Absent means everything installed. */
+  commands?: string[];
 };
 
 /** A team is a project's group chat and who is in it. Its conversations are workspace, not setup. */
@@ -356,6 +362,8 @@ function soulMono(s: SetupSoul, teams: PortableTeam[]): PortableMono {
   if (s.memory) files["MEMORY.md"] = s.memory;
   for (const [name, text] of Object.entries(s.topics ?? {})) files[`memory/${name}.md`] = text;
   const workerDefault = readWorkerDefault(s.workerDefault);
+  const offeredSkills = cardNames(s.offeredSkills);
+  const commands = cardNames(s.commands);
   return {
     id: s.monoId,
     name: s.name,
@@ -373,6 +381,9 @@ function soulMono(s: SetupSoul, teams: PortableTeam[]): PortableMono {
     files,
     waiting: true,
     ...(workerDefault ? { workerDefault } : {}),
+    ...(typeof s.engineFast === "boolean" ? { engineFast: s.engineFast } : {}),
+    ...(offeredSkills ? { offeredSkills } : {}),
+    ...(commands ? { commands } : {}),
   };
 }
 
@@ -390,6 +401,8 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
     const rules = files["SOUL.md"] ?? "";
     const skills = skillsOf(rules);
     const workerDefault = readWorkerDefault(m.workerDefault);
+    const offeredSkills = cardNames(m.skills);
+    const commands = cardNames(m.commands);
     return {
       id: m.id,
       name,
@@ -408,6 +421,9 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
       ...(m.showStartedSessionsInSidebar !== undefined ? { showStartedSessionsInSidebar: m.showStartedSessionsInSidebar } : {}),
       ...(m.useSidebarFolders ? { useSidebarFolders: true } : {}),
       ...(workerDefault ? { workerDefault } : {}),
+      ...(typeof m.engineFast === "boolean" ? { engineFast: m.engineFast } : {}),
+      ...(offeredSkills ? { offeredSkills } : {}),
+      ...(commands ? { commands } : {}),
     };
   });
   const seatedIds = new Set(seated.map((m) => m.id));
@@ -597,6 +613,8 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
     : [];
   const team = m.team === "lead" || m.team === "leadership" ? m.team : "member";
   const workerDefault = readWorkerDefault(m.workerDefault);
+  const offeredSkills = cardNames(m.offeredSkills);
+  const commands = cardNames(m.commands);
   return {
     id: m.id,
     name,
@@ -616,6 +634,9 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
     ...(typeof m.showStartedSessionsInSidebar === "boolean" ? { showStartedSessionsInSidebar: m.showStartedSessionsInSidebar } : {}),
     ...(m.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
     ...(workerDefault ? { workerDefault } : {}),
+    ...(typeof m.engineFast === "boolean" ? { engineFast: m.engineFast } : {}),
+    ...(offeredSkills ? { offeredSkills } : {}),
+    ...(commands ? { commands } : {}),
   };
 }
 

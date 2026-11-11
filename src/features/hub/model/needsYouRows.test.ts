@@ -5,7 +5,9 @@ import type { Delegation } from "../../monos/model/delegations";
 import { stuckOf, type StuckWorker } from "../../monos/model/workerStuck";
 import { stuckWorkerChip } from "../../monos/model/stuckChip";
 import { workerChip } from "./statusChip";
-import { isNeedsYouRow, needsYouCountFor, needsYouFor, needsYouPanel, needsYouRows } from "./needsYouRows";
+import { isNeedsYouRow, needsYouFor, needsYouPanel, needsYouRows } from "./needsYouRows";
+
+const countFor = (rows: Parameters<typeof needsYouFor>[0], lead: string) => needsYouFor(rows, lead).length;
 import type { Worker } from "./types";
 
 const now = Date.now();
@@ -23,15 +25,15 @@ describe("one list of red Needs you rows", () => {
     const credits = stuck("w1", { errorClass: "billing" });
     const rows = needsYouRows([gaveUp, working], [credits], () => "hivra");
     expect(rows.map((r) => r.key)).toEqual(["job:j1", "worker:k-w1"]);
-    expect(needsYouCountFor(rows, "hivra-lead")).toBe(2);
-    expect(needsYouCountFor(rows, "exo-lead")).toBe(0);
+    expect(countFor(rows, "hivra-lead")).toBe(2);
+    expect(countFor(rows, "exo-lead")).toBe(0);
   });
 
   it("never counts a worker twice: one its job row carries is that row", () => {
     const credits = stuck("w1", { errorClass: "billing" });
     const carried = job("j1", { stuck: "stuck", stuckWorker: credits });
     expect(isNeedsYouRow(carried)).toBe(true);
-    expect(needsYouCountFor(needsYouRows([carried], [credits], () => "hivra"), "hivra-lead")).toBe(1);
+    expect(countFor(needsYouRows([carried], [credits], () => "hivra"), "hivra-lead")).toBe(1);
   });
 
   it("leaves out what is grey: a worker its Lead has, a finished job", () => {
@@ -69,8 +71,8 @@ describe("the r30c red reasons all feed the one list", () => {
       const chip = r.job ? workerChip(r.job) : stuckWorkerChip(r.worker!, "Hivra lead");
       expect(chip).toMatchObject({ word: "Needs you", tone: "red" });
     }
-    expect(needsYouCountFor(rows, "hivra-lead")).toBe(rows.length);
-    expect(needsYouCountFor(rows, "hivra-lead")).toBe(4);
+    expect(countFor(rows, "hivra-lead")).toBe(rows.length);
+    expect(countFor(rows, "hivra-lead")).toBe(4);
   });
 });
 
@@ -82,7 +84,7 @@ describe("r51: chip, panel and rows are one list", () => {
     const jobs = Array.from({ length: 5 }, (_, i) => job(`g${i}`, { lead: "exo-lead", projectId: "vg-game", who: "EXO lead", stuck: "lead_gave_up", stuckReason: "It still fails" }));
     const rows = needsYouRows(jobs, [], () => "vg-game");
     const panel = needsYouPanel(needsYouFor(rows, "exo-lead"));
-    expect(needsYouCountFor(rows, "exo-lead")).toBe(5);
+    expect(countFor(rows, "exo-lead")).toBe(5);
     expect(panel.count).toBe(5);
     expect(panel.jobs.map((j) => j.id)).toEqual(["g0", "g1", "g2", "g3", "g4"]);
     expect(panel.workers).toEqual([]);
@@ -95,13 +97,13 @@ describe("r51: chip, panel and rows are one list", () => {
     const panel = needsYouPanel(needsYouFor(rows, "hivra-lead"));
     expect(panel.workers.map((w) => w.key).sort()).toEqual(["k-w1", "k-w2"]);
     expect(panel.jobs.map((j) => j.id)).toEqual(["j2"]);
-    expect(panel.count).toBe(needsYouCountFor(rows, "hivra-lead"));
+    expect(panel.count).toBe(countFor(rows, "hivra-lead"));
     expect(panel.count).toBe(3);
   });
 
   it("a grey row never raises a Lead's count: With <Lead>, Retrying, waiting on an answer, a Lead that can't answer for now", () => {
     const red = Array.from({ length: 6 }, (_, i) => job(`r${i}`, { stuck: "lead_gave_up" }));
-    const before = needsYouCountFor(needsYouRows(red, [], () => "hivra"), "hivra-lead");
+    const before = countFor(needsYouRows(red, [], () => "hivra"), "hivra-lead");
     expect(before).toBe(6);
     const firstFail = stuck("g1", { error: "Stopped with an error.", delivery: "delivered" });
     const asking = { ...stuck("g2", { state: "running" } as Partial<Delegation>), kind: "asking" as const };
@@ -114,7 +116,7 @@ describe("r51: chip, panel and rows are one list", () => {
     ];
     for (const g of greys) expect(workerChip(g)?.tone ?? "none").not.toBe("red");
     const rows = needsYouRows([...red, ...greys], [firstFail, asking], () => "hivra");
-    expect(needsYouCountFor(rows, "hivra-lead")).toBe(6);
+    expect(countFor(rows, "hivra-lead")).toBe(6);
     expect(needsYouPanel(needsYouFor(rows, "hivra-lead")).count).toBe(6);
   });
 
@@ -123,7 +125,7 @@ describe("r51: chip, panel and rows are one list", () => {
     const part = job("p1", { stuck: "stuck", stuckWorker: credits, parentId: "big" });
     const big = job("big", { stuck: "stuck", stuckWorker: credits, parts: [part] });
     const rows = needsYouRows([big], [credits], () => "hivra");
-    expect(needsYouCountFor(rows, "hivra-lead")).toBe(1);
+    expect(countFor(rows, "hivra-lead")).toBe(1);
     expect(needsYouPanel(rows).count).toBe(1);
   });
 });

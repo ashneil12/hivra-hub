@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { buildAgentsTree, flattenBoard, type BoardPerson, type BoardProject } from "./tree";
+import { buildAgentsTree, descendantOwnCount, flattenBoard, type BoardPerson, type BoardProject } from "./tree";
+import { rollupText } from "./words";
 
 const NOW = Date.UTC(2026, 10, 11, 15, 0, 0);
 
@@ -120,6 +121,23 @@ describe("buildAgentsTree", () => {
       "marketing",
       "exo-session",
     ]);
+  });
+
+  it("keeps a worker with no project or owner on the board, under the Chief of Staff", () => {
+    // A global Mono's job, or one whose folder is not a listed project, has nowhere else to go. It is not dropped.
+    const root = tree([
+      person({ id: "captain", role: "captain", name: "Chief of Staff" }),
+      person({ id: "loose", role: "worker", name: "Loose job", projectId: null, parentId: null, state: "needs-you", sessionId: "loose-chat" }),
+      person({ id: "loose-sub", role: "subchat", name: "Its sub-chat", parentId: "loose-chat", state: "working", sessionId: "loose-sub-chat" }),
+      person({ id: "job", role: "worker", name: "Job", projectId: "hivra", parentId: "gone", state: "working" }),
+    ]);
+    const loose = root.children.find((node) => node.id === "loose");
+    expect(loose?.state).toBe("needs-you");
+    expect(loose?.children.map((node) => node.id)).toEqual(["loose-sub"]);
+    expect(root.children.find((node) => node.projectId === "hivra")?.children.map((node) => node.id)).toEqual(["job"]);
+    expect(root.state).toBe("needs-you");
+    const ids = flattenBoard(root).map((node) => node.id);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it("lists a person once when the same id or session arrives twice", () => {
@@ -272,6 +290,11 @@ describe("buildAgentsTree", () => {
     const nodeOf = (id: string) => flattenBoard(root).find((node) => node.id === id);
     expect(nodeOf("captain")?.state).toBe("needs-you");
     expect(nodeOf("captain")?.rolledUp).toBe(true);
+    expect(descendantOwnCount(nodeOf("captain")!, "needs-you")).toBe(1);
+    expect(rollupText(1, "needs-you")).toBe("1 needs you below");
+    expect(rollupText(2, "needs-you")).toBe("2 need you below");
+    expect(rollupText(2, "working")).toBe("2 working");
+    expect(rollupText(0, "working")).toBeNull();
     expect(nodeOf("hivra-session")?.state).toBe("needs-you");
     expect(nodeOf("hivra-session")?.rolledUp).toBe(true);
     expect(nodeOf("coding")?.state).toBe("needs-you");

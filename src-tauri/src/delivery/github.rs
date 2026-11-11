@@ -56,6 +56,10 @@ impl Github for CliGithub {
             command.current_dir(dir);
         }
         crate::harness::apply_gui_env(&mut command);
+        let command = match delivery_gh_prefix() {
+            Ok(prefix) => crate::agent_sandbox::under_wrap(command, prefix.as_deref()),
+            Err(_) => std::process::Command::new("/nonexistent/monocode-sandbox-refused"),
+        };
         let ran = bounded::run(command, GH_TIMEOUT).map_err(|failed| match failed {
             bounded::Failed::NotFound => {
                 "GitHub CLI (`gh`) is not installed, so Hivra can't open or merge pull requests."
@@ -75,6 +79,20 @@ impl Github for CliGithub {
             ran.stderr
         };
         Err(detail.trim().chars().take(600).collect())
+    }
+}
+
+/// Prefix for delivery's `gh`, or nothing when the sandbox is off.
+/// Unit tests stay plain. A profile that cannot be built refuses the start.
+fn delivery_gh_prefix() -> Result<Option<Vec<std::ffi::OsString>>, String> {
+    #[cfg(test)]
+    {
+        Ok(None)
+    }
+    #[cfg(not(test))]
+    {
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        crate::agent_sandbox::action_wrap(data.as_deref(), &[])
     }
 }
 

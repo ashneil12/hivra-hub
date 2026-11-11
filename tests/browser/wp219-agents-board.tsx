@@ -90,6 +90,9 @@ if (root) {
       lines={{ newer: ["Example: The build failed on the Windows test."] }}
       initialOpen={{ newer: true, sub: true, "exo-job": true, older: true }}
       onStop={() => undefined}
+      onOpen={(id) => {
+        document.querySelector("[data-agents-board]")?.setAttribute("data-opened", id);
+      }}
     />,
   );
 }

@@ -1,23 +1,21 @@
 import { expect, it } from "vitest";
-import { needsYou } from "../../needs/model/needsYou";
+import type { NeedsItem } from "../../needs/model/needsYou";
 import { needActions } from "./needActions";
 
 it("Yes and Not yet run the needs item's own handlers", () => {
   let picked = "";
-  const [item] = needsYou({
-    items: [{
+  const item: NeedsItem = {
       key: "notes",
       kind: "question",
+      who: "Ada",
       at: 1,
       sentence: "Example: Should we ship the notes?",
       actions: [
         { label: "Yes", run: () => { picked = "yes"; } },
         { label: "Not yet", run: () => { picked = "not"; } },
       ],
-      open: { kind: "inbox" },
-    }],
-  }, 0);
-  const actions = needActions(item!);
+  };
+  const actions = needActions(item);
   expect(actions.map((action) => action.label)).toEqual(["Yes", "Not yet"]);
   actions[0]?.onClick();
   expect(picked).toBe("yes");
@@ -26,10 +24,10 @@ it("Yes and Not yet run the needs item's own handlers", () => {
 });
 
 it("drops a fourth action", () => {
-  const [item] = needsYou({
-    items: [{
+  const item: NeedsItem = {
       key: "many",
       kind: "approval",
+      who: "Ada",
       at: 1,
       sentence: "Example: four ways",
       actions: [
@@ -38,8 +36,6 @@ it("drops a fourth action", () => {
         { label: "Three", run: () => undefined },
         { label: "Four", run: () => undefined },
       ],
-      open: { kind: "inbox" },
-    }],
-  }, 0);
-  expect(needActions(item!).map((action) => action.label)).toEqual(["One", "Two", "Three"]);
+  };
+  expect(needActions(item).map((action) => action.label)).toEqual(["One", "Two", "Three"]);
 });

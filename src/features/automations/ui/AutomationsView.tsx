@@ -73,6 +73,14 @@ import {
   type AutomationTrigger,
   type AutomationTriggerKind,
 } from "../model/automations";
+import { AutomationMap } from "./AutomationMap";
+import { AutomationRuns } from "./AutomationRuns";
+import {
+  AutomationScreenTabs,
+  automationPanelId,
+  automationTabId,
+  type AutomationScreen,
+} from "./AutomationScreenTabs";
 import {
   AUTOMATION_TEMPLATE_CATEGORIES,
   templatesForCategory,
@@ -94,6 +102,11 @@ import { defaultSessionChoice, firstEnabledHarness, modelsFor, preferredModelId,
 import { projectKey, projectName } from "../../../shared/lib/paths";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
+import { createTauriOneTimeStore } from "../../one-time-schedule/model/oneTimeScheduleApi";
+import {
+  OneTimeSchedulePanel,
+  type OneTimeChatChoice,
+} from "../../one-time-schedule/ui/OneTimeSchedulePanel";
 import { inProjectScope } from "../../projects/model/projectScope";
 import {
   loadSessionFolders,
@@ -119,6 +132,8 @@ type Props = {
   /** Lists only automations that run in this project, plus project-less ones. */
   scopeProject?: string;
   recents: RecentProject[];
+  /** WP-128: chats a one-time schedule can run in. */
+  chats?: OneTimeChatChoice[];
   onClose: () => void;
   onToggleSidebar?: () => void;
   onLaunch: (
@@ -142,6 +157,7 @@ export function AutomationsView({
   cwd,
   scopeProject,
   recents,
+  chats = [],
   onClose,
   onToggleSidebar,
   onLaunch,
@@ -179,6 +195,7 @@ export function AutomationsView({
         cwd={cwd}
         scopeProject={scopeProject}
         recents={recents}
+        chats={chats}
         onLaunch={onLaunch}
         onOpenSession={onOpenSession}
       />
@@ -190,12 +207,23 @@ function AutomationsContent({
   cwd,
   scopeProject,
   recents,
+  chats = [],
   onLaunch,
   onOpenSession,
 }: Pick<
   Props,
-  "cwd" | "scopeProject" | "recents" | "onLaunch" | "onOpenSession"
+  "cwd" | "scopeProject" | "recents" | "chats" | "onLaunch" | "onOpenSession"
 >) {
+  // WP-128: one prompt at a chosen time. The open app is what fires it.
+  const oneTimeStore = useMemo(() => createTauriOneTimeStore(), []);
+  const oneTimeProjects = useMemo(() => {
+    const paths: string[] = [];
+    if (cwd && looksLikeProject(cwd)) paths.push(cwd);
+    for (const recent of recents) {
+      if (looksLikeProject(recent.path)) paths.push(recent.path);
+    }
+    return paths.map((id) => ({ id, label: projectName(id) }));
+  }, [cwd, recents]);
   const [automations, setAutomations] = useState<Automation[]>(
     () => peekAutomations() ?? [],
   );
@@ -208,6 +236,8 @@ function AutomationsContent({
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<AutomationDraft | null>(null);
   const [pickerOpen, setPickerOpen] = useState(true);
+  // WP-180a: Runs and Map. The list and the editor below stay in their order.
+  const [screen, setScreen] = useState<AutomationScreen>("list");
   const [saving, setSaving] = useState(false);
   const [running, setRunning] = useState<string | null>(null);
   const logos = useTabGroupLogos();
@@ -215,6 +245,12 @@ function AutomationsContent({
   const [groupMascots] = useState(loadTabGroupMascots);
   const [groupColors] = useState(loadTabGroupColors);
   const [groupCustomColors] = useState(loadTabGroupCustomColors);
+  const openFromMap = (id: string) => {
+    setPickerOpen(false);
+    setDraft(null);
+    setSelectedId(id);
+    setScreen("list");
+  };
 
   const refresh = useCallback(async () => {
     try {
@@ -383,8 +419,39 @@ function AutomationsContent({
   const listLock = useLockOverscroll<HTMLDivElement>();
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 text-content">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
+      <AutomationScreenTabs screen={screen} onScreen={setScreen} />
+      {screen === "runs" ? (
+        <div
+          id={automationPanelId("runs")}
+          role="tabpanel"
+          aria-labelledby={automationTabId("runs")}
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
+        >
+          <AutomationRuns
+            automations={scoped}
+            onOpenSession={onOpenSession}
+          />
+        </div>
+      ) : screen === "map" ? (
+        <div
+          id={automationPanelId("map")}
+          role="tabpanel"
+          aria-labelledby={automationTabId("map")}
+          className="flex min-h-0 min-w-0 flex-1 flex-col"
+        >
+          <AutomationMap automations={scoped} onOpen={openFromMap} />
+        </div>
+      ) : (
+    <div
+      id={automationPanelId("list")}
+      role="tabpanel"
+      aria-labelledby={automationTabId("list")}
+      className="flex min-h-0 min-w-0 flex-1 text-content"
+    >
       <aside className="flex w-[280px] shrink-0 flex-col border-r border-stroke">
+        {/* WP-128: schedule one prompt, once. */}
+        <OneTimeSchedulePanel chats={chats} projects={oneTimeProjects} store={oneTimeStore} />
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
           <label className="relative flex h-7 min-w-0 flex-1 items-center">
             <Search className="pointer-events-none absolute left-2 size-3 shrink-0 text-content/40" />
@@ -500,6 +567,8 @@ function AutomationsContent({
           <AutomationPicker onBlank={beginBlank} onPick={beginFromTemplate} />
         )}
       </main>
+    </div>
+      )}
     </div>
   );
 }

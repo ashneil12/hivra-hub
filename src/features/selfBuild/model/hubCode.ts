@@ -50,7 +50,7 @@ function keepPinging(on: boolean): void {
   }
 }
 
-type Part = { sha: string };
+type Part = { sha: string; delivery?: HubDelivery };
 type ChangeData = { id: string; delivery?: HubDelivery };
 /** The installed app's preview is a browser page that outlives the window, so only an in-place one is kept alive. */
 const watches = (data: unknown, on: boolean) => on && (data as ChangeData).delivery !== "rebuild";
@@ -63,7 +63,10 @@ registerChangeKind(HUB_CODE, {
   apply: async (data) => {
     const applied = await commands.apply((data as ChangeData).id).catch((e) => Promise.reject(plain(e)));
     keepPinging(false);
-    return applied.map((c) => ({ title: c.subject || "Hub change", data: { sha: c.sha } satisfies Part }));
+    return applied.map((c) => ({
+      title: c.subject || "Hub change",
+      data: { sha: c.sha, delivery: (data as ChangeData).delivery } satisfies Part,
+    }));
   },
   discard: async (data) => {
     await commands.discard((data as ChangeData).id).catch((e) => Promise.reject(plain(e)));
@@ -153,6 +156,12 @@ export async function undoHubPart(which: string) {
     rows.find((c) => c.after.toLowerCase().includes(want) || want.includes(c.after.toLowerCase()));
   if (!row)
     throw new Error(`No applied hub change matches "${which}". Applied: ${rows.map((c) => `"${c.after}"`).join(", ") || "none"}.`);
+  // A rebuild undo runs the checks, the build and the ship with no tap (hub_change_revert). Ash's Undo in Bot
+  // changes still does that, because that button is the tap. A chat asking for the same undo is not.
+  // A row applied before the delivery tag holds the commit alone. Refuse unless this part is known to be in place.
+  if ((row.flow?.data as Part | undefined)?.delivery !== "inPlace") {
+    throw new Error("That change is not known to be in place. Undo it from Bot changes, so a chat does not rebuild and ship it.");
+  }
   await undoBotChange([row.id]);
   const after = flowChanges(HUB_CODE).find((c) => c.id === row.id);
   if (after?.problem) throw new Error(after.problem);

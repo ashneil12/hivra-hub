@@ -602,6 +602,12 @@ pub fn harness_runtime_binary_paths(
         paths.insert("claude".into(), binary);
     }
     let paths = initialize_runtime_binary_paths(&host.runtime_binary_paths, paths);
+    for path in paths.values() {
+        let trimmed = path.trim();
+        if !trimmed.is_empty() {
+            crate::agent_sandbox::note_configured_cli(&expand_home(trimmed));
+        }
+    }
     // The configured CLIs' identity checks run now, in the background, not on the first chat's turn.
     warm_configured_binaries(paths.clone());
     paths
@@ -1150,6 +1156,9 @@ pub fn harness_spawn(
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
+    // Codex chats that already run inside Codex's own sandbox. macOS refuses a sandbox inside a sandbox, so those
+    // skip this wrap. A full access Codex chat does not set it. A More agents child never skips it.
+    skip_outer_sandbox: Option<bool>,
     crew_ticket: Option<String>,
     store: State<'_, crate::session_store::SessionStore>,
     crew_folder: Option<String>,
@@ -1194,6 +1203,9 @@ pub fn harness_spawn(
             )?)
         }
     };
+    let more_id = more.as_ref().map(|run| run.id.clone());
+    let more_argv0 = more.as_ref().and_then(|run| run.argv0.clone());
+    let more_sha = more.as_ref().map(|run| run.sha256.clone());
     let more_run = more.is_some();
     let (command, args) = match more {
         Some(run) => (run.command, run.args),
@@ -1233,6 +1245,55 @@ pub fn harness_spawn(
             Some(crate::model_router::prepare_routed_session(route)?)
         }
     };
+    // WP-178 item 3.1: with the agent sandbox setting on, the CLI starts under the macOS sandbox profile. Fail closed:
+    // a sandbox that cannot start refuses the start here, before anything is reserved or stopped, and never falls back
+    // to a plain start (agent_sandbox::sandboxed_launch). A More agents child is not wrapped here. Its run folder does
+    // not exist yet, and the wrap is the last step before spawn so it names that folder and the approved command.
+    let data_dir = app.path().app_data_dir().ok();
+    let sandbox_more = more_run && crate::agent_sandbox::enabled(data_dir.as_deref());
+    let (launch_program, launch_lead) = if !more_run
+        && skip_outer_sandbox != Some(true)
+        && crate::agent_sandbox::enabled(data_dir.as_deref())
+    {
+        let started = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .ok_or_else(|| {
+                "The agent did not start: HOME is not set, so the macOS sandbox cannot be built."
+                    .to_string()
+            })
+            .and_then(|home| {
+                let mut checkouts = match crate::local_hub::project_folders(&*store.lock_conn()?) {
+                    Ok(folders) => folders,
+                    Err(error) => {
+                        return Err(format!(
+                            "The agent did not start. The project list could not be read, so other projects' git folders could not be locked. {error}"
+                        ));
+                    }
+                };
+                if !checkouts.iter().any(|folder| folder == &workdir) {
+                    checkouts.insert(0, workdir.clone());
+                }
+                crate::agent_sandbox::sandboxed_launch(
+                    std::ffi::OsStr::new(&command),
+                    &home,
+                    data_dir.as_deref(),
+                    &checkouts,
+                    std::path::Path::new(crate::agent_sandbox::SANDBOX_EXEC),
+                )
+            });
+        match started {
+            Ok(launch) => launch,
+            Err(error) => {
+                // WP-78: a refused start is one activity row, naming the chat. Nothing was started or reserved yet.
+                if let Some(data) = data_dir.as_deref() {
+                    crate::agent_sandbox::note_refusal(data, &session_id, &error);
+                }
+                return Err(error);
+            }
+        }
+    } else {
+        (std::ffi::OsString::from(&command), Vec::new())
+    };
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
     if let Some(prev) = prev {
@@ -1256,12 +1317,33 @@ pub fn harness_spawn(
     };
     // macOS: start the CLI as its own responsible process, so a privacy prompt names the CLI and not the Hub
     // (src/disclaim.rs). Same pid, pipes, cwd and process group; a plain spawn when it can't or is switched off.
-    let disclaim_launcher = crate::disclaim::launcher_for(
-        std::ffi::OsStr::new(&command),
-        app.path().app_data_dir().ok().as_deref(),
+    // A More agents child that will be sandboxed is not disclaimed as the spawned program. The sandbox wrap is the
+    // last step and is what gets spawned. The invoked name and the approved hash are applied inside that wrap, so
+    // they still name the canonical command the sandbox runs. When the sandbox is off, this is the plain launcher
+    // path: `launch_program` is the approved command, with the invoked name and the approved hash. A non-More start
+    // keeps `launch_program`, which may already be the sandbox launcher. There is no hard link.
+    let disclaim_launcher = if sandbox_more {
+        None
+    } else {
+        crate::disclaim::launcher_for(
+            launch_program.as_os_str(),
+            app.path().app_data_dir().ok().as_deref(),
+        )
+    };
+    let (spawn_argv0, spawn_sha): (Option<&std::ffi::OsStr>, Option<&str>) = if sandbox_more {
+        (None, None)
+    } else {
+        (
+            more_argv0.as_deref().map(std::ffi::OsStr::new),
+            more_sha.as_deref(),
+        )
+    };
+    let mut cmd = crate::disclaim::command(
+        launch_program.as_os_str(),
+        disclaim_launcher.as_deref(),
+        spawn_argv0,
+        spawn_sha,
     );
-    let mut cmd =
-        crate::disclaim::command(std::ffi::OsStr::new(&command), disclaim_launcher.as_deref());
     // A More agents child runs in its own empty folder, never the chat folder: nothing a chat holds is a relative input.
     let spawn_dir = if more_run {
         crate::more_agents::run_folder(&app.path().app_data_dir().map_err(|e| e.to_string())?)?
@@ -1274,7 +1356,8 @@ pub fn harness_spawn(
                 .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", &config_dir);
         }
     }
-    cmd.args(&devin_config)
+    cmd.args(&launch_lead)
+        .args(&devin_config)
         .args(&args)
         .current_dir(&spawn_dir)
         .stdin(Stdio::piped())
@@ -1324,15 +1407,19 @@ pub fn harness_spawn(
     // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain. This runs
     // after configure_child, so the app's MONOCODE_* variables it just set are stripped again for an armed worker (M3).
     // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
-    {
+    // A More agents child gets its environment cleared below, so its secrets are applied after that clear instead.
+    let apply_secrets = |cmd: &mut Command| -> Result<(), String> {
         let store = app.state::<crate::session_store::SessionStore>();
         crate::secrets::worker::apply_to_child(
             &session_id,
             crate::secrets::store::active(),
-            &mut cmd,
+            cmd,
             &store,
             crate::session_store::now_millis(),
-        )?;
+        )
+    };
+    if !more_run {
+        apply_secrets(&mut cmd)?;
     }
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     // WP-86: stamp this crew's commits. A failure here must not stop the crew.
@@ -1356,12 +1443,87 @@ pub fn harness_spawn(
             task.as_deref(),
         );
     }
-    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
-    if more_run {
-        crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
+    // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list, then the
+    // secrets the person approved for this worker (WP-92). Applying them before the clear dropped them.
+    // The last hash in this process is here, after the run folder exists and immediately before the spawn.
+    // A text-file-busy retry hashes again before the next spawn. On macOS the disclaim launcher hashes once more,
+    // immediately before exec. When the sandbox is on, that launcher sits inside the wrap, so the hash still
+    // applies to the approved program, and the wrap is the last step before spawn.
+    let more_recheck = if more_run {
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let id = more_id.as_deref().unwrap_or("").to_string();
+        // A sandboxed child's environment is cleared inside the wrap, so its secrets go on after the wrap below.
+        let ready = if sandbox_more {
+            crate::more_agents::confirm_before_spawn(&data_dir, &id, &command)
+        } else {
+            crate::more_agents::restrict_env_then(&mut cmd, &gui_search_path(), apply_secrets)
+                .and_then(|()| crate::more_agents::confirm_before_spawn(&data_dir, &id, &command))
+        };
+        if let Err(error) = ready {
+            let _ = crate::more_agents::remove_run_folder(&data_dir, &spawn_dir);
+            return Err(error);
+        }
+        Some((data_dir, id, command.clone()))
+    } else {
+        None
+    };
+    // WP-178: when the sandbox is on, the wrap is the last step before spawn. It wraps the approved canonical
+    // command. The invoked name and the approved hash are passed through the wrap, so they apply to the program
+    // the sandbox runs. skip_outer_sandbox does not apply. There is no hard link.
+    if sandbox_more {
+        let home = match std::env::var_os("HOME").map(PathBuf::from) {
+            Some(home) => home,
+            None => {
+                let error =
+                    "The agent did not start: HOME is not set, so the macOS sandbox cannot be built.";
+                return refuse_more_agent_sandbox(
+                    data_dir.as_deref(),
+                    &spawn_dir,
+                    &session_id,
+                    error,
+                );
+            }
+        };
+        cmd = match wrap_more_agent_at_spawn(
+            cmd,
+            &command,
+            &spawn_dir,
+            &workdir,
+            data_dir.as_deref(),
+            &home,
+            skip_outer_sandbox,
+            more_argv0.as_deref().map(std::ffi::OsStr::new),
+            more_sha.as_deref(),
+        ) {
+            Ok(wrapped) => wrapped,
+            Err(error) => {
+                return refuse_more_agent_sandbox(
+                    data_dir.as_deref(),
+                    &spawn_dir,
+                    &session_id,
+                    &error,
+                );
+            }
+        };
+        // WP-92: the wrap cleared the environment to the allow-list, so the approved secrets go on now.
+        if let Err(error) = apply_secrets(&mut cmd) {
+            if let Some((data_dir, _, _)) = more_recheck.as_ref() {
+                let _ = crate::more_agents::remove_run_folder(data_dir, &spawn_dir);
+            }
+            return Err(error);
+        }
     }
+    let recheck = || match more_recheck.as_ref() {
+        Some((data_dir, id, command)) => {
+            crate::more_agents::confirm_before_spawn(data_dir, id, command)
+        }
+        None => Ok(()),
+    };
+    let recheck_ref = more_recheck
+        .is_some()
+        .then_some(&recheck as &dyn Fn() -> Result<(), String>);
     let mut child = child_or_reap(
-        spawn_managed(&mut cmd),
+        spawn_managed(&mut cmd, recheck_ref),
         more_run,
         || app.path().app_data_dir().ok(),
         &spawn_dir,
@@ -1542,6 +1704,116 @@ pub fn harness_spawn(
     Ok(pid)
 }
 
+/// A More agents sandbox that cannot be built. The run folder is removed and the refusal is logged. Nothing is spawned.
+fn refuse_more_agent_sandbox(
+    data_dir: Option<&Path>,
+    spawn_dir: &Path,
+    session_id: &str,
+    error: &str,
+) -> Result<u32, String> {
+    if let Some(data) = data_dir {
+        let _ = crate::more_agents::remove_run_folder(data, spawn_dir);
+        crate::agent_sandbox::note_refusal(data, session_id, error);
+    }
+    Err(error.to_string())
+}
+
+/// The last step before a More agents child is spawned, when the sandbox is on.
+///
+/// The approved canonical command is the program the sandbox runs. There is no hard link. `argv0` is the invoked
+/// name when it differs from that path, and `expect_sha256` is the approved file's hash. Both are passed through
+/// the wrap: the disclaim launcher, when it is on, is what the sandbox execs, and it checks the hash and sets the
+/// invoked name immediately before it execs the canonical path. A direct start (the launcher is off) ignores the
+/// hash, the same as any other direct start, and `sandbox-exec` does not keep a direct `argv0`. The last hash in
+/// this process is `confirm_before_spawn`, which has already run.
+///
+/// The child keeps its run folder as its working directory, and that folder is in the profile's allowed set.
+/// `skip_outer_sandbox` is ignored: a More agents child does not skip the wrap.
+///
+/// The process group is set after the wrap, so the leader is the sandbox launcher. The allow-listed environment is
+/// applied after that, because the wrap builds a new command.
+#[allow(clippy::too_many_arguments)]
+fn wrap_more_agent_at_spawn(
+    cmd: Command,
+    approved: &str,
+    spawn_dir: &Path,
+    workdir: &Path,
+    data_dir: Option<&Path>,
+    home: &Path,
+    skip_outer_sandbox: Option<bool>,
+    argv0: Option<&std::ffi::OsStr>,
+    expect_sha256: Option<&str>,
+) -> Result<Command, String> {
+    // A Codex chat can skip the outer sandbox. A More agents child cannot.
+    let _ = skip_outer_sandbox;
+    let checkout = workdir.to_path_buf();
+    let allowed = spawn_dir.to_path_buf();
+    let prefix = crate::agent_sandbox::more_agent_wrap(
+        home,
+        data_dir,
+        std::slice::from_ref(&checkout),
+        std::slice::from_ref(&allowed),
+    )?;
+    let cmd = pass_more_agent_pin(cmd, approved, data_dir, argv0, expect_sha256);
+    let Some(prefix) = prefix else {
+        // The sandbox is off. The pin rebuilds the command, so the process group and the pipes are set again.
+        // The child still gets only the allow-listed environment.
+        let mut cmd = cmd;
+        prepare_child(&mut cmd, approved);
+        crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        return Ok(cmd);
+    };
+    let mut cmd = crate::agent_sandbox::under_wrap(cmd, Some(prefix.as_slice()));
+    prepare_child(&mut cmd, approved);
+    crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    Ok(cmd)
+}
+
+/// Put the disclaim launcher, the invoked name and the approved hash in front of `cmd`'s arguments.
+///
+/// The launcher hashes `approved` by path and then execs that path. `under_wrap` keeps the program and the
+/// arguments, so the sandbox runs the launcher and the hash still applies to the canonical command. When the
+/// launcher is off, a direct start ignores the hash. Nothing is added when there is no name and no hash.
+fn pass_more_agent_pin(
+    cmd: Command,
+    approved: &str,
+    data_dir: Option<&Path>,
+    argv0: Option<&std::ffi::OsStr>,
+    expect_sha256: Option<&str>,
+) -> Command {
+    if argv0.is_none() && expect_sha256.is_none() {
+        return cmd;
+    }
+    let launcher = crate::disclaim::launcher_for(std::ffi::OsStr::new(approved), data_dir);
+    let mut inner = crate::disclaim::command(
+        std::ffi::OsStr::new(approved),
+        launcher.as_deref(),
+        argv0,
+        expect_sha256,
+    );
+    inner.args(cmd.get_args());
+    if let Some(dir) = cmd.get_current_dir() {
+        inner.current_dir(dir);
+    }
+    for (key, value) in cmd.get_envs() {
+        match value {
+            Some(value) => {
+                inner.env(key, value);
+            }
+            None => {
+                inner.env_remove(key);
+            }
+        }
+    }
+    inner
+}
+
 /// The child from a start, or the error the caller sees when the start failed. A More agents run folder
 /// was made before the spawn, so a failed start removes it. The data folder is read only then. An ordinary
 /// spawn has no run folder, so its working folder is left alone, and a missing data folder leaves the run
@@ -1568,6 +1840,8 @@ fn child_or_reap(
 
 #[cfg(test)]
 mod failed_spawn_tests {
+    #[cfg(unix)]
+    use super::retry_text_file_busy;
     use super::{child_or_reap, spawn_managed};
     use std::path::PathBuf;
     use std::process::Command;
@@ -1606,7 +1880,7 @@ mod failed_spawn_tests {
 
         // Not a More agents start: this failure has no run folder of its own, so the working folder stays.
         let ordinary = child_or_reap(
-            spawn_managed(&mut cmd),
+            spawn_managed(&mut cmd, None),
             false,
             || Some(data.0.clone()),
             &run,
@@ -1619,7 +1893,7 @@ mod failed_spawn_tests {
         );
 
         let failed = child_or_reap(
-            spawn_managed(&mut cmd),
+            spawn_managed(&mut cmd, None),
             true,
             || Some(data.0.clone()),
             &run,
@@ -1647,6 +1921,287 @@ mod failed_spawn_tests {
             "a missing data folder was treated as a removed run folder"
         );
         crate::more_agents::remove_run_folder(&data.0, &kept).expect("reap leftover");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_text_file_busy_retry_checks_again_before_the_next_spawn() {
+        let checks = std::cell::Cell::new(0);
+        let spawns = std::cell::Cell::new(0);
+        let recheck = || {
+            checks.set(checks.get() + 1);
+            Ok(())
+        };
+        let result = retry_text_file_busy(Some(&recheck), || {
+            let n = spawns.get();
+            spawns.set(n + 1);
+            if n < 2 {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "stop"))
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(spawns.get(), 3);
+        assert_eq!(checks.get(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_recheck_stops_the_text_file_busy_retry() {
+        let spawns = std::cell::Cell::new(0);
+        let recheck = || Err("changed".to_string());
+        let result = retry_text_file_busy(Some(&recheck), || {
+            spawns.set(spawns.get() + 1);
+            Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+        });
+        let error = result.expect_err("the retry stopped");
+        assert_eq!(spawns.get(), 1);
+        assert_eq!(error.to_string(), "changed");
+    }
+}
+
+#[cfg(test)]
+mod more_agent_sandbox_tests {
+    use super::wrap_more_agent_at_spawn;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Runs one shell script under the profile the wrap built. The script uses paths relative to `cwd`, so nothing
+    /// from this machine is written into the assertion text.
+    #[cfg(target_os = "macos")]
+    fn under_profile(
+        profile: &str,
+        cwd: &std::path::Path,
+        home: &std::path::Path,
+        script: &str,
+    ) -> bool {
+        Command::new(crate::agent_sandbox::SANDBOX_EXEC)
+            .args(["-p", profile, "/bin/sh", "-c", script])
+            .current_dir(cwd)
+            .env("HOME", home)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .expect("sandbox probe")
+            .success()
+    }
+
+    /// With the sandbox on, a More agents start is wrapped: the spawned program is the sandbox launcher and the
+    /// approved command is inside it. The working directory is the run folder on every platform. The launcher only
+    /// exists on macOS, so that assertion is gated. `skip_outer_sandbox` is set and must not stop the wrap.
+    #[test]
+    fn a_sandboxed_more_agents_start_is_wrapped_and_runs_in_its_run_folder() {
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("wp178-more-wrap-{}", uuid::Uuid::new_v4())));
+        std::fs::create_dir_all(&scratch.0).expect("scratch");
+        let home = scratch.0.join("home");
+        let chat = scratch.0.join("chat");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&chat).expect("chat");
+        crate::agent_sandbox::write_setting(&scratch.0, true).expect("sandbox on");
+        let run = crate::more_agents::run_folder(&scratch.0).expect("run folder");
+        let approved = std::env::current_exe().expect("test binary");
+        let approved_text = approved
+            .to_str()
+            .expect("the test binary path is text")
+            .to_string();
+        let mut cmd = Command::new(&approved);
+        cmd.arg("--flag").current_dir(&run);
+
+        let wrapped = wrap_more_agent_at_spawn(
+            cmd,
+            &approved_text,
+            &run,
+            &chat,
+            Some(&scratch.0),
+            &home,
+            Some(true),
+            None,
+            None,
+        )
+        .expect("the start is built");
+
+        assert_eq!(
+            wrapped.get_current_dir(),
+            Some(run.as_path()),
+            "a More agents child runs in its run folder"
+        );
+
+        #[cfg(target_os = "macos")]
+        {
+            use std::ffi::OsStr;
+            assert_eq!(
+                wrapped.get_program(),
+                OsStr::new(crate::agent_sandbox::SANDBOX_EXEC),
+                "the spawned program is the sandbox launcher"
+            );
+            let args: Vec<String> = wrapped
+                .get_args()
+                .map(|arg| arg.to_string_lossy().into_owned())
+                .collect();
+            assert!(
+                args.iter().any(|arg| arg == &approved_text),
+                "the approved command is inside the sandbox launcher"
+            );
+            assert!(
+                args.iter().any(|arg| arg == "--flag"),
+                "the approved arguments stay on the command"
+            );
+            // A short profile is `-p <text>`. A long one (many worktrees) is `-f <file>`.
+            let profile = match args.iter().position(|arg| arg == "-f") {
+                Some(at) => {
+                    let path = args.get(at + 1).expect("the profile file follows -f");
+                    std::fs::read_to_string(path).expect("the profile file can be read")
+                }
+                None => args
+                    .iter()
+                    .find(|arg| arg.contains("(version 1)"))
+                    .expect("the profile is an argument")
+                    .clone(),
+            };
+            let run_text = run.to_string_lossy();
+            assert!(
+                profile.contains(&format!(
+                    "(allow file-read* file-write* (subpath \"{run_text}\"))"
+                )),
+                "the run folder is not in the profile's allowed set"
+            );
+            // The run folder is `<data>/more-agents/run/<id>`, so three levels up is the data folder.
+            let in_run = run.join("ok.txt");
+            assert!(
+                under_profile(&profile, &run, &home, "echo ok > ok.txt"),
+                "the run folder is not writable under the profile"
+            );
+            assert_eq!(std::fs::read_to_string(&in_run).unwrap_or_default(), "ok\n");
+            let planted = scratch.0.join("planted");
+            assert!(
+                !under_profile(&profile, &run, &home, "echo x > ../../../planted"),
+                "a file in the data folder, outside the run folder, was writable"
+            );
+            assert!(
+                !planted.exists(),
+                "the denied write left a file in the data folder"
+            );
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            assert_eq!(
+                wrapped.get_program(),
+                approved.as_os_str(),
+                "off macOS the sandbox is off, so the approved command starts directly"
+            );
+        }
+
+        crate::more_agents::remove_run_folder(&scratch.0, &run).expect("reap run");
+    }
+
+    /// The sandbox wrap is the spawned program, and the approved hash and the invoked name are inside it. The
+    /// disclaim launcher, when it is on, is what the sandbox execs: it checks the hash, then execs the canonical
+    /// path. When the launcher is off, a direct start ignores the hash, so the flag is not on the command.
+    #[test]
+    fn a_sandboxed_more_agents_start_keeps_the_hash_and_the_invoked_name() {
+        let scratch =
+            Scratch(std::env::temp_dir().join(format!("wp178-more-pin-{}", uuid::Uuid::new_v4())));
+        std::fs::create_dir_all(&scratch.0).expect("scratch");
+        let home = scratch.0.join("home");
+        let chat = scratch.0.join("chat");
+        std::fs::create_dir_all(&home).expect("home");
+        std::fs::create_dir_all(&chat).expect("chat");
+        crate::agent_sandbox::write_setting(&scratch.0, true).expect("sandbox on");
+        let run = crate::more_agents::run_folder(&scratch.0).expect("run folder");
+        let approved = std::env::current_exe().expect("test binary");
+        let approved_text = approved
+            .to_str()
+            .expect("the test binary path is text")
+            .to_string();
+        let sha = "ab".repeat(32);
+        let mut cmd = Command::new(&approved);
+        cmd.arg("--flag").current_dir(&run);
+
+        let wrapped = wrap_more_agent_at_spawn(
+            cmd,
+            &approved_text,
+            &run,
+            &chat,
+            Some(&scratch.0),
+            &home,
+            Some(true),
+            Some(std::ffi::OsStr::new("bunx")),
+            Some(&sha),
+        )
+        .expect("the start is built");
+
+        let args: Vec<String> = wrapped
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let launcher_on = crate::disclaim::launcher_for(
+            std::ffi::OsStr::new(&approved_text),
+            Some(scratch.0.as_path()),
+        )
+        .is_some();
+        #[cfg(target_os = "macos")]
+        assert!(
+            launcher_on,
+            "the disclaim launcher is off, so the hash cannot be checked inside the wrap"
+        );
+        if launcher_on {
+            let sha_at = args
+                .iter()
+                .position(|arg| arg == "--expect-sha256")
+                .expect("the approved hash is passed through the wrap");
+            assert_eq!(args.get(sha_at + 1).map(String::as_str), Some(sha.as_str()));
+            let name_at = args
+                .iter()
+                .position(|arg| arg == "--argv0")
+                .expect("the invoked name is passed through the wrap");
+            assert!(sha_at < name_at, "the hash is not before the invoked name");
+            assert_eq!(args.get(name_at + 1).map(String::as_str), Some("bunx"));
+            let dash = args
+                .iter()
+                .position(|arg| arg == "--")
+                .expect("the launcher flags end before the command");
+            assert!(name_at < dash);
+            assert_eq!(
+                args.get(dash + 1).map(String::as_str),
+                Some(approved_text.as_str()),
+                "the hash does not apply to the canonical command"
+            );
+        } else {
+            assert!(
+                !args.iter().any(|arg| arg == "--expect-sha256"),
+                "a direct start, with the launcher off, put the hash on the command"
+            );
+        }
+        assert!(
+            args.iter().any(|arg| arg == "--flag"),
+            "the approved arguments stay on the command"
+        );
+
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            wrapped.get_program(),
+            std::ffi::OsStr::new(crate::agent_sandbox::SANDBOX_EXEC),
+            "the spawned program is the sandbox launcher"
+        );
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            wrapped.get_program(),
+            approved.as_os_str(),
+            "off macOS the sandbox is off, so the approved command starts directly"
+        );
+
+        crate::more_agents::remove_run_folder(&scratch.0, &run).expect("reap run");
     }
 }
 
@@ -2125,7 +2680,8 @@ pub(crate) fn exec_output(
         }
     }
 
-    let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
+    let child =
+        spawn_managed(&mut cmd, None).map_err(|e| format!("Failed to run {command}: {e}"))?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -2185,17 +2741,22 @@ fn isolate_child(cmd: &mut Command) {
     }
 }
 
-fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_managed(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
     #[cfg(windows)]
     {
+        let _ = recheck;
         crate::windows::spawn_managed(cmd)
     }
     #[cfg(unix)]
     {
-        spawn_retrying_text_file_busy(cmd)
+        spawn_retrying_text_file_busy(cmd, recheck)
     }
     #[cfg(not(any(unix, windows)))]
     {
+        let _ = recheck;
         cmd.spawn()
     }
 }
@@ -2206,16 +2767,36 @@ fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
 /// So a binary written seconds ago — a CLI mid-upgrade, or a `--version` probe
 /// of a path the user just pointed us at — can be briefly unrunnable rather
 /// than wrong, and reporting it as invalid is the wrong answer.
+/// `recheck` runs after the wait and before the next spawn, so a More agents start hashes the
+/// program again. A failed recheck stops the retry.
 #[cfg(unix)]
-fn spawn_retrying_text_file_busy(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_retrying_text_file_busy(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
+    retry_text_file_busy(recheck, || cmd.spawn())
+}
+
+#[cfg(unix)]
+fn retry_text_file_busy(
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+    mut attempt_spawn: impl FnMut() -> std::io::Result<std::process::Child>,
+) -> std::io::Result<std::process::Child> {
     const ATTEMPTS: u32 = 4;
     for attempt in 1..ATTEMPTS {
-        match cmd.spawn() {
-            Err(e) if is_text_file_busy(&e) => thread::sleep(Duration::from_millis(20) * attempt),
+        match attempt_spawn() {
+            Err(error) if is_text_file_busy(&error) => {
+                thread::sleep(Duration::from_millis(20) * attempt);
+                if let Some(check) = recheck {
+                    if let Err(error) = check() {
+                        return Err(std::io::Error::other(error));
+                    }
+                }
+            }
             settled => return settled,
         }
     }
-    cmd.spawn()
+    attempt_spawn()
 }
 
 #[cfg(unix)]
@@ -2889,12 +3470,8 @@ fn validate_harness_binary_version(
     if provider == "antigravity" {
         return Ok(());
     }
-    let version = exec_capture_within(
-        &path.to_string_lossy(),
-        &["--version".to_string()],
-        None,
-        timeout,
-    )?;
+    // A stored path is untrusted. Run it inside the container, not through exec_output.
+    let version = contained_version_output(path, timeout)?;
     let lower = version.to_ascii_lowercase();
     let has_version = is_supported_harness_version(&version);
     let provider_marker = match provider {
@@ -2911,6 +3488,41 @@ fn validate_harness_binary_version(
             "Configured {provider} binary returned an invalid version."
         ))
     }
+}
+
+/// `--version` of a stored harness path. The container is `contained_command`: unit tests stay plain, and a container
+/// that cannot be built is a program that does not exist.
+fn contained_version_output(path: &Path, timeout: Duration) -> Result<String, String> {
+    let program = path.to_string_lossy();
+    crate::verify_live::provider_start_allowed(crate::verify_live::plan(), None, &program)?;
+    let mut cmd = crate::git_cmd::contained_command(path);
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    prepare_child(&mut cmd, &program);
+    // A version probe is not a More agents start, so there is no pin to recheck.
+    let child =
+        spawn_managed(&mut cmd, None).map_err(|e| format!("Failed to run {program}: {e}"))?;
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let output = match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("Failed to run {program}: {e}")),
+        Err(_) => {
+            terminate(pid);
+            return Err(format!("{program} timed out"));
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if output.status.success() || !stdout.trim().is_empty() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(stderr.trim().to_string())
 }
 
 fn resolve_configured_harness_binary(
@@ -2940,6 +3552,7 @@ fn resolve_configured_harness_binary(
             "Configured path is not a {provider} binary: {binary_path}"
         ));
     }
+    crate::agent_sandbox::note_configured_cli(&path);
     Ok(path)
 }
 
@@ -3302,7 +3915,7 @@ fn help_mentions_rpc_mode(path: &Path) -> bool {
     if bench_refuses_path(path) {
         return false;
     }
-    let mut cmd = Command::new(path);
+    let mut cmd = crate::git_cmd::contained_command(path);
     cmd.arg("--help")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -3311,7 +3924,7 @@ fn help_mentions_rpc_mode(path: &Path) -> bool {
     // fails outright without a PATH that has node on it.
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3396,7 +4009,7 @@ fn fx_help_mentions_acp(path: &Path) -> bool {
     if bench_refuses_path(path) {
         return false;
     }
-    let mut cmd = Command::new(path);
+    let mut cmd = crate::git_cmd::contained_command(path);
     cmd.arg("--help")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -3405,7 +4018,7 @@ fn fx_help_mentions_acp(path: &Path) -> bool {
     // fails outright without a PATH that has node on it.
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3462,14 +4075,14 @@ fn grok_help_mentions_agent(path: &Path) -> bool {
     if bench_refuses_path(path) {
         return false;
     }
-    let mut cmd = Command::new(path);
+    let mut cmd = crate::git_cmd::contained_command(path);
     cmd.arg("--help")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3828,7 +4441,9 @@ fn peek_login_shell_path(cache: &Mutex<Option<HashMap<String, String>>>) -> Opti
 fn login_shell_env(name: &str) -> Option<String> {
     let mut cache = LOGIN_SHELL_ENV.lock().ok()?;
     if cache.is_none() {
-        *cache = Some(load_login_shell_env());
+        *cache = Some(crate::agent_sandbox::during_login_read(
+            load_login_shell_env,
+        ));
     }
     cache
         .as_ref()
@@ -3866,7 +4481,7 @@ fn load_unix_login_shell_env() -> HashMap<String, String> {
             "/bin/bash".into()
         }
     });
-    let mut cmd = Command::new(&shell);
+    let mut cmd = crate::git_cmd::contained_command(&shell);
     cmd.args(["-lic", "printenv"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -5498,6 +6113,225 @@ mod dev_claude_tests {
         assert_eq!(
             super::launch_preflight("/not/a/cli", &temp, Some("claude"), None),
             Err("harness_spawn: not a resolved harness CLI".to_string())
+        );
+    }
+}
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(all(test, unix))]
+mod review_r5_repro {
+    use super::*;
+
+    fn filter_matches(line: &str, path: &str) -> bool {
+        if let Some(start) = line.find("(regex #\"") {
+            let rest = &line[start + "(regex #\"".len()..];
+            return rest.find("\")").is_some_and(|end| {
+                regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path))
+            });
+        }
+        false
+    }
+
+    fn denies_write(profile: &str, path: &str) -> bool {
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ") && line.contains("file-write") && filter_matches(line, path)
+        })
+    }
+
+    /// HIGH (H-E still open): while the sandbox is on, the login-shell probe runs in the container, which denies reads of
+    /// `.zprofile` and `.zshrc`, so the probe's PATH has no Homebrew. A Finder launch inherits only launchd's PATH.
+    /// `gh` and `git-lfs` are then found in the fixed folders, where `~/.claude/local`, `~/.local/share/claude`,
+    /// `~/.opencode/bin`, `~/.grok/bin`, `~/.npm-global/bin` and `~/.bun/bin` come before `/opt/homebrew/bin`, and the
+    /// profile denies none of them. The agent drops `~/.bun/bin/gh`; the worktree sweep runs `gh pr list` every 15
+    /// minutes with this PATH, outside the sandbox (worktree_janitor::gh_prs_for_branch), and Ash's Commit or Push runs
+    /// `git-lfs` from it. Every home folder searched before Homebrew must be write-denied (or the search must not use them).
+    #[test]
+    fn every_home_folder_searched_before_homebrew_is_write_denied() {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let home = std::env::temp_dir().join(format!("harness-r5-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let home = std::fs::canonicalize(&home).unwrap();
+        let profile = crate::agent_sandbox::profile_with_checkouts(&home, None, &[]).unwrap();
+        let search = gui_search_path_from(
+            None,
+            Some(home.to_string_lossy().into_owned()),
+            Some("/usr/bin:/bin:/usr/sbin:/sbin".into()),
+        );
+        let _ = std::fs::remove_dir_all(&home);
+        let open: Vec<String> = std::env::split_paths(&search)
+            .take_while(|dir| dir != Path::new("/opt/homebrew/bin"))
+            .filter(|dir| dir.starts_with(&home))
+            .map(|dir| dir.join("gh").to_string_lossy().into_owned())
+            .filter(|gh| !denies_write(&profile, gh))
+            .collect();
+        assert!(
+            open.is_empty(),
+            "an agent can plant gh or git-lfs here, and the app runs it outside the sandbox: {open:?}"
+        );
+    }
+}
+
+/// Review r6 repro for PR #208 (WP-178), red at 520e3d4e3. Round 6 write-denied the fixed fallback folders searched
+/// before Homebrew. The app still finds programs it runs outside the sandbox in other home folders an agent can write.
+#[cfg(all(test, unix))]
+mod review_r6_repro {
+    use super::*;
+
+    fn filter_matches(line: &str, path: &str) -> bool {
+        let Some(start) = line.find("(regex #\"") else {
+            return false;
+        };
+        let rest = &line[start + "(regex #\"".len()..];
+        rest.find("\")")
+            .is_some_and(|end| regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path)))
+    }
+
+    fn denies_write(profile: &str, path: &Path) -> bool {
+        let path = path.to_string_lossy();
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ")
+                && line.contains("file-write*")
+                && filter_matches(line, &path)
+        })
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("hx-r6-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    /// HIGH (HIGH-4 fix incomplete): the login shell's PATH comes first in `gui_search_path`, ahead of Homebrew and
+    /// `/usr/bin`. pnpm (`~/Library/pnpm`), `n` (`~/n/bin`), a personal `~/bin`, pyenv, volta, deno, Windsurf and
+    /// Antigravity all put a home folder there. The profile denies only a fixed list, so an agent drops `git`, `ssh`,
+    /// `node` or `npm` into one of these. Ash's Git panel commit and push (`git_with_hooks`, never sandboxed, PATH set
+    /// to this search path), the self-build's `npm run hub:check-all`, the terminal mirror's `claude` and the issue
+    /// poll's `gh` then run the planted file. `tool_on_path` reads the app's own PATH, which a Finder launch keeps bare,
+    /// so it never sees these folders either. The cache is seeded the way the login shell read fills it; the empty
+    /// scratch folders go in front, so nothing else resolves differently.
+    #[test]
+    fn every_home_folder_on_the_login_path_is_write_denied() {
+        let home = scratch("loginpath");
+        let h = home.to_string_lossy().to_string();
+        let login = {
+            let mut cache = LOGIN_SHELL_ENV.lock().unwrap();
+            let map = cache.get_or_insert_with(HashMap::new);
+            let tail = map
+                .get("PATH")
+                .cloned()
+                .or_else(|| std::env::var("PATH").ok())
+                .unwrap_or_default();
+            let login = format!("{h}/bin:{h}/Library/pnpm:{h}/n/bin:{tail}");
+            map.insert("PATH".into(), login.clone());
+            login
+        };
+        let search = gui_search_path_from(Some(login), Some(h.clone()), None);
+        let dirs: Vec<PathBuf> = std::env::split_paths(&search).collect();
+        let system = dirs
+            .iter()
+            .position(|dir| dir == Path::new("/usr/bin"))
+            .expect("/usr/bin is searched");
+        let profile = crate::agent_sandbox::profile_with_checkouts(&home, None, &[]).unwrap();
+        let _ = std::fs::remove_dir_all(&home);
+        assert!(
+            denies_write(&profile, &home.join(".local/bin/git")),
+            "precondition: a listed fallback folder is write-denied"
+        );
+        let open: Vec<String> = dirs[..system]
+            .iter()
+            .filter(|dir| dir.starts_with(&home))
+            .map(|dir| dir.join("git"))
+            .filter(|planted| !denies_write(&profile, planted))
+            .map(|planted| planted.display().to_string())
+            .collect();
+        assert!(
+            open.is_empty(),
+            "an agent can plant git here, ahead of /usr/bin on the search path the app's unsandboxed git uses: {open:?}"
+        );
+    }
+
+    /// HIGH (HIGH-4 fix incomplete): the provider resolvers probe home folders round 6 did not deny (`~/n/bin`,
+    /// `~/.fx/bin`), and for grok, fx, pi and omp the probe of a file that does not carry the marker runs
+    /// `<file> --help` outside the sandbox (`grok_help_mentions_agent`, `fx_help_mentions_acp`,
+    /// `help_mentions_rpc_mode`). When that CLI is not installed elsewhere first, an agent's `~/n/bin/grok` runs the
+    /// next time the app resolves grok (the model catalog, Settings, a new chat's picker). Either the folder is denied,
+    /// or the probe starts inside the container.
+    #[test]
+    fn a_planted_cli_in_a_folder_the_resolvers_probe_cannot_run_outside_the_sandbox() {
+        let home = Path::new("/Users/test");
+        let profile = crate::agent_sandbox::profile_with_checkouts(home, None, &[]).unwrap();
+        let source = include_str!("harness.rs");
+        let contained = |name: &str| -> bool {
+            let Some(start) = source.find(&format!("fn {name}(")) else {
+                return false;
+            };
+            let rest = &source[start..];
+            let body = &rest[..rest.find("\n}\n").unwrap_or(rest.len())];
+            body.contains("contained_command") || body.contains("under_wrap")
+        };
+        assert!(
+            denies_write(&profile, &home.join(".grok/bin/grok")),
+            "precondition: a listed folder is write-denied"
+        );
+        let mut open = Vec::new();
+        for (planted, probe) in [
+            ("n/bin/grok", "grok_help_mentions_agent"),
+            (".fx/bin/fx", "fx_help_mentions_acp"),
+            ("n/bin/fx", "fx_help_mentions_acp"),
+            ("n/bin/pi", "help_mentions_rpc_mode"),
+            ("n/bin/omp", "help_mentions_rpc_mode"),
+        ] {
+            let path = home.join(planted);
+            if !denies_write(&profile, &path) && !contained(probe) {
+                open.push(format!("{} ({probe})", path.display()));
+            }
+        }
+        assert!(
+            open.is_empty(),
+            "an agent can plant these, and the resolver runs them with --help outside the sandbox: {open:?}"
+        );
+    }
+}
+
+#[cfg(all(test, unix))]
+#[path = "harness_review_r7_repro.rs"]
+mod review_r7_repro;
+
+#[cfg(all(test, unix))]
+mod login_read_reentry_tests {
+    use super::*;
+
+    /// The login read holds `LOGIN_SHELL_ENV` while its shell runs. With the sandbox on, `contained_command` builds the
+    /// shell's container profile on this same thread, and a profile build reads the login PATH first. That inner build
+    /// must not wait for the lock its own thread holds, or the first read at launch never returns.
+    #[test]
+    fn a_profile_built_inside_the_login_read_does_not_wait_for_it() {
+        let home = std::env::temp_dir().join(format!("hx-reentry-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&home).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let inner_home = home.clone();
+        thread::spawn(move || {
+            let _held = LOGIN_SHELL_ENV.lock().unwrap_or_else(|p| p.into_inner());
+            let built = crate::agent_sandbox::during_login_read(|| {
+                crate::agent_sandbox::container_profile(&inner_home, None)
+            });
+            let _ = tx.send(built.is_ok());
+        });
+        let got = rx.recv_timeout(Duration::from_secs(30));
+        let _ = std::fs::remove_dir_all(&home);
+        assert_eq!(
+            got,
+            Ok(true),
+            "a profile built inside the login read waited for its own lock"
         );
     }
 }

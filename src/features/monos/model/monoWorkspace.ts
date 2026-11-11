@@ -1,3 +1,4 @@
+import { resolveModel } from "../../sessions/model/models";
 import { HARNESS_LABEL, newSession, type HarnessId, type Session } from "../../sessions/model/session";
 import {
   closeLeaf,
@@ -19,11 +20,20 @@ import {
   saveMonoSessionId,
 } from "./mono";
 import { stampFirstMate } from "./monoMate";
+import { withMonoFast } from "./monoRun";
 import { forgetAgentContext } from "./monoFiles";
 import { forgetMonoRotation } from "./monoRotation";
 import { leadWorkingFolder } from "../../hub/model/hubLeads";
 
 const openingMonos = new Map<string, Promise<Session | undefined>>();
+
+/** Fast mode from the Mono, when this model offers it. Otherwise the session's own settings stay. */
+function withEngineFast(session: Session, engineFast: boolean | undefined): Session {
+  return {
+    ...session,
+    modelSettings: withMonoFast(resolveModel(session.harness, session.model), session.modelSettings, engineFast),
+  };
+}
 
 /**
  * Load the Mono's conversation without opening or replacing a workspace tab.
@@ -68,7 +78,7 @@ async function loadMonoSession(
   const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
   const created = host.create(home);
   const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
-  const session: Session = stampFirstMate({ ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" });
+  const session: Session = stampFirstMate({ ...withEngineFast(own ? newSession(engine, home, mono.engineModel) : created, mono.engineFast), runtimeMode: "auto" });
   saveMonoSessionId(monoId, session.id);
   host.add(session);
   return session;
@@ -117,7 +127,7 @@ async function loadMonoRoomSession(
   const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
   const created = host.create(home);
   const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
-  const session: Session = stampFirstMate({ ...(own ? newSession(engine, home, mono.engineModel) : created), runtimeMode: "auto" });
+  const session: Session = stampFirstMate({ ...withEngineFast(own ? newSession(engine, home, mono.engineModel) : created, mono.engineFast), runtimeMode: "auto" });
   if (!saveMonoRoomSession(monoId, chatId, convId, session.id)) return undefined;
   host.add(session);
   return session;

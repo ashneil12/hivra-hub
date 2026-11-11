@@ -356,8 +356,3 @@ export function useInboxActivity(
     linkedSessionUpdateIds: linkedIndicators,
   };
 }
-
-/** Badge-only compatibility wrapper for consumers that do not render sessions. */
-export function useInboxUnseen(recents: RecentProject[], cwd: string): boolean {
-  return useInboxActivity(recents, cwd, []).unseen;
-}

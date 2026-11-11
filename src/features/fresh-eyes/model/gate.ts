@@ -434,7 +434,15 @@ async function settleReview(
   const limit = afterMs(deps.reviewTimeoutMs ?? REVIEW_TIMEOUT_MS, TIMED_OUT);
   try {
     const run = await Promise.race([
-      runReview({ plan: job.plan, reading: job.reading, count: job.count, choice: job.choice, port: job.port, folder: start.project }),
+      runReview({
+        plan: job.plan,
+        reading: job.reading,
+        count: job.count,
+        choice: job.choice,
+        port: job.port,
+        folder: start.project,
+        ...(start.owner?.trim() ? { parentSession: start.owner.trim() } : {}),
+      }),
       limit.promise,
     ]);
     const accept = job.actor === "first-mate" && firstMateMayAccept(settingFor(start.project, storage), run);

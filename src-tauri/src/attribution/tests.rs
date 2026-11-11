@@ -1,7 +1,6 @@
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, SystemTime};
 
@@ -314,7 +313,7 @@ fn git_failing_does_not_drop_a_stored_credit() {
 }
 
 fn git(repo: &Path, env: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
-    let mut cmd = crate::delivery::child("git");
+    let mut cmd = crate::git_cmd::child_keep_hooks();
     cmd.arg("--no-pager").arg("-C").arg(repo).args(args);
     cmd.env("GIT_CONFIG_NOSYSTEM", "1");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
@@ -975,7 +974,7 @@ fn two_crews_installing_together_both_get_the_hook() {
         let global_b = made.global.clone();
         let a = std::thread::spawn(move || {
             let installed = super::hooks::install_for_repo(&left, &repo_a, &env_a);
-            let mut cmd = Command::new("git");
+            let mut cmd = crate::git_cmd::git_keep_hooks();
             cmd.env("HOME", &home_a).env("GIT_CONFIG_GLOBAL", &global_a);
             super::apply_crew_env(&mut cmd, &left, &repo_a, "chat-1", Some("task-1"));
             let pointed = cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT");
@@ -983,7 +982,7 @@ fn two_crews_installing_together_both_get_the_hook() {
         });
         let b = std::thread::spawn(move || {
             let installed = super::hooks::install_for_repo(&right, &repo_b, &env_b);
-            let mut cmd = Command::new("git");
+            let mut cmd = crate::git_cmd::git_keep_hooks();
             cmd.env("HOME", &home_b).env("GIT_CONFIG_GLOBAL", &global_b);
             super::apply_crew_env(&mut cmd, &right, &repo_b, "chat-2", Some("task-2"));
             let pointed = cmd.get_envs().any(|(key, _)| key == "GIT_CONFIG_COUNT");
@@ -1574,7 +1573,7 @@ fn a_failed_install_is_noted_and_the_crew_still_runs() {
     let made = GitRepo::new(&scratch);
     git(&made.repo, &made.env(), &["init", "-b", "main"]).unwrap();
     let secret = "hunter2-do-not-log";
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git_keep_hooks();
     cmd.env("HOME", &made.home)
         .env("GIT_CONFIG_GLOBAL", &made.global)
         .env("GIT_CONFIG_KEY_0", secret);
@@ -1611,7 +1610,7 @@ fn a_failed_install_is_noted_and_the_crew_still_runs() {
     // A good install says nothing.
     let data = scratch.path().join("data");
     fs::create_dir_all(&data).unwrap();
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git_keep_hooks();
     cmd.env("HOME", &made.home)
         .env("GIT_CONFIG_GLOBAL", &made.global);
     let mut quiet: Vec<String> = Vec::new();
@@ -2195,7 +2194,11 @@ fn env_pairs(pairs: &[(&str, &str)]) -> Vec<(String, String)> {
 /// this repository's folder, and return the environment that points git at it.
 fn arm(data: &Path, repo: &Path, env: &[(&str, &str)]) -> Armed {
     fs::create_dir_all(data).unwrap();
-    let hooks = super::hooks::install_for_repo(data, repo, &env_pairs(env)).unwrap();
+    // The pre-push guard is the app's own binary; a test runs a stand-in that passes, and tests the guard itself elsewhere.
+    let stand_in = data.join("guard-stand-in");
+    write_hook(&stand_in, "exit 0\n");
+    let hooks =
+        super::hooks::install_for_repo_with(data, repo, &env_pairs(env), &stand_in).unwrap();
     let hooks_path = hooks.to_str().unwrap().to_string();
     let (count, key, value_name) = super::logic::git_config_env(None, &hooks_path).unwrap();
     Armed {
@@ -2217,7 +2220,7 @@ fn crew_pairs<'a>(base: &[(&'a str, &'a str)], armed: &'a Armed) -> Vec<(&'a str
 }
 
 fn git_reading_system(repo: &Path, env: &[(&str, &str)], args: &[&str]) -> Result<String, String> {
-    let mut cmd = crate::delivery::child("git");
+    let mut cmd = crate::git_cmd::child_keep_hooks();
     cmd.arg("--no-pager").arg("-C").arg(repo).args(args);
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
@@ -2289,6 +2292,16 @@ fn every_executable_repo_hook_is_forwarded_and_three_are_never_written() {
                 text.contains(hook_test_line()),
                 "{name} has the wrong hook test: {text}"
             );
+        } else if *name == "pre-push" {
+            // WP-200: the pre-push hook runs the commit guard first, then the repository's own hook.
+            assert!(
+                text.contains("pre-push-guard"),
+                "pre-push does not run the guard: {text}"
+            );
+            assert!(
+                text.contains("\"$real_hook\" \"$@\" < \"$refs\""),
+                "pre-push does not forward to the repository's hook with the ref list: {text}"
+            );
         } else {
             assert!(
                 text.contains("exec \"$real_hook\" \"$@\""),
@@ -2320,7 +2333,11 @@ fn a_repo_with_no_hooks_gets_only_prepare_commit_msg() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
-    assert_eq!(names, vec!["prepare-commit-msg".to_string()]);
+    // WP-200: the pre-push hook (the commit guard) is installed too, even with no repository hook of its own.
+    assert_eq!(
+        names,
+        vec!["pre-push".to_string(), "prepare-commit-msg".to_string()]
+    );
     let script = fs::read_to_string(dir.join("prepare-commit-msg")).unwrap();
     assert!(script.contains("real_hook=''"));
     assert!(script.contains("Hivra-Chat:"));
@@ -2366,6 +2383,8 @@ fn a_hook_added_after_the_crew_starts_is_picked_up_on_the_next_run() {
 /// The hook starts no git of its own. A PATH shim records any call; the
 /// repository hook and the trailers must still run around it.
 #[cfg(unix)]
+// Runs the hook through `sh`, so it is a unix test.
+#[cfg(unix)]
 #[test]
 fn a_forwarder_makes_no_git_calls() {
     let scratch = Scratch::new();
@@ -2401,7 +2420,7 @@ fn a_forwarder_makes_no_git_calls() {
     let message = scratch.path().join("message");
     fs::write(&message, "subject\n\nbody\n").unwrap();
     // Run the hook the way git would, so the shim only sees calls the hook makes.
-    let mut cmd = Command::new("sh");
+    let mut cmd = std::process::Command::new("sh");
     cmd.arg(Path::new(&armed.hooks_path).join("prepare-commit-msg"));
     cmd.arg(&message);
     for (key, value) in &crew {
@@ -2777,7 +2796,22 @@ fn pre_push_is_forwarded_with_stdin_args_and_exit_code() {
             sh_quote(&stdin_path)
         ),
     );
-    let armed = arm(&scratch.path().join("data"), &made.repo, &base);
+    // The guard here is a stand-in that passes, so this proves the forwarding; the guard itself is tested in commit_guard.
+    let stand_in = scratch.path().join("guard-stand-in");
+    write_hook(&stand_in, "exit 0\n");
+    let data = scratch.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    let hooks =
+        super::hooks::install_for_repo_with(&data, &made.repo, &env_pairs(&base), &stand_in)
+            .unwrap();
+    let hooks_path = hooks.to_str().unwrap().to_string();
+    let (count, key, value_name) = super::logic::git_config_env(None, &hooks_path).unwrap();
+    let armed = Armed {
+        count,
+        key,
+        value_name,
+        hooks_path,
+    };
     let crew = crew_pairs(&base, &armed);
     let config_before = fs::read(made.repo.join(".git").join("config")).unwrap();
     assert!(git(&made.repo, &crew, &["push", "origin", "HEAD"]).is_err());

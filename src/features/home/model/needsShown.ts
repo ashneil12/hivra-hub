@@ -2,7 +2,7 @@
 // A stopped or failed row leads, then anything blocking a ship, then questions.
 // Within one tier the older row stays first.
 
-import { needsYou, type NeedsItem } from "../../needs/model/needsYou";
+import type { NeedsItem } from "../../needs/model/needsYou";
 
 export const HOME_NEEDS_SHOWN = 5;
 
@@ -20,6 +20,7 @@ function byUrgency(a: NeedsItem, b: NeedsItem): number {
   return needsRank(a) - needsRank(b) || a.at - b.at || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 }
 
-export function needsShown(items: readonly NeedsItem[], now: number): NeedsItem[] {
-  return needsYou({ items }, now).sort(byUrgency).slice(0, HOME_NEEDS_SHOWN);
+/** `items` is the one list (needsLive.useNeedsYou), already deduped. Home only orders and cuts it. */
+export function needsShown(items: readonly NeedsItem[], _now?: number): NeedsItem[] {
+  return [...items].sort(byUrgency).slice(0, HOME_NEEDS_SHOWN);
 }

@@ -96,7 +96,7 @@ pub fn protected_area(path: &str) -> Option<&'static str> {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = Command::new("git");
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
     let output = command
         .arg("-C")
@@ -303,7 +303,7 @@ fn blocked(made: &[ChangeCommit]) -> Vec<Blocked> {
 pub fn collect(change: &Change) -> Result<Collected, String> {
     let folder = Path::new(&change.folder);
     if !git(folder, &["status", "--porcelain"])?.trim().is_empty() {
-        git(folder, &["add", "-A"])?;
+        crate::commit_guard::stage_all(folder)?;
         git(folder, &["commit", "-q", "-m", "Hub change"])?;
     }
     let made = commits(folder, &format!("{}..HEAD", change.base))?;
@@ -364,6 +364,8 @@ pub fn apply(change: &Change, dir: &Path) -> Result<Vec<ChangeCommit>, String> {
     let repo = Path::new(&change.repo);
     let before = git(repo, &["rev-parse", "HEAD"])?.trim().to_string();
     let range = format!("{}..{}", change.base, change.branch);
+    // WP-200: the commits this change brings in are checked the same way a push is, before they are picked.
+    crate::commit_guard::gate_range(repo, &[range.as_str()])?;
     if let Err(error) = git(repo, &["cherry-pick", "--allow-empty", &range]) {
         let _ = git(repo, &["cherry-pick", "--abort"]);
         return Err(format!(
@@ -424,6 +426,8 @@ pub fn land(change: &Change) -> Result<Vec<ChangeCommit>, String> {
             ));
         }
     }
+    let landing = format!("{head}..{}", change.branch);
+    crate::commit_guard::gate_range(repo, &[landing.as_str()])?;
     if let Err(error) = git(repo, &["merge", "--ff-only", &change.branch]) {
         return Err(format!(
             "The change couldn't go into {branch} ({}). Nothing changed.",
@@ -480,6 +484,7 @@ fn deliver(repo: &Path) -> Result<(), String> {
         repo.to_string_lossy().into_owned(),
         None,
         Some("wait".into()),
+        Some(true),
     )?;
     Ok(())
 }
@@ -707,11 +712,6 @@ fn vite(folder: &Path, port: u16) -> Result<Command, String> {
         .env("VITE_MONOCODE_HUB", "1")
         .env("PATH", crate::harness::cached_gui_search_path())
         .stdin(Stdio::null());
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
-    }
     Ok(command)
 }
 
@@ -752,7 +752,7 @@ fn wait_until_serving(port: u16, child: &mut Child, log: &Path) -> Result<(), St
 #[cfg(unix)]
 fn stop_process(pid: u32, folder: &Path) {
     let command = Command::new("/bin/ps")
-        .args(["-p", &pid.to_string(), "-o", "command="])
+        .args(["-ww", "-p", &pid.to_string(), "-o", "command="])
         .output()
         .ok()
         .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
@@ -775,13 +775,23 @@ fn preview_record(dir: &Path) -> Option<PreviewRun> {
 }
 
 /// The installed app's Preview: vite in the change's copy, the hub's dev page in the browser.
-fn start_preview(change: &Change, dir: &Path) -> Result<String, String> {
+fn start_preview(change: &Change, dir: &Path, data_dir: Option<&Path>) -> Result<String, String> {
     checked(change)?;
     stop_preview(change, dir);
     let folder = Path::new(&change.folder);
     let port = free_port()?;
     let log = dir.join(format!("{}.preview.log", change.id));
-    let mut command = vite(folder, port)?;
+    let command = vite(folder, port)?;
+    // The group leader is sandbox-exec, so the group is set after the wrap. A wrap that cannot be built does not
+    // start vite unsandboxed. The vite path stays on the command line, so stopping the preview can still see it.
+    let named = folder.to_path_buf();
+    let wrap = crate::agent_sandbox::action_wrap(data_dir, std::slice::from_ref(&named))?;
+    let mut command = crate::agent_sandbox::under_wrap(command, wrap.as_deref());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
     let log_file = std::fs::File::create(&log).map_err(|e| e.to_string())?;
     command.stdout(Stdio::from(
         log_file.try_clone().map_err(|e| e.to_string())?,
@@ -931,6 +941,7 @@ pub async fn hub_change_collect(app: AppHandle, id: String) -> Result<Collected,
 #[tauri::command]
 pub async fn hub_change_preview(app: AppHandle, id: String, on: bool) -> Result<(), String> {
     let dir = changes_dir(&app)?;
+    let data_dir = app.path().app_data_dir().ok();
     blocking(move || {
         let change = load(&dir, &id)?;
         match change.delivery {
@@ -939,7 +950,7 @@ pub async fn hub_change_preview(app: AppHandle, id: String, on: bool) -> Result<
                 set_live(&dir, on.then_some(id.as_str()));
             }
             Delivery::Rebuild if on => {
-                start_preview(&change, &dir)?;
+                start_preview(&change, &dir, data_dir.as_deref())?;
             }
             Delivery::Rebuild => stop_preview(&change, &dir),
         }
@@ -1505,7 +1516,7 @@ mod tests {
             "Accent",
         );
         // This copy has no packages, so vite can't start; the change itself is untouched and nothing is left behind.
-        let err = start_preview(&change, &dir).unwrap_err();
+        let err = start_preview(&change, &dir, None).unwrap_err();
         assert!(err.contains("no packages installed"), "{err}");
         assert!(!dir.join(PREVIEW_FILE).exists());
         assert!(read(&repo, "src/theme.css").contains("blue"));

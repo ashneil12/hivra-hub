@@ -3,6 +3,7 @@
 import { pathKey } from "../../../shared/lib/paths";
 import { boardChipCounts } from "./counts";
 import { costUsdBySession, type CostSession } from "./cost";
+import { agentsBoardSessionStopReady } from "./sessionStop";
 import { buildAgentsTree, type BoardNode, type BoardPerson, type BoardProject } from "./tree";
 import { boardState } from "./words";
 
@@ -95,6 +96,20 @@ function checkFor(id: string, sessionId: string | null, checks: readonly StoreCh
   return checks.find((check) => check.delegationId === id || (sessionId && check.sessionId === sessionId));
 }
 
+/** A first mate is Working while its own chat runs a turn, not only when a worker under it does. */
+export function mateStatus(
+  sessionId: string | null | undefined,
+  sessions: readonly { id: string; busy?: boolean }[],
+): "working" | "idle" {
+  if (!sessionId) return "idle";
+  return sessions.some((session) => session.id === sessionId && session.busy === true) ? "working" : "idle";
+}
+
+/** A project chat, home chat or sub-chat can be stopped only while it is working and the app lent its Stop. */
+function sessionCanStop(status: string | null | undefined): boolean {
+  return boardState({ status }) === "working" && agentsBoardSessionStopReady();
+}
+
 export function boardFromStores(source: BoardSource): {
   tree: BoardNode;
   projects: BoardProject[];
@@ -129,6 +144,7 @@ export function boardFromStores(source: BoardSource): {
       settledAt: session.settledAt,
       costUsd: costs.get(session.id) ?? null,
       sessionId: session.id,
+      canStop: sessionCanStop(session.status),
     });
   }
 
@@ -176,7 +192,7 @@ export function boardFromStores(source: BoardSource): {
       sessionId,
       prNumber: check?.prNumber ?? null,
       checks: check ? { failing: check.failing, pending: check.pending, passed: check.passed } : null,
-      canStop: state === "working" || state === "needs-you",
+      canStop: !!row.ownerSession?.trim() && (state === "working" || state === "needs-you"),
     });
   }
 
@@ -195,6 +211,7 @@ export function boardFromStores(source: BoardSource): {
       settledAt: session.settledAt,
       costUsd: costs.get(session.id) ?? null,
       sessionId: session.id,
+      canStop: sessionCanStop(session.status),
     });
   }
 

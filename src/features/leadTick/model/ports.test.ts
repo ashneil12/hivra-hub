@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_BUILDER_SCALE } from "../../monos/model/builderScale";
-import { appPorts, outcomeOf, slotAnswer, type PortHost } from "./ports";
+import { appPorts, conflictOf, leaseOf, outcomeOf, slotAnswer, type PortHost } from "./ports";
 
 function pkg(id: string) {
   return {
@@ -149,5 +149,58 @@ describe("app ports", () => {
   it("reads an unknown merge answer as a refusal", () => {
     expect(outcomeOf(null)).toEqual({ outcome: "refused", reason: "The merge path gave no answer." });
     expect(outcomeOf({ outcome: "merged", head_sha: "h", allowed_by: "switch" })).toEqual({ outcome: "merged", headSha: "h", allowedBy: "switch" });
+  });
+});
+
+describe("lead lease and branch check answers (WP-162)", () => {
+  it("reads the lock's answers, whichever spelling of the expiry the app sends", () => {
+    expect(leaseOf({ kind: "acquired" })).toEqual({ kind: "acquired" });
+    expect(leaseOf({ kind: "extended" })).toEqual({ kind: "extended" });
+    expect(leaseOf({ kind: "takenOver", previous: "old" })).toEqual({ kind: "takenOver", previous: "old" });
+    expect(leaseOf({ kind: "refused", holder: "h", expires_at: 9 })).toEqual({ kind: "refused", holder: "h", expiresAt: 9 });
+    expect(() => leaseOf({ kind: "maybe" })).toThrow();
+  });
+
+  it("reads a report, and an update's outcome in plain words", () => {
+    expect(conflictOf({ kind: "reported", message: "Only reported." })).toEqual({ kind: "reported", message: "Only reported." });
+    expect(conflictOf({ kind: "ran", packageId: "a", outcome: { kind: "updated", method: "merge", head: "abc" } })).toEqual({
+      kind: "ran",
+      ok: true,
+      line: "Brought main into its branch and pushed it.",
+    });
+    expect(conflictOf({ kind: "ran", packageId: "a", outcome: { kind: "conflict", detail: "Cancelled." } })).toEqual({
+      kind: "ran",
+      ok: false,
+      line: "Cancelled.",
+    });
+    expect(conflictOf({ kind: "ran", packageId: "a", outcome: { kind: "notFinished", reason: "Try again." } })).toEqual({
+      kind: "ran",
+      ok: false,
+      line: "Try again.",
+    });
+    expect(() => conflictOf({})).toThrow();
+  });
+
+  it("calls the two commands with the project folder, the package and its branch", async () => {
+    const calls: Array<[string, Record<string, unknown> | undefined]> = [];
+    const host: PortHost = {
+      invoke: async (command, args) => {
+        calls.push([command, args]);
+        return command === "programme_lead_acquire" ? { kind: "acquired" } : { kind: "reported", message: "m" };
+      },
+      slot: () => ({ ok: true }),
+      delegate: async () => ({}),
+    };
+    const ports = appPorts(host, "/code/app", {
+      projectId: "app",
+      lead: { monoId: "m", name: "Lead", sessionId: "s1" },
+      look: { busy: false, asking: false, queued: 0, limited: false, resumeStopped: false },
+    } as never);
+    expect(await ports.leadLease?.()).toEqual({ kind: "acquired" });
+    expect(await ports.considerConflict?.("r1", "wp/1-x")).toEqual({ kind: "reported", message: "m" });
+    expect(calls).toEqual([
+      ["programme_lead_acquire", { project: "/code/app", holder: "s1" }],
+      ["programme_consider_conflict", { project: "/code/app", packageId: "r1", branch: "wp/1-x" }],
+    ]);
   });
 });

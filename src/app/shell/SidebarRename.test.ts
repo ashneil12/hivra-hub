@@ -488,7 +488,8 @@ describe("worktree explorer visibility", () => {
 
 describe.each([false, true])("Mono rail selection (compact: %s)", (compact) => {
   it.each([
-    ["Inbox", "inboxActive", "onOpenInbox"],
+    // Dropwave: the project rail says Inbox; the compact rail keeps Needs you.
+    [compact ? "Needs you" : "Inbox", "inboxActive", "onOpenInbox"],
     ["Notes", "notesActive", "onOpenNotes"],
     ["Automations", "automationsActive", "onOpenAutomations"],
     ["Search", "searchActive", "onSearch"],
@@ -1873,7 +1874,7 @@ describe("collapsed rail Inbox actions", () => {
       // WP-15: Crew sits with the other Classic sidebar tabs.
       "Crew",
       "Search",
-      "Inbox",
+      "Needs you",
       "Notes",
       // WP-72: Docs sits with Notes. It opens the page tree.
       "Docs",
@@ -1904,7 +1905,7 @@ describe("collapsed rail Inbox actions", () => {
     );
     expect(props.onTabChange).toHaveBeenCalledWith("files");
     expect(
-      container.querySelector('button[aria-label="Inbox"]')?.closest("nav"),
+      container.querySelector('button[aria-label="Needs you"]')?.closest("nav"),
     ).toBe(rail);
     const projectPicker = rail.querySelector<HTMLButtonElement>(
       'button[aria-label^="Switch project"]',
@@ -2199,7 +2200,7 @@ describe("collapsed rail Inbox actions", () => {
     await act(async () => render());
 
     const inbox = container.querySelector<HTMLButtonElement>(
-      'button[aria-label="Inbox"]',
+      'button[aria-label="Needs you"]',
     )!;
     expect(inbox.getAttribute("aria-pressed")).toBe("true");
     act(() => inbox.click());
@@ -2210,7 +2211,7 @@ describe("collapsed rail Inbox actions", () => {
     act(() => render());
     act(() =>
       container
-        .querySelector<HTMLButtonElement>('button[aria-label="Inbox"]')!
+        .querySelector<HTMLButtonElement>('button[aria-label="Needs you"]')!
         .click(),
     );
     expect(props.onOpenInbox).toHaveBeenCalledOnce();
@@ -2227,7 +2228,7 @@ describe("collapsed rail Inbox actions", () => {
       props.recents = [{ path: "/workspace/other", openedAt: 1 }];
       await act(async () => render());
       const inbox = container.querySelector<HTMLButtonElement>(
-        'button[aria-label="Inbox"]',
+        'button[aria-label="Needs you"]',
       )!;
       expect(inbox).not.toBeNull();
       await act(async () => {

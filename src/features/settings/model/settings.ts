@@ -343,10 +343,22 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "mobile phone iphone qr pair code router device",
   },
   {
+    id: "hivra-cloud",
+    section: "connections",
+    label: "Hivra Cloud",
+    keywords: "cloud sign in pair machine address endpoint always on",
+  },
+  {
     id: "remote-machines",
     section: "connections",
     label: "Your machines",
     keywords: "ssh remote connect host server environment",
+  },
+  {
+    id: "team-workspace",
+    section: "connections",
+    label: "Share projects with my team",
+    keywords: "team workspace shared projects server invitation join address sync collaborate off",
   },
   {
     id: "mcp-servers",
@@ -468,6 +480,16 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
           section: "general" as const,
           label: "Quick composer",
           keywords: "spotlight global shortcut hotkey floating prompt anywhere",
+        },
+      ]
+    : []),
+  ...(IS_MAC
+    ? [
+        {
+          id: "agent-sandbox",
+          section: "general" as const,
+          label: "Run agents in the macOS sandbox",
+          keywords: "sandbox security isolate protect ssh keys keychain git hooks agents confine",
         },
       ]
     : []),

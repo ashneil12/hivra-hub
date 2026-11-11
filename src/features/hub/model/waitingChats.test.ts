@@ -272,6 +272,7 @@ describe("answering from Today", () => {
 describe("hooks for Autopilot and H4", () => {
   it("Autopilot takes picks but never a red line, and hears every change", async () => {
     const { calls } = host();
+    setCaptainDoor(() => ({ confident: true }));
     const heard = vi.fn();
     const off = subscribeWaitingChats(heard);
     noteChats([markerChat("ok", "Needs Ash: Rename the file?\nMy pick: yes"), markerChat("red", "Needs Ash: Email every customer about the delay?\nMy pick: yes")]);
@@ -287,6 +288,7 @@ describe("hooks for Autopilot and H4", () => {
 
   it("Autopilot never takes a pick that sends, deletes, moves money, publishes or changes access (WP-101, row 19)", async () => {
     const { calls } = host();
+    setCaptainDoor(() => ({ confident: true }));
     noteChats([
       markerChat("mail", "Needs Ash: Send the invoice to Priya?\nMy pick: yes, send it"),
       markerChat("notes", "Needs Ash: What next?\nMy pick: publish the release notes"),
@@ -350,6 +352,7 @@ describe("hooks for Autopilot and H4", () => {
 
   it("holds a saved chat whose rows hold an action, and one whose rows it can't read, on the same door (item F)", async () => {
     host();
+    setCaptainDoor(() => ({ confident: true }));
     noteChats([markerChat("rows", "Needs Ash: What next?\nMy pick: keep it")]);
     const chat = findWaitingChat("rows")!;
     // A card whose other row is a send: taking this pick answers a card that names it.
@@ -415,11 +418,6 @@ describe("hooks for Autopilot and H4", () => {
     expect(await takePick("id", { by: "autopilot" })).toMatchObject({ ok: true, sent: "Example: keep it" });
     expect(gateLog().find((row) => row.sessionId === "id")?.answer).toMatchObject({ words: "Example: keep it", who: "captain:ada" });
 
-    setCaptainDoor(() => ({ monoId: "ada" }));
-    noteChats([markerChat("same", "Needs Ash: Rename the file?\nMy pick: yes")]);
-    expect((await takePick("same", { by: "autopilot" })).ok).toBe(true);
-    expect(gateLog().find((row) => row.sessionId === "same")?.answer?.who).toBe("captain:ada");
-
     for (const monoId of ["page:ada", "user", "person", "page", ""]) {
       const id = `bad-${monoId || "blank"}`;
       setCaptainDoor(() => ({ monoId, standing }));
@@ -430,6 +428,27 @@ describe("hooks for Autopilot and H4", () => {
     }
     expect(calls.send.map(([id]) => id)).toContain("id");
     expect(calls.send.map(([, text]) => text).join("\n")).not.toContain("page:");
+  });
+
+  it("a missing or false confident flag does not record the chat's own pick", async () => {
+    host();
+    setCaptainDoor(() => ({ monoId: "ada" }));
+    noteChats([markerChat("same", "Needs Ash: Rename the file?\nMy pick: yes")]);
+    expect(await takePick("same", { by: "autopilot" })).toEqual({
+      ok: false,
+      reason: "The engine is down. It passes up if it is still open in 10 minutes.",
+    });
+    expect(gateLog().find((row) => row.sessionId === "same")?.answer?.who ?? "").not.toMatch(/^captain:/);
+
+    setCaptainDoor(() => ({ monoId: "ada", confident: false }));
+    noteChats([markerChat("nope", "Needs Ash: Rename the file?\nMy pick: yes")]);
+    expect((await takePick("nope", { by: "autopilot" })).ok).toBe(false);
+    expect(gateLog().find((row) => row.sessionId === "nope")?.answer?.who ?? "").not.toMatch(/^captain:/);
+
+    setCaptainDoor(() => ({ monoId: "ada", confident: true }));
+    noteChats([markerChat("yes-pick", "Needs Ash: Rename the file?\nMy pick: yes")]);
+    expect((await takePick("yes-pick", { by: "autopilot" })).ok).toBe(true);
+    expect(gateLog().find((row) => row.sessionId === "yes-pick")?.answer?.who).toBe("captain:ada");
   });
 
   it("keeps pager as a mono id, and does not read it as a page", async () => {

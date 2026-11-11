@@ -35,7 +35,7 @@ const PLANTED: [&str; 4] = [
 
 /// What git prints for `args` in `dir` (trimmed of its trailing newline).
 fn git_stdout(dir: &Path, args: &[&str]) -> String {
-    let out = Command::new("git")
+    let out = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -45,7 +45,7 @@ fn git_stdout(dir: &Path, args: &[&str]) -> String {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let out = Command::new("git")
+    let out = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args([
@@ -134,6 +134,9 @@ fn add_session(
             goal: None,
             private_chat: false,
             private_boundary_id: None,
+            teleport: None,
+            move_brief_owed: false,
+            moved_from: None,
             registry_agent_id: None,
         },
     )
@@ -596,7 +599,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                     "{name}/{relative}"
                 );
             }
-            let log = Command::new("git")
+            let log = crate::git_cmd::git()
                 .arg("-C")
                 .arg(target.memory_root.join(name))
                 .args(["log", "--oneline"])
@@ -613,7 +616,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 !target.memory_root.join(name).join(".gitignore").exists(),
                 "{name}/.gitignore was restored"
             );
-            let status = Command::new("git")
+            let status = crate::git_cmd::git()
                 .arg("-C")
                 .arg(target.memory_root.join(name))
                 .args(["status", "--porcelain"])
@@ -627,7 +630,7 @@ fn a_round_trip_into_an_empty_data_folder_brings_everything_back_minus_secrets()
                 "{name}: the restored history is intact: {}",
                 String::from_utf8_lossy(&status.stdout)
             );
-            let remotes = Command::new("git")
+            let remotes = crate::git_cmd::git()
                 .arg("-C")
                 .arg(target.memory_root.join(name))
                 .arg("remote")
@@ -3359,7 +3362,7 @@ fn history_import(dest: &Path) -> ImportRequest {
 
 /// The subjects of the commits in the memory folder this import made.
 fn history_subjects(target: &Env, name: &str) -> Vec<String> {
-    let out = Command::new("git")
+    let out = crate::git_cmd::git()
         .arg("-C")
         .arg(target.memory_root.join(name))
         .args(["log", "--format=%s"])
@@ -6634,7 +6637,7 @@ fn restoring_a_history_runs_no_filter_and_drops_the_files_that_name_one() {
 /// defines the filters a hostile history names), hooks and attributes as git finds them.
 #[cfg(unix)]
 fn git_as_ash(folder: &Path, global: &Path, args: &[&str]) -> std::process::Output {
-    Command::new("git")
+    crate::git_cmd::git()
         .arg("-C")
         .arg(folder)
         .args(args)
@@ -6958,5 +6961,121 @@ fn review_231_r2_an_imported_more_agents_chat_does_not_become_a_claude_chat() {
         stored.registry_agent_id.as_deref(),
         Some("my-copilot"),
         "the imported More agents chat lost its entry and runs as a Claude chat"
+    );
+}
+
+/// A chat exported while a move is open, then brought in as a copy, must not keep that move's notices. The same chat
+/// imported under its own id keeps them, so recovery on the machine it belongs to can still finish the move.
+#[test]
+fn an_imported_copy_drops_move_notices_and_the_same_chat_keeps_them() {
+    let source_dir = TestDir::new("move-source");
+    let same_dir = TestDir::new("move-same");
+    let copy_dir = TestDir::new("move-copy");
+    let out = TestDir::new("move-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    {
+        let conn = store.lock_conn().unwrap();
+        add_session(
+            &conn,
+            "chat-move",
+            "Mid move",
+            "claude",
+            json!([
+                block("b1", "user", "keep this message"),
+                {
+                    "id": "teleport-frozen-m1",
+                    "role": "system",
+                    "text": "{}",
+                    "notice": "teleport-frozen"
+                },
+                {
+                    "id": "teleported@host-a@1",
+                    "role": "system",
+                    "text": "Moved to Studio box",
+                    "notice": "teleported"
+                }
+            ]),
+            5_000,
+        );
+    }
+    drop(store);
+
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+
+    let same = env_for(&same_dir.0);
+    let same_store = open_store(&same);
+    let conn = same_store.lock_conn().unwrap();
+    let added = import_held(
+        &same,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["chat-move".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(added.sessions_added, 1);
+    let kept: String = conn
+        .query_row(
+            "SELECT blocks_json FROM sessions WHERE id = 'chat-move'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(kept.contains("keep this message"));
+    assert!(
+        kept.contains("teleport-frozen"),
+        "a chat imported under its own id lost the note recovery needs"
+    );
+    drop(conn);
+    drop(same_store);
+
+    let copy_env = env_for(&copy_dir.0);
+    let copy_store = open_store(&copy_env);
+    let conn = copy_store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "chat-move",
+        "Already here",
+        "claude",
+        json!([block("x", "user", "mine")]),
+        9_000,
+    );
+    let report = import_held(
+        &copy_env,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["chat-move".into()],
+                session_copies: vec!["chat-move".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_copied, 1, "{report:?}");
+    let copy_id = &report.renamed["chat-move"];
+    let blocks: String = conn
+        .query_row(
+            "SELECT blocks_json FROM sessions WHERE id = ?1",
+            [copy_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(blocks.contains("keep this message"), "{blocks}");
+    assert!(
+        !blocks.contains("teleport"),
+        "an imported copy kept a move notice: {blocks}"
     );
 }

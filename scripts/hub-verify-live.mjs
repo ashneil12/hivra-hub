@@ -81,6 +81,11 @@
 //   npm run hub:verify-live -- --fail-gate       # the negative control: must exit non-zero
 //   npm run hub:verify-live -- --no-build        # reuse target/debug/monocode from the last run
 //   npm run hub:verify-live -- --keep            # leave the temporary HOME for a look afterwards
+//   npm run hub:verify-live -- --wait-ceiling-ms 300000   # how long a state wait may take before it fails (default 120 s)
+//
+// Every wait is for a state (a row, a DOM element, a saved call, a mark), polled until it holds. The ceiling only bounds
+// a real failure, so a busy Mac costs time and never a verdict. The one fixed window left in the walk's checks (after
+// the cascade cancel) is a negative one: it waits for a report that must not come, which has no state to poll for.
 
 import { execFileSync, spawn } from "node:child_process";
 import crypto from "node:crypto";
@@ -91,6 +96,7 @@ import path from "node:path";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
 import { signInFakeClaude } from "./hub-fake-claude-login.mjs";
+import { parseWaitCeiling, settleView, waitFor } from "./hub-verify-live-wait.mjs";
 
 export const MAX_RESUMES = 3;
 
@@ -1043,6 +1049,8 @@ export function parseArgs(argv) {
     only: argv.includes("--only") ? parseOnly(argv[argv.indexOf("--only") + 1]) : null,
     slot: value("--slot", `${path.basename(ROOT)}-verify`),
     scale: Number(value("--timeout-scale", "1")) || 1,
+    // The ceiling every state wait polls up to (a wait ends as soon as its state holds). Not a sleep.
+    waitCeiling: parseWaitCeiling(argv, process.env),
   };
 }
 
@@ -1426,21 +1434,31 @@ async function main() {
     };
     /** One action for the window's driver (verifyDriver.ts perform), and its answer. */
     let driverSeq = 0;
-    const act = async (op, payload = {}, timeoutMs = 60_000) => {
+    const writeDriverAnswer = (actionId, answer) =>
+      fs.writeFileSync(path.join(evidence, `driver-${actionId}.json`), `${JSON.stringify(answer, null, 2)}\n`);
+    // One action and its answer, not yet written to evidence (a poll decides which answer to keep).
+    const request = async (op, payload = {}, timeoutMs = 60_000) => {
       const actionId = `${String(++driverSeq).padStart(5, "0")}-${op}`;
       const tmp = path.join(driverDir, "inbox", `.${actionId}.tmp`);
       fs.writeFileSync(tmp, JSON.stringify({ id: actionId, op, ...payload }));
       fs.renameSync(tmp, path.join(driverDir, "inbox", `${actionId}.json`));
       const done = path.join(driverDir, "done", `${actionId}.json`);
-      const answer = await until(() => {
-        try {
-          return JSON.parse(fs.readFileSync(done, "utf8"));
-        } catch {
-          return null;
-        }
-      }, scale(timeoutMs));
+      const answer = await waitFor(
+        () => {
+          try {
+            return JSON.parse(fs.readFileSync(done, "utf8"));
+          } catch {
+            return null;
+          }
+        },
+        { timeoutMs: scale(timeoutMs), label: `driver answer to ${actionId}`, log },
+      );
       if (!answer) throw new Error(`driver: no answer to ${actionId} in ${timeoutMs / 1000}s`);
-      fs.writeFileSync(path.join(evidence, `driver-${actionId}.json`), `${JSON.stringify(answer, null, 2)}\n`);
+      return { actionId, answer };
+    };
+    const act = async (op, payload = {}, timeoutMs = 60_000) => {
+      const { actionId, answer } = await request(op, payload, timeoutMs);
+      writeDriverAnswer(actionId, answer);
       return answer;
     };
     const kill = async (why) => {
@@ -1465,7 +1483,10 @@ async function main() {
         return null;
       }
     };
-    const waitMark = (name, ms) => until(() => mark(name), scale(ms));
+    // A mark the fake Claude wrote when a step happened. Waits for it up to the ceiling unless a window is given.
+    const waitMark = (name, ms = options.waitCeiling) => waitFor(() => mark(name), { timeoutMs: scale(ms), label: `mark ${name}`, log });
+    // Any state a check needs (a row, a DOM element, a saved call): read until `read` returns it, up to the ceiling.
+    const awaitState = (label, read, everyMs = 250) => waitFor(read, { timeoutMs: scale(options.waitCeiling), everyMs, label, log });
     const inFlight = () => query(db, "SELECT session_id, background_json, resumes FROM in_flight_sessions");
     const delegations = () =>
       query(db, "SELECT id, owner_session, child_session, state, delivery, generation FROM delegations ORDER BY created_at");
@@ -1741,21 +1762,25 @@ async function main() {
     const askerTask = savedCall("asker-task");
     const askerTaskId = askerTask?.response?.result?.taskId;
     const askerChat = askerTask?.response?.result?.childSessionId;
-    const asked = await until(async () => {
+    // Each wait below ends when its state holds (the ceiling only bounds a failure), so a slow Mac does not miss it.
+    const asked = await awaitState("asker row in question", async () => {
       const row = await rowById(askerTaskId);
       return row?.state === "question" ? row : null;
-    }, scale(20_000));
-    const woken = await waitMark("tree-lead-got-question", 30_000);
-    // While it is open: Ash's Waiting on you (the window's local storage) must not list the worker as his.
-    const listing = asked ? await until(() => waitingEntry(home, askerChat, scratch), scale(10_000), 500) : null;
+    });
+    const woken = await waitMark("tree-lead-got-question");
+    // While it is open: Ash's Waiting on you (the window's local storage) must not list the worker as his. A row routed
+    // to the Lead may never be written, so this one stays a short bound, measured from the Lead's wake.
+    const listing = asked
+      ? await waitFor(() => waitingEntry(home, askerChat, scratch), { timeoutMs: scale(10_000), everyMs: 500, label: "Waiting on you row for the asker", log })
+      : null;
     const store = listing ?? (await waitingEntry(home, askerChat, scratch, true));
     open("answer-go");
-    const answered = await waitMark("asker-answered", 30_000);
+    const answered = await waitMark("asker-answered");
     const leadAnswer = savedCall("lead-answer");
-    const askerDone = await until(async () => {
+    const askerDone = await awaitState("asker row completed", async () => {
       const row = await rowById(askerTaskId);
       return row?.state === "completed" ? row : null;
-    }, scale(30_000));
+    });
     const cosConversation = cosBriefed?.conversation;
     const askerConversation = asking?.conversation;
     const leadConversation = woken?.conversation;
@@ -1810,21 +1835,26 @@ async function main() {
 
     phase();
     // 8. One cancel at the top: Chief of Staff cancels its brief while the Lead's second worker is busy.
-    const helperStarted = await waitMark("helper-started", 60_000);
-    const helperTask = savedCall("helper-task");
+    const helperStarted = await waitMark("helper-started");
+    const helperTask = await awaitState("helper task call saved", () => {
+      const call = savedCall("helper-task");
+      return call?.response?.result?.taskId ? call : null;
+    });
     const helperTaskId = helperTask?.response?.result?.taskId;
     const helperChat = helperTask?.response?.result?.childSessionId;
-    const beneath = await until(async () => {
+    // Precondition for the cancel: the helper's row is running beneath the top brief and its turn is busy. The cancel
+    // waits for that state (it used to race a 20 s window, and cancelled nothing beneath when the row came late).
+    const beneath = await awaitState("helper row running beneath the top brief, turn busy", async () => {
       const row = await rowById(helperTaskId);
       const busy = (await inFlight()).some((entry) => entry.session_id === helperChat);
       return row?.state === "running" && row.parent_id === cosTaskId && busy ? row : null;
-    }, scale(20_000));
+    });
     // The helper went silent mid-turn (it waits on a gate that never opens): its row is marked stalled, quiet, since its
     // last activity, while it still runs; the window found it by itself.
-    const stalledRow = await until(async () => {
+    const stalledRow = await awaitState("helper row marked stalled (quiet)", async () => {
       const rows = await query(db, "SELECT state, stall_kind, stall_reason, stalled_at, log FROM delegations WHERE id = ?", helperTaskId ?? "");
       return rows[0]?.stall_kind === "quiet" ? rows[0] : null;
-    }, scale(90_000));
+    });
     if (stalledRow?.state === "running" && stalledRow.stalled_at > 0 && String(stalledRow.log).includes('"event":"stalled"'))
       pass(
         "worker_stalled",
@@ -1841,21 +1871,20 @@ async function main() {
     phase();
     const before = { top: brief(await rowById(cosTaskId)), helper: brief(beneath) };
     open("tree-cancel");
-    const cancelled = await waitMark("cos-cancelled", 60_000);
+    const cancelled = await waitMark("cos-cancelled");
     const cancelCall = savedCall("cos-cancel");
-    const ended = await until(async () => {
+    const ended = await awaitState("top and helper rows cancelled and disposed", async () => {
       const top = await rowById(cosTaskId);
       const helper = await rowById(helperTaskId);
       return [top, helper].every((row) => row?.state === "cancelled" && row.delivery === "disposed") ? { top, helper } : null;
-    }, scale(15_000));
+    });
     const helperConversation = helperStarted?.conversation;
-    const helperStopped = await until(
-      async () => interruptedIn(helperConversation) && !(await inFlight()).some((entry) => entry.session_id === helperChat),
-      scale(15_000),
+    const helperStopped = await awaitState("helper turn interrupted and out of flight", async () =>
+      interruptedIn(helperConversation) && !(await inFlight()).some((entry) => entry.session_id === helperChat) ? true : null,
     );
     const leadStopped = interruptedIn(leadConversation);
     open("lead-hold");
-    const carriedOn = await waitMark("tree-lead-carried-on", 30_000);
+    const carriedOn = await waitMark("tree-lead-carried-on");
     // Time for a report that should never come (the cancelled brief's, or its worker's).
     await sleep(scale(6_000));
     const askerRow = await rowById(askerTaskId);
@@ -2627,23 +2656,32 @@ async function main() {
     // window opens the coding team and starts the chat in the project's folder, as his New session there does).
     sendMessages({ id: "ct-ash-1", codingTeam: TREE_PROJECT.id, prompt: `${CT_KICKOFF} run ${id}: have one worker check the verify widget.` },
     );
-    const ctDelegated = await waitMark("ct-delegated", 60_000);
-    const ctTask = savedCall("ct-task")?.response;
+    /** What the coding-team check reads about its chat, read in one pass; `complete` once every piece is on disk. */
+    const codingTeamRead = async (child, delegated) => {
+      const row = child ? ((await query(db, "SELECT id, owner_session, owner_mono, child_session, project, state, delivery FROM delegations WHERE child_session = ?", child))[0] ?? null) : null;
+      const chat = row?.owner_session ?? null;
+      const sessions = await query(db, "SELECT id, cwd, sidebar_hidden AS hidden FROM sessions WHERE id IN (?, ?)", chat ?? "?", child ?? "?");
+      const chatRow = sessions.find((entry) => entry.id === chat) ?? null;
+      const childRow = sessions.find((entry) => entry.id === child) ?? null;
+      const monoBlocks = chat ? (await query(db, "SELECT COUNT(*) AS n FROM mono_blocks WHERE session_id = ?", chat))[0]?.n ?? 0 : 0;
+      const start = delegated ? events().find((event) => event.dir === "start" && event.conversation === delegated.conversation) : undefined;
+      const briefed = prompts().some((entry) => entry.rule === "ct-worker");
+      return { row, chat, chatRow, childRow, monoBlocks, start, complete: !!(row && chatRow && childRow && start && briefed) };
+    };
+    const ctDelegated = await waitMark("ct-delegated");
+    const ctTask = await awaitState("coding team task answered", () => savedCall("ct-task")?.response ?? null);
     const ctChild = ctTask?.result?.childSessionId ?? null;
-    const ctWorker = await waitMark("ct-worker-started", 60_000);
-    const ctReport = await waitMark("ct-got-report", 60_000);
-    const ctRow = ctChild
-      ? (await query(db, "SELECT id, owner_session, owner_mono, child_session, project, state, delivery FROM delegations WHERE child_session = ?", ctChild))[0] ?? null
-      : null;
-    const ctChat = ctRow?.owner_session ?? null;
+    const ctWorker = await waitMark("ct-worker-started");
+    const ctReport = await waitMark("ct-got-report");
+    // The delegation row, both chats, the worker's start and its brief are each written a moment after the mark that
+    // announced them (on a busy Mac, a moment can be seconds), so the reads wait until they are all there.
+    let ctLast = null;
+    const ct = await awaitState("coding team row, chats, worker start and brief", async () => {
+      ctLast = await codingTeamRead(ctChild, ctDelegated);
+      return ctLast.complete ? ctLast : null;
+    });
+    const { row: ctRow, chat: ctChat, chatRow: ctChatRow, childRow: ctChildRow, monoBlocks: ctMonoBlocks, start: ctStart } = ct ?? ctLast;
     if (ctChat) ledger.sessions.add(ctChat);
-    const ctSessions = await query(db, "SELECT id, cwd, sidebar_hidden AS hidden FROM sessions WHERE id IN (?, ?)", ctChat ?? "?", ctChild ?? "?");
-    const ctChatRow = ctSessions.find((row) => row.id === ctChat) ?? null;
-    const ctChildRow = ctSessions.find((row) => row.id === ctChild) ?? null;
-    const ctMonoBlocks = ctChat ? (await query(db, "SELECT COUNT(*) AS n FROM mono_blocks WHERE session_id = ?", ctChat))[0]?.n ?? 0 : 0;
-    const ctStart = ctDelegated
-      ? events().find((event) => event.dir === "start" && event.conversation === ctDelegated.conversation)
-      : undefined;
     const ctArgs = ctStart?.argv ?? [];
     const ctMcp = (() => {
       const at = ctArgs.indexOf("--mcp-config");
@@ -2728,20 +2766,37 @@ async function main() {
         prompt: `${MT_KICKOFF} run ${id}: the verify widget's copy is wrong, get it fixed, and find me three good examples.`,
       },
     );
-    const mtDelegated = await waitMark("mt-delegated", 90_000);
-    const mtLeadWorker = await waitMark("mt-lead-worker-started", 90_000);
-    const mtOwnWorker = await waitMark("mt-own-started", 90_000);
-    const mtRefused = savedCall("mt-refused")?.response ?? null;
-    const mtBriefCall = savedCall("mt-brief")?.response ?? null;
-    const mtOwnCall = savedCall("mt-own")?.response ?? null;
-    const mtLeadCall = savedCall("mt-lead-task")?.response ?? null;
+    const mtDelegated = await waitMark("mt-delegated");
+    const mtLeadWorker = await waitMark("mt-lead-worker-started");
+    const mtOwnWorker = await waitMark("mt-own-started");
     const mtRow = async (taskId) =>
       taskId
         ? ((await query(db, "SELECT id, owner_session, owner_mono, child_session, parent_id, follow, project, state FROM delegations WHERE id = ?", taskId))[0] ?? null)
         : null;
-    const mtBrief = await mtRow(mtBriefCall?.result?.taskId);
-    const mtOwn = await mtRow(mtOwnCall?.result?.taskId);
-    const mtLead = await mtRow(mtLeadCall?.result?.taskId);
+    /** The refusal, the two briefs' calls and the rows they made; each is written a moment after its worker starts. */
+    const monoTeamRead = async () => {
+      const refused = savedCall("mt-refused")?.response ?? null;
+      const briefCall = savedCall("mt-brief")?.response ?? null;
+      const ownCall = savedCall("mt-own")?.response ?? null;
+      const leadCall = savedCall("mt-lead-task")?.response ?? null;
+      const brief = await mtRow(briefCall?.result?.taskId);
+      const own = await mtRow(ownCall?.result?.taskId);
+      const lead = await mtRow(leadCall?.result?.taskId);
+      return { refused, briefCall, ownCall, leadCall, brief, own, lead, complete: !!(refused && brief && own && lead) };
+    };
+    let mtLast = null;
+    const mtRead =
+      (await awaitState("Mono team calls and delegation rows", async () => {
+        mtLast = await monoTeamRead();
+        return mtLast.complete ? mtLast : null;
+      })) ?? mtLast;
+    const mtRefused = mtRead.refused;
+    const mtBriefCall = mtRead.briefCall;
+    const mtOwnCall = mtRead.ownCall;
+    const mtLeadCall = mtRead.leadCall;
+    const mtBrief = mtRead.brief;
+    const mtOwn = mtRead.own;
+    const mtLead = mtRead.lead;
     const mtMonoId = mtBrief?.owner_mono ?? null;
     if (mtMonoId) ledger.monos.add(mtMonoId);
     const mtChat = mtBrief?.owner_session ?? null;
@@ -2762,13 +2817,36 @@ async function main() {
     let codingDom = null;
     let teamDom = null;
     let driverError = null;
+    // A view is read until the elements the check asserts are on screen: the window renders at its own pace, and a fixed
+    // settle missed it on a busy Mac. The snapshot is read-only, so polling it changes nothing (the open is done once).
+    // The read that settles the view (or the last read, on timeout) is written once, under its own driver-<id> name.
+    const settledDom = async (label, ready) => {
+      const { view } = await settleView(() => request("snapshot"), (read) => ready(read.answer.dom ?? null), {
+        timeoutMs: scale(options.waitCeiling),
+        everyMs: 500,
+        label,
+        log,
+      });
+      if (!view) return null;
+      writeDriverAnswer(view.actionId, view.answer);
+      return view.answer.dom ?? null;
+    };
+    const nestedUnder = (dom, parentAttr, parentValue, childAttr, childValue) =>
+      shown(dom, parentAttr, parentValue).length > 0 && shown(dom, childAttr, childValue).length > 0;
     try {
       await act("ping", {}, 60_000);
       await act("open", { mono: mtMonoId });
-      await sleep(scale(1_500));
-      chatDom = (await act("snapshot"))?.dom ?? null;
-      codingDom = (await act("open", { codingTeam: TREE_PROJECT.id, unfold: [mtLeadChat], settleMs: scale(2_500) }))?.dom ?? null;
-      teamDom = (await act("open", { team: mtMonoId, unfold: [mtChat], settleMs: scale(2_500) }))?.dom ?? null;
+      chatDom = await settledDom("the Mono's chat shows its briefed-team line and its work line", (dom) =>
+        !!shown(dom, "data-briefed-team", mtBrief?.id ?? "?")[0] && !!shown(dom, "data-mono-work", mtMonoId ?? "?")[0],
+      );
+      await act("open", { codingTeam: TREE_PROJECT.id, unfold: [mtLeadChat], settleMs: 0 });
+      codingDom = await settledDom("the coding team shows its Lead and the Lead's worker nested under it", (dom) =>
+        !!shown(dom, "data-coding-team-lead")[0] && nestedUnder(dom, "data-sub-chats", leadChat ?? "?", "data-sub-chat", mtLead?.child_session ?? "?"),
+      );
+      await act("open", { team: mtMonoId, unfold: [mtChat], settleMs: 0 });
+      teamDom = await settledDom("the Mono's own team shows its owner and its worker nested under it", (dom) =>
+        !!shown(dom, "data-coding-team-lead")[0] && nestedUnder(dom, "data-sub-chats", mtChat ?? "?", "data-sub-chat", mtOwn?.child_session ?? "?"),
+      );
     } catch (error) {
       driverError = error.message;
     }

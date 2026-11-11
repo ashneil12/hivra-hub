@@ -3253,7 +3253,7 @@ mod tests {
     }
 
     fn git(cwd: &Path, args: &[&str]) {
-        let output = Command::new("git")
+        let output = crate::git_cmd::git()
             .current_dir(cwd)
             .args(args)
             .env("GIT_AUTHOR_NAME", "Test")
@@ -3332,7 +3332,7 @@ mod tests {
         let body = std::fs::read(fix.first.join(".monocode").join("stack.env")).unwrap();
         assert!(!body.contains(&b'\r'), "env file must be LF");
         assert!(body.windows(5).any(|chunk| chunk == b"PORT="));
-        let ignored = Command::new("git")
+        let ignored = crate::git_cmd::git()
             .current_dir(&fix.first)
             .args(["check-ignore", "-q", ".monocode/stack.env"])
             .env("GIT_CONFIG_NOSYSTEM", "1")

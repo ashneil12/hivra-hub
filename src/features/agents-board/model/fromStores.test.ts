@@ -1,7 +1,10 @@
-import { describe, expect, it } from "vitest";
-import { boardFromStores } from "./fromStores";
+import { afterEach, describe, expect, it } from "vitest";
+import { boardFromStores, mateStatus } from "./fromStores";
 import { costUsdBySession } from "./cost";
+import { setAgentsBoardSessionStop } from "./sessionStop";
 import { flattenBoard } from "./tree";
+
+afterEach(() => setAgentsBoardSessionStop(null));
 
 const NOW = Date.UTC(2026, 10, 11, 15, 0, 0);
 
@@ -79,6 +82,9 @@ describe("boardFromStores", () => {
     expect(job?.checksLabel).toBe("checks green");
     expect(job?.children.map((node) => node.id)).toEqual(["sub-chat"]);
     expect(job?.rolledUp).toBe(false);
+    expect(job?.canStop).toBe(true);
+    expect(flattenBoard(board.tree).find((node) => node.id === "home-chat")?.canStop).toBe(false);
+    expect(flattenBoard(board.tree).find((node) => node.id === "sub-chat")?.canStop).toBe(false);
     // Hivra and Coding only repeat this worker, so the chip stays 1. Home and the sub-chat are themselves working.
     expect(board.tree.rolledUp).toBe(true);
     expect(board.tree.state).toBe("needs-you");
@@ -103,6 +109,45 @@ describe("boardFromStores", () => {
     expect(job?.costLabel).toBeNull();
     expect(job?.prNumber).toBeNull();
     expect(job?.name).toBe("Look");
+    expect(job?.canStop).toBe(false);
+  });
+
+  it("offers Stop on a working project chat or sub-chat only when the app Stop is registered", () => {
+    const source = {
+      now: NOW,
+      projects: [{ id: "hivra", name: "Hivra" }],
+      sessions: [
+        { id: "home-chat", place: "home" as const, title: "Home", status: "idle" },
+        { id: "hivra-chat", place: "project" as const, projectId: "hivra", title: "Hivra", status: "working" },
+        { id: "sub-chat", place: "subchat" as const, parentSessionId: "worker-chat", projectId: "hivra", title: "Read", status: "working" },
+      ],
+      mates: [{ id: "lead", name: "Coding", projectId: "hivra", sessionId: "lead", department: "coding" }],
+      delegations: [{ id: "job", title: "Fix", project: "hivra", ownerSession: "lead", childSession: "worker-chat", status: "working", createdAt: NOW }],
+      checks: [],
+      costs: [],
+    };
+    const before = boardFromStores(source);
+    expect(flattenBoard(before.tree).find((node) => node.id === "hivra-chat")?.canStop).toBe(false);
+    expect(flattenBoard(before.tree).find((node) => node.id === "sub-chat")?.canStop).toBe(false);
+    setAgentsBoardSessionStop(() => undefined);
+    const after = boardFromStores(source);
+    expect(flattenBoard(after.tree).find((node) => node.id === "hivra-chat")?.canStop).toBe(true);
+    expect(flattenBoard(after.tree).find((node) => node.id === "home-chat")?.canStop).toBe(false);
+    expect(flattenBoard(after.tree).find((node) => node.id === "sub-chat")?.canStop).toBe(true);
+    expect(flattenBoard(after.tree).find((node) => node.id === "job")?.canStop).toBe(true);
+  });
+});
+
+describe("mateStatus", () => {
+  it("is Working while the first mate's own chat runs a turn", () => {
+    const sessions = [
+      { id: "lead-chat", busy: true },
+      { id: "other", busy: false },
+    ];
+    expect(mateStatus("lead-chat", sessions)).toBe("working");
+    expect(mateStatus("other", sessions)).toBe("idle");
+    expect(mateStatus("missing", sessions)).toBe("idle");
+    expect(mateStatus(null, sessions)).toBe("idle");
   });
 });
 

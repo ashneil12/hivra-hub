@@ -92,6 +92,8 @@ export type Tab = {
   title: string;
   /** Other conversation titles in this tab, focused session omitted. */
   more: string[];
+  /** WP-177: set when the focused chat moved to another machine; the name of that machine. */
+  movedTo?: string;
   sessionCount: number;
   harnesses: HarnessId[];
   /** Harnesses with an in-flight turn in this tab. */
@@ -233,6 +235,7 @@ export function tabCopy(tab: Tab): {
     if (sessions) metaParts.push(sessions);
   }
 
+  if (tab.movedTo) metaParts.unshift(`Moved to ${tab.movedTo}`);
   const meta = metaParts.join(" · ");
 
   const tooltipParts = [project];
@@ -1134,7 +1137,7 @@ function TitleBarComponent({
         {showTrailingActions ? (
           <div className="flex items-center gap-0.5 px-2">
             {projectless && railClosed && onOpenInbox ? (
-              <IconButton label="Inbox" onClick={onOpenInbox}>
+              <IconButton label="Needs you" onClick={onOpenInbox}>
                 <Inbox className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             ) : null}

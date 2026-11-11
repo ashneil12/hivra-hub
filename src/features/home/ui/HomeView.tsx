@@ -14,8 +14,8 @@ import { PixelMascot } from "../../projects/ui/PixelMascot";
 import { useHubDataVersion, hubData } from "../../hub/model/hubData";
 import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
-import { attentionCount, useAttentionVersion } from "../../hub/model/todayCounts";
-import { needsCount, useNeedsYou, workingCount, type NeedsItem } from "../../needs/model/needsYou";
+import { useNeedsYou } from "../../needs/model/needsLive";
+import { workingCount, type NeedsItem } from "../../needs/model/needsYou";
 import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workLog";
 import { hideSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
@@ -57,21 +57,26 @@ function labelFor(projects: readonly HomeProject[]): (projectId: string) => stri
   };
 }
 
-function openNeed(item: NeedsItem): void {
+/** Where a Needs you row leads: the place the item names (its chat, page, decision or check), never a guess. */
+export function needTarget(item: NeedsItem): HomeOpenTarget {
   const projectId = item.projectId ?? "";
-  if (item.open.kind === "inbox") {
-    openFromHome({ kind: "needs" });
-    return;
+  const decision = item.decisionKey?.trim();
+  const gate = item.gateKey?.trim();
+  const open = item.open;
+  if (item.kind === "stopped") {
+    return open?.where === "chat" ? { kind: "chat", id: open.id, projectId } : { kind: "task", projectId, id: open?.id || item.key };
   }
-  if (item.open.kind === "chat") {
-    openFromHome({ kind: "chat", id: item.open.id, projectId });
-    return;
-  }
-  if (item.open.kind === "page") {
-    openFromHome({ kind: "doc", id: item.open.id });
-    return;
-  }
-  openFromHome({ kind: "task", projectId: item.open.projectId ?? projectId, id: item.open.id });
+  if (open?.where === "chat") return { kind: "chat", id: open.id, projectId };
+  if (open?.where === "page") return { kind: "page", id: open.id };
+  if (item.kind === "check" && gate) return { kind: "inbox", projectId, decisionKey: gate };
+  if (decision) return { kind: "inbox", projectId, decisionKey: decision };
+  if (open?.where === "task") return { kind: "task", projectId, id: open.id };
+  if (item.kind === "review" || item.kind === "question") return { kind: "task", projectId, id: item.key };
+  return { kind: "inbox", projectId, decisionKey: item.key };
+}
+
+function openNeed(item: NeedsItem): void {
+  openFromHome(needTarget(item));
 }
 
 /** Opens a Places view (Pages, Notes, Automations) over Home; App.tsx listens. */
@@ -283,7 +288,6 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
     });
   }
 
-  useAttentionVersion();
   const projects = snap?.projects ?? [];
   // On a project's home every row is this project's, so rows carry no project tag.
   const tagFor = labelFor(projects);
@@ -301,8 +305,9 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
   ];
   const scoped = hubData().listProjects().find((p) => p.id === projectId);
   const inScope = (id: string | null | undefined) => !scoped || id === scoped.id;
-  const shown = needsShown(needs, now.getTime()).filter((item) => inScope(item.projectId));
-  const totalNeeds = scoped ? shown.length : needsCount();
+  const mine = needs.filter((item) => inScope(item.projectId));
+  const shown = needsShown(mine);
+  const totalNeeds = mine.length;
   const lines = workingLines(delegations.filter((row) => inScope(row.project)).map((row: Delegation) => ({
     id: row.id,
     project: row.project,
@@ -436,13 +441,8 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
       chief={chief}
       needs={needRows}
       needsTotal={totalNeeds}
-      // The count at a glance agrees with the project rail's badges (todayCounts) until WP-210 makes them one list.
-      needsGlance={Math.max(
-        totalNeeds,
-        scoped
-          ? attentionCount(scoped.id, now.getTime())
-          : hubData().listProjects().reduce((sum, project) => sum + attentionCount(project.id, now.getTime()), 0),
-      )}
+      // WP-210: the count at a glance, the card's count and the rail's badges are the one Needs you list.
+      needsGlance={totalNeeds}
       builders={builderLines}
       working={workRows}
       workingTotal={running}

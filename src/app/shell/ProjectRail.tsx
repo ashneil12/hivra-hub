@@ -120,6 +120,8 @@ type Props = {
   cwd: string;
   recents: RecentProject[];
   inboxUnseen?: boolean;
+  /** WP-210: how many items need Ash. This paints the Inbox mark. */
+  needsMark?: number;
   busyPaths?: Iterable<string>;
   canGoBack?: boolean;
   canGoForward?: boolean;
@@ -170,6 +172,7 @@ export function ProjectRail({
   cwd,
   recents,
   inboxUnseen = false,
+  needsMark = 0,
   busyPaths,
   canGoBack = false,
   canGoForward = false,
@@ -289,8 +292,10 @@ export function ProjectRail({
           setInboxMenu({ x, y });
         }}
         active={inboxActive}
+        // WP-210: the red count is the one Needs you list.
+        needs={needsMark}
         dot={inboxUnseen}
-        ariaLabel={inboxUnseen ? "Inbox, new items" : "Inbox"}
+        ariaLabel={needsMark > 0 ? `Inbox, ${needsMark} need you` : inboxUnseen ? "Inbox, new items" : "Inbox"}
       />
       {notesEnabled ? (
         <RailAction

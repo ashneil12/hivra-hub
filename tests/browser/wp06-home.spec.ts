@@ -122,7 +122,7 @@ test("work that left Today and Being built is on the crew or in the inbox", asyn
 
   // The project's Inbox, not the retired Today item.
   const sidebar = page.getByRole("navigation", { name: "Projects" }).nth(1);
-  await sidebar.getByRole("button", { name: "Inbox", exact: true }).click();
+  await sidebar.getByRole("button", { name: /^Needs you/ }).click();
   await expect(page.getByRole("region", { name: "Inbox" })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator("[data-inbox-kind=decision]")).toContainText("Ship it now?");
   await expect(page.locator("[data-inbox-kind=decision]")).toContainText("Open the chat");

@@ -7,11 +7,7 @@ import type { PopoverAnchor } from "../../../shared/ui/Popover";
 import { ProjectGlyph, ProjectMenu, ProjectMonogramTile, RemovedUndoToast } from "./ProjectMenu";
 import { moveLocalNamesToAshOs } from "../model/projectActions";
 import { hubData, useHubDataVersion } from "../model/hubData";
-import { attentionCount, useAttentionVersion } from "../model/todayCounts";
-import { useProposalsVersion } from "../model/proposals";
-import { useTemplatesVersion } from "../model/templates";
-import { useConnectorsVersion } from "../model/connectors";
-import { useHubBuildsVersion } from "../model/hubBuilds";
+import { useNeedsYou } from "../../needs/model/needsLive";
 import { appItemInView, showAppItem, showProjectToday, type HubSelection } from "../model/hubNav";
 import type { HubProject } from "../model/types";
 import { readStripGroups, stripLayout, useStripGroupsVersion } from "../model/stripGroups";
@@ -40,13 +36,9 @@ export function ProjectStrip({
   titleBarAbove?: boolean;
 }) {
   useHubDataVersion();
-  useProposalsVersion();
-  useTemplatesVersion();
-  useConnectorsVersion();
   void onCreateProject;
-  useHubBuildsVersion();
-  // The same count as the project's card on Today (todayCounts.ts).
-  useAttentionVersion();
+  // WP-210: the red count is the one Needs you list, not the mock stores.
+  const needs = useNeedsYou();
   const data = hubData();
   const projects = data.listProjects();
   // Names Ash gave projects on this Mac before Ash OS kept them go to Ash OS once (it runs only when Ash OS is there).
@@ -65,12 +57,13 @@ export function ProjectStrip({
   const layout = stripLayout(projects, stripGroups.groups, stripGroups.assignments, stripGroups.filterId);
   const [groupMenu, setGroupMenu] = useState<{ group: ProjectGroup; anchor: PopoverAnchor }>();
   const projectButton = (project: HubProject) => {
-    const count = attentionCount(project.id);
+    const count = needs.filter((item) => item.projectId === project.id).length;
     return (
       <StripButton
         key={project.id}
+        projectId={project.id}
         label={project.shortName}
-        title={count ? `${project.name}, ${count} waiting on you` : project.name}
+        title={count ? `${project.name}, ${count} needs you` : project.name}
         selected={selection.project === project.id && !appItemInView(selection)}
         onClick={() => onPickProject(project)}
         glyph={<ProjectGlyph project={project} />}
@@ -190,6 +183,7 @@ export function StripButton({
   Icon,
   glyph,
   count,
+  projectId,
   onMenu,
 }: {
   label: string;
@@ -200,6 +194,7 @@ export function StripButton({
   /** A project's own tile (letter, emoji, icon or image) instead of Icon. */
   glyph?: ReactNode;
   count?: number;
+  projectId?: string;
   /** Right-click, or the hover "⋯", opens the project's menu. */
   onMenu?: (anchor: PopoverAnchor) => void;
 }) {
@@ -215,6 +210,7 @@ export function StripButton({
       title={title}
       aria-label={title}
       aria-current={selected || undefined}
+      data-project-id={projectId}
       onClick={() => {
         if (press.current?.fired) {
           press.current = undefined;
@@ -240,7 +236,11 @@ export function StripButton({
       >
         {glyph ?? (Icon ? <Icon className="size-[18px]" strokeWidth={1.75} /> : null)}
         {(count ?? 0) > 0 ? (
-          <span className="absolute -right-1 -top-1 min-w-4 hub-count-badge rounded-full bg-background-base px-1 text-center text-[10px] leading-4 text-content/75">
+          <span
+            data-needs-count={count}
+            className="hub-count-badge absolute -right-1 -top-1 min-w-4 rounded-full px-1 text-center text-[10px] leading-4 text-white"
+            style={{ background: "#e5484d" }}
+          >
             {count}
           </span>
         ) : null}
