@@ -2347,3 +2347,173 @@ mod review_r3_repro {
         );
     }
 }
+
+/// Review r4 repro tests for PR #208 (WP-178). Each states a property the profile should hold and is red at 5eedc0d75.
+/// The evaluator is the r3 one: `regex`, `literal` and `subpath` filters, any `file-write…` operation.
+#[cfg(all(test, unix))]
+mod review_r4_repro {
+    use super::*;
+
+    fn filter_matches(line: &str, path: &str) -> bool {
+        if let Some(start) = line.find("(regex #\"") {
+            let rest = &line[start + "(regex #\"".len()..];
+            return rest.find("\")").is_some_and(|end| {
+                regex::Regex::new(&rest[..end]).is_ok_and(|re| re.is_match(path))
+            });
+        }
+        for (open, subpath) in [("(literal \"", false), ("(subpath \"", true)] {
+            if let Some(start) = line.find(open) {
+                let rest = &line[start + open.len()..];
+                let Some(end) = rest.find('"') else {
+                    return false;
+                };
+                let named = &rest[..end];
+                return path == named
+                    || (subpath && path.starts_with(&format!("{}/", named.trim_end_matches('/'))));
+            }
+        }
+        false
+    }
+
+    fn denies_write(profile: &str, path: &str) -> bool {
+        profile.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("(deny ") && line.contains("file-write") && filter_matches(line, path)
+        })
+    }
+
+    const HOME: &str = "/Users/test";
+
+    fn scratch(tag: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("sbx-r4-{tag}-{}-{nanos}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::canonicalize(&dir).unwrap()
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = crate::git_cmd::git()
+            .arg("-C")
+            .arg(dir)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .status()
+            .unwrap()
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+
+    /// HIGH: an agent working in a linked worktree (how Hivra runs workers) is given the worktree as its checkout, and
+    /// `push_git_writes` locks `<main>/.git/worktrees/<name>` only. Git reads a linked worktree's config, hooks and
+    /// `info/attributes` from the COMMON dir, `<main>/.git`, which no rule names. The agent writes a hook there (Ash's
+    /// Git panel commit runs it outside the sandbox) or a `filter.x.clean` in `<main>/.git/config` plus
+    /// `info/attributes` (the Git panel's automatic `git diff --numstat` runs it outside the sandbox; see the fs repro).
+    #[test]
+    fn an_agent_in_a_linked_worktree_cannot_write_the_main_repositorys_config_hooks_or_attributes()
+    {
+        let root = scratch("linked");
+        let main = root.join("main");
+        let wt = root.join("wt");
+        std::fs::create_dir_all(&main).unwrap();
+        git(&main, &["init", "-q"]);
+        std::fs::write(main.join("a.txt"), "a\n").unwrap();
+        git(&main, &["add", "a.txt"]);
+        git(&main, &["commit", "-q", "-m", "a"]);
+        git(&main, &["worktree", "add", "-q", wt.to_str().unwrap()]);
+        let profile =
+            profile_with_checkouts(Path::new(HOME), None, std::slice::from_ref(&wt)).unwrap();
+        let common = main.join(".git");
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["config", "hooks/pre-commit", "info/attributes"] {
+            let path = common.join(name).to_string_lossy().to_string();
+            assert!(
+                denies_write(&profile, &path),
+                "{path} is writable by an agent in the linked worktree, and git reads it for that worktree"
+            );
+        }
+    }
+
+    /// HIGH: a chat whose folder is inside a repository (a subproject of a monorepo) names that folder as its checkout.
+    /// `<folder>/.git` does not exist, so the rules lock a path that is not there and the repository's real `.git` is
+    /// open.
+    #[test]
+    fn an_agent_whose_folder_is_inside_a_repository_cannot_write_that_repositorys_hooks_or_config()
+    {
+        let root = scratch("subdir");
+        let sub = root.join("packages").join("app");
+        std::fs::create_dir_all(&sub).unwrap();
+        git(&root, &["init", "-q"]);
+        let profile =
+            profile_with_checkouts(Path::new(HOME), None, std::slice::from_ref(&sub)).unwrap();
+        let _ = std::fs::remove_dir_all(&root);
+        for name in ["config", "hooks/pre-commit", "info/attributes"] {
+            let path = root.join(".git").join(name).to_string_lossy().to_string();
+            assert!(
+                denies_write(&profile, &path),
+                "{path} is writable by an agent working in {}",
+                sub.display()
+            );
+        }
+    }
+
+    /// HIGH (needs a macOS probe): `crontab` is setuid and is not a denied program; under `(allow default)` the
+    /// sandboxed crontab writes the user's cron table, and cron runs the job later outside the sandbox (the same escape
+    /// as a launchd job, without launchctl). A copy of crontab loses setuid, so denying the table's folder is enough.
+    #[test]
+    fn the_cron_tables_cannot_be_written() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in ["/private/var/at/tabs/test", "/usr/lib/cron/tabs/test"] {
+            assert!(
+                denies_write(&profile, path),
+                "{path} is writable, so a sandboxed crontab installs a job cron runs outside the sandbox"
+            );
+        }
+    }
+
+    /// HIGH: the daily app is `~/Applications/MonoCode Hub.app`, owned by the person, and no rule names it. A sandboxed
+    /// agent builds its own bundle (this repo builds one) and renames it into place, or edits the bundle in place; at the
+    /// next start the daily app is the agent's code, outside every sandbox. macOS App Management does not stop it: the
+    /// responsible process is MonoCode Hub itself. Ship is the only supported way a build reaches that folder.
+    #[test]
+    fn the_installed_daily_app_cannot_be_written_or_moved() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in [
+            "/Users/test/Applications/MonoCode Hub.app",
+            "/Users/test/Applications/MonoCode Hub.app/Contents/MacOS/monocode",
+            "/Users/test/Applications/MonoCode Hub.app/Contents/Info.plist",
+        ] {
+            assert!(
+                denies_write(&profile, path),
+                "{path} is writable, so the next start of the daily app runs what the agent put there"
+            );
+        }
+    }
+
+    /// MED (functional, r3 M3 still partly open): the "unscoped" redirect rules match every repository on disk,
+    /// including a temporary one. `git worktree add` writes `.git/worktrees/<n>/commondir` and `git submodule update`
+    /// writes `.git/modules/<name>/config`, so both fail in any repo an agent clones under `$TMPDIR` (and this repo's
+    /// own tests that add worktrees fail under the wrapped Check action).
+    #[test]
+    fn git_worktree_add_and_submodules_still_work_in_a_temporary_clone() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in [
+            "/private/var/folders/ab/xyz/T/clone/.git/worktrees/wt/commondir",
+            "/private/var/folders/ab/xyz/T/clone/.git/modules/vendor/lib/config",
+        ] {
+            assert!(
+                !denies_write(&profile, path),
+                "{path} is denied, so git worktree add / git submodule update fail in a temporary clone"
+            );
+        }
+    }
+}

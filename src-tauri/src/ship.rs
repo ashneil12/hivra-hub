@@ -2896,3 +2896,56 @@ mod review_r3_repro {
         );
     }
 }
+
+/// Review r4 repro for PR #208 (WP-178). 5eedc0d75 says startup "refuses a ship runner the app did not write", but the
+/// proof is only things an agent can reproduce: the runner scripts are public (`scripts/hub-ship-runner.mjs` and
+/// `scripts/ship-platform.mjs` are in the checkout it works in), `node` is any non-script file named `node` outside
+/// the ship folder (a copied or compiled binary in `/tmp`), `dataDir` comes from the record itself, and nothing about
+/// `state.json` is checked, while the genuine runner then opens the record's `appPath` (with `launch.env` in direct
+/// mode). The data folder is write-denied, so this is the second line only (MED). Red at 5eedc0d75.
+#[cfg(all(test, unix))]
+mod review_r4_repro {
+    use super::*;
+
+    #[test]
+    fn a_record_built_from_the_public_runner_and_an_agent_node_is_not_the_apps() {
+        use std::os::unix::fs::PermissionsExt;
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("ship-r4-{}-{nanos}", std::process::id()));
+        let data = root.join("data");
+        let dir = data.join(SHIP_DIR).join("planted");
+        let elsewhere = root.join("agent-bin");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        // Byte-for-byte the build's copies: the agent reads them from its own checkout.
+        std::fs::write(dir.join("runner.mjs"), APP_RUNNER).unwrap();
+        std::fs::write(dir.join("ship-platform.mjs"), APP_SHIP_PLATFORM).unwrap();
+        // Any binary (not a `#!` script) named node, outside the ship folder.
+        let node = elsewhere.join("node");
+        std::fs::copy("/usr/bin/true", &node).unwrap();
+        std::fs::set_permissions(&node, std::fs::Permissions::from_mode(0o755)).unwrap();
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "planted",
+                "phase": "trial",
+                "to": { "sha": instance::stamp().sha },
+                "from": { "sha": "0000000" },
+                "node": node.to_string_lossy(),
+                "appPath": root.join("Agent.app").to_string_lossy(),
+                "launch": { "mode": "direct", "env": { "AGENT": "1" } },
+            }),
+        )
+        .unwrap();
+        let ship = Ship::load(&dir).unwrap();
+        let ours = runner_record_is_ours(&ship);
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !ours,
+            "a record an agent can build (public runner copies, its own node, its own appPath) passes as the app's"
+        );
+    }
+}
