@@ -676,6 +676,12 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
             return Err("follow must be queue, steer or lead".into());
         }
     }
+    // WP-203: a security review's request id is the app's alone. Any other owner naming one is refused.
+    if request.starts_with(crate::delivery::review::REQUEST_PREFIX)
+        && owner != crate::delivery::review::OWNER
+    {
+        return Err("security review requests are the app's; this owner can't start one".into());
+    }
     let by = actor(input.by);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
@@ -885,6 +891,21 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     row.note(now, &by, "settled", detail);
     row.touch(now);
     save(&tx, &row)?;
+    // WP-203: a completed security review is recorded here, by the app, from this row's result. No other path writes it.
+    if row.owner_session == crate::delivery::review::OWNER
+        && row
+            .request_id
+            .starts_with(crate::delivery::review::REQUEST_PREFIX)
+        && row.state == COMPLETED
+    {
+        crate::delivery::review::record_settled(
+            &tx,
+            &row.id,
+            &row.request_id,
+            row.result.as_deref(),
+            now,
+        )?;
+    }
     // WP-157: one summary line. Cancelled work is not an outcome. A repeated settle never reaches here. The line is
     // written in a savepoint: a journal that cannot be written is logged and skipped, and the task is still done.
     if row.state == COMPLETED || row.state == FAILED {

@@ -23,6 +23,7 @@ pub mod events;
 pub mod github;
 pub mod merge;
 pub mod protected;
+pub mod review;
 pub mod settings;
 pub mod teardown;
 
@@ -176,6 +177,14 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    // WP-203: the builder that did the work, recorded by the app at delivery. The security review's author.
+    let has_author = conn
+        .prepare("SELECT 1 FROM pragma_table_info('work_deliveries') WHERE name = 'author'")?
+        .exists([])?;
+    if !has_author {
+        conn.execute("ALTER TABLE work_deliveries ADD COLUMN author TEXT", [])?;
+    }
+    review::ensure_table(conn)?;
     Ok(())
 }
 

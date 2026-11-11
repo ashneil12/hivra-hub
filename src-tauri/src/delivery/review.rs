@@ -1,0 +1,527 @@
+//! WP-203 H1: the app records the security review. Nothing in a checkout is a record.
+//!
+//! A review is a delegation the app starts for one head, to one reviewer builder, with the request id
+//! `security-review:<owner>/<repo>#<number>@<head>:<reviewer>` and the app-only owner [`OWNER`]. When that delegation
+//! completes, the app reads its result (the hunter's output, the findings, the coverage ledger, and each verifier's
+//! builder), checks it here, and writes one row keyed by pull request and head. The merge gate reads only that row.
+//! Agents have no path to write it: the row is written from the settle of a delegation the app owns, and the author
+//! comes from the pull request's delivery row, which the app records when the work is delivered.
+//!
+//! The checks are the ones the review command's validators make, in Rust and case-folded: a result that is not an
+//! object, a missing hunter (no candidate count), a hunter that is not the reviewer, a findings list that is not an
+//! array or does not match the candidate count, an unknown verdict, severity or builder, a verifier that is the
+//! reviewer or the author, a ledger that does not cover every file the hunter read.
+
+use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
+use unicode_normalization::UnicodeNormalization;
+
+/// The owner of every review delegation. Only the app starts one, so only its settle may record a review.
+pub const OWNER: &str = "app:security-review";
+/// The request id prefix that marks a review delegation.
+pub const REQUEST_PREFIX: &str = "security-review:";
+/// The builders that may author or review a change.
+pub const BUILDERS: [&str; 5] = ["claude", "codex", "grok", "devin", "human"];
+const VERDICTS: [&str; 3] = ["confirmed", "needs_validation", "rejected"];
+const SEVERITIES: [&str; 5] = ["informational", "low", "medium", "high", "critical"];
+/// The most files one review reads (the review command's own cap).
+pub const FILE_CAP: usize = 40;
+
+pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS security_reviews (
+           repo TEXT NOT NULL,
+           number INTEGER NOT NULL,
+           head TEXT NOT NULL,
+           delegation_id TEXT NOT NULL,
+           author TEXT,
+           reviewer TEXT NOT NULL,
+           status TEXT NOT NULL,
+           reason TEXT,
+           files TEXT NOT NULL DEFAULT '[]',
+           pending TEXT NOT NULL DEFAULT '[]',
+           blocking TEXT,
+           recorded_at INTEGER NOT NULL,
+           PRIMARY KEY (repo, number, head)
+         );",
+    )?;
+    Ok(())
+}
+
+/// One name, compared the way the floor compares them: NFKC, then lower case, trimmed.
+fn fold(text: &str) -> String {
+    text.trim().nfkc().collect::<String>().to_lowercase()
+}
+
+/// The builder's folded name when it is one of [`BUILDERS`].
+pub fn known_builder(name: &str) -> Option<String> {
+    let folded = fold(name);
+    BUILDERS.contains(&folded.as_str()).then_some(folded)
+}
+
+/// What the request id names: the pull request, its head and the reviewer the app chose.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Request {
+    pub repo: String,
+    pub number: u64,
+    pub head: String,
+    pub reviewer: String,
+}
+
+/// The request id the app gives a review it starts. Only tests build one until the review launcher exists.
+#[cfg(test)]
+pub fn request_id(repo: &str, number: u64, head: &str, reviewer: &str) -> String {
+    format!("{REQUEST_PREFIX}{repo}#{number}@{head}:{reviewer}")
+}
+
+/// Parses a review's request id. A malformed id, an unknown reviewer or a head that is not a full commit id is an
+/// error: the record is refused and the gate says why.
+pub fn parse_request(request_id: &str) -> Result<Request, String> {
+    let rest = request_id
+        .strip_prefix(REQUEST_PREFIX)
+        .ok_or("the request id is not a security review's")?;
+    let (target, reviewer) = rest
+        .rsplit_once(':')
+        .ok_or("the review's request id names no reviewer")?;
+    let (repo_number, head) = target
+        .rsplit_once('@')
+        .ok_or("the review's request id names no head")?;
+    let (repo, number) = repo_number
+        .rsplit_once('#')
+        .ok_or("the review's request id names no pull request")?;
+    let number: u64 = number
+        .parse()
+        .map_err(|_| "the review's pull request number is not a number".to_string())?;
+    if !repo.contains('/') {
+        return Err("the review's repository is not owner/name".into());
+    }
+    if head.len() != 40
+        || !head
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("the review's head is not a full commit id".into());
+    }
+    let reviewer = known_builder(reviewer).ok_or("the review's reviewer is not a known builder")?;
+    Ok(Request {
+        repo: repo.to_ascii_lowercase(),
+        number,
+        head: head.to_string(),
+        reviewer,
+    })
+}
+
+/// A result the app accepted: what the gate reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Judged {
+    /// The files the hunter read in full, each covered by the ledger.
+    pub files: Vec<String>,
+    /// Candidates that need validation, by title. They do not block; the gate holds for the person's word.
+    pub pending: Vec<String>,
+    /// A confirmed high or critical finding, if any: the gate refuses the head.
+    pub blocking: Option<String>,
+}
+
+fn text_of(value: &Value) -> Option<String> {
+    value.as_str().map(str::to_string)
+}
+
+/// The app's checks of one review result. `author` is the pull request's delivery builder; `reviewer` is the one the
+/// request id names.
+pub fn judge(author: &str, reviewer: &str, result: &str) -> Result<Judged, String> {
+    let author = known_builder(author)
+        .ok_or("the change's author builder is not recorded, so the review can't be checked")?;
+    let reviewer = known_builder(reviewer).ok_or("the reviewer is not a known builder")?;
+    if author == reviewer {
+        return Err(format!(
+            "the same builder ({author}) cannot review its own change"
+        ));
+    }
+    let value: Value =
+        serde_json::from_str(result).map_err(|_| "the review's result is not JSON".to_string())?;
+    let object = value
+        .as_object()
+        .ok_or("the review's result is not an object with a hunt, findings and a ledger")?;
+
+    // The hunter: the reviewer's own read of the change. A review with no hunter output is no review.
+    let hunt = object
+        .get("hunt")
+        .and_then(Value::as_object)
+        .ok_or("the review has no hunter output")?;
+    let hunter = hunt
+        .get("builder")
+        .and_then(text_of)
+        .and_then(|name| known_builder(&name))
+        .ok_or("the hunter's builder is not a known builder")?;
+    if hunter != reviewer {
+        return Err(format!(
+            "the hunter ({hunter}) is not the reviewer ({reviewer})"
+        ));
+    }
+    let candidates = hunt
+        .get("candidates")
+        .and_then(Value::as_u64)
+        .ok_or("the hunter's candidate count is missing, so the hunt can't be checked")?;
+    let files: Vec<String> = hunt
+        .get("files")
+        .and_then(Value::as_array)
+        .ok_or("the hunter named no files")?
+        .iter()
+        .map(|file| {
+            file.as_str()
+                .map(str::to_string)
+                .filter(|f| !f.trim().is_empty())
+        })
+        .collect::<Option<Vec<_>>>()
+        .ok_or("the hunter's file list has a name that is not text")?;
+    if files.is_empty() {
+        return Err("the hunter read no files".into());
+    }
+    if files.len() > FILE_CAP {
+        return Err(format!(
+            "the hunter read {} files, more than the {FILE_CAP} one review covers",
+            files.len()
+        ));
+    }
+
+    // Findings: an array, one record per candidate, each verified by a builder that is neither the reviewer nor the author.
+    let findings = object
+        .get("findings")
+        .and_then(Value::as_array)
+        .ok_or("the findings are not a list")?;
+    if findings.len() as u64 != candidates {
+        return Err(format!(
+            "the hunter reported {candidates} candidates but the findings list has {}",
+            findings.len()
+        ));
+    }
+    let mut pending = Vec::new();
+    let mut blocking = None;
+    for finding in findings {
+        let verdict = finding
+            .get("verdict")
+            .and_then(text_of)
+            .map(|v| fold(&v))
+            .filter(|v| VERDICTS.contains(&v.as_str()))
+            .ok_or("a finding has no known verdict")?;
+        let title = finding
+            .get("title")
+            .and_then(text_of)
+            .filter(|t| !t.trim().is_empty())
+            .ok_or("a finding has no title")?;
+        let severity = finding
+            .get("severity")
+            .and_then(|s| s.get("overall_severity"))
+            .and_then(text_of)
+            .map(|s| fold(&s))
+            .filter(|s| SEVERITIES.contains(&s.as_str()))
+            .ok_or("a finding has no known severity")?;
+        let verifier = finding
+            .get("verified_by")
+            .and_then(text_of)
+            .and_then(|name| known_builder(&name))
+            .ok_or("a finding was not verified by a known builder")?;
+        if verifier == reviewer {
+            return Err(format!(
+                "a finding was verified by the reviewer ({reviewer}), not a fresh verifier"
+            ));
+        }
+        if verifier == author {
+            return Err(format!(
+                "a finding was verified by the change's author ({author})"
+            ));
+        }
+        if verdict == "confirmed"
+            && (severity == "high" || severity == "critical")
+            && blocking.is_none()
+        {
+            blocking = Some(format!("{severity}: {title}"));
+        }
+        if verdict == "needs_validation" {
+            pending.push(title);
+        }
+    }
+
+    // The ledger: every file the hunter read is covered by a unit that says so.
+    let units = object
+        .get("ledger")
+        .and_then(Value::as_array)
+        .ok_or("the coverage ledger is missing")?;
+    let covered: Vec<&str> = units
+        .iter()
+        .filter(|unit| unit.get("status").and_then(Value::as_str) == Some("covered"))
+        .filter_map(|unit| unit.get("starting_paths")?.get(0)?.as_str())
+        .collect();
+    let uncovered: Vec<&str> = files
+        .iter()
+        .map(String::as_str)
+        .filter(|f| !covered.contains(f))
+        .collect();
+    if !uncovered.is_empty() {
+        return Err(format!(
+            "the coverage ledger does not cover every file read: {}",
+            uncovered.join(", ")
+        ));
+    }
+    Ok(Judged {
+        files,
+        pending,
+        blocking,
+    })
+}
+
+/// The author of a pull request: the builder its delivery row records, the newest delivery first.
+pub fn author_of(conn: &Connection, repo: &str, number: u64) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT author FROM work_deliveries WHERE repo = ?1 AND number = ?2 AND author IS NOT NULL \
+         ORDER BY created_at DESC, rowid DESC LIMIT 1",
+        params![repo.to_ascii_lowercase(), number as i64],
+        |row| row.get::<_, Option<String>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(|e| e.to_string())
+}
+
+/// The recorded review for one pull request head, or none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Record {
+    pub status: String,
+    pub reason: Option<String>,
+    pub files: Vec<String>,
+    pub pending: Vec<String>,
+    pub blocking: Option<String>,
+    pub reviewer: String,
+    pub author: Option<String>,
+}
+
+pub fn lookup(
+    conn: &Connection,
+    repo: &str,
+    number: u64,
+    head: &str,
+) -> Result<Option<Record>, String> {
+    conn.query_row(
+        "SELECT status, reason, files, pending, blocking, reviewer, author FROM security_reviews \
+         WHERE repo = ?1 AND number = ?2 AND head = ?3",
+        params![repo.to_ascii_lowercase(), number as i64, head],
+        |row| {
+            let files: String = row.get(2)?;
+            let pending: String = row.get(3)?;
+            Ok(Record {
+                status: row.get(0)?,
+                reason: row.get(1)?,
+                files: serde_json::from_str(&files).unwrap_or_default(),
+                pending: serde_json::from_str(&pending).unwrap_or_default(),
+                blocking: row.get(4)?,
+                reviewer: row.get(5)?,
+                author: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Called from the settle of a completed review delegation (delegations::settle). Writes one row for its pull request
+/// and head: `recorded` when the result passes every check, `refused` with the reason otherwise. A refusal is a
+/// record too, so the gate can say why the review does not count.
+pub(crate) fn record_settled(
+    conn: &Connection,
+    delegation_id: &str,
+    request_id: &str,
+    result: Option<&str>,
+    now: i64,
+) -> Result<(), String> {
+    let request = match parse_request(request_id) {
+        Ok(request) => request,
+        Err(reason) => return write(conn, delegation_id, None, None, None, Err(reason), now),
+    };
+    let author = author_of(conn, &request.repo, request.number)?;
+    let Some(author_name) = author.clone() else {
+        let reason =
+            "the change's author is not recorded on its delivery, so the review can't be checked"
+                .to_string();
+        return write(
+            conn,
+            delegation_id,
+            Some(&request),
+            None,
+            None,
+            Err(reason),
+            now,
+        );
+    };
+    let judged = match result {
+        Some(text) => judge(&author_name, &request.reviewer, text),
+        None => Err("the review finished with no result".into()),
+    };
+    write(
+        conn,
+        delegation_id,
+        Some(&request),
+        Some(&author_name),
+        Some(&request.reviewer),
+        judged,
+        now,
+    )
+}
+
+fn write(
+    conn: &Connection,
+    delegation_id: &str,
+    request: Option<&Request>,
+    author: Option<&str>,
+    reviewer: Option<&str>,
+    judged: Result<Judged, String>,
+    now: i64,
+) -> Result<(), String> {
+    let Some(request) = request else {
+        return Ok(());
+    };
+    let reviewer = reviewer.unwrap_or(&request.reviewer);
+    match judged {
+        Ok(judged) => conn.execute(
+            "INSERT OR REPLACE INTO security_reviews (repo, number, head, delegation_id, author, reviewer, status, reason, \
+             files, pending, blocking, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'recorded', NULL, ?7, ?8, ?9, ?10)",
+            params![
+                request.repo,
+                request.number as i64,
+                request.head,
+                delegation_id,
+                author,
+                reviewer,
+                serde_json::to_string(&judged.files).map_err(|e| e.to_string())?,
+                serde_json::to_string(&judged.pending).map_err(|e| e.to_string())?,
+                judged.blocking,
+                now,
+            ],
+        ),
+        Err(reason) => conn.execute(
+            "INSERT OR REPLACE INTO security_reviews (repo, number, head, delegation_id, author, reviewer, status, reason, \
+             files, pending, blocking, recorded_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'refused', ?7, '[]', '[]', NULL, ?8)",
+            params![request.repo, request.number as i64, request.head, delegation_id, author, reviewer, reason, now],
+        ),
+    }
+    .map(|_| ())
+    .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const HEAD: &str = "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
+    const FILE: &str = "src-tauri/src/mobile_access.rs";
+
+    fn clean(builder: &str) -> String {
+        format!(
+            r#"{{"hunt":{{"builder":"{builder}","candidates":0,"files":["{FILE}"]}},"findings":[],"ledger":[{{"status":"covered","starting_paths":["{FILE}"]}}]}}"#
+        )
+    }
+
+    #[test]
+    fn a_clean_hunt_by_the_reviewer_passes() {
+        let judged = judge("codex", "claude", &clean("claude")).unwrap();
+        assert_eq!(judged.files, vec![FILE.to_string()]);
+        assert_eq!(judged.blocking, None);
+    }
+
+    #[test]
+    fn a_result_with_no_hunter_output_is_refused() {
+        let no_hunt = format!(
+            r#"{{"findings":[],"ledger":[{{"status":"covered","starting_paths":["{FILE}"]}}]}}"#
+        );
+        assert_eq!(
+            judge("codex", "claude", &no_hunt).unwrap_err(),
+            "the review has no hunter output"
+        );
+        let no_count = format!(
+            r#"{{"hunt":{{"builder":"claude","files":["{FILE}"]}},"findings":[],"ledger":[]}}"#
+        );
+        assert!(judge("codex", "claude", &no_count)
+            .unwrap_err()
+            .contains("candidate count is missing"));
+    }
+
+    #[test]
+    fn a_hunter_that_is_not_the_reviewer_is_refused() {
+        assert!(judge("codex", "claude", &clean("codex"))
+            .unwrap_err()
+            .contains("is not the reviewer"));
+    }
+
+    #[test]
+    fn the_same_builder_cannot_author_and_review_in_any_case() {
+        assert!(judge("Claude", "claude", &clean("claude"))
+            .unwrap_err()
+            .contains("cannot review its own change"));
+    }
+
+    #[test]
+    fn a_verifier_that_is_the_reviewer_or_the_author_is_refused() {
+        let by = |verifier: &str| {
+            format!(
+                r#"{{"hunt":{{"builder":"claude","candidates":1,"files":["{FILE}"]}},"findings":[{{"verdict":"rejected","title":"x","severity":{{"overall_severity":"low"}},"verified_by":"{verifier}"}}],"ledger":[{{"status":"covered","starting_paths":["{FILE}"]}}]}}"#
+            )
+        };
+        assert!(judge("codex", "claude", &by("claude"))
+            .unwrap_err()
+            .contains("verified by the reviewer"));
+        assert!(judge("codex", "claude", &by("codex"))
+            .unwrap_err()
+            .contains("verified by the change's author"));
+        assert!(judge("codex", "claude", &by("human")).is_ok());
+    }
+
+    #[test]
+    fn severity_and_verdict_are_folded_and_a_high_blocks() {
+        let high = format!(
+            r#"{{"hunt":{{"builder":"claude","candidates":1,"files":["{FILE}"]}},"findings":[{{"verdict":"Confirmed","title":"Token leaks","severity":{{"overall_severity":"High"}},"verified_by":"human"}}],"ledger":[{{"status":"covered","starting_paths":["{FILE}"]}}]}}"#
+        );
+        let judged = judge("codex", "claude", &high).unwrap();
+        assert_eq!(judged.blocking.as_deref(), Some("high: Token leaks"));
+        let unknown = high.replace("High", "severe");
+        assert!(judge("codex", "claude", &unknown)
+            .unwrap_err()
+            .contains("no known severity"));
+    }
+
+    #[test]
+    fn findings_must_be_a_list_that_matches_the_candidate_count() {
+        let object = format!(
+            r#"{{"hunt":{{"builder":"claude","candidates":0,"files":["{FILE}"]}},"findings":{{"verdict":"confirmed"}},"ledger":[{{"status":"covered","starting_paths":["{FILE}"]}}]}}"#
+        );
+        assert_eq!(
+            judge("codex", "claude", &object).unwrap_err(),
+            "the findings are not a list"
+        );
+        let short = format!(
+            r#"{{"hunt":{{"builder":"claude","candidates":2,"files":["{FILE}"]}},"findings":[],"ledger":[{{"status":"covered","starting_paths":["{FILE}"]}}]}}"#
+        );
+        assert!(judge("codex", "claude", &short)
+            .unwrap_err()
+            .contains("reported 2 candidates"));
+    }
+
+    #[test]
+    fn a_ledger_that_does_not_cover_a_file_read_is_refused() {
+        let uncovered = format!(
+            r#"{{"hunt":{{"builder":"claude","candidates":0,"files":["{FILE}"]}},"findings":[],"ledger":[{{"status":"uncovered","starting_paths":["{FILE}"]}}]}}"#
+        );
+        assert!(judge("codex", "claude", &uncovered)
+            .unwrap_err()
+            .contains("does not cover every file read"));
+    }
+
+    #[test]
+    fn a_request_id_names_one_head_and_one_known_reviewer() {
+        let id = request_id("Acme/Web", 7, HEAD, "Claude");
+        let parsed = parse_request(&id).unwrap();
+        assert_eq!(parsed.repo, "acme/web");
+        assert_eq!(parsed.reviewer, "claude");
+        assert!(parse_request(&request_id("acme/web", 7, "abc", "claude")).is_err());
+        assert!(parse_request(&request_id("acme/web", 7, HEAD, "someone")).is_err());
+        assert!(parse_request("not a review").is_err());
+    }
+}

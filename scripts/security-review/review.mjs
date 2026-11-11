@@ -91,12 +91,26 @@ export function readScoped(files, read) {
  * @returns {string[]}
  */
 export function changedFiles({ base, head, cwd }) {
-  const run = spawnSync("git", ["diff", "--name-only", "--diff-filter=ACMR", `${base}...${head}`], {
+  // No diff filter and no rename detection: a deleted file and the old name of a rename are changes too.
+  const run = spawnSync("git", ["diff", "--name-only", "--no-renames", `${base}...${head}`], {
     cwd,
     encoding: "utf8",
   });
   if (run.status !== 0) throw new Error(`git could not list the changed files: ${(run.stderr || "").trim()}`);
   return run.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+/**
+ * Reads each file as it is at the head commit, never from the working tree (a worker's copy can differ from the
+ * commit the gate judges). A file the head doesn't have was deleted: it reads as empty.
+ * @param {{ head: string, cwd?: string }} input
+ * @returns {(file: string) => string}
+ */
+export function readAtHead({ head, cwd }) {
+  return (file) => {
+    const run = spawnSync("git", ["show", `${head}:${file}`], { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+    return run.status === 0 ? run.stdout : "";
+  };
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -284,8 +298,10 @@ function labelKey(label) {
  * @returns {string}
  */
 export function isSecuritySensitive({ files, labels = [], securityPaths = SECURITY_PATHS, parkLabels = PARK_LABELS }) {
-  const matchers = securityPaths.map(globToRegExp);
-  const file = (files ?? []).find((path) => matchers.some((match) => match.test(path)));
+  // Names fold the way the Rust floor folds them (NFKC, then lower case), on both sides of the match.
+  const fold = (text) => String(text).normalize("NFKC").toLowerCase();
+  const matchers = securityPaths.map((pattern) => globToRegExp(fold(pattern)));
+  const file = (files ?? []).find((path) => matchers.some((match) => match.test(fold(path))));
   if (file) return `changes ${file}`;
   const label = labels.find((name) => parkLabels.includes(labelKey(name)));
   return label ? `is labelled ${label}` : "";
@@ -340,11 +356,12 @@ export function securityGate({ head, files, labels = [], reviewsRoot, validate =
   if (high) {
     return refuseGate(`A confirmed ${high.severity.overall_severity} finding is open on head ${short}: ${high.title}.`);
   }
-  const pending = records.filter((r) => r.verdict === "needs_validation");
-  const inbox = pending.length
-    ? [`Security review of ${short}: ${pending.length} candidate${pending.length === 1 ? "" : "s"} need validation (${pending.map((r) => r.title).join("; ")}).`]
-    : [];
-  return { status: "pass", reason: "", inbox };
+  // Every check above passed on this folder, and that still isn't a record: the app records and checks the review at
+  // merge (delivery/review.rs), from a review delegation it ran. A file in the checkout can be written by anyone who
+  // can write the checkout, so this gate never clears a security change.
+  return refuseGate(
+    `This change ${why}. The review for head ${short} is in this checkout, but only the app records a review that clears the gate, so this folder can't clear it.`,
+  );
 }
 
 /**
@@ -454,7 +471,7 @@ export async function runCli(argv, { cwd = process.cwd(), out = console.log, err
     files,
     candidates,
     verifier,
-    read: (file) => readFileSync(join(repo, file), "utf8"),
+    read: readAtHead({ head, cwd: repo }),
     cap: opts.cap,
     onPlan: (plan) => out(plan.line),
   });

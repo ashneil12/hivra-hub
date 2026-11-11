@@ -15,6 +15,7 @@ import {
   assessCi,
   evaluatePullRequest,
   normalizePullRequest,
+  readChangedFiles,
   normalizeRuns,
   packageMentioned,
   parseArgs,
@@ -73,7 +74,8 @@ function apiPr(over = {}) {
     headRefOid: SHA_A,
     headRefName: "wp/99-ordinary",
     labels: [],
-    files: [],
+    baseRefOid: SHA_B,
+    changedFiles: 1,
     ...over,
   };
 }
@@ -112,10 +114,14 @@ function fakeGh(handler) {
  * @param {Record<string, unknown>} prsByNumber
  * @param {(sha: string, calls: string[][]) => unknown} runsFor
  */
-function repoGh(prsByNumber, runsFor = (sha) => [apiRun({ headSha: sha })]) {
+function repoGh(prsByNumber, runsFor = (sha) => [apiRun({ headSha: sha })], compareStdout = "docs/readme.md\n") {
   return fakeGh((args) => {
     if (args[0] === "repo" && args[1] === "view") {
       return { ok: true, stdout: JSON.stringify({ nameWithOwner: REPO }) };
+    }
+    // The compare read of the changed files (one harmless file unless a test says otherwise).
+    if (args[0] === "api" && String(args[1]).includes("/compare/")) {
+      return { ok: true, stdout: compareStdout };
     }
     if (args[0] === "pr" && args[1] === "view") {
       const found = prsByNumber[args[2]];
@@ -361,6 +367,47 @@ test("timing fields are only the times that were read", () => {
   assert.equal(junk, `pr=99 sha=${SHA_A}`);
 });
 
+test("M2: the changed files come from the compare read, past the 100 files gh pr view stops at", async () => {
+  const many = Array.from({ length: 150 }, (_, n) => `src/file${n}.ts`);
+  const body = `${many.join("\n")}\n`;
+  const { gh, calls } = repoGh({ 99: apiPr({ changedFiles: 150 }) }, undefined, body);
+  const read = await readChangedFiles(gh, REPO, { base: SHA_B, sha: SHA_A, changedFiles: 150 });
+  assert.equal(read.ok, true, read.reason);
+  assert.equal(read.files.length, 150);
+  assert.equal(calls.some((args) => args[0] === "api" && args[1].includes(`/compare/${SHA_B}...${SHA_A}`)), true);
+});
+
+test("M2: a list that is empty, capped, short or unreadable fails closed", async () => {
+  const pr = { base: SHA_B, sha: SHA_A, changedFiles: 1 };
+  const empty = await readChangedFiles(repoGh({}, undefined, "").gh, REPO, pr);
+  assert.equal(empty.ok, false);
+  assert.match(empty.reason, /empty/);
+  const capped = await readChangedFiles(
+    repoGh({}, undefined, `${Array.from({ length: 300 }, (_, n) => `f${n}\n`).join("")}`).gh,
+    REPO,
+    { ...pr, changedFiles: 300 },
+  );
+  assert.equal(capped.ok, false);
+  assert.match(capped.reason, /stops at 300/);
+  const short = await readChangedFiles(repoGh({}, undefined, "a.ts\nb.ts\n").gh, REPO, { ...pr, changedFiles: 60 });
+  assert.equal(short.ok, false);
+  assert.match(short.reason, /says this pull request changes 60/);
+  const unreadable = fakeGh(async () => ({ ok: false, status: 1, stderr: "rate limit", stdout: "" }));
+  const failed = await readChangedFiles(unreadable.gh, REPO, pr);
+  assert.equal(failed.ok, false);
+  const noCount = await readChangedFiles(repoGh({}).gh, REPO, { ...pr, changedFiles: null });
+  assert.equal(noCount.ok, false);
+  assert.match(noCount.reason, /how many files/);
+});
+
+test("M2: a rename's old name is held as a changed path and not counted", async () => {
+  const body = "src/new-name.ts\nprevious:src/old-name.ts\n";
+  const { gh } = repoGh({}, undefined, body);
+  const read = await readChangedFiles(gh, REPO, { base: SHA_B, sha: SHA_A, changedFiles: 1 });
+  assert.equal(read.ok, true, read.reason);
+  assert.deepEqual(read.files, ["src/new-name.ts", "src/old-name.ts"]);
+});
+
 test("pull request JSON is untrusted", () => {
   const ok = normalizePullRequest(
     {
@@ -371,7 +418,8 @@ test("pull request JSON is untrusted", () => {
       headRefOid: SHA_A.toUpperCase(),
       headRefName: "wp/99-ordinary",
       labels: [{ name: "area" }, "docs"],
-      files: [{ path: "docs/hivra/PLAN.md" }],
+      baseRefOid: SHA_B,
+      changedFiles: 1,
       extra: "ignored",
     },
     "99",
@@ -379,7 +427,8 @@ test("pull request JSON is untrusted", () => {
   assert.equal(ok.ok, true);
   assert.equal(ok.pr.sha, SHA_A);
   assert.deepEqual(ok.pr.labels, ["area", "docs"]);
-  assert.deepEqual(ok.pr.files, ["docs/hivra/PLAN.md"]);
+  assert.equal(ok.pr.changedFiles, 1);
+  assert.equal(ok.pr.base, SHA_B);
 
   assert.equal(normalizePullRequest(apiPr({ number: 100 }), "99").ok, false);
   assert.equal(normalizePullRequest(apiPr({ headRefOid: "abc" }), "99").message, "pull request head sha is missing");
@@ -779,7 +828,8 @@ const pr = {
   headRefOid: sha,
   headRefName: "wp/99-ordinary",
   labels: [],
-  files: [],
+  baseRefOid: ${JSON.stringify(SHA_B)},
+  changedFiles: 1,
 };
 const ci = [{
   databaseId: 1,
@@ -790,6 +840,10 @@ const ci = [{
   updatedAt: ${JSON.stringify(UPDATED)},
   workflowName: "CI",
 }];
+if (args[0] === "api" && String(args[1]).includes("/compare/")) {
+  process.stdout.write("docs/readme.md\\n");
+  process.exit(0);
+}
 if (args[0] === "pr" && args[1] === "view") {
   process.stdout.write(JSON.stringify(pr));
   process.exit(0);

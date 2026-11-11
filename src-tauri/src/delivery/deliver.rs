@@ -36,6 +36,10 @@ const BODY_PART_MAX: usize = 20_000;
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DeliverInput {
+    /// WP-203: the builder that did the work (claude, codex, ...). The security review's author; a review can't be
+    /// checked without it.
+    #[serde(default)]
+    pub author: Option<String>,
     /// The project's main checkout.
     pub project: String,
     /// The worker's own copy.
@@ -783,7 +787,20 @@ pub fn deliver(
             }
         }
     }
-    insert(&*store.lock_conn()?, &delivery)?;
+    let conn = store.lock_conn()?;
+    insert(&conn, &delivery)?;
+    if let Some(author) = input
+        .author
+        .as_deref()
+        .and_then(super::review::known_builder)
+    {
+        conn.execute(
+            "UPDATE work_deliveries SET author = ?1 WHERE id = ?2",
+            rusqlite::params![author, delivery.id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    drop(conn);
     if gated {
         let marked = {
             let conn = store.lock_conn()?;

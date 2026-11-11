@@ -24,7 +24,10 @@ const ISO_TIME =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$/;
 const SAFE_FIELD = /^[A-Za-z0-9_.:@+\-]+$/;
 const PARK_LABELS = new Set(NEVER_MERGE_LIST.labels);
-const PR_JSON = "number,title,state,isDraft,headRefOid,headRefName,labels,files";
+const PR_JSON = "number,title,state,isDraft,headRefOid,headRefName,labels,baseRefOid,changedFiles";
+// The changed files come from the compare read (readChangedFiles), not from `gh pr view --json files`, which stops at 100.
+export const COMPARE_CEILING = 300;
+const FILE_LIST_JQ = '.files[] | "filename:\\(.filename)", (select(.previous_filename != null) | "previous:\\(.previous_filename)")';
 const RUN_JSON = "databaseId,headSha,status,conclusion,createdAt,updatedAt,workflowName";
 const TIMING_KEYS = [
   "pr",
@@ -289,15 +292,9 @@ export function normalizePullRequest(json, expectedNumber) {
   }
   const sha = typeof record.headRefOid === "string" ? record.headRefOid.trim().toLowerCase() : "";
   if (!SHA40.test(sha)) return { ok: false, message: "pull request head sha is missing" };
-  // The changed files decide whether the security gate applies, so a list that can't be read refuses the pull request.
-  if (!Array.isArray(record.files)) return { ok: false, message: "could not read the pull request's changed files" };
-  /** @type {string[]} */
-  const files = [];
-  for (const file of record.files) {
-    const path = typeof file === "string" ? file : file && typeof file === "object" ? file.path : undefined;
-    if (typeof path !== "string" || !path) return { ok: false, message: "could not read the pull request's changed files" };
-    files.push(path);
-  }
+  // The base commit and GitHub's own changed-file count: the compare read (readChangedFiles) is judged against them.
+  const base = typeof record.baseRefOid === "string" ? record.baseRefOid.trim().toLowerCase() : "";
+  const changedFiles = Number.isInteger(record.changedFiles) ? record.changedFiles : null;
 
   /** @type {string[]} */
   const labels = [];
@@ -319,9 +316,67 @@ export function normalizePullRequest(json, expectedNumber) {
       isDraft: record.isDraft,
       sha,
       labels,
-      files,
+      base,
+      changedFiles,
     },
   };
+}
+
+/**
+ * Reads the pull request's changed files the way the app's floor reads them: the compare read between the base and
+ * head commits, judged against GitHub's own count. Fails closed: a list that is empty, at or past GitHub's ceiling, or
+ * that disagrees with the count is not the whole change, so it refuses. A `previous:` line (an old name of a rename) is
+ * held as a changed path, and is not counted.
+ * @param {(args: string[]) => Promise<{ ok: boolean, unreachable?: boolean, message?: string, stdout?: string }>} gh
+ * @param {string} repo
+ * @param {{ base: string, sha: string, changedFiles: number | null }} pr
+ * @returns {Promise<{ ok: true, files: string[] } | { ok: false, reason: string }>}
+ */
+export async function readChangedFiles(gh, repo, pr) {
+  if (!SHA40.test(pr.base || "") || !SHA40.test(pr.sha || "")) {
+    return { ok: false, reason: "the base or head commit is not a full commit id" };
+  }
+  if (!Number.isInteger(pr.changedFiles)) return { ok: false, reason: "GitHub didn't say how many files this pull request changes" };
+  let answer;
+  try {
+    answer = await gh(["api", `repos/${repo}/compare/${pr.base}...${pr.sha}`, "--jq", FILE_LIST_JQ]);
+  } catch {
+    return { ok: false, reason: "could not reach GitHub to list the changed files" };
+  }
+  if (!answer || answer.ok !== true) {
+    return { ok: false, reason: answer?.message || "GitHub's compare read failed" };
+  }
+  const body = answer.stdout ?? "";
+  const trimmed = body.trim();
+  if ((trimmed.startsWith("{") || trimmed.startsWith("[")) && /["\:]/.test(trimmed)) {
+    return { ok: false, reason: "the file list was not a list of paths" };
+  }
+  /** @type {string[]} */
+  const files = [];
+  const current = new Set();
+  let filenames = 0;
+  for (const raw of body.split(/[\r\n]+/)) {
+    const line = raw.trim();
+    if (!line || line === "null") continue;
+    if (/[\u0000-\u001f\u007f]/.test(line)) return { ok: false, reason: "the file list was not a list of paths" };
+    const previous = line.startsWith("previous:");
+    const path = line.replace(/^(filename|previous):/, "");
+    if (!path) continue;
+    files.push(path);
+    if (!previous) {
+      if (current.has(path)) return { ok: false, reason: "the file list names one file twice" };
+      current.add(path);
+      filenames += 1;
+    }
+  }
+  if (filenames === 0) return { ok: false, reason: "GitHub's file list was empty, so it doesn't show what changed" };
+  if (filenames >= COMPARE_CEILING) {
+    return { ok: false, reason: `GitHub's file list stops at ${COMPARE_CEILING} files, so this one may be short` };
+  }
+  if (filenames !== pr.changedFiles) {
+    return { ok: false, reason: `GitHub says this pull request changes ${pr.changedFiles} files, but the list has ${filenames}` };
+  }
+  return { ok: true, files };
 }
 
 /**
@@ -707,6 +762,12 @@ async function inspect(gh, repo, number, options) {
   }
   const normalized = normalizePullRequest(json, number);
   if (!normalized.ok) return { ok: false, number, message: normalized.message };
+  // The changed files decide whether the security gate applies: a list that can't be read refuses the pull request.
+  const listedFiles = await readChangedFiles(gh, repo, normalized.pr);
+  if (!listedFiles.ok) {
+    return { ok: false, number, message: `could not read the pull request's changed files: ${listedFiles.reason}` };
+  }
+  normalized.pr.files = listedFiles.files;
 
   const early = refuseBeforeCi(normalized.pr, options);
   if (early) return { ok: false, number, message: early };

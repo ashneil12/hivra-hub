@@ -155,7 +155,7 @@ test("the vendored files keep their source header and the MIT licence beside the
 });
 
 // Item 2: a different builder reviews. The author and the reviewer are recorded for the change.
-const { checkBuilders } = await import("./security-review/review.mjs");
+const { checkBuilders, globToRegExp, readAtHead } = await import("./security-review/review.mjs");
 
 test("the same builder that wrote a change cannot review it", () => {
   const same = checkBuilders({ author: "claude", reviewer: "claude" });
@@ -355,22 +355,23 @@ test("a confirmed high finding for this head is refused", async () => {
   }
 });
 
-test("a needs_validation finding adds one Inbox line and does not block", async () => {
+test("a needs_validation finding in a folder review still refuses: the app records the review", async () => {
   const root = await reviewedRoot([needsValidation(), { ...needsValidation(), fingerprint: "review-second-candidate" }]);
   try {
     const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
-    assert.equal(gate.status, "pass", gate.reason);
-    assert.equal(gate.inbox.length, 1, "one line, not one per candidate");
+    assert.equal(gate.status, "refuse");
+    assert.match(gate.reason, /only the app records a review/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 });
 
-test("a clean findings file passes", async () => {
+test("a clean findings file in the checkout does not clear the gate", async () => {
   const root = await reviewedRoot([rejected()]);
   try {
     const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
-    assert.deepEqual([gate.status, gate.inbox], ["pass", []]);
+    assert.equal(gate.status, "refuse");
+    assert.match(gate.reason, /only the app records a review/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -442,13 +443,12 @@ test("the ship helper refuses a security change with a confirmed high finding on
   }
 });
 
-test("the ship helper passes a security change with a clean review, and a needs_validation item does not block it", async () => {
+test("the ship helper does not pass a security change on a checkout review, even a clean one", async () => {
   const root = await reviewedRoot([needsValidation()]);
   try {
     const decision = evaluatePullRequest(prFor(), greenRuns, { repo: REPO, reviewsRoot: root });
-    assert.equal(decision.ok, true, decision.message);
-    // The Inbox item is recorded by the app's merge path (delivery/merge.rs), not printed here.
-    assert.equal("inbox" in decision, false);
+    assert.equal(decision.ok, false);
+    assert.match(decision.message, /only the app records a review/);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -634,3 +634,117 @@ test("the gate refuses a change with a file the review did not cover", async () 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// ---- review/220-r1 repros (red at 82876e1b) ----------------------------------------------------------------------------
+// The author of a change can clear the gate alone: one command, no hunt, no verifier, builders typed on the command line,
+// and a coverage ledger the command writes itself ("covered" for every file). The gate must not treat that as a review.
+test("repro 220-r1: the author's own empty run with self-declared builders does not clear the gate", async () => {
+  const root = scratch();
+  try {
+    const run = await runReview({
+      root,
+      head: HEAD,
+      author: "codex", // typed by whoever runs it; nothing checks it against who wrote the change
+      reviewer: "claude",
+      files: SENSITIVE,
+      candidates: [], // no hunt
+      verifier: () => {
+        throw new Error("never called");
+      },
+      read: fakeRead(),
+    });
+    assert.equal(run.ok, true, run.reason);
+    const gate = securityGate({ head: HEAD, files: SENSITIVE, reviewsRoot: root });
+    assert.equal(gate.status, "refuse", "a run with no hunter output and no recorded reviewer is not a security review");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// The WP-92 vault (#213) lives in src-tauri/src/secrets/ and src/features/secrets/; the list names vault/ folders that
+// do not exist. Approval auto-allow tables, the Keychain, the phone's port mapping and TLS, and the remote bootstrap
+// scripts are missing too, and so is the gate's own list and code.
+test("repro 220-r1: the vault, approval, keychain, phone and gate files are security paths", () => {
+  for (const file of [
+    "src-tauri/src/secrets/store.rs",
+    "src/features/secrets/ui/SecretsPage.tsx",
+    "src-tauri/src/hub_keychain.rs",
+    "src-tauri/src/watcher/safe_cmd.rs",
+    "src/features/autopilot/model/safeApproval.ts",
+    "src/features/sessions/model/childApproval.ts",
+    "src-tauri/src/mobile_router.rs",
+    "crates/mobile-link/src/tls.rs",
+    "src-tauri/src/remote_bootstrap.sh",
+    "src/features/leadTick/model/neverMerge.json",
+    "scripts/security-review/review.mjs",
+  ]) {
+    assert.notEqual(isSecuritySensitive({ files: [file], labels: [] }), "", `${file} merges with no review`);
+  }
+});
+
+// ---- WP-203 round 2 (the lead's hard review at 82876e1be) ----------------------------------------------------------------
+
+test("H2: every security path names a tracked file, or a planned path another work package lands", () => {
+  const tracked = spawnSync("git", ["ls-files"], { cwd: resolve(here, ".."), encoding: "utf8" }).stdout.split("\n");
+  const planned = new Set(neverMergeList.plannedPaths ?? []);
+  const matches = (pattern, file) => globToRegExp(pattern.toLowerCase()).test(file.normalize("NFKC").toLowerCase());
+  const dead = neverMergeList.securityPaths.filter(
+    (pattern) => !planned.has(pattern) && !tracked.some((file) => file && matches(pattern, file)),
+  );
+  assert.deepEqual(dead, [], "every pattern in neverMerge.json matches at least one tracked file");
+  for (const pattern of planned) assert.ok(neverMergeList.securityPaths.includes(pattern), `${pattern} is gated too`);
+});
+
+test("H3: the gate's own files and the merge path are security paths", () => {
+  for (const file of [
+    "src/features/leadTick/model/neverMerge.json",
+    "scripts/security-review/review.mjs",
+    "scripts/hivra-ship-green.mjs",
+    "src-tauri/src/delivery/merge.rs",
+    "src-tauri/src/delivery/github.rs",
+  ]) {
+    assert.notEqual(isSecuritySensitive({ files: [file], labels: [] }), "", `${file} is gated`);
+  }
+});
+
+test("LOW: the path match folds case and width on both sides", () => {
+  assert.notEqual(isSecuritySensitive({ files: ["SRC-TAURI/SRC/Mobile_Access.RS"], labels: [] }), "");
+  assert.notEqual(isSecuritySensitive({ files: ["src/features/sessions/model/CHILDAPPROVAL.ts"], labels: [] }), "");
+});
+
+test("M1: builders that differ only in case are the same builder", () => {
+  const same = checkBuilders({ author: "Claude", reviewer: "claude" });
+  assert.equal(same.ok, false);
+  assert.match(same.reason, /cannot review its own change/);
+});
+
+test("M3: a change lists its deletions and both names of a rename, and each file is read at the head commit", () => {
+  const repo = scratch();
+  const git = (...args) => spawnSync("git", args, { cwd: repo, encoding: "utf8" });
+  try {
+    git("init", "-q");
+    git("config", "user.email", "t@example.com");
+    git("config", "user.name", "t");
+    writeFileSync(join(repo, "a.ts"), "old a\n");
+    writeFileSync(join(repo, "b.ts"), "old b\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "base");
+    const base = git("rev-parse", "HEAD").stdout.trim();
+    git("rm", "-q", "a.ts");
+    git("mv", "b.ts", "c.ts");
+    writeFileSync(join(repo, "c.ts"), "committed c\n");
+    git("add", ".");
+    git("commit", "-q", "-m", "head");
+    // The worker's copy changes after the commit: the gate reads what is committed, not this.
+    writeFileSync(join(repo, "c.ts"), "uncommitted c\n");
+    const head = git("rev-parse", "HEAD").stdout.trim();
+    const listed = changedFiles({ base, head, cwd: repo }).sort();
+    assert.deepEqual(listed, ["a.ts", "b.ts", "c.ts"]);
+    const read = readAtHead({ head, cwd: repo });
+    assert.equal(read("c.ts"), "committed c\n");
+    assert.equal(read("a.ts"), "", "a deleted file reads as empty");
+  } finally {
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+

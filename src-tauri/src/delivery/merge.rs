@@ -27,10 +27,7 @@
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
-use std::path::PathBuf;
-
 use super::github::Github;
-use crate::decisions::{self, AskInput};
 use crate::delegations;
 use crate::pr_watch::eval::{gate, Check, CheckStatus, Mergeability};
 use crate::pr_watch::github::{split_repo, PrRead, PrState};
@@ -143,13 +140,11 @@ pub fn security_paths() -> Vec<String> {
     list.security_paths
 }
 
-/// The review folder's name under the clone's git common directory (the review command and the ship helper use it too).
-const SECURITY_REVIEW_DIR: &str = "hivra-security-review";
-/// The Inbox key of a needs_validation item for one head.
-const SECURITY_KEY: &str = "security-review/";
-
 /// A glob as the ship helper reads it: `**` any path, `*` within one folder name, `?` one character.
 pub fn glob_match(pattern: &str, path: &str) -> bool {
+    // Both sides fold the way the floor folds names (NFKC, lower case), so a case or width change can't slip past.
+    let pattern = super::protected::fold_path(pattern);
+    let path = super::protected::fold_path(path);
     fn go(p: &[u8], s: &[u8]) -> bool {
         match p.first() {
             None => s.is_empty(),
@@ -196,24 +191,8 @@ fn gate_files(gh: &dyn Github, repo: &str, read: &PrRead) -> super::protected::C
     super::protected::judge(listed, read.changed_files)
 }
 
-/// `<git common dir>/hivra-security-review` for the project's checkout, or None when it is not a git checkout.
-fn review_root(project: &str) -> Option<PathBuf> {
-    let out = super::child("git")
-        .args([
-            "-C",
-            project,
-            "rev-parse",
-            "--path-format=absolute",
-            "--git-common-dir",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    let common = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!common.is_empty()).then(|| PathBuf::from(common).join(SECURITY_REVIEW_DIR))
-}
+/// The Inbox key of a needs_validation question for one head.
+const SECURITY_KEY: &str = "security-review/";
 
 /// The security gate's answer for one merge.
 #[derive(Debug, PartialEq, Eq)]
@@ -221,18 +200,11 @@ enum SecurityGate {
     /// Not security-sensitive, or reviewed and clean.
     Pass,
     Refuse(String),
-    /// The changed files can't be read, so the gate can't tell. The merge is held for a question, never merged: the
-    /// gate runs before any approval, so a tap can't merge a list the gate could not read.
+    /// The gate can't decide yet (the files can't be read, or a question about the review is open). The merge is held
+    /// for an answer and never merged: the gate runs before any approval, so a tap can't merge past it.
     Hold(String),
 }
 
-fn read_json(path: &std::path::Path) -> Result<serde_json::Value, String> {
-    let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    serde_json::from_str(&text).map_err(|e| e.to_string())
-}
-
-/// The security gate (WP-203) for one head. Files are read from disk; the rules are the ship helper's, restated here
-/// for the merge path. A needs_validation record opens one Inbox decision and passes.
 /// The pull request and its head that the gate judges.
 struct GateTarget<'a> {
     repo: &'a str,
@@ -242,6 +214,10 @@ struct GateTarget<'a> {
     labels: &'a [String],
 }
 
+/// The security gate (WP-203) for one head. The review is the app's record (delivery/review.rs), written from a
+/// review delegation the app ran: a checkout folder is never read. A change that needs a review and has none recorded
+/// for its head is refused; a recorded review must cover every changed file, have no confirmed high or critical
+/// finding, and, when it has candidates that need validation, wait for the person's answer to them.
 fn security_gate(
     conn: &mut rusqlite::Connection,
     changed: super::protected::ChangedFiles,
@@ -271,118 +247,76 @@ fn security_gate(
     if !sensitive {
         return Ok(SecurityGate::Pass);
     }
-    let refuse =
-        |reason: String| -> Result<SecurityGate, String> { Ok(SecurityGate::Refuse(reason)) };
-    let Some(project) = project else {
-        return refuse(format!("{repo}#{number} is security-sensitive, and no project folder is known to find its review."));
+    let short = head.chars().take(12).collect::<String>();
+    let Some(record) = super::review::lookup(conn, repo, number, head)? else {
+        return Ok(SecurityGate::Refuse(format!(
+            "{repo}#{number} is security-sensitive, and no security review is recorded for head {short}. Start the review for this head first."
+        )));
     };
-    let Some(root) = review_root(project) else {
-        return refuse(format!("{repo}#{number} is security-sensitive, and {project} is not a git checkout to find its review in."));
-    };
-    let dir = root.join(head);
-    if !dir.join("findings.json").exists() {
-        return refuse(format!(
-            "{repo}#{number} is security-sensitive, and there is no security review for head {head}. Run the review on this head first."
-        ));
+    if record.status != "recorded" {
+        return Ok(SecurityGate::Refuse(format!(
+            "The security review for head {short} doesn't count: {}",
+            record.reason.as_deref().unwrap_or("it was refused")
+        )));
     }
-    let run = match read_json(&dir.join("run.json")) {
-        Ok(run) => run,
-        Err(_) => {
-            return refuse(format!(
-                "The security review for head {head} has no readable run record."
-            ))
-        }
-    };
-    if run.get("head").and_then(|h| h.as_str()) != Some(head) {
-        return refuse(format!(
-            "The security review on record is for another head, not {head}."
-        ));
-    }
-    let author = run.get("author").and_then(|a| a.as_str()).unwrap_or("");
-    let reviewer = run.get("reviewer").and_then(|r| r.as_str()).unwrap_or("");
-    if author.is_empty() || reviewer.is_empty() || author == reviewer {
-        return refuse(format!(
-            "The security review for head {head} needs a different builder: the author and the reviewer must both be recorded, and the same builder cannot review its own change."
-        ));
-    }
-    let ledger = match read_json(&dir.join("coverage-ledger.json")) {
-        Ok(ledger) => ledger,
-        Err(_) => {
-            return refuse(format!(
-                "The security review for head {head} has no coverage ledger."
-            ))
-        }
-    };
-    let covered: Vec<&str> = ledger
-        .as_array()
-        .map(|units| {
-            units
-                .iter()
-                .filter(|u| u.get("status").and_then(|s| s.as_str()) == Some("covered"))
-                .filter_map(|u| u.get("starting_paths")?.get(0)?.as_str())
-                .collect()
-        })
-        .unwrap_or_default();
     let uncovered: Vec<&str> = files
         .iter()
         .map(String::as_str)
-        .filter(|f| !covered.contains(f))
+        .filter(|file| !record.files.iter().any(|covered| covered == file))
         .collect();
     if !uncovered.is_empty() {
-        return refuse(format!(
-            "The security review for head {head} does not cover every changed file; not covered: {}.",
+        return Ok(SecurityGate::Refuse(format!(
+            "The security review for head {short} does not cover every changed file; not covered: {}.",
             uncovered.join(", ")
-        ));
+        )));
     }
-    let findings = read_json(&dir.join("findings.json"))?;
-    let records = findings.as_array().cloned().unwrap_or_default();
-    let blocking = records.iter().find(|r| {
-        r.get("verdict").and_then(|v| v.as_str()) == Some("confirmed")
-            && matches!(
-                r.get("severity")
-                    .and_then(|s| s.get("overall_severity"))
-                    .and_then(|v| v.as_str()),
-                Some("high") | Some("critical")
-            )
-    });
-    if let Some(record) = blocking {
-        let severity = record["severity"]["overall_severity"]
-            .as_str()
-            .unwrap_or("high");
-        let title = record["title"].as_str().unwrap_or("untitled");
-        return refuse(format!(
-            "A confirmed {severity} finding is open on head {head}: {title}."
-        ));
+    if let Some(blocking) = &record.blocking {
+        return Ok(SecurityGate::Refuse(format!(
+            "A confirmed {blocking} finding is open on head {short}."
+        )));
     }
-    let pending: Vec<&str> = records
-        .iter()
-        .filter(|r| r.get("verdict").and_then(|v| v.as_str()) == Some("needs_validation"))
-        .filter_map(|r| r.get("title").and_then(|t| t.as_str()))
-        .collect();
-    if !pending.is_empty() {
-        let question = format!(
-            "Security review of {repo}#{number} (head {}): {} candidate{} need validation: {}. Nothing is blocked; check them before this ships.",
-            head.chars().take(12).collect::<String>(),
-            pending.len(),
-            if pending.len() == 1 { "" } else { "s" },
-            pending.join("; "),
-        );
-        decisions::ask(
-            conn,
-            AskInput {
-                asked_by: "gate".into(),
-                asked_by_mono: None,
-                project: Some(project.to_string()),
-                key: format!("{SECURITY_KEY}{head}"),
-                question,
-                options: vec!["Looked at it".into(), "Hold the merge".into()],
-                recommended: None,
-                task_ids: Vec::new(),
-            },
-            now,
-        )?;
+    if record.pending.is_empty() {
+        return Ok(SecurityGate::Pass);
     }
-    Ok(SecurityGate::Pass)
+    // Candidates that need validation: one Inbox question for the head. Its answer decides; nothing merges until then.
+    let Some(project) = project else {
+        return Ok(SecurityGate::Refuse(format!(
+            "{repo}#{number} has candidates that need validation on head {short}, and no project is known to ask about them."
+        )));
+    };
+    let key = format!("{SECURITY_KEY}{head}");
+    let question = format!(
+        "Security review of {repo}#{number} (head {short}): {} candidate{} need validation: {}. Nothing is blocked until you answer; \"Hold the merge\" keeps it from merging.",
+        record.pending.len(),
+        if record.pending.len() == 1 { "" } else { "s" },
+        record.pending.join("; "),
+    );
+    match crate::decisions::get(conn, project, &key)? {
+        None => {
+            crate::decisions::ask(
+                conn,
+                crate::decisions::AskInput {
+                    asked_by: "gate".into(),
+                    asked_by_mono: None,
+                    project: Some(project.to_string()),
+                    key,
+                    question: question.clone(),
+                    options: vec!["Looked at it".into(), "Hold the merge".into()],
+                    recommended: None,
+                    task_ids: Vec::new(),
+                },
+                now,
+            )?;
+            Ok(SecurityGate::Hold(question))
+        }
+        Some(decision) => match decision.answer.as_deref() {
+            Some("Looked at it") if decision.state == crate::decisions::ANSWERED => Ok(SecurityGate::Pass),
+            Some(_) if decision.state == crate::decisions::ANSWERED => Ok(SecurityGate::Refuse(format!(
+                "The person held the merge of head {short} over its candidates that need validation."
+            ))),
+            _ => Ok(SecurityGate::Hold(question)),
+        },
+    }
 }
 
 /// The first park or never-merge label on the pull request, as the tick names it (trimmed, lower case, spaces and

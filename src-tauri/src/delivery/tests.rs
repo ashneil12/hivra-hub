@@ -1672,38 +1672,71 @@ fn the_janitor_never_offers_to_remove_a_landed_but_unmerged_copy() {
 
 const SECURITY_FILE: &str = "src-tauri/src/mobile_access.rs";
 
-fn review_folder(project: &Path, head: &str) -> PathBuf {
-    project
-        .join(".git")
-        .join("hivra-security-review")
-        .join(head)
+/// Records a hand-written result for `head`, as the review delegation's settle would receive it.
+fn record_raw(s: &SessionStore, head: &str, author: &str, reviewer: &str, result: &str) {
+    let conn = s.lock_conn().unwrap();
+    conn.execute(
+        "INSERT INTO work_deliveries (id, project, mode, state, repo, number, fix_rounds, created_at, updated_at, author) \
+         VALUES (?1, '/no/such/review', 'pr', 'open', 'acme/web', 7, 0, 1, 1, ?2)",
+        rusqlite::params![format!("dlv-{head}"), author],
+    )
+    .unwrap();
+    crate::delivery::review::record_settled(
+        &conn,
+        &format!("del-{head}"),
+        &crate::delivery::review::request_id("acme/web", 7, head, reviewer),
+        Some(result),
+        10,
+    )
+    .unwrap();
 }
 
-/// Writes a review for `head` the way the review command does (the records themselves are checked by the validators;
-/// here only what the gate reads is written).
-fn write_review(
-    project: &Path,
+/// Records a review for `head` the way the app does: a delivery row names the author, and the review delegation's
+/// settle writes the record from its result. A finding without a severity or a verifier gets a low severity and a
+/// fresh verifier, so each test states only what it is about.
+fn record_review(
+    s: &SessionStore,
     head: &str,
     findings: &str,
     author: &str,
     reviewer: &str,
     covered: &[&str],
 ) {
-    let dir = review_folder(project, head);
-    std::fs::create_dir_all(&dir).unwrap();
-    std::fs::write(dir.join("findings.json"), findings).unwrap();
-    std::fs::write(
-        dir.join("run.json"),
-        format!("{{\"head\":\"{head}\",\"author\":\"{author}\",\"reviewer\":\"{reviewer}\"}}"),
+    let conn = s.lock_conn().unwrap();
+    conn.execute(
+        "INSERT INTO work_deliveries (id, project, mode, state, repo, number, fix_rounds, created_at, updated_at, author) \
+         VALUES (?1, '/no/such/review', 'pr', 'open', 'acme/web', 7, 0, 1, 1, ?2)",
+        rusqlite::params![format!("dlv-{head}"), author],
     )
     .unwrap();
-    let units: Vec<String> = covered
+    let mut list: Vec<serde_json::Value> = serde_json::from_str(findings).unwrap();
+    let verifier = ["human", "grok", "devin"]
+        .into_iter()
+        .find(|name| *name != author && *name != reviewer)
+        .unwrap();
+    for finding in &mut list {
+        if finding.get("severity").is_none() {
+            finding["severity"] = serde_json::json!({ "overall_severity": "low" });
+        }
+        if finding.get("verified_by").is_none() {
+            finding["verified_by"] = serde_json::json!(verifier);
+        }
+    }
+    let ledger: Vec<serde_json::Value> = covered
         .iter()
-        .map(|f| format!("{{\"status\":\"covered\",\"starting_paths\":[\"{f}\"]}}"))
+        .map(|f| serde_json::json!({ "status": "covered", "starting_paths": [f] }))
         .collect();
-    std::fs::write(
-        dir.join("coverage-ledger.json"),
-        format!("[{}]", units.join(",")),
+    let result = serde_json::json!({
+        "hunt": { "builder": reviewer, "candidates": list.len(), "files": covered },
+        "findings": list,
+        "ledger": ledger,
+    });
+    crate::delivery::review::record_settled(
+        &conn,
+        &format!("del-{head}"),
+        &crate::delivery::review::request_id("acme/web", 7, head, reviewer),
+        Some(&result.to_string()),
+        10,
     )
     .unwrap();
 }
@@ -1770,11 +1803,12 @@ const H0_SEC: &str = "b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0";
 
 #[test]
 fn a_security_pr_without_a_review_for_its_head_is_refused() {
+    let s = store();
     let f = fixture("sec-none");
     let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
-    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
-        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains(&format!("no security review for head {H1_SEC}"))),
+        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("no security review is recorded")),
         "{outcome:?}"
     );
     assert!(gh.ran("pr", "merge").is_empty(), "nothing merges");
@@ -1782,17 +1816,11 @@ fn a_security_pr_without_a_review_for_its_head_is_refused() {
 
 #[test]
 fn a_review_for_another_head_does_not_pass_a_new_head() {
+    let s = store();
     let f = fixture("sec-stale");
-    write_review(
-        &f.project,
-        H0_SEC,
-        "[]",
-        "claude",
-        "codex",
-        &[SECURITY_FILE],
-    );
+    record_review(&s, H0_SEC, "[]", "claude", "codex", &[SECURITY_FILE]);
     let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
-    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Refused { .. }),
         "{outcome:?}"
@@ -1802,18 +1830,12 @@ fn a_review_for_another_head_does_not_pass_a_new_head() {
 
 #[test]
 fn a_confirmed_high_on_the_head_refuses_the_merge() {
+    let s = store();
     let f = fixture("sec-high");
     let high = r#"[{"verdict":"confirmed","title":"Stale head merges","severity":{"overall_severity":"high"}}]"#;
-    write_review(
-        &f.project,
-        H1_SEC,
-        high,
-        "claude",
-        "codex",
-        &[SECURITY_FILE],
-    );
+    record_review(&s, H1_SEC, high, "claude", "codex", &[SECURITY_FILE]);
     let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
-    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("confirmed high")),
         "{outcome:?}"
@@ -1823,33 +1845,12 @@ fn a_confirmed_high_on_the_head_refuses_the_merge() {
 
 #[test]
 fn a_clean_review_for_the_exact_head_lets_the_security_pr_merge() {
+    let s = store();
     let f = fixture("sec-clean");
-    write_review(
-        &f.project,
+    record_review(
+        &s,
         H1_SEC,
         r#"[{"verdict":"rejected","title":"Cap exists"}]"#,
-        "claude",
-        "codex",
-        &[SECURITY_FILE],
-    );
-    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
-    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
-    assert!(
-        matches!(&outcome, MergeOutcome::Merged { .. }),
-        "{outcome:?}"
-    );
-    assert_eq!(gh.ran("pr", "merge").len(), 1);
-}
-
-#[test]
-fn a_needs_validation_item_becomes_one_open_inbox_decision_and_does_not_block() {
-    let f = fixture("sec-inbox");
-    let s = store();
-    let pending = r#"[{"verdict":"needs_validation","title":"Unbounded read"},{"verdict":"needs_validation","title":"Second"}]"#;
-    write_review(
-        &f.project,
-        H1_SEC,
-        pending,
         "claude",
         "codex",
         &[SECURITY_FILE],
@@ -1860,33 +1861,73 @@ fn a_needs_validation_item_becomes_one_open_inbox_decision_and_does_not_block() 
         matches!(&outcome, MergeOutcome::Merged { .. }),
         "{outcome:?}"
     );
-    let conn = s.lock_conn().unwrap();
-    let project = f.project.display().to_string();
-    let item = crate::decisions::get(&conn, &project, &format!("security-review/{H1_SEC}"))
-        .unwrap()
-        .expect("one Inbox item");
-    assert_eq!(item.state, crate::decisions::OPEN);
-    assert!(
-        item.question.contains("2 candidates need validation"),
-        "{}",
-        item.question
-    );
-    assert_eq!(item.options.len(), 2);
+    assert_eq!(gh.ran("pr", "merge").len(), 1);
+}
+
+#[test]
+fn a_needs_validation_question_holds_the_merge_until_the_person_answers() {
+    // M4: the candidates that need validation hold the merge until the person answers the Inbox question. Nothing merges
+    // in the call that asks, and "Hold the merge" keeps it from ever merging on this head.
+    let pending = r#"[{"verdict":"needs_validation","title":"Unbounded read"},{"verdict":"needs_validation","title":"Second"}]"#;
+    let key = format!("security-review/{H1_SEC}");
+    for (tag, answer, expect_merge) in [
+        ("sec-held", "Hold the merge", false),
+        ("sec-looked", "Looked at it", true),
+    ] {
+        let f = fixture(tag);
+        let project = f.project.display().to_string();
+        let s = store();
+        record_review(&s, H1_SEC, pending, "claude", "codex", &[SECURITY_FILE]);
+        let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+        let first = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
+        assert!(
+            matches!(&first, MergeOutcome::NeedsYou { question, .. } if question.contains("2 candidates need validation")),
+            "{tag}: {first:?}"
+        );
+        assert!(
+            gh.ran("pr", "merge").is_empty(),
+            "{tag}: the first call holds, it does not merge"
+        );
+        {
+            let conn = s.lock_conn().unwrap();
+            let item = crate::decisions::get(&conn, &project, &key)
+                .unwrap()
+                .expect("one Inbox question");
+            assert_eq!(item.state, crate::decisions::OPEN);
+            assert_eq!(item.options.len(), 2);
+        }
+        {
+            let mut conn = s.lock_conn().unwrap();
+            crate::decisions::answer(&mut conn, &project, &key, answer, Some("person".into()), 11)
+                .unwrap();
+        }
+        let second = merge::merge(&s, &gh, security_request(&f.project), 12).unwrap();
+        if expect_merge {
+            assert!(
+                matches!(second, MergeOutcome::Merged { .. }),
+                "{tag}: {second:?}"
+            );
+            assert_eq!(gh.ran("pr", "merge").len(), 1);
+        } else {
+            assert!(
+                matches!(&second, MergeOutcome::Refused { reason } if reason.contains("held the merge")),
+                "{tag}: {second:?}"
+            );
+            assert!(
+                gh.ran("pr", "merge").is_empty(),
+                "{tag}: a held head never merges"
+            );
+        }
+    }
 }
 
 #[test]
 fn a_review_by_the_same_builder_is_refused_at_the_merge() {
+    let s = store();
     let f = fixture("sec-same");
-    write_review(
-        &f.project,
-        H1_SEC,
-        "[]",
-        "claude",
-        "claude",
-        &[SECURITY_FILE],
-    );
+    record_review(&s, H1_SEC, "[]", "claude", "claude", &[SECURITY_FILE]);
     let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
-    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("same builder")),
         "{outcome:?}"
@@ -1895,13 +1936,14 @@ fn a_review_by_the_same_builder_is_refused_at_the_merge() {
 
 #[test]
 fn a_security_path_past_the_file_list_cap_is_held_not_missed() {
+    let s = store();
     let f = fixture("sec-cap");
     // Three hundred other files, then the security path as the 301st. GitHub's list stops at 300, so the gate
     // cannot see the path: it holds the merge (never merges) rather than pass a list it cannot trust.
     let mut body: String = (0..300).map(|n| format!("docs/note{n}.md\n")).collect();
     body.push_str(&format!("{SECURITY_FILE}\n"));
     let gh = files_of(Ok(&body));
-    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::NeedsYou { question, .. } if question.contains("couldn't be read") && question.contains("stops at 300")),
         "{outcome:?}"
@@ -1911,20 +1953,14 @@ fn a_security_path_past_the_file_list_cap_is_held_not_missed() {
 
 #[test]
 fn a_security_pr_whose_review_leaves_a_changed_file_uncovered_is_refused() {
+    let s = store();
     let f = fixture("sec-uncovered");
-    write_review(
-        &f.project,
-        H1_SEC,
-        "[]",
-        "claude",
-        "codex",
-        &[SECURITY_FILE],
-    );
+    record_review(&s, H1_SEC, "[]", "claude", "codex", &[SECURITY_FILE]);
     let gh = security_gh(
         H1_SEC,
         &[SECURITY_FILE, "src/features/mobile/ui/PairPhoneDialog.tsx"],
     );
-    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("not covered")),
         "{outcome:?}"
@@ -2646,9 +2682,10 @@ fn the_file_list_is_read_for_the_base_and_head_commits_it_judges() {
 
 #[test]
 fn a_change_outside_the_security_paths_merges_without_a_review() {
+    let s = store();
     let f = fixture("sec-skip");
     let gh = security_gh(H1_SEC, &["docs/hivra/PLAN.md"]);
-    let outcome = merge::merge(&store(), &gh, security_request(&f.project), 10).unwrap();
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
     assert!(
         matches!(&outcome, MergeOutcome::Merged { .. }),
         "{outcome:?}"
@@ -2745,9 +2782,14 @@ fn the_security_path_glob_matches_like_the_ship_helper() {
         "src/features/sessions/model/approval*.ts",
         "src/features/sessions/model/approvalWait.ts"
     ));
-    assert!(!merge::glob_match(
-        "src/features/sessions/model/approval*.ts",
+    // H2: the approval files match at any name (childApproval.ts is an approval too), and case does not matter.
+    assert!(merge::glob_match(
+        "src/features/sessions/model/*approval*.ts",
         "src/features/sessions/model/childApproval.ts"
+    ));
+    assert!(merge::glob_match(
+        "src/features/sessions/model/*approval*.ts",
+        "SRC/features/sessions/model/CHILDAPPROVAL.TS"
     ));
     assert!(merge::security_paths()
         .iter()
@@ -2932,4 +2974,62 @@ fn a_pattern_that_matches_nothing_is_refused_on_write_and_nothing_is_saved() {
     let kept = settings::get(&conn, project).unwrap();
     assert!(kept.protected_extra.is_empty());
     assert_eq!(kept.updated_at, None);
+}
+
+// ---- review/220-r1 repros (red at 82876e1b) ---------------------------------------------------------------------------
+
+/// WP-92's vault (#213) is src-tauri/src/secrets/**, not src-tauri/src/vault/**: a later change to it merges unreviewed.
+#[test]
+fn repro_220_a_change_to_the_wp92_vault_needs_a_security_review() {
+    let s = store();
+    let f = fixture("r220-vault");
+    let gh = security_gh(H1_SEC, &["src-tauri/src/secrets/store.rs"]);
+    let outcome = merge::merge(&s, &gh, security_request(&f.project), 10).unwrap();
+    assert!(
+        matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("no security review")),
+        "{outcome:?}"
+    );
+    assert!(
+        gh.ran("pr", "merge").is_empty(),
+        "the vault merged with no review"
+    );
+}
+
+/// The gate's own list is neither a security path nor on the floor: the lead tick's switch merges a PR that empties
+/// `securityPaths` with no person and no review, and the next ship has no gate.
+#[test]
+fn repro_220_a_change_to_the_gates_own_list_is_not_merged_by_the_switch() {
+    let (s, _project) = floor_pr("r220-list", 7, None);
+    let gh = files_of(Ok("src/features/leadTick/model/neverMerge.json\n"));
+    let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+    assert!(
+        !matches!(outcome, MergeOutcome::Merged { .. }),
+        "the switch merged a change to the security path list: {outcome:?}"
+    );
+}
+
+/// The merge path does not run the validators: a findings file the review command could never write (an object, not
+/// the schema's array) carrying a confirmed critical is read as "no findings", and builders that differ only in case,
+/// or are not known builders, pass. All three are files anyone with the checkout can write by hand.
+#[test]
+fn repro_220_a_hand_written_review_the_validators_would_refuse_does_not_pass() {
+    // A findings object with no hunter, a hunter whose builder differs from the reviewer only in case, and a reviewer
+    // the app does not know: none of them is a review the app records, and the gate refuses each.
+    let critical = r#"{"findings":[{"verdict":"confirmed","title":"Token leaks","severity":{"overall_severity":"critical"}}]}"#;
+    let case_only = r#"{"hunt":{"builder":"Claude","candidates":0,"files":["src-tauri/src/mobile_access.rs"]},"findings":[],"ledger":[{"status":"covered","starting_paths":["src-tauri/src/mobile_access.rs"]}]}"#;
+    for (tag, result, author, reviewer) in [
+        ("r220-object", critical, "codex", "claude"),
+        ("r220-case", case_only, "Claude", "claude"),
+        ("r220-unknown", case_only, "codex", "y"),
+    ] {
+        let s = store();
+        record_raw(&s, H1_SEC, author, reviewer, result);
+        let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+        let outcome = merge::merge(&s, &gh, security_request(&floor_project(tag)), 10).unwrap();
+        assert!(
+            matches!(&outcome, MergeOutcome::Refused { .. }),
+            "{tag}: {outcome:?}"
+        );
+        assert!(gh.ran("pr", "merge").is_empty(), "{tag}: nothing merges");
+    }
 }
