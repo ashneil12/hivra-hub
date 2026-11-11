@@ -13,7 +13,7 @@ import {
   CurrentProjectIcon,
   useProjectLabel,
 } from "../../features/projects/ui/CurrentProjectIcon";
-import { OrchestrationSidebarAgents } from "../../features/orchestration/ui/OrchestrationSidebarAgents";
+import { SidebarAgents } from "../../features/agents-board/ui/SidebarAgents";
 import { CrewPanel } from "../../features/crew/ui/CrewPanel";
 import { clearCrewFocus } from "../../features/crew/model/focus";
 import { useDelegationRows } from "../../features/monos/model/delegationStore";
@@ -6060,7 +6060,8 @@ export const SessionCard = memo(function SessionCard({
             )}
           </div>
           {orchestrationExpanded && !dense ? (
-            <OrchestrationSidebarAgents
+            // WP-219: the orchestration tree opens the Agents board in the Hub bundle.
+            <SidebarAgents
               leadId={session.id}
               summary={orchestration!}
             />
@@ -6259,7 +6260,8 @@ export const SessionCard = memo(function SessionCard({
         >
           {/* One item, padding and all, for the reveal to grow. */}
           <div>
-            <OrchestrationSidebarAgents
+            {/* WP-219: the orchestration tree opens the Agents board in the Hub bundle. */}
+            <SidebarAgents
               leadId={session.id}
               summary={orchestration}
               variant="tree"

@@ -9,7 +9,7 @@
 //! commit keeps counts only.
 
 mod git;
-mod hooks;
+pub(crate) mod hooks;
 mod logic;
 
 #[cfg(test)]

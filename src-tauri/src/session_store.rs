@@ -1731,6 +1731,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::notes::ensure_notes_table(conn)?;
     crate::reminders::ensure_table(conn)?;
     crate::automations::ensure_tables(conn)?;
+    // WP-128: one-time schedules. Not a numbered migration: an older build never reads the table.
+    crate::one_time_schedule::ensure_tables(conn)?;
     ensure_orchestration_history(conn)?;
     crate::mono_transcript::ensure_tables(conn)?;
     crate::delegations::ensure_tables(conn)?;

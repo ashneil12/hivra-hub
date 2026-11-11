@@ -492,9 +492,31 @@ test("the real script fails when one half fails, and the other half still finish
   }
 });
 
-test("macOS stays one check job and runs the two halves together", () => {
+test("macOS runs only the Rust half by default, both halves when every OS runs; host and ship run on Linux on a PR", () => {
   const check = jobBlock("check");
-  assert.equal((check.match(/macos-latest/g) || []).length, 1);
+  // The matrix is chosen by the repository variable HUB_CROSS_PLATFORM_CI. By default the web half runs on two Linux
+  // runners and macOS runs the Rust half alone (Linux would need Ubuntu's package mirror); when "true", every OS runs
+  // and macOS runs both halves together.
+  const include = /include: \$\{\{ fromJSON\(vars\.HUB_CROSS_PLATFORM_CI == 'true' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}/.exec(check);
+  assert.ok(include, "the check matrix is not chosen by HUB_CROSS_PLATFORM_CI");
+  const full = JSON.parse(include[1]);
+  const byDefault = JSON.parse(include[2]);
+  assert.deepEqual(byDefault, [
+    { os: "ubuntu-latest", part: "web", shard: "1/2" },
+    { os: "ubuntu-latest", part: "web", shard: "2/2" },
+    { os: "macos-latest", part: "rust" },
+  ]);
+  assert.ok(!byDefault.some((entry) => entry.os === "windows-latest"), "Windows is off by default");
+  assert.ok(!byDefault.some((entry) => entry.os === "ubuntu-latest" && entry.part !== "web"), "Linux runs only the web half by default");
+  assert.equal(full.filter((entry) => entry.os === "macos-latest").length, 1);
+  assert.deepEqual(full.find((entry) => entry.os === "macos-latest"), { os: "macos-latest", part: "all" });
+  for (const job of ["host", "ship"]) {
+    assert.match(
+      jobBlock(job),
+      /os: \$\{\{ fromJSON\(vars\.HUB_CROSS_PLATFORM_CI == 'true' && '\[[^\]]*\]' \|\| github\.event_name == 'workflow_dispatch' && '\["macos-latest"\]' \|\| '\["ubuntu-latest"\]'\) \}\}/,
+      `${job}: Linux on a PR, macOS in the pre-ship run`,
+    );
+  }
   assert.match(check, /node scripts\/ci-check-parallel\.mjs/);
   assert.match(check, /if: matrix\.part == 'all'/);
   assert.match(check, /run: npm test[\s\S]*?\n {8}if: matrix\.part == 'web'/);

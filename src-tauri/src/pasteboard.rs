@@ -523,10 +523,18 @@ mod tests {
             &NSString::from_str("file://localhost/tmp/finder%20copy.txt"),
             unsafe { NSPasteboardTypeFileURL },
         ));
-        assert_eq!(
-            file_paths_from(&pb),
-            vec!["/tmp/finder copy.txt".to_string()]
-        );
+        // The pasteboard is a separate system service. On a busy Mac a read right after the write can come back
+        // empty (seen once in a full check at load 18), so the read is retried briefly before the check. The
+        // expected value is unchanged.
+        let mut paths = file_paths_from(&pb);
+        for _ in 0..20 {
+            if !paths.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            paths = file_paths_from(&pb);
+        }
+        assert_eq!(paths, vec!["/tmp/finder copy.txt".to_string()]);
     }
 
     #[test]

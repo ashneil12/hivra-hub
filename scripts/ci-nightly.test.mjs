@@ -76,8 +76,8 @@ function jobNeeds(block) {
 /** GitHub's expression syntax, for the few operators these conditions use, run as JavaScript. */
 function evaluate(expression, context) {
   const js = expression.replace(/needs\.([A-Za-z0-9_-]+)\./g, 'needs["$1"].');
-  const run = new Function("github", "needs", "fromJSON", "success", "always", `return (${js});`);
-  return run(context.github, context.needs, JSON.parse, context.success, context.always);
+  const run = new Function("github", "needs", "vars", "fromJSON", "success", "always", `return (${js});`);
+  return run(context.github, context.needs, context.vars ?? {}, JSON.parse, context.success, context.always);
 }
 
 const IMAGES_ALL = ["almalinux:10", "fedora:43"];
@@ -96,8 +96,11 @@ const RUNS = {
   "nightly run": { eventName: "schedule", draft: null, full: "true", images: IMAGES_ALL },
 };
 
-/** Which jobs of ci.yml start for a run, and the images the rpm job would build. */
-function simulate(run) {
+/**
+ * Which jobs of ci.yml start for a run, and the images the rpm job would build. Windows and Linux CI are off unless
+ * the repository variable HUB_CROSS_PLATFORM_CI is "true"; the runs above describe the full set, so they turn it on.
+ */
+function simulate(run, vars = { HUB_CROSS_PLATFORM_CI: "true" }) {
   const results = {};
   const outputs = {};
   let images = null;
@@ -113,7 +116,7 @@ function simulate(run) {
     };
     const condition = jobIf(block);
     const allPassed = needsNames.every((dep) => results[dep] === "success");
-    const context = { github, needs, success: () => allPassed, always: () => true };
+    const context = { github, needs, vars, success: () => allPassed, always: () => true };
     const usesStatus = condition !== null && /\b(always|success)\(\)/.test(condition);
     const wanted = condition === null ? true : Boolean(evaluate(condition, context));
     const starts = usesStatus ? wanted : allPassed && wanted;
@@ -182,9 +185,22 @@ test("a nightly run builds both images and then the clean install", () => {
 test("a push to main and a ready pull request that changes packaging start every job and both images", () => {
   for (const name of ["push to main", "ready pull request that changes packaging"]) {
     const { results, images } = simulate(RUNS[name]);
-    for (const job of jobNames(ci)) assert.equal(results[job], "success", `${name}: ${job}`);
+    for (const job of jobNames(ci)) {
+      // The browser tests run only in the pre-ship run (see the next test).
+      const expected = job === "browser" ? "skipped" : "success";
+      assert.equal(results[job], expected, `${name}: ${job}`);
+    }
     assert.deepEqual(images, IMAGES_ALL, name);
   }
+});
+
+test("the browser tests run only in the pre-ship run, never on a pull request, a push or a schedule", () => {
+  const ran = (run) => simulate(run).results.browser;
+  assert.equal(ran({ eventName: "workflow_dispatch", draft: null, full: "true", images: IMAGES_ALL }), "success");
+  for (const name of ["push to main", "ready pull request that changes packaging", "ready pull request that does not", "draft pull request", "nightly run"]) {
+    assert.equal(ran(RUNS[name]), "skipped", name);
+  }
+  assert.match(onBlock(ci), /\n {2}workflow_dispatch:\n/);
 });
 
 test("a ready pull request that does not touch packaging still builds the production image, and nothing more", () => {
@@ -192,7 +208,10 @@ test("a ready pull request that does not touch packaging still builds the produc
   assert.equal(results.rpm, "success", "the production build runs on every pull request");
   assert.deepEqual(images, IMAGES_ONE);
   assert.equal(results["rpm-clean-install"], "skipped");
-  for (const job of [...OTHER_JOBS, "rpm-changes", "ci-ok"]) assert.equal(results[job], "success", job);
+  for (const job of [...OTHER_JOBS.filter((job) => job !== "browser"), "rpm-changes", "ci-ok"]) {
+    assert.equal(results[job], "success", job);
+  }
+  assert.equal(results.browser, "skipped", "the browser tests never run on a pull request");
 });
 
 test("a draft pull request starts nothing but ci-ok", () => {
@@ -227,4 +246,13 @@ test("the simulation rejects a job condition that lets a schedule through", () =
   };
   assert.equal(Boolean(evaluate(condition, context)), false);
   assert.equal(Boolean(evaluate(without, context)), true);
+});
+
+test("with cross-platform CI off (the default), no Linux packaging job starts on any run", () => {
+  for (const [label, run] of Object.entries(RUNS)) {
+    const { results } = simulate(run, {});
+    for (const job of ["appimage", "rpm-changes", "rpm", "rpm-clean-install"]) {
+      assert.equal(results[job], "skipped", `${label}: ${job} started with HUB_CROSS_PLATFORM_CI unset`);
+    }
+  }
 });
