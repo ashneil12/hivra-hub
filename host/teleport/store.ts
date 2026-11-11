@@ -202,7 +202,7 @@ export class HostTeleportStore {
     }
   }
 
-  async canResume(provider: Provider, model: string, effort: string): Promise<CanResume> {
+  async canResume(provider: Provider, model: string, _effort: string): Promise<CanResume> {
     if (!this.options.providers.includes(provider)) {
       return { ok: false, reason: `this host does not run ${provider}` };
     }
