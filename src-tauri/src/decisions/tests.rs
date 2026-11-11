@@ -648,7 +648,7 @@ fn a_standing_line_escapes_markup_and_stays_short() {
         1,
     );
     let block = standing_block(&conn, "hivra").unwrap();
-    assert!(block.contains("asked by a chat:"));
+    assert!(block.contains("asked by fm:"));
     assert!(block.contains("Ash's answer:"));
     assert!(!block.contains("<script>"), "{block}");
     assert!(block.contains("&lt;script&gt;"), "{block}");
@@ -1375,7 +1375,7 @@ fn standing_answer_flow_asks_answers_reuses_retires_and_turns_off() {
     assert!(
         block.contains("S-")
             && block.contains(
-                "asked by a chat: Should the release go to staging or stay on the branch? Ash's answer: Staging first"
+                "asked by fm: Should the release go to staging or stay on the branch? Ash's answer: Staging first"
             ),
         "{block}"
     );

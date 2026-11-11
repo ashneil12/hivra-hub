@@ -1649,8 +1649,9 @@ fn fence_safe(value: &str) -> String {
 
 fn standing_line(row: &Decision) -> String {
     let line = format!(
-        "{}: asked by a chat: {} Ash's answer: {}",
+        "{}: asked by {}: {} Ash's answer: {}",
         row.standing_id,
+        fence_safe(&row.asked_by),
         fence_safe(&row.question),
         fence_safe(row.answer.as_deref().unwrap_or(""))
     );
