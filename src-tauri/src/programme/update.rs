@@ -2,13 +2,18 @@
 //!
 //! The push is a normal push: no `--force` and no `--no-verify`. `refs/heads/main`
 //! is read at the start and must be the same sha at the end. A fetch that fails,
-//! a timeout, or a push that is not a fast-forward leaves the package branch
-//! where it was. Those are not final failures.
+//! a merge or rebase that times out, or a push that is refused leaves the package
+//! branch where it was, after a merge or rebase still in progress is aborted.
+//! A push that times out once the remote has the commit is left in place. None of
+//! these is a final failure.
 
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
+
+#[cfg(test)]
+use std::cell::Cell;
 
 use rusqlite::{Connection, OptionalExtension};
 use serde::Serialize;
@@ -101,6 +106,8 @@ pub(crate) fn branch_worktree(folder: &Path, branch: &str) -> Result<Option<Path
             current = None;
         }
     }
+    // A removed worktree can stay in the list until it is pruned. It is not a place to update.
+    found.retain(|path| path.is_dir());
     match found.len() {
         0 => Ok(None),
         1 => Ok(found.pop()),
@@ -308,10 +315,17 @@ fn try_update(plan: &Plan) -> Result<Outcome, Outcome> {
         guard_main(&worktree, base, &main_before)?;
         return Ok(Outcome::AlreadyCurrent);
     }
-    if let Err(outcome) = push(&worktree, remote, branch, base) {
-        undo_ours(&worktree, branch, &old, &new_head)?;
-        guard_main(&worktree, base, &main_before)?;
-        return Err(outcome);
+    match push(&worktree, remote, branch, base) {
+        Ok(()) => {}
+        Err(PushFault::Rejected(outcome)) => {
+            undo_ours(&worktree, branch, &old, &new_head)?;
+            guard_main(&worktree, base, &main_before)?;
+            return Err(outcome);
+        }
+        Err(PushFault::Uncertain(outcome)) => {
+            guard_main(&worktree, base, &main_before)?;
+            return Err(outcome);
+        }
     }
     guard_main(&worktree, base, &main_before)?;
     if head(&worktree)? != new_head {
@@ -386,7 +400,14 @@ fn merge(
 ) -> Result<(), Outcome> {
     let args = merge_args(remote, base);
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    let ran = git(worktree, &borrowed, LOCAL_TIMEOUT)?;
+    let ran = match git(worktree, &borrowed, LOCAL_TIMEOUT) {
+        Ok(ran) => ran,
+        Err(outcome) => {
+            // A timeout kills git after it may have started the merge. Abort before any report.
+            cancel_merge(worktree, old, branch)?;
+            return Err(outcome);
+        }
+    };
     if ran.code == 0 {
         return Ok(());
     }
@@ -416,7 +437,14 @@ fn rebase(
 ) -> Result<(), Outcome> {
     let args = rebase_args(remote, base);
     let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    let ran = git(worktree, &borrowed, LOCAL_TIMEOUT)?;
+    let ran = match git(worktree, &borrowed, LOCAL_TIMEOUT) {
+        Ok(ran) => ran,
+        Err(outcome) => {
+            // A timeout kills git after it may have started the rebase. Abort before any report.
+            cancel_rebase(worktree, old, branch)?;
+            return Err(outcome);
+        }
+    };
     if ran.code == 0 {
         return Ok(());
     }
@@ -437,35 +465,98 @@ fn rebase(
     ))
 }
 
-fn push(worktree: &Path, remote: &str, branch: &str, base: &str) -> Result<(), Outcome> {
+enum PushFault {
+    /// The remote does not have the commit. The caller may put the branch back.
+    Rejected(Outcome),
+    /// The push did not finish, and the remote may already have the commit. Do not rewind.
+    Uncertain(Outcome),
+}
+
+fn push(worktree: &Path, remote: &str, branch: &str, base: &str) -> Result<(), PushFault> {
     if names::is_protected(branch, base) {
-        return Err(refused("That branch is main. It was not updated."));
+        return Err(PushFault::Rejected(refused(
+            "That branch is main. It was not updated.",
+        )));
     }
     // The gate returns the URLs it checked. The push names those URLs, not the remote: a pushurl written after
     // the check would otherwise send the commit somewhere the check never read.
-    let checked =
-        crate::commit_guard::gate_outgoing_to(worktree, remote).map_err(outcome_from_gate)?;
+    let checked = crate::commit_guard::gate_outgoing_to(worktree, remote)
+        .map_err(|error| PushFault::Rejected(outcome_from_gate(error)))?;
     if checked.urls.is_empty() {
-        return Err(outcome_from_gate(format!(
+        return Err(PushFault::Rejected(outcome_from_gate(format!(
             "the remote {remote} has no push URL."
-        )));
+        ))));
     }
     let refspec = format!("{}:refs/heads/{branch}", checked.sha);
+    let mut landed = false;
     for url in &checked.urls {
         let (before, after) = push_transport_args(url, &refspec);
         let mut args = before;
         args.push("push".to_string());
         args.extend(after);
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-        let ran = git(worktree, &borrowed, FETCH_TIMEOUT)?;
-        if ran.code != 0 {
-            return Err(not_finished(
-                "A normal push was refused, so the branch was put back. Nothing was force-pushed.",
-            ));
+        match git(worktree, &borrowed, FETCH_TIMEOUT) {
+            Ok(ran) if ran.code == 0 => landed = true,
+            Ok(_) if landed => {
+                return Err(left_in_place(
+                    "A later push was refused. The branch was left as it is, because the remote already has it. Nothing was force-pushed.",
+                ));
+            }
+            Ok(_) => match remote_has_sha(worktree, url, branch, &checked.sha) {
+                Ok(true) => landed = true,
+                Ok(false) => {
+                    return Err(PushFault::Rejected(not_finished(
+                        "A normal push was refused, so the branch was put back. Nothing was force-pushed.",
+                    )));
+                }
+                Err(()) => {
+                    return Err(left_in_place(
+                        "The push did not finish in time. The branch was left as it is, because the remote may already have it. Try again.",
+                    ));
+                }
+            },
+            Err(_) if landed => {
+                return Err(left_in_place(
+                    "The push did not finish in time. The branch was left as it is, because the remote already has it. Try again.",
+                ));
+            }
+            Err(_) => match remote_has_sha(worktree, url, branch, &checked.sha) {
+                Ok(true) => landed = true,
+                Ok(false) => {
+                    return Err(PushFault::Rejected(not_finished(
+                        "The push did not finish in time, so the branch was put back. Nothing was force-pushed. Try again.",
+                    )));
+                }
+                Err(()) => {
+                    return Err(left_in_place(
+                        "The push did not finish in time. The branch was left as it is, because the remote may already have it. Try again.",
+                    ));
+                }
+            },
         }
     }
     record_pushed_refs(worktree, remote, branch, &checked.sha);
     Ok(())
+}
+
+fn left_in_place(reason: &str) -> PushFault {
+    PushFault::Uncertain(not_finished(reason))
+}
+
+/// Whether `url` already has `sha` on `branch`. An unreadable remote is not a no.
+fn remote_has_sha(worktree: &Path, url: &str, branch: &str, sha: &str) -> Result<bool, ()> {
+    let spec = format!("refs/heads/{branch}");
+    let ran = git(worktree, &["ls-remote", url, &spec], FETCH_TIMEOUT).map_err(|_| ())?;
+    if ran.code != 0 {
+        return Err(());
+    }
+    Ok(ran.stdout.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        match (parts.next(), parts.next()) {
+            (Some(found), Some(name)) => found == sha && name == spec,
+            _ => false,
+        }
+    }))
 }
 
 /// A secret or an agent file is a final refusal. Anything else (the remote could not be read, a timeout) is not:
@@ -495,17 +586,28 @@ fn record_pushed_refs(worktree: &Path, remote: &str, branch: &str, sha: &str) {
 }
 
 fn cancel_merge(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
-    if in_merge(worktree) {
-        let _ = git(worktree, &["merge", "--abort"], LOCAL_TIMEOUT);
+    if in_merge(worktree) && !abort_finished(worktree, &["merge", "--abort"], in_merge) {
+        return Err(not_finished(
+            "The merge could not be cancelled, so the worktree was left for you.",
+        ));
     }
     settled(worktree, old, branch)
 }
 
 fn cancel_rebase(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
-    if in_rebase(worktree) {
-        let _ = git(worktree, &["rebase", "--abort"], LOCAL_TIMEOUT);
+    if in_rebase(worktree) && !abort_finished(worktree, &["rebase", "--abort"], in_rebase) {
+        return Err(not_finished(
+            "The rebase could not be cancelled, so the worktree was left for you.",
+        ));
     }
     settled(worktree, old, branch)
+}
+
+fn abort_finished(worktree: &Path, args: &[&str], still: fn(&Path) -> bool) -> bool {
+    match git(worktree, args, LOCAL_TIMEOUT) {
+        Ok(ran) if ran.code == 0 => !still(worktree),
+        _ => false,
+    }
 }
 
 fn settled(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
@@ -1054,10 +1156,139 @@ fn unlink_if_ours(file: &mut fs::File, path: &Path, token: &str) -> bool {
 }
 
 fn git(cwd: &Path, args: &[&str], timeout: Duration) -> Result<gitrun::Ran, Outcome> {
-    gitrun::run(cwd, args, timeout).map_err(|error| match error {
+    if let Some(stopped) = interrupt_before(args) {
+        return stopped;
+    }
+    let ran = gitrun::run(cwd, args, timeout).map_err(|error| match error {
         gitrun::RunError::Refused(reason) => refused(reason),
         gitrun::RunError::NotFinished(reason) => not_finished(reason),
-    })
+    })?;
+    if interrupt_after(args, ran.code) {
+        return Err(timed_out());
+    }
+    Ok(ran)
+}
+
+fn timed_out() -> Outcome {
+    not_finished("The update did not finish in time. Nothing was changed. Try again.")
+}
+
+/// A test asks git to report a timeout, or an abort that did not run. Off in every other build.
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Interrupt {
+    Off,
+    /// The merge or rebase command runs, then is reported as a timeout.
+    RewriteTimeout,
+    /// `merge --abort` and `rebase --abort` fail and do not run.
+    AbortFails,
+    /// The push command runs, then is reported as a timeout.
+    PushAfterAccept,
+    /// The push and the following remote read are both reported as timeouts.
+    PushUnreadable,
+}
+
+#[cfg(test)]
+thread_local! {
+    static INTERRUPT: Cell<Interrupt> = const { Cell::new(Interrupt::Off) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_interrupt(kind: Interrupt) {
+    INTERRUPT.with(|cell| cell.set(kind));
+}
+
+#[cfg(test)]
+fn interrupt_kind() -> Interrupt {
+    INTERRUPT.with(|cell| cell.get())
+}
+
+#[cfg(test)]
+fn clear_interrupt() {
+    set_interrupt(Interrupt::Off);
+}
+
+#[cfg(test)]
+fn interrupt_before(args: &[&str]) -> Option<Result<gitrun::Ran, Outcome>> {
+    match interrupt_kind() {
+        Interrupt::AbortFails if is_abort(args) => {
+            clear_interrupt();
+            Some(Ok(gitrun::Ran {
+                code: 1,
+                stdout: String::new(),
+                stderr: "abort failed".into(),
+            }))
+        }
+        Interrupt::PushUnreadable if is_push(args) => Some(Err(timed_out())),
+        Interrupt::PushUnreadable if is_ls_remote(args) => {
+            clear_interrupt();
+            Some(Err(timed_out()))
+        }
+        _ => None,
+    }
+}
+
+#[cfg(not(test))]
+fn interrupt_before(_args: &[&str]) -> Option<Result<gitrun::Ran, Outcome>> {
+    None
+}
+
+#[cfg(test)]
+fn interrupt_after(args: &[&str], code: i32) -> bool {
+    match interrupt_kind() {
+        Interrupt::RewriteTimeout if is_rewrite(args) => {
+            clear_interrupt();
+            true
+        }
+        Interrupt::PushAfterAccept if is_push(args) && code == 0 => {
+            clear_interrupt();
+            true
+        }
+        _ => false,
+    }
+}
+
+#[cfg(not(test))]
+fn interrupt_after(_args: &[&str], _code: i32) -> bool {
+    false
+}
+
+#[cfg(test)]
+fn command_name<'a>(args: &'a [&'a str]) -> Option<&'a str> {
+    let mut index = 0;
+    while index < args.len() {
+        let arg = args[index];
+        if arg == "-c" || arg == "-C" {
+            index += 2;
+            continue;
+        }
+        if arg.starts_with('-') {
+            index += 1;
+            continue;
+        }
+        return Some(arg);
+    }
+    None
+}
+
+#[cfg(test)]
+fn is_push(args: &[&str]) -> bool {
+    command_name(args) == Some("push")
+}
+
+#[cfg(test)]
+fn is_ls_remote(args: &[&str]) -> bool {
+    command_name(args) == Some("ls-remote")
+}
+
+#[cfg(test)]
+fn is_rewrite(args: &[&str]) -> bool {
+    matches!(command_name(args), Some("merge" | "rebase")) && !args.contains(&"--abort")
+}
+
+#[cfg(test)]
+fn is_abort(args: &[&str]) -> bool {
+    matches!(command_name(args), Some("merge" | "rebase")) && args.contains(&"--abort")
 }
 
 fn refused(reason: impl Into<String>) -> Outcome {
