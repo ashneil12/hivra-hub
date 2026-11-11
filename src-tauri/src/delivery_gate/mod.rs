@@ -1674,3 +1674,41 @@ pub(crate) fn respond(
     );
     forward_answer(store, &project, decision_key, answer)
 }
+
+/// Review r6 repro for PR #208 (WP-178), red at 520e3d4e3.
+#[cfg(test)]
+mod review_r6_repro {
+    /// HIGH (new, when a project has "Check work before it goes to GitHub" on): a crew's delivery calls `fill`, which
+    /// starts the no-mistakes daemon (`ensure_daemon`) and `axi run` (`invoke`) outside the sandbox. The daemon's
+    /// pipeline runs the repository's own test and lint commands (`npm run check` for this repo) and a pipeline agent
+    /// (claude or grok, with tools and auto-fix) in a copy of the crew's branch. Every one of those is the agents' code
+    /// or reads it, and none is wrapped. The spawn audit allows both starts for their arguments, not for what the
+    /// daemon then runs.
+    #[test]
+    fn the_gates_daemon_starts_inside_the_agent_sandbox() {
+        let source = include_str!("mod.rs");
+        let wrapped = |name: &str| -> bool {
+            let Some(start) = source.find(&format!("fn {name}(")) else {
+                return false;
+            };
+            let rest = &source[start..];
+            let body = &rest[..rest.find("\n}\n").unwrap_or(rest.len())];
+            [
+                "action_wrap",
+                "under_wrap",
+                "contained_command",
+                "sandboxed_launch",
+            ]
+            .iter()
+            .any(|marker| body.contains(marker))
+        };
+        let open: Vec<&str> = ["ensure_daemon", "tool_command"]
+            .into_iter()
+            .filter(|name| !wrapped(name))
+            .collect();
+        assert!(
+            open.len() < 2,
+            "the delivery gate's daemon, which runs the repo's checks and a pipeline agent, starts outside the sandbox"
+        );
+    }
+}
