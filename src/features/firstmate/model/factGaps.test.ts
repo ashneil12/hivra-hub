@@ -417,6 +417,22 @@ describe("review r2", () => {
 });
 
 describe("whole class", () => {
+  it("turning pipefail off does not make a pipe a pass", () => {
+    const gaps = doneGaps(
+      turn({
+        checks: [
+          {
+            command: "set -o pipefail && set +o pipefail && npm test | tail -20",
+            status: "passed",
+            at: 2,
+          },
+        ],
+        edits: [{ path: "src/features/crew/row.ts", at: 1 }],
+      }),
+    );
+    expect(gaps).toContain("A piped or masked run does not count.");
+  });
+
   it("a pipe with pipefail counts as a pass, and && still counts", () => {
     for (const command of ["set -o pipefail && npm test | tail -20", "set -euo pipefail && npm test | tail -20", "npm test && echo done"]) {
       expect(
