@@ -3514,3 +3514,156 @@ fn a_failed_review_runs_again_as_a_new_attempt_and_its_old_settle_is_refused() {
     .unwrap();
     assert!(!stale.applied, "an old attempt settled the new one");
 }
+
+// ---- review/220-r5 repros (red at 348326363) ---------------------------------------------------------------------------
+
+/// The MED-3 stand-in rests on who answered `security-review/<head>`, and the code that names who answered is not
+/// gated: steering.ts's askPerson labels an agent's answer `chat:<id>` (one argument away from "user"), App.tsx wires the
+/// reviewer launcher and the settle that writes the record, monos/model/delegations.ts skips review rows at boot (MED-2)
+/// and carries the settle, fs.rs routes the Inbox's merge button into merge::by_person, lib.rs registers decisions_answer.
+/// None of them names REVIEW_OWNER, REQUEST_PREFIX or a security-review- literal, so the round-5 list test passes them.
+#[test]
+fn repro_220_r5_the_answer_identity_and_launcher_wiring_are_security_paths() {
+    let missing: Vec<&str> = [
+        "src/features/firstmate/model/steering.ts",
+        "src/app/App.tsx",
+        "src/features/monos/model/delegations.ts",
+        "src-tauri/src/fs.rs",
+        "src-tauri/src/lib.rs",
+    ]
+    .into_iter()
+    .filter(|file| {
+        !merge::security_paths()
+            .iter()
+            .any(|pattern| merge::glob_match(pattern, file))
+    })
+    .collect();
+    assert!(missing.is_empty(), "not security paths: {missing:?}");
+}
+
+/// End to end: the lead tick's switch merges a change to steering.ts (who an answer is from) with no review and no person.
+/// After a ship of that change, an agent's ask_person answer on `security-review/<head>` is recorded as the person's.
+#[test]
+fn repro_220_r5_the_switch_merges_a_change_to_who_answered() {
+    let mut merged = Vec::new();
+    for file in [
+        "src/features/firstmate/model/steering.ts",
+        "src/app/App.tsx",
+        "src-tauri/src/fs.rs",
+    ] {
+        let project = floor_project(&format!("r220r5-{}", file.len()));
+        let s = store();
+        set_mode(&s, &project, Some(Mode::Pr), true);
+        remember_delivery(&s, &project, None, 7);
+        let gh = files_of(Ok(&format!("{file}\n")));
+        let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+        if matches!(outcome, MergeOutcome::Merged { .. }) {
+            merged.push(file);
+        }
+    }
+    assert!(
+        merged.is_empty(),
+        "the switch merged the gate's answer/launcher code with no review and no person: {merged:?}"
+    );
+}
+
+/// The gate passes on any answered decision under `(project, security-review/<head>)`: it never checks that it asked it
+/// (asked_by "gate"), nor that the answer is to the question it would ask now. A top-level chat asks that key first with its
+/// own wording ("rename a button?", options Approve/No); the gate's later ask changes nothing (one key, one question); the
+/// person's "Approve" to the chat's question passes a head whose review has a critical candidate that needs validation,
+/// and the candidate is never put to them. The lead tick then merges by the switch.
+#[test]
+fn repro_220_r5_a_chat_that_asks_the_gate_key_first_words_the_persons_approval() {
+    let f = fixture("r220r5-preask");
+    let s = store();
+    set_mode(&s, &f.project, Some(Mode::Pr), true);
+    remember_delivery(&s, &f.project, None, 7);
+    let project = settings::key(f.project.to_str().unwrap());
+    let key = format!("security-review/{H1_SEC}");
+    {
+        let mut conn = s.lock_conn().unwrap();
+        crate::decisions::ask(
+            &mut conn,
+            crate::decisions::AskInput {
+                asked_by: "author-lead".into(),
+                asked_by_mono: None,
+                project: Some(project.clone()),
+                key: key.clone(),
+                question: "OK to rename the Save button to Keep?".into(),
+                options: vec!["Approve".into(), "No".into()],
+                recommended: Some("Approve".into()),
+                task_ids: Vec::new(),
+            },
+            5,
+        )
+        .unwrap();
+    }
+    // The person answers the question the Inbox shows them.
+    person_answers(&s, &f.project, H1_SEC, "Approve");
+    let pending = r#"[{"verdict":"needs_validation","title":"Token may leak to the phone","severity":{"overall_severity":"critical"}}]"#;
+    record_review(&s, H1_SEC, pending, "claude", "codex", &[SECURITY_FILE]);
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 30).unwrap();
+    let shown = crate::decisions::get(&s.lock_conn().unwrap(), &project, &key)
+        .unwrap()
+        .unwrap();
+    assert!(
+        !matches!(outcome, MergeOutcome::Merged { .. }),
+        "merged on the answer to a chat's question {:?} (asked by {}); the critical candidate was never shown: {outcome:?}",
+        shown.question,
+        shown.asked_by
+    );
+}
+
+/// The key has no pull request in it: the person's "Approve" of PR #7's clean review at head H passes PR #8 at the same
+/// head (the same branch opened again, or against another base), whose own review has a critical candidate that needs
+/// validation. The lead tick merges PR #8 by the switch and the person is never asked about it.
+#[test]
+fn repro_220_r5_an_answer_for_one_pull_request_passes_another_at_the_same_head() {
+    let f = fixture("r220r5-two-prs");
+    let s = store();
+    set_mode(&s, &f.project, Some(Mode::Pr), true);
+    remember_delivery(&s, &f.project, None, 7);
+    remember_delivery(&s, &f.project, None, 8);
+    record_review(&s, H1_SEC, "[]", "claude", "codex", &[SECURITY_FILE]);
+    let gh = security_gh(H1_SEC, &[SECURITY_FILE]);
+    let first = merge::merge(&s, &gh, agent_merge("acme/web"), 10).unwrap();
+    assert!(
+        matches!(&first, MergeOutcome::NeedsYou { question, .. } if question.contains("PR #7")),
+        "{first:?}"
+    );
+    person_answers(&s, &f.project, H1_SEC, "Approve");
+    // PR #8's own review, at the same head, flags a critical candidate.
+    {
+        let conn = s.lock_conn().unwrap();
+        conn.execute(
+            "INSERT INTO work_deliveries (id, project, mode, state, repo, number, fix_rounds, created_at, updated_at, author) \
+             VALUES ('dlv-8-author', '/no/such/review', 'pr', 'open', 'acme/web', 8, 0, 1, 1, 'claude')",
+            [],
+        )
+        .unwrap();
+        let pending = format!(
+            r#"{{"hunt":{{"builder":"codex","candidates":1,"files":["{SECURITY_FILE}"]}},"findings":[{{"verdict":"needs_validation","title":"Token may leak to the phone","severity":{{"overall_severity":"critical"}},"verified_by":"human"}}],"ledger":[{{"status":"covered","starting_paths":["{SECURITY_FILE}"]}}]}}"#
+        );
+        crate::delivery::review::record_settled(
+            &conn,
+            "del-pr8",
+            &crate::delivery::review::request_id("acme/web", 8, H1_SEC, "codex"),
+            Some(&pending),
+            26,
+        )
+        .unwrap();
+        let record = crate::delivery::review::lookup(&conn, "acme/web", 8, H1_SEC)
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.status, "recorded");
+        assert_eq!(record.pending.len(), 1);
+    }
+    let mut eight = agent_merge("acme/web");
+    eight.number = 8;
+    let second = merge::merge(&s, &gh, eight, 30).unwrap();
+    assert!(
+        !matches!(second, MergeOutcome::Merged { .. }),
+        "PR #8 merged on the person's answer to PR #7's clean review; its critical candidate was never shown: {second:?}"
+    );
+}
