@@ -345,6 +345,8 @@ export type QueuedMessage = {
   steerWhenBusy?: boolean;
   /** A room's wake or another Mono's message: goes in hidden, as a quiet line, and never shows as a pending bubble. */
   monoNote?: MonoNote;
+  /** WP-243: Ash typed it in the composer himself (Block.byOwner); it keeps that once it leaves the queue. */
+  byOwner?: boolean;
   /** Delivery failed; the message remains available to retry or edit. */
   error?: string;
 };
@@ -427,6 +429,16 @@ export type ApprovalCall = {
   folderPinned?: boolean;
 };
 
+/**
+ * WP-243: what covered an approval the app allowed without asking. `quote` is the exact words, found by the app itself in
+ * the source named: one of Ash's own typed messages in this chat, one of his standing answers, or the routine's
+ * instructions.
+ */
+export type CoveredBy = {
+  source: "message" | "rule" | "routine";
+  quote: string;
+};
+
 export type Block = {
   id: string;
   role: BlockRole;
@@ -446,6 +458,17 @@ export type Block = {
   providerTurnId?: string;
   /** User turn saved to the session but not submitted to the harness yet. */
   draft?: boolean;
+  /**
+   * WP-243: Ash typed this user turn in the composer himself. Set only by the composer's own send; absent on everything
+   * the app or another chat wrote (briefs, app notes, resumes, wakes) and on every message saved before it existed.
+   * Only such a turn's words count as Ash's own when the app checks an action against what he said.
+   */
+  byOwner?: true;
+  /**
+   * WP-243: the turn this message started was withdrawn: Ash stopped it, or the provider failed it. Its words stay in the
+   * chat but stop counting as cover for an action (ownerWords.ts). A failed turn is also read from its error notice.
+   */
+  withdrawn?: "stopped" | "failed";
   /** This user turn activated MonoCode app access for its thread. */
   monocode?: boolean;
   /** The Plan or Orchestrator mode this user turn was sent in. */
@@ -479,6 +502,11 @@ export type Block = {
     startedAt?: number;
     /** Epoch ms of the last event about this call: a change, or the provider's heartbeat that it still runs. */
     updatedAt?: number;
+    /**
+     * WP-243: a quit, crash or reload cut this call while it may have been running, so whether it ran is unknown. It is
+     * never run again by the app; the resume note names it so the agent checks its effect first (inFlight.ts).
+     */
+    uncertain?: true;
   };
   approval?: {
     requestId: number;
@@ -491,6 +519,13 @@ export type Block = {
     callComplete?: boolean;
     /** WP-122: the child that asked, so the answer is sent to its port. */
     child?: { name: string; sessionPort: string; detail?: string };
+    /**
+     * WP-243: the frozen action, SHA-256 of the tool's name and full arguments (approvalAction.ts). An allow is bound to
+     * it: a different call under the same id is asked again.
+     */
+    actionHash?: string;
+    /** WP-243: allowed because Ash's own words covered it (ownerWords.ts). The words the app found in the source. */
+    coveredBy?: CoveredBy;
   };
   /** Inner activity of a delegated run. Present on Agent/Task tool blocks. */
   agentRun?: AgentRunMeta;

@@ -19,6 +19,7 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import { appNoteLine } from "../model/appNote";
+import { UNCERTAIN_LINE, coveredByLine } from "../model/approvalAction";
 import { isNoReplyPrefix, withoutNoReply } from "../../../shared/text/noReply";
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { plainErrorText } from "../../../shared/text/plainErrorText";
@@ -5064,9 +5065,11 @@ function ActivityToolRow({
           {pending ? null : <ToolCallStatusIcon state={state} />}
         </div>
       )}
+      <ExactAction block={block} />
       {pending ? (
         <ApprovalControls block={block} onApproval={onApproval} />
       ) : null}
+      <ActionNotes block={block} />
       {errorOpen && errorDetail ? (
         <pre
           className={`min-w-0 whitespace-pre-wrap break-words py-1 font-mono text-[12px] leading-5 text-red-400/80 ${bare ? "" : "pl-5"}`}
@@ -5402,7 +5405,9 @@ function ToolCall({
           {expanded}
         </pre>
       ) : null}
+      <ExactAction block={block} />
       <ApprovalControls block={block} onApproval={onApproval} />
+      <ActionNotes block={block} />
     </div>
   );
 }
@@ -5554,6 +5559,44 @@ function ToolCallIcon({ state }: { state: ToolCallState }) {
     );
   }
   return null;
+}
+
+/** WP-243: an open card shows the exact command an Allow runs, whole (the row above it may cut it short). */
+function ExactAction({ block }: { block: Block }) {
+  const approval = block.approval;
+  const command = approval && !approval.decided ? approval.call?.command : undefined;
+  if (!command) return null;
+  return (
+    <pre
+      data-approval-exact
+      className="max-h-32 min-w-0 overflow-auto whitespace-pre-wrap break-all py-1 pl-5 font-mono text-[12px] leading-5 text-content/70"
+    >
+      {command}
+    </pre>
+  );
+}
+
+/**
+ * WP-243: why a call ran without a tap (Ash's own words covered it), and a call a restart cut while it may have been
+ * running.
+ */
+function ActionNotes({ block }: { block: Block }) {
+  const covered = block.approval?.decided === "allow" ? block.approval.coveredBy : undefined;
+  if (!covered && !block.tool?.uncertain) return null;
+  return (
+    <>
+      {covered ? (
+        <p data-approval-covered className="min-w-0 break-words pl-5 font-sans text-[12px] leading-5 text-content/60">
+          {coveredByLine(covered)}
+        </p>
+      ) : null}
+      {block.tool?.uncertain ? (
+        <p data-tool-uncertain className="min-w-0 pl-5 font-sans text-[12px] leading-5 text-content/60">
+          {UNCERTAIN_LINE}
+        </p>
+      ) : null}
+    </>
+  );
 }
 
 function ApprovalControls({

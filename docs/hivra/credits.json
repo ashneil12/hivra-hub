@@ -933,6 +933,22 @@
       "copyright": "Copyright (c) 2026 CopilotKit",
       "where": "src/features/monos/vendor/routineChecklist.ts, src/features/monos/model/monoHabits.ts, src/features/monos/vendor/LICENSE.openbot",
       "how": "shared/routine-checklist.ts with checklistNotice and openPartsNudge from shared/run-notices.ts copied at commit 558cba6, its test cases ported to vitest; the notices say habit where OpenBot says routine. monoHabits.ts adds the checklist under a list habit's instructions with OpenBot's unattended-run lines (ROUTINE_RUN_LINES, adapted), and sends a finished run back once while a part is open or its answer ends on a promise."
+    },
+    {
+      "name": "OpenBot's ask test",
+      "url": "https://github.com/CopilotKit/OpenBot",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 CopilotKit",
+      "where": "src/features/firstmate/model/askTest.ts, src/features/firstmate/contract.md, src/features/firstmate/vendor/LICENSE.openbot",
+      "how": "ASK_TEST_LINES and ASKING_GUIDANCE_LINES from shared/bot-prompt.ts copied at commit 558cba6 and adapted (WP-247): OpenBot reads the app, and the list of what the app already asks names Hivra's own gates. The first-mate contract's Asking section and the crew brief carry it, so an agent asks only when a wrong guess is hard to undo, the readings differ, or only the person knows, and never asks first about what the app's own card asks."
+    },
+    {
+      "name": "Nod's owner-words check",
+      "url": "https://github.com/n8n-io/nod",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright 2026 n8n GmbH",
+      "where": "src/features/autopilot/model/ownerWords.ts, src/features/autopilot/model/LICENSE.nod",
+      "how": "trustDecision, trustBasis and the plain normaliser from src/server/trust-basis.ts adapted at commit d82e06e (WP-243): a cheap check names which of Ash's own words cover an exact action and quotes them, and the app finds the quote in that source before an allow; anything else asks Ash."
     }
   ]
 }
