@@ -1510,4 +1510,142 @@ mod tests {
             "a shell was approved through a symlink"
         );
     }
+
+    // Review r4 repro (MEDIUM): a bare file name is as relative as `./agent.mjs`. The child reads it from the chat
+    // folder, which nothing pins, yet only an argument with a slash is refused. `--env-file=.env` is the same.
+    #[test]
+    fn review_r4_a_bare_relative_file_argument_is_refused() {
+        for args in [
+            &["agent.mjs"][..],
+            &["--env-file=.env", "/opt/agent.mjs"][..],
+        ] {
+            assert_eq!(
+                checked_fields(&entry("wp134", "/opt/node", args))
+                    .err()
+                    .as_deref(),
+                Some(RELATIVE_REFUSED),
+                "{args:?} reads a file from the chat folder and is not refused"
+            );
+        }
+    }
+
+    // Review r4 repro (MEDIUM): the pin is taken on the symlink's target, but the child is given the link. Pointing the
+    // link at another file runs that file while the pin still matches.
+    #[cfg(unix)]
+    #[test]
+    fn review_r4_a_pinned_argument_behind_a_symlink_cannot_be_redirected() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let real = d.path().join("agent.mjs");
+        let evil = d.path().join("evil.mjs");
+        let link = d.path().join("current.mjs");
+        std::fs::write(&real, b"console.log('approved')").expect("script");
+        std::fs::write(&evil, b"require('child_process').exec('anything')").expect("evil");
+        std::os::unix::fs::symlink(&real, &link).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        let link_arg = link.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-node", &[link_arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::remove_file(&link).expect("unlink");
+        std::os::unix::fs::symlink(&evil, &link).expect("relink");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "the argument now runs another file and still starts"
+        );
+    }
+
+    // Review r4 repro (MEDIUM): an absolute argument that was not a file at approval is never pinned, so a file put
+    // there afterwards runs unpinned.
+    #[cfg(unix)]
+    #[test]
+    fn review_r4_an_absolute_file_that_appears_after_approval_does_not_run() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let script = d.path().join("agent.mjs");
+        let path_value = bin.to_string_lossy().into_owned();
+        let script_arg = script.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-node", &[script_arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&script, b"require('child_process').exec('anything')").expect("plant");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "a file that appeared after approval runs unpinned"
+        );
+    }
+
+    // Review r4 repro (MEDIUM): an absolute file given as a flag value (`--import=/abs/hook.mjs`) is not pinned.
+    #[cfg(unix)]
+    #[test]
+    fn review_r4_an_absolute_file_given_as_a_flag_value_is_pinned() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-node", b"#!/bin/sh\n");
+        let hook = d.path().join("hook.mjs");
+        std::fs::write(&hook, b"// approved hook").expect("hook");
+        let path_value = bin.to_string_lossy().into_owned();
+        let flag = format!("--import={}", hook.to_string_lossy());
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-node", &[flag.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        std::fs::write(&hook, b"require('child_process').exec('anything')").expect("swap");
+        assert!(
+            approved_spawn(d.path(), "wp134", &path_value).is_err(),
+            "the hook changed after approval and still starts"
+        );
+    }
+
+    // Review r4 repro (MEDIUM): the generation is a counter that a missing Keychain item reads as 0. Once the item is
+    // gone (deleted, or a `monocode-hub:` connector sign-out names it), the counter climbs through the old values
+    // again and a record withdrawn at one of them verifies again.
+    #[cfg(unix)]
+    #[test]
+    fn review_r4_a_reset_generation_does_not_revive_a_withdrawn_record() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-a", b"#!/bin/sh\n");
+        make_tool(&bin, "wp134-b", b"#!/bin/sh\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![
+                entry("wp134a", "wp134-a", &[]),
+                entry("wp134b", "wp134-b", &[]),
+            ],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134a", &path_value).expect("approve a");
+        let file = file_path(d.path());
+        let saved: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+        let record = saved["approvals"]["wp134a"].clone();
+        set_approval(d.path(), "wp134a", false, None, &path_value).expect("withdraw");
+        // The Keychain item goes away: the next read is 0, and the next change issues generation 1 again.
+        TEST_GEN.with(|g| g.set(0));
+        approve(d.path(), "wp134b", &path_value).expect("approve b");
+        let mut now: Value =
+            serde_json::from_str(&std::fs::read_to_string(&file).expect("read")).expect("json");
+        now["approvals"]["wp134a"] = record;
+        std::fs::write(&file, serde_json::to_string(&now).expect("text")).expect("write");
+        assert!(
+            approved_spawn(d.path(), "wp134a", &path_value).is_err(),
+            "a withdrawn approval came back once the generation counter restarted"
+        );
+    }
 }
