@@ -11,10 +11,11 @@
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const KEY_SERVICE: &str = "monocode-hub:model-key";
@@ -296,6 +297,18 @@ pub fn save_key_in(
     key: &str,
     route: Option<&CustomRoute>,
 ) -> Result<(), String> {
+    save_key_with(service, custom_model_id, key, route, &crate::hub_keychain::store)
+}
+
+/// `save_key_in` with the Keychain write passed in (tests use a fake). A saved key replaces the account's routers
+/// (WP-129 L1): the old key's router tokens stop working.
+pub(crate) fn save_key_with(
+    service: &str,
+    custom_model_id: &str,
+    key: &str,
+    route: Option<&CustomRoute>,
+    store: &dyn Fn(&str, &str, &str) -> Result<(), String>,
+) -> Result<(), String> {
     check_model_id(custom_model_id)?;
     let key = key.trim();
     if looks_like_claude_credential(key) {
@@ -304,7 +317,9 @@ pub fn save_key_in(
         );
     }
     let item = crate::key_binding::item_for_save(key, route, custom_model_id);
-    crate::hub_keychain::store(service, custom_model_id, &item)
+    store(service, custom_model_id, &item)?;
+    stop_routers_for(custom_model_id);
+    Ok(())
 }
 
 /// The raw Keychain item for an account. Only `key_binding` reads it, and only through `bound_key`.
@@ -348,9 +363,23 @@ pub fn delete_outcome(result: Result<bool, String>) -> Result<bool, String> {
 }
 
 pub fn delete_key_in(service: &str, custom_model_id: &str) -> Result<bool, String> {
+    delete_key_with(service, custom_model_id, &crate::hub_keychain::delete)
+}
+
+/// `delete_key_in` with the Keychain delete passed in (tests use a fake). A deleted key stops the account's routers
+/// (WP-129 L1).
+pub(crate) fn delete_key_with(
+    service: &str,
+    custom_model_id: &str,
+    delete: &dyn Fn(&str, &str) -> Result<bool, String>,
+) -> Result<bool, String> {
     check_model_id(custom_model_id)?;
     // The address is inside the item, so deleting the item deletes it too.
-    delete_outcome(crate::hub_keychain::delete(service, custom_model_id))
+    let result = delete_outcome(delete(service, custom_model_id));
+    if result.is_ok() {
+        stop_routers_for(custom_model_id);
+    }
+    result
 }
 
 /// The address a key was saved with, for the Other models list and the memory picker (WP-129). An address is not
@@ -1090,8 +1119,33 @@ impl StreamTranslator {
 struct Running {
     port: u16,
     upstream: String,
-    token: String,
     route: CustomRoute,
+    /// One token per live session (WP-129 L2). A session's token leaves this set when the session ends.
+    tokens: Arc<Mutex<HashSet<String>>>,
+    /// Set when the account's key is deleted or replaced (L1): the accept loop exits and takes no more connections.
+    stop: Arc<AtomicBool>,
+}
+
+/// One routed session's router token. The router takes it until this is dropped, which is when the session's
+/// stdout ends, so a token never outlives its session (WP-129 L2). Not Debug: the token is a credential.
+pub struct SessionToken {
+    token: String,
+    tokens: Arc<Mutex<HashSet<String>>>,
+}
+
+impl SessionToken {
+    pub fn value(&self) -> &str {
+        &self.token
+    }
+}
+
+impl Drop for SessionToken {
+    fn drop(&mut self) {
+        self.tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&self.token);
+    }
 }
 
 /// A random token for one router (256 bits from the OS). Useless anywhere but that router.
@@ -1107,29 +1161,86 @@ static ROUTERS: Mutex<Vec<Running>> = Mutex::new(Vec::new());
 
 /// The router for this route and upstream key, started on first use (127.0.0.1, random port). Returns its port and
 /// the token the child must send to it.
-pub fn ensure_router(route: &CustomRoute, upstream: &str) -> Result<(u16, String), String> {
+pub fn ensure_router(route: &CustomRoute, upstream: &str) -> Result<(u16, SessionToken), String> {
     if !may_route(route) {
         return Err("This model isn't routed: Claude models always use your Claude login.".into());
     }
     let mut routers = ROUTERS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(r) = routers
+    let index = match routers
         .iter()
-        .find(|r| &r.route == route && r.upstream == upstream)
+        .position(|r| &r.route == route && r.upstream == upstream)
     {
-        return Ok((r.port, r.token.clone()));
-    }
+        Some(index) => index,
+        None => {
+            let tokens = Arc::new(Mutex::new(HashSet::new()));
+            let stop = Arc::new(AtomicBool::new(false));
+            let port = start_router_with(
+                route.clone(),
+                upstream.to_string(),
+                tokens.clone(),
+                stop.clone(),
+            )?;
+            routers.push(Running {
+                port,
+                upstream: upstream.to_string(),
+                route: route.clone(),
+                tokens,
+                stop,
+            });
+            routers.len() - 1
+        }
+    };
+    let running = &routers[index];
     let token = new_child_token();
-    let port = start_router(route.clone(), upstream.to_string(), token.clone())?;
-    routers.push(Running {
-        port,
-        upstream: upstream.to_string(),
-        token: token.clone(),
-        route: route.clone(),
-    });
-    Ok((port, token))
+    running
+        .tokens
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(token.clone());
+    let session = SessionToken {
+        token,
+        tokens: running.tokens.clone(),
+    };
+    Ok((running.port, session))
 }
 
+/// Stops the routers of one account (its key was deleted or replaced, WP-129 L1): their tokens stop working, and their
+/// accept loops exit. Routers of other accounts are kept.
+fn stop_routers_for(custom_model_id: &str) {
+    let mut routers = ROUTERS.lock().unwrap_or_else(|e| e.into_inner());
+    routers.retain(|r| {
+        if r.route.custom_model_id != custom_model_id {
+            return true;
+        }
+        r.stop.store(true, Ordering::SeqCst);
+        r.tokens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
+        // One connection wakes the accept loop, which then sees the stop flag and returns.
+        let _ = TcpStream::connect(("127.0.0.1", r.port));
+        false
+    });
+}
+
+/// A router that takes one fixed token (the tests' form). Routed sessions use `ensure_router`.
+#[cfg(test)]
 pub fn start_router(route: CustomRoute, upstream: String, token: String) -> Result<u16, String> {
+    let tokens = Arc::new(Mutex::new(HashSet::from([token])));
+    start_router_with(
+        route,
+        upstream,
+        tokens,
+        Arc::new(AtomicBool::new(false)),
+    )
+}
+
+fn start_router_with(
+    route: CustomRoute,
+    upstream: String,
+    tokens: Arc<Mutex<HashSet<String>>>,
+    stop: Arc<AtomicBool>,
+) -> Result<u16, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|_| "Couldn't start the model router.".to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
@@ -1137,11 +1248,14 @@ pub fn start_router(route: CustomRoute, upstream: String, token: String) -> Resu
         .name(format!("model-router-{port}"))
         .spawn(move || {
             for stream in listener.incoming().flatten() {
+                if stop.load(Ordering::SeqCst) {
+                    break;
+                }
                 let route = route.clone();
-                let token = token.clone();
+                let tokens = tokens.clone();
                 let upstream = upstream.clone();
                 let _ = std::thread::Builder::new().spawn(move || {
-                    let _ = handle(stream, &route, &token, &upstream);
+                    let _ = handle(stream, &route, &tokens, &upstream);
                 });
             }
         })
@@ -1290,14 +1404,40 @@ fn scrub(text: &str, token: &str) -> String {
     t
 }
 
+/// Accepts a request that carries one of the live session tokens (WP-129 L2). A Claude login is refused as before.
+fn authorize_any(
+    headers: &HashMap<String, String>,
+    live: &[String],
+) -> Result<(), (u16, &'static str)> {
+    if live
+        .iter()
+        .any(|token| !token.is_empty() && authorize(headers, token).is_ok())
+    {
+        return Ok(());
+    }
+    if looks_like_claude_credential(&incoming_token(headers).unwrap_or_default()) {
+        return Err((403, "The model router never forwards a Claude login."));
+    }
+    Err((
+        401,
+        "This router only serves the session it was started for.",
+    ))
+}
+
 fn handle(
     mut stream: TcpStream,
     route: &CustomRoute,
-    token: &str,
+    tokens: &Mutex<HashSet<String>>,
     upstream: &str,
 ) -> std::io::Result<()> {
     let req = read_request(&mut stream)?;
-    if let Err((status, message)) = authorize(&req.headers, token) {
+    let live: Vec<String> = tokens
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .cloned()
+        .collect();
+    if let Err((status, message)) = authorize_any(&req.headers, &live) {
         return respond(
             &mut stream,
             status,
@@ -1616,7 +1756,7 @@ fn forward_answer(
 }
 
 /// What `harness_spawn` applies for a Claude Code session on a custom model.
-pub fn prepare_routed_session(route: &CustomRoute) -> Result<RoutedEnv, String> {
+pub fn prepare_routed_session(route: &CustomRoute) -> Result<(RoutedEnv, SessionToken), String> {
     prepare_routed_session_in(route, &crate::key_binding::keychain_item)
 }
 
@@ -1625,7 +1765,7 @@ pub fn prepare_routed_session(route: &CustomRoute) -> Result<RoutedEnv, String> 
 pub(crate) fn prepare_routed_session_in(
     route: &CustomRoute,
     read_item: crate::key_binding::ItemReader,
-) -> Result<RoutedEnv, String> {
+) -> Result<(RoutedEnv, SessionToken), String> {
     if !may_route(route) {
         return Err("This model isn't routed: Claude models always use your Claude login.".into());
     }
@@ -1637,11 +1777,11 @@ pub(crate) fn prepare_routed_session_in(
     // The key is the router's upstream credential and never leaves this process: the child is given a random
     // token that only the router accepts (WP-129).
     let upstream = session_token(&route.provider, key.as_deref())?;
-    let (port, token) = ensure_router(&route, &upstream)?;
+    let (port, session) = ensure_router(&route, &upstream)?;
     // The provider's own window for this model, asked once per route. Nothing here may fail the spawn: a session on
     // an assumed-200K window is still a working session.
     let window = remembered_window(&route, key.as_deref());
-    Ok(routed_env(&route, &token, port, window))
+    Ok((routed_env(&route, session.value(), port, window), session))
 }
 
 // ---- quick pick: one short completion for a room's auto responder (WP-22) -----------------------------------------------
@@ -2115,7 +2255,7 @@ mod tests {
         };
         assert!(!attempt(&other_provider));
         // The bound route gets a session. The child's token is not the key, and the key is in no variable.
-        let (set, _) = prepare_routed_session_in(&stored, &store).unwrap();
+        let ((set, _), _) = prepare_routed_session_in(&stored, &store).unwrap();
         assert!(set.iter().all(|(_, value)| !value.contains(key)));
         // Nothing stored at all: no session, and no key is sent.
         assert!(prepare_routed_session_in(&stored, &|_: &str| Ok(None)).is_err());
@@ -3288,5 +3428,84 @@ mod tests {
         assert!(!out.contains("sk-json"), "{out}");
         assert!(!out.contains("quote"), "{out}");
         assert!(out.contains("***"), "{out}");
+    }
+
+    /// WP-129 L2 (lead review, 4 Jan): each routed session has its own router token, and it stops working when that
+    /// session ends. Two sessions on one router must not share a token.
+    #[test]
+    fn each_routed_session_has_its_own_router_token() {
+        let server = local(vec![http(200, "OK", r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#); 4]);
+        let r = CustomRoute {
+            provider: "custom".into(),
+            base_url: base_of(server.port),
+            model_id: "m".into(),
+            custom_model_id: "l2-sessions-test".into(),
+            reasoning_effort: None,
+        };
+        let (port_a, token_a) = ensure_router(&r, "l2-upstream-key").unwrap();
+        let (port_b, token_b) = ensure_router(&r, "l2-upstream-key").unwrap();
+        assert_eq!(port_a, port_b);
+        assert_ne!(token_a.value(), token_b.value(), "two sessions were given the same router token");
+        // Each session's token works on the shared router until that session ends.
+        assert_eq!(router_status(port_a, token_a.value()), 200);
+        assert_eq!(router_status(port_b, token_b.value()), 200);
+        let ended = token_a.value().to_string();
+        drop(token_a);
+        assert_eq!(router_status(port_a, &ended), 401, "an ended session's token still works");
+        assert_eq!(router_status(port_b, token_b.value()), 200, "ending one session stopped the other");
+    }
+
+    /// Sends one request to a router with `token`: the status it answers with, or None when nothing listens there any
+    /// more (a stopped router closes its port).
+    fn router_answer(port: u16, token: &str) -> Option<u16> {
+        let body = r#"{"model":"m","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}"#;
+        let mut stream = TcpStream::connect(("127.0.0.1", port)).ok()?;
+        write!(
+            stream,
+            "POST /v1/messages HTTP/1.1\r\nHost: 127.0.0.1\r\nx-api-key: {token}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+        .unwrap();
+        let mut line = String::new();
+        BufReader::new(stream).read_line(&mut line).ok()?;
+        line.split_whitespace().nth(1)?.parse().ok()
+    }
+
+    fn router_status(port: u16, token: &str) -> u16 {
+        router_answer(port, token).expect("the router is not listening")
+    }
+
+    /// WP-129 L1 (lead review, 4 Jan): deleting or replacing a model's key stops that account's routers, so a token
+    /// from before the change stops working. Another account's router keeps running.
+    #[test]
+    fn deleting_or_replacing_a_key_stops_its_routers() {
+        let answer = r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let server = local(vec![http(200, "OK", answer); 8]);
+        let route_for = |id: &str| CustomRoute {
+            provider: "custom".into(),
+            base_url: base_of(server.port),
+            model_id: "m".into(),
+            custom_model_id: id.into(),
+            reasoning_effort: None,
+        };
+        let deleted = route_for("l1-deleted");
+        let replaced = route_for("l1-replaced");
+        let kept = route_for("l1-kept");
+        let (port_d, token_d) = ensure_router(&deleted, "l1-key-a").unwrap();
+        let (port_r, token_r) = ensure_router(&replaced, "l1-key-b").unwrap();
+        let (port_k, token_k) = ensure_router(&kept, "l1-key-c").unwrap();
+        let (token_d, token_r, token_k) = (token_d.value().to_string(), token_r.value().to_string(), token_k.value().to_string());
+        assert_eq!(router_status(port_d, &token_d), 200);
+        assert_eq!(router_status(port_r, &token_r), 200);
+        assert_eq!(router_status(port_k, &token_k), 200);
+
+        assert_eq!(delete_key_with(KEY_SERVICE, "l1-deleted", &|_: &str, _: &str| Ok(true)), Ok(true));
+        save_key_with(KEY_SERVICE, "l1-replaced", "a-new-key-1234", None, &|_: &str, _: &str, _: &str| Ok(())).unwrap();
+
+        for (port, token, what) in [(port_d, &token_d, "a deleted key's"), (port_r, &token_r, "a replaced key's")] {
+            let answer = router_answer(port, token);
+            assert!(matches!(answer, None | Some(401)), "{what} router still takes its old token: {answer:?}");
+        }
+        assert_eq!(router_status(port_k, &token_k), 200, "another account's router was stopped too");
     }
 }
