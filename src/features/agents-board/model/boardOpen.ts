@@ -1,5 +1,6 @@
-// Where Open goes. A row with a chat opens that chat. A needs-you row with no chat of its
-// own opens the owner's chat, then the project's workspace, which is where that item is answered.
+// Where Open goes. A worker is answered in the Lead's chat, even when the worker has a chat
+// of its own. Any other row opens its own chat. A needs-you row with no chat opens the
+// project, which is where that item is answered.
 
 import { openFromHome } from "../../home/model/opener";
 import type { BoardRole } from "./tree";
@@ -16,9 +17,13 @@ export type BoardOpenTarget =
   | { kind: "needs-you"; id: string; projectId: string };
 
 export function boardOpenTarget(node: BoardOpenNode, ownerSession?: string | null): BoardOpenTarget | null {
-  const session = node.sessionId?.trim() || ownerSession?.trim() || "";
+  const owner = ownerSession?.trim() || "";
+  const session = node.sessionId?.trim() || "";
   const projectId = node.projectId?.trim() || "";
-  if (session) return { kind: "chat", sessionId: session, projectId };
+  // The worker can have its own chat. The answer still goes through the Lead.
+  if (node.role === "worker" && owner) return { kind: "chat", sessionId: owner, projectId };
+  const chosen = session || owner;
+  if (chosen) return { kind: "chat", sessionId: chosen, projectId };
   if (node.role === "home" || node.role === "project" || node.role === "subchat" || node.role === "mate") {
     const id = node.id.trim();
     if (!id) return null;
