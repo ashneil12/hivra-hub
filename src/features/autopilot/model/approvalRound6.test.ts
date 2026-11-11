@@ -53,7 +53,7 @@ describe("HIGH-1: a Bash read that names a place outside the chat's folder waits
   });
 
   it("holds an edit or a Read of those places too", () => {
-    expect(editInside("Library/Messages/chat.db", FOLDER)).toBeNull();
+    expect(editInside(`${FOLDER}/Library/Messages/chat.db`, FOLDER)).toBeNull();
     expect(credentialInPaths(["Library/Messages/chat.db"], FOLDER)).not.toBeNull();
     expect(credentialInPaths([`${FOLDER}/Library/WebKit/x`], FOLDER)).not.toBeNull();
   });
@@ -133,6 +133,6 @@ describe("LOW: rg's -z and the guard's own source", () => {
       expect(editInside(path, FOLDER), path).not.toBeNull();
       expect(safeCall({ tool: "Edit", paths: [path] } as any, FOLDER), path).not.toBeNull();
     }
-    expect(editInside("src/app.ts", FOLDER)).toBeNull();
+    expect(editInside(`${FOLDER}/src/app.ts`, FOLDER)).toBeNull();
   });
 });

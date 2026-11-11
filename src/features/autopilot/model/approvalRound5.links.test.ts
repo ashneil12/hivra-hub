@@ -36,10 +36,11 @@ describe("M2: reads and searches resolve through links", () => {
 
   it("allows a link that lands on an ordinary file in the same checkout", async () => {
     const locate = locateWith({ [`${FOLDER}/docs/app.md`]: { root: FOLDER, relative: "src/app.ts" } });
-    expect(await readStaysInside(read(["docs/app.md"]), FOLDER, locate)).toBeNull();
+    expect(await readStaysInside(read([`${FOLDER}/docs/app.md`]), FOLDER, locate)).toBeNull();
   });
 
   it("does not look up a search with no path, which walks the folder itself", async () => {
-    expect(await readStaysInside({ tool: "Grep" } as any, FOLDER, locateWith({}))).toBeNull();
+    // Round 10: a search with no path starts from its request's cwd, which the request names here.
+    expect(await readStaysInside({ tool: "Grep", cwd: FOLDER } as any, FOLDER, locateWith({}))).toBeNull();
   });
 });

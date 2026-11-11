@@ -47,7 +47,7 @@ describe("MED-1: a link as the last part of a path is placed where it points", (
 
   it("allows a link whose target is an ordinary file inside the same checkout", async () => {
     const locate = locateWith({ [`${FOLDER}/docs/app.md`]: { root: FOLDER, relative: "src/app.ts", linked: true } });
-    expect(await readStaysInside(read(["docs/app.md"]), FOLDER, locate)).toBeNull();
+    expect(await readStaysInside(read([`${FOLDER}/docs/app.md`]), FOLDER, locate)).toBeNull();
   });
 });
 

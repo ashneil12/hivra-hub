@@ -289,7 +289,8 @@ describe("containment compares whole path components, the same on every platform
   it("allows a Windows chat outside git whose canonical paths are backslashed, and holds a link out of it", async () => {
     const toWindows: Canonical = async (paths) => paths.map((p) => p.replace(/\//g, "\\"));
     const outside: Canonical = async (paths) => paths.map((p) => (p.endsWith("linked.ts") ? "C:\\Users\\runneradmin\\Secret\\s.txt" : p.replace(/\//g, "\\")));
-    expect(await placeStaysInside({ tool: "Write", paths: ["src\\new.ts"] } as any, folder, outsideGit, toWindows)).toBeNull();
+    // Round 10: a relative path waits (the tool resolves it against its own folder), so only the absolute form is allowed.
+    expect(await placeStaysInside({ tool: "Write", paths: ["src\\new.ts"] } as any, folder, outsideGit, toWindows)).not.toBeNull();
     expect(await placeStaysInside({ tool: "Write", paths: [`${folder}\\src\\new.ts`] } as any, folder, outsideGit, toWindows)).toBeNull();
     expect(await placeStaysInside({ tool: "Read", paths: ["src\\linked.ts"] } as any, folder, outsideGit, outside)).not.toBeNull();
   });

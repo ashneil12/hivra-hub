@@ -392,9 +392,6 @@ describe("a tool approval under autopilot", () => {
         `${FOLDER}/README.md`,
         `${FOLDER}/src/app.ts`,
         "/users/someone/Worktrees/hub-x/src/app.ts",
-        "README.md",
-        "src/app.ts",
-        ".zshrc",
         "/tmp/notes.txt",
         "/Users/someone/Documents/plan.md",
         // A project that ships its own startup file: the read tool names it absolutely, and it is the project's.
@@ -404,10 +401,13 @@ describe("a tool approval under autopilot", () => {
         expect(approvalVerdict(read("Read", [path]), FOLDER), path).toMatchObject({ kind: "allow" });
       // Round 9: a path the tool would not open as written (a `.` segment) waits, however it reads.
       expect(approvalVerdict(read("Read", ["/./Users/someone/Worktrees/hub-x/README.md"]), FOLDER)).toMatchObject({ kind: "held" });
+      // Round 10: a relative path waits for a Read (the tool resolves it against its own working folder).
+      for (const path of ["README.md", "src/app.ts", ".zshrc"]) expect(approvalVerdict(read("Read", [path]), FOLDER), path).toMatchObject({ kind: "held" });
       expect(approvalVerdict(read("Read", ["../README.md"]), FOLDER)).toMatchObject({ kind: "held" });
       // No path at all, as with Grep, Glob and LS: nothing to judge, so the tool is read as before.
       expect(approvalVerdict(read("Read", undefined), FOLDER)).toMatchObject({ kind: "allow" });
-      expect(approvalVerdict(read("Grep", undefined), FOLDER)).toMatchObject({ kind: "allow" });
+      // Round 10: a search with no path starts from the request's cwd; without one it waits.
+      expect(approvalVerdict(read("Grep", undefined), FOLDER)).toMatchObject({ kind: "held" });
     });
 
     it("leaves an edit's path to the edit rule, which already holds anything outside the folder", () => {
@@ -561,10 +561,12 @@ describe("review fixes on approvals", () => {
   it("holds a search that starts outside the chat's folder, or in a credential place (review H1)", () => {
     expect(approvalVerdict(tool("Grep", { pattern: "x", path: "/etc" }), FOLDER_R)).toMatchObject({ kind: "held" });
     expect(approvalVerdict(tool("Grep", { pattern: "x", path: "/Users/someone" }), FOLDER_R)).toMatchObject({ kind: "held" });
-    expect(approvalVerdict(tool("Glob", { pattern: "**/*.ts", path: `${FOLDER_R}/src` }), FOLDER_R)).toMatchObject({ kind: "allow" });
+    // Round 10: a Glob pattern is relative, and a relative path waits without a cwd in the request.
+    expect(approvalVerdict(tool("Glob", { pattern: "**/*.ts", path: `${FOLDER_R}/src` }), FOLDER_R)).toMatchObject({ kind: "held" });
     expect(approvalVerdict(tool("Grep", { pattern: "x", path: `${FOLDER_R}/.ssh` }), FOLDER_R)).toMatchObject({ kind: "held" });
     // The pattern of a Grep is what it searches for, not a path: a word such as "token" is not held for that.
-    expect(approvalVerdict(tool("Grep", { pattern: "token" }), FOLDER_R)).toMatchObject({ kind: "allow" });
+    // Round 10: a search with no path starts from a folder the request must name, so without one it waits.
+    expect(approvalVerdict(tool("Grep", { pattern: "token" }), FOLDER_R)).toMatchObject({ kind: "held" });
   });
 
   // H2: the logins that Codex, OpenCode, Gemini, sops, rclone, stripe, doctl, wrangler, glab and fish keep.

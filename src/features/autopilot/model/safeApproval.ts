@@ -206,14 +206,36 @@ export function openedForm(raw: string, folder: string | undefined): { path: str
   if (windows && raw.includes("/")) return { why: `it names ${raw} with forward slashes, which the tool doesn't open as written, so it waits for Ash` };
   // A UNC share (\\server) is not absolute here: it is held, as a relative name that doesn't rebuild as written.
   const absolute = windows ? DRIVE.test(raw) : raw.startsWith("/");
-  if (!absolute) {
-    if (!folder || (!windows && !folder.startsWith("/")) || (windows && !DRIVE.test(folder))) return { why: "the chat has no absolute folder to resolve it in, so it waits for Ash" };
-    if (raw.startsWith("~") || !spelledAsOpened(raw, windows, false)) return { why: `it names ${raw}, which isn't in the form the tool opens (no . or .. and no doubled or trailing separator), so it waits for Ash` };
-    const base = folder.replace(/[\\/]+$/, "");
-    return { path: `${base}${windows ? "\\" : "/"}${raw}` };
-  }
+  // Round 10: a relative path waits for every file tool. The tool resolves it against its own working folder, which a Bash
+  // `cd` can move, so the chat's folder is not the place it opens.
+  if (!absolute) return { why: `it names ${raw}, a relative path, which the tool resolves against its own working folder (a cd can move it), so it waits for Ash` };
   if (!spelledAsOpened(raw, windows, true)) return { why: `it names ${raw}, which isn't in the form the tool opens (no . or .. and no doubled or trailing separator), so it waits for Ash` };
   return { path: raw };
+}
+
+/** Whether a path is absolute on the chat's platform (round 10). */
+function absoluteOn(raw: string, windows: boolean): boolean {
+  return windows ? DRIVE.test(raw) : raw.startsWith("/");
+}
+
+/**
+ * The path a search (Grep, Glob, LS) walks from (round 10). An absolute path is opened as openedForm opens it. A relative
+ * path, or none, is resolved against the search's working folder, which only the request can name (`cwd`): with no cwd,
+ * it waits. The cwd is itself checked in the chat (canonical, inside the folder, by the lookup as a target).
+ */
+export function openedSearchPath(raw: string | undefined, folder: string | undefined, cwd: string | undefined): { path: string } | { why: string } {
+  if (!folder) return { why: "the chat has no folder to search in" };
+  const windows = windowsShaped(folder);
+  if (raw !== undefined && typeof raw === "string" && absoluteOn(raw, windows)) return openedForm(raw, folder);
+  if (cwd === undefined) return { why: "its search starts from a relative or missing path, and the request names no working folder for it, so it waits for Ash" };
+  const base = openedForm(cwd, folder);
+  if ("why" in base) return { why: `its working folder ${base.why}` };
+  if (!pathWithin(base.path, folder)) return { why: `its working folder ${cwd} is outside the chat's folder, so it waits for Ash` };
+  if (raw === undefined) return { path: base.path };
+  if (typeof raw !== "string" || raw === "" || raw !== raw.trim() || raw !== raw.normalize("NFC") || !spelledAsOpened(raw, windows, false))
+    return { why: `it names ${String(raw)}, which isn't in the form the tool opens (no . or .. and no doubled or trailing separator), so it waits for Ash` };
+  if (!windows && raw.includes("\\")) return { why: `it names ${raw}, which has a backslash in it, so it waits for Ash` };
+  return { path: `${base.path.replace(/[\\/]+$/, "")}${windows ? "\\" : "/"}${raw}` };
 }
 
 /**
@@ -342,11 +364,12 @@ export function searchStartsOutside(call: ApprovalCall | undefined, folder: stri
   // Round 5, H2: a search from a chat folder that is home or shallower (or none) holds, with or without a path.
   const base = foldedFolder(folder);
   if (!base || base.length < 3) return true;
-  if (call.paths === undefined) return false;
-  if (!Array.isArray(call.paths) || call.paths.some((path) => typeof path !== "string")) return true;
+  // Round 10: a search with no path starts from its request's cwd; with neither, it waits (openedSearchPath).
+  if (call.paths !== undefined && (!Array.isArray(call.paths) || call.paths.some((path) => typeof path !== "string"))) return true;
   // Under `find`, not `rg`: a search's paths are where it walks from, and none of them is a pattern to skip.
   // Round 9: the walk starts from the path the tool opens (openedForm); inside the folder it is judged as a relative place.
-  const forms = call.paths.map((path) => openedForm(path, folder));
+  const raws: (string | undefined)[] = call.paths === undefined ? [undefined] : (call.paths as string[]);
+  const forms = raws.map((raw) => openedSearchPath(raw, folder, call.cwd));
   if (forms.some((form) => "why" in form)) return true;
   const home = (folder ?? "").replace(/[\\/]+$/, "");
   const starts = forms.map((form) => {
@@ -634,6 +657,8 @@ function safeCallInner(call: ApprovalCall | undefined, folder: string | undefine
   // Round 9: a read or search names a path the tool opens as written (openedForm), or it waits.
   if (READ_ONLY_TOOLS.has(call.tool)) {
     if (!Array.isArray(call.paths)) return null;
+    // A search's start is judged by searchStartsOutside, through openedSearchPath (round 10).
+    if (SEARCH_TOOLS.has(call.tool)) return null;
     for (const path of call.paths) {
       if (typeof path !== "string") return "a path it reads isn't text, so it waits for Ash";
       const form = openedForm(path, folder);
@@ -805,14 +830,17 @@ export async function readStaysInside(
   canonical?: Canonical,
 ): Promise<SafeVerdict> {
   if (!call || !(READ_ONLY_TOOLS.has(call.tool) || SEARCH_TOOLS.has(call.tool))) return null;
-  if (!Array.isArray(call.paths) || !call.paths.length) return null;
+  const search = SEARCH_TOOLS.has(call.tool);
+  if (!search && (!Array.isArray(call.paths) || !call.paths.length)) return null;
   // A path that isn't text is held by safeCall and searchStartsOutside already.
-  if (call.paths.some((path) => typeof path !== "string")) return null;
-  const paths = call.paths as string[];
+  if (Array.isArray(call.paths) && call.paths.some((path) => typeof path !== "string")) return null;
+  const raws: (string | undefined)[] = call.paths === undefined ? [undefined] : (call.paths as string[]);
+  const paths = raws.map((raw) => String(raw ?? call.cwd ?? "the search's folder"));
   const root = folder?.replace(/\/+$/, "");
   if (!root) return "the chat has no folder of its own to read in";
-  // Round 9: each target is the path the tool opens (openedForm); a form it can't open waits.
-  const forms = paths.map((path) => openedForm(path, root));
+  // Round 9: each target is the path the tool opens (openedForm); a form it can't open waits. Round 10: a search's start is
+  // the path it opens (openedSearchPath), resolved against the request's cwd when it is relative or missing.
+  const forms = raws.map((raw) => (search ? openedSearchPath(raw, root, call.cwd) : openedForm(raw as string, root)));
   const refused = forms.find((form): form is { why: string } => "why" in form);
   if (refused) return refused.why;
   const targets = forms.map((form) => (form as { path: string }).path);

@@ -183,6 +183,7 @@ describe("round 9: flag-only clusters pass, and a shell word or a file path that
     expect(editInsideRound9("/Users/example/proj/src/café.ts", "/Users/example/proj")).not.toBeNull();
     expect(editInsideRound9("/Users/example/proj/src/", "/Users/example/proj")).not.toBeNull();
     expect(editInsideRound9("/Users/example/proj/src/a.ts", "/Users/example/proj")).toBeNull();
-    expect(openedForm("src/a.ts", "/Users/example/proj")).toEqual({ path: "/Users/example/proj/src/a.ts" });
+    expect(openedForm("/Users/example/proj/src/a.ts", "/Users/example/proj")).toEqual({ path: "/Users/example/proj/src/a.ts" });
+    expect(openedForm("src/a.ts", "/Users/example/proj")).toEqual({ why: expect.any(String) });
   });
 });

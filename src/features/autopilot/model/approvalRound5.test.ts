@@ -69,7 +69,7 @@ describe("H2: a chat folder at home or shallower holds every search", () => {
 
   it("still allows a search in a deep chat folder that names no secret", () => {
     allowed(bash("rg -n 'foo' src"), FOLDER);
-    allowed(tool("Grep", { paths: ["src"] }), FOLDER);
+    allowed(tool("Grep", { paths: [`${FOLDER}/src`] }), FOLDER);
   });
 });
 

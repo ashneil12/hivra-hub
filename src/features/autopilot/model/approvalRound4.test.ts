@@ -176,10 +176,10 @@ describe("finding 7: home spellings and quoted words", () => {
 
 describe("finding 8: the guard's own files are not editable by an agent", () => {
   it("holds an edit to the shared list and to the autopilot model", () => {
-    expect(editInside("src/shared/security/agentConfigPaths.json", FOLDER)).not.toBeNull();
-    expect(editInside("src/features/autopilot/model/safeApproval.ts", FOLDER)).not.toBeNull();
-    expect(editInside("src/features/autopilot/model/decide.ts", FOLDER)).not.toBeNull();
-    expect(editInside("src/shared/lib/paths.ts", FOLDER)).toBeNull();
+    expect(editInside(`${FOLDER}/src/shared/security/agentConfigPaths.json`, FOLDER)).not.toBeNull();
+    expect(editInside(`${FOLDER}/src/features/autopilot/model/safeApproval.ts`, FOLDER)).not.toBeNull();
+    expect(editInside(`${FOLDER}/src/features/autopilot/model/decide.ts`, FOLDER)).not.toBeNull();
+    expect(editInside(`${FOLDER}/src/shared/lib/paths.ts`, FOLDER)).toBeNull();
   });
   it("reads of those files are ordinary", () => {
     expect(approvalVerdict(read("Read", [`${FOLDER}/src/features/autopilot/model/tokenizer.ts`]), FOLDER)).toMatchObject({ kind: "allow" });

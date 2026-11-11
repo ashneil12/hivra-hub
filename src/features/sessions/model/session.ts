@@ -419,6 +419,8 @@ export type ApprovalCall = {
   args?: string[];
   /** A Grep's glob, as given. Present (even empty or not text) means the search names files by a glob. */
   glob?: string;
+  /** The working folder a search's relative or missing path is resolved against, when the request carries one (round 10). */
+  cwd?: string;
 };
 
 export type Block = {

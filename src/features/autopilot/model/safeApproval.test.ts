@@ -303,7 +303,7 @@ describe("shell commands", () => {
 describe("edits", () => {
   it("are allowed inside the chat's folder only", () => {
     expect(editInside(`${FOLDER}/src/a.ts`, FOLDER)).toBeNull();
-    expect(editInside("src/a.ts", FOLDER)).toBeNull();
+    expect(editInside(`${FOLDER}/src/a.ts`, FOLDER)).toBeNull();
     // Round 9: a path with a climb is held, since the tool takes the climb by words before it opens the file.
     expect(editInside(`${FOLDER}/src/../README.md`, `${FOLDER}/`)).not.toBeNull();
     for (const path of [`${FOLDER}/../hub-y/a.ts`, `${FOLDER}-other/a.ts`, "/Users/someone/.zshrc", "~/.zshrc", "../escape.ts", FOLDER, "/"])
@@ -395,7 +395,7 @@ describe("where an edit really lands", () => {
   const edit = (...paths: string[]) => ({ tool: "Edit", paths });
 
   it("follows links: an edit that leaves the folder through one waits", async () => {
-    expect(await editStaysInside(edit(`${FOLDER}/src/a.ts`, "src/b.ts"), FOLDER, lookup)).toBeNull();
+    expect(await editStaysInside(edit(`${FOLDER}/src/a.ts`, `${FOLDER}/src/b.ts`), FOLDER, lookup)).toBeNull();
     expect(await editStaysInside(edit(`${FOLDER}/shared/config.ts`), FOLDER, lookup)).toBe(`it edits ${MAIN}/shared/config.ts, outside the chat's folder`);
     expect(await editStaysInside(edit(`${FOLDER}/src/a.ts`, `${FOLDER}/shared/x.ts`), `${FOLDER}/`, lookup)).not.toBeNull();
   });
