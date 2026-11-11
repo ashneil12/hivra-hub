@@ -382,6 +382,7 @@ mod tests {
             remarks: Some(Vec::new()),
             rate: None,
             merge_state: merge_state.map(str::to_string),
+            changed_files: None,
         }
     }
 
@@ -421,7 +422,7 @@ mod tests {
         let c = parse_compare(&compare_json(&["src/a.rs", "src/b.rs"], 3)).unwrap();
         assert_eq!(c.files, vec!["src/a.rs", "src/b.rs"]);
         assert_eq!((c.behind_by, c.cut_short), (3, false));
-        let full: Vec<&str> = std::iter::repeat("x.rs").take(COMPARE_FILE_CAP).collect();
+        let full: Vec<&str> = std::iter::repeat_n("x.rs", COMPARE_FILE_CAP).collect();
         assert!(parse_compare(&compare_json(&full, 0)).unwrap().cut_short);
         assert!(parse_compare("not json").is_err());
         assert!(

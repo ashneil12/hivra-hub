@@ -167,6 +167,16 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     if !has_run_started {
         conn.execute_batch("ALTER TABLE delegations ADD COLUMN run_started_at INTEGER;")?;
     }
+    // A row a memory or chat import wrote: history from another copy, which lends no folder (chat_media). Older stores
+    // get the column here, with every existing row unmarked.
+    let has_imported = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'imported'")?
+        .exists([])?;
+    if !has_imported {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
     Ok(())
 }
 
