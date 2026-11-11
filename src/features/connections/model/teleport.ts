@@ -255,8 +255,12 @@ function redactAny(text: string): { text: string; count: number } {
 // text (truncated output has no END line), and a base64 encoding of a PEM header.
 const BASIC_AUTH = /\b(Basic)\s+[A-Za-z0-9+/=]{8,}/g;
 const PEM_TO_END = /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g;
+const PGP_BLOCK = /-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?(?:-----END PGP PRIVATE KEY BLOCK-----|$)/g;
+const PUTTY_PRIVATE_LINE = /(Private-Lines:[ \t]*\d+[ \t]*\r?\n)([^\r\n]*)/g;
+const AGE_SECRET = /AGE-SECRET-KEY-1[0-9A-Z]+/g;
 const BASE64_PEM = /LS0tLS1CRUdJTi[A-Za-z0-9+/=]{16,}/g;
-const PRIVATE_KEY_HEADER = /PRIVATE KEY-----|LS0tLS1CRUdJTi[A-Za-z0-9+/=]*UFJJVkFURS/;
+// No `g` flag: privateKeyPresent uses test(), which is stateful on a global expression.
+const PRIVATE_KEY_HEADER = /PRIVATE KEY(?: BLOCK)?-----|PuTTY-User-Key-File|Private-Lines:[ \t]*[0-9]|AGE-SECRET-KEY-1|LS0tLS1CRUdJTi[A-Za-z0-9+/=]*UFJJVkFURS/;
 const COOKIE_SESSION = /Cookie\s*:\s*session=([^\s;]{6,})/gi;
 const NETRC_PASSWORD = /(^|[\n\r])([ \t]*password[ \t]+)([^\s]{6,})/gi;
 const MYSQL_PASSWORD = /(mysql\s+-p)(\S{4,})/gi;
@@ -269,6 +273,18 @@ function redactExtra(text: string): { text: string; count: number } {
     return `${word} [secret removed]`;
   });
   out = out.replace(PEM_TO_END, () => {
+    count += 1;
+    return "[secret removed]";
+  });
+  out = out.replace(PGP_BLOCK, () => {
+    count += 1;
+    return "[secret removed]";
+  });
+  out = out.replace(PUTTY_PRIVATE_LINE, (_match, head: string) => {
+    count += 1;
+    return `${head}[secret removed]`;
+  });
+  out = out.replace(AGE_SECRET, () => {
     count += 1;
     return "[secret removed]";
   });
