@@ -2,6 +2,7 @@
 // export adds, what is already here and what conflicts (by id and by name). The restore only adds: nothing of Ash's is
 // overwritten unless he ticks it in the preview, imported Monos wait for his OK, logins and keys are entered again,
 // automations come back paused.
+import { FOLDERLESS_CHANGED } from "../../../integrations/harness/core/chatFolder";
 import { projectKey } from "../../../shared/lib/paths";
 import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { importCustomModels, listCustomModels, type CustomModel } from "../../sessions/model/customModels";
@@ -67,6 +68,8 @@ export type Inspection = {
   memory: MemoryPreview[];
   workspace: WorkspacePreview | null;
   memoryTarget: string;
+  /** Files the export lists that an import will leave out, and why (too big for their kind, or past what the preview holds). */
+  leftOut?: { path: string; reason: string }[];
 };
 
 /** An export picked for import, read and waiting for Ash's choices in the preview. */
@@ -80,6 +83,11 @@ export type PendingImport = {
   fromV1: boolean;
   /** Which folders the export names exist on this Mac. */
   folders: Record<string, boolean>;
+  /**
+   * Project folders the export names that can never be adopted, each with why (Rust decides: the home folder or a
+   * folder holding it, `/`, `/Volumes`, the app's data folder). Older callers leave it out.
+   */
+  folderChecks?: Record<string, string>;
   /** Which of the Monos' skills this Mac has. */
   skillsHere: Record<string, boolean>;
 };
@@ -122,7 +130,14 @@ export function hereNow(): Here {
 
 // ---- the preview ----------------------------------------------------------------------------------------------------------
 
-export type ProjectPlan = { project: PortableProject; state: "new" | "here"; folderHere: boolean | null; nameClash?: string };
+export type ProjectPlan = {
+  project: PortableProject;
+  state: "new" | "here";
+  folderHere: boolean | null;
+  /** Why the folder it names can't be adopted, when Rust refuses it. */
+  folderRefused?: string;
+  nameClash?: string;
+};
 export type MonoPlan = {
   mono: PortableMono;
   /** new: comes in waiting for Ash's OK. waiting: already waiting here. here: seated here already (by id). */
@@ -159,13 +174,14 @@ export function engineLabel(engine: PortableMono["engine"]): string {
 
 /**
  * A Mono's project folders on this Mac: this Mac's folder for each of its projects (matched by project id, so a
- * different home folder is fine), else its own folder when that exists here. The rest are reported as missing.
+ * different home folder is fine). Never a folder the file merely names: a Mono with a project folder can start sessions,
+ * worktrees and actions there, so only a folder that is already a project's here counts. The rest are reported as
+ * missing.
  */
 export function foldersHere(
   mono: PortableMono,
   exported: PortableProject[],
   here: Pick<Here, "projects">,
-  exists: Record<string, boolean>,
 ): { folders: string[]; missing: string[] } {
   const folders: string[] = [];
   const add = (folder: string) => {
@@ -180,7 +196,6 @@ export function foldersHere(
     const source = exported.find((p) => p.folder && projectKey(p.folder) === projectKey(folder));
     const local = source ? here.projects.find((p) => p.id === source.id && p.folder) : undefined;
     if (local?.folder) add(local.folder);
-    else if (exists[folder]) add(folder);
     else missing.push(folder);
   }
   return { folders, missing };
@@ -196,6 +211,7 @@ export function planImport(p: PendingImport, here: Here = hereNow()): Plan {
       project,
       state: local ? "here" : "new",
       folderHere: project.folder ? (p.folders[project.folder] ?? null) : null,
+      ...(project.folder && p.folderChecks?.[project.folder] ? { folderRefused: p.folderChecks[project.folder] } : {}),
       ...(clash ? { nameClash: clash.name } : {}),
     };
   });
@@ -203,7 +219,7 @@ export function planImport(p: PendingImport, here: Here = hereNow()): Plan {
     const seated = here.monos.some((m) => m.id === mono.id);
     const waiting = here.waiting.some((s) => s.monoId === mono.id);
     const clash = here.monos.find((m) => m.id !== mono.id && lower(m.name ?? "") === lower(mono.name));
-    const { folders, missing } = foldersHere(mono, doc.projects, here, p.folders);
+    const { folders, missing } = foldersHere(mono, doc.projects, here);
     return {
       mono,
       state: seated ? "here" : waiting ? "waiting" : "new",
@@ -255,6 +271,13 @@ export function planImport(p: PendingImport, here: Here = hereNow()): Plan {
 
 export type Choices = {
   projects: Set<string>;
+  /**
+   * New projects whose folder (the one the export names) becomes the project's code folder. Never ticked for you: a
+   * file names the folder, so only a tick adopts it, and Rust refuses the broad ones whatever is ticked.
+   */
+  projectFolders: Set<string>;
+  /** Monos already seated here that also gain the projects the file lists for them (this Mac's own project folders). Never by default. */
+  monoProjects: Set<string>;
   monos: Set<string>;
   /** Seated Monos whose soul and habits should be the file's (ticked on purpose); otherwise only missing files come in. */
   replaceSouls: Set<string>;
@@ -293,6 +316,8 @@ export function defaultChoices(plan: Plan): Choices {
   const ws = plan.workspace;
   return {
     projects: ids(plan.projects, (x) => x.state === "new", (x) => x.project.id),
+    projectFolders: new Set(),
+    monoProjects: new Set(),
     // A Mono Ash deleted here isn't ticked when an older export still has it (A10: deleted Monos stay deleted).
     monos: ids(plan.monos, (x) => x.state !== "waiting" && !(x.state === "new" && monoDeletedByUser(x.mono)), (x) => x.mono.id),
     replaceSouls: new Set(),
@@ -335,6 +360,14 @@ export type RustImportReport = {
   delegationsAdded: number;
   /** Activity rows added (WP-78). Older builds leave it out. */
   activityAdded?: number;
+  /** Chats whose folder wasn't inside a project on this Mac, so they came in with none (docs/PORTABLE.md). */
+  foldersCleared?: number;
+  /** Automations that lost a folder the same way. */
+  automationFoldersCleared?: number;
+  /** Paths in tool rows that lay outside the chat's folder, dropped. */
+  toolPathsDropped?: number;
+  /** Pictures of imported notes left out (a link, a file the manifest doesn't list, one that changed); each is also a line in `notes`. Older builds leave it out. */
+  noteAssetsSkipped?: number;
   memoryFilesAdded: number;
   memoryFilesBeside: number;
   memoryHistory: string[];
@@ -356,12 +389,24 @@ export type RustImportRequest = {
     automations: string[];
     reminders: boolean;
     delegations: boolean;
+    /** Folders the project rail lists: a chat or automation keeps its folder only inside one of these or a project the app has. */
+    knownFolders: string[];
+    /** The Monos seated here: a chat keeps a Mono's own folder only for one of these. */
+    knownMonos: string[];
+    /** This Mac's folder for each project the file names, by project id: a folder from another user or home maps through it. */
+    folderMap: { projectId: string; from: string; to: string }[];
   };
 };
 
 export type ImportDeps = {
   /** Rust's part (memory and workspace). */
   rustImport?: (request: RustImportRequest) => Promise<RustImportReport>;
+  /** The folders this window knows as projects (the rail's), for the folder check Rust makes on chats and automations. */
+  knownFolders?: () => string[];
+  /** The ids of the Monos seated here (the window's own list). */
+  knownMonos?: () => string[];
+  /** Asks Rust which of these project folders can never be adopted (path to why). The app always passes it. */
+  checkFolders?: (paths: string[]) => Promise<Record<string, string>>;
   /** Registers a new project with Ash OS; resolves false when Ash OS didn't take it (it then stays on this Mac's list). */
   registerProject?: (project: PortableProject, folderHere: boolean) => Promise<boolean>;
   here?: Here;
@@ -405,6 +450,17 @@ export function pausedHabits(text: string | undefined): string {
   });
   // Already paused: byte for byte as written.
   return changed ? `${JSON.stringify(paused, null, 2)}\n` : text;
+}
+
+/**
+ * Each exported project that has a folder in the file: its id and that folder, and this Mac's folder for the same id
+ * (blank when it has none here yet). Rust maps a chat's folder from another user or home through the pair, and keeps
+ * the project's id with a cleared chat so a relink can map it through the project record as it is then.
+ */
+export function folderMapFor(exported: PortableProject[], here: Pick<Here, "projects">): { projectId: string; from: string; to: string }[] {
+  return exported.flatMap((project) =>
+    project.folder ? [{ projectId: project.id, from: project.folder, to: here.projects.find((p) => p.id === project.id)?.folder ?? "" }] : [],
+  );
 }
 
 function soulFor(mono: PortableMono, folders: string[], withMemory: boolean): SetupSoul {
@@ -544,7 +600,71 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   const problems: string[] = [];
   const { doc } = p;
 
-  // Rust first: chats, notes, automations and memory files. Nothing below depends on it, but a failure stops here.
+  // Projects first, so the chats Rust brings in are judged against them (a restore on a fresh Mac keeps its chats'
+  // folders). Ash OS keeps the list; a new one is registered there, or kept on this Mac's list when it can't be. A
+  // project's folder is adopted only when it was ticked, it is here, and Rust doesn't refuse it (asked again now).
+  const newProjects = plan.projects.filter((x) => x.state === "new" && choices.projects.has(x.project.id));
+  const wanted = newProjects.filter((x) => x.project.folder && x.folderHere === true && !x.folderRefused && choices.projectFolders.has(x.project.id));
+  let refusedNow: Record<string, string> = {};
+  if (wanted.length) {
+    try {
+      // Without Rust's check nothing is adopted: a missing checker refuses everything, it never allows it.
+      if (!deps.checkFolders) throw new Error("no checker");
+      refusedNow = await deps.checkFolders(wanted.map((x) => x.project.folder as string));
+    } catch {
+      // Rust couldn't be asked: nothing is adopted.
+      refusedNow = Object.fromEntries(wanted.map((x) => [x.project.folder as string, "it couldn't be checked"]));
+    }
+  }
+  const adopted: string[] = [];
+  let registered = 0;
+  for (const x of newProjects) {
+    const { template, ...project } = x.project;
+    const folder = x.project.folder;
+    const adopt = wanted.includes(x) && !!folder && !refusedNow[folder];
+    if (wanted.includes(x) && folder && refusedNow[folder]) problems.push(`${x.project.name}: its folder ${folder} wasn't adopted: ${refusedNow[folder]}.`);
+    if (adopt && folder) adopted.push(folder);
+    let ok = false;
+    if (deps.registerProject) {
+      try {
+        ok = await deps.registerProject(x.project, adopt);
+      } catch {
+        ok = false;
+      }
+    }
+    if (ok) registered++;
+    else addMockProject({ ...project, folder: adopt ? project.folder : null });
+    if (TEMPLATES.some((t) => t.id === template) && !hasSavedTemplate(project.id)) setTemplate(project.id, template);
+  }
+  for (const x of plan.projects.filter((x) => x.state === "here")) {
+    if (!hasSavedTemplate(x.project.id) && TEMPLATES.some((t) => t.id === x.project.template)) setTemplate(x.project.id, x.project.template);
+  }
+  // Ash's names, icons and order for projects that are here now (and have none of his own touches yet).
+  mergePrefs(doc.projectPrefs, new Set(plan.projects.filter((x) => x.state === "here" || choices.projects.has(x.project.id)).map((x) => x.project.id)));
+  if (newProjects.length) {
+    lines.push(
+      registered === newProjects.length
+        ? forYou`${plural(newProjects.length, "project")} added to Ash OS.`
+        : `${plural(newProjects.length, "project")} added${registered ? forYou` (${registered} to Ash OS, the rest on this Mac's list until Ash OS takes them)` : forYou(" to this Mac's list; Ash OS wasn't reachable to take them")}.`,
+    );
+  }
+  const withoutFolder = newProjects.filter((x) => x.project.folder && !adopted.includes(x.project.folder)).length;
+  if (withoutFolder) lines.push(`${plural(withoutFolder, "project")} came in without a code folder, so ${withoutFolder === 1 ? "its" : "their"} chats ask you to choose one.`);
+
+  const knownMonos = new Set([...here.monos.map((m) => m.id), ...choices.monos, ...here.waiting.map((s) => s.monoId)]);
+  // A seated Mono's own team folder is made before Rust, so the team's chats find it by its id (the file's path is
+  // another Mac's). One for a Mono that is only coming in is made after the Mono step below, never for anyone else.
+  const seatedMonos = new Set(here.monos.map((m) => m.id));
+  const teamsWanted = (only: Set<string>): Promise<number> => {
+    if (choices.settings === "none") return Promise.resolve(0);
+    const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
+    const value = doc.settings[MONO_TEAMS_KEY];
+    if (typeof value !== "string" || !isPortableSetting(MONO_TEAMS_KEY) || settingLooksSecret(MONO_TEAMS_KEY, value)) return Promise.resolve(0);
+    return applyOwnedSetting(MONO_TEAMS_KEY, value, choices.settings === "all" && keys.includes(MONO_TEAMS_KEY), only, deps);
+  };
+  let teamsSet = await teamsWanted(seatedMonos);
+
+  // Then Rust: chats, notes, automations and memory files. Nothing below depends on it, but a failure stops here.
   let rust: RustImportReport | null = null;
   const wantMemory = choices.memory.on && choices.memory.projects.size > 0;
   const ws = choices.workspace;
@@ -563,40 +683,13 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
               automations: [...ws.automations],
               reminders: ws.reminders,
               delegations: ws.delegations,
+              knownFolders: [...new Set([...(deps.knownFolders?.() ?? []), ...adopted])],
+              knownMonos: [...new Set([...(deps.knownMonos?.() ?? []), ...seatedMonos])],
+              folderMap: folderMapFor(doc.projects, deps.here ?? hereNow()),
             },
           }
         : {}),
     });
-  }
-
-  // Projects: Ash OS keeps the list; a new one is registered there, or kept on this Mac's list when it can't be.
-  const newProjects = plan.projects.filter((x) => x.state === "new" && choices.projects.has(x.project.id));
-  let registered = 0;
-  for (const x of newProjects) {
-    const { template, ...project } = x.project;
-    let ok = false;
-    if (deps.registerProject) {
-      try {
-        ok = await deps.registerProject(x.project, x.folderHere === true);
-      } catch {
-        ok = false;
-      }
-    }
-    if (ok) registered++;
-    else addMockProject(project);
-    if (TEMPLATES.some((t) => t.id === template) && !hasSavedTemplate(project.id)) setTemplate(project.id, template);
-  }
-  for (const x of plan.projects.filter((x) => x.state === "here")) {
-    if (!hasSavedTemplate(x.project.id) && TEMPLATES.some((t) => t.id === x.project.template)) setTemplate(x.project.id, x.project.template);
-  }
-  // Ash's names, icons and order for projects that are here now (and have none of his own touches yet).
-  mergePrefs(doc.projectPrefs, new Set(plan.projects.filter((x) => x.state === "here" || choices.projects.has(x.project.id)).map((x) => x.project.id)));
-  if (newProjects.length) {
-    lines.push(
-      registered === newProjects.length
-        ? forYou`${plural(newProjects.length, "project")} added to Ash OS.`
-        : `${plural(newProjects.length, "project")} added${registered ? forYou` (${registered} to Ash OS, the rest on this Mac's list until Ash OS takes them)` : forYou(" to this Mac's list; Ash OS wasn't reachable to take them")}.`,
-    );
   }
 
   // A10: Monos Ash deleted stay deleted. The export's deleted list joins this Mac's, and a default-team Mono this copy
@@ -609,10 +702,12 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
       if (!inFile.has(m.id) && !m.sessionId && deleted.has(teamIdOf(m) ?? m.id.toLowerCase())) removeMono(m.id);
   }
 
-  // Monos: never seated by a file. New ones wait for Ash's OK; ones already here gain only what they lack.
+  // Monos: never seated by a file. New ones wait for Ash's OK; ones already here gain only what they lack. A Mono's
+  // folders are this Mac's own project folders, read now that the ticked projects are registered.
+  const monoFoldersNow = (mono: PortableMono) => foldersHere(mono, doc.projects, hereNow()).folders;
   const withMemory = choices.memory.on && choices.memory.monoMemory;
   const waitingNow = importSouls(
-    plan.monos.filter((m) => m.state === "new" && choices.monos.has(m.mono.id)).map((m) => soulFor(m.mono, m.folders, withMemory)),
+    plan.monos.filter((m) => m.state === "new" && choices.monos.has(m.mono.id)).map((m) => soulFor(m.mono, monoFoldersNow(m.mono), withMemory)),
   );
   if (waitingNow) lines.push(`${plural(waitingNow, "Mono")} waiting for your OK in the Monos list.`);
   let merged = 0;
@@ -621,8 +716,11 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     try {
       // A soul that is still only the one the app seeded here is no one's edit: the file's own soul takes its place
       // (a fresh install taking its team in from an export). Anything edited here stays unless ticked to replace.
+      // Exactly the list the preview showed for its tick: this Mac's project folders it listed then.
       const r = await mergeIntoSeated(soulFor(m.mono, m.folders, withMemory), {
         replace: choices.replaceSouls.has(m.mono.id),
+        // Its own project list never grows from a file unless that was ticked.
+        projects: choices.monoProjects.has(m.mono.id),
         stale: async (path, current) => path === "SOUL.md" && (await isKnownSeededSoul(current)),
         ...deps.agentFiles,
       });
@@ -634,6 +732,8 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     }
   }
   if (merged) lines.push(`${plural(merged, "Mono")} already here got the files they didn't have.`);
+  // A team folder for a Mono that is only coming in, now that the Mono step is done.
+  teamsSet += await teamsWanted(new Set([...choices.monos].filter((id) => !seatedMonos.has(id))));
   // A fresh install whose team now carries the export's souls is no longer fresh: say so, so nothing reads it as one.
   if (knownTeamPack() === "plain" && [...soulsWritten].some((id) => { const mono = listMonos().find((x) => x.id === id); return !!mono && !!teamSpecOf(mono); })) {
     setTeamPack("imported");
@@ -647,7 +747,6 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   }
 
   // Teams, and with the workspace their conversations.
-  const knownMonos = new Set([...here.monos.map((m) => m.id), ...choices.monos, ...here.waiting.map((s) => s.monoId)]);
   const teams = plan.teams.filter((t) => choices.teams.has(t.team.id));
   const groupChats = ws.on && ws.groupChats;
   const result = importChats(
@@ -680,9 +779,11 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
 
   if (choices.settings !== "none") {
     const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
-    const owned = [WORKER_LIMITS_KEY, MONO_TEAMS_KEY, WORKER_DEFAULT_KEY];
-    let set = 0;
+    // The Monos' teams were set before Rust (above).
+    const owned = [WORKER_LIMITS_KEY, WORKER_DEFAULT_KEY];
+    let set = teamsSet;
     for (const key of keys) {
+      if (key === MONO_TEAMS_KEY) continue;
       // Checked again where it is written: only a real preference, and never one that looks like a secret.
       const value = doc.settings[key];
       if (typeof value !== "string" || !isPortableSetting(key) || settingLooksSecret(key, value)) continue;
@@ -710,8 +811,10 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   if (rust) {
     const r = rust;
     if (r.sessionsAdded || r.sessionsCopied) lines.push(`${plural(r.sessionsAdded + r.sessionsCopied, "chat")} added${r.sessionsCopied ? ` (${r.sessionsCopied} as copies beside yours)` : ""}.`);
+    if (r.foldersCleared) lines.push(`${plural(r.foldersCleared, "chat")} came in without a folder, because ${r.foldersCleared === 1 ? "its" : "their"} folder isn't inside a project on this Mac. Each asks you to choose a project before it runs.`);
     if (r.notesAdded || r.notesCopied) lines.push(`${plural(r.notesAdded + r.notesCopied, "note")} added.`);
     if (r.automationsAdded) lines.push(`${plural(r.automationsAdded, "automation")} added, paused until you turn each on.`);
+    if (r.automationFoldersCleared) lines.push(`${plural(r.automationFoldersCleared, "automation")} lost a folder that isn't inside a project on this Mac. Choose a project for ${r.automationFoldersCleared === 1 ? "it" : "each"} before turning ${r.automationFoldersCleared === 1 ? "it" : "them"} on.`);
     if (r.remindersAdded) lines.push(`${plural(r.remindersAdded, "reminder")} added.`);
     if (r.delegationsAdded) lines.push(`${plural(r.delegationsAdded, "delegation")} added to the history.`);
     if (r.activityAdded) lines.push(`${r.activityAdded === 1 ? "1 activity line" : `${r.activityAdded} activity lines`} added.`);
@@ -720,6 +823,8 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
     if (r.kept) lines.push(`${plural(r.kept, "thing")} already here kept as they were.`);
     problems.push(...r.notes);
   }
+  // Chats that came in with no folder are listed in the sidebar's "Needs a folder" group; one already on screen reads again.
+  if (rust?.foldersCleared && typeof window !== "undefined") window.dispatchEvent(new Event(FOLDERLESS_CHANGED));
   if (!lines.length) lines.push("Nothing new to add: it was all here already.");
   return { lines, rust, problems };
 }

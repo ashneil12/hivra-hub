@@ -174,6 +174,10 @@ export type HarnessEvent =
       preview?: ToolPreview;
       /** Exactly what it would run, when the provider can say. */
       call?: ApprovalCall;
+      /** WP-150: true when `call` carries every argument the tool runs with. The phone publishes only those. */
+      callComplete?: boolean;
+      /** WP-122: the child that asked, so the answer is sent to its port. */
+      child?: { name: string; sessionPort: string; detail?: string };
     }
   | {
       type: "approval.resolved";
@@ -261,6 +265,11 @@ export type HarnessSessionInput = {
    * (src/features/firstmate/model/readOnly.ts); for every CLI the app also checks the checkout after each turn.
    */
   firstMate?: boolean;
+  /**
+   * Hivra WP-143: this session is a Mono, a coding team or one of their workers (features/crew/model/crewSession.ts).
+   * Claude Code starts these on Anthropic with a cheap Explore agent passed as a flag (providers/claude/explorePin.ts).
+   */
+  crew?: boolean;
   onEvent: (event: HarnessEvent) => void;
 };
 

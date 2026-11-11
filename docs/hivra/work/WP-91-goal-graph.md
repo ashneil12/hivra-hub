@@ -199,3 +199,9 @@ oh-my-hermes is MIT (Copyright (c) 2026 oh-my-hermes contributors), read at `267
 - [ ] `npm run check` passes.
 - [ ] Dev-copy check with `scripts/fake-claude.mjs`: a run whose check is red on the base turns green, one task fails
   and is repaired, one irreversible task waits for a decision, and the graph shows all of it.
+
+## Addendum (10 Nov 2026): the run goal reaches every node's brief
+
+Source: Paperclip (MIT, Copyright (c) 2025 Paperclip AI). Ideas only, no code or text copied.
+
+Each node's brief names the run goal as its intent and gives the node's own line from the plan (title and layer), so a worker sees why, not only its title. Brief template only; there is no second goals store. Today `src/features/firstmate/model/brief.ts` keeps intent, spec and goal only, so no parent chain or run goal reaches a worker. Done when a node's brief in a fixture run carries the run goal and the node's plan line, and a test pins it.

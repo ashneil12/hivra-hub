@@ -5,6 +5,13 @@ import type { RemoveWorktree } from "./worktrees";
 /** The worktree clean-up report (src-tauri/src/worktree_janitor.rs). It only reads; the two taps act on it. */
 export type JanitorOutcome = "remove" | "free" | "keep";
 
+export type JanitorBuildOutput = {
+  path: string;
+  bytes: number | null;
+  linked: boolean;
+  ignored: boolean;
+};
+
 export type JanitorEntry = {
   path: string;
   kind: string;
@@ -14,7 +21,7 @@ export type JanitorEntry = {
   chats: number;
   lastActivity: number | null;
   totalBytes: number | null;
-  buildOutput: { path: string; bytes: number | null; linked: boolean; ignored: boolean }[];
+  buildOutput: JanitorBuildOutput[];
   verdict: {
     outcome: JanitorOutcome;
     state: string;
@@ -29,6 +36,9 @@ export type JanitorReport = {
   roots: string[];
   entries: JanitorEntry[];
   totalBytes: number;
+  /** What every worktree holds in build output (inside `totalBytes`), and how many hold any. */
+  buildOutputBytes: number;
+  buildOutputCount: number;
   removeCount: number;
   removeBytes: number;
   freeCount: number;
@@ -103,6 +113,22 @@ export function tapBytes(entries: JanitorEntry[], tier: CleanTier): number {
       (tier === "remove" ? entry.verdict.reclaimBytes : entry.verdict.freeableBytes),
     0,
   );
+}
+
+/** What a worktree holds in build output folders (target/, node_modules/ ...). A link counts nothing. */
+export function buildOutputBytes(entry: Pick<JanitorEntry, "buildOutput">): number {
+  return entry.buildOutput
+    .filter((output) => !output.linked)
+    .reduce((sum, output) => sum + (output.bytes ?? 0), 0);
+}
+
+/** "target 9.1 GB, node_modules 400 MB": the folders that hold something, biggest first. */
+export function buildOutputFolders(entry: Pick<JanitorEntry, "buildOutput">): string {
+  return entry.buildOutput
+    .filter((output) => !output.linked && (output.bytes === null || output.bytes > 0))
+    .sort((a, b) => (b.bytes ?? 0) - (a.bytes ?? 0))
+    .map((output) => `${output.path} ${formatBytes(output.bytes)}`)
+    .join(", ");
 }
 
 export function formatBytes(bytes: number | null | undefined): string {

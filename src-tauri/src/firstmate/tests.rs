@@ -114,6 +114,47 @@ fn depth_counts_only_open_work_above_the_chat() {
 
 // ---- derive_status -------------------------------------------------------------------------------------------------
 
+/// The worktree clean-up asks `is_done` of every row without loading it. It must say what the shown status says.
+#[test]
+fn is_done_agrees_with_the_shown_status_for_every_state_and_verdict() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let row = record(&mut conn, launch("mono", "r1", "child"), 1).unwrap();
+    let states = [
+        "running",
+        "question",
+        "completed",
+        "failed",
+        "cancelled",
+        "nonsense",
+    ];
+    let verdicts = [
+        None,
+        Some("pending"),
+        Some("passed"),
+        Some("failed"),
+        Some("unsure"),
+        Some("odd"),
+    ];
+    let mut done = 0;
+    for state in states {
+        for verdict in verdicts {
+            let mut shown = row.clone();
+            shown.state = state.into();
+            shown.gate_verdict = verdict.map(str::to_string);
+            let expected = status::status_of(&shown).status == Status::Done;
+            assert_eq!(
+                status::is_done(state, verdict),
+                expected,
+                "{state} with {verdict:?}"
+            );
+            done += usize::from(expected);
+        }
+    }
+    // Completed with no gates or passed gates: the only two that are done.
+    assert_eq!(done, 2);
+}
+
 #[test]
 fn a_running_row_is_working_and_a_judged_stall_is_only_a_notice() {
     let store = store();

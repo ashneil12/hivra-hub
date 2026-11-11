@@ -1,5 +1,6 @@
 // Translated from Row-Bot src/row_bot/external_content.py (Apache-2.0).
 // Copyright 2026 Row-Bot Contributors
+// The licence text is LICENSE.row-bot beside this file; see also NOTICE and docs/hivra/credits.json.
 // What changed: only the injection scan. The fence and the warning sentence are not used.
 // A match refuses a proposed memory and is noted on recall. It never deletes one.
 

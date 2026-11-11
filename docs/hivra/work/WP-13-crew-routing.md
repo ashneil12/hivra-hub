@@ -45,3 +45,5 @@ must not end the task.
 - [ ] Tests: precedence order, defaults from signed-in CLIs, each failure class (reroute vs not), the retry budget,
       and pause-then-resume on a usage limit.
 - [ ] The rules UI has a browser spec; `npm run check` passes.
+
+Spend limits, including a per-task ceiling for billed models and the rule that a reroute never moves a task onto a billed model without the person's OK, live in `WP-XX-spend-limits.md` (Paperclip and Omnigent), not here.

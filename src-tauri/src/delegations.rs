@@ -167,6 +167,16 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     if !has_run_started {
         conn.execute_batch("ALTER TABLE delegations ADD COLUMN run_started_at INTEGER;")?;
     }
+    // A row a memory or chat import wrote: history from another copy, which lends no folder (chat_media). Older stores
+    // get the column here, with every existing row unmarked.
+    let has_imported = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'imported'")?
+        .exists([])?;
+    if !has_imported {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;",
+        )?;
+    }
     Ok(())
 }
 
@@ -875,11 +885,109 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
     row.note(now, &by, "settled", detail);
     row.touch(now);
     save(&tx, &row)?;
+    // WP-157: one summary line. Cancelled work is not an outcome. A repeated settle never reaches here. The line is
+    // written in a savepoint: a journal that cannot be written is logged and skipped, and the task is still done.
+    if row.state == COMPLETED || row.state == FAILED {
+        crate::work_log::best_effort(&tx, "finished task", |conn| record_work_outcome(conn, &row));
+    }
     tx.commit().map_err(|e| e.to_string())?;
     Ok(Change {
         applied: true,
         row: Some(row),
     })
+}
+
+/// The work log line for a delegation that just finished. Rework is send-backs already stored, plus each resumed
+/// generation after the first. The source keeps a retry of this same finish from writing a second line.
+fn record_work_outcome(conn: &Connection, row: &Delegation) -> Result<(), String> {
+    let ending = if row.state == COMPLETED {
+        "done"
+    } else {
+        "failed"
+    };
+    let rework = crate::work_log::sent_back_count(conn, &row.id)?
+        .saturating_add(row.generation.saturating_sub(1));
+    let source = crate::work_log::delegation_source(&row.id, ending, row.generation);
+    let task = row
+        .title
+        .as_deref()
+        .or(row.goal.as_deref())
+        .or(row.brief.as_deref())
+        .unwrap_or("");
+    crate::work_log::record_outcome(
+        conn,
+        &crate::work_log::FinishedWork {
+            project: row.project.as_deref().unwrap_or(""),
+            task_id: &row.id,
+            task,
+            delivered: row.result.as_deref().unwrap_or(""),
+            problem: if ending == "failed" {
+                row.error.as_deref().unwrap_or("")
+            } else {
+                ""
+            },
+            ending,
+            rework,
+            queued_at: row.created_at,
+            at_ms: row.settled_at.unwrap_or(row.updated_at),
+            source: &source,
+        },
+    )?;
+    Ok(())
+}
+
+/// WP-157: the checks sent this work back for another try. A repeat of the same try returns the first line. A task
+/// that is already finished, or already gone, changes nothing: a late result is not a new outcome.
+pub(crate) fn sent_back(
+    conn: &mut Connection,
+    id: &str,
+    rework: i64,
+    report: &str,
+    now: i64,
+) -> Result<Option<crate::work_log::Line>, String> {
+    if !(1..=100).contains(&rework) {
+        return Err("Rework has to be from 1 to 100.".into());
+    }
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("There's no task with that id.".into());
+    }
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let Some(row) = get(&tx, id)? else {
+        return Ok(None);
+    };
+    if !row.is_open() {
+        return Ok(None);
+    }
+    let shown = crate::work_log::sent_back_count(&tx, &row.id)?
+        .saturating_add(row.generation.saturating_sub(1))
+        .saturating_add(1);
+    let source = crate::work_log::delegation_source(&row.id, "sent-back", rework);
+    let task = row
+        .title
+        .as_deref()
+        .or(row.goal.as_deref())
+        .or(row.brief.as_deref())
+        .unwrap_or("");
+    let line = crate::work_log::record_outcome(
+        &tx,
+        &crate::work_log::FinishedWork {
+            project: row.project.as_deref().unwrap_or(""),
+            task_id: &row.id,
+            task,
+            delivered: report,
+            problem: "",
+            ending: "sent back",
+            rework: shown,
+            queued_at: row.created_at,
+            at_ms: now,
+            source: &source,
+        },
+    )?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(Some(line))
 }
 
 struct StagedProof {
@@ -1441,6 +1549,34 @@ pub fn list_open(conn: &Connection) -> Result<Vec<Delegation>, String> {
     )
 }
 
+/// Every row's chat and whether the row shows as done (`firstmate::status::is_done`), oldest first, without loading the
+/// rows' text: the worktree clean-up reads the newest row per chat to see whether a worker's task was accepted.
+pub(crate) fn acceptance(conn: &Connection) -> Result<Vec<(String, bool)>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT child_session, state, gate_verdict FROM delegations ORDER BY created_at, rowid",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(child, state, gate)| {
+            let done = crate::firstmate::status::is_done(&state, gate.as_deref());
+            (child, done)
+        })
+        .collect())
+}
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnedQuery {
@@ -1768,6 +1904,24 @@ pub fn delegations_settle(
         changed(&app, &[row]);
     }
     Ok(change)
+}
+
+/// WP-157: one work log line when checks send this work back.
+#[tauri::command(async)]
+pub fn delegations_sent_back(
+    store: State<'_, SessionStore>,
+    id: String,
+    rework: i64,
+    report: Option<String>,
+) -> Result<bool, String> {
+    Ok(sent_back(
+        &mut *store.lock_conn()?,
+        &id,
+        rework,
+        report.as_deref().unwrap_or(""),
+        now_millis(),
+    )?
+    .is_some())
 }
 
 #[tauri::command(async)]
@@ -2472,6 +2626,24 @@ mod tests {
             (reopened.id.as_str(), reopened.state.as_str()),
             (row.id.as_str(), RUNNING)
         );
+    }
+
+    /// The same owner and request id get the row already there back, even one the owner cancelled, so a restart that
+    /// wants a worker of its own must send a new request id (WP-172: fanoutCheckpoint.ts resume, confirm).
+    #[test]
+    fn a_cancelled_request_comes_back_as_the_same_row_so_a_restart_needs_a_new_request_id() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let first = record(&mut conn, launch("mono", "req-x", "child-x"), 10).unwrap();
+        cancel(&mut conn, std::slice::from_ref(&first.id), None, None, 11).unwrap();
+        let again = record(&mut conn, launch("mono", "req-x", "child-x"), 12).unwrap();
+        assert_eq!(
+            (again.id.as_str(), again.state.as_str()),
+            (first.id.as_str(), CANCELLED)
+        );
+        let restarted = record(&mut conn, launch("mono", "req-x-r2", "child-x"), 13).unwrap();
+        assert_ne!(restarted.id, first.id);
+        assert_eq!(restarted.state, RUNNING);
     }
 
     /// A worker waiting on its owner's answer is taken over by a later request: the question is no longer anyone's.

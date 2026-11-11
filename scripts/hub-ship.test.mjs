@@ -35,6 +35,19 @@ const pids = new Set();
 const roots = [];
 
 /**
+ * How long the real app waits for a held data folder before it refuses with exit 75: `LOCK_WAIT` in
+ * src-tauri/src/instance.rs, read from the source so the fake app below can't drift from it. A rename or a change of
+ * shape fails here, loudly, instead of leaving the fake on an old number.
+ */
+function realLockWaitMs() {
+  const source = fs.readFileSync(path.join(SCRIPTS, "..", "src-tauri", "src", "instance.rs"), "utf8");
+  const found = /^const LOCK_WAIT: Duration = Duration::from_(secs|millis)\((\d+)\);/m.exec(source);
+  if (!found) throw new Error("instance.rs no longer has `const LOCK_WAIT: Duration = Duration::from_secs(N);`: teach realLockWaitMs() its new shape");
+  return Number(found[2]) * (found[1] === "secs" ? 1000 : 1);
+}
+const REAL_LOCK_WAIT_MS = realLockWaitMs();
+
+/**
  * Every live process started from one of this suite's temporary folders (its command line names the folder: the fake
  * app, the shell that execs it, the runner), plus anything those spawned.
  */
@@ -180,13 +193,23 @@ const read = (file) => { try { return JSON.parse(fs.readFileSync(file, "utf8"));
 const data = path.join(process.env.HOME, "Library/Application Support/com.ash.monocode-hub");
 fs.mkdirSync(data, { recursive: true });
 let lock = null;
-// Wait for the lock to go, with a deadline far past what a loaded machine needs holding it.
-const deadline = Date.now() + 60_000;
+// Wait the way the real app does (src-tauri/src/instance.rs): try, and while another copy holds the folder retry every
+// 100 ms until its LOCK_WAIT is over, then refuse with exit 75. Never longer: the runner opens a build with the folder
+// free, so a build that has to wait here would have to wait in the real app too.
+const started = Date.now();
+let tries = 0;
 while (!lock) {
+  tries += 1;
   const db = new DatabaseSync(path.join(data, "instance-owner.sqlite"));
   try { db.exec("PRAGMA busy_timeout = 0"); db.exec("BEGIN EXCLUSIVE"); lock = db; }
-  catch { db.close(); if (Date.now() > deadline) process.exit(75); await sleep(100); }
+  catch {
+    db.close();
+    if (tries === 1) fs.writeFileSync(path.join(process.env.HOME, "lock-waiting.json"), JSON.stringify({ pid: process.pid, at: Date.now() }));
+    if (Date.now() - started >= ${REAL_LOCK_WAIT_MS}) process.exit(75);
+    await sleep(100);
+  }
 }
+fs.appendFileSync(path.join(process.env.HOME, "lock-waits.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, tries, waitedMs: Date.now() - started, at: Date.now() }) + "\n");
 // Keep the lock reachable for the life of the process: a collected DatabaseSync closes and drops the lock.
 globalThis.instanceLock = lock;
 const lstart = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(process.pid)], { encoding: "utf8", env: { ...process.env, LC_ALL: "C" } }).stdout.trim();
@@ -206,7 +229,9 @@ const first = ship();
 const onTrial = first?.state?.phase === "trial" && first.state.to.sha === fake.sha;
 if (onTrial) fs.appendFileSync(path.join(data, "monocode.db"), "migrated by " + fake.sha);
 if (onTrial && fake.behavior === "crash") setTimeout(() => process.exit(3), 300);
+let quitting = false;
 setInterval(() => {
+  if (quitting) return;
   const now = ship();
   if (!now?.state) return;
   const { dir, state } = now;
@@ -216,7 +241,14 @@ setInterval(() => {
     fs.writeFileSync(path.join(dir, "refused.json"), JSON.stringify({ reason: "Its signature differs from this app's." }));
   else if (staged && fake.behavior !== "refuse") {
     fs.writeFileSync(path.join(dir, "accepted.json"), JSON.stringify({ pid: process.pid, bridge: "down" }));
-    process.exit(0);
+    if (!fake.quitDelayMs) process.exit(0);
+    // A real app takes a moment to quit and keeps the data folder until it is gone: this one for as long as the test says.
+    quitting = true;
+    const quitStartedAt = Date.now();
+    setTimeout(() => {
+      fs.appendFileSync(path.join(process.env.HOME, "lock-releases.jsonl"), JSON.stringify({ sha: fake.sha, pid: process.pid, quitStartedAt, releasedAt: Date.now() }) + "\n");
+      process.exit(0);
+    }, fake.quitDelayMs);
   }
   if (["commit", "old"].includes(fake.behavior) && state.phase === "trial" && state.to.sha === fake.sha && !fs.existsSync(path.join(dir, "committed.json")))
     fs.writeFileSync(path.join(dir, "committed.json"), JSON.stringify({ sha: fake.sha, pid: process.pid }));
@@ -276,7 +308,7 @@ esac
 exit 0
 `;
 
-function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version }) {
+function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = HUB, signature = "dev", behavior = "commit", root, version, quitDelayMs = 0 }) {
   fs.mkdirSync(path.join(app, "Contents/MacOS"), { recursive: true });
   fs.mkdirSync(path.join(app, "Contents/Resources"), { recursive: true });
   fs.writeFileSync(
@@ -333,12 +365,12 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
       }),
     );
   }
-  fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch }));
+  fs.writeFileSync(path.join(app, "Contents/Resources/fake.json"), JSON.stringify({ behavior, signature, sha, branch, quitDelayMs }));
   return app;
 }
 
 /** A temporary HOME with an installed old app and its data, a clean checkout, and a new bundle built from its HEAD. */
-function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } = {}) {
+function world({ newBehavior = "commit", oldBehavior = "old", oldQuitDelayMs = 0, newBundle = {} } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
   roots.push(root);
   fs.writeFileSync(path.join(root, "fake-app.mjs"), fakeAppSource());
@@ -362,7 +394,7 @@ function world({ newBehavior = "commit", oldBehavior = "old", newBundle = {} } =
   fs.mkdirSync(path.join(repo, "target/hub-checks"), { recursive: true });
   fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
   const paths = homePaths(home);
-  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root });
+  const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root, quitDelayMs: oldQuitDelayMs });
   const bundle = bundleAt(path.join(repo, "target/release/bundle/macos/MonoCode Hub.app"), {
     sha,
     behavior: newBehavior,
@@ -677,25 +709,112 @@ test("a ship commits: the new build is in place, the old one kept, the database 
   assert.equal(receipt.outcome, "committed");
   assert.equal(receipt.running.sha, w.sha);
   assert.equal(receipt.from.sha, SHA_A);
+  // Who holds the folder while the runner opens a build? Nobody: the old app has quit, the runner held the folder for
+  // the swap and let go just before opening the new build, so the build takes it on its first try. The real app only
+  // waits LOCK_WAIT (the fake app waits the same), so a runner that opened a build while still holding it would fail here.
+  assert.deepEqual(
+    lockWaits(w).map((took) => [took.sha, took.tries]),
+    [[SHA_A, 1], [w.sha, 1]],
+    "the trial build found the data folder free",
+  );
   assert.equal(readJson(path.join(w.data, "running.json")).sha, w.sha);
   assert.equal(readJson(path.join(w.data, "ship/current.json")).id, answer.id);
   assert.equal(state.launch.mode, "direct", "under a temporary HOME the app is opened directly");
   assert.equal(state.launch.env.CFFIXED_USER_HOME, w.home);
 });
 
-// The app takes the data folder's lock like the real one. On a loaded machine the previous holder can take longer
-// than a couple of seconds to let go; the app must wait for the lock to go, not give up and make the ship roll back.
-test("the app waits for a held data-folder lock instead of giving up after two seconds", async () => {
+const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Each fake app that took the data folder, in order: which build, and how many tries it needed. */
+function lockWaits(w) {
+  try {
+    return fs
+      .readFileSync(path.join(w.home, "lock-waits.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch {
+    return [];
+  }
+}
+
+/** The fake app, started like `startApp`, with a promise for how it ended. */
+function startAppWatched(w) {
+  const spec = appCommand(w.app, w.home);
+  const child = spawn(spec.command, spec.args, { env: w.env, detached: true, stdio: "ignore" });
+  pids.add(child.pid);
+  const exited = new Promise((resolve) => child.once("exit", (code, signal) => resolve({ code, signal, at: Date.now() })));
+  child.unref();
+  return { pid: child.pid, exited };
+}
+
+// The fake app takes the data folder's lock the way the real one does (src-tauri/src/instance.rs): retry every 100 ms
+// for the real wait, then refuse with exit 75. It used to wait 60 s, so every ship test would have passed a build that
+// the real app, giving up after 2 s, turns into a rolled-back ship. Nothing here lets it wait longer than the app.
+test("a copy that finds the data folder held takes it once the holder lets go inside the app's wait", async () => {
   const w = world();
-  const lock = tryLock(path.join(w.data, "instance-owner.sqlite"));
-  assert.ok(lock, "the test holds the data folder's lock");
-  const pid = startApp(w);
-  // Past the old two-second budget, where the app used to exit 75.
-  await new Promise((resolve) => setTimeout(resolve, 3000));
-  assert.equal(alive(pid), true, "the app is still waiting for the lock, not gone");
-  releaseLock(lock);
-  const running = await until("the app to take the lock", () => readJson(path.join(w.data, "running.json")), 30_000);
-  assert.equal(running.pid, pid);
+  let holder = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(holder, "the test holds the data folder's lock");
+  try {
+    const app = startAppWatched(w);
+    await until("the app to find the folder held", () => readJson(path.join(w.home, "lock-waiting.json")));
+    await pause(REAL_LOCK_WAIT_MS / 4);
+    assert.equal(alive(app.pid), true, "the app is still inside its wait, not gone");
+    releaseLock(holder);
+    holder = null;
+    const running = await until("the app to take the folder", () => readJson(path.join(w.data, "running.json")), REAL_LOCK_WAIT_MS + 30_000);
+    assert.equal(running.pid, app.pid);
+    assert.ok(lockWaits(w)[0].tries > 1, "it had to retry for the folder");
+  } finally {
+    releaseLock(holder);
+  }
+});
+
+test("a copy still finding the data folder held when the app's wait is over refuses with exit 75, as the real app does", async () => {
+  const w = world();
+  const holder = tryLock(path.join(w.data, "instance-owner.sqlite"));
+  assert.ok(holder, "the test holds the data folder's lock");
+  try {
+    const app = startAppWatched(w);
+    const waiting = await until("the app to find the folder held", () => readJson(path.join(w.home, "lock-waiting.json")));
+    let ended = null;
+    app.exited.then((how) => (ended = how));
+    await until("the app to give up", () => ended, REAL_LOCK_WAIT_MS + 10_000);
+    assert.equal(ended.code, 75, `it refused: ${JSON.stringify(ended)}`);
+    assert.ok(ended.at - waiting.at >= REAL_LOCK_WAIT_MS - 500, `it waited the real ${REAL_LOCK_WAIT_MS} ms before refusing, not less`);
+    assert.equal(readJson(path.join(w.data, "running.json")), null, "it never took the folder");
+    assert.deepEqual(lockWaits(w), []);
+  } finally {
+    releaseLock(holder);
+  }
+});
+
+// An old app can be slow to quit and keep the data folder past the new build's whole wait. The runner is who waits for
+// that, not the new build: it opens the build only once it holds the folder itself, so the build finds it free. A runner
+// that opened the build while the old app still held the folder would get exit 75 from the build, as the real app would.
+test("an old app that keeps the data folder past the app's wait is waited out by the runner, not by the new build", async () => {
+  const quitDelayMs = REAL_LOCK_WAIT_MS + 2_000;
+  const w = world({ oldQuitDelayMs: quitDelayMs });
+  startApp(w);
+  await until("the old app", () => readJson(path.join(w.data, "running.json"))?.sha === SHA_A);
+  const { code, answer } = ship(w);
+  assert.equal(code, 0, JSON.stringify(answer));
+  const dir = answer.shipDir;
+  const state = await until("the commit", settled(dir, "committed"), 90_000);
+  remember(dir);
+  assert.equal(stampOf(w.app).sha, w.sha, "the new build is in the app's place");
+  const [released] = fs
+    .readFileSync(path.join(w.home, "lock-releases.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line));
+  assert.equal(released.sha, SHA_A);
+  assert.ok(released.releasedAt - released.quitStartedAt > REAL_LOCK_WAIT_MS, "the old app kept the folder longer than the app's wait");
+  const [, fresh] = lockWaits(w);
+  assert.equal(fresh.sha, w.sha);
+  assert.ok(fresh.at >= released.releasedAt, "the new build took the folder only after the old app let go");
+  assert.equal(fresh.tries, 1, "and found it free on its first try");
+  assert.equal(state.launch.mode, "direct");
 });
 
 test("no commit rolls back: the old app returns and the database matches its copy byte for byte", async () => {
@@ -719,6 +838,13 @@ test("no commit rolls back: the old app returns and the database matches its cop
   const receipt = readJson(path.join(dir, "receipt.json"));
   assert.equal(receipt.outcome, "rolled-back");
   assert.equal(receipt.running.sha, SHA_A);
+  // The rollback hands the folder over the same way: the stopped trial build is gone, the runner held the folder to
+  // put the old build back, and the reopened old build takes it on its first try.
+  assert.deepEqual(
+    lockWaits(w).map((took) => [took.sha, took.tries]),
+    [[w.sha, 1], [SHA_A, 1]],
+    "the trial build and the reopened old build each found the data folder free",
+  );
 });
 
 test("a build that exits during its trial is rolled back at once", async () => {
@@ -1132,6 +1258,36 @@ test("SH-1: tidying old ships never archives the ship a rollback under way resto
   write(rollback, { phase: "committed", kind: "rollback", requestedBy: { via: "hub:rollback", rollsBack: committed } });
   write("20261022-000005-5555555", { phase: "committed" });
   assert.deepEqual(retainShips(ships, archive, "20261022-000005-5555555"), [committed, "20261022-000002-2222222"]);
+});
+
+test("SH-1: tidying archives nothing while a ship folder's state can't be read, so a rollback being written keeps its copy", () => {
+  // The Windows 'SH-1: hub:rollback of a ship with two newer ship folders…' failure: a read of the rollback's state.json
+  // during its writer's rename comes back empty, the tidy-up no longer sees which ship the rollback restores from, and
+  // archives it. An unreadable state could be that rollback, so nothing moves until it can be read.
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
+  roots.push(root);
+  const ships = path.join(root, "ship");
+  const archive = path.join(root, "archive");
+  const write = (id, text) => {
+    fs.mkdirSync(path.join(ships, id, "backup"), { recursive: true });
+    fs.writeFileSync(path.join(ships, id, "state.json"), text);
+  };
+  const committed = "20261022-000001-1111111";
+  write(committed, JSON.stringify({ id: committed, phase: "committed" }));
+  write("20261022-000002-2222222", JSON.stringify({ id: "20261022-000002-2222222", phase: "rolled-back" }));
+  write("20261022-000003-3333333", JSON.stringify({ id: "20261022-000003-3333333", phase: "rolled-back" }));
+  const rollback = "20261022-000004-aaaaaaa-rollback";
+  // Half written, as a read in the middle of the writer's replace can see it.
+  write(rollback, '{"id":"20261022-000004-aaaaaaa-rollback","phase":"wai');
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  assert.ok(fs.existsSync(path.join(ships, committed, "backup")), "the rollback's database copy stays put");
+  // A folder still being staged, with no state yet, is the same unknown.
+  fs.rmSync(path.join(ships, rollback, "state.json"));
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  // Once it reads as the rollback it is, the committed ship is protected by name and the rest is tidied as before.
+  write(rollback, JSON.stringify({ id: rollback, phase: "waiting", kind: "rollback", requestedBy: { via: "hub:rollback", rollsBack: committed } }));
+  assert.deepEqual(retainShips(ships, archive, "20261022-000003-3333333"), []);
+  assert.ok(fs.existsSync(path.join(ships, committed, "backup")));
 });
 
 test("SH-4: a superseded ship's LaunchAgent is booted out and its plist removed", { skip: process.platform === "win32" }, async () => {

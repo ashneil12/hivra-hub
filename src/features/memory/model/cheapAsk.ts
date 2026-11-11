@@ -1,8 +1,8 @@
 // WP-103: the cheap tier asks a model the person added under Other models, on that model's own key. The key goes from
 // the Keychain to the provider inside Rust and never comes back here (src-tauri/src/memory_cheap.rs).
 //
-// Every failure is a "try again later" for the curator, never a crash and never a retry loop of its own: the next turn
-// tries again by itself, because a deferred turn is not marked done.
+// A failure that may pass is a "try again later" for the curator (at most two tries a turn, set by the hook); one that
+// will not pass is final. Never a crash and never a retry loop of its own.
 
 import { invoke } from "@tauri-apps/api/core";
 import { listCustomModels, type CustomModel } from "../../sessions/model/customModels";
@@ -28,20 +28,24 @@ export function cheapProblem(modelId: string | undefined): string | undefined {
 }
 
 /**
- * Any failure at all is a "try again later": no key, a timeout, a reply that cannot be read, a 4xx or a 5xx. The turn
- * is kept for next time rather than dropped; the background budget is what stops that becoming a retry storm.
+ * A failure that may pass (no answer in time, a busy provider, a 5xx) is a "try again later": the turn is kept for next
+ * time, and the hook allows two tries per turn. A failure that will not pass is final, so it is never asked again:
+ * a refusal (a bad key, a 401 or 403, a secret in the prompt, a prompt too long) and a reply that is not the JSON
+ * the curator needs. Retrying those only spends the budget.
  */
 function unfinished(outcome: CheapOutcome): CuratorAsk {
-  if (outcome.ok && typeof outcome.text === "string" && outcome.text.trim()) {
-    // An empty or unreadable reply is a bad reply, not a quiet turn: leaving it deferred is how it gets tried again.
-    if (parseCuratorReply(outcome.text).length > 0) return { ok: true, text: outcome.text };
+  if (outcome.ok && typeof outcome.text === "string" && outcome.text.trim() && parseCuratorReply(outcome.text).length > 0) {
+    return { ok: true, text: outcome.text };
+  }
+  if (outcome.ok || outcome.kind === "refused" || outcome.kind === "unreachable") {
+    return { ok: false, kind: "refused", reason: outcome.reason || "The model's reply couldn't be read." };
   }
   return { ok: false, kind: "timeout", reason: outcome.reason || "The model didn't answer this time." };
 }
 
 /**
- * The curator's ask on the cheap tier. Anything at all that goes wrong comes back as a timeout, which the curator
- * keeps deferred, so no turn is ever dropped because a provider was busy or a key was not there yet.
+ * The curator's ask on the cheap tier. A busy provider or a thrown call comes back as a timeout, which the curator
+ * keeps deferred; a refusal or an unreadable reply comes back as refused, which is final.
  */
 export function cheapAsk(modelId: string | undefined, call: (route: CheapRoute, prompt: string) => Promise<CheapOutcome> = realCall): (prompt: string) => Promise<CuratorAsk> {
   return async (prompt) => {

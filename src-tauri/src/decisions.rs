@@ -177,17 +177,30 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     Ok(())
 }
 
+/// WP-172: a restart decision of a fan-out names its plan, its task and the request id that was stopped (up to 100,
+/// 40 and 100 characters), then a 16-character owner tag, with the prefix and separators: 272 at most.
+const FANOUT_AGAIN_KEY_MAX: usize = 300;
+
+fn key_max(value: &str) -> usize {
+    if is_again_key(value) {
+        FANOUT_AGAIN_KEY_MAX
+    } else {
+        KEY_MAX
+    }
+}
+
 fn key_like(value: &str) -> Result<String, String> {
     let value = value.trim();
+    let max = key_max(value);
     if value.is_empty()
-        || value.len() > KEY_MAX
+        || value.len() > max
         || !value
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':' | b'/'))
     {
         return Err(format!(
             "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : / and at \
-             most {KEY_MAX} characters"
+             most {max} characters"
         ));
     }
     Ok(value.to_string())
@@ -467,21 +480,52 @@ pub struct AnswerOutcome {
     pub released_tasks: Vec<String>,
 }
 
+/// What the app says it is when it closes a fresh-eyes question itself (a brief taken back, replaced, or accepted as a
+/// clean review). It tells no one: the chat that asked did the thing, or the person allowed it.
+pub const APP_CLOSER: &str = "app:fresh-eyes";
+
+/// WP-144: the questions a fresh-eyes review puts to the person (the review itself, and a brief that could not start).
+fn is_review_key(key: &str) -> bool {
+    key.starts_with("fresh-eyes/") || key.starts_with("fresh-eyes-start/")
+}
+
 /// WP-91: the decision keys only the person may answer, whatever path asked.
 ///
 /// An irreversible step of an orchestration run is parked under `irreversible/<lead>/<task>`. A person answers it in
 /// the app (`by` absent or `"user"`); a chat answering on a first mate's behalf (`chat:<session>`) and autopilot both
 /// count as a machine, and are refused here rather than trusted to hold it.
+///
+/// WP-144: so is a fresh-eyes review (`fresh-eyes/...`) and the question that its approved brief could not start
+/// (`fresh-eyes-start/...`). A chat answering `ask_person` on its own review's key would take the question out of the
+/// person's Inbox, and the review ignores its answer anyway. The app itself may close them (`app:fresh-eyes`).
+///
+/// WP-172: so is the decision that starts a stopped fan-out task again (`fanout-again/<plan>/<task>/<stopped request id>`).
+/// A stopped worker runs again only on Ash's yes, so an agent's `ask_person` answer (a chat, whatever the words) is refused
+/// here, and the app's own closers are not a way round it.
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
-    if !key.starts_with("irreversible/") {
+    let review = is_review_key(key);
+    let again = is_again_key(key);
+    if !key.starts_with("irreversible/") && !review && !again {
         return None;
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
         None | Some("user") | Some("person") => None,
+        Some(APP_CLOSER) if review => None,
+        Some(other) if review => Some(format!(
+            "Only the person answers a fresh-eyes review; {other} cannot. It waits in the Inbox until they do."
+        )),
+        Some(other) if again => Some(format!(
+            "Only the person answers whether a stopped task starts again; {other} cannot. It waits in Needs until they do."
+        )),
         Some(other) => Some(format!(
             "Only the person answers an irreversible step; {other} cannot. It waits in Needs until they do."
         )),
     }
+}
+
+/// WP-172: the decision keys that start a stopped fan-out task again.
+pub fn is_again_key(key: &str) -> bool {
+    key.starts_with("fanout-again/")
 }
 
 pub fn answer(
@@ -539,7 +583,9 @@ pub fn answer(
     // The asker hears the answer, unless the person gave it in the asker's own chat: it recorded it itself.
     let from_asker =
         decision.answered_by.as_deref() == Some(format!("chat:{}", decision.asked_by).as_str());
-    if !from_asker {
+    // The app closing a review's question (a brief taken back, replaced, or accepted as clean) has nothing to tell.
+    let from_app = decision.answered_by.as_deref() == Some(APP_CLOSER);
+    if !from_asker && !from_app {
         released.push(steering::record(
             &tx,
             SteerInput {
@@ -555,6 +601,18 @@ pub fn answer(
             now,
         )?);
     }
+    // WP-157: one summary of the question and the answer. A second answer never reaches here. The line is written in
+    // a savepoint: a journal that cannot be written is logged and skipped, and the answer still lands.
+    crate::work_log::best_effort(&tx, "decision", |conn| {
+        crate::work_log::record_decision(
+            conn,
+            &decision.project,
+            &decision.decision_key,
+            &decision.question,
+            decision.answer.as_deref().unwrap_or(""),
+            decision.answered_at.unwrap_or(now),
+        )
+    });
     tx.commit().map_err(|e| e.to_string())?;
     move_questions(conn, &released_tasks, QUESTION_FOR_FIRST_MATE, now);
     Ok(AnswerOutcome {

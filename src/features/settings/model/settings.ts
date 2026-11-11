@@ -38,6 +38,7 @@ export type SettingsSectionId =
   | "changes"
   | "decisions"
   | "activity"
+  | "work-log"
   | "usage"
   | "connected"
   | "dashboards"
@@ -114,6 +115,13 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     description:
       "What agents and the app did, newest first. Kept for 90 days.",
     keywords: "activity log audit history who did what",
+  },
+  {
+    id: "work-log",
+    group: "app",
+    label: "Work log",
+    description: "What got done, grouped by day. One project, or every project.",
+    keywords: "work log today outcomes decisions",
   },
   {
     id: "usage",
@@ -362,6 +370,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "project file .monocode project.json setup run dev slot check ship import trust buttons",
   },
   {
+    id: "worktree-autoclear",
+    section: "worktrees",
+    label: "Clear build output of finished worktrees",
+    keywords:
+      "disk space automatic auto finished merged closed pull request accepted target node_modules test-results playwright-report build output delete free",
+  },
+  {
     id: "worktree-cleanup",
     section: "worktrees",
     label: "Clean up worktrees",
@@ -403,6 +418,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     section: "general",
     label: "Notifications",
     keywords: "notify alert toast permission reminder background",
+  },
+  {
+    id: "quiet-hours",
+    section: "general",
+    label: "Quiet hours",
+    keywords: "quiet hours overnight mute programme notices",
   },
   {
     id: "notes",
@@ -652,11 +673,23 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "pacman snake arcade grid fun",
   },
   {
+    id: "text-generation",
+    section: "providers",
+    label: "Short text",
+    keywords: "title commit branch openrouter ollama deepseek",
+  },
+  {
     id: "agent-clis",
     section: "providers",
     label: "Agent CLIs",
     keywords:
       "codex opencode cursor grok pi omp fx hermes antigravity devin binary path",
+  },
+  {
+    id: "more-agents",
+    section: "providers",
+    label: "More agents",
+    keywords: "local command acp extra agent",
   },
   {
     id: "provider-accounts",
@@ -1288,6 +1321,38 @@ export function subscribeLiveAgentsEnabled(onStoreChange: () => void) {
   window.addEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
   return () =>
     window.removeEventListener(LIVE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
+}
+
+const MORE_AGENTS_ENABLED_KEY = "monocode.moreAgentsEnabled";
+
+export const MORE_AGENTS_ENABLED_DEFAULT = false;
+
+/** Fired on `window` when More agents is switched on or off. */
+export const MORE_AGENTS_ENABLED_CHANGE_EVENT =
+  "monocode:more-agents-enabled-change";
+
+export function loadMoreAgentsEnabled(): boolean {
+  return readFlag(MORE_AGENTS_ENABLED_KEY) ?? MORE_AGENTS_ENABLED_DEFAULT;
+}
+
+export function saveMoreAgentsEnabled(value: boolean) {
+  writeFlag(MORE_AGENTS_ENABLED_KEY, value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(MORE_AGENTS_ENABLED_CHANGE_EVENT, {
+      detail: value,
+    }),
+  );
+}
+
+export function subscribeMoreAgentsEnabled(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(MORE_AGENTS_ENABLED_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(
+      MORE_AGENTS_ENABLED_CHANGE_EVENT,
+      onStoreChange,
+    );
 }
 
 const CLOSE_TO_TRAY_KEY = "monocode.closeToTray";

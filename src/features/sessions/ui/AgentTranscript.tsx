@@ -48,7 +48,11 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AttachmentChip } from "./AttachmentChip";
+import { ChildApprovalNote } from "./ChildApprovalNote";
+import { ForkFromHereButton } from "./ForkFromHereButton";
 import { GeneratedImage } from "./GeneratedImage";
+import { LineageList } from "./LineageList";
+import type { Lineage } from "../model/subagentLineage";
 import { MonocodeSparkles } from "./MonocodeSparkles";
 import { OrchestratorConstellation } from "./OrchestratorConstellation";
 import { PlanStepsBurst } from "./PlanStepsBurst";
@@ -250,6 +254,8 @@ const HISTORY_TRIM_DELAY_MS = 2000;
 
 type Props = {
   blocks: Block[];
+  /** WP-122: the native subagents this thread started. Drawn at the top of the scroll content, never beside it. */
+  lineage?: Lineage | null;
   /** Archived messages render immediately, even when first loaded in this visit. */
   historicalBlockIds?: ReadonlySet<string>;
   initialTurns?: number;
@@ -311,6 +317,8 @@ type Props = {
   onSecondOpinion?: (target: ModelTarget, turn: Block[]) => void;
   onHandoff?: (target: ModelTarget, turn: Block[]) => void;
   onEditLastTurn?: () => void;
+  /** WP-123: copy this chat up to the chosen message. */
+  onForkFromHere?: (blockId: string) => void;
   editingLastTurn?: boolean;
   onJumpToBottomChange?: (show: boolean) => void;
 
@@ -332,6 +340,11 @@ type Props = {
   /** Saved session that omitted tool output is fetched from. */
   sessionId?: string;
   /**
+   * The saved chat whose records say which folders its local images and videos may come from (a Mono chat's
+   * `localMedia`). Absent for a chat on a connected machine, which shows its own files through the machine.
+   */
+  mediaSessionId?: string;
+  /**
    * Stops a workflow run, for a view of a session another window runs (the
    * floating chat). Without it, only the window running the session stops one.
    */
@@ -340,6 +353,7 @@ type Props = {
 
 function AgentTranscriptComponent({
   blocks: sourceBlocks,
+  lineage,
   historicalBlockIds,
   initialTurns = INITIAL_TURNS,
   pageSize = TURN_PAGE_SIZE,
@@ -384,6 +398,7 @@ function AgentTranscriptComponent({
   onSecondOpinion,
   onHandoff,
   onEditLastTurn,
+  onForkFromHere,
   editingLastTurn = false,
   onJumpToBottomChange,
   onJumpToBottomReady,
@@ -396,6 +411,7 @@ function AgentTranscriptComponent({
   onScrollerChange,
   managed = false,
   sessionId,
+  mediaSessionId,
   onStopWorkflow: stopWorkflowElsewhere,
 }: Props) {
   const isMonoChat = !!agentMascot;
@@ -1253,6 +1269,7 @@ function AgentTranscriptComponent({
             </button>
           </div>
         ) : null}
+        {lineage ? <LineageList lineage={lineage} /> : null}
         {visibleTurns.map((turn, turnIndex) => {
           // A checker's note and the answer to it: one quiet line (an approval it waits on still shows as usual).
           if (isMonoCheckPrompt(turn[0]) && !turn.some(needsApproval))
@@ -1583,6 +1600,7 @@ function AgentTranscriptComponent({
                 layout={transcriptLayout}
                 bubbleTail={!!agentMascot}
                 localMedia={isMonoChat}
+                mediaSessionId={mediaSessionId}
                 compactFollowUp={isCompactFollowUp(item, itemIndex)}
                 stackedOnPrevious={
                   itemIndex === 0
@@ -1628,6 +1646,13 @@ function AgentTranscriptComponent({
                   editingLastTurn &&
                   item.block.role === "user" &&
                   item.block.id === editableUserBlockId
+                }
+                onForkFromHere={
+                  onForkFromHere &&
+                  !item.block.internal &&
+                  (item.block.role === "user" || item.block.role === "assistant")
+                    ? onForkFromHere
+                    : undefined
                 }
               />
             );
@@ -2533,6 +2558,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   embedded = false,
   cwd,
   localMedia = false,
+  mediaSessionId,
   onApproval,
   onSaveNote,
   onSendDraft,
@@ -2547,6 +2573,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings,
   onEditLastTurn,
   editing = false,
+  onForkFromHere,
   askedBefore,
 }: {
   /** r99: questions an earlier reply already asked (one per line, a string so memo holds); left out of this one. */
@@ -2569,6 +2596,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   cwd?: string;
   /** Show local images and videos a reply links to, as Mono chats do. */
   localMedia?: boolean;
+  /** The chat they are shown for: Rust works out from its records which folders they may come from. */
+  mediaSessionId?: string;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -2583,6 +2612,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings?: Record<string, string>;
   onEditLastTurn?: () => void;
   editing?: boolean;
+  /** WP-123: copy this chat up to this message. */
+  onForkFromHere?: (blockId: string) => void;
 }) {
   if (block.role === "user") {
     // r93: the app's note to the chat is one small neutral line, never a bubble in Ash's name.
@@ -2611,6 +2642,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         cwd={cwd}
         onEdit={onEditLastTurn}
         editing={editing}
+        onFork={onForkFromHere}
         onSaveNote={onSaveNote}
         onSendDraft={onSendDraft}
         onRemoveDraft={onRemoveDraft}
@@ -2745,9 +2777,16 @@ const TranscriptBlock = memo(function TranscriptBlock({
         cwd={cwd}
         onOpenFile={onOpenFile}
         localMedia={localMedia}
+        mediaSessionId={mediaSessionId}
+        visualReplies
       />
       {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
       {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}
+      {onForkFromHere && !block.streaming ? (
+        <div className="user-message-actions flex items-center gap-1 pt-1">
+          <ForkFromHereButton blockId={block.id} onFork={onForkFromHere} />
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -2814,6 +2853,7 @@ function UserMessageBlock({
   stickyIndex,
   onEdit,
   editing = false,
+  onFork,
   cwd,
   onSaveNote,
   onSendDraft,
@@ -2830,6 +2870,7 @@ function UserMessageBlock({
   stickyIndex: number;
   onEdit?: () => void;
   editing?: boolean;
+  onFork?: (blockId: string) => void;
   cwd?: string;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -3195,6 +3236,9 @@ function UserMessageBlock({
                 label="Copy message"
               />
             ) : null}
+            {onFork ? (
+              <ForkFromHereButton blockId={block.id} onFork={onFork} />
+            ) : null}
             {onEdit ? (
               <EditLastTurnButton onEdit={onEdit} editing={editing} />
             ) : null}
@@ -3210,6 +3254,10 @@ function UserMessageBlock({
                 {formatClockTime(messageAt)}
               </time>
             ) : null}
+          </div>
+        ) : compactFollowUp && onFork ? (
+          <div className="user-message-actions flex items-center gap-1 px-3 pt-1">
+            <ForkFromHereButton blockId={block.id} onFork={onFork} />
           </div>
         ) : null}
       </div>
@@ -5512,7 +5560,7 @@ function ApprovalControls({
 }) {
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
-  return (
+  const controls = (
     <div data-approval-controls className="mt-1.5 flex gap-2 font-sans">
       <button
         type="button"
@@ -5531,6 +5579,14 @@ function ApprovalControls({
       <span className="self-center text-[11px] text-content/50">Waiting for approval</span>
     </div>
   );
+  // WP-122: a child's ask is named here. The buttons stay the parent's.
+  if (!approval.child) return controls;
+  return (
+    <>
+      <ChildApprovalNote name={approval.child.name} detail={approval.child.detail} />
+      {controls}
+    </>
+  );
 }
 
 function HandoffDivider({ block }: { block: Block }) {
@@ -5538,7 +5594,12 @@ function HandoffDivider({ block }: { block: Block }) {
   if (!meta) return null;
 
   const preparing = meta.status === "preparing";
-  const label = preparing ? "Preparing a handoff" : HARNESS_TITLE[meta.to];
+  const marker = meta.switchTo;
+  const label = marker
+    ? marker.label
+    : preparing
+      ? "Preparing a handoff"
+      : HARNESS_TITLE[meta.to];
 
   return (
     <div className="px-4 py-5">
@@ -5547,10 +5608,13 @@ function HandoffDivider({ block }: { block: Block }) {
         <div
           role="separator"
           aria-label={
-            preparing
-              ? `Preparing a handoff to ${HARNESS_TITLE[meta.to]}`
-              : `Continued with ${label}`
+            marker
+              ? marker.label
+              : preparing
+                ? `Preparing a handoff to ${HARNESS_TITLE[meta.to]}`
+                : `Continued with ${label}`
           }
+          data-switch-marker={marker ? "" : undefined}
           className="flex max-w-[min(100%,20rem)] items-center gap-1.5 px-1.5 font-sans text-[12px] text-content/55"
         >
           {preparing ? (
@@ -5561,6 +5625,7 @@ function HandoffDivider({ block }: { block: Block }) {
           ) : (
             <>
               <HarnessIcon harness={meta.to} className="size-3.5 shrink-0" />
+              {marker ? <span>{marker.label}</span> : null}
             </>
           )}
         </div>

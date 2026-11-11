@@ -3,7 +3,9 @@ import { defineConfig } from "@playwright/test";
 // Hub fork: every page starts as an app that has finished first launch. The Hub's onboarding card and its setup card
 // would otherwise cover the fixture page on a fresh profile. Specs that test onboarding open it with `?onboarding`
 // (see src/features/hub/model/onboarding.ts) or clear these keys themselves. The app's own gate is unchanged.
-const BASE_URL = "http://127.0.0.1:1435";
+// WP-175: WP175_PORT lets a builder run on a free port when 1435 is taken. Unset, it is 1435.
+const PORT = Number(process.env.WP175_PORT ?? 1435);
+const BASE_URL = `http://127.0.0.1:${PORT}`;
 const FINISHED_FIRST_LAUNCH = {
   cookies: [],
   origins: [
@@ -37,8 +39,8 @@ export default defineConfig({
     { name: "webkit", use: { browserName: "webkit" } },
   ],
   webServer: {
-    command: "npm run dev -- --host 127.0.0.1 --port 1435",
-    url: "http://127.0.0.1:1435/tests/browser/transcript.html",
+    command: `npm run dev -- --host 127.0.0.1 --port ${PORT}`,
+    url: `${BASE_URL}/tests/browser/transcript.html`,
     reuseExistingServer: false,
   },
 });

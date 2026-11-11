@@ -151,6 +151,19 @@ export function wakeMessage(wake: PrWake): QueuedMessage {
   };
 }
 
+/** The words pr_watch/wake.rs puts in a wake's title when required or listed checks failed (its SUMMARY_FAILED). */
+export const CHECKS_FAILED_SUMMARY = "checks failed";
+
+/**
+ * WP-164: a wake that says checks failed is a red CI, one of the notable programme events (notableEvents.ts). A merge
+ * conflict is a failed wake too, but it is not a red CI, and neither is an unreadable pull request.
+ */
+export function ciRedEvent(wake: PrWake): { id: string; kind: "ci-red"; text: string; at: number } | null {
+  if (wake.kind !== "update" || wake.outcome !== "failed") return null;
+  if (!wake.title.includes(CHECKS_FAILED_SUMMARY)) return null;
+  return { id: wake.id, kind: "ci-red", text: wake.title, at: wake.createdAt };
+}
+
 /** What the watch says about the pull request now, in a few calm words. */
 export function prWatchLine(watch: Pick<PrWatch, "status" | "state" | "endReason">): string {
   if (watch.state === "ended") {
@@ -190,6 +203,13 @@ export type PrWatchHost = {
   load(id: string): Promise<Session | null>;
   /** Put a wake in the owner's queue (deduplicated by its id). */
   queueWake(ownerId: string, message: QueuedMessage): Promise<void>;
+  /**
+   * A wake is going to a live owner for the first time. Called once per wake, after it is marked queued, so a write
+   * that failed (and will be tried again) has not been noticed yet, and never again when a crash puts it in the queue a
+   * second time. `watch` is the watch as of the last read, when the list has one. A throw is logged and does not hold
+   * the wake back.
+   */
+  noticed?(wake: PrWake, about: { owner: Session; watch: PrWatch | undefined }): void;
 };
 
 /**
@@ -300,6 +320,7 @@ export class PrWatchTracker {
           if (owner.queuedMessages?.some((message) => message.id === wake.id)) continue;
         } else {
           await this.backend.setDelivery([wake.id], "queued");
+          this.notice(wake, owner);
         }
         await this.host.queueWake(wake.ownerSession, wakeMessage(wake));
         summary.queued++;
@@ -311,6 +332,14 @@ export class PrWatchTracker {
       if (unread.size) summary.waiting = unread.size;
       return summary;
     });
+  }
+
+  private notice(wake: PrWake, owner: Session): void {
+    try {
+      this.host.noticed?.(wake, { owner, watch: this.watches.find((watch) => watch.id === wake.watchId) });
+    } catch (error) {
+      console.warn("PR watch: couldn't note a wake; it is still delivered", error);
+    }
   }
 
   /** A wake went to its owner as a turn. */

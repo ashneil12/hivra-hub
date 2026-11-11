@@ -12,6 +12,7 @@ import {
   setHarnessModels,
 } from "../../sessions/model/models";
 import type { Delegation } from "../../monos/model/delegations";
+import { createCheckpoint, type FanoutCheckpoint } from "../../firstmate/model/fanoutCheckpoint";
 import { askFakeClaude, fakeClaudeLaunch } from "../../phases/model/fakeClaude";
 import { begin, counter } from "../../phases/model/machine";
 import { deliverPhaseResult } from "../../phases/model/phaseBridge";
@@ -22,6 +23,8 @@ import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import {
   briefPrompt,
+  fanoutAgainKey,
+  markAppDelegate,
   portOfBrief,
   WORKER_PORT_BASE,
   WORKER_PORT_SPAN,
@@ -44,6 +47,9 @@ import {
   type ProviderRoom,
 } from "../../monos/model/workerPool";
 import { isOpenDelegation } from "../../monos/model/delegations";
+import { fanoutDependency, forgetVerifications, settleFanout, verificationOf } from "../../firstmate/model/fanoutChecks";
+import { fanoutHost } from "../../firstmate/host/fanoutHost";
+import type { DependencyLookup } from "../../firstmate/model/fanoutWaves";
 import { addMono, findMono, updateMono } from "../../monos/model/mono";
 import { setLineRulesSource } from "../../crew/model/lineRules";
 import { customModelRoute, importCustomModels } from "../../sessions/model/customModels";
@@ -672,6 +678,21 @@ describe("tasks.delegate", () => {
     await handleAgentApp(source, "r-down", "tasks.delegate", { brief: "Look again." }, host);
     const down = (started.at(-1) as [{ prompt: string }])[0].prompt;
     expect(down).toBe(briefPrompt("EXO lead", scaffold("Look again.", { kind: "own-checkout", mainCheckout: PROJECT }), TEST_GOAL, undefined, workerRules(portOfBrief(down)!)));
+  });
+
+  it("tells every worker it has no memory of the chat, never asks the person, and hands back a blocked path exactly (WP-171)", () => {
+    const rules = workerRules(41_000);
+    expect(rules).toMatch(/no memory of the chat that sent you/);
+    expect(rules).toMatch(/the person's own request quoted in it/);
+    expect(rules).toMatch(/Never ask the person a question/);
+    expect(rules).toMatch(/most reasonable reading/);
+    expect(rules).toMatch(/say in your report what you assumed/);
+    expect(rules).toMatch(/nobody can approve it for you/);
+    expect(rules).toMatch(/exactly what was blocked and where/);
+    // One block, and the ones it had are all still there.
+    expect(rules.match(/<worker_rules>/g)).toHaveLength(1);
+    expect(rules).toMatch(/stop and ask your Lead/);
+    expect(rules).not.toMatch(/[\u2014\u2013]/);
   });
 
   it("waits for the first harness probe before starting a worker (a Mono briefed right after a launch)", async () => {
@@ -1450,6 +1471,57 @@ describe("tasks.delegate gates (WP-40)", () => {
   });
 });
 
+describe("tasks.delegate reads the machine first (WP-161)", () => {
+  it("looks at the machine before it decides, so the very first launch meets a pause", async () => {
+    const { source, host, api, started } = fixture();
+    const seen: string[] = [];
+    let diskLow = false;
+    api.pool = {
+      limits: () => ({ workers: 6, heavy: 2 }),
+      setLimits: () => ({ workers: 6, heavy: 2 }),
+      model: () => undefined,
+      openRows: () => [],
+      refreshHealth: async () => {
+        seen.push("read");
+        diskLow = true;
+      },
+      admit: () => {
+        seen.push("admit");
+        return diskLow
+          ? { start: false, line: "Free disk is 24 GB, which is below 30 GB. Running builders keep going.", reason: "health" }
+          : { start: true };
+      },
+      enqueue: () => void seen.push("enqueue"),
+      started: () => undefined,
+      queued: () => [],
+    } as unknown as AgentAppTasksHost["pool"];
+    const out = (await handleAgentApp(source, "r-disk", "tasks.delegate", { brief: "Add delete." }, host)) as {
+      status: string;
+      waiting: string;
+    };
+    expect(seen).toEqual(["read", "admit", "enqueue"]);
+    expect(out.status).toBe("waiting");
+    expect(out.waiting).toContain("Free disk is 24 GB");
+    expect(started).toHaveLength(0);
+  });
+
+  it("starts as before when the host does not read the machine", async () => {
+    const { source, host, api, started } = fixture();
+    api.pool = {
+      limits: () => ({ workers: 6, heavy: 2 }),
+      setLimits: () => ({ workers: 6, heavy: 2 }),
+      model: () => undefined,
+      openRows: () => [],
+      admit: () => ({ start: true }),
+      enqueue: () => undefined,
+      started: () => undefined,
+      queued: () => [],
+    } as unknown as AgentAppTasksHost["pool"];
+    await handleAgentApp(source, "r-plain", "tasks.delegate", { brief: "Add delete." }, host);
+    expect(started).toHaveLength(1);
+  });
+});
+
 describe("tasks.accept (WP-40)", () => {
   it("accepts one of its own and refuses one that isn't, or a refusal with no reason", async () => {
     const rows = [
@@ -1941,7 +2013,7 @@ describe("parallel workers per project, with throttling (H8)", () => {
       pumpWorkers({
         openRows: () => rows.filter(isOpenDelegation),
         room: () => room(),
-        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", job.input, f.host),
+        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
       });
     return { ...f, cards, cardLaunches, pump };
   }
@@ -2619,5 +2691,1271 @@ describe("Hivra WP-14: tasks.message and tasks.ask", () => {
     await expect(
       handleAgentApp(worker.source, "r-w", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a" }, worker.host),
     ).rejects.toThrow("A worker reports to the chat that delegated it");
+  });
+});
+
+// WP-171: a contract, waves and the tasks that wait for what they need, through the same delegate every task uses.
+describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)", () => {
+  const INTENT = "Ash: a score board with an API behind it.";
+  const api = {
+    name: "api",
+    brief: "Add GET /api/score in src/api/score.ts.",
+    goal: "the route answers with a number",
+    owns: ["src/api/score.ts"],
+    provides: [
+      { kind: "endpoint", name: "/api/score" },
+      { kind: "file", name: "src/api/score.ts" },
+    ],
+    checks: ["api-tests"],
+  };
+  const board = {
+    name: "board",
+    brief: "Show the score in src/ui/Board.tsx.",
+    goal: "the board shows the number",
+    owns: ["src/ui/Board.tsx"],
+    requires: ["/api/score"],
+  };
+  const docs = { name: "docs", brief: "Document the score in README.md.", goal: "the README explains it" };
+  const FILE = `${PROJECT}/src/api/score.ts`;
+
+  /** The delegate path as App.tsx wires it: the pool with dependencies, and the pump that settles them first. */
+  function fanned(who: "mono" | "worker" | "checker" = "mono", rows: Delegation[] = []) {
+    resetWorkerPool();
+    forgetVerifications();
+    const f = fixture(rows, who);
+    const files: Record<string, string> = {};
+    const time = { now: 1_000 };
+    const io = { exists: async (path: string) => path in files, read: async (path: string) => files[path] ?? null };
+    const lookup: DependencyLookup = {
+      row: (session) => rows.find((entry) => entry.childSession === session),
+      queued: (session) => queuedWorkers().some((entry) => entry.id === session),
+      verified: (session, current) => verificationOf(session, current),
+    };
+    const dependency = fanoutDependency(lookup);
+    const open = () => rows.filter(isOpenDelegation);
+    f.api.pool = workerPoolHost({ openRows: open, room: () => ({ room: true }), dependency, card: () => {} });
+    const pump = () =>
+      pumpWorkers({
+        openRows: open,
+        room: () => ({ room: true }),
+        dependency,
+        settle: (queue) => settleFanout(queue, { row: lookup.row, folder: () => PROJECT, io, now: () => time.now }),
+        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
+      });
+    const fan = (requestId: string, tasks: unknown[]) =>
+      handleRaw(f.source, requestId, "tasks.fanout", { intent: INTENT, tasks }, f.host) as Promise<{
+        waves: string[][];
+        tasks: { name: string; wave: number; status: string; waiting?: string; error?: string; childSessionId?: string }[];
+        warnings?: string[];
+        note: string;
+      }>;
+    const finish = (index: number, patch: Partial<Delegation> = {}) =>
+      Object.assign(rows[index], { state: "completed", status: "done", gateVerdict: "passed", version: 2, ...patch });
+    return { ...f, rows, files, time, pump, fan, finish };
+  }
+  const startedIds = (started: unknown[][]) => started.map((call) => call[1]);
+  const promptOf = (started: unknown[][], index: number) => (started[index][0] as { prompt: string }).prompt;
+
+  it("starts the tasks that need nothing and holds the one that needs a provider, each as an ordinary task", async () => {
+    const { fan, started, rows } = fanned();
+    const out = await fan("r1", [api, board, docs]);
+    expect(out.waves).toEqual([["api", "docs"], ["board"]]);
+    expect(out.tasks.map((task) => [task.name, task.wave, task.status])).toEqual([
+      ["api", 1, "running"],
+      ["board", 2, "waiting"],
+      ["docs", 1, "running"],
+    ]);
+    expect(out.tasks[1].waiting).toMatch(/^Waiting for api to finish and be checked/);
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
+    expect(rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
+    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-f2_r1-board"]);
+    expect(out.note).toContain("2 started now; 1 waits for what it needs");
+    expect(out.note).not.toMatch(/[\u2014\u2013]/);
+  });
+
+  it("tells a room each task it handed out, as delegate_task does, so the work comes back to the room", async () => {
+    const f = fanned();
+    const delegated = vi.fn();
+    (f.host as { rooms?: unknown }).rooms = { delegated };
+    const out = await f.fan("r1", [api, board, docs]);
+    expect(delegated.mock.calls.map((entry) => [entry[0], (entry[1] as { childSessionId: string }).childSessionId])).toEqual(
+      out.tasks.map((task) => [f.source, task.childSessionId]),
+    );
+    expect(delegated.mock.calls[1][1]).toMatchObject({ childSessionId: "app-mono-exo-f2_r1-board", title: expect.any(String) });
+  });
+
+  it("with fresh-eyes on, holds each task for its review and keeps its place in the plan for the start", async () => {
+    const f = fanned();
+    const reviewed: { requestId: string; held?: Record<string, unknown> }[] = [];
+    f.api.freshEyes = vi.fn(async (input) => {
+      reviewed.push(input);
+      return { hold: input.requestId.endsWith("-api"), why: "Fresh-eyes review: waiting on you" };
+    });
+    const out = await f.fan("r1", [api, board, docs]);
+    expect(out.tasks.map((task) => [task.name, task.status, (task as { freshEyes?: boolean }).freshEyes ?? false])).toEqual([
+      ["api", "waiting", true],
+      ["board", "waiting", false],
+      ["docs", "running", false],
+    ]);
+    // The call the review keeps is the one that starts later: it still says which plan it is part of.
+    const held = reviewed.find((entry) => entry.requestId === "f2_r1-api")!.held!;
+    expect(held.fanout).toMatchObject({ name: "api", plan: "r1" });
+    expect(typeof held.originalRequest === "string" || held.originalRequest === undefined).toBe(true);
+    expect(out.note).toContain("1 started now");
+    expect(out.note).toContain("1 waits for its fresh-eyes review");
+    expect(out.note).toContain("1 waits for what it needs");
+  });
+
+  it("starts all of them at once when none needs another, up to the first mate's eight", async () => {
+    const { fan, started } = fanned();
+    const many = Array.from({ length: 8 }, (_, i) => ({ name: `t${i}`, brief: `Do part ${i}.`, goal: `part ${i} works` }));
+    const out = await fan("r8", many);
+    expect(out.waves).toHaveLength(1);
+    expect(started).toHaveLength(6); // the project's own limit of six still holds: the last two wait their turn
+    expect(out.tasks.filter((task) => task.status === "waiting")).toHaveLength(2);
+    await expect(fan("r9", [...many, { name: "t8", brief: "Do part 8.", goal: "part 8 works" }])).rejects.toThrow(/1 to 8 tasks/);
+  });
+
+  it("writes the contract into every brief: who it is, what it owns and provides, what it may rely on", async () => {
+    const { fan, started, pump, rows, files, finish } = fanned();
+    await fan("r1", [api, board]);
+    const first = promptOf(started, 0);
+    expect(first).toContain('## Fan-out contract\nYou are task "api" of a fan-out of 2 tasks, in wave 1.');
+    expect(first).toContain("You provide: endpoint /api/score; file src/api/score.ts");
+    expect(first).toContain("- [api] api-tests");
+    // The intent the first mate sent is the Intent section of each brief.
+    expect(first).toContain(`## Intent\n${INTENT}`);
+    files[FILE] = 'app.get("/api/score", handler)';
+    finish(0);
+    await pump();
+    const second = promptOf(started, 1);
+    expect(second).toContain('You are task "board" of a fan-out of 2 tasks, in wave 2. What you waited for has been delivered and checked: api.');
+    expect(second).toContain("You may rely on: /api/score (endpoint from api)");
+    expect(rows).toHaveLength(2);
+  });
+
+  it("the dependent starts by itself once its provider is done, its checks passed and what it made is on disk", async () => {
+    const { fan, started, pump, files, finish, time } = fanned();
+    await fan("r1", [api, board]);
+    await pump();
+    expect(started).toHaveLength(1); // the provider is still working
+    finish(0);
+    await pump();
+    expect(started).toHaveLength(1); // done, but the file is not there: not delivered
+    files[FILE] = "export const x = 1;";
+    time.now += 30_000;
+    await pump();
+    expect(started).toHaveLength(1); // the file is there but the route is not
+    files[FILE] = 'app.get("/api/score", handler)';
+    time.now += 30_000;
+    await pump();
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-board"]);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("never lets an unrun declared check pass: a done provider with no passing verdict holds its dependent", async () => {
+    const { fan, started, pump, files, finish, source, host } = fanned();
+    await fan("r1", [api, board]);
+    files[FILE] = 'app.get("/api/score", handler)';
+    finish(0, { gateVerdict: null });
+    await pump();
+    expect(started).toHaveLength(1);
+    const status = (await handleAgentApp(source, "s1", "tasks.status", {}, host)) as { waiting: { waiting: string }[] };
+    expect(status.waiting[0].waiting).toMatch(/^Held: api finished, but its declared check \(api-tests\) did not run or have not passed/);
+  });
+
+  it("holds the dependent when its provider fails, and the first mate reads what landed and what did not start", async () => {
+    const { fan, started, pump, rows, source, host } = fanned();
+    await fan("r1", [api, board, docs]);
+    Object.assign(rows[0], { state: "failed", status: "failed", error: "the build broke in src/api/score.ts" });
+    await pump();
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-api", "app-mono-exo-f2_r1-docs"]);
+    const status = (await handleAgentApp(source, "s1", "tasks.status", {}, host)) as {
+      waiting: { childSessionId: string; waiting: string }[];
+    };
+    expect(status.waiting).toHaveLength(1);
+    expect(status.waiting[0].childSessionId).toBe("app-mono-exo-f2_r1-board");
+    expect(status.waiting[0].waiting).toContain("Held: api failed: the build broke in src/api/score.ts.");
+    expect(status.waiting[0].waiting).toContain("Not started: board.");
+    // The first mate can take it back, as any waiting task.
+    await handleAgentApp(source, "c1", "tasks.cancel", { taskId: "app-mono-exo-f2_r1-board" }, host);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("refuses a requirement nothing provides before anything starts", async () => {
+    const { fan, started } = fanned();
+    await expect(fan("r1", [api, { ...board, requires: ["/api/scores"] }])).rejects.toThrow(/Task board requires "\/api\/scores", but no task provides it/);
+    expect(started).toEqual([]);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("says which tasks did not start, and does not run the ones that need them", async () => {
+    const { fan, started, api: tasks, rows } = fanned();
+    let calls = 0;
+    tasks.checkDepth = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("Not started: you already have 8 tasks running, the most one first mate runs at once (8).");
+      return 1;
+    });
+    const out = await fan("r1", [api, board, docs]);
+    expect(out.tasks.map((task) => [task.name, task.status])).toEqual([
+      ["api", "refused"],
+      ["board", "not started"],
+      ["docs", "running"],
+    ]);
+    expect(out.tasks[0].error).toContain("already have 8 tasks running");
+    expect(out.tasks[1].error).toContain("It needs api, which did not start");
+    expect(startedIds(started)).toEqual(["app-mono-exo-f2_r1-docs"]);
+    expect(queuedWorkers()).toEqual([]);
+    expect(rows).toHaveLength(1);
+    expect(out.note).toContain("2 did not start");
+  });
+
+  it("fails loudly when nothing at all could start", async () => {
+    const { fan, api: tasks } = fanned();
+    tasks.checkDepth = vi.fn(async () => {
+      throw new Error("This task would sit 3 levels deep.");
+    });
+    await expect(fan("r1", [api, docs])).rejects.toThrow(/Nothing started\. api: This task would sit 3 levels deep\. docs: /);
+  });
+
+  it("sends the same call again without starting anything twice", async () => {
+    const { fan, started } = fanned();
+    await fan("r1", [api, board, docs]);
+    const again = await fan("r1", [api, board, docs]);
+    expect(started).toHaveLength(2);
+    expect(again.tasks.find((task) => task.name === "api")).toMatchObject({ alreadyStarted: true });
+    expect(queuedWorkers().map((entry) => entry.id)).toEqual(["app-mono-exo-f2_r1-board"]);
+  });
+
+  it("keeps each task's declared checks as its WP-40 checks gate", async () => {
+    const { fan, api: tasks, rows } = fanned();
+    const saved: unknown[][] = [];
+    tasks.saveGates = vi.fn(async (...args: unknown[]) => void saved.push(args));
+    await fan("r1", [api, docs]);
+    expect(saved).toEqual([[rows[0].id, { gates: ["checks"], checks: ["api-tests"] }, PROJECT]]);
+  });
+
+  it("runs a cyclic plan in one wave and says so, instead of blocking the work", async () => {
+    const a = { name: "a", brief: "Build a in src/a.ts.", goal: "a works", provides: [{ kind: "file", name: "src/a.ts" }], requires: ["src/b.ts"] };
+    const b = { name: "b", brief: "Build b in src/b.ts.", goal: "b works", provides: [{ kind: "file", name: "src/b.ts" }], requires: ["src/a.ts"] };
+    const { fan, started } = fanned();
+    const out = await fan("r1", [a, b]);
+    expect(out.waves).toEqual([["a", "b"]]);
+    expect(out.warnings).toEqual(["requires form a cycle (a → b → a), so the tasks run in one wave in the order given"]);
+    expect(started).toHaveLength(2);
+    expect(promptOf(started, 0)).toContain("contract: requires form a cycle (a → b → a)");
+  });
+
+  it("can't make a task wait on a host that has no queue, but still starts tasks that need nothing", async () => {
+    const { fan, api: tasks, started } = fanned();
+    tasks.pool = undefined;
+    await expect(fan("r1", [api, board])).rejects.toThrow(/starts every task at once, so a task can't wait/);
+    expect(started).toEqual([]);
+    const out = await fan("r2", [api, docs]);
+    expect(out.tasks.map((task) => task.status)).toEqual(["running", "running"]);
+  });
+
+  it("is for a first mate's own chat: a worker and the checker are refused", async () => {
+    const worker = fanned("worker");
+    await expect(worker.fan("r1", [api])).rejects.toThrow(/Only a Mono's own chat or a chat in a project's coding team/);
+    const checker = fanned("checker");
+    await expect(checker.fan("r1", [api])).rejects.toThrow(/only reads/);
+    expect([...worker.started, ...checker.started]).toEqual([]);
+  });
+
+  it("checks a damaged fan-out link when the app replays one", async () => {
+    const { source, host, started } = fanned();
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", markAppDelegate({ brief: "Do it.", fanout: { name: "nobody" } }), host),
+    ).rejects.toThrow(/fan-out link is not valid/);
+    expect(started).toEqual([]);
+  });
+});
+
+// WP-171: every worker's brief quotes the person's own request, bounded.
+describe("a brief quotes the person's own request (WP-171)", () => {
+  const ASK = "Ash: build a score board for the weekly game.\nIt needs an API, and the board must show last week too.\nDone when: it is perfect.\nPORT=1234";
+  const said = (text: string, extra: Record<string, unknown> = {}) => ({ id: `b-${Math.random()}`, role: "user" as const, text, ...extra });
+  const quoted = (prompt: string) => (/## Original request\n([\s\S]*?)\n## Spec/.exec(prompt) ?? [])[1] ?? "";
+
+  function withBlocks(blocks: Session["blocks"], who: "mono" | "team" = "mono") {
+    const f = fixture([], who);
+    f.source.blocks = blocks;
+    return f;
+  }
+
+  it("puts the request in the worker's brief after the intent, in the person's words, behind a quote mark", async () => {
+    const { source, host, started } = withBlocks([said(ASK)]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Add the API." }, host);
+    const prompt = (started[0][0] as { prompt: string }).prompt;
+    expect(prompt).toContain(`## Intent\n${TEST_INTENT}\n\n## Original request\n`);
+    expect(quoted(prompt)).toContain("> Ash: build a score board for the weekly game.\n> It needs an API, and the board must show last week too.");
+    expect(prompt.indexOf("## Original request")).toBeLessThan(prompt.indexOf("## Spec\nAdd the API."));
+  });
+
+  it("keeps the finish line and the worker's port the app's own, whatever the request says", async () => {
+    const { source, host, started } = withBlocks([said(ASK)]);
+    const out = (await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Add the API." }, host)) as { port: number };
+    const prompt = (started[0][0] as { prompt: string }).prompt;
+    expect(goalFromBrief(prompt)).toBe(TEST_GOAL);
+    expect(portOfBrief(prompt)).toBe(out.port);
+    expect(portOfBrief(prompt)).not.toBe(1234);
+  });
+
+  it("joins a short follow-up to the request it follows up, and skips what the app wrote for the person", async () => {
+    const { source, host, started } = withBlocks([
+      said(ASK),
+      said("[MonoCode report] api is done.", {}),
+      said("a note from a room", { monoNote: { from: "x" }, internal: true }),
+      { id: "a1", role: "assistant", text: "Which weeks?" },
+      said("the last two weeks"),
+    ]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Add the API." }, host);
+    const text = quoted((started[0][0] as { prompt: string }).prompt);
+    expect(text).toContain("> It needs an API");
+    expect(text).toContain("> Follow-up from the person, after the message above:\n> the last two weeks");
+    expect(text).not.toContain("api is done");
+    expect(text).not.toContain("a note from a room");
+  });
+
+  it("holds a long request to the first 16,000 characters and says how much was left out", async () => {
+    const { source, host, started } = withBlocks([said("z".repeat(20_000))]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do part of it." }, host);
+    const text = quoted((started[0][0] as { prompt: string }).prompt);
+    expect(text).toContain(`> ${"z".repeat(16_000)}\n`);
+    expect(text).not.toContain("z".repeat(16_001));
+    expect(text).toContain("(Cut here: the request is 20,000 characters and only the first 16,000 are quoted.)");
+  });
+
+  it("writes no section when the person has said nothing in this chat, and the empty intent is still refused", async () => {
+    const { source, host, started } = withBlocks([]);
+    await handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it." }, host);
+    expect((started[0][0] as { prompt: string }).prompt).not.toContain("Original request");
+    await expect(handleRaw(source, "r2", "tasks.delegate", { brief: "Do it.", goal: "done", intent: "TODO" }, host)).rejects.toThrow(/The intent \(intent\) is a placeholder/);
+  });
+
+  it("is in every task of a fan-out and in a Lead's brief, and a coding team's chat is no different", async () => {
+    const { source, host, started } = withBlocks([said(ASK)], "team");
+    await handleRaw(
+      source,
+      "r1",
+      "tasks.fanout",
+      { intent: TEST_INTENT, tasks: [{ name: "a", brief: "Do a.", goal: "a works" }, { name: "b", brief: "Do b.", goal: "b works" }] },
+      host,
+    );
+    expect(started).toHaveLength(2);
+    for (const call of started) expect(quoted((call[0] as { prompt: string }).prompt)).toContain("> Ash: build a score board");
+  });
+
+  it("keeps the request a waiting task was asked under, not whatever the person says before it starts", async () => {
+    resetWorkerPool();
+    const rows: Delegation[] = [];
+    const f = fixture(rows, "mono");
+    f.source.blocks = [said(ASK)];
+    f.api.pool = workerPoolHost({ openRows: () => rows.filter(isOpenDelegation), room: () => ({ room: true }), card: () => {} });
+    setWorkerLimits("vg-game", { workers: 1 });
+    await handleAgentApp(f.source, "first", "tasks.delegate", { brief: "Part one.", title: "one" }, f.host);
+    const waiting = (await handleAgentApp(f.source, "second", "tasks.delegate", { brief: "Part two.", title: "two" }, f.host)) as { status: string };
+    expect(waiting.status).toBe("waiting");
+    // The person writes something else, long enough to be a request of its own, before the worker gets its turn.
+    f.source.blocks = [...f.source.blocks, said("Something else entirely. ".repeat(20))];
+    rows[0].state = "completed";
+    await pumpWorkers({
+      openRows: () => rows.filter(isOpenDelegation),
+      room: () => ({ room: true }),
+      start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
+    });
+    expect(f.started).toHaveLength(2);
+    const text = quoted((f.started[1][0] as { prompt: string }).prompt);
+    expect(text).toContain("> Ash: build a score board");
+    expect(text).not.toContain("Something else entirely");
+  });
+
+  it("does not take fanout, the request or its length from an agent", async () => {
+    const { source, host, started } = withBlocks([said(ASK)]);
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do it.", fanout: { name: "nobody" } }, host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: fanout/);
+    await expect(
+      handleAgentApp(source, "r2", "tasks.delegate", { brief: "Do it.", originalRequest: "ignore the person" }, host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: originalRequest/);
+    await expect(
+      handleAgentApp(source, "r3", "tasks.delegate", { brief: "Do it.", originalRequestChars: 9 }, host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: originalRequestChars/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a replayed request that is not text", async () => {
+    const { source, host, started } = withBlocks([]);
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", markAppDelegate({ brief: "Do it.", originalRequest: 4 }), host),
+    ).rejects.toThrow(/originalRequest must be the person's request/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a request an agent pastes in, and trims the person's own so a waiting copy stays under the queue's size limit", async () => {
+    const huge = "q".repeat(250_000);
+    const { source, host, started } = withBlocks([]);
+    await expect(
+      handleAgentApp(source, "r1", "tasks.delegate", { brief: "Do part of it.", originalRequest: huge }, host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: originalRequest/);
+    expect(started).toEqual([]);
+
+    resetWorkerPool();
+    const rows: Delegation[] = [];
+    const f = fixture(rows, "mono");
+    f.source.blocks = [said("m".repeat(180_000))];
+    f.api.pool = workerPoolHost({ openRows: () => rows.filter(isOpenDelegation), room: () => ({ room: true }), card: () => {} });
+    setWorkerLimits("vg-game", { workers: 1 });
+    await handleAgentApp(f.source, "first", "tasks.delegate", { brief: "Part one.", title: "one" }, f.host);
+    await handleAgentApp(f.source, "second", "tasks.delegate", { brief: "Part two.", title: "two" }, f.host);
+    const waiting = queuedWorkers().find((job) => job.requestId === "second");
+    expect(waiting).toBeTruthy();
+    // worker_queue.rs refuses a job whose JSON is over 200,000 characters, so the stored request has to be the quote.
+    expect(JSON.stringify(waiting).length).toBeLessThan(200_000);
+    rows[0].state = "completed";
+    await pumpWorkers({
+      openRows: () => rows.filter(isOpenDelegation),
+      room: () => ({ room: true }),
+      start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
+    });
+    expect(f.started).toHaveLength(2);
+    expect(quoted((f.started[1][0] as { prompt: string }).prompt)).toContain(
+      "(Cut here: the request is 180,000 characters and only the first 16,000 are quoted.)",
+    );
+  });
+});
+
+
+// WP-172: a fan-out checkpoints as it sends its tasks, and a resume sends only what never started (the same request ids,
+// so a task that already has a row is never started twice).
+describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
+  const INTENT_172 = "Ash: a score board with an API behind it.";
+  const api = { name: "api", brief: "Add GET /api/score in src/api/score.ts.", goal: "the route answers with a number" };
+  const docs = { name: "docs", brief: "Document the score in README.md.", goal: "the README explains it" };
+  const board = { name: "board", brief: "Show the score in src/ui/Board.tsx.", goal: "the board shows the number" };
+
+  /** An in-memory checkpoint store with the same compare-and-swap rule as the app's table. */
+  function memCheckpoints(clock = { now: 0 }) {
+    const saved = new Map<string, FanoutCheckpoint>();
+    const leases = new Map<string, { holder: string; until: number }>();
+    const LEASE = 90_000;
+    return {
+      saved,
+      leases,
+      acquire: vi.fn(async (owner: string, id: string, holder: string) => {
+        const key = `${owner}|${id}`;
+        const held = leases.get(key);
+        if (held && held.holder !== holder && held.until >= clock.now) return false;
+        leases.set(key, { holder, until: clock.now + LEASE });
+        return true;
+      }),
+      renew: vi.fn(async (owner: string, id: string, holder: string) => {
+        const key = `${owner}|${id}`;
+        if (leases.get(key)?.holder !== holder) return false;
+        leases.set(key, { holder, until: clock.now + LEASE });
+        return true;
+      }),
+      release: vi.fn(async (owner: string, id: string, holder: string) => {
+        const key = `${owner}|${id}`;
+        if (leases.get(key)?.holder !== holder) return false;
+        return leases.delete(key);
+      }),
+      save: vi.fn(async (owner: string, cp: FanoutCheckpoint) => {
+        const key = `${owner}|${cp.id}`;
+        if ((saved.get(key)?.revision ?? 0) >= cp.revision) return false;
+        saved.set(key, cp);
+        return true;
+      }),
+      list: vi.fn(async (owner: string) =>
+        [...saved.entries()].filter(([key]) => key.startsWith(`${owner}|`)).map(([, cp]) => cp),
+      ),
+      remove: vi.fn(async (owner: string, id: string) => saved.delete(`${owner}|${id}`)),
+    };
+  }
+
+  /** A plan as an earlier run left it: the given tasks, each with the delegate input the fan-out sent. */
+  function seededPlan(owner: string, id: string, states: Record<string, Partial<FanoutCheckpoint["tasks"][number]>>) {
+    const cp = createCheckpoint({
+      id,
+      owner,
+      originalRequest: "Build the score board.",
+      waves: [["api", "docs"]],
+      tasks: [api, docs].map((task) => ({
+        name: task.name,
+        wave: 1,
+        input: { intent: INTENT_172, brief: task.brief, goal: task.goal, title: task.name },
+      })),
+      now: 1_000,
+    });
+    return {
+      ...cp,
+      revision: 2,
+      tasks: cp.tasks.map((task) => ({ ...task, ...(states[task.name] ?? {}) })),
+    } as FanoutCheckpoint;
+  }
+
+  it("keeps a plan with each task marked as it is sent, and removes it once every task is settled", async () => {
+    const f = fixture([]);
+    const store = memCheckpoints();
+    f.api.fanoutCheckpoints = store;
+    const seenAtStart: string[][] = [];
+    const inner = f.host.start;
+    f.host.start = vi.fn(async (...args: unknown[]) => {
+      const plan = store.saved.get(`${f.source.id}|r1`);
+      seenAtStart.push((plan?.tasks ?? []).map((task) => `${task.name}:${task.state}`));
+      return (inner as (...a: unknown[]) => Promise<unknown>)(...args);
+    }) as unknown as AgentAppHost["start"];
+
+    await handleRaw(f.source, "r1", "tasks.fanout", { intent: INTENT_172, tasks: [api, docs] }, f.host);
+
+    // Each start is preceded by its own "starting" mark, so a crash in the call is visible.
+    expect(seenAtStart).toEqual([
+      ["api:starting", "docs:pending"],
+      ["api:started", "docs:starting"],
+    ]);
+    // Everything settled: nothing is left to resume, so the plan is gone.
+    expect(store.saved.size).toBe(0);
+    expect(store.remove).toHaveBeenCalledWith(f.source.id, "r1");
+  });
+
+  it("does not stop the fan-out when the checkpoint cannot be written", async () => {
+    const f = fixture([]);
+    const lease = memCheckpoints();
+    f.api.fanoutCheckpoints = {
+      ...lease,
+      save: vi.fn(async () => { throw new Error("disk full"); }),
+      list: vi.fn(async () => []),
+      remove: vi.fn(async () => false),
+    };
+    const out = (await handleRaw(f.source, "r2", "tasks.fanout", { intent: INTENT_172, tasks: [api] }, f.host)) as {
+      tasks: { status: string }[];
+      checkpointNote?: string;
+    };
+    expect(out.tasks.map((task) => task.status)).toEqual(["running"]);
+    // Told once, in one line, that the plan cannot be resumed; not once per write.
+    expect(out.checkpointNote).toMatch(/could not save/i);
+    expect(out.checkpointNote).not.toMatch(/[\u2013\u2014]/);
+    expect(JSON.stringify(out).match(/could not save/gi)?.length).toBe(1);
+  });
+
+  it("resumes a crashed plan: the task that started is kept, the one that never did is sent, nothing is sent twice", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r1-api", requestId: "app-mono-exo-f2_r1-api", state: "running" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-f2_r1-api", status: "running" } }));
+    f.api.fanoutCheckpoints = store;
+
+    const out = (await handleRaw(f.source, "resume-1", "tasks.fanout", { resume: "r1" }, f.host)) as {
+      tasks: { name: string; status: string }[];
+      note: string;
+    };
+
+    expect(f.started.map((call) => (call[1] as string))).toEqual(["app-mono-exo-f2_r1-docs"]);
+    expect(out.tasks).toEqual([
+      { name: "api", status: "kept" },
+      { name: "docs", status: "started" },
+    ]);
+    expect(out.note).toMatch(/1 already started and kept as it is/);
+    expect(out.note).toMatch(/1 not started yet, which is sent now/);
+    expect(out.note).not.toMatch(/[—–]/);
+    expect(store.saved.size).toBe(0);
+  });
+
+  it("asks before it starts again a task whose worker was stopped, and sends it only on a yes", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r1-api", requestId: "app-mono-exo-f2_r1-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-f2_r1-api" } }));
+    f.api.fanoutCheckpoints = store;
+
+    const decisions = decisionsOf(f.api);
+    const first = (await handleRaw(f.source, "resume-2", "tasks.fanout", { resume: "r1" }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(first.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r1-docs"]);
+    // The plan stays, so the yes can still come.
+    expect(store.saved.has("mono-exo|r1")).toBe(true);
+
+    // The yes is Ash's answer to the decision the resume asked (WP-14), not the model's word.
+    await decisions.backend.answer(PROJECT, fanoutAgainKey("mono-exo", "r1", "api", "f2_r1-api"), YES);
+    const second = (await handleRaw(f.source, "resume-3", "tasks.fanout", { resume: "r1", confirm: ["api"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(second.tasks.find((task) => task.name === "api")).toMatchObject({ status: "started" });
+    // A start again goes under a request id of its own (the stopped row is not revived), so only the docs id is the old one.
+    expect(f.started.map((call) => call[1])).toHaveLength(2);
+    expect(f.started[0][1]).toBe("app-mono-exo-f2_r1-docs");
+    // The second resume's number is 2 (the first resume already counted), so its restart id carries it.
+    expect(f.started[1][1]).toBe("app-mono-exo-r2f2_r1-api");
+    expect(f.started[1][1]).not.toBe("app-mono-exo-f2_r1-api");
+  });
+
+  it("refuses a confirm that names no task of the plan", async () => {
+    const f = fixture([]);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", {}));
+    f.api.fanoutCheckpoints = store;
+    await expect(
+      handleRaw(f.source, "resume-4", "tasks.fanout", { resume: "r1", confirm: ["nope"] }, f.host),
+    ).rejects.toThrow(/not part of this plan/);
+    expect(f.started).toEqual([]);
+  });
+
+  it("says so, and sends nothing, when the plan is not there to resume", async () => {
+    const f = fixture([]);
+    f.api.fanoutCheckpoints = memCheckpoints();
+    await expect(handleRaw(f.source, "resume-5", "tasks.fanout", { resume: "gone" }, f.host)).rejects.toThrow(
+      /no unfinished plan/i,
+    );
+    expect(f.started).toEqual([]);
+  });
+
+  it("tells the first mate, in plain words, which plan it can carry on with", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r1-api", requestId: "app-mono-exo-f2_r1-api", state: "running" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r1", seededPlan("mono-exo", "r1", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-f2_r1-api" } }));
+    f.api.fanoutCheckpoints = store;
+    const out = (await handleRaw(f.source, "status-1", "tasks.status", {}, f.host)) as {
+      unfinishedPlans?: { plan: string; line: string }[];
+    };
+    expect(out.unfinishedPlans).toEqual([
+      expect.objectContaining({
+        plan: "r1",
+        line: expect.stringMatching(/^1 already started and kept as it is; 1 not started yet, which is sent now\./),
+      }),
+    ]);
+    expect(out.unfinishedPlans?.[0].line).toMatch(/resume "r1"/);
+    expect(out.unfinishedPlans?.[0].line).not.toMatch(/[\u2014\u2013]/);
+  });
+
+  // WP-172 (stop one worker): task_cancel on one task of a fan-out stops that row and leaves its siblings running.
+  it("stopping one task of a fan-out leaves the other tasks of the plan running", async () => {
+    const rows: Delegation[] = [];
+    const f = fixture(rows);
+    f.api.fanoutCheckpoints = memCheckpoints();
+    await handleRaw(f.source, "r7", "tasks.fanout", { intent: INTENT_172, tasks: [api, docs] }, f.host);
+    const [stopped, sibling] = rows;
+    expect([stopped.childSession, sibling.childSession]).toEqual(["app-mono-exo-f2_r7-api", "app-mono-exo-f2_r7-docs"]);
+
+    await handleRaw(f.source, "cancel-1", "tasks.cancel", { taskId: stopped.id, reason: "Stuck on a provider error." }, f.host);
+
+    expect(rows.find((entry) => entry.id === stopped.id)?.state).toBe("cancelled");
+    expect(rows.find((entry) => entry.id === sibling.id)?.state).toBe("running");
+    expect(f.cancelled).toEqual([[stopped.id, "Stuck on a provider error."]]);
+    const status = (await handleRaw(f.source, "status-7", "tasks.status", {}, f.host)) as { tasks: { taskId: string; status: string }[] };
+    expect(status.tasks.find((task) => task.taskId === sibling.id)?.status).toBe("running");
+  });
+
+  it("two windows on one plan: only the one holding its lease sends, the other is refused in plain words", async () => {
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r8", seededPlan("mono-exo", "r8", { api: { state: "started", taskId: "t-api", childSession: "app-mono-exo-f2_r8-api" } }));
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r8-api", requestId: "app-mono-exo-f2_r8-api", state: "running" })];
+    const first = fixture(rows);
+    const second = fixture(rows);
+    first.api.fanoutCheckpoints = store;
+    second.api.fanoutCheckpoints = store;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const inner = first.host.start;
+    first.host.start = vi.fn(async (...args: unknown[]) => {
+      await gate;
+      return (inner as (...a: unknown[]) => Promise<unknown>)(...args);
+    }) as unknown as AgentAppHost["start"];
+
+    const window1 = handleRaw(first.source, "resume-w1", "tasks.fanout", { resume: "r8" }, first.host);
+    await vi.waitFor(() => expect(store.leases.size).toBe(1));
+    await expect(handleRaw(second.source, "resume-w2", "tasks.fanout", { resume: "r8" }, second.host)).rejects.toThrow(
+      /already being sent/,
+    );
+    expect(second.started).toEqual([]);
+    release();
+    await window1;
+    expect(first.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r8-docs"]);
+    expect(second.started).toEqual([]);
+    // The lease is given back at the end, so the plan can be looked at again.
+    expect(store.leases.size).toBe(0);
+  });
+
+  it("takes over a plan whose window's lease has run out", async () => {
+    const clock = { now: 1_000_000 };
+    const store = memCheckpoints(clock);
+    store.saved.set("mono-exo|r9", seededPlan("mono-exo", "r9", {}));
+    store.leases.set("mono-exo|r9", { holder: "window-that-died", until: clock.now - 1 });
+    const f = fixture([]);
+    f.api.fanoutCheckpoints = store;
+    await handleRaw(f.source, "resume-9", "tasks.fanout", { resume: "r9" }, f.host);
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r9-api", "app-mono-exo-f2_r9-docs"]);
+  });
+
+  it("refuses a resume while the same plan is still being sent by this app", async () => {
+    const f = fixture([]);
+    const store = memCheckpoints();
+    f.api.fanoutCheckpoints = store;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const inner = f.host.start;
+    let holding = true;
+    f.host.start = vi.fn(async (...args: unknown[]) => {
+      if (holding) {
+        holding = false;
+        await gate;
+      }
+      return (inner as (...a: unknown[]) => Promise<unknown>)(...args);
+    }) as unknown as AgentAppHost["start"];
+
+    const sending = handleRaw(f.source, "r6", "tasks.fanout", { intent: INTENT_172, tasks: [api] }, f.host);
+    await vi.waitFor(() => expect(store.saved.size).toBe(1));
+    await expect(handleRaw(f.source, "resume-6", "tasks.fanout", { resume: "r6" }, f.host)).rejects.toThrow(
+      /already being sent/,
+    );
+    release();
+    await sending;
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f2_r6-api"]);
+  });
+
+  // WP-172 review round: a queued task, a restart under its own request id, the per-plan read, the in-flight start, the
+  // decision gate on a confirm, and a resume that names both tasks and a plan.
+  const providing = {
+    name: "api",
+    brief: "Add GET /api/score in src/api/score.ts.",
+    goal: "the route answers with a number",
+    owns: ["src/api/score.ts"],
+    provides: [
+      { kind: "endpoint", name: "/api/score" },
+      { kind: "file", name: "src/api/score.ts" },
+    ],
+    checks: ["api-tests"],
+  };
+  const waitingBoard = {
+    name: "board",
+    brief: "Show the score in src/ui/Board.tsx.",
+    goal: "the board shows the number",
+    requires: ["/api/score"],
+  };
+  const YES = "Start it again";
+  /** The question the app asks for a stopped task (askAgain): a card under the key must carry it, word for word. */
+  const AGAIN_QUESTION = (name: string) =>
+    `Start the "${name}" task again? Its worker stopped or went missing, and a repeat can do its work twice.`;
+  const NO = "Leave it stopped";
+
+  /** The app's pool with the fan-out's dependencies, and the pump that starts what can start (as App.tsx wires it). */
+  function queuedPlan(rows: Delegation[] = []) {
+    resetWorkerPool();
+    forgetVerifications();
+    const f = fixture(rows);
+    const files: Record<string, string> = {};
+    const time = { now: 1_000 };
+    const io = { exists: async (path: string) => path in files, read: async (path: string) => files[path] ?? null };
+    const lookup: DependencyLookup = {
+      row: (session) => rows.find((entry) => entry.childSession === session),
+      queued: (session) => queuedWorkers().some((entry) => entry.id === session),
+      verified: (session, current) => verificationOf(session, current),
+    };
+    const dependency = fanoutDependency(lookup);
+    const open = () => rows.filter(isOpenDelegation);
+    f.api.pool = workerPoolHost({ openRows: open, room: () => ({ room: true }), dependency, card: () => {} });
+    const pump = () =>
+      pumpWorkers({
+        openRows: open,
+        room: () => ({ room: true }),
+        dependency,
+        settle: (queue) => settleFanout(queue, { row: lookup.row, folder: () => PROJECT, io, now: () => time.now }),
+        start: (job) => handleAgentApp(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
+      });
+    return { ...f, rows, pump };
+  }
+
+  /**
+   * The first mate's decision store (WP-14) as the app keeps it: asking again under a key changes nothing, and a
+   * restart decision (`fanout-again/...`) takes only the person's answer (person_only in decisions.rs). `enforce: false`
+   * keeps a chat's answer as the store's own, to test the second gate in askAgain.
+   */
+  function decisionsOf(api: AgentAppTasksHost, options: { enforce?: boolean } = {}) {
+    const enforce = options.enforce ?? true;
+    const store = new Map<string, Record<string, unknown>>();
+    const backend = {
+      ask: vi.fn(async (input: { key: string; question: string; options: string[]; taskIds?: string[]; project?: string }) => {
+        const existing = store.get(input.key);
+        if (existing) return { decision: existing, created: false, added: [], released: [] };
+        const decision = {
+          project: input.project ?? PROJECT,
+          decisionKey: input.key,
+          question: input.question,
+          options: input.options,
+          recommended: null,
+          askedBy: "mono-exo",
+          askedByMono: null,
+          waiting: input.taskIds ?? [],
+          state: "open",
+          answer: null,
+          answeredBy: null,
+          answeredAt: null,
+          createdAt: 0,
+          updatedAt: 0,
+          version: 1,
+        };
+        store.set(input.key, decision);
+        return { decision, created: true, added: input.taskIds ?? [], released: [] };
+      }),
+      // `by` is who answers: absent is the person (the app's own answer), a chat or autopilot is a machine.
+      answer: vi.fn(async (_project: string, key: string, answer: string, by?: string) => {
+        if (enforce && key.startsWith("fanout-again/") && by !== undefined && by !== "user" && by !== "person")
+          throw new Error(`Only the person answers whether a stopped task starts again; ${by} cannot. It waits in Needs until they do.`);
+        const decision = store.get(key)!;
+        Object.assign(decision, { state: "answered", answer, answeredBy: by ?? "person" });
+        return { applied: true, decision, released: [], releasedTasks: [] };
+      }),
+      decisions: vi.fn(async () => [...store.values()]),
+    };
+    api.firstMate = { backend } as unknown as AgentAppTasksHost["firstMate"];
+    return { backend, store };
+  }
+
+  it("a task held in the worker queue is checkpointed as queued, and a resume after it left the queue asks before it starts it (HIGH 1)", async () => {
+    const q = queuedPlan();
+    const store = memCheckpoints();
+    q.api.fanoutCheckpoints = store;
+    const out = (await handleRaw(q.source, "q1", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard, docs] }, q.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(out.tasks.find((task) => task.name === "board")).toMatchObject({ status: "waiting" });
+    expect(store.saved.get("mono-exo|q1")?.tasks.find((task) => task.name === "board")?.state).toBe("queued");
+
+    // Its waiting job is taken off the queue (task_cancel names it by its child session).
+    await handleRaw(q.source, "cancel-q1", "tasks.cancel", { taskId: "app-mono-exo-f2_q1-board", reason: "Not wanted." }, q.host);
+    expect(queuedWorkers()).toEqual([]);
+
+    const started = q.started.length;
+    const resumed = (await handleRaw(q.source, "resume-q1", "tasks.fanout", { resume: "q1" }, q.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(resumed.tasks.find((task) => task.name === "board")).toMatchObject({ status: "needs your yes" });
+    expect(q.started.slice(started)).toEqual([]);
+    expect(queuedWorkers()).toEqual([]);
+  });
+
+  it("confirming a stopped task starts a new worker under its own request id, which the app tracks (HIGH 2)", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_r3-api", requestId: "app-mono-exo-f2_r3-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r3", seededPlan("mono-exo", "r3", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f2_r3-api" } }));
+    f.api.fanoutCheckpoints = store;
+    // delegations.rs record(): the owner and request id that already have a row get that row back, cancelled or not.
+    const startRecord = f.host.start as unknown as (...args: unknown[]) => Promise<unknown>;
+    f.host.start = vi.fn(async (...args: unknown[]) => {
+      const id = args[1] as string;
+      if (rows.some((entry) => entry.ownerSession === f.source.id && entry.requestId === id)) return;
+      return startRecord(...args);
+    }) as unknown as AgentAppHost["start"];
+    // Ash's yes to the decision for api, given before the resume: the test is about the restart, not the question.
+    const decisions = decisionsOf(f.api);
+    await decisions.backend.ask({ key: fanoutAgainKey("mono-exo", "r3", "api", "f2_r3-api"), question: AGAIN_QUESTION("api"), options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, fanoutAgainKey("mono-exo", "r3", "api", "f2_r3-api"), YES);
+    const out = (await handleRaw(f.source, "resume-h2b", "tasks.fanout", { resume: "r3", confirm: ["api"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "started" });
+    // The new worker's request id carries the resume's number, so its child session is the api one with a suffix.
+    const running = rows.filter((entry) => entry.childSession.includes("-api") && entry.state === "running");
+    expect(running).toHaveLength(1);
+    expect(running[0].childSession).not.toBe("app-mono-exo-f2_r3-api");
+    // Every task has a row now, so the plan is done and its checkpoint is gone.
+    expect(store.saved.has("mono-exo|r3")).toBe(false);
+  });
+
+  it("lists each unfinished plan with its own read, and a read that fails never makes a running task stopped (MED 3)", async () => {
+    // Two-letter plan ids: the request id's length is part of its prefix (taskRequestId), so the children stay readable.
+    const plans = Array.from({ length: 11 }, (_, i) => `p${String.fromCharCode(97 + i)}`);
+    const rows = plans.map((id) => row({ id: `t-${id}`, ownerSession: "mono-exo", childSession: `app-mono-exo-f2_${id}-api`, requestId: `app-mono-exo-f2_${id}-api`, state: "running" }));
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    for (const id of plans)
+      store.saved.set(`mono-exo|${id}`, seededPlan("mono-exo", id, { api: { state: "started", taskId: `t-${id}`, childSession: `app-mono-exo-f2_${id}-api` } }));
+    f.api.fanoutCheckpoints = store;
+    // delegations.rs owned(): more than 20 requests in one query is refused.
+    const owned = f.api.owned;
+    const capped = vi.fn(async (owner: string, query: { ids?: string[]; requestIds?: string[] }) => {
+      if ((query.ids?.length ?? 0) + (query.requestIds?.length ?? 0) > 20) throw new Error("At most 20 tasks at once");
+      return owned(owner, query as never);
+    });
+    f.api.owned = capped as unknown as typeof f.api.owned;
+
+    const status = (await handleRaw(f.source, "status-m3", "tasks.status", {}, f.host)) as { unfinishedPlans?: { plan: string; line: string }[] };
+    expect(status.unfinishedPlans).toHaveLength(11);
+    expect(status.unfinishedPlans?.every((entry) => !/needs your yes/.test(entry.line))).toBe(true);
+
+    // The store refuses the plan's own read (its requests), and only that: status' own read still works.
+    f.api.owned = vi.fn(async (owner: string, query: { ids?: string[]; requestIds?: string[] }) => {
+      if (query.requestIds?.length) throw new Error("The store is busy");
+      return owned(owner, query as never);
+    }) as unknown as typeof f.api.owned;
+    const blind = (await handleRaw(f.source, "status-m3b", "tasks.status", {}, f.host)) as { unfinishedPlans?: unknown[] };
+    expect(blind.unfinishedPlans ?? []).toEqual([]);
+    await expect(handleRaw(f.source, "resume-m3", "tasks.fanout", { resume: "pa" }, f.host)).rejects.toThrow(/could not read/i);
+    expect(store.saved.get("mono-exo|pa")?.tasks.find((task) => task.name === "api")?.state).toBe("started");
+    expect(f.started).toEqual([]);
+  });
+
+  it("a resume while the pump is starting a queued task of the plan does not start that task a second time (MED 5)", async () => {
+    const q = queuedPlan();
+    const store = memCheckpoints();
+    q.api.fanoutCheckpoints = store;
+    const many = Array.from({ length: 8 }, (_, i) => ({ name: `t${i}`, brief: `Do part ${i}.`, goal: `part ${i} works` }));
+    await handleRaw(q.source, "q5", "tasks.fanout", { intent: INTENT_172, tasks: many }, q.host);
+    expect(q.started).toHaveLength(6);
+
+    // One of the six finishes, so the pump starts the first waiting task, and that start is held open.
+    Object.assign(q.rows[0], { state: "completed", status: "done", version: 2 });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const entered: unknown[] = [];
+    const startInner = q.host.start as unknown as (...args: unknown[]) => Promise<unknown>;
+    let holding = true;
+    q.host.start = vi.fn(async (...args: unknown[]) => {
+      entered.push(args[1]);
+      if (holding && String(args[1]).endsWith("-t6")) {
+        holding = false;
+        await gate;
+      }
+      return startInner(...args);
+    }) as unknown as AgentAppHost["start"];
+    const pumping = q.pump();
+    await vi.waitFor(() => expect(entered.filter((id) => String(id).endsWith("-t6"))).toHaveLength(1));
+
+    // While that start is still being sent, the plan is resumed.
+    await handleRaw(q.source, "resume-q5", "tasks.fanout", { resume: "q5" }, q.host);
+    release();
+    await pumping;
+    expect(entered.filter((id) => String(id).endsWith("-t6"))).toHaveLength(1);
+  });
+
+  it("confirming a stopped task needs Ash's answer to that task's decision: an unanswered or unanswered-yes task starts nothing (MED 6)", async () => {
+    const rows = [
+      row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r10-api", requestId: "app-mono-exo-f3_r10-api", state: "cancelled" }),
+      row({ id: "t-docs", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r10-docs", requestId: "app-mono-exo-f3_r10-docs", state: "cancelled" }),
+    ];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set(
+      "mono-exo|r10",
+      seededPlan("mono-exo", "r10", {
+        api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r10-api" },
+        docs: { state: "stopped", taskId: "t-docs", childSession: "app-mono-exo-f3_r10-docs" },
+      }),
+    );
+    f.api.fanoutCheckpoints = store;
+    const decisions = decisionsOf(f.api);
+
+    const asked = (await handleRaw(f.source, "resume-m6a", "tasks.fanout", { resume: "r10", confirm: ["api", "docs"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(asked.tasks.map((task) => task.status)).toEqual(["needs your yes", "needs your yes"]);
+    expect([...decisions.store.keys()].sort()).toEqual([fanoutAgainKey("mono-exo", "r10", "api", "f3_r10-api"), fanoutAgainKey("mono-exo", "r10", "docs", "f3_r10-docs")]);
+    expect(f.started).toEqual([]);
+
+    // Ash answers for api only: that one starts, and docs still waits for its own answer.
+    await decisions.backend.answer(PROJECT, fanoutAgainKey("mono-exo", "r10", "api", "f3_r10-api"), YES);
+    const answered = (await handleRaw(f.source, "resume-m6b", "tasks.fanout", { resume: "r10", confirm: ["api", "docs"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(answered.tasks.map((task) => [task.name, task.status])).toEqual([
+      ["api", "started"],
+      ["docs", "needs your yes"],
+    ]);
+    // Only api is sent, under a request id of its own: the stopped worker's row is not revived.
+    expect(f.started.map((call) => call[1])).toHaveLength(1);
+    expect(f.started[0][1]).not.toBe("app-mono-exo-f3_r10-api");
+  });
+
+  it("refuses a resume that also names tasks, rather than ignoring them (LOW)", async () => {
+    const f = fixture([]);
+    f.api.fanoutCheckpoints = memCheckpoints();
+    await expect(
+      handleRaw(f.source, "resume-low", "tasks.fanout", { resume: "r1", tasks: [api] }, f.host),
+    ).rejects.toThrow(/leave out tasks/);
+    expect(f.started).toEqual([]);
+  });
+
+  // WP-172 review round 2 (MED 6): the model cannot give the yes that restarts a stopped task.
+  it("an agent cannot answer a stopped task's restart decision itself: its answer is refused and nothing starts", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    f.api.fanoutCheckpoints = store;
+    decisionsOf(f.api);
+    // The first mate makes up the decision under the key the app asks under, and "answers" it in one ask_person call.
+    await expect(
+      handleRaw(
+        f.source,
+        "ask-fab",
+        "tasks.ask",
+        { key: fanoutAgainKey("mono-exo", "r11", "api", "f3_r11-api"), question: "Carry on?", options: [YES, NO], recommended: YES, answer: YES },
+        f.host,
+      ),
+    ).rejects.toThrow(/Only the app asks/);
+    const out = (await handleRaw(f.source, "resume-fab", "tasks.fanout", { resume: "r11", confirm: ["api"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    // Ash never saw or answered anything: the stopped api never starts again, and it still needs his yes. (docs was never
+    // started, so the resume sends it, as before.)
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f3_r11-docs"]);
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+  });
+
+  it("a chat's answer on a restart decision never starts the task, even where the store kept it", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    f.api.fanoutCheckpoints = store;
+    // A store that takes the chat's answer as it is (the app's own store refuses it; this is the second gate).
+    const decisions = decisionsOf(f.api, { enforce: false });
+    // The app's own card, then the model's answer to it, written straight to the store (the handler refuses it first).
+    const key = fanoutAgainKey("mono-exo", "r11", "api", "f3_r11-api");
+    await decisions.backend.ask({ key, question: AGAIN_QUESTION("api"), options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, key, YES, "chat:mono-exo");
+    const out = (await handleRaw(f.source, "resume-fab2", "tasks.fanout", { resume: "r11", confirm: ["api"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(f.started.map((call) => call[1])).toEqual(["app-mono-exo-f3_r11-docs"]);
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+  });
+
+  /**
+   * The app's own fan-out host (firstmate/host/fanoutHost.ts), with the plan store the window uses: a provider started
+   * again is found through the plan's record, the way the app finds it.
+   */
+  function deliveredPlan() {
+    resetWorkerPool();
+    forgetVerifications();
+    const rows: Delegation[] = [];
+    const f = fixture(rows);
+    const files: Record<string, string> = {};
+    const time = { now: 1_000 };
+    const io = { exists: async (path: string) => path in files, read: async (path: string) => files[path] ?? null };
+    const fanout = fanoutHost({
+      rows: () => rows,
+      fetch: async () => undefined,
+      folder: () => PROJECT,
+      io,
+      now: () => time.now,
+      checkpoints: () => f.api.fanoutCheckpoints,
+    });
+    const open = () => rows.filter(isOpenDelegation);
+    f.api.pool = workerPoolHost({ openRows: open, room: () => ({ room: true }), dependency: fanout.dependency, card: () => {} });
+    const pump = () =>
+      pumpWorkers({
+        openRows: open,
+        room: () => ({ room: true }),
+        dependency: fanout.dependency,
+        settle: fanout.settle,
+        start: (job) => handleRaw(f.source, job.requestId, "tasks.delegate", markAppDelegate(job.input), f.host),
+      });
+    return { ...f, rows, files, time, pump };
+  }
+
+  // WP-172 review round 2 (HIGH): a provider started again is the one its waiting task looks for.
+  it("the original provider delivering starts the task that waits for it (control)", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    await handleRaw(q.source, "h7c", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    expect(q.rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f3_h7c-api"]);
+    Object.assign(q.rows[0], { state: "completed", status: "done", gateVerdict: "passed", version: 2 });
+    q.files[`${PROJECT}/src/api/score.ts`] = 'app.get("/api/score", handler)';
+    q.time.now += 120_000;
+    await q.pump();
+    expect(q.rows.some((entry) => entry.childSession === "app-mono-exo-f3_h7c-board")).toBe(true);
+  });
+
+  it("a provider stopped and started again on Ash's yes is the one its waiting task looks for", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    const decisions = decisionsOf(q.api);
+    await handleRaw(q.source, "h7", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    expect(q.rows.map((entry) => entry.childSession)).toEqual(["app-mono-exo-f2_h7-api"]);
+    // Ash stops api, then says yes to starting it again, and the first mate resumes naming it.
+    Object.assign(q.rows[0], { state: "cancelled", version: 2 });
+    await decisions.backend.ask({ key: fanoutAgainKey("mono-exo", "h7", "api", "f2_h7-api"), question: AGAIN_QUESTION("api"), options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, fanoutAgainKey("mono-exo", "h7", "api", "f2_h7-api"), YES);
+    const out = (await handleRaw(q.source, "resume-h7", "tasks.fanout", { resume: "h7", confirm: ["api"] }, q.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "started" });
+    const again = q.rows.find((entry) => entry.state === "running" && entry.childSession.includes("-api"));
+    expect(again).toBeDefined();
+    // The restarted api delivers: done, its checks passed, the route on disk.
+    Object.assign(again!, { state: "completed", status: "done", gateVerdict: "passed", version: 2 });
+    q.files[`${PROJECT}/src/api/score.ts`] = 'app.get("/api/score", handler)';
+    q.time.now += 120_000;
+    await q.pump();
+    expect(q.rows.some((entry) => entry.childSession === "app-mono-exo-f2_h7-board")).toBe(true);
+  });
+
+  // WP-172 review round 2 (MED): one yes covers one stop. Each stop asks under the request id it stopped.
+  it("one yes does not start a task again after Ash stops it a second time", async () => {
+    const q = deliveredPlan();
+    q.api.fanoutCheckpoints = memCheckpoints();
+    const decisions = decisionsOf(q.api);
+    await handleRaw(q.source, "h8", "tasks.fanout", { intent: INTENT_172, tasks: [providing, waitingBoard] }, q.host);
+    Object.assign(q.rows[0], { state: "cancelled", version: 2 });
+    await decisions.backend.ask({ key: fanoutAgainKey("mono-exo", "h8", "api", "f2_h8-api"), question: AGAIN_QUESTION("api"), options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, fanoutAgainKey("mono-exo", "h8", "api", "f2_h8-api"), YES);
+    await handleRaw(q.source, "resume-h8a", "tasks.fanout", { resume: "h8", confirm: ["api"] }, q.host);
+    const again = q.rows.find((entry) => entry.state === "running" && entry.childSession.includes("-api"))!;
+    // Ash stops the restarted worker too.
+    Object.assign(again, { state: "cancelled", version: 3 });
+    const before = q.rows.length;
+    const out = (await handleRaw(q.source, "resume-h8b", "tasks.fanout", { resume: "h8", confirm: ["api"] }, q.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(q.rows.length).toBe(before);
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+    // The second stop has a decision of its own, under the request id it stopped (the restarted one).
+    expect(decisions.store.has(fanoutAgainKey("mono-exo", "h8", "api", "r1f2_h8-api"))).toBe(true);
+  });
+
+  // WP-172 review round 2 (MED 3, LOW): a held brief whose read fails is not taken for a stopped one.
+  it("a failed read of the tasks held for review refuses the resume, so a held task is never started a second time", async () => {
+    const f = fixture([]);
+    const store = memCheckpoints();
+    store.saved.set(
+      "mono-exo|r12",
+      seededPlan("mono-exo", "r12", { api: { state: "queued", childSession: "app-mono-exo-f2_r12-api" } }),
+    );
+    f.api.fanoutCheckpoints = store;
+    f.api.freshEyesWaiting = vi.fn(async () => {
+      throw new Error("store unavailable");
+    });
+    await expect(handleRaw(f.source, "resume-r12", "tasks.fanout", { resume: "r12" }, f.host)).rejects.toThrow(
+      /Could not read which tasks are held/,
+    );
+    expect(f.started).toEqual([]);
+    expect(store.saved.get("mono-exo|r12")?.tasks.find((task) => task.name === "api")?.state).toBe("queued");
+  });
+
+  // WP-172 review round 3 (LOW-1): a restart starts nothing unless its "starting" record was saved.
+  it("a start again whose starting record the store refuses to save does not start", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    // The store takes every save except the one that records api as starting.
+    const save = store.save;
+    store.save = vi.fn(async (owner: string, cp: FanoutCheckpoint) =>
+      cp.tasks.find((task) => task.name === "api")?.state === "starting" ? false : save(owner, cp),
+    );
+    f.api.fanoutCheckpoints = store;
+    const decisions = decisionsOf(f.api);
+    const key = fanoutAgainKey("mono-exo", "r11", "api", "f3_r11-api");
+    await decisions.backend.ask({ key, question: AGAIN_QUESTION("api"), options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, key, YES, "user");
+    const out = (await handleRaw(f.source, "resume-lo1", "tasks.fanout", { resume: "r11", confirm: ["api"] }, f.host)) as {
+      tasks: { name: string; status: string }[];
+    };
+    expect(f.started.map((call) => call[1])).not.toContain("app-mono-exo-r1f3_r11-api");
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "not started: could not save this plan's progress" });
+  });
+
+  // WP-172 review round 2 (LOW): a resume whose number is not saved starts nothing.
+  it("a resume whose number the store refuses to save starts nothing", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    // The store refuses the save of the resume's number (its copy is newer).
+    const save = store.save;
+    store.save = vi.fn(async (owner: string, cp: FanoutCheckpoint) => (cp.resumes === 1 ? false : save(owner, cp)));
+    f.api.fanoutCheckpoints = store;
+    const decisions = decisionsOf(f.api);
+    await decisions.backend.ask({ key: fanoutAgainKey("mono-exo", "r11", "api", "f3_r11-api"), question: AGAIN_QUESTION("api"), options: [YES, NO], taskIds: [] });
+    await decisions.backend.answer(PROJECT, fanoutAgainKey("mono-exo", "r11", "api", "f3_r11-api"), YES);
+    await expect(handleRaw(f.source, "resume-r11", "tasks.fanout", { resume: "r11", confirm: ["api"] }, f.host)).rejects.toThrow(
+      /Could not save this plan's resume/,
+    );
+    expect(f.started).toEqual([]);
+  });
+
+  // WP-172 review round 2 (LOW): a stop's decision key names the plan, the task and the stopped request id.
+  it("a restart decision's key names the plan, the task, the stopped request id and its owner, and no two share one", () => {
+    const key = fanoutAgainKey("mono-exo", "r1", "api", "f2_r1-api");
+    expect(key).toMatch(/^fanout-again\/r1\/api\/f2_r1-api\/[0-9a-f]{16}$/);
+    // Two chats that picked the same plan id and task name get two keys (Ash's yes for one never restarts the other's).
+    expect(fanoutAgainKey("mono-checker", "p1", "api", "f2_p1-api")).not.toBe(fanoutAgainKey("mono-exo", "p1", "api", "f2_p1-api"));
+    // Plan and task names that run together (fix-auth + api, fix + auth-api) are two decisions.
+    expect(fanoutAgainKey("mono-exo", "fix-auth", "api", "f8_fix-auth-api")).not.toBe(fanoutAgainKey("mono-exo", "fix", "auth-api", "f8_fix-auth-api"));
+    // A long plan id is never cut short into the same key as another.
+    const long = "p".repeat(90);
+    expect(fanoutAgainKey("mono-exo", `${long}a`, "api", "x")).not.toBe(fanoutAgainKey("mono-exo", `${long}b`, "api", "x"));
+    // Each stop of a task asks again: its stopped request id differs.
+    expect(fanoutAgainKey("mono-exo", "r1", "api", "f2_r1-api")).not.toBe(fanoutAgainKey("mono-exo", "r1", "api", "r1f2_r1-api"));
+  });
+  // ---- REVIEW round 3: new probes ----
+  // R3-1 (MED): the key names no owner. A second first mate in the same project that picked the same plan id and task
+  // name inherits Ash's yes given for the first chat's stopped worker, and restarts its own without being asked.
+  it("R3-1: Ash's yes for one chat's stopped task does not restart another chat's task of the same plan id and name", async () => {
+    const shared = new Map<string, Record<string, unknown>>();
+    const backend = {
+      ask: vi.fn(async (input: { key: string; question: string; options: string[]; project?: string }) => {
+        const id = `${input.project ?? ""}|${input.key}`;
+        const existing = shared.get(id);
+        if (existing) return { decision: existing, created: false, added: [], released: [] };
+        const decision = { project: input.project ?? "", decisionKey: input.key, question: input.question, options: input.options, recommended: null, askedBy: "x", askedByMono: null, waiting: [], state: "open", answer: null, answeredBy: null, answeredAt: null, createdAt: 0, updatedAt: 0, version: 1 };
+        shared.set(id, decision);
+        return { decision, created: true, added: [], released: [] };
+      }),
+      answer: vi.fn(async (project: string, key: string, answer: string, by?: string) => {
+        if (key.startsWith("fanout-again/") && by !== undefined && by !== "user" && by !== "person") throw new Error("person only");
+        const decision = shared.get(`${project}|${key}`)!;
+        Object.assign(decision, { state: "answered", answer, answeredBy: by ?? "person" });
+        return { applied: true, decision, released: [], releasedTasks: [] };
+      }),
+      decisions: vi.fn(async () => [...shared.values()]),
+    };
+    // Chat A (mono-exo): plan "p1", its api stopped; Ash says yes to A's decision.
+    const rowsA = [row({ id: "t-a", ownerSession: "mono-exo", childSession: "app-mono-exo-f2_p1-api", requestId: "app-mono-exo-f2_p1-api", state: "cancelled" })];
+    const a = fixture(rowsA);
+    const storeA = memCheckpoints();
+    storeA.saved.set("mono-exo|p1", seededPlan("mono-exo", "p1", { api: { state: "stopped", taskId: "t-a", childSession: "app-mono-exo-f2_p1-api" }, docs: { state: "started", taskId: "t-ad", childSession: "app-mono-exo-f2_p1-docs" } }));
+    a.api.fanoutCheckpoints = storeA;
+    a.api.firstMate = { backend } as unknown as AgentAppTasksHost["firstMate"];
+    await handleRaw(a.source, "resume-a1", "tasks.fanout", { resume: "p1" }, a.host);
+    const askedA = [...shared.values()].find((d) => d.decisionKey === fanoutAgainKey("mono-exo", "p1", "api", "f2_p1-api"))!;
+    expect(askedA).toBeDefined();
+    await backend.answer(askedA.project as string, askedA.decisionKey as string, YES, "user");
+    // Chat B (a second first mate chat, id mono-checker here), same project: its own plan "p1", its own api, stopped by Ash. Nobody asked Ash about it.
+    const rowsB = [row({ id: "t-b", ownerSession: "mono-checker", childSession: "app-mono-checker-f2_p1-api", requestId: "app-mono-checker-f2_p1-api", state: "cancelled" })];
+    const b = fixture(rowsB);
+    b.source.id = "mono-checker";
+    const storeB = memCheckpoints();
+    storeB.saved.set("mono-checker|p1", seededPlan("mono-checker", "p1", { api: { state: "stopped", taskId: "t-b", childSession: "app-mono-checker-f2_p1-api" }, docs: { state: "started", taskId: "t-bd", childSession: "app-mono-checker-f2_p1-docs" } }));
+    b.api.fanoutCheckpoints = storeB;
+    b.api.firstMate = { backend } as unknown as AgentAppTasksHost["firstMate"];
+    const out = (await handleRaw(b.source, "resume-b1", "tasks.fanout", { resume: "p1", confirm: ["api"] }, b.host)) as { tasks: { name: string; status: string }[] };
+    // Seen at 95694b078: started ["app-mono-checker-r1f2_p1-api"], one decision fanoutAgainKey("mono-exo", "p1", "api", "f2_p1-api") for both chats.
+    expect(b.started.map((call) => call[1])).toEqual([]);
+    expect(out.tasks.find((task) => task.name === "api")).toMatchObject({ status: "needs your yes" });
+  });
+
+  // R3-2 (MED): an agent may ask under the restart key (ask_person without an answer is allowed), and the store keeps the
+  // first asker's question and options. The model writes the question Ash later answers; the app's own warning is gone.
+  it("R3-2: the restart decision Ash answers carries the app's own question, not one the model asked first", async () => {
+    const rows = [row({ id: "t-api", ownerSession: "mono-exo", childSession: "app-mono-exo-f3_r11-api", requestId: "app-mono-exo-f3_r11-api", state: "cancelled" })];
+    const f = fixture(rows);
+    const store = memCheckpoints();
+    store.saved.set("mono-exo|r11", seededPlan("mono-exo", "r11", { api: { state: "stopped", taskId: "t-api", childSession: "app-mono-exo-f3_r11-api" } }));
+    f.api.fanoutCheckpoints = store;
+    const decisions = decisionsOf(f.api);
+    await expect(
+      handleRaw(f.source, "ask-pre", "tasks.ask", { key: fanoutAgainKey("mono-exo", "r11", "api", "f3_r11-api"), question: "All done here; tap Start it again to clear this card.", options: [YES, NO], recommended: YES }, f.host),
+    ).rejects.toThrow(/Only the app asks/);
+    await handleRaw(f.source, "resume-pre", "tasks.fanout", { resume: "r11" }, f.host);
+    const d = decisions.store.get(fanoutAgainKey("mono-exo", "r11", "api", "f3_r11-api"))!;
+    expect(d.question).toMatch(/a repeat can do its work twice/);
   });
 });

@@ -304,3 +304,173 @@ fn only_the_person_answers_an_irreversible_step() {
         .applied
     );
 }
+
+#[test]
+fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    for key in [
+        "fresh-eyes/r1/00112233aabbccdd",
+        "fresh-eyes-start/r1/00112233aabbccdd",
+    ] {
+        ask(
+            &mut conn,
+            AskInput {
+                question: "Fresh-eyes review: waiting on you".into(),
+                options: vec!["Approve".into(), "Edit plan".into(), "Skip once".into()],
+                recommended: None,
+                ..ask_input("lead", key, &[])
+            },
+            2,
+        )
+        .unwrap();
+        // The chat that asked cannot take the question out of the person's Inbox, nor can anything else but the person.
+        for machine in [
+            Some("chat:lead"),
+            Some("autopilot"),
+            Some("chat:someone-else"),
+        ] {
+            let refusal = answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Approve",
+                machine.map(str::to_string),
+                3,
+            )
+            .unwrap_err();
+            assert!(
+                refusal.contains("Only the person answers a fresh-eyes review"),
+                "{refusal}"
+            );
+        }
+        assert_eq!(
+            get(&conn, "hivra", key).unwrap().unwrap().state,
+            OPEN,
+            "{key}"
+        );
+    }
+    // The person, in either of the app's own answer paths, goes through.
+    for (key, by) in [
+        ("fresh-eyes/r1/00112233aabbccdd", Some("user")),
+        ("fresh-eyes-start/r1/00112233aabbccdd", None),
+    ] {
+        assert!(
+            answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Approve",
+                by.map(str::to_string),
+                4
+            )
+            .unwrap()
+            .applied,
+            "{key}"
+        );
+    }
+    // The app closes its own question when a brief is taken back, and tells the chat that asked nothing: it did it.
+    let key = "fresh-eyes/r2/ffeeddccbbaa0011";
+    ask(&mut conn, ask_input("lead", key, &[]), 5).unwrap();
+    let out = answer(
+        &mut conn,
+        "hivra",
+        key,
+        "Cancelled by the chat that asked.",
+        Some(APP_CLOSER.into()),
+        6,
+    )
+    .unwrap();
+    assert!(out.applied);
+    assert!(out.released.is_empty(), "{:?}", out.released);
+    assert_eq!(
+        get(&conn, "hivra", key)
+            .unwrap()
+            .unwrap()
+            .answered_by
+            .as_deref(),
+        Some(APP_CLOSER)
+    );
+    // The app's word is not a way round for any other key: an irreversible step is still the person's alone.
+    let hard = "irreversible/lead/task-9";
+    ask(&mut conn, ask_input("lead", hard, &[]), 7).unwrap();
+    let refusal = answer(
+        &mut conn,
+        "hivra",
+        hard,
+        "Approve",
+        Some(APP_CLOSER.into()),
+        8,
+    )
+    .unwrap_err();
+    assert!(
+        refusal.contains("Only the person answers an irreversible step"),
+        "{refusal}"
+    );
+}
+
+/// WP-172: a stopped fan-out task starts again only on the person's yes. No chat (the model's own ask_person answer
+/// included) and no app closer can give it.
+#[test]
+fn only_the_person_answers_a_restart_decision_of_a_stopped_task() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let key = "fanout-again/r1/api/f2_r1-api";
+    ask(
+        &mut conn,
+        AskInput {
+            question: "Start api again?".into(),
+            options: vec!["Start it again".into(), "Leave it stopped".into()],
+            recommended: Some("Leave it stopped".into()),
+            ..ask_input("lead", key, &[])
+        },
+        2,
+    )
+    .unwrap();
+    for machine in [Some("chat:lead"), Some("autopilot"), Some(APP_CLOSER)] {
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Start it again",
+            machine.map(str::to_string),
+            3,
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers whether a stopped task starts again"),
+            "{refusal}"
+        );
+    }
+    assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
+    // The person's own answer goes through.
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Start it again",
+            Some("user".into()),
+            4
+        )
+        .unwrap()
+        .applied
+    );
+}
+
+/// WP-172: a restart decision names a plan, a task and a request id, each up to its own length, so its key can be longer
+/// than an ordinary decision's; the longer limit is for that prefix only.
+#[test]
+fn a_restart_decision_key_names_a_whole_plan_task_and_request() {
+    let key = format!(
+        "fanout-again/{}/{}/{}/{}",
+        "p".repeat(100),
+        "t".repeat(40),
+        "r".repeat(100),
+        "0".repeat(16)
+    );
+    assert!(key.len() > KEY_MAX && key.len() <= FANOUT_AGAIN_KEY_MAX);
+    assert_eq!(key_like(&key).unwrap(), key);
+    assert!(key_like(&"k".repeat(KEY_MAX + 1)).is_err());
+    assert!(key_like(&format!("other/{}", "x".repeat(KEY_MAX))).is_err());
+}

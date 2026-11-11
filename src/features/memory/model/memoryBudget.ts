@@ -12,7 +12,8 @@ const DAY_MS = 86_400_000;
 /** Two days of timestamps is all the daily limit needs; older ones are dropped on every read and write. */
 const KEEP_MS = 2 * DAY_MS;
 
-export type BudgetProblem = "hour" | "day";
+/** "storage": the ledger could not be read or written, so the limit cannot be kept and nothing is called. */
+export type BudgetProblem = "hour" | "day" | "storage";
 
 export type BudgetCheck = { ok: true } | { ok: false; problem: BudgetProblem; until: number };
 
@@ -52,33 +53,44 @@ export function spendBudget(times: readonly number[], now: number): number[] {
   return clean([...times, now], now);
 }
 
-function readRaw(): unknown[] {
+/** The stored ledger, or undefined when it is there but cannot be read (the limit then cannot be trusted). */
+function readRaw(): unknown[] | undefined {
   try {
     const parsed = JSON.parse(localStorage.getItem(BUDGET_KEY) ?? "[]") as unknown;
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? parsed : undefined;
   } catch {
-    return [];
+    return undefined;
   }
 }
 
 /** What the browser holds now, pruned and sorted. Any unreadable value is an empty ledger, never a crash. */
 export function loadBudget(now: number): number[] {
-  return pruneBudget(readRaw(), now);
+  return pruneBudget(readRaw() ?? [], now);
 }
 
-function write(times: number[]): void {
+function write(times: number[]): boolean {
   try {
     localStorage.setItem(BUDGET_KEY, JSON.stringify(times));
+    return true;
   } catch {
-    // Private mode or a full quota: this run is simply not limited by what it could not write.
+    return false;
   }
 }
 
-/** Read, check and (when it fits) count one call, all against the same now. */
+const STORAGE_RETRY_MS = 600_000;
+
+/**
+ * Read, check and (when it fits) count one call, all against the same now. It fails closed: a ledger that cannot be
+ * read or a count that cannot be written means no budget, so no call is made.
+ */
 export function takeBudget(now: number): BudgetCheck {
-  const check = checkBudget(loadBudget(now), now);
-  if (check.ok) write(spendBudget(loadBudget(now), now));
-  return check;
+  const stored = readRaw();
+  const closed: BudgetCheck = { ok: false, problem: "storage", until: now + STORAGE_RETRY_MS };
+  if (!stored) return closed;
+  const times = pruneBudget(stored, now);
+  const check = checkBudget(times, now);
+  if (!check.ok) return check;
+  return write(spendBudget(times, now)) ? check : closed;
 }
 
 /** "14:30" in the person's own clock: the time the budget opens again. */
@@ -91,6 +103,7 @@ export function clockTime(at: number): string {
 
 /** The line the health card shows, in plain words. */
 export function pausedText(problem: BudgetProblem, until: number): string {
+  if (problem === "storage") return `Paused until ${clockTime(until)}: the spending limit can't be saved on this device.`;
   return problem === "hour"
     ? `Paused until ${clockTime(until)}: the hourly limit was reached.`
     : `Paused until ${clockTime(until)}: the daily limit was reached.`;
@@ -104,7 +117,7 @@ export type BudgetPause = { problem: BudgetProblem; until: number };
 function isPause(value: unknown): value is BudgetPause {
   if (!value || typeof value !== "object") return false;
   const pause = value as { problem?: unknown; until?: unknown };
-  return (pause.problem === "hour" || pause.problem === "day") && typeof pause.until === "number" && Number.isFinite(pause.until);
+  return (pause.problem === "hour" || pause.problem === "day" || pause.problem === "storage") && typeof pause.until === "number" && Number.isFinite(pause.until);
 }
 
 /** Record that the budget turned a turn away. The latest pause is the one worth showing, so this only overwrites. */

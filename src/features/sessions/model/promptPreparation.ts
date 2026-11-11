@@ -7,6 +7,7 @@ import {
   type SkillCatalogContext,
 } from "../../skills/model/skills";
 import { nativeCommandPrompt } from "../../../integrations/harness/core/nativeCommands";
+import { isTodayQuestion, withTodayAnswer } from "../../workLog/model/workLog";
 
 export async function preparePrompt(
   text: string,
@@ -17,5 +18,8 @@ export async function preparePrompt(
     return nativeCommandPrompt(context.harness, text);
   const withFiles = await applyFileMentionsToTurn(text, context.cwd);
   const withNotes = await applyNotesToTurn(withFiles);
-  return applySkillsToTurn(withNotes, context);
+  const skilled = await applySkillsToTurn(withNotes, context);
+  // WP-157: "what got done today?" is answered from the work log.
+  if (!isTodayQuestion(skilled)) return skilled;
+  return withTodayAnswer(skilled);
 }

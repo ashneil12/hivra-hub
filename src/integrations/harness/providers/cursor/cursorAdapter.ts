@@ -7,6 +7,7 @@ import {
   sendCursorTurn,
   steerCursorTurn,
   stopCursorSession,
+  cursorHasBackgroundWork,
 } from "./cursor";
 import { refreshCursorCatalog } from "./cursorCatalog";
 import {
@@ -31,6 +32,7 @@ export const cursorAdapter: HarnessAdapter = {
   respondApproval: respondCursorApproval,
   respondQuestion: respondCursorQuestion,
   stopSession: stopCursorSession,
+  hasBackgroundWork: cursorHasBackgroundWork,
   forgetSession: forgetCursorSession,
   bindSession: bindCursorSession,
   refreshCatalog: refreshCursorCatalog,

@@ -15,6 +15,9 @@ import { useHubBuildsVersion } from "../model/hubBuilds";
 import { appItemInView, showAppItem, showProjectToday, type HubSelection } from "../model/hubNav";
 import type { HubProject } from "../model/types";
 import { useAutopilotStrip } from "../../autopilot/ui/AutopilotStripButton";
+import { readStripGroups, stripLayout, useStripGroupsVersion } from "../model/stripGroups";
+import { ShowAllProjectsButton, StripGroupHeading, StripGroupMenu } from "./StripGroups";
+import type { ProjectGroup } from "../../projects/model/projectGroups";
 
 export { SHAPES } from "./projectShapeIcons";
 
@@ -57,6 +60,27 @@ export function ProjectStrip({
   const [menu, setMenu] = useState<{ project: HubProject; anchor: PopoverAnchor }>();
   const [draftMenu, setDraftMenu] = useState<PopoverAnchor>();
   const autopilot = useAutopilotStrip();
+  // WP-137: projects in no group first, then each group under its heading, all in the saved order. "Show only this
+  // group" (this window only) shows one group; the others come back in the same slots when it goes off.
+  useStripGroupsVersion();
+  const stripGroups = readStripGroups();
+  const layout = stripLayout(projects, stripGroups.groups, stripGroups.assignments, stripGroups.filterId);
+  const [groupMenu, setGroupMenu] = useState<{ group: ProjectGroup; anchor: PopoverAnchor }>();
+  const projectButton = (project: HubProject) => {
+    const count = attentionCount(project.id);
+    return (
+      <StripButton
+        key={project.id}
+        label={project.shortName}
+        title={count ? `${project.name}, ${count} waiting on you` : project.name}
+        selected={selection.project === project.id && !appItemInView(selection)}
+        onClick={() => onPickProject(project)}
+        glyph={<ProjectGlyph project={project} />}
+        count={count}
+        onMenu={(anchor) => setMenu({ project, anchor })}
+      />
+    );
+  };
   return (
     <nav
       aria-label="Projects"
@@ -84,21 +108,16 @@ export function ProjectStrip({
         glyph={autopilot.glyph}
       />
       <div className="h-2 shrink-0" />
-      {projects.map((project) => {
-        const count = attentionCount(project.id);
-        return (
-          <StripButton
-            key={project.id}
-            label={project.shortName}
-            title={count ? `${project.name}, ${count} waiting on you` : project.name}
-            selected={selection.project === project.id && !appItemInView(selection)}
-            onClick={() => onPickProject(project)}
-            glyph={<ProjectGlyph project={project} />}
-            count={count}
-            onMenu={(anchor) => setMenu({ project, anchor })}
-          />
-        );
-      })}
+      {layout.loose.map(projectButton)}
+      {layout.groups.map(({ group, projects: members }) => (
+        <div key={group.id} role="group" aria-label={`${group.name} group`} data-strip-group-section={group.id}
+          className="flex shrink-0 flex-col items-center gap-1">
+          <StripGroupHeading group={group} filterOn={layout.filter?.id === group.id}
+            onMenu={(anchor) => setGroupMenu({ group, anchor })} />
+          {members.map(projectButton)}
+        </div>
+      ))}
+      {layout.filter ? <ShowAllProjectsButton /> : null}
       {draftProject ? (
         <div data-hub-project-draft>
           <StripButton
@@ -128,6 +147,10 @@ export function ProjectStrip({
         />
       ) : null}
       {menu ? <ProjectMenu project={menu.project} anchor={menu.anchor} onClose={() => setMenu(undefined)} /> : null}
+      {groupMenu ? (
+        <StripGroupMenu group={groupMenu.group} basis={stripGroups.groups} filterOn={layout.filter?.id === groupMenu.group.id}
+          anchor={groupMenu.anchor} onClose={() => setGroupMenu(undefined)} />
+      ) : null}
       <RemovedUndoToast />
     </nav>
   );

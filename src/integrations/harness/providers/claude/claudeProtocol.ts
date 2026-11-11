@@ -38,12 +38,21 @@ import {
 } from "./claudeFailure";
 import { claudeBridgeKind } from "./claudeDeepseekBridge";
 import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
+import { cliPermissionSetting } from "../../core/permissionMatrix";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
 export const MINIMUM_CLAUDE_OPUS_5_VERSION = "2.1.219";
 export const MINIMUM_CLAUDE_SONNET_5_VERSION = "2.1.197";
 export const MINIMUM_CLAUDE_FABLE_5_VERSION = "2.1.169";
+/**
+ * Fable 5.1, offline fallback only (live `list_models` is not filtered by it).
+ * The CLI's own words for it, in the recorded list_models row in
+ * claudeProtocol.test.ts: "Update to 2.1.255+ to use Fable 5.1". Fable 5.2 has
+ * no minimum on record anywhere in this checkout, so it has no constant: the
+ * fallback offers it wherever it offers 5.1, and live `list_models` decides.
+ */
+export const MINIMUM_CLAUDE_FABLE_5_1_VERSION = "2.1.255";
 export const MINIMUM_CLAUDE_OPUS_4_8_VERSION = "2.1.154";
 export const MINIMUM_CLAUDE_OPUS_4_7_VERSION = "2.1.111";
 
@@ -151,16 +160,8 @@ export function compareSemver(left: string, right: string): number {
 export function runtimeModeToPermission(
   mode: RuntimeMode,
 ): ClaudePermissionMode {
-  switch (mode) {
-    case "auto-accept-edits":
-      return "acceptEdits";
-    case "auto":
-      return "auto";
-    case "full-access":
-      return "bypassPermissions";
-    default:
-      return "default";
-  }
+  // The table in core/permissionMatrix.ts holds every CLI's setting for each mode.
+  return cliPermissionSetting("claude", mode) as ClaudePermissionMode;
 }
 
 /** Older model ids that reject `xhigh` and want `max` instead. */
@@ -282,6 +283,21 @@ function normalizeImageMime(mime: string): string {
  * tools); a write made through it is caught by the checkout check after the turn (src-tauri/src/firstmate/).
  */
 export const FIRST_MATE_DENY_TOOLS = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/**
+ * A side question ("by the way", `/btw`) answers from what the chat already did and may look around the project. The
+ * tools it is given are an allowlist (`--tools`): Read, Grep and Glob, and nothing the CLI adds later. A deny list can
+ * only name what is known today, and it missed EnterWorktree, which creates a worktree and a branch in the project
+ * even in plan mode (with only the deny list, Claude Code 2.1.318 still offered it, WebFetch and about twenty others).
+ * The allowlist is what keeps a side question read-only; the plan mode it also runs in is not relied on.
+ */
+export const SIDE_QUESTION_TOOLS = ["Read", "Grep", "Glob"];
+
+/**
+ * Kept behind the allowlist: the file-editing tools and Bash (a shell can write, delete or push) are denied by name as
+ * well, and a deny rule holds in every permission mode, so one dropped from the allowlist by mistake is still refused.
+ */
+export const SIDE_QUESTION_DENY_TOOLS = [...FIRST_MATE_DENY_TOOLS, "Bash"];
 
 export function buildClaudeSpawnArgs(input: {
   model?: string;
@@ -1239,6 +1255,20 @@ export function approvalCall(
   };
 }
 
+/** The Bash input keys the phone shows: the command it runs, its description and its timeout. */
+const PHONE_SHOWN_BASH_KEYS = new Set(["command", "description", "timeout"]);
+
+/**
+ * WP-150: whether everything the call runs with is in the view `approvalCall` gives the phone, so an allow from
+ * the phone runs exactly what it showed. Only a Bash call whose input has no key beyond the three above
+ * qualifies. An MCP call, WebFetch, Write, Edit, Task, a Bash sandbox override or any other key does not:
+ * the desktop still decides it, and the phone never sees it.
+ */
+export function approvalCallComplete(toolName: string, input: Record<string, unknown>): boolean {
+  if (toolName !== "Bash" || typeof input.command !== "string") return false;
+  return Object.keys(input).every((key) => PHONE_SHOWN_BASH_KEYS.has(key));
+}
+
 export function summarizeToolRequest(
   toolName: string,
   input: Record<string, unknown>,
@@ -1283,7 +1313,7 @@ function contextUsedFromUsage(usage: Record<string, unknown> | null): number {
 /**
  * Aggregate token accounting for the completed Claude turn.
  *
- * The result record also carries `total_cost_usd`, the CLI's own price for the turn (WP-108). It is kept as reported
+ * The result record also carries `total_cost_usd`, the CLI process's running total (WP-108; the adapter turns it into the turn's own cost). It is kept as reported
  * and never derived: a CLI that doesn't send it gets a turn with tokens and no price.
  */
 export function turnMetricsFromResult(

@@ -54,6 +54,7 @@ const appPolicyForTest = {
   autoResume: true,
   notificationPrompt: true,
   globalShortcut: true,
+  clearBuildOutput: true,
 };
 
 const featureWorktree: Worktree = {

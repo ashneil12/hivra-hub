@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { ask } from "@tauri-apps/plugin-dialog";
-import { forgetHarnessSession } from "../../integrations/harness/core/registry";
+import { cancelHarnessTurn, forgetHarnessSession } from "../../integrations/harness/core/registry";
 import { killAllChildren } from "../../integrations/harness/core/child";
-import { newSession } from "../../features/sessions/model/session";
+import { newSession, type Session } from "../../features/sessions/model/session";
 import { newTab } from "../../features/workspace/model/layout";
 import {
   armBenchQuit,
@@ -46,6 +46,7 @@ vi.mock("../../integrations/harness/core/registry", () => ({
   bindHarnessSession: vi.fn(),
   isLiveHarness: vi.fn(),
   forgetHarnessSession: vi.fn().mockResolvedValue(undefined),
+  cancelHarnessTurn: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../../integrations/harness/core/child", () => ({
   killAllChildren: vi.fn().mockResolvedValue(undefined),
@@ -403,6 +404,71 @@ describe("coordinated quit", () => {
     }
   });
 
+  it("WP-115: a chat held for a background compact is not a cut turn at quit, reload or restore", async () => {
+    const held = newSession("claude", "C:/test");
+    held.idleCompacting = true;
+    held.busy = true;
+    held.blocks = [{ id: "u1", role: "user", text: "an old message" }];
+    const real = newSession("claude", "C:/other");
+    real.busy = true;
+    real.blocks = [{ id: "u2", role: "user", text: "working" }];
+    const tabs = [newTab(held.id), newTab(real.id)];
+    const workspace = (sessions: Session[]) =>
+      setQuitWorkspace(
+        () => sessions,
+        () => tabs,
+        () => tabs[0].id,
+        () => held.cwd,
+        () => [],
+        () => new Map(),
+        vi.fn(),
+      );
+    // The quit poll: only the real turn blocks Quit.
+    let release = workspace([held, real]);
+    try {
+      await reportQuitPoll(21);
+      expect(invokedWith("quit_poll_reply")).toEqual({ id: 21, inFlight: 1 });
+    } finally {
+      release();
+    }
+    // The held chat alone: nothing to confirm.
+    release = workspace([held]);
+    try {
+      vi.mocked(invoke).mockClear();
+      await reportQuitPoll(22);
+      expect(invokedWith("quit_poll_reply")).toEqual({ id: 22, inFlight: 0 });
+      // Quit, reload and ship all save it as it was: no "Turn interrupted" note, no in-flight row.
+      for (const mode of ["quit", "unload"] as const) {
+        vi.mocked(invoke).mockClear();
+        const { persistQuitState } = await import("./appLifecycle");
+        await persistQuitState([held], [tabs[0]], tabs[0].id, held.cwd, new Map(), mode);
+        const saved = vi
+          .mocked(invoke)
+          .mock.calls.find(([command]) => command === "session_upsert")?.[1] as
+          | { session: { blocks: { notice?: string }[] } }
+          | undefined;
+        expect(saved?.session.blocks.some((block) => block.notice === "interrupt")).toBe(false);
+        expect((invokedWith("session_set_in_flight") as { sessions: unknown[] } | undefined)?.sessions ?? []).toEqual([]);
+      }
+      // A quit (a ship is one) cancels the compact; the watcher then lets go of the chat.
+      vi.mocked(invoke).mockClear();
+      vi.mocked(cancelHarnessTurn).mockClear();
+      await commitQuit(23, "20261019-210405-bbbbbbb");
+      expect(cancelHarnessTurn).toHaveBeenCalledTimes(1);
+      expect(cancelHarnessTurn).toHaveBeenCalledWith("claude", held.id);
+      expect(invokedWith("quit_ready")).toEqual({ id: 23, persisted: true });
+    } finally {
+      release();
+    }
+    // Nothing in the saved rows marks it interrupted when the app reopens.
+    const { inFlightRefs, wasTurnInterrupted } = await import("../../features/sessions/model/inFlight");
+    const interrupted = new Set(inFlightRefs([held], [tabs[0]]).map((ref) => ref.sessionId));
+    const snapshot = collectWorkspaceSnapshot([tabs[0]], [held], tabs[0].id, held.cwd, new Map());
+    const restored = hydrateWorkspaceSnapshot(snapshot, new Map([[held.id, { ...held, busy: undefined }]]), interrupted);
+    expect(restored?.sessions.some(wasTurnInterrupted)).toBe(false);
+    expect(restored?.sessions.find((s) => s.id === held.id)?.busy).toBe(false);
+  });
+
   it("reports nothing from a window with no workspace yet", async () => {
     await reportQuitPoll(2);
     expect(invokedWith("quit_poll_reply")).toEqual({ id: 2, inFlight: 0 });
@@ -607,5 +673,61 @@ describe("remembering the terminal dock side across restarts", () => {
     const { handleQuitRequested } = await import("./appLifecycle");
     await handleQuitRequested();
     expect(await lastSavedDockSide()).toBe("left");
+  });
+});
+
+// WP-110: choosing "this folder" on a new chat was only in memory, so a reload let "always" move the chat anyway.
+describe("a new chat's choice to stay in its folder across a reload", () => {
+  it("is saved with the page's own unload save and comes back from the boot loader", async () => {
+    // The boot loader remembers its first answer for the life of the page, so this test boots a page of its own.
+    vi.resetModules();
+    const { invoke: tauriInvoke } = await import("@tauri-apps/api/core");
+    const store = await import("../../features/sessions/data/sessionStore");
+    const { persistQuitState, loadResumedWorkspace } = await import("./appLifecycle");
+    const { newSession: fresh } = await import("../../features/sessions/model/session");
+    const { newTab: freshTab } = await import("../../features/workspace/model/layout");
+    const { newChatStaysHere, newChatWorktreeOpenFor, openNewChatWorktree } = await import(
+      "../../features/source-control/model/newChatWorktree"
+    );
+
+    const stayed = { ...fresh("claude", "/alpha"), id: "stay", worktreeDeclined: true };
+    const plain = { ...fresh("claude", "/alpha"), id: "plain" };
+    const tabs = [
+      { ...freshTab("stay"), id: "tab-stay" },
+      { ...freshTab("plain"), id: "tab-plain" },
+    ];
+    await persistQuitState([stayed, plain], tabs, "tab-stay", "/alpha", new Map(), "unload");
+    const saved = vi
+      .mocked(tauriInvoke)
+      .mock.calls.filter(([command]) => command === "workspace_set_snapshot")
+      .at(-1)?.[1] as { snapshot: unknown } | undefined;
+    expect(saved).toBeDefined();
+    // The webview gets back the JSON the store kept.
+    vi.mocked(store.loadWorkspaceSnapshot).mockResolvedValue(JSON.parse(JSON.stringify(saved!.snapshot)));
+
+    const resumed = await loadResumedWorkspace();
+    const kept = resumed?.sessions.find((session) => session.id === "stay");
+    const moved = resumed?.sessions.find((session) => session.id === "plain");
+    expect(kept && newChatStaysHere(kept)).toBe(true);
+    expect(moved && newChatStaysHere(moved)).toBe(false);
+
+    // The first send after the reload, with the setting on always.
+    const create = vi.fn(async () => {
+      throw new Error("a worktree must not be created for this chat");
+    });
+    const port = {
+      gitOnThisComputer: vi.fn(async () => true),
+      offerCheck: () => null,
+      createWorktree: create,
+    };
+    const send = (session: NonNullable<typeof kept>) =>
+      openNewChatWorktree(
+        newChatWorktreeOpenFor(session, { setting: "always", isFirstTurn: true, toggleOn: false }),
+        port,
+      );
+    expect(await send(kept!)).toBeNull();
+    expect(create).not.toHaveBeenCalled();
+    await expect(send(moved!)).rejects.toThrow("a worktree must not be created");
+    expect(create).toHaveBeenCalledTimes(1);
   });
 });

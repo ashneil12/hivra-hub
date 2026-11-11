@@ -59,7 +59,12 @@ impl GateVerdict {
 
     /// The row's stored verdict. An unknown value is treated as not yet passed, never as passed.
     pub fn of(row: &Delegation) -> GateVerdict {
-        match row.gate_verdict.as_deref() {
+        Self::stored(row.gate_verdict.as_deref())
+    }
+
+    /// A stored verdict, as the row's `gate_verdict` column holds it.
+    pub fn stored(verdict: Option<&str>) -> GateVerdict {
+        match verdict {
             None => GateVerdict::NotRequired,
             Some(Self::PASSED) => GateVerdict::Passed,
             Some(Self::FAILED) => GateVerdict::Failed,
@@ -239,4 +244,14 @@ pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
 /// The row's status with its own stored gate verdict.
 pub fn status_of(row: &Delegation) -> DerivedStatus {
     derive_status(row, GateVerdict::of(row))
+}
+
+/// Whether a row in `state` with this stored gate verdict shows as `done`, without loading the row (the worktree
+/// clean-up asks it of every row). It is `status_of(row).status == Status::Done`; a test keeps the two together.
+pub fn is_done(state: &str, gate_verdict: Option<&str>) -> bool {
+    state == COMPLETED
+        && matches!(
+            GateVerdict::stored(gate_verdict),
+            GateVerdict::NotRequired | GateVerdict::Passed
+        )
 }

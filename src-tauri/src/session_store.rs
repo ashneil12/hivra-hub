@@ -32,7 +32,7 @@ CREATE INDEX IF NOT EXISTS sessions_cwd_updated_idx
 /// The newest schema this build writes (`schema_migrations`). A database at a higher version was written by a newer
 /// build: it is refused, never opened or migrated, because this build would misread it (docs/PHASE-1B-DEV-SETUP.md).
 /// Raise it with every new numbered migration; `schema_version_matches_the_migrations` checks.
-pub const SCHEMA_VERSION: i64 = 20;
+pub const SCHEMA_VERSION: i64 = 21;
 
 /// A database newer than this build.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -415,15 +415,11 @@ pub(crate) fn boundary_for_read(value: Option<String>) -> Option<String> {
     stored_boundary(Some(&raw)).or(Some("private-boundary-unreadable".to_string()))
 }
 
-#[tauri::command(async)]
-pub fn session_upsert(
-    store: State<'_, SessionStore>,
-    session: SessionUpsert,
-) -> Result<SessionSummary, String> {
+/// What a saved chat must look like. A blank folder is allowed: it is a chat that came in from an export with no folder
+/// that is a project here (docs/PORTABLE.md), and it has to keep saving (title, pin, a new folder) until one is chosen.
+/// Nothing runs in it: every launcher refuses a blank folder (`chat_folder.rs`).
+fn check_upsert(session: &SessionUpsert) -> Result<(), String> {
     validate_id(&session.id, "session")?;
-    if session.cwd.trim().is_empty() {
-        return Err("cwd is required".into());
-    }
     if let Some(provider_session_id) = &session.provider_session_id {
         if !provider_session_id.is_empty() {
             validate_id(provider_session_id, "provider session")?;
@@ -445,7 +441,15 @@ pub fn session_upsert(
     if !session.blocks.is_array() {
         return Err("blocks must be an array".into());
     }
+    Ok(())
+}
 
+#[tauri::command(async)]
+pub fn session_upsert(
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+) -> Result<SessionSummary, String> {
+    check_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
     Ok(summary)
@@ -477,6 +481,16 @@ pub fn session_list_by_project(
     }
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     list_by_project(&conn, &cwd).map_err(|e| e.to_string())
+}
+
+/// The chats that have no folder (an import cleared it, docs/PORTABLE.md), newest first: the sidebar's "Needs a folder"
+/// group, so none of them is findable only through search.
+#[tauri::command(async)]
+pub fn session_list_folderless(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<SessionSummary>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    list_folderless(&conn).map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -568,9 +582,15 @@ fn usage_rows(conn: &Connection, since: i64) -> Result<Vec<UsageSessionRow>, Str
         let Ok((id, cwd, harness, model, blocks_json)) = row else {
             continue;
         };
-        let Ok(blocks) = serde_json::from_str::<Value>(&blocks_json) else {
+        let Ok(mut blocks) = serde_json::from_str::<Value>(&blocks_json) else {
             continue;
         };
+        // A first mate's transcript lives in mono_blocks and its blocks_json is `[]`.
+        if crate::mono_transcript::is_indexed(conn, &id).unwrap_or(false) {
+            if let Ok(user_blocks) = crate::mono_transcript::user_blocks(conn, &id) {
+                blocks = Value::Array(user_blocks);
+            }
+        }
         let turns = usage_turns(&blocks);
         if turns.is_empty() {
             continue;
@@ -694,7 +714,7 @@ pub fn session_private_keys(store: State<'_, SessionStore>) -> Result<Vec<Privat
 
 fn list_private_keys(conn: &Connection) -> rusqlite::Result<Vec<PrivateChatKey>> {
     let mut statement = conn.prepare(
-        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 ORDER BY id ASC",
+        "SELECT id, provider_session_id FROM sessions WHERE private_chat != 0 OR (private_boundary_id IS NOT NULL AND private_boundary_id != '') ORDER BY id ASC",
     )?;
     let rows = statement.query_map([], |row| {
         let provider: Option<String> = row.get(1)?;
@@ -983,10 +1003,20 @@ pub(crate) fn purge_chat(
     conn: &Connection,
     session_id: &str,
 ) -> Result<(), String> {
+    purge_chat_with(conn, session_id, |paths| {
+        crate::fs::delete_generated_images_sync(app, paths)
+    })
+}
+
+fn purge_chat_with(
+    conn: &Connection,
+    session_id: &str,
+    remove_images: impl FnOnce(&[String]) -> Result<crate::fs::GeneratedImageDeletion, String>,
+) -> Result<(), String> {
     let image_paths = collect_chat_image_paths(conn, session_id)?;
     delete_session(conn, session_id).map_err(|error| error.to_string())?;
     if !image_paths.is_empty() {
-        if let Err(error) = crate::fs::delete_generated_images_sync(app, &image_paths) {
+        if let Err(error) = remove_images(&image_paths) {
             eprintln!("Generated image cleanup will need a retry: {error}");
         }
     }
@@ -1210,7 +1240,7 @@ pub fn workspace_get_snapshot(store: State<'_, SessionStore>) -> Result<Option<V
 }
 
 /// Add `column` to `table` when it is absent.
-fn ensure_table_column(
+pub(crate) fn ensure_table_column(
     conn: &Connection,
     table: &str,
     column: &str,
@@ -1251,6 +1281,33 @@ fn ensure_column(conn: &Connection, name: &str, decl: &str) -> rusqlite::Result<
         &format!("ALTER TABLE sessions ADD COLUMN {name} {decl}"),
         [],
     )?;
+    Ok(())
+}
+
+/// The table of what an import's file named for a cleared folder, with every column. A table made by an earlier build
+/// (before `blocked`, `project_id` or `rest` existed, or on the fly before it was a migration) gets the missing ones.
+fn ensure_imported_chat_folders(conn: &Connection) -> rusqlite::Result<()> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS imported_chat_folders (
+           session_id TEXT PRIMARY KEY,
+           cwd TEXT NOT NULL,
+           worktree_cwd TEXT
+         );",
+    )?;
+    for (column, definition) in [
+        ("blocked", "INTEGER NOT NULL DEFAULT 0"),
+        ("project_id", "TEXT"),
+        ("rest", "TEXT"),
+    ] {
+        let present = conn
+            .prepare("SELECT 1 FROM pragma_table_info('imported_chat_folders') WHERE name = ?1")?
+            .exists([column])?;
+        if !present {
+            conn.execute_batch(&format!(
+                "ALTER TABLE imported_chat_folders ADD COLUMN {column} {definition};"
+            ))?;
+        }
+    }
     Ok(())
 }
 
@@ -1558,6 +1615,16 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
             params![now_millis()],
         )?;
     }
+    if current < 21 {
+        // An imported chat whose folder was cleared keeps what its file named, as an inert note: the window offers it
+        // back once it passes the import's checks (docs/PORTABLE.md). Nothing runs from this table. (Its columns are
+        // kept whole by `ensure_imported_chat_folders` below, whichever build made the table first.)
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (21, ?1)",
+            params![now_millis()],
+        )?;
+    }
+    ensure_imported_chat_folders(conn)?;
     // Create even when a version row already exists (another build may have
     // used the same numbers, or a previous run recorded the version without
     // the table). Restore writes into these; missing tables look like a
@@ -1617,6 +1684,8 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::delegations::ensure_tables(conn)?;
     // WP-70
     crate::tasks::ensure_tables(conn)?;
+    // WP-159: the programme board. An older build never reads this table.
+    crate::programme::ensure_tables(conn)?;
     // WP-74: the task and doc search index, after both tables exist.
     crate::finder::ensure_index(conn)?;
     // Hivra WP-11: the first mate's wake queue and timers.
@@ -1631,9 +1700,12 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     crate::crew::ensure_tables(conn)?; // Hivra WP-13
     crate::rooms::ensure_tables(conn)?;
     crate::worker_queue::ensure_tables(conn)?;
+    crate::fanout_checkpoint::ensure_tables(conn)?; // Hivra WP-172
     crate::ship::ensure_acceptance_table(conn)?;
     // WP-78: the activity log. In place, so an older build still opens this file.
     crate::activity::ensure_tables(conn)?;
+    // WP-157: the work log. In place, so an older build still opens this file.
+    crate::work_log::ensure_tables(conn)?;
     // WP-86: commit attribution. In place, so an older build still opens this file.
     crate::attribution::ensure_tables(conn)?;
     // WP-76: the trash ledger. Not a numbered migration: an older build simply never reads it.
@@ -2294,8 +2366,22 @@ fn ceil_char_boundary(text: &str, mut index: usize) -> usize {
 }
 
 fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, cwd, "AND has_user_message = 1")
+}
+
+/// Every chat that has no folder, with or without a message of its own: an imported chat that was only a draft or a
+/// brief still has to be findable in "Needs a folder".
+fn list_folderless(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
+    list_chats_in(conn, "", "")
+}
+
+fn list_chats_in(
+    conn: &Connection,
+    cwd: &str,
+    message_filter: &str,
+) -> rusqlite::Result<Vec<SessionSummary>> {
     let git = crate::fs::git_info_for(&crate::fs::expand_home(cwd));
-    let mut statement = conn.prepare(
+    let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, runtime_mode, title, provider_session_id,
                 created_at, updated_at, branch, archived, pinned,
                 linked_work_item_json,
@@ -2303,12 +2389,12 @@ fn list_by_project(conn: &Connection, cwd: &str) -> rusqlite::Result<Vec<Session
                 worktree_removed, is_draft, automation_id, sidebar_hidden, private_chat
          FROM sessions
          WHERE cwd = ?1
-           AND has_user_message = 1
+           {message_filter}
            AND id NOT IN (SELECT id FROM sessions WHERE inbox_ask IS NOT NULL)
            AND id NOT IN (SELECT session_id FROM orchestration_workers)
            AND id NOT IN (SELECT item_id FROM trash_items WHERE kind = 'chat')
-         ORDER BY updated_at DESC, id ASC",
-    )?;
+         ORDER BY updated_at DESC, id ASC"
+    ))?;
     let rows = statement.query_map(params![cwd], |row| {
         let stored_branch: Option<String> = row.get(9)?;
         let archived: i64 = row.get(10)?;
@@ -2475,6 +2561,11 @@ fn delete_session_in(tx: &Connection, session_id: &str) -> rusqlite::Result<()> 
     )?;
     tx.execute(
         "DELETE FROM orchestration_sidebar WHERE lead_id = ?1",
+        [session_id],
+    )?;
+    // What an import's file named for this chat's folder goes with the chat.
+    tx.execute(
+        "DELETE FROM imported_chat_folders WHERE session_id = ?1",
         [session_id],
     )?;
     if let Some(parent) = parent.filter(|id| id != session_id) {
@@ -2869,6 +2960,42 @@ mod tests {
     }
 
     #[test]
+    fn usage_rows_include_a_first_mate_whose_transcript_is_in_mono_blocks() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut mono = sample("mono", "/tmp/a", "Mono");
+        mono.blocks = json!([
+            {
+                "id": "m1",
+                "role": "user",
+                "text": "mono prompt that must not travel",
+                "turnMetrics": { "inputTokens": 7, "outputTokens": 2, "costUsd": 0.01 }
+            },
+            { "id": "m2", "role": "assistant", "text": "reply" }
+        ]);
+        upsert_session(&conn, &mono).unwrap();
+        crate::mono_transcript::migrate_transcript(&conn, "mono").unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT blocks_json FROM sessions WHERE id = 'mono'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, "[]");
+
+        let rows = usage_rows(&conn, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "mono");
+        let blocks = rows[0].blocks.as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["turnMetrics"]["inputTokens"], 7);
+        assert!(!serde_json::to_string(&rows[0].blocks)
+            .unwrap()
+            .contains("must not travel"));
+    }
+
+    #[test]
     fn usage_rows_skip_a_trashed_chat() {
         let store = SessionStore::open_in_memory().unwrap();
         let conn = store.lock_conn().unwrap();
@@ -2987,6 +3114,46 @@ mod tests {
         assert_eq!(transcript_reads.load(Ordering::Relaxed), 0);
         drop(managed);
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn a_purge_with_one_outside_image_path_still_removes_the_chats_own_images() {
+        let data =
+            std::env::temp_dir().join(format!("hivra purge outside {}", uuid::Uuid::new_v4()));
+        let images = data.join("generated-images");
+        std::fs::create_dir_all(&images).unwrap();
+        let outsider = data.join("outsider.png");
+        std::fs::write(&outsider, "keep me").unwrap();
+        let first = images.join("one.png");
+        let second = images.join("two.png");
+        std::fs::write(&first, "1").unwrap();
+        std::fs::write(&second, "2").unwrap();
+
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut chat = sample("chat-images", "/tmp/project", "Pictures");
+        // The refused path is the chat's first image, so a delete that stops at it removes nothing.
+        chat.blocks = json!([
+            { "id": "i0", "role": "image", "image": { "path": outsider.to_string_lossy() } },
+            { "id": "i1", "role": "image", "image": { "path": first.to_string_lossy() } },
+            { "id": "i2", "role": "image", "image": { "path": second.to_string_lossy() } },
+        ]);
+        upsert_session(&conn, &chat).unwrap();
+
+        let mut report = None;
+        purge_chat_with(&conn, "chat-images", |paths| {
+            let done = crate::fs::delete_generated_images_in(&images, paths)?;
+            report = Some(done.skipped);
+            Ok(done)
+        })
+        .unwrap();
+
+        assert_eq!(report, Some(1));
+        assert!(get_session(&conn, "chat-images").unwrap().is_none());
+        assert!(!first.exists());
+        assert!(!second.exists());
+        assert_eq!(std::fs::read_to_string(&outsider).unwrap(), "keep me");
+        let _ = std::fs::remove_dir_all(&data);
     }
 
     fn sample(id: &str, cwd: &str, title: &str) -> SessionUpsert {
@@ -3195,7 +3362,7 @@ mod tests {
                        ON sessions (cwd, has_user_message, updated_at DESC, id, harness,
                                     model, runtime_mode, title, provider_session_id,
                                     created_at, branch, archived, pinned, linked_work_item_json);
-                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20);",
+                     DELETE FROM schema_migrations WHERE version IN (16, 17, 18, 19, 20, 21);",
                 )
                 .unwrap();
                 migrate(&conn).unwrap();
@@ -3624,6 +3791,10 @@ mod tests {
             .iter()
             .any(|item| item.id == "old" && item.private_chat));
 
+        // A chat switched back off still has a private part, so it stays on the list.
+        set_private(&conn, &row.id, false, Some("turn-3")).unwrap();
+        assert_eq!(list_private_keys(&conn).unwrap().len(), 1);
+
         // A boundary that is not a message id must not unlock the chat.
         conn.execute(
             "UPDATE sessions SET private_chat = 0, private_boundary_id = '../no' WHERE id = 'secret'",
@@ -4037,6 +4208,94 @@ mod tests {
         let restored = get_session(&conn, "s1").unwrap().unwrap();
         assert!(!restored.worktree_removed);
         assert_eq!(restored.branch.as_deref(), Some("main"));
+    }
+
+    /// A chat that came in with no folder (docs/PORTABLE.md) keeps saving while it waits for one; the checks that
+    /// protect the row itself stay.
+    #[test]
+    fn a_chat_with_no_folder_yet_can_still_be_saved() {
+        assert_eq!(check_upsert(&sample("s1", "", "Imported")), Ok(()));
+        assert!(check_upsert(&sample("../s1", "", "Imported")).is_err());
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        let saved = get_session(&conn, "s1").unwrap().unwrap();
+        assert_eq!(saved.cwd, "");
+        // Never the branch of whatever checkout the app itself runs in.
+        assert_eq!(saved.branch, None);
+    }
+
+    /// Migration 21: what an import's file named for a cleared folder is kept in a real table, and goes with its chat.
+    #[test]
+    fn the_imported_folder_notes_are_a_migration_and_go_with_their_chat() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('imported_chat_folders') ORDER BY cid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .flatten()
+            .collect();
+        assert_eq!(
+            columns,
+            [
+                "session_id",
+                "cwd",
+                "worktree_cwd",
+                "blocked",
+                "project_id",
+                "rest"
+            ]
+        );
+        // An older database (version 20, no table) gets it.
+        conn.execute_batch(
+            "DROP TABLE imported_chat_folders; DELETE FROM schema_migrations WHERE version = 21;",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        assert_eq!(schema_version(&conn).unwrap(), 21);
+        upsert_session(&conn, &sample("s1", "", "Imported")).unwrap();
+        conn.execute(
+            "INSERT INTO imported_chat_folders (session_id, cwd) VALUES ('s1', '/Users/old/app')",
+            [],
+        )
+        .unwrap();
+        delete_session(&conn, "s1").unwrap();
+        let left: i64 = conn
+            .query_row("SELECT COUNT(*) FROM imported_chat_folders", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(left, 0);
+    }
+
+    /// The "Needs a folder" group: every chat with a conversation and no folder, and no chat that has one.
+    #[test]
+    fn chats_with_no_folder_are_listed_together() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let said = json!([{ "id": "u", "role": "user", "text": "hello" }]);
+        for (id, cwd) in [("a", ""), ("b", ""), ("c", "/tmp/a")] {
+            let mut session = sample(id, cwd, id);
+            session.blocks = said.clone();
+            upsert_session(&conn, &session).unwrap();
+        }
+        // An imported chat that never had a message of its own is listed too: it has to be findable.
+        let mut quiet = sample("d", "", "d");
+        quiet.blocks = json!([]);
+        upsert_session(&conn, &quiet).unwrap();
+        let ids: Vec<_> = list_folderless(&conn)
+            .unwrap()
+            .into_iter()
+            .map(|summary| summary.id)
+            .collect();
+        assert_eq!(ids.len(), 3, "{ids:?}");
+        for id in ["a", "b", "d"] {
+            assert!(ids.contains(&id.to_string()), "{id}");
+        }
+        // A chat with a folder still lists only by project, and only once it has a message.
+        assert_eq!(list_by_project(&conn, "").unwrap().len(), 2);
     }
 
     #[test]
