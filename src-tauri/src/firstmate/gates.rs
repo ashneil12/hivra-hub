@@ -1259,6 +1259,21 @@ pub fn claude_verdict(
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
     crate::harness::apply_gui_env(&mut cmd);
+    // The binary is the same Claude Code a worker can replace. Under the sandbox that replacement still cannot
+    // reach the switch file or a secret. Tests do not call this: it would read the daily data folder.
+    #[cfg(not(test))]
+    {
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        match crate::agent_sandbox::action_wrap(data.as_deref(), &[]) {
+            Ok(prefix) => {
+                cmd = crate::agent_sandbox::under_wrap(cmd, prefix.as_deref());
+            }
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&dir);
+                return Err(error);
+            }
+        }
+    }
     let result = (|| {
         let mut child = cmd
             .spawn()
