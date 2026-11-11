@@ -82,6 +82,7 @@ fn skip_to_newline<R: BufRead>(reader: &mut R) {
 #[cfg(test)]
 mod stdout_cap_tests {
     use super::read_stdout_lines;
+    use std::cell::RefCell;
     use std::io::Cursor;
 
     // Review r5 repro (LOW): a stderr line past the cap ends the stderr read, so the pipe closes and the child's next
@@ -130,19 +131,21 @@ mod stdout_cap_tests {
     fn a_more_agents_line_past_the_cap_is_dropped_counted_and_the_read_goes_on() {
         let big = "x".repeat(9 * 1024 * 1024);
         let input = format!("first\n{big}\nnext\n");
-        let mut order = Vec::new();
+        // Both callbacks record into one sequence. A RefCell lets each push when it runs, so the drop
+        // note is checked against the line before it and the line after it.
+        let order = RefCell::new(Vec::new());
         let dropped = read_stdout_lines(
             Cursor::new(input.into_bytes()),
             Some(8 * 1024 * 1024),
             |line| {
-                order.push(line);
+                order.borrow_mut().push(line);
                 true
             },
-            |count| order.push(format!("dropped {count}")),
+            |count| order.borrow_mut().push(format!("dropped {count}")),
         );
         // The over-cap line is not delivered. The drop is reported when it happens, not when the stream ends.
         assert_eq!(
-            order,
+            order.into_inner(),
             vec![
                 "first".to_string(),
                 "dropped 1".to_string(),
@@ -1308,18 +1311,13 @@ pub fn harness_spawn(
     if more_run {
         crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
     }
-    let mut child = match spawn_managed(&mut cmd) {
-        Ok(child) => child,
-        Err(error) => {
-            // The run folder was made before the spawn. A failed start must not leave it behind.
-            if more_run {
-                if let Ok(data_dir) = app.path().app_data_dir() {
-                    let _ = crate::more_agents::remove_run_folder(&data_dir, &spawn_dir);
-                }
-            }
-            return Err(format!("Failed to start {command}: {error}"));
-        }
-    };
+    let mut child = child_or_reap(
+        spawn_managed(&mut cmd),
+        more_run,
+        || app.path().app_data_dir().ok(),
+        &spawn_dir,
+        &command,
+    )?;
     let pid = child.id();
 
     let stdin = child
@@ -1485,6 +1483,114 @@ pub fn harness_spawn(
     });
 
     Ok(pid)
+}
+
+/// The child from a start, or the error the caller sees when the start failed. A More agents run folder
+/// was made before the spawn, so a failed start removes it. The data folder is read only then. An ordinary
+/// spawn has no run folder, so its working folder is left alone, and a missing data folder leaves the run
+/// folder where it is.
+fn child_or_reap(
+    spawned: std::io::Result<std::process::Child>,
+    more_run: bool,
+    data_dir: impl FnOnce() -> Option<PathBuf>,
+    spawn_dir: &Path,
+    command: &str,
+) -> Result<std::process::Child, String> {
+    match spawned {
+        Ok(child) => Ok(child),
+        Err(error) => {
+            if more_run {
+                if let Some(data_dir) = data_dir() {
+                    let _ = crate::more_agents::remove_run_folder(&data_dir, spawn_dir);
+                }
+            }
+            Err(format!("Failed to start {command}: {error}"))
+        }
+    }
+}
+
+#[cfg(test)]
+mod failed_spawn_tests {
+    use super::{child_or_reap, spawn_managed};
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn scratch() -> Scratch {
+        let path = std::env::temp_dir().join(format!(
+            "wp134-failed-spawn-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|elapsed| elapsed.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&path).expect("scratch");
+        Scratch(path)
+    }
+
+    #[test]
+    fn a_failed_more_agents_spawn_does_not_leave_its_run_folder() {
+        let data = scratch();
+        let run = crate::more_agents::run_folder(&data.0).expect("run folder");
+        let missing = data.0.join("missing-agent");
+        let mut cmd = Command::new(&missing);
+        cmd.current_dir(&run)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+
+        // Not a More agents start: this failure has no run folder of its own, so the working folder stays.
+        let ordinary = child_or_reap(
+            spawn_managed(&mut cmd),
+            false,
+            || Some(data.0.clone()),
+            &run,
+            "missing-agent",
+        );
+        assert!(ordinary.is_err(), "the missing program started");
+        assert!(
+            run.is_dir(),
+            "a failed ordinary spawn removed the working folder"
+        );
+
+        let failed = child_or_reap(
+            spawn_managed(&mut cmd),
+            true,
+            || Some(data.0.clone()),
+            &run,
+            "missing-agent",
+        );
+        let message = failed.expect_err("the missing program did not fail to start");
+        assert!(
+            message.starts_with("Failed to start missing-agent:"),
+            "unexpected error: {message}"
+        );
+        assert!(!run.exists(), "a failed spawn left its run folder behind");
+
+        // The data folder could not be read. The run folder stays, and the failure is still reported.
+        let kept = crate::more_agents::run_folder(&data.0).expect("second run");
+        let no_data = child_or_reap(
+            Err(std::io::Error::new(std::io::ErrorKind::NotFound, "missing")),
+            true,
+            || None,
+            &kept,
+            "missing-agent",
+        );
+        assert!(no_data.is_err());
+        assert!(
+            kept.is_dir(),
+            "a missing data folder was treated as a removed run folder"
+        );
+        crate::more_agents::remove_run_folder(&data.0, &kept).expect("reap leftover");
+    }
 }
 
 /// A More agents run folder goes when its child exits. Anything else has no folder to remove.
