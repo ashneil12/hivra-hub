@@ -39,6 +39,20 @@ describe("crew tab", () => {
     vi.unstubAllGlobals();
   });
 
+  it("WP-141: shows why the crew picked a worker, beside its notice", () => {
+    const rows = crewRows({
+      project: PROJECT,
+      now: NOW,
+      rows: [
+        { ...worker("a", "working"), log: [{ event: "recorded", at: 1, why: "Builder role prefers Codex." }] },
+        worker("b", "working"),
+      ],
+    });
+    act(() => root.render(createElement(CrewTab, { rows, onStop: vi.fn() })));
+    expect(container.querySelector("[data-crew-row='a'] [data-crew-why]")?.textContent).toBe("Builder role prefers Codex.");
+    expect(container.querySelector("[data-crew-row='b'] [data-crew-why]")).toBeNull();
+  });
+
   it("shows the five words and nothing else, and asks before it stops", () => {
     const rows = crewRows({
       project: PROJECT,

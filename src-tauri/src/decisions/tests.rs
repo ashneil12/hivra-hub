@@ -179,6 +179,15 @@ fn a_finished_task_is_not_released_and_bad_asks_are_refused() {
     let mut long = ask_input("fm", "k", &[]);
     long.question = "x".repeat(QUESTION_MAX + 1);
     assert!(ask(&mut conn, long, 2).unwrap_err().contains("at most"));
+    let shared: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../src/features/crew/model/decisionLimits.json"
+    ))
+    .unwrap();
+    assert_eq!(
+        shared["questionMax"].as_u64().unwrap() as usize,
+        QUESTION_MAX,
+        "the Inbox and the store share one question limit"
+    );
 
     ask(&mut conn, ask_input("fm", "k", &[&a.id]), 3).unwrap();
     crate::delegations::cancel(
@@ -1166,6 +1175,74 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
     );
 }
 
+// Fix round 3, H1: a secret run's card is answered by the person on the card alone. A page or the Needs sheet
+// (answered as "user") and a chat's own answer are refused; the card's own answer (no answerer) still applies.
+#[test]
+fn a_secret_card_takes_no_answer_from_a_page_or_needs() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let asked = ask(
+        &mut conn,
+        ask_input("chat", "secret/stripe-api-key/9f", &[]),
+        1,
+    )
+    .unwrap();
+    for by in ["user", "page:pg_1", "chat:abc"] {
+        let err = answer(
+            &mut conn,
+            "hivra",
+            "secret/stripe-api-key/9f",
+            "Once",
+            Some(by.into()),
+            2,
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("Only the person can approve a secret run"),
+            "{by} must not answer a secret card: {err}"
+        );
+    }
+    // The person's own answer names the version they read. Without it, the card stays open.
+    assert!(
+        answer_seen(
+            &mut conn,
+            "hivra",
+            "secret/stripe-api-key/9f",
+            "Once",
+            None,
+            Some(asked.decision.version),
+            3,
+        )
+        .unwrap()
+        .applied
+    );
+}
+
+/// A chat must not approve a secret run by spelling its key in capitals. The same fold the other person-only
+/// prefixes use reads "SECRET/..." as the secret card, so the answer is refused and the card stays open.
+#[test]
+fn a_chat_answer_to_a_secret_key_spelled_in_capitals_is_refused() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let key = "secret/stripe-api-key/9f";
+    ask(&mut conn, ask_input("chat", key, &[]), 1).unwrap();
+    let refusal = answer(
+        &mut conn,
+        "hivra",
+        "SECRET/stripe-api-key/9f",
+        "Once",
+        Some("chat:abc".into()),
+        2,
+    )
+    .unwrap_err();
+    assert!(
+        refusal.contains("Only the person can approve a secret run"),
+        "{refusal}"
+    );
+    assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
+    assert!(person_only("SECRET/stripe-api-key/9f", Some("chat:abc")).is_some());
+}
+
 /// WP-156 security: a key the person alone answers, a delivery gate's approval, or a secret never reuses an old answer
 /// and never shows up as guidance. A reworded question on an ordinary key still gets the standing answer.
 #[test]
@@ -1219,15 +1296,43 @@ fn a_gate_secret_or_irreversible_key_never_reuses_or_shows_a_standing_answer() {
             get(&conn, "hivra", key).unwrap().unwrap().keys.is_empty(),
             "{key} stored match words"
         );
-        let done = answer(
-            &mut conn,
-            "hivra",
-            key,
-            options[0],
-            Some("user".into()),
-            10 + n as i64,
-        )
-        .unwrap();
+        // A secret card takes the person's answer and the version they read. The Needs sheet cannot answer it.
+        // The answer is still not a standing answer: the checks below cover it with the other protected keys.
+        let done = if is_secret_key(key) {
+            let refused = answer(
+                &mut conn,
+                "hivra",
+                key,
+                options[0],
+                Some("user".into()),
+                10 + n as i64,
+            )
+            .unwrap_err();
+            assert!(
+                refused.contains("Only the person can approve a secret run"),
+                "{key}: {refused}"
+            );
+            answer_seen(
+                &mut conn,
+                "hivra",
+                key,
+                options[0],
+                None,
+                Some(asked.decision.version),
+                10 + n as i64,
+            )
+            .unwrap()
+        } else {
+            answer(
+                &mut conn,
+                "hivra",
+                key,
+                options[0],
+                Some("user".into()),
+                10 + n as i64,
+            )
+            .unwrap()
+        };
         assert!(done.applied, "{key} was not answered");
     }
     assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
@@ -1477,6 +1582,125 @@ fn standing_answer_flow_asks_answers_reuses_retires_and_turns_off() {
     assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
 }
 
+/// A standing answer never answers a secret card. The card cannot be ticked, it is left out of the reuse list, and
+/// neither a forced flag nor another standing answer hands those words out as the card's answer.
+#[test]
+fn a_standing_answer_never_answers_a_secret_card() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+
+    let key = "secret/stripe-api-key/9f";
+    let asked = ask(&mut conn, ask_input("fm", key, &[]), 1).unwrap();
+    assert!(asked.created && !asked.matched, "{asked:?}");
+
+    let refused = answer(
+        &mut conn,
+        "hivra",
+        key,
+        "Keep 30 days",
+        Some("user".into()),
+        2,
+    )
+    .unwrap_err();
+    assert!(
+        refused.contains("Only the person can approve a secret run"),
+        "{refused}"
+    );
+    let done = answer_seen(
+        &mut conn,
+        "hivra",
+        key,
+        "Keep 30 days",
+        None,
+        Some(asked.decision.version),
+        3,
+    )
+    .unwrap();
+    assert!(done.applied);
+    let row = get(&conn, "hivra", key).unwrap().unwrap();
+    assert!(!row.standing);
+    assert_eq!(row.answered_by.as_deref(), Some("person"));
+
+    let refused = set_standing(&mut conn, "hivra", key, true, 4).unwrap_err();
+    assert!(refused.contains("never reused"), "{refused}");
+    assert!(
+        reuse_rows(&conn, "hivra")
+            .unwrap()
+            .iter()
+            .all(|row| row.decision_key != key),
+        "the card was listed for reuse"
+    );
+    assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
+
+    conn.execute(
+        "UPDATE decisions SET standing = 1 WHERE project = 'hivra' AND decision_key = ?1",
+        [key],
+    )
+    .unwrap();
+    assert!(
+        reuse_rows(&conn, "hivra")
+            .unwrap()
+            .iter()
+            .all(|row| row.decision_key != key),
+        "a forced flag listed the card"
+    );
+    assert!(
+        !standing_block(&conn, "hivra")
+            .unwrap()
+            .contains("Keep deleted sessions"),
+        "a forced flag put the card in the brief"
+    );
+    let echoed = ask(&mut conn, ask_input("fm", "same-words", &[]), 5).unwrap();
+    assert!(
+        !echoed.matched,
+        "the card answered another question: {echoed:?}"
+    );
+    assert!(echoed.created);
+    assert_eq!(echoed.decision.state, OPEN);
+
+    let mut ordinary = ask_input("fm", "region-policy", &[]);
+    ordinary.question = "Should the release go to staging or stay on the branch?".into();
+    ordinary.options = vec!["Staging first".into(), "Keep it on the branch".into()];
+    ordinary.recommended = Some("Staging first".into());
+    ask(&mut conn, ordinary, 6).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "region-policy",
+        "Staging first",
+        Some("user".into()),
+        7,
+    )
+    .unwrap();
+    tick(&mut conn, "region-policy", 8);
+
+    let mut card = ask_input("fm", "secret/archive-copy/1", &[]);
+    card.question = "Should the release go to staging or stay on the branch?".into();
+    card.options = vec!["Staging first".into(), "Keep it on the branch".into()];
+    card.recommended = Some("Staging first".into());
+    let card = ask(&mut conn, card, 9).unwrap();
+    assert!(
+        !card.matched && card.created,
+        "a standing answer answered the secret card: {card:?}"
+    );
+    assert_eq!(card.decision.state, OPEN);
+    assert!(card.standing_id.is_none());
+
+    assert!(!standing_eligible("secret/stripe-api-key/9f"));
+    assert!(!standing_eligible("SECRET/stripe-api-key/9f"));
+    // Fullwidth "secret/", the same fold a secret card's key is read with.
+    assert!(!standing_eligible(
+        " \u{ff53}\u{ff45}\u{ff43}\u{ff52}\u{ff45}\u{ff54}/stripe-api-key/9f "
+    ));
+    assert!(!standing_eligible("gate/run-1"));
+    assert!(!standing_eligible("irreversible/lead/task"));
+    assert!(!standing_eligible("fresh-eyes/r1"));
+    assert!(!standing_eligible("fresh-eyes-start/r1"));
+    assert!(!standing_eligible("fanout-again/p/t/r"));
+    assert!(standing_eligible("retention-policy"));
+}
+
 /// WP-172: a stopped fan-out task starts again only on the person's yes. No chat (the model's own ask_person answer
 /// included) and no app closer can give it.
 #[test]
@@ -1519,7 +1743,7 @@ fn only_the_person_answers_a_restart_decision_of_a_stopped_task() {
             key,
             "Start it again",
             Some("user".into()),
-            4
+            4,
         )
         .unwrap()
         .applied

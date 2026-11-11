@@ -135,11 +135,12 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
 
 /// WP-156: keys that never take part in standing answers, neither as a match nor as guidance. The person alone answers
 /// an irreversible step, a fresh-eyes review, a security review and a stopped fan-out's restart; a delivery gate's
-/// approval belongs to the gate, not to an old answer; a secret is never reused. A key that is not listed here is an
-/// ordinary question. Case, width and hidden characters fold to the same key, so none of those spellings stand either.
+/// approval belongs to the gate, not to an old answer; a secret card (`secret/<name>/<program>`) is never marked
+/// standing, listed for reuse, or answered by an old answer. Case, width and hidden characters fold to the same key,
+/// so none of those spellings stand either. A key that is not listed here is an ordinary question.
 pub fn standing_eligible(key: &str) -> bool {
-    // Keys keep the case they were typed in (`key_like`), so a protected prefix is matched in any case.
-    let ascii = key.trim().to_ascii_lowercase();
+    // Keys keep the case they were typed in (`key_like`). Fold before the prefix check, as `is_secret_key` does.
+    let folded = fold_key(key);
     if [
         "irreversible/",
         "fresh-eyes",
@@ -149,12 +150,8 @@ pub fn standing_eligible(key: &str) -> bool {
         "security-review/",
     ]
     .iter()
-    .any(|prefix| ascii.starts_with(prefix))
+    .any(|prefix| folded.starts_with(prefix))
     {
-        return false;
-    }
-    // A fullwidth or invisible spelling does not start with the ascii prefix, but it is the same key.
-    if fold_key(key).starts_with("secret/") {
         return false;
     }
     // person_only refuses a chat on a review, a security review, a restart, a gate or an irreversible step.
@@ -1215,7 +1212,14 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     if created || !added.is_empty() || refresh {
         decision.waiting.extend(added.iter().cloned());
         decision.updated_at = now;
-        decision.version += 1;
+        // A secret card's version comes from a counter that outlives the card, so a spent card's version is never
+        // given to the next one (fix round 6). Other decisions still count up from the row itself.
+        if is_secret_key(&key) {
+            decision.version = crate::secrets::alloc_card_version(&tx, &project, &key)?;
+        } else {
+            decision.version += 1;
+        }
+        // A security question the gate replaces is written over the stale row, not as a second one.
         if refresh {
             replace_asked(&tx, &decision)?;
         } else {
@@ -1251,6 +1255,102 @@ pub struct AnswerOutcome {
     pub released: Vec<SteerMessage>,
     /// The waiting delegations the answer went to.
     pub released_tasks: Vec<String>,
+}
+
+/// WP-92: a secret's approval card is answered by the person alone. The person's own paths are the Inbox (which sends
+/// no answerer), the Needs sheet (`user`) and the check cards (`person`). An agent's `ask_person` forwards `chat:<id>`,
+/// and a Monos or a worker that names itself never counts.
+fn is_person(by: Option<&str>) -> bool {
+    match by.map(str::trim).filter(|b| !b.is_empty()) {
+        None => true,
+        Some(by) => by == "person" || by == "user",
+    }
+}
+
+/// A secret run's card is answered by the person on the card: no answerer (the Inbox) or "person". Not "user" (the Needs
+/// sheet), not a page, not a chat (fix round 3, H1).
+fn secret_answer_by_person(by: Option<&str>) -> bool {
+    // Nobody named is not the person on a secret card. Only the card's own answer (`person`) is.
+    matches!(by.map(str::trim).filter(|b| !b.is_empty()), Some("person"))
+}
+
+/// Whether a decision's recorded answerer is the person's own path. WP-92's grant check reads it: an answer recorded
+/// any other way (a chat, a Mono, a worker) is not the person's and never becomes a secret grant.
+pub fn answered_by_person(answered_by: Option<&str>) -> bool {
+    is_person(answered_by)
+}
+
+/// Whether a secret card's recorded answer is the person's own: the card's answer (the Inbox records `person`), never the
+/// Needs sheet's `user`, which `is_person` accepts for other decisions (fix round 4, LOW).
+pub fn secret_answered_by_person(answered_by: Option<&str>) -> bool {
+    secret_answer_by_person(answered_by)
+}
+
+/// WP-92: a secret's approval card (`secret/<name>/<program>`) is made by the app alone, with the app's own words about
+/// the exact command. An agent's `ask_person` reaches the store through `decisions_ask`, and it may not pick a key that
+/// would put its own words on a card the person approves a secret run on.
+pub fn check_ask_key(key: &str) -> Result<(), String> {
+    if is_secret_key(key) {
+        return Err(
+            "A key's approval card is made by the app when you run a command with that key; only the app can ask it. \
+             Call secrets_run and the person is asked."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// WP-92: a secret's card that nobody has answered shows what is being asked now. The same Mono asking again with other
+/// arguments changes the words (and only the words) so the person never answers a stale command line. A card another
+/// Mono asked, or one already answered, is left alone.
+#[allow(clippy::too_many_arguments)]
+pub fn refresh_open(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    question: &str,
+    options: &[String],
+    recommended: Option<&str>,
+    by_mono: Option<&str>,
+    now: i64,
+) -> Result<bool, String> {
+    if !is_secret_key(key) {
+        return Ok(false);
+    }
+    let Some(card) = get(conn, project, key)? else {
+        return Ok(false);
+    };
+    if card.state != OPEN || card.asked_by_mono.as_deref() != by_mono {
+        return Ok(false);
+    }
+    let question = plain(question, "The question", QUESTION_MAX)?;
+    if card.question == question && card.options == options {
+        return Ok(false);
+    }
+    // The new version is allocated with the word change, and only lands if the card is still the one that was read.
+    // A lost race spends a number. It does not reuse one.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let next = crate::secrets::alloc_card_version(&tx, project, key)?;
+    let changed = tx
+        .execute(
+            "UPDATE decisions SET question = ?3, options = ?4, recommended = ?5, updated_at = ?6, version = ?8
+             WHERE project = ?1 AND decision_key = ?2 AND state = 'open' AND version = ?7",
+            params![
+                project,
+                key,
+                question,
+                json!(options).to_string(),
+                recommended,
+                now,
+                card.version,
+                next
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(changed == 1)
 }
 
 /// What the app says it is when it closes a fresh-eyes question itself (a brief taken back, replaced, or accepted as a
@@ -1334,13 +1434,32 @@ fn is_security_key(key: &str) -> bool {
 /// the run id must not answer it, whatever the spelling. The app's own closers are not a way round it either.
 ///
 /// Every prefix is read on the folded key, so a change of case or a hidden character does not let a machine through.
+///
+/// WP-92: so is a secret's approval card (`secret/<name>/<program>`). A chat that spells it another way (`SECRET/...`)
+/// must not approve the run. Only `person` counts. Nobody named, the Needs sheet (`user`), and the app's own closers
+/// are not a way round it.
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let review = is_review_key(key);
     let security = is_security_key(key);
     let again = is_again_key(key);
     let gate = is_gate_key(key);
-    if !fold_key(key).starts_with("irreversible/") && !review && !security && !again && !gate {
+    let secret = is_secret_key(key);
+    if !fold_key(key).starts_with("irreversible/")
+        && !review
+        && !security
+        && !again
+        && !gate
+        && !secret
+    {
         return None;
+    }
+    // A secret card is stricter than the other person-only keys: nobody named, and `user` (the Needs sheet), are not
+    // the person on the card. Only `person` is.
+    if secret {
+        return match by.map(str::trim).filter(|word| !word.is_empty()) {
+            Some("person") => None,
+            _ => Some("Only the person can approve a secret run. Ask them on their card.".into()),
+        };
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
         None | Some("user") | Some("person") => None,
@@ -1368,6 +1487,12 @@ pub fn is_gate_key(key: &str) -> bool {
     fold_key(key).starts_with("gate/")
 }
 
+/// WP-92: a secret's approval card (`secret/<name>/<program>`). Read through `fold_key`, like the other person-only
+/// prefixes, so a capital or fullwidth spelling is the same card.
+pub fn is_secret_key(key: &str) -> bool {
+    fold_key(key).starts_with("secret/")
+}
+
 /// The person, as an answer is recorded: the words the app uses for them. Nobody named is not the person.
 fn from_person(by: Option<&str>) -> bool {
     matches!(
@@ -1389,6 +1514,36 @@ pub fn answer(
     by: Option<String>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
+    answer_seen(conn, project, key, answer, by, None, now)
+}
+
+/// The words a refused answer says when the card changed after the person read it.
+pub const CARD_CHANGED: &str =
+    "That card changed after you read it, so the answer was not recorded. Read it again and answer.";
+
+/// [`answer`] for the card the person read: `seen_version` is the card's version on their screen. A secret card whose
+/// version has moved on (another command, folder or variable was put on it) is not answered, so an answer is only ever
+/// for the words the person read (fix round 4, N6). Checked inside the transaction that writes the answer.
+pub fn answer_seen(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    seen_version: Option<i64>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    if is_secret_key(key) && !secret_answer_by_person(by.as_deref()) {
+        return Err("Only the person can approve a secret run. Ask them on their card.".into());
+    }
+    // Fix round 5 (L5): a secret card's answer names the version that was read. Checked here, after the person check, so
+    // a missing version is refused on every path into the store, not only the Tauri command. The prefix is folded, so
+    // "SECRET/..." is the same card.
+    if is_secret_key(key) && seen_version.is_none() {
+        return Err(
+            "Read the card again and answer it, so the answer is for what you read.".into(),
+        );
+    }
     let answer = plain(answer, "The answer", ANSWER_MAX)?;
     // The key as asked, before any lookup: a chat's spelling of a person-only key is refused even when no such
     // decision exists, so nothing about the lookup can turn a refusal into a quiet no-op or a bypass.
@@ -1406,13 +1561,27 @@ pub fn answer(
             released_tasks: Vec::new(),
         });
     };
+    if let Some(seen) = seen_version {
+        if is_secret_key(&decision.decision_key) && seen != decision.version {
+            return Err(CARD_CHANGED.into());
+        }
+    }
     if decision.state != OPEN {
-        return Ok(AnswerOutcome {
-            applied: false,
-            decision: Some(decision),
-            released: Vec::new(),
-            released_tasks: Vec::new(),
-        });
+        // WP-92: a secret row an agent's answer had settled is still the person's to settle. Their own answer replaces
+        // it; anything else leaves it as it is. Fix round 4 (LOW): "the person" here is the card's own answer, not the
+        // Needs sheet's (`user`).
+        let person_settles_an_agents_answer = secret_answer_by_person(by.as_deref())
+            && is_secret_key(&decision.decision_key)
+            && decision.state == ANSWERED
+            && !answered_by_person(decision.answered_by.as_deref());
+        if !person_settles_an_agents_answer {
+            return Ok(AnswerOutcome {
+                applied: false,
+                decision: Some(decision),
+                released: Vec::new(),
+                released_tasks: Vec::new(),
+            });
+        }
     }
     // Nobody named is not the person. It used to be stored as "person", so a caller that forgot `by` answered as Ash.
     let who = by
@@ -1446,7 +1615,12 @@ pub fn answer(
     decision.answered_by = Some(who);
     decision.answered_at = Some(now);
     decision.updated_at = now;
-    decision.version += 1;
+    if is_secret_key(&decision.decision_key) {
+        decision.version =
+            crate::secrets::alloc_card_version(&tx, &decision.project, &decision.decision_key)?;
+    } else {
+        decision.version += 1;
+    }
     save(&tx, &decision)?;
     let mut released = Vec::new();
     let mut released_tasks = Vec::new();
@@ -1474,6 +1648,8 @@ pub fn answer(
                 owner_session: decision.asked_by.clone(),
                 child_session: decision.asked_by.clone(),
                 delegation_id: None,
+                // One id per answer. The version is part of it, and a secret card's version never repeats, so a later
+                // answer of the same key is not refused as a copy of the first.
                 request_id: release_request(
                     &decision.decision_key,
                     "asker",
@@ -1846,6 +2022,7 @@ pub fn decisions_ask(
     store: State<'_, SessionStore>,
     input: AskInput,
 ) -> Result<AskOutcome, String> {
+    check_ask_key(&input.key)?;
     let outcome = ask(&mut *store.lock_conn()?, input, now_millis())?;
     if outcome.created || !outcome.added.is_empty() || outcome.matched {
         announce(&app, Some(&outcome.decision), &outcome.released);
@@ -1860,14 +2037,18 @@ pub fn decisions_answer(
     project: Option<String>,
     key: String,
     answer: String,
-    by: String,
+    by: Option<String>,
+    seen_version: Option<i64>,
 ) -> Result<AnswerOutcome, String> {
+    // The version a secret card was read at is required inside answer_seen, in any spelling of the key. A gate answer
+    // is forwarded only when this one landed and the person gave it.
     let outcome = answer_and_relay(
         &store,
         project.as_deref().unwrap_or(""),
         &key,
         &answer,
-        Some(by),
+        by,
+        seen_version,
         now_millis(),
     )?;
     if outcome.applied {
@@ -1883,9 +2064,18 @@ pub(crate) fn answer_and_relay(
     key: &str,
     answer_text: &str,
     by: Option<String>,
+    seen_version: Option<i64>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    let outcome = answer(&mut *store.lock_conn()?, project, key, answer_text, by, now)?;
+    let outcome = answer_seen(
+        &mut *store.lock_conn()?,
+        project,
+        key,
+        answer_text,
+        by,
+        seen_version,
+        now,
+    )?;
     relay_gate_answer(store, &outcome, answer_text);
     Ok(outcome)
 }

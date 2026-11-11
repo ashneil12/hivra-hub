@@ -161,6 +161,10 @@ async function answerDecision(backend: Pick<FirstMateBackend, "decisions" | "ans
   if (payload.quick === "agree" && !agreed) throw new HubCallError("refused", "No answer was suggested. Pick an option or write your answer.");
   const answer = choice ?? agreed ?? words;
   if (!answer) throw new HubCallError("refused", "Pick an option or write your answer.");
+  // A secret run's card is approved on the card in the Inbox, never through Needs (fix round 3, H1).
+  if (d.decisionKey.startsWith("secret/")) {
+    throw new HubCallError("refused", "A secret run is approved on its card in the Inbox. Needs can't answer it.");
+  }
   const out = await backend.answer(d.project, d.decisionKey, answer, from ? `page:${from}` : "user");
   if (!out.applied) return { receipt: `Already answered: ${out.decision?.answer ?? ""}`, rowDone: true };
   const n = out.releasedTasks.length;

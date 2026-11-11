@@ -48,7 +48,10 @@ export function FirstMateInbox({
           ) : null}
           {item.statusWord ? <p className="text-[12px] text-content/60">{item.statusWord}</p> : null}
           {item.body ? (
-            <p data-failure={item.kind === "failure" ? item.id : undefined} className="mt-1 text-[12px] text-content/70">
+            <p
+              data-failure={item.kind === "failure" ? item.id : undefined}
+              className="mt-1 whitespace-pre-wrap break-words text-[12px] text-content/70"
+            >
               {item.body}
             </p>
           ) : null}
@@ -61,6 +64,11 @@ export function FirstMateInbox({
                 </button>
               ))}
             </div>
+          ) : null}
+          {item.note ? (
+            <p data-inbox-note className="mt-1.5 text-[12px] text-content/70">
+              {item.note}
+            </p>
           ) : null}
           <div className="mt-1.5 flex flex-wrap gap-2">
             {item.chatId ? (

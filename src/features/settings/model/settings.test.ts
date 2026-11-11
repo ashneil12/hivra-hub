@@ -723,6 +723,8 @@ describe("settings navigation", () => {
       "history",
       "memory",
       "connectors",
+      // WP-92: the key vault.
+      "secrets",
       "keybindings",
       "chat",
       "providers",
