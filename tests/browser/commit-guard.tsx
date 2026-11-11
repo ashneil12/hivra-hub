@@ -29,9 +29,18 @@ function Page() {
     <main className="flex flex-col gap-6 p-6 text-white">
       <CommitGuardRefusal
         message="Possible secret in src/config.rs:12 in /srv/project (commit 1a2b3c4d5e6f, refusal 0123456789ab). The value is not shown. To go on, either remove it from the commit."
+        fetchRefusal={async (id) =>
+          id === "0123456789ab"
+            ? { id, folder: "/srv/project", file: "src/config.rs", line: 12, commit: "1a2b3c4d5e6f" }
+            : null
+        }
         allowLine={async (id) => {
           calls.push({ id });
         }}
+      />
+      <CommitGuardRefusal
+        message="Possible secret in src/other.rs:3 in /srv/project (commit 2b3c4d5e6f70, refusal aaaaaaaaaaaa). The value is not shown."
+        fetchRefusal={async () => null}
       />
       <CommitGuardRefusal message="Possible secret in a commit message:2. The value is not shown." />
       <OpenInSourceControlLink message="Possible secret in src/config.rs:12 in /srv/project (commit 1a2b3c4d5e6f, refusal 0123456789ab). The value is not shown." />

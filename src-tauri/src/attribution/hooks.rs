@@ -882,7 +882,7 @@ pub(crate) fn pre_push_script(
          real_hook={real}\n\
          refs=\"$(mktemp \"${{TMPDIR:-/tmp}}/hivra-pre-push.XXXXXX\")\" || exit 1\n\
          cat > \"$refs\"\n\
-         \"$guard\" pre-push-guard \"$1\" --store \"$store\" < \"$refs\" || {{ rm -f \"$refs\"; exit 1; }}\n\
+         \"$guard\" pre-push-guard \"$1\" \"$2\" --store \"$store\" < \"$refs\" || {{ rm -f \"$refs\"; exit 1; }}\n\
          if [ {test} \"$real_hook\" ]; then\n\
          \t\"$real_hook\" \"$@\" < \"$refs\"\n\
          \tstatus=$?\n\

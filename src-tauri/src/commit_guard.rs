@@ -13,7 +13,7 @@
 //! - Nothing here edits an ignore file. A refusal names the choices in words and leaves the person to pick.
 
 use std::collections::BTreeMap;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::{Mutex, OnceLock};
@@ -86,17 +86,45 @@ fn plain_secret_refusal(what: &str) -> String {
 
 /// Every guard git call: plain output whatever the repository's or the person's config says (N1). The colour and
 /// encoding settings are overridden on the command line, which wins over every config file.
+/// The one way the guard reads a repository (the structural fix for review rounds 1 to 4). Config and environment that
+/// could change what a read reports are cleared: GIT_CONFIG_* and GIT_CONFIG_PARAMETERS, GIT_DIR and the other
+/// repository-location variables, and replace objects (refs/replace) are off. The repository's, the person's and the
+/// system's config are not read (GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1), and the commands below set the
+/// options that decide what a diff shows (diff.relative, log.showRoot, colour, encoding) on the command line.
 fn guard_git(root: &Path) -> Command {
     let mut cmd = crate::fs::git_cmd();
+    for (name, _) in std::env::vars_os() {
+        let Some(name) = name.to_str() else { continue };
+        let ambient = name.starts_with("GIT_CONFIG")
+            || name.starts_with("GIT_DIR")
+            || name.starts_with("GIT_WORK_TREE")
+            || name.starts_with("GIT_INDEX")
+            || name.starts_with("GIT_OBJECT")
+            || name.starts_with("GIT_ALTERNATE")
+            || name.starts_with("GIT_COMMON")
+            || name.starts_with("GIT_NAMESPACE")
+            || name.starts_with("GIT_REPLACE");
+        if ambient {
+            cmd.env_remove(name);
+        }
+    }
     cmd.arg("--no-pager")
+        .arg("--no-replace-objects")
         .arg("-c")
         .arg("color.ui=never")
         .arg("-c")
         .arg("color.diff=never")
         .arg("-c")
         .arg("i18n.logOutputEncoding=UTF-8")
+        .arg("-c")
+        .arg("diff.relative=false")
+        .arg("-c")
+        .arg("log.showRoot=true")
         .arg("-C")
         .arg(root)
+        .env("GIT_NO_REPLACE_OBJECTS", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0");
     cmd
@@ -127,19 +155,29 @@ fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
 }
 
 /// A check's git output, bounded: the run is killed after `limit`, and output past `max_bytes` refuses.
-pub(crate) fn checked_output_within(
-    root: &Path,
-    args: &[&str],
+/// Runs a guard read with an optional input, bounded: killed after `limit`, refused past `max_bytes`, and refused when
+/// git wrapped a line in colour codes.
+fn run_bounded(
+    mut cmd: Command,
+    input: Option<&[u8]>,
     limit: Duration,
     max_bytes: usize,
 ) -> Result<String, String> {
-    let mut child = guard_git(root)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| e.to_string())?;
+    cmd.stdin(if input.is_some() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    })
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
+    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
+    let stdin = child.stdin.take();
+    let data = input.map(|bytes| bytes.to_vec());
+    let writer = std::thread::spawn(move || {
+        if let (Some(mut pipe), Some(bytes)) = (stdin, data) {
+            let _ = pipe.write_all(&bytes);
+        }
+    });
     let mut stdout = child.stdout.take().ok_or("git output was not piped")?;
     let mut stderr = child.stderr.take().ok_or("git errors were not piped")?;
     let out_reader = std::thread::spawn(move || {
@@ -164,6 +202,7 @@ pub(crate) fn checked_output_within(
             None => std::thread::sleep(Duration::from_millis(20)),
         }
     };
+    let _ = writer.join();
     let out = out_reader.join().unwrap_or_default();
     let err = err_reader.join().unwrap_or_default();
     if !status.success() {
@@ -178,8 +217,66 @@ pub(crate) fn checked_output_within(
     Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
-fn git_checked_output(root: &Path, args: &[&str]) -> Result<String, String> {
-    checked_output_within(root, args, CHECK_TIMEOUT, MAX_CHECKED_BYTES)
+#[cfg(test)]
+pub(crate) fn checked_output_within(
+    root: &Path,
+    args: &[&str],
+    limit: Duration,
+    max_bytes: usize,
+) -> Result<String, String> {
+    let mut cmd = guard_git(root);
+    cmd.args(args);
+    run_bounded(cmd, None, limit, max_bytes)
+}
+
+/// The repository's top folder: every history read runs there, so a subfolder project still sees the whole repository.
+fn toplevel(root: &Path) -> Result<PathBuf, String> {
+    Ok(PathBuf::from(
+        git_out(root, &["rev-parse", "--show-toplevel"])?.trim(),
+    ))
+}
+
+/// The commits `revs` reach, one per line (`rev-list`); their diffs come from `diff_commits`.
+fn commits_of(top: &Path, revs: &[&str]) -> Result<String, String> {
+    let mut cmd = guard_git(top);
+    cmd.arg("rev-list").args(revs);
+    run_bounded(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)
+}
+
+/// The diffs of the listed commits (`rev-list | diff-tree --stdin`), against every parent (`-m`, so an octopus merge
+/// is diffed against each of its parents), with the root commit included. Names (added files) or the text patch.
+fn diff_commits(top: &Path, commits: &str, names: bool) -> Result<String, String> {
+    let mut cmd = guard_git(top);
+    cmd.arg("diff-tree")
+        .arg("--stdin")
+        .arg("-r")
+        .arg("--root")
+        .arg("--no-color")
+        .arg("--no-ext-diff")
+        .arg("--no-textconv")
+        .arg("--no-renames")
+        .arg("--full-index");
+    if names {
+        // Names: a file added relative to any parent (-m), so an octopus merge's files are all listed.
+        cmd.args([
+            "-m",
+            "--no-commit-id",
+            "--name-only",
+            "--diff-filter=A",
+            "-z",
+        ]);
+    } else {
+        // The text: the combined diff (-c), which shows only the lines that differ from every parent. A merge's
+        // content from a side branch is already a commit of its own, so it is not shown again; a secret the merge
+        // itself adds is (any octopus parent count).
+        cmd.args(["-c", "--format=hivra-commit %H", "-p", "--text", "-U0"]);
+    }
+    run_bounded(
+        cmd,
+        Some(commits.as_bytes()),
+        CHECK_TIMEOUT,
+        MAX_CHECKED_BYTES,
+    )
 }
 
 /// Whether HEAD already has the path. A repo with no commits has nothing tracked.
@@ -292,19 +389,27 @@ fn added_lines(patch: &str) -> Vec<Added> {
     let mut commit = String::new();
     let mut line_no = 0usize;
     let mut in_hunk = false;
+    // 0 for a plain diff; for a combined diff (a merge), one marker column per parent.
+    let mut parents = 0usize;
     for raw in patch.lines() {
         if let Some(sha) = raw.strip_prefix("hivra-commit ") {
             commit = sha.trim().to_string();
             in_hunk = false;
             continue;
         }
-        if raw.starts_with("diff --git ") {
+        if raw.starts_with("diff --git ")
+            || raw.starts_with("diff --cc ")
+            || raw.starts_with("diff --combined ")
+        {
             in_hunk = false;
             file.clear();
             continue;
         }
-        if let Some(header) = raw.strip_prefix("@@ ") {
-            line_no = new_start(header);
+        if raw.starts_with("@@") {
+            // A combined hunk has one more '@' than the parents: "@@@ -a -b +c @@@" is two parents.
+            let marks = raw.chars().take_while(|c| *c == '@').count();
+            parents = if marks >= 3 { marks - 1 } else { 0 };
+            line_no = new_start(raw);
             in_hunk = true;
             continue;
         }
@@ -314,15 +419,35 @@ fn added_lines(patch: &str) -> Vec<Added> {
             }
             continue;
         }
-        if let Some(text) = raw.strip_prefix('+') {
+        if parents == 0 {
+            if let Some(text) = raw.strip_prefix('+') {
+                out.push(Added {
+                    file: file.clone(),
+                    line: line_no,
+                    // A UTF-16 file has a NUL after each ASCII character; without them the text is what a person reads.
+                    text: text.chars().filter(|c| *c != '\0').collect(),
+                    commit: commit.clone(),
+                });
+                line_no += 1;
+            } else if raw.starts_with(' ') || raw.is_empty() {
+                line_no += 1;
+            }
+            continue;
+        }
+        // Combined: the first `parents` characters mark the line against each parent. A line added against every
+        // parent is the merge's own content: it is checked. A line some parent has and the result lacks is not in
+        // the result; the rest are context.
+        let marks: String = raw.chars().take(parents).collect();
+        let content: String = raw.chars().skip(parents).collect();
+        if marks.len() == parents && marks.chars().all(|c| c == '+') {
             out.push(Added {
                 file: file.clone(),
                 line: line_no,
-                text: text.to_string(),
+                text: content.chars().filter(|c| *c != '\0').collect(),
                 commit: commit.clone(),
             });
             line_no += 1;
-        } else if raw.starts_with(' ') || raw.is_empty() {
+        } else if !marks.contains('-') {
             line_no += 1;
         }
     }
@@ -398,7 +523,7 @@ fn check_patch(patch: &str, allows: &[Allow], repo: &str) -> Result<(), Finding>
 /// is not a finding. Tests and the land path use it; the gates record each refusal they raise.
 pub fn scan_patch_with(patch: &str, allows: &[Allow], repo: &str) -> Result<(), String> {
     check_patch(patch, allows, repo).map_err(|finding| {
-        let id = record_refusal(repo, &finding);
+        let id = record_refusal("", repo, &finding);
         refusal_text(&finding, None, &id)
     })
 }
@@ -461,74 +586,73 @@ fn scan_names(names: &[&str]) -> Result<(), String> {
 /// Binary-marked files are read as text, and the output is plain. The agent-file names, the file names and the added
 /// lines are checked, and a refusal is recorded under its id for the person's one Allow.
 pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
-    let mut name_args = vec![
-        "log",
-        "--no-color",
-        "--format=",
-        "--name-only",
-        "--diff-filter=A",
-        "--no-renames",
-        "--diff-merges=remerge",
-        "-z",
-    ];
-    name_args.extend_from_slice(revs);
-    let names = git_checked_output(root, &name_args)?;
-    let names: Vec<&str> = names.split('\0').filter(|path| !path.is_empty()).collect();
+    let top = toplevel(root)?;
+    let commits = commits_of(&top, revs)?;
+    let names = diff_commits(&top, &commits, true)?;
+    let names: Vec<&str> = names
+        .split('\0')
+        .map(|name| name.trim_matches('\n'))
+        .filter(|name| !name.is_empty())
+        .collect();
     for path in &names {
         if let Some(kind) = agent_file_kind(path)? {
             return Err(refused_to_push(path, kind));
         }
     }
     scan_names(&names)?;
-    let mut patch_args = vec![
-        "log",
-        "--no-color",
-        "--format=hivra-commit %H",
-        "-p",
-        "-U0",
-        "--text",
-        "--no-ext-diff",
-        "--no-textconv",
-        "--no-renames",
-        "--diff-merges=remerge",
-    ];
-    patch_args.extend_from_slice(revs);
-    let patch = git_checked_output(root, &patch_args)?;
+    let patch = diff_commits(&top, &commits, false)?;
+    let folder = root.to_string_lossy().into_owned();
     check_patch(&patch, &load_allows(), &repo_id(root)).map_err(|finding| {
-        let folder = root.to_string_lossy().into_owned();
-        let id = record_refusal(&repo_id(root), &finding);
+        let id = record_refusal(&folder, &repo_id(root), &finding);
         refusal_text(&finding, Some(&folder), &id)
     })?;
-    let mut message_args = vec!["log", "--no-color", "--format=%B"];
-    message_args.extend_from_slice(revs);
-    let messages = git_checked_output(root, &message_args)?;
+    let mut message_cmd = guard_git(&top);
+    message_cmd.args(["log", "--format=%B"]).args(revs);
+    let messages = run_bounded(message_cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
     scan_message(&messages)
 }
-
 /// The remote's tips as it advertises them now (`git ls-remote`), limited to commits this checkout has. The gate's
 /// base comes from here and never from local remote-tracking refs, which a checkout can write (N3).
-fn advertised_tips(root: &Path, remote: &str) -> Result<Vec<String>, String> {
-    let listed = checked_output_within(
-        root,
-        &["ls-remote", remote],
+fn advertised_tips(top: &Path, url: &str) -> Result<Vec<String>, String> {
+    let mut cmd = guard_git(top);
+    cmd.args(["ls-remote", url]);
+    let listed = run_bounded(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
+    let shas: Vec<String> = listed
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .filter(|sha| {
+            (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit())
+        })
+        .map(str::to_string)
+        .collect();
+    Ok(object_kinds(top, &shas)?
+        .into_iter()
+        .filter(|(_, kind)| kind == "commit" || kind == "tag")
+        .map(|(sha, _)| sha)
+        .collect())
+}
+
+/// The object type of each sha, in one `cat-file --batch-check` (a missing object reads as "missing").
+fn object_kinds(top: &Path, shas: &[String]) -> Result<Vec<(String, String)>, String> {
+    if shas.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input = format!("{}\n", shas.join("\n"));
+    let mut cmd = guard_git(top);
+    cmd.args(["cat-file", "--batch-check"]);
+    let out = run_bounded(
+        cmd,
+        Some(input.as_bytes()),
         CHECK_TIMEOUT,
         MAX_CHECKED_BYTES,
     )?;
-    let mut tips = Vec::new();
-    for line in listed.lines() {
-        let Some(sha) = line.split_whitespace().next() else {
-            continue;
-        };
-        let hex = sha.chars().all(|c| c.is_ascii_hexdigit());
-        if hex && (sha.len() == 40 || sha.len() == 64) && object_exists(root, sha) {
-            tips.push(sha.to_string());
-        }
-    }
-    Ok(tips)
-}
-
-fn object_exists(root: &Path, sha: &str) -> bool {
-    git_out(root, &["cat-file", "-e", &format!("{sha}^{{commit}}")]).is_ok()
+    Ok(out
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.split_whitespace();
+            Some((parts.next()?.to_string(), parts.next()?.to_string()))
+        })
+        .collect())
 }
 
 fn is_zero_sha(sha: &str) -> bool {
@@ -536,12 +660,27 @@ fn is_zero_sha(sha: &str) -> bool {
 }
 
 /// Gates the commits reachable from `shas` that the remote does not advertise, for a push to `remote`.
-fn gate_pushed(root: &Path, remote: &str, shas: &[String]) -> Result<(), String> {
-    let tips = advertised_tips(root, remote)?;
+fn gate_pushed(top: &Path, url: &str, shas: &[String]) -> Result<(), String> {
+    let tips = advertised_tips(top, url)?;
     let mut revs: Vec<&str> = shas.iter().map(String::as_str).collect();
     revs.push("--not");
     revs.extend(tips.iter().map(String::as_str));
-    gate_range(root, &revs)
+    gate_range(top, &revs)
+}
+/// The URL git pushes to for `remote`: the push URL (pushurl, or url), as `git push` itself resolves it (M4). The
+/// guard does not read the fetch URL, which a checkout can point at itself.
+pub fn push_url(root: &Path, remote: &str) -> Result<String, String> {
+    let output = crate::fs::git_cmd()
+        .arg("-C")
+        .arg(root)
+        .args(["remote", "get-url", "--push", remote])
+        .output()
+        .map_err(|e| e.to_string())?;
+    let url = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if !output.status.success() || url.is_empty() {
+        return Err(format!("the remote {remote} has no push URL"));
+    }
+    Ok(url)
 }
 
 /// The remote a push from this checkout goes to: the current branch's configured remote, or `origin`.
@@ -565,10 +704,11 @@ pub fn push_remote(root: &Path) -> String {
 
 /// The gate before a push to `remote` of the given commits (the app's own push, a PR, a checked delivery).
 pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<(), String> {
-    let head = git_out(root, &["rev-parse", "HEAD"])?;
-    gate_pushed(root, remote, &[head.trim().to_string()])
+    let top = toplevel(root)?;
+    let url = push_url(&top, remote)?;
+    let head = git_out(&top, &["rev-parse", "HEAD"])?;
+    gate_pushed(&top, &url, &[head.trim().to_string()])
 }
-
 /// The gate before the app's own push, a pull request or a checked delivery from this checkout.
 pub fn gate_outgoing(root: &Path) -> Result<(), String> {
     gate_outgoing_to(root, &push_remote(root))
@@ -576,9 +716,11 @@ pub fn gate_outgoing(root: &Path) -> Result<(), String> {
 
 /// The pre-push check when git gives no list of refs (a manual run): every local branch and HEAD, so nothing that
 /// might be pushed is left unchecked (N2).
-pub fn pre_push_check(root: &Path, remote: &str) -> Result<(), String> {
+pub fn pre_push_check(root: &Path, target: &str) -> Result<(), String> {
+    let top = toplevel(root)?;
+    let url = push_url(&top, target).unwrap_or_else(|_| target.to_string());
     let heads = git_out(
-        root,
+        &top,
         &["for-each-ref", "--format=%(objectname)", "refs/heads"],
     )?;
     let mut shas: Vec<String> = heads
@@ -587,21 +729,22 @@ pub fn pre_push_check(root: &Path, remote: &str) -> Result<(), String> {
         .filter(|sha| !sha.is_empty())
         .map(str::to_string)
         .collect();
-    if let Ok(head) = git_out(root, &["rev-parse", "--verify", "-q", "HEAD"]) {
+    if let Ok(head) = git_out(&top, &["rev-parse", "--verify", "-q", "HEAD"]) {
         shas.push(head.trim().to_string());
     }
     if shas.is_empty() {
         return Ok(());
     }
-    gate_pushed(root, remote, &shas)
+    gate_pushed(&top, &url, &shas)
 }
-
 /// The pre-push check of what git is really sending: each `<local ref> <local sha> <remote ref> <remote sha>` line
 /// on stdin is checked, so `git push origin leak`, `--all` and `<sha>:refs/heads/x` are covered whatever HEAD is (N2).
-pub fn pre_push_stdin_check(root: &Path, remote: &str, stdin: &str) -> Result<(), String> {
+pub fn pre_push_stdin_check(root: &Path, target: &str, stdin: &str) -> Result<(), String> {
+    let top = toplevel(root)?;
     if stdin.trim().is_empty() {
-        return pre_push_check(root, remote);
+        return pre_push_check(&top, target);
     }
+    let url = push_url(&top, target).unwrap_or_else(|_| target.to_string());
     let mut shas = Vec::new();
     for line in stdin.lines().filter(|line| !line.trim().is_empty()) {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -615,20 +758,28 @@ pub fn pre_push_stdin_check(root: &Path, remote: &str, stdin: &str) -> Result<()
     if shas.is_empty() {
         return Ok(());
     }
-    gate_pushed(root, remote, &shas)
+    // An annotated tag's message is text too: it is checked the way a commit message is (M-LOW).
+    for (sha, kind) in object_kinds(&top, &shas)? {
+        if kind == "tag" {
+            let mut cmd = guard_git(&top);
+            cmd.args(["cat-file", "tag", &sha]);
+            let body = run_bounded(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
+            scan_message(&body)?;
+        }
+    }
+    gate_pushed(&top, &url, &shas)
 }
-
 /// The `pre-push-guard` subcommand, run by a crew's pre-push hook in the repository. Arguments: the remote, then
 /// `--store <path>` (the app's allow list). Reads git's ref lines from stdin. Prints the refusal on stderr and exits 1.
 pub fn pre_push_main(args: &[String]) -> i32 {
-    let mut remote: Option<String> = None;
+    let mut positional: Vec<String> = Vec::new();
     let mut store: Option<String> = None;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         if arg == "--store" {
             store = rest.next().cloned();
-        } else if remote.is_none() {
-            remote = Some(arg.clone());
+        } else {
+            positional.push(arg.clone());
         }
     }
     if let Some(path) = store {
@@ -641,15 +792,23 @@ pub fn pre_push_main(args: &[String]) -> i32 {
             return 1;
         }
     };
-    let remote = remote
-        .filter(|remote| !remote.is_empty())
-        .unwrap_or_else(|| push_remote(&cwd));
+    // git gives the push URL as the hook's second argument: that is the one the push goes to (M4).
+    let name = positional
+        .first()
+        .filter(|name| !name.is_empty())
+        .cloned()
+        .unwrap_or_else(|| "origin".to_string());
+    let target = positional
+        .get(1)
+        .filter(|url| !url.is_empty())
+        .cloned()
+        .unwrap_or(name);
     let mut stdin = String::new();
     if std::io::stdin().read_to_string(&mut stdin).is_err() {
         eprintln!("{UNREADABLE_PUSH}");
         return 1;
     }
-    match pre_push_stdin_check(&cwd, &remote, &stdin) {
+    match pre_push_stdin_check(&cwd, &target, &stdin) {
         Ok(()) => 0,
         Err(why) => {
             eprintln!("{why}");
@@ -657,7 +816,6 @@ pub fn pre_push_main(args: &[String]) -> i32 {
         }
     }
 }
-
 /// The gate for a patch that is about to land into a project (the text of the same change, not the binary form).
 pub fn scan_landing_patch(project: &Path, patch: &str) -> Result<(), String> {
     if patch.len() > MAX_CHECKED_BYTES {
@@ -665,7 +823,7 @@ pub fn scan_landing_patch(project: &Path, patch: &str) -> Result<(), String> {
     }
     check_patch(patch, &load_allows(), &repo_id(project)).map_err(|finding| {
         let folder = project.to_string_lossy().into_owned();
-        let id = record_refusal(&repo_id(project), &finding);
+        let id = record_refusal(&folder, &repo_id(project), &finding);
         refusal_text(&finding, Some(&folder), &id)
     })
 }
@@ -843,10 +1001,24 @@ fn write_allows(path: &Path, allows: &[Allow]) -> Result<(), String> {
 struct Refusal {
     id: String,
     repo: String,
+    folder: String,
     file: String,
+    line: usize,
+    commit: String,
     hash: String,
 }
 
+/// What the banner shows for a refusal, read from the app's record by id (M7): the folder, the file and line, and the
+/// commit. The banner never takes these from the text of a refusal.
+#[derive(Clone, Debug, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RefusalView {
+    pub id: String,
+    pub folder: String,
+    pub file: String,
+    pub line: usize,
+    pub commit: String,
+}
 static REFUSALS: Mutex<Vec<Refusal>> = Mutex::new(Vec::new());
 const MAX_REFUSALS: usize = 200;
 
@@ -861,14 +1033,17 @@ fn refusal_id(repo: &str, finding: &Finding) -> String {
 }
 
 /// Records a refusal and returns its id. The same finding gets the same id.
-fn record_refusal(repo: &str, finding: &Finding) -> String {
+fn record_refusal(folder: &str, repo: &str, finding: &Finding) -> String {
     let id = refusal_id(repo, finding);
     if let Ok(mut refusals) = REFUSALS.lock() {
         if !refusals.iter().any(|known| known.id == id) {
             refusals.push(Refusal {
                 id: id.clone(),
                 repo: repo.to_string(),
+                folder: folder.to_string(),
                 file: finding.file.clone(),
+                line: finding.line,
+                commit: finding.commit.clone(),
                 hash: finding.hash.clone(),
             });
             let excess = refusals.len().saturating_sub(MAX_REFUSALS);
@@ -937,6 +1112,18 @@ fn remove_allow_in(store: &Path, allow: &Allow) -> Result<(), String> {
 /// Removes an allow (the app's UI, through `commit_guard_remove`).
 pub fn remove_allow(_choice: PersonChoice, allow: &Allow) -> Result<(), String> {
     remove_allow_in(store_path()?, allow)
+}
+
+/// The record of one refusal, for the banner. None when the app holds no such refusal: the banner then offers no Allow.
+#[tauri::command]
+pub async fn commit_guard_refusal(id: String) -> Result<Option<RefusalView>, String> {
+    Ok(find_refusal(&id).map(|refusal| RefusalView {
+        id: refusal.id,
+        folder: refusal.folder,
+        file: refusal.file,
+        line: refusal.line,
+        commit: refusal.commit,
+    }))
 }
 
 /// Allows one refusal from the app's UI. The webview names the id it was shown and nothing else.

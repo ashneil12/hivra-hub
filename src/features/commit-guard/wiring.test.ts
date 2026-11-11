@@ -23,7 +23,7 @@ describe("the commit guard's allow is wired into the screens", () => {
     const panel = read("./ui/CommitGuardAllowsPanel.tsx");
     expect(panel).toContain("onClick={() => void removeOne(allow)}");
     // Nothing else in the webview calls these commands on its own: one call site each, inside the click handlers.
-    expect(refusal.match(/await allowLine\(finding\.id\)/g)?.length ?? 0).toBe(1);
+    expect(refusal.match(/await allowLine\(view\.id\)/g)?.length ?? 0).toBe(1);
     expect(panel.match(/await remove\(allow\)/g)?.length ?? 0).toBe(1);
   });
 });

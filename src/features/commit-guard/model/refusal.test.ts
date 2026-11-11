@@ -1,45 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { isGuardRefusal, secretFinding } from "./refusal";
+import { isGuardRefusal, refusalId } from "./refusal";
 
-describe("secretFinding", () => {
-  const refusal = (file: string, line: number) =>
-    `Possible secret in ${file}:${line} in /srv/project (commit 1a2b3c4d5e6f, refusal 0123456789ab). The value is not shown.`;
-
-  it("reads the file, line, folder, commit and id of a secret refusal", () => {
-    expect(secretFinding(refusal("src/config.rs", 12))).toEqual({
-      id: "0123456789ab",
-      file: "src/config.rs",
-      line: 12,
-      folder: "/srv/project",
-      commit: "1a2b3c4d5e6f",
-    });
+describe("refusalId", () => {
+  it("reads the id a secret refusal carries", () => {
+    expect(
+      refusalId("Possible secret in src/config.rs:12 in /srv/project (commit 1a2b3c4d5e6f, refusal 0123456789ab). The value is not shown."),
+    ).toBe("0123456789ab");
   });
 
-  it("keeps colons in the file name", () => {
-    expect(secretFinding(refusal("docs/a:b.md", 3))?.file).toBe("docs/a:b.md");
-  });
-
-  it("reads a refusal with no folder or commit", () => {
-    expect(secretFinding("Possible secret in src/a.rs:4 (commit none, refusal 0123456789ab). The value is not shown.")).toEqual({
-      id: "0123456789ab",
-      file: "src/a.rs",
-      line: 4,
-      folder: null,
-      commit: "none",
-    });
-  });
-
-  it("gives no finding for a refusal with no id, so no button", () => {
-    expect(secretFinding("Possible secret in src/config.rs:12. The value is not shown.")).toBeUndefined();
-  });
-
-  it("gives no finding for a commit message, since its line is not in a file", () => {
-    expect(secretFinding("Possible secret in a commit message:2. The value is not shown.")).toBeUndefined();
-  });
-
-  it("gives no finding for any other refusal", () => {
-    expect(secretFinding("Refused to push .claude/settings.local.json: it is an agent's local approvals.")).toBeUndefined();
-    expect(secretFinding("network down")).toBeUndefined();
+  it("gives no id for a commit message, a file name or a refusal without one", () => {
+    expect(refusalId("Possible secret in a commit message:2. The value is not shown.")).toBeUndefined();
+    expect(refusalId("Possible secret in a file name (the name is not shown). The value is not shown.")).toBeUndefined();
+    expect(refusalId("Possible secret in src/a.rs:1 (commit none, refusal 0123456789ab)")).toBeUndefined();
   });
 });
 

@@ -10,9 +10,10 @@ test("a refused secret names its line, and one click allows that line", async ({
   expect(calls).toEqual([{ id: "0123456789ab" }]);
 });
 
-test("a commit message finding has no allow button, since it has no file line", async ({ page }) => {
+test("a commit message finding, and a refusal the app holds no record of, have no allow button", async ({ page }) => {
   await page.goto("/tests/browser/commit-guard.html");
   await expect(page.getByText("Possible secret in a commit message:2.")).toBeVisible();
+  await expect(page.getByText("This refusal is no longer on record, so it cannot be allowed here.")).toBeVisible();
   await expect(page.getByRole("button", { name: "Allow this line" })).toHaveCount(1);
 });
 

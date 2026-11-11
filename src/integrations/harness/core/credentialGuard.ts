@@ -51,9 +51,12 @@ export function gitHookSkipBlock(command?: string): string | undefined {
   if (!command) return undefined;
   const plain = command.replace(/["'\\`]/g, "");
   if (GIT_HOOK_SKIP.some((pattern) => pattern.test(command) || pattern.test(plain))) return GIT_HOOK_BLOCK_MESSAGE;
-  if (/\bgit\b/.test(plain) && /no-v[a-z]*/i.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
-  if (/\bgit\b/.test(plain) && /\benv\b[^;&|\n]*\s-[i-]\b/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
-  if (/\bgit\b/.test(plain) && /\bsend-pack\b/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
+  // M6: only a command that pushes or commits is held for its flags. A git read, an unrelated env prefix or a
+  // branch name is ordinary work.
+  const pushOrCommit = /\bgit\b[^;&|\n]*\b(?:push|commit)\b/.test(plain);
+  if (pushOrCommit && /--no-v[a-z]*|\bno-verify\b|\s-n(?=\s|$)/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
+  if (pushOrCommit && /\benv\s+(?:-i\b|--ignore-environment\b|-\s)/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
+  if (/\bgit\b[^;&|\n]*\bsend-pack\b/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
   return undefined;
 }
 
@@ -68,11 +71,11 @@ export const GUARD_STORE_DENY_RULES: readonly string[] = [
   "Edit(~/Library/Application Support/com.ash.monocode-hub*/attribution/**)",
   "Write(~/Library/Application Support/com.ash.monocode-hub*/attribution/**)",
   "Bash(*commit-guard-allows*)",
-  "Bash(*monocode-hub*attribution/*)",
+  "Bash(*Application Support/com.ash.monocode-hub*attribution/*)",
 ];
 
 /** A path or command that names the allow list or the crew hooks folder. */
-const GUARD_STORE = /commit-guard-allows|monocode-hub[^\s"'`;|&]*\/attribution(?:\/|\b)/i;
+const GUARD_STORE = /Application Support\/com\.ash\.monocode-hub[^\s"'`;|&]*\/(?:commit-guard-allows|attribution)(?:\/|\b)/i;
 
 /** Claude Code permission rules, passed as --disallowedTools; deny rules hold even in bypass mode. */
 export const CREDENTIAL_DENY_RULES: readonly string[] = [

@@ -850,3 +850,66 @@ fn a_raw_escape_byte_inside_a_file_is_data_and_is_checked_as_text() {
     local.commit("ansi fixture");
     gate_outgoing(local.path()).expect("a file with an escape byte in it is checked, not refused");
 }
+
+// ---- review round 5 -------------------------------------------------------------------------------------------------
+
+#[test]
+fn a_utf16_file_with_a_secret_is_refused_as_text() {
+    let (local, _remote) = pushed_repo("utf16");
+    let bytes: Vec<u8> = format!("const KEY: &str = \"{}\";\n", fake_key())
+        .encode_utf16()
+        .flat_map(|unit| unit.to_le_bytes())
+        .collect();
+    std::fs::write(local.path().join("src-config.txt"), bytes).unwrap();
+    local.commit("utf16 file");
+    let err = gate_outgoing(local.path()).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in src-config.txt"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_secret_in_an_annotated_tag_message_stops_the_push() {
+    let (local, _remote) = pushed_repo("tag-msg");
+    local.git(&[
+        "tag",
+        "-a",
+        "v1",
+        "-m",
+        &format!("release key {}", fake_key()),
+    ]);
+    let tag = local.git(&["rev-parse", "v1"]);
+    let zeros = "0".repeat(40);
+    let stdin = format!("refs/tags/v1 {} refs/tags/v1 {zeros}\n", tag.trim());
+    let err = pre_push_stdin_check(local.path(), "origin", &stdin).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in a commit message"),
+        "{err}"
+    );
+    assert!(
+        !err.contains(key_body(&fake_key())),
+        "the tag message leaked: {err}"
+    );
+}
+
+#[test]
+fn a_refusal_records_its_folder_file_line_and_commit_for_the_banner() {
+    let (local, _remote) = pushed_repo("banner");
+    let key = fake_key();
+    local.write("src/config.rs", &format!("const KEY: &str = \"{key}\";\n"));
+    local.commit("config");
+    let commit = local.git(&["rev-parse", "HEAD"]);
+    let message = gate_outgoing(local.path()).unwrap_err();
+    let id = refusal_id_of(&message);
+    let record = find_refusal(&id).expect("the refusal is on record");
+    assert_eq!(record.file, "src/config.rs");
+    assert_eq!(record.line, 1);
+    assert!(
+        commit.trim().starts_with(&record.commit),
+        "the record names the commit"
+    );
+    assert!(record
+        .folder
+        .ends_with(local.path().file_name().unwrap().to_str().unwrap()));
+}
