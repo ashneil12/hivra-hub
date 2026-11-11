@@ -2543,6 +2543,22 @@ pub fn ensure_grant(
                         drop(tx);
                         return Ok(false);
                     }
+                    // The card is cleared in this same transaction, and only while it is still the version that was
+                    // read. A version that moved is a newer card: a stale version deletes nothing, and its binding
+                    // stays. The grant still commits, so this run is spent and the newer card is left for the next one.
+                    let cleared = tx
+                        .execute(
+                            "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2 AND version = ?3",
+                            params![project, key, decision.version],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if cleared == 1 {
+                        tx.execute(
+                            "DELETE FROM secret_card_bindings WHERE project = ?1 AND decision_key = ?2",
+                            params![project, key],
+                        )
+                        .map_err(|e| e.to_string())?;
+                    }
                     tx.commit().map_err(|e| e.to_string())?;
                 }
                 Ok(true)
@@ -2563,15 +2579,18 @@ pub fn ensure_grant(
                 }
             }
             // The answer has become a grant: clear the card so the next run (after a revoke, or a second once) asks
-            // again. A "No" stays answered, so the person is not asked over and over.
-            let _ = conn.execute(
-                "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2",
-                params![project, key],
-            );
-            let _ = conn.execute(
-                "DELETE FROM secret_card_bindings WHERE project = ?1 AND decision_key = ?2",
-                params![project, key],
-            );
+            // again. A "No" stays answered, so the person is not asked over and over. Once already cleared its card
+            // inside the grant transaction, and only at the version that was read, so it must not be deleted again here.
+            if answer != "Once" {
+                let _ = conn.execute(
+                    "DELETE FROM decisions WHERE project = ?1 AND decision_key = ?2",
+                    params![project, key],
+                );
+                let _ = conn.execute(
+                    "DELETE FROM secret_card_bindings WHERE project = ?1 AND decision_key = ?2",
+                    params![project, key],
+                );
+            }
             Ok(ApprovalOutcome::Granted)
         }
         _ => {

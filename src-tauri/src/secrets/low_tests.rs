@@ -1,7 +1,13 @@
-//! WP-92 follow-up: a secret card's version never repeats when the row is ahead of the counter.
+//! WP-92 follow-up: a secret card's version never repeats when the row is ahead of the counter, and a Once
+//! card is deleted only at the version that was read.
 
+use super::store::Memory;
 use super::*;
+use crate::session_store::SessionStore;
 use rusqlite::{params, Connection};
+
+const VALUE: &str = "sk_live_51NxAbCdEfGhIjKl";
+const NOW: i64 = 1_700_000_000_000;
 
 fn open_decisions() -> Connection {
     let conn = Connection::open_in_memory().unwrap();
@@ -76,5 +82,93 @@ fn alloc_card_version_keeps_the_higher_of_the_counter_and_the_row() {
     assert_eq!(
         alloc_card_version(&conn, "p", "secret/stripe/curl").unwrap(),
         12
+    );
+}
+
+fn run_request(mono: &str) -> RunRequest {
+    RunRequest {
+        chat: "chat-1".into(),
+        mono: Some(mono.into()),
+        project: None,
+        name: "stripe-api-key".into(),
+        env: "STRIPE_API_KEY".into(),
+        command: vec![harmless_program().into(), "customers".into(), "list".into()],
+        cwd: None,
+        timeout_seconds: None,
+    }
+}
+
+/// The Once card is deleted inside the grant transaction, and only at the version that was read.
+/// A version that moves while the grant is written (another window rebound the card) is left in place.
+/// Before the fix the delete ran after the commit and named no version, so it removed the newer card.
+#[test]
+fn once_grant_leaves_a_card_whose_version_moved() {
+    let store = SessionStore::open_in_memory().unwrap();
+    let vault = Memory::new();
+    {
+        let conn = store.lock_conn().unwrap();
+        save_value(
+            &vault,
+            &conn,
+            SCOPE_GLOBAL,
+            "stripe-api-key",
+            None,
+            VALUE,
+            NOW,
+        )
+        .unwrap();
+    }
+    let mut conn = store.lock_conn().unwrap();
+    let RunOutcome::Waiting { decision_key, .. } =
+        prepare_run(&vault, &mut conn, run_request("mono-1"), NOW).unwrap()
+    else {
+        panic!("the first run must ask");
+    };
+    let seen = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .unwrap()
+        .version;
+    crate::decisions::answer_seen(
+        &mut conn,
+        "",
+        &decision_key,
+        "Once",
+        None,
+        Some(seen),
+        NOW + 1,
+    )
+    .unwrap();
+    let read = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .unwrap()
+        .version;
+    // Moves the card's version in the same transaction as the once grant, which is what a racing rebind does.
+    conn.execute_batch(
+        "CREATE TRIGGER bump_secret_card_during_once
+         AFTER INSERT ON secret_grants
+         BEGIN
+           UPDATE decisions SET version = version + 100;
+         END;",
+    )
+    .unwrap();
+    let outcome = prepare_run(&vault, &mut conn, run_request("mono-1"), NOW + 2).unwrap();
+    assert!(
+        matches!(outcome, RunOutcome::Granted { .. }),
+        "the once answer still grants this run, got {outcome:?}"
+    );
+    let card = crate::decisions::get(&conn, "", &decision_key)
+        .unwrap()
+        .expect("a stale version deleted the newer card");
+    assert_eq!(card.version, read + 100, "card version is {}", card.version);
+    assert_eq!(card.answer.as_deref(), Some("Once"));
+    assert!(
+        binding_of(&conn, "", &decision_key).unwrap().is_some(),
+        "the newer card's binding was deleted with the stale version"
+    );
+    assert!(
+        grants_for(&conn, SCOPE_GLOBAL, "stripe-api-key")
+            .unwrap()
+            .is_empty(),
+        "the once grant must still be spent"
     );
 }
