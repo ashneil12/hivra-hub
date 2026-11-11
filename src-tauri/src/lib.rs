@@ -68,6 +68,10 @@ mod terminal_mirror;
 mod memory_review;
 // WP-103: the cheap memory tier asks a model the person added, on its own key.
 mod memory_cheap;
+// WP-129: the address each saved model key belongs to, so a command sends a key only there.
+mod key_binding;
+// WP-129: one short completion for titles, commits, pull requests and branch names.
+mod text_generation;
 // WP-83: learn from past chats. Readers, and the write after an accept.
 mod learn_stores;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
