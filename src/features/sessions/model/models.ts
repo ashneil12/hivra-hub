@@ -1,4 +1,5 @@
 import { DEFAULT_CLAUDE_MODEL_ID, useDefaultClaudeModelId } from "./defaultClaudeModel";
+import { recordLiveCatalog } from "./modelFirstSeen";
 import { BRIDGE_MODEL_NAMES, DEEPSEEK_BRIDGE_NATIVE } from "./deepseekBridge";
 import { readRetiredGrokModel } from "./grokRetirement";
 import type { HarnessId } from "./session";
@@ -61,6 +62,18 @@ export const MODELS: AgentModel[] = [
     harness: "claude",
     name: "Claude Opus 5.5",
     nativeId: "claude-opus-5-5",
+  },
+  {
+    id: "claude:fable-5-2",
+    harness: "claude",
+    name: "Claude Fable 5.2",
+    nativeId: "claude-fable-5-2",
+  },
+  {
+    id: "claude:fable-5-1",
+    harness: "claude",
+    name: "Claude Fable 5.1",
+    nativeId: "claude-fable-5-1",
   },
   {
     id: "claude:fable-5",
@@ -261,6 +274,8 @@ const HARNESS_ORDER: HarnessId[] = [
 const EMPTY_MODELS: AgentModel[] = [];
 
 let overlays: Partial<Record<HarnessId, AgentModel[]>> = {};
+/** Overlays that are the built-in list filtered by CLI version, not what the CLI itself listed. */
+const unlistedOverlays = new Set<HarnessId>();
 let overlayDefaults: Partial<Record<HarnessId, string>> = {};
 let catalogVersion = 0;
 const listeners = new Set<() => void>();
@@ -284,8 +299,28 @@ export function getModelSnapshot(): number {
   return catalogVersion;
 }
 
-export function setHarnessModels(harness: HarnessId, models: AgentModel[]) {
+/**
+ * Replace a harness's built-in list. `live: false` marks a list that is the
+ * built-in one filtered by CLI version, used when the CLI would not list its
+ * models: it fills the picker but is never recorded as seen, so it can't make
+ * a model look new or become the baseline for the real list.
+ */
+export function setHarnessModels(
+  harness: HarnessId,
+  models: AgentModel[],
+  options?: { live?: boolean },
+) {
   if (models.length === 0) return;
+  const live = options?.live !== false;
+  if (live) {
+    unlistedOverlays.delete(harness);
+    recordLiveCatalog(
+      harness,
+      models.map((model) => model.id),
+    );
+  } else {
+    unlistedOverlays.add(harness);
+  }
   overlays = { ...overlays, [harness]: models };
   overlayDefaults = {
     ...overlayDefaults,
@@ -299,9 +334,15 @@ export function hasLiveCatalog(harness: HarnessId): boolean {
   return overlays[harness] != null;
 }
 
+/** True when the CLI itself listed the models now showing, not the built-in list filtered by version. */
+export function hasListedCatalog(harness: HarnessId): boolean {
+  return overlays[harness] != null && !unlistedOverlays.has(harness);
+}
+
 /** Test seam. */
 export function resetHarnessModelOverlays() {
   overlays = {};
+  unlistedOverlays.clear();
   overlayDefaults = {};
   emit();
 }

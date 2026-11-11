@@ -270,15 +270,15 @@ Third-party components Hivra adds:
   Source: https://github.com/siddsachar/row-bot
   License: Apache-2.0
   Copyright 2026 Row-Bot Contributors
-  Used in: src/features/memory/model/recallPolicy.ts
-  memory_policy.py translated to TypeScript with its test cases ported (WP-99). The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; and Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review.
+  Used in: src/features/memory/model/recallPolicy.ts, src/features/memory/model/LICENSE.row-bot
+  memory_policy.py translated to TypeScript with its test cases ported (WP-99). The semantic and graph score terms are folded into lexical matching, because Hivra has no embeddings and no graph; the store is scored in one pass rather than through a SQLite candidate query; and Row-Bot's memory statuses become Hivra's: a fact with a removal waiting is archived, one with an update waiting is superseded, and an unreviewed proposal needs review. Hivra adds a small penalty for a memory that has faded, and scores the memories of every Mono a turn reads in one decision. Licence text in src/features/memory/model/LICENSE.row-bot.
 
 - Row-Bot's correction rule
   Source: https://github.com/siddsachar/row-bot
   License: Apache-2.0
   Copyright 2026 Row-Bot Contributors
-  Used in: src/features/memory/model/ruleCurator.ts
-  learning/corrections.py translated line for line to TypeScript, with its test cases ported (WP-103). The store, episode and signal parts are left out because Hivra judges one turn at a time; the context cut, the retraction window, the defect and asking sentence rules and the conservative order are the original's. Hivra adds its own fact detector beside it.
+  Used in: src/features/memory/model/ruleCurator.ts, src/features/memory/model/LICENSE.row-bot
+  learning/corrections.py translated line for line to TypeScript, with its test cases ported (WP-103). The store, episode and signal parts are left out because Hivra judges one turn at a time; the context cut, the retraction window, the defect and asking sentence rules and the conservative order are the original's. Hivra adds its own fact detector beside it. Licence text in src/features/memory/model/LICENSE.row-bot.
 
 - Mnemos's lived-day clock
   Source: https://github.com/Riley-Coyote/mnemos-mcp
@@ -305,8 +305,36 @@ Third-party components Hivra adds:
   Source: https://github.com/siddsachar/row-bot
   License: Apache-2.0
   Copyright 2026 Row-Bot Contributors
-  Used in: src/features/memory/model/orderScan.ts
-  external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one.
+  Used in: src/features/memory/model/orderScan.ts, src/features/memory/model/LICENSE.row-bot
+  external_content.py's injection scan translated to TypeScript, with its cases ported (WP-111). The fence and the warning sentence are not used. A match refuses a proposed memory and is noted on recall. It never deletes one. Licence text in src/features/memory/model/LICENSE.row-bot.
+
+- MiniMax Code's subagent-split-check, independent-review and taste-to-checks
+  Source: https://github.com/MiniMax-AI/mcode-stack
+  License: MIT
+  Copyright (c) 2026 MiniMax Code
+  Used in: src-tauri/plugins/hivra-mcode/skills/subagent-split-check, src-tauri/plugins/hivra-mcode/skills/independent-review, src-tauri/plugins/hivra-mcode/skills/taste-to-checks, src-tauri/plugins/hivra-mcode/skills/long-session-check, src-tauri/plugins/hivra-mcode/skills/context-tax-audit
+  Copied from stacks/ronny/skills at 88f84be7075106d8ce283e5d3a8138cdb8f9a205. The three named skills, plus the short long-session-check and context-tax-audit. Each file adds disable-model-invocation, so Claude Code does not offer it to the model itself; Hivra's skill index lists each one and where it is, and a first mate reads it when the work fits (WP-117). context-tax-audit turns two em dashes into a comma and a full stop. Pointers to checklists and skills this plugin does not ship (checklists/*.md, handoff-doc, harness-experiment, evidence-first-review, tool-budget-audit) are dropped or reworded as plain prose. The skill text is otherwise unchanged.
+
+- models.dev's model catalogue
+  Source: https://github.com/anomalyco/models.dev
+  License: MIT
+  Copyright (c) 2025 models.dev
+  Used in: src/features/sessions/model/modelsDev.json, src/features/sessions/model/LICENSE.models-dev
+  The models.dev catalogue trimmed to each model's context window and tool flag, at commit b4b8ca36 (WP-104). The generator and the provider files are not copied. The app reads the file offline. Licence text in src/features/sessions/model/LICENSE.models-dev.
+
+- Pierre Diffs
+  Source: https://github.com/pierrecomputer/pierre/tree/main/packages/diffs
+  License: Apache-2.0
+  Copyright 2025 Pierre Computer Company
+  Used in: package.json, src/features/source-control/ui/pierreDiff.tsx
+  Pinned npm package for the optional split diff view (WP-116).
+
+- Atomic Agent's fan-out contract
+  Source: https://github.com/AtomicBot-ai/atomic-agent
+  License: MIT
+  Copyright (c) 2026 Atomic Bot
+  Used in: src/features/firstmate/model/fanoutContract.ts, src/features/firstmate/model/fanoutWaves.ts, src/features/firstmate/model/fanoutChecks.ts, src/features/firstmate/model/originalRequest.ts
+  The contract's kinds of provide, its description and search-path rules, the contract block and per-task lines, and the requires-cycle walk (contract.ts); the wave planner and its cycle fallback (contract-waves.ts); the presence check of a provide in a file (contract-checks.ts); and the bounded quote of the person's request with its follow-up rule (worker-prompt.ts), translated to TypeScript at commit 1b4e641525c5b1427b48ff6b8d9932dc26bd8256 (WP-171). Hivra reads the contract from each task of one delegate_tasks call, refuses a requirement nothing provides and a provide nobody could check before anything starts, holds a task whose provider failed or did not deliver instead of running it anyway, fails a check that could not run, runs a declared check as the task's WP-40 checks gate, reads the request from the first mate's chat (the person's own messages only), and quotes it behind a mark on every line.
 
 MonoCode
 ========

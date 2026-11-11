@@ -59,6 +59,7 @@ impl UpdateReport {
     }
 }
 
+#[cfg(test)]
 pub fn update_from_main(conn: &Connection, package_id: &str) -> Result<UpdateReport, String> {
     match load(conn, package_id)? {
         Some(plan) => Ok(execute(&plan)),
@@ -74,6 +75,42 @@ pub(crate) fn load(conn: &Connection, package_id: &str) -> Result<Option<Plan>, 
         return Ok(None);
     };
     Ok(Some(plan_from(conn, &checkout)?))
+}
+
+/// The package worktree: the one worktree of `folder` with `branch` checked out. Zero
+/// matches is "not found"; several is refused, so the update never guesses.
+pub(crate) fn branch_worktree(folder: &Path, branch: &str) -> Result<Option<PathBuf>, String> {
+    let branch = names::branch_name(branch)?;
+    let ran = gitrun::run(folder, &["worktree", "list", "--porcelain"], LOCAL_TIMEOUT)
+        .map_err(run_error_text)?;
+    if ran.code != 0 {
+        return Err("The worktrees could not be read. Nothing was changed. Try again.".into());
+    }
+    let wanted = format!("refs/heads/{branch}");
+    let mut found: Vec<PathBuf> = Vec::new();
+    let mut current: Option<PathBuf> = None;
+    for line in ran.stdout.lines() {
+        if let Some(path) = line.strip_prefix("worktree ") {
+            current = Some(PathBuf::from(path));
+        } else if line.strip_prefix("branch ") == Some(wanted.as_str()) {
+            if let Some(path) = current.clone() {
+                found.push(path);
+            }
+        } else if line.is_empty() {
+            current = None;
+        }
+    }
+    match found.len() {
+        0 => Ok(None),
+        1 => Ok(found.pop()),
+        _ => Err("More than one worktree has that branch checked out. Nothing was changed.".into()),
+    }
+}
+
+fn run_error_text(error: gitrun::RunError) -> String {
+    match error {
+        gitrun::RunError::Refused(reason) | gitrun::RunError::NotFinished(reason) => reason,
+    }
 }
 
 fn plan_from(conn: &Connection, checkout: &Checkout) -> Result<Plan, String> {

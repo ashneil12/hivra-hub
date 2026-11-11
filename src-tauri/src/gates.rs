@@ -70,6 +70,15 @@ pub(crate) fn gate_for(
 
 /// A worker's own checkout: a folder inside the project's sibling `<project>-worktrees/` folder.
 pub(crate) fn worker_checkout(checkout: &str) -> Result<PathBuf, String> {
+    worker_checkout_in(checkout, None)
+}
+
+/// A worker's own checkout: a folder inside the project's sibling `<project>-worktrees/` folder, or (WP-91) a slot of
+/// the worktree pool (WP-82), which lives straight under the folder the pool hands its slots out of, `pool_slots`.
+pub(crate) fn worker_checkout_in(
+    checkout: &str,
+    pool_slots: Option<&Path>,
+) -> Result<PathBuf, String> {
     let path = crate::fs::canonical(checkout)
         .map_err(|_| "The worker's checkout isn't there.".to_string())?;
     let in_worktrees = path
@@ -77,7 +86,8 @@ pub(crate) fn worker_checkout(checkout: &str) -> Result<PathBuf, String> {
         .and_then(|p| p.file_name())
         .and_then(|n| n.to_str())
         .is_some_and(|n| n.ends_with("-worktrees"));
-    if !path.is_dir() || !in_worktrees {
+    let in_pool = pool_slots.is_some_and(|slots| crate::worktree_pool::is_slot_in(slots, &path));
+    if !path.is_dir() || !(in_worktrees || in_pool) {
         return Err("A check only runs on a worker's own checkout.".into());
     }
     Ok(path)
@@ -196,11 +206,13 @@ pub async fn run_worker_gate(
     signed_off: bool,
 ) -> Result<Option<GateRun>, String> {
     let dir = gates_dir(&app)?;
+    // WP-91: an orchestration worker's checkout may be a slot of the worktree pool.
+    let pool_slots = crate::worktree_pool::slots_dir_for(&app);
     tauri::async_runtime::spawn_blocking(move || {
         let Some((config, script)) = gate_for(&dir, &project_id)? else {
             return Ok(None);
         };
-        let checkout = worker_checkout(&checkout)?;
+        let checkout = worker_checkout_in(&checkout, pool_slots.as_deref())?;
         let items = if signed_off {
             config.sign_off.clone()
         } else {
@@ -275,6 +287,77 @@ mod tests {
         assert!(worker_checkout(project.to_str().unwrap()).is_err());
         assert!(worker_checkout(worker.to_str().unwrap()).is_ok());
         assert!(worker_checkout(dir.join("nope").to_str().unwrap()).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // WP-91: an orchestration worker's checkout is a slot of the worktree pool (WP-82) when the pool is on, and a slot
+    // lives in the pool's own folder, not in `<project>-worktrees/`. The routes check refused it as "not a worker's
+    // own checkout", so every such task read "not run".
+    #[test]
+    fn a_worktree_pool_slot_is_a_worker_checkout() {
+        use crate::worktree_pool::{slots_dir, PoolEnv};
+        let dir = temp("pool");
+        // The daily app's pool is `~/Worktrees/pool`; a dev copy keeps its own under its data folder.
+        for dev in [false, true] {
+            let env = PoolEnv {
+                dev,
+                data_dir: dir.join(format!("data {dev}")),
+                home: dir.join(format!("home café {dev}")),
+                launch: None,
+            };
+            let slots = slots_dir(&env).expect("the pool's folder");
+            let slot = slots.join("tally-slot1");
+            std::fs::create_dir_all(&slot).unwrap();
+            std::fs::create_dir_all(slot.join("src")).unwrap();
+            let text = |path: &Path| path.to_str().unwrap().to_string();
+
+            // Without the pool's folder named a slot is not a worker's checkout (the old rule is unchanged)...
+            assert!(worker_checkout(&text(&slot)).is_err());
+            assert!(worker_checkout_in(&text(&slot), None).is_err());
+            // ...and with it, it is.
+            assert_eq!(
+                worker_checkout_in(&text(&slot), Some(&slots)).unwrap(),
+                crate::fs::canonical(&slot).unwrap()
+            );
+            // The folder that holds the slots, a folder inside a slot, one that is not there and a project that
+            // sits beside the pool are not slots.
+            for other in [
+                slots.clone(),
+                slot.join("src"),
+                slots.join("tally-slot2"),
+                slots.parent().unwrap().to_path_buf(),
+            ] {
+                assert!(
+                    worker_checkout_in(&text(&other), Some(&slots)).is_err(),
+                    "{other:?} is not a slot"
+                );
+            }
+            let project = slots.parent().unwrap().join("tally");
+            std::fs::create_dir_all(&project).unwrap();
+            assert!(worker_checkout_in(&text(&project), Some(&slots)).is_err());
+            // A `..` that walks out of the pool is still out of it.
+            let sneaky = slots
+                .join("tally-slot1")
+                .join("..")
+                .join("..")
+                .join("tally");
+            assert!(worker_checkout_in(&text(&sneaky), Some(&slots)).is_err());
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A link inside the pool's folder that leads to the project is not a slot: the folder's real identity decides.
+    #[cfg(unix)]
+    #[test]
+    fn a_link_in_the_pool_folder_to_a_project_is_not_a_slot() {
+        let dir = temp("pool-link");
+        let slots = dir.join("pool");
+        let project = dir.join("tally");
+        std::fs::create_dir_all(&slots).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::os::unix::fs::symlink(&project, slots.join("tally-slot1")).unwrap();
+        let link = slots.join("tally-slot1");
+        assert!(worker_checkout_in(link.to_str().unwrap(), Some(&slots)).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

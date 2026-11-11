@@ -21,7 +21,9 @@ struct Device {
     name: String,
     fingerprint: String,
 }
-#[derive(Clone, Serialize, Deserialize)]
+// Hivra: every field defaults to off or empty. Upstream's Default opened a router port (open_router: true); here no
+// port mapping happens unless the person ticks it.
+#[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct Config {
     enabled: bool,
@@ -32,21 +34,13 @@ struct Config {
     #[serde(default)]
     devices: Vec<Device>,
 }
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            open_router: true,
-            remote_address: String::new(),
-            devices: Vec::new(),
-        }
-    }
-}
 struct Invitation {
     expires: u64,
 }
 struct Pending {
     window: String,
+    /// The paired device that asked. The answer is refused once it is no longer paired.
+    peer: String,
     reply: oneshot::Sender<Value>,
 }
 /// A phone watching a conversation through the window that owns it.
@@ -323,6 +317,11 @@ pub fn mobile_revoke(host: State<'_, MobileHost>, device_id: String) -> Result<(
         .inner
         .lock()
         .map_err(|_| "Mobile service unavailable")?;
+    forget_device(&host, &mut inner, &device_id)
+}
+
+/// Drops one paired device: its key, its watches, then the saved list.
+fn forget_device(host: &MobileHost, inner: &mut Inner, device_id: &str) -> Result<(), String> {
     let mut config = inner.config.clone();
     if let Some(device) = config.devices.iter().find(|v| v.id == device_id) {
         host.gate.remove(&device.fingerprint);
@@ -330,7 +329,7 @@ pub fn mobile_revoke(host: State<'_, MobileHost>, device_id: String) -> Result<(
         inner.watches.retain(|_, watch| watch.peer != peer);
     }
     config.devices.retain(|device| device.id != device_id);
-    save(&host, &config)?;
+    save(host, &config)?;
     inner.config = config;
     Ok(())
 }
@@ -355,6 +354,18 @@ pub fn mobile_publish(
         .catalogs
         .insert(window.label().into(), catalog);
     Ok(())
+}
+/// The owning window asks, right before it runs a phone approval, whether that approval is still
+/// open. A request that timed out, was answered, or whose device was revoked or disabled is refused.
+#[tauri::command]
+pub fn mobile_admits(window: WebviewWindow, host: State<'_, MobileHost>, id: String) -> bool {
+    let inner = host.inner.lock().unwrap();
+    approval_still_open(
+        &inner,
+        &id,
+        window.label(),
+        crate::instance::policy().phone_access,
+    )
 }
 #[tauri::command]
 pub fn mobile_reply(
@@ -505,10 +516,15 @@ fn merged_catalog(app: &AppHandle, inner: &mut Inner) -> Value {
     inner
         .catalogs
         .retain(|window, _| app.get_webview_window(window).is_some());
+    merge_catalogs(&inner.catalogs)
+}
+
+/// The workspace poll. Approvals stay on each window's catalog; they are not part of this poll.
+fn merge_catalogs(catalogs: &HashMap<String, Value>) -> Value {
     let mut result = json!({"projects":[],"monos":[],"sessions":[]});
     for field in ["projects", "monos", "sessions"] {
         let mut items = HashMap::new();
-        for catalog in inner.catalogs.values() {
+        for catalog in catalogs.values() {
             for item in catalog[field].as_array().into_iter().flatten() {
                 if let Some(id) = item["id"].as_str() {
                     let rank = |value: &Value| {
@@ -605,6 +621,268 @@ fn session_page(sessions: &Value, params: &Value) -> Value {
         "sessions": page,
         "hasMore": offset + page.len() < matches.len(),
     })
+}
+
+/// `Number.MAX_SAFE_INTEGER`. A request id the phone cannot round-trip is not a request id.
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
+
+fn is_pairing_method(method: &str) -> bool {
+    matches!(
+        method,
+        "session.approve" | "session.deny" | "inbox.list" | "crew.status"
+    )
+}
+
+/// Whether `peer` may use the pairing methods right now: the service is on, phone access is on,
+/// and the peer is still a paired device. handle() and the approval checks both use this.
+fn authorize_pairing(config: &Config, peer: &str, phone_access: bool) -> Result<(), String> {
+    let paired = config
+        .devices
+        .iter()
+        .any(|device| device.fingerprint == peer);
+    pairing_gate(config.enabled, phone_access, paired)
+}
+
+/// An approval the window may still run: its request is pending for this window, and the
+/// device that asked is still paired with access on. A request that timed out, was answered,
+/// or whose device was revoked or disabled is not run.
+fn approval_still_open(inner: &Inner, id: &str, window: &str, phone_access: bool) -> bool {
+    inner.pending.get(id).is_some_and(|pending| {
+        pending.window == window
+            && authorize_pairing(&inner.config, &pending.peer, phone_access).is_ok()
+    })
+}
+
+/// Inbox, crew, and one tool call. Anything short of on, allowed, and paired is a refusal.
+fn pairing_gate(enabled: bool, phone_access: bool, paired: bool) -> Result<(), String> {
+    if !enabled {
+        return Err("Mobile access disabled".into());
+    }
+    if !phone_access {
+        return Err("Phone access is off.".into());
+    }
+    if !paired {
+        return Err("Device revoked or not paired".into());
+    }
+    Ok(())
+}
+
+fn rejects_blanket(params: &Value) -> Result<(), String> {
+    let Some(object) = params.as_object() else {
+        return Ok(());
+    };
+    for key in ["all", "scope", "approveAll", "allowAll"] {
+        if object.get(key).is_some_and(|value| !value.is_null()) {
+            return Err("One tool call at a time.".into());
+        }
+    }
+    if matches!(
+        object.get("decision").and_then(Value::as_str),
+        Some("allow_all" | "allow-all" | "all")
+    ) {
+        return Err("One tool call at a time.".into());
+    }
+    Ok(())
+}
+
+/// The method names the decision. A missing decision is that decision. Any other word is a refusal.
+fn decision_conflict(method: &str, params: &Value) -> Result<(), String> {
+    let expected = if method == "session.approve" {
+        "allow"
+    } else {
+        "deny"
+    };
+    match params.get("decision") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(value)) if value == expected => Ok(()),
+        _ => Err("This approval does not match a waiting tool call.".into()),
+    }
+}
+
+fn command_equal(echo: Option<&Value>, stored: Option<&Value>) -> bool {
+    let echo = echo.filter(|value| !value.is_null());
+    let stored = stored.filter(|value| !value.is_null());
+    match (echo, stored) {
+        (None, None) => true,
+        (Some(Value::String(left)), Some(Value::String(right))) => left == right,
+        _ => false,
+    }
+}
+
+fn path_text(value: &Value) -> Option<&str> {
+    value
+        .as_str()
+        .filter(|path| path.len() <= 1024 && !path.contains('\0'))
+}
+
+/// Omitted paths match an empty list. Anything else must be the same list, in order.
+fn paths_equal(echo: Option<&Value>, stored: Option<&Value>) -> bool {
+    let Some(stored) = (match stored {
+        None | Some(Value::Null) => Some(Vec::new()),
+        Some(Value::Array(paths)) if paths.len() <= 64 => {
+            paths.iter().map(path_text).collect::<Option<Vec<_>>>()
+        }
+        Some(_) => None,
+    }) else {
+        return false;
+    };
+    match echo {
+        None => stored.is_empty(),
+        Some(Value::Array(paths)) if paths.len() == stored.len() && paths.len() <= 64 => paths
+            .iter()
+            .zip(stored)
+            .all(|(echo, stored)| path_text(echo) == Some(stored)),
+        Some(_) => false,
+    }
+}
+
+fn echo_matches(params: &Value, row: &Value) -> bool {
+    let Some(tool) = params.get("tool").and_then(Value::as_str) else {
+        return false;
+    };
+    row.get("tool").and_then(Value::as_str) == Some(tool)
+        && command_equal(params.get("command"), row.get("command"))
+        && paths_equal(params.get("paths"), row.get("paths"))
+}
+
+/// A listed chat, or the session a published Mono names. A Mono's chat is not a session card.
+fn conversation_listed(catalog: &Value, conversation: &str) -> bool {
+    catalog
+        .get("sessions")
+        .and_then(Value::as_array)
+        .is_some_and(|sessions| sessions.iter().any(|session| session["id"] == conversation))
+        || catalog
+            .get("monos")
+            .and_then(Value::as_array)
+            .is_some_and(|monos| monos.iter().any(|mono| mono["sessionId"] == conversation))
+}
+
+fn presence_rank(item: &Value) -> u8 {
+    if item["busy"] == true {
+        3
+    } else if item["live"] == true {
+        2
+    } else {
+        1
+    }
+}
+
+/// The window that published this call. A Mono's chat routes with the Mono, not the session list.
+fn approval_owner(catalogs: &HashMap<String, Value>, params: &Value) -> Option<String> {
+    let conversation = params.get("conversationId").and_then(Value::as_str)?;
+    let request_id = params.get("requestId").and_then(Value::as_u64)?;
+    catalogs
+        .iter()
+        .filter_map(|(window, catalog)| {
+            if !conversation_listed(catalog, conversation) {
+                return None;
+            }
+            let rows = catalog.get("approvals").and_then(Value::as_array)?;
+            let hit = rows.iter().any(|row| {
+                row["conversationId"] == conversation
+                    && row["requestId"].as_u64() == Some(request_id)
+                    && echo_matches(params, row)
+            });
+            if !hit {
+                return None;
+            }
+            let rank = catalog
+                .get("sessions")
+                .and_then(Value::as_array)
+                .and_then(|sessions| {
+                    sessions
+                        .iter()
+                        .find(|session| session["id"] == conversation)
+                })
+                .or_else(|| {
+                    catalog
+                        .get("monos")
+                        .and_then(Value::as_array)
+                        .and_then(|monos| {
+                            monos.iter().find(|mono| mono["sessionId"] == conversation)
+                        })
+                })
+                .map(presence_rank)
+                .unwrap_or(1);
+            Some((window, rank))
+        })
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(window, _)| window.clone())
+}
+
+/// The phone's echo against every window's published calls. A disagreement wins over a match.
+fn match_approval(catalogs: &HashMap<String, Value>, params: &Value) -> Result<(), String> {
+    let conversation = params
+        .get("conversationId")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    if conversation.is_empty() || conversation.len() > 256 || conversation.contains('\0') {
+        return Err("This approval does not match a waiting tool call.".into());
+    }
+    let Some(request_id) = params.get("requestId").and_then(Value::as_u64) else {
+        return Err("Missing approval request.".into());
+    };
+    if request_id > MAX_SAFE_INTEGER {
+        return Err("Missing approval request.".into());
+    }
+    if catalogs
+        .values()
+        .any(|catalog| catalog.get("approvalsTruncated") == Some(&Value::Bool(true)))
+    {
+        return Err("Too many approvals to list from the phone.".into());
+    }
+    let mut agreed = false;
+    let mut disagreed = false;
+    for catalog in catalogs.values() {
+        let Some(rows) = catalog.get("approvals").and_then(Value::as_array) else {
+            continue;
+        };
+        let listed = conversation_listed(catalog, conversation);
+        for row in rows {
+            if row["conversationId"] != conversation
+                || row["requestId"].as_u64() != Some(request_id)
+            {
+                continue;
+            }
+            // A window that did not publish the session is not a hit. A different command is.
+            if !echo_matches(params, row) {
+                disagreed = true;
+            } else if listed {
+                agreed = true;
+            }
+        }
+    }
+    if disagreed {
+        return Err("The command does not match.".into());
+    }
+    if !agreed {
+        return Err("This approval does not match a waiting tool call.".into());
+    }
+    Ok(())
+}
+
+/// The window that reads the inbox and the crew: a busy one, then a live one, then the smaller label.
+fn workspace_owner(catalogs: &HashMap<String, Value>) -> Option<String> {
+    catalogs
+        .iter()
+        .map(|(window, catalog)| {
+            let rank = catalog
+                .get("sessions")
+                .and_then(Value::as_array)
+                .map(|sessions| {
+                    if sessions.iter().any(|session| session["busy"] == true) {
+                        3
+                    } else if sessions.iter().any(|session| session["live"] == true) {
+                        2
+                    } else {
+                        1
+                    }
+                })
+                .unwrap_or(1);
+            (window, rank)
+        })
+        .max_by(|a, b| a.1.cmp(&b.1).then_with(|| b.0.cmp(a.0)))
+        .map(|(window, _)| window.clone())
 }
 
 fn pick_owner(catalogs: &HashMap<String, Value>, method: &str, entity: &str) -> Option<String> {
@@ -740,6 +1018,10 @@ async fn handle(
             let catalog = merged_catalog(app, &mut inner);
             return Ok(session_page(&catalog["sessions"], &params));
         }
+        // WP-150: inbox, crew, and one tool call. Refused unless phone access is on.
+        if is_pairing_method(method) {
+            authorize_pairing(&inner.config, peer, crate::instance::policy().phone_access)?;
+        }
         if ![
             "conversation.read",
             "conversation.older",
@@ -764,6 +1046,10 @@ async fn handle(
             "session.rename",
             "session.delete",
             "session.archive",
+            "session.approve",
+            "session.deny",
+            "inbox.list",
+            "crew.status",
         ]
         .contains(&method)
         {
@@ -773,29 +1059,43 @@ async fn handle(
             return Err("Desktop is busy; try again".into());
         }
         let catalog = merged_catalog(app, &mut inner);
+        if method == "session.approve" || method == "session.deny" {
+            // The window checks the phone's original echo again. Do not rewrite it.
+            rejects_blanket(&params)?;
+            decision_conflict(method, &params)?;
+            match_approval(&inner.catalogs, &params)?;
+        }
         // The model sheet asks about a conversation when it has one, else a
         // project, and goes to the window that owns whichever it named.
-        let route = match method {
-            "models.list" if params["conversationId"].is_string() => "conversation.read",
-            "models.list"
-            | "accounts.usage"
-            | "project.worktrees"
-            | "project.files"
-            | "project.file"
-            | "project.search"
-            | "project.fileHighlight"
-            | "project.git"
-            | "project.gitAction" => "project.changes",
-            _ => method,
-        };
-        let entity = if route == "session.start" || route == "project.changes" {
-            params["projectId"].as_str()
+        let owner = if method == "inbox.list" || method == "crew.status" {
+            workspace_owner(&inner.catalogs).ok_or("Desktop window is unavailable")?
+        } else if method == "session.approve" || method == "session.deny" {
+            // The window that published the call, including a Mono's own chat.
+            approval_owner(&inner.catalogs, &params)
+                .ok_or("This workspace item is no longer available")?
         } else {
-            params["conversationId"].as_str()
-        }
-        .ok_or("Missing workspace item")?;
-        let owner = pick_owner(&inner.catalogs, route, entity)
-            .ok_or("This workspace item is no longer available")?;
+            let route = match method {
+                "models.list" if params["conversationId"].is_string() => "conversation.read",
+                "models.list"
+                | "accounts.usage"
+                | "project.worktrees"
+                | "project.files"
+                | "project.file"
+                | "project.search"
+                | "project.fileHighlight"
+                | "project.git"
+                | "project.gitAction" => "project.changes",
+                _ => method,
+            };
+            let entity = if route == "session.start" || route == "project.changes" {
+                params["projectId"].as_str()
+            } else {
+                params["conversationId"].as_str()
+            }
+            .ok_or("Missing workspace item")?;
+            pick_owner(&inner.catalogs, route, entity)
+                .ok_or("This workspace item is no longer available")?
+        };
         drop(catalog);
         let id = uuid::Uuid::new_v4().to_string();
         let command_id = request["id"]
@@ -811,6 +1111,7 @@ async fn handle(
             id.clone(),
             Pending {
                 window: owner.clone(),
+                peer: peer.to_string(),
                 reply: send,
             },
         );
@@ -1006,5 +1307,312 @@ mod tests {
         let params = json!({"certificate":phone.certificate,"proof":phone.proof(&key).unwrap()});
         assert!(enroll(&host, &mut inner, &key, &params).is_err());
         assert!(inner.config.devices.is_empty() && !host.path.exists());
+    }
+    #[test]
+    fn mobile_access_stays_off_and_the_router_default_is_off() {
+        let config = Config::default();
+        assert!(!config.enabled);
+        assert!(!config.open_router);
+        assert!(config.devices.is_empty());
+        assert!(config.remote_address.is_empty());
+    }
+    #[test]
+    fn pairing_methods_are_refused_unless_access_policy_and_the_device_all_allow() {
+        assert_eq!(
+            pairing_gate(false, true, true).unwrap_err(),
+            "Mobile access disabled"
+        );
+        assert_eq!(
+            pairing_gate(true, false, true).unwrap_err(),
+            "Phone access is off."
+        );
+        assert_eq!(
+            pairing_gate(true, true, false).unwrap_err(),
+            "Device revoked or not paired"
+        );
+        assert!(pairing_gate(true, true, true).is_ok());
+        assert!(is_pairing_method("session.approve"));
+        assert!(is_pairing_method("session.deny"));
+        assert!(is_pairing_method("inbox.list"));
+        assert!(is_pairing_method("crew.status"));
+        assert!(!is_pairing_method("session.approveAll"));
+        assert!(!is_pairing_method("session.approve "));
+        assert!(!is_pairing_method("decision.answer"));
+    }
+    fn published(command: &str, paths: Value) -> Value {
+        json!({
+            "conversationId": "chat-1",
+            "requestId": 7,
+            "tool": "Bash",
+            "command": command,
+            "paths": paths,
+        })
+    }
+    fn catalogs_with(rows: Vec<Value>, sessions: Value) -> HashMap<String, Value> {
+        HashMap::from([(
+            "main".into(),
+            json!({"sessions": sessions, "approvals": rows}),
+        )])
+    }
+    #[test]
+    fn an_approval_matches_only_the_published_call() {
+        let command = "echo café \r\nC:\\work\\my proj";
+        let paths = json!(["C:\\work\\my proj\\a.ts"]);
+        let echo = published(command, paths.clone());
+        let row = published(command, paths.clone());
+        let catalogs = catalogs_with(vec![row.clone(), row.clone()], json!([{"id": "chat-1"}]));
+        assert!(match_approval(&catalogs, &echo).is_ok());
+
+        let stored_null = catalogs_with(
+            vec![json!({"conversationId": "chat-1", "requestId": 7, "tool": "Bash", "paths": []})],
+            json!([{"id": "chat-1"}]),
+        );
+        let mut echo_null = echo.clone();
+        echo_null["command"] = Value::Null;
+        echo_null["paths"] = json!([]);
+        assert!(match_approval(&stored_null, &echo_null).is_ok());
+        // A missing command is the same as a null one, and an omitted path list matches nothing to write.
+        let mut omitted = echo_null.clone();
+        omitted.as_object_mut().unwrap().remove("command");
+        omitted.as_object_mut().unwrap().remove("paths");
+        assert!(match_approval(&stored_null, &omitted).is_ok());
+        omitted["paths"] = json!(["src/a.ts"]);
+        assert_eq!(
+            match_approval(&stored_null, &omitted).unwrap_err(),
+            "The command does not match."
+        );
+
+        let mut other = HashMap::new();
+        other.insert(
+            "main".into(),
+            json!({"sessions": [{"id": "chat-1"}], "approvals": [row]}),
+        );
+        other.insert(
+            "other".into(),
+            json!({
+                "sessions": [{"id": "chat-1"}],
+                "approvals": [published("rm -rf /", json!([]))],
+            }),
+        );
+        let err = match_approval(&other, &echo).unwrap_err();
+        assert_eq!(err, "The command does not match.");
+        assert!(!err.contains(command) && !err.contains("rm -rf"));
+
+        let mut truncated = catalogs_with(
+            vec![published(command, paths.clone())],
+            json!([{"id": "chat-1"}]),
+        );
+        truncated.get_mut("main").unwrap()["approvalsTruncated"] = json!(true);
+        assert_eq!(
+            match_approval(&truncated, &echo).unwrap_err(),
+            "Too many approvals to list from the phone."
+        );
+
+        let unlisted = catalogs_with(vec![published(command, paths)], json!([{"id": "other"}]));
+        assert_eq!(
+            match_approval(&unlisted, &echo).unwrap_err(),
+            "This approval does not match a waiting tool call."
+        );
+
+        for request_id in [
+            json!("7"),
+            json!(7.5),
+            json!(-1),
+            json!(MAX_SAFE_INTEGER + 1),
+        ] {
+            let mut bad = echo.clone();
+            bad["requestId"] = request_id;
+            assert_eq!(
+                match_approval(&catalogs, &bad).unwrap_err(),
+                "Missing approval request."
+            );
+        }
+        let mut nul = echo.clone();
+        nul["conversationId"] = json!("chat\u{0}1");
+        assert_eq!(
+            match_approval(&catalogs, &nul).unwrap_err(),
+            "This approval does not match a waiting tool call."
+        );
+        let mut shortened = echo.clone();
+        shortened["command"] = json!("echo café");
+        assert_eq!(
+            match_approval(&catalogs, &shortened).unwrap_err(),
+            "The command does not match."
+        );
+
+        // A Mono's own chat is not on the session list. Its call still matches, and a stranger's does not.
+        let mono = HashMap::from([(
+            "main".into(),
+            json!({
+                "sessions": [],
+                "monos": [{"id": "mono-1", "sessionId": "chat-1", "busy": true}],
+                "approvals": [published(command, echo["paths"].clone())],
+            }),
+        )]);
+        assert!(match_approval(&mono, &echo).is_ok());
+        assert_eq!(approval_owner(&mono, &echo).as_deref(), Some("main"));
+        let stranger = HashMap::from([(
+            "main".into(),
+            json!({
+                "sessions": [],
+                "monos": [{"id": "mono-1", "sessionId": "other"}],
+                "approvals": [published(command, echo["paths"].clone())],
+            }),
+        )]);
+        assert_eq!(
+            match_approval(&stranger, &echo).unwrap_err(),
+            "This approval does not match a waiting tool call."
+        );
+        assert!(approval_owner(&stranger, &echo).is_none());
+    }
+    #[test]
+    fn a_blanket_decision_is_refused_before_it_can_allow() {
+        for params in [
+            json!({"all": true}),
+            json!({"scope": "session"}),
+            json!({"approveAll": true}),
+            json!({"allowAll": true}),
+            json!({"decision": "allow_all"}),
+            json!({"decision": "allow-all"}),
+            json!({"decision": "all"}),
+        ] {
+            assert_eq!(
+                rejects_blanket(&params).unwrap_err(),
+                "One tool call at a time."
+            );
+        }
+        assert!(rejects_blanket(&json!({"all": null, "decision": null})).is_ok());
+        assert!(decision_conflict("session.approve", &json!({})).is_ok());
+        assert!(decision_conflict("session.deny", &json!({"decision": null})).is_ok());
+        assert!(decision_conflict("session.approve", &json!({"decision": "allow"})).is_ok());
+        assert_eq!(
+            decision_conflict("session.approve", &json!({"decision": "deny"})).unwrap_err(),
+            "This approval does not match a waiting tool call."
+        );
+    }
+    #[test]
+    fn the_workspace_poll_does_not_carry_approvals() {
+        let catalogs = HashMap::from([(
+            "main".into(),
+            json!({
+                "projects": [{"id": "p", "name": "P"}],
+                "monos": [],
+                "sessions": [{"id": "s", "updatedAt": 2}],
+                "approvals": [{"command": "echo secret-token"}],
+                "approvalsTruncated": false
+            }),
+        )]);
+        let merged = merge_catalogs(&catalogs);
+        assert!(merged.get("approvals").is_none());
+        assert!(merged.get("approvalsTruncated").is_none());
+        assert_eq!(merged["sessions"][0]["id"], "s");
+        assert!(!merged.to_string().contains("secret-token"));
+    }
+    #[test]
+    fn inbox_and_crew_prefer_a_busy_window_then_the_smaller_label() {
+        let idle = HashMap::from([
+            ("b".into(), json!({"sessions": [{"id": "s", "live": true}]})),
+            ("a".into(), json!({"sessions": [{"id": "s", "live": true}]})),
+        ]);
+        assert_eq!(workspace_owner(&idle).as_deref(), Some("a"));
+        let busy = HashMap::from([
+            ("a".into(), json!({"sessions": [{"id": "s", "live": true}]})),
+            ("z".into(), json!({"sessions": [{"id": "s", "busy": true}]})),
+        ]);
+        assert_eq!(workspace_owner(&busy).as_deref(), Some("z"));
+        assert!(workspace_owner(&HashMap::new()).is_none());
+    }
+    #[test]
+    fn forgetting_a_device_drops_its_key() {
+        let (host, join, phone) = fixture();
+        let parent = host.path.parent().unwrap().to_path_buf();
+        let key = join.fingerprint().unwrap();
+        let fingerprint = phone.fingerprint().unwrap();
+        let params = json!({"certificate": phone.certificate, "proof": phone.proof(&key).unwrap(), "name": "iPhone"});
+        let mut inner = host.inner.lock().unwrap();
+        let result = enroll(&host, &mut inner, &key, &params).unwrap();
+        let device_id = result["deviceId"].as_str().unwrap().to_string();
+        assert!(host.gate.admits(&fingerprint));
+        forget_device(&host, &mut inner, &device_id).unwrap();
+        assert!(!host.gate.admits(&fingerprint));
+        assert!(inner.config.devices.is_empty());
+        assert!(pairing_gate(true, true, false).is_err());
+        drop(inner);
+        std::fs::remove_dir_all(&parent).unwrap();
+    }
+    #[test]
+    fn a_new_setup_does_not_open_a_router_port() {
+        assert!(!Config::default().open_router);
+        assert!(!Config::default().enabled);
+        let saved: Config = serde_json::from_str(r#"{"enabled":true}"#).unwrap();
+        assert!(!saved.open_router);
+    }
+
+    #[test]
+    fn pairing_is_authorized_only_for_an_enabled_paired_device_with_phone_access() {
+        let mut config = Config {
+            enabled: true,
+            ..Config::default()
+        };
+        config.devices.push(Device {
+            id: "d1".into(),
+            name: "iPhone".into(),
+            fingerprint: "peer-a".into(),
+        });
+        assert!(authorize_pairing(&config, "peer-a", true).is_ok());
+        assert_eq!(
+            authorize_pairing(&config, "peer-a", false).unwrap_err(),
+            "Phone access is off."
+        );
+        assert_eq!(
+            authorize_pairing(&config, "peer-b", true).unwrap_err(),
+            "Device revoked or not paired"
+        );
+        let mut off = config.clone();
+        off.enabled = false;
+        assert_eq!(
+            authorize_pairing(&off, "peer-a", true).unwrap_err(),
+            "Mobile access disabled"
+        );
+        // A revoked device is refused by the same check that handle() runs, not by a stub.
+        config.devices.clear();
+        assert_eq!(
+            authorize_pairing(&config, "peer-a", true).unwrap_err(),
+            "Device revoked or not paired"
+        );
+    }
+
+    #[test]
+    fn an_approval_in_flight_is_not_run_once_its_window_device_or_access_is_gone() {
+        let (host, _join, _phone) = fixture();
+        let mut inner = host.inner.lock().unwrap();
+        inner.config.devices.push(Device {
+            id: "d1".into(),
+            name: "iPhone".into(),
+            fingerprint: "peer-a".into(),
+        });
+        let (reply, _receiver) = oneshot::channel();
+        inner.pending.insert(
+            "req-1".into(),
+            Pending {
+                window: "main".into(),
+                peer: "peer-a".into(),
+                reply,
+            },
+        );
+        assert!(approval_still_open(&inner, "req-1", "main", true));
+        // Another window, phone access off, a timed-out or answered request, a revoked device, or a disabled service.
+        assert!(!approval_still_open(&inner, "req-1", "other", true));
+        assert!(!approval_still_open(&inner, "req-1", "main", false));
+        assert!(!approval_still_open(&inner, "missing", "main", true));
+        inner.config.devices.clear();
+        assert!(!approval_still_open(&inner, "req-1", "main", true));
+        inner.config.devices.push(Device {
+            id: "d1".into(),
+            name: "iPhone".into(),
+            fingerprint: "peer-a".into(),
+        });
+        inner.config.enabled = false;
+        assert!(!approval_still_open(&inner, "req-1", "main", true));
     }
 }

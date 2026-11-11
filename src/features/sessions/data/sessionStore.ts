@@ -15,6 +15,7 @@ import { recoverCursorSubagents } from "../../../integrations/harness/providers/
 import { dropHarnessSession } from "../../../integrations/harness/core/registry";
 import { isProviderErrorClass } from "../../../integrations/harness/core/providerFailure";
 import { persistableAttachment } from "../model/attachments";
+import { isPersistableId } from "../model/persistableId";
 import { ARTIFACT_KINDS } from "../../artifacts/artifacts";
 import type { ContextUsage } from "../model/contextUsage";
 import {
@@ -166,11 +167,6 @@ export function shouldPersistSession(session: Session): boolean {
       (isMonoSession(session.id) &&
         (session.blocks.length > 0 || !!session.monoTranscript)))
   );
-}
-
-/** Matches Rust `validate_id` — a path here fails the whole upsert. */
-export function isPersistableId(value: string): boolean {
-  return /^[A-Za-z0-9_-]+$/.test(value);
 }
 
 function persistableMeta(
@@ -588,6 +584,12 @@ export async function listSessionsByProject(
   const rows = await invoke<SessionSummary[]>("session_list_by_project", {
     cwd: normalizeProjectPath(cwd),
   });
+  return rows.map(normalizeSummary);
+}
+
+/** Chats that have no folder (an import cleared it, docs/PORTABLE.md): the sidebar's "Needs a folder" group. */
+export async function listFolderlessSessions(): Promise<SessionSummary[]> {
+  const rows = await invoke<SessionSummary[]>("session_list_folderless");
   return rows.map(normalizeSummary);
 }
 
@@ -1140,6 +1142,8 @@ function sanitizeBlock(
       // A card that doesn't parse is dropped. The words stay.
     }
   }
+  // WP-123: the last message copied into a fork; its next send carries the recap until a turn is taken.
+  if (block.forkPoint === true) next.forkPoint = true;
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;
   const turnModel = sanitizeTurnModel(block.turnModel);
@@ -1442,13 +1446,14 @@ function sanitizeGeneratedImage(
     return undefined;
   }
   const record = value as Record<string, unknown>;
-  const path = typeof record.path === "string" ? record.path.trim() : "";
+  // An empty path is kept: it says the picture's file is not on this Mac (a chat imported from another one).
+  const path = typeof record.path === "string" ? record.path.trim() : null;
   const name = typeof record.name === "string" ? record.name.trim() : "";
   const mimeType =
     typeof record.mimeType === "string" ? record.mimeType.trim() : "";
   const size = record.size;
   if (
-    !path ||
+    path === null ||
     !name ||
     !mimeType.startsWith("image/") ||
     typeof size !== "number" ||

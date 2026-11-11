@@ -8,7 +8,7 @@ use rusqlite::Connection;
 use super::checkout::{self, Bind};
 use super::gitrun;
 use super::settings::{self, Strategy};
-use super::tick::{self, Tick};
+use super::tick::{self, Next, Tick};
 use super::update::{self, fetch_args, merge_args, push_args, rebase_args, Outcome};
 use super::UpdateReport;
 
@@ -637,7 +637,8 @@ fn the_tick_only_reports_until_the_setting_is_on() {
     let conn = memory();
     lab.bind(&conn, "pkg");
 
-    match tick::consider_conflict(&conn, "pkg-1").unwrap() {
+    let project = lab.main.to_str().unwrap().to_string();
+    match tick::consider_conflict(&conn, &project, "pkg-1", "pkg").unwrap() {
         Tick::Reported { message } => {
             assert!(message.contains("only reported"), "{message}");
             assert!(message.contains("Nothing was merged"), "{message}");
@@ -657,7 +658,7 @@ fn the_tick_only_reports_until_the_setting_is_on() {
         1,
     )
     .unwrap();
-    match tick::consider_conflict(&conn, "pkg-1").unwrap() {
+    match tick::consider_conflict(&conn, &project, "pkg-1", "pkg").unwrap() {
         Tick::Ran(report) => match report.outcome {
             Outcome::Updated { method, head } => {
                 assert_eq!(method, Strategy::Merge);
@@ -668,6 +669,50 @@ fn the_tick_only_reports_until_the_setting_is_on() {
         },
         other => panic!("expected the update to run, got {other:?}"),
     }
+    assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+    assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
+}
+
+#[test]
+fn the_tick_finds_the_package_worktree_by_its_branch_and_updates_it() {
+    let lab = Lab::open("pkg");
+    lab.commit(&lab.package, "pkg.txt", "pkg\n");
+    lab.push(&lab.package, "pkg");
+    lab.commit(&lab.main, "trunk.txt", "trunk\n");
+    lab.push(&lab.main, "main");
+    let before = lab.sha(&lab.package, "HEAD");
+    let main_sha = lab.sha(&lab.main, "refs/heads/main");
+    let conn = memory();
+    let project = lab.main.to_str().unwrap().to_string();
+    settings::set(&conn, &project, true, Strategy::Merge, 0, 1).unwrap();
+
+    // Nothing is recorded yet, so the tick looks the worktree up by its branch.
+    let Next::Find { branch } = tick::next(&conn, &project, "pkg-1", "pkg").unwrap() else {
+        panic!("expected a lookup before any worktree is recorded");
+    };
+    assert_eq!(
+        update::branch_worktree(&lab.main, "no-such-branch").unwrap(),
+        None
+    );
+    assert!(update::branch_worktree(&lab.main, "-x").is_err());
+    let found = update::branch_worktree(&lab.main, &branch)
+        .unwrap()
+        .expect("the package worktree");
+    assert_eq!(
+        fs::canonicalize(&found).unwrap(),
+        fs::canonicalize(&lab.package).unwrap()
+    );
+    tick::record(&conn, &project, "pkg-1", &found, &branch, 1).unwrap();
+
+    // The recorded worktree is used from now on, with no second lookup.
+    let Next::Update(plan) = tick::next(&conn, &project, "pkg-1", "pkg").unwrap() else {
+        panic!("expected the recorded worktree to be updated");
+    };
+    match update::execute(&plan).outcome {
+        Outcome::Updated { head, .. } => assert_eq!(head, lab.sha(&lab.package, "HEAD")),
+        other => panic!("expected an update, got {other:?}"),
+    }
+    assert_ne!(lab.sha(&lab.package, "HEAD"), before);
     assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
     assert_eq!(lab.sha(&lab.origin, "refs/heads/main"), main_sha);
 }

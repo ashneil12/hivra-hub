@@ -2,6 +2,7 @@
 //
 // The recall call already builds a full trace for every candidate; this keeps the latest one per
 // Mono so the person can open "Why these were recalled" and see the count, not the internals.
+// One decision can read several Monos at once; each of them keeps a row that counts only its own memories.
 // In this window's memory only, bounded, and never written to disk.
 
 import {
@@ -46,26 +47,35 @@ export function recallSummary(trace: LastRecall): string {
   return reasons ? `${head}: ${reasons}.` : `${head}.`;
 }
 
-/** Stores one turn's trace. Newest first is what `latestRecall` reads, so insertion order is redone. */
+/**
+ * Stores one turn's trace, one row for each Mono the decision read. The Mono the turn belongs to goes in last, so
+ * `latestRecall` reads it; insertion order is redone for each.
+ */
 export function recordRecall(decision: RecallDecision, at: number): void {
-  const tally = tallyRejections(decision);
-  const reasons: RecallReason[] = [...tally.entries()]
-    .map(([reason, count]) => ({ label: REJECT_LABEL[reason as RecallRejectReason], count }))
-    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
-    .slice(0, RECALL_TRACE_REASONS_MAX);
-  const skipped = [...tally.values()].reduce((sum, count) => sum + count, 0);
-  const trace: LastRecall = {
-    mateId: decision.mateId,
-    at,
-    query: decision.query,
-    ...(decision.stop ? { stop: decision.stop } : {}),
-    broad: decision.broad,
-    picked: decision.picked.length,
-    skipped,
-    reasons,
-  };
-  traces.delete(decision.mateId);
-  traces.set(decision.mateId, trace);
+  const [own, ...others] = decision.mateIds;
+  for (const mateId of [...others, own]) {
+    const candidates = decision.candidates.filter((candidate) => candidate.mateId === mateId);
+    const tally = tallyRejections({ candidates });
+    const reasons: RecallReason[] = [...tally.entries()]
+      .map(([reason, count]) => ({ label: REJECT_LABEL[reason as RecallRejectReason], count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+      .slice(0, RECALL_TRACE_REASONS_MAX);
+    const skipped = [...tally.values()].reduce((sum, count) => sum + count, 0);
+    // A Mono with no memories at all in a decision that read others says so, as it did when it had its own.
+    const stop = decision.stop ?? (candidates.length ? undefined : "no_memories");
+    const trace: LastRecall = {
+      mateId,
+      at,
+      query: decision.query,
+      ...(stop ? { stop } : {}),
+      broad: decision.broad,
+      picked: candidates.filter((candidate) => candidate.picked).length,
+      skipped,
+      reasons,
+    };
+    traces.delete(mateId);
+    traces.set(mateId, trace);
+  }
   while (traces.size > RECALL_TRACES_MAX) {
     const oldest = traces.keys().next();
     if (oldest.done) break;

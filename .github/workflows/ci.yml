@@ -8,14 +8,21 @@ on:
     # tier runs 20 jobs (5 on macOS) at once, so drafts kept the PRs that are ready waiting in the
     # queue. Marking a PR ready for review runs everything.
     types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    # Hivra: nightly, on main, 03:47 UTC. The RPM jobs only; every other job skips a scheduled run. A pull request
+    # that touches no packaging file builds one RPM image, so this run is what builds the second image and the
+    # clean install for everything else (a new Rust release, a moved Fedora or EPEL package). Native Preview has
+    # its own nightly run in native.yml.
+    - cron: '47 3 * * *'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  # GitHub's default job limit is 360 minutes. That is too long for a hang, so the long jobs set their own limit.
   release-channel:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Release channel isolation
     runs-on: ubuntu-latest
     permissions:
@@ -33,7 +40,7 @@ jobs:
       - run: node --test scripts/hub-dev-loop.test.cjs
 
   mobile:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Mobile checks
     runs-on: ubuntu-latest
     permissions:
@@ -59,17 +66,21 @@ jobs:
       - run: npx vitest run --config mobile/vitest.config.ts
 
   browser:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     # Hivra: the suite runs one test at a time (workers: 1) and took about 22 minutes as one job, the longest wait
     # on every PR. Four shards (whole spec files each) run side by side on separate runners, so nothing is shared.
+    # The install step is capped at 15 minutes and its retry at 8, so the job limit is 35 minutes: one full attempt
+    # plus the tests. A second attempt that also runs to the cap can meet this limit, and that still fails the hang.
+    # The OS packages' .deb files are cached as well: on 10 Nov 2026 the Ubuntu mirror was slow enough that most
+    # browser jobs hit the old 8 minute cap twice before a test ran.
     name: browser (${{ matrix.shard }}/4)
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     # GitHub's default job timeout is 360 minutes, which is too long for a hang.
-    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -81,8 +92,65 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium webkit
+      - name: Playwright browser cache directory and image
+        id: playwright-path
+        # The browsers are built for one Ubuntu release, and ubuntu-latest moves between releases while runner.os
+        # still says Linux. The runner's ImageOS names the release. The env context does not hold it (that context
+        # has only what a workflow sets), so the script reads it from the process and prints it as an output.
+        run: |
+          node scripts/ci-playwright-install.mjs --print-cache-path >> "$GITHUB_OUTPUT"
+          node scripts/ci-playwright-install.mjs --print-image-os >> "$GITHUB_OUTPUT"
+          node scripts/ci-playwright-install.mjs --print-debs-path >> "$GITHUB_OUTPUT"
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        # A cache outage must not skip the browsers. An empty hit flag fails open to a full install.
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.path }}
+          key: ms-playwright-v1-${{ runner.os }}-${{ steps.playwright-path.outputs.image-os }}-${{ hashFiles('package-lock.json') }}
+      - name: Restore the browsers' OS packages
+        id: apt-debs-cache
+        # The .deb files apt-get downloaded for the browsers last time. A miss or a cache outage only means apt
+        # downloads them again.
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.debs }}
+          key: apt-debs-v1-${{ steps.playwright-path.outputs.image-os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        id: playwright-install
+        timeout-minutes: 15
+        continue-on-error: true
+        run: node scripts/ci-playwright-install.mjs --cache-hit "${{ steps.playwright-cache.outputs.cache-hit }}" --debs "${{ steps.playwright-path.outputs.debs }}"
+      - name: Retry Playwright browser install
+        id: playwright-install-retry
+        if: steps.playwright-install.outcome == 'failure'
         timeout-minutes: 8
+        run: node scripts/ci-playwright-install.mjs --cache-hit "${{ steps.playwright-cache.outputs.cache-hit }}" --debs "${{ steps.playwright-path.outputs.debs }}"
+      - name: Save Playwright browsers
+        # Four shards miss together and would all try to write one key. A lost race must not fail the tests.
+        # The save also waits until an install attempt actually succeeded, so a partial download is not cached.
+        continue-on-error: true
+        if: >-
+          steps.playwright-cache.outputs.cache-hit != 'true'
+          && steps.playwright-cache.outputs.cache-primary-key != ''
+          && (steps.playwright-install.outcome == 'success' || steps.playwright-install-retry.outcome == 'success')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.path }}
+          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
+      - name: Save the browsers' OS packages
+        # Only after an install succeeded, so the cache holds a whole set.
+        continue-on-error: true
+        if: >-
+          steps.apt-debs-cache.outputs.cache-hit != 'true'
+          && steps.apt-debs-cache.outputs.cache-primary-key != ''
+          && (steps.playwright-install.outcome == 'success' || steps.playwright-install-retry.outcome == 'success')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.debs }}
+          key: ${{ steps.apt-debs-cache.outputs.cache-primary-key }}
       # WP-03: Hivra's one layout, in the app built with the Hub flag (the default config runs without it).
       - name: Hivra layout (Hub flag)
         if: matrix.shard == 1
@@ -98,13 +166,13 @@ jobs:
           if-no-files-found: ignore
 
   host:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -122,11 +190,13 @@ jobs:
       - run: npm run host:package
 
   check:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     # Hivra: the web tests and the Rust checks ran one after the other in one job (about 24 minutes on Windows).
     # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
-    # macOS stays one job: it was already quick, and macOS runners are the scarce ones.
+    # macOS stays one runner. The web half and the Rust half run at the same time in that job, because a second
+    # macOS runner would sit in the queue. Linux and Windows stay split.
     name: check (${{ matrix.os }}, ${{ matrix.part }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -138,7 +208,6 @@ jobs:
           - { os: windows-latest, part: web, shard: 2/2 }
           - { os: windows-latest, part: rust }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -162,29 +231,51 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # WP-173: pinned installer, pinned nextest. No new permissions and no secrets.
+      - name: Install cargo-nextest
+        if: matrix.part != 'web'
+        uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
+        with:
+          tool: cargo-nextest@0.9.151
+
       - run: npm ci
       - run: npm test ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
-        if: matrix.part != 'rust'
+        if: matrix.part == 'web'
       - run: npx tsc --noEmit
-        if: matrix.part != 'rust'
+        if: matrix.part == 'web'
       - run: cargo fmt --check
-        if: matrix.part != 'web'
+        if: matrix.part == 'rust'
       - run: cargo clippy --workspace --all-targets -- -D warnings
-        if: matrix.part != 'web'
-      - run: cargo check
-        if: matrix.part != 'web'
-      - run: cargo test
-        if: matrix.part != 'web'
+        if: matrix.part == 'rust'
+      - run: cargo nextest run --workspace --profile ci
+        if: matrix.part == 'rust'
+      - name: Web and Rust checks together
+        if: matrix.part == 'all'
+        run: node scripts/ci-check-parallel.mjs
+
+      # WP-173: list flaky and twice-failed tests. The script exits 0, so it does not change the job result.
+      - name: Rust flaky tests in the job summary
+        if: always() && matrix.part != 'web'
+        run: node scripts/ci-rust-flaky-summary.mjs
+
+      - name: Upload Rust test results
+        if: always() && matrix.part != 'web'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-junit-${{ matrix.os }}-${{ matrix.part }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   ship:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Ship drill
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
         os: [macos-latest, ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -201,7 +292,7 @@ jobs:
         run: node --disable-warning=ExperimentalWarning --test scripts/hub-ship.test.mjs scripts/ship-platform.test.mjs
 
   appimage:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: AppImage host libraries
     runs-on: ubuntu-22.04
     permissions:
@@ -266,19 +357,52 @@ jobs:
         if: steps.packaging.outputs.run == 'true'
         run: bash scripts/assert-appimage-host-libs.sh
 
-  rpm:
+  # Every run builds one RPM image, the image the release workflow publishes from, so a production build runs on every
+  # pull request. The full set (the second image and the clean install) runs on every push to main, every nightly run,
+  # and every pull request whose base-sha diff touches an RPM input, the same idea as the AppImage job. The script
+  # prints full=true or full=false. A missing event, a missing base or a git failure prints full=true.
+  rpm-changes:
     if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: RPM build (${{ matrix.image }})
+    name: RPM packaging changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      full: ${{ steps.packaging.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Decide whether the full RPM set runs
+        id: packaging
+        env:
+          PACKAGING_EVENT: ${{ github.event_name }}
+          PACKAGING_BASE: ${{ github.event.pull_request.base.sha }}
+          PACKAGING_HEAD: ${{ github.sha }}
+        run: node scripts/ci-packaging-changed.mjs --kind rpm >> "$GITHUB_OUTPUT"
+
+  rpm:
+    needs: rpm-changes
+    # The production build: tauri's release build and the rpm bundle. It no longer waits for the gate's answer, only
+    # for the gate to have run. The gate's answer picks the images.
+    if: >-
+      needs.rpm-changes.result == 'success'
+      && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    name: RPM build (${{ matrix.image }})
     timeout-minutes: 25
+    runs-on: ubuntu-latest
     container: ${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
-        # almalinux:10 covers the Enterprise Linux path in
-        # scripts/install-linux-deps-fedora.sh (EPEL 10 + CRB), which is the
-        # only way to catch packages that are missing from EPEL 10.
-        image: [fedora:43, almalinux:10]
+        # almalinux:10 is the image release.yml builds the published rpm on, so every run builds it. It also covers
+        # the Enterprise Linux path in scripts/install-linux-deps-fedora.sh (EPEL 10 + CRB), which is the only way to
+        # catch packages that are missing from EPEL 10. fedora:43 joins it when the gate says full.
+        image: ${{ fromJSON(needs.rpm-changes.outputs.full == 'true' && '["almalinux:10","fedora:43"]' || '["almalinux:10"]') }}
     steps:
       # Neither fedora:43 nor almalinux:10 ships git, which actions/checkout
       # otherwise has to work around with a REST API tarball download.
@@ -330,7 +454,8 @@ jobs:
       - name: Upload rpm for the clean install check
         # Ship and test the EL 10 build. Fedora 43's glibc is newer, so a
         # fedora:43 rpm can dnf-install on AlmaLinux 10 and still fail to load.
-        if: matrix.image == 'almalinux:10'
+        # The clean install runs only for the full set, so only that run uploads.
+        if: matrix.image == 'almalinux:10' && needs.rpm-changes.outputs.full == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: rpm-package
@@ -339,7 +464,10 @@ jobs:
 
   rpm-clean-install:
     name: Clean rpm install
-    needs: rpm
+    needs: [rpm-changes, rpm]
+    # Part of the full set. A run that built only the production image has no rpm to hand over, so this skips.
+    # With no status function in the condition, a failed or skipped rpm job skips this one too.
+    if: needs.rpm-changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     # Deliberately no setup script: this is the only job that can catch an rpm
     # whose Requires are missing, since everywhere else the -devel packages are
@@ -390,12 +518,13 @@ jobs:
   # WP-105: one required check that adds up the rest, so branch protection names one job instead of
   # every job. A new job stays out of this needs list until it has been green for a week. `if: always()`
   # means a failed or cancelled dependency still runs this job, so the failure is reported here too.
-  # Skipped counts as fine: a draft PR runs no jobs, and the AppImage check skips when packaging files
-  # did not change. scripts/ci-ok.mjs prints one line naming every job and its result.
+  # Skipped counts as fine: a draft PR runs no jobs, the AppImage check and the RPM full set skip when packaging
+  # files did not change, and a nightly run starts only the RPM jobs. scripts/ci-ok.mjs prints one line naming
+  # every job and its result.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [release-channel, mobile, browser, host, check, ship, appimage, rpm, rpm-clean-install]
+    needs: [release-channel, mobile, browser, host, check, ship, appimage, rpm-changes, rpm, rpm-clean-install]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

@@ -23,6 +23,8 @@ import {
   type CrewWorkerInput,
 } from "../model/rows";
 import { GateCards } from "../../delivery-gate/ui/GateCards";
+import { FreshEyesPanel } from "../../fresh-eyes/ui/FreshEyesPanel";
+import { LeadTickPanel } from "../../leadTick/ui/LeadTickPanel";
 import { phaseDocLinks } from "../../phases/model/pr";
 import { taskForCrew, workFor } from "../../phases/model/store";
 import { crewTree } from "../model/crewTree";
@@ -150,7 +152,8 @@ export function CrewPanel({
     return [...ids].sort();
   }, [workers]);
   const liveSessions = useCrewSessions(project, extraIds);
-  const tree = crewTree({ project, workers, sessions: liveSessions, now });
+  // Built again only when something it draws changes, not on every render of the panel.
+  const tree = useMemo(() => crewTree({ project, workers, sessions: liveSessions, now }), [project, workers, liveSessions, now]);
 
   const rows = crewRows({
     project,
@@ -248,6 +251,10 @@ export function CrewPanel({
     <>
       {/* WP-81: the check on the crew's task, and one question when it needs a person. */}
       <GateCards project={project} />
+      {/* WP-144: one line before the crew starts, off until this project turns it on. */}
+      <FreshEyesPanel project={project} />
+      {/* WP-160: the Lead's timed pass over the programme, off until this project turns it on. */}
+      <LeadTickPanel project={project} />
       <CrewTab
         rows={rows}
         briefTitle={focus.briefId ? "This brief" : null}

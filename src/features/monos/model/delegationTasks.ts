@@ -4,6 +4,7 @@
 // stops the whole tree beneath the task (stopTree.ts), a wait marks the chat as waiting (so its workers' questions come
 // back through the wait, not a wake), and an answer is noted for the question router before it reaches the worker.
 import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
+import { backendFrom, cancelHeld, heldWaiting, reviewBeforeCrew } from "../../fresh-eyes/model/gate";
 import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
 import type { Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
@@ -42,6 +43,8 @@ export type DelegationTasksDeps = {
   unqueue?(childSession: string, requestId: string): void;
   /** A Mono briefs a project's Lead (App.tsx, through leadershipDelegation.ts). */
   briefLead?: AgentAppTasksHost["briefLead"];
+  /** Whether the Lead a brief names exists, asked before a fresh-eyes review. */
+  checkLead?: AgentAppTasksHost["checkLead"];
   /** Where a Mono's work goes: its project's coding team, or its own team (hub/model/monoTeams.ts). */
   monoWork?: AgentAppTasksHost["monoWork"];
   /** Workers per project and the ones waiting for a free worker (H8, workerPool.ts). */
@@ -160,9 +163,18 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
       };
     },
     ...(deps.briefLead ? { briefLead: deps.briefLead } : {}),
+    ...(deps.checkLead ? { checkLead: deps.checkLead } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),
+    // WP-144: off unless this project turned fresh-eyes review on. Reviewers run after this call returns (control.rs cuts
+    // the app call at 35 s). The Inbox and the chat that asked come from the first mate's own backend.
+    freshEyes: (input) =>
+      reviewBeforeCrew(input, { ...(deps.firstMate ? { backend: backendFrom(deps.firstMate.backend) } : {}) }),
+    // WP-144: a held brief is a waiting task: task_status lists it and task_cancel takes it back.
+    freshEyesWaiting: (owner) => heldWaiting(owner),
+    freshEyesCancel: (owner, childSessionId) =>
+      cancelHeld(owner, childSessionId, { ...(deps.firstMate ? { backend: backendFrom(deps.firstMate.backend) } : {}) }),
     // WP-40: the brief's gates stay with the task, and its first mate accepts an unsure one.
     saveGates: (id, request, folder) => saveGatePlan(id, request, folder),
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),

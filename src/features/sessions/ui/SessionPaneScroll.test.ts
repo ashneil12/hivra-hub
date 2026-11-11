@@ -383,15 +383,50 @@ it.each([
   },
 );
 
-it("passes the current session context reading to the Mono composer", () => {
+it("passes the current session context reading to the Mono composer, and draws no second row", () => {
   const pane = props();
   pane.session.harness = "claude";
   pane.session.context = { used: 275765, window: 1048576 };
   act(() => root.render(createElement(SessionPane, pane)));
   const last = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
   expect(last[0]).toMatchObject({ showContext: true, context: { used: 275765, window: 1048576 }, contextEmpty: false });
+  // The composer holds the one meter, and it sits outside the scrolling transcript.
+  const dock = container.querySelector("[data-session-composer]");
+  expect(dock).toBeTruthy();
+  expect(container.querySelector(".agent-transcript")?.contains(dock ?? null)).toBe(false);
+  expect(container.querySelector("[data-open-thread-context]")).toBeNull();
   pane.session = { ...pane.session, context: { used: 120000, window: 1048576 } };
   act(() => root.render(createElement(SessionPane, pane)));
   const updated = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
-  expect(updated[0]).toMatchObject({ context: { used: 120000, window: 1048576 } });
+  expect(updated[0]).toMatchObject({
+    showContext: true,
+    context: { used: 120000, window: 1048576 },
+  });
+});
+
+// The composer is mocked to nothing here, so any context ring or "Context" label in
+// the pane is a second one drawn by the pane itself (WP-127 had a "Context" row above
+// the composer that repeated the composer's ring; it was dropped on purpose).
+it.each([
+  ["a reading", { used: 275765, window: 1048576 }, "claude"],
+  ["no reading from the provider", undefined, "claude"],
+  ["an empty chat", { used: 0, window: 1048576 }, "claude"],
+] as const)("the pane draws no Context row of its own with %s", (_name, context, harness) => {
+  const pane = props();
+  pane.session.harness = harness;
+  pane.session.context = context;
+  if (_name === "an empty chat") pane.session.blocks = [];
+  act(() => root.render(createElement(SessionPane, pane)));
+
+  expect(container.querySelector("[data-open-thread-context]")).toBeNull();
+  expect(container.querySelector('[role="img"][aria-label*="context" i]')).toBeNull();
+  expect(container.querySelector('[aria-label*="context actions" i]')).toBeNull();
+  expect(container.querySelector('[title="Context usage"]')).toBeNull();
+  const labels = [...container.querySelectorAll("*")].filter(
+    (element) => element.children.length === 0 && element.textContent?.trim() === "Context",
+  );
+  expect(labels).toEqual([]);
+  // The one meter is the composer's: the pane hands it the reading and does not hide it.
+  const last = probes.composer.mock.calls[probes.composer.mock.calls.length - 1] as unknown as [Record<string, unknown>];
+  expect(last[0]).toMatchObject({ showContext: true });
 });

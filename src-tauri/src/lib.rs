@@ -3,6 +3,8 @@ use tauri::Manager;
 mod account_identity;
 // WP-78: the activity log.
 mod activity;
+// WP-157: the work log. Not a numbered migration.
+mod work_log;
 // WP-86: commit attribution. Not a numbered migration.
 mod artifacts;
 mod attribution;
@@ -17,6 +19,8 @@ mod background_work;
 // WP-75: checked backups, one-item restore, and a full restore through the ship path.
 pub mod backups;
 mod chat_background;
+mod chat_folder;
+mod chat_media;
 mod checkpoint;
 mod codex_mono_store;
 pub mod connectors;
@@ -31,11 +35,11 @@ mod github_issues;
 // WP-91: the goal graph — a finish line proved first, write scopes, handoffs, repairs and the run verdict.
 pub mod goal_graph;
 mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labelled GitHub issues become tasks.
+           // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
+mod programme; // WP-162: update a package branch from main, and the programme lead lease.
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
-// WP-162: update a package branch from main, and the programme lead lease.
-pub mod programme;
 // Hivra WP-81: a pinned tool, downloaded and checked, then the local gate before GitHub.
 mod delivery_gate;
 mod pinned_tool;
@@ -43,7 +47,10 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
+// WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
+mod dictation;
 pub mod disclaim;
+mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
 mod external_editor;
 mod firstmate;
 mod fs;
@@ -73,6 +80,10 @@ mod jira;
 mod jsonc;
 mod land;
 mod launch_guard;
+// WP-104: daily log and crash records.
+mod diagnostics;
+// WP-104: machine facts for the health list.
+mod health;
 mod linear;
 mod link_preview;
 mod live_turns;
@@ -109,6 +120,8 @@ pub mod plugins;
 pub mod browser;
 // WP-33: plugin panels, the catalog and the My panels migration.
 mod panels;
+// Reads of files this app didn't make: never through a link, a pipe, or past the size expected.
+mod plain_file;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
@@ -124,6 +137,8 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod resources;
+// WP-161: load, free memory and free disk. The command takes no path.
+mod builder_health;
 mod room_council;
 mod rooms;
 mod search;
@@ -158,7 +173,10 @@ mod window_transfer;
 #[cfg(windows)]
 mod windows;
 mod worker_queue;
+pub mod worktree_autoclean;
 pub mod worktree_janitor;
+// WP-138: copy the files named in .worktreeinclude when a worktree is created.
+mod worktree_include;
 mod worktree_lifecycle;
 mod worktrees;
 
@@ -385,6 +403,8 @@ pub fn run() {
     }
     // Rule 3, then one app per data folder: the lock is held until this process ends.
     let claim = instance::claim(&identity, &version);
+    // WP-104: daily log and crash records, before the rest of startup.
+    diagnostics::install(&claim.data_dir, &version);
     // Before the database opens: finish whatever a ship's runner left (a trial, a restore), or call it off
     // (src/ship.rs). May exit.
     let boot = ship::startup(&identity, &claim.data_dir);
@@ -456,18 +476,10 @@ pub fn run() {
             ) {
                 eprintln!("WP-90: the named-app proxy did not start: {error}");
             }
-            // WP-90: a stack still marked running from the last launch keeps its names on
-            // this process; the new proxy has just pruned the previous owner's.
-            match stacks::env_from_app(app.handle()) {
-                Ok(env) => {
-                    if let Err(error) = stacks::resume_names(&env) {
-                        eprintln!("WP-90: the running stacks' names were not put back: {error}");
-                    }
-                }
-                Err(error) => {
-                    eprintln!("WP-90: the running stacks' names were not put back: {error}");
-                }
-            }
+            // WP-90 and stack-fakes (#88): the last run's fakes are stopped and a running stack's
+            // fakes and names put back, in the background. Neither the stop nor `node --version`
+            // holds the window, and a stack action that comes in waits for it.
+            stacks::resume_at_launch(app.handle(), claim.data_dir.clone());
             // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
             let _ = plugins::host(app.handle());
             // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
@@ -492,6 +504,10 @@ pub fn run() {
             worker_queue::init(app.handle());
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
+            // A finished worktree gives its build output back (worktree_autoclean.rs); the daily app only.
+            if policy.clear_build_output {
+                worktree_autoclean::init(app.handle().clone(), claim.data_dir.clone());
+            }
             control::init(app.handle())?;
             // WP-85: the loopback port for terminal Claude sessions. A failure here does not stop the app.
             terminal_mirror::init(app.handle().clone(), claim.data_dir.clone(), identity.kind);
@@ -538,12 +554,17 @@ pub fn run() {
             menu::dispatch(app, event.id().as_ref());
         })
         .invoke_handler(tauri::generate_handler![
+            // WP-131: desktop dictation.
+            dictation::dictation_support,
+            dictation::dictation_start,
+            dictation::dictation_stop,
             mobile_access::mobile_status,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
             mobile_access::mobile_cancel_invite,
             mobile_access::mobile_revoke,
             mobile_access::mobile_publish,
+            mobile_access::mobile_admits,
             mobile_access::mobile_reply,
             mobile_access::mobile_push,
             remote::remote_machines,
@@ -597,6 +618,11 @@ pub fn run() {
             reminders::reminder_open,
             delegations::delegations_record,
             delegations::delegations_settle,
+            // WP-157: one work log line when checks send work back.
+            delegations::delegations_sent_back,
+            // WP-157: the first mate's work log tool.
+            work_log::work_log_add,
+            work_log::work_log_read,
             delegations::delegations_reattach,
             delegations::delegations_set_question,
             delegations::delegations_set_stall,
@@ -638,6 +664,7 @@ pub fn run() {
             programme::programme_update_from_main,
             programme::programme_lead_acquire,
             programme::programme_lead_heartbeat,
+            programme::programme_consider_conflict,
             // Hivra WP-81: the check before work goes to GitHub.
             delivery_gate::gate_setting_get,
             delivery_gate::gate_setting_set,
@@ -662,6 +689,9 @@ pub fn run() {
             watcher::watcher_timer_cancel,
             watcher::watcher_timers,
             watcher::watcher_tick,
+            // WP-104: a check waits on a safe command, then one wake.
+            watcher::watcher_check_set,
+            watcher::watcher_check_cancel,
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
             crew::crew_rules_set,
@@ -695,6 +725,12 @@ pub fn run() {
             tasks::commands::tasks_views_save,
             tasks::commands::tasks_views_delete,
             tasks::commands::tasks_statuses,
+            // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
+            programme::commands::programme_list,
+            programme::commands::programme_enqueue,
+            programme::commands::programme_set_status,
+            programme::commands::programme_park,
+            programme::commands::programme_clear,
             // WP-74: full-text search over tasks and docs.
             finder::finder_search,
             // WP-77: labelled GitHub issues become tasks. Reads only.
@@ -717,6 +753,8 @@ pub fn run() {
             worker_queue::worker_model_set,
             // WP-89: the system-wide worker default, beside a project's own.
             worker_queue::worker_default_set,
+            // WP-161: the shared builder ceiling and the optional health pauses.
+            worker_queue::builder_scale_set,
             worker_queue::worker_heavy_mark,
             worker_queue::worker_settings_import_local,
             autopilot::autopilot_status,
@@ -873,6 +911,8 @@ pub fn run() {
             verify_stage::verify_stage_status,
             verify_stage::verify_stage_run,
             verify_stage::verify_stage_latest,
+            worktree_autoclean::worktree_autoclean_status,
+            worktree_autoclean::worktree_autoclean_set,
             worktree_janitor::worktree_janitor_report,
             worktree_janitor::worktree_janitor_clean,
             worktree_janitor::worktree_janitor_remove,
@@ -892,9 +932,12 @@ pub fn run() {
             fs::read_file_base64,
             fs::read_binary_file,
             fs::read_project_image,
+            fs::read_chat_image,
             fs::allow_video_stream,
             fs::write_attachment,
             fs::save_generated_image,
+            fs::copy_generated_image,
+            fs::read_generated_image,
             fs::delete_generated_images,
             fs::read_text_file,
             fs::mobile_list_dir,
@@ -903,6 +946,8 @@ pub fn run() {
             fs::omp_active_assistant_texts,
             fs::claude_shell_commands,
             fs::write_text_file,
+            // WP-143: is an Explore agent already defined? Reads only; nothing is written.
+            explore_agent::claude_explore_agent_defined,
             skills::list_skills,
             // WP-30: plugins.
             plugins::plugins_list,
@@ -1014,6 +1059,7 @@ pub fn run() {
             pty::pty_kill_all,
             session_store::session_upsert,
             session_store::session_list_by_project,
+            session_store::session_list_folderless,
             session_store::session_rebase_project,
             session_store::session_list_linked,
             // WP-108: counts and names only, for the usage history page.
@@ -1050,6 +1096,8 @@ pub fn run() {
             artifacts::artifacts_upsert,
             artifacts::artifacts_delete,
             page_frames::page_frame_put,
+            page_frames::visual_frame_put,
+            page_frames::visual_frame_drop,
             page_http::page_http_fetch,
             page_http::page_source_token_set,
             page_http::page_source_token_exists,
@@ -1094,6 +1142,10 @@ pub fn run() {
             portable::portable_mono_files,
             portable::portable_find_skills,
             portable::portable_paths_exist,
+            portable::portable_project_folder_checks,
+            portable::portable_relink_candidate,
+            portable::portable_relink_candidates,
+            portable::portable_relink_apply,
             portable::portable_session_engines,
             portable::portable_export,
             portable::portable_inspect,
@@ -1177,6 +1229,8 @@ pub fn run() {
             window_transfer::take_window_transfer,
             chat_background::save_chat_background,
             resources::resource_usage,
+            // WP-161: the health sample the builder pause reads. No path argument.
+            builder_health::builder_health,
             resources::resource_processes,
             resources::resource_stop_tool,
             chat_background::remove_chat_background,
@@ -1222,6 +1276,11 @@ pub fn run() {
             outside::outside_approve,
             outside::outside_deny,
             outside::outside_pick_new_port,
+            // WP-104: the logs folder, and the lines the copy action masks.
+            diagnostics::diagnostics_folder,
+            diagnostics::diagnostics_sources,
+            // WP-104: machine facts for the health list.
+            health::health_facts,
         ])
         .build(context)
         .expect("error while building MonoCode");
@@ -1288,6 +1347,17 @@ pub fn run() {
             reap_harness_children(handle);
             // WP-81: stop the check's daemon with the app. It is not a login item.
             crate::delivery_gate::stop_daemons();
+            // stack-fakes (#88): fake services stop with the app, not after it.
+            match crate::project_file::data_dir(handle) {
+                Ok(dir) => {
+                    if let Err(error) = stacks::stop_stand_ins(&dir) {
+                        eprintln!("WP-90: a fake service was not stopped at quit: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("WP-90: the fake services were not stopped at quit: {error}");
+                }
+            }
         }
         _ => {}
     });

@@ -472,6 +472,7 @@ function FloatingConversation({
           pageSize={MONO_PAGE_TURNS}
           busy={!!session.busy && !transcript.viewingOlderPage}
           cwd={sessionWorkCwd(session)}
+          mediaSessionId={session.id}
           agentName={mono.name}
           agentMascot={mono}
           bottomAligned

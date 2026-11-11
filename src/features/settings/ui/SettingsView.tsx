@@ -6,6 +6,7 @@ import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingThe
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { ActivityPage } from "../../activity/ui/ActivityPage";
+import { WorkLogPanel } from "../../workLog/ui/WorkLogPanel";
 // WP-108: Settings, Usage. Counts and names only.
 import { UsagePage } from "../../usage/ui/UsagePage";
 // WP-79: Settings → Connected apps.
@@ -28,8 +29,13 @@ import { ProgrammeUpdateSetting } from "../../programme/ui/ProgrammeUpdateSettin
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
 // WP-84: the project's default phase path.
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
+// WP-104: copy diagnostics, and the health list.
+import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+// WP-164: quiet hours for routine programme notices.
+import { QuietHoursSetting } from "../../notifications/ui/QuietHoursSetting";
+import { QUIET_HOURS_DESCRIPTION } from "../../notifications/model/quietHours";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
@@ -700,6 +706,8 @@ export function SettingsView({
               ) : null}
               {/* WP-84: how much process a task gets, for this project. */}
               {section === "general" ? <PhaseSettings projectKey={cwd} /> : null}
+              {/* WP-104: diagnostics a person can send, and the health list. */}
+              {section === "general" ? <DiagnosticsPanel /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
                   <ConnectionsSettings />
@@ -714,6 +722,10 @@ export function SettingsView({
               {section === "activity" ? (
                 // WP-78: Settings → Activity.
                 <ActivityPage onOpenSession={onOpenSession} />
+              ) : null}
+              {section === "work-log" ? (
+                // WP-157: Settings → Work log.
+                <WorkLogPanel />
               ) : null}
               {section === "usage" ? (
                 // WP-108: token and cost history. Read only.
@@ -1100,6 +1112,10 @@ function GeneralPage({
             on={notificationsEnabled}
             onChange={onNotificationsEnabled}
           />
+        </Row>
+        {/* WP-164: what waits and what comes through is spelled out in QUIET_HOURS_DESCRIPTION. */}
+        <Row id="quiet-hours" label="Quiet hours" description={QUIET_HOURS_DESCRIPTION}>
+          <QuietHoursSetting />
         </Row>
       </Group>
 

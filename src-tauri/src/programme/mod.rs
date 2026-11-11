@@ -1,9 +1,18 @@
+//! WP-159: a programme of packages the first mate keeps.
+//!
+//! The idea of a row that waits, is claimed, then settles comes from firstmate's durable wake
+//! queue. The table, the statuses and the park rule are Hivra's. This is not the per-job worker queue.
+//!
 //! WP-162: bring main into a package branch, and hold the programme lead lease.
 //!
 //! The update runs only in the package worktree. It fetches main and merges
 //! (the default) or rebases, then pushes with a normal push. It refuses a dirty
 //! tree, the wrong branch, and anything that would edit main. A timeout or a
 //! remote that cannot be reached is not a final failure.
+
+pub(crate) mod commands;
+pub(crate) mod mcp;
+mod store;
 
 mod checkout;
 mod gitrun;
@@ -13,6 +22,9 @@ mod settings;
 mod tick;
 mod update;
 
+#[cfg(test)]
+mod store_tests;
+
 use rusqlite::Connection;
 use serde::Deserialize;
 use tauri::State;
@@ -21,10 +33,16 @@ use crate::session_store::{now_millis, SessionStore};
 
 pub use checkout::Checkout;
 pub use settings::{Strategy, UpdateSettings};
-pub use tick::{consider_conflict, Tick};
-pub use update::{update_from_main, UpdateReport};
+pub use tick::Tick;
+pub use update::UpdateReport;
 
+/// Both programme stores: the package board (WP-159) and the WP-162 update and lease tables.
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
+    store::ensure_tables(conn)?;
+    ensure_update_tables(conn)
+}
+
+fn ensure_update_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS programme_update_settings (
            project TEXT PRIMARY KEY,
@@ -50,7 +68,6 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
          );",
     )
 }
-
 #[tauri::command]
 pub fn programme_update_settings_get(
     store: State<'_, SessionStore>,
@@ -130,6 +147,64 @@ pub async fn programme_update_from_main(
     tauri::async_runtime::spawn_blocking(move || update::execute(&plan))
         .await
         .map_err(|error| error.to_string())
+}
+
+/// What the lead tick calls for a conflicting package. With the setting off this
+/// answers with a report and runs no git. With it on, the package worktree is
+/// found by its branch, recorded, and updated from main. Git runs off the UI
+/// thread and outside the database lock.
+#[tauri::command]
+pub async fn programme_consider_conflict(
+    store: State<'_, SessionStore>,
+    project: String,
+    package_id: String,
+    branch: String,
+) -> Result<Tick, String> {
+    let next = {
+        let conn = store.lock_conn()?;
+        tick::next(&conn, &project, &package_id, &branch)?
+    };
+    let plan = match next {
+        tick::Next::Done(tick) => return Ok(tick),
+        tick::Next::Update(plan) => plan,
+        tick::Next::Find { branch } => {
+            let folder = std::path::PathBuf::from(&project);
+            let lookup = branch.clone();
+            let found = tauri::async_runtime::spawn_blocking(move || {
+                update::branch_worktree(&folder, &lookup)
+            })
+            .await
+            .map_err(|error| error.to_string())??;
+            let Some(worktree) = found else {
+                return Ok(Tick::Reported {
+                    message:
+                        "No worktree has this package's branch checked out. Nothing was changed."
+                            .into(),
+                });
+            };
+            let conn = store.lock_conn()?;
+            tick::record(
+                &conn,
+                &project,
+                &package_id,
+                &worktree,
+                &branch,
+                now_millis(),
+            )?;
+            match update::load(&conn, &package_id)? {
+                Some(plan) => plan,
+                None => {
+                    return Ok(Tick::Reported {
+                        message: "That package has no worktree recorded.".into(),
+                    })
+                }
+            }
+        }
+    };
+    let report = tauri::async_runtime::spawn_blocking(move || update::execute(&plan))
+        .await
+        .map_err(|error| error.to_string())?;
+    Ok(Tick::Ran(report))
 }
 
 #[tauri::command]

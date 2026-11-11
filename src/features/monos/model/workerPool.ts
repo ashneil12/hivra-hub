@@ -19,11 +19,27 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import type { WorkerPoolHost } from "../../agent-app/model/agentAppTasks";
 import type { Delegation } from "./delegations";
+import { FANOUT_MAX_TASKS } from "../../firstmate/model/fanoutContract";
+import type { DependencyWait } from "../../firstmate/model/fanoutWaves";
 import type { ProviderRateLimits } from "../../providers/model/rateLimits";
 import { freshRoomAfter, limitResetAt } from "../../providers/model/accountWaterfall";
 import { isOpenDelegation } from "./delegations";
 import { cleanStoredDefault, readProjectWorkerDefault } from "../../crew/model/workerDefault";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
+import {
+  DEFAULT_BUILDER_SCALE,
+  HEALTH_CACHE_MS,
+  HEALTH_STALE_MS,
+  builderHoldNeed,
+  builderLaunchAllowed,
+  builderScaleFromStored,
+  builderScaleIsDefault,
+  builderScaleToStored,
+  sanitizeBuilderScale,
+  type BuilderHealth,
+  type BuilderHoldNeed,
+  type BuilderScale,
+} from "./builderScale";
 
 export type WorkerLimits = {
   workers: number;
@@ -75,7 +91,9 @@ let settingsCopy: {
   heavy: Set<string>;
   /** WP-89: the worker default for every project, when one is set. */
   workerDefault?: WorkerPick;
-} = { limits: {}, heavy: new Set() };
+  /** WP-161: the shared ceiling and the optional health pauses. */
+  builderScale: BuilderScale;
+} = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
 /**
  * Bumped on every local settings write. A refresh that started earlier read the old
  * copy; it must not put that copy back over a write that landed while it was reading.
@@ -115,7 +133,8 @@ const clampCount = (n: unknown, fallback: number) =>
 
 export function workerLimits(project: string): WorkerLimits {
   const saved = settingsCopy.limits[project];
-  const workers = clampCount(saved?.workers, DEFAULT_LIMITS.workers);
+  // WP-161: a project with no ceiling of its own uses the shared max builders (still 6 until raised).
+  const workers = clampCount(saved?.workers, builderScale().maxBuilders);
   return {
     workers,
     heavy: Math.min(workers, clampCount(saved?.heavy, Math.min(workers, DEFAULT_LIMITS.heavy))),
@@ -170,6 +189,28 @@ export function projectWorkerDefault(project: string): WorkerPick | undefined {
 /** WP-89: the worker default for every project, when one is set. */
 export function systemWorkerDefault(): WorkerPick | undefined {
   return cleanStoredDefault(settingsCopy.workerDefault);
+}
+
+/** WP-161: the shared max builders and the optional pauses. A bad value falls back, it is not thrown away whole. */
+export function builderScale(): BuilderScale {
+  return sanitizeBuilderScale(settingsCopy.builderScale);
+}
+
+/**
+ * Saves the shared scale. The default is not stored. This does not stop a builder that is already running:
+ * the saved value has no list of builders to stop.
+ */
+export function setBuilderScale(next: BuilderScale): BuilderScale {
+  const clean = sanitizeBuilderScale(next);
+  wroteSettings();
+  settingsCopy = { ...settingsCopy, builderScale: clean };
+  changed();
+  noteSettingsWrite(
+    (backend.setBuilderScale?.(clean) ?? Promise.resolve(null)).catch((error: unknown) =>
+      console.warn("Could not save the builder scale", error),
+    ),
+  );
+  return clean;
 }
 
 /** Saves (or clears, with undefined) the worker default for every project. A value that isn't usable is dropped. */
@@ -296,11 +337,13 @@ export type WorkerQueueBackend = {
   claim(id: string, by: string): Promise<boolean>;
   /** The claimed job started: out of the queue (only the claimant's finish counts). */
   finish(id: string, by: string): Promise<boolean>;
-  /** Each project's limits, the workers marked heavy, and the system worker default when one is set. */
+  /** Each project's limits, the workers marked heavy, the system worker default, and the builder scale when one is set. */
   settings(): Promise<{
     limits: Record<string, Partial<WorkerLimits>>;
     heavy: string[];
     workerDefault?: WorkerPick;
+    /** WP-161. Absent means the defaults (6, load at 1.6 times the cores, memory off, disk below 30 GB). */
+    builderScale?: unknown;
   }>;
   setLimits(project: string, limits: WorkerLimits): Promise<WorkerLimits>;
   /** The project's own worker model (E7); undefined clears it. `cli` is the WP-89 CLI, absent on an old Claude row. */
@@ -310,6 +353,8 @@ export type WorkerQueueBackend = {
   ): Promise<unknown>;
   /** WP-89: the worker default for every project. Undefined clears it. */
   setWorkerDefault(choice: WorkerPick | undefined): Promise<unknown>;
+  /** WP-161: the shared ceiling and pauses. Optional so a stand-in from before this field still loads. */
+  setBuilderScale?(scale: BuilderScale): Promise<unknown>;
   markHeavy(child: string): Promise<boolean>;
   /** Limits and the heavy list an older build kept in local storage, imported once. */
   importLocalSettings(limits: Record<string, Partial<WorkerLimits>>, heavy: string[]): Promise<boolean>;
@@ -336,6 +381,8 @@ export const tauriWorkerQueue: WorkerQueueBackend = {
       cli: choice?.cli ?? null,
     }),
   setWorkerDefault: (choice) => invoke("worker_default_set", { value: choice ?? null }),
+  // WP-161: null clears a scale that is back to the defaults.
+  setBuilderScale: (scale) => invoke("builder_scale_set", { value: builderScaleToStored(scale) }),
   markHeavy: (child) => invoke<boolean>("worker_heavy_mark", { child }),
   importLocalSettings: (limits, heavy) => invoke<boolean>("worker_settings_import_local", { limits, heavy }),
   subscribe: (onChange) => {
@@ -378,6 +425,7 @@ export function memoryWorkerQueue(
     limits: {} as Record<string, WorkerLimits>,
     heavy: [] as string[],
     workerDefault: undefined as WorkerPick | undefined,
+    builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" as const } } as BuilderScale,
     importedSettings: false,
     listeners: new Set<() => void>(),
     list: async () =>
@@ -432,6 +480,7 @@ export function memoryWorkerQueue(
       limits: { ...store.limits },
       heavy: [...store.heavy],
       ...(store.workerDefault ? { workerDefault: store.workerDefault } : {}),
+      ...(builderScaleIsDefault(store.builderScale) ? {} : { builderScale: builderScaleToStored(store.builderScale) }),
     }),
     setLimits: async (project: string, limits: WorkerLimits) => {
       const workers = clampCount(limits.workers, DEFAULT_LIMITS.workers);
@@ -458,6 +507,11 @@ export function memoryWorkerQueue(
       store.workerDefault = choice;
       notify();
       return choice ?? null;
+    },
+    setBuilderScale: async (scale: BuilderScale) => {
+      store.builderScale = sanitizeBuilderScale(scale);
+      notify();
+      return builderScaleToStored(store.builderScale);
     },
     markHeavy: async (child: string) => {
       if (store.heavy.includes(child)) return false;
@@ -497,7 +551,7 @@ export function setWorkerQueueBackend(next: WorkerQueueBackend): Promise<void> {
   noteQueueEdit();
   copy = [];
   wroteSettings();
-  settingsCopy = { limits: {}, heavy: new Set() };
+  settingsCopy = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
   loading = undefined;
   unsubscribe = next.subscribe?.(() => void refreshWorkerQueue());
   return loadWorkerQueue();
@@ -567,6 +621,8 @@ export async function refreshWorkerQueue(): Promise<void> {
       limits: settings.limits ?? {},
       heavy: new Set(settings.heavy ?? []),
       ...(settings.workerDefault ? { workerDefault: settings.workerDefault } : {}),
+      // A row saved before the disk pause was on by default reads as the new default (builderScaleFromStored).
+      builderScale: builderScaleFromStored(settings.builderScale),
     };
   } catch (error) {
     console.warn("Could not read the waiting workers", error);
@@ -579,6 +635,27 @@ export async function refreshWorkerQueue(): Promise<void> {
 export function claimWorker(id: string): Promise<boolean> {
   return backend.claim(id, windowId).catch(() => false);
 }
+/**
+ * The start was refused because the owner is already at the fan-out cap. Drop the lease and put the job back, so the
+ * next look can start it. Taking it and adding it again clears the claim (add keeps no lease) without a new command.
+ */
+async function releaseForRetry(job: QueuedWorker): Promise<void> {
+  const { claimedUntil: _claimed, ...plain } = job;
+  noteQueueEdit();
+  copy = copy.some((queued) => queued.id === job.id)
+    ? copy.map((queued) => (queued.id === job.id ? plain : queued))
+    : [...copy, plain];
+  changed();
+  const removed = await backend.take(job.id).catch(() => false);
+  if (!removed) {
+    await refreshWorkerQueue();
+    return;
+  }
+  await backend.add(plain).catch((error: unknown) => console.warn("Could not keep a waiting worker", error));
+  noteQueueEdit();
+  await refreshWorkerQueue();
+}
+
 /** It started (or its start was refused): out of the queue, if this window still holds it. */
 export function finishWorker(id: string): Promise<boolean> {
   if (copy.some((q) => q.id === id)) {
@@ -623,7 +700,11 @@ export function dequeueWorker(id: string): Promise<boolean> {
 
 // ---- deciding ----------------------------------------------------------------------------------------------------
 
-export type WaitReason = "workers" | "heavy" | "limit" | "files";
+/**
+ * WP-171: `requires` waits for the tasks of its fan-out that provide what it needs; `held` is that wait when one of
+ * them failed; `fanout` is the owner's own cap (a first mate runs at most FANOUT_MAX_TASKS at once).
+ */
+export type WaitReason = "workers" | "heavy" | "limit" | "files" | "health" | "requires" | "held" | "fanout";
 export type Admission = { start: true } | { start: false; reason: WaitReason; line: string };
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
@@ -650,6 +731,10 @@ export type AdmitInput = {
   harness: string;
   /** r87: the files or folders it will change, when known. */
   files?: readonly string[];
+  /** WP-171: its fan-out link (firstmate/model/fanoutWaves.ts), when it is one task of a contract. Opaque here. */
+  fanout?: unknown;
+  /** The chat that asked. When set, its open tasks count toward the fan-out cap. Absent: the cap is not applied. */
+  ownerSession?: string;
 };
 
 // ---- r87: two jobs never change the same files at once ------------------------------------------------------------
@@ -749,13 +834,171 @@ export function filesWaitLine(shared: { title: string; file: string }): string {
 }
 
 export type AdmitContext = {
-  rows: readonly (Pick<Delegation, "project" | "state" | "childSession" | "follow"> & Partial<Pick<Delegation, "title">>)[];
+  rows: readonly (Pick<Delegation, "project" | "state" | "childSession" | "follow"> &
+    Partial<Pick<Delegation, "title" | "ownerSession">>)[];
   room: (harness: string) => ProviderRoom;
   limits?: (project: string) => WorkerLimits;
   heavy?: (childSession: string) => boolean;
   /** What waits already (queue order); defaults to the saved queue. */
   queue?: readonly QueuedWorker[];
+  /**
+   * WP-171: what a task of a fan-out still waits for, from the rows (firstmate/model/fanoutWaves.ts dependencyVerdict);
+   * undefined when everything it needs is delivered. Absent: no task waits for another.
+   */
+  dependency?: (job: { id: string; fanout: unknown }) => DependencyWait | undefined;
 };
+
+/** The wait a job's dependencies put on it now, or undefined (it needs nothing, or has it). */
+function dependencyWait(job: { id: string; fanout?: unknown }, ctx: AdmitContext): DependencyWait | undefined {
+  return job.fanout === undefined ? undefined : ctx.dependency?.({ id: job.id, fanout: job.fanout });
+}
+
+/**
+ * WP-171: the dependency the waiting card reads. The pump gets its own copy on each call. The card does not, so the
+ * window that owns the queue publishes the same function here. Absent, a card cannot tell a held task from a free worker.
+ */
+let queueDependency: AdmitContext["dependency"] | undefined;
+
+/** Publish (or clear) the dependency check the waiting cards read. */
+export function setQueueDependency(next: AdmitContext["dependency"] | undefined): void {
+  queueDependency = next;
+}
+
+/** Why this queued task waits on another task, or undefined when it does not. */
+export function taskWait(job: QueuedWorker): DependencyWait | undefined {
+  return dependencyWait(
+    { id: job.id, fanout: queuedFanout(job) },
+    { rows: [], room: () => ({ room: true }), dependency: queueDependency },
+  );
+}
+
+/** A queued job's fan-out link, kept in its stored delegate input. */
+const queuedFanout = (job: QueuedWorker): unknown => job.input?.fanout;
+
+/** The latest health sample. A launch with none yet is allowed. Reset drops it. */
+let healthNow: BuilderHealth | undefined;
+let healthEpoch = 0;
+let healthInflight: Promise<void> | undefined;
+let healthTimeoutMs = 3_000;
+const defaultHealthReader = (): Promise<unknown> => invoke("builder_health");
+let healthReader: () => Promise<unknown> = defaultHealthReader;
+
+/** The sample a launch reads. Undefined until a read has landed. */
+export function builderHealth(): BuilderHealth | undefined {
+  return healthNow;
+}
+
+/**
+ * WP-161: the Needs you line for builders the disk pause is holding, or null. It reads the same sample and the same
+ * saved pause the launch gate reads, and the queue, so it appears when a builder waits and clears when the disk recovers.
+ */
+export function builderHold(): BuilderHoldNeed | null {
+  return builderHoldNeed(queuedWorkers().length, healthNow, builderScale());
+}
+
+/** Tests stand in for the command. `null` puts the command back. */
+export function setBuilderHealthReader(reader: (() => Promise<unknown>) | null): void {
+  healthReader = reader ?? defaultHealthReader;
+}
+
+/** Tests shorten the wait. `null` puts the 3s wait back. */
+export function setBuilderHealthTimeout(ms: number | null): void {
+  healthTimeoutMs = ms == null || !Number.isFinite(ms) || ms < 1 ? 3_000 : ms;
+}
+
+function finiteHealth(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/** A command payload. Only the known numbers are kept. Anything else is missing, not a pause. */
+function healthFromWire(raw: unknown, now: number): BuilderHealth | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const row = raw as Record<string, unknown>;
+  const cores = finiteHealth(row.cores);
+  const readAt = finiteHealth(row.readAt);
+  return {
+    load1: finiteHealth(row.load1),
+    cores: cores != null && cores >= 1 ? Math.round(cores) : null,
+    freeMemoryGb: finiteHealth(row.freeMemoryGb),
+    freeDiskGb: finiteHealth(row.freeDiskGb),
+    readAt: readAt ?? now,
+  };
+}
+
+function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error("The health reading timed out")), ms);
+    work.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error instanceof Error ? error : new Error("The health reading failed"));
+      },
+    );
+  });
+}
+
+async function refreshBuilderHealthOnce(): Promise<void> {
+  const epoch = healthEpoch;
+  const held = healthNow;
+  const now = Date.now();
+  if (held && held.now == null && typeof held.readAt === "number" && now - held.readAt < HEALTH_CACHE_MS) return;
+  let sample: BuilderHealth | null = null;
+  try {
+    sample = healthFromWire(await withTimeout(healthReader(), healthTimeoutMs), now);
+  } catch (error) {
+    sample = null;
+    const internals = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+    if (internals) console.warn("Could not read builder health", error);
+  }
+  if (epoch !== healthEpoch) return;
+  if (sample) {
+    setBuilderHealth(sample);
+    return;
+  }
+  // A timeout is not a pause. Keep a fresh sample, drop one old enough that it must not keep pausing.
+  if (held?.now != null) return;
+  if (held && typeof held.readAt === "number" && now - held.readAt <= HEALTH_STALE_MS) return;
+  setBuilderHealth(null);
+}
+
+/** Reads health unless the sample is still fresh. One read at a time. Never throws. */
+export function refreshBuilderHealth(): Promise<void> {
+  if (healthInflight) return healthInflight;
+  healthInflight = refreshBuilderHealthOnce().finally(() => {
+    healthInflight = undefined;
+  });
+  return healthInflight;
+}
+
+/**
+ * The sample the launch gate reads. A sample that is older than the one already held is ignored,
+ * so a late read cannot put a stale pause back. `null` clears it.
+ */
+export function setBuilderHealth(next: BuilderHealth | null | undefined): void {
+  if (next == null) {
+    if (healthNow === undefined) return;
+    healthNow = undefined;
+    changed();
+    return;
+  }
+  const prevAt = healthNow?.readAt;
+  const nextAt = next.readAt;
+  if (
+    typeof prevAt === "number" &&
+    Number.isFinite(prevAt) &&
+    typeof nextAt === "number" &&
+    Number.isFinite(nextAt) &&
+    nextAt < prevAt
+  ) {
+    return;
+  }
+  healthNow = next;
+  changed();
+}
 
 function decide(job: AdmitInput, load: ProjectLoad, limits: WorkerLimits, room: ProviderRoom): Admission {
   if (load.running >= limits.workers)
@@ -763,7 +1006,71 @@ function decide(job: AdmitInput, load: ProjectLoad, limits: WorkerLimits, room: 
   if (job.heavy && load.heavy >= limits.heavy)
     return { start: false, reason: "heavy", line: waitLine("heavy", job.projectName, limits) };
   if (!room.room) return { start: false, reason: "limit", line: waitLine("limit", job.projectName, limits, room) };
+  // WP-161: health is after the counts and the provider. Raising the ceiling does not skip it.
+  const gate = builderLaunchAllowed(healthNow, builderScale());
+  if (!gate.ok) return { start: false, reason: "health", line: gate.reason };
   return { start: true };
+}
+
+/** Open tasks of one owner: running or asking, and not a followed brief (the same rows check_fanout counts). */
+function ownerOpen(owner: string, rows: AdmitContext["rows"]): number {
+  let n = 0;
+  for (const row of rows) {
+    if (row.ownerSession !== owner || row.follow) continue;
+    if (row.state !== "running" && row.state !== "question") continue;
+    n += 1;
+  }
+  return n;
+}
+
+/** The line for a task that would put its owner over the fan-out cap. `open` is how many already count. */
+export function fanoutWaitLine(open: number): string {
+  return `Waiting: you already have ${open} tasks running, the most one first mate runs at once (${FANOUT_MAX_TASKS}). It starts by itself when one finishes.`;
+}
+
+/** One line for the owner when a waiting task is dropped instead of started. Names the task. */
+export function droppedTaskLine(job: Pick<QueuedWorker, "title">, error: unknown): string {
+  const why = error instanceof Error ? error.message : String(error);
+  const name = job.title.trim() || "A waiting task";
+  return `"${name}" was dropped before it could start: ${why}`;
+}
+
+/** One line for the owner when a task becomes held. Names the task, then the reason the queue already computed. */
+export function heldTaskLine(job: Pick<QueuedWorker, "title">, line: string): string {
+  const name = job.title.trim() || "A waiting task";
+  return `"${name}" is waiting for another task. ${line}`;
+}
+
+/** The rust cap refusal (firstmate check_fanout). A task that hits it waits; it is not a final failure. */
+function capRefusal(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("the most one first mate runs at once");
+}
+
+/**
+ * How many of this owner's tasks already count against the cap, before `job` would start: open rows, jobs ahead of
+ * it that would start now, and any job another window has claimed. A job with no owner is not capped.
+ */
+function fanoutPressure(job: { id: string; ownerSession?: string }, ctx: AdmitContext): number | undefined {
+  if (!job.ownerSession) return undefined;
+  const queue = ctx.queue ?? queuedWorkers();
+  const at = queue.findIndex((queued) => queued.id === job.id);
+  const ahead = at < 0 ? queue : queue.slice(0, at);
+  const starters = nextWorkers({ ...ctx, queue: ahead });
+  let n = ownerOpen(job.ownerSession, ctx.rows);
+  const counted = new Set<string>();
+  for (const queued of starters) {
+    if (queued.ownerSession !== job.ownerSession || counted.has(queued.id)) continue;
+    counted.add(queued.id);
+    n += 1;
+  }
+  for (const queued of queue) {
+    if (queued.id === job.id || queued.ownerSession !== job.ownerSession || !isClaimed(queued) || counted.has(queued.id))
+      continue;
+    counted.add(queued.id);
+    n += 1;
+  }
+  return n;
 }
 
 /**
@@ -776,11 +1083,24 @@ export function admitWorker(job: AdmitInput, ctx: AdmitContext): Admission {
   const room = ctx.room(job.harness);
   // What already waits in this project starts first, except a heavy job that waits only for a heavy-test slot.
   const heavyFull = load.heavy >= limits.heavy;
+  // WP-171: a task that waits for a provider holds no seat, so it never holds up work that needs nothing.
   const ahead = (ctx.queue ?? queuedWorkers()).filter(
-    (q) => q.project === job.project && q.id !== job.id && !(q.heavy && heavyFull),
+    (q) =>
+      q.project === job.project &&
+      q.id !== job.id &&
+      !(q.heavy && heavyFull) &&
+      !dependencyWait({ id: q.id, fanout: queuedFanout(q) }, ctx),
   );
+  const needed = dependencyWait(job, ctx);
+  if (needed) return { start: false, reason: needed.reason, line: needed.line };
   const shared = sharedWith(job, ctx.rows, ahead);
   if (shared) return { start: false, reason: "files", line: filesWaitLine(shared) };
+  // WP-171: a task of a fan-out waits at the owner's cap. An ordinary worker does not: the project's own limit decides.
+  if (job.fanout !== undefined) {
+    const pressure = fanoutPressure(job, ctx);
+    if (pressure !== undefined && pressure >= FANOUT_MAX_TASKS)
+      return { start: false, reason: "fanout", line: fanoutWaitLine(pressure) };
+  }
   return decide(job, { running: load.running + ahead.length, heavy: load.heavy + ahead.filter((q) => q.heavy).length }, limits, room);
 }
 
@@ -788,6 +1108,12 @@ export function admitWorker(job: AdmitInput, ctx: AdmitContext): Admission {
 export function nextWorkers(ctx: AdmitContext): QueuedWorker[] {
   const queue = ctx.queue ?? queuedWorkers();
   const loads = new Map<string, ProjectLoad>();
+  // A claim already holds a slot, including one later in the queue than the job being considered.
+  const fanout = new Map<string, number>();
+  for (const job of queue) {
+    if (!job.ownerSession || !isClaimed(job)) continue;
+    fanout.set(job.ownerSession, (fanout.get(job.ownerSession) ?? ownerOpen(job.ownerSession, ctx.rows)) + 1);
+  }
   const start: QueuedWorker[] = [];
   for (const job of queue) {
     const load = loads.get(job.project) ?? projectLoad(job.project, ctx.rows, ctx.heavy);
@@ -795,9 +1121,17 @@ export function nextWorkers(ctx: AdmitContext): QueuedWorker[] {
     const limits = (ctx.limits ?? workerLimits)(job.project);
     // Another window is starting it: it takes its place, but isn't this window's to start.
     const claimed = isClaimed(job);
+    // WP-171: not until everything it needs is delivered; it keeps its place and takes no seat meanwhile.
+    if (!claimed && dependencyWait({ id: job.id, fanout: queuedFanout(job) }, ctx)) continue;
     if (!claimed && sharedWith(job, ctx.rows, start)) continue;
+    const open = job.ownerSession ? (fanout.get(job.ownerSession) ?? ownerOpen(job.ownerSession, ctx.rows)) : undefined;
+    // Past the cap a fan-out task waits, and it does not take a project seat. An ordinary worker is not capped here.
+    if (!claimed && queuedFanout(job) !== undefined && open !== undefined && open >= FANOUT_MAX_TASKS) continue;
     if (!claimed && !decide(job, load, limits, ctx.room(job.harness)).start) continue;
-    if (!claimed) start.push(job);
+    if (!claimed) {
+      start.push(job);
+      if (job.ownerSession) fanout.set(job.ownerSession, (open ?? ownerOpen(job.ownerSession, ctx.rows)) + 1);
+    }
     loads.set(job.project, { running: load.running + 1, heavy: load.heavy + (job.heavy ? 1 : 0) });
   }
   return start;
@@ -808,8 +1142,14 @@ export function queuedLine(job: QueuedWorker, ctx: AdmitContext): string {
   const limits = (ctx.limits ?? workerLimits)(job.project);
   const load = projectLoad(job.project, ctx.rows, ctx.heavy);
   const room = ctx.room(job.harness);
+  const needed = dependencyWait({ id: job.id, fanout: queuedFanout(job) }, ctx);
+  if (needed) return needed.line;
   const shared = sharedWith(job, ctx.rows);
   if (shared) return filesWaitLine(shared);
+  if (queuedFanout(job) !== undefined) {
+    const pressure = fanoutPressure(job, ctx);
+    if (pressure !== undefined && pressure >= FANOUT_MAX_TASKS) return fanoutWaitLine(pressure);
+  }
   const why = decide(job, load, limits, room);
   return why.start ? "Starting now." : why.line;
 }
@@ -884,8 +1224,16 @@ export function resetWorkerPool(): void {
   copy = [];
   settingsEpoch = Promise.resolve();
   wroteSettings();
-  settingsCopy = { limits: {}, heavy: new Set() };
+  settingsCopy = { limits: {}, heavy: new Set(), builderScale: { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" } } };
+  healthEpoch += 1;
+  healthInflight = undefined;
+  healthReader = defaultHealthReader;
+  healthTimeoutMs = 3_000;
+  healthNow = undefined;
   loading = undefined;
+  heldTold.clear();
+  heldEpisode.clear();
+  queueDependency = undefined;
   changed();
 }
 
@@ -894,6 +1242,11 @@ export function resetWorkerPool(): void {
 /** Waiting workers the app is starting right now: their own delegate_task, asked again, always starts. */
 const startingNow = new Set<string>();
 
+/** Tasks whose owner has already been told about the hold they are in now. Cleared when the hold ends or the task leaves. */
+const heldTold = new Set<string>();
+/** How many separate holds this task has been told about. The next one gets a new note id, so a repeat is not swallowed. */
+const heldEpisode = new Map<string, number>();
+
 /**
  * What agentAppTasks.ts's delegate reads (App.tsx builds it): the rows of every chat, E5's room per provider, and the
  * card a waiting worker shows in the chat that asked for it.
@@ -901,16 +1254,23 @@ const startingNow = new Set<string>();
 export function workerPoolHost(deps: {
   openRows(): Delegation[];
   room(harness: string): ProviderRoom;
+  /** WP-171: what a task of a fan-out still waits for (AdmitContext.dependency). Absent: it can't wait for a provider. */
+  dependency?: AdmitContext["dependency"];
   /** Put the waiting worker's card in its chat (it shows "Waiting for a free worker" until it starts). */
   card?(
     job: QueuedWorker,
     launch: { cwd: string; harness: string; model?: string; ranFrom?: string; ranEffort?: string; cliFallback?: string },
   ): void;
 }): WorkerPoolHost {
-  const ctx = (): AdmitContext => ({ rows: deps.openRows(), room: deps.room });
+  const ctx = (): AdmitContext => ({ rows: deps.openRows(), room: deps.room, dependency: deps.dependency });
   return {
     openRows: deps.openRows,
+    waitsOnProviders: deps.dependency !== undefined,
     admit: (job) => (startingNow.has(job.id) ? { start: true } : admitWorker(job, ctx())),
+    // WP-161: the machine is read before a launch is decided. The pump only reads it once something waits, so without
+    // this the first launch would never meet a pause. A read that fails or is slow leaves the last fresh sample, or
+    // none, which allows. Never throws.
+    refreshHealth: () => refreshBuilderHealth(),
     enqueue: (job, launch) => {
       enqueueWorker(job);
       deps.card?.(job, launch);
@@ -941,6 +1301,39 @@ export function workerPoolHost(deps: {
 }
 
 /**
+ * WP-171: tell the owner the first time a task is held, and again only after that hold has ended. A task this pump did
+ * not look at (its chat is not open here) keeps its mark, so the next look does not tell a second time. A task that
+ * left the queue drops its mark. The episode count stays, so a later hold of the same task gets a new note id.
+ */
+function noteHeldTasks(
+  queue: readonly QueuedWorker[],
+  ctx: AdmitContext,
+  held: ((job: QueuedWorker, note: { id: string; line: string }) => void) | undefined,
+): void {
+  const looked = new Set(queue.map((job) => job.id));
+  const still = new Set<string>();
+  for (const job of queue) {
+    if (isClaimed(job)) continue;
+    const wait = dependencyWait({ id: job.id, fanout: queuedFanout(job) }, ctx);
+    if (wait?.reason !== "held") continue;
+    still.add(job.id);
+    if (!held || heldTold.has(job.id)) continue;
+    const episode = (heldEpisode.get(job.id) ?? 0) + 1;
+    heldEpisode.set(job.id, episode);
+    heldTold.add(job.id);
+    held(job, { id: `held-${job.id}-${episode}`, line: heldTaskLine(job, wait.line) });
+  }
+  for (const id of [...heldTold]) {
+    if (!queuedWorkers().some((job) => job.id === id)) {
+      heldTold.delete(id);
+      continue;
+    }
+    if (!looked.has(id) || still.has(id)) continue;
+    heldTold.delete(id);
+  }
+}
+
+/**
  * Start what can start now (App.tsx calls it whenever a row or a chat changes, and on a timer for provider resets):
  * each through `start`, which asks its own delegate_task again. One that fails to start leaves the queue with the
  * reason, for its chat to hear (`failed`).
@@ -948,17 +1341,36 @@ export function workerPoolHost(deps: {
 export async function pumpWorkers(deps: {
   openRows(): Delegation[];
   room(harness: string): ProviderRoom;
+  /** WP-171: what a task of a fan-out still waits for (AdmitContext.dependency). */
+  dependency?: AdmitContext["dependency"];
+  /**
+   * WP-171: bring what `dependency` reads up to date before anyone is started: the rows of the providers the waiting
+   * tasks need, and the check of what each finished provider made. A failure is ignored: what could not be read stays
+   * unknown, and a task whose provider is unknown does not start.
+   */
+  settle?(queue: readonly QueuedWorker[]): Promise<void>;
   /** The owner chat can't take it any more (removed): the job is dropped. */
   ownerGone?(job: QueuedWorker): boolean;
   /** Its chat isn't loaded in this window right now: it keeps its place and starts once it is. */
   canStart?(job: QueuedWorker): boolean;
   start(job: QueuedWorker): Promise<unknown>;
   failed?(job: QueuedWorker, error: unknown): void;
+  /** A waiting task was dropped (not a cap refusal, and not a chat that is gone). One line, naming the task. */
+  dropped?(job: QueuedWorker, line: string): void;
+  /** A task became held. Once per hold, naming the task. `id` changes when the same task is held again later. */
+  held?(job: QueuedWorker, note: { id: string; line: string }): void;
 }): Promise<QueuedWorker[]> {
+  // WP-161: a fresh sample when the last one is old. A timeout keeps the last fresh sample, or none.
+  await refreshBuilderHealth();
   for (const job of queuedWorkers()) if (deps.ownerGone?.(job)) await dequeueWorker(job.id);
   const queue = queuedWorkers().filter((job) => deps.canStart?.(job) ?? true);
+  if (queue.length) await deps.settle?.(queue).catch(() => undefined);
+  // WP-171: a hold is a queue wait, but the owner only hears it by being told. Once per hold, not on every look.
+  noteHeldTasks(queue, { rows: deps.openRows(), room: deps.room, queue, dependency: deps.dependency }, deps.held);
   if (!queue.length) return [];
-  const ready = nextWorkers({ rows: deps.openRows(), room: deps.room, queue }).filter((job) => !startingNow.has(job.id));
+  const ready = nextWorkers({ rows: deps.openRows(), room: deps.room, queue, dependency: deps.dependency }).filter(
+    (job) => !startingNow.has(job.id),
+  );
   const started: QueuedWorker[] = [];
   for (const job of ready) {
     startingNow.add(job.id);
@@ -971,7 +1383,14 @@ export async function pumpWorkers(deps: {
         await deps.start(job);
         started.push(job);
       } catch (error) {
+        // The cap moved between the decision and the start. It keeps its place and is tried again; nobody is told
+        // it failed, because it has not.
+        if (capRefusal(error)) {
+          await releaseForRetry(job);
+          continue;
+        }
         deps.failed?.(job, error);
+        deps.dropped?.(job, droppedTaskLine(job, error));
       }
       // Started, or refused for good: either way it no longer waits.
       await finishWorker(job.id);
@@ -980,6 +1399,17 @@ export async function pumpWorkers(deps: {
     }
   }
   return started;
+}
+
+/** How often waiting builders are checked against the machine again: a pause that clears lets them start. */
+export const HEALTH_RECHECK_MS = 10_000;
+
+/**
+ * When to look at the machine again for waiting builders, with nothing else changing: soon, while any wait. Under
+ * {@link HEALTH_STALE_MS}, so the sample the Needs you line reads never goes stale between looks.
+ */
+export function nextHealthCheck(now: number): number | undefined {
+  return queuedWorkers().length ? now + HEALTH_RECHECK_MS : undefined;
 }
 
 /** When a waiting worker might start without any row changing: the soonest provider reset among the waiting. */
