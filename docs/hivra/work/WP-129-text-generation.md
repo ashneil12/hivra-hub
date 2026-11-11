@@ -17,6 +17,10 @@ T3 is moving this to a first-class setting in nightly 0.1.8 ([docs/user/text-gen
 
 Keys saved before this change must be re-saved under Other models before quick pick, memory, the context window and routed sessions use them. A key is used only at the provider, model and address it was saved with; a key saved before that binding was recorded is not sent anywhere until it is saved again. The Other models list and the memory model picker show each saved address, so the person can check it.
 
+## Key stores
+
+On macOS a saved key is a Keychain item that only the app that wrote it can read. Windows and Linux have no per-app access control in their key stores (`keyring`): any program running as the same user can read a saved key there. The address binding still keeps MonoCode from sending a key to another host.
+
 ## Read first
 
 - Hivra: `textHarness.ts` and every caller (commit, PR, title, branch).

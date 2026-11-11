@@ -7,6 +7,10 @@
 //! stored address. The address is compared after parsing, and the request URL is rebuilt from the parsed parts, so
 //! a trailing dot, a different case, a default port, userinfo, a query or a look-alike host cannot point a key
 //! somewhere else. An item with no binding (a plain key, or one saved with no usable address) is never sent.
+//!
+//! Platform limit (WP-129 L5): only macOS restricts a Keychain item to the app that wrote it. The Windows and Linux
+//! key stores (`keyring`) have no per-app access control, so any program running as the same user can read the item
+//! there. The binding above still stops MonoCode itself from sending a key anywhere else.
 
 use std::fs;
 use std::path::Path;
