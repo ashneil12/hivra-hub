@@ -306,11 +306,19 @@ export class HostTeleportStore {
     };
     if (base.incoming?.moveId === moveId) this.releaseLease(chatId);
     const aborted = [...(base.aborted ?? []).filter((id) => id !== moveId), moveId].slice(-200);
+    const ownsLive = !!(stored?.live && stored.owner === this.options.selfId);
     this.save(chatId, {
       ...base,
       incoming: base.incoming?.moveId === moveId ? null : base.incoming,
       aborted,
     });
+    // Activate opens the host session before the record says the copy is live. A crash there leaves a
+    // runnable session under a record that is still incoming. Abort must hold and close that session.
+    // A live copy this host already owns (another move) is left as it is.
+    if (!ownsLive) {
+      this.options.sessions?.hold?.(chatId, true);
+      this.options.sessions?.close(chatId);
+    }
     return "aborted";
   }
 
