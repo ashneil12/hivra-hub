@@ -551,6 +551,34 @@ export function mobileConfigureMode(
   return { targetHarness, mode: change.mode };
 }
 
+/**
+ * The phone's model sheet for an open chat, as App's session.configure runs it (WP-175). The mode is checked
+ * first, so a refused pick changes nothing: no model switch, no settings, no mode.
+ */
+export function applyMobileConfigure(
+  session: Session,
+  params: Record<string, unknown>,
+  deps: {
+    openMode: (sessionId: string) => RuntimeMode | undefined;
+    onModelChange: (sessionId: string, harness: HarnessId, model: string) => void;
+    onModelSettingsChange: (sessionId: string, settings: Record<string, string>) => void;
+    onRuntimeModeChange: (sessionId: string, mode: RuntimeMode) => void;
+  },
+): { sessionId: string } {
+  const choice = mobileChoice(params);
+  const openNow = deps.openMode(session.id);
+  const plan = mobileConfigureMode(session, openNow, choice);
+  if (plan.error) throw new Error(plan.error);
+  if (choice.harness && choice.model && (choice.harness !== session.harness || choice.model !== session.model))
+    deps.onModelChange(session.id, choice.harness, choice.model);
+  if (choice.modelSettings) {
+    const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
+    deps.onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
+  }
+  if (plan.mode && plan.mode !== (openNow ?? session.runtimeMode)) deps.onRuntimeModeChange(session.id, plan.mode);
+  return { sessionId: session.id };
+}
+
 /** A new session from the phone, set to the model sheet's choice if it made one. */
 export function applyMobileChoice(
   session: Session,

@@ -106,3 +106,24 @@ it("names Antigravity's Auto for what it runs (WP-175 4.3)", () => {
   expect(options[2].textContent).toContain("Default (no AI review)");
   expect(options[2].textContent).not.toMatch(/\bAuto\b/);
 });
+
+it("Enter on fx's Supervised, which fx does not offer, picks nothing (WP-175 LOW 10)", () => {
+  act(() => root.unmount());
+  root = createRoot(container);
+  act(() =>
+    root.render(
+      createElement(QuickPermissions, {
+        value: "supervised",
+        harness: "fx",
+        onChange,
+        onClose,
+      }),
+    ),
+  );
+  const menu = container.querySelector('[role="listbox"]')!;
+  act(() =>
+    menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
+  );
+  expect(onChange).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});

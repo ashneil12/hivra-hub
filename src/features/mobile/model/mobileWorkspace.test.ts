@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { newDefaultSession, newSession } from "../../sessions/model/session";
-import { applyMobileChoice, mobileConfigureMode, mobileQuestionReply } from "./mobileWorkspace";
+import { applyMobileChoice, applyMobileConfigure, mobileConfigureMode, mobileQuestionReply } from "./mobileWorkspace";
 
 const prompt = {
   requestId: 1,
@@ -155,5 +155,44 @@ describe("a new Antigravity chat from the phone takes the CLI's rank (WP-175 HIG
     const session = newDefaultSession("~", "auto");
     session.harness = "antigravity";
     expect(applyMobileChoice(session, { runtimeMode: "auto-accept-edits" }).runtimeMode).toBe("auto");
+  });
+});
+
+describe("App's session.configure, run through applyMobileConfigure (WP-175 MED 4)", () => {
+  const deps = () => ({
+    openMode: vi.fn(() => "supervised" as const),
+    onModelChange: vi.fn(),
+    onModelSettingsChange: vi.fn(),
+    onRuntimeModeChange: vi.fn(),
+  });
+
+  it("a looser pick throws the error and changes nothing: no model switch, no settings, no mode", () => {
+    const session = newDefaultSession("~", "supervised");
+    session.harness = "claude";
+    const d = deps();
+    expect(() =>
+      applyMobileConfigure(session, { runtimeMode: "full-access", harness: "codex", model: "codex:gpt", modelSettings: { effort: "high" } }, d),
+    ).toThrow(/can only tighten this chat's mode\. It stays on Supervised\./);
+    expect(d.onModelChange).not.toHaveBeenCalled();
+    expect(d.onModelSettingsChange).not.toHaveBeenCalled();
+    expect(d.onRuntimeModeChange).not.toHaveBeenCalled();
+  });
+
+  it("a stricter pick applies the mode and returns the session", () => {
+    const session = newDefaultSession("~", "full-access");
+    session.harness = "claude";
+    const d = deps();
+    d.openMode.mockReturnValue("full-access");
+    expect(applyMobileConfigure(session, { runtimeMode: "auto" }, d)).toEqual({ sessionId: session.id });
+    expect(d.onRuntimeModeChange).toHaveBeenCalledWith(session.id, "auto");
+  });
+
+  it("with no pick, only the model moves", () => {
+    const session = newDefaultSession("~", "auto");
+    session.harness = "claude";
+    const d = deps();
+    applyMobileConfigure(session, { harness: "claude", model: "claude:sonnet" }, d);
+    expect(d.onModelChange).toHaveBeenCalledWith(session.id, "claude", "claude:sonnet");
+    expect(d.onRuntimeModeChange).not.toHaveBeenCalled();
   });
 });

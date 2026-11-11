@@ -33,8 +33,7 @@ import { hasMobileAttachments, mobileAttachments } from "../features/mobile/mode
 import {
   applyMobileChoice,
   mobileWorkspaceChoice,
-  mobileChoice,
-  mobileConfigureMode,
+  applyMobileConfigure,
   mobileCatalog,
   mobilePrivateSessionIds,
   publishedApprovalRows,
@@ -10982,22 +10981,13 @@ function Workspace({
         return { sessionId: session.id };
       }
       if (method === "session.configure") {
-        // The phone's model sheet, through the same paths as the composer's
-        // pickers, so a provider switch hands off on the next send as here.
-        const choice = mobileChoice(params);
-        // WP-175: the phone may tighten this chat's mode, never loosen it. Checked before anything changes, so a
-        // refused pick leaves the chat as it was and the phone is told, and resets its pick (mobileConfigureMode).
-        const openNow = sessionsRef.current.find((current) => current.id === session.id);
-        const plan = mobileConfigureMode(session, openNow?.runtimeMode, choice);
-        if (plan.error) throw new Error(plan.error);
-        if (choice.harness && choice.model && (choice.harness !== session.harness || choice.model !== session.model))
-          onModelChange(session.id, choice.harness, choice.model);
-        if (choice.modelSettings) {
-          const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
-          onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
-        }
-        if (plan.mode && plan.mode !== (openNow?.runtimeMode ?? session.runtimeMode)) onRuntimeModeChange(session.id, plan.mode);
-        return { sessionId: session.id };
+        // The phone's model sheet, through the same paths as the composer's pickers (mobileWorkspace.applyMobileConfigure).
+        return applyMobileConfigure(session, params, {
+          openMode: (id) => sessionsRef.current.find((current) => current.id === id)?.runtimeMode,
+          onModelChange,
+          onModelSettingsChange,
+          onRuntimeModeChange,
+        });
       }
       if (method === "session.answerQuestion" || method === "session.keepQuestionOpen") {
         // As the composer's question card; only the question still waiting,
