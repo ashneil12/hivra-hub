@@ -405,6 +405,9 @@ pub fn run() {
     }
     // Rule 3, then one app per data folder: the lock is held until this process ends.
     let claim = instance::claim(&identity, &version);
+    // WP-92: a secret run that crashed can leave its old home under the temporary folder. Clear those. The sealed
+    // home a run uses now is not in that folder, and this never deletes it.
+    secrets::run::remove_leftover_run_homes();
     // WP-104: daily log and crash records, before the rest of startup.
     diagnostics::install(&claim.data_dir, &version);
     // Before the database opens: finish whatever a ship's runner left (a trial, a restore), or call it off

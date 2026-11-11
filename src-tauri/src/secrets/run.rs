@@ -5,8 +5,10 @@
 //! It verifies the signature, refuses an expired grant (60 seconds) and a nonce it has already seen, re-reads the secret
 //! (refusing if the version changed or the item is gone), checks that the pinned program still has its approved file
 //! identity, checks that no argv element holds the value, then spawns the pinned program with `env_clear()`, a fixed PATH,
-//! the account's HOME, the allow-list and the one secret, in its own process group, with stdout and stderr captured. It
-//! prints one JSON object and nothing else on stdout; the value never appears in it.
+//! a home the account cannot write, the allow-list and the one secret, in its own process group, with stdout and stderr captured. It
+//! prints one JSON object and nothing else on stdout; the value never appears in it. The child's home is a folder the
+//! account cannot write (`/var/empty` when that folder is sealed), not the account's own home and not a folder under the
+//! temporary directory.
 //!
 //! A timeout is `timedOut: true` with the output so far, not a failure. A keychain that won't give the key is "not now,
 //! try again", not "wrong secret".
@@ -61,8 +63,8 @@ pub fn is_allowlisted_env(name: &str) -> bool {
 }
 
 /// The child's environment. `PATH` is [`child_path`], never the caller's, and `SHELL` is never passed on (a login shell would
-/// read the caller's files). `HOME` is not here: [`execute`] gives each run its own empty home (fix round 4, N2), so the
-/// account's own config files (`~/.curlrc`, `~/.gitconfig`) never reach the child. What is left of the allow-list (locale,
+/// read the caller's files). `HOME` is not here: [`execute`] points it at a folder the account cannot write (fix round 5, M3),
+/// so the account's own config files (`~/.curlrc`, `~/.gitconfig`) never reach the child. What is left of the allow-list (locale,
 /// temporary folder, terminal) is copied from this process. Never `MONOCODE_*`, never the app token, never a model key,
 /// never another secret.
 pub fn allow_env(secret_env: &str, secret_value: &str) -> Vec<(String, String)> {
@@ -84,32 +86,84 @@ pub fn search_path() -> String {
     crate::connectors::launch::safe_path()
 }
 
-/// The PATH the child runs with (fix round 4, N3): the search path without any folder the account can write, or that
-/// other accounts can. A program there could be started by name by the approved command, with the key in its environment.
+/// The PATH the child runs with (fix round 5, L3): system folders first, then any other folder on the search path that the
+/// account cannot write. Connector launches keep their own order ([`crate::connectors::launch::SAFE_PATH`]). A program in a
+/// folder the account can write could be started by name by the approved command, with the key in its environment.
 pub fn child_path() -> String {
-    let kept: Vec<PathBuf> = std::env::split_paths(&search_path())
-        .filter(|folder| !has_user_writable_component(folder))
-        .collect();
+    let mut kept: Vec<PathBuf> = Vec::new();
+    #[cfg(unix)]
+    {
+        for folder in ["/usr/bin", "/bin", "/usr/sbin", "/sbin"] {
+            let path = PathBuf::from(folder);
+            if path.is_dir()
+                && !has_user_writable_component(&path)
+                && !kept.iter().any(|have| have == &path)
+            {
+                kept.push(path);
+            }
+        }
+    }
+    for folder in std::env::split_paths(&search_path()) {
+        if kept.iter().any(|have| have == &folder) {
+            continue;
+        }
+        if !has_user_writable_component(&folder) {
+            kept.push(folder);
+        }
+    }
     std::env::join_paths(kept)
         .map(|joined| joined.to_string_lossy().into_owned())
         .unwrap_or_default()
 }
 
-/// Whether a folder on the way to `path` (the file itself included) is one the account can write, or one with a group or
-/// other write bit: a program there could be replaced by anything running as the account, or by another account (fix
-/// round 4, N3 and N7). Unix only. Windows judges by its own permissions, so this is false there.
+/// Whether a folder on the way to `path` is one the account can write, or one with a group or other write bit.
+/// Links are resolved first. A path that cannot be resolved counts as writable (fail closed). A link that lives in a
+/// folder the account can write counts too, even when its target does not: the link can be pointed somewhere else.
+/// This sees a Homebrew library beside the program only when the program itself is under Homebrew. A program in a
+/// system folder can still load a Homebrew library this check never walks. Unix only. Windows judges by its own
+/// permissions, so this is false there.
 #[cfg(unix)]
 pub fn has_user_writable_component(path: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
     // SAFETY: getuid has no preconditions and cannot fail.
     let uid = unsafe { libc::getuid() };
+    let resolved_writable = match std::fs::canonicalize(path) {
+        Ok(resolved) => ancestors_writable(&resolved, uid),
+        Err(_) => true,
+    };
+    resolved_writable || given_path_writable(path, uid)
+}
+
+#[cfg(unix)]
+fn ancestors_writable(path: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
     path.ancestors()
         .filter(|folder| !folder.as_os_str().is_empty())
         .any(|folder| {
-            std::fs::metadata(folder)
+            std::fs::symlink_metadata(folder)
                 .map(|meta| meta.uid() == uid || meta.mode() & 0o022 != 0)
-                .unwrap_or(false)
+                .unwrap_or(true)
         })
+}
+
+/// The path as it was given, one component at a time, without following links. A missing component counts as writable.
+#[cfg(unix)]
+fn given_path_writable(path: &Path, uid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let mut walked = PathBuf::new();
+    let mut saw_component = false;
+    for component in path.components() {
+        saw_component = true;
+        walked.push(component);
+        match std::fs::symlink_metadata(&walked) {
+            Ok(meta) => {
+                if meta.uid() == uid || meta.mode() & 0o022 != 0 {
+                    return true;
+                }
+            }
+            Err(_) => return true,
+        }
+    }
+    !saw_component
 }
 
 #[cfg(not(unix))]
@@ -117,9 +171,12 @@ pub fn has_user_writable_component(_path: &Path) -> bool {
     false
 }
 
-/// The child's own empty home, made for one run with mode 0700 and removed when the run ends (fix round 4, N2).
+/// Windows has no sealed folder like `/var/empty`. A run there still gets a private folder, removed when the run ends.
+/// Folder rules do not apply on Windows (a known limit).
+#[cfg(not(unix))]
 struct RunHome(PathBuf);
 
+#[cfg(not(unix))]
 impl RunHome {
     fn new() -> Result<Self, String> {
         let path = std::env::temp_dir().join(format!(
@@ -128,19 +185,59 @@ impl RunHome {
         ));
         std::fs::create_dir(&path)
             .map_err(|_| "Couldn't make an empty home for the command.".to_string())?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700))
-                .map_err(|_| "Couldn't make an empty home for the command.".to_string())?;
-        }
         Ok(Self(path))
     }
 }
 
+#[cfg(not(unix))]
 impl Drop for RunHome {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A folder the account cannot write, used as the child's home on Unix. Not created here and never removed.
+#[cfg(unix)]
+fn sealed_config_home() -> Result<PathBuf, String> {
+    let path = PathBuf::from("/var/empty");
+    if !path.is_dir() || has_user_writable_component(&path) {
+        return Err("Couldn't give the command a home you cannot write, so it wasn't run.".into());
+    }
+    Ok(path)
+}
+
+/// Homes a crashed secret run left under the temporary folder. A symlink is left alone. Anything that does not stay
+/// inside the temporary folder after links are resolved is left alone. `/var/empty` is not in that folder and is never
+/// deleted.
+pub fn remove_leftover_run_homes() {
+    let temp = std::env::temp_dir();
+    let Ok(temp_canon) = std::fs::canonicalize(&temp) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(&temp) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !name.starts_with("monocode-run-home-") {
+            continue;
+        }
+        let path = entry.path();
+        let Ok(meta) = std::fs::symlink_metadata(&path) else {
+            continue;
+        };
+        if meta.file_type().is_symlink() || !meta.is_dir() {
+            continue;
+        }
+        let Ok(canon) = std::fs::canonicalize(&path) else {
+            continue;
+        };
+        if canon == temp_canon || !canon.starts_with(&temp_canon) {
+            continue;
+        }
+        let _ = std::fs::remove_dir_all(&canon);
     }
 }
 
@@ -222,8 +319,9 @@ pub fn refuse_shell_program(program: &Path) -> bool {
 /// The card's warning for a program in a folder the person owns: anything running as them can replace it, after the
 /// approval, under the same name. `None` for a folder the account does not own (a system folder). Fix round 3, M1.
 pub fn program_folder_warning(program: &Path) -> Option<String> {
-    // Fix round 4 (N7): any folder on the way to the program counts, not only the parent's owner: a folder above it can
-    // be the one the account writes (a parent folder swapped for another).
+    // A folder on the way (after links are resolved) counts. This sees a Homebrew library beside the program only when
+    // the program itself is under Homebrew. A program in a system folder can still load a Homebrew library this check
+    // never walks.
     let folder = program.parent()?;
     has_user_writable_component(program).then(|| {
         format!(
@@ -535,13 +633,23 @@ pub fn execute_controlled(
             "The program changed since it was approved, so it wasn't run. Ask again.".into(),
         );
     }
-    // Fix round 4 (N2): the child's home is its own empty folder, and so are the two names that point config at it.
+    // Round 5 (M3): the child's home is a folder the account cannot write. A private folder under the temporary
+    // directory is writable by anything running as the account while the command starts. Unix uses `/var/empty` and
+    // points wget's config at `/dev/null`. That folder is not created here and not removed. Windows keeps a private
+    // folder; its folder rules do not apply.
+    #[cfg(unix)]
+    let home = sealed_config_home()?;
+    #[cfg(not(unix))]
     let run_home = RunHome::new()?;
-    let home = run_home.0.to_string_lossy().into_owned();
+    #[cfg(not(unix))]
+    let home = run_home.0.clone();
+    let home_text = home.to_string_lossy().into_owned();
     let mut env = allow_env(&payload.env, value);
-    env.push(("HOME".to_string(), home.clone()));
-    env.push(("CURL_HOME".to_string(), home.clone()));
-    env.push(("XDG_CONFIG_HOME".to_string(), home));
+    env.push(("HOME".to_string(), home_text.clone()));
+    env.push(("CURL_HOME".to_string(), home_text.clone()));
+    env.push(("XDG_CONFIG_HOME".to_string(), home_text));
+    #[cfg(unix)]
+    env.push(("WGETRC".to_string(), "/dev/null".to_string()));
     let needles = scrub::needles(value);
     let mut command = Command::new(program);
     command
@@ -1259,12 +1367,12 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
-    // ---- fix round 4, N2: the child never reads the account's own home. A planted `~/.curlrc` in the real home reached
-    // the child and sent the key to a second listener. The child now gets a fresh empty home, removed after the run.
+    // The child never reads the account's own home. Round 5 points HOME at a folder the account cannot write, and does
+    // not remove that folder.
 
     #[cfg(unix)]
     #[test]
-    fn the_child_runs_in_a_fresh_empty_home_that_is_removed_after_the_run() {
+    fn the_child_does_not_get_the_accounts_home_or_a_temporary_one() {
         let tmp = std::env::temp_dir().join(format!("mc-home-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&tmp).unwrap();
         let script = fixture(
@@ -1298,11 +1406,51 @@ mod tests {
             home,
             "XDG_CONFIG_HOME must name the run's own home"
         );
-        assert_eq!(line("entries"), "0", "the run's home starts empty");
         assert!(
-            !Path::new(&home).exists(),
-            "the run's home is removed after the run"
+            !Path::new(&home).starts_with(std::env::temp_dir()),
+            "the home must not be under the temporary folder: {home}"
         );
+        assert!(
+            Path::new(&home).is_dir(),
+            "the sealed home is not deleted after the run"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// Round 5 (M3): the child's home is a folder the account cannot write, not a directory under the temporary folder.
+    #[cfg(unix)]
+    #[test]
+    fn the_childs_home_is_a_folder_the_account_cannot_write() {
+        let tmp = std::env::temp_dir().join(format!("mc-sealed-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let script = fixture(
+            &tmp,
+            "sealed-home",
+            "#!/bin/sh\necho \"home=$HOME\"\necho \"curl=$CURL_HOME\"\necho \"xdg=$XDG_CONFIG_HOME\"\necho \"wgetrc=$WGETRC\"\nif touch \"$HOME/planted\" 2>/dev/null; then echo writable=yes; else echo writable=no; fi\n",
+        );
+        let payload = run_payload(vec![crate::fs::path_to_js(&script)]);
+        let outcome = execute(&payload, "sk_live_abcdefgh", &tmp).unwrap();
+        let line = |key: &str| {
+            outcome
+                .stdout
+                .text
+                .lines()
+                .find_map(|text| text.strip_prefix(&format!("{key}=")))
+                .unwrap_or("")
+                .to_string()
+        };
+        let home = line("home");
+        let temp = std::env::temp_dir();
+        assert!(
+            !Path::new(&home).starts_with(&temp),
+            "the home must not be under the temporary folder: {home}"
+        );
+        assert!(!home.contains("monocode-run-home"), "{home}");
+        assert_eq!(line("curl"), home);
+        assert_eq!(line("xdg"), home);
+        assert_eq!(line("wgetrc"), "/dev/null");
+        assert_eq!(line("writable"), "no", "{}", outcome.stdout.text);
+        assert!(Path::new(&home).is_dir(), "the sealed home is not deleted");
         let _ = std::fs::remove_dir_all(&tmp);
     }
 

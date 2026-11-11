@@ -316,10 +316,10 @@ pub fn run_main(args: &[String]) -> i32 {
 }
 
 /// The system part of where a local server's program is looked for, and the PATH it runs with: never the caller's.
+/// Homebrew comes first, so a local connector finds the Homebrew `python3` and `git` rather than the stubs in `/usr/bin`.
+/// A secret run does not use this order. Its PATH is system folders first (`run::child_path`).
 #[cfg(not(windows))]
-/// Fix round 4 (N3): the folders the system owns come first, so a program of the same name in a folder the account writes
-/// never shadows one of them. Homebrew and /usr/local come after.
-pub const SAFE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin";
+pub const SAFE_PATH: &str = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin";
 
 /// [`SAFE_PATH`] plus the account's own `~/.local/bin` (where uvx installs), taken from the user database so a caller's
 /// HOME can't point it anywhere else.
@@ -1014,11 +1014,11 @@ pub(crate) mod tests {
         assert!(seen.get(home).is_some_and(|home| !home.is_empty()));
         #[cfg(not(windows))]
         {
-            assert_eq!(
-                SAFE_PATH,
-                "/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:/usr/local/bin"
-            );
-            assert_eq!(find_on_path("env"), Some(PathBuf::from("/usr/bin/env")));
+            assert_eq!(SAFE_PATH, "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin");
+            let expected = std::env::split_paths(&safe_path())
+                .map(|dir| dir.join("env"))
+                .find(|candidate| candidate.is_file());
+            assert_eq!(find_on_path("env"), expected);
         }
         #[cfg(windows)]
         {
