@@ -100,7 +100,7 @@ it("counts an open decision and a task that needs you, and skips a removed one",
 it("keeps a ready-to-merge decision, and a chat asking the same thing is not a second item", () => {
   const list = needsYou(factsFromParts(parts(
     { decisions: [decision("hivra", "m217", "Ready to merge #217.")] },
-    { chats: [chat("Ready to merge #217.")] },
+    { chats: [{ ...chat("Ready to merge #217."), sessionId: "lead" }] },
   )), NOW);
   expect(list).toHaveLength(1);
   expect(list[0]?.kind).toBe("merge");

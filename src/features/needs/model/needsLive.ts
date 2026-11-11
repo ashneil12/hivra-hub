@@ -13,7 +13,7 @@ import { findMono } from "../../monos/model/mono";
 import { openFromHome } from "../../home/model/opener";
 import { parseTask, taskReadKeys, type HomeDecision, type HomeProject, type HomeTask } from "../../home/model/lines";
 import type { AskRow } from "../../hub/model/chatQuestions";
-import { gitdirFromGitFile, joinRepoPath, originUrlFromGitConfig, repoFromOriginUrl } from "./projectRepos";
+import { commonGitDir, gitdirFromGitFile, joinRepoPath, originUrlFromGitConfig, repoFromOriginUrl } from "./projectRepos";
 import { allKeptPages, needsAllow, requestOpenPage, usePagesVersion, type Page } from "../../pages/model/pages";
 import { PR_WATCHES_CHANGED, tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
@@ -140,24 +140,28 @@ function rowFact(chat: WaitingChat, row: AskRow, id: string): QuestionFact | App
     open: { where: "chat" as const, id: chat.sessionId },
     onOpen: () => openWaitingChat(chat.sessionId),
     routedToLead: chat.routedToLead,
+    sessionId: chat.sessionId,
   };
   if (isErrand(chat)) return base;
   if (accessAsk(row.question)) return { ...base, reviewOnly: true };
+  const pick = row.pick?.trim() ?? "";
+  const seen = { requestId: chat.requestId, question: row.question, pick: row.pick ?? null };
   if (row.redLine) {
+    if (pick && pick !== row.question.trim()) return base;
     return {
       ...base,
       risky: true,
       allowLabel: "Approve once",
-      onAllow: () => { void answerRow(chat.sessionId, row, approvalMessage("approve-once", row)); },
-      onDeny: () => { void answerRow(chat.sessionId, row, approvalMessage("deny", row)); },
+      onAllow: () => { void answerRow(chat.sessionId, row, approvalMessage("approve-once", row), "words", seen); },
+      onDeny: () => { void answerRow(chat.sessionId, row, approvalMessage("deny", row), "words", seen); },
     };
   }
-  const pick = row.pick?.trim();
   if (!pick) return base;
+  const shown = pickButton(pick);
   return {
     ...base,
-    asMerge: MERGE_PHRASE.test(row.question),
-    onAnswer: () => { void answerRow(chat.sessionId, row, pick, "pick"); },
+    ...shown,
+    onAnswer: () => { void answerRow(chat.sessionId, row, pick, "pick", seen); },
   };
 }
 
@@ -172,17 +176,21 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
     open: { where: "chat" as const, id: chat.sessionId },
     onOpen: () => openWaitingChat(chat.sessionId),
     routedToLead: chat.routedToLead,
+    sessionId: chat.sessionId,
   };
   if (isErrand(chat)) return base;
   if (accessAsk(question)) return { ...base, reviewOnly: true };
   if (chat.source === "permission") {
+    const seen = { requestId: chat.requestId, question: chat.question };
     return {
       ...base,
-      onAllow: () => { answerPermission(chat.sessionId, "allow"); },
-      onDeny: () => { answerPermission(chat.sessionId, "deny"); },
+      onAllow: () => { answerPermission(chat.sessionId, "allow", seen); },
+      onDeny: () => { answerPermission(chat.sessionId, "deny", seen); },
     };
   }
+  const pick = chat.pick?.trim() ?? "";
   if (chat.redLine || chat.gate?.kind === "approval") {
+    if (pick && pick !== question.trim()) return base;
     const seen = { question: chat.question, askedAt: chat.askedAt, pick: chat.pick };
     return {
       ...base,
@@ -191,11 +199,19 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
       onDeny: () => { void answerApproval(chat.sessionId, "deny", seen); },
     };
   }
+  if (!pick) return base;
   return {
     ...base,
-    asMerge: MERGE_PHRASE.test(question),
-    ...(chat.pick ? { onAnswer: () => { void takePick(chat.sessionId, { by: "ash" }); } } : {}),
+    ...pickButton(pick),
+    onAnswer: () => { void takePick(chat.sessionId, { by: "ash", seen: { requestId: chat.requestId, question: chat.question, pick: chat.pick ?? null } }); },
   };
+}
+
+/** The button is the pick. A long pick is shortened; the full text stays on the button. */
+function pickButton(pick: string): { answerLabel: string; answerTitle: string } {
+  const full = pick.replace(/\s+/g, " ").trim();
+  const label = full.length > 80 ? `${full.slice(0, 77).trimEnd()}...` : full;
+  return { answerLabel: label, answerTitle: full };
 }
 
 function keepFact(fact: QuestionFact | ApprovalFact, questions: QuestionFact[], approvals: ApprovalFact[]) {
@@ -238,6 +254,93 @@ function openDecision(decision: Decision, projectId: string | undefined): () => 
   return () => openFromHome({ kind: "inbox", projectId: projectId ?? "", decisionKey: decision.decisionKey });
 }
 
+const ALLOW_WORDS = ["Allow always", "Allow once", "Allow"];
+
+function approvalDecision(
+  decision: Decision,
+  base: { id: string; projectId?: string; monoId?: string; who: string; at: number; sentence: string; decisionKey: string },
+  named: string | undefined,
+  open: () => void,
+): ApprovalFact {
+  const literal = decision.options.find((option) => ALLOW_WORDS.includes(option));
+  if (literal) {
+    const primary = named && ALLOW_WORDS.includes(named) ? named : literal;
+    const second = decision.options.find((option) => option !== primary);
+    return {
+      ...base,
+      allowLabel: primary,
+      onAllow: sendOption(decision, primary),
+      ...(second ? { denyLabel: second, onDeny: sendOption(decision, second) } : { onOpen: open }),
+    };
+  }
+  if (decision.options.includes("Yes") || decision.options.includes("No")) {
+    const yes = decision.options.includes("Yes");
+    const no = decision.options.includes("No");
+    return {
+      ...base,
+      ...(yes ? { onAllow: sendOption(decision, "Yes") } : { onOpen: open }),
+      ...(no ? { onDeny: sendOption(decision, "No") } : {}),
+    };
+  }
+  if (named) {
+    const second = decision.options.find((option) => option !== named);
+    return {
+      ...base,
+      allowLabel: named,
+      onAllow: sendOption(decision, named),
+      ...(second ? { denyLabel: second, onDeny: sendOption(decision, second) } : { onOpen: open }),
+    };
+  }
+  return { ...base, onOpen: open };
+}
+
+function mergeDecision(
+  decision: Decision,
+  base: { id: string; projectId?: string; monoId?: string; who: string; at: number; sentence: string; decisionKey: string },
+  named: string | undefined,
+  other: string | undefined,
+  open: () => void,
+): QuestionFact {
+  const askedBy = decision.askedBy;
+  const hasMerge = decision.options.includes("Merge");
+  const hasNotYet = decision.options.includes("Not yet");
+  if (hasMerge || hasNotYet) {
+    return {
+      ...base,
+      fromDecision: true,
+      askedBy,
+      asMerge: true,
+      ...(hasMerge ? { onAnswer: sendOption(decision, "Merge") } : {}),
+      ...(hasNotYet ? { onNotYet: sendOption(decision, "Not yet") } : {}),
+      ...(!hasMerge ? { onOpen: open } : {}),
+    };
+  }
+  if (decision.options.includes("Yes") || decision.options.includes("No")) {
+    const yes = decision.options.includes("Yes");
+    const no = decision.options.includes("No");
+    return {
+      ...base,
+      fromDecision: true,
+      askedBy,
+      asMerge: true,
+      ...(yes ? { onAnswer: sendOption(decision, "Yes") } : { onOpen: open }),
+      ...(no ? { onNotYet: sendOption(decision, "No") } : {}),
+    };
+  }
+  if (named) {
+    return {
+      ...base,
+      fromDecision: true,
+      askedBy,
+      answerLabel: named,
+      answerTitle: named,
+      onAnswer: sendOption(decision, named),
+      ...(other ? { onNotYet: sendOption(decision, other), otherLabel: other } : { onOpen: open }),
+    };
+  }
+  return { ...base, fromDecision: true, askedBy, onOpen: open };
+}
+
 function decisionFacts(
   decisions: readonly Decision[],
   list: readonly ProjectRef[],
@@ -259,18 +362,20 @@ function decisionFacts(
     const named = namedOption(decision);
     const other = named ? decision.options.find((option) => option !== named) : undefined;
     const open = openDecision(decision, base.projectId);
+    const askedBy = decision.askedBy;
     if (isPersonOnlyDecisionKey(decision.decisionKey)) {
       questions.push(parked.has(decision.decisionKey)
-        ? { ...base, fromDecision: true, gateKey: decision.decisionKey, onOpen: open }
-        : { ...base, fromDecision: true, onOpen: open });
+        ? { ...base, fromDecision: true, askedBy, gateKey: decision.decisionKey, onOpen: open }
+        : { ...base, fromDecision: true, askedBy, onOpen: open });
       continue;
     }
     if (parked.has(decision.decisionKey)) {
       questions.push({
         ...base,
         fromDecision: true,
+        askedBy,
         gateKey: decision.decisionKey,
-        ...(named ? { onAnswer: sendOption(decision, named) } : {}),
+        onOpen: open,
       });
       continue;
     }
@@ -279,30 +384,27 @@ function decisionFacts(
       continue;
     }
     if (APPROVAL_PHRASE.test(decision.question)) {
-      approvals.push({
-        ...base,
-        ...(named ? { onAllow: sendOption(decision, named) } : {}),
-        ...(decision.options.includes("No") ? { onDeny: sendOption(decision, "No") } : {}),
-        ...(!named ? { onOpen: open } : {}),
-      });
+      approvals.push(approvalDecision(decision, base, named, open));
       continue;
     }
     const merge = MERGE_PHRASE.test(decision.question);
     if (merge) {
-      questions.push({
-        ...base,
-        fromDecision: true,
-        asMerge: true,
-        ...(named ? { onAnswer: sendOption(decision, named) } : { onOpen: open }),
-        ...(named && other ? { onNotYet: sendOption(decision, other) } : {}),
-      });
+      questions.push(mergeDecision(decision, base, named, other, open));
       continue;
     }
     if (named) {
-      questions.push({ ...base, fromDecision: true, answerLabel: named, onAnswer: sendOption(decision, named) });
+      questions.push({
+        ...base,
+        fromDecision: true,
+        askedBy,
+        answerLabel: named,
+        answerTitle: named,
+        onAnswer: sendOption(decision, named),
+        onOpen: open,
+      });
       continue;
     }
-    questions.push({ ...base, fromDecision: true, onOpen: open });
+    questions.push({ ...base, fromDecision: true, askedBy, onOpen: open });
   }
   return { questions, approvals };
 }
@@ -408,6 +510,16 @@ function ownedRepos(list: readonly ProjectRef[]): Set<string> {
   return repos;
 }
 
+/** Each project's own origin. A review is compared with this, not with every repo in the set. */
+function originsByProject(list: readonly ProjectRef[]): Map<string, string> {
+  const map = new Map<string, string>();
+  for (const project of list) {
+    const named = repoByProject.get(project.id) ?? repoFromOriginUrl(project.origin);
+    if (named) map.set(project.id, named);
+  }
+  return map;
+}
+
 function homeDecision(decision: HomeDecision): Decision {
   return {
     project: decision.project,
@@ -464,11 +576,14 @@ export function factsFromHome(
   const fromTasks = taskFacts(tasks, list);
   const chats = factsFromChats(safeChats());
   return {
+    stopped: [],
     questions: [...fromDecisions.questions, ...fromTasks.questions, ...chats.questions],
-    approvals: [...fromDecisions.approvals, ...chats.approvals],
-    reviews: fromTasks.reviews,
+    approvals: [...fromDecisions.approvals, ...chats.approvals, ...pageFacts(safePages(), list)],
+    reviews: [...fromTasks.reviews, ...watchFacts(remote.watches, list)],
+    checks: cardFacts(remote.cards, list, remote.decisions),
     knownProjects: new Set(list.map((project) => project.id)),
-    ownRepos: new Set<string>(),
+    ownRepos: ownedRepos(list),
+    ownRepoByProject: originsByProject(list),
   };
 }
 
@@ -508,6 +623,7 @@ export function factsFromParts(parts: NeedsParts): NeedsSources {
     checks: cardFacts(parts.remote.cards, list, parts.remote.decisions),
     running: runningFacts(parts.delegations, list),
     ownRepos: ownedRepos(list),
+    ownRepoByProject: originsByProject(list),
     knownProjects: new Set(list.map((project) => project.id)),
   };
 }
@@ -683,15 +799,22 @@ async function readGitText(path: string): Promise<string | undefined> {
 
 /** A repo name, null when the folder was read and has no origin, undefined when the read failed. */
 async function originOfFolder(folder: string): Promise<string | null | undefined> {
+  const pointer = await readGitText(joinRepoPath(folder, ".git"));
+  const gitdir = pointer !== undefined ? gitdirFromGitFile(pointer) : undefined;
+  if (gitdir) {
+    const resolved = joinRepoPath(folder, gitdir);
+    const commonText = await readGitText(joinRepoPath(resolved, "commondir"));
+    if (commonText === undefined) return undefined;
+    const common = commonGitDir(resolved, commonText);
+    if (!common) return null;
+    const linked = await readGitText(joinRepoPath(common, "config"));
+    if (linked === undefined) return undefined;
+    return repoFromOriginUrl(originUrlFromGitConfig(linked)) ?? null;
+  }
   const config = await readGitText(joinRepoPath(folder, ".git/config"));
   if (config !== undefined) return repoFromOriginUrl(originUrlFromGitConfig(config)) ?? null;
-  const pointer = await readGitText(joinRepoPath(folder, ".git"));
   if (pointer === undefined) return undefined;
-  const gitdir = gitdirFromGitFile(pointer);
-  if (!gitdir) return null;
-  const linked = await readGitText(joinRepoPath(joinRepoPath(folder, gitdir), "config"));
-  if (linked === undefined) return undefined;
-  return repoFromOriginUrl(originUrlFromGitConfig(linked)) ?? null;
+  return null;
 }
 
 async function readOrigins(list: readonly ProjectRef[]): Promise<{ id: string; repo: string | null | undefined }[]> {

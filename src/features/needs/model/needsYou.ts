@@ -5,7 +5,7 @@
 //    They share `about`. Keep the question.
 // 2. A gate key in the decision store and in the gate log is one check. A chat cannot answer a
 //    delivery gate key, so a chat row that names one is that check, not a question.
-// 3. A chat and a decision that ask the same thing in the same project are the decision.
+// 3. A chat and a decision that ask the same thing are one item only when that chat asked the decision.
 // 4. The same key collapses. When two kinds collide, keep the higher one:
 //    check, then question, then approval, then merge, then review, then stopped.
 // 5. A chat routed to its Lead is not Ash's. A grey waiting worker (With a Lead, retrying, stalled)
@@ -22,7 +22,7 @@ import { ALWAYS_ASK_REASON, questionVeto } from "../../autopilot/model/reviewerR
 
 export type NeedsKind = "stopped" | "question" | "approval" | "merge" | "review" | "check";
 
-export type NeedsAction = { label: string; run: () => void };
+export type NeedsAction = { label: string; run: () => void; title?: string };
 
 export type NeedsOpen =
   | { where: "chat"; id: string }
@@ -42,6 +42,8 @@ export type NeedsItem = {
   open?: NeedsOpen;
   /** Set when the item is a decision. Home opens the inbox on this key. */
   decisionKey?: string;
+  /** Set when the item is a delivery check. Home opens that check. */
+  gateKey?: string;
 };
 
 type FactBase = {
@@ -75,9 +77,16 @@ export type QuestionFact = FactBase & {
   decisionKey?: string;
   /** The one-tap button names this option, and that is the answer it sends. */
   answerLabel?: string;
+  /** Full words when the label is shortened. */
+  answerTitle?: string;
   onAnswer?: () => void;
-  /** The other answer. A merge shows this as Not yet. */
+  /** The other answer. A merge shows this as Not yet unless otherLabel names it. */
   onNotYet?: () => void;
+  otherLabel?: string;
+  /** The chat this ask came from. A decision collapses with it only when askedBy matches. */
+  sessionId?: string;
+  /** The chat that asked this decision. */
+  askedBy?: string;
 };
 
 export type ApprovalFact = FactBase & {
@@ -88,6 +97,8 @@ export type ApprovalFact = FactBase & {
   reviewOnly?: boolean;
   /** Button words for the yes choice. A red-line row of a card says Approve once. */
   allowLabel?: string;
+  /** Button words for the other choice. Absent means Deny. */
+  denyLabel?: string;
   /** Set when this ask is a decision. Home opens the inbox on this key. */
   decisionKey?: string;
   onAllow?: () => void;
@@ -120,8 +131,10 @@ export type NeedsSources = {
   reviews?: readonly ReviewFact[];
   checks?: readonly CheckFact[];
   running?: readonly RunningFact[];
-  /** Repos that belong to one of Ash's projects. */
+  /** Repos that belong to one of Ash's projects. Used when ownRepoByProject is absent. */
   ownRepos?: ReadonlySet<string>;
+  /** Each project's own origin. When set, a review counts only against that project's repo. */
+  ownRepoByProject?: ReadonlyMap<string, string>;
   /** Hub project ids. A review with no repo counts when its project is one of these. */
   knownProjects?: ReadonlySet<string>;
   /** Present only so a caller can prove they add nothing. Never read. */
@@ -179,7 +192,8 @@ export function plainSentence(text: string): string {
 }
 
 function sentenceKey(projectId: string | undefined, sentence: string): string {
-  return `${projectId ?? ""}\n${sentence.trim().toLowerCase()}`;
+  const full = sentence.replace(/\s+/g, " ").trim().toLowerCase();
+  return `${projectId ?? ""}\n${full}`;
 }
 
 type Draft = NeedsItem & {
@@ -188,10 +202,21 @@ type Draft = NeedsItem & {
   same?: string;
   fromDecision?: boolean;
   decisionKey?: string;
+  sessionId?: string;
+  askedBy?: string;
 };
 
 function actionsOf(list: NeedsAction[]): NeedsAction[] {
-  return list.filter((action) => action.label.trim()).slice(0, 2);
+  const seen = new Set<string>();
+  const out: NeedsAction[] = [];
+  for (const action of list) {
+    const label = action.label.trim();
+    if (!label || seen.has(label)) continue;
+    seen.add(label);
+    out.push({ ...action, label });
+    if (out.length === 2) break;
+  }
+  return out;
 }
 
 function openAction(label: string, run: (() => void) | undefined): NeedsAction[] {
@@ -253,10 +278,7 @@ function questionItem(fact: QuestionFact, now: number): Draft | undefined {
       who,
       at: finite(fact.at, now),
       sentence,
-      actions: actionsOf([
-        ...(fact.onAnswer ? [{ label: "Approve", run: fact.onAnswer }] : []),
-        ...openAction("Open", fact.onOpen),
-      ]),
+      actions: openAction("Open", fact.onOpen),
       open: fact.open,
       about: fact.about,
       gateKey,
@@ -279,14 +301,21 @@ function questionItem(fact: QuestionFact, now: number): Draft | undefined {
         ...openAction("Open", fact.onOpen),
       ]
       : [
-        ...(fact.onAnswer ? [{ label: fact.answerLabel?.trim() || "Answer", run: fact.onAnswer }] : []),
+        ...(fact.onAnswer ? [{
+          label: fact.answerLabel?.trim() || "Answer",
+          run: fact.onAnswer,
+          ...(fact.answerTitle ? { title: fact.answerTitle } : {}),
+        }] : []),
+        ...(fact.onNotYet ? [{ label: fact.otherLabel?.trim() || "Not yet", run: fact.onNotYet }] : []),
         ...openAction("Open", fact.onOpen),
       ]),
     open: fact.open,
     about: fact.about,
-    same: sentenceKey(fact.projectId, sentence),
+    same: sentenceKey(fact.projectId, fact.sentence),
     fromDecision: fact.fromDecision,
     decisionKey: fact.decisionKey,
+    sessionId: fact.sessionId,
+    askedBy: fact.askedBy,
   };
 }
 
@@ -311,7 +340,7 @@ function approvalItem(fact: ApprovalFact, now: number): Draft | undefined {
       ? openAction("Review", fact.onOpen)
       : [
         ...(fact.onAllow ? [{ label: allow, run: fact.onAllow }] : []),
-        ...(fact.onDeny ? [{ label: "Deny", run: fact.onDeny }] : []),
+        ...(fact.onDeny ? [{ label: fact.denyLabel?.trim() || "Deny", run: fact.onDeny }] : []),
         ...openAction("Open", fact.onOpen),
       ]),
     open: fact.open,
@@ -342,14 +371,38 @@ function mergeItem(fact: MergeFact, now: number): Draft | undefined {
   };
 }
 
+/** A checkout may still say monocode-hub after the GitHub repo was renamed. No network. */
+const REPO_ALIAS: Record<string, string> = {
+  "ashneil12/monocode-hub": "ashneil12/hivra-hub",
+  "ashneil12/hivra-hub": "ashneil12/monocode-hub",
+};
+
+/** Same repo, ignoring case, including one known rename. */
+export function sameRepo(left: string, right: string): boolean {
+  const a = left.trim().toLowerCase();
+  const b = right.trim().toLowerCase();
+  if (!a || !b) return false;
+  return a === b || REPO_ALIAS[a] === b;
+}
+
+function reviewOwned(repo: string, projectId: string | undefined, sources: NeedsSources): boolean {
+  if (!repo) return projectId != null && sources.knownProjects?.has(projectId) === true;
+  const map = sources.ownRepoByProject;
+  if (map) {
+    const own = projectId ? map.get(projectId) : undefined;
+    return own != null && sameRepo(repo, own);
+  }
+  for (const own of sources.ownRepos ?? []) {
+    if (sameRepo(repo, own)) return true;
+  }
+  return false;
+}
+
 function reviewItem(fact: ReviewFact, sources: NeedsSources, now: number): Draft | undefined {
   const repo = fact.repo.trim();
   const projectId = fact.projectId || undefined;
-  // A named repo counts only when it is one of the projects' own repos. The project a watch was filed under is not enough.
-  const owned = repo
-    ? sources.ownRepos?.has(repo) === true
-    : projectId != null && sources.knownProjects?.has(projectId) === true;
-  if (!owned) return undefined;
+  // A named repo counts only against that project's own origin, not every repo Ash has.
+  if (!reviewOwned(repo, projectId, sources)) return undefined;
   const id = fact.id.trim();
   if (!id) return undefined;
   const sentence = plainSentence(fact.sentence);
@@ -394,8 +447,13 @@ function checkItem(fact: CheckFact, now: number): Draft | undefined {
 function collapse(drafts: Draft[]): NeedsItem[] {
   const claimed = new Set(drafts.filter((row) => row.kind !== "stopped" && row.about).map((row) => row.about));
   let rows = drafts.filter((row) => !(row.kind === "stopped" && row.about && claimed.has(row.about)));
-  const decisions = new Set(rows.filter((row) => row.fromDecision && row.same).map((row) => row.same));
-  rows = rows.filter((row) => row.fromDecision || !row.same || !decisions.has(row.same));
+  const decisions = rows.filter((row) => row.fromDecision && row.same);
+  rows = rows.filter((row) => {
+    if (row.fromDecision || !row.same) return true;
+    const session = row.sessionId?.trim() ?? "";
+    if (!session) return true;
+    return !decisions.some((decision) => decision.same === row.same && decision.askedBy?.trim() === session);
+  });
   const kept = new Map<string, Draft>();
   for (const row of rows) {
     const key = row.gateKey ? `check:${row.gateKey}` : row.key;
@@ -418,6 +476,7 @@ function collapse(drafts: Draft[]): NeedsItem[] {
       actions: row.actions,
       open: row.open,
       ...(row.decisionKey ? { decisionKey: row.decisionKey } : {}),
+      ...(row.gateKey ? { gateKey: row.gateKey } : {}),
     }))
     .sort((a, b) => urgency(a.kind) - urgency(b.kind) || a.at - b.at || a.key.localeCompare(b.key));
 }

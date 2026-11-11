@@ -50,6 +50,26 @@ export function gitdirFromGitFile(text: string): string | undefined {
   return dir;
 }
 
+/**
+ * The main git dir a worktree or submodule `.git` file may follow.
+ * Only `.git/worktrees/<name>` and `.git/modules/<name>`. Anything else is refused.
+ */
+export function commonGitDir(gitdir: string, commondirText: string): string | undefined {
+  const rel = commondirText.replace(/\r/g, "").trim();
+  if (!rel || rel.includes("\0") || rel.includes("\n")) return undefined;
+  const git = joinRepoPath(gitdir, ".");
+  const common = joinRepoPath(git, rel);
+  const slash = git.includes("\\") && !git.includes("/") ? "\\" : "/";
+  for (const kind of ["worktrees", "modules"]) {
+    const prefix = `${common}${slash}${kind}${slash}`;
+    if (!git.startsWith(prefix)) continue;
+    const name = git.slice(prefix.length);
+    if (!name || name.includes("/") || name.includes("\\") || name === "." || name === "..") continue;
+    return common;
+  }
+  return undefined;
+}
+
 /** Join a folder and a git path. An absolute target stays absolute. `..` is resolved. */
 export function joinRepoPath(base: string, rel: string): string {
   const target = rel.trim();

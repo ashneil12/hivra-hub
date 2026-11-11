@@ -192,8 +192,8 @@ it("collapses a gate key in the decision store and the gate log into one check",
 it("keeps the decision when a chat asks the same question in the same project", () => {
   const items = needsYou(sources({
     questions: [
-      { id: "chat-1", projectId: "exo", who: "EXO lead", at: NOW, sentence: "Ship the hit flash?" },
-      { id: "dec-1", projectId: "exo", who: "EXO lead", at: NOW - 1, sentence: "Ship the hit flash?", fromDecision: true },
+      { id: "chat-1", projectId: "exo", who: "EXO lead", at: NOW, sentence: "Ship the hit flash?", sessionId: "lead-exo" },
+      { id: "dec-1", projectId: "exo", who: "EXO lead", at: NOW - 1, sentence: "Ship the hit flash?", fromDecision: true, askedBy: "lead-exo" },
     ],
   }), NOW);
   expect(items).toHaveLength(1);
