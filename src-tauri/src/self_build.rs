@@ -472,6 +472,7 @@ fn deliver(repo: &Path) -> Result<(), String> {
         repo.to_string_lossy().into_owned(),
         None,
         Some("wait".into()),
+        Some(true),
     )?;
     Ok(())
 }
