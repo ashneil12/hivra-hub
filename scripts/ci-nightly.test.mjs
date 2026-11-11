@@ -185,9 +185,22 @@ test("a nightly run builds both images and then the clean install", () => {
 test("a push to main and a ready pull request that changes packaging start every job and both images", () => {
   for (const name of ["push to main", "ready pull request that changes packaging"]) {
     const { results, images } = simulate(RUNS[name]);
-    for (const job of jobNames(ci)) assert.equal(results[job], "success", `${name}: ${job}`);
+    for (const job of jobNames(ci)) {
+      // The browser tests run only in the pre-ship run (see the next test).
+      const expected = job === "browser" ? "skipped" : "success";
+      assert.equal(results[job], expected, `${name}: ${job}`);
+    }
     assert.deepEqual(images, IMAGES_ALL, name);
   }
+});
+
+test("the browser tests run only in the pre-ship run, never on a pull request, a push or a schedule", () => {
+  const ran = (run) => simulate(run).results.browser;
+  assert.equal(ran({ eventName: "workflow_dispatch", draft: null, full: "true", images: IMAGES_ALL }), "success");
+  for (const name of ["push to main", "ready pull request that changes packaging", "ready pull request that does not", "draft pull request", "nightly run"]) {
+    assert.equal(ran(RUNS[name]), "skipped", name);
+  }
+  assert.match(onBlock(ci), /\n {2}workflow_dispatch:\n/);
 });
 
 test("a ready pull request that does not touch packaging still builds the production image, and nothing more", () => {
@@ -195,7 +208,10 @@ test("a ready pull request that does not touch packaging still builds the produc
   assert.equal(results.rpm, "success", "the production build runs on every pull request");
   assert.deepEqual(images, IMAGES_ONE);
   assert.equal(results["rpm-clean-install"], "skipped");
-  for (const job of [...OTHER_JOBS, "rpm-changes", "ci-ok"]) assert.equal(results[job], "success", job);
+  for (const job of [...OTHER_JOBS.filter((job) => job !== "browser"), "rpm-changes", "ci-ok"]) {
+    assert.equal(results[job], "success", job);
+  }
+  assert.equal(results.browser, "skipped", "the browser tests never run on a pull request");
 });
 
 test("a draft pull request starts nothing but ci-ok", () => {
@@ -238,5 +254,29 @@ test("with cross-platform CI off (the default), no Linux packaging job starts on
     for (const job of ["appimage", "rpm-changes", "rpm", "rpm-clean-install"]) {
       assert.equal(results[job], "skipped", `${label}: ${job} started with HUB_CROSS_PLATFORM_CI unset`);
     }
+  }
+});
+
+test("a merge into main cancels the older main run, but nothing cancels the pre-ship or the nightly run", () => {
+  const match = /\nconcurrency:\n {2}group: (.+)\n {2}cancel-in-progress: true\n/.exec(ci);
+  assert.ok(match, "ci.yml needs a top-level concurrency group with cancel-in-progress");
+  // The group is a string with ${{ }} parts: evaluate each part and join them, as GitHub does.
+  const group = (event_name, extra = {}) => {
+    const github = {
+      workflow: "CI",
+      event_name,
+      ref: "refs/heads/main",
+      run_id: extra.run_id ?? 1,
+      // GitHub reads a missing property as null; an empty object gives JavaScript the same answer.
+      event: { pull_request: extra.pr ?? {} },
+    };
+    return match[1].replace(/\$\{\{ (.+?) \}\}/g, (_, expression) => String(evaluate(expression, { github, needs: {} })));
+  };
+  assert.equal(group("push", { run_id: 1 }), group("push", { run_id: 2 }), "two pushes to main share a group");
+  assert.equal(group("pull_request", { pr: { number: 7 }, run_id: 1 }), group("pull_request", { pr: { number: 7 }, run_id: 2 }));
+  assert.notEqual(group("pull_request", { pr: { number: 7 } }), group("pull_request", { pr: { number: 8 } }));
+  for (const event of ["workflow_dispatch", "schedule"]) {
+    assert.notEqual(group(event, { run_id: 1 }), group(event, { run_id: 2 }), `${event} runs never share a group`);
+    assert.notEqual(group(event, { run_id: 1 }), group("push", { run_id: 1 }), `a push never cancels a ${event} run`);
   }
 });

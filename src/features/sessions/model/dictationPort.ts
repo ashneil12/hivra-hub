@@ -1,7 +1,8 @@
 // WP-131: the desktop port. Speech stays in the OS process. This module only
 // carries text the recogniser already produced, and only inside the app.
 import { invoke, isTauri } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWebviewWindow } from "@tauri-apps/api/webviewWindow";
 import {
   DICTATION_NOT_HERE,
   DICTATION_STOPPED,
@@ -73,7 +74,9 @@ export const tauriDictationPort: DictationPort = {
     let unlisten: UnlistenFn | null = null;
     let dead = false;
     if (!inDesktopApp()) return () => {};
-    void listen<DictationChunk>(DICTATION_EVENT, (event) => {
+    // LOW 1 (round 3): this window's own listener. A global listen() also receives events emitted to other windows,
+    // so another window's dictation words would reach this one.
+    void getCurrentWebviewWindow().listen<DictationChunk>(DICTATION_EVENT, (event) => {
       const payload = event.payload;
       if (!payload || typeof payload.session !== "number" || typeof payload.text !== "string") return;
       onChunk({

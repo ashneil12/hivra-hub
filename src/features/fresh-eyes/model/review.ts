@@ -21,6 +21,8 @@ export type ReviewerTurn = {
   history: readonly [];
   /** Round 7: the reviewed project's folder, which the crew gate judges the reviewer against. */
   folder?: string;
+  /** The chat that asked for the review. Its grant stays in force for the reviewer. */
+  parentSession?: string;
 };
 
 export type ReviewerPort = {
@@ -165,6 +167,7 @@ export async function runReview(input: {
   choice: { model: string | null; effort: string | null };
   port: ReviewerPort;
   folder?: string;
+  parentSession?: string;
 }): Promise<ReviewRun> {
   const plan = input.plan.replace(/\r\n/g, "\n").trim();
   if (!plan) return { status: "empty", findings: [], failed: [], retry: false, calls: [] };
@@ -180,6 +183,7 @@ export async function runReview(input: {
       prompt: reviewerPrompt({ persona, plan, reading: input.reading }),
       history: [],
       ...(input.folder ? { folder: input.folder } : {}),
+      ...(input.parentSession?.trim() ? { parentSession: input.parentSession.trim() } : {}),
     };
     calls.push(turn);
     try {

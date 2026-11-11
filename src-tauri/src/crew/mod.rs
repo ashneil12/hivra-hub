@@ -22,7 +22,13 @@ mod review_r10_tests;
 #[cfg(test)]
 mod review_r11_tests;
 #[cfg(test)]
+mod review_r12_lead_tests;
+#[cfg(test)]
 mod review_r12_tests;
+#[cfg(test)]
+mod review_r247_r1_tests;
+#[cfg(test)]
+mod review_r247_r2_tests;
 #[cfg(test)]
 mod tests;
 

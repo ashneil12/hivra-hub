@@ -947,6 +947,18 @@ pub fn settle(conn: &mut Connection, input: SettleInput, now: i64) -> Result<Cha
         detail["error_class"] = json!(class);
     }
     row.note(now, &by, "settled", detail);
+    // A plan-less fix round writes no new verdict when the facts are clean, so the first round's
+    // send-back would still be on the row when the report is delivered. A completed delivery clears
+    // that failure. A verdict that is not a send-back stays as it is. The log keeps the reason.
+    // A resumed turn, a boot settle, or a followed brief delivers without running the gates again.
+    // That must not clear a send-back on a row that has a plan. A plan-less fix still clears here.
+    if row.state == COMPLETED
+        && row.gate_verdict.as_deref() == Some(crate::firstmate::status::GateVerdict::FAILED)
+        && crate::firstmate::status::sent_back_on(&row)
+        && crate::firstmate::gates::plan_of(&tx, &row.id)?.is_none()
+    {
+        row.gate_verdict = Some(crate::firstmate::status::GateVerdict::PASSED.into());
+    }
     row.touch(now);
     save(&tx, &row)?;
     // WP-203: a completed security review is recorded here, by the app, from this row's result. No other path writes it.

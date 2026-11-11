@@ -1,7 +1,7 @@
 // Home. Orbit's column and entrance, restyled: no counters, no status icons, no view-all links.
 // HomePage.tsx imports Orbit data hooks and shows those, so this screen is not a copy of that file.
 
-import { useState, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { sectionKey, type HomeArrangement, type SectionRef } from "../model/arrangement";
 import type { HomeLine, HomeLineKind } from "../model/lines";
 import { FREE_UP_SPACE } from "../../monos/model/builderScale";
@@ -9,6 +9,8 @@ import { RAISE_LIMIT } from "../../usage/model/spendGate";
 import { ArrowUp } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
+import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import { oneTapRefusal, subscribeOneTapRefusal } from "../../needs/model/oneTapNotice";
 import "./home.css";
 
 const TITLE: Record<string, string> = {
@@ -33,6 +35,152 @@ export function sectionTitle(ref: SectionRef, catalog: readonly CatalogPanel[]):
 function noteLine(note: HomeNote): HomeLine {
   const kind: HomeLineKind = note.kind === "doc" || note.kind === "chat" || note.kind === "decision" ? note.kind : "moving";
   return { id: `${note.kind}:${note.id}`, kind, text: note.text, projectId: note.projectId, target: note.id, at: 0 };
+}
+
+const ROW_ACTIONS = 3;
+
+// Blue primary (bg-accent, black text). Not the white primary-action fill.
+const PRIMARY_BUTTON = "shrink-0 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black";
+
+function OneTapRefusal() {
+  const text = useSyncExternalStore(subscribeOneTapRefusal, oneTapRefusal, () => undefined);
+  if (!text) return null;
+  return <p data-needs-refusal className="border-t border-stroke px-3 py-1.5 text-[12px] text-content/70">{text}</p>;
+}
+
+function NeedActions({ actions }: { actions: readonly { label: string; run: () => void; title?: string; ariaLabel?: string }[] }) {
+  return actions.slice(0, ROW_ACTIONS).map((action, index) => {
+    const run = (event: { stopPropagation: () => void }) => {
+      event.stopPropagation();
+      action.run();
+    };
+    // A stopped row and the way out stay bordered. A one tap keeps the blue button.
+    const bordered = action.label === "Open chat" || action.label === "Open";
+    const name = action.ariaLabel || action.title || action.label;
+    if (index === 0 && !bordered) {
+      return (
+        <button
+          key={`${index}:${action.label}`}
+          type="button"
+          data-needs-answer=""
+          title={name}
+          aria-label={name}
+          className={PRIMARY_BUTTON}
+          onClick={run}
+        >
+          {action.label}
+        </button>
+      );
+    }
+    return (
+      <SecondaryButton key={`${index}:${action.label}`} title={name} aria-label={name} {...(index === 0 ? { "data-needs-answer": "" } : {})} onClick={run}>
+        {action.label}
+      </SecondaryButton>
+    );
+  });
+}
+
+function kindChip(kind: string | undefined): { label: string; className: string } | undefined {
+  switch (kind) {
+    case "stopped":
+      return { label: "Stopped", className: "bg-red-400/15 text-red-400" };
+    case "merge":
+      return { label: "Ready to merge", className: "bg-emerald-400/15 text-emerald-300" };
+    case "question":
+      return { label: "Question", className: "bg-purple-400/15 text-purple-300" };
+    case "approval":
+      return { label: "Approval", className: "bg-amber-400/15 text-amber-200" };
+    case "review":
+      return { label: "Review", className: "bg-amber-400/15 text-amber-200" };
+    case "check":
+      return { label: "Check", className: "bg-content/10 text-content/70" };
+    default:
+      return undefined;
+  }
+}
+
+/** A quiet age. Minutes, then hours, then days. Months only after two months, never inside a day. */
+export function needsAgo(at: number, now = Date.now()): string | undefined {
+  if (!Number.isFinite(at) || !Number.isFinite(now) || at < 1_000_000_000_000) return undefined;
+  const mins = Math.max(0, Math.round((now - at) / 60_000));
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.round(mins / 60);
+  // A day is still hours or, past two days, days. Months start at 60 days.
+  if (hours < 48) return `${hours} hr ago`;
+  const days = Math.round(hours / 24);
+  if (days < 60) return `${days} d ago`;
+  return `${Math.round(days / 30)} mo ago`;
+}
+
+function sourceLine(who: string | undefined, at: number): string | undefined {
+  const name = who?.replace(/\s+/g, " ").trim();
+  const when = needsAgo(at);
+  if (name && when) return `${name} · ${when}`;
+  return name || when;
+}
+
+function NeedText({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) => void }) {
+  const chip = line.projectName?.trim();
+  const source = line.needsKind ? sourceLine(line.who, line.at) : undefined;
+  const body = line.kind === "stopped" ? (
+    <span className="block truncate">{line.text}</span>
+  ) : (
+    <button
+      type="button"
+      aria-label={chip ? `${chip} · ${line.text}` : undefined}
+      className="block w-full truncate text-left"
+      onClick={() => onOpen(line)}
+    >
+      {line.text}
+    </button>
+  );
+  return (
+    <span className="min-w-0 flex-1">
+      {body}
+      {source ? <span data-needs-source className="block truncate text-[11px] text-content/45">{source}</span> : null}
+    </span>
+  );
+}
+
+function NeedRow({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) => void }) {
+  const actions = line.actions ?? [];
+  const chip = line.projectName?.trim();
+  const kind = kindChip(line.needsKind);
+  if (actions.length === 0 && line.kind !== "stopped") {
+    const named = chip && !line.text.startsWith(`${chip} · `) ? `${chip} · ${line.text}` : undefined;
+    return (
+      <button
+        type="button"
+        data-home-line={line.kind}
+        aria-label={named}
+        className="flex min-h-10 w-full items-center border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
+        onClick={() => onOpen(line)}
+      >
+        <span className="min-w-0 flex-1 truncate">{line.text}</span>
+      </button>
+    );
+  }
+  return (
+    <div
+      data-home-line={line.kind}
+      data-needs-project={line.projectId || undefined}
+      className="flex min-h-10 w-full flex-wrap items-center gap-3 border-t border-stroke px-3 py-1.5 text-[13px] text-content"
+    >
+      {chip ? (
+        <span data-needs-chip className="shrink-0 rounded-md bg-content/10 px-1.5 py-0.5 text-[11px] font-medium text-content/80">
+          {chip}
+        </span>
+      ) : null}
+      {kind ? (
+        <span data-needs-kind={line.needsKind} className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium ${kind.className}`}>
+          {kind.label}
+        </span>
+      ) : null}
+      <NeedText line={line} onOpen={onOpen} />
+      <NeedActions actions={actions} />
+    </div>
+  );
 }
 
 function Notes({ notes, onOpen }: { notes: readonly HomeNote[]; onOpen: (line: HomeLine) => void }) {
@@ -188,6 +336,7 @@ export function HomeScreen({
   onAsk,
   renderPanel,
   programme,
+  needsMark = 0,
 }: {
   needsYou: readonly HomeLine[];
   /** One line per project (the overview). */
@@ -214,6 +363,8 @@ export function HomeScreen({
   renderPanel?: (panel: CatalogPanel) => ReactNode;
   /** WP-159: the programme card. Absent when the board is empty, so a quiet home stays quiet. */
   programme?: ReactNode;
+  /** How many items need Ash. The builder line is not one of them, so an empty home stays free of a number. */
+  needsMark?: number;
 }) {
   const lines: Record<string, readonly HomeLine[]> = {
     "needs-you": needsYou,
@@ -232,7 +383,7 @@ export function HomeScreen({
   const summaryNotes = summary ?? [];
   // Quiet is about activity: the projects overview alone is not something happening.
   const quiet =
-    known && !programme && !noProjects && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
+    known && !programme && !noProjects && needsMark === 0 && needsYou.length + moving.length + recent.length === 0 && summaryNotes.length === 0;
   return (
     <div
       data-home
@@ -254,6 +405,7 @@ export function HomeScreen({
           const rows = ref.kind === "builtin" ? lines[ref.id] ?? [] : [];
           const panel = ref.kind === "panel" ? catalog.find((item) => item.plugin === ref.plugin && item.panelId === ref.panelId) : undefined;
           const place = visible.indexOf(ref);
+          const needsHead = ref.kind === "builtin" && ref.id === "needs-you";
           return (
             <section
               key={key}
@@ -262,16 +414,21 @@ export function HomeScreen({
               className="home-enter group rounded-lg border border-stroke"
               style={{ animationDelay: `${index * HOME_STAGGER_MS}ms` }}
             >
-              <header className="flex items-center gap-3 px-3 py-2">
-                <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-content">{title}</h2>
+              <header className="flex items-center gap-2 px-3 py-2">
+                {needsHead ? <span data-home-needs-dot className="size-2 shrink-0 rounded-full" style={{ background: "#e5484d" }} /> : null}
+                <h2 className={`${needsHead ? "" : "min-w-0 flex-1 "}truncate text-[13px] font-medium text-content`}>{title}</h2>
+                {needsHead && needsMark > 0 ? (
+                  <span data-home-needs-count={needsMark} className="shrink-0 text-[12px] tabular-nums text-content/60">{needsMark}</span>
+                ) : null}
                 {/* Arranging is there when it's wanted: on hover or keyboard focus, not as words on every card. */}
-                <div data-home-arrange className="flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                <div data-home-arrange className={`flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100${needsHead ? " ml-auto" : ""}`}>
                   <Control name={`Move ${title} up`} onClick={() => place > 0 && onMove(key, -1)} />
                   <Control name={`Move ${title} down`} onClick={() => place < visible.length - 1 && onMove(key, 1)} />
                   <Control name={`Hide ${title}`} onClick={() => onHide(key)} />
                   {ref.kind === "panel" ? <Control name={`Unpin ${title}`} onClick={() => onUnpin(key)} /> : null}
                 </div>
               </header>
+              {needsHead ? <OneTapRefusal /> : null}
               {ref.kind === "builtin" ? rows.map((line) => line.kind === "builders" ? (
                 // WP-161: a line about the machine, not a place to open. A disk pause opens Clean up.
                 // WP-176: a spend pause opens the limit. The text wraps, so the reason is never clipped.
@@ -291,15 +448,7 @@ export function HomeScreen({
                   </button>
                 </div>
               ) : (
-                <button
-                  key={line.id}
-                  type="button"
-                  data-home-line={line.kind}
-                  className="flex min-h-10 w-full items-center border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
-                  onClick={() => onOpen(line)}
-                >
-                  <span className="min-w-0 flex-1 truncate">{line.text}</span>
-                </button>
+                <NeedRow key={line.id} line={line} onOpen={onOpen} />
               )) : panel && renderPanel ? renderPanel(panel) : (
                 <p className="border-t border-stroke px-3 py-3 text-[13px] text-content/70">This panel is not available.</p>
               )}

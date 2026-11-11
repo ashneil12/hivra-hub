@@ -34,7 +34,7 @@
     "hub:seed-dev": "node scripts/hub-seed-dev.mjs",
     "hub:doctor": "node scripts/hub-doctor.mjs",
     "hub:clean": "node scripts/hub-doctor.mjs --clean",
-    "hub:build": "node scripts/disk-guard.mjs hub:build && CARGO_BUILD_BUILD_DIR=\"$HOME/Library/Caches/monocode-hub/cargo-build\" tauri build --config src-tauri/tauri.hub.conf.json --bundles app",
+    "hub:build": "node scripts/disk-guard.mjs hub:build && CARGO_BUILD_BUILD_DIR=\"$HOME/Library/Caches/monocode-hub/cargo-build\" tauri build --config src-tauri/tauri.hub.conf.json --bundles app && node scripts/hub-dictation-helper.mjs",
     "hub:verify": "node scripts/verify-hub-bundle.mjs \"target/release/bundle/macos/MonoCode Hub.app\"",
     "hub:install": "node --disable-warning=ExperimentalWarning scripts/hub-ship.mjs --legacy",
     "hub:check-all": "node scripts/hub-check-all.mjs",

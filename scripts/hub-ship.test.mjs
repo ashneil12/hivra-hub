@@ -299,10 +299,13 @@ process.exit(0);
 const FAKE_CODESIGN = `#!/bin/sh
 # A stand-in for /usr/bin/codesign: the bundle (last argument) says how it is signed in Contents/Resources/fake.json.
 for last; do :; done
+# The entitlements a bundle carries (the dictation helper's audio input entitlement, WP-131b) are in Contents/Resources.
+if [ "$2" = "--entitlements" ]; then cat "$last/Contents/Resources/entitlements.plist" 2>/dev/null; exit 0; fi
 sig=$(sed -n 's/.*"signature":"\\([a-z-]*\\)".*/\\1/p' "$last/Contents/Resources/fake.json")
 if [ "$sig" = unsigned ]; then echo "$last: code object is not signed at all" >&2; exit 1; fi
 case "$1" in
-  -dv) if [ "$sig" = adhoc ]; then echo "Signature=adhoc" >&2; else echo "Authority=Apple Development: Test ($sig)" >&2; fi ;;
+  -dv) if [ "$sig" = adhoc ]; then echo "Signature=adhoc" >&2; else echo "Authority=Apple Development: Test ($sig)" >&2; fi
+       echo "TeamIdentifier=TESTTEAM01" >&2; echo "CodeDirectory v=20500 size=1674 flags=0x10000(runtime) hashes=41+7" >&2 ;;
   -d) if [ "$sig" = adhoc ]; then echo 'designated => cdhash H"0000"'; else echo "designated => identifier \\"${HUB}\\" and certificate leaf[subject.CN] = \\"$sig\\""; fi ;;
 esac
 exit 0
@@ -316,6 +319,22 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
     `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}</string><key>CFBundleExecutable</key><string>monocode</string>${version ? `<key>CFBundleShortVersionString</key><string>${version}</string>` : ""}</dict></plist>
+`,
+  );
+  // The dictation helper (WP-131b): its own identifier, both usage strings, and the audio input entitlement.
+  const helper = path.join(app, "Contents/Helpers/MonoCode Dictation.app");
+  fs.mkdirSync(path.join(helper, "Contents/MacOS"), { recursive: true });
+  fs.mkdirSync(path.join(helper, "Contents/Resources"), { recursive: true });
+  fs.writeFileSync(
+    path.join(helper, "Contents/Info.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>${identifier}.dictation</string><key>CFBundleExecutable</key><string>monocode-dictation</string><key>NSMicrophoneUsageDescription</key><string>Dictation listens while you dictate.</string><key>NSSpeechRecognitionUsageDescription</key><string>Dictation recognises speech on this Mac.</string></dict></plist>
+`,
+  );
+  fs.writeFileSync(
+    path.join(helper, "Contents/Resources/entitlements.plist"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<plist version="1.0"><dict><key>com.apple.security.device.audio-input</key><true/></dict></plist>
 `,
   );
   const stamp = JSON.stringify({ sha, branch, dirty, builtAt: "2026-10-19T21:04:05Z" });
@@ -519,6 +538,7 @@ function ship(w, args = [], env = {}) {
     ],
     { env: { ...w.env, ...env }, label: "hub-ship" },
   );
+  if (!result.stdout.trim()) throw new Error(`hub-ship printed no answer (status ${result.status}): ${result.stderr}`);
   const answer = JSON.parse(result.stdout.trim().split("\n").pop());
   return { code: result.status, answer };
 }
@@ -993,6 +1013,17 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     assert.deepEqual(fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode")), before, `${what}: app untouched`);
     assert.equal(sha256File(path.join(w.data, "monocode.db")), w.before.db, `${what}: database untouched`);
   }
+});
+
+// WP-131b: dictation is off in this build, so hub:build puts no helper into the bundle. A bundle without one is a
+// normal build and ships. (The helper check runs on macOS only; elsewhere this passes trivially.)
+test("a bundle without the dictation helper ships while dictation is off", () => {
+  const w = world();
+  fs.rmSync(path.join(w.bundle, "Contents/Helpers"), { recursive: true, force: true });
+  const { code, answer } = ship(w, ["--dry-run"]);
+  assert.equal(code, 0, JSON.stringify(answer));
+  assert.equal(answer.ok, true, JSON.stringify(answer));
+  assert.ok(!(answer.refusals ?? []).some((refusal) => /Dictation helper/.test(refusal)), JSON.stringify(answer));
 });
 
 test("r59: compareVersions and versionProblem", () => {

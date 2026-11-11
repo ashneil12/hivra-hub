@@ -1136,7 +1136,7 @@ function TitleBarComponent({
         {showTrailingActions ? (
           <div className="flex items-center gap-0.5 px-2">
             {projectless && railClosed && onOpenInbox ? (
-              <IconButton label="Inbox" onClick={onOpenInbox}>
+              <IconButton label="Needs you" onClick={onOpenInbox}>
                 <Inbox className="size-3.5" strokeWidth={1.75} />
               </IconButton>
             ) : null}

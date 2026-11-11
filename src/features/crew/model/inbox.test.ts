@@ -435,3 +435,65 @@ describe("answering a decision", () => {
     expect(next.rows[0]?.status).toBe("failed");
   });
 });
+
+// Review round 1 (PR #232), LOW: a sent-back reason quotes the worker's own to-do or command. A working row whose
+// reason names a sign-in test is not a sign-in the person has to do.
+describe("review r1: sent-back reasons", () => {
+  it("r1: a sent-back reason that mentions sign-in is not a credential card", () => {
+    const shown = inboxItems({
+      project: "/work/proj",
+      rows: [
+        {
+          id: "fixing",
+          project: "/work/proj",
+          title: "Fix the login page",
+          status: "working",
+          statusNotice: "Sent back: a check failed this turn (npx vitest run src/features/auth/sign-in.test.ts).",
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(shown.filter((item) => item.kind === "credential")).toEqual([]);
+  });
+});
+
+// Review round 2 (PR #232), MED (r1 MED still open): the r1 fix reads only a working row's notice. A delivery that the
+// checks failed twice carries the same sent-back line as its error, and that still becomes a credential card.
+describe("review r2: sent-back reasons", () => {
+  it("r2: a failed delivery whose error is a sent-back reason naming sign-in is not a credential card", () => {
+    const line = "Sent back: a check failed this turn (npx vitest run src/features/auth/sign-in.test.ts).";
+    const shown = inboxItems({
+      project: "/work/proj",
+      rows: [
+        {
+          id: "fixing",
+          project: "/work/proj",
+          title: "Fix the login page",
+          status: "failed",
+          statusNotice: `${line} Still failed after 2 tries.`,
+          error: `${line} Still failed after 2 tries.`,
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(shown.filter((item) => item.kind === "credential")).toEqual([]);
+  });
+
+  it("a real sign-in line stays a credential when a send-back line is also there", () => {
+    const shown = inboxItems({
+      project: "/work/proj",
+      rows: [
+        {
+          id: "auth",
+          project: "/work/proj",
+          title: "Connect the account",
+          status: "failed",
+          statusNotice: "not signed in",
+          error: "Sent back: npx vitest run src/features/auth/sign-in.test.ts",
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(shown.some((item) => item.kind === "credential")).toBe(true);
+  });
+});

@@ -6,13 +6,14 @@
 //! | Row | Status |
 //! | --- | --- |
 //! | `running` | working (a quiet, loop or idle stall is a notice, not a state) |
+//! | `running`, gates failed with a sent-back reason (WP-145) | working, with that reason, unless a stall is already the notice |
 //! | `running`, blocked by its first mate (`task_cannot` on its own task) | needs you |
 //! | `running`, blocked by the worker itself | working: its first mate hears it first |
 //! | `question` for the first mate (the default) | working, with a notice |
 //! | `question` the first mate passed to the person | needs you |
 //! | `completed`, no gates or gates passed | done |
 //! | `completed`, gates still running | working |
-//! | `completed`, gates failed | failed |
+//! | `completed`, gates failed | failed, and a sent-back reason when the gates left one (WP-145) |
 //! | `completed`, gates passed but the verdict check was unsure, or a gate couldn't run (WP-40) | working, with a notice: its first mate decides |
 //! | `failed` on a usage limit (`resets_at`, or class `usage_limit`), not marked unretryable | paused |
 //! | `failed` otherwise | failed |
@@ -113,6 +114,39 @@ fn with_reason(lead: &str, reason: Option<&str>) -> String {
     }
 }
 
+/// The first line of a fact-gap summary, when it is a real reason. A log line is untrusted: a blank, a control
+/// character, or a line too long to show is not a reason.
+fn sent_back_line(summary: &str) -> Option<String> {
+    let line = summary.split(['\n', '\r']).next()?.trim();
+    let rest = line.strip_prefix("Sent back:")?.trim();
+    if rest.is_empty() || line.chars().count() > 180 {
+        return None;
+    }
+    if line.chars().any(char::is_control) {
+        return None;
+    }
+    Some(line.to_string())
+}
+
+/// Whether the newest gates line is a real send-back. The verdict on the row is separate: a later delivery can
+/// clear it without losing the line.
+pub(crate) fn sent_back_on(row: &Delegation) -> bool {
+    sent_back_notice(row, GateVerdict::Failed).is_some()
+}
+
+/// The newest gates summary, and only when this verdict is a failure. An older line does not outlive a later one.
+fn sent_back_notice(row: &Delegation, gates: GateVerdict) -> Option<String> {
+    if gates != GateVerdict::Failed {
+        return None;
+    }
+    let summary = row
+        .log
+        .iter()
+        .rev()
+        .find(|entry| entry.get("event").and_then(Value::as_str) == Some("gates"))?;
+    sent_back_line(summary.get("summary")?.as_str()?)
+}
+
 /// The row's status. Pure: the same row and verdict always give the same answer.
 pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
     match row.state.as_str() {
@@ -146,7 +180,8 @@ pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
                     row.stall_reason.as_deref(),
                 )),
             ),
-            _ => derived(Status::Working, None),
+            // WP-145: a fact gap sent the work back. The row stays working for the fix round.
+            _ => derived(Status::Working, sent_back_notice(row, gates)),
         },
         QUESTION => {
             let question = row.pending_question.as_deref();
@@ -169,7 +204,10 @@ pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
             }
             GateVerdict::Failed => derived(
                 Status::Failed,
-                Some("Finished, but its checks failed".into()),
+                Some(
+                    sent_back_notice(row, gates)
+                        .unwrap_or_else(|| "Finished, but its checks failed".into()),
+                ),
             ),
             GateVerdict::Unsure => derived(
                 Status::Working,

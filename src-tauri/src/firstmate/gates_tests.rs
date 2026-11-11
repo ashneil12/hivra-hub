@@ -139,6 +139,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             report: "## Report\nSummary: added b",
             now: 1,
             gate_owns_checks: false,
+            facts: None,
         },
         fake,
     )
@@ -531,12 +532,95 @@ fn a_brief_without_a_definition_of_done_is_unsure() {
             report: "",
             now: 1,
             gate_owns_checks: false,
+            facts: None,
         },
         &fake,
     );
     assert_eq!(record.verdict, Verdict::Unsure);
     assert!(fake.prompts.borrow().is_empty());
     let _ = &f.project;
+}
+
+fn stale_facts() -> crate::firstmate::fact_gaps::FactTurn {
+    crate::firstmate::fact_gaps::FactTurn {
+        checks: vec![crate::firstmate::fact_gaps::FactCheck {
+            command: "npm test".into(),
+            status: "passed".into(),
+            at: 1.0,
+        }],
+        edits: vec![crate::firstmate::fact_gaps::FactEdit {
+            path: "src/features/crew/row.ts".into(),
+            at: 2.0,
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn fact_gaps_fail_the_claim_without_asking_the_model() {
+    let f = fixture("stale");
+    let facts = stale_facts();
+    let fake = Fake::default();
+    let record = run_round(
+        &RoundInput {
+            delegation_id: "d-1",
+            round: 1,
+            checkout: &f.copy,
+            plan: &plan(&[]),
+            brief: "Add a row.",
+            done_when: "the row is there",
+            report: "Done.",
+            now: 1,
+            gate_owns_checks: false,
+            facts: Some(&facts),
+        },
+        &fake,
+    );
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(record.check.is_none(), "a fact gap does not ask the model");
+    assert!(fake.prompts.borrow().is_empty());
+    assert_eq!(
+        record.summary, "Sent back: tests went stale after the last edit.",
+        "the first line is the reason a person sees"
+    );
+    let _ = &f.project;
+}
+
+#[test]
+fn a_planless_turn_fails_on_fact_gaps_and_stays_quiet_when_there_are_none() {
+    let failed = fact_only_record("d-1", 2, 9, &stale_facts(), None).expect("a gap");
+    assert_eq!(failed.verdict, Verdict::Failed);
+    assert!(failed.check.is_none());
+    assert!(
+        failed.gates.is_empty(),
+        "no plan means no routes check here"
+    );
+    assert_eq!(
+        failed.summary,
+        "Sent back: tests went stale after the last edit."
+    );
+    assert!(fact_only_record(
+        "d-1",
+        2,
+        9,
+        &crate::firstmate::fact_gaps::FactTurn::default(),
+        None,
+    )
+    .is_none());
+    // A docs edit after a passing test is not a gap, so the routes check stays in the webview.
+    let docs = crate::firstmate::fact_gaps::FactTurn {
+        checks: vec![crate::firstmate::fact_gaps::FactCheck {
+            command: "npm test".into(),
+            status: "passed".into(),
+            at: 1.0,
+        }],
+        edits: vec![crate::firstmate::fact_gaps::FactEdit {
+            path: "docs/readme.md".into(),
+            at: 2.0,
+        }],
+        ..Default::default()
+    };
+    assert!(fact_only_record("d-1", 2, 9, &docs, None).is_none());
 }
 
 // ---- evidence and the row -----------------------------------------------------------------------------------------------
@@ -782,4 +866,152 @@ fn the_claude_verdict_call_sends_the_prompt_on_stdin_with_no_tools() {
             .contains("exited with 3")
     );
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+// ---- review round 1 (PR #232): failing repro --------------------------------------------------------------------------
+
+// HIGH: a plan-less worker sent back for a fact gap and then fixed keeps the first round's "failed" verdict.
+// `firstmate_run_gates` returns `None` for a plan-less turn with no gap before it writes anything, so nothing replaces
+// the stored failure; the delivered row shows Failed ("Sent back: ...") and `task_accept` can't fix it (unsure only).
+#[test]
+fn r1_a_planless_turn_fixed_after_a_send_back_does_not_stay_failed() {
+    use crate::firstmate::fact_gaps::{done_gaps, FactCheck, FactEdit, FactTurn};
+    use crate::firstmate::status::Status;
+    let mut conn = store();
+    let row = record_row(&mut conn);
+    // Round 1, as the command does it: no stored plan, a fact gap, the fact-only record's verdict on the row.
+    let first = fact_only_record(&row.id, 1, 2, &stale_facts(), None).expect("a gap");
+    let applied = crate::delegations::set_gate_verdict(
+        &mut conn,
+        &row.id,
+        first.verdict.stored(),
+        &first.summary,
+        None,
+        2,
+    )
+    .unwrap();
+    assert!(applied.applied);
+    // Round 2: the worker reran the test after its edit. No plan and no gap, so the command returns before it writes,
+    // the routes check passes in the webview, and the report is delivered as completed.
+    let fixed = FactTurn {
+        checks: vec![
+            FactCheck {
+                command: "npm test".into(),
+                status: "passed".into(),
+                at: 1.0,
+            },
+            FactCheck {
+                command: "npm test".into(),
+                status: "passed".into(),
+                at: 3.0,
+            },
+        ],
+        edits: vec![FactEdit {
+            path: "src/features/crew/row.ts".into(),
+            at: 2.0,
+        }],
+        ..Default::default()
+    };
+    assert!(done_gaps(&fixed).is_empty());
+    assert!(fact_only_record(&row.id, 2, 4, &fixed, None).is_none());
+    let settled = settle_done(&mut conn, &row);
+    assert_eq!(
+        settled.status,
+        Status::Done,
+        "delivered work still shows {:?}: {:?}",
+        settled.status,
+        settled.status_notice
+    );
+}
+
+// ---- review round 2 (PR #232): failing repro --------------------------------------------------------------------------
+
+// MED: the r1 fix clears a send-back whenever a completed report is settled, in `delegations::settle`. A report that is
+// settled without a gate run (a resumed turn, a boot settle, a followed brief) clears it too. Here the app's own project
+// checks failed beside a fact gap; nothing ran them again, and the delivered row shows Done. On main it stays Failed.
+#[test]
+fn r2_a_completed_settle_does_not_clear_a_failed_plan_gate_nothing_reran() {
+    use crate::firstmate::status::Status;
+    let f = fixture("r2-plan");
+    std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+    let mut conn = store();
+    let row = record_row(&mut conn);
+    let p = plan(&[GateKind::Diff, GateKind::Checks]);
+    save_plan(&conn, &row.id, &p, 1).unwrap();
+    let failing = Fake {
+        checks: Some(Ok(vec![run("Project checks", Outcome::Failed, "1 failed")])),
+        ..Default::default()
+    };
+    let facts = stale_facts();
+    let record = run_round(
+        &RoundInput {
+            delegation_id: &row.id,
+            round: 1,
+            checkout: &f.copy,
+            plan: &p,
+            brief: "Add b",
+            done_when: "app.ts exports b",
+            report: "Done.",
+            now: 2,
+            gate_owns_checks: false,
+            facts: Some(&facts),
+        },
+        &failing,
+    );
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(
+        record.summary.starts_with("Sent back:"),
+        "{}",
+        record.summary
+    );
+    let applied = crate::delegations::set_gate_verdict(
+        &mut conn,
+        &row.id,
+        record.verdict.stored(),
+        &record.summary,
+        None,
+        2,
+    )
+    .unwrap();
+    assert!(applied.applied);
+    let settled = settle_done(&mut conn, &row);
+    assert_eq!(
+        settled.status,
+        Status::Failed,
+        "a failed project check nothing reran shows {:?}",
+        settled.status
+    );
+    let _ = &f.project;
+}
+
+// The command decides a plan-less turn through `planless_facts`. Missing facts are not a clean turn:
+// a send-back stays, and the row is not marked pending. A present turn with no gap still clears.
+#[test]
+fn a_missing_fact_turn_does_not_clear_a_send_back() {
+    use crate::firstmate::fact_gaps::{FactCheck, FactEdit, FactTurn};
+    assert_eq!(planless_facts(None, None), PlanlessFacts::Keep);
+    let fixed = FactTurn {
+        checks: vec![
+            FactCheck {
+                command: "npm test".into(),
+                status: "passed".into(),
+                at: 1.0,
+            },
+            FactCheck {
+                command: "npm test".into(),
+                status: "passed".into(),
+                at: 3.0,
+            },
+        ],
+        edits: vec![FactEdit {
+            path: "src/features/crew/row.ts".into(),
+            at: 2.0,
+        }],
+        ..Default::default()
+    };
+    assert_eq!(planless_facts(Some(&fixed), None), PlanlessFacts::Clear);
+    assert_eq!(
+        planless_facts(Some(&stale_facts()), None),
+        PlanlessFacts::Gaps
+    );
 }

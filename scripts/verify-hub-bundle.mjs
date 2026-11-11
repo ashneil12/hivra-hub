@@ -21,6 +21,7 @@
 // command line: it always runs, however it is reached. The readers are in scripts/hub-bundle.mjs.
 
 import { readStamp, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+import { dictationHelperProblems, helperBundleId, readBundleFacts } from "./hub-dictation-helper.mjs";
 
 const args = process.argv.slice(2);
 const stampOnly = args[0] === "--stamp";
@@ -45,4 +46,17 @@ if (!result.ok) {
   for (const error of result.errors) console.error(`  ${error}`);
   process.exit(1);
 }
+// WP-131b: the microphone belongs to the dictation helper inside the bundle, never to the Hub itself.
+const bundleFacts = readBundleFacts(app);
+const helperProblems = dictationHelperProblems({ identifier: result.identifier, ...bundleFacts });
+if (helperProblems.length) {
+  console.error(`REFUSE: ${app} (dictation helper)`);
+  for (const problem of helperProblems) console.error(`  ${problem}`);
+  process.exit(1);
+}
 console.log(`OK: ${app} is the Hub (${result.identifier}), ${stampLabel(result.stamp)}, built ${result.stamp.builtAt}.`);
+console.log(
+  bundleFacts.helper
+    ? `OK: dictation helper ${helperBundleId(result.identifier)} is in the bundle, signed with its own entitlements.`
+    : "OK: no dictation helper in the bundle (dictation is off in this build), and the app asks for no microphone.",
+);
