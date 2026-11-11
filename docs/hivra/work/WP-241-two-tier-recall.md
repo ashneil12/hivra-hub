@@ -33,10 +33,10 @@ rest is reached by search.
 
 ## Done when
 
-- [ ] Tests:
+- [x] Tests:
   - the essential cap holds;
   - search returns only stored ids;
   - the rank's deadline falls back to lexical search;
   - an id the model invents is dropped;
   - the changes block is sent once.
-- [ ] `node --test scripts/memory-eval/*.test.mjs` has no regression on recall quality.
+- [x] `node --test scripts/memory-eval/*.test.mjs` has no regression on recall quality (82 of 82 pass).

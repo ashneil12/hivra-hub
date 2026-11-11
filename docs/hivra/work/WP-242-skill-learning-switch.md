@@ -32,5 +32,9 @@ Ash decides how skills are learned, in one place. A learned skill is cleaned of 
 
 ## Done when
 
-- [ ] Tests for each mode on both paths, sanitising, the exactly-once patch, and eviction.
-- [ ] Browser spec of the setting, with before and after screenshots.
+- [x] Tests for each mode on both paths, sanitising, the exactly-once patch, and eviction
+  (`selfBuild/model/skillRoute.test.ts`, `selfBuild/model/lessonSafety.test.ts`).
+- [x] Browser spec of the setting, with before and after screenshots (`tests/browser/wp242-skill-learning.spec.ts`,
+  `shots/wp-242/`).
+- [x] Credits: no Nod or OpenBot code or text was copied (ideas only), so NOTICE is unchanged; credits.json names what
+  Nod gave.

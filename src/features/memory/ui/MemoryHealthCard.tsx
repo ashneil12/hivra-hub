@@ -46,6 +46,11 @@ export function MemoryHealthCard({ health, now, paused }: { health: MemoryHealth
           {`${health.dropped[row.key]} ${health.dropped[row.key] === 1 ? "fact was" : "facts were"} not kept: ${row.label}.`}
         </p>
       ))}
+      {health.skillsDropped ? (
+        <p data-health-skills-dropped>
+          {`${health.skillsDropped} ${health.skillsDropped === 1 ? "lesson was" : "lessons were"} not learned, because skill learning is off.`}
+        </p>
+      ) : null}
       <p data-health-fading>
         {health.fading === 0
           ? "Nothing is fading."

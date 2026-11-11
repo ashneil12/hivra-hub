@@ -154,3 +154,22 @@ it("a turn that keeps failing for a passing reason is tried twice, then left alo
   expect(mayTryAgain(tries, "notes-lead:turn-1")).toBe(false);
   expect(mayTryAgain(tries, "notes-lead:turn-2")).toBe(true);
 });
+
+it("WP-240: a chat that leaves the list or is hidden has closed, and is read one last time; a busy one has not", async () => {
+  const { trackChats, batchChats } = await import("./useMemoryCurator");
+  const mateOf = (id: string) => (id.startsWith("lead") ? "notes-lead" : undefined);
+  const chat = (id: string, extra: { busy?: boolean; sidebarHidden?: boolean } = {}) => ({
+    id,
+    ...extra,
+    blocks: [{ id: `${id}-u`, role: "user", text: "We ship on Fridays." }],
+  });
+  const known = new Map();
+  expect(trackChats(known, [chat("lead-1"), chat("lead-2"), chat("worker")], mateOf)).toEqual([]);
+  expect([...known.keys()]).toEqual(["lead-1", "lead-2"]);
+  // Busy is still open.
+  expect(trackChats(known, [chat("lead-1", { busy: true }), chat("lead-2")], mateOf)).toEqual([]);
+  const closed = trackChats(known, [chat("lead-1", { sidebarHidden: true })], mateOf);
+  expect(closed.map((one) => one.sessionId).sort()).toEqual(["lead-1", "lead-2"]);
+  // The batch reads the closed chats beside the open ones, once each.
+  expect(batchChats([chat("lead-3")], mateOf, closed).map((one) => one.sessionId)).toEqual(["lead-3", "lead-1", "lead-2"]);
+});

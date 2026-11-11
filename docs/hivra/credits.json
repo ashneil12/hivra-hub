@@ -64,7 +64,7 @@
       "name": "Nod",
       "url": "https://github.com/n8n-io/nod",
       "licence": "Apache-2.0",
-      "gave": "memory that only keeps what the owner said in their own words"
+      "gave": "memory that only keeps what the owner said in their own words, learns in batches behind a watermark, keeps a let-go list and repairs itself without a model, and learned skills cleaned of personal details, patched one passage at a time and capped at 40 (ideas only)"
     },
     {
       "name": "Rerun",
