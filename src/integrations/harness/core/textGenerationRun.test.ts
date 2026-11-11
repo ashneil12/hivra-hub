@@ -134,7 +134,8 @@ it("keeps today's commit path when no text model is set", async () => {
   expect(await generateCommitMessage("/repo", "claude", signal, ["my file.txt"])).toBe("from the coding agent");
   expect(calls).toEqual([]);
   expect(staged).not.toHaveBeenCalled();
-  expect(harnessCommit).toHaveBeenCalledExactlyOnceWith("claude", "/repo", signal, ["my file.txt"]);
+  // The fallback carries the origin too: a commit Ash asked for is his turn (round 6).
+  expect(harnessCommit).toHaveBeenCalledExactlyOnceWith("claude", "/repo", signal, ["my file.txt"], "person");
 });
 
 it("uses the text model for a commit and does not start the coding agent", async () => {

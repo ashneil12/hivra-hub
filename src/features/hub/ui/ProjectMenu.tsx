@@ -21,6 +21,7 @@ import {
 } from "../../monos/model/workerPool";
 import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
 import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
+import { SpendLimitLine } from "../../usage/ui/SpendLimitLine";
 import { plainErrorText } from "../../../shared/text/plainErrorText";
 import { ProjectGroupChooser } from "./StripGroups";
 import { readStripGroups, stripLayout, stripSectionNeighbour } from "../model/stripGroups";
@@ -268,6 +269,8 @@ export function ProjectWorkers({ project, anchor, onClose }: { project: HubProje
       {field("Of them on heavy tests", limits.heavy, "heavy", limits.workers)}
       {/* WP-161: pauses apply to every project. Running builders are not stopped. */}
       <BuilderScaleControls />
+      {/* WP-176: this project's measured-cost limit. A running builder is not stopped. */}
+      <SpendLimitLine project={project.id} harness={limits.cli} />
       <p className="text-[12px] leading-4 text-content/60" data-project-workers-line>
         {limitsLine(project.name, limits)} The rest wait their turn and start by themselves. You can also just tell its Lead.
       </p>

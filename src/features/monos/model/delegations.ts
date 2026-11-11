@@ -138,6 +138,8 @@ export type RecordInput = {
   ownerSession: string;
   ownerMono?: string;
   batchId?: string;
+  /** WP-176 round 5: the owner's row this one redoes. Written with the row, in the same transaction. */
+  redoes?: string;
   requestId: string;
   childSession: string;
   project?: string;

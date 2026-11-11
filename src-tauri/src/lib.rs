@@ -47,6 +47,7 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
+mod spend_ledger;
 // WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
 mod dictation;
 pub mod disclaim;
@@ -110,6 +111,8 @@ mod mono;
 mod mono_chat;
 mod mono_home;
 mod mono_transcript;
+// WP-134: the More agents list, its approvals and the environment its child gets.
+mod more_agents;
 mod notes;
 // WP-72: docs are notes, with blocks, versions and a tree.
 pub(crate) mod docs;
@@ -695,6 +698,13 @@ pub fn run() {
             watcher::watcher_check_cancel,
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
+            spend_ledger::spend_ledger_append,
+            spend_ledger::spend_ledger_totals,
+            spend_ledger::spend_project_folder,
+            spend_ledger::spend_book_read,
+            spend_ledger::spend_book_write,
+            spend_ledger::spend_redo_links,
+            spend_ledger::spend_set_project_folders,
             crew::crew_rules_set,
             crew::crew_route,
             crew::crew_on_failure,
@@ -1038,6 +1048,11 @@ pub fn run() {
             harness::harness_resolve_antigravity,
             harness::harness_free_port,
             harness::harness_spawn,
+            // WP-134: the More agents list, its approvals (src-tauri/src/more_agents.rs).
+            more_agents::more_agents_read,
+            more_agents::more_agents_write,
+            more_agents::more_agents_approve,
+            more_agents::more_agents_check,
             codex_mono_store::codex_mono_store_prepare,
             codex_mono_store::codex_mono_store_copy,
             codex_mono_store::codex_mono_store_restore_agent_state,

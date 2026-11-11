@@ -1,4 +1,4 @@
-# WP-134: ACP registry and long-tail providers: design only
+# WP-134: ACP registry and long-tail providers (More agents)
 
 | Wave | Size | Depends on | Grok OK |
 | --- | --- | --- | --- |
@@ -158,3 +158,7 @@ No provider package, no change to `HarnessId` or `Kind`, no settings key, and no
 ## Licence
 
 Behaviour in this package is inspired by T3 Code (https://github.com/pingdotgg/t3code at commit `e85e0094dd4617a1eada1ad7961f2132a79e67b2`), MIT, Copyright (c) 2026 T3 Tools Inc. Ideas need no credits.json component. If any T3 source file is translated, stop unless this brief asked for it; then add the file header, a NOTICE entry with the exact copyright line from T3's LICENSE, a credits.json component, the README inspirations list, and a SOURCES.md row with the commit and file. Do not copy T3 Connect, Clerk, telemetry, or the T3 name.
+
+## Built in WP-134b
+
+The first slice is built in `WP-134b-more-agents.md`: More agents (off by default), a local command the person already has installed, and one generic ACP session on the desktop TypeScript path. Copilot's flavor, downloads, and a twelfth CLI stay out.

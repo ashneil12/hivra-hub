@@ -274,6 +274,8 @@ export type HarnessSessionInput = {
 };
 
 export type SendTurnInput = HarnessSessionInput & {
+  /** WP-176: who started the turn. Only the composer sends "person"; omitted is automated. */
+  origin?: "person" | "automated";
   text: string;
   attachments?: Attachment[];
   /** Called once the provider has accepted the user turn. */
@@ -306,6 +308,8 @@ export type LiveSettingsInput = {
 export type LiveSettingsOutcome = "applied" | "next-turn" | "unchanged" | "idle";
 
 export type SteerTurnInput = {
+  /** WP-176: who sent the steer. Omitted is automated. */
+  origin?: "person" | "automated";
   sessionId: string;
   cwd: string;
   model: string;

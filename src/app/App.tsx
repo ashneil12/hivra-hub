@@ -82,7 +82,7 @@ import {
   queueBriefForIdle,
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
-import { markAppDelegate, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { markAppDelegate, redoLinkRefusal, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { deliverPhaseResult, isPhaseSession, phaseFinish } from "../features/phases/model/phaseBridge";
 import { chatMonoOwner, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { appendsHubNote, hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
@@ -821,6 +821,18 @@ import {
   type WorkspaceMode,
   DEFAULT_RUNTIME_MODE,
 } from "../features/sessions/model/session";
+// WP-134b: a More agents chat never goes through the eleven CLIs.
+import { AGENT_GONE, WAITS } from "../features/registry/model/registryCopy";
+import {
+  START_REGISTRY_CHAT_EVENT,
+  linkRegistryChat,
+  loadRegistryDocument,
+  refreshRegistry,
+  reportRegistryChatRefused,
+  subscribeRegistry,
+} from "../features/registry/model/registryList";
+import { registrySendPlan, registrySessionFields } from "../features/registry/model/registryPlan";
+import { moreAgentOfSession, openMoreAgentSession } from "../integrations/harness/moreAgents/moreAgentAdapter";
 // WP-113: attention for the optional chat list inbox. Off passes no sessions.
 import { useChatListInbox } from "../features/settings/model/displayPrefs";
 import {
@@ -991,6 +1003,7 @@ import {
   type HeldSeen,
   type QueuedWorker,
 } from "../features/monos/model/workerPool";
+import { subscribeSpend, type TurnOrigin } from "../features/usage/model/spendGate";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
 import { failedTurnMessage } from "../features/monos/model/turnFailure";
 import {
@@ -1168,6 +1181,7 @@ import {
   subscribeMonosEnabled,
   loadDiffViewer,
   loadFollowUpBehavior,
+  loadMoreAgentsEnabled,
   loadNewChatWorktree,
   loadIdleAgentLimit,
   loadKeybindingOverrides,
@@ -1239,6 +1253,7 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
+import { wireSpendGate } from "../features/usage/model/spendWiring";
 
 const SearchView = lazySurface(
   async () => {
@@ -1296,6 +1311,11 @@ type LinkedWorkItemPanelState = {
 };
 
 type SubmitOptions = ComposerTurnOptions & {
+  /**
+   * Who started the turn, for the spend gate. Only the composer and the quick composer say "person". Every other caller
+   * (habits, automations, agent apps, wakes, continue prompts, first-mate steers) leaves it out, so it is automated.
+   */
+  origin?: TurnOrigin;
   ciRepair?: CiRepairRequest;
   /** Saved alongside the user turn; does not replace the submitted prompt. */
   ciContext?: string;
@@ -1502,6 +1522,9 @@ function leadCodingTeam(monoId: string): HubProject | undefined {
         .find((project) => project.id === lead.projectId && !!project.folder)
     : undefined;
 }
+
+// WP-176: the spend gate reads the hub ids and the Mono and habit registries. Wired once, at module load.
+wireSpendGate();
 
 export default function App(props: AppProps) {
   return (
@@ -2686,6 +2709,7 @@ function Workspace({
   const usageSource =
     insetLayout && monoViewSession ? monoViewSession : active;
   const usageProviders = useMemo(() => {
+    if (usageSource?.registryAgentId) return [];
     if (
       usageSource?.harness === "claude" ||
       usageSource?.harness === "codex" ||
@@ -2695,12 +2719,13 @@ function Workspace({
       return [usageSource.harness];
     }
     return [];
-  }, [usageSource?.harness]);
+  }, [usageSource?.harness, usageSource?.registryAgentId]);
   const usageSession = useMemo(() => {
     if (!usageSource) return undefined;
     return {
       id: usageSource.id,
       harness: usageSource.harness,
+      ...(usageSource.registryAgentId ? { registryAgentId: usageSource.registryAgentId } : {}),
       model: usageSource.model,
       authRequired: latestTurnNeedsHarnessLogin(usageSource.blocks),
       providerAccountId:
@@ -2712,6 +2737,7 @@ function Workspace({
   }, [
     usageSource?.id,
     usageSource?.harness,
+    usageSource?.registryAgentId,
     usageSource?.model,
     usageSource?.blocks,
     usageSource?.providerAccountId,
@@ -3432,6 +3458,60 @@ function Workspace({
     },
     [insertBesideActive],
   );
+
+  // WP-134b: the More agents list the chat screens read is the app's own list. Read it at start, and again whenever
+  // it changes in any window (Settings adds, allows, withdraws or removes an entry).
+  useEffect(() => {
+    void refreshRegistry();
+    return subscribeRegistry(() => undefined);
+  }, []);
+
+  // WP-134b: Start a chat opens a More agents session. The harness stays one of the eleven.
+  useEffect(() => {
+    const onStart = async (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: unknown; cwd?: unknown }>).detail;
+      const agentId = typeof detail?.agentId === "string" ? detail.agentId : "";
+      // The entry may have been added or allowed a moment ago in Settings: read the app's list before deciding.
+      await refreshRegistry();
+      const plan = registrySendPlan({
+        registryAgentId: agentId,
+        enabled: loadMoreAgentsEnabled(),
+        agents: loadRegistryDocument().agents,
+        busy: false,
+      });
+      if (plan.action !== "prompt") {
+        reportRegistryChatRefused(plan.action === "refuse" ? plan.sentence : AGENT_GONE);
+        return;
+      }
+      const rawCwd = detail?.cwd;
+      const cwd =
+        typeof rawCwd === "string" && rawCwd.length > 0 && rawCwd.length <= 4096 && !/[\0\r\n]/.test(rawCwd)
+          ? rawCwd
+          : "~";
+      const session = {
+        ...newSession("claude", cwd),
+        ...registrySessionFields(plan.agent, "claude"),
+      };
+      if (!linkRegistryChat(session.id, plan.agent.id).ok) return;
+      const tab = newTab(session.id);
+      setSessions((prev) => [...prev, session]);
+      appendTab(tab, cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+    };
+    window.addEventListener(START_REGISTRY_CHAT_EVENT, onStart);
+    return () => window.removeEventListener(START_REGISTRY_CHAT_EVENT, onStart);
+  }, [appendTab]);
+
+  // WP-134b: a More agents chat is routed to its entry as soon as it is in the list, so its first send, compact,
+  // rewind and restore never reach the harness it was saved with. Sends still check the list and the switch.
+  useEffect(() => {
+    for (const session of sessions) {
+      if (session.registryAgentId && moreAgentOfSession(session.id) !== session.registryAgentId) {
+        openMoreAgentSession(session.id, session.registryAgentId);
+      }
+    }
+  }, [sessions]);
 
   const usageLimitAccountChangeRef = useRef<
     ((sessionId: string, accountId: string) => Promise<void>) | null
@@ -5355,6 +5435,11 @@ function Workspace({
         restored.providerSessionId &&
         isLiveHarness(restored.harness)
       ) {
+        // WP-134b: a More agents chat binds its saved ACP session to its entry. The route is set first, in this same
+        // call, so the bind never reaches the harness the chat was saved with.
+        if (restored.registryAgentId) {
+          openMoreAgentSession(restored.id, restored.registryAgentId);
+        }
         bindHarnessSession(
           restored.harness,
           restored.id,
@@ -6269,6 +6354,9 @@ function Workspace({
         for (const session of kept) {
           const pending = session.pendingSwitch;
           if (pending?.fromProviderSessionId) {
+            if (session.registryAgentId) {
+              openMoreAgentSession(session.id, session.registryAgentId);
+            }
             bindHarnessSession(
               pending.from,
               session.id,
@@ -8573,6 +8661,7 @@ function Workspace({
           !message ||
           !canSteerQueuedHead(current) ||
           !canSteerHarness(current.harness) ||
+          current.registryAgentId ||
           operatorCommand.matched
         ) {
           // WP-146: Steer on a message held behind an open approval says why it stayed.
@@ -8608,6 +8697,7 @@ function Workspace({
           },
           steer: (prepared) =>
             steerHarnessTurn({
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -8680,10 +8770,13 @@ function Workspace({
         // busy flag is ours, there is no reply to steer into, and a message
         // written now would land inside the compact.
         const compacting = !!current.idleCompacting;
+        // WP-134b: a More agents chat cannot be steered; its message waits for the turn to finish.
+        const registryChat = Boolean(current.registryAgentId);
         const steerable =
           isLiveHarness(current.harness) &&
           canSteerHarness(current.harness) &&
-          !compacting;
+          !compacting &&
+          !registryChat;
         const followUpBehavior = followUpWhenBusy({
           setting: options?.followUpBehavior ?? loadFollowUpBehavior(),
           mustWait: !!(
@@ -8697,7 +8790,7 @@ function Workspace({
           onlyBackgroundWork: !!current.backgroundTasks?.length,
           mono: !!mono,
           steerable,
-          cannotRedirect: harnessCannotSteer(current.harness),
+          cannotRedirect: registryChat || harnessCannotSteer(current.harness),
           compacting,
           alreadyQueued: !!options?.queuedMessageId,
         });
@@ -8711,6 +8804,10 @@ function Workspace({
           return false;
         }
         if (followUpBehavior === "queue") {
+          if (registryChat) {
+            enqueueHarnessEvent(sessionId, { type: "status", text: WAITS });
+            flushHarnessEvents();
+          }
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId
@@ -8790,6 +8887,7 @@ function Workspace({
               cwd: initialWorkCwd,
             });
             await steerHarnessTurn({
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -9608,8 +9706,33 @@ function Workspace({
               return;
             }
           }
-          const sendTurn = (text: string, turnAttachments = prepared) =>
-            sendHarnessTurn({
+          const sendTurn = (text: string, turnAttachments = prepared) => {
+            // WP-134b: a More agents chat runs on its entry through the route set here, never on the placeholder
+            // CLI's own start. A refusal is not a success.
+            if (current.registryAgentId) {
+              const registryPlan = registrySendPlan({
+                registryAgentId: current.registryAgentId,
+                enabled: loadMoreAgentsEnabled(),
+                agents: loadRegistryDocument().agents,
+                busy: false,
+              });
+              if (registryPlan.action === "refuse") {
+                routeTurnEvent({
+                  type: "session.error",
+                  message: registryPlan.sentence,
+                  retryable: registryPlan.retryable,
+                });
+                return Promise.resolve();
+              }
+              if (registryPlan.action !== "prompt") {
+                routeTurnEvent({ type: "session.error", message: AGENT_GONE, retryable: false });
+                return Promise.resolve();
+              }
+              openMoreAgentSession(sessionId, registryPlan.agent.id);
+            }
+            return sendHarnessTurn({
+              // WP-176: the caller's origin. Only the composer sets "person"; an omitted origin is automated.
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: workCwd,
@@ -9643,6 +9766,7 @@ function Workspace({
                 ),
               onEvent: routeTurnEvent,
             });
+          };
           let sendText = orchestrator.prompt(
             sessionId,
             inboxAskPrompt(
@@ -10124,6 +10248,13 @@ function Workspace({
       return true;
     },
     [submitSession],
+  );
+
+  // The composer's own send is the person's turn for the spend gate. Other callers of onSubmit are automated.
+  const onComposerSubmit = useCallback(
+    (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean =>
+      onSubmit(sessionId, text, attachments, { ...options, origin: "person" }),
+    [onSubmit],
   );
 
   /**
@@ -10706,7 +10837,7 @@ function Workspace({
         const delivery = deliveryFor(
           current,
           input.mode ?? "queue",
-          isLiveHarness(current.harness) && canSteerHarness(current.harness),
+          isLiveHarness(current.harness) && canSteerHarness(current.harness) && !current.registryAgentId,
         );
         const accepted = await submitSessionRef.current(lead.id, text, [], {
           appRequestId: requestId,
@@ -10843,13 +10974,14 @@ function Workspace({
                   submit: (settle) =>
                     submitSession(id, text, attachments, {
                       ...options,
+                      origin: "person",
                       appRequestId: deliveryId,
                       onSettled: settle,
                     }),
                   onSettled,
                   rejectionMessage: "The monitored session could not start.",
                 })
-              : submitSession(id, text, attachments, options),
+              : submitSession(id, text, attachments, { ...options, origin: "person" }),
           saveDraft: (id, prompt, attachments, requestId) =>
             flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
         },
@@ -10874,7 +11006,7 @@ function Workspace({
   // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
   const steering = useSteering(sessions, {
     chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
-    canSteer: (chat) => isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
+    canSteer: (chat) => !chat.registryAgentId && isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
     submit: async (id, text, { appRequestId, steer }) =>
       await submitSessionRef.current(id, text, [], steer ? { appRequestId, followsUp: true, followUpBehavior: "steer" } : { appRequestId }),
   });
@@ -11381,6 +11513,7 @@ function Workspace({
           (monoForSession(session.id) &&
             canSteerQueuedHead(session) &&
             canSteerHarness(session.harness) &&
+            !session.registryAgentId &&
             !consumeOperatorCommand(queued[0].text).matched)
         ) ||
         queueDispatchingRef.current.has(session.id)
@@ -11408,6 +11541,7 @@ function Workspace({
               (monoForSession(latest.id) &&
                 canSteerQueuedHead(latest) &&
                 canSteerHarness(latest.harness) &&
+                !latest.registryAgentId &&
                 !consumeOperatorCommand(head.text).matched)
             )
           ) {
@@ -13570,7 +13704,8 @@ function Workspace({
           );
         if (
           !isLiveHarness(session.harness) ||
-          !canSteerHarness(session.harness)
+          !canSteerHarness(session.harness) ||
+          session.registryAgentId
         )
           throw new Error(
             `${session.harness} cannot take guidance mid-turn. Wait for the turn to finish, then use message.`,
@@ -13756,10 +13891,13 @@ function Workspace({
       window.clearTimeout(timer);
       arm();
     });
+    // WP-176: raising a spend limit starts a builder that was waiting on it, without waiting for the timer.
+    const offSpend = subscribeSpend(pumpWorkersNow);
     arm();
     return () => {
       offRows();
       offPool();
+      offSpend();
       window.clearTimeout(timer);
     };
   }, [pumpWorkersNow]);
@@ -14065,12 +14203,17 @@ function Workspace({
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
             ...(delegation?.taskId ? { taskId: delegation.taskId } : {}),
+            // WP-176 round 5: the redo's link is written with its row, in the same transaction, before its first turn.
+            ...(delegation?.redoes ? { redoes: delegation.redoes.id } : {}),
             // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
             // when the turn settles through a restart's recovery path.
             ...(delegation ? { reviewRequired: true } : {}),
             by: `owner:${monoId}`,
           });
           const row = await launch?.row;
+          // A redo whose link could not be recorded does not start: its turn would be judged without its parent.
+          const refusal = redoLinkRefusal(delegation, row);
+          if (refusal) throw new Error(refusal);
           // Dev-only (D5 scripted test): a worker started while a tester armed dev-faults/fail-next-workers runs, then
           // reports a failure. Off by default; see devFault.ts and docs/DEV-FAULTS.md.
           const fault = await takeWorkerFault();
@@ -14476,7 +14619,8 @@ function Workspace({
                 target,
                 mode,
                 isLiveHarness(target.harness) &&
-                  canSteerHarness(target.harness),
+                  canSteerHarness(target.harness) &&
+                  !target.registryAgentId,
               );
               if (delivery !== "started") {
                 const follow = delivery === "steered" ? "steer" : "queue";
@@ -16914,7 +17058,7 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       }),
-    submit: onSubmit,
+    submit: onComposerSubmit,
     stop: onStopFromUser,
     approval: onApproval,
     question: onQuestionReply,
@@ -17042,7 +17186,7 @@ function Workspace({
     onRuntimeModeChange,
     onSaveDraft,
     onRemoveDraft,
-    onSubmit,
+    onSubmit: onComposerSubmit,
     onCompareModels,
     fanOutForSession,
     onStop: onStopFromUser,
