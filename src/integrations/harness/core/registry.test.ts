@@ -5,6 +5,7 @@ import {
 } from "../../../features/sessions/model/models";
 import type { HarnessId } from "../../../features/sessions/model/session";
 import {
+  BACKGROUND_HOLD_CEILING_MS,
   HARNESS_IDLE_PARK_MS,
   bindHarnessSession,
   canCompactHarnessContext,
@@ -422,6 +423,74 @@ describe("harness registry", () => {
       expect(stopSession).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + 60_000);
       expect(stopSession).toHaveBeenCalledWith("s1");
+    });
+
+    it("parks a chat whose background work never ends, after the hold ceiling, and says so once", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      registerHarness(
+        stub("opencode", {
+          stopSession,
+          hasBackgroundWork: () => true,
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+      const events: { type: string; text?: string }[] = [];
+      await sendHarnessTurn({
+        harness: "opencode",
+        sessionId: "stuck",
+        cwd: "/tmp",
+        model: "claude-sonnet",
+        text: "hi",
+        runtimeMode: "supervised",
+        onEvent: (event) => events.push(event),
+      });
+
+      // The first check that finds the work starts the hold: HARNESS_IDLE_PARK_MS after the turn settles.
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + BACKGROUND_HOLD_CEILING_MS - 30_000);
+      expect(stopSession).not.toHaveBeenCalled();
+      expect(events.filter((event) => event.type === "status")).toEqual([]);
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(stopSession).toHaveBeenCalledTimes(1);
+      expect(stopSession).toHaveBeenCalledWith("stuck");
+      const statuses = events.filter((event) => event.type === "status");
+      expect(statuses).toHaveLength(1);
+      expect(statuses[0]!.text).toMatch(/background work/i);
+
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS * 2);
+      expect(stopSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps holding a Claude chat past the ceiling while Claude still reports its own background work", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      let busy = true;
+      registerHarness(
+        stub("claude", {
+          stopSession,
+          hasBackgroundWork: () => busy,
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+      const events: { type: string; text?: string }[] = [];
+      await sendHarnessTurn({
+        harness: "claude",
+        sessionId: "long-build",
+        cwd: "/tmp",
+        model: "claude-sonnet",
+        text: "hi",
+        runtimeMode: "supervised",
+        onEvent: (event) => events.push(event),
+      });
+
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + BACKGROUND_HOLD_CEILING_MS * 2);
+      expect(stopSession).not.toHaveBeenCalled();
+      expect(events.filter((event) => event.type === "status")).toEqual([]);
+
+      busy = false;
+      await vi.advanceTimersByTimeAsync(30_000 + HARNESS_IDLE_PARK_MS + 60_000);
+      expect(stopSession).toHaveBeenCalledWith("long-build");
     });
 
     it("skips a busy chat when the warm limit parks the longest-idle child", async () => {

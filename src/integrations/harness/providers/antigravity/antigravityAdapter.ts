@@ -6,6 +6,7 @@ import {
   sendAntigravityTurn,
   steerAntigravityTurn,
   stopAntigravitySession,
+  antigravityHasBackgroundWork,
 } from "./antigravity";
 import { refreshAntigravityCatalog } from "./antigravityCatalog";
 import { registerHarness, type HarnessAdapter } from "../../core/registry";
@@ -19,6 +20,7 @@ export const antigravityAdapter: HarnessAdapter = {
   cancelTurn: cancelAntigravityTurn,
   respondApproval: respondAntigravityApproval,
   stopSession: stopAntigravitySession,
+  hasBackgroundWork: antigravityHasBackgroundWork,
   forgetSession: forgetAntigravitySession,
   bindSession: bindAntigravitySession,
   refreshCatalog: refreshAntigravityCatalog,
