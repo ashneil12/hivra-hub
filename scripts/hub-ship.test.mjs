@@ -982,11 +982,6 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     ],
     ["an ad-hoc signature", (w) => bundleAt(w.bundle, { sha: w.sha, signature: "adhoc", root: w.root }), /signed ad hoc/],
     [
-      "a bundle without the dictation helper (WP-131b)",
-      (w) => fs.rmSync(path.join(w.bundle, "Contents/Helpers"), { recursive: true, force: true }),
-      /Dictation helper: the dictation helper is missing/,
-    ],
-    [
       "a different certificate",
       (w) => bundleAt(w.bundle, { sha: w.sha, signature: "someone-else", root: w.root }),
       /signed differently from the installed app/,
@@ -1004,9 +999,6 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     ],
   ];
   for (const [what, spoil, expected] of cases) {
-    // The dictation helper is checked on macOS only (hub-dictation-helper.mjs helperCheckApplies), so its refusal
-    // can't happen anywhere else.
-    if (what.includes("dictation helper") && process.platform !== "darwin") continue;
     const w = world();
     spoil(w);
     const before = fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode"));
@@ -1021,6 +1013,17 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     assert.deepEqual(fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode")), before, `${what}: app untouched`);
     assert.equal(sha256File(path.join(w.data, "monocode.db")), w.before.db, `${what}: database untouched`);
   }
+});
+
+// WP-131b: dictation is off in this build, so hub:build puts no helper into the bundle. A bundle without one is a
+// normal build and ships. (The helper check runs on macOS only; elsewhere this passes trivially.)
+test("a bundle without the dictation helper ships while dictation is off", () => {
+  const w = world();
+  fs.rmSync(path.join(w.bundle, "Contents/Helpers"), { recursive: true, force: true });
+  const { code, answer } = ship(w, ["--dry-run"]);
+  assert.equal(code, 0, JSON.stringify(answer));
+  assert.equal(answer.ok, true, JSON.stringify(answer));
+  assert.ok(!(answer.refusals ?? []).some((refusal) => /Dictation helper/.test(refusal)), JSON.stringify(answer));
 });
 
 test("r59: compareVersions and versionProblem", () => {

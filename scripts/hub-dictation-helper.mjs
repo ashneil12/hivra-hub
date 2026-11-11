@@ -10,6 +10,7 @@
 //
 // Run by `npm run hub:build` after `tauri build`: it builds the helper binary, writes its Info.plist, signs the helper
 // with its own entitlements, then signs the app again (its seal covers the helper) with the app's entitlements.
+// While dictation is off (DICTATION_ENABLED below) it does none of that and leaves the bundle as tauri build made it.
 // The pure functions below are what the tests pin; the CLI does the file and codesign work.
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -24,6 +25,13 @@ export const HELPER_NAME = "MonoCode Dictation.app";
 export const HELPER_EXECUTABLE = "monocode-dictation";
 export const HELPER_RELATIVE = path.join("Contents", "Helpers", HELPER_NAME);
 export const HELPER_ENTITLEMENT = "com.apple.security.device.audio-input";
+/**
+ * Whether dictation is on in this build. It is off (round-3 review, HIGH 1) until the XPC follow-up lands, and it moves
+ * together with `dictation::ENABLED` (src-tauri/src/dictation.rs) and `protocol::DICTATION_ENABLED`
+ * (crates/dictation-helper); a test fails if they differ. While it is off, hub:build puts no helper into the bundle, and
+ * hub:verify and hub:ship accept a bundle without one. The main app's microphone keys are checked either way.
+ */
+export const DICTATION_ENABLED = false;
 const INFO_TEMPLATE = path.join(ROOT, "crates/dictation-helper/bundle/Info.plist");
 const HELPER_ENTITLEMENTS = path.join(ROOT, "crates/dictation-helper/bundle/Entitlements.plist");
 
@@ -60,7 +68,14 @@ function hasTrueEntitlement(entitlements, key) {
  * neither usage string nor the audio input entitlement; the helper must have its identifier, both strings and the
  * entitlement.
  */
-export function dictationHelperProblems({ identifier, hubInfo, hubEntitlements, hubTeam, helper }) {
+export function dictationHelperProblems({
+  identifier,
+  hubInfo,
+  hubEntitlements,
+  hubTeam,
+  helper,
+  dictationEnabled = DICTATION_ENABLED,
+}) {
   const problems = [];
   for (const key of ["NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription"]) {
     if (hasKey(hubInfo, key)) problems.push(`the main app carries ${key}; the microphone belongs to the helper only`);
@@ -69,7 +84,8 @@ export function dictationHelperProblems({ identifier, hubInfo, hubEntitlements, 
     problems.push("the main app carries the audio input entitlement; the microphone belongs to the helper only");
   }
   if (!helper) {
-    problems.push("the dictation helper is missing from the bundle");
+    // Dictation is off, so nothing starts a helper and a bundle without one is a normal build.
+    if (dictationEnabled) problems.push("the dictation helper is missing from the bundle");
     return problems;
   }
   const expected = helperBundleId(identifier);
@@ -245,6 +261,11 @@ export function installHelper(appPath, { binary = buildHelperBinary() } = {}) {
 }
 
 function main(argv) {
+  if (!DICTATION_ENABLED) {
+    // The bundle stays as tauri build signed it: nothing is built, copied or signed again, and hub:build can't fail here.
+    console.log("OK: dictation is off in this build, so the dictation helper is not put into the bundle.");
+    return;
+  }
   const app = path.resolve(argv[0] ?? helperBundleDefault(process.env));
   if (!existsSync(app)) {
     console.error(`no bundle at ${app}; run tauri build first (or pass the path to the .app)`);

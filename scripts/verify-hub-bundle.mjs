@@ -47,11 +47,16 @@ if (!result.ok) {
   process.exit(1);
 }
 // WP-131b: the microphone belongs to the dictation helper inside the bundle, never to the Hub itself.
-const helperProblems = dictationHelperProblems({ identifier: result.identifier, ...readBundleFacts(app) });
+const bundleFacts = readBundleFacts(app);
+const helperProblems = dictationHelperProblems({ identifier: result.identifier, ...bundleFacts });
 if (helperProblems.length) {
   console.error(`REFUSE: ${app} (dictation helper)`);
   for (const problem of helperProblems) console.error(`  ${problem}`);
   process.exit(1);
 }
 console.log(`OK: ${app} is the Hub (${result.identifier}), ${stampLabel(result.stamp)}, built ${result.stamp.builtAt}.`);
-console.log(`OK: dictation helper ${helperBundleId(result.identifier)} is in the bundle, signed with its own entitlements.`);
+console.log(
+  bundleFacts.helper
+    ? `OK: dictation helper ${helperBundleId(result.identifier)} is in the bundle, signed with its own entitlements.`
+    : "OK: no dictation helper in the bundle (dictation is off in this build), and the app asks for no microphone.",
+);
