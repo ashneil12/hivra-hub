@@ -57,6 +57,10 @@ pub const PERMISSION_GRANT: &str = "permission.grant";
 /// WP-178: an agent did not start under the macOS sandbox (agent_sandbox::note_refusal).
 pub const SANDBOX_REFUSE: &str = "sandbox.refuse";
 
+/// WP-180a: the runs screen listens for this after a line is stored.
+/// `record` has no app handle, so the writer emits it.
+pub const CHANGED: &str = "monocode:activity-changed";
+
 /// Who did a thing, or who asked for it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "kebab-case")]

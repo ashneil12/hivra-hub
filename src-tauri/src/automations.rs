@@ -733,23 +733,20 @@ pub fn automation_runs_list(
     Ok(runs)
 }
 
-#[tauri::command(async)]
-pub fn automation_runs_recover(
-    app: AppHandle,
-    store: State<'_, SessionStore>,
+struct RecoveredRuns {
+    due: Vec<DueAutomationRun>,
+    changed: bool,
+    /// WP-180a: true once a restart wrote a new activity line.
+    noted: bool,
+}
+
+/// The body of `automation_runs_recover`, without the app handle, so a test can
+/// drive it. A pending event run with no prompt becomes failed.
+fn recover_stored_runs(
+    conn: &mut Connection,
     started_before: i64,
     now: i64,
-) -> Result<Vec<DueAutomationRun>, String> {
-    // A dev copy never runs automations on its own (src/instance.rs); its runs stay as they are.
-    if !crate::instance::policy().automations {
-        return Ok(Vec::new());
-    }
-    // A build on trial runs none until it commits (src/ship.rs). An error, not an empty list: the window retries
-    // recovery later instead of remembering that there was nothing to recover.
-    if crate::ship::holding() {
-        return Err("This build is on trial; automations wait until it commits.".into());
-    }
-    let mut conn = store.lock_conn()?;
+) -> Result<RecoveredRuns, String> {
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let mut statement = tx
         .prepare(
@@ -769,6 +766,7 @@ pub fn automation_runs_recover(
 
     let mut due = Vec::new();
     let mut changed = false;
+    let mut noted = false;
     let mut changed_automation_ids = Vec::new();
     for mut run in runs {
         if run.status != "pending" && run.status != "running" {
@@ -794,12 +792,16 @@ pub fn automation_runs_recover(
                 .as_deref()
                 .is_none_or(|prompt| prompt.trim().is_empty())
         {
+            let previous_status = run.status.clone();
             run.status = "failed".into();
             run.completed_at = Some(now);
             run.error = Some("The Inbox event prompt was not available after restart.".into());
             apply_run_summary(&mut automation, &run);
             write_run(&tx, &run)?;
             write_automation(&tx, &automation)?;
+            if note_run_activity(&tx, &automation, &previous_status, &run, None, now) {
+                noted = true;
+            }
             changed_automation_ids.push(run.automation_id.clone());
             changed = true;
             continue;
@@ -812,11 +814,40 @@ pub fn automation_runs_recover(
         trim_history(&tx, &automation_id)?;
     }
     tx.commit().map_err(|error| error.to_string())?;
+    Ok(RecoveredRuns {
+        due,
+        changed,
+        noted,
+    })
+}
+
+#[tauri::command(async)]
+pub fn automation_runs_recover(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    started_before: i64,
+    now: i64,
+) -> Result<Vec<DueAutomationRun>, String> {
+    // A dev copy never runs automations on its own (src/instance.rs); its runs stay as they are.
+    if !crate::instance::policy().automations {
+        return Ok(Vec::new());
+    }
+    // A build on trial runs none until it commits (src/ship.rs). An error, not an empty list: the window retries
+    // recovery later instead of remembering that there was nothing to recover.
+    if crate::ship::holding() {
+        return Err("This build is on trial; automations wait until it commits.".into());
+    }
+    let mut conn = store.lock_conn()?;
+    let recovered = recover_stored_runs(&mut conn, started_before, now)?;
     drop(conn);
-    if changed || !due.is_empty() {
+    if recovered.changed || !recovered.due.is_empty() {
         let _ = app.emit(CHANGED, ());
     }
-    Ok(due)
+    // WP-180a: the runs screen hears the activity log's own event.
+    if recovered.noted {
+        let _ = app.emit(crate::activity::CHANGED, ());
+    }
+    Ok(recovered.due)
 }
 
 #[tauri::command(async)]
@@ -981,39 +1012,293 @@ pub fn automations_claim_event(
     Ok(Some(DueAutomationRun { automation, run }))
 }
 
-#[tauri::command(async)]
-pub fn automation_run_update(
-    app: AppHandle,
-    store: State<'_, SessionStore>,
-    run_id: String,
-    status: String,
+struct StoredRunUpdate {
+    run: AutomationRun,
+    /// WP-180a: true once a new activity line was written for this update.
+    noted: bool,
+}
+
+const AUTOMATION_STARTED: &str = "automation.started";
+const AUTOMATION_COMPLETED: &str = "automation.completed";
+const AUTOMATION_FAILED: &str = "automation.failed";
+
+fn activity_kind_for_status(status: &str) -> Option<&'static str> {
+    match status {
+        "running" => Some(AUTOMATION_STARTED),
+        "succeeded" => Some(AUTOMATION_COMPLETED),
+        "failed" => Some(AUTOMATION_FAILED),
+        _ => None,
+    }
+}
+
+/// `failureLine(error, errorClass)`. A class `crew::failure` already knows
+/// becomes one sentence. Anything else is the first line of the error, with
+/// secrets removed. The automation prompt is never read here.
+pub(crate) fn failure_line(error: Option<&str>, error_class: Option<&str>) -> String {
+    let class = crate::crew::failure::sanitize_class(error_class);
+    if let Some(sentence) = failure_sentence(&class) {
+        return sentence.to_string();
+    }
+    // Scrub the whole error first, so a key that spans a line break cannot
+    // leave its header on the line that is kept.
+    let scrubbed = crate::portable::scrubber()
+        .redact_text(error.unwrap_or(""))
+        .0;
+    let first = first_line(&scrubbed).trim();
+    if first.is_empty() {
+        "the run failed".to_string()
+    } else {
+        crate::activity::bounded_text(first, 240)
+    }
+}
+
+fn failure_sentence(class: &str) -> Option<&'static str> {
+    match class {
+        "auth" | "not_authenticated" | "unauthenticated" | "login" | "unauthorized" => {
+            Some("the Claude login has expired")
+        }
+        "usage" | "usage_limit" | "rate_limit" | "ratelimit" | "rate_limited" => {
+            Some("the usage limit has been reached")
+        }
+        "billing" | "billing_or_quota" | "quota" | "credit" | "credits" | "out_of_credits" => {
+            Some("the account has a billing problem")
+        }
+        "missing_cli" | "cli_missing" | "command_not_found" | "sdk_not_installed" => {
+            Some("the agent CLI is missing")
+        }
+        _ => None,
+    }
+}
+
+fn first_line(text: &str) -> &str {
+    text.split(['\n', '\r', '\u{2028}', '\u{2029}', '\u{0085}'])
+        .next()
+        .unwrap_or("")
+}
+
+fn clock_phrase(time: &str) -> Option<String> {
+    if !valid_time(time) {
+        return None;
+    }
+    let (hour, minute) = time.split_once(':')?;
+    let hour: u8 = hour.parse().ok()?;
+    Some(format!("{hour}:{minute}"))
+}
+
+/// What started a run, in plain words. Never the prompt.
+/// The map uses the same phrases (`src/features/automations/model/mapLayout.ts`).
+fn started_by(automation: &Automation, run: &AutomationRun) -> String {
+    if run.trigger == "manual" {
+        return "you".to_string();
+    }
+    if run.trigger == "event" {
+        return event_cause(automation, run);
+    }
+    schedule_cause(automation, run)
+}
+
+/// The time trigger whose clock is the local time of `scheduled_for`. An hourly
+/// trigger matches its minute only when no exact clock does. No match is just
+/// "the schedule".
+fn schedule_cause(automation: &Automation, run: &AutomationRun) -> String {
+    let triggers = automation.triggers.as_deref().unwrap_or(&[]);
+    let (hour, minute) = local_clock(run.scheduled_for);
+    if let Some(trigger) = triggers.iter().find(|trigger| {
+        trigger.kind == "time"
+            && trigger.schedule_kind != "hourly"
+            && trigger_clock(trigger) == Some((hour, minute))
+    }) {
+        return match clock_phrase(&trigger.time) {
+            Some(clock) => format!("the {clock} schedule"),
+            None => "the schedule".to_string(),
+        };
+    }
+    if triggers.iter().any(|trigger| {
+        trigger.kind == "time"
+            && trigger.schedule_kind == "hourly"
+            && trigger.minute == i64::from(minute)
+    }) {
+        return "the hourly schedule".to_string();
+    }
+    "the schedule".to_string()
+}
+
+fn local_clock(scheduled_for_ms: i64) -> (u8, u8) {
+    let secs = scheduled_for_ms.div_euclid(1000);
+    let offset = i64::from(crate::work_log::local_offset_seconds(secs));
+    let day = (secs + offset).rem_euclid(86_400);
+    let hour = u8::try_from(day / 3600).unwrap_or(0);
+    let minute = u8::try_from((day % 3600) / 60).unwrap_or(0);
+    (hour, minute)
+}
+
+fn trigger_clock(trigger: &AutomationTrigger) -> Option<(u8, u8)> {
+    if !valid_time(&trigger.time) {
+        return None;
+    }
+    let (hour, minute) = trigger.time.split_once(':')?;
+    Some((hour.parse().ok()?, minute.parse().ok()?))
+}
+
+fn event_cause(automation: &Automation, run: &AutomationRun) -> String {
+    let event = run.event.as_deref().unwrap_or("");
+    let noun = match event {
+        "issue_opened" | "issue_created" => "a new issue",
+        "pull_request_opened" | "pull_request_appeared" | "draft_opened" => "a new pull request",
+        "merge_request_opened" => "a new merge request",
+        "work_item_appeared" => "a new work item",
+        _ => "an event",
+    };
+    match event_repo(automation, run) {
+        Some(repo) => format!("{noun} in {repo}"),
+        None => noun.to_string(),
+    }
+}
+
+fn event_repo(automation: &Automation, run: &AutomationRun) -> Option<String> {
+    if let Some(repo) = repo_from_event_key(run.event_key.as_deref().unwrap_or("")) {
+        return Some(repo);
+    }
+    let kind = run.event_kind.as_deref().unwrap_or("");
+    let event = run.event.as_deref().unwrap_or("");
+    if let Some(triggers) = automation.triggers.as_ref() {
+        if let Some(trigger) = triggers
+            .iter()
+            .find(|trigger| trigger.kind == kind && (event.is_empty() || trigger.event == event))
+        {
+            let repo = trigger.repo.trim();
+            if !repo.is_empty() {
+                return Some(repo.to_string());
+            }
+            if let Some(repo) = trigger
+                .repos
+                .iter()
+                .map(|repo| repo.trim())
+                .find(|repo| !repo.is_empty())
+            {
+                return Some(repo.to_string());
+            }
+        }
+    }
+    None
+}
+
+/// `github:issue:owner/repo:12`. A key with no `owner/name` has no repo.
+fn repo_from_event_key(key: &str) -> Option<String> {
+    let parts: Vec<&str> = key.split(':').collect();
+    if parts.len() < 4 {
+        return None;
+    }
+    let repo = parts[2..parts.len() - 1].join(":");
+    let repo = repo.trim();
+    if repo.is_empty() || !repo.contains('/') {
+        None
+    } else {
+        Some(repo.to_string())
+    }
+}
+
+fn run_activity_summary(
+    automation: &Automation,
+    run: &AutomationRun,
+    error_class: Option<&str>,
+) -> String {
+    let name = automation.name.trim();
+    let name = if name.is_empty() { "Automation" } else { name };
+    let cause = started_by(automation, run);
+    match run.status.as_str() {
+        "running" => format!("{name}. Started by {cause}."),
+        "succeeded" => format!("{name}. Finished. Started by {cause}."),
+        "failed" => {
+            let reason = failure_line(run.error.as_deref(), error_class);
+            format!("{name}. Failed: {reason}. Started by {cause}.")
+        }
+        _ => String::new(),
+    }
+}
+
+fn activity_line_exists(conn: &Connection, kind: &str, target: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM activity WHERE kind = ?1 AND target = ?2 LIMIT 1",
+        [kind, target],
+        |_| Ok(true),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+
+/// One line per run and status. A retry, or a line already stored for this
+/// run, writes nothing. The prompt is not copied into the line.
+fn note_run_activity(
+    conn: &Connection,
+    automation: &Automation,
+    previous_status: &str,
+    run: &AutomationRun,
+    error_class: Option<&str>,
+    now: i64,
+) -> bool {
+    let Some(kind) = activity_kind_for_status(&run.status) else {
+        return false;
+    };
+    if activity_kind_for_status(previous_status) == Some(kind) {
+        return false;
+    }
+    let target = format!("{}/{}", run.automation_id, run.id);
+    if activity_line_exists(conn, kind, &target) {
+        return false;
+    }
+    let summary = run_activity_summary(automation, run, error_class);
+    if summary.is_empty() {
+        return false;
+    }
+    let link = run
+        .session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .map(|id| format!("session:{id}"))
+        .unwrap_or_default();
+    crate::activity::note(
+        conn,
+        kind,
+        &crate::activity::Who::app(),
+        &crate::activity::Who::app(),
+        automation.cwd.trim(),
+        &target,
+        &summary,
+        &link,
+        now,
+    );
+    activity_line_exists(conn, kind, &target)
+}
+
+/// The body of `automation_run_update`, without the app handle, so a test can
+/// drive it. A retried status writes no second activity line.
+#[allow(clippy::too_many_arguments)]
+fn update_stored_run(
+    conn: &mut Connection,
+    run_id: &str,
+    status: &str,
     session_id: Option<String>,
     error: Option<String>,
+    error_class: Option<&str>,
     now: i64,
-) -> Result<AutomationRun, String> {
-    validate_id(&run_id, "automation run")?;
-    if let Some(session_id) = session_id.as_deref() {
-        validate_id(session_id, "session")?;
-    }
-    if !matches!(
-        status.as_str(),
-        "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled"
-    ) {
-        return Err("Invalid automation run status.".into());
-    }
-    let mut conn = store.lock_conn()?;
+) -> Result<StoredRunUpdate, String> {
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let raw = tx
         .query_row(
             "SELECT run_json FROM automation_runs WHERE id = ?1",
-            [&run_id],
+            [run_id],
             |row| row.get::<_, String>(0),
         )
         .optional()
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Automation run not found.".to_string())?;
     let mut run: AutomationRun = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
-    run.status = status;
+    let previous_status = run.status.clone();
+    run.status = status.to_string();
     if run.status == "running" && run.started_at.is_none() {
         run.started_at = Some(now);
     }
@@ -1032,11 +1317,52 @@ pub fn automation_run_update(
     apply_run_summary(&mut automation, &run);
     write_run(&tx, &run)?;
     write_automation(&tx, &automation)?;
+    // WP-180a: one activity line when a run starts, finishes or fails.
+    let noted = note_run_activity(&tx, &automation, &previous_status, &run, error_class, now);
     trim_history(&tx, &run.automation_id)?;
     tx.commit().map_err(|error| error.to_string())?;
+    Ok(StoredRunUpdate { run, noted })
+}
+
+#[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
+pub fn automation_run_update(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    run_id: String,
+    status: String,
+    session_id: Option<String>,
+    error: Option<String>,
+    error_class: Option<String>,
+    now: i64,
+) -> Result<AutomationRun, String> {
+    validate_id(&run_id, "automation run")?;
+    if let Some(session_id) = session_id.as_deref() {
+        validate_id(session_id, "session")?;
+    }
+    if !matches!(
+        status.as_str(),
+        "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled"
+    ) {
+        return Err("Invalid automation run status.".into());
+    }
+    let mut conn = store.lock_conn()?;
+    let updated = update_stored_run(
+        &mut conn,
+        &run_id,
+        &status,
+        session_id,
+        error,
+        error_class.as_deref(),
+        now,
+    )?;
     drop(conn);
     let _ = app.emit(CHANGED, ());
-    Ok(run)
+    // WP-180a: the runs screen hears the activity log's own event.
+    if updated.noted {
+        let _ = app.emit(crate::activity::CHANGED, ());
+    }
+    Ok(updated.run)
 }
 
 #[cfg(test)]
@@ -1316,5 +1642,728 @@ mod tests {
 
         assert_eq!(claim(), 1);
         assert_eq!(claim(), 0);
+    }
+
+    struct ActivitySeen {
+        kind: String,
+        summary: String,
+        link: String,
+        target: String,
+    }
+
+    fn stored_automation(id: &str, name: &str, prompt: &str) -> Automation {
+        Automation {
+            id: id.into(),
+            name: name.into(),
+            prompt: prompt.into(),
+            harness: "claude".into(),
+            model: "model".into(),
+            model_settings: HashMap::new(),
+            cwd: "/work/project".into(),
+            workspace_mode: "current".into(),
+            worktree_cwd: String::new(),
+            session_folder_id: String::new(),
+            reuse_session: false,
+            runtime_mode: "auto".into(),
+            trigger_kind: "time".into(),
+            trigger_event: String::new(),
+            schedule_kind: "weekdays".into(),
+            minute: 0,
+            time: "09:00".into(),
+            day_of_week: 1,
+            triggers: None,
+            missed_run_grace_minutes: 720,
+            enabled: true,
+            next_run_at: 1,
+            last_run_at: None,
+            last_run_status: None,
+            last_run_error: None,
+            last_session_id: None,
+            created_at: 1,
+            updated_at: 1,
+        }
+    }
+
+    fn stored_run(id: &str, automation_id: &str) -> AutomationRun {
+        AutomationRun {
+            id: id.into(),
+            automation_id: automation_id.into(),
+            trigger: "scheduled".into(),
+            scheduled_for: at_local_clock(9, 0),
+            created_at: 1,
+            started_at: None,
+            completed_at: None,
+            status: "pending".into(),
+            session_id: None,
+            error: None,
+            event_key: None,
+            event_kind: None,
+            event: None,
+            prompt: Some("PROMPT_SHOULD_NOT_LEAK".into()),
+        }
+    }
+
+    fn activity_rows(conn: &Connection) -> Vec<ActivitySeen> {
+        let mut statement = conn
+            .prepare("SELECT kind, summary, link, target FROM activity ORDER BY seq ASC")
+            .unwrap();
+        statement
+            .query_map([], |row| {
+                Ok(ActivitySeen {
+                    kind: row.get(0)?,
+                    summary: row.get(1)?,
+                    link: row.get(2)?,
+                    target: row.get(3)?,
+                })
+            })
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect()
+    }
+
+    /// A finished run and a failed run each write one activity line. Repeating
+    /// the same `automation_run_update` writes no second line. Today, before the
+    /// hook, both updates write nothing.
+    #[test]
+    fn finished_and_failed_runs_write_one_activity_line() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut conn = store.lock_conn().unwrap();
+        let automation =
+            stored_automation("morning-audit", "Morning audit", "PROMPT_SHOULD_NOT_LEAK");
+        write_automation(&conn, &automation).unwrap();
+        write_run(&conn, &stored_run("run-finished", "morning-audit")).unwrap();
+        let secret = "sk-ant-api03-PLANTEDplantedPLANTED0123456789abcdefXYZ";
+        update_stored_run(
+            &mut conn,
+            "run-finished",
+            "succeeded",
+            Some("session-1".into()),
+            None,
+            None,
+            1_700_000_000_000,
+        )
+        .unwrap();
+        update_stored_run(
+            &mut conn,
+            "run-finished",
+            "succeeded",
+            Some("session-1".into()),
+            None,
+            None,
+            1_700_000_000_001,
+        )
+        .unwrap();
+        write_run(&conn, &stored_run("run-failed", "morning-audit")).unwrap();
+        update_stored_run(
+            &mut conn,
+            "run-failed",
+            "failed",
+            None,
+            Some(format!("login failed\n{secret}")),
+            Some("not_authenticated"),
+            1_700_000_000_002,
+        )
+        .unwrap();
+        update_stored_run(
+            &mut conn,
+            "run-failed",
+            "failed",
+            None,
+            Some(format!("login failed again\n{secret}")),
+            Some("not_authenticated"),
+            1_700_000_000_003,
+        )
+        .unwrap();
+
+        let rows = activity_rows(&conn);
+        assert_eq!(
+            rows.len(),
+            2,
+            "a finished run and a failed run write one line each, and a retry writes no second"
+        );
+        let finished = rows
+            .iter()
+            .find(|row| row.kind == "automation.completed")
+            .expect("finished line");
+        assert!(finished.summary.contains("Morning audit"));
+        assert!(finished.summary.contains("Finished"));
+        assert!(finished.summary.contains("the 9:00 schedule"));
+        assert!(!finished.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        assert_eq!(finished.link, "session:session-1");
+        assert_eq!(finished.target, "morning-audit/run-finished");
+        let failed = rows
+            .iter()
+            .find(|row| row.kind == "automation.failed")
+            .expect("failed line");
+        assert!(failed.summary.contains("Morning audit"));
+        assert!(failed
+            .summary
+            .contains("Failed: the Claude login has expired"));
+        assert!(failed.summary.contains("the 9:00 schedule"));
+        assert!(!failed.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        assert!(!failed.summary.contains(secret));
+        assert!(!failed.summary.contains("sk-ant-"));
+        assert_eq!(failed.target, "morning-audit/run-failed");
+    }
+
+    #[test]
+    fn failure_line_maps_known_classes_and_scrubs_an_unknown_error() {
+        let secret = "sk-ant-api03-PLANTEDplantedPLANTED0123456789abcdefXYZ";
+        for class in [
+            "auth",
+            "not_authenticated",
+            "Not_Authenticated",
+            "unauthenticated",
+            "login",
+            "unauthorized",
+        ] {
+            let line = failure_line(Some(&format!("nope\n{secret}")), Some(class));
+            assert_eq!(line, "the Claude login has expired", "{class}");
+            assert!(!line.contains(secret));
+        }
+        for class in [
+            "usage",
+            "usage_limit",
+            "rate_limit",
+            "ratelimit",
+            "rate_limited",
+        ] {
+            assert_eq!(
+                failure_line(Some("nope"), Some(class)),
+                "the usage limit has been reached",
+                "{class}"
+            );
+        }
+        for class in [
+            "billing",
+            "billing_or_quota",
+            "quota",
+            "credit",
+            "credits",
+            "out_of_credits",
+        ] {
+            assert_eq!(
+                failure_line(Some("nope"), Some(class)),
+                "the account has a billing problem",
+                "{class}"
+            );
+        }
+        for class in [
+            "missing_cli",
+            "cli_missing",
+            "command_not_found",
+            "sdk_not_installed",
+        ] {
+            assert_eq!(
+                failure_line(Some("nope"), Some(class)),
+                "the agent CLI is missing",
+                "{class}"
+            );
+        }
+
+        let first = failure_line(Some(&format!("disk full\r\n{secret}")), Some("other"));
+        assert_eq!(first, "disk full");
+        assert!(!first.contains(secret));
+        assert!(!first.contains("sk-ant-"));
+
+        let scrubbed = failure_line(Some(&format!("broke {secret} badly")), None);
+        assert!(scrubbed.contains("[secret removed]"));
+        assert!(!scrubbed.contains(secret));
+        assert!(!scrubbed.contains("sk-ant-"));
+
+        let second_line = failure_line(Some(&format!("ok\n{secret}")), None);
+        assert_eq!(second_line, "ok");
+        assert!(!second_line.contains("sk-ant-"));
+
+        assert_eq!(failure_line(Some(""), None), "the run failed");
+        assert_eq!(failure_line(None, None), "the run failed");
+        assert_eq!(
+            failure_line(Some("\nsecret on the next line"), None),
+            "the run failed"
+        );
+    }
+
+    fn open_run(id: &str) -> (crate::session_store::SessionStore, Automation) {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let automation = stored_automation(id, "Morning audit", "PROMPT_SHOULD_NOT_LEAK");
+        {
+            let conn = store.lock_conn().unwrap();
+            write_automation(&conn, &automation).unwrap();
+        }
+        (store, automation)
+    }
+
+    fn finish(
+        conn: &mut Connection,
+        run_id: &str,
+        status: &str,
+        error: Option<String>,
+        error_class: Option<&str>,
+    ) {
+        update_stored_run(
+            conn,
+            run_id,
+            status,
+            None,
+            error,
+            error_class,
+            1_700_000_000_000,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_started_run_writes_one_line_and_a_retry_does_not() {
+        let (store, _) = open_run("morning-audit");
+        let mut conn = store.lock_conn().unwrap();
+        write_run(&conn, &stored_run("run-start", "morning-audit")).unwrap();
+        finish(&mut conn, "run-start", "running", None, None);
+        finish(&mut conn, "run-start", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "automation.started");
+        assert!(rows[0].summary.contains("Morning audit"));
+        assert!(rows[0].summary.contains("Started by the 9:00 schedule"));
+        assert!(!rows[0].summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        assert_eq!(rows[0].target, "morning-audit/run-start");
+    }
+
+    #[test]
+    fn starting_then_finishing_writes_two_lines_and_neither_twice() {
+        let (store, _) = open_run("morning-audit");
+        let mut conn = store.lock_conn().unwrap();
+        write_run(&conn, &stored_run("run-both", "morning-audit")).unwrap();
+        finish(&mut conn, "run-both", "running", None, None);
+        finish(&mut conn, "run-both", "running", None, None);
+        finish(&mut conn, "run-both", "succeeded", None, None);
+        finish(&mut conn, "run-both", "succeeded", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, "automation.started");
+        assert_eq!(rows[1].kind, "automation.completed");
+    }
+
+    #[test]
+    fn skipped_cancelled_and_pending_write_nothing() {
+        let (store, _) = open_run("morning-audit");
+        let mut conn = store.lock_conn().unwrap();
+        for (id, status) in [
+            ("run-skip", "skipped"),
+            ("run-cancel", "cancelled"),
+            ("run-wait", "pending"),
+        ] {
+            write_run(&conn, &stored_run(id, "morning-audit")).unwrap();
+            finish(&mut conn, id, status, None, None);
+            finish(&mut conn, id, status, None, None);
+        }
+        assert!(activity_rows(&conn).is_empty());
+    }
+
+    #[test]
+    fn a_line_already_stored_for_the_run_is_not_repeated() {
+        let (store, _) = open_run("morning-audit");
+        let mut conn = store.lock_conn().unwrap();
+        write_run(&conn, &stored_run("run-finished", "morning-audit")).unwrap();
+        crate::activity::record(
+            &conn,
+            "automation.completed",
+            &crate::activity::Who::app(),
+            &crate::activity::Who::app(),
+            "/work/project",
+            "morning-audit/run-finished",
+            "Morning audit. Finished. Started by the 9:00 schedule.",
+            "",
+            1_700_000_000_000,
+        )
+        .unwrap();
+        finish(&mut conn, "run-finished", "succeeded", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].kind, "automation.completed");
+    }
+
+    #[test]
+    fn a_manual_run_says_you_started_it() {
+        let (store, _) = open_run("morning-audit");
+        let mut conn = store.lock_conn().unwrap();
+        let mut run = stored_run("run-hand", "morning-audit");
+        run.trigger = "manual".into();
+        write_run(&conn, &run).unwrap();
+        finish(&mut conn, "run-hand", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].summary.contains("Started by you."));
+        assert!(!rows[0].summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+    }
+
+    #[test]
+    fn an_hourly_schedule_and_a_blank_name_stay_plain() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut automation = stored_automation("hourly", "   ", "PROMPT_SHOULD_NOT_LEAK");
+        automation.schedule_kind = "hourly".into();
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+        write_run(&conn, &stored_run("run-hour", "hourly")).unwrap();
+        finish(&mut conn, "run-hour", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].summary.starts_with("Automation."));
+        assert!(rows[0].summary.contains("the hourly schedule"));
+        assert!(!rows[0].summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+    }
+
+    #[test]
+    fn an_event_run_names_the_change_and_the_repo() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut automation = stored_automation("inbox", "Inbox watch", "PROMPT_SHOULD_NOT_LEAK");
+        automation.triggers = Some(vec![
+            AutomationTrigger {
+                id: "issues".into(),
+                kind: "github".into(),
+                event: "issue_opened".into(),
+                schedule_kind: "weekdays".into(),
+                minute: 0,
+                time: "09:00".into(),
+                day_of_week: 1,
+                repos: vec!["owner/repo".into()],
+                repo: String::new(),
+                branch: String::new(),
+                actor: "app".into(),
+            },
+            AutomationTrigger {
+                id: "mrs".into(),
+                kind: "gitlab".into(),
+                event: "merge_request_opened".into(),
+                schedule_kind: "weekdays".into(),
+                minute: 0,
+                time: "09:00".into(),
+                day_of_week: 1,
+                repos: Vec::new(),
+                repo: "group/project".into(),
+                branch: String::new(),
+                actor: "app".into(),
+            },
+        ]);
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+
+        let mut issue = stored_run("run-issue", "inbox");
+        issue.trigger = "event".into();
+        issue.event_kind = Some("github".into());
+        issue.event = Some("issue_opened".into());
+        issue.event_key = Some("github:issue:owner/repo:12".into());
+        write_run(&conn, &issue).unwrap();
+
+        let mut request = stored_run("run-mr", "inbox");
+        request.trigger = "event".into();
+        request.event_kind = Some("gitlab".into());
+        request.event = Some("merge_request_opened".into());
+        request.event_key = Some("gitlab:pr:group/project:4".into());
+        write_run(&conn, &request).unwrap();
+
+        let mut linear = stored_run("run-linear", "inbox");
+        linear.trigger = "event".into();
+        linear.event_kind = Some("linear".into());
+        linear.event = Some("issue_created".into());
+        linear.event_key = Some("linear:issue:abc".into());
+        write_run(&conn, &linear).unwrap();
+
+        finish(&mut conn, "run-issue", "running", None, None);
+        finish(&mut conn, "run-mr", "running", None, None);
+        finish(&mut conn, "run-linear", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 3);
+        assert!(rows[0].summary.contains("a new issue in owner/repo"));
+        assert!(rows[1]
+            .summary
+            .contains("a new merge request in group/project"));
+        assert!(rows[2].summary.contains("a new issue"));
+        assert!(!rows[2].summary.contains(" in "));
+        for row in &rows {
+            assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        }
+    }
+
+    #[test]
+    fn a_secret_in_the_name_or_the_error_does_not_reach_the_line() {
+        let secret = "sk-ant-api03-PLANTEDplantedPLANTED0123456789abcdefXYZ";
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let automation = stored_automation(
+            "leaky",
+            &format!("Audit {secret}"),
+            "PROMPT_SHOULD_NOT_LEAK",
+        );
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+        write_run(&conn, &stored_run("run-name", "leaky")).unwrap();
+        finish(&mut conn, "run-name", "succeeded", None, None);
+
+        write_run(&conn, &stored_run("run-error", "leaky")).unwrap();
+        finish(
+            &mut conn,
+            "run-error",
+            "failed",
+            Some(format!("{secret} on the first line\nmore {secret}")),
+            None,
+        );
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert!(!row.summary.contains(secret), "{}", row.summary);
+            assert!(!row.summary.contains("sk-ant-"), "{}", row.summary);
+            assert!(row.summary.contains("[secret removed]"));
+            assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+            assert!(!row.summary.contains("more "));
+        }
+    }
+
+    /// Local millis for a clock on 15 Jan 2024. The offset is read twice so a
+    /// daylight boundary does not land on the wrong hour.
+    fn at_local_clock(hour: u8, minute: u8) -> i64 {
+        use time::{Date, Month, PrimitiveDateTime, Time};
+        let date = Date::from_calendar_date(2024, Month::January, 15).expect("date");
+        let clock = Time::from_hms(hour, minute, 0).expect("clock");
+        let naive = PrimitiveDateTime::new(date, clock)
+            .assume_utc()
+            .unix_timestamp();
+        for shift in [0_i64, -3600, 3600, -7200, 7200] {
+            let offset = i64::from(crate::work_log::local_offset_seconds(naive + shift));
+            let utc = naive - offset;
+            if i64::from(crate::work_log::local_offset_seconds(utc)) != offset {
+                continue;
+            }
+            let day_seconds = (utc + offset).rem_euclid(86_400);
+            if day_seconds / 3600 == i64::from(hour)
+                && (day_seconds % 3600) / 60 == i64::from(minute)
+            {
+                return utc * 1000;
+            }
+        }
+        panic!("no local instant for {hour:02}:{minute:02}");
+    }
+
+    fn time_trigger(id: &str, time: &str) -> AutomationTrigger {
+        AutomationTrigger {
+            id: id.into(),
+            kind: "time".into(),
+            event: "weekdays".into(),
+            schedule_kind: "weekdays".into(),
+            minute: 0,
+            time: time.into(),
+            day_of_week: 1,
+            repos: Vec::new(),
+            repo: String::new(),
+            branch: String::new(),
+            actor: "app".into(),
+        }
+    }
+
+    fn event_trigger(
+        id: &str,
+        kind: &str,
+        event: &str,
+        repo: &str,
+        repos: &[&str],
+    ) -> AutomationTrigger {
+        AutomationTrigger {
+            id: id.into(),
+            kind: kind.into(),
+            event: event.into(),
+            schedule_kind: "weekdays".into(),
+            minute: 0,
+            time: "09:00".into(),
+            day_of_week: 1,
+            repos: repos.iter().map(|repo| (*repo).to_string()).collect(),
+            repo: repo.into(),
+            branch: String::new(),
+            actor: "app".into(),
+        }
+    }
+
+    /// Two repos on one GitHub trigger: the line names the repo in the event
+    /// key, not the first repo on the trigger. Linear and Jira keys have no
+    /// repo, so those lines keep the trigger repo.
+    #[test]
+    fn an_event_run_names_the_repo_in_the_key() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut automation = stored_automation("inbox", "Inbox watch", "PROMPT_SHOULD_NOT_LEAK");
+        automation.triggers = Some(vec![
+            event_trigger(
+                "issues",
+                "github",
+                "issue_opened",
+                "",
+                &["acme/web", "acme/api"],
+            ),
+            event_trigger("linear", "linear", "issue_created", "team/board", &[]),
+            event_trigger("jira", "jira", "issue_created", "jira-project", &[]),
+        ]);
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+
+        let mut issue = stored_run("run-api", "inbox");
+        issue.trigger = "event".into();
+        issue.event_kind = Some("github".into());
+        issue.event = Some("issue_opened".into());
+        issue.event_key = Some("github:issue:acme/api:12".into());
+        write_run(&conn, &issue).unwrap();
+
+        let mut linear = stored_run("run-linear", "inbox");
+        linear.trigger = "event".into();
+        linear.event_kind = Some("linear".into());
+        linear.event = Some("issue_created".into());
+        linear.event_key = Some("linear:issue:abc".into());
+        write_run(&conn, &linear).unwrap();
+
+        let mut jira = stored_run("run-jira", "inbox");
+        jira.trigger = "event".into();
+        jira.event_kind = Some("jira".into());
+        jira.event = Some("issue_created".into());
+        jira.event_key = Some("jira:issue:abc-1".into());
+        write_run(&conn, &jira).unwrap();
+
+        finish(&mut conn, "run-api", "running", None, None);
+        finish(&mut conn, "run-linear", "running", None, None);
+        finish(&mut conn, "run-jira", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows[0].summary.contains("a new issue in acme/api"),
+            "{}",
+            rows[0].summary
+        );
+        assert!(!rows[0].summary.contains("acme/web"), "{}", rows[0].summary);
+        assert!(rows[1].summary.contains("a new issue in team/board"));
+        assert!(rows[2].summary.contains("a new issue in jira-project"));
+        for row in &rows {
+            assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        }
+    }
+
+    /// Two clocks: the line names the one whose time matches `scheduled_for`.
+    /// A time that matches neither clock says "the schedule".
+    #[test]
+    fn a_schedule_run_names_the_clock_that_fired() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut automation = stored_automation("bells", "Bells", "PROMPT_SHOULD_NOT_LEAK");
+        automation.triggers = Some(vec![
+            time_trigger("nine", "09:00"),
+            time_trigger("six", "18:00"),
+        ]);
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+
+        let mut morning = stored_run("run-nine", "bells");
+        morning.scheduled_for = at_local_clock(9, 0);
+        write_run(&conn, &morning).unwrap();
+        let mut evening = stored_run("run-six", "bells");
+        evening.scheduled_for = at_local_clock(18, 0);
+        write_run(&conn, &evening).unwrap();
+        let mut noon = stored_run("run-noon", "bells");
+        noon.scheduled_for = at_local_clock(12, 30);
+        write_run(&conn, &noon).unwrap();
+
+        finish(&mut conn, "run-nine", "running", None, None);
+        finish(&mut conn, "run-six", "running", None, None);
+        finish(&mut conn, "run-noon", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows[0].summary.contains("the 9:00 schedule"),
+            "{}",
+            rows[0].summary
+        );
+        assert!(!rows[0].summary.contains("18:00"), "{}", rows[0].summary);
+        assert!(
+            rows[1].summary.contains("the 18:00 schedule"),
+            "{}",
+            rows[1].summary
+        );
+        assert!(!rows[1].summary.contains("9:00"), "{}", rows[1].summary);
+        assert!(
+            rows[2].summary.contains("the schedule"),
+            "{}",
+            rows[2].summary
+        );
+        assert!(!rows[2].summary.contains("9:00"), "{}", rows[2].summary);
+        assert!(!rows[2].summary.contains("18:00"), "{}", rows[2].summary);
+        for row in &rows {
+            assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        }
+    }
+
+    /// A pending event run whose prompt is empty fails on restart and writes
+    /// one failed line. A running run that is cancelled writes nothing new.
+    #[test]
+    fn a_restarted_event_run_with_no_prompt_writes_a_failed_line() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let automation = stored_automation("inbox", "Inbox watch", "PROMPT_SHOULD_NOT_LEAK");
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+
+        let mut pending = stored_run("run-empty", "inbox");
+        pending.trigger = "event".into();
+        pending.event_kind = Some("github".into());
+        pending.event = Some("issue_opened".into());
+        pending.event_key = Some("github:issue:acme/api:12".into());
+        pending.prompt = Some(String::new());
+        pending.created_at = 10;
+        write_run(&conn, &pending).unwrap();
+
+        let mut running = stored_run("run-cut", "inbox");
+        running.status = "running".into();
+        running.created_at = 11;
+        write_run(&conn, &running).unwrap();
+
+        let recovered = recover_stored_runs(&mut conn, 100, 1_700_000_000_000).unwrap();
+        assert!(recovered.due.is_empty());
+        recover_stored_runs(&mut conn, 100, 1_700_000_000_001).unwrap();
+
+        let raw: String = conn
+            .query_row(
+                "SELECT run_json FROM automation_runs WHERE id = ?1",
+                ["run-empty"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let stored: AutomationRun = serde_json::from_str(&raw).unwrap();
+        assert_eq!(stored.status, "failed");
+
+        let rows = activity_rows(&conn);
+        assert_eq!(
+            rows.len(),
+            1,
+            "the restart writes one line and a repeat writes no second"
+        );
+        assert_eq!(rows[0].kind, "automation.failed");
+        assert!(rows[0]
+            .summary
+            .contains("The Inbox event prompt was not available after restart."));
+        assert!(!rows[0].summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        assert_eq!(rows[0].target, "inbox/run-empty");
+    }
+
+    #[test]
+    fn failure_line_stops_at_a_unicode_break_and_scrubs_a_whole_key() {
+        let line = failure_line(Some("disk full\u{2028}not a token but private"), None);
+        assert_eq!(line, "disk full");
+        assert!(!line.contains("private"));
+        assert_eq!(
+            failure_line(Some("disk full\u{2029}rest of it"), None),
+            "disk full"
+        );
+        assert_eq!(
+            failure_line(Some("disk full\u{0085}rest of it"), None),
+            "disk full"
+        );
+
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----";
+        let scrubbed = failure_line(Some(pem), None);
+        assert!(
+            !scrubbed.contains("BEGIN"),
+            "a private key must not leave its header: {scrubbed}"
+        );
+        assert!(!scrubbed.contains("OPENSSH"));
+        assert!(scrubbed.contains("[secret removed]"));
     }
 }

@@ -555,13 +555,15 @@ export async function claimDueAutomations(
 export async function updateAutomationRun(
   runId: string,
   status: AutomationRunStatus,
-  options: { sessionId?: string; error?: string } = {},
+  options: { sessionId?: string; error?: string; errorClass?: string } = {},
 ): Promise<AutomationRun> {
   const run = await invoke<AutomationRun>("automation_run_update", {
     runId,
     status,
     sessionId: options.sessionId ?? null,
     error: options.error ?? null,
+    // WP-180a: a known class becomes the sentence on the activity line.
+    errorClass: options.errorClass ?? null,
     now: Date.now(),
   });
   emitLocalChange();

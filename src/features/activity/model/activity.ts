@@ -46,10 +46,17 @@ const KINDS: Record<string, string> = {
   "protected.report": "Protected files changed",
   // WP-182: a change on a Mono's card.
   "mono.settings": "Mono settings",
+  // WP-180a: the automations screen writes these. The words match the line.
+  "automation.started": "Automation started",
+  "automation.completed": "Automation finished",
+  "automation.failed": "Automation failed",
 };
 
 /** WP-178: the kind of a first mate's report of a protected or secret place it touched (checkoutGuard.ts). */
 export const ACTIVITY_PROTECTED_REPORT = "protected.report";
+
+/** WP-180a: `activity::CHANGED`. The runs screen refetches when this fires. */
+export const ACTIVITY_CHANGED = "monocode:activity-changed";
 
 /** A blank filter means no filter. Surrounding spaces don't count. */
 function filled(value: string | undefined): string | undefined {
