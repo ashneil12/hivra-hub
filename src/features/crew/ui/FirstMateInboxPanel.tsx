@@ -1,6 +1,6 @@
 // Hivra WP-15: first-mate items in the Inbox, and the quiet digest.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { DELEGATIONS_CHANGED, type Delegation } from "../../monos/model/delegations";
 import { DECISIONS_CHANGED, tauriFirstMate, type Decision } from "../../firstmate/model/steering";
@@ -28,12 +28,35 @@ function asDelivery(value: unknown): CrewDeliveryInput | null {
   };
 }
 
+/**
+ * G10: what the panel hands the Inbox's one Needs you list. Each decision is drawn there as a row, and the row's answer
+ * buttons run this panel's own versioned answer (`answer`), so the version check and the refusals stay in one place.
+ */
+export type FirstMateFold = {
+  project: string;
+  /** This project's open decisions, as the panel would have drawn them. Each carries the version it was drawn from. */
+  decisions: readonly FirstMateItem[];
+  /** The decision Home asked the Inbox to show, if any. */
+  selectedKey: string | null;
+  answer: (item: FirstMateItem, answer: string) => void;
+  openChat: (sessionId: string) => void;
+  openWorker: (workerId: string) => void;
+};
+
+/** A digest line about a decision. A folded decision is a Needs you row already, so its line is not repeated. */
+function decisionLine(id: string): boolean {
+  return id.startsWith("decision:");
+}
+
 export function FirstMateInboxPanel({
   cwd,
   onOpenSession,
+  onFold,
 }: {
   cwd?: string;
   onOpenSession?: (sessionId: string) => void;
+  /** G10: given, the decisions go to the Needs you list through this, and the panel keeps the rest. */
+  onFold?: (fold: FirstMateFold | null) => void;
 }) {
   const project = cwd ?? "";
   const [rows, setRows] = useState<CrewWorkerInput[]>([]);
@@ -238,10 +261,33 @@ export function FirstMateInboxPanel({
     }
   }
 
+  // G10: the folded decisions and the answer the Needs you rows run. The callbacks read the latest props through refs,
+  // so the fold changes only when the decisions or the selection do.
+  const answerRef = useRef(onAnswer);
+  answerRef.current = onAnswer;
+  const openRef = useRef(onOpenSession);
+  openRef.current = onOpenSession;
+  const answer = useCallback((item: FirstMateItem, text: string) => void answerRef.current(item, text), []);
+  const openChat = useCallback((sessionId: string) => openRef.current?.(sessionId), []);
+  const openWorker = useCallback((id: string) => {
+    const chat = held.current.rows.find((row) => row.id === id)?.childSession;
+    if (chat) openRef.current?.(chat);
+  }, []);
+  const folded = useMemo(
+    () => (onFold ? inboxItems({ project, decisions, rows, deliveries }).filter((item) => item.kind === "decision") : []),
+    [onFold, project, decisions, rows, deliveries],
+  );
+  useEffect(() => {
+    onFold?.({ project, decisions: folded, selectedKey, answer, openChat, openWorker });
+  }, [onFold, project, folded, selectedKey, answer, openChat, openWorker]);
+  useEffect(() => () => onFold?.(null), [onFold]);
+  const cards = onFold ? items.filter((item) => item.kind !== "decision") : items;
+  const immediate = shown?.immediate ?? [];
+
   return (
     <>
       <DigestBanner
-        immediate={shown?.immediate ?? []}
+        immediate={onFold ? immediate.filter((line) => !decisionLine(line.id)) : immediate}
         digest={shown?.digest ?? null}
         onOpen={(id) => {
           // A line about a card below shows that card; a line about work that needs you opens that work's chat.
@@ -253,7 +299,7 @@ export function FirstMateInboxPanel({
         }}
       />
       <FirstMateInbox
-        items={items}
+        items={cards}
         stale={stale}
         selectedKey={selectedKey}
         onAnswer={(item, answer) => void onAnswer(item, answer)}
