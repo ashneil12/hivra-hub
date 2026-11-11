@@ -1894,7 +1894,7 @@ export async function handleAgentApp(
             source.id);
       const id = `app-${source.id}-${requestId}`;
       // WP-141 MEDIUM 5: a session start is gated like a worker, before its process starts.
-      await gateSessionStart(host, source, launch.harness, launch.cwd);
+      await gateSessionStart(host, source, launch.harness, launch.cwd, id);
       if (besideSessionId)
         await host.start(
           launch,

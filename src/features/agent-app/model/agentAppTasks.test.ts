@@ -169,6 +169,8 @@ function tasksHost(rows: Delegation[], clock = { now: 0 }) {
   /** tasks.cannot, as the row would record it: the caller, the task, the reason. */
   const declared: Array<[string, string, string]> = [];
   const host: AgentAppTasksHost = {
+    // WP-141 round 5: a permissive gate by default, so a test that is not about the gate can start its worker.
+    crewGate: vi.fn(async () => undefined),
     owned: vi.fn(async (owner, query) => {
       const mine = rows.filter((entry) => entry.ownerSession === owner);
       if (!query.ids?.length && !query.requestIds?.length)

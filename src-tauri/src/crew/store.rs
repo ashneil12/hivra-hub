@@ -385,9 +385,14 @@ fn meta(
     .map_err(|e| e.to_string())
 }
 
-fn policy_value(text: Option<String>) -> Value {
-    let parsed = text.and_then(|text| serde_json::from_str::<Value>(&text).ok());
-    sanitize_policy(parsed.as_ref().unwrap_or(&Value::Null))
+/// A stored policy that doesn't parse is an error, never an empty policy: an empty one would drop every Never use.
+fn policy_value(text: Option<String>) -> Result<Value, String> {
+    let Some(text) = text else {
+        return Ok(sanitize_policy(&Value::Null));
+    };
+    let parsed = serde_json::from_str::<Value>(&text)
+        .map_err(|_| "A saved crew policy is unreadable, so it can't be applied. Save it again in Crew Defaults.".to_string())?;
+    Ok(sanitize_policy(&parsed))
 }
 
 fn parse_budget(text: Option<String>) -> Option<Value> {
@@ -408,7 +413,7 @@ pub fn get_rules(conn: &Connection, scope: &str, scope_id: &str) -> Result<Store
     let policy_own = policy.is_some();
     // A project with no policy of its own shows the system's, the one a route in it actually uses.
     let policy = if policy_own || scope != "project" {
-        policy_value(policy)
+        policy_value(policy)?
     } else {
         saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null))
     };
@@ -589,7 +594,7 @@ fn saved_policy(conn: &Connection, scope: &str, raw: &str) -> Result<Option<Valu
         return Ok(None);
     };
     let (_, _, text) = meta(conn, &scope, &id)?;
-    Ok(text.map(|text| policy_value(Some(text))))
+    text.map(|text| policy_value(Some(text))).transpose()
 }
 
 /// The policy in force for a launch: the union of the Mono's, the project's and the system's saved policies.
@@ -611,6 +616,27 @@ pub(crate) fn policy_for(
         saved_policy(conn, "system", "system")?.unwrap_or_else(|| sanitize_policy(&Value::Null)),
     );
     Ok(union_policy(&scopes))
+}
+
+/// Whether any saved policy, in any scope, has the lock on.
+pub fn any_lock(conn: &Connection) -> Result<bool, String> {
+    let mut statement = conn
+        .prepare("SELECT policy FROM crew_rule_meta WHERE policy IS NOT NULL")
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let text = row.map_err(|e| e.to_string())?;
+        if policy_value(Some(text))?
+            .get("lockDefault")
+            .and_then(Value::as_bool)
+            == Some(true)
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 /// One policy from several scopes: Never use is the union, the lock is on when any scope sets it, and the fallback

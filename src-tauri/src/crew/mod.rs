@@ -7,7 +7,7 @@
 
 mod budget;
 mod failure;
-mod gate;
+pub(crate) mod gate;
 mod pick;
 mod policy;
 mod reroute;
@@ -243,13 +243,40 @@ pub fn crew_pick(
     store::pick_at(&*store.lock_conn()?, &request, &plugins, now_millis())
 }
 
-/// WP-141: the gate every worker or session launch passes before its process starts. Refuses with one plain line.
+/// WP-141: the gate a worker or session launch passes before its process starts. Refuses with one plain line. A
+/// launch that passes is recorded for its session, so the spawn that follows is judged against the same default.
 #[tauri::command(async)]
 pub fn crew_launch_check(
     store: State<'_, SessionStore>,
     input: gate::LaunchCheck,
+    session_id: Option<String>,
 ) -> Result<(), String> {
-    gate::check_launch(&*store.lock_conn()?, &input)
+    gate::check_launch(&*store.lock_conn()?, &input)?;
+    match session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(session) => gate::record_grant(session, &input),
+        None => Ok(()),
+    }
+}
+
+/// WP-141: the one-time ticket `harness_spawn` requires for an agent session's process. Judged at the spawn itself.
+#[tauri::command(async)]
+pub fn crew_spawn_ticket(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    cli: String,
+    folder: String,
+) -> Result<String, String> {
+    gate::issue_ticket(&*store.lock_conn()?, &session_id, &cli, &folder)
+}
+
+/// WP-141: whether any saved crew policy, in any scope, has the lock on. A chat's default change is refused then.
+#[tauri::command(async)]
+pub fn crew_any_lock(store: State<'_, SessionStore>) -> Result<bool, String> {
+    store::any_lock(&*store.lock_conn()?)
 }
 
 #[tauri::command(async)]

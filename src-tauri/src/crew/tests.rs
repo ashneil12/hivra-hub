@@ -2521,3 +2521,144 @@ fn a_route_says_which_never_use_and_lock_it_was_chosen_under() {
     assert_eq!(routed.never, vec!["grok"]);
     assert_eq!(routed.cli.as_deref(), Some("claude"));
 }
+
+/// WP-141 round 5 (HIGH-C/MEDIUM-F): the spawn gate. An agent session's process needs a one-time ticket from the gate,
+/// bound to its session, CLI and folder, and a banned CLI gets none whichever path asked for it.
+#[test]
+fn a_spawn_needs_a_ticket_for_an_agent_session_and_none_for_ashs_own_chat() {
+    use super::gate::require_ticket;
+    let err = require_ticket("app-spawn-none-1", "claude", "/tmp/spawn-none", None).unwrap_err();
+    assert!(err.contains("no crew gate ticket"), "{err}");
+    assert!(require_ticket("3f2a9c1e-ashs-chat", "claude", "/tmp/spawn-none", None).is_ok());
+}
+
+#[test]
+fn a_ticket_is_one_time_and_bound_to_its_session_cli_and_folder() {
+    use super::gate::{issue_ticket, record_grant, require_ticket, LaunchCheck};
+    let store = memory();
+    let conn = store.lock_conn().unwrap();
+    let session = "app-ticket-bound-1";
+    record_grant(
+        session,
+        &LaunchCheck {
+            cli: "claude".into(),
+            mono: None,
+            project: Some("/tmp/ticket-bound".into()),
+            locked_default: None,
+        },
+    )
+    .unwrap();
+    let wrong_cli = issue_ticket(&conn, session, "claude", "/tmp/ticket-bound").unwrap();
+    let err = require_ticket(session, "codex", "/tmp/ticket-bound", Some(&wrong_cli)).unwrap_err();
+    assert!(err.contains("another launch"), "{err}");
+    let wrong_folder = issue_ticket(&conn, session, "claude", "/tmp/ticket-bound").unwrap();
+    let err = require_ticket(session, "claude", "/tmp/elsewhere", Some(&wrong_folder)).unwrap_err();
+    assert!(err.contains("another launch"), "{err}");
+    let good = issue_ticket(&conn, session, "claude", "/tmp/ticket-bound").unwrap();
+    assert!(require_ticket(session, "claude", "/tmp/ticket-bound", Some(&good)).is_ok());
+    let err = require_ticket(session, "claude", "/tmp/ticket-bound", Some(&good)).unwrap_err();
+    assert!(err.contains("already used"), "{err}");
+}
+
+#[test]
+fn a_banned_cli_gets_no_spawn_ticket_whatever_routed_it() {
+    use super::gate::issue_ticket;
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/ban-spawn",
+        &json!({ "lockDefault": false, "neverUse": ["Codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let err = issue_ticket(&conn, "app-ban-spawn-1", "codex", "/tmp/ban-spawn").unwrap_err();
+    assert_eq!(err, "Codex is on Never use, so it was not started.");
+    assert!(issue_ticket(&conn, "app-ban-spawn-2", "claude", "/tmp/ban-spawn").is_ok());
+}
+
+#[test]
+fn under_the_lock_a_spawn_needs_the_granted_default_and_nothing_else() {
+    use super::gate::{issue_ticket, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "system",
+        "system",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let no_grant =
+        issue_ticket(&conn, "app-lock-spawn-1", "claude", "/tmp/lock-spawn").unwrap_err();
+    assert!(no_grant.contains("has no gate decision"), "{no_grant}");
+    record_grant(
+        "app-lock-spawn-2",
+        &LaunchCheck {
+            cli: "claude".into(),
+            mono: None,
+            project: Some("/tmp/lock-spawn".into()),
+            locked_default: Some("claude".into()),
+        },
+    )
+    .unwrap();
+    assert!(issue_ticket(&conn, "app-lock-spawn-2", "claude", "/tmp/lock-spawn").is_ok());
+    let off_default =
+        issue_ticket(&conn, "app-lock-spawn-2", "grok", "/tmp/lock-spawn").unwrap_err();
+    assert_eq!(
+        off_default,
+        "Always use my default is on, and the default is Claude Code, so Grok was not started."
+    );
+}
+
+/// WP-141 LOW: a stored policy that doesn't parse is an error. An empty one would drop every Never use.
+#[test]
+fn a_corrupt_stored_policy_is_an_error_not_an_empty_policy() {
+    use super::gate::{check_launch, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/corrupt-policy",
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE crew_rule_meta SET policy = 'not json' WHERE scope = 'project' AND scope_id = '/tmp/corrupt-policy'",
+        [],
+    )
+    .unwrap();
+    let refused = check_launch(
+        &conn,
+        &LaunchCheck {
+            cli: "codex".into(),
+            mono: None,
+            project: Some("/tmp/corrupt-policy".into()),
+            locked_default: None,
+        },
+    )
+    .unwrap_err();
+    assert!(refused.contains("unreadable"), "{refused}");
+    assert!(store::any_lock(&conn).is_err());
+}
+
+/// WP-141 HIGH-B: the lock is seen in every saved scope, so a chat's default change is refused when any scope locks.
+#[test]
+fn any_lock_sees_a_lock_in_any_scope() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    assert!(!store::any_lock(&conn).unwrap());
+    store::set_policy(
+        &mut conn,
+        "project",
+        "/tmp/any-lock",
+        &json!({ "lockDefault": true, "neverUse": [], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    assert!(store::any_lock(&conn).unwrap());
+}

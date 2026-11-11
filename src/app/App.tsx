@@ -70,7 +70,7 @@ import {
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
-import { crewLaunchCheck, crewPickFor, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
 import { refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
@@ -14944,6 +14944,7 @@ function Workspace({
               crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
               // WP-141: the one gate every worker and session launch passes before its process starts.
               crewGate: (input) => crewLaunchCheck(input),
+              crewAnyLock: () => crewAnyLock(),
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);

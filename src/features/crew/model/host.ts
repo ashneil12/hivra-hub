@@ -143,6 +143,8 @@ export function crewLaunchCheck(input: {
   folder?: string;
   /** The CLI the route picked, which the lock pins this launch to. */
   lockedDefault?: string;
+  /** The session this launch starts. Its spawn is judged against the decision recorded here. */
+  sessionId?: string;
 }): Promise<void> {
   return invoke<void>("crew_launch_check", {
     input: {
@@ -151,5 +153,16 @@ export function crewLaunchCheck(input: {
       ...(input.folder ? { project: input.folder } : {}),
       ...(input.lockedDefault ? { lockedDefault: input.lockedDefault } : {}),
     },
+    ...(input.sessionId ? { sessionId: input.sessionId } : {}),
   });
+}
+
+/** WP-141: the one-time ticket harness_spawn needs for an agent session's process (judged again at the spawn). */
+export function crewSpawnTicket(input: { sessionId: string; cli: string; folder: string }): Promise<string> {
+  return invoke<string>("crew_spawn_ticket", input);
+}
+
+/** WP-141 HIGH-B: whether any saved crew policy, in any scope, has the lock on. */
+export function crewAnyLock(): Promise<boolean> {
+  return invoke<boolean>("crew_any_lock");
 }

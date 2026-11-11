@@ -49,6 +49,7 @@ export type DelegationTasksDeps = {
   crewPolicy?: AgentAppTasksHost["crewPolicy"];
   /** WP-141: the gate every worker and session launch passes before its process starts (crew_launch_check). */
   crewGate?: AgentAppTasksHost["crewGate"];
+  crewAnyLock?: AgentAppTasksHost["crewAnyLock"];
   /** Where a Mono's work goes: its project's coding team, or its own team (hub/model/monoTeams.ts). */
   monoWork?: AgentAppTasksHost["monoWork"];
   /** Workers per project and the ones waiting for a free worker (H8, workerPool.ts). */
@@ -173,6 +174,7 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     ...(deps.checkLead ? { checkLead: deps.checkLead } : {}),
     ...(deps.crewPolicy ? { crewPolicy: deps.crewPolicy } : {}),
     ...(deps.crewGate ? { crewGate: deps.crewGate } : {}),
+    ...(deps.crewAnyLock ? { crewAnyLock: deps.crewAnyLock } : {}),
     ...(deps.monoWork ? { monoWork: deps.monoWork } : {}),
     ...(deps.pool ? { pool: deps.pool } : {}),
     ...(deps.crewRoute ? { crewRoute: deps.crewRoute } : {}),

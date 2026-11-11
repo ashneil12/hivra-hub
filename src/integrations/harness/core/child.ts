@@ -378,6 +378,15 @@ export async function spawnChild(
   const binaryPath = binaryProvider && !defaultBinary
     ? runtimeProviderBinaryPath(binaryProvider)
     : undefined;
+  // WP-141: an agent session's process starts only with the one-time ticket its crew gate issues, for this session, CLI and
+  // folder. The spawn refuses without it (harness_spawn). Ash's own chats have no `app-` id and need none.
+  const crewTicket = sessionId.startsWith("app-")
+    ? await invoke<string>("crew_spawn_ticket", {
+        sessionId,
+        cli: binaryProvider ?? "claude",
+        folder: cwd,
+      })
+    : undefined;
   const pid = await invoke<number>("harness_spawn", {
     sessionId,
     command,
@@ -389,6 +398,7 @@ export async function spawnChild(
     ...(codexStore ? { codexStore } : {}),
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(customRoute ? { customRoute } : {}),
+    ...(crewTicket ? { crewTicket } : {}),
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
