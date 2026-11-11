@@ -6,6 +6,8 @@ import { setCodexDeveloperInstructions, setCodexExtraConfig } from "../../../int
 import { REMOTE_PATH_PREFIX } from "../../../shared/lib/remotePaths";
 import { browserAgentFor } from "../../browser/model/agent";
 import { plainEnglishEndings } from "../../firstmate/model/plainEnglish";
+import { monoForSession } from "../../monos/model/mono";
+import { monoSessionInstruction } from "../../monos/model/monoSession";
 import { mcodeInstallRoot, pstackInstallRoot, sessionInstruction } from "./pstackAutopilot";
 import { claudeAdditions, codexConfig, NO_WIRING, type PluginWiring } from "./pluginWiring";
 
@@ -25,12 +27,17 @@ export async function pluginWiringFor(cwd: string, sessionId?: string): Promise<
 }
 
 /** What a session is told about the skills of the plugins that are on for it, from one wiring read. */
-function instructionFor(wiring: PluginWiring): string {
-  return sessionInstruction({
+function instructionFor(wiring: PluginWiring, sessionId?: string): string {
+  const input = {
     pstackRoot: pstackInstallRoot(wiring.claudePluginDirs),
     mcodeRoot: mcodeInstallRoot(wiring.claudePluginDirs),
     plainEnglish: plainEnglishEndings(),
-  });
+  };
+  // WP-182: a Mono that names its skills is told only those. Unset keeps today's text.
+  if (!sessionId) return sessionInstruction(input);
+  const skills = monoForSession(sessionId)?.skills;
+  if (!skills?.length) return sessionInstruction(input);
+  return monoSessionInstruction({ ...input, skills, commands: monoForSession(sessionId)?.commands });
 }
 
 export function registerPluginSessions(
@@ -42,12 +49,12 @@ export function registerPluginSessions(
     const wiring = await read(cwd, sessionId);
     return {
       additions: claudeAdditions(wiring),
-      append: instructionFor(wiring),
+      append: instructionFor(wiring, sessionId),
     };
   });
-  setCodexDeveloperInstructions(async (cwd) => {
-    const wiring = await read(cwd);
-    return instructionFor(wiring);
+  setCodexDeveloperInstructions(async (cwd, sessionId) => {
+    const wiring = await read(cwd, sessionId);
+    return instructionFor(wiring, sessionId);
   });
 }
 
