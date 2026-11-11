@@ -73,6 +73,18 @@ const PLACES: readonly (readonly string[])[] = [
   ["appdata", "roaming", "npm", "etc"],
   ["appdata", "local", "google", "chrome"],
   ["appdata", "local", "microsoft", "edge"],
+  // Round 6, HIGH-1: the macOS stores of a signed-in app (WebKit's storage, HTTP cookies, Group Containers, Messages,
+  // Accounts, sandboxed containers) and the Windows browsers' and apps' stores (Firefox logins, Discord, Brave, VS Code).
+  ["library", "webkit"],
+  ["library", "httpstorages"],
+  ["library", "group containers"],
+  ["library", "messages"],
+  ["library", "accounts"],
+  ["library", "containers"],
+  ["appdata", "roaming", "mozilla"],
+  ["appdata", "roaming", "discord"],
+  ["appdata", "local", "bravesoftware"],
+  ["appdata", "roaming", "code"],
 ];
 
 /** Files whose whole name is a login store, whatever extension they carry. */
@@ -275,7 +287,17 @@ function placeAmong(parts: readonly string[]): boolean {
  * `ps -o command` are held for, and the routes (round 2) by which a process's files are read without their path.
  */
 const processSecrets = (parts: readonly string[]) =>
-  parts.some((part, i) => part === "proc" && ["environ", "cmdline", "cwd", "root"].includes(parts[i + 2] ?? ""));
+  parts.some((part, i) => {
+    if (part !== "proc") return false;
+    // Round 6, MED-3: a thread's own files (`proc/<pid>/task/<tid>/environ`), and the descriptors, the mapped files and the
+    // memory of a process, are read the same way as its environment and command line.
+    const at = parts[i + 2] ?? "";
+    if (at === "task") return PROCESS_FILES.includes(parts[i + 4] ?? "");
+    return PROCESS_FILES.includes(at);
+  });
+
+/** The files of a process that hold its secrets or let a read reach its files (`/proc/<pid>/<name>`, round 6). */
+const PROCESS_FILES: readonly string[] = ["environ", "cmdline", "cwd", "root", "fd", "map_files", "mem"];
 
 /** Whether these (folded) parts name a credential place or a credential file. */
 function credentialSegments(parts: readonly string[]): boolean {
@@ -686,9 +708,11 @@ export function walkHeld(words: readonly string[], folder: string | undefined, t
   if (!walksFolders(head, args)) return false;
   // Round 5, H2: a walk from a chat whose folder is home or shallower (or none) is not known to stay in a project, so an
   // approval holds it. A timer has no chat folder; its words are judged alone.
+  // Round 6, MED-2: a timer's check runs in the chat's folder too, so the same gate holds it. A folder at or inside a
+  // credential place is held as well: its walk reaches the place with no path at all.
   const base = foldedFolder(folder);
   const deep = base !== null && base.length >= MIN_PROJECT_DEPTH;
-  if (!timer && !deep) return true;
+  if (!deep || startsAtPlaceParent({ segments: base, rooted: true }) || credentialSegments(base)) return true;
   const root = folderParts(folder);
   // A search's pattern is not a path: its first bare word, unless a -e or -f option names the pattern (round 4; the
   // same rule credentialInWords and the Rust timer check read). A Grep or Glob call's paths are walked from, so
@@ -717,4 +741,22 @@ export function walkHeld(words: readonly string[], folder: string | undefined, t
     if (!startsWith(place, root)) return true;
   }
   return false;
+}
+
+/**
+ * Whether a word of a command names a place outside the chat's own folder (review round 6, HIGH-1): a rooted path, a home
+ * word, a drive or a UNC path, or a relative one that climbs out of the folder. Every piece of the word counts, so
+ * `--file=/x` and `-f/x` are held as `/x`. A word that stays inside is read as it is written, as an approval's words
+ * always were. With no folder known, a rooted or climbing word is outside, since nothing shows it is inside.
+ */
+export function wordOutside(word: string, folder: string | undefined): boolean {
+  const base = foldedFolder(folder);
+  return pieces(word).some((piece) => {
+    const folded = fold(piece);
+    if (!folded) return false;
+    const anchored = folded.startsWith("/") || folded === "~" || folded.startsWith("~/") || /^[a-z]:(?=\/|$)/.test(folded);
+    if (!base) return anchored || folded.split("/").includes("..");
+    const resolved = resolvePath(anchored ? folded : `/${base.join("/")}/${folded}`);
+    return !startsWith(resolved.segments, base);
+  });
 }

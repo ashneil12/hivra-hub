@@ -18,7 +18,7 @@
 // main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
-import { credentialInWords, credentialPath, dotOutside, foldedFolder, timerOutside, walkHeld } from "./credentialPaths";
+import { credentialInWords, credentialPath, dotOutside, foldedFolder, timerOutside, walkHeld, wordOutside } from "./credentialPaths";
 import { guardRunHeld, isProtectedConfig, segmentsOf } from "./protectedConfig";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
 import { serverTrusted, type TrustedServers } from "./mcpTrust";
@@ -316,6 +316,9 @@ function abbreviatesLongOption(given: string, option: string): boolean {
  */
 const followsLinks = (args: readonly string[]) => args.some((arg) => /^-[^-]*L/.test(arg) || arg === "--follow" || arg.startsWith("--follow="));
 
+/** `-z` and `--search-zip` read the inside of compressed files, which the ignore rules and the place rules do not see (round 6). */
+const searchesZip = (args: readonly string[]) => args.some((arg) => /^-[^-]*z/.test(arg) || arg === "--search-zip" || arg.startsWith("--search-zip="));
+
 function rgRead(args: readonly string[]): SafeVerdict {
   // --pre runs a program on every file; --hostname-bin runs one too. A short form of either does as well. -L and
   // --follow read through links, which can lead out of the folder into a login store (review M4).
@@ -323,6 +326,7 @@ function rgRead(args: readonly string[]): SafeVerdict {
   if (usesOption(args, options) || args.some((arg) => options.some((option) => abbreviatesLongOption(arg, option))))
     return "rg --pre runs a program";
   if (followsLinks(args)) return "that option follows links out of the folder";
+  if (searchesZip(args)) return "that option reads compressed files, which the login rules can't see into";
   return null;
 }
 
@@ -381,6 +385,9 @@ function safeCommandInner(command: string, folder: string | undefined, timer = f
   if (typeof check !== "function") return UNREADABLE_COMMAND;
   // WP-101 fix round 2, item B: a walk through folders has to start inside the chat's own, whatever it names.
   if (walkHeld(words, folder, timer)) return "it walks folders outside the chat's own, or reads what a project keeps out of git, so it waits for Ash";
+  // Round 6, HIGH-1: a word that names a place outside the chat's own folder (a rooted path, a home word, a climb out) waits,
+  // whatever the command, so a read of the hub's database copies or a browser's store by its absolute path does not pass.
+  if (words.slice(1).some((arg) => wordOutside(arg, folder))) return "it names a file outside the chat's own folder, so it waits for Ash";
   // A config the tools read, or a dot-named folder or file, is held as an edit is (review round 3, item 1).
   if (words.slice(1).some((arg) => namesProtectedConfig(arg, folder))) return "it names a tool's config or a dot-named file, so it waits for Ash";
   return check(words.slice(1));
@@ -458,12 +465,20 @@ export function commandNamesLogin(command: string): SafeVerdict {
 // ---- where an edit really lands ----------------------------------------------------------------------------------
 
 /** A path's checkout and its place in it, with the folders on the way resolved through links (fs.rs git_locate_files). */
-export type RealPlace = { root: string; relative: string };
+export type RealPlace = {
+  root: string;
+  relative: string;
+  /** Whether the path's last part is a link (round 6, MED-1): a read of one must land inside the chat's folder. */
+  linked?: boolean;
+};
 /** The app's lookup of real places; null for a path outside git. */
 export type Locate = (paths: string[]) => Promise<(RealPlace | null)[]>;
 
 /** A name looked up inside the chat's folder, so the lookup resolves the folder itself (it needn't exist). */
 const PROBE = ".monocode-autopilot-probe";
+
+/** Whether a real path is inside a folder (a checkout's root), by whole segments. */
+const insideFolder = (real: string, folder: string) => real.startsWith(`${folder.replace(/\/+$/, "")}/`);
 
 const realPath = (place: RealPlace, relative = place.relative) =>
   relative ? `${place.root.replace(/\/+$/, "")}/${relative}` : place.root;
@@ -527,12 +542,57 @@ export async function readStaysInside(call: ApprovalCall | undefined, folder: st
     if (!place) return `the app couldn't place ${paths[i]} in a git checkout, so it can't tell where it really reads`;
     const real = realPath(place);
     if (credentialPath(real) || dotOutside(real, realFolder)) return `${paths[i]} really reads ${real}, a login or config file`;
+    // Round 6, MED-1: a link as the last part is held when it points outside the chat's folder, whatever it points at.
+    if (place.linked && !insideFolder(real, realFolder)) return `${paths[i]} is a link to ${real}, outside the chat's folder`;
   }
   return null;
 }
 
-/** The lookup check for whatever a tool call touches: an edit's real place, or a read's or search's (round 5, M2). */
+// ---- where a shell command's words really land --------------------------------------------------------------------
+
+/**
+ * Whether a shell command's words, each read as a place in the chat's folder, really land on a file the credential rules
+ * allow once links are followed (round 6, MED-1). A word that is a link as its last part, or that leads out of the folder
+ * through a link, waits; so does a word the app can't place. A word that isn't a path (a pattern, a revision) is placed
+ * too, as a name in the folder, and is held only when that place is one.
+ */
+export async function bashStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
+  if (!call || !SHELL_TOOLS.has(call.tool)) return null;
+  const words = bashWords(call);
+  if (!words) return null;
+  const root = folder?.replace(/\/+$/, "");
+  if (!root) return "the chat has no folder of its own to run in";
+  // A flag's value is a place too (`--file=x`), and so is the word itself.
+  const names = [...new Set(words.slice(1).flatMap((word) => (word.startsWith("-") && word.includes("=") ? [word, word.slice(word.indexOf("=") + 1)] : [word])))]
+    .filter(Boolean);
+  if (!names.length) return null;
+  const targets = names.map((name) => (name.startsWith("/") ? name : `${root}/${name}`));
+  let places: (RealPlace | null)[];
+  try {
+    places = await locate([`${root}/${PROBE}`, ...targets]);
+  } catch (error) {
+    return `the app couldn't find where it really runs (${error instanceof Error ? error.message : String(error)})`;
+  }
+  const home = places[0];
+  if (!home || !home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
+  const realFolder = realPath(home, home.relative.slice(0, -PROBE.length).replace(/\/+$/, ""));
+  for (let i = 0; i < targets.length; i++) {
+    const place = places[i + 1];
+    // A word whose folder is a link out of git can't be placed, so it waits (a name the command reads is always in the checkout).
+    if (!place) return `${names[i]} can't be placed in a git checkout, so it waits for Ash`;
+    const real = realPath(place);
+    if (place.linked && !insideFolder(real, realFolder)) return `${names[i]} is a link to ${real}, outside the chat's folder`;
+    // A word that is the chat's own name is judged by its words (a search's pattern is not a file); one that reached its
+    // place through a link is judged by where it really is.
+    const own = names[i].startsWith("/") ? null : `${realFolder}/${names[i]}`;
+    if (own !== real && (credentialPath(real) || dotOutside(real, realFolder))) return `${names[i]} really reads ${real}, a login or config file`;
+  }
+  return null;
+}
+
+/** The lookup check for whatever a tool call touches: an edit's real place, a read's or search's, or a shell command's (round 5, M2; round 6, MED-1). */
 export function placeStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
   if (call && EDIT_TOOLS.has(call.tool)) return editStaysInside(call, folder, locate);
+  if (call && SHELL_TOOLS.has(call.tool)) return bashStaysInside(call, folder, locate);
   return readStaysInside(call, folder, locate);
 }

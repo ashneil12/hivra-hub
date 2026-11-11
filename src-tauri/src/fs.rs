@@ -1064,6 +1064,9 @@ pub struct GitStagedContext {
 pub struct GitFileLocation {
     pub root: String,
     pub relative: String,
+    /// Whether the path's last part is a link (round 6, MED-1). The place is then where the link points, so a read or an
+    /// edit through it is judged by its target, and a read of a link out of the chat's folder waits.
+    pub linked: bool,
 }
 
 /// Locate each file's own checkout, including files whose parents were deleted.
@@ -2688,18 +2691,45 @@ fn git_staged_context_for(root: &Path) -> Result<GitStagedContext, String> {
     })
 }
 
+/// Where a path really is in its checkout. A path that exists is followed to its target, every link on the way and a link
+/// as its last part too (round 6, MED-1), so a link to a file in another place is placed there, and a link to a file
+/// outside git is in no checkout at all. A path that doesn't exist (a new file, a deleted one) is placed by its parent.
 fn git_locate_file(path: &Path) -> Result<Option<GitFileLocation>, String> {
+    locate_path(path, true)
+}
+
+/// Where a named entry is in its checkout, without following its last part: a selection names the link itself, which
+/// is what git stores (git_selected_paths).
+fn git_locate_entry(path: &Path) -> Result<Option<GitFileLocation>, String> {
+    locate_path(path, false)
+}
+
+fn locate_path(path: &Path, follow_last: bool) -> Result<Option<GitFileLocation>, String> {
     if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') {
         return Err("Invalid file path".into());
     }
-    let mut parent = path.parent().ok_or("Invalid file path")?;
-    while !parent.is_dir() {
-        parent = parent.parent().ok_or("File has no existing parent")?;
-    }
-    // Canonicalize parents rather than the file: deleted files still have a
-    // location, and a tracked symlink belongs to the checkout holding the link.
-    let directory = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
-    let actual = directory.join(path.strip_prefix(parent).map_err(|e| e.to_string())?);
+    let entry = std::fs::symlink_metadata(path);
+    let linked = follow_last
+        && entry
+            .as_ref()
+            .is_ok_and(|meta| meta.file_type().is_symlink());
+    let (directory, actual) = if follow_last && entry.is_ok() {
+        // A link whose target is missing is refused: a write through it would reach a place nothing has checked.
+        let actual = std::fs::canonicalize(path)
+            .map_err(|_| "A link points to a place that isn't there".to_string())?;
+        let directory = actual.parent().ok_or("Invalid file path")?.to_path_buf();
+        (directory, actual)
+    } else {
+        let mut parent = path.parent().ok_or("Invalid file path")?;
+        while !parent.is_dir() {
+            parent = parent.parent().ok_or("File has no existing parent")?;
+        }
+        // Canonicalize parents rather than the file: deleted files still have a
+        // location, and a tracked symlink belongs to the checkout holding the link.
+        let directory = std::fs::canonicalize(parent).map_err(|e| e.to_string())?;
+        let actual = directory.join(path.strip_prefix(parent).map_err(|e| e.to_string())?);
+        (directory, actual)
+    };
     let output = git_cmd()
         .args(["-C"])
         .arg(&directory)
@@ -2722,6 +2752,7 @@ fn git_locate_file(path: &Path) -> Result<Option<GitFileLocation>, String> {
         // Git supplies a usable Windows path without canonicalize's verbatim prefix.
         root: path_to_js(top),
         relative: path_to_js(relative),
+        linked,
     }))
 }
 
@@ -2755,7 +2786,7 @@ fn git_selected_paths(root: &Path, paths: &[String]) -> Result<Vec<String>, Stri
             Err(error) if error.kind() == ErrorKind::NotFound => false,
             Err(error) => return Err(error.to_string()),
         };
-        let location = git_locate_file(&canonical_root.join(&relative))?
+        let location = git_locate_entry(&canonical_root.join(&relative))?
             .ok_or("Selected file is outside Git")?;
         if std::fs::canonicalize(&location.root).map_err(|e| e.to_string())? != canonical_root {
             return Err("Selected files must belong to this repository".into());
@@ -9677,6 +9708,47 @@ mod tests {
         assert!(
             git_commit_selected_for(&repo.0, "Escape", &["dir-link/secret.txt".into()]).is_err()
         );
+    }
+
+    /// WP-101 review round 6, MED-1: a link as the last part of the path is placed where it really points, so a read or an
+    /// edit through it is judged by its target. A real symlink, in a temporary checkout (never the user's files).
+    #[cfg(unix)]
+    #[test]
+    fn locate_follows_a_link_named_as_the_last_part() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("locate-links");
+        let repo = home.0.join("repo");
+        let other = home.0.join("other");
+        let outside = home.0.join("outside");
+        std::fs::create_dir(&repo).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        assert!(init_git_commit(&repo, &[("inside.txt", "a\n")]));
+        assert!(init_git_commit(&other, &[("theirs.txt", "b\n")]));
+        std::fs::write(outside.join("secret.txt"), "OUTSIDE_SECRET\n").unwrap();
+        symlink(outside.join("secret.txt"), repo.join("to-outside")).unwrap();
+        symlink(repo.join("inside.txt"), repo.join("to-inside")).unwrap();
+        symlink(other.join("theirs.txt"), repo.join("to-other")).unwrap();
+        symlink(outside.join("missing.txt"), repo.join("dangling")).unwrap();
+
+        // A link to a file outside git is not placed in the chat's checkout.
+        assert_eq!(git_locate_file(&repo.join("to-outside")).unwrap(), None);
+        // A link into the same checkout is placed at its target.
+        let inside = git_locate_file(&repo.join("to-inside")).unwrap().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&inside.root).unwrap(),
+            std::fs::canonicalize(&repo).unwrap()
+        );
+        assert_eq!(inside.relative, "inside.txt");
+        // A link into another checkout is placed in that checkout.
+        let theirs = git_locate_file(&repo.join("to-other")).unwrap().unwrap();
+        assert_eq!(
+            std::fs::canonicalize(&theirs.root).unwrap(),
+            std::fs::canonicalize(&other).unwrap()
+        );
+        assert_eq!(theirs.relative, "theirs.txt");
+        // A dangling link is refused: a write would go through it to a place nothing has checked.
+        assert!(git_locate_file(&repo.join("dangling")).is_err());
     }
 
     #[test]

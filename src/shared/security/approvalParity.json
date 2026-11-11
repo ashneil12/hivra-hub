@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "about": "Commands the autopilot timer (TypeScript safeCommand plus commandNamesLogin) and the Rust timer check (watcher/safe_cmd.rs verdict) must both hold or both allow. Read by approvalParity.test.ts and by safe_cmd.rs tests.",
+  "about": "Commands the autopilot timer (TypeScript safeCommand plus commandNamesLogin, judged in the check's folder) and the Rust timer check (watcher/safe_cmd.rs verdict(command, folder)) must both hold or both allow. A case may name its own \"folder\"; otherwise the top-level folder is used. Read by approvalParity.test.ts and by safe_cmd.rs tests.",
   "cases": [
     {
       "command": "git status",
@@ -451,12 +451,169 @@
       "held": true
     },
     {
-      "command": "cat /Users/ash/proj/a:b/../../.zshrc",
+      "command": "cat /Users/example/proj/a:b/../../.zshrc",
       "held": true
     },
     {
       "command": "cat ~/Library/Preferences/x.plist",
       "held": true
+    },
+    {
+      "command": "ls /Users/example/Archive/monocode/ships",
+      "held": true
+    },
+    {
+      "command": "cat /Users/example/Archive/monocode/ships/abc123/backup/monocode.db",
+      "held": true
+    },
+    {
+      "command": "grep -a -o -E 'sk-ant-\\S+' /Users/example/Archive/monocode/backups-20261110/monocode.db",
+      "held": true
+    },
+    {
+      "command": "tail -c 50000 /Users/example/Archive/monocode/ships/abc123/monocode.db-wal",
+      "held": true
+    },
+    {
+      "command": "head -c 400000 '/Users/example/Library/WebKit/com.ash.monocode-h'ub/WebsiteData/localstorage.sqlite3",
+      "held": true
+    },
+    {
+      "command": "cat Library/WebKit/com.ash.monocode-hub/WebsiteData/localstorage.sqlite3",
+      "held": true
+    },
+    {
+      "command": "cat Library/HTTPStorages/com.ash.app/cookies.binarycookies",
+      "held": true
+    },
+    {
+      "command": "cat \"Library/Group Containers/group.example/data.db\"",
+      "held": true
+    },
+    {
+      "command": "cat Library/Messages/chat.db",
+      "held": true
+    },
+    {
+      "command": "cat Library/Accounts/Accounts4.sqlite",
+      "held": true
+    },
+    {
+      "command": "cat Library/Containers/com.example.app/Data/state.db",
+      "held": true
+    },
+    {
+      "command": "cat AppData/Roaming/Mozilla/Firefox/Profiles/p1/logins.json",
+      "held": true
+    },
+    {
+      "command": "cat \"AppData/Roaming/discord/Local Storage/leveldb/000003.log\"",
+      "held": true
+    },
+    {
+      "command": "cat \"AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies\"",
+      "held": true
+    },
+    {
+      "command": "cat AppData/Roaming/Code/User/globalStorage/state.vscdb",
+      "held": true
+    },
+    {
+      "command": "cat ../../other/notes.txt",
+      "held": true
+    },
+    {
+      "command": "cat docs/notes.txt",
+      "held": false
+    },
+    {
+      "command": "cat /Users/example/proj/src/app.ts",
+      "held": true,
+      "folder": "/Users/example/proj"
+    },
+    {
+      "command": "rg -c -e sk-ant-api03-A .",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "rg -c sk-ant-api03-A",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "ls -R .",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "rg -c -e sk-ant-api03-A .",
+      "held": true,
+      "folder": "/Users/example/Library/Application Support/tool"
+    },
+    {
+      "command": "rg -c -e sk-ant-api03-A src",
+      "held": false,
+      "folder": "/Users/example/Projects/hivra"
+    },
+    {
+      "command": "rg -c -e fetchUser src",
+      "held": false,
+      "folder": "/Users/example/Projects/hivra"
+    },
+    {
+      "command": "cat README.md",
+      "held": false,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "cat proc/123/task/123/environ",
+      "held": true
+    },
+    {
+      "command": "cat proc/123/task/456/cmdline",
+      "held": true
+    },
+    {
+      "command": "cat proc/123/fd/3",
+      "held": true
+    },
+    {
+      "command": "cat proc/self/mem",
+      "held": true
+    },
+    {
+      "command": "cat /proc/123/task/123/environ",
+      "held": true
+    },
+    {
+      "command": "cat /proc/self/map_files/7f00-7f01",
+      "held": true
+    },
+    {
+      "command": "rg -L token src",
+      "held": true
+    },
+    {
+      "command": "rg --follow token src",
+      "held": true
+    },
+    {
+      "command": "rg -z token src",
+      "held": true
+    },
+    {
+      "command": "rg -nz token src",
+      "held": true
+    },
+    {
+      "command": "rg --search-zip token src",
+      "held": true
+    },
+    {
+      "command": "rg -n token src",
+      "held": false
     }
-  ]
+  ],
+  "folder": "/Users/example/Projects/proj"
 }

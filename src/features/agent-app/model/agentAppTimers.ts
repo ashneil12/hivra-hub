@@ -82,9 +82,11 @@ export async function handleTimers(source: Session, action: string, input: Recor
       const command = typeof input.command === "string" ? input.command.trim() : "";
       if (!command) throw new Error("command must be a read the app can run by itself");
       if ([...command].length > 2000) throw new Error("that command is too long");
+      // Round 6, MED-2: judged in the folder the check runs in, the same as an approval's walk (a Mono starts at home).
       // Round 2: the same login-store and hidden-file check autopilot's approvals make, since the table alone allowed
       // `cat ~/.netrc` and `rg -g '.env*'`.
-      const why = safeCommand(command, undefined, true) ?? commandNamesLogin(command);
+      const cwd = sessionWorkCwd(source);
+      const why = safeCommand(command, cwd, true) ?? commandNamesLogin(command);
       if (why) throw new Error(`That command doesn't run by itself: ${why}`);
       const pattern = input.pattern === undefined ? "" : input.pattern;
       if (typeof pattern !== "string" || [...pattern].length > 200)
@@ -93,7 +95,6 @@ export async function handleTimers(source: Session, action: string, input: Recor
       if (!note) throw new Error("note must say what this check is for");
       const every = everyMinutes(input.everyMinutes);
       // Stored with the check: it runs in the folder this chat works in, not wherever the app was started.
-      const cwd = sessionWorkCwd(source);
       const check: Check = await timers.checkSet({
         ownerSession: source.id,
         command,

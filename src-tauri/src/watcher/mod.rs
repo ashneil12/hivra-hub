@@ -197,7 +197,7 @@ pub fn watcher_check_set(
     input: checks::CheckInput,
 ) -> Result<checks::Check, String> {
     // Judged before the lock: a refused command never holds the store, and nothing here can poison it (round 4, item 9).
-    checks::vet_command(input.command.trim())?;
+    checks::vet_command(input.command.trim(), &input.cwd)?;
     checks::set(&mut *store.lock_conn()?, input, now_millis())
 }
 

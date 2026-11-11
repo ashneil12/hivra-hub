@@ -104,7 +104,9 @@ describe("timers.*", () => {
   });
 
   it("takes a pattern and an interval, and refuses one outside a minute to a day", async () => {
-    const { source, host, api } = fixture("mono");
+    const { source: mono, host, api } = fixture("mono");
+    // Round 6, MED-2: a walk (rg) runs only from a project folder deep enough to be one, so this check uses one.
+    const source = { ...mono, cwd: "/Users/example/Projects/hivra" };
     await handleAgentApp(source, "r1", "timers.check", { command: "rg -n ready src", pattern: "ready", note: "the word", everyMinutes: 5 }, host);
     expect(api.checkSet).toHaveBeenCalledWith(expect.objectContaining({ pattern: "ready", intervalMs: 5 * 60_000 }));
     await expect(handleAgentApp(source, "r2", "timers.check", { command: "pwd", note: "x", everyMinutes: 0 }, host)).rejects.toThrow(/from 1/);
@@ -120,5 +122,31 @@ describe("timers.*", () => {
     expect(() => dueAt({ inMinutes: 5, at: "2026-11-04T09:00:00Z" }, 0)).toThrow(/not both/);
     expect(() => dueAt({ inMinutes: 0 }, 0)).toThrow(/from 1/);
     expect(() => dueAt({ at: "tomorrow" }, 0)).toThrow(/ISO time/);
+  });
+});
+
+// WP-101 review round 6, MED-2: a timer's check runs in the chat's folder, so a walk from a folder that is home or
+// shallower, or inside a credential place, is held like an approval's walk (a Mono starts at home, and a walk from there
+// reaches every login store under it, a yes-or-no oracle for a key).
+describe("timers.check walks only from a project folder", () => {
+  const checkFrom = (cwd: string, command: string) => {
+    const { host } = fixture("mono");
+    const source: Session = { ...newSession("claude", cwd, "claude:opus-5-5"), id: "chat-mono" };
+    return handleAgentApp(source, "r1", "timers.check", { command, pattern: "", note: "look", everyMinutes: 5 }, host);
+  };
+
+  it("holds a search from a Mono whose folder is home, with or without a path", async () => {
+    for (const command of ["rg -c -e sk-ant-api03-A .", "rg -c sk-ant-api03-A", "ls -R ."]) {
+      await expect(checkFrom("/Users/example", command), command).rejects.toThrow(/doesn't run by itself/);
+    }
+  });
+
+  it("holds a search from a folder at or inside a credential place", async () => {
+    await expect(checkFrom("/Users/example/Library/Application Support/tool", "rg -c sk-ant-api03-A .")).rejects.toThrow(/doesn't run by itself/);
+    await expect(checkFrom("/Users/example/.ssh/work", "rg -c sk-ant-api03-A .")).rejects.toThrow(/doesn't run by itself/);
+  });
+
+  it("still sets a plain search from a project folder", async () => {
+    await expect(checkFrom("/Users/example/Projects/hivra", "rg -c -e fetchUser src")).resolves.toMatchObject({ id: "check-1" });
   });
 });

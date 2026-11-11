@@ -170,15 +170,51 @@ fn folder(raw: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{WHICH}: that folder name can't be used"))
 }
 
+/// Why a timer's command waits, or None: the verdict on its words, then whether a word that names a link on disk leads out of
+/// the check's folder (round 6, MED-1; the approval's lookup does the same for a chat's own words).
+fn judged(command: &str, cwd: &str) -> Option<String> {
+    safe_cmd::verdict(command, cwd).or_else(|| link_outside(command, cwd))
+}
+
+/// A word that names a file in the check's folder must really be in it once links are followed (round 6, MED-1). A word
+/// that names nothing on disk (a pattern, a revision) is no path and passes; the verdict has already held what is outside.
+fn link_outside(command: &str, cwd: &str) -> Option<String> {
+    let words = safe_cmd::shell_words(command.trim())?;
+    let root = std::fs::canonicalize(cwd).ok()?;
+    for word in words.iter().skip(1) {
+        // An option's value is a place too (`--file=x`), and so is the word itself.
+        let values = match word.split_once('=') {
+            Some((_, value)) if word.starts_with('-') => vec![word.as_str(), value],
+            _ => vec![word.as_str()],
+        };
+        for value in values {
+            if value.is_empty() || value.starts_with('-') {
+                continue;
+            }
+            // A word that doesn't exist names nothing to read.
+            let Ok(real) = std::fs::canonicalize(Path::new(cwd).join(value)) else {
+                continue;
+            };
+            if !real.starts_with(&root) {
+                return Some(format!(
+                    "{value} is a link out of the chat's folder, so it waits for Ash"
+                ));
+            }
+        }
+    }
+    None
+}
+
 /// The command judgement `set` makes, on its own. `watcher_check_set` runs it before it takes the store's lock (round 4,
 /// item 9), so a refused command never holds the lock, and a check that can't be judged never reaches the database.
-pub fn vet_command(command: &str) -> Result<(), String> {
-    if let Some(why) = safe_cmd::verdict(command) {
+pub fn vet_command(command: &str, folder_raw: &str) -> Result<String, String> {
+    let cwd = folder(folder_raw)?;
+    if let Some(why) = judged(command, &cwd) {
         return Err(why);
     }
     // Parse once here so a command the table allows is also one we can exec with no shell.
-    safe_cmd::argv(command)?;
-    Ok(())
+    safe_cmd::argv(command, &cwd)?;
+    Ok(cwd)
 }
 
 /// Arm a check. Refuses a command the safe table does not already allow, and does not insert a row then.
@@ -201,8 +237,7 @@ pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, 
     if command.chars().count() > COMMAND_MAX {
         return Err("that command is too long".into());
     }
-    vet_command(command)?;
-    let cwd = folder(&input.cwd)?;
+    let cwd = vet_command(command, &input.cwd)?;
     if input.pattern.chars().count() > PATTERN_MAX {
         return Err("the text to watch for is too long".into());
     }
@@ -450,7 +485,7 @@ impl Runner for LiveRunner {
 /// never runs, and never runs wherever the app happens to be. A folder that has gone waits, and runs again if it
 /// comes back (an unplugged drive or a renamed working copy is not a final failure).
 pub(crate) fn look(item: &Claimed, runner: &impl Runner) -> Attempt {
-    if safe_cmd::verdict(&item.command).is_some() || item.cwd.is_empty() {
+    if item.cwd.is_empty() || judged(&item.command, &item.cwd).is_some() {
         return Attempt::Stop;
     }
     let cwd = Path::new(&item.cwd);
@@ -489,7 +524,7 @@ fn command_for(words: &[String], cwd: &Path, search: &str, windows: bool) -> Opt
 /// `search` the way the app finds every CLI (`npm` is `npm.cmd` on Windows); one that isn't there waits. Output is
 /// dropped after the decision.
 fn run_in(command: &str, pattern: &str, cwd: &Path, search: &str) -> Attempt {
-    let words = match safe_cmd::argv(command) {
+    let words = match safe_cmd::argv(command, &cwd.to_string_lossy()) {
         Ok(words) => words,
         Err(_) => return Attempt::Stop,
     };
@@ -528,6 +563,8 @@ mod tests {
     // WP-101 review round 4, items 4 and 9: the timer's command judgement, with no lock or store in the way.
     #[test]
     fn a_command_the_timer_would_hold_is_refused_before_any_lock_is_taken() {
+        let folder = TempDir::new("proj");
+        let folder = folder.path();
         for command in [
             "grep -rn TODO src",
             "git log --textconv -p",
@@ -535,10 +572,33 @@ mod tests {
             "cat ./ENV~1",
             "cat .secrets",
         ] {
-            assert!(vet_command(command).is_err(), "{command} was accepted");
+            assert!(
+                vet_command(command, &folder).is_err(),
+                "{command} was accepted"
+            );
         }
-        assert!(vet_command("git status").is_ok());
-        assert!(vet_command("rg -n token src").is_ok());
+        assert!(vet_command("git status", &folder).is_ok());
+        assert!(vet_command("rg -n token src", &folder).is_ok());
+    }
+
+    /// WP-101 review round 6, MED-1: a timer's word that is a real link out of the check's folder waits, a link inside it
+    /// does not, and a word that names nothing on disk is no path.
+    #[cfg(unix)]
+    #[test]
+    fn a_timer_word_that_is_a_link_out_of_the_folder_waits() {
+        use std::os::unix::fs::symlink;
+        let folder = TempDir::new("proj");
+        let outside = TempDir::new("outside");
+        std::fs::write(outside.0.join("secret.txt"), "SECRET\n").unwrap();
+        std::fs::write(folder.0.join("inside.txt"), "ok\n").unwrap();
+        symlink(outside.0.join("secret.txt"), folder.0.join("linked")).unwrap();
+        symlink(folder.0.join("inside.txt"), folder.0.join("alias")).unwrap();
+        let path = folder.path();
+        assert!(vet_command("cat linked", &path).is_err());
+        assert!(vet_command("grep -n SECRET linked", &path).is_err());
+        assert!(vet_command("cat alias", &path).is_ok());
+        assert!(vet_command("cat inside.txt", &path).is_ok());
+        assert!(vet_command("rg -n token inside.txt", &path).is_ok());
     }
 
     fn store() -> SessionStore {

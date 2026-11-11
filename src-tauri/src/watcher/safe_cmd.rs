@@ -400,6 +400,17 @@ const CREDENTIAL_PLACES: &[&[&str]] = &[
     &["appdata", "roaming", "npm", "etc"],
     &["appdata", "local", "google", "chrome"],
     &["appdata", "local", "microsoft", "edge"],
+    // Round 6, HIGH-1: the macOS stores of a signed-in app and the Windows browsers' and apps' stores (credentialPaths.ts PLACES).
+    &["library", "webkit"],
+    &["library", "httpstorages"],
+    &["library", "group containers"],
+    &["library", "messages"],
+    &["library", "accounts"],
+    &["library", "containers"],
+    &["appdata", "roaming", "mozilla"],
+    &["appdata", "roaming", "discord"],
+    &["appdata", "local", "bravesoftware"],
+    &["appdata", "roaming", "code"],
 ];
 
 /// `.env`, `.env.local`, `app.env`, but not the templates (`.env.example`), as credentialPaths.ts reads them.
@@ -462,6 +473,17 @@ fn credential_name(name: &str) -> bool {
     !ext.is_empty() || stem.contains(['*', '?', '_', '-'])
 }
 
+/// The files of a process that hold its secrets or let a read reach its files (`/proc/<pid>/<name>`, round 6).
+const PROCESS_FILES: &[&str] = &[
+    "environ",
+    "cmdline",
+    "cwd",
+    "root",
+    "fd",
+    "map_files",
+    "mem",
+];
+
 /// Whether the folded segments of a path are a credential place or a credential file (credentialSegments).
 fn credential_segments(parts: &[String]) -> bool {
     let Some(last) = parts.last() else {
@@ -470,12 +492,18 @@ fn credential_segments(parts: &[String]) -> bool {
     if last == "known_hosts" {
         return false;
     }
+    // Round 6, MED-3: a thread's own files, and the descriptors, mapped files and memory of a process (credentialPaths.ts).
     let process_secret = parts.iter().enumerate().any(|(i, part)| {
-        part == "proc"
-            && matches!(
-                parts.get(i + 2).map(String::as_str),
-                Some("environ" | "cmdline" | "cwd" | "root")
-            )
+        if part != "proc" {
+            return false;
+        }
+        let at = parts.get(i + 2).map(String::as_str);
+        if at == Some("task") {
+            return parts
+                .get(i + 4)
+                .is_some_and(|name| PROCESS_FILES.contains(&name.as_str()));
+        }
+        at.is_some_and(|name| PROCESS_FILES.contains(&name))
     });
     let in_place = CREDENTIAL_PLACES.iter().any(|place| {
         parts
@@ -596,12 +624,57 @@ fn grep_recurses(args: &[String]) -> bool {
     false
 }
 
+/// `-L` and `--follow` read through links, which lead out of the folder (credentialPaths.ts followsLinks, round 6 parity).
+fn follows_links(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('L'))
+            || arg == "--follow"
+            || arg.starts_with("--follow=")
+    })
+}
+
+/// `-z` and `--search-zip` read inside compressed files, which the login rules can't see into (round 6, LOW).
+fn searches_zip(args: &[String]) -> bool {
+    args.iter().any(|arg| {
+        (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('z'))
+            || arg == "--search-zip"
+            || arg.starts_with("--search-zip=")
+    })
+}
+
 fn rg_read(args: &[String]) -> Option<&'static str> {
     if has(args, &["--pre", "--pre-glob", "--hostname-bin"]) {
         Some("rg --pre runs a program")
+    } else if follows_links(args) {
+        Some("that option follows links out of the folder")
+    } else if searches_zip(args) {
+        Some("that option reads compressed files, which the login rules can't see into")
     } else {
         None
     }
+}
+
+/// Whether a check's folder can hold a walk (round 6, MED-2; the folder gate in credentialPaths.ts walkHeld): an absolute
+/// folder at least three levels deep, that is not a credential place, not inside one, and not a parent of one. A folder
+/// with a non-ASCII name is held, since this side has no Unicode folding.
+fn folder_holds_walk(folder: &str) -> bool {
+    if !folder.is_ascii() || !(folder.starts_with(['/', '\\']) || is_drive_path(folder)) {
+        return false;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for part in folder.split(['/', '\\']) {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            _ => parts.push(fold_segment(part)),
+        }
+    }
+    if is_drive_path(folder) && !parts.is_empty() {
+        parts.remove(0);
+    }
+    parts.len() >= 3 && !credential_segments(&parts) && !starts_at_place_parent(&parts)
 }
 
 /// Whether a walk's start (relative, no folder known) is at or above a credential place: its last segments are the first
@@ -640,6 +713,7 @@ fn names_login_or_outside(
     head: &str,
     args: &[String],
     list: Option<&ProtectedList>,
+    folder: &str,
 ) -> Option<&'static str> {
     let Some(list) = list else {
         return Some(UNREADABLE_LIST);
@@ -649,6 +723,11 @@ fn names_login_or_outside(
     }
     let search = matches!(head, "rg" | "grep" | "ag" | "fd" | "find");
     let walks = walks_folders(head, args);
+    // Round 6, MED-2: a walk (a search with or without a path, a listing, git diff) runs from the check's folder, so that
+    // folder must be a project's own (a Mono's check from home would walk every login store under it).
+    if walks && !folder_holds_walk(folder) {
+        return Some(HELD);
+    }
     let git = head == "git";
     let no_index = args.iter().any(|arg| arg == "--no-index");
     // A search's first bare word is its pattern, as grep reads it, unless an option names the pattern itself.
@@ -716,15 +795,15 @@ fn names_login_or_outside(
     None
 }
 
-/// None when autopilot would run this by itself. The reason otherwise. Same answers as `safeCommand`, plus the words a
-/// read names in a login store (round 2).
+/// None when autopilot would run this by itself, in the check's `folder`. The reason otherwise. Same answers as
+/// `safeCommand(command, folder, true)`, plus the words a read names in a login store (round 2).
 /// An unreadable command is a reason, never an allow: `?` on the word list would invert that.
-pub fn verdict(command: &str) -> Option<String> {
-    verdict_with(command, protected_list())
+pub fn verdict(command: &str, folder: &str) -> Option<String> {
+    verdict_with(command, protected_list(), folder)
 }
 
 /// `verdict` against a given list. A test passes a malformed list (None) to see that every read then holds.
-fn verdict_with(command: &str, list: Option<&ProtectedList>) -> Option<String> {
+fn verdict_with(command: &str, list: Option<&ProtectedList>, folder: &str) -> Option<String> {
     if command.chars().any(|c| SHELL_META.contains(&c)) {
         return Some("it chains, substitutes or redirects".into());
     }
@@ -744,13 +823,13 @@ fn verdict_with(command: &str, list: Option<&ProtectedList>) -> Option<String> {
             return Some(format!("{other} isn't a read autopilot runs by itself"));
         }
     };
-    why.or_else(|| names_login_or_outside(&words[0], args, list))
+    why.or_else(|| names_login_or_outside(&words[0], args, list, folder))
         .map(str::to_string)
 }
 
-/// The words to exec, with no shell, when `verdict` allows the command.
-pub fn argv(command: &str) -> Result<Vec<String>, String> {
-    if let Some(why) = verdict(command) {
+/// The words to exec, with no shell, when `verdict` allows the command in `folder`.
+pub fn argv(command: &str, folder: &str) -> Result<Vec<String>, String> {
+    if let Some(why) = verdict(command, folder) {
         return Err(why.to_string());
     }
     let words = shell_words(command.trim())
@@ -760,6 +839,15 @@ pub fn argv(command: &str) -> Result<Vec<String>, String> {
         return Err("it isn't a read autopilot runs by itself".into());
     }
     Ok(words)
+}
+
+/// The folder the unit tests run a timer command in: a project folder deep enough to walk (round 6, MED-2).
+#[cfg(test)]
+const TEST_FOLDER: &str = "/Users/example/Projects/proj";
+
+#[cfg(test)]
+fn verdict_here(command: &str) -> Option<String> {
+    verdict(command, TEST_FOLDER)
 }
 
 #[cfg(test)]
@@ -775,8 +863,8 @@ mod tests {
         assert!(shell_words("rg foo *").is_none());
         assert!(shell_words("cat 'x").is_none());
         // An unreadable command is refused, not allowed.
-        assert!(verdict("cargo +nightly test").is_some());
-        assert!(verdict("rg foo *").is_some());
+        assert!(verdict_here("cargo +nightly test").is_some());
+        assert!(verdict_here("rg foo *").is_some());
     }
 
     #[test]
@@ -807,9 +895,9 @@ mod tests {
             "git show HEAD:src/app.ts",
         ] {
             assert!(
-                verdict(command).is_none(),
+                verdict_here(command).is_none(),
                 "{command} -> {:?}",
-                verdict(command)
+                verdict_here(command)
             );
         }
     }
@@ -899,7 +987,7 @@ mod tests {
             "ls ^x",
             "cat 'unclosed",
         ] {
-            assert!(verdict(command).is_some(), "{command} was allowed");
+            assert!(verdict_here(command).is_some(), "{command} was allowed");
         }
     }
 }
@@ -933,31 +1021,31 @@ mod round3_tests {
             "cat config/mise/config.toml",
             "ls .omp",
         ] {
-            assert!(verdict(command).is_some(), "{command} should be held");
+            assert!(verdict_here(command).is_some(), "{command} should be held");
         }
     }
 
     #[test]
     fn a_glued_short_option_with_a_path_is_held() {
-        assert!(verdict("rg -f/Users/me/x src").is_some());
-        assert!(verdict("grep -f/etc/passwd README.md").is_some());
+        assert!(verdict_here("rg -f/Users/me/x src").is_some());
+        assert!(verdict_here("grep -f/etc/passwd README.md").is_some());
     }
 
     #[test]
     fn braces_naming_a_folder_outside_are_held() {
-        assert!(verdict("cat '{/etc,src}/x'").is_some());
-        assert!(verdict("ls '{../..,src}'").is_some());
+        assert!(verdict_here("cat '{/etc,src}/x'").is_some());
+        assert!(verdict_here("ls '{../..,src}'").is_some());
     }
 
     #[test]
     fn a_word_that_is_not_ascii_is_held() {
-        assert!(verdict("cat README-é.md").is_some());
+        assert!(verdict_here("cat README-é.md").is_some());
     }
 
     #[test]
     fn a_plain_read_still_runs() {
-        assert!(verdict("cat README.md").is_none());
-        assert!(verdict("rg -n 'foo' src").is_none());
+        assert!(verdict_here("cat README.md").is_none());
+        assert!(verdict_here("rg -n 'foo' src").is_none());
     }
 }
 
@@ -979,7 +1067,7 @@ mod round4_tests {
             "cat .gitignore",
             "cat src/.github/ci.yml",
         ] {
-            assert!(verdict(command).is_some(), "{command} was allowed");
+            assert!(verdict_here(command).is_some(), "{command} was allowed");
         }
     }
 
@@ -1000,7 +1088,7 @@ mod round4_tests {
             "cat ~/.ngrok2/ngrok.yml",
             "cat ~/.m2/settings.xml",
         ] {
-            assert!(verdict(command).is_some(), "{command} was allowed");
+            assert!(verdict_here(command).is_some(), "{command} was allowed");
         }
     }
 
@@ -1015,16 +1103,16 @@ mod round4_tests {
             "rg -uu foo src",
             "rg -.n foo src",
         ] {
-            assert!(verdict(command).is_some(), "{command} was allowed");
+            assert!(verdict_here(command).is_some(), "{command} was allowed");
         }
     }
 
     #[test]
     fn textconv_and_glued_short_option_values_are_held() {
-        assert!(verdict("git log --textconv -p").is_some());
-        assert!(verdict("git diff --textconv HEAD~1").is_some());
-        assert!(verdict("grep -f.netrc x README.md").is_some());
-        assert!(verdict("grep -fsecrets README.md").is_some());
+        assert!(verdict_here("git log --textconv -p").is_some());
+        assert!(verdict_here("git diff --textconv HEAD~1").is_some());
+        assert!(verdict_here("grep -f.netrc x README.md").is_some());
+        assert!(verdict_here("grep -fsecrets README.md").is_some());
     }
 
     #[test]
@@ -1037,19 +1125,19 @@ mod round4_tests {
             "cat CLAUDE~1.MD",
             "cat sub/CODEX~1/auth.json",
         ] {
-            assert!(verdict(command).is_some(), "{command} was allowed");
+            assert!(verdict_here(command).is_some(), "{command} was allowed");
         }
         // A git revision is not a file name, so it is read as before.
-        assert!(verdict("git diff HEAD~1 -- src/app.ts").is_none());
-        assert!(verdict("git log HEAD~3..HEAD").is_none());
+        assert!(verdict_here("git diff HEAD~1 -- src/app.ts").is_none());
+        assert!(verdict_here("git log HEAD~3..HEAD").is_none());
     }
 
     #[test]
     fn a_search_pattern_is_not_a_path_and_an_option_names_one() {
         // A bare word is the pattern, so `token` is a search for the word.
-        assert!(verdict("rg -n token src").is_none());
+        assert!(verdict_here("rg -n token src").is_none());
         // `-e` names the pattern, so the word after it is a file and is judged as one.
-        assert!(verdict("rg -e foo secrets").is_some());
+        assert!(verdict_here("rg -e foo secrets").is_some());
     }
 
     #[test]
@@ -1058,10 +1146,10 @@ mod round4_tests {
         assert!(parse_protected(r#"{"files": [1], "dirs": [], "pathSuffixes": []}"#).is_none());
         assert!(parse_protected(r#"{"files": [], "dirs": [], "pathSuffixes": "x"}"#).is_none());
         // With no list, the verdict holds before anything else is read.
-        assert!(verdict_with("git status", None).is_some());
-        assert!(verdict_with("cat README.md", None).is_some());
+        assert!(verdict_with("git status", None, TEST_FOLDER).is_some());
+        assert!(verdict_with("cat README.md", None, TEST_FOLDER).is_some());
         // The real list parses.
-        assert!(verdict_with("cat README.md", protected_list()).is_none());
+        assert!(verdict_with("cat README.md", protected_list(), TEST_FOLDER).is_none());
     }
 }
 
@@ -1082,14 +1170,81 @@ mod parity {
             cases.len() > 90,
             "the shared set is too small to mean anything"
         );
+        // Round 6: each case runs in its own folder, else the file's (the timer runs it in the chat's folder).
+        let default_folder = file["folder"].as_str().expect("a default folder");
         for case in cases {
             let command = case["command"].as_str().expect("a command");
             let held = case["held"].as_bool().expect("a held flag");
+            let folder = case["folder"].as_str().unwrap_or(default_folder);
             assert_eq!(
-                verdict(command).is_some(),
+                verdict(command, folder).is_some(),
                 held,
-                "parity: {command} (TypeScript holds it: {held})"
+                "parity: {command} in {folder} (TypeScript holds it: {held})"
             );
         }
+    }
+}
+
+/// WP-101 review round 6: the Rust side's own probes (the parity fixture carries the same cases for TypeScript).
+#[cfg(test)]
+mod round6_tests {
+    use super::*;
+
+    #[test]
+    fn a_relative_read_of_a_store_in_the_folder_is_held_by_its_place() {
+        for command in [
+            "cat Library/WebKit/com.ash.monocode-hub/WebsiteData/localstorage.sqlite3",
+            "cat Library/HTTPStorages/com.ash.app/cookies.binarycookies",
+            "cat \"Library/Group Containers/group.example/data.db\"",
+            "cat Library/Messages/chat.db",
+            "cat Library/Accounts/Accounts4.sqlite",
+            "cat Library/Containers/com.example.app/Data/state.db",
+            "cat AppData/Roaming/Mozilla/Firefox/Profiles/p1/logins.json",
+            "cat AppData/Roaming/Code/User/globalStorage/state.vscdb",
+        ] {
+            assert!(verdict_here(command).is_some(), "{command} was allowed");
+        }
+    }
+
+    #[test]
+    fn a_process_thread_or_descriptor_read_is_held() {
+        for command in [
+            "cat proc/123/task/123/environ",
+            "cat proc/123/fd/3",
+            "cat proc/self/mem",
+            "cat /proc/self/map_files/7f00-7f01",
+        ] {
+            assert!(verdict_here(command).is_some(), "{command} was allowed");
+        }
+    }
+
+    #[test]
+    fn rg_reads_through_links_and_compressed_files_are_held() {
+        for command in [
+            "rg -L token src",
+            "rg --follow token src",
+            "rg -z token src",
+            "rg -nz token src",
+            "rg --search-zip token src",
+        ] {
+            assert!(verdict_here(command).is_some(), "{command} was allowed");
+        }
+        assert!(verdict_here("rg -n token src").is_none());
+    }
+
+    #[test]
+    fn a_walk_from_a_home_or_shallow_folder_or_a_credential_place_is_held() {
+        assert!(verdict("rg -c -e sk-ant-api03-A .", "/Users/example").is_some());
+        assert!(verdict("rg -c sk-ant-api03-A", "/Users/example").is_some());
+        assert!(verdict("ls -R .", "/Users/example").is_some());
+        assert!(verdict(
+            "rg -c -e sk-ant-api03-A .",
+            "/Users/example/Library/Application Support/tool"
+        )
+        .is_some());
+        assert!(verdict("rg -c -e sk-ant-api03-A .", "/Users/example/.ssh/work").is_some());
+        assert!(verdict("rg -c -e fetchUser src", "/Users/example/Projects/hivra").is_none());
+        // A walk-free command runs anywhere, as it always did.
+        assert!(verdict("cat README.md", "/Users/example").is_none());
     }
 }

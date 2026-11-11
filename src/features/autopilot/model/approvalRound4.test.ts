@@ -8,7 +8,7 @@ import { credentialInPaths, credentialInWords, dotOutside } from "./credentialPa
 import { commandNamesLogin, editInside, safeCall, safeCommand } from "./safeApproval";
 
 /** A timer's verdict on a command, as agentAppTimers.ts takes it: the table and walk first, then the login words. */
-const timerHolds = (command: string) => safeCommand(command, undefined, true) ?? commandNamesLogin(command);
+const timerHolds = (command: string) => safeCommand(command, "/Users/example/Projects/proj", true) ?? commandNamesLogin(command);
 import { credentialBlock } from "../../../integrations/harness/core/credentialGuard";
 
 const FOLDER = "/Users/someone/Worktrees/hub-x";

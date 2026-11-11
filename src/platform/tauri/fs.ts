@@ -337,7 +337,8 @@ export function gitUnstageAll(cwd: string): Promise<void> {
   return invoke<void>("git_unstage_all", { cwd });
 }
 
-export type GitFileLocation = { root: string; relative: string };
+/** A path's checkout and its place in it. `linked` says the path's last part is a link, placed at its target (round 6). */
+export type GitFileLocation = { root: string; relative: string; linked?: boolean };
 
 /** Each path's repository root and repo-relative path, or null outside git. */
 export function gitLocateFiles(

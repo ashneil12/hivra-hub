@@ -270,7 +270,8 @@ describe("a tool approval under autopilot", () => {
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
     expect(approvalVerdict(bash("cat .zshrc"), FOLDER)).toMatchObject({ kind: "allow" });
     expect(approvalVerdict(bash("cat README.md"), FOLDER)).toMatchObject({ kind: "allow" });
-    expect(approvalVerdict(bash("cat ~/notes.txt"), FOLDER)).toMatchObject({ kind: "allow" });
+    // Round 6, HIGH-1: a home word names a place outside the chat's folder, so it waits.
+    expect(approvalVerdict(bash("cat ~/notes.txt"), FOLDER)).toMatchObject({ kind: "held" });
   });
 
   // WP-101 fix round 4, finding 1 (HIGH): the fix-3 check only matched a path that literally began `~/`, `/Users/` or
@@ -327,7 +328,9 @@ describe("a tool approval under autopilot", () => {
       "cat ~/.ssh/./id_rsa",
     ])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
-    // Ordinary reads of the same shapes stay reads.
+    // Ordinary reads of the same shapes stay reads, inside the chat's own folder (round 6, HIGH-1: the folder is the
+    // chat's, so the absolute forms are inside it).
+    const HUB_X = "/Users/someone/Worktrees/hub-x";
     for (const command of [
       "cat /./Users/someone/Worktrees/hub-x/README.md",
       "cat //Users/someone/Worktrees/hub-x/src/app.ts",
@@ -335,13 +338,13 @@ describe("a tool approval under autopilot", () => {
       "cat ./README.md",
       "cat src/../README.md",
       "cat ./.zshrc",
-      "cat ~/./notes.txt",
-      "cat /etc/./hosts",
-      "head -n 5 /./etc/hosts",
       "git diff main..feature",
       "git diff HEAD~1 -- src/app.ts",
     ])
-      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
+      expect(approvalVerdict(bash(command), HUB_X), command).toMatchObject({ kind: "allow" });
+    // Round 6, HIGH-1: the same words outside the chat's folder wait.
+    for (const command of ["cat ~/./notes.txt", "cat /etc/./hosts", "head -n 5 /./etc/hosts"])
+      expect(approvalVerdict(bash(command), HUB_X), command).toMatchObject({ kind: "held" });
   });
 
   // WP-101 fix round 4, finding 4: the Read tool names its file in `paths`, and neither check ever looked there for a home
@@ -466,7 +469,10 @@ describe("a tool approval under autopilot", () => {
       "git diff --no-index ../../.zshrc /dev/null",
     ])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
-    for (const command of ["cat ../README.md", "cat ../../README.md", "cat src/.zshrc", "cat src/../.zshrc"])
+    // Round 6, HIGH-1: a climb out of the chat's folder waits, a climb that stays in it does not.
+    for (const command of ["cat ../README.md", "cat ../../README.md"])
+      expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "held" });
+    for (const command of ["cat src/.zshrc", "cat src/../.zshrc"])
       expect(approvalVerdict(bash(command), FOLDER), command).toMatchObject({ kind: "allow" });
     // With no folder to resolve against, a climb to a startup file still waits.
     expect(approvalVerdict(bash("cat ../../.zshrc"), undefined)).toMatchObject({ kind: "held" });

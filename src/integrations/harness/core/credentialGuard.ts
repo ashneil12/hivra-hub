@@ -47,10 +47,13 @@ export const HUB_DB_DENY_RULES: readonly string[] = [
   "Bash(*com.ash.monocode-hub*sqlite*)",
   "Read(~/Library/Application Support/com.ash.monocode-hub*/*.db*)",
   "Read(~/Library/WebKit/com.ash.monocode-hub*/**)",
+  // Round 6, HIGH-1: the copies a ship, a recovery and a backup leave in the Archive folder.
+  "Read(~/Archive/monocode/**/monocode.db*)",
+  "Bash(*Archive/monocode*monocode.db*)",
 ];
 
 /** The app's data folder (the daily app or any dev slot) or its WebKit storage, then a database file in it. */
-const HUB_DB = /(?:Application Support\/com\.ash\.monocode-hub[^/\s"']*\/[^\s"';|&)]*\.(?:db|sqlite3?)(?:-wal|-shm)?\b|\/WebKit\/com\.ash\.monocode-hub)/i;
+const HUB_DB = /(?:Application Support\/com\.ash\.monocode-hub[^/\s"']*\/[^\s"';|&)]*\.(?:db|sqlite3?)(?:-wal|-shm)?\b|\/WebKit\/com\.ash\.monocode-hub|Archive\/monocode\/[^\s"';|&)]*monocode\.db)/i;
 /** A bare monocode.db read by a database tool from wherever the shell happens to be. */
 const HUB_DB_TOOL = /(^|[\s;&|(`$])(?:\/usr\/bin\/)?sqlite3\b[^;&|]*\bmonocode\.db\b/i;
 
@@ -133,8 +136,9 @@ export function credentialBlock(
     for (const text of new Set([raw, raw.replace(/['"]/g, "")])) {
       if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
       if (SECRET_FILES.some((re) => re.test(foldForSecrets(collapseClimbs(text))))) return CREDENTIAL_BLOCK_MESSAGE;
+      // Round 6, HIGH-1: the hub's store is read with its quotes taken out too (`'.../com.ash.monocode-h'ub/...`).
+      if (HUB_DB.test(text) || HUB_DB_TOOL.test(text)) return HUB_DB_BLOCK_MESSAGE;
     }
-    if (HUB_DB.test(raw) || HUB_DB_TOOL.test(raw)) return HUB_DB_BLOCK_MESSAGE;
     const padded = ` ${raw}`;
     for (const match of padded.matchAll(ENV_PATH)) {
       if (!insideProject(match[1], cwd, home)) return CREDENTIAL_BLOCK_MESSAGE;
