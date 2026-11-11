@@ -739,3 +739,29 @@ fn review225_a_chat_cannot_answer_a_gate_key_in_any_spelling() {
         .applied
     );
 }
+
+/// Pre-existing on main (not introduced by #225): a chat records an answer on a delivery gate's key through
+/// ask_person's `answer` field. person_only does not cover `gate/`, and decisions_answer forwards any `gate/` answer to
+/// the gate without looking at who gave it.
+#[test]
+fn review225_main_a_chat_cannot_answer_a_gate_key() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let mut gate = ask_input("gate", "gate/run-9", &[]);
+    gate.options = vec!["Approve".into(), "Fix".into(), "Skip".into()];
+    gate.recommended = None;
+    ask(&mut conn, gate, 1).unwrap();
+    let out = answer(
+        &mut conn,
+        "hivra",
+        "gate/run-9",
+        "Approve",
+        Some("chat:fm".into()),
+        2,
+    );
+    assert!(
+        out.is_err(),
+        "a chat answered a delivery gate: {:?}",
+        out.map(|o| o.applied)
+    );
+}
