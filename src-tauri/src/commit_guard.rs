@@ -480,6 +480,9 @@ pub struct Allow {
     pub repo: String,
     pub file: String,
     pub hash: String,
+    /// The entry's signature (HMAC with the app's Keychain key). An entry without a valid one is not honoured.
+    #[serde(default)]
+    pub mac: String,
 }
 
 /// Proof that a person chose the allow in the app's UI. Only this module builds one, in the Tauri command below; no
@@ -554,6 +557,7 @@ fn allow_finding_in(store: &Path, repo: &Path, file: &str, line: usize) -> Resul
         repo: repo_id(repo),
         file: file.to_string(),
         hash: line_hash(&text),
+        mac: String::new(),
     };
     if !allows.contains(&allow) {
         allows.push(allow);
@@ -611,11 +615,18 @@ pub async fn commit_guard_allows() -> Result<Vec<Allow>, String> {
 /// Removes one allow from the Settings list (the app's UI, through a direct click).
 #[tauri::command]
 pub async fn commit_guard_remove(repo: String, file: String, hash: String) -> Result<(), String> {
-    let allow = Allow { repo, file, hash };
+    let allow = Allow {
+        repo,
+        file,
+        hash,
+        mac: String::new(),
+    };
     remove_allow(PersonChoice(()), &allow)
 }
 
 #[cfg(test)]
 mod review_tests;
+#[cfg(test)]
+mod review_tests_r3;
 #[cfg(test)]
 mod tests;

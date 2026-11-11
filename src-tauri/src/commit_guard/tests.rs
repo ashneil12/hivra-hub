@@ -568,6 +568,7 @@ fn an_allowed_line_is_not_a_finding_and_only_that_line_is() {
         repo: "repo-a".into(),
         file: "src/config.rs".into(),
         hash: line_hash(&line),
+        mac: String::new(),
     };
     scan_patch_with(&patch, std::slice::from_ref(&allow), "repo-a")
         .expect("the allowed line passes");
@@ -607,6 +608,7 @@ fn an_allow_store_that_does_not_parse_allows_nothing() {
         repo: "repo-a".into(),
         file: "src/config.rs".into(),
         hash: line_hash("x"),
+        mac: String::new(),
     };
     write_allows(&path, std::slice::from_ref(&allow)).unwrap();
     assert_eq!(read_allows(&path), vec![allow]);
@@ -725,6 +727,7 @@ fn an_allow_is_recorded_for_the_head_line_and_can_be_removed() {
         repo: repo_id(local.path()),
         file: "src/config.rs".into(),
         hash: line_hash(&format!("const KEY: &str = \"{key}\";")),
+        mac: String::new(),
     };
     assert_eq!(recorded, vec![expected.clone()]);
     assert!(
