@@ -3,6 +3,7 @@ import {
   type Automation,
   type AutomationTrigger,
 } from "./automations";
+import { scrubShownText } from "./shownText";
 
 /**
  * Where each automation sits between what starts it and where the work goes.
@@ -88,27 +89,28 @@ export function mapLayout(automations: readonly Automation[]): MapLayout {
       automationId: automation.id,
     });
     for (const trigger of automationTriggers(automation)) {
-      const key = triggerKey(trigger);
-      const id = `trigger:${key}`;
-      if (!triggers.has(id)) {
-        triggers.set(id, {
-          id,
-          label: triggerLabel(trigger),
-          disabled: false,
-          automationId: "",
-        });
+      for (const piece of triggerPieces(trigger)) {
+        const id = `trigger:${piece.key}`;
+        if (!triggers.has(id)) {
+          triggers.set(id, {
+            id,
+            label: piece.label,
+            disabled: false,
+            automationId: "",
+          });
+        }
+        const users = triggerUsers.get(id) ?? [];
+        users.push(automation.id);
+        triggerUsers.set(id, users);
+        addEdge(id, automationNode);
       }
-      const users = triggerUsers.get(id) ?? [];
-      users.push(automation.id);
-      triggerUsers.set(id, users);
-      addEdge(id, automationNode);
     }
     for (const destination of destinationsOf(automation)) {
       const id = `destination:${destination.key}`;
       if (!destinations.has(id)) {
         destinations.set(id, {
           id,
-          label: destination.label,
+          label: scrubShownText(destination.label),
           disabled: false,
           automationId: "",
         });
@@ -180,7 +182,40 @@ function uniqueAutomations(automations: readonly Automation[]): Automation[] {
 
 function automationLabel(automation: Automation): string {
   const name = typeof automation.name === "string" ? automation.name.trim() : "";
-  return name || "Automation";
+  return scrubShownText(name || "Automation");
+}
+
+/** One node per repo. A time trigger stays one node. The key uses the scrubbed repo. */
+function triggerPieces(trigger: AutomationTrigger): { key: string; label: string }[] {
+  if (trigger.kind === "time") {
+    return [{ key: triggerKey(trigger), label: scrubShownText(triggerLabel(trigger)) }];
+  }
+  const repos = uniqueRepos(trigger);
+  if (repos.length === 0) {
+    return [{ key: triggerKey(trigger), label: scrubShownText(triggerLabel(trigger)) }];
+  }
+  const noun = eventNoun(trigger.event);
+  return repos.map((repo) => {
+    const shown = scrubShownText(repo);
+    return {
+      key: ["event", trigger.kind, trigger.event, shown, text(trigger.branch)].join("\u0000"),
+      label: shown ? `${noun} in ${shown}` : noun,
+    };
+  });
+}
+
+function uniqueRepos(trigger: AutomationTrigger): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (value: string) => {
+    const repo = text(value);
+    if (!repo || seen.has(repo)) return;
+    seen.add(repo);
+    out.push(repo);
+  };
+  add(trigger.repo);
+  for (const repo of trigger.repos ?? []) add(repo);
+  return out;
 }
 
 /** Same words as `started_by` for a scheduled or event trigger. */

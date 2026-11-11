@@ -7,6 +7,7 @@ import {
   type ActivityEntry,
 } from "../../activity/model/activity";
 import type { Automation } from "../model/automations";
+import { automationFilterLabel } from "../model/shownText";
 import {
   collectRunPages,
   sessionIdFromLink,
@@ -88,7 +89,7 @@ export function AutomationRuns({
             <option value="">All automations</option>
             {names.map((automation) => (
               <option key={automation.id} value={automation.id}>
-                {automation.name.trim() || "Automation"}
+                {automationFilterLabel(automation.name)}
               </option>
             ))}
           </select>
