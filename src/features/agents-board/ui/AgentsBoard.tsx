@@ -10,10 +10,11 @@ import { descendantOwnCount, flattenBoard, type BoardNode, type BoardState } fro
 import { rollupText } from "../model/words";
 
 const CHIP: Record<BoardState, { label: string; own: string }> = {
+  // Needs you stays this red: it is the one status colour on the screen, and the chip check looks for it.
   "needs-you": { label: "Needs you", own: "border border-transparent bg-[#e5484d]/15 text-[#e5484d]" },
-  working: { label: "Working", own: "border border-transparent bg-[#3b82f6]/15 text-[#60a5fa]" },
-  done: { label: "Done", own: "border border-transparent bg-emerald-400/15 text-emerald-300" },
-  idle: { label: "Idle", own: "border border-transparent bg-white/10 text-white/45" },
+  working: { label: "Working", own: "border border-transparent bg-accent/15 text-accent" },
+  done: { label: "Done", own: "border border-transparent bg-status-ok/15 text-status-ok" },
+  idle: { label: "Idle", own: "border border-transparent bg-content/10 text-content/45" },
 };
 
 const COLUMNS = "14rem 15.5rem minmax(4rem, 1fr) 4.75rem 4.25rem 3.75rem 9rem";
@@ -150,14 +151,14 @@ export function AgentsBoard({
   }
 
   return (
-    <div data-agents-board className="flex h-full min-h-0 flex-col bg-[#141416] text-[#f2f2f2]">
-      <header className="flex flex-wrap items-center gap-2 border-b border-white/10 px-4 py-3">
+    <div data-agents-board className="flex h-full min-h-0 flex-col bg-background-base text-content">
+      <header className="flex flex-wrap items-center gap-2 border-b border-stroke px-4 py-3">
         <h1 className="mr-2 text-[15px] font-medium">Agents</h1>
-        <label className="text-[12px] text-white/50">
+        <label className="text-[12px] text-content/50">
           <span className="sr-only">Project</span>
           <select
             aria-label="Project"
-            className="rounded-md border border-white/10 bg-[#1b1b1d] px-2 py-1 text-[13px] text-[#f2f2f2]"
+            className="rounded-md border border-stroke bg-surface-raised px-2 py-1 text-[13px] text-content"
             value={filter.projectId ?? ""}
             onChange={(event) => setFilter({ ...filter, projectId: event.target.value || null })}
           >
@@ -182,7 +183,7 @@ export function AgentsBoard({
         >
           <div
             data-board-head
-            className="grid items-center pb-1 text-[11px] text-white/35"
+            className="grid items-center pb-1 text-[11px] text-content/35"
             style={{ gridColumn: "1 / -1", gridTemplateColumns: "subgrid" }}
           >
             <span />
@@ -196,53 +197,53 @@ export function AgentsBoard({
           <Rows node={shown} depth={0} now={now} open={open} selected={selected} onPick={pick} onToggle={toggle} onOpen={onOpen} />
         </div>
         {current ? (
-          <aside data-readonly-chat className="flex w-[380px] shrink-0 flex-col border-l border-white/10">
-            <div className="border-b border-white/10 px-4 py-3">
+          <aside data-readonly-chat className="flex w-[380px] shrink-0 flex-col border-l border-stroke">
+            <div className="border-b border-stroke px-4 py-3">
               <p className="text-[14px] font-medium">{current.name}</p>
-              <p className="mt-1 text-[12px] text-white/50">{chipText(current)}</p>
+              <p className="mt-1 text-[12px] text-content/50">{chipText(current)}</p>
             </div>
-            <div className="min-h-0 flex-1 space-y-2 overflow-auto px-4 py-3 text-[13px] leading-5 text-white/80">
+            <div className="min-h-0 flex-1 space-y-2 overflow-auto px-4 py-3 text-[13px] leading-5 text-content/80">
               {(lines[current.id] ?? []).length ? (
                 (lines[current.id] ?? []).map((line, index) => <p key={index}>{line}</p>)
               ) : (
-                <p className="text-white/45">No messages in this chat yet.</p>
+                <p className="text-content/45">No messages in this chat yet.</p>
               )}
             </div>
-            <div className="flex flex-col gap-2 border-t border-white/10 px-4 py-3">
+            <div className="flex flex-col gap-2 border-t border-stroke px-4 py-3">
               {current.ownState === "needs-you" ? (
-                <button type="button" className="w-fit rounded-md border border-white/15 px-3 py-1.5 text-[13px]" onClick={() => onOpen(current.id)}>
+                <button type="button" className="w-fit rounded-md border border-stroke px-3 py-1.5 text-[13px]" onClick={() => onOpen(current.id)}>
                   Open to answer
                 </button>
               ) : null}
               {asking ? (
                 <div role="dialog" aria-label="Stop this chat" data-stop-ask className="flex items-center gap-2">
                   <p className="mr-auto text-[13px]">Stop {current.name}?</p>
-                  <button type="button" className="rounded-md border border-white/40 bg-white/15 px-3 py-1.5 text-[13px]" onClick={confirm}>
+                  <button type="button" className="rounded-md border border-stroke bg-selection px-3 py-1.5 text-[13px] text-content" onClick={confirm}>
                     Stop
                   </button>
-                  <button type="button" className="rounded-md px-3 py-1.5 text-[13px] text-white/70" onClick={() => setStops((prev) => ({ ...prev, [current.id]: { phase: cancelStop(entry.phase) } }))}>
+                  <button type="button" className="rounded-md px-3 py-1.5 text-[13px] text-content/70" onClick={() => setStops((prev) => ({ ...prev, [current.id]: { phase: cancelStop(entry.phase) } }))}>
                     Cancel
                   </button>
                 </div>
               ) : entry.phase === "stopping" ? (
-                <p className="text-[13px] text-white/70">Stopping...</p>
+                <p className="text-[13px] text-content/70">Stopping...</p>
               ) : entry.phase === "stopped" ? (
-                <p className="text-[13px] text-white/70">Stopped</p>
+                <p className="text-[13px] text-content/70">Stopped</p>
               ) : entry.phase === "failed" ? (
                 <div className="flex flex-col items-start gap-2">
-                  <p className="text-[13px] text-white/80">{entry.error}</p>
+                  <p className="text-[13px] text-content/80">{entry.error}</p>
                   {current.canStop ? (
-                    <button type="button" className="rounded-md border border-white/15 px-3 py-1.5 text-[13px]" onClick={askStop}>
+                    <button type="button" className="rounded-md border border-stroke px-3 py-1.5 text-[13px]" onClick={askStop}>
                       Stop
                     </button>
                   ) : null}
                 </div>
               ) : current.canStop ? (
-                <button type="button" className="w-fit rounded-md border border-white/15 px-3 py-1.5 text-[13px]" onClick={askStop}>
+                <button type="button" className="w-fit rounded-md border border-stroke px-3 py-1.5 text-[13px]" onClick={askStop}>
                   Stop
                 </button>
               ) : (
-                <p className="text-[12px] text-white/40">Read only</p>
+                <p className="text-[12px] text-content/40">Read only</p>
               )}
             </div>
           </aside>
@@ -287,12 +288,12 @@ function FilterChip({
       aria-pressed={pressed}
       aria-label={label}
       onClick={onClick}
-      className={`rounded-md border px-2.5 py-1 text-[12px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#3b82f6] ${
-        pressed ? "border-white/70 bg-white/20 text-white" : "border-white/20 text-white/75 hover:bg-white/5"
+      className={`rounded-md border px-2.5 py-1 text-[12px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent ${
+        pressed ? "border-content/70 bg-selection-strong text-content" : "border-stroke text-content/75 hover:bg-selection-hover"
       }`}
     >
       {label}
-      <span data-count aria-hidden className="ml-1.5 tabular-nums text-white/45">
+      <span data-count aria-hidden className="ml-1.5 tabular-nums text-content/45">
         {count}
       </span>
     </button>
@@ -334,7 +335,7 @@ function Rows({
         data-rolled={node.rolledUp ? "true" : "false"}
         data-done-today={doneToday ? "true" : "false"}
         onClick={() => onPick(node.id)}
-        className={`grid cursor-pointer items-center py-2 text-[13px] ${selected === node.id ? "bg-white/8" : "hover:bg-white/5"}`}
+        className={`grid cursor-pointer items-center py-2 text-[13px] ${selected === node.id ? "bg-selection-subtle" : "hover:bg-selection-hover"}`}
         style={{ gridColumn: "1 / -1", gridTemplateColumns: "subgrid" }}
       >
         <div className="flex min-w-0 items-center gap-1" style={{ paddingLeft: depth * 14 }}>
@@ -342,7 +343,7 @@ function Rows({
             <button
               type="button"
               aria-label={`${expanded ? "Hide" : "Show"} ${node.name}`}
-              className="w-4 shrink-0 text-white/40"
+              className="w-4 shrink-0 text-content/40"
               onClick={(event) => {
                 event.stopPropagation();
                 onToggle(node);
@@ -376,7 +377,7 @@ function Rows({
           {node.ownState === "needs-you" ? (
             <button
               type="button"
-              className="shrink-0 rounded-md border border-white/15 px-2 py-0.5 text-[11px] text-white/80"
+              className="shrink-0 rounded-md border border-stroke px-2 py-0.5 text-[11px] text-content/80"
               onClick={(event) => {
                 event.stopPropagation();
                 onOpen(node.id);
@@ -390,18 +391,18 @@ function Rows({
               data-chip
               data-rolled="true"
               title="From a row under it"
-              className={`flex min-w-0 items-center gap-1 truncate text-[11px] ${node.state === "needs-you" ? "text-[#e5484d]" : "text-white/45"}`}
+              className={`flex min-w-0 items-center gap-1 truncate text-[11px] ${node.state === "needs-you" ? "text-[#e5484d]" : "text-content/45"}`}
             >
               <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-current" />
               {under}
             </span>
           ) : null}
         </div>
-        <span data-task className="min-w-0 truncate text-white/55">{node.task ?? ""}</span>
-        <span data-cost className="text-right text-[12px] tabular-nums text-white/50">{node.costLabel ?? ""}</span>
-        <span data-time className="text-right text-[12px] text-white/50">{node.timeLabel ?? ""}</span>
-        <span data-pr className="text-right text-[12px] text-white/70">{node.prNumber ? `#${node.prNumber}` : ""}</span>
-        <span data-checks className="truncate text-[12px] text-white/55">{node.checksLabel ?? ""}</span>
+        <span data-task className="min-w-0 truncate text-content/55">{node.task ?? ""}</span>
+        <span data-cost className="text-right text-[12px] tabular-nums text-content/50">{node.costLabel ?? ""}</span>
+        <span data-time className="text-right text-[12px] text-content/50">{node.timeLabel ?? ""}</span>
+        <span data-pr className="text-right text-[12px] text-content/70">{node.prNumber ? `#${node.prNumber}` : ""}</span>
+        <span data-checks className="truncate text-[12px] text-content/55">{node.checksLabel ?? ""}</span>
       </div>
       {showKids
         ? node.children.map((child) => (
