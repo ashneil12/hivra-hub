@@ -1,6 +1,6 @@
 // The moved state of a chat on this Mac (WP-177), kept in the chat itself as a system notice, so it survives a
-// restart without a schema change. While the chat is moved, this Mac keeps only the marker, not the transcript: the
-// host holds the live copy.
+// restart without a schema change. While the chat is moved, this Mac keeps the person's own messages and the marker.
+// The rest of the transcript leaves: the host holds the live copy.
 
 import type { Block, Session } from "../../sessions/model/session";
 

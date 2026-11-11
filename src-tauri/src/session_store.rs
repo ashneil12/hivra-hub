@@ -2703,12 +2703,18 @@ fn list_linked(conn: &Connection) -> rusqlite::Result<Vec<SessionSummary>> {
 }
 
 /// Mirrors the sidebar's notion of a listable session: a transcript that the
-/// user has actually said something in.
+/// user has actually said something in, or a chat a move has marked (the marker
+/// row has no user message, and the project list is what the sidebar and launch
+/// recovery read).
 fn has_user_block(blocks: &Value) -> bool {
     blocks.as_array().is_some_and(|blocks| {
-        blocks
-            .iter()
-            .any(|block| block.get("role").and_then(Value::as_str) == Some("user"))
+        blocks.iter().any(|block| {
+            block.get("role").and_then(Value::as_str) == Some("user")
+                || block
+                    .get("notice")
+                    .and_then(Value::as_str)
+                    .is_some_and(|notice| notice.starts_with("teleport"))
+        })
     })
 }
 

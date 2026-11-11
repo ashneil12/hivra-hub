@@ -380,10 +380,12 @@ export function localMoveEndpoint(options: {
       }
       // The provider conversation stays on this Mac otherwise, and a later move would resume it.
       await forgetHarnessSession(session.harness, chatId);
-      // The transcript and the provider session id leave this Mac here: the host holds the live copy.
+      // The assistant transcript and the provider session id leave this Mac: the host holds the live copy.
+      // The person's own messages stay, so the row is still a chat in its project after a restart.
+      const kept = session.blocks.filter((block) => block.role === "user" && block.draft !== true);
       const next = {
         ...session,
-        blocks: movedBlocks(labelFor(to), now(), to),
+        blocks: [...kept, ...movedBlocks(labelFor(to), now(), to)],
         providerSessionId: undefined,
         queuedMessages: [],
       } as unknown as Session;
