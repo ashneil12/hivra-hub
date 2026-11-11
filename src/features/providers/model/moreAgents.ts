@@ -43,6 +43,8 @@ export type MoreAgentsList = {
   fingerprints: Record<string, string>;
   /** The absolute file each entry resolves to right now, or null when it is not found. */
   resolved: Record<string, string | null>;
+  /** A line for the Allow card when the entry fetches its program at start (only the launcher is pinned). */
+  notes: Record<string, string>;
 };
 
 /** The words a person sees for each gap in the subset (WP-134's table). No dashes. */
@@ -221,6 +223,7 @@ type StoredDocument = {
   approved?: unknown;
   fingerprints?: unknown;
   resolved?: unknown;
+  notes?: unknown;
 };
 
 function listFrom(doc: StoredDocument): MoreAgentsList {
@@ -237,7 +240,11 @@ function listFrom(doc: StoredDocument): MoreAgentsList {
       resolved[id] = typeof path === "string" ? path : null;
     }
   }
-  return { revision: doc.revision, rows: parseMoreAgentRows(doc.agents), approved, fingerprints, resolved };
+  const notes: Record<string, string> = {};
+  if (doc.notes && typeof doc.notes === "object") {
+    for (const [id, note] of Object.entries(doc.notes)) if (typeof note === "string") notes[id] = note;
+  }
+  return { revision: doc.revision, rows: parseMoreAgentRows(doc.agents), approved, fingerprints, resolved, notes };
 }
 
 export class MoreAgentsChangedError extends Error {

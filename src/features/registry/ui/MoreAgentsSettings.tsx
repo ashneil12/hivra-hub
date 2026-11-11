@@ -200,6 +200,11 @@ export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
                   <span className="w-full break-all font-mono text-[12px] text-content/60" data-agent-exact>
                     {[entry.command, ...entry.args].join(" ")}
                   </span>
+                  {list?.notes[entry.id] ? (
+                    <span className="w-full text-[12px] text-content/70" data-agent-note>
+                      {list.notes[entry.id]}
+                    </span>
+                  ) : null}
                   <span className="w-full break-all font-mono text-[12px] text-content/60" data-agent-resolved>
                     {list?.resolved[entry.id] ?? "Not found on this Mac. Check the command before you allow it."}
                   </span>
