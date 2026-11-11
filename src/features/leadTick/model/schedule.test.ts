@@ -88,6 +88,32 @@ describe("lead tick cadence", () => {
     expect(runs.length).toBeLessThanOrEqual(7);
   });
 
+  it("passes the tick interval to the ports so the lead lease can follow it", async () => {
+    const store = createLeadTickStore(memoryDisk());
+    await store.writeSetting("/code/app", { enabled: true, intervalMinutes: 60 });
+    let seen: unknown;
+    const scheduler = new LeadTickScheduler({
+      store,
+      now: () => Date.now(),
+      quiet: () => ({ enabled: false, start: "22:00", end: "08:00" }),
+      allowed: () => true,
+      resolve: async () => ({
+        projectId: "app",
+        lead: { monoId: "app-lead", name: "Lead", sessionId: "s-lead" },
+        look: { busy: false, asking: false, queued: false, limited: false, resumeStopped: false },
+      }),
+      ports: (_folder, _context, intervalMinutes?: number) => {
+        seen = intervalMinutes;
+        return {} as LeadTickPorts;
+      },
+      run: async () => ({ line: "Nothing to do this tick.", attention: [], noted: [] }),
+    });
+    scheduler.start();
+    await advance(0);
+    scheduler.stop();
+    expect(seen).toBe(60);
+  });
+
   it("passes Ship on green through, off unless turned on", async () => {
     const { scheduler, runs, store } = setup();
     await store.writeSetting("/code/app", { enabled: true });
