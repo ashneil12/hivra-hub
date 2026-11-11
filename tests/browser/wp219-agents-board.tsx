@@ -86,7 +86,6 @@ if (root) {
         { id: "hivra", name: "Hivra" },
         { id: "exo", name: "EXO" },
       ]}
-      counts={{ needsYou: 4, working: 2 }}
       now={NOW}
       lines={{ newer: ["Example: The build failed on the Windows test."] }}
       initialOpen={{ newer: true, sub: true, "exo-job": true, older: true }}

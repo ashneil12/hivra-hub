@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { chipCounts } from "./counts";
-import { filterBoard, type BoardFilter } from "./filter";
-import { buildAgentsTree, flattenBoard, type BoardPerson } from "./tree";
+import { boardChipCounts } from "./counts";
+import { filterBoard, settledToday, type BoardFilter } from "./filter";
+import { buildAgentsTree, flattenBoard, type BoardNode, type BoardPerson } from "./tree";
 
 const NOW = Date.UTC(2026, 10, 11, 15, 0, 0);
 
@@ -60,19 +60,30 @@ describe("filterBoard", () => {
   it("filters by needs you, working, and done today", () => {
     expect(ids({ projectId: null, state: "needs-you" })).toEqual(["captain", "hivra-session", "coding", "need"]);
     expect(ids({ projectId: null, state: "working" })).toContain("home");
-    expect(ids({ projectId: null, state: "working" })).toContain("coding");
+    expect(ids({ projectId: null, state: "working" })).not.toContain("coding");
     expect(ids({ projectId: null, state: "working" })).not.toContain("need");
     expect(ids({ projectId: null, state: "done-today" })).toContain("today");
     expect(ids({ projectId: null, state: "done-today" })).not.toContain("yesterday");
   });
 
-  it("uses the needs and working counts it is given, not a recount of the tree", () => {
-    const counts = chipCounts({ needs: 4, working: 2 });
-    const visibleNeeds = flattenBoard(filterBoard(root, { projectId: null, state: "needs-you" }, NOW)).filter(
-      (node) => node.state === "needs-you",
-    ).length;
-    expect(visibleNeeds).toBe(1);
-    expect(counts).toEqual({ needsYou: 4, working: 2 });
-    expect(chipCounts({ needs: Number.NaN, working: -3 })).toEqual({ needsYou: 0, working: 0 });
+  it("each chip count equals the rows in that state under the project filter", () => {
+    // Limit until PR #243: the chip recounts this board. It does not take a separate needs number.
+    for (const projectId of [null, "hivra", "exo"] as const) {
+      const counts = boardChipCounts(root, projectId, NOW);
+      const rows = flattenBoard(filterBoard(root, { projectId, state: null }, NOW));
+      expect(counts.needsYou).toBe(rows.filter((node) => node.state === "needs-you").length);
+      expect(counts.working).toBe(rows.filter((node) => node.state === "working").length);
+      expect(counts.doneToday).toBe(rows.filter((node) => doneToday(node)).length);
+    }
+    const all = boardChipCounts(root, null, NOW);
+    const hivra = boardChipCounts(root, "hivra", NOW);
+    expect(all.doneToday).toBe(1);
+    expect(hivra.needsYou).toBe(all.needsYou);
+    expect(hivra.working).toBe(0);
+    expect(hivra.doneToday).toBe(0);
   });
 });
+
+function doneToday(node: BoardNode): boolean {
+  return node.state === "done" && settledToday(node.settledAt, NOW);
+}

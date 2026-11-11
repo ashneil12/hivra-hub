@@ -1,8 +1,9 @@
 // The one Agents board. A row opens its chat read-only: no composer, one Stop that asks once.
 
 import { useMemo, useState } from "react";
+import { boardChipCounts } from "../model/counts";
 import { loadOpenMap, rowOpen, saveOpenMap, type OpenMap } from "../model/expand";
-import { filterBoard, type BoardFilter, type BoardStateFilter } from "../model/filter";
+import { filterBoard, settledToday, type BoardFilter, type BoardStateFilter } from "../model/filter";
 import { cancelStop, confirmStop, requestStop, stopTarget, type StopPhase } from "../model/stop";
 import { flattenBoard, type BoardNode, type BoardState } from "../model/tree";
 
@@ -16,7 +17,6 @@ const CHIP: Record<BoardState, { label: string; className: string }> = {
 export function AgentsBoard({
   tree,
   projects,
-  counts,
   now,
   lines,
   onStop,
@@ -24,7 +24,6 @@ export function AgentsBoard({
 }: {
   tree: BoardNode;
   projects: readonly { id: string; name: string }[];
-  counts: { needsYou: number; working: number };
   now: number;
   lines: Record<string, readonly string[]>;
   onStop: (id: string) => void;
@@ -35,6 +34,7 @@ export function AgentsBoard({
   const [selected, setSelected] = useState<string | null>(null);
   const [phase, setPhase] = useState<StopPhase>("closed");
   const shown = useMemo(() => filterBoard(tree, filter, now), [tree, filter, now]);
+  const counts = useMemo(() => boardChipCounts(tree, filter.projectId, now), [tree, filter.projectId, now]);
   const ids = useMemo(() => flattenBoard(shown).map((node) => node.id), [shown]);
   const current = selected ? flattenBoard(shown).find((node) => node.id === selected) ?? null : null;
   const asking = phase === "asking" && current != null;
@@ -86,11 +86,11 @@ export function AgentsBoard({
         </label>
         <FilterChip label="Needs you" count={counts.needsYou} pressed={filter.state === "needs-you"} onClick={() => setState(setFilter, "needs-you")} />
         <FilterChip label="Working" count={counts.working} pressed={filter.state === "working"} onClick={() => setState(setFilter, "working")} />
-        <FilterChip label="Done today" pressed={filter.state === "done-today"} onClick={() => setState(setFilter, "done-today")} />
+        <FilterChip label="Done today" count={counts.doneToday} pressed={filter.state === "done-today"} onClick={() => setState(setFilter, "done-today")} />
       </header>
       <div className="flex min-h-0 flex-1">
         <div role="tree" aria-label="Agents" className="min-w-0 flex-1 overflow-auto py-2">
-          <Rows node={shown} depth={0} open={open} selected={selected} onPick={pick} onToggle={toggle} />
+          <Rows node={shown} depth={0} now={now} open={open} selected={selected} onPick={pick} onToggle={toggle} />
         </div>
         {current ? (
           <aside data-readonly-chat className="flex w-[380px] shrink-0 flex-col border-l border-white/10">
@@ -145,7 +145,7 @@ function FilterChip({
   onClick,
 }: {
   label: string;
-  count?: number;
+  count: number;
   pressed: boolean;
   onClick: () => void;
 }) {
@@ -155,10 +155,14 @@ function FilterChip({
       aria-pressed={pressed}
       aria-label={label}
       onClick={onClick}
-      className={`rounded-full px-2.5 py-1 text-[12px] ${pressed ? "bg-white/15 text-white" : "text-white/55 hover:bg-white/10"}`}
+      className={`rounded-md border px-2.5 py-1 text-[12px] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#3b82f6] ${
+        pressed ? "border-white/70 bg-white/20 text-white" : "border-white/20 text-white/75 hover:bg-white/5"
+      }`}
     >
       {label}
-      {typeof count === "number" ? <span aria-hidden className="ml-1 tabular-nums text-white/70">{count}</span> : null}
+      <span data-count aria-hidden className="ml-1.5 tabular-nums text-white/45">
+        {count}
+      </span>
     </button>
   );
 }
@@ -166,6 +170,7 @@ function FilterChip({
 function Rows({
   node,
   depth,
+  now,
   open,
   selected,
   onPick,
@@ -173,6 +178,7 @@ function Rows({
 }: {
   node: BoardNode;
   depth: number;
+  now: number;
   open: OpenMap;
   selected: string | null;
   onPick: (id: string) => void;
@@ -180,6 +186,7 @@ function Rows({
 }) {
   const expanded = rowOpen(node.id, node.role, open);
   const showKids = expanded && node.children.length > 0;
+  const doneToday = node.state === "done" && settledToday(node.settledAt, now);
   return (
     <>
       <div
@@ -188,29 +195,50 @@ function Rows({
         data-node={node.id}
         data-role={node.role}
         data-state={node.state}
-        className={`flex items-center gap-2 px-3 py-1.5 text-[13px] ${selected === node.id ? "bg-white/8" : "hover:bg-white/5"}`}
-        style={{ paddingLeft: 12 + depth * 16 }}
+        data-done-today={doneToday ? "true" : "false"}
+        onClick={() => onPick(node.id)}
+        className={`grid cursor-pointer items-center gap-x-3 px-3 py-2 text-[13px] ${selected === node.id ? "bg-white/8" : "hover:bg-white/5"}`}
+        style={{ gridTemplateColumns: "16rem 5.5rem minmax(4rem, 16rem) 4.25rem 3.75rem 3.5rem 9.5rem" }}
       >
-        {node.children.length ? (
-          <button type="button" aria-label={`${expanded ? "Hide" : "Show"} ${node.name}`} className="w-4 shrink-0 text-white/40" onClick={() => onToggle(node)}>
-            {expanded ? "▾" : "▸"}
+        <div className="flex min-w-0 items-center gap-1" style={{ paddingLeft: depth * 14 }}>
+          {node.children.length ? (
+            <button
+              type="button"
+              aria-label={`${expanded ? "Hide" : "Show"} ${node.name}`}
+              className="w-4 shrink-0 text-white/40"
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggle(node);
+              }}
+            >
+              {expanded ? "▾" : "▸"}
+            </button>
+          ) : (
+            <span className="w-4 shrink-0" />
+          )}
+          <button
+            type="button"
+            className="min-w-0 truncate text-left font-medium"
+            onClick={(event) => {
+              event.stopPropagation();
+              onPick(node.id);
+            }}
+          >
+            <span data-name>{node.name}</span>
           </button>
-        ) : (
-          <span className="w-4 shrink-0" />
-        )}
-        <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => onPick(node.id)}>
-          <span data-name className="shrink-0 font-medium">{node.name}</span>
-          <span data-chip className={`shrink-0 rounded-full px-1.5 py-0.5 text-[11px] ${CHIP[node.state].className}`}>{CHIP[node.state].label}</span>
-          {node.task ? <span className="min-w-0 truncate text-white/55">{node.task}</span> : null}
-          {node.costLabel ? <span className="shrink-0 tabular-nums text-[12px] text-white/50">{node.costLabel}</span> : null}
-          {node.timeLabel ? <span className="shrink-0 text-[12px] text-white/50">{node.timeLabel}</span> : null}
-          {node.prNumber ? <span className="shrink-0 text-[12px] text-white/70">#{node.prNumber}</span> : null}
-          {node.checksLabel ? <span className="shrink-0 text-[12px] text-white/55">{node.checksLabel}</span> : null}
-        </button>
+        </div>
+        <span data-chip className={`justify-self-start rounded-full px-1.5 py-0.5 text-[11px] ${CHIP[node.state].className}`}>
+          {CHIP[node.state].label}
+        </span>
+        <span className="min-w-0 truncate text-white/55">{node.task ?? ""}</span>
+        <span data-cost className="text-right text-[12px] tabular-nums text-white/50">{node.costLabel ?? ""}</span>
+        <span data-time className="text-right text-[12px] text-white/50">{node.timeLabel ?? ""}</span>
+        <span data-pr className="text-right text-[12px] text-white/70">{node.prNumber ? `#${node.prNumber}` : ""}</span>
+        <span data-checks className="truncate text-[12px] text-white/55">{node.checksLabel ?? ""}</span>
       </div>
       {showKids
         ? node.children.map((child) => (
-            <Rows key={child.id} node={child} depth={depth + 1} open={open} selected={selected} onPick={onPick} onToggle={onToggle} />
+            <Rows key={child.id} node={child} depth={depth + 1} now={now} open={open} selected={selected} onPick={onPick} onToggle={onToggle} />
           ))
         : null}
     </>

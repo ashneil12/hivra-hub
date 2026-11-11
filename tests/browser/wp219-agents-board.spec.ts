@@ -35,15 +35,25 @@ test("the agents board", async ({ page }, info) => {
   await expect(board.getByRole("option", { name: "Crew" })).toHaveCount(0);
   await expect(board).not.toContainText("stuck");
   await expect(board.locator("input, textarea, [contenteditable='true']")).toHaveCount(0);
+  await expectChipCounts(board);
   if (shoot) await page.screenshot({ path: `${afterDir}/tree.png` });
 
   await board.getByLabel("Project").selectOption("hivra");
   await expect(board.getByText("Example: Look at EXO")).toHaveCount(0);
   await expect(board.getByText("Example: Home")).toHaveCount(0);
   await expect(board.getByText("Example: Fix the build")).toBeVisible();
-  await board.getByRole("button", { name: "Needs you", exact: true }).click();
+  await expectChipCounts(board);
+  const needsYou = board.getByRole("button", { name: "Needs you", exact: true });
+  await expect(needsYou).toHaveAttribute("aria-pressed", "false");
+  await needsYou.focus();
+  await expect(needsYou).toBeFocused();
+  await page.keyboard.press("Space");
+  await expect(needsYou).toHaveAttribute("aria-pressed", "true");
+  await expect(board.getByRole("button", { name: "Working", exact: true })).toHaveAttribute("aria-pressed", "false");
+  await expect(board.getByRole("button", { name: "Done today", exact: true })).toHaveAttribute("aria-pressed", "false");
   await expect(board.getByText("Example: Fix the build")).toBeVisible();
   await expect(board.getByText("Example: Write the note")).toHaveCount(0);
+  await needsYou.blur();
   if (shoot) await page.screenshot({ path: `${afterDir}/filter.png` });
 
   await board.getByRole("button", { name: "Needs you", exact: true }).click();
@@ -59,3 +69,12 @@ test("the agents board", async ({ page }, info) => {
   await expect(chat.getByRole("button", { name: "Stop" })).toHaveCount(0);
   await expect(chat.getByText("Read only")).toBeVisible();
 });
+
+async function expectChipCounts(board: import("@playwright/test").Locator) {
+  const needs = await board.locator("[data-state='needs-you']").count();
+  const working = await board.locator("[data-state='working']").count();
+  const doneToday = await board.locator("[data-done-today='true']").count();
+  await expect(board.getByRole("button", { name: "Needs you", exact: true }).locator("[data-count]")).toHaveText(String(needs));
+  await expect(board.getByRole("button", { name: "Working", exact: true }).locator("[data-count]")).toHaveText(String(working));
+  await expect(board.getByRole("button", { name: "Done today", exact: true }).locator("[data-count]")).toHaveText(String(doneToday));
+}

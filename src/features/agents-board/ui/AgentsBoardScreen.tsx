@@ -11,7 +11,6 @@ import type { Delegation } from "../../monos/model/delegations";
 import { currentPrWatches, usePrWatchesVersion } from "../../pr-watch/model/prWatchBoard";
 import type { Block, Session } from "../../sessions/model/session";
 import { SessionStateContext } from "../../sessions/model/sessionStateStore";
-import { liveBoardCounts } from "../model/counts";
 import { boardFromStores, type StoreCheck, type StoreSession } from "../model/fromStores";
 import { taskWords } from "../model/words";
 import { AgentsBoard } from "./AgentsBoard";
@@ -35,11 +34,8 @@ export function AgentsBoardScreen() {
   const board = useMemo(() => {
     const listed = hubData().listProjects().filter((project) => !isGlobalProject(project.id));
     const projects = listed.map((project) => ({ id: project.id, name: project.name, folder: project.folder }));
-    const counts = liveBoardCounts(now);
     return boardFromStores({
       now,
-      needsCount: counts.needsYou,
-      workingCount: counts.working,
       projects,
       sessions: boardSessions(sessions, delegations),
       mates: listed.map((project) => {
@@ -78,7 +74,6 @@ export function AgentsBoardScreen() {
     <AgentsBoard
       tree={board.tree}
       projects={board.projects}
-      counts={board.counts}
       now={now}
       lines={lines}
       onStop={(id) => {

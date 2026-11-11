@@ -255,7 +255,34 @@ export function buildAgentsTree(input: {
 
   for (const project of projectNodes) sortCrew(project);
   captain.children = [...homes, ...projectNodes];
+  rollupStates(captain);
   return captain;
+}
+
+const STATE_RANK: Record<BoardState, number> = {
+  "needs-you": 0,
+  working: 1,
+  done: 2,
+  idle: 3,
+};
+
+/** A project or first mate shows the strongest state under it. A worker keeps its own. */
+function rollupStates(node: BoardNode): void {
+  for (const child of node.children) rollupStates(child);
+  if (node.role !== "project" && node.role !== "mate") return;
+  node.state = strongestState(node);
+}
+
+function strongestState(node: BoardNode): BoardState {
+  let state = node.state;
+  const walk = (current: BoardNode) => {
+    for (const child of current.children) {
+      if (STATE_RANK[child.state] < STATE_RANK[state]) state = child.state;
+      walk(child);
+    }
+  };
+  walk(node);
+  return state;
 }
 
 export function flattenBoard(node: BoardNode): BoardNode[] {

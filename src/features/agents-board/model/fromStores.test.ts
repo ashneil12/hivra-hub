@@ -9,8 +9,6 @@ describe("boardFromStores", () => {
   it("builds the tree from projects, captain sessions, first mates, delegations and sub-chats", () => {
     const board = boardFromStores({
       now: NOW,
-      needsCount: 2,
-      workingCount: 1,
       projects: [
         { id: "hivra", name: "Hivra", folder: "/Work/hivra" },
         { id: "exo", name: "EXO", folder: "/Work/exo" },
@@ -80,7 +78,7 @@ describe("boardFromStores", () => {
     expect(job?.prNumber).toBe(41);
     expect(job?.checksLabel).toBe("checks green");
     expect(job?.children.map((node) => node.id)).toEqual(["sub-chat"]);
-    expect(board.counts).toEqual({ needsYou: 2, working: 1 });
+    expect(board.counts).toEqual({ needsYou: 3, working: 2, doneToday: 1 });
     const text = JSON.stringify(flattenBoard(board.tree));
     expect(text).not.toMatch(/\bstuck\b/i);
     expect(text).not.toContain("/Work");
@@ -89,8 +87,6 @@ describe("boardFromStores", () => {
   it("does not invent a home row, a cost or a pull request", () => {
     const board = boardFromStores({
       now: NOW,
-      needsCount: 0,
-      workingCount: 0,
       projects: [{ id: "exo", name: "EXO" }],
       sessions: [],
       mates: [],

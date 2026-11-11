@@ -7,7 +7,7 @@ export type BoardFilter = {
   state: BoardStateFilter;
 };
 
-function sameDay(settledAt: number | null, now: number): boolean {
+export function settledToday(settledAt: number | null, now: number): boolean {
   if (settledAt == null || !Number.isFinite(settledAt) || !Number.isFinite(now)) return false;
   const left = new Date(settledAt);
   const right = new Date(now);
@@ -22,7 +22,7 @@ function matches(node: BoardNode, filter: BoardFilter, now: number): boolean {
   if (filter.projectId && node.projectId !== filter.projectId) return false;
   if (filter.state === "needs-you") return node.state === "needs-you";
   if (filter.state === "working") return node.state === "working";
-  if (filter.state === "done-today") return node.state === "done" && sameDay(node.settledAt, now);
+  if (filter.state === "done-today") return node.state === "done" && settledToday(node.settledAt, now);
   return true;
 }
 

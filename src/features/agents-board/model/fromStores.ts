@@ -1,7 +1,7 @@
 // Turn the app's own records into the board. Missing cost, time or checks stay missing.
 
 import { pathKey } from "../../../shared/lib/paths";
-import { chipCounts } from "./counts";
+import { boardChipCounts } from "./counts";
 import { costUsdBySession, type CostSession } from "./cost";
 import { buildAgentsTree, type BoardNode, type BoardPerson, type BoardProject } from "./tree";
 import { boardState } from "./words";
@@ -60,8 +60,6 @@ export type StoreCheck = {
 
 export type BoardSource = {
   now: number;
-  needsCount: number;
-  workingCount: number;
   projects: readonly StoreProject[];
   sessions: readonly StoreSession[];
   mates: readonly StoreMate[];
@@ -200,9 +198,10 @@ export function boardFromStores(source: BoardSource): {
     });
   }
 
+  const tree = buildAgentsTree({ projects, people, now: source.now });
   return {
-    tree: buildAgentsTree({ projects, people, now: source.now }),
+    tree,
     projects,
-    counts: chipCounts({ needs: source.needsCount, working: source.workingCount }),
+    counts: boardChipCounts(tree, null, source.now),
   };
 }

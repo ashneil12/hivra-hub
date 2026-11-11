@@ -204,4 +204,82 @@ describe("buildAgentsTree", () => {
     expect(stopped?.checksLabel).toBe("1 check failing");
     expect(stopped?.prNumber).toBeNull();
   });
+
+  it("rolls a project or first mate up to Needs you, else Working, else Done or Idle", () => {
+    const root = tree(
+      [
+        person({ id: "captain", role: "captain", name: "Chief of Staff", state: "idle" }),
+        person({ id: "hivra-session", role: "project", name: "Hivra", projectId: "hivra", state: "idle" }),
+        person({
+          id: "coding",
+          role: "mate",
+          name: "Coding",
+          projectId: "hivra",
+          department: "coding",
+          state: "working",
+        }),
+        person({
+          id: "need",
+          role: "worker",
+          name: "Need",
+          projectId: "hivra",
+          parentId: "coding",
+          state: "needs-you",
+        }),
+        person({
+          id: "sub",
+          role: "subchat",
+          name: "Sub",
+          projectId: "hivra",
+          parentId: "need",
+          state: "working",
+        }),
+        person({
+          id: "marketing",
+          role: "mate",
+          name: "Marketing",
+          projectId: "hivra",
+          department: "marketing",
+          state: "idle",
+        }),
+        person({ id: "exo-session", role: "project", name: "EXO", projectId: "exo", state: "idle" }),
+        person({ id: "shipped", role: "worker", name: "Shipped", projectId: "exo", state: "done" }),
+        person({ id: "quiet-session", role: "project", name: "Quiet", projectId: "quiet", state: "idle" }),
+        person({ id: "ops", role: "mate", name: "Ops", projectId: "quiet", department: "ops", state: "idle" }),
+        person({
+          id: "busy",
+          role: "mate",
+          name: "Busy",
+          projectId: "quiet",
+          department: "coding",
+          state: "done",
+        }),
+        person({
+          id: "running",
+          role: "worker",
+          name: "Running",
+          projectId: "quiet",
+          parentId: "busy",
+          state: "working",
+        }),
+      ],
+      [
+        { id: "hivra", name: "Hivra" },
+        { id: "exo", name: "EXO" },
+        { id: "quiet", name: "Quiet" },
+      ],
+    );
+    const stateOf = (id: string) => flattenBoard(root).find((node) => node.id === id)?.state;
+    expect(stateOf("captain")).toBe("idle");
+    expect(stateOf("hivra-session")).toBe("needs-you");
+    expect(stateOf("coding")).toBe("needs-you");
+    expect(stateOf("need")).toBe("needs-you");
+    expect(stateOf("sub")).toBe("working");
+    expect(stateOf("marketing")).toBe("idle");
+    expect(stateOf("exo-session")).toBe("done");
+    expect(stateOf("shipped")).toBe("done");
+    expect(stateOf("busy")).toBe("working");
+    expect(stateOf("quiet-session")).toBe("working");
+    expect(stateOf("ops")).toBe("idle");
+  });
 });
