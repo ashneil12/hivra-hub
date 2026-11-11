@@ -1355,4 +1355,34 @@ mod tests {
             );
         }
     }
+
+    // Review of PR #244, round 4: autopilot.decide reads the open card, runs the captain on it, and only then writes.
+    // The write names neither the version it read nor checks the answer against the stored card, so an answer worked
+    // out for one card lands on whatever the row holds by then (re-asked with other options after a retire, for one).
+    #[test]
+    fn review_r4_b_a_captain_answer_that_is_not_one_of_the_stored_cards_options_is_refused() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        cover(&conn, "*");
+        open_as(&mut conn, "hivra", "font-opts", "Which font?", "fm");
+        let out = answer_as_caller(
+            &mut conn,
+            "hivra",
+            "font-opts",
+            "Comic Sans",
+            Some("captain:ada".into()),
+            Some("standing answer: merge on green"),
+            Some("fm"),
+            NOW,
+        );
+        assert!(
+            out.is_err(),
+            "{:?}",
+            out.map(|o| o.decision.and_then(|d| d.answer))
+        );
+        assert_eq!(
+            get(&conn, "hivra", "font-opts").unwrap().unwrap().state,
+            OPEN
+        );
+    }
 }
