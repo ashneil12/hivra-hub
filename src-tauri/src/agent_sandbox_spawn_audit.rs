@@ -1,7 +1,9 @@
 //! Every process start under `src-tauri/src` is wrapped in the agent sandbox, or named in `ALLOW` with a reason.
 //!
-//! A start is `Command::new` or a process `.spawn()` (nothing inside the parentheses, turbofish allowed).
-//! It is not a start when it sits in a comment or a string, when `.spawn(...)` takes arguments (a thread, a
+//! A start is `Command::new`, an empty `.spawn()`, `.output()` or `.status()` (turbofish allowed, HTTP
+//! `response.status()` is not a start), or a call that runs a command built elsewhere: `bounded::run`,
+//! `run_collected`, `spawn_managed`, `spawn_command`, `delivery::child`, and a `use ... as` alias of one of those.
+//! It is not a start when it sits in a comment or a string, when the call takes arguments (a thread, a
 //! rayon scope, or some other method), or when it is test-only. Test-only means a `#[cfg(test)]` function,
 //! a `#[cfg(test)]` module body, or a file brought in by `#[cfg(test)] mod` (including `tests.rs`). Those are
 //! not in the binary.
@@ -132,17 +134,17 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "delivery/mod.rs",
         "child",
-        "The app's scrubbed child. While the sandbox is on, git uses git_cmd::command_for, which starts sandbox-exec instead of this.",
+        "Builds a scrubbed command and returns it. It does not spawn. Callers that run the command are their own sites.",
     ),
     (
         "delivery_gate/mod.rs",
         "ensure_daemon",
-        "Spawns the no-mistakes tool through delivery::child. Arguments are daemon run --root, never daemon start.",
+        "Spawns the command tool_command already wrapped. That wrap allows only the tool's own home. Arguments are daemon run --root, never daemon start.",
     ),
     (
         "delivery_gate/mod.rs",
         "invoke",
-        "Spawns that same tool for a fixed subcommand (axi run and the other listed ones).",
+        "Spawns the command tool_command already wrapped, for a fixed subcommand (axi run and the other listed ones).",
     ),
     (
         "disclaim.rs",
@@ -182,27 +184,12 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "gates.rs",
         "run_collected",
-        "Spawns a Command the caller built. run_script calls under_wrap first. project_tests also calls it for Ash's npm test button, which is not an agent turn.",
+        "Spawns a Command the caller built. run_script and run_project_tests wrap with under_wrap before they call this.",
     ),
     (
         "harness.rs",
         "exec_output",
-        "Command::new after provider_start_allowed. Callers are the MCP binary probe and harness_update of a resolved harness CLI, not an agent turn.",
-    ),
-    (
-        "harness.rs",
-        "fx_help_mentions_acp",
-        "The resolved fx binary with --help. bench_refuses_path skips it, and isolate_child clears the environment.",
-    ),
-    (
-        "harness.rs",
-        "grok_help_mentions_agent",
-        "The resolved grok binary with --help. Same bench refusal and cleared environment.",
-    ),
-    (
-        "harness.rs",
-        "help_mentions_rpc_mode",
-        "The resolved pi binary with --help. Same bench refusal and cleared environment.",
+        "Command::new after provider_start_allowed, for the MCP binary probe and harness_update of a resolved CLI. The stored-path --version probe is contained_command in contained_version_output, not here.",
     ),
     (
         "harness.rs",
@@ -332,7 +319,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "pr_watch/bounded.rs",
         "run",
-        "Spawns a Command the caller built and kills its process group at a deadline. The check runner wraps in run_in before it calls this. The janitor's gh is contained_command in its own function.",
+        "Spawns a Command the caller built and kills its process group at a deadline. Callers that start gh or a check wrap before they call this, and those callers are their own sites.",
     ),
     (
         "project_actions.rs",
@@ -343,11 +330,6 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "project_actions.rs",
         "spawn",
         "Spawns the Command that command() built.",
-    ),
-    (
-        "project_tests.rs",
-        "run_project_tests",
-        "Ash's Run tests button. npm test in the project folder. Not an agent turn.",
     ),
     (
         "pty.rs",
@@ -412,7 +394,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "self_build.rs",
         "npm",
-        "npm run of a script in the hub checkout, for this app's own check and build. An agent's undo of a rebuild part is refused before this runs.",
+        "npm run of a script in the hub checkout, for this app's own check and build. A chat undo runs this only when the part's delivery is exactly in place.",
     ),
     (
         "self_build.rs",
@@ -477,7 +459,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "terminal_mirror.rs",
         "run",
-        "Starts claude only, with an allow-listed environment. The versions directory a swapped binary would need is write-denied.",
+        "Starts claude only, with an allow-listed environment. It is not inside the agent sandbox. The versions directory a swapped binary would need is write-denied.",
     ),
     (
         "watcher/checks.rs",
@@ -508,6 +490,216 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "secrets/run.rs",
         "kill_group",
         "taskkill of a process group this app started. Unix uses libc::kill and starts no process.",
+    ),
+    (
+        "azure_devops.rs",
+        "azure_devops_repo_for",
+        "git config --get-regexp of remote urls, through git_cmd::git(): the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "azure_devops.rs",
+        "git_unified_hunks",
+        "git diff of two temporary files, through git_cmd::git(): the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "checkpoint.rs",
+        "diff_numstat",
+        "git diff --no-index --numstat of two snapshot files, through git_cmd::git(): the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "checkpoint.rs",
+        "git_head",
+        "git rev-parse HEAD through git_cmd::git() after ensure_contained. Read only. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "checkpoint/turn.rs",
+        "checked_output",
+        "Runs the command the caller built. Callers pass git_command, which is git_cmd::git(): the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "connectors/launch.rs",
+        "exec_stdio",
+        "On Windows, starts the connector command stdio_command built, environment cleared. On Unix this process is replaced with exec. The .status() line is cfg(not(unix)), which the scanner still sees.",
+    ),
+    (
+        "crew/store.rs",
+        "checkout_of",
+        "bounded::run of fs::git_cmd(), which is git_cmd::git(), for rev-parse. Five second limit. Read only. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "delivery/deliver.rs",
+        "git",
+        "git_cmd::child(): scrubbed environment, the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "delivery/settings.rs",
+        "git",
+        "git_cmd::child(): scrubbed environment, the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "delivery/teardown.rs",
+        "clean",
+        "git status --porcelain through git_cmd::child(): scrubbed environment, the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "delivery/teardown.rs",
+        "git_ok",
+        "git_cmd::child() for the read the caller names. Scrubbed environment, the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "delivery/teardown.rs",
+        "head",
+        "git rev-parse HEAD through git_cmd::child(): scrubbed environment, the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "delivery_gate/mod.rs",
+        "git",
+        "git_cmd::child(): scrubbed environment, the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "firstmate/checkout_guard.rs",
+        "git",
+        "git_cmd::git() after ensure_contained, then extend_readonly. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "firstmate/gates.rs",
+        "git",
+        "git_cmd::git() with the arguments the caller passed. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "firstmate/protected_paths.rs",
+        "common_git_dir",
+        "git rev-parse --git-common-dir through git_cmd::git(). The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "fs.rs",
+        "clone_repo_sync",
+        "git clone through git_cmd_for_args. Clone is git_cmd::git() with hooks off: the container profile while the sandbox is on.",
+    ),
+    (
+        "fs.rs",
+        "git_branch_name",
+        "git check-ref-format through git_cmd(), which is git_cmd::git(). The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "fs.rs",
+        "git_checked",
+        "git_cmd_for_args. A read is git_cmd::git() (container, hooks off). commit, push, pull and fetch are git_with_hooks: Ash's own, hooks on, not in the container.",
+    ),
+    (
+        "fs.rs",
+        "git_output",
+        "git_cmd_for_args, same split as git_checked. Reads are the container profile. commit, push, pull and fetch keep Ash's hooks and are not in the container.",
+    ),
+    (
+        "fs.rs",
+        "git_selected_context_for",
+        "git_cmd() against a private index, for one selection's staged diff. git_cmd() is git_cmd::git(): the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "fs.rs",
+        "git_stdout",
+        "git_cmd(), which is git_cmd::git(). The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "fs.rs",
+        "locate_path",
+        "git rev-parse --show-toplevel through git_cmd(), which is git_cmd::git(). The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "git_cmd.rs",
+        "apply_scrub",
+        "Copies the allow-listed environment from delivery::child onto a command. It does not start it. The scanner sees the delivery::child call.",
+    ),
+    (
+        "gitlab.rs",
+        "gitlab_repo_for",
+        "git config --get-regexp of remote urls, through git_cmd::git(): the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "health.rs",
+        "read_git",
+        "git --version through fs::git_cmd(), which is git_cmd::git(). The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "land.rs",
+        "merge3",
+        "git merge-file -p of three temporary files, through git_cmd::git(): the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "land.rs",
+        "refresh",
+        "git merge-file of the worker copy against the project, through git_cmd::git(): the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "local_hub.rs",
+        "make_project_folder",
+        "git init -q through git_cmd::git(), after the folder and its README exist. A missing git is ignored. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "plugins/source.rs",
+        "run",
+        "Starts the command command() built: git or npm for a plugin Ash is installing. stdin is null. Not an agent shell.",
+    ),
+    (
+        "plugins/wiring.rs",
+        "run_main",
+        "On Windows, starts the plugin server prepare_launch built. On Unix this process is replaced with exec. The .status() line is cfg(not(unix)), which the scanner still sees.",
+    ),
+    (
+        "portable.rs",
+        "history_bundle",
+        "git log and git bundle create through git_cmd::git(), for one memory folder. A history that looks like it holds a secret is left out. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "portable.rs",
+        "restore_history",
+        "git clone and the later git commands through git_cmd::git(), with an empty config, attributes and hooks directory, to restore one memory folder from a checked bundle.",
+    ),
+    (
+        "portable/folders.rs",
+        "linked_worktrees",
+        "git rev-parse --show-toplevel through fs::git_cmd(), which is git_cmd::git(), to list a project's linked worktrees. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "pr_watch/checkout.rs",
+        "git_within",
+        "bounded::run of git_cmd::git() after ensure_contained. Read only, with a timeout. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "pr_watch/github.rs",
+        "run_with_timeout",
+        "bounded::run of the command the caller built. Both callers (rest and graphql) use contained_command before they hand it over.",
+    ),
+    (
+        "self_build.rs",
+        "git",
+        "git_cmd::git() for this app's own hub-change git, with a fixed user and signing off. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "stacks.rs",
+        "git_line",
+        "scrubbed git, environment cleared, to read this worktree's git dir before an env file is written. Not an agent shell.",
+    ),
+    (
+        "stacks.rs",
+        "remove_by_label",
+        "docker ps filtered by this compose project's label, then stop and rm of those container ids. The command is scrubbed docker. An agent cannot start a stack while the sandbox is on.",
+    ),
+    (
+        "worktree_janitor.rs",
+        "git_out",
+        "git_cmd::git() after ensure_contained, then extend_readonly. The container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "worktree_pool.rs",
+        "git",
+        "git_cmd::child(): scrubbed environment, the container profile while the sandbox is on, hooks off.",
+    ),
+    (
+        "worktrees.rs",
+        "git",
+        "git_cmd::git() after ensure_contained, then extend_readonly. The container profile while the sandbox is on, hooks off.",
     ),
 ];
 
@@ -691,11 +883,8 @@ fn test_only_rels(root: &Path) -> HashSet<String> {
         let Ok(text) = fs::read_to_string(&path) else {
             continue;
         };
-        let Some(dir) = path.parent() else {
-            continue;
-        };
         for decl in test_mod_decls(&text) {
-            let Some(resolved) = resolve_decl(dir, &decl) else {
+            let Some(resolved) = resolve_decl(&path, &decl) else {
                 continue;
             };
             let Some(rel) = rel_path(root, &resolved) else {
@@ -743,7 +932,8 @@ fn test_mod_decls(src: &str) -> Vec<Decl> {
     out
 }
 
-fn resolve_decl(dir: &Path, decl: &Decl) -> Option<PathBuf> {
+fn resolve_decl(file: &Path, decl: &Decl) -> Option<PathBuf> {
+    let dir = file.parent()?;
     if let Some(rel) = &decl.path_attr {
         if rel.is_empty() || rel.contains("..") || Path::new(rel).is_absolute() {
             return None;
@@ -751,12 +941,26 @@ fn resolve_decl(dir: &Path, decl: &Decl) -> Option<PathBuf> {
         let joined = dir.join(rel);
         return joined.is_file().then_some(joined);
     }
-    let rs = dir.join(format!("{}.rs", decl.name));
-    if rs.is_file() {
-        return Some(rs);
+    // `lib.rs` and `mod.rs` keep submodules beside themselves. `portable.rs` keeps them in `portable/`.
+    let module_dir = if matches!(
+        file.file_name()?.to_str(),
+        Some("mod.rs" | "lib.rs" | "main.rs")
+    ) {
+        dir.to_path_buf()
+    } else {
+        dir.join(file.file_stem()?)
+    };
+    for base in [module_dir, dir.to_path_buf()] {
+        let rs = base.join(format!("{}.rs", decl.name));
+        if rs.is_file() {
+            return Some(rs);
+        }
+        let nested = base.join(&decl.name).join("mod.rs");
+        if nested.is_file() {
+            return Some(nested);
+        }
     }
-    let nested = dir.join(&decl.name).join("mod.rs");
-    nested.is_file().then_some(nested)
+    None
 }
 
 fn gather_rs(dir: &Path, out: &mut Vec<PathBuf>) {
@@ -797,15 +1001,177 @@ fn find_sites(scan: &Scan, found: &mut Vec<Site>) {
         }
         i = at + command.len();
     }
-    let spawn = b".spawn";
-    i = 0;
-    while let Some(rel) = find_at(&bytes[i..], spawn) {
+    // `.output` and `.status` follow `.spawn`: the byte before `.` is an identifier, so token_at would miss them.
+    for method in [
+        b".spawn".as_slice(),
+        b".output".as_slice(),
+        b".status".as_slice(),
+    ] {
+        i = 0;
+        while let Some(rel) = find_at(&bytes[i..], method) {
+            let at = i + rel;
+            if method == b".status" && http_status_receiver(bytes, at) {
+                i = at + method.len();
+                continue;
+            }
+            if empty_spawn(bytes, at + method.len()) {
+                push_site(scan, at, found);
+            }
+            i = at + method.len();
+        }
+    }
+    for name in [
+        "bounded::run",
+        "run_collected",
+        "spawn_managed",
+        "spawn_command",
+        "delivery::child",
+    ] {
+        push_calls(scan, name, found);
+    }
+    for alias in call_aliases(scan.masked) {
+        push_calls(scan, &alias, found);
+    }
+}
+
+fn push_calls(scan: &Scan, name: &str, found: &mut Vec<Site>) {
+    let bytes = scan.masked.as_bytes();
+    let needle = name.as_bytes();
+    let mut i = 0;
+    while let Some(rel) = find_at(&bytes[i..], needle) {
         let at = i + rel;
-        if empty_spawn(bytes, at + spawn.len()) {
+        if token_at(bytes, at, needle.len())
+            && followed_by_call(bytes, at + needle.len())
+            && !defines_function(bytes, at)
+        {
             push_site(scan, at, found);
         }
-        i = at + spawn.len();
+        i = at + needle.len();
     }
+}
+
+fn followed_by_call(bytes: &[u8], mut i: usize) -> bool {
+    while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+        i += 1;
+    }
+    i < bytes.len() && bytes[i] == b'('
+}
+
+/// `fn spawn_managed(` is a definition, not a call.
+fn defines_function(bytes: &[u8], at: usize) -> bool {
+    let mut i = at;
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    ends_with_word(bytes, i, "fn")
+}
+
+/// `response.status()` is an HTTP status, not a process. A call whose receiver is not one of these stays a start.
+fn http_status_receiver(bytes: &[u8], dot: usize) -> bool {
+    let mut i = dot;
+    while i > 0 && bytes[i - 1].is_ascii_whitespace() {
+        i -= 1;
+    }
+    if i == 0 || !is_ident(bytes[i - 1]) {
+        return false;
+    }
+    let end = i;
+    while i > 0 && is_ident(bytes[i - 1]) {
+        i -= 1;
+    }
+    matches!(
+        std::str::from_utf8(&bytes[i..end]).unwrap_or(""),
+        "response" | "resp" | "res" | "reply" | "r" | "self" | "door"
+    )
+}
+
+/// Aliases from `use path::builder as name`, so `name(...)` is still a start.
+fn call_aliases(masked: &str) -> Vec<String> {
+    let bytes = masked.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + 3 < bytes.len() {
+        if keyword_at(bytes, i, "use") {
+            let start = skip_ws(bytes, i + 3);
+            let end = use_stmt_end(bytes, start);
+            remember_aliases(&masked[start..end], &mut out);
+            i = end.max(start + 1);
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+fn use_stmt_end(bytes: &[u8], mut i: usize) -> usize {
+    let mut depth = 0i32;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => depth -= 1,
+            b';' if depth <= 0 => return i,
+            _ => {}
+        }
+        i += 1;
+    }
+    i
+}
+
+fn remember_aliases(clause: &str, out: &mut Vec<String>) {
+    let bytes = clause.as_bytes();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let mut i = 0usize;
+    while i <= bytes.len() {
+        let split = i == bytes.len() || (bytes[i] == b',' && depth == 0);
+        if !split {
+            match bytes[i] {
+                b'{' => depth += 1,
+                b'}' => depth -= 1,
+                _ => {}
+            }
+            i += 1;
+            continue;
+        }
+        let segment = clause[start..i]
+            .trim()
+            .trim_matches(|ch| ch == '{' || ch == '}')
+            .trim();
+        if let Some((path, alias)) = segment.rsplit_once(" as ") {
+            let alias = alias.trim();
+            if plain_ident(alias) && imports_builder(path) && !out.iter().any(|have| have == alias)
+            {
+                out.push(alias.to_string());
+            }
+        }
+        start = i + 1;
+        i += 1;
+    }
+}
+
+fn plain_ident(text: &str) -> bool {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(ch) if ch.is_ascii_alphabetic() || ch == '_' => {}
+        _ => return false,
+    }
+    chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+}
+
+fn imports_builder(path: &str) -> bool {
+    let flat: String = path
+        .chars()
+        .filter(|ch| !ch.is_ascii_whitespace())
+        .collect();
+    let flat = flat.trim_matches(|ch| ch == '{' || ch == '}');
+    flat.ends_with("delivery::child")
+        || flat.ends_with("bounded::run")
+        || flat.ends_with("::run_collected")
+        || flat == "run_collected"
+        || flat.ends_with("::spawn_managed")
+        || flat == "spawn_managed"
+        || flat.ends_with("::spawn_command")
+        || flat == "spawn_command"
 }
 
 fn push_site(scan: &Scan, at: usize, found: &mut Vec<Site>) {
