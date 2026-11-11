@@ -168,15 +168,32 @@ describe("autopilot.decide", () => {
     expect(s.backend.entries.filter((e) => e.kind === "decision")).toEqual([]);
   });
 
-  it("takes the recommendation and logs what, who, the pick, when and which chat, once per request", async () => {
+  it("holds a decide while the captain is waiting, and does not take the chat's own recommendation", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    const result = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Split the fix into two PRs?", recommendation: "Yes, two PRs" },
+      s,
+      "wait-1",
+    )) as Record<string, unknown>;
+    expect(result).toMatchObject({ decision: "held", act: "ask", red: null });
+    expect(result.answer).toBeUndefined();
+    expect(String(result.reason)).toMatch(/engine is down/);
+    expect(s.backend.entries.find((e) => e.kind === "decision")).toMatchObject({ outcome: "held" });
+  });
+
+  it("logs a held decide once per request, with what, who, when and which chat, and does not take the pick", async () => {
     const s = setup();
     await on(s, ["*"]);
     const lead = chat("hivra-chat");
     const result = await call(lead, "autopilot.decide", { question: "Split the fix into two PRs?", recommendation: "Yes, two PRs", why: "smaller reviews" }, s, "req-1");
-    expect(result).toMatchObject({ autopilot: "on", decision: "taken", act: "proceed", answer: "Yes, two PRs", untilLabel: "Mon 9:00" });
+    expect(result).toMatchObject({ autopilot: "on", decision: "held", act: "ask", untilLabel: "Mon 9:00" });
+    expect((result as { answer?: string }).answer).toBeUndefined();
     const entry = s.backend.entries.find((e) => e.kind === "decision")!;
     expect(entry).toMatchObject({
-      outcome: "taken",
+      outcome: "held",
       what: "Split the fix into two PRs?",
       recommendation: "Yes, two PRs",
       who: "Hivra lead",
@@ -225,7 +242,7 @@ describe("autopilot.decide", () => {
     await on(s, ["vg-game"]);
     const worker = chat("worker-1", [], "/Users/someone/Projects/hivra");
     expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes" }, s)).toMatchObject({ autopilot: "off" });
-    expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes", project: "EXO" }, s)).toMatchObject({ decision: "taken" });
+    expect(await call(worker, "autopilot.decide", { question: "Rename it?", recommendation: "Yes", project: "EXO" }, s)).toMatchObject({ autopilot: "on", decision: "held" });
     // A leadership chat spans projects: only the switch for everything covers it.
     expect(await call(chat("cos-chat"), "autopilot.decide", { question: "Plan?", recommendation: "A" }, s)).toMatchObject({ autopilot: "off" });
     await expect(call(worker, "autopilot.decide", { question: "x", recommendation: "y", project: "nope" }, s)).rejects.toThrow("Unknown project");
