@@ -48,6 +48,17 @@ export type TickMergeOutcome =
 
 export type SlotAnswer = { ok: true } | { ok: false; reason: string };
 
+/** programme_lead_acquire's answer (lock.rs `Acquire`). A fresh lock held by another lead refuses this tick. */
+export type LeadLeaseAnswer =
+  | { kind: "acquired" | "extended" }
+  | { kind: "takenOver"; previous: string }
+  | { kind: "refused"; holder: string; expiresAt: number };
+
+/** programme_consider_conflict's answer (tick.rs `Tick`). Git runs only when the project setting is on. */
+export type ConflictAnswer =
+  | { kind: "reported"; message: string }
+  | { kind: "ran"; ok: boolean; line: string };
+
 export type LeadTickPorts = {
   /** The project's programme, best first (programme_list). */
   list(): Promise<ProgrammePackage[]>;
@@ -65,6 +76,16 @@ export type LeadTickPorts = {
   note(line: string): void;
   /** One work log outcome line. */
   outcome(line: string): void;
+  /**
+   * The programme lead lease (programme_lead_acquire): acquires or extends it, or refuses while another lead holds it
+   * fresh. Optional: without it the tick runs unleased.
+   */
+  leadLease?(): Promise<LeadLeaseAnswer>;
+  /**
+   * A package whose pull request conflicts with main (programme_consider_conflict). With "Update conflicting packages
+   * from main" off this only reports; with it on, the package branch is brought up to date. Optional.
+   */
+  considerConflict?(packageId: string, branch: string): Promise<ConflictAnswer>;
   /** WP-215: a call this tick settled, noted as this chat. Optional, so a tick without it still runs. */
   noteDecision?(input: { project: string; what: string; reason: string }): void | Promise<void>;
 };
@@ -220,6 +241,18 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
     return out;
   };
 
+  // (0) the programme lead lease: a fresh lock held by another lead keeps this tick out. An expired one is taken over.
+  if (ports.leadLease) {
+    let lease: LeadLeaseAnswer;
+    try {
+      lease = await ports.leadLease();
+    } catch {
+      return finish("Couldn't check the programme lead lock. The next tick tries again.");
+    }
+    if (lease.kind === "refused") return finish("Another First Mate holds the programme lead lock. This tick waits for it to expire.");
+    if (lease.kind === "takenOver") did.push("Took over the programme lead lock from a First Mate whose lease had expired.");
+  }
+
   // (a) the programme.
   let rows: ProgrammePackage[];
   try {
@@ -291,6 +324,22 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
     // A red CI is said in the line, not as a ping: the PR watch already sends the ci-red notice for it.
     if (watch.status.failed.length) {
       once(noteKey("red", String(watch.number), head), `CI failed on ${pr}: ${watch.status.failed.slice(0, 3).join(", ")}.`, did);
+      continue;
+    }
+    // A conflicting pull request is handled before the green check. Asked once per head commit: a report with the
+    // setting off, or the branch brought up to date from main with it on (Rust decides, and never edits main).
+    if (watch.status.mergeable === "conflicting" && watch.state === "watching" && ports.considerConflict) {
+      const key = noteKey("conflict", String(watch.number), head);
+      if (!noted.has(key)) {
+        noted.add(key);
+        try {
+          const answer = await ports.considerConflict(row.id, row.branch);
+          if (answer.kind === "ran" && answer.ok) did.push(`${pr}: ${answer.line}`);
+          else attention.push(`${pr}: ${answer.kind === "ran" ? answer.line : answer.message}`);
+        } catch (error) {
+          attention.push(`${pr} conflicts with main, and it couldn't be checked: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
       continue;
     }
     if (!green(watch)) continue;

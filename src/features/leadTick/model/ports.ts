@@ -7,7 +7,7 @@ import { builderLaunchAllowed, type BuilderHealth, type BuilderScale } from "../
 import type { WorkerLimits } from "../../monos/model/workerPool";
 import { collectProgramme, readPackage, type ProgrammePackage, type ProgrammeStatus } from "../../programme/model/programme";
 import type { LeadContext } from "./schedule";
-import type { LeadTickPorts, SlotAnswer, TickMergeOutcome, TickWatch } from "./tick";
+import type { ConflictAnswer, LeadLeaseAnswer, LeadTickPorts, SlotAnswer, TickMergeOutcome, TickWatch } from "./tick";
 
 export type SlotFacts = {
   limits: Pick<WorkerLimits, "workers">;
@@ -64,6 +64,42 @@ export function outcomeOf(value: unknown): TickMergeOutcome {
   return { outcome: "refused", reason: typeof raw.reason === "string" ? raw.reason : "The merge path gave no answer." };
 }
 
+/** lock.rs `Acquire`: the tag is camelCase, the fields keep Rust's names. */
+export function leaseOf(value: unknown): LeadLeaseAnswer {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  if (raw.kind === "acquired" || raw.kind === "extended") return { kind: raw.kind };
+  if (raw.kind === "takenOver") return { kind: "takenOver", previous: String(raw.previous ?? "") };
+  if (raw.kind === "refused") {
+    return { kind: "refused", holder: String(raw.holder ?? ""), expiresAt: Number(raw.expires_at ?? raw.expiresAt ?? 0) };
+  }
+  throw new Error("The programme lead lock gave no answer.");
+}
+
+/** Plain words for one branch update, from the update report (update.rs `Outcome`). */
+function updateLine(outcome: Record<string, unknown>): { ok: boolean; line: string } {
+  switch (outcome.kind) {
+    case "updated":
+      return { ok: true, line: "Brought main into its branch and pushed it." };
+    case "alreadyCurrent":
+      return { ok: true, line: "Its branch already has everything from main." };
+    case "conflict":
+      return { ok: false, line: String(outcome.detail ?? "The merge hit conflicts, so the branch was left as it was.") };
+    default:
+      return { ok: false, line: String(outcome.reason ?? "The branch could not be brought up to date. Nothing was changed.") };
+  }
+}
+
+/** tick.rs `Tick`: `reported` with a message, or `ran` with the update report's outcome. */
+export function conflictOf(value: unknown): ConflictAnswer {
+  const raw = (value ?? {}) as Record<string, unknown>;
+  if (raw.kind === "reported") return { kind: "reported", message: String(raw.message ?? "") };
+  if (raw.kind === "ran") {
+    const { ok, line } = updateLine((raw.outcome ?? {}) as Record<string, unknown>);
+    return { kind: "ran", ok, line };
+  }
+  throw new Error("The branch check gave no answer.");
+}
+
 export function appPorts(host: PortHost, folder: string, context: LeadContext): LeadTickPorts {
   const actor = { id: context.lead.sessionId, project: context.projectId, kind: "first-mate" };
   return {
@@ -107,6 +143,13 @@ export function appPorts(host: PortHost, folder: string, context: LeadContext): 
       void host
         .invoke("work_log_add", { session: context.lead.sessionId, project: folder, kind: "outcome", line })
         .catch(() => undefined);
+    },
+    async leadLease() {
+      // The project's folder is the key the Settings switch and the Rust side use.
+      return leaseOf(await host.invoke("programme_lead_acquire", { project: folder, holder: context.lead.sessionId }));
+    },
+    async considerConflict(packageId, branch) {
+      return conflictOf(await host.invoke("programme_consider_conflict", { project: folder, packageId, branch }));
     },
     // WP-215: the chat is the Lead's own, not a field the tick can set.
     noteDecision(input) {
