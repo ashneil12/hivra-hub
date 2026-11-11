@@ -32,6 +32,26 @@ export function checkBuilders({ author, reviewer } = {}) {
   return { ok: true, reason: "" };
 }
 
+/** Reviewers run on the project's worker default through the gateway, never on the lead's own subscription. */
+export const WORKER_DEFAULT = "worker-default";
+
+/**
+ * What a run will do, shown before it starts: its file count, its approximate size and who runs it.
+ * @param {{ files: string[], read: (file: string) => string }} input
+ * @returns {{ files: number, bytes: number, worker: string, line: string }}
+ */
+export function planRun({ files, read }) {
+  const bytes = files.reduce((total, file) => total + Buffer.byteLength(read(file), "utf8"), 0);
+  const count = `${files.length} file${files.length === 1 ? "" : "s"}`;
+  const size = `${(bytes / 1024).toFixed(1)} KB`;
+  return {
+    files: files.length,
+    bytes,
+    worker: WORKER_DEFAULT,
+    line: `Reviewing ${count} (about ${size}) with the worker default through the gateway.`,
+  };
+}
+
 /** The most files one run reviews. A bigger change is narrowed or split first. */
 export const DEFAULT_FILE_CAP = 40;
 
@@ -121,15 +141,18 @@ export async function verifyCandidates({ candidates, verifier }) {
  * One review of one change at one head. Refuses before any work when the builders, the scope or the records are not
  * right. Writes `findings.json` and `run.json` under `<root>/<head>/` only when the records validate.
  * @param {{ root: string, head: string, author: string, reviewer: string, files: string[], candidates: object[],
- *   verifier: (candidate: object) => Promise<object> | object, read: (file: string) => string, cap?: number }} input
+ *   verifier: (candidate: object) => Promise<object> | object, read: (file: string) => string, cap?: number,
+ *   onPlan?: (plan: object) => void }} input
  */
 export async function runReview(input) {
-  const { root, head, author, reviewer, files, candidates, verifier, read, cap } = input;
+  const { root, head, author, reviewer, files, candidates, verifier, read, cap, onPlan } = input;
   const roles = checkBuilders({ author, reviewer });
   if (!roles.ok) return { ok: false, reason: roles.reason };
   const scope = scopeFiles(files, { cap });
   if (!scope.ok) return { ok: false, reason: scope.reason };
-  readScoped(scope.files, read);
+  const contents = readScoped(scope.files, read);
+  const plan = planRun({ files: scope.files, read: (file) => contents[scope.files.indexOf(file)] });
+  if (onPlan) onPlan(plan);
   const records = (await verifyCandidates({ candidates, verifier })).sort((a, b) =>
     String(a.fingerprint).localeCompare(String(b.fingerprint)),
   );
@@ -149,7 +172,7 @@ export async function runReview(input) {
       join(dir, "run.json"),
       `${JSON.stringify({ head, author, reviewer, files: scope.files, records: records.length }, null, 2)}\n`,
     );
-    return { ok: true, reason: "", findingsPath, records: records.length };
+    return { ok: true, reason: "", findingsPath, records: records.length, plan };
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

@@ -463,3 +463,44 @@ test("a security change with no review folder known is refused, never read from 
   assert.equal(decision.ok, false);
   assert.match(decision.message, /review folder/);
 });
+
+// Item 6: reviewers run on the cheap worker default through the gateway, and the run shows its size before it starts.
+const { planRun, WORKER_DEFAULT } = await import("./security-review/review.mjs");
+
+test("the run plan names the worker default and the file count before any verifier starts", async () => {
+  const order = [];
+  const root = scratch();
+  try {
+    const files = ["src/a.ts", "src/b.rs", "docs/c.md"];
+    const run = await runReview({
+      root,
+      head: HEAD,
+      author: "claude",
+      reviewer: "codex",
+      files,
+      candidates: [rejected()],
+      verifier: async (candidate) => {
+        order.push("verify");
+        return candidate;
+      },
+      read: fakeRead("x".repeat(2048)),
+      onPlan: (plan) => order.push(`plan:${plan.files}:${plan.worker}`),
+    });
+    assert.equal(run.ok, true, run.reason);
+    assert.deepEqual(order, [`plan:3:${WORKER_DEFAULT}`, "verify"]);
+    assert.equal(WORKER_DEFAULT, "worker-default");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the plan line states the count, the size and the worker default", () => {
+  const plan = planRun({ files: ["a.ts", "b.ts", "c.ts"], read: () => "x".repeat(4096) });
+  assert.equal(plan.files, 3);
+  assert.equal(plan.worker, WORKER_DEFAULT);
+  assert.match(plan.line, /3 files/);
+  assert.match(plan.line, /12\.0 KB/);
+  assert.match(plan.line, /worker default/);
+  assert.match(plan.line, /gateway/);
+  assert.doesNotMatch(plan.line, /subscription/i, "reviewers never run on the lead's own subscription");
+});
