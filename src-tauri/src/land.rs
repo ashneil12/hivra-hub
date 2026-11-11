@@ -114,44 +114,24 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         if !ok {
             return Err(format!("the copy's changes couldn't be gathered: {why}"));
         }
-        let (_, names, _) = git(
-            checkout,
-            &["diff", "--cached", "--name-only", &base],
-            Some(&index),
-            None,
-        )?;
+        // WP-200: the staged blobs are checked, not a coloured diff. Git LFS and submodules are not followed.
+        let files = crate::commit_guard::scan_landing_index(checkout, &index, &base, project)?;
         let (ok, patch, why) = git(
-            checkout,
-            &["diff", "--cached", "--binary", &base],
-            Some(&index),
-            None,
-        )?;
-        if !ok {
-            return Err(format!("the copy's change couldn't be written out: {why}"));
-        }
-        // WP-200: the same change as text (binary-marked files included) is what gets checked for secrets.
-        let (ok, text, why) = git(
             checkout,
             &[
                 "diff",
                 "--cached",
-                "--text",
+                "--binary",
+                "--no-color",
                 "--no-ext-diff",
-                "--no-textconv",
                 &base,
             ],
             Some(&index),
             None,
         )?;
         if !ok {
-            return Err(format!("the copy's change couldn't be checked: {why}"));
+            return Err(format!("the copy's change couldn't be written out: {why}"));
         }
-        crate::commit_guard::scan_landing_patch(project, &String::from_utf8_lossy(&text))?;
-        let files = String::from_utf8_lossy(&names)
-            .lines()
-            .map(str::to_string)
-            .filter(|l| !l.is_empty())
-            .collect();
         Ok((patch, files, base.clone()))
     })();
     let _ = std::fs::remove_file(&index);

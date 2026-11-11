@@ -19,11 +19,11 @@ export const GIT_HOOK_BLOCK_MESSAGE =
 /** Claude Code deny rules for the same skips (every Claude process and hub chat carries them). */
 export const GIT_HOOK_DENY_RULES: readonly string[] = [
   "Bash(*git*push*--no-v*)",
-  "Bash(*git*push* -n *)",
-  "Bash(*git*push* -n)",
+  "Bash(git push -n)",
+  "Bash(git push -n *)",
   "Bash(*git*commit*--no-v*)",
-  "Bash(*git*commit* -n *)",
-  "Bash(*git*commit* -n)",
+  "Bash(git commit -n)",
+  "Bash(git commit -n *)",
   "Bash(*core.hooksPath*)",
   "Bash(*GIT_CONFIG_*)",
   "Bash(*--config-env*)",
@@ -31,8 +31,9 @@ export const GIT_HOOK_DENY_RULES: readonly string[] = [
 ];
 
 const GIT_HOOK_SKIP: readonly RegExp[] = [
-  // a push or commit with --no-verify (or any unambiguous prefix of it), or -n
-  /\bgit\b[^;&|\n]*\b(?:push|commit)\b[^;&|\n]*(?:--no-v\w*|\s-n(?=\s|$))/i,
+  // a push or commit with --no-verify (or any unambiguous prefix of it). `-n` is judged on that command's own
+  // arguments, below: a later `grep -n` is not a hook skip.
+  /\bgit\b[^;&|\n]*\b(?:push|commit)\b[^;&|\n]*--no-v\w*/i,
   // another hooks folder, set on the command line, in the environment, or in config
   /core\.hookspath/i,
   // git's environment overrides of its own configuration
@@ -54,10 +55,97 @@ export function gitHookSkipBlock(command?: string): string | undefined {
   // M6: only a command that pushes or commits is held for its flags. A git read, an unrelated env prefix or a
   // branch name is ordinary work.
   const pushOrCommit = /\bgit\b[^;&|\n]*\b(?:push|commit)\b/.test(plain);
-  if (pushOrCommit && /--no-v[a-z]*|\bno-verify\b|\s-n(?=\s|$)/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
+  // A variable (`V=--no-verify; git push $V`) still matches the loose text. `-n` does not: it is only a flag of the
+  // git push or commit itself.
+  if (pushOrCommit && /--no-v[a-z]*|\bno-verify\b/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
+  if (gitPushOrCommitSkips(command)) return GIT_HOOK_BLOCK_MESSAGE;
   if (pushOrCommit && /\benv\s+(?:-i\b|--ignore-environment\b|-\s)/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
   if (/\bgit\b[^;&|\n]*\bsend-pack\b/.test(plain)) return GIT_HOOK_BLOCK_MESSAGE;
   return undefined;
+}
+
+/** One shell command, split on `&&`, `||`, `;`, `|` and newlines, but not inside quotes. */
+function shellSegments(command: string): string[] {
+  const parts: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (quote) {
+      current += char;
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    const two = command.slice(i, i + 2);
+    if (two === "&&" || two === "||") {
+      parts.push(current);
+      current = "";
+      i += 1;
+      continue;
+    }
+    if (char === "|" || char === ";" || char === "\n") {
+      parts.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  parts.push(current);
+  return parts;
+}
+
+function shellWords(segment: string): string[] {
+  const words: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (const char of segment) {
+    if (quote) {
+      if (char === quote) quote = null;
+      else current += char;
+      continue;
+    }
+    if (char === '"' || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === " " || char === "\t") {
+      if (current) words.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  if (current) words.push(current);
+  return words;
+}
+
+/**
+ * `-n` or `--no-v…` on the git push or commit itself. A commit message is not a flag (`-m` and `--message` take the
+ * next word). Words after `--` are not flags. A later command in the same line is not this git's arguments.
+ */
+function gitPushOrCommitSkips(command: string): boolean {
+  for (const segment of shellSegments(command)) {
+    const words = shellWords(segment);
+    const gitAt = words.findIndex((word) => word === "git" || word.endsWith("/git"));
+    if (gitAt < 0) continue;
+    const args = words.slice(gitAt + 1);
+    const verbAt = args.findIndex((arg) => arg === "push" || arg === "commit");
+    if (verbAt < 0) continue;
+    for (let i = verbAt + 1; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === "--") break;
+      if (arg === "-n" || arg.startsWith("--no-v")) return true;
+      if (arg === "-m" || arg === "--message" || arg === "-F" || arg === "--file") {
+        i += 1;
+      }
+    }
+  }
+  return false;
 }
 
 /** What an agent reads back when it tries to write the commit guard's allow list or the crew hooks. */

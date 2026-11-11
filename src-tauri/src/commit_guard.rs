@@ -12,12 +12,14 @@
 //!   the Keychain, and kept in the app's data folder. Nothing else can make one.
 //! - Nothing here edits an ignore file. A refusal names the choices in words and leaves the person to pick.
 
-use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::collections::{BTreeMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+
+mod objects;
 
 use crate::delivery::protected::{folded_segments, shared_list};
 
@@ -84,50 +86,24 @@ fn plain_secret_refusal(what: &str) -> String {
     )
 }
 
-/// Every guard git call: plain output whatever the repository's or the person's config says (N1). The colour and
-/// encoding settings are overridden on the command line, which wins over every config file.
-/// The one way the guard reads a repository (the structural fix for review rounds 1 to 4). Config and environment that
-/// could change what a read reports are cleared: GIT_CONFIG_* and GIT_CONFIG_PARAMETERS, GIT_DIR and the other
-/// repository-location variables, and replace objects (refs/replace) are off. The repository's, the person's and the
-/// system's config are not read (GIT_CONFIG_GLOBAL=/dev/null, GIT_CONFIG_NOSYSTEM=1), and the commands below set the
-/// options that decide what a diff shows (diff.relative, log.showRoot, colour, encoding) on the command line.
+/// A guard read of the repository that contains `root`. The git dir is that folder's `.git` (a directory or a
+/// `gitdir:` file), not `rev-parse --show-toplevel`, which follows `core.worktree` and would read a different
+/// checkout from the one a push sends.
+///
+/// Repo config is still read for keys this command does not set. Colour, encoding, `diff.relative`, `log.showRoot`,
+/// abbreviation, fsmonitor and the LFS filters are set on the command so they cannot hide a file. A shell `unset` of
+/// other `GIT_*` names, and aliases, are best-effort only: this is not a shell.
 fn guard_git(root: &Path) -> Command {
-    let mut cmd = crate::fs::git_cmd();
-    for (name, _) in std::env::vars_os() {
-        let Some(name) = name.to_str() else { continue };
-        let ambient = name.starts_with("GIT_CONFIG")
-            || name.starts_with("GIT_DIR")
-            || name.starts_with("GIT_WORK_TREE")
-            || name.starts_with("GIT_INDEX")
-            || name.starts_with("GIT_OBJECT")
-            || name.starts_with("GIT_ALTERNATE")
-            || name.starts_with("GIT_COMMON")
-            || name.starts_with("GIT_NAMESPACE")
-            || name.starts_with("GIT_REPLACE");
-        if ambient {
-            cmd.env_remove(name);
+    match objects::open_repo(root) {
+        Ok(repo) => objects::command(&repo),
+        Err(_) => {
+            let missing = objects::Repo {
+                git_dir: PathBuf::from("/nonexistent-commit-guard"),
+                work_tree: PathBuf::from("/nonexistent-commit-guard"),
+            };
+            objects::command(&missing)
         }
     }
-    cmd.arg("--no-pager")
-        .arg("--no-replace-objects")
-        .arg("-c")
-        .arg("color.ui=never")
-        .arg("-c")
-        .arg("color.diff=never")
-        .arg("-c")
-        .arg("i18n.logOutputEncoding=UTF-8")
-        .arg("-c")
-        .arg("diff.relative=false")
-        .arg("-c")
-        .arg("log.showRoot=true")
-        .arg("-C")
-        .arg(root)
-        .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_OPTIONAL_LOCKS", "0");
-    cmd
 }
 
 /// Whether git wrapped a line in colour codes. Colour is off on every guard command, so this should never be true; if
@@ -154,69 +130,6 @@ fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// A check's git output, bounded: the run is killed after `limit`, and output past `max_bytes` refuses.
-/// Runs a guard read with an optional input, bounded: killed after `limit`, refused past `max_bytes`, and refused when
-/// git wrapped a line in colour codes.
-fn run_bounded(
-    mut cmd: Command,
-    input: Option<&[u8]>,
-    limit: Duration,
-    max_bytes: usize,
-) -> Result<String, String> {
-    cmd.stdin(if input.is_some() {
-        Stdio::piped()
-    } else {
-        Stdio::null()
-    })
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(|e| e.to_string())?;
-    let stdin = child.stdin.take();
-    let data = input.map(|bytes| bytes.to_vec());
-    let writer = std::thread::spawn(move || {
-        if let (Some(mut pipe), Some(bytes)) = (stdin, data) {
-            let _ = pipe.write_all(&bytes);
-        }
-    });
-    let mut stdout = child.stdout.take().ok_or("git output was not piped")?;
-    let mut stderr = child.stderr.take().ok_or("git errors were not piped")?;
-    let out_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stdout.read_to_end(&mut buf);
-        buf
-    });
-    let err_reader = std::thread::spawn(move || {
-        let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
-        buf
-    });
-    let deadline = Instant::now() + limit;
-    let status = loop {
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(TIMED_OUT.into());
-        }
-        match child.try_wait().map_err(|e| e.to_string())? {
-            Some(status) => break status,
-            None => std::thread::sleep(Duration::from_millis(20)),
-        }
-    };
-    let _ = writer.join();
-    let out = out_reader.join().unwrap_or_default();
-    let err = err_reader.join().unwrap_or_default();
-    if !status.success() {
-        return Err(String::from_utf8_lossy(&err).trim().to_string());
-    }
-    if out.len() > max_bytes {
-        return Err(TOO_LARGE.into());
-    }
-    if colour_wrapped(&out) {
-        return Err(COLOUR_REFUSED.into());
-    }
-    Ok(String::from_utf8_lossy(&out).into_owned())
-}
-
 #[cfg(test)]
 pub(crate) fn checked_output_within(
     root: &Path,
@@ -226,57 +139,11 @@ pub(crate) fn checked_output_within(
 ) -> Result<String, String> {
     let mut cmd = guard_git(root);
     cmd.args(args);
-    run_bounded(cmd, None, limit, max_bytes)
-}
-
-/// The repository's top folder: every history read runs there, so a subfolder project still sees the whole repository.
-fn toplevel(root: &Path) -> Result<PathBuf, String> {
-    Ok(PathBuf::from(
-        git_out(root, &["rev-parse", "--show-toplevel"])?.trim(),
-    ))
-}
-
-/// The commits `revs` reach, one per line (`rev-list`); their diffs come from `diff_commits`.
-fn commits_of(top: &Path, revs: &[&str]) -> Result<String, String> {
-    let mut cmd = guard_git(top);
-    cmd.arg("rev-list").args(revs);
-    run_bounded(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)
-}
-
-/// The diffs of the listed commits (`rev-list | diff-tree --stdin`), against every parent (`-m`, so an octopus merge
-/// is diffed against each of its parents), with the root commit included. Names (added files) or the text patch.
-fn diff_commits(top: &Path, commits: &str, names: bool) -> Result<String, String> {
-    let mut cmd = guard_git(top);
-    cmd.arg("diff-tree")
-        .arg("--stdin")
-        .arg("-r")
-        .arg("--root")
-        .arg("--no-color")
-        .arg("--no-ext-diff")
-        .arg("--no-textconv")
-        .arg("--no-renames")
-        .arg("--full-index");
-    if names {
-        // Names: a file added relative to any parent (-m), so an octopus merge's files are all listed.
-        cmd.args([
-            "-m",
-            "--no-commit-id",
-            "--name-only",
-            "--diff-filter=A",
-            "-z",
-        ]);
-    } else {
-        // The text: the combined diff (-c), which shows only the lines that differ from every parent. A merge's
-        // content from a side branch is already a commit of its own, so it is not shown again; a secret the merge
-        // itself adds is (any octopus parent count).
-        cmd.args(["-c", "--format=hivra-commit %H", "-p", "--text", "-U0"]);
+    let out = objects::read_capped(cmd, None, limit, max_bytes)?;
+    if colour_wrapped(&out) {
+        return Err(COLOUR_REFUSED.into());
     }
-    run_bounded(
-        cmd,
-        Some(commits.as_bytes()),
-        CHECK_TIMEOUT,
-        MAX_CHECKED_BYTES,
-    )
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// Whether HEAD already has the path. A repo with no commits has nothing tracked.
@@ -466,10 +333,9 @@ pub struct Finding {
 
 /// The first finding a person has not allowed. A line is found by its token shape or long assigned value; a private
 /// key is found by its whole block, so an allow for one key does not allow another in the same file (N5).
-fn check_patch(patch: &str, allows: &[Allow], repo: &str) -> Result<(), Finding> {
+fn check_added(added: &[Added], allows: &[Allow], repo: &str) -> Result<(), Finding> {
     let scrubber = crate::portable::scrubber();
-    let added = added_lines(patch);
-    for line in &added {
+    for line in added {
         if !scrubber.findings(&line.text).is_empty() {
             let hash = line_hash(&line.text);
             if !is_allowed(allows, repo, &line.file, &hash) {
@@ -483,7 +349,7 @@ fn check_patch(patch: &str, allows: &[Allow], repo: &str) -> Result<(), Finding>
         }
     }
     let mut by_file: BTreeMap<&str, Vec<&Added>> = BTreeMap::new();
-    for line in &added {
+    for line in added {
         by_file.entry(line.file.as_str()).or_default().push(line);
     }
     for (file, lines) in by_file {
@@ -517,6 +383,10 @@ fn check_patch(patch: &str, allows: &[Allow], repo: &str) -> Result<(), Finding>
         }
     }
     Ok(())
+}
+
+fn check_patch(patch: &str, allows: &[Allow], repo: &str) -> Result<(), Finding> {
+    check_added(&added_lines(patch), allows, repo)
 }
 
 /// Scans the added lines of a unified diff with the given allows (for this repository `repo`). A line a person allowed
@@ -582,90 +452,159 @@ fn scan_names(names: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
-/// Gates the commits named by `revs` (for example `sha --not <tips>`). Merge commits are included, as remerged diffs.
-/// Binary-marked files are read as text, and the output is plain. The agent-file names, the file names and the added
-/// lines are checked, and a refusal is recorded under its id for the person's one Allow.
-pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
-    let top = toplevel(root)?;
-    let commits = commits_of(&top, revs)?;
-    let names = diff_commits(&top, &commits, true)?;
-    let names: Vec<&str> = names
-        .split('\0')
-        .map(|name| name.trim_matches('\n'))
-        .filter(|name| !name.is_empty())
-        .collect();
-    for path in &names {
-        if let Some(kind) = agent_file_kind(path)? {
-            return Err(refused_to_push(path, kind));
-        }
-    }
-    scan_names(&names)?;
-    let patch = diff_commits(&top, &commits, false)?;
-    let folder = root.to_string_lossy().into_owned();
-    check_patch(&patch, &load_allows(), &repo_id(root)).map_err(|finding| {
-        let id = record_refusal(&folder, &repo_id(root), &finding);
-        refusal_text(&finding, Some(&folder), &id)
-    })?;
-    let mut message_cmd = guard_git(&top);
-    message_cmd.args(["log", "--format=%B"]).args(revs);
-    let messages = run_bounded(message_cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
-    scan_message(&messages)
-}
-/// The remote's tips as it advertises them now (`git ls-remote`), limited to commits this checkout has. The gate's
-/// base comes from here and never from local remote-tracking refs, which a checkout can write (N3).
-fn advertised_tips(top: &Path, url: &str) -> Result<Vec<String>, String> {
-    let mut cmd = guard_git(top);
-    cmd.args(["ls-remote", url]);
-    let listed = run_bounded(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
-    let shas: Vec<String> = listed
-        .lines()
-        .filter_map(|line| line.split_whitespace().next())
-        .filter(|sha| {
-            (sha.len() == 40 || sha.len() == 64) && sha.chars().all(|c| c.is_ascii_hexdigit())
-        })
-        .map(str::to_string)
-        .collect();
-    Ok(object_kinds(top, &shas)?
-        .into_iter()
-        .filter(|(_, kind)| kind == "commit" || kind == "tag")
-        .map(|(sha, _)| sha)
-        .collect())
-}
-
-/// The object type of each sha, in one `cat-file --batch-check` (a missing object reads as "missing").
-fn object_kinds(top: &Path, shas: &[String]) -> Result<Vec<(String, String)>, String> {
-    if shas.is_empty() {
-        return Ok(Vec::new());
-    }
-    let input = format!("{}\n", shas.join("\n"));
-    let mut cmd = guard_git(top);
-    cmd.args(["cat-file", "--batch-check"]);
-    let out = run_bounded(
-        cmd,
-        Some(input.as_bytes()),
-        CHECK_TIMEOUT,
-        MAX_CHECKED_BYTES,
-    )?;
-    Ok(out
-        .lines()
-        .filter_map(|line| {
-            let mut parts = line.split_whitespace();
-            Some((parts.next()?.to_string(), parts.next()?.to_string()))
-        })
-        .collect())
-}
-
 fn is_zero_sha(sha: &str) -> bool {
     !sha.is_empty() && sha.chars().all(|c| c == '0')
 }
 
-/// Gates the commits reachable from `shas` that the remote does not advertise, for a push to `remote`.
-fn gate_pushed(top: &Path, url: &str, shas: &[String]) -> Result<(), String> {
-    let tips = advertised_tips(top, url)?;
-    let mut revs: Vec<&str> = shas.iter().map(String::as_str).collect();
-    revs.push("--not");
-    revs.extend(tips.iter().map(String::as_str));
-    gate_range(top, &revs)
+fn added_from(hit: &objects::LineHit) -> Added {
+    Added {
+        file: hit.file.clone(),
+        line: hit.line,
+        text: hit.text.clone(),
+        commit: hit.commit.clone(),
+    }
+}
+
+fn refuse_paths(paths: &[String]) -> Result<(), String> {
+    for path in paths {
+        if let Some(kind) = agent_file_kind(path)? {
+            return Err(refused_to_push(path, kind));
+        }
+    }
+    let names: Vec<&str> = paths.iter().map(String::as_str).collect();
+    scan_names(&names)
+}
+
+fn refuse_lines(root: &Path, added: &[Added]) -> Result<(), String> {
+    let folder = root.to_string_lossy().into_owned();
+    check_added(added, &load_allows(), &repo_id(root)).map_err(|finding| {
+        let id = record_refusal(&folder, &repo_id(root), &finding);
+        refusal_text(&finding, Some(&folder), &id)
+    })
+}
+
+fn git_out_repo(repo: &objects::Repo, args: &[&str]) -> Result<String, String> {
+    let output = objects::command(repo)
+        .args(args)
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    if colour_wrapped(&output.stdout) {
+        return Err(COLOUR_REFUSED.into());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+/// Gates the commits named by `revs` (for example `sha --not <tips>`). Each commit is read from its blobs, so a merge,
+/// a binary-marked file and an attributes rule cannot hide a line. Agent files, then file names, then new lines, then
+/// commit messages. A refusal is recorded under its id for the person's one Allow.
+fn gate_repo(root: &Path, repo: &objects::Repo, revs: &[&str]) -> Result<(), String> {
+    let scan = objects::scan_revs(repo, revs)?;
+    refuse_paths(&scan.added)?;
+    let added: Vec<Added> = scan.lines.iter().map(added_from).collect();
+    refuse_lines(root, &added)?;
+    for message in &scan.messages {
+        scan_message(message)?;
+    }
+    Ok(())
+}
+
+pub fn gate_range(root: &Path, revs: &[&str]) -> Result<(), String> {
+    let repo = objects::open_repo(root)?;
+    gate_repo(root, &repo, revs)
+}
+
+fn union_push_urls(
+    repo: &objects::Repo,
+    remote: &str,
+    also: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let mut urls = match objects::destinations_for(repo, remote) {
+        Ok(urls) => urls,
+        Err(error) => {
+            if also.is_none() {
+                return Err(error);
+            }
+            Vec::new()
+        }
+    };
+    if let Some(extra) = also
+        .map(str::trim)
+        .filter(|extra| !extra.is_empty() && *extra != remote)
+    {
+        match objects::destinations_for(repo, extra) {
+            Ok(more) => {
+                for url in more {
+                    if !urls.iter().any(|have| have == &url) {
+                        urls.push(url);
+                    }
+                }
+            }
+            Err(_) => {
+                if !urls.iter().any(|have| have == extra) {
+                    urls.push(extra.to_string());
+                }
+            }
+        }
+    }
+    if urls.is_empty() {
+        return Err(format!("the remote {remote} has no push URL"));
+    }
+    Ok(urls)
+}
+
+/// Tips advertised by every destination. A commit is already upstream only when each of them has it. An `ls-remote`
+/// that fails refuses the push; it is not "no tips".
+fn tips_on_every_destination(repo: &objects::Repo, urls: &[String]) -> Result<Vec<String>, String> {
+    let mut common: Option<HashSet<String>> = None;
+    for url in urls {
+        let advertised = objects::advertised_shas(url)?;
+        let local = objects::local_tips(repo, &advertised)?;
+        let set: HashSet<String> = local.into_iter().collect();
+        common = Some(match common {
+            None => set,
+            Some(have) => have.intersection(&set).cloned().collect(),
+        });
+    }
+    Ok(common.into_iter().flatten().collect())
+}
+
+fn gate_shas(
+    root: &Path,
+    repo: &objects::Repo,
+    urls: &[String],
+    shas: &[String],
+) -> Result<(), String> {
+    let mut commits = Vec::new();
+    for sha in shas {
+        if is_zero_sha(sha) {
+            continue;
+        }
+        let peeled = objects::peel(repo, sha)?;
+        for message in &peeled.messages {
+            scan_message(message)?;
+        }
+        if !peeled.hits.is_empty() {
+            let added: Vec<Added> = peeled.hits.iter().map(added_from).collect();
+            let paths: Vec<String> = added.iter().map(|line| line.file.clone()).collect();
+            refuse_paths(&paths)?;
+            refuse_lines(root, &added)?;
+        }
+        if let Some(commit) = peeled.commit {
+            commits.push(commit);
+        }
+    }
+    if commits.is_empty() {
+        return Ok(());
+    }
+    let tips = tips_on_every_destination(repo, urls)?;
+    let mut revs: Vec<String> = commits;
+    revs.push("--not".to_string());
+    revs.extend(tips);
+    let refs: Vec<&str> = revs.iter().map(String::as_str).collect();
+    gate_repo(root, repo, &refs)
 }
 /// The URL git pushes to for `remote`: the push URL (pushurl, or url), as `git push` itself resolves it (M4). The
 /// guard does not read the fetch URL, which a checkout can point at itself.
@@ -704,23 +643,25 @@ pub fn push_remote(root: &Path) -> String {
 
 /// The gate before a push to `remote` of the given commits (the app's own push, a PR, a checked delivery).
 pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<(), String> {
-    let top = toplevel(root)?;
-    let url = push_url(&top, remote)?;
-    let head = git_out(&top, &["rev-parse", "HEAD"])?;
-    gate_pushed(&top, &url, &[head.trim().to_string()])
+    let repo = objects::open_repo(root)?;
+    let urls = objects::push_destinations(&repo, remote)?;
+    let head = git_out_repo(&repo, &["rev-parse", "HEAD"])?;
+    gate_shas(root, &repo, &urls, &[head.trim().to_string()])
 }
 /// The gate before the app's own push, a pull request or a checked delivery from this checkout.
 pub fn gate_outgoing(root: &Path) -> Result<(), String> {
     gate_outgoing_to(root, &push_remote(root))
 }
 
-/// The pre-push check when git gives no list of refs (a manual run): every local branch and HEAD, so nothing that
-/// might be pushed is left unchecked (N2).
-pub fn pre_push_check(root: &Path, target: &str) -> Result<(), String> {
-    let top = toplevel(root)?;
-    let url = push_url(&top, target).unwrap_or_else(|_| target.to_string());
-    let heads = git_out(
-        &top,
+fn pre_push_heads(
+    root: &Path,
+    repo: &objects::Repo,
+    remote: &str,
+    also: Option<&str>,
+) -> Result<(), String> {
+    let urls = union_push_urls(repo, remote, also)?;
+    let heads = git_out_repo(
+        repo,
         &["for-each-ref", "--format=%(objectname)", "refs/heads"],
     )?;
     let mut shas: Vec<String> = heads
@@ -729,22 +670,29 @@ pub fn pre_push_check(root: &Path, target: &str) -> Result<(), String> {
         .filter(|sha| !sha.is_empty())
         .map(str::to_string)
         .collect();
-    if let Ok(head) = git_out(&top, &["rev-parse", "--verify", "-q", "HEAD"]) {
-        shas.push(head.trim().to_string());
+    if let Ok(head) = git_out_repo(repo, &["rev-parse", "--verify", "-q", "HEAD"]) {
+        let head = head.trim();
+        if !head.is_empty() {
+            shas.push(head.to_string());
+        }
     }
     if shas.is_empty() {
         return Ok(());
     }
-    gate_pushed(&top, &url, &shas)
+    gate_shas(root, repo, &urls, &shas)
 }
-/// The pre-push check of what git is really sending: each `<local ref> <local sha> <remote ref> <remote sha>` line
-/// on stdin is checked, so `git push origin leak`, `--all` and `<sha>:refs/heads/x` are covered whatever HEAD is (N2).
-pub fn pre_push_stdin_check(root: &Path, target: &str, stdin: &str) -> Result<(), String> {
-    let top = toplevel(root)?;
+
+fn pre_push_in(
+    root: &Path,
+    repo: &objects::Repo,
+    remote: &str,
+    also: Option<&str>,
+    stdin: &str,
+) -> Result<(), String> {
     if stdin.trim().is_empty() {
-        return pre_push_check(&top, target);
+        return pre_push_heads(root, repo, remote, also);
     }
-    let url = push_url(&top, target).unwrap_or_else(|_| target.to_string());
+    let urls = union_push_urls(repo, remote, also)?;
     let mut shas = Vec::new();
     for line in stdin.lines().filter(|line| !line.trim().is_empty()) {
         let parts: Vec<&str> = line.split_whitespace().collect();
@@ -758,16 +706,22 @@ pub fn pre_push_stdin_check(root: &Path, target: &str, stdin: &str) -> Result<()
     if shas.is_empty() {
         return Ok(());
     }
-    // An annotated tag's message is text too: it is checked the way a commit message is (M-LOW).
-    for (sha, kind) in object_kinds(&top, &shas)? {
-        if kind == "tag" {
-            let mut cmd = guard_git(&top);
-            cmd.args(["cat-file", "tag", &sha]);
-            let body = run_bounded(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
-            scan_message(&body)?;
-        }
-    }
-    gate_pushed(&top, &url, &shas)
+    gate_shas(root, repo, &urls, &shas)
+}
+
+/// The pre-push check when git gives no list of refs (a manual run): every local branch and HEAD, so nothing that
+/// might be pushed is left unchecked (N2).
+pub fn pre_push_check(root: &Path, target: &str) -> Result<(), String> {
+    let repo = objects::open_repo(root)?;
+    pre_push_heads(root, &repo, target, None)
+}
+
+/// The pre-push check of what git is really sending: each `<local ref> <local sha> <remote ref> <remote sha>` line
+/// on stdin is checked, so `git push origin leak`, `--all` and `<sha>:refs/heads/x` are covered whatever HEAD is (N2).
+/// A tag is peeled: its message, and a blob or a tree it names, are scanned. A blob is not passed to `rev-list`.
+pub fn pre_push_stdin_check(root: &Path, target: &str, stdin: &str) -> Result<(), String> {
+    let repo = objects::open_repo(root)?;
+    pre_push_in(root, &repo, target, None, stdin)
 }
 /// The `pre-push-guard` subcommand, run by a crew's pre-push hook in the repository. Arguments: the remote, then
 /// `--store <path>` (the app's allow list). Reads git's ref lines from stdin. Prints the refusal on stderr and exits 1.
@@ -792,23 +746,31 @@ pub fn pre_push_main(args: &[String]) -> i32 {
             return 1;
         }
     };
-    // git gives the push URL as the hook's second argument: that is the one the push goes to (M4).
+    // Git's hook gets the remote name, then the URL of this push. The current directory may be `core.worktree`,
+    // so the git dir is the one git put in `GIT_DIR` when it set one. In-process gates do not read that variable.
     let name = positional
         .first()
         .filter(|name| !name.is_empty())
         .cloned()
         .unwrap_or_else(|| "origin".to_string());
-    let target = positional
-        .get(1)
-        .filter(|url| !url.is_empty())
-        .cloned()
-        .unwrap_or(name);
+    let also = positional.get(1).map(String::as_str);
+    let repo = match std::env::var_os("GIT_DIR") {
+        Some(dir) if !dir.is_empty() => objects::open_git_dir(Path::new(&dir), &cwd),
+        _ => objects::open_repo(&cwd),
+    };
+    let repo = match repo {
+        Ok(repo) => repo,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
     let mut stdin = String::new();
     if std::io::stdin().read_to_string(&mut stdin).is_err() {
         eprintln!("{UNREADABLE_PUSH}");
         return 1;
     }
-    match pre_push_stdin_check(&cwd, &target, &stdin) {
+    match pre_push_in(&cwd, &repo, &name, also, &stdin) {
         Ok(()) => 0,
         Err(why) => {
             eprintln!("{why}");
@@ -826,6 +788,30 @@ pub fn scan_landing_patch(project: &Path, patch: &str) -> Result<(), String> {
         let id = record_refusal(&folder, &repo_id(project), &finding);
         refusal_text(&finding, Some(&folder), &id)
     })
+}
+
+/// The files staged in `index` against `base`, after the new lines and new file names have been checked. The index
+/// is compared as blobs, so colour and attributes on the landing diff cannot hide a line.
+pub fn scan_landing_index(
+    checkout: &Path,
+    index: &Path,
+    base: &str,
+    project: &Path,
+) -> Result<Vec<String>, String> {
+    let repo = objects::open_repo(checkout)?;
+    let scan = objects::scan_index(&repo, index, base)?;
+    for path in &scan.added {
+        if let Some(kind) = agent_file_kind(path)? {
+            if !tracked_at_head(project, path) {
+                return Err(refused_to_land(path, kind));
+            }
+        }
+    }
+    let names: Vec<&str> = scan.added.iter().map(String::as_str).collect();
+    scan_names(&names)?;
+    let added: Vec<Added> = scan.lines.iter().map(added_from).collect();
+    refuse_lines(project, &added)?;
+    Ok(scan.files)
 }
 
 // ---- person-approved allows ------------------------------------------------------------------------------------------
@@ -1153,12 +1139,14 @@ pub async fn commit_guard_remove(repo: String, file: String, hash: String) -> Re
 }
 
 #[cfg(test)]
+mod review_repro_r5;
+#[cfg(test)]
 mod review_tests;
 #[cfg(test)]
 mod review_tests_r3;
 #[cfg(test)]
 mod review_tests_r4;
 #[cfg(test)]
-mod review_repro_r5;
+mod review_tests_r6;
 #[cfg(test)]
 mod tests;

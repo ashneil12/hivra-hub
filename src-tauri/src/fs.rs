@@ -2911,7 +2911,10 @@ fn git_head_message_for(root: &Path) -> Result<String, String> {
 }
 
 /// Pushes the current branch with an explicit refspec, to the remote the guard checked (WP-200). A bare `git push`
-/// would follow the person's push configuration, which the guard does not read.
+/// would follow the person's push configuration, which the guard does not read. `--no-follow-tags` and
+/// `--recurse-submodules=no` keep an annotated tag and a submodule commit from leaving with this push: the guard
+/// did not read them. Git LFS still runs the repository's own hook and uploads objects; only the pointer file was
+/// scanned. The app does not turn that filter off.
 pub(crate) fn git_push_for(root: &Path) -> Result<(), String> {
     let upstream = git_stdout(root, &["rev-parse", "--abbrev-ref", "@{upstream}"]).is_some();
     let remote = if upstream {
@@ -2923,9 +2926,28 @@ pub(crate) fn git_push_for(root: &Path) -> Result<(), String> {
     let branch = git_branch(root).ok_or_else(|| "Not on a branch".to_string())?;
     let refspec = format!("HEAD:refs/heads/{branch}");
     if upstream {
-        return git_checked(root, &["push", &remote, &refspec]);
+        return git_checked(
+            root,
+            &[
+                "push",
+                "--no-follow-tags",
+                "--recurse-submodules=no",
+                &remote,
+                &refspec,
+            ],
+        );
     }
-    git_checked(root, &["push", "-u", &remote, &refspec])
+    git_checked(
+        root,
+        &[
+            "push",
+            "-u",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            &remote,
+            &refspec,
+        ],
+    )
 }
 
 fn git_sync_changes_for(root: &Path) -> Result<(), String> {
