@@ -29,6 +29,7 @@ import {
 import { removeMonoBackground } from "./monoBackground";
 import { lastTurnFailure } from "./turnFailure";
 import { recordMonoChat, rosterSaved } from "./monoHome";
+import { hasCaptainCharter } from "../../chief/model/charter";
 
 /** The project palette's colors, plus indigo for a Mono's ninth preset. */
 export const MONO_COLORS = [
@@ -295,7 +296,8 @@ function parseMono(value: unknown): Mono | undefined {
     ...(typeof entry.templateId === "string" && /^[A-Za-z0-9-]+$/.test(entry.templateId)
       ? { templateId: entry.templateId }
       : {}),
-    ...(entry.captain === true ? { captain: true } : {}),
+    // A soul that already carries the charter is the captain, even when an older copy wrote no flag.
+    ...(entry.captain === true || hasCaptainCharter(instructions) ? { captain: true } : {}),
     ...(crewRules ? { crewRules } : {}),
     ...(workerDefault ? { workerDefault } : {}),
     ...(instructions ? { instructions } : {}),
@@ -306,9 +308,35 @@ function parseMono(value: unknown): Mono | undefined {
   };
 }
 
+/**
+ * One pass over the stored roster: a Mono whose instructions already carry the charter is flagged.
+ * A write that does not stick is tried again on the next read. Nothing else in the row is rewritten.
+ */
+function migrateCaptainFlags(): void {
+  const raw = readJson(ROSTER_KEY);
+  if (!Array.isArray(raw)) return;
+  let changed = false;
+  const next = raw.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const row = entry as Record<string, unknown>;
+    if (row.captain === true) return entry;
+    const instructions = typeof row.instructions === "string" ? row.instructions : "";
+    if (!hasCaptainCharter(instructions)) return entry;
+    changed = true;
+    return { ...row, captain: true };
+  });
+  if (!changed) return;
+  try {
+    localStorage.setItem(ROSTER_KEY, JSON.stringify(next));
+  } catch {
+    // The read still flags it in memory. The next read tries the write again.
+  }
+}
+
 /** Every Mono, in the order the rail shows them. */
 export function listMonos(): Mono[] {
   migrateLegacyMonoStorage();
+  migrateCaptainFlags();
   const parsed = readJson(ROSTER_KEY);
   if (!Array.isArray(parsed)) return [];
   // Each Mono has its own conversation. A roster that names one session twice (a restored setup file, a hand-edited
