@@ -357,6 +357,9 @@ fn security_gate(
             options,
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         now,
     )?;

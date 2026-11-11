@@ -3586,6 +3586,9 @@ fn repro_220_r5_only_the_gate_asks_a_security_review() {
                 options: vec!["Approve".into(), "Hold the merge".into()],
                 recommended: None,
                 task_ids: Vec::new(),
+                keys: Vec::new(),
+                force: false,
+                reason: None,
             },
             2,
         )
@@ -3914,6 +3917,9 @@ fn repro_220_r5_a_chat_that_asks_the_gate_key_first_words_the_persons_approval()
                 options: vec!["Approve".into(), "No".into()],
                 recommended: Some("Approve".into()),
                 task_ids: Vec::new(),
+                keys: Vec::new(),
+                force: false,
+                reason: None,
             },
             5,
         )
@@ -4015,6 +4021,9 @@ fn repro_220_r6_a_chat_cannot_open_the_gate_key_in_any_spelling() {
                 options: vec!["Approve".into(), "No".into()],
                 recommended: Some("Approve".into()),
                 task_ids: Vec::new(),
+                keys: Vec::new(),
+                force: false,
+                reason: None,
             },
             5,
         );

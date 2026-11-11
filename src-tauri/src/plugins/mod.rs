@@ -14,6 +14,8 @@ mod install;
 pub mod manifest;
 pub mod mcp;
 pub mod registry;
+// WP-101: what a staged copy holds, read before the person is asked to install it.
+pub mod scan;
 mod source;
 pub mod verify;
 pub mod wiring;
@@ -28,6 +30,8 @@ mod defaults_tests;
 mod desktop_tests;
 #[cfg(test)]
 mod install_tests;
+#[cfg(test)]
+mod scan_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -206,6 +210,8 @@ pub fn plugins_session_wiring(
         .ok()
         .map(|exe| exe.to_string_lossy().into_owned());
     let cwd = crate::fs::expand_home(&cwd);
+    // WP-101 fix round 2: the person's own server names, reported with the wiring so a call can be checked against the
+    // name Claude Code reads rather than the one a config spells.
     let taken = crate::mcp::names_in_use(&cwd);
     // WP-43: a chat passes its agent so the browser plugin gets that profile. Other plugins ignore it.
     let name = agent_name.unwrap_or_else(|| "This chat".into());

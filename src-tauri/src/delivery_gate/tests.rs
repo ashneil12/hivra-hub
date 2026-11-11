@@ -974,6 +974,9 @@ fn ask_gate(store: &SessionStore, project: &str, key: &str) {
             options: vec!["Approve".into(), "Fix".into(), "Skip".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         2,
     )
@@ -1220,6 +1223,9 @@ fn the_checks_answer_refuses_a_key_that_is_not_a_check() {
             options: vec!["Approve".into(), "Fix".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         2,
     )

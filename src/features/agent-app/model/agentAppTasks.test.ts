@@ -2773,11 +2773,49 @@ describe("Hivra WP-14: tasks.message and tasks.ask", () => {
       source,
       "r-ask",
       "tasks.ask",
-      { key: "retention", question: "Keep 30 days?", options: ["Yes", "No"], recommended: "Yes", taskIds: ["t-1"] },
+      {
+        key: "retention",
+        question: "Keep 30 days?",
+        options: ["Yes", "No"],
+        recommended: "Yes",
+        taskIds: ["t-1"],
+        keys: ["sessions"],
+        force: true,
+        reason: "The old one is about staging.",
+      },
       host,
     );
     expect(fm.asked).toEqual([
-      expect.objectContaining({ askedBy: "mono-exo", askedByMono: "vg-game-lead", project: "vg-game", key: "retention", taskIds: ["t-1"] }),
+      expect.objectContaining({
+        askedBy: "mono-exo",
+        askedByMono: "vg-game-lead",
+        project: "vg-game",
+        key: "retention",
+        taskIds: ["t-1"],
+        keys: ["sessions"],
+        force: true,
+        reason: "The old one is about staging.",
+      }),
+    ]);
+    await expect(
+      handleAgentApp(source, "r-extra", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a", extra: 1 }, host),
+    ).rejects.toThrow("Unknown tasks.ask fields");
+    await expect(
+      handleAgentApp(source, "r-stand", "tasks.ask", { key: "k", question: "q", options: ["a", "b"], recommended: "a", standing: true }, host),
+    ).rejects.toThrow("Unknown tasks.ask fields");
+    const other = fixture([row({ id: "t-1", project: "other-app" })]);
+    other.api.firstMate = fm.host;
+    await expect(
+      handleAgentApp(
+        other.source,
+        "r-other",
+        "tasks.ask",
+        { key: "retention", question: "Keep 30 days?", options: ["Yes", "No"], recommended: "Yes", taskIds: ["t-1"] },
+        other.host,
+      ),
+    ).rejects.toThrow("another project");
+    expect(fm.asked).toEqual([
+      expect.objectContaining({ project: "vg-game", taskIds: ["t-1"] }),
     ]);
     const worker = fixture([], "worker");
     worker.api.firstMate = fm.host;

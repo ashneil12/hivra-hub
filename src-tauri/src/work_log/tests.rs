@@ -987,6 +987,9 @@ fn an_answered_decision_writes_one_line() {
             options: vec!["CSV".into(), "JSON".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         unix_ms(2026, 11, 10),
     )
@@ -1038,6 +1041,9 @@ fn an_answered_decision_writes_one_line() {
             options: vec!["Keep it".into(), "Delete it".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         unix_ms(2026, 11, 10),
     )
@@ -1126,6 +1132,9 @@ fn a_broken_work_log_does_not_stop_an_answer_from_landing() {
             options: vec!["CSV".into(), "JSON".into()],
             recommended: None,
             task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         at,
     )
@@ -1212,6 +1221,9 @@ fn two_windows_keep_one_line_for_one_decision_and_one_send_back() {
                 options: vec!["CSV".into(), "JSON".into()],
                 recommended: None,
                 task_ids: Vec::new(),
+                keys: Vec::new(),
+                force: false,
+                reason: None,
             },
             1_000,
         )
