@@ -287,6 +287,8 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { placePrompt, rememberPromptSession } from "../features/sessions/model/threadLinkOpen";
+import { ThreadLinkNotice, useThreadLinkOpener } from "../features/sessions/ui/ThreadLinkActions";
 import {
   codingTeamView,
   noteCodingTeamView,
@@ -5944,15 +5946,16 @@ function Workspace({
   );
 
   const onSelectHistorySession = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string): Promise<boolean> => {
       const askedAt = Date.now();
       workspaceNavigation.cancel();
       let session = await ensureOpenSession(sessionId);
-      if (!session || session.inboxAsk) return;
+      // WP-125: false means no pane was shown (an inbox ask, or the chat is gone).
+      if (!session || session.inboxAsk) return false;
       const mono = monoForSession(session.id);
       if (mono) {
         await onOpenMono(mono.id);
-        return;
+        return true;
       }
       const parentId =
         session.orchestrationLeadId ??
@@ -5960,7 +5963,7 @@ function Workspace({
       if (parentId && parentId !== sessionId) {
         setInspectedWorkerId(sessionId);
         session = await ensureOpenSession(parentId);
-        if (!session) return;
+        if (!session) return false;
       }
       setSearchViewOpen(false);
       setSettingsOpen(false);
@@ -5975,17 +5978,18 @@ function Workspace({
       const linkedUpdate = linkedSessionUpdatesRef.current.get(session.id);
       if (focusOpenSession(session.id)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       if (replaceBlankPaneWithSession(session)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       const tab = newTab(session.id);
       appendTab(tab, session.cwd);
       setActiveTabId(tab.id);
       setComposerFocused(true);
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
+      return true;
     },
     [
       appendTab,
@@ -17619,6 +17623,47 @@ function Workspace({
     openSettings: (section, anchor) => openSettings(section, anchor),
     projects: () => hubData().listProjects(),
   });
+  // WP-125: a local chat or prompt link opens in this window. A missing chat is a message, not a new window.
+  // openChat is false when no pane was shown, so the opener can say the chat is not on this computer.
+  useThreadLinkOpener({
+    hasChat: (id) =>
+      sessionsRef.current.some((session) => session.id === id) ||
+      getSession(id).then((session) => session != null),
+    hasProject: (id) => hubData().listProjects().some((project) => project.id === id),
+    openChat: (id) => onSelectHistorySession(id),
+    openPrompt: (projectId, text, ticket) => {
+      placePrompt(
+        projectId,
+        text,
+        ticket,
+        {
+          projects: () => hubData().listProjects(),
+          sessions: () => sessionsRef.current,
+        },
+        {
+          openProject: (id) => {
+            openCodingTeam(id, { lead: false });
+            noteCodingTeamView(id, "chat");
+          },
+          addSession: (session) => {
+            const next = rememberPromptSession(sessionsRef.current, session);
+            if (!next) return;
+            sessionsRef.current = next;
+            setSessions(next);
+            const tab = newTab(session.id);
+            appendTab(tab, session.cwd);
+            setActiveTabId(tab.id);
+            setComposerFocused(true);
+            // A new chat from a prompt link follows the same worktree setting as New session.
+            attachNewChatWorktree(session.id, session.cwd, setSessions);
+          },
+          focusSession: (id) => {
+            void onSelectHistorySession(id);
+          },
+        },
+      );
+    },
+  });
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers
   // the main area (a Mono's 1:1, Search, Settings, Inbox, Notes, Automations or Pages) takes the highlight from the
   // project's items, so one nav row is ever active.
@@ -18866,6 +18911,8 @@ function Workspace({
             chipHost={pressureChipHost}
             insetChip={insetLayout}
           />
+          {/* WP-125: a local link that cannot be opened on this computer. */}
+          <ThreadLinkNotice />
           <ApprovalToasts
             notices={IS_HUB_BUNDLE ? hubToastNotices(hiddenApprovalToasts) : hiddenApprovalToasts}
             hubView={IS_HUB_BUNDLE ? hubToastView : undefined}
