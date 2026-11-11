@@ -3332,3 +3332,78 @@ fn a_lock_refusal_names_where_to_change_it() {
         "{refused}"
     );
 }
+
+/// Review repro (PR #194 round 7, HIGH-C): a project inside another project's repository keeps its own Never use.
+/// `project_owning` returns the FIRST project whose git common directory the folder shares, before it looks at which
+/// project the folder actually sits in. With a hub project at a repository's root and another at a package inside it
+/// (one repo, two projects), a launch or spawn in the package's own folder is judged by the root project alone, and
+/// `record_grant` stores the root as the grant's project, so the package's Never use never applies. In round 6 the
+/// launch gate still read the package's own saved policy.
+#[test]
+fn review_r7_a_nested_project_in_the_same_repository_keeps_its_never_use() {
+    use super::gate::{check_launch, issue_ticket, judge_spawn, record_grant, LaunchCheck};
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let root = std::env::temp_dir().join(format!("review-r7-nested-{}", uuid::Uuid::new_v4()));
+    let repo = root.join("repo");
+    let package = repo.join("packages").join("app");
+    std::fs::create_dir_all(&package).unwrap();
+    let out = std::process::Command::new("git")
+        .current_dir(&repo)
+        .args(["init", "-q"])
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git init failed");
+    let key = |path: &std::path::Path| {
+        std::fs::canonicalize(path)
+            .unwrap()
+            .to_string_lossy()
+            .into_owned()
+    };
+    let (repo_key, package_key) = (key(&repo), key(&package));
+    // The repository's root project has a saved policy of its own (nothing banned) ...
+    store::set_policy(
+        &mut conn,
+        "project",
+        &repo_key,
+        &json!({ "lockDefault": false, "neverUse": [], "fallback": ["claude"] }),
+        0,
+    )
+    .unwrap();
+    // ... and the package, a hub project of its own, bans Codex.
+    store::set_policy(
+        &mut conn,
+        "project",
+        &package_key,
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let owner = store::project_owning(&conn, &package_key);
+    let chat = judge_spawn(&conn, "5e0c1d2b-ashs-chat", "codex", &package_key, None);
+    let gated = LaunchCheck {
+        cli: "codex".into(),
+        mono: None,
+        project: Some(package_key.clone()),
+        locked_default: None,
+    };
+    let launch = check_launch(&conn, &gated);
+    let session = "app-review-r7-nested-1";
+    let _ = record_grant(&conn, session, &gated);
+    let spawn = issue_ticket(&conn, session, "codex", &package_key)
+        .and_then(|ticket| judge_spawn(&conn, session, "codex", &package_key, Some(&ticket)));
+    let _ = std::fs::remove_dir_all(&root);
+
+    let passed: Vec<&str> = [
+        ("a chat's spawn in the package", chat.is_ok()),
+        ("the launch gate for the package", launch.is_ok()),
+        ("a granted worker's spawn in the package", spawn.is_ok()),
+    ]
+    .into_iter()
+    .filter_map(|(what, ok)| ok.then_some(what))
+    .collect();
+    assert!(
+        passed.is_empty(),
+        "Codex is on the package project's Never use, yet these passed: {passed:?} (owner read as {owner:?})"
+    );
+}
