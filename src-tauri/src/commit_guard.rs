@@ -1186,6 +1186,8 @@ mod review_repro_r7;
 #[cfg(test)]
 mod review_repro_r8;
 #[cfg(test)]
+mod review_repro_r9;
+#[cfg(test)]
 mod review_tests;
 #[cfg(test)]
 mod review_tests_r3;

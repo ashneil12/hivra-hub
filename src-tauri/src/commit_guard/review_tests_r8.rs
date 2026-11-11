@@ -506,9 +506,11 @@ fn in_child() -> bool {
 }
 
 /// No global helper, a system helper, and a `url.insteadOf` that must not be copied. `gh`'s
-/// `hosts.yml` has to stay visible. The second half points that system file at a decoy. The guard
-/// resolves the push URL with the same file `git push` reads, so the push is refused. The includeIf
-/// helper is still written; a refused push does not authenticate through it.
+/// `hosts.yml` has to stay visible. A second half keeps auth that lives behind `includeIf`.
+/// Split in the round 9 review: the guard now resolves the push URL with the system file `git push`
+/// reads, so the second half's system `url.insteadOf` refuses the push
+/// (`r8_n3_limit_a_system_url_rewrite_refuses_the_push`). The second half here keeps the includeIf
+/// check with the system file emptied instead.
 #[cfg(unix)]
 #[test]
 fn r8_n3_system_credential_helper_reaches_ls_remote_without_a_global_helper() {
@@ -635,11 +637,8 @@ fn r8_n3_inner_system_credential_helper() {
         "the system helper did not authenticate ls-remote (marker {marked:?}): {result:?}"
     );
 
-    fs::write(
-        &system,
-        "[url \"http://127.0.0.1:1/decoy/\"]\n\tinsteadOf = http://127.0.0.1:\n",
-    )
-    .unwrap();
+    // Round 9 review split: no system url rewrite here (see the limit test). The system helper is gone too.
+    fs::write(&system, "").unwrap();
     let included = root.0.join("included.gitconfig");
     let helper_b = root.0.join("helper-b.sh");
     fs::write(
@@ -670,7 +669,147 @@ fn r8_n3_inner_system_credential_helper() {
     let _ = server.join();
     let marked = fs::read_to_string(&marker).unwrap_or_default();
     assert!(
-        included_result.is_err(),
-        "a system url rewrite must refuse the push (marker {marked:?}): {included_result:?}"
+        included_result.is_ok() && marked.contains("included") && !marked.contains("system"),
+        "includeIf auth was dropped or the system url rewrite was applied (marker {marked:?}): {included_result:?}"
+    );
+}
+
+/// Split from r8_n3 in the round 9 review. A system `url.insteadOf` sends `git push origin` to a
+/// decoy, and the guard resolves the push URL with that same system file, so it asks the decoy and
+/// the push is refused. It must not ask, or authenticate to, the real server the push never reaches.
+#[cfg(unix)]
+#[test]
+fn r8_n3_limit_a_system_url_rewrite_refuses_the_push() {
+    let home = temp("n3-limit-home");
+    let system = home.0.join("system.gitconfig");
+    let global = home.0.join("global.gitconfig");
+    fs::write(&global, "").unwrap();
+    let exe = std::env::current_exe().expect("the test binary");
+    let module = module_path!();
+    let module = module
+        .split_once("::")
+        .map(|(_, rest)| rest)
+        .unwrap_or(module);
+    let filter = format!("{module}::r8_n3_limit_inner_system_url_rewrite");
+    let out = Command::new(exe)
+        .args([
+            filter.as_str(),
+            "--exact",
+            "--ignored",
+            "--test-threads=1",
+            "--nocapture",
+        ])
+        .env("CG_R8_CHILD", "1")
+        .env("HOME", &home.0)
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .env("GIT_CONFIG_SYSTEM", &system)
+        .env_remove("GIT_CONFIG_NOSYSTEM")
+        .env_remove("GIT_CONFIG_COUNT")
+        .env_remove("GIT_CONFIG_PARAMETERS")
+        .output()
+        .expect("the child test runs");
+    let text = format!(
+        "{}{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(
+        out.status.success() && text.contains("1 passed"),
+        "a system url rewrite did not refuse the push:\n{text}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+#[ignore = "run by r8_n3_limit_a_system_url_rewrite_refuses_the_push in a child"]
+fn r8_n3_limit_inner_system_url_rewrite() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+    if !in_child() {
+        return;
+    }
+    let system =
+        PathBuf::from(std::env::var_os("GIT_CONFIG_SYSTEM").expect("set by the outer test"));
+    let global =
+        PathBuf::from(std::env::var_os("GIT_CONFIG_GLOBAL").expect("set by the outer test"));
+    for path in [&system, &global] {
+        assert!(
+            path.to_string_lossy().contains("cg-r8-n3-limit-home"),
+            "only ever write the outer test's own file: {}",
+            path.display()
+        );
+    }
+    let root = temp("n3-limit-repo");
+    let marker = root.0.join("marker.txt");
+    let helper = root.0.join("helper.sh");
+    fs::write(
+        &helper,
+        format!(
+            "#!/bin/sh\ncat >/dev/null\nprintf 'included\\n' >> '{}'\nprintf 'username=git\\npassword=x\\n\\n'\nexit 0\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+    let included = root.0.join("included.gitconfig");
+    fs::write(
+        &included,
+        format!("[credential]\n\thelper = !'{}'\n", helper.display()),
+    )
+    .unwrap();
+    fs::write(
+        &global,
+        format!(
+            "[includeIf \"gitdir:**\"]\n\tpath = {}\n",
+            included.display()
+        ),
+    )
+    .unwrap();
+    fs::write(
+        &system,
+        "[url \"http://127.0.0.1:1/decoy/\"]\n\tinsteadOf = http://127.0.0.1:\n",
+    )
+    .unwrap();
+
+    let local = root.0.join("local");
+    fs::create_dir_all(&local).unwrap();
+    git(&local, &["init", "-q", "-b", "main"]);
+    for (key, value) in [
+        ("user.email", "guard@example.test"),
+        ("user.name", "Guard Test"),
+        ("commit.gpgsign", "false"),
+    ] {
+        git(&local, &["config", key, value]);
+    }
+    fs::write(local.join("a.txt"), b"one\n").unwrap();
+    git(&local, &["add", "-A"]);
+    git(&local, &["commit", "-q", "-m", "start"]);
+    let base = git(&local, &["rev-parse", "HEAD"]).trim().to_string();
+    fs::write(local.join("a.txt"), b"one\ntwo\n").unwrap();
+    git(&local, &["commit", "-q", "-am", "clean change"]);
+
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let url = format!("http://127.0.0.1:{port}/repo.git");
+    git(&local, &["remote", "add", "origin", &url]);
+    let pushes_to = git(&local, &["remote", "get-url", "--push", "origin"]);
+    assert!(
+        pushes_to.contains("127.0.0.1:1/decoy/"),
+        "fixture: `git push origin` goes to the decoy: {pushes_to}"
+    );
+    let stop = Arc::new(AtomicBool::new(false));
+    let server = {
+        let stop = stop.clone();
+        std::thread::spawn(move || advertise_base(listener, base, stop))
+    };
+
+    let result = super::gate_outgoing(&local);
+    stop.store(true, Ordering::Relaxed);
+    let _ = server.join();
+    let marked = fs::read_to_string(&marker).unwrap_or_default();
+    assert!(
+        result.is_err() && !marked.contains("included"),
+        "the guard asked the server the push never reaches, or passed the push (marker {marked:?}): {result:?}"
     );
 }
