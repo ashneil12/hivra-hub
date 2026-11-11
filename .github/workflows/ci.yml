@@ -254,8 +254,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # The Rust half of a pull request reads the merge commit's first parent to see what the PR changed.
-          fetch-depth: ${{ matrix.part == 'rust' && github.event_name == 'pull_request' && 2 || 1 }}
+          # A pull request reads the merge commit's first parent to see what it changed: the Rust half to decide whether
+          # it runs, the web half to pick the tests the change can reach (scripts/affected-tests.mjs).
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
 
       - uses: actions/setup-node@v4
         with:
@@ -296,8 +297,23 @@ jobs:
 
       - run: npm ci
         if: steps.rust.outputs.run != 'false'
-      - run: npm test ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
+      # Hivra (11 Nov 2026): a pull request runs only the web tests its change can reach through imports, or that read a
+      # changed file from disk (the planner below). A change to package.json, the lockfile, a test or build
+      # config, the test setup, a .d.ts or CI itself runs every test, and so does anything that isn't a pull request:
+      # main's run after each merge and the pre-ship run are always the full suite. tsc below still checks every file.
+      - run: node scripts/affected-tests.mjs web ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
         if: matrix.part == 'web'
+        env:
+          AFFECTED_EVENT: ${{ github.event_name }}
+      # Script tests (scripts/*.test.*) never ran on a pull request before. They now run when the change reaches them.
+      # Not blocking yet: four of them lean on the Mac's own setup (a dev copy's Claude login, codesign) and fail on
+      # Linux, so a red step here is read, not merged against.
+      - name: Script tests the change reaches
+        if: matrix.part == 'web' && (!matrix.shard || startsWith(matrix.shard, '1/'))
+        continue-on-error: true
+        run: node scripts/affected-tests.mjs scripts
+        env:
+          AFFECTED_EVENT: ${{ github.event_name }}
       - run: npx tsc --noEmit
         if: matrix.part == 'web'
       - run: cargo fmt --check

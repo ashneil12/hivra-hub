@@ -525,7 +525,7 @@ test("macOS runs only the Rust half by default, both halves when every OS runs; 
   }
   assert.match(check, /node scripts\/ci-check-parallel\.mjs/);
   assert.match(check, /if: matrix\.part == 'all'/);
-  assert.match(check, /run: npm test[\s\S]*?\n {8}if: matrix\.part == 'web'/);
+  assert.match(check, /run: node scripts\/affected-tests\.mjs web[\s\S]*?\n {8}if: matrix\.part == 'web'/);
   assert.match(check, /run: cargo nextest run --workspace --profile ci\n {8}if: matrix\.part == 'rust'/);
   assert.doesNotMatch(check, /\n {6}- run: cargo check\n/);
   assert.doesNotMatch(check, /\n {6}- run: cargo test\n/);

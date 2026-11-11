@@ -156,7 +156,7 @@ test("the check job decides once, before any Rust step, and only for the Rust ha
   const firstRust = steps.findIndex((step) => /rust-toolchain|cargo|Linux system dependencies/.test(step.head + step.text));
   assert.ok(at < firstRust, "the decision comes before the Rust toolchain and the Linux packages");
   // The merge commit's first parent must be in the checkout for the diff.
-  assert.match(steps[0].text, /fetch-depth: \$\{\{ matrix\.part == 'rust' && github\.event_name == 'pull_request' && 2 \|\| 1 \}\}/);
+  assert.match(steps[0].text, /fetch-depth: \$\{\{ github\.event_name == 'pull_request' && 2 \|\| 1 \}\}/);
 });
 
 test("every step that serves the Rust half obeys the decision", () => {
@@ -173,7 +173,7 @@ test("every step that serves the Rust half obeys the decision", () => {
 
 test("the web half never reads the decision, so a skipped Rust half cannot skip web checks", () => {
   for (const step of checkSteps()) {
-    if (/npm test|tsc --noEmit/.test(step.text)) {
+    if (/npm test|affected-tests\.mjs|tsc --noEmit/.test(step.text)) {
       assert.doesNotMatch(step.cond, /steps\.rust/, step.head);
     }
   }

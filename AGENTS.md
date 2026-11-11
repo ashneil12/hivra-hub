@@ -188,9 +188,17 @@ itself; `src/features/hub/model/hivraLayout.test.ts` fails if a merge drops the 
 ## Development basics
 
 - Work in a worktree or a branch; never edit the installed app in place.
-- `npm run check` runs the web checks (`vitest run` + `tsc --noEmit`), the script tests
+- **Test what your change can reach, not everything (the default).** While you work and before you push, run
+  `npm run check:affected`: the web and script tests whose imports reach a changed file (or that read one from disk),
+  `tsc --noEmit` on everything, and the Rust check only when a change reaches it (`scripts/affected-tests.mjs`; it
+  compares with `origin/main`, uncommitted edits included). A pull request's CI does the same. A change to
+  `package.json`, the lockfile, a test, build or TypeScript config, the test setup, a `.d.ts` or CI itself runs every
+  test, and so does every run that isn't a pull request.
+- `npm run check` is the full suite: the web checks (`vitest run` + `tsc --noEmit`), the script tests
   (`node --test scripts/*.test.cjs scripts/*.test.mjs`) and the Rust checks (`cargo fmt --check`,
-  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test`). Run it before calling anything done.
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test`). Main runs it after every merge and
+  `hub:check-all` runs it before a ship; run it yourself only when the work asks for it (a dependency bump, a change
+  to shared test setup, a release).
 - The hub flag `VITE_MONOCODE_HUB=1` is a **build-time** Vite variable (`src/features/hub/model/hubBundle.ts`,
   `IS_HUB_BUNDLE`). It is what makes the app open straight on the hub. Both `tauri.conf.json` and the overlay
   set it, so it is always on: in a build **and in dev** (`npm run hub:dev`; checked by
