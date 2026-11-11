@@ -3554,20 +3554,29 @@ mod tests {
     }
 
     /// `file:///C:/x` must not be read as `C:/x` relative to this process's working folder.
+    /// The decoy is created in a temp folder, and nothing outside that folder is removed.
     #[cfg(unix)]
     #[test]
     fn a_file_url_with_a_drive_letter_does_not_use_the_working_folder() {
-        let cwd = std::env::current_dir().expect("cwd");
-        let decoy_dir = cwd.join("C:");
-        let decoy = decoy_dir.join("wp134-not-the-working-folder");
+        let scratch = dir();
+        static CWD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _lock = CWD.lock().expect("cwd lock");
+        struct Restore(PathBuf);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                let _ = std::env::set_current_dir(&self.0);
+            }
+        }
+        // Declared after the scratch, so the working folder is restored before the temp folder is removed.
+        let _restore = Restore(std::env::current_dir().expect("cwd"));
+        std::env::set_current_dir(scratch.path()).expect("chdir");
+        let decoy_dir = scratch.path().join("C:");
         std::fs::create_dir_all(&decoy_dir).expect("decoy dir");
-        std::fs::write(&decoy, b"decoy").expect("decoy");
+        std::fs::write(decoy_dir.join("wp134-not-the-working-folder"), b"decoy").expect("decoy");
         let result = canonical_of_value("file:///C:/wp134-not-the-working-folder");
-        let _ = std::fs::remove_file(&decoy);
-        let _ = std::fs::remove_dir(&decoy_dir);
         match result {
             Ok(Some(path)) => assert!(
-                !Path::new(&path).starts_with(&cwd),
+                !Path::new(&path).starts_with(scratch.path()),
                 "the file URL resolved inside the working folder: {path}"
             ),
             Ok(None) => panic!("the file URL was not treated as a file"),
