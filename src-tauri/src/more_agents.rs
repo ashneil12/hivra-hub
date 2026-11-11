@@ -3168,7 +3168,7 @@ mod tests {
             })
         };
         let mut failures = Vec::new();
-        for _ in 0..400 {
+        for _ in 0..2000 {
             let run = approved_spawn(&data, "wp134", &path_value).expect("approved");
             if let Err(error) = confirm_before_spawn(&data, "wp134", &run.command) {
                 failures.push(error);
@@ -3178,7 +3178,7 @@ mod tests {
         other.join().expect("other chat");
         assert!(
             failures.is_empty(),
-            "{} of 400 starts were refused while another chat used the same agent: {:?}",
+            "{} of 2000 starts were refused while another chat used the same agent: {:?}",
             failures.len(),
             failures.first()
         );
@@ -3220,6 +3220,38 @@ mod tests {
             assert!(
                 approved_spawn(d.path(), id, &path_value).is_err(),
                 "{id}: an edited @file ran on the old approval"
+            );
+        }
+    }
+
+    // Review #241 r1 repro (MEDIUM, pin bypass; not new in #241, same class as r3's file: URL): a flag that takes its
+    // value after a colon is not split. `java -javaagent:/abs/agent.jar -jar /abs/app.jar` pins app.jar but not the
+    // agent jar, which java loads and runs first, so an edit to it runs on the old approval. `--config:../x` and
+    // `-p:../x` (dotnet, msbuild and other colon-style CLIs) name a file outside the run folder and are not refused.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r1_a_file_after_a_colon_flag_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-jvm", b"#!/bin/sh\n");
+        let jar = d.path().join("agent.jar");
+        std::fs::write(&jar, b"approved-jar").expect("jar");
+        let path_value = bin.to_string_lossy().into_owned();
+        let arg = format!("-javaagent:{}", jar.to_string_lossy());
+        let agent = entry("wp134", "wp134-jvm", &[arg.as_str()]);
+        if checked_fields(&agent).is_ok() {
+            write_agents(d.path(), 0, vec![agent]).expect("seed");
+            approve(d.path(), "wp134", &path_value).expect("approve");
+            std::fs::write(&jar, b"changed-jar").expect("edit");
+            assert!(
+                approved_spawn(d.path(), "wp134", &path_value).is_err(),
+                "an edited -javaagent: jar ran on the old approval"
+            );
+        }
+        for relative in ["--config:../x", "-p:../x"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/wp134-jvm", &[relative])).is_err(),
+                "{relative} names a file outside the run folder"
             );
         }
     }
