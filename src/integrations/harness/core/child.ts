@@ -369,6 +369,8 @@ export async function spawnChild(
   },
   /** The provider's default CLI, not a configured override. */
   defaultBinary?: boolean,
+  /** Codex only: its own sandbox is already on, and macOS refuses a sandbox inside a sandbox. */
+  skipOuterSandbox?: boolean,
   /** Round 7: the folder the crew gate judges the process against, when it is not the folder the process runs in. */
   crewFolder?: string,
 ): Promise<void> {
@@ -400,6 +402,7 @@ export async function spawnChild(
     ...(codexStore ? { codexStore } : {}),
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(customRoute ? { customRoute } : {}),
+    ...(skipOuterSandbox ? { skipOuterSandbox: true } : {}),
     ...(crewTicket ? { crewTicket } : {}),
     ...(crewFolder ? { crewFolder } : {}),
   });

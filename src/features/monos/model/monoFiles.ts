@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { recordSavedSoul } from "./soulSaved";
 import {
+  commitRoster,
   findMono,
   HANDED_KEY,
   migrateLegacyMonoStorage,
@@ -188,7 +189,22 @@ function coordinatorSoul(monoId: string, soul: string): boolean {
   return soul.includes("I am the coordinator.");
 }
 
+/** The soul already has the charter, so this Mono is the captain. A missed write is tried on the next open. */
+function flagCaptain(monoId: string): void {
+  commitRoster((roster) => {
+    const index = roster.findIndex((mono) => mono.id === monoId);
+    if (index < 0 || roster[index]?.captain === true) return null;
+    const next = roster.slice();
+    next[index] = { ...roster[index], captain: true };
+    return next;
+  });
+}
+
 async function keepCaptainCharter(monoId: string, files: MonoFiles): Promise<MonoFiles> {
+  if (hasCaptainCharter(files.soul)) {
+    flagCaptain(monoId);
+    return files;
+  }
   if (!files.soul || !coordinatorSoul(monoId, files.soul)) return files;
   const soul = ensureCaptainCharter(files.soul);
   try {
@@ -199,6 +215,7 @@ async function keepCaptainCharter(monoId: string, files: MonoFiles): Promise<Mon
       expectedHash: files.soulHash,
     });
     recordSavedSoul(monoId, soul, soulHash);
+    flagCaptain(monoId);
     return { ...files, soul, soulHash };
   } catch {
     // A conflict or a miss is not final: the file stays as it was and the next open tries again.
@@ -268,8 +285,13 @@ export async function writeAgentFile(
 ): Promise<string> {
   let saving = text;
   if (path === "SOUL.md") {
-    const current = await readAgentFile(monoId, path).catch(() => undefined);
-    if (current && hasCaptainCharter(current.text) && !hasCaptainCharter(text)) {
+    let current: Awaited<ReturnType<typeof readAgentFile>>;
+    try {
+      current = await readAgentFile(monoId, path);
+    } catch {
+      throw new Error("The soul could not be read, so it was not saved.");
+    }
+    if (hasCaptainCharter(current.text) && !hasCaptainCharter(text)) {
       throw new Error("The captain charter is fixed. Edit the personality beside it.");
     }
     if (hasCaptainCharter(text)) saving = withLockedRole(text);

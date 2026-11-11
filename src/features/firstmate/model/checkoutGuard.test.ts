@@ -86,3 +86,48 @@ describe("the after-turn checkout check (Hivra WP-10)", () => {
     expect(firstMateLaunch({})).toEqual({});
   });
 });
+
+describe("the after-turn protected-file check (WP-178 items 3.3 and 3.4, report only)", () => {
+  function withProtected(
+    before: Record<string, string>,
+    after: Record<string, string>,
+  ): CheckoutGuardBackend & { protectedSnapshot: ReturnType<typeof vi.fn> } {
+    const b = backend(null);
+    let current = before;
+    return Object.assign(b, {
+      protectedSnapshot: vi.fn(async () => {
+        const out = current;
+        current = after;
+        return out;
+      }),
+    });
+  }
+
+  it("reports a first-mate turn that changed .git/hooks or a secret path, and blocks nothing", async () => {
+    const b = withProtected({ ".git/hooks/pre-commit": "1", "~/.ssh/id_ed25519": "1:10" }, {
+      ".git/hooks/pre-commit": "2",
+      "~/.ssh/id_ed25519": "1:20",
+    });
+    const guard = new FirstMateTurnGuard(b);
+    guard.begin("mate", "/p");
+    const report = await guard.endProtected("mate");
+    expect(report?.touched.map((t) => `${t.kind}:${t.path}`).sort()).toEqual([
+      "protected:.git/hooks/pre-commit",
+      "secret:~/.ssh/id_ed25519",
+    ]);
+    expect(b.revert).not.toHaveBeenCalled();
+  });
+
+  it("says nothing when no protected file changed", async () => {
+    const b = withProtected({ ".git/config": "a" }, { ".git/config": "a" });
+    const guard = new FirstMateTurnGuard(b);
+    guard.begin("mate", "/p");
+    expect(await guard.endProtected("mate")).toBeUndefined();
+  });
+
+  it("is skipped when the backend has no protected snapshot, so older backends still work", async () => {
+    const guard = new FirstMateTurnGuard(backend(null));
+    guard.begin("mate", "/p");
+    expect(await guard.endProtected("mate")).toBeUndefined();
+  });
+});

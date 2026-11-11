@@ -175,6 +175,7 @@ describe.each(providers)("$id offline ACP transport", (provider) => {
       undefined,
       undefined,
       undefined,
+      undefined,
       "/repo",
     );
     expect(mock.sent.find((m) => m.method === "initialize")?.params).toMatchObject({ protocolVersion: 1 });

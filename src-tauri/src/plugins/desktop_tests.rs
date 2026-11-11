@@ -882,7 +882,7 @@ fn platform_key_uses_node_names() {
 }
 
 fn git(dir: &Path, args: &[&str]) {
-    let status = std::process::Command::new("git")
+    let status = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args(args)

@@ -113,6 +113,7 @@ pub(crate) fn run_script(
     signed_off: &[String],
     path_env: Option<String>,
     timeout: Duration,
+    wrap: Option<&[std::ffi::OsString]>,
 ) -> (bool, String) {
     let ext = script.extension().and_then(|e| e.to_str()).unwrap_or("");
     let mut cmd = if matches!(ext, "mjs" | "js" | "ts" | "cjs") {
@@ -131,6 +132,9 @@ pub(crate) fn run_script(
         cmd.env("PATH", path);
     }
     cmd.current_dir(script.parent().unwrap_or(Path::new("/")));
+    // The script lives in the data folder, which the profile already refuses to write. The wrap is the second line:
+    // the script runs inside the sandbox too, and a wrap that cannot be built does not run it unsandboxed.
+    let cmd = crate::agent_sandbox::under_wrap(cmd, wrap);
     run_collected(cmd, timeout, "check")
 }
 
@@ -206,6 +210,7 @@ pub async fn run_worker_gate(
     signed_off: bool,
 ) -> Result<Option<GateRun>, String> {
     let dir = gates_dir(&app)?;
+    let data_dir = app.path().app_data_dir().ok();
     // WP-91: an orchestration worker's checkout may be a slot of the worktree pool.
     let pool_slots = crate::worktree_pool::slots_dir_for(&app);
     tauri::async_runtime::spawn_blocking(move || {
@@ -218,12 +223,17 @@ pub async fn run_worker_gate(
         } else {
             Vec::new()
         };
+        let wrap = crate::agent_sandbox::action_wrap(
+            data_dir.as_deref(),
+            std::slice::from_ref(&checkout),
+        )?;
         let (ok, output) = run_script(
             &script,
             &checkout,
             &items,
             crate::harness::login_shell_path(),
             GATE_TIMEOUT,
+            wrap.as_deref(),
         );
         Ok(Some(GateRun {
             name: config.name.unwrap_or_else(|| "Check".into()),
@@ -375,6 +385,7 @@ mod tests {
             &[],
             None,
             Duration::from_secs(10),
+            None,
         );
         assert!(!ok);
         assert!(said.contains("DELETE /x is not signed off"), "{said}");
@@ -384,6 +395,7 @@ mod tests {
             &["DELETE /x".into()],
             None,
             Duration::from_secs(10),
+            None,
         );
         assert!(ok, "{said}");
         assert!(said.contains("on /tmp/co signed DELETE /x"));
@@ -410,6 +422,7 @@ mod tests {
                 &[],
                 None,
                 Duration::from_millis(300),
+                None,
             );
             if !said.contains("Text file busy") {
                 break;
