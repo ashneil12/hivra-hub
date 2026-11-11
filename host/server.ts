@@ -4,6 +4,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { hostname, homedir } from "node:os";
+import { dirname, join } from "node:path";
 import { execFile } from "node:child_process";
 import { realpath, stat } from "node:fs/promises";
 import { promisify } from "node:util";
@@ -14,6 +15,18 @@ import {
 } from "../src/features/connections/model/protocol";
 import { HostEngine } from "./engine";
 import { HostFirstMate } from "./firstmate/service";
+import { HostTeleportStore } from "./teleport/store";
+import { isTeleportMethod, teleportRpc } from "./teleport/rpc";
+import { createHash as teleportHash } from "node:crypto";
+// WP-177: the paired device. A stable device key survives a new bearer token, so re-pairing does not orphan a moved chat.
+// The token itself is never stored. A call with no key still uses the token hash, for an older desktop.
+const deviceOf = (token: string, params: Record<string, unknown>) => {
+  const claimed = typeof params.deviceKey === "string" ? params.deviceKey : "";
+  if (/^[A-Za-z0-9]{16,80}$/.test(claimed)) {
+    return teleportHash("sha256").update(`device:${claimed}`).digest("hex");
+  }
+  return teleportHash("sha256").update(token).digest("hex");
+};
 import { writeAttachmentChunk, readAttachmentChunk } from "./attachments";
 import type { LinkedWorkItem } from "../src/features/sessions/model/session";
 import { parseGithubWorkItemUrl } from "../src/features/sessions/model/sessionWorkItem";
@@ -42,6 +55,7 @@ import {
   writeHostFile,
 } from "./workspace";
 import { WorkspaceCommands } from "./workspace-commands";
+import { hostChatSessions } from "./teleport/sessions";
 import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
 import { discoverClaudeModels } from "../src/integrations/harness/providers/claude/claudeCatalog";
 import { discoverCursorModels } from "../src/integrations/harness/providers/cursor/cursorCatalog";
@@ -144,6 +158,16 @@ export function createHostServer(
   const transfers = new SyncTransfers();
   // WP-60: a remote project's first mate keeps its records on this host.
   const firstMate = new HostFirstMate(engine);
+  // WP-177: a chat moved to this host is kept in its own store, next to the attachments, never in session rows.
+  const teleport = new HostTeleportStore({
+    dir: join(dirname(engine.store.attachmentDir), "teleport"),
+    selfId: engine.store.environmentId,
+    providers,
+    // The WP-60 lease root: the first mate's leases, so one place holds every host lease.
+    leaseRoot: join(dirname(engine.store.attachmentDir), "firstmate-leases"),
+    // H4: a copy this host activates is a real session in its own session list.
+    sessions: hostChatSessions(engine.store),
+  });
   const workspace = new WorkspaceCommands(
     engine.store,
     (projectId, action) => engine.withIdleProject(projectId, action),
@@ -627,6 +651,19 @@ export function createHostServer(
             break;
           case "firstmate.wakes":
             result = firstMate.wakes(params.projectId);
+            break;
+          case "teleport.read":
+          case "teleport.freeze":
+          case "teleport.thaw":
+          case "teleport.canResume":
+          case "teleport.receive":
+          case "teleport.discard":
+          case "teleport.activate":
+          case "teleport.holds":
+          case "teleport.release":
+          case "teleport.abort":
+            if (!isTeleportMethod(input.method)) throw new Error("Unsupported host method");
+            result = await teleportRpc(teleport, input.method, params, deviceOf(token, params));
             break;
           default:
             throw new Error("Unsupported host method");

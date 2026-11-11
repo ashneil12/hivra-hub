@@ -171,6 +171,9 @@ function copyBlocks(
   } catch {
     return null;
   }
+  // A move notice belongs to this chat's move, not to the copy. The same notices are dropped from an imported copy.
+  cloned = cloned.filter((block) => !(block.notice ?? "").startsWith("teleport"));
+  if (cloned.length === 0) return null;
   const blockIds = new Map<string, string>();
   for (const block of cloned) {
     const previous = block.id;

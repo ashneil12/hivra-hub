@@ -542,7 +542,21 @@ export type Block = {
     /** The chat moved to (or started on) another account of its provider because one hit its limit (E5, accountWaterfall.ts). */
     | "account-moved"
     /** Ash wrote to a chat that is held on his OK for a tool call: it can't answer until he decides (approvalWait.ts). */
-    | "waiting-on-you";
+    | "waiting-on-you"
+    /** WP-177: the chat moved to another machine. The text names the host; the marker is the chat's only saved trace here. */
+    | "teleported"
+    /** WP-177: the chat came back to this Mac from another machine. */
+    | "teleported-back"
+    /** WP-177: a move froze this chat here until it is released or undone (the move's id is in the block id). */
+    | "teleport-frozen"
+    /** WP-177: a moved copy is stored here, not yet activated (the move's id is in the block id). */
+    | "teleport-incoming"
+    /** WP-177: this machine refused a move id for good, so a late copy of that move is turned away. */
+    | "teleport-aborted"
+    /** WP-177: the chat is back here, and the other machine has not confirmed it dropped its copy. */
+    | "teleport-release-owed"
+    /** WP-177: this Mac asked the other machine to freeze, and has not heard back yet. */
+    | "teleport-freeze-asked";
   /** An agent-to-agent note on a system block (who messaged whom, got stuck, reported; monos/model/agentNotes.ts). */
   agentNote?: import("../../monos/model/agentNotes").AgentNote;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
@@ -657,6 +671,11 @@ export type Session = {
   monoTranscript?: { before: number | null; firstBlockId: string | null };
   /** True while a harness turn is in flight. */
   busy?: boolean;
+  /**
+   * Set when a move reads a chat that is in the trash. In memory only: a save never writes it.
+   * A copy is not accepted back into a trashed chat.
+   */
+  trashed?: boolean;
   /** The provider has accepted this turn and can take live follow-ups. */
   turnReady?: boolean;
   /**
@@ -705,6 +724,13 @@ export type Session = {
   ephemeral?: boolean;
   /** Provider-side conversation id (Cursor ACP session id). */
   providerSessionId?: string;
+  /**
+   * WP-177: this chat was moved in (to a host, or back to this Mac) and has no provider conversation yet. Its next turn
+   * sends the chat so far with the text (movedChatPrompt), until the provider gives it a session id.
+   */
+  moveBriefOwed?: boolean;
+  /** WP-177: the machine this chat was moved from, for the first turn's brief. */
+  movedFrom?: string;
   /** Named local credential profile used by Claude or Codex. */
   providerAccountId?: string;
   /** Context-window level reported by the harness. Absent until it reports. */

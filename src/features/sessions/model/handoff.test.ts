@@ -6,6 +6,7 @@ import {
   buildDeterministicHandoff,
   buildHandoffComposerCard,
   buildOutgoingHandoffPrompt,
+  movedChatPrompt,
   chooseHandoffBrief,
   completeHandoff,
   consumeHandoff,
@@ -465,5 +466,35 @@ describe("handoff fence tags", () => {
     const prompt = wrapHandoffPrompt(hostile, "codex", "Next");
     expect(prompt.split("</handoff>")).toHaveLength(2);
     expect(prompt.endsWith("</handoff>")).toBe(true);
+  });
+});
+
+describe("movedChatPrompt (WP-177)", () => {
+  type Chat = Parameters<typeof movedChatPrompt>[0];
+  const chat = (over: Record<string, unknown> = {}) =>
+    ({
+      id: "moved",
+      harness: "claude",
+      model: "claude:test",
+      title: "Moved",
+      cwd: "/work",
+      runtimeMode: "default",
+      blocks: [
+        { id: "u1", role: "user", text: "Remember the codeword teal." },
+        { id: "a1", role: "assistant", text: "Noted: the codeword is teal." },
+      ],
+      ...over,
+    }) as unknown as Chat;
+
+  it("sends the chat so far with the first turn of a moved chat, then the turn's own text", () => {
+    const prompt = movedChatPrompt(chat({ moveBriefOwed: true }), "What codeword did I ask you to remember?");
+    expect(prompt).toContain("Remember the codeword teal.");
+    expect(prompt).toContain("Noted: the codeword is teal.");
+    expect(prompt.endsWith("What codeword did I ask you to remember?")).toBe(true);
+  });
+
+  it("leaves the text alone once the provider has a session, or when no move is owed", () => {
+    expect(movedChatPrompt(chat({ moveBriefOwed: true, providerSessionId: "prov-1" }), "Next")).toBe("Next");
+    expect(movedChatPrompt(chat(), "Next")).toBe("Next");
   });
 });
