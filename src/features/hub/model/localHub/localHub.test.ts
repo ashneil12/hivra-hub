@@ -279,3 +279,29 @@ describe("the one-time Ash OS import", () => {
     expect((await hub.projects()).projects.map((p) => p.name)).toEqual(["My EXO"]);
   });
 });
+
+describe("sharing a project with the team (WP-80)", () => {
+  it("is a flag on the project that only the sharing call sets, and it survives a restart", async () => {
+    const disk = memoryDisk();
+    const first = new LocalHub(disk);
+    await first.projectCreate({ name: "EXO game", project_id: "exo", folder: "/tmp/exo" });
+    expect((await first.projects()).projects[0].shared).toBeUndefined();
+
+    await first.projectRename({ project_id: "exo", shared: true });
+    const again = new LocalHub(disk);
+    const [shared] = (await again.projects()).projects;
+    expect(shared.shared).toBe(true);
+    // The local folder stays on this machine; sharing does not touch it.
+    expect(shared.folder).toBe("/tmp/exo");
+
+    await again.projectRename({ project_id: "exo", shared: false });
+    expect((await again.projects()).projects[0].shared).toBe(false);
+  });
+
+  it("does not share anything on its own when a project is only renamed", async () => {
+    const hub = new LocalHub(memoryDisk());
+    await hub.projectCreate({ name: "EXO game", project_id: "exo" });
+    await hub.projectRename({ project_id: "exo", name: "EXO" });
+    expect((await hub.projects()).projects[0].shared).toBeUndefined();
+  });
+});

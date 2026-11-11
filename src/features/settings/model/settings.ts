@@ -340,6 +340,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "ssh remote connect host server environment",
   },
   {
+    id: "team-workspace",
+    section: "connections",
+    label: "Share projects with my team",
+    keywords: "team workspace shared projects server invitation join address sync collaborate off",
+  },
+  {
     id: "mcp-servers",
     section: "mcp",
     label: "MCP servers",
