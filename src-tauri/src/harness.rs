@@ -1069,7 +1069,10 @@ pub fn harness_spawn(
     apply_provider_account(&app, &mut cmd, account.as_ref())?;
     // "Other models": a Claude Code session on a non-Claude model goes through the hub's local router with the
     // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
-    if let Some((set, remove)) = routed {
+    // The routed session's router token (WP-129 L2) is held by the stdout reader below, so it ends with the session.
+    let mut routed_session = None;
+    if let Some(((set, remove), session)) = routed {
+        routed_session = Some(session);
         for key in remove {
             cmd.env_remove(key);
         }
@@ -1188,6 +1191,7 @@ pub fn harness_spawn(
     let stdout_store = codex_store;
     let stdout_run = run.clone();
     thread::spawn(move || {
+        let _routed_session = routed_session;
         for line in BufReader::new(stdout).lines() {
             let Ok(line) = line else { break };
             if crate::harness_runs::ends_turn(&line) {

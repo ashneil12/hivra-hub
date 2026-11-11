@@ -35,13 +35,23 @@ describe("connector logins live in the Keychain", () => {
     c.setConnectorKeychain(k);
     c.addConnectors([{ id: "github", name: "GitHub", projectId: "hivra" }]);
     await c.signIn("github", { account: "dummy@example.invalid", secret: "not-a-real-secret" });
-    expect(k.store).toHaveBeenCalledWith("monocode-hub-test:github", "dummy@example.invalid", "not-a-real-secret");
+    expect(k.store).toHaveBeenCalledWith("monocode-hub-test:login:github", "dummy@example.invalid", "not-a-real-secret");
     expect(c.allConnectors()[0]).toMatchObject({ signedIn: true, account: "dummy@example.invalid" });
     expect(localStorage.getItem("monocode:hub-connectors")).not.toContain("not-a-real-secret");
     expect(c.signInState("github")).toBe("on-this-mac");
     await c.signOut("github");
     expect(k.items.size).toBe(0);
     expect(c.allConnectors()[0].signedIn).toBe(false);
+  });
+
+  it("a connector id from an imported setup can never name a model key", async () => {
+    localStorage.removeItem("monocode:hub-keychain-test");
+    const c = await import("./connectors");
+    // The model keys are `monocode-hub:model-key`. A connector named like that still lands under `login:`.
+    for (const id of ["model-key", "connector:x", "page-source:p"]) {
+      expect(c.keychainService(id)).toBe(`monocode-hub:login:${id}`);
+      expect(c.keychainService(id)).not.toBe("monocode-hub:model-key");
+    }
   });
 
   it("a Keychain that refuses leaves it signed out with the reason", async () => {
