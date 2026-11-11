@@ -624,6 +624,18 @@ export async function readBinaryFile(path: string): Promise<Uint8Array> {
 }
 
 /**
+ * The bytes of one of the app's generated images, or null when its file is not here. The path comes from a saved chat,
+ * so the app reads it only from its own generated-images folder (symlinks followed) and answers with nothing for
+ * anything else: gone, outside that folder, or an empty path. Always asked of the app on this Mac, never routed to a
+ * connected machine.
+ */
+export async function readGeneratedImage(path: string): Promise<Uint8Array | null> {
+  if (!path) return null;
+  const buffer = await invokeLocal<ArrayBuffer | null>("read_generated_image", { path });
+  return buffer && buffer.byteLength > 0 ? new Uint8Array(buffer) : null;
+}
+
+/**
  * Bytes of an image a project's Markdown document shows. `path` is relative to
  * `root`, and the file is read only if it resolves inside `root`, symlinks
  * included. A connected machine already keeps every read inside its projects.
@@ -634,6 +646,30 @@ export function readProjectImage(root: string, path: string): Promise<Uint8Array
   return invokeLocal<ArrayBuffer>("read_project_image", { root, path }).then(
     (buffer) => new Uint8Array(buffer),
   );
+}
+
+/**
+ * Bytes of an image a chat's Markdown shows from this computer. Rust reads it
+ * only if it lies inside a folder the app's records give chat `sessionId` (its
+ * own folder and worktree, its Mono's projects and their worktrees, its
+ * workers' folders) or the app's generated-images folder, symlinks followed,
+ * and its bytes are an image; the reply that named it is untrusted. A
+ * connected machine already keeps every read inside its projects.
+ */
+export function readChatImage(path: string, sessionId: string): Promise<Uint8Array> {
+  if (path.startsWith(REMOTE_PATH_PREFIX)) return readBinaryFile(path);
+  return invokeLocal<ArrayBuffer>("read_chat_image", { path, sessionId }).then(
+    (buffer) => new Uint8Array(buffer),
+  );
+}
+
+/**
+ * Let the asset protocol stream one local video a chat's Markdown shows. Rust
+ * adds it to the scope, and answers with the path to load, only if it lies
+ * inside a folder the app's records give chat `sessionId`.
+ */
+export function allowVideoStream(path: string, sessionId: string): Promise<string> {
+  return invokeLocal<string>("allow_video_stream", { path, sessionId });
 }
 
 export type GeneratedImageAsset = {
@@ -649,8 +685,14 @@ export function saveGeneratedImage(input: {
   return invoke<GeneratedImageAsset>("save_generated_image", input);
 }
 
-export function deleteGeneratedImages(paths: string[]): Promise<void> {
-  return invoke<void>("delete_generated_images", { paths });
+/** What a generated-image delete did. `skipped` counts paths it refused (outside the images folder); they are left alone. */
+export type GeneratedImageDeletion = {
+  removed: number;
+  skipped: number;
+};
+
+export function deleteGeneratedImages(paths: string[]): Promise<GeneratedImageDeletion> {
+  return invoke<GeneratedImageDeletion>("delete_generated_images", { paths });
 }
 
 export function writeTextFile(path: string, content: string): Promise<void> {

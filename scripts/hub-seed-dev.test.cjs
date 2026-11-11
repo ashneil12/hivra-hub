@@ -54,6 +54,8 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO workspace_snapshot VALUES (1, '{"tabs":["s1"]}', 5);
     CREATE TABLE worktree_removals (path TEXT PRIMARY KEY, sessions_json TEXT NOT NULL);
     INSERT INTO worktree_removals VALUES ('/Users/ash/Worktrees/real', '[]');
+    CREATE TABLE imported_chat_folders (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, worktree_cwd TEXT, blocked INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO imported_chat_folders VALUES ('s1', '/Users/old/Projects/app', NULL, 0);
     CREATE TABLE automations (id TEXT PRIMARY KEY, definition_json TEXT NOT NULL, enabled INTEGER NOT NULL, next_run_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     INSERT INTO automations VALUES ('auto-1', '{}', 1, 9, 9);
     CREATE TABLE automation_runs (id TEXT PRIMARY KEY, automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, run_json TEXT NOT NULL);
@@ -86,6 +88,8 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO pr_watches VALUES ('w1', 's1', 'ashneil12/hivra', 42, 'watching');
     CREATE TABLE pr_watch_wakes (id TEXT PRIMARY KEY, watch_id TEXT NOT NULL, owner_session TEXT NOT NULL, delivery TEXT NOT NULL);
     INSERT INTO pr_watch_wakes VALUES ('pr-watch-w1-1', 'w1', 's1', 'pending'), ('pr-watch-w1-2', 'w1', 's1', 'delivered');
+    CREATE TABLE hub_local_docs (key TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO hub_local_docs VALUES ('fan-out-compares', '[{"id":"compare-1"}]', 1, 3), ('fresh-eyes', '{"settings":{},"reviews":[{"requestId":"r1"}]}', 1, 3), ('home', '{"recent":[]}', 1, 2);
     CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);
     INSERT INTO notes VALUES ('n1', 'kept');
   `);
@@ -129,6 +133,7 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     inFlightTurns: 1,
     workspaceSnapshot: 1,
     worktreeRemovals: 1,
+    importedChatFolders: 1,
     automationRuns: 2,
     automationEventClaims: 1,
     automations: 1,
@@ -144,6 +149,8 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     autopilotResumes: 1,
     prWatchWakes: 2,
     prWatches: 1,
+    fanOutCompares: 1,
+    freshEyesReviews: 1,
     queuedMessages: 1,
     goals: 1,
     providerSessionIds: 2,
@@ -156,10 +163,20 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     { id: "s2", title: "Chat two", blocks_json: '[{"role":"user","text":"yo"}]', provider_session_id: null, queued_messages_json: "[]", queue_status: null },
     { id: "s3", title: "Chat three", blocks_json: "[]", provider_session_id: null, queued_messages_json: "[]", queue_status: null },
   ]);
-  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
+  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "imported_chat_folders", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
     assert.deepEqual(rows(copy, `SELECT count(*) AS n FROM ${table}`), [{ n: 0 }], table);
+  assert.deepEqual(
+    rows(copy, "SELECT key FROM hub_local_docs ORDER BY key"),
+    [{ key: "home" }],
+    "a held brief and its review name Ash's real chats and stay behind; the other hub documents come along",
+  );
   assert.deepEqual(rows(copy, "SELECT count(*) AS n FROM autopilot_log"), [{ n: 1 }], "the autopilot log is history and stays");
   assert.deepEqual(rows(copy, "SELECT body FROM notes"), [{ body: "kept" }], "everything else is kept");
+  assert.deepEqual(
+    rows(copy, "SELECT key FROM hub_local_docs ORDER BY key"),
+    [{ key: "home" }],
+    "a compare's records name Ash's real worktrees and stay behind; the other hub documents come along",
+  );
 
   assert.deepEqual(fingerprint(daily.file), before, "the source's database and WAL are byte for byte the same");
   assert.deepEqual(fs.readdirSync(path.dirname(daily.file)).sort(), ["monocode.db", "monocode.db-shm", "monocode.db-wal"], "nothing new beside the source");

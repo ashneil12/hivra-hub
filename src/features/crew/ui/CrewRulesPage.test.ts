@@ -3,6 +3,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
+import { builderScale, resetWorkerPool } from "../../monos/model/workerPool";
 import { CrewRulesPage } from "./CrewRulesPage";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -152,4 +153,50 @@ it("shows a lost save when the stored revision is not the one just written", asy
     click("Save");
   });
   expect(sets().at(-1)?.revision).toBe(1);
+});
+
+it("says on Crew defaults that the builder pauses apply to all projects", async () => {
+  invokeMock.mockImplementation((cmd: string) =>
+    cmd === "crew_rules_get"
+      ? Promise.resolve({ rules: [], plugins: [], revision: 0, signedIn: [] })
+      : Promise.resolve(undefined),
+  );
+  show();
+  await act(async () => undefined);
+  const pauses = container.querySelector("[data-builder-pauses]");
+  expect(pauses?.textContent).toContain("Pause new builders when");
+  expect(pauses?.textContent).toContain("These pauses apply to all projects.");
+});
+
+it("shows the free disk pause on at 30 GB from the start, and lets the person turn it off and back on", async () => {
+  resetWorkerPool();
+  invokeMock.mockImplementation((cmd: string) =>
+    cmd === "crew_rules_get"
+      ? Promise.resolve({ rules: [], plugins: [], revision: 0, signedIn: [] })
+      : Promise.resolve(undefined),
+  );
+  show();
+  await act(async () => undefined);
+  const check = () => container.querySelector<HTMLInputElement>("[data-builder-pause-on='disk']")!;
+  const floor = () => container.querySelector<HTMLInputElement>("[data-builder-pause='disk']")!;
+  const line = () => container.querySelector("[data-builder-scale-line]")?.textContent ?? "";
+  expect(check().checked).toBe(true);
+  expect(floor().value).toBe("30");
+  expect(floor().disabled).toBe(false);
+  expect(line()).toContain("New builders pause when free disk is below 30 GB.");
+  expect(builderScale().pauseFreeDiskGb).toBe(30);
+
+  act(() => check().click());
+  expect(check().checked).toBe(false);
+  expect(floor().disabled).toBe(true);
+  expect(line()).toContain("Free disk is not checked.");
+  expect(builderScale().pauseFreeDiskGb).toBeNull();
+
+  // On again: back to 30, not to some old value, and the person can change it.
+  act(() => check().click());
+  expect(check().checked).toBe(true);
+  expect(floor().value).toBe("30");
+  setValue("Free disk limit in GB", "50");
+  expect(builderScale().pauseFreeDiskGb).toBe(50);
+  expect(line()).toContain("free disk is below 50 GB");
 });

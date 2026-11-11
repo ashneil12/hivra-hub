@@ -14,9 +14,17 @@ remote machine, with first mates running there around the clock.
 Hivra Cloud is the managed always-on option (SPEC.md section 9). This package is the app side only; the service
 that provides the machines is separate and out of scope here.
 
+WP-133 is the design for a phone, a web client and how they reach a machine. It does not replace this package.
+What stays: Cloud is optional, sign-in if it ever exists is a loopback flow, pairing does not send a long-lived
+key, an account check fails soft and never blocks, and the app works with no Cloud account. What WP-133 adds:
+the source of truth is the machine that holds the checkout (this desktop, or the WP-60 host on a computer that
+stays up), and phone, web and a second desktop are views of it. They connect through the SSH host that already
+exists, then a LAN or a tailnet the person runs, then an opt-in relay that cannot read the session. T3 Connect
+is not the model. SPEC section 12 still defers a hosted multi-user relay, so neither package starts one.
+
 ## Read first
 
-- WP-60; upstream's Add machine flow.
+- WP-60; WP-133 (phone, web and reachability; design only); upstream's Add machine flow.
 - OpenBot (MIT): loopback sign-in with PKCE from the desktop, the account check that is cached, fails soft and
   never blocks, routine safety rules (15-minute floor, stop after repeated failures, skip missed windows).
 - Rerun (AGPL, ideas only): pairing a remote engine without the key travelling.
@@ -35,3 +43,7 @@ that provides the machines is separate and out of scope here.
 
 - [ ] Tests against a stubbed cloud service: sign-in, pairing, account check failing soft, routine caps, away feed.
 - [ ] `npm run check` passes; a dev-copy check against a staging service once one exists.
+
+## See also
+
+Phone basics (the Expo app already in `mobile/`, off by default, no store publish) are [WP-149](WP-149-mobile-app.md). A relay, a web client, and work that continues with the laptop closed are WP-133, which extends this package. WP-149 does not add a second remote plan and does not replace the decisions above.

@@ -1,6 +1,6 @@
 import { GripVertical, X } from "../../../shared/ui/icons";
 import type { LayoutNode, SplitDir } from "../../workspace/model/layout";
-import { PaneSplitButtons } from "../../workspace/ui/PaneSplitButtons";
+import { PaneSplitButtons, PaneSplitCorner } from "../../workspace/ui/PaneSplitButtons";
 import { MonoDraftsInChat } from "../../selfBuild/ui/MonoDraftCard";
 import { TeamDraftsInChat } from "../../selfBuild/ui/TeamDraftCard";
 import { useSessionSnapshot } from "../model/sessionStateStore";
@@ -17,7 +17,11 @@ import {
 } from "react";
 import { Composer } from "./Composer";
 import { PrivateMark } from "./PrivateMark";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
+import { ChatFolderBanner } from "./ChatFolderBanner";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
+import { LeadCliNotice } from "../../firstmate/ui/LeadCliNotice";
+import { askThreadFork } from "../model/threadForkAsk";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -31,6 +35,7 @@ import { sessionEditPaths } from "../model/checkpointEdits";
 import { PromptOutline } from "./PromptOutline";
 import {
   canCompactHarnessContext,
+  harnessCannotSteer,
   type ApprovalDecision,
   type UserQuestionReply,
 } from "../../../integrations/harness";
@@ -55,8 +60,10 @@ import {
   type ComposerTurnOptions,
 } from "../model/session";
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
+import { FanOutCompare, type FanOutCompareModel } from "./FanOutCompare";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
+import { lineageForThread } from "../model/subagentLineage";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -78,6 +85,8 @@ import {
 import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { reportTeamOf, useDelegationPane } from "../../monos/hooks/useDelegationPane";
 import { readTeamReport } from "../../monos/model/teamReport";
+import { useDelegationRows } from "../../monos/model/delegationStore";
+import { ownsWork } from "../../monos/model/delegationView";
 import { MonoModelLine } from "../../monos/ui/MonoModelLine";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
 import { isCodingTeamChat, useCodingTeamVersion } from "../../hub/model/codingTeam";
@@ -113,9 +122,10 @@ import {
   loadNotesEnabled,
   subscribeNotesEnabled,
 } from "../../settings/model/settings";
+import { COMPACTING_NOTE, cantRedirectTurn } from "../model/cantDo";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
 import { MONO_PREFILL_EVENT, type MonoPrefill } from "../../monos/model/monoPrefill";
-import { resolveModel } from "../model/models";
+import { preferredModelId, resolveModel } from "../model/models";
 import { isAstraModel } from "../model/astraWelcome";
 import { isOpus55Model } from "../model/opusWelcome";
 import { AstraWelcome } from "./AstraWelcome";
@@ -198,6 +208,14 @@ export type SessionPaneProps = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
+  /** WP-135: start the same prompt on several models. A string is the reason nothing started. */
+  onCompareModels?: (
+    sessionId: string,
+    prompt: string,
+    targets: readonly { provider: HarnessId; model: string }[],
+  ) => boolean | string | Promise<boolean | string | void> | void;
+  /** WP-135: the compare started from this chat, when there is one. */
+  fanOutForSession?: (sessionId: string) => FanOutCompareModel | null;
   onSaveDraft: (
     sessionId: string,
     text: string,
@@ -357,6 +375,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onSaveDraft,
   onRemoveDraft,
   onSubmit,
+  onCompareModels,
+  fanOutForSession,
   onStop,
   onStopTurn,
   onCompactContext,
@@ -417,6 +437,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const title = sessionDisplayTitle(session.title, session.harness, firstAskOf(session));
   const isEmpty = session.blocks.length === 0;
+  // WP-122: native CLI children, separate from the first-mate crew. Read once per change to the blocks, not per render.
+  const lineage = useMemo(
+    () => lineageForThread(session.harness, session.blocks),
+    [session.harness, session.blocks],
+  );
   const editedPaths = useMemo(
     () => (session.busy ? undefined : sessionEditPaths(session.blocks)),
     [session.blocks, session.busy],
@@ -457,6 +482,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   // A coding team's own chat (codingTeam.ts) sends like a Mono's: Stop in the send button, the model line above the box.
   const teamChat = !agent && isCodingTeamChat(session.id);
   const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id), !!session.pendingQuestion);
+  // WP-120: the lead strip names the crew only when this chat has handed work out.
+  const hasCrew = ownsWork(session.id, useDelegationRows());
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
     ? monoChatBackground(mono.id)
@@ -709,6 +736,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
     return () => observer.disconnect();
   }, [glassDock, composerDockMotion.dockedRef]);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
+  const fanOutView = fanOutForSession?.(session.id) ?? null;
+  const fanOutCompare = fanOutView ? <FanOutCompare view={fanOutView} /> : null;
+  // WP-115: hide a redirect this agent cannot do, and say what to do instead.
+  const cannotRedirect = harnessCannotSteer(session.harness);
+  // The app compacting this idle chat in the background says so, and a queued
+  // message cannot be steered into a compact (it sends when that finishes).
+  const compacting = !!session.idleCompacting;
+  const steerNote = compacting
+    ? COMPACTING_NOTE
+    : session.busy && cannotRedirect
+      ? cantRedirectTurn(session.harness)
+      : undefined;
   const composer = (
     <Composer
       key={session.id}
@@ -751,6 +790,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       inboxCard={session.inboxCard}
       noteCard={session.noteCard}
       handoffCard={session.handoffCard}
+      midThreadLine={session.midThread?.line}
       question={session.pendingQuestion}
       onQuoteRequestConsumed={acknowledgeQuote}
       onInboxCardDismiss={() => onInboxCardDismiss?.(session.id)}
@@ -814,6 +854,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
         if (!dockComposer) composerDockMotion.captureLaunch();
         return onSubmit(session.id, text, attachments, options);
       }}
+      onCompareModels={
+        onCompareModels
+          ? (prompt, targets) => onCompareModels(session.id, prompt, targets)
+          : undefined
+      }
       onBtwCommand={btw.openWith}
       // A coding team's chat: Stop is its own turn; "Stop all" on the delegation line stops what it handed out.
       onStop={() => (teamChat ? (onStopTurn ?? onStop) : onStop)(session.id)}
@@ -845,8 +890,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onQueuedMessageEditingChange={(messageId) =>
         onQueuedMessageEditingChange(session.id, messageId)
       }
-      onSteerQueuedMessage={(messageId) =>
-        onSteerQueuedMessage(session.id, messageId)
+      onSteerQueuedMessage={
+        session.busy && cannotRedirect
+          ? undefined
+          : (messageId) => onSteerQueuedMessage(session.id, messageId)
       }
       onResumeQueue={() => onResumeQueue(session.id)}
       usageLimit={session.usageLimit}
@@ -863,6 +910,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       onOpenFile={onOpenFile}
       busy={!!session.busy}
+      steerNote={steerNote}
+      steerNoteBesideBox={compacting}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
       onRecallLastTurnReady={(recall) => {
@@ -892,7 +941,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       style={projectBackgroundStyle}
       className={`${
         agent && !projectBackground ? "" : "chat-pane-background "
-      }relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col`}
+      }group/pane relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col`}
       onMouseDown={() => onFocus(session.id, "pointer")}
     >
       {projectBackground?.effect === "gradient-blur" ||
@@ -959,23 +1008,31 @@ const LocalSessionPane = memo(function LocalSessionPane({
             <X className="size-3" strokeWidth={1.75} />
           </button>
         </div>
-      ) : session.private === true && !splitButtons ? (
+      ) : session.private === true ? (
         <div className="flex h-7 shrink-0 items-center px-3">
           {/* WP-111 */}
           <PrivateMark on />
         </div>
-      ) : splitButtons ? (
-        <div
-          data-pane-header=""
-          className="flex h-9 shrink-0 items-center justify-end border-b border-stroke px-1.5"
-        >
-          {/* WP-111 */}
-          {session.private === true ? <PrivateMark on /> : null}
-          {splitButtons}
-        </div>
+      ) : null}
+      {/* A chat on its own has no header bar: its split buttons show in the corner while the pane is hovered. */}
+      {!inSplit && splitButtons ? <PaneSplitCorner>{splitButtons}</PaneSplitCorner> : null}
+      {/* A chat that came in from an export with no folder here: nothing runs until one is chosen. */}
+      {!remote ? (
+        <ChatFolderBanner session={session} onChoose={(cwd) => onCwdChange(session.id, cwd)} />
       ) : null}
       {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
       <NewChatWorktreeBanner session={session} />
+      {/* WP-120: when this CLI cannot lead, the strip says why and offers a switch. */}
+      {session.firstMate ? (
+        <LeadCliNotice
+          harness={session.harness}
+          sessionId={session.id}
+          hasCrew={hasCrew}
+          onSwitch={(cli) => onModelChange(session.id, cli, preferredModelId(cli))}
+        />
+      ) : null}
+      {/* WP-121: continue this chat, or a labelled recap, until the next send. */}
+      <MidThreadSwitchNotice line={session.midThread?.line} place="header" />
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"
@@ -1052,6 +1109,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         ref={composerDockMotion.centeredRef}
                         data-session-composer
                       >
+                        {fanOutCompare}
                         {composer}
                       </div>
                     )
@@ -1066,6 +1124,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   onMouseDown={focusPane}
                 >
                   <AgentTranscript
+                    lineage={lineage}
                     blocks={
                       agent && !monoTranscript.viewingOlderPage
                         ? monoPendingTranscriptBlocks(
@@ -1075,6 +1134,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         : monoTranscript.blocks
                     }
                     sessionId={remoteSession ? undefined : session.id}
+                    mediaSessionId={remoteSession ? undefined : session.id}
                     historicalBlockIds={monoTranscript.historicalBlockIds}
                     initialTurns={agent ? MONO_PAGE_TURNS : undefined}
                     pageSize={agent ? MONO_PAGE_TURNS : undefined}
@@ -1199,6 +1259,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           }
                         : undefined
                     }
+                    onForkFromHere={(blockId) => askThreadFork(session.id, blockId)}
                     latestTurnAccessory={
                       // A Mono's chat: a new Mono or team it drafted sits after its reply, in the messages (r29, A6).
                       agent ? (
@@ -1451,6 +1512,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       </button>
                     </div>
                   ) : null}
+                  {fanOutCompare}
                   {composer}
                 </>
               )}

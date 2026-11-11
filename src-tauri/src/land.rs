@@ -103,7 +103,15 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         if !ok {
             return Err(format!("the copy couldn't be read: {why}"));
         }
-        let (ok, _, why) = git(checkout, &["add", "-A", "."], Some(&index), None)?;
+        // WP-91: a worker's handoff is a note kept in its own checkout, never one of its changes (checkpoint.rs leaves
+        // it out of integration too), so it is not work that has to land before the copy can go.
+        let handoff = format!(":(exclude){}", crate::goal_graph::handoff::DIR);
+        let (ok, _, why) = git(
+            checkout,
+            &["add", "-A", "--", ".", &handoff],
+            Some(&index),
+            None,
+        )?;
         if !ok {
             return Err(format!("the copy's changes couldn't be gathered: {why}"));
         }

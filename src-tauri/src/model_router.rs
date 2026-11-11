@@ -3,7 +3,7 @@
 //! * Keys live in the Keychain under `monocode-hub:model-key` (tests: `monocode-hub-test:model-key`; a dev copy:
 //!   `monocode-hub-dev:model-key`, see hub_keychain.rs), one item per custom model. A key goes in from the webview
 //!   and never comes back out; only the router reads it, in this process.
-//! * `model_key_test` makes one tiny real request to the provider and answers in plain words.
+//! * `model_key_test` asks the model to call one tool and answers in plain words. The key is not in the answer.
 //! * For a session on a custom model, Claude Code starts with `ANTHROPIC_BASE_URL` pointing at a router on
 //!   127.0.0.1 (random port) that turns Anthropic Messages (text, streaming, tools) into OpenAI chat completions for
 //!   that provider. The model's own key is the auth token, so Claude Code never uses Ash's claude.ai login for it,
@@ -22,6 +22,9 @@ pub const KEY_SERVICE: &str = "monocode-hub:model-key";
 pub const TEST_KEY_SERVICE: &str = "monocode-hub-test:model-key";
 
 const KEY_FAILED: &str = "That key didn't work";
+const TOOLS_YES: &str = "This model can use tools.";
+const TOOLS_NO: &str = "This model answers, but it cannot use tools, so Claude Code cannot use it.";
+const ENDPOINT_DOWN: &str = "Couldn't reach that endpoint.";
 const OLLAMA_UP: &str = "Connected, Ollama is running";
 const OLLAMA_DOWN: &str = "Can't reach Ollama on this Mac";
 /// Stand-in token for Ollama, which needs no key. It still stops Claude Code falling back to the claude.ai login.
@@ -339,25 +342,46 @@ fn host_of(url: &str) -> String {
         .unwrap_or_else(|| "the provider".into())
 }
 
-pub fn test_key(provider: &str, base_url: &str, model_id: &str, key: &str) -> KeyTestResult {
-    let model = model_id.trim();
+/// What is wrong with the request itself, before anything is sent. Ollama is left to its caller: an empty model
+/// there is a tags check, and a named model is a tool check. The same sentences as `test_key` has always used.
+fn refuse_before_request(
+    provider: &str,
+    base_url: &str,
+    model: &str,
+    key: &str,
+) -> Option<KeyTestResult> {
     if !PROVIDERS.contains(&provider) {
-        return fail("Pick a provider");
+        return Some(fail("Pick a provider"));
     }
     if !valid_base_url(provider, base_url) {
-        return fail("The base URL needs https:// (http:// only for this Mac)");
+        return Some(fail(
+            "The base URL needs https:// (http:// only for this Mac)",
+        ));
+    }
+    if provider == "ollama" {
+        return None;
+    }
+    if key.trim().is_empty() {
+        return Some(fail("Add the key"));
+    }
+    if looks_like_claude_credential(key) {
+        return Some(fail(
+            "That looks like a Claude key; use the provider's own key",
+        ));
+    }
+    if model.is_empty() {
+        return Some(fail("Add the model id"));
+    }
+    None
+}
+
+pub fn test_key(provider: &str, base_url: &str, model_id: &str, key: &str) -> KeyTestResult {
+    let model = model_id.trim();
+    if let Some(refused) = refuse_before_request(provider, base_url, model, key) {
+        return refused;
     }
     if provider == "ollama" {
         return test_ollama(base_url, model);
-    }
-    if key.trim().is_empty() {
-        return fail("Add the key");
-    }
-    if looks_like_claude_credential(key) {
-        return fail("That looks like a Claude key; use the provider's own key");
-    }
-    if model.is_empty() {
-        return fail("Add the model id");
     }
     let url = chat_url(provider, base_url);
     let body = json!({"model": model, "messages": [{"role": "user", "content": "Say ok"}], "max_tokens": 1, "stream": false});
@@ -425,6 +449,198 @@ fn test_ollama(base_url: &str, model: &str) -> KeyTestResult {
     }
 }
 
+fn probe_agent(read: Duration) -> ureq::Agent {
+    let capped = if read.is_zero() {
+        Duration::from_millis(1)
+    } else {
+        read
+    };
+    ureq::AgentBuilder::new()
+        .timeout_connect(capped.min(Duration::from_secs(10)))
+        .timeout_read(capped)
+        .timeout_write(capped.min(Duration::from_secs(30)))
+        .redirects(0)
+        .build()
+}
+
+fn post_chat(
+    agent: &ureq::Agent,
+    url: &str,
+    key: &str,
+    body: &Value,
+) -> Result<ureq::Response, Box<ureq::Error>> {
+    agent
+        .post(url)
+        .set("Authorization", &format!("Bearer {key}"))
+        .set("Content-Type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(Box::new)
+}
+
+/// At most 64KB, then dropped. A provider can echo the key; it must not be kept or logged.
+fn response_text(resp: ureq::Response) -> String {
+    let mut buf = Vec::new();
+    let _ = resp.into_reader().take(64 * 1024).read_to_end(&mut buf);
+    String::from_utf8_lossy(&buf).into_owned()
+}
+
+fn tool_probe_body(model: &str) -> Value {
+    json!({
+        "model": model,
+        "messages": [{"role": "user", "content": "Call the ping tool."}],
+        "tools": [{
+            "type": "function",
+            "function": {
+                "name": "ping",
+                "description": "Confirm you can use tools.",
+                "parameters": {"type": "object", "properties": {}}
+            }
+        }],
+        "tool_choice": "required",
+        "max_tokens": 64,
+        "stream": false
+    })
+}
+
+fn plain_probe_body(model: &str) -> Value {
+    json!({"model": model, "messages": [{"role": "user", "content": "Say ok"}], "max_tokens": 1, "stream": false})
+}
+
+fn call_name(name: Option<&str>) -> bool {
+    name.is_some_and(|text| !text.trim().is_empty())
+}
+
+fn call_has_name(call: &Value) -> bool {
+    call_name(call["function"]["name"].as_str()) || call_name(call["name"].as_str())
+}
+
+/// A real tool call: a non-empty name in `tool_calls`, or the older `function_call`. An empty list is not one,
+/// even when `finish_reason` says `tool_calls`.
+fn called_a_tool(body: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<Value>(body) else {
+        return false;
+    };
+    let message = &value["choices"][0]["message"];
+    if message["tool_calls"]
+        .as_array()
+        .is_some_and(|calls| calls.iter().any(call_has_name))
+    {
+        return true;
+    }
+    call_name(message["function_call"]["name"].as_str())
+}
+
+fn tool_or_not(text: &str) -> KeyTestResult {
+    if called_a_tool(text) {
+        ok(TOOLS_YES)
+    } else {
+        fail(TOOLS_NO)
+    }
+}
+
+fn unknown_model(model: &str) -> KeyTestResult {
+    fail(format!("The provider doesn't know the model id {model}"))
+}
+
+fn status_result(status: u16, model: &str) -> KeyTestResult {
+    match status {
+        401 | 403 => fail(KEY_FAILED),
+        404 => unknown_model(model),
+        400 | 422 => fail("The provider turned the test down"),
+        402 => fail("The key works but the account has no credit"),
+        429 => fail("The key works but the provider is rate-limiting it right now"),
+        code => fail(format!(
+            "The provider had a problem (error {code}); try again"
+        )),
+    }
+}
+
+/// A 2xx is the model's answer. ureq returns a redirect as `Ok` when none are followed, and that is not an answer.
+fn read_answer(resp: ureq::Response, model: &str) -> Result<KeyTestResult, (u16, KeyTestResult)> {
+    let status = resp.status();
+    let text = response_text(resp);
+    if (200..300).contains(&status) {
+        Ok(tool_or_not(&text))
+    } else {
+        Err((status, status_result(status, model)))
+    }
+}
+
+/// The tools request was rejected. One plain request decides whether the model answers at all.
+/// A timeout or a dropped connection here is not "no tools": the endpoint did not answer.
+fn plain_followup(agent: &ureq::Agent, url: &str, key: &str, model: &str) -> KeyTestResult {
+    match post_chat(agent, url, key, &plain_probe_body(model)) {
+        Ok(resp) => read_answer(resp, model).unwrap_or_else(|(_, result)| result),
+        Err(err) => match *err {
+            ureq::Error::Status(401 | 403, _) => fail(KEY_FAILED),
+            ureq::Error::Status(404, _) => unknown_model(model),
+            ureq::Error::Status(402, _) => fail("The key works but the account has no credit"),
+            ureq::Error::Status(429, _) => {
+                fail("The key works but the provider is rate-limiting it right now")
+            }
+            ureq::Error::Transport(_) => fail(ENDPOINT_DOWN),
+            ureq::Error::Status(_, _) => fail("The provider turned the test down"),
+        },
+    }
+}
+
+fn probe_tools(provider: &str, base_url: &str, model_id: &str, key: &str) -> KeyTestResult {
+    probe_tools_in(provider, base_url, model_id, key, Duration::from_secs(30))
+}
+
+fn probe_tools_in(
+    provider: &str,
+    base_url: &str,
+    model_id: &str,
+    key: &str,
+    read: Duration,
+) -> KeyTestResult {
+    let model = model_id.trim();
+    if let Some(refused) = refuse_before_request(provider, base_url, model, key) {
+        return refused;
+    }
+    if provider == "ollama" && model.is_empty() {
+        return test_ollama(base_url, model);
+    }
+    // A Claude credential is never sent, including to a local Ollama that was given one by mistake.
+    if looks_like_claude_credential(key) {
+        return fail("That looks like a Claude key; use the provider's own key");
+    }
+    let bearer = if key.trim().is_empty() {
+        OLLAMA_TOKEN
+    } else {
+        key.trim()
+    };
+    let url = chat_url(provider, base_url);
+    let http = probe_agent(read);
+    match post_chat(&http, &url, bearer, &tool_probe_body(model)) {
+        Ok(resp) => match read_answer(resp, model) {
+            Ok(answer) => answer,
+            // The server rejected the tool request. One plain request sees whether it answers at all.
+            Err((400 | 422, _)) => plain_followup(&http, &url, bearer, model),
+            Err((_, result)) => result,
+        },
+        Err(err) => match *err {
+            ureq::Error::Status(401 | 403, _) => fail(KEY_FAILED),
+            ureq::Error::Status(404, _) => unknown_model(model),
+            ureq::Error::Status(400 | 422, resp) => {
+                let _ = response_text(resp);
+                plain_followup(&http, &url, bearer, model)
+            }
+            ureq::Error::Status(402, _) => fail("The key works but the account has no credit"),
+            ureq::Error::Status(429, _) => {
+                fail("The key works but the provider is rate-limiting it right now")
+            }
+            ureq::Error::Status(code, _) => fail(format!(
+                "The provider had a problem (error {code}); try again"
+            )),
+            ureq::Error::Transport(_) => fail(ENDPOINT_DOWN),
+        },
+    }
+}
+
+/// Asks the model to call one tool. The key is sent to that endpoint and is not part of the answer.
+/// A cheap-memory check still uses `test_key`: that one only needs a reply, not tools.
 #[tauri::command]
 pub async fn model_key_test(
     provider: String,
@@ -432,7 +648,7 @@ pub async fn model_key_test(
     model_id: String,
     key: String,
 ) -> Result<KeyTestResult, String> {
-    tauri::async_runtime::spawn_blocking(move || test_key(&provider, &base_url, &model_id, &key))
+    tauri::async_runtime::spawn_blocking(move || probe_tools(&provider, &base_url, &model_id, &key))
         .await
         .map_err(|_| "The check didn't finish.".to_string())
 }
@@ -2185,5 +2401,422 @@ mod tests {
             window_seen,
             result["usage"]["iterations"].clone(),
         )
+    }
+
+    const SECRET: &str = "sk-test-SECRETKEY";
+
+    #[derive(Debug)]
+    struct Hit {
+        path: String,
+        auth: String,
+        body: String,
+    }
+
+    struct Local {
+        port: u16,
+        hits: std::sync::Arc<Mutex<Vec<Hit>>>,
+        done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        join: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl Drop for Local {
+        fn drop(&mut self) {
+            self.done.store(true, std::sync::atomic::Ordering::Relaxed);
+            if let Some(handle) = self.join.take() {
+                let _ = handle.join();
+            }
+        }
+    }
+
+    /// Serves `replies` in order, then holds the connection until dropped. Records every request.
+    fn local(replies: Vec<String>) -> Local {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let hits = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let hits2 = hits.clone();
+        let done2 = done.clone();
+        let join = std::thread::spawn(move || {
+            let mut left = replies;
+            let started = std::time::Instant::now();
+            while !done2.load(std::sync::atomic::Ordering::Relaxed)
+                && started.elapsed() < Duration::from_secs(8)
+            {
+                match listener.accept() {
+                    Ok((mut stream, _)) => {
+                        let _ = stream.set_nonblocking(false);
+                        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+                        let Ok(req) = read_request(&mut stream) else {
+                            continue;
+                        };
+                        hits2.lock().unwrap().push(Hit {
+                            path: req.path,
+                            auth: req
+                                .headers
+                                .get("authorization")
+                                .cloned()
+                                .unwrap_or_default(),
+                            body: String::from_utf8_lossy(&req.body).into_owned(),
+                        });
+                        if left.is_empty() {
+                            while !done2.load(std::sync::atomic::Ordering::Relaxed) {
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            break;
+                        }
+                        let answer = left.remove(0);
+                        let _ = stream.write_all(answer.as_bytes());
+                    }
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::WouldBlock
+                            || e.kind() == std::io::ErrorKind::Interrupted =>
+                    {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+        Local {
+            port,
+            hits,
+            done,
+            join: Some(join),
+        }
+    }
+
+    fn http(status: u16, reason: &str, body: &str) -> String {
+        format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        )
+    }
+
+    fn base_of(port: u16) -> String {
+        format!("http://127.0.0.1:{port}/v1")
+    }
+
+    fn no_secret(result: &KeyTestResult) {
+        let dumped = serde_json::to_string(result).unwrap();
+        assert!(!dumped.contains(SECRET), "{dumped}");
+        assert!(!result.message.contains("127.0.0.1"), "{}", result.message);
+    }
+
+    #[test]
+    fn tool_probe_says_when_the_model_calls_the_tool() {
+        let body = json!({
+            "choices": [{
+                "message": {
+                    "content": Value::Null,
+                    "tool_calls": [{
+                        "id": "1",
+                        "type": "function",
+                        "function": { "name": "ping", "arguments": format!(r#"{{"k":"{SECRET}"}}"#) }
+                    }]
+                },
+                "finish_reason": "tool_calls"
+            }]
+        })
+        .to_string();
+        let server = local(vec![http(200, "OK", &body)]);
+        let result = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "m",
+            SECRET,
+            Duration::from_secs(2),
+        );
+        assert!(result.ok);
+        assert_eq!(result.message, "This model can use tools.");
+        no_secret(&result);
+        let hits = server.hits.lock().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].auth, format!("Bearer {SECRET}"));
+        assert!(
+            hits[0].path.ends_with("/chat/completions"),
+            "{}",
+            hits[0].path
+        );
+        assert!(hits[0].body.contains("\"tool_choice\":\"required\""));
+        assert!(hits[0].body.contains("\"name\":\"ping\""));
+    }
+
+    #[test]
+    fn tool_probe_accepts_a_legacy_function_call_and_rejects_an_empty_list() {
+        assert!(called_a_tool(
+            r#"{"choices":[{"message":{"function_call":{"name":"ping","arguments":"{}"}}}]}"#
+        ));
+        assert!(!called_a_tool(
+            r#"{"choices":[{"message":{"tool_calls":[]},"finish_reason":"tool_calls"}]}"#
+        ));
+        assert!(!called_a_tool(
+            r#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"  "}}]}}]}"#
+        ));
+        assert!(!called_a_tool("not-json"));
+        let server = local(vec![http(200, "OK", "not-json")]);
+        let result = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "m",
+            SECRET,
+            Duration::from_secs(2),
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            result.message,
+            "This model answers, but it cannot use tools, so Claude Code cannot use it."
+        );
+        no_secret(&result);
+    }
+
+    #[test]
+    fn tool_probe_says_when_the_model_answers_without_tools() {
+        let body = format!(
+            r#"{{"choices":[{{"message":{{"content":"hello {SECRET}"}},"finish_reason":"stop"}}]}}"#
+        );
+        let server = local(vec![http(200, "OK", &body)]);
+        let result = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "m",
+            SECRET,
+            Duration::from_secs(2),
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            result.message,
+            "This model answers, but it cannot use tools, so Claude Code cannot use it."
+        );
+        no_secret(&result);
+    }
+
+    #[test]
+    fn tool_probe_follows_a_rejected_tools_request_with_one_plain_request() {
+        let leaked = format!(r#"{{"error":{{"message":"no tools {SECRET}"}}}}"#);
+        let answer = r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#;
+        let server = local(vec![
+            http(400, "Bad Request", &leaked),
+            http(200, "OK", answer),
+        ]);
+        let result = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "m",
+            SECRET,
+            Duration::from_secs(2),
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            result.message,
+            "This model answers, but it cannot use tools, so Claude Code cannot use it."
+        );
+        no_secret(&result);
+        let hits = server.hits.lock().unwrap();
+        assert_eq!(hits.len(), 2, "{hits:?}");
+        assert!(hits[0].body.contains("\"tools\""));
+        assert!(!hits[1].body.contains("\"tools\""), "{}", hits[1].body);
+        assert!(!hits[1].body.contains("tool_choice"), "{}", hits[1].body);
+    }
+
+    #[test]
+    fn tool_probe_a_dead_followup_is_not_stored_as_no_tools() {
+        let server = local(vec![http(400, "Bad Request", r#"{"error":"no"}"#)]);
+        let started = std::time::Instant::now();
+        let result = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "m",
+            SECRET,
+            Duration::from_millis(400),
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(3),
+            "a hang is not a 30s wait"
+        );
+        assert!(!result.ok);
+        assert_eq!(result.message, "Couldn't reach that endpoint.");
+        assert_ne!(
+            result.message,
+            "This model answers, but it cannot use tools, so Claude Code cannot use it."
+        );
+        no_secret(&result);
+        assert_eq!(server.hits.lock().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn tool_probe_says_when_the_endpoint_is_down_or_slow() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let refused = probe_tools_in(
+            "custom",
+            &base_of(port),
+            "m",
+            SECRET,
+            Duration::from_millis(400),
+        );
+        assert!(!refused.ok);
+        assert_eq!(refused.message, "Couldn't reach that endpoint.");
+        no_secret(&refused);
+
+        let server = local(vec![]);
+        let started = std::time::Instant::now();
+        let hung = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "m",
+            SECRET,
+            Duration::from_millis(400),
+        );
+        assert!(started.elapsed() < Duration::from_secs(3));
+        assert_eq!(hung.message, "Couldn't reach that endpoint.");
+        no_secret(&hung);
+        let hits = server.hits.lock().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].auth, format!("Bearer {SECRET}"));
+    }
+
+    #[test]
+    fn tool_probe_a_bad_key_is_not_a_missing_tool() {
+        let server = local(vec![http(
+            401,
+            "Unauthorized",
+            &format!(r#"{{"error":"{SECRET}"}}"#),
+        )]);
+        let result = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "m",
+            SECRET,
+            Duration::from_secs(2),
+        );
+        assert!(!result.ok);
+        assert_eq!(result.message, "That key didn't work");
+        no_secret(&result);
+        assert_eq!(server.hits.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tool_probe_does_not_follow_a_redirect_with_the_key() {
+        let redirect = "HTTP/1.1 302 Found\r\nLocation: http://127.0.0.1:9/steal\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+        let server = local(vec![redirect.to_string()]);
+        let result = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "m",
+            SECRET,
+            Duration::from_secs(2),
+        );
+        assert!(!result.ok);
+        assert_eq!(
+            result.message,
+            "The provider had a problem (error 302); try again"
+        );
+        no_secret(&result);
+        assert_eq!(
+            server.hits.lock().unwrap().len(),
+            1,
+            "the key must not be sent on"
+        );
+    }
+
+    #[test]
+    fn tool_probe_an_unknown_model_keeps_the_old_sentence() {
+        let server = local(vec![http(404, "Not Found", r#"{"error":"missing"}"#)]);
+        let result = probe_tools_in(
+            "custom",
+            &base_of(server.port),
+            "missing-model",
+            SECRET,
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            result.message,
+            "The provider doesn't know the model id missing-model"
+        );
+        no_secret(&result);
+    }
+
+    #[test]
+    fn tool_probe_refuses_a_bad_request_before_any_call() {
+        let quick = Duration::from_millis(200);
+        assert_eq!(
+            probe_tools_in("xai", "https://api.x.ai/v1", "grok-4", "", quick).message,
+            "Add the key"
+        );
+        assert!(probe_tools_in(
+            "xai",
+            "https://api.x.ai/v1",
+            "grok-4",
+            "sk-ant-api03-x",
+            quick
+        )
+        .message
+        .contains("looks like a Claude key"));
+        assert_eq!(
+            probe_tools_in("nope", "https://api.x.ai/v1", "m", "k", quick).message,
+            "Pick a provider"
+        );
+        assert!(
+            probe_tools_in("custom", "http://example.com/v1", "m", "k", quick)
+                .message
+                .contains("https://")
+        );
+        assert_eq!(
+            probe_tools_in("custom", "https://example.com/v1", "", "k", quick).message,
+            "Add the model id"
+        );
+        assert!(probe_tools_in(
+            "ollama",
+            "http://127.0.0.1:9",
+            "llama",
+            "sk-ant-api03-x",
+            quick
+        )
+        .message
+        .contains("looks like a Claude key"));
+    }
+
+    #[test]
+    fn tool_probe_ollama_without_a_model_only_checks_tags() {
+        let tags = r#"{"models":[]}"#;
+        let server = local(vec![http(200, "OK", tags)]);
+        let result = probe_tools_in(
+            "ollama",
+            &format!("http://127.0.0.1:{}", server.port),
+            "",
+            SECRET,
+            Duration::from_secs(2),
+        );
+        assert!(result.ok);
+        assert_eq!(result.message, "Connected, Ollama is running");
+        no_secret(&result);
+        let hits = server.hits.lock().unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path, "/api/tags");
+        assert!(!hits[0].auth.contains(SECRET));
+    }
+
+    #[test]
+    fn tool_probe_ollama_with_a_model_asks_for_a_tool_and_sends_no_user_key() {
+        let body = r#"{"choices":[{"message":{"tool_calls":[{"function":{"name":"ping"}}]}}]}"#;
+        let server = local(vec![http(200, "OK", body)]);
+        let result = probe_tools_in(
+            "ollama",
+            &format!("http://127.0.0.1:{}", server.port),
+            "llama3.2",
+            "",
+            Duration::from_secs(2),
+        );
+        assert_eq!(result.message, "This model can use tools.");
+        let hits = server.hits.lock().unwrap();
+        assert!(
+            hits[0].path.ends_with("/chat/completions"),
+            "{}",
+            hits[0].path
+        );
+        assert_eq!(hits[0].auth, "Bearer monocode-ollama-local");
+        assert!(!hits[0].body.contains(SECRET));
     }
 }

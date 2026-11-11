@@ -3,6 +3,7 @@
 // the folder or archive, and on import reads one back for the preview and restores what Ash ticked.
 import { recordRestoredSouls } from "../../hub/model/soulTamper";
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { railFolders } from "./railFolders";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { useSyncExternalStore } from "react";
 import { appIdentity } from "../../../app/model/appIdentity";
@@ -117,14 +118,22 @@ export async function pickImportSource(kind: "file" | "folder"): Promise<string 
   return typeof path === "string" ? path : null;
 }
 
-async function withLocalFacts(doc: SetupDoc): Promise<Pick<PendingImport, "folders" | "skillsHere">> {
-  const paths = [...new Set([...doc.projects.flatMap((p) => (p.folder ? [p.folder] : [])), ...doc.monos.flatMap((m) => m.projects)])];
+/** Which of these project folders Rust refuses to adopt, with why (the home folder, `/`, the app's data folder ...). */
+export function projectFolderChecks(paths: string[]): Promise<Record<string, string>> {
+  return invoke<Record<string, string>>("portable_project_folder_checks", { paths });
+}
+
+async function withLocalFacts(doc: SetupDoc): Promise<Pick<PendingImport, "folders" | "folderChecks" | "skillsHere">> {
+  const projectFolders = [...new Set(doc.projects.flatMap((p) => (p.folder ? [p.folder] : [])))];
+  const paths = [...new Set([...projectFolders, ...doc.monos.flatMap((m) => m.projects)])];
   const names = [...new Set(doc.monos.flatMap((m) => m.skills))];
-  const [folders, refs] = await Promise.all([
+  const [folders, refs, folderChecks] = await Promise.all([
     paths.length ? invoke<Record<string, boolean>>("portable_paths_exist", { paths }).catch(() => ({})) : Promise.resolve({}),
     names.length ? invoke<SkillRef[]>("portable_find_skills", { names }).catch(() => [] as SkillRef[]) : Promise.resolve([] as SkillRef[]),
+    // Every folder a Mono or project names is checked, so the preview shows the refusals and a Mono never adopts one.
+    paths.length ? projectFolderChecks(paths).catch(() => Object.fromEntries(paths.map((path) => [path, "it couldn't be checked"]))) : Promise.resolve({}),
   ]);
-  return { folders, skillsHere: Object.fromEntries(refs.map((r) => [r.name, r.path !== null])) };
+  return { folders, folderChecks, skillsHere: Object.fromEntries(refs.map((r) => [r.name, r.path !== null])) };
 }
 
 /** Reads an export (folder, archive or v1 file) for the preview. Nothing changes yet. */
@@ -169,6 +178,9 @@ export function restore(p: PendingImport, plan: Plan, choices: Choices): Promise
   return applyImport(p, plan, choices, {
     rustImport: (request: RustImportRequest) => invoke<RustImportReport>("portable_import", { request }),
     registerProject,
+    knownFolders: railFolders,
+    knownMonos: () => listMonos().map((m) => m.id),
+    checkFolders: projectFolderChecks,
     recordSouls: (ids) => recordRestoredSouls(ids),
   });
 }

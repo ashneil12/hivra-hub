@@ -1,6 +1,7 @@
 // What Home lists. One line each, no counts. A value from disk or another agent is untrusted.
 
 import { pathKey } from "../../../shared/lib/paths";
+import type { BuilderHoldNeed } from "../../monos/model/builderScale";
 import { HOME_CARD_LIMIT } from "../vendor/homeLayout";
 
 export type HomeTask = {
@@ -37,7 +38,7 @@ export type HomeChat = {
   openedAt: number;
 };
 
-export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat";
+export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "builders" | "project";
 
 export type HomeLine = {
   id: string;
@@ -231,6 +232,22 @@ export function needsYouLines(
   return lines;
 }
 
+/**
+ * WP-161: new builders are waiting on the disk pause. A line about the machine, not a project, so it has no project
+ * name in front. It leads Needs you: nothing new can start until the person frees space (or changes the floor).
+ * Its action opens Settings > Worktrees > Clean up (`targetFor`).
+ */
+export function builderHoldLine(need: BuilderHoldNeed): HomeLine {
+  return {
+    id: `builders:${need.id}`,
+    kind: "builders",
+    text: cleanLine(need.text),
+    projectId: "",
+    target: need.id,
+    at: 0,
+  };
+}
+
 /** Agent tasks in progress, except a question (that line is in Needs you). */
 export function movingLines(tasks: readonly HomeTask[], name: (projectId: string) => string): HomeLine[] {
   const lines: HomeLine[] = [];
@@ -290,4 +307,40 @@ export function recentLines(docs: readonly HomeDoc[], chats: readonly HomeChat[]
   }
   lines.sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
   return lines.slice(0, HOME_CARD_LIMIT);
+}
+
+/**
+ * One line per project, in the strip's order: its name, then what is happening there in a few words. "needs you" when
+ * a Needs you line names it, else the first task moving in it, else just the name. No counts.
+ */
+export function projectLines(
+  projects: readonly HomeProject[],
+  needsYou: readonly HomeLine[],
+  moving: readonly HomeLine[],
+  tasks: readonly HomeTask[],
+): HomeLine[] {
+  const lines: HomeLine[] = [];
+  const seen = new Set<string>();
+  for (const project of projects) {
+    if (seen.has(project.id)) continue;
+    seen.add(project.id);
+    const name = cleanLine(project.name) || project.id;
+    let what = "";
+    if (needsYou.some((line) => line.projectId === project.id)) {
+      what = "needs you";
+    } else {
+      const line = moving.find((item) => item.projectId === project.id);
+      const task = line ? tasks.find((item) => `task:${item.id}` === line.id) : undefined;
+      if (task) what = cleanLine(task.title);
+    }
+    lines.push({
+      id: `project:${project.id}`,
+      kind: "project",
+      text: what ? `${name} · ${what}` : name,
+      projectId: project.id,
+      target: project.id,
+      at: 0,
+    });
+  }
+  return lines;
 }

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { memoryId } from "./doc";
 import type { MemoryDoc, MemoryItem } from "./doc";
 import {
@@ -9,6 +9,7 @@ import {
   clockDaysFor,
   fadeNow,
   fadeOf,
+  fadeReader,
   livedClockOf,
   markLived,
   markUsed,
@@ -79,6 +80,24 @@ describe("LivedClock", () => {
     expect(clock.daysSince(utc(2026, 10, 1, 23), utc(2026, 10, 1, 23))).toBe(0);
     expect(clock.daysSince(utc(2026, 10, 1), utc(2026, 10, 2))).toBe(1);
     expect(clock.daysSince(utc(2026, 10, 1), utc(2026, 10, 4))).toBe(2);
+  });
+
+  it("places every moment as its date string would, across midnights, gaps and the edges of the lived days", () => {
+    const days = ["2025-12-30", "2026-01-01", "2026-01-02", "2026-01-05", "2026-01-31", "2026-02-01"];
+    const clock = new LivedClock(days);
+    const reference = (moment: Date) => {
+      const date = moment.toISOString().slice(0, 10);
+      const midnight = Date.parse(`${date}T00:00:00Z`);
+      return 24 * days.filter((lived) => lived < date).length + (days.includes(date) ? (moment.getTime() - midnight) / 3_600_000 : 0);
+    };
+    const moments: Date[] = [new Date(-1), new Date(0), new Date("1969-12-31T23:59:59.999Z")];
+    for (let at = Date.UTC(2025, 11, 28); at < Date.UTC(2026, 1, 4); at += 5 * 3_600_000 + 37 * 60_000) moments.push(new Date(at));
+    for (const day of days) moments.push(new Date(`${day}T00:00:00.000Z`), new Date(`${day}T23:59:59.999Z`));
+    for (const moment of moments) expect(clock.at(moment), moment.toISOString()).toBe(reference(moment));
+    // A string with a zone, one without (read as UTC) and epoch milliseconds are the same moments.
+    expect(clock.at("2026-01-02T06:00:00+02:00")).toBe(clock.at(new Date("2026-01-02T04:00:00Z")));
+    expect(clock.at("2026-01-02T06:00:00")).toBe(clock.at(new Date("2026-01-02T06:00:00Z")));
+    expect(clock.at(Date.UTC(2026, 0, 2, 6))).toBe(clock.at(new Date("2026-01-02T06:00:00Z")));
   });
 
   it("lived hours stop growing on the days nobody lived", () => {
@@ -187,6 +206,53 @@ describe("fadeNow", () => {
     // A saved fade above full is read as full, and one below 0 as 0.
     expect(fadeNow({ ...normal, fade: 5 }, new LivedClock([]), utc(2026, 10, 3))).toBe(1);
     expect(fadeNow({ ...normal, fade: -1 }, new LivedClock([]), utc(2026, 10, 3))).toBe(0);
+  });
+});
+
+describe("fadeReader", () => {
+  const base = utc(2026, 1, 1);
+  const clock = new LivedClock(run(base, 200));
+  const end = utc(2026, 6, 1, 7);
+  const items = [
+    fact({ lastUsedAt: base.getTime() }),
+    fact({ lastUsedAt: utc(2026, 3, 9, 15).getTime(), updatedAt: base.getTime() }),
+    fact({ state: "unreviewed", lastUsedAt: utc(2026, 5, 20).getTime() }),
+    fact({ state: "edited", lastUsedAt: base.getTime() }),
+    fact({ updatedAt: utc(2026, 4, 2).getTime(), lastUsedAt: undefined }),
+    fact({ updatedAt: 0, createdAt: utc(2026, 2, 2).getTime() }),
+    { ...fact({ lastUsedAt: base.getTime() }), fade: 0.4 },
+    { ...fact({ lastUsedAt: base.getTime() }), fade: Number.NaN },
+  ];
+
+  it("reads every memory exactly as fadeNow does", () => {
+    const read = fadeReader(clock, end);
+    for (const item of items) expect(read(item)).toBe(fadeNow(item, clock, end));
+    // A number reads as the same moment as its Date.
+    const readMs = fadeReader(clock, end.getTime());
+    for (const item of items) expect(readMs(item)).toBe(fadeNow(item, clock, end));
+  });
+
+  it("works out the moment once, however many memories it reads", () => {
+    const spy = vi.spyOn(LivedClock.prototype, "at");
+    try {
+      const read = fadeReader(clock, end);
+      for (const item of items) read(item);
+      const atEnd = spy.mock.calls.filter(([moment]) => new Date(moment as Date | number).getTime() === end.getTime());
+      expect(atEnd).toHaveLength(1);
+      // One reading of the moment, then one of the last use of each memory that fades (the person's own words do not).
+      expect(spy).toHaveBeenCalledTimes(1 + items.filter((item) => clockDaysFor(item) !== undefined).length);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("gives the same hours as hoursBetween, and 0 for a start it cannot read", () => {
+    const hoursSince = clock.hoursTo(end);
+    for (const start of [base, utc(2026, 3, 9, 15), base.getTime(), "2026-04-02T05:00:00Z", end, utc(2026, 7, 1)]) {
+      expect(hoursSince(start)).toBe(clock.hoursBetween(start, end));
+    }
+    expect(hoursSince(undefined)).toBe(0);
+    expect(hoursSince("nope")).toBe(0);
   });
 });
 

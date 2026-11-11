@@ -21,6 +21,7 @@ import {
   compareSemver,
   isClaudeInitMessage,
   listModelsFromControlResponse,
+  MINIMUM_CLAUDE_FABLE_5_1_VERSION,
   MINIMUM_CLAUDE_FABLE_5_VERSION,
   MINIMUM_CLAUDE_OPUS_4_7_VERSION,
   MINIMUM_CLAUDE_OPUS_4_8_VERSION,
@@ -118,6 +119,20 @@ function contextWindow(defaultValue: "200k" | "1m"): ModelSetting {
 
 /** Fallback catalog when `list_models` is unavailable. */
 export const CLAUDE_MODEL_CATALOG: AgentModel[] = [
+  {
+    id: "claude:fable-5-2",
+    harness: "claude",
+    name: "Claude Fable 5.2",
+    nativeId: "claude-fable-5-2",
+    settings: [EFFORT_WITH_XHIGH, contextWindow("1m")],
+  },
+  {
+    id: "claude:fable-5-1",
+    harness: "claude",
+    name: "Claude Fable 5.1",
+    nativeId: "claude-fable-5-1",
+    settings: [EFFORT_WITH_XHIGH, contextWindow("1m")],
+  },
   {
     id: "claude:fable-5",
     harness: "claude",
@@ -221,9 +236,11 @@ let inflight: Promise<void> | null = null;
 
 export function refreshClaudeCatalog(): Promise<void> {
   if (inflight) return inflight;
-  inflight = discoverClaudeModels()
-    .then((models) => {
-      if (models.length > 0) setHarnessModels("claude", models);
+  inflight = discoverClaudeCatalog()
+    .then(({ models, listed }) => {
+      // A list the CLI would not give (the version-filtered built-in one) fills
+      // the picker but is not recorded as live.
+      if (models.length > 0) setHarnessModels("claude", models, { live: listed });
     })
     .catch((error: unknown) => {
       console.debug("[monocode] claude catalog", error);
@@ -237,14 +254,21 @@ export function refreshClaudeCatalog(): Promise<void> {
 export async function discoverClaudeModels(
   workingDirectory?: string,
 ): Promise<AgentModel[]> {
+  return (await discoverClaudeCatalog(workingDirectory)).models;
+}
+
+/** `listed` is true only when the models came from the CLI's own `list_models`. */
+async function discoverClaudeCatalog(
+  workingDirectory?: string,
+): Promise<{ models: AgentModel[]; listed: boolean }> {
   const listed = await discoverViaListModels(workingDirectory).catch(
     (error: unknown) => {
       console.debug("[monocode] claude list_models catalog failed", error);
       return [];
     },
   );
-  if (listed.length > 0) return listed;
-  return discoverViaVersion(workingDirectory);
+  if (listed.length > 0) return { models: listed, listed: true };
+  return { models: await discoverViaVersion(workingDirectory), listed: false };
 }
 
 async function discoverViaListModels(
@@ -564,6 +588,12 @@ export function modelsForClaudeVersion(
     if (slug === "claude-sonnet-5") {
       return version
         ? compareSemver(version, MINIMUM_CLAUDE_SONNET_5_VERSION) >= 0
+        : false;
+    }
+    if (slug === "claude-fable-5-2" || slug === "claude-fable-5-1") {
+      // 5.1's minimum is the CLI's own. 5.2 has none on record, so it follows 5.1's.
+      return version
+        ? compareSemver(version, MINIMUM_CLAUDE_FABLE_5_1_VERSION) >= 0
         : false;
     }
     if (slug === "claude-fable-5") {

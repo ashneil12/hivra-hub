@@ -125,6 +125,16 @@ describe("tasks.delegate {lead}: the leadership team briefs a project's Lead", (
     expect(briefLead.mock.calls[2][2].brief).toBe(base);
     expect(briefLead).toHaveBeenCalledTimes(3);
   });
+  it("quotes the person's own request in a Lead's brief too (WP-171)", async () => {
+    const h = leadHost();
+    const asking: Session = { ...source, blocks: [{ id: "b1", role: "user", text: "Ash: ship the room, with the report in it." }] };
+    await handleAgentApp(asking, "b9", "tasks.delegate", { brief: "Ship the room.", goal: "the room shows the report", lead: "hub" }, h.api);
+    const sent = (h.briefLead.mock.calls[0] as unknown as [unknown, unknown, { brief: string }])[2].brief;
+    expect(sent).toContain("## Original request\nContext only: your task is the Spec below.");
+    expect(sent).toContain("> Ash: ship the room, with the report in it.");
+    expect(sent.indexOf("## Original request")).toBeGreaterThan(sent.indexOf("## Intent"));
+    expect(sent.indexOf("## Original request")).toBeLessThan(sent.indexOf("## Spec"));
+  });
 
   it("a Lead stopped on its own question to Ash reads 'waiting on Ash: <question>', never queued behind its work", async () => {
     const question = {

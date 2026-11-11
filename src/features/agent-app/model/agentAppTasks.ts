@@ -44,6 +44,7 @@ import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview"
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
+import { readingEntries } from "../../fresh-eyes/model/review";
 import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
@@ -81,10 +82,14 @@ import { bindPhaseLauncher, unbindPhaseLauncher } from "../../phases/model/phase
 import { bindCrew, commentId } from "../../phases/model/store";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+import { parseFanout } from "../../firstmate/model/fanoutContract";
+import { boundRequest, readOriginalRequest } from "../../firstmate/model/originalRequest";
+import { fanoutSection, parseFanoutLink, planFanout, taskRequestId } from "../../firstmate/model/fanoutWaves";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import { gateRequest, type GateRequest } from "../../firstmate/model/completionGates";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
+import { remoteProjectFor } from "../../connections/model/remoteProjects";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
 import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
 import { taskProjectOf } from "../../tasks/model/agentTasks";
@@ -103,6 +108,8 @@ export type WorkerPoolHost = {
   openRows(): Delegation[];
   /** Start this worker now, or let it wait and say why. One the app is starting from the queue always starts. */
   admit(job: AdmitInput): Admission;
+  /** WP-161: read the machine (load, memory, disk) so the next `admit` sees a fresh sample. Never throws. */
+  refreshHealth?(): Promise<void>;
   /** It waits: kept in order with what starts it later (and its card shows in the chat that asked). */
   enqueue(job: QueuedWorker, launch: QuickLaunch): void;
   /** It started: out of the queue, counted as heavy if it is, and holding the files it changes (r87). */
@@ -113,6 +120,8 @@ export type WorkerPoolHost = {
   unqueue(owner: string, id: string): boolean;
   limits(project: string): WorkerLimits;
   setLimits(project: string, next: Partial<WorkerLimits>): WorkerLimits;
+  /** WP-171: this host can hold a task of a fan-out until the tasks that provide what it requires are delivered. */
+  waitsOnProviders?: boolean;
   /** The project's own worker model (E7), when Ash chose one; else undefined for the usual Sonnet. */
   model(project: string): WorkerModel | undefined;
   /** WP-89: the project's worker default, CLI included. Absent on a host that only knows the Claude ladder. */
@@ -145,10 +154,14 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "gates",
       "checks",
       "code",
+      // WP-144: a short reading list the fresh-eyes reviewers see with the plan.
+      "reading",
       // WP-70: the shared task this work moves. Not a worker's task id.
       "taskId",
     ],
   ],
+  // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
+  ["tasks.fanout", ["intent", "tasks"]],
   ["tasks.accept", ["taskId", "accept", "reason"]],
   ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
   ["tasks.status", ["taskIds"]],
@@ -160,6 +173,25 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.message", ["taskId", "text", "whenBusy"]],
   ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"]],
 ];
+
+/**
+ * Fields only the app puts on a tasks.delegate replay: the queue, a fresh-eyes start, a retry.
+ * An agent's call cannot carry the mark, so it cannot set these. delegate_tasks writes them itself
+ * and calls delegate() directly, which does not go through the field list.
+ */
+export const APP_DELEGATE_FIELDS = ["fanout", "originalRequest", "originalRequestChars"] as const;
+
+/** Set on a tasks.delegate input by the app itself. Not enumerable, so a copy or JSON drops it. */
+export const appDelegateMark: unique symbol = Symbol("hivra.appDelegate");
+
+export function markAppDelegate(input: Record<string, unknown>): Record<string, unknown> {
+  Object.defineProperty(input, appDelegateMark, { value: true });
+  return input;
+}
+
+export function isAppDelegate(input: object): boolean {
+  return Reflect.get(input, appDelegateMark) === true;
+}
 
 /** What a delegation's row records beyond a plain monitored launch. */
 export type DelegationMeta = {
@@ -274,6 +306,25 @@ export type AgentAppTasksHost = {
     effortFrom?: string | null;
   } | null | undefined>;
   /**
+   * WP-144: fresh-eyes review before builders start. Absent means today's start.
+   * Hold only when `hold` is true.
+   */
+  freshEyes?(input: {
+    project: string;
+    requestId: string;
+    plan: string;
+    ownerSession: string;
+    reading?: unknown;
+    /** The delegate call, kept so a later approval can start this same brief. */
+    held?: Record<string, unknown>;
+  }): Promise<{ hold: boolean; why: string }>;
+  /** The Lead a brief names exists and this Mono may brief it. Throws when it does not. Checked before a review. */
+  checkLead?(source: Session, mono: { id: string; name?: string }, lead: string): void | Promise<void>;
+  /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
+  freshEyesWaiting?(ownerSession: string): Promise<{ childSessionId: string; title: string; line: string }[]>;
+  /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
+  freshEyesCancel?(ownerSession: string, childSessionId: string): Promise<boolean>;
+  /**
    * Where a Mono's work goes (hub/model/monoTeams.ts). Absent outside the hub, where a Mono starts workers in its
    * projects as before.
    */
@@ -353,7 +404,9 @@ export function workerPort(childSession: string, taken: ReadonlySet<number> = ne
 
 /** The port a brief gave its worker (workerRules), if any. */
 export function portOfBrief(brief: string | null | undefined): number | undefined {
-  const found = /\bPORT=(\d{4,5})\b/.exec(brief ?? "");
+  // The person's quoted request (WP-171) may talk about ports of its own; only the app's own lines name this worker's.
+  const own = (brief ?? "").replace(/^## Original request\n[\s\S]*?(?=^## |(?![\s\S]))/m, "");
+  const found = /\bPORT=(\d{4,5})\b/.exec(own);
   return found ? Number(found[1]) : undefined;
 }
 
@@ -365,7 +418,7 @@ export function portOfBrief(brief: string | null | undefined): number | undefine
  * its landing took the sibling's test out of the project; workers leave code they didn't write alone.
  */
 export function workerRules(port: number): string {
-  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Your checkout may already hold other workers' finished work. Never remove or rewrite code you didn't write unless your brief names it, even where your brief says not to add it: leave it, and say what looks wrong at the top of your report.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- Ash may write in your chat himself. His words decide: they outrank your brief and any pick from your Lead. A choice of his your brief already carries is settled: never ask it again; if a check disagrees with it, say that mismatch in one line.\n- Updates and reports in a few short lines: what changed, and each check as one line (\"npm test: 14 passed\"); never paste test or command output.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End with your report in exactly this shape. Checks with their results, links, files and commits are evidence; your opinion of your own work is not:\n\n${WORKER_REPORT_SHAPE}\n- Then a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${monoHomeFence()}\n</worker_rules>`;
+  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Your checkout may already hold other workers' finished work. Never remove or rewrite code you didn't write unless your brief names it, even where your brief says not to add it: leave it, and say what looks wrong at the top of your report.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- Ash may write in your chat himself. His words decide: they outrank your brief and any pick from your Lead. A choice of his your brief already carries is settled: never ask it again; if a check disagrees with it, say that mismatch in one line.\n- You have no memory of the chat that sent you. Everything you may assume is in this brief, including the person's own request quoted in it. If something your task depends on isn't there, say so in your report instead of guessing at the chat.\n- Never ask the person a question. Where your brief leaves a point open, take the most reasonable reading and say in your report what you assumed. A choice that is Ash's is not yours, as below.\n- If a tool call is refused because nobody can approve it for you (a path or command outside what your task allows), stop retrying it and say in your report exactly what was blocked and where, so your first mate can send the task again with that named.\n- Updates and reports in a few short lines: what changed, and each check as one line (\"npm test: 14 passed\"); never paste test or command output.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End with your report in exactly this shape. Checks with their results, links, files and commits are evidence; your opinion of your own work is not:\n\n${WORKER_REPORT_SHAPE}\n- Then a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${monoHomeFence()}\n</worker_rules>`;
 }
 
 /**
@@ -750,6 +803,24 @@ async function delegate(
   // left as a placeholder is refused before anything starts (firstmate/model/brief.ts).
   const unfit = checkBrief({ intent: input.intent, spec: input.brief, done: input.goal });
   if (unfit) throw new Error(unfit);
+  // WP-171: a task of a fan-out carries its link: the contract its brief shows, and what it waits for.
+  const link = input.fanout === undefined ? undefined : parseFanoutLink(input.fanout);
+  if (link && input.lead !== undefined) throw new Error("A fan-out's tasks are workers: leave out lead.");
+  const contract = link ? fanoutSection(link) : undefined;
+  // WP-171: every brief quotes the person's own request, cut to the quote budget at this read. A longer one is
+  // trimmed, not refused, and the cut note keeps the real length. A task that waited keeps the request it was asked
+  // under, not whatever the person said since.
+  if (input.originalRequest !== undefined && typeof input.originalRequest !== "string")
+    throw new Error("originalRequest must be the person's request, as text");
+  const supplied = typeof input.originalRequest === "string" ? input.originalRequest : "";
+  const knownChars =
+    typeof input.originalRequestChars === "number" && Number.isFinite(input.originalRequestChars)
+      ? input.originalRequestChars
+      : undefined;
+  const taken = supplied ? boundRequest(supplied, knownChars) : readOriginalRequest(source.blocks);
+  const originalRequest = taken?.text || undefined;
+  const originalRequestChars = taken && taken.chars > taken.text.length ? taken.chars : undefined;
+  const extras = { contract, originalRequest, originalRequestChars };
   const intent = text(input.intent, "intent", BRIEF_MAX);
   const brief = text(input.brief, "brief", BRIEF_MAX);
   const title =
@@ -778,6 +849,42 @@ async function delegate(
       unbindPhaseLauncher(sharedTask);
     }
   }
+  const startedAlready = async (): Promise<boolean> => {
+    const [row] = await tasks.owned(source.id, { requestIds: [`app-${source.id}-${requestId}`] }).catch(() => [] as Delegation[]);
+    return !!row && row.state !== "cancelled";
+  };
+  // WP-144: fresh-eyes review, off unless this project turned it on. It comes after every check that can refuse the call
+  // cheaply (so a brief that would fail is never reviewed) and before anything starts. The review keeps the call as a
+  // waiting task; Approve (or Skip once) asks tasks.delegate again under the same request ID, with the call that was
+  // reviewed. The reviewers run after this call returns, so it never waits on them.
+  const heldForReview = async () => {
+    if (!tasks.freshEyes) return undefined;
+    // A task already started for this request is read back below, never started again: nothing to review, and a
+    // worker that was cancelled is not started again on the strength of an earlier approval.
+    if (await startedAlready()) return undefined;
+    // The reading list is capped here, so what is kept, reviewed and started is the same short list.
+    const held = { ...input, ...(input.reading !== undefined ? { reading: readingEntries(input.reading) } : {}) };
+    const eyes = await tasks.freshEyes({
+      project: source.cwd,
+      requestId,
+      plan: brief,
+      ownerSession: source.id,
+      reading: held.reading,
+      held,
+    });
+    if (eyes?.hold !== true) return undefined;
+    return {
+      taskId: null,
+      childSessionId: `app-${source.id}-${requestId}`,
+      status: "waiting",
+      title,
+      freshEyes: true,
+      note:
+        typeof eyes.why === "string" && eyes.why.trim()
+          ? eyes.why
+          : "Fresh-eyes review: waiting on you",
+    };
+  };
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
   const gates = gateRequest(input);
   // Hivra WP-10: never deeper than first mate, first mate, workers.
@@ -791,12 +898,18 @@ async function delegate(
       throw new Error(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
       );
+    // Every refusal this brief can meet comes before the review: what it names, and whether that Lead exists.
+    const request = leadRequest(input, tasks);
+    await tasks.checkLead?.(source, owner.mono, request.lead);
+    const held = await heldForReview();
+    if (held) return held;
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
     // WP-41: the brief names the pstack skills for this kind of work.
     const leadBrief = renderBrief(
       { intent, spec: brief },
       { kind: "first-mate" },
       classifyBriefTask(`${intent}\n${brief}`),
+      extras,
     );
     return briefLead(source, owner.mono, tasks, {
       requestId,
@@ -842,6 +955,7 @@ async function delegate(
   // Every Mono but a Lead works through teams (hub/model/monoTeams.ts): a project's work goes to its coding team as a
   // brief to its Lead, and its own work to a worker in its own team's folder, made the first time.
   let ownTeam: { folder: string; name: string } | undefined;
+  let makesOwnTeam = false;
   if (owner.mono && tasks.monoWork && !tasks.monoWork.isLead(owner.mono.id)) {
     const team = named !== undefined ? tasks.monoWork.codingTeam(named) : undefined;
     if (team)
@@ -854,15 +968,33 @@ async function delegate(
         throw new Error(
           "Your own team's folder isn't a repository, so its workers share it: leave out isolation (or use \"shared\").",
         );
-      ownTeam = await tasks.monoWork.ownTeam(owner.mono);
+      makesOwnTeam = true;
     }
   }
+  // A model the call names must be one this chat can ask for. Checked here, so a bad name is refused before a review.
+  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
+  const askedModel = taskModel(input.model, source, onBridge);
+  // A job Ash already answered in its worker's chat is his: refused before a review, as it is before a start.
+  if (tasks.freshEyes && !(await startedAlready())) {
+    const open = (await tasks.owned(source.id, {}).catch(() => [] as Delegation[])).filter(isOpenDelegation);
+    const refusal = answeredJobRefusal(open, { requestId, title, ...(redoes ? { redoes } : {}) });
+    if (refusal) throw new Error(refusal);
+  }
+  const held = await heldForReview();
+  if (held) return held;
+  // The Mono's own team is made now, once the brief may start: its folder is where this worker runs.
+  if (makesOwnTeam && owner.mono && tasks.monoWork) ownTeam = await tasks.monoWork.ownTeam(owner.mono);
   // E7: a worker gets the right model for its job — Sonnet for a usual one, a stronger model (and high effort when it
   // offers one) for a hard one, and a project's own worker model for any of its jobs. A model or effort the caller
   // names always wins, and the route never touches another engine or one of Ash's own models (taskDifficulty.ts).
   const folder =
     ownTeam?.folder ??
     (named !== undefined && !owner.team ? tasks.hubProjectFolder?.(named) ?? named : source.cwd);
+  // WP-171: a task that waits for another is held in this app's queue, which a remote project's host does not share.
+  if (link?.after.length && [folder, source.cwd].some((path) => remoteProjectFor(path)))
+    throw new Error(
+      "A task that waits for another can't be held on a remote project yet. Send the tasks that need nothing from each other, and the rest once they report.",
+    );
   // WP-60: a remote project keeps the brief on its host. A local folder is unchanged.
   const remoteBrief = await briefOnRemoteHost({
     paths: [folder, source.cwd],
@@ -880,6 +1012,7 @@ async function delegate(
           { intent, spec: brief },
           { kind: "shared", folder: hostCwd },
           classifyBriefTask(`${intent}\n${brief}`),
+          extras,
         ),
         goal,
       ),
@@ -888,8 +1021,6 @@ async function delegate(
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
   // On the DeepSeek launcher a Claude name is only a label: a worker it names runs on DeepSeek.
-  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
-  const askedModel = taskModel(input.model, source, onBridge);
   // On the DeepSeek launcher another engine's model runs as DeepSeek instead, and the Lead hears why.
   const offBridgeAsk =
     onBridge && askedModel !== undefined && askedModel.harness !== "claude" ? String(input.model) : undefined;
@@ -1012,6 +1143,7 @@ async function delegate(
             isolationOf(workspaceMode, worktreeCwd),
             // WP-41: the brief names the pstack skills for this kind of work.
             classifyBriefTask(`${intent}\n${brief}`),
+            extras,
           ),
           goal,
           memory,
@@ -1064,7 +1196,9 @@ async function delegate(
       harness: launch.harness,
       ...(files.length ? { files } : {}),
     };
-    const admission = tasks.pool.admit(job);
+    // WP-161: look at the machine first, so a pause the person set applies to the very first launch too.
+    await tasks.pool.refreshHealth?.();
+    const admission = tasks.pool.admit({ ...job, ownerSession: source.id, ...(link ? { fanout: link } : {}) });
     if (!admission.start) {
       tasks.pool.enqueue(
         {
@@ -1073,7 +1207,13 @@ async function delegate(
           requestId,
           title,
           queuedAt: (tasks.now ?? Date.now)(),
-          input,
+          input: originalRequest
+            ? {
+                ...input,
+                originalRequest,
+                ...(originalRequestChars !== undefined ? { originalRequestChars } : {}),
+              }
+            : input,
         },
         launch,
       );
@@ -1162,7 +1302,121 @@ async function delegate(
   };
 }
 
+/**
+ * WP-171, delegate_tasks: one call for a multi-part ask whose tasks name what each owns, provides, requires and checks.
+ * The whole contract is checked before anything starts. Then every task goes through the same `delegate` a single
+ * delegate_task does (its brief, gates, crew route, worker limits, checkout): the tasks that need nothing start, and a
+ * task that requires a name waits in the worker queue until the task that provides it is delivered and checked
+ * (fanoutWaves.ts, fanoutChecks.ts), starting by itself then. A task that cannot start holds the tasks that need it.
+ */
+async function fanout(
+  source: Session,
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  const { tasks } = taskOwner(source, host);
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
+    throw new Error("request ID must use letters, digits, underscores or hyphens (up to 100)");
+  const parsed = parseFanout(input);
+  const planned = planFanout(parsed, source.id, requestId, (tasks.now ?? Date.now)());
+  if (planned.links.some((link) => link.after.length) && !tasks.pool?.waitsOnProviders)
+    throw new Error(
+      "This build starts every task at once, so a task can't wait for one it needs. Send the tasks that need nothing now with delegate_task, and the rest after they report.",
+    );
+  // One request for the whole plan, read once and cut to the quote budget: the tasks that wait keep it, whatever
+  // the person says meanwhile. The real length travels with it so the cut note stays honest.
+  const takenRequest = readOriginalRequest(source.blocks);
+  const linkOf = new Map(planned.links.map((link) => [link.name, link]));
+  const taskOf = new Map(parsed.tasks.map((task) => [task.name, task]));
+  /** Tasks that did not start (refused, or needing one that did not), by name, with why. */
+  const notStarted = new Map<string, string>();
+  const results: Record<string, unknown>[] = [];
+  // The tasks that need nothing first, then each wave after, so the queue holds the rest in order.
+  for (const name of planned.waves.flat()) {
+    const link = linkOf.get(name)!;
+    const task = taskOf.get(name)!;
+    const blocker = link.after.find((dep) => notStarted.has(dep));
+    if (blocker) {
+      notStarted.set(name, `${blocker} did not start`);
+      results.push({ name, wave: link.wave, status: "not started", error: `It needs ${blocker}, which did not start (${notStarted.get(blocker)}).` });
+      continue;
+    }
+    try {
+      const out = (await delegate(
+        source,
+        taskRequestId(requestId, name),
+        {
+          intent: task.intent,
+          brief: task.brief,
+          goal: task.goal,
+          ...(task.title ? { title: task.title } : {}),
+          ...(task.files.length ? { files: task.files } : {}),
+          ...(task.gates ?? {}),
+          ...task.passthrough,
+          fanout: link,
+          ...(takenRequest
+            ? {
+                originalRequest: takenRequest.text,
+                ...(takenRequest.chars > takenRequest.text.length ? { originalRequestChars: takenRequest.chars } : {}),
+              }
+            : {}),
+        },
+        host,
+        helpers,
+      )) as Record<string, unknown>;
+      results.push({
+        name,
+        wave: link.wave,
+        ...Object.fromEntries(
+          ["taskId", "childSessionId", "status", "title", "waiting", "freshEyes", "modelName", "effort", "alreadyStarted"]
+            .filter((key) => out[key] !== undefined)
+            .map((key) => [key, out[key]]),
+        ),
+      });
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      notStarted.set(name, why);
+      results.push({ name, wave: link.wave, status: "refused", error: why });
+    }
+  }
+  if (notStarted.size === results.length)
+    throw new Error(`Nothing started. ${results.map((entry) => `${String(entry.name)}: ${String(entry.error)}`).join(" ")}`);
+  // Said in the order the tasks were given, not the order they started.
+  const byName = new Map(results.map((entry) => [entry.name, entry]));
+  const ordered = parsed.tasks.map((task) => byName.get(task.name)!);
+  // WP-144: a task held for its fresh-eyes review waits for the person's word, not for another task.
+  const reviewed = ordered.filter((entry) => entry.status === "waiting" && entry.freshEyes === true).length;
+  const waiting = ordered.filter((entry) => entry.status === "waiting" && entry.freshEyes !== true).length;
+  const problems = ordered.filter((entry) => entry.status === "refused" || entry.status === "not started").length;
+  return {
+    waves: planned.waves,
+    tasks: ordered,
+    ...(planned.warnings.length ? { warnings: planned.warnings } : {}),
+    note: forUser`${ordered.length - waiting - reviewed - problems} started now${reviewed ? `; ${reviewed} wait${reviewed === 1 ? "s" : ""} for ${reviewed === 1 ? "its" : "their"} fresh-eyes review` : ""}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for what ${waiting === 1 ? "it needs" : "they need"} to be delivered and checked, and start${waiting === 1 ? "s" : ""} by itself then` : ""}${problems ? `; ${problems} did not start (see each task's error)` : ""}. A task whose provider fails is held, not run anyway, and you hear what landed and what did not. Reports come back to you as their own turns. Tell Ash in one line what is running and what waits (in plain words: never a task id, a task name or a folder path), then end your turn.`,
+  };
+}
+
 /** delegate_task {lead}: a Mono briefs a project's Lead (double delegation); its report comes back later. */
+/** What a brief to a Lead names, checked: the Lead, no project, model, effort or isolation, and how to go in when busy. */
+function leadRequest(
+  input: Record<string, unknown>,
+  tasks: AgentAppTasksHost,
+): { lead: string; whenBusy: "queue" | "steer" } {
+  if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
+  const lead = text(input.lead, "lead", 200);
+  for (const field of ["project", "model", "effort", "isolation"] as const)
+    if (input[field] !== undefined)
+      throw new Error(
+        `A Lead works in its own chat, project and model: leave out ${field} when you name a lead`,
+      );
+  const whenBusy = input.whenBusy ?? "queue";
+  if (whenBusy !== "queue" && whenBusy !== "steer")
+    throw new Error('whenBusy must be "queue" or "steer"');
+  return { lead, whenBusy };
+}
+
 async function briefLead(
   source: Session,
   mono: { id: string; name?: string },
@@ -1179,17 +1433,8 @@ async function briefLead(
     gateFolder?: string;
   },
 ) {
-  const { input } = job;
+  const { lead, whenBusy } = leadRequest(job.input, tasks);
   if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
-  const lead = text(input.lead, "lead", 200);
-  for (const field of ["project", "model", "effort", "isolation"] as const)
-    if (input[field] !== undefined)
-      throw new Error(
-        `A Lead works in its own chat, project and model: leave out ${field} when you name a lead`,
-      );
-  const whenBusy = input.whenBusy ?? "queue";
-  if (whenBusy !== "queue" && whenBusy !== "steer")
-    throw new Error('whenBusy must be "queue" or "steer"');
   // WP-156: standing answers ride on the Lead's brief. Off, empty, or unreachable: the brief is unchanged.
   let brief = job.brief;
   if (tasks.standingBrief) {
@@ -1252,6 +1497,8 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
   );
   // Waiting for a free worker: no task yet, only the chat it will be (H8).
   const queued = ids ? [] : (tasks.pool?.queued(source.id) ?? []);
+  // WP-144: a brief held for a fresh-eyes review is waiting too, though no worker is queued for it.
+  const reviewed = ids ? [] : await (tasks.freshEyesWaiting?.(source.id) ?? Promise.resolve([])).catch(() => []);
   const team = ids ? [] : await othersOpen(source, tasks);
   return {
     tasks: rows.map((row, index) =>
@@ -1261,19 +1508,28 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
         trees[index].filter((entry) => entry.parentId === row.id),
       ),
     ),
-    ...(queued.length
+    ...(queued.length || reviewed.length
       ? {
-          waiting: queued.map(({ job, line }) => ({
-            childSessionId: job.id,
-            title: job.title,
-            status: "waiting",
-            waiting: line,
-            ...(job.heavy ? { heavy: true } : {}),
-          })),
+          waiting: [
+            ...queued.map(({ job, line }) => ({
+              childSessionId: job.id,
+              title: job.title,
+              status: "waiting",
+              waiting: line,
+              ...(job.heavy ? { heavy: true } : {}),
+            })),
+            ...reviewed.map((entry) => ({
+              childSessionId: entry.childSessionId,
+              title: entry.title,
+              status: "waiting",
+              waiting: entry.line,
+              freshEyes: true,
+            })),
+          ],
         }
       : {}),
     ...(team.length ? { othersRunning: team } : {}),
-    ...(rows.length || queued.length
+    ...(rows.length || queued.length || reviewed.length
       ? {}
       : {
           note: team.length
@@ -1357,6 +1613,8 @@ async function cancel(source: Session, input: Record<string, unknown>, host: Age
     input.reason === undefined ? "Cancelled by its owner." : text(input.reason, "reason", 500);
   // One still waiting for a free worker (named by its childSessionId) never starts.
   if (tasks.pool?.unqueue(source.id, id)) return { taskId: id, status: "cancelled", stopFailed: [] };
+  // WP-144: so does one held for a fresh-eyes review.
+  if (await tasks.freshEyesCancel?.(source.id, id)) return { taskId: id, status: "cancelled", stopFailed: [] };
   const [row] = await ownRows(source, tasks, [id]);
   const { stopFailed, cancelled } = await tasks.cancel(source.id, row, reason);
   const [after] = await tasks.owned(source.id, { ids: [id] });
@@ -1678,6 +1936,8 @@ export function handleTasks(
   switch (action) {
     case "tasks.delegate":
       return delegate(source, requestId, input, host, helpers);
+    case "tasks.fanout":
+      return fanout(source, requestId, input, host, helpers);
     case "tasks.status":
       return status(source, input, host);
     case "tasks.wait":

@@ -22,6 +22,7 @@ type Loaded = {
     input: Record<string, unknown>,
     host: AgentAppHost,
   ) => Promise<unknown>;
+  markAppDelegate: (input: Record<string, unknown>) => Record<string, unknown>;
   newSession: (harness: "claude", cwd: string, model: string) => Session;
   rememberRemoteProject: (environmentId: string, project: { id: string; cwd: string; name: string }) => void;
   remotePath: (environmentId: string, hostPath: string) => string;
@@ -36,12 +37,14 @@ async function load(): Promise<Loaded> {
   ]);
   const sessions = await import("../../sessions/model/session");
   const parts = await import("../testing/briefParts");
+  const tasks = await import("../../agent-app/model/agentAppTasks");
   const projects = await import("../../connections/model/remoteProjects");
   const core = await import("@tauri-apps/api/core");
   localStorage.clear();
   localStorage.setItem("monocode:hub-team-pack", "ash");
   return {
     handle: parts.handleWithBriefParts,
+    markAppDelegate: tasks.markAppDelegate,
     newSession: sessions.newSession,
     rememberRemoteProject: projects.rememberRemoteProject,
     remotePath: projects.remotePath,
@@ -140,6 +143,44 @@ describe("tasks.delegate on a remote project", () => {
       status: "running",
       alreadyStarted: false,
     });
+  });
+
+  it("quotes the person's request in the brief the host gets, and holds a task that waits for another back from it (WP-171)", async () => {
+    const cwd = app.remotePath("env-3", "/work/app");
+    app.rememberRemoteProject("env-3", { id: "proj-3", cwd: "/work/app", name: "App" });
+    const { source, host, started } = hostFor(cwd);
+    const real = app.newSession("claude", cwd, "claude:opus-5-5");
+    Object.assign(source, real, { id: "team-exo", firstMate: true, cwd });
+    source.blocks = [{ id: "b1", role: "user", text: "Ash: fix the save bug on the app." }];
+    app.invoke.mockImplementation(async (command: string, input?: { method?: string }) => {
+      if (command === "remote_machines") return [{ id: "machine-1", name: "box", endpoint: "http://127.0.0.1:1", environmentId: "env-3" }];
+      if (input?.method === "firstmate.brief") return { delegation: { id: "d1", childSession: "s1", title: "Fix", state: "running" }, created: true };
+      return [];
+    });
+    await app.handle(source, "r-remote", "tasks.delegate", { brief: "Fix the save bug." }, host);
+    const sent = app.invoke.mock.calls.find((call) => call[1]?.method === "firstmate.brief")![1].params.brief as string;
+    expect(sent).toContain("## Original request");
+    expect(sent).toContain("> Ash: fix the save bug on the app.");
+    // A task that would wait for another is held in this app's queue, which the host does not share: it is not sent.
+    const { parseFanout } = await import("../model/fanoutContract");
+    const { planFanout } = await import("../model/fanoutWaves");
+    const [, board] = planFanout(
+      parseFanout({
+        intent: "Ash: fix it.",
+        tasks: [
+          { name: "api", brief: "Add the route in src/api.ts", goal: "it answers", owns: ["src/api.ts"], provides: [{ kind: "endpoint", name: "/api/x" }] },
+          { name: "board", brief: "Show it in src/ui.tsx", goal: "it shows", requires: ["/api/x"] },
+        ],
+      }),
+      "team-exo",
+      "r-plan",
+    ).links;
+    app.invoke.mockClear();
+    await expect(
+      app.handle(source, "r-wait", "tasks.delegate", app.markAppDelegate({ brief: "Show it.", fanout: board }), host),
+    ).rejects.toThrow(/can't be held on a remote project/);
+    expect(app.invoke.mock.calls.some((call) => call[1]?.method === "firstmate.brief")).toBe(false);
+    expect(started).toHaveLength(0);
   });
 
   it("does not start locally when the remote machine is not connected", async () => {

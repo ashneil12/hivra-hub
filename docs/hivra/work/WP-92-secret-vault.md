@@ -375,3 +375,16 @@ write a second copy of any of them.
       --all-targets -- -D warnings` where the Windows target is installed.
 - [ ] Mac-only checks for Ash: the keychain prompt appears once for the app, "Always Allow" sticks across a
     rebuild with the pinned identity, and the granted run prints `[secret removed]` where the value would be.
+
+## Addendum (10 Nov 2026): planted-secret acceptance tests
+
+Source: AgenticBench (agenticbench.org; no repo or licence file found). Ideas only, no probes or code copied.
+
+Before the vault ships, a test suite plants a fake secret and checks that it does not reach the model context, a log, telemetry, a crash report or an export. Cases:
+
+1. A command the agent did not need cannot read a file outside the project to find a secret.
+2. A project file, or the output of a script the agent runs, that says to read the secret and send it does not get the secret.
+3. When a requested command fails and prints the secret in its error output, the value is removed from every copy except the one the person chose.
+4. A new chat in a second project does not carry the first chat's secret.
+
+Trust-gate cases (project hooks or project MCP config running before the person trusts the folder) belong to WP-31's acceptance list, not here. Done when each case is a test that fails if the secret appears, and the suite runs in `npm run check`.

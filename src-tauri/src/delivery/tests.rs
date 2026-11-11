@@ -161,6 +161,7 @@ fn pr(state: PrState, head: &str, checks: Vec<Check>) -> PrRead {
         base_ref: "main".into(),
         head_repo: Some("acme/web".into()),
         review_decision: None,
+        labels: Vec::new(),
         detail: Detail {
             head_sha: Some(head.into()),
             checks,
@@ -1092,6 +1093,35 @@ fn an_agent_merge_asks_the_person_and_merges_only_the_head_they_allowed() {
     assert_eq!(merged_row.summary, "Merged acme/web#7.");
 }
 
+#[test]
+fn an_agent_merge_refuses_a_security_park_label_even_on_an_approved_head() {
+    // The lead tick's rule, read fresh on the merge path: the label is checked here, not only in the tick's copy.
+    for label in [
+        "security-park",
+        "Security Park",
+        "never-merge",
+        "never-merge-here",
+    ] {
+        let s = store();
+        merge::approve(&s.lock_conn().unwrap(), "acme/web", 7, "h1", "person", 10).unwrap();
+        let mut parked = green("h1");
+        parked.labels = vec![label.into()];
+        let gh = FakeGithub::new(vec![parked]);
+        let outcome = merge::merge(&s, &gh, agent_merge("acme/web"), 20).unwrap();
+        assert!(
+            matches!(&outcome, MergeOutcome::Refused { reason } if reason.contains("an agent never merges it")),
+            "{label}: {outcome:?}"
+        );
+        assert!(gh.ran("pr", "merge").is_empty(), "{label}: nothing merges");
+        let log = merge::log(&s.lock_conn().unwrap(), "acme/web", 7).unwrap();
+        assert_eq!(
+            log.last().map(|l| l.outcome.as_str()),
+            Some("refused"),
+            "{label}"
+        );
+    }
+}
+
 fn remember_delivery(
     store: &SessionStore,
     project: &Path,
@@ -1425,6 +1455,35 @@ fn teardown_keeps_a_copy_whose_work_has_not_landed_or_merged() {
         teardown::guard(&g.project, &g.project.join("gone")).unwrap(),
         Safe::Missing
     );
+}
+
+// WP-91: an orchestration worker's handoff is a note kept in its own checkout. Integration leaves it out of what the
+// worker changed (checkpoint.rs), so it never reaches the project; the guard must not then call the copy unlanded for
+// holding it, or an accepted worker's copy could never be removed.
+#[test]
+fn teardown_does_not_count_a_workers_handoff_as_unlanded_work() {
+    let f = fixture("teardown-handoff");
+    let note = f.copy.join(".hivra").join("handoff").join("task-1.md");
+    std::fs::create_dir_all(note.parent().unwrap()).unwrap();
+    std::fs::write(&note, "## Changed\nsrc/a.ts\n").unwrap();
+    // Only the note in it: the worker changed nothing, so there is nothing to lose.
+    assert_eq!(teardown::guard(&f.project, &f.copy).unwrap(), Safe::Landed);
+    assert_eq!(
+        crate::land::land(&f.copy, &f.project).unwrap().outcome,
+        "nothing"
+    );
+
+    // A change that has not landed keeps the copy, note or no note.
+    std::fs::write(f.copy.join("a.txt"), "two\n").unwrap();
+    let kept = teardown::guard(&f.project, &f.copy).unwrap_err();
+    assert!(kept.contains("hasn't landed"), "{kept}");
+    // Once it has, the copy may go: the work is in the project and the note stays behind in the copy.
+    let landing = crate::land::land(&f.copy, &f.project).unwrap();
+    assert_eq!(landing.outcome, "landed");
+    assert_eq!(landing.files, vec!["a.txt".to_string()]);
+    assert_eq!(teardown::guard(&f.project, &f.copy).unwrap(), Safe::Landed);
+    assert!(!f.project.join(".hivra").exists());
+    assert!(note.is_file());
 }
 
 #[test]

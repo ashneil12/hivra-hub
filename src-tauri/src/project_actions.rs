@@ -536,6 +536,9 @@ fn prune_logs(dir: &Path) {
 
 /// The checkout an action runs in must be the project's main checkout or one of its registered worktrees.
 pub fn checkout_of_project(cwd: &Path) -> Result<(PathBuf, PathBuf), String> {
+    if crate::chat_folder::is_blank(cwd) {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
     let main = project_file::main_checkout(cwd)?;
     let wanted = crate::fs::canonical(cwd).map_err(|e| e.to_string())?;
     let registered = crate::worktrees::list(&main)?
@@ -791,6 +794,19 @@ mod tests {
             timeout_seconds: None,
             confirm: None,
         }
+    }
+
+    /// `git -C ""` reads the folder the app runs in, so an action could be tied to the app's own checkout.
+    #[test]
+    fn an_action_is_never_tied_to_a_chat_with_no_folder() {
+        assert_eq!(
+            checkout_of_project(Path::new("")),
+            Err(crate::chat_folder::NEEDS_FOLDER.to_string())
+        );
+        assert_eq!(
+            project_file::main_checkout(Path::new("")),
+            Err(crate::chat_folder::NEEDS_FOLDER.to_string())
+        );
     }
 
     #[test]

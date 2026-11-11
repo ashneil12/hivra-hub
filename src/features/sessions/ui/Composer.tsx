@@ -6,7 +6,6 @@ import {
   CursorMagicSelection,
   FilePlus,
   Camera,
-  Mic,
   Plus,
   Share,
   Square,
@@ -34,6 +33,16 @@ import {
   revokeAttachment,
 } from "../model/attachments";
 import { resizeComposer, restoreComposerSize } from "../model/composerResize";
+import { tauriDictationPort } from "../model/dictationPort";
+import {
+  DictationAskButton,
+  DictationExplainDialog,
+  DictationListening,
+  DictationMenuRow,
+  DictationProvisional,
+  DictationWaiting,
+} from "./DictationControl";
+import { useDictation, writeDraftKeepingUndo } from "./useDictation";
 import {
   isFileReferenceText,
   messageFilesFromClipboard,
@@ -109,6 +118,7 @@ import { AccessPicker } from "./AccessPicker";
 import { ComposerRunner } from "./ComposerRunner";
 import { ContextMeter } from "./ContextMeter";
 import { contextCeilingFor } from "../model/contextCeiling";
+import { catalogueVersion, subscribeCatalogue } from "../model/modelCatalogue";
 import { AttachmentChip } from "./AttachmentChip";
 import { BranchPicker } from "../../source-control/ui/BranchPicker";
 import { WorktreePicker } from "../../source-control/ui/WorktreePicker";
@@ -125,9 +135,13 @@ import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { InboxMiniCard } from "../../inbox/ui/InboxMiniCard";
 import { NoteMiniCard } from "../../notes/ui/NoteMiniCard";
 import { HandoffMiniCard } from "./HandoffMiniCard";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
+import { FanOutPicker } from "./FanOutPicker";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
+import { appNoteText } from "../model/appNote";
+import { redirectNotePlace } from "../model/cantDo";
 import { SkillPicker } from "../../skills/ui/SkillPicker";
 import { pathKey, projectKey } from "../../../shared/lib/paths";
 import { consumeQuoteRequest, type QuoteRequest } from "../model/quoteDraft";
@@ -254,6 +268,8 @@ type Props = {
   inboxCard?: InboxComposerCard;
   noteCard?: NoteComposerCard;
   handoffCard?: HandoffComposerCard;
+  /** WP-121: the continue or recap line, until the next send. */
+  midThreadLine?: string;
   question?: UserQuestionPrompt;
   busy?: boolean;
   /** Allow typed text to replace Stop with Send while a turn is running. */
@@ -295,6 +311,11 @@ type Props = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
+  /** WP-135: send this prompt to several models. Absent on surfaces that cannot start those chats. */
+  onCompareModels?: (
+    prompt: string,
+    targets: readonly { provider: HarnessId; model: string }[],
+  ) => boolean | string | Promise<boolean | string | void> | void;
   /** `draft` opens the side question with the text unsent, for a typed `/btw `. */
   onBtwCommand?: (
     text: string,
@@ -309,6 +330,10 @@ type Props = {
   onEditQueuedMessage?: (messageId: string, text: string) => void;
   onQueuedMessageEditingChange?: (messageId?: string) => void;
   onSteerQueuedMessage?: (messageId: string) => void;
+  /** Shown once when this agent cannot redirect a running turn. */
+  steerNote?: string;
+  /** Show the note beside the box even when nothing is queued (the app is compacting this chat). */
+  steerNoteBesideBox?: boolean;
   onResumeQueue?: () => void;
   onUsageLimitResume?: () => void;
   onUsageLimitResumeAtReset?: (enabled: boolean) => void;
@@ -387,6 +412,7 @@ export function Composer({
   inboxCard,
   noteCard,
   handoffCard,
+  midThreadLine,
   question,
   busy = false,
   allowBusySubmit = true,
@@ -420,6 +446,7 @@ export function Composer({
   onQuestionReply,
   onQuestionInteraction,
   onSubmit,
+  onCompareModels,
   canSaveDraft = false,
   onSaveDraft,
   onStop,
@@ -429,6 +456,8 @@ export function Composer({
   onEditQueuedMessage,
   onQueuedMessageEditingChange,
   onSteerQueuedMessage,
+  steerNote,
+  steerNoteBesideBox = false,
   onResumeQueue,
   onUsageLimitResume,
   onUsageLimitResumeAtReset,
@@ -549,6 +578,8 @@ export function Composer({
     loadModelControls,
     () => "menu" as const,
   );
+  // WP-104: a custom route's window loads on first use; draw the context ceiling again when it arrives.
+  useSyncExternalStore(subscribeCatalogue, catalogueVersion, catalogueVersion);
   const controlsBeside = modelControls === "beside";
   const [notes, setNotes] = useState<Note[]>(() => peekNotes() ?? []);
   const [mention, setMention] = useState<MentionToken | null>(null);
@@ -676,6 +707,28 @@ export function Composer({
     },
     [inboxCard, noteCard, handoffCard],
   );
+
+  // WP-131: dictation writes into this draft and never sends it.
+  const dictation = useDictation({
+    port: tauriDictationPort,
+    enabled: enabled && !disabled && !worktreeRemoved,
+    getText: () => ref.current?.value ?? "",
+    getSelection: () => ({
+      start: ref.current?.selectionStart ?? 0,
+      end: ref.current?.selectionEnd ?? 0,
+    }),
+    write: (text, cursor) => {
+      const el = ref.current;
+      if (!el) return;
+      writeDraftKeepingUndo(el, text);
+      const caret = Math.max(0, Math.min(text.length, cursor));
+      el.setSelectionRange(caret, caret);
+      resizeComposer(el);
+      draftRevisionRef.current += 1;
+      setDraft(text);
+      syncHasValue(text, attachmentsRef.current);
+    },
+  });
 
   // A leading mode command in the text shows the same pill as picking the mode.
   const operatorActive =
@@ -1323,6 +1376,8 @@ export function Composer({
   }, [editLastTurnSupported, onRecallLastTurnReady, recallLastTurn]);
 
   const submit = (value: string) => {
+    // WP-131: a late transcript must not refill a draft that is being sent.
+    dictation.seal();
     // An empty box while the turn runs: Enter or the button stops this chat's turn (TurnStop.tsx).
     if (
       turnStop &&
@@ -1753,8 +1808,29 @@ export function Composer({
     // WP-94: a hidden character never reaches the draft, so it never reaches the agent (hiddenText.ts).
     const plain = e.clipboardData?.getData("text/plain") ?? "";
     const paste = plain ? stripHiddenCharacters(plain) : null;
+    // A paste that carries an image as well as text keeps the image, whatever happens to the text.
+    const carried = (() => {
+      const files = filesFromClipboard(e.clipboardData);
+      return files.length > 0
+        ? files
+        : (messageFilesFromClipboard(e.clipboardData) ?? []);
+    })();
+    const attachCarried = () => {
+      if (carried.length === 0 || !attachmentsSupported) return;
+      const generation = pasteGenerationRef.current;
+      rememberAttachmentRead(
+        attachmentsFromFiles(carried).then((pasted) => {
+          if (pasteGenerationRef.current !== generation) {
+            pasted.forEach(revokeAttachment);
+            return;
+          }
+          addAttachments(pasted);
+        }),
+      );
+    };
     if (paste && paste.removed > 0 && !paste.text) {
       e.preventDefault();
+      attachCarried();
       setPasteNotice(null);
       setPasteError(
         "That paste had only hidden characters, so nothing was pasted.",
@@ -1769,6 +1845,7 @@ export function Composer({
       inlinePasteRef.current !== true
     ) {
       e.preventDefault();
+      attachCarried();
       const captured = captureDraft(e.currentTarget);
       const generation = pasteGenerationRef.current;
       rememberAttachmentRead(
@@ -1807,6 +1884,7 @@ export function Composer({
     }
     if (paste && paste.removed > 0) {
       e.preventDefault();
+      attachCarried();
       const captured = captureDraft(e.currentTarget);
       if (captured) insertRestoredText(captured, paste.text);
       setPasteNotice(
@@ -1995,6 +2073,15 @@ export function Composer({
       </div>
     </div>
   );
+  const queueVisible = queuedMessages.some(
+    (message) =>
+      message.monoSessionCompletion || appNoteText(message.text) === undefined,
+  );
+  const notePlace = redirectNotePlace(
+    steerNote,
+    queueVisible,
+    !allowBusySubmit || steerNoteBesideBox,
+  );
   return (
     <div
       data-composer
@@ -2035,8 +2122,14 @@ export function Composer({
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}
         onSteer={onSteerQueuedMessage}
+        steerNote={notePlace === "queue" ? steerNote : undefined}
         onResume={onResumeQueue}
       />
+      {notePlace === "composer" ? (
+        <p role="note" className="px-2 pb-1 text-[12px] text-content/55">
+          {steerNote}
+        </p>
+      ) : null}
       <div className="relative overflow-visible">
         {mcpPickerOpen ? (
           <div className="absolute inset-x-0 bottom-full z-30 mb-1">
@@ -2243,6 +2336,21 @@ export function Composer({
               {pasteNotice}
             </p>
           ) : null}
+          {dictation.note ? (
+            <p role="status" data-dictation-note className="px-3 pt-2 text-xs text-content/70">
+              {dictation.note}
+            </p>
+          ) : null}
+          {dictation.phase === "explain" ? (
+            <DictationExplainDialog
+              onContinue={() => {
+                // Dictation writes into this draft, so the draft takes focus; Undo then works on the dictated words.
+                ref.current?.focus();
+                dictation.accept();
+              }}
+              onNotNow={() => dictation.decline()}
+            />
+          ) : null}
           {sideNotice ? (
             <p
               role="status"
@@ -2268,6 +2376,8 @@ export function Composer({
             />
           ) : null}
 
+          <MidThreadSwitchNotice line={midThreadLine} place="composer" />
+
           <div className="relative">
             <div
               ref={highlightRef}
@@ -2283,6 +2393,7 @@ export function Composer({
                 names={skillNames}
                 mentions={mentionIndex.labels}
                 mcpTags={selectedMcp}
+                provisional={dictation.provisional}
               />
             </div>
             <textarea
@@ -2331,6 +2442,7 @@ export function Composer({
                 resizeComposer(el);
                 draftRevisionRef.current += 1;
                 setDraft(el.value);
+                dictation.onTyped(el.value);
                 setSelectedMcp((current) => {
                   const retained = current.filter(
                     (tag) => taggedMcpServers(el.value, [tag]).length > 0,
@@ -2540,21 +2652,15 @@ export function Composer({
                       </span>
                     </span>
                   </button>
-                  <button
-                    type="button"
-                    disabled
-                    aria-disabled
-                    data-composer-plus-unwired
-                    className="flex w-full cursor-not-allowed items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content opacity-50"
-                  >
-                    <Mic className="mt-0.5 size-4 shrink-0 text-content/60" />
-                    <span className="min-w-0 flex-1">
-                      <span className="block text-[13px]">Voice</span>
-                      <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
-                        Not connected yet
-                      </span>
-                    </span>
-                  </button>
+                  {dictation.supported && !disabled && !worktreeRemoved ? (
+                    <DictationMenuRow
+                      onAsk={() => {
+                        setPlusOpen(false);
+                        ref.current?.focus();
+                        dictation.ask();
+                      }}
+                    />
+                  ) : null}
                 </Popover>
               ) : null}
             </div>
@@ -2666,21 +2772,55 @@ export function Composer({
                 <span>Cancel edit</span>
               </button>
             ) : null}
+            {dictation.phase === "listening" ? (
+              <DictationListening onStop={() => dictation.stop()} />
+            ) : dictation.phase === "authorizing" ? (
+              <DictationWaiting onCancel={() => dictation.cancel()} />
+            ) : dictation.supported && !disabled && !worktreeRemoved && dictation.phase === "idle" ? (
+              <DictationAskButton
+                onAsk={() => {
+                  ref.current?.focus();
+                  dictation.ask();
+                }}
+              />
+            ) : null}
             <div className="flex shrink-0 items-center gap-1">
               {turnStop &&
               !disabled &&
               showsStop({ enabled, busy, text: draft, attachments: attachments.length, canStop: !!onStop }) ? (
                 <TurnStopButton onClick={() => onStop?.()} />
               ) : (
-              <ComposerAction
-                busy={busy}
-                disabled={disabled}
-                hasValue={hasValue && !worktreeRemoved}
-                allowBusySubmit={allowBusySubmit}
-                label={draftActive ? "Save draft" : "Send"}
-                onSend={() => submit(ref.current?.value ?? "")}
-                onStop={() => onStop?.()}
-              />
+                <>
+                  {onCompareModels && !compact && !remoteSession ? (
+                    <FanOutPicker
+                      prompt={draft}
+                      disabled={disabled || worktreeRemoved}
+                      allowedHarnesses={allowedModelHarnesses}
+                      onLaunch={async (prompt, targets) => {
+                        const accepted = await onCompareModels(prompt, targets);
+                        if (accepted === false || typeof accepted === "string") return accepted;
+                        pasteGenerationRef.current += 1;
+                        if (ref.current) {
+                          ref.current.value = "";
+                          ref.current.style.height = "auto";
+                        }
+                        setDraft("");
+                        onDraftChange?.("");
+                        syncHasValue("", attachmentsRef.current);
+                        return true;
+                      }}
+                    />
+                  ) : null}
+                  <ComposerAction
+                    busy={busy}
+                    disabled={disabled}
+                    hasValue={hasValue && !worktreeRemoved}
+                    allowBusySubmit={allowBusySubmit}
+                    label={draftActive ? "Save draft" : "Send"}
+                    onSend={() => submit(ref.current?.value ?? "")}
+                    onStop={() => onStop?.()}
+                  />
+                </>
               )}
             </div>
           </div>
@@ -2707,13 +2847,49 @@ function ComposerHighlight({
   names,
   mentions,
   mcpTags,
+  provisional = null,
+  suppressTrail = false,
 }: {
   text: string;
   mode: ModeCommandToken | null;
   names: ReadonlySet<string>;
   mentions: ReadonlyMap<string, ProjectFile>;
   mcpTags: McpTag[];
+  /** WP-131: the words still being heard, in draft indexes. */
+  provisional?: { start: number; end: number } | null;
+  /** A slice of a marked draft must not add its own trailing break. */
+  suppressTrail?: boolean;
 }) {
+  // WP-131: an out-of-range mark renders unmarked. It must not throw.
+  if (
+    provisional &&
+    provisional.end > provisional.start &&
+    provisional.start >= 0 &&
+    provisional.end <= text.length
+  ) {
+    return (
+      <>
+        <ComposerHighlight
+          text={text.slice(0, provisional.start)}
+          mode={mode && provisional.start >= mode.end ? mode : null}
+          names={names}
+          mentions={mentions}
+          mcpTags={mcpTags}
+          suppressTrail
+        />
+        <DictationProvisional text={text.slice(provisional.start, provisional.end)} />
+        <ComposerHighlight
+          text={text.slice(provisional.end)}
+          mode={null}
+          names={names}
+          mentions={mentions}
+          mcpTags={mcpTags}
+          suppressTrail
+        />
+        {text.endsWith("\n") ? "\n" : null}
+      </>
+    );
+  }
   const rest = mode ? text.slice(mode.end) : text;
   const parts = skillTextParts(rest, names);
   return (
@@ -2735,7 +2911,7 @@ function ComposerHighlight({
           />
         ),
       )}
-      {text.endsWith("\n") ? "\n" : null}
+      {suppressTrail || !text.endsWith("\n") ? null : "\n"}
     </>
   );
 }

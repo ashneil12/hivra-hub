@@ -349,7 +349,8 @@ export function receiptFor(ship, dir, by) {
  * Keep the newest `keep` ship folders; move older finished ones to ~/Archive/monocode/ships/. `keepIds` (one id or a
  * list) are never moved: the ship being staged, and the ship a rollback restores from. Nor is any ship that a rollback
  * still under way restores from, whoever is tidying: a runner finishing an earlier ship can get here after a rollback was
- * staged, and moving that ship's folder would take the database copy out from under the rollback.
+ * staged, and moving that ship's folder would take the database copy out from under the rollback. While any ship
+ * folder's state can't be read, nothing moves.
  */
 export function retainShips(shipRoot, archive, keepIds, keep = KEEP_SHIPS) {
   const protectedIds = new Set([keepIds].flat().filter(Boolean));
@@ -365,13 +366,17 @@ export function retainShips(shipRoot, archive, keepIds, keep = KEEP_SHIPS) {
   }
   for (const name of names) {
     const doc = readJson(path.join(shipRoot, name, STATE));
-    if (doc && !FINAL.has(doc.phase) && doc.requestedBy?.rollsBack) protectedIds.add(doc.requestedBy.rollsBack);
+    // A state that can't be read right now (a folder still being staged, or a read that lands in its writer's replace,
+    // which Windows can answer with nothing) might be a rollback under way. Moving its source would take the database
+    // copy out from under it, so nothing is archived this time; the next tidy-up tries again.
+    if (!doc) return [];
+    if (!FINAL.has(doc.phase) && doc.requestedBy?.rollsBack) protectedIds.add(doc.requestedBy.rollsBack);
   }
   const moved = [];
   for (const name of names.slice(0, Math.max(0, names.length - keep))) {
     if (protectedIds.has(name)) continue;
     const doc = readJson(path.join(shipRoot, name, STATE));
-    if (doc && !FINAL.has(doc.phase)) continue;
+    if (!doc || !FINAL.has(doc.phase)) continue;
     removeLaunchAgent(doc);
     moveDir(path.join(shipRoot, name), path.join(archive, name));
     moved.push(name);

@@ -124,20 +124,42 @@ the stack says so plainly instead of pretending, and that stack is not run unatt
    into `src-tauri/src/local_services/base_url.rs`, and `persistence.rs`'s rules (write `wx` at 0600, fsync, rename;
    `link()` for create-or-read) into `src-tauri/src/local_services/store.rs`, with emulate's tests ported. If Node is
    missing or older than 24, the stack starts without the stand-in and says so once; the base URLs still point at the
-   named host, so a test fails closed (connection refused) instead of quietly reaching the real service.
+   service's own loopback port, so a test fails closed (connection refused) instead of quietly reaching the real service.
 7. **Wiring it into the stack (WP-87).** A stack's declared service may name an emulated one
    (`{ "emulate": "github", "urlEnv": "GITHUB_BASE_URL" }`). Hivra writes each emulated service's port into the
-   generated emulate config (it honours a per-service `port`), registers `<service>-<label>.localhost` for it, and puts
-   its named base URL in the stack's env block under `urlEnv`, defaulting to `<SERVICE>_BASE_URL`. The app itself
+   generated emulate config (it honours a per-service `port`), registers `<service>.<project>-<label>.localhost` for it
+   (the project is in the name so two projects on one branch never share one, and the service is a label of its own
+   so no hyphenated project or branch can read as it: project `github-shop`'s app on branch `a` is
+   `github-shop-a.localhost`, project `shop`'s fake GitHub is `github.shop-a.localhost`; two project folders with the
+   same name each add a short hash of their path), and puts `http://127.0.0.1:<port>` in
+   the stack's env block under `urlEnv`, defaulting to `<SERVICE>_BASE_URL`: server-side code resolves names through
+   the OS, which does not treat `*.localhost` as loopback. The named URL is what the stand-in advertises (its
+   `baseUrl`, links and redirects) and what a browser opens through the proxy. A name another stack holds is refused,
+   and only the stack that holds a name removes it. The app itself
    gets `<project>-<label>.localhost` and `PUBLIC_URL`; the framework-specific names the project already declares
    (`PORT`, `VITE_PORT`, and so on) keep working. One stand-in process per stack, never `--portless`: emulate's
    `--portless` registers a global `<service>.emulate` alias with `--force`, so two worktrees would overwrite each
-   other's. The named base URL is the whole isolation.
+   other's. The per-stack port and name are the whole isolation.
 8. **State per worktree.** Seeds and snapshots live with the stack, not in the worktree, and `stack reset` puts the
    stand-in back to its seed between runs. A pool slot keeps its state (WP-82); `stack down` stops the stand-in, the
    app's processes and removes its names, and a stack whose worktree is gone appears in Clean up, removed only with a
    tap. A name or stand-in left by a crash is pruned on the next start, never silently re-pointed at a port now owned
-   by something else.
+   by something else: the app stops every stand-in it started when it quits and again at the next start. A stand-in is
+   stopped only when it is provably the one the app started: the start time recorded when it was spawned (macOS
+   `proc_pidinfo`, Linux `/proc/<pid>/stat`, Windows `GetProcessTimes`) is found again on the live process, the program
+   is node, and where the command line can be read it runs `--seed <stack>/emulate.config.json`. A pid file with no start
+   time is never signalled. After SIGTERM the stand-in's process group is watched and gets SIGKILL only if it is still there
+   at every look through the wait (a group id in use cannot be another program's, so a child that ignores SIGTERM is
+   ended even when its leader is gone, and a group that has gone is never signalled again). The pid file is removed
+   only if it still says what the stop read. On
+   Windows each stand-in is in a Job Object of its own that ends with the app, and stopping ends the whole tree; a stop
+   that leaves one of its ports answering keeps the pid file. At launch this runs in the background (a stack action
+   waits for it), `node --version` has a five second limit, and for a stack that was still running the app starts that
+   stack's fakes again and puts their names back. The app's own name comes back only while its port answers and Docker
+   says this stack's own containers publish it; any other listener, or a Docker that cannot be asked, leaves it
+   unpublished. A name that was not put back (Docker still starting, a port something else holds, a name list that could
+   not be used) stays with its stack and the card says why, and only a name another stack really holds is dropped from
+   this one.
 9. **On screen and by chat.** The stack's card shows each name, whether it is emulated, and one line saying which
    mode it is in ("tests use fake GitHub and Stripe" or "reaches the real internet"). The task card links the named
    app URL. `app stacks` reads the same; a crew is told the app's named URL in its brief.

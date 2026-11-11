@@ -26,6 +26,15 @@ pub struct Worktree {
     /// WP-82: said once, when this checkout was a plain git worktree because the pool was off or not installed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pool_notice: Option<String>,
+    /// WP-138: one line when files named in .worktreeinclude are in this worktree. No file contents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_note: Option<String>,
+    /// WP-138: one line when a listed file could not be copied. No file contents.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub include_warning: Option<String>,
+    /// WP-123: said when a fork's checkout could not be given the chat's uncommitted changes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub changes_notice: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -36,6 +45,10 @@ pub struct Worktrees {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<String, String> {
+    // `git -C ""` changes nowhere: a chat with no folder would list the worktrees of the folder the app runs in.
+    if crate::chat_folder::is_blank(root) {
+        return Err(crate::chat_folder::NEEDS_FOLDER.into());
+    }
     let mut command = Command::new("git");
     crate::hide_window_console(&mut command);
     let output = command
@@ -178,6 +191,22 @@ pub(crate) fn create(
     base: &str,
     existing: bool,
 ) -> Result<Worktree, String> {
+    let mut tree = create_without_include(root, branch, base, existing)?;
+    // WP-138: named files from .worktreeinclude. A copy failure does not undo the worktree.
+    let include = crate::worktree_include::apply(root, Path::new(&tree.path));
+    tree.include_note = include.note;
+    tree.include_warning = include.warning;
+    Ok(tree)
+}
+
+/// `git worktree add` and nothing else: no `.worktreeinclude` files. For a checkout of code
+/// somebody else wrote (a pull request), where a secret copied in could be read by that code.
+pub(crate) fn create_without_include(
+    root: &Path,
+    branch: &str,
+    base: &str,
+    existing: bool,
+) -> Result<Worktree, String> {
     let branch = branch.trim();
     if branch.starts_with('-') || branch.starts_with('@') || branch.is_empty() {
         return Err("Enter a valid branch name".into());
@@ -248,8 +277,43 @@ pub(crate) fn create(
         .into_iter()
         .find(|tree| same_path(Path::new(&tree.path), &path))
         .ok_or_else(|| {
-            "Worktree created, but could not be found. Refresh the working copies.".into()
+            "Worktree created, but could not be found. Refresh the working copies.".to_string()
         })
+}
+
+/// WP-123: what a fork's checkout says when the chat's uncommitted changes could not come along.
+pub(crate) const CHANGES_NOT_COPIED: &str =
+    "Uncommitted changes in this chat's worktree weren't copied.";
+
+/// WP-123: a new checkout that starts from the chat's own checkout, uncommitted changes included, the way a pool
+/// slot is seeded. A chat's recap names the files it edited, and `git worktree add` alone brings only the commit. If
+/// the copy fails the checkout is still made, put back at the commit it began from (it had no changes of its own, so
+/// nothing is left half-copied) and the tree carries `CHANGES_NOT_COPIED` for the caller to say.
+fn create_carrying_changes(root: &Path, branch: &str, base: &str) -> Result<Worktree, String> {
+    let mut tree = create(root, branch, base, false)?;
+    let path = PathBuf::from(&tree.path);
+    if copy_checkout_state(root, &path).is_err() {
+        let _ = git(&path, &["reset", "--hard", "--quiet"]);
+        let _ = git(&path, &["clean", "-fdq"]);
+        tree.changes_notice = Some(CHANGES_NOT_COPIED.into());
+    }
+    Ok(tree)
+}
+
+/// The plain checkout of `git_worktree_create`, with the chat's uncommitted changes when `carry` asks for them. An
+/// existing branch has its own contents, so nothing is carried onto it.
+fn new_checkout(
+    root: &Path,
+    branch: &str,
+    base: &str,
+    existing: bool,
+    carry: bool,
+) -> Result<Worktree, String> {
+    if carry && !existing {
+        create_carrying_changes(root, branch, base)
+    } else {
+        create(root, branch, base, existing)
+    }
 }
 
 /// Start the project's setup in a worktree that was just added. It runs before the agent's first turn: the chat
@@ -287,7 +351,20 @@ fn take_pool_slot(
     run_setup: Option<bool>,
 ) -> Result<Pooled, String> {
     let env = crate::worktree_pool::env_from_app(app);
-    match crate::worktree_pool::acquire(&env, root, branch, holder) {
+    take_pool_slot_with(&env, root, branch, holder, |tree| {
+        with_setup(app, tree, run_setup)
+    })
+}
+
+/// The pool path, with the step that starts setup passed in so a test can watch when it runs.
+fn take_pool_slot_with(
+    env: &crate::worktree_pool::PoolEnv,
+    root: &Path,
+    branch: &str,
+    holder: &str,
+    start_setup: impl FnOnce(Worktree) -> Worktree,
+) -> Result<Pooled, String> {
+    match crate::worktree_pool::acquire(env, root, branch, holder) {
         Ok(crate::worktree_pool::Checkout::Slot { path, fresh, .. }) => {
             let tree = list(root)?
                 .into_iter()
@@ -297,10 +374,16 @@ fn take_pool_slot(
                 })?;
             if fresh {
                 if let Err(error) = copy_checkout_state(root, Path::new(&tree.path)) {
-                    let _ = crate::worktree_pool::give_back(&env, root, &path);
+                    let _ = crate::worktree_pool::give_back(env, root, &path);
                     return Err(error);
                 }
-                Ok(Pooled::Ready(Box::new(with_setup(app, tree, run_setup))))
+                let mut tree = tree;
+                // WP-138: a fresh slot gets the named files before setup starts, because setup
+                // may need them. A reused slot keeps its own copies.
+                let include = crate::worktree_include::apply(root, Path::new(&tree.path));
+                tree.include_note = include.note;
+                tree.include_warning = include.warning;
+                Ok(Pooled::Ready(Box::new(start_setup(tree))))
             } else {
                 Ok(Pooled::Ready(Box::new(tree)))
             }
@@ -319,9 +402,12 @@ pub async fn git_worktree_create(
     base: String,
     existing: bool,
     run_setup: Option<bool>,
+    carry_changes: Option<bool>,
 ) -> Result<Worktree, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let root = expand_home(&cwd);
+        // WP-123: a fork asks for the chat's uncommitted changes. A fresh pool slot is already seeded that way.
+        let carry = carry_changes == Some(true);
         // WP-82: "New worktree" uses the pool only when that switch is on. It stays off.
         let use_pool = !existing
             && crate::worktree_pool::settings_for(&crate::worktree_pool::env_from_app(&app), &root)
@@ -331,14 +417,14 @@ pub async fn git_worktree_create(
                 Ok(Pooled::Ready(tree)) => return Ok(*tree),
                 Ok(Pooled::Full(note)) => return Err(note),
                 Ok(Pooled::Plain(notice)) => {
-                    let mut tree = create(&root, &branch, &base, existing)?;
+                    let mut tree = new_checkout(&root, &branch, &base, existing, carry)?;
                     tree.pool_notice = notice;
                     return Ok(with_setup(&app, tree, run_setup));
                 }
                 Err(error) => return Err(pooled_error(error, false)),
             }
         }
-        let tree = create(&root, &branch, &base, existing)?;
+        let tree = new_checkout(&root, &branch, &base, existing, carry)?;
         Ok(with_setup(&app, tree, run_setup))
     })
     .await
@@ -981,6 +1067,75 @@ mod tests {
         Repo(dir)
     }
 
+    /// A pool driven by the stand-in tool, with its own data folder and home, like a dev copy.
+    fn pool_env(tmp: &Path) -> crate::worktree_pool::PoolEnv {
+        crate::worktree_pool::PoolEnv {
+            dev: true,
+            data_dir: tmp.join("data"),
+            home: tmp.join("home"),
+            launch: Some(crate::worktree_pool::ToolLaunch {
+                program: PathBuf::from("node"),
+                args: vec![std::ffi::OsString::from(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/tests/treehouse_standin.mjs"
+                ))],
+            }),
+        }
+    }
+
+    #[test]
+    fn a_pool_slot_gets_named_files_before_setup_starts() {
+        let dir = std::env::temp_dir().join(format!(
+            "monocode-worktree-include-pool-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let root = dir.join("repo");
+        std::fs::create_dir_all(&root).unwrap();
+        git_checked(&root, &["init", "-b", "main"]).unwrap();
+        git_checked(&root, &["config", "core.autocrlf", "false"]).unwrap();
+        std::fs::write(root.join(".gitignore"), ".env\n").unwrap();
+        git_checked(&root, &["add", ".gitignore"]).unwrap();
+        git_checked(
+            &root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                "ignore",
+            ],
+        )
+        .unwrap();
+        std::fs::write(root.join(".env"), "first\n").unwrap();
+        std::fs::write(root.join(".worktreeinclude"), ".env\n").unwrap();
+        let env = pool_env(&dir);
+        let started = std::cell::Cell::new(None::<bool>);
+        let result = take_pool_slot_with(&env, &root, "mc/include-pool", "crew-a", |tree| {
+            // Recorded at the moment setup starts: the file must already be here.
+            started.set(Some(Path::new(&tree.path).join(".env").is_file()));
+            tree
+        })
+        .unwrap();
+        let tree = match result {
+            Pooled::Ready(tree) => *tree,
+            Pooled::Full(note) => panic!("pool full: {note}"),
+            Pooled::Plain(notice) => panic!("fallback: {notice:?}"),
+        };
+        assert_eq!(started.get(), Some(true), "setup started before the copy");
+        assert_eq!(
+            std::fs::read_to_string(Path::new(&tree.path).join(".env")).unwrap(),
+            "first\n"
+        );
+        assert_eq!(
+            tree.include_note.as_deref(),
+            Some("1 file named in .worktreeinclude is in this worktree.")
+        );
+        assert!(tree.include_warning.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn parses_literal_paths_and_worktree_flags() {
         let trees = parse_worktrees("worktree /repo\0HEAD abc\0branch refs/heads/main\0\0worktree /a\nquoted\"path\0HEAD def\0detached\0locked reason\0prunable missing\0\0");
@@ -1085,6 +1240,101 @@ mod tests {
             "lead dirty\n"
         );
         remove(&root, worker, true).unwrap();
+    }
+
+    fn commit_all(root: &Path, message: &str) {
+        git_checked(root, &["add", "."]).unwrap();
+        git_checked(
+            root,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn a_fork_worktree_carries_the_chats_uncommitted_changes() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join("tracked.txt"), "head\n").unwrap();
+        std::fs::write(root.join("deleted.txt"), "delete me\n").unwrap();
+        commit_all(&root, "files");
+        std::fs::write(root.join("tracked.txt"), "chat edit\n").unwrap();
+        std::fs::write(root.join("untracked.txt"), "chat new\n").unwrap();
+        std::fs::remove_file(root.join("deleted.txt")).unwrap();
+
+        let tree = create_carrying_changes(&root, "mc/fork-carry", "HEAD").unwrap();
+        let fork = Path::new(&tree.path);
+        assert!(tree.changes_notice.is_none());
+        assert_eq!(
+            std::fs::read_to_string(fork.join("tracked.txt")).unwrap(),
+            "chat edit\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(fork.join("untracked.txt")).unwrap(),
+            "chat new\n"
+        );
+        assert!(!fork.join("deleted.txt").exists());
+        // The chat's own checkout is only read.
+        assert_eq!(
+            std::fs::read_to_string(root.join("tracked.txt")).unwrap(),
+            "chat edit\n"
+        );
+        remove(&root, fork, true).unwrap();
+    }
+
+    #[test]
+    fn a_fork_worktree_of_a_clean_checkout_has_nothing_to_say() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        let tree = create_carrying_changes(&root, "mc/fork-clean", "HEAD").unwrap();
+        assert!(tree.changes_notice.is_none());
+        assert!(git(
+            Path::new(&tree.path),
+            &["status", "--porcelain", "--untracked-files=normal"]
+        )
+        .unwrap()
+        .is_empty());
+        remove(&root, Path::new(&tree.path), true).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fork_worktree_says_so_and_starts_clean_when_the_changes_cannot_be_copied() {
+        let repo = repo();
+        let root = repo.0.join("repo");
+        std::fs::write(root.join("a.txt"), "head\n").unwrap();
+        commit_all(&root, "files");
+        // One change that copies and one that cannot (a symbolic link is refused).
+        std::fs::write(root.join("a.txt"), "chat edit\n").unwrap();
+        std::os::unix::fs::symlink("a.txt", root.join("z-link")).unwrap();
+
+        let tree = create_carrying_changes(&root, "mc/fork-refused", "HEAD").unwrap();
+        let fork = Path::new(&tree.path);
+        assert_eq!(tree.changes_notice.as_deref(), Some(CHANGES_NOT_COPIED));
+        // Nothing half-copied: the checkout is the commit it started from, so the notice is true.
+        assert_eq!(
+            std::fs::read_to_string(fork.join("a.txt")).unwrap(),
+            "head\n"
+        );
+        assert!(!fork.join("z-link").exists());
+        assert!(
+            git(fork, &["status", "--porcelain", "--untracked-files=normal"])
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            std::fs::read_to_string(root.join("a.txt")).unwrap(),
+            "chat edit\n"
+        );
+        remove(&root, fork, true).unwrap();
     }
 
     #[test]

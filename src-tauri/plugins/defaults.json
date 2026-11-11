@@ -56,6 +56,32 @@
         "skills/configure-workspaces",
         "skills/setup-worktree"
       ]
+    },
+    {
+      "name": "hivra-mcode",
+      "folder": "hivra-mcode",
+      "repository": "https://github.com/MiniMax-AI/mcode-stack",
+      "path": "stacks/ronny/skills",
+      "commit": "88f84be7075106d8ce283e5d3a8138cdb8f9a205",
+      "version": "0.1.0",
+      "license": "MIT",
+      "copyright": "Copyright (c) 2026 MiniMax Code",
+      "left_out": [
+        "skills/agent-brief",
+        "skills/engineering-change-descriptions",
+        "skills/engineering-code-review",
+        "skills/engineering-emergency-changes",
+        "skills/engineering-review-comments",
+        "skills/engineering-review-feedback",
+        "skills/engineering-small-prs",
+        "skills/evidence-first-review",
+        "skills/handoff-doc",
+        "skills/harness-experiment",
+        "skills/long-command-check",
+        "skills/review-capacity-check",
+        "skills/tool-budget-audit",
+        "skills/trajectory-review"
+      ]
     }
   ]
 }

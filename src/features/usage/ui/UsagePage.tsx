@@ -2,6 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { copyText } from "../../../platform/tauri/clipboard";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import {
+  applyUsageFilter,
+  defaultUsageFilter,
+  usageFilterChoices,
+  usageFilterFrom,
+  type UsageFilter,
+  type UsageFilterChoice,
+} from "../model/filter";
+import {
   buildUsageHistory,
   costNote,
   dayLabel,
@@ -13,7 +21,7 @@ import {
   type UsageSession,
   type UsageTotals,
 } from "../model/history";
-import { loadUsageHistory } from "../model/load";
+import { loadUsageSessions } from "../model/load";
 
 type Props = {
   /** Saved chats to read. When set, the page does not ask the app. */
@@ -30,11 +38,8 @@ export function UsagePage({ sessions, now }: Props) {
   const seeded = sessions !== undefined;
   const [liveClock] = useState(() => Date.now());
   const at = now ?? liveClock;
-  const seededHistory = useMemo(
-    () => (sessions !== undefined ? buildUsageHistory(sessions, { now: at }) : null),
-    [sessions, at],
-  );
-  const [live, setLive] = useState<UsageHistory | null>(null);
+  const [liveSessions, setLiveSessions] = useState<readonly UsageSession[] | null>(null);
+  const [filter, setFilter] = useState<UsageFilter>(() => defaultUsageFilter());
   const [problem, setProblem] = useState(false);
   const [loading, setLoading] = useState(!seeded);
   const [attempt, setAttempt] = useState(0);
@@ -46,10 +51,10 @@ export function UsagePage({ sessions, now }: Props) {
     const mine = ++generation.current;
     let cancelled = false;
     setLoading(true);
-    void loadUsageHistory(at)
+    void loadUsageSessions(at)
       .then((next) => {
         if (cancelled || mine !== generation.current) return;
-        setLive(next);
+        setLiveSessions(next);
         setProblem(false);
         setLoading(false);
       })
@@ -64,7 +69,35 @@ export function UsagePage({ sessions, now }: Props) {
     };
   }, [seeded, at, attempt]);
 
-  const history = seededHistory ?? live;
+  const source = seeded ? (sessions ?? []) : liveSessions;
+  const filtered = useMemo(
+    () => (source == null ? null : applyUsageFilter(source, filter)),
+    [source, filter],
+  );
+  const history = useMemo(
+    () => (filtered ? buildUsageHistory(filtered, { now: at }) : null),
+    [filtered, at],
+  );
+  const choices = useMemo(
+    () => usageFilterChoices(source ?? [], filter.provider),
+    [source, filter.provider],
+  );
+  const hiddenByFilter =
+    history != null &&
+    history.last30.turns === 0 &&
+    source != null &&
+    buildUsageHistory(source, { now: at }).last30.turns > 0;
+
+  function onProvider(provider: string) {
+    setFilter((current) => {
+      const next = usageFilterFrom({ provider, model: current.model });
+      const models = usageFilterChoices(source ?? [], next.provider).models;
+      if (next.model && !models.some((item) => item.id === next.model)) {
+        return { ...next, model: "" };
+      }
+      return next;
+    });
+  }
 
   async function onCopy() {
     if (!history) return;
@@ -90,6 +123,11 @@ export function UsagePage({ sessions, now }: Props) {
       {history ? (
         <UsageBody
           history={history}
+          hiddenByFilter={hiddenByFilter}
+          filter={filter}
+          choices={choices}
+          onProvider={onProvider}
+          onModel={(model) => setFilter((current) => usageFilterFrom({ ...current, model }))}
           copyLabel={
             copyState === "copied" ? "Copied" : copyState === "failed" ? "Could not copy" : "Copy as CSV"
           }
@@ -102,22 +140,43 @@ export function UsagePage({ sessions, now }: Props) {
 
 function UsageBody({
   history,
+  hiddenByFilter,
+  filter,
+  choices,
+  onProvider,
+  onModel,
   copyLabel,
   onCopy,
 }: {
   history: UsageHistory;
+  hiddenByFilter: boolean;
+  filter: UsageFilter;
+  choices: { providers: UsageFilterChoice[]; models: UsageFilterChoice[] };
+  onProvider: (provider: string) => void;
+  onModel: (model: string) => void;
   copyLabel: string;
   onCopy: () => void;
 }) {
   const empty = history.last30.turns === 0;
   return (
     <>
+      <UsageFilters filter={filter} choices={choices} onProvider={onProvider} onModel={onModel} />
       <div className="flex items-center justify-between gap-3">
         <p className="text-[13px] text-content/60">
-          {empty ? "No turns in the last 30 days." : "Tokens and cost for the last 30 days."}
+          {hiddenByFilter
+            ? "No turns for this filter."
+            : empty
+              ? "No turns in the last 30 days."
+              : "Tokens and cost for the last 30 days."}
         </p>
         <SecondaryButton onClick={onCopy}>{copyLabel}</SecondaryButton>
       </div>
+      {empty ? null : (
+        <p className="text-xs text-content/60">
+          Estimated cost is what the same use would cost at API prices. If you use a Claude subscription you pay a flat fee, so
+          this is not your bill.
+        </p>
+      )}
       <div className="grid gap-3 sm:grid-cols-3">
         <Summary title="Today" totals={history.today} />
         <Summary title="Last 7 days" totals={history.last7} />
@@ -128,6 +187,55 @@ function UsageBody({
       <TotalsTable caption="By engine" rows={history.byEngine} />
       <TotalsTable caption="By model" rows={history.byModel} />
     </>
+  );
+}
+
+function UsageFilters({
+  filter,
+  choices,
+  onProvider,
+  onModel,
+}: {
+  filter: UsageFilter;
+  choices: { providers: UsageFilterChoice[]; models: UsageFilterChoice[] };
+  onProvider: (provider: string) => void;
+  onModel: (model: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-4 text-[13px] text-content/70" data-usage-filters>
+      <label className="flex items-center gap-2">
+        Provider
+        <select
+          aria-label="Provider"
+          value={filter.provider}
+          onChange={(event) => onProvider(event.target.value)}
+          className="rounded-md border border-stroke bg-transparent px-2 py-1 text-content"
+        >
+          <option value="">All</option>
+          {choices.providers.map((choice) => (
+            <option key={choice.id} value={choice.id}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+      </label>
+      <label className="flex items-center gap-2">
+        Model
+        <select
+          aria-label="Model"
+          value={filter.model}
+          onChange={(event) => onModel(event.target.value)}
+          className="rounded-md border border-stroke bg-transparent px-2 py-1 text-content"
+        >
+          <option value="">All</option>
+          {choices.models.map((choice) => (
+            <option key={choice.id} value={choice.id}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+      </label>
+    </div>
   );
 }
 
@@ -222,7 +330,7 @@ function TotalsTable({ caption, rows }: { caption: string; rows: UsageGroup[] })
           {showCache ? (
             <th scope="col" className="py-1 pr-3 text-right font-medium">Cache write</th>
           ) : null}
-          <th scope="col" className="py-1 text-right font-medium">Cost</th>
+          <th scope="col" className="py-1 text-right font-medium">Estimated cost</th>
         </tr>
       </thead>
       <tbody>

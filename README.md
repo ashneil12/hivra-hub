@@ -31,14 +31,14 @@ Hivra takes ideas, and in a few places code, from these projects. What it takes 
 in Settings, under About.
 
 - [MonoCode](https://github.com/hardbeat920/monocode): the app Hivra is built on (projects, sessions on many CLIs, worktrees, Monos and the Inbox).
-- [firstmate](https://github.com/kunchenguid/firstmate): the first mate role, briefs with a definition of done, the status protocol and crew dispatch.
+- [firstmate](https://github.com/kunchenguid/firstmate): the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra.
 - [pstack](https://github.com/cursor/plugins/tree/main/pstack): Lauren Tan's (poteto) skills for rigour and verification, shipped as the default plugin.
 - [DeepSeek super-agent prototype](https://github.com/deepseek-ai/dsh-superagent-prototype): a router that never does the work itself, workers that follow threads, a watchdog.
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness): safe plugin installs, a static plugin index, Discover and Creator mode (ideas only).
 - [Agent Plugins standard](https://agent-plugins.org/): the plugin format.
 - [council-of-high-intelligence](https://github.com/0xnyk/council-of-high-intelligence): the council protocol (blind round, cross-exam, dissent quota and a chairman).
 - [OpenMausBot](https://github.com/milind-soni/OpenMausBot): rooms with responder modes, goal mode, teams and playbooks as one file.
-- [OpenBot](https://github.com/CopilotKit/openbot): approval gates, an audit trail, typed handoffs and quiet digests.
+- [OpenBot](https://github.com/CopilotKit/openbot): approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests.
 - [Rerun](https://github.com/rerun-build/rerun): remote engine pairing, a memory curator and approval cards (ideas only).
 - [Puppetmaster](https://github.com/professorpalmer/Puppetmaster): completion gates, typed artifacts with evidence, failure reroutes, session leases and idempotent launch keys.
 - [Raven](https://github.com/EverMind-AI/Raven): "finished" is not "succeeded", status from the registry, provenance-required memory.
@@ -64,14 +64,47 @@ in Settings, under About.
 - [Matt Pocock's skills](https://github.com/mattpocock/skills): diagnosing-bugs, tdd, grill-me and grilling, copied from mattpocock/skills at 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d and called by name only.
 - [portless](https://github.com/vercel-labs/portless): a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove (WP-90). The 0.17 parallel loopback dial and Windows route-lock retry are included (WP-139).
 - [emulate](https://github.com/vercel-labs/emulate): 14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones (WP-90).
-- [oh-my-hermes](https://github.com/rlaope/oh-my-hermes): the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, planned for Wave J.
-- [T3 Code](https://github.com/pingdotgg/t3code): the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases and 18 recorded Claude transcripts for the test bench.
+- [oh-my-hermes](https://github.com/rlaope/oh-my-hermes): the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, and a finished run's close that counts the usage its children recorded (WP-91, WP-148).
+- [T3 Code](https://github.com/pingdotgg/t3code): the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a lead that can start work on any funded CLI (WP-120), a portable mid-thread handoff that says when a harness cannot resume, native subagent lineage with a child's approval answered on the parent thread (WP-122, ideas from the v0.1.0 and v0.1.7 release notes at e85e0094dd4617a1eada1ad7961f2132a79e67b2), forking a chat from a message (WP-123), copying the files named in .worktreeinclude into a new worktree (WP-138), and one prompt sent to several models from the thread sidebar (docs/user/thread-sidebar.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2), and the open request for vendor cloud sessions (idea only, WP-136). WP-133 takes the remote, phone and web idea only (commit e85e0094) and does not copy T3 Connect.
+- [T3 Code usage](https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/usage.md): always-on context remaining in an open chat, usage history filters by provider and model, and dollar figures labelled as estimates (WP-127), from docs/user/usage.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2.
+- [T3 Code html renders](https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/html-renders.md): sandboxed visual HTML replies in chat, from its html renders note at commit e85e0094dd4617a1eada1ad7961f2132a79e67b2 (ideas only, no code copied).
+- [T3 Code voice input](https://github.com/pingdotgg/t3code/blob/e85e0094dd4617a1eada1ad7961f2132a79e67b2/docs/user/voice-input.md): desktop dictation that writes into the draft and does not send, from its voice input note at commit e85e0094dd4617a1eada1ad7961f2132a79e67b2 (ideas only, no code copied).
 - [Aether](https://runaether.dev): ideas only: a machine per task, the person's own subscription, phone control and a reviewer that runs the changed code.
 - [Row-Bot](https://github.com/siddsachar/row-bot): the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99), the correction rule behind the rules tier (WP-103), and a scan that refuses text which looks like instructions aimed at the model (WP-111).
 - [Mnemos](https://github.com/Riley-Coyote/mnemos-mcp): ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100).
 - [ccdeck](https://github.com/BarganConstantin/ccdeck): ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first.
 - [precedent-log](https://github.com/quotumorg/precedent-log): standing answers: show past answers before a new question, match a reworded question to an old answer, and list who relied on an answer when it is retired (ideas only).
+- [mcode-stack](https://github.com/MiniMax-AI/mcode-stack): team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117).
+- [Pierre](https://github.com/pierrecomputer/pierre): an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116).
+- [Claude Code subagents](https://code.claude.com/docs/en/sub-agents): a cheap Explore agent passed to a crew session as a flag, so its search does not run on the lead model (ideas only, WP-143).
+- [models.dev](https://github.com/anomalyco/models.dev): a catalogue of each model's context window and whether it can call tools, bundled so a custom route can read it offline (WP-104).
+- [Elephant-Goldfish](https://github.com/google/elephant-goldfish-model): a zero-context review of a plan before a crew starts (WP-144).
 - [Memorilla](https://github.com/snap-stanford/memorilla): an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only).
+- [numbrone](https://github.com/stevenmichaelthomas/numbrone): ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees.
+- [Reason Network](https://github.com/reason-machines/reason-network): the rule that an agent saying someone approved is not that person's approval, and the one-task-per-session and point-first messaging rules (ideas only).
+- [Orchestrator.inc](https://github.com/OrchestratorInc/agent-orchestrator): ideas only: durable facts with status derived at read time, the rule that automation never types into a blocked session, and the chat hibernation boundary table (a new WP, not yet numbered).
+- [Paseo](https://github.com/getpaseo/paseo): the lifecycle idea: a closed agent keeps its identity and resumes its saved session on the next prompt, and an idle runtime is reclaimed after an hour behind a daemon check and a provider veto (ideas only).
+- [Happy](https://github.com/slopus/happy): one permission-mode resolution order and one mapping per CLI, written as Hivra's own matrix (ideas only; no Happy text or code copied).
+- [Paradev](https://github.com/ParadevAI/Paradev): two handoff verbs (a native fork that does not read a transcript, and a handoff from the harness store first), an omitted-context marker and trust checks on a reported transcript path (ideas only).
+- [Cloudroom](https://github.com/davidondrej/cloudroom): ideas only: teleport a running session between the Mac and a host (freeze, move history, resume with the same chat, model and effort), and the split of harness from core.
+- [Emdash](https://github.com/generalaction/emdash): ideas only: the host's inventory is authoritative, a deletion intent may outlive an unreachable host, and host calls fail fast.
+- [Jean](https://github.com/coollabsio/jean): ideas only: a plan that waits for approval before a GitHub issue is built, and one sidebar for local and remote machines.
+- [Paperclip](https://github.com/paperclipai/paperclip): ideas only: a spend limit that warns once and stops new builders at the limit, and goal ancestry on a run's briefs.
+- [bb](https://github.com/get-bb/bb): the principle that the person and the agent are both first-class operators of the same surfaces, with the CLI and API as first-class surfaces rather than sidecars (ideas only).
+- [HarnessRouter](https://github.com/HarnessRouter/harnessrouter): a closed error code set with a retry rule for each code, and the rule that a client who gave up must not assume the task stopped (ideas only).
+- [Omnigent](https://github.com/omnigent-ai/omnigent): a spend ceiling with a soft ask before a hard stop, and policies that stack from server to session (ideas only).
+- [Ghostex](https://github.com/maddada/Ghostex): automatic account switch at a usage limit, and a card that says when every account is full (Hivra already has the switch; ideas only).
+- [Nimbalyst](https://github.com/nimbalyst/nimbalyst): red and green accept or reject of an agent's change in the rendered document (ideas only).
+- [Traycer](https://github.com/traycerai/traycer): switching model inside one chat with context kept, and a capability table per agent (ideas only).
+- [Sidecar](https://github.com/marcus/sidecar): an agent opening a file at a line or a diff beside its terminal (ideas only).
+- [CC Switch](https://github.com/farion1231/cc-switch): a failover queue with a circuit breaker across providers, and resuming a local session in its own folder (ideas only).
+- [OpenCodex](https://github.com/lidge-jun/opencodex): a local gateway that lets Claude Code and Codex use other providers (ideas only).
+- [TanStack AI](https://github.com/TanStack/ai): tool approval that rebuilds a paused call from the message history on resume (ideas only).
+- [OpenClaw](https://github.com/openclaw/openclaw): a competitive reference for chat channels: unknown senders paired first, inbound messages untrusted (ideas only).
+- [activeloopai/hivemind](https://github.com/activeloopai/hivemind): repeated patterns in agent traces codified into SKILL.md files (ideas only; cloud-backed).
+- [AgenticBench](https://agenticbench.org): planted-secret checks on what a coding agent does with a machine and its data, as acceptance-test ideas for the secret vault (ideas only).
+- [Agentlas](https://github.com/agentlas-ai/agentlas-desktop): ideas only: an operating-system boundary around each agent's terminal, with secret paths and protected config paths (design first).
+- [Atomic Agent](https://github.com/AtomicBot-ai/atomic-agent): contracts for a multi-part fan-out (what each part owns, provides and requires, and the checks it must pass), dependency waves, the person's own request quoted in every worker brief, and a few prompt lines (WP-171).
 
 Also [poteto](https://x.com/poteto)'s writing on skills and verification, including the
 [verification skill example](https://github.com/poteto/verification-skill-example).
