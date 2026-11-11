@@ -42,6 +42,20 @@ export async function renameProjectEverywhere(project: Pick<HubProject, "id" | "
 }
 
 /**
+ * "Share with my team" (WP-80): sets or clears `shared` on the project. Only a click by Ash calls this; the team sync
+ * sends a project only while it is marked shared and the team switch is on.
+ */
+export async function setProjectShared(project: Pick<HubProject, "id">, shared: boolean): Promise<void> {
+  const store = liveHubStore();
+  if (!store) throw new Error("Sharing needs the app.");
+  try {
+    await store.act("project-rename", { project_id: project.id, shared }, ["projects", "layout"]);
+  } catch (e) {
+    throw plain(e, "That didn't go through, so the project's sharing is unchanged.");
+  }
+}
+
+/**
  * Give a project one of the hub's shapes (`project-rename {icon_shape}`). An emoji or image Ash picked on this
  * Mac is cleared, so the shape shows.
  */

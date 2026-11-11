@@ -150,6 +150,10 @@ pub fn local_hub_write<R: Runtime>(
     let rev = write_if(&*store.lock_conn()?, &key, &value, expect_rev)?;
     if let Some(rev) = rev {
         let _ = app.emit(CHANGED_EVENT, json!({"key": key, "rev": rev}));
+        // Team workspaces (off by default): a change to the projects goes to the team's server when the switch is on.
+        if key == "projects" {
+            crate::team_workspace::sync_after_change(&app);
+        }
     }
     Ok(rev)
 }

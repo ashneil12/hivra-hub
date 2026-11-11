@@ -504,6 +504,7 @@ import { SkillsPage } from "../../skills/ui/SkillsPage";
 import { ProjectNotificationSettings } from "../../notifications/ui/ProjectNotificationSettings";
 import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
 // WP-129: who writes titles, commits, pull request text and branch names.
+import { TeamWorkspaceSetting } from "./TeamWorkspaceSetting";
 import { TextGenerationSetting } from "./TextGenerationSetting";
 import {
   removeWorktree,
@@ -729,6 +730,8 @@ export function SettingsView({
                   {/* WP-61: Hivra Cloud, off until the person turns it on. */}
                   <CloudSettings />
                   <ConnectionsSettings />
+                  {/* WP-80: share projects with a team's server. Off until the person turns it on. */}
+                  <TeamWorkspaceSetting />
                   <MobileSettings />
                 </div>
               ) : null}

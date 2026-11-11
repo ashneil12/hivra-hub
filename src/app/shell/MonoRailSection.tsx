@@ -15,8 +15,9 @@ import { BellOff, ChevronDown, CircleAlert, Clock, Copy, ImagePlus, Loader, More
 import { duplicateContactWithFiles, editContactProfile, setContactMuted, setContactPinned } from "../../features/monos/model/contacts";
 import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
-import { needsYouCountFor, needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
+import { needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
 import { useNeedsYouRows } from "../../features/hub/model/useNeedsYouRows";
+import { useNeedsYou } from "../../features/needs/model/needsLive";
 import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
@@ -41,6 +42,7 @@ import {
   subscribeMonoRailCollapsed,
 } from "../../features/settings/model/settings";
 import { StuckPanel } from "../../features/monos/ui/StuckPanel";
+import { monoPanelAsks } from "./monoPanelAsks";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { monoBackgroundKey } from "../../features/monos/model/monoBackground";
 import {
@@ -240,9 +242,9 @@ export function MonoRailSection({
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
   // What each Mono has out (its workers live in its team, never listed here), read once for its line and the folded summary.
-  // "N needs you" counts the one list Being built draws its red rows from (needsYouRows.ts, Critiquito on r30: Being
-  // built showed Hivra lead two red rows while this said "1 needs you").
-  const needsYou = useNeedsYouRows();
+  // WP-210: the red number is the one Needs you list. The panel still opens the worker rows behind a stopped item.
+  const needsRows = useNeedsYouRows();
+  const needsItems = useNeedsYou();
   // r75 (blind s06, B12): a Mono's own chat waiting on Ash (a Lead that asked before starting any job) is red on its row
   // too, like Today and Being built; it opens that chat.
   useWaitingChatsVersion();
@@ -252,7 +254,7 @@ export function MonoRailSection({
     const children = childChats.get(monoId) ?? [];
     return {
       attention: subChatAttention(children, now),
-      counts: railCounts(countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now), needsYouCountFor(needsYou, monoId)),
+      counts: railCounts(countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now), needsItems.filter((item) => item.monoId === monoId).length),
     };
   };
   const work = new Map(monos.map((mono) => [mono.id, workOf(mono.id)] as const));
@@ -270,10 +272,11 @@ export function MonoRailSection({
   // jobs alike, so the panel's rows and header always equal the chip.
   // The folded header counts the Monos shown here, so its panel lists those Monos' rows, no more.
   const shownIds = new Set(ids);
-  const shownRows = needsYou.filter((r) => !!r.lead && shownIds.has(r.lead));
+  const shownRows = needsRows.filter((r) => !!r.lead && shownIds.has(r.lead));
   const allStuck = needsYouPanel(shownRows).workers;
-  const panel = stuckPanel ? needsYouPanel(stuckPanel.monoId ? needsYouFor(needsYou, stuckPanel.monoId) : shownRows) : undefined;
+  const panel = stuckPanel ? needsYouPanel(stuckPanel.monoId ? needsYouFor(needsRows, stuckPanel.monoId) : shownRows) : undefined;
   const panelStuck = panel?.workers ?? [];
+  const panelAsks = stuckPanel ? monoPanelAsks(needsItems, stuckPanel.monoId, shownIds) : [];
   const panelMono = stuckPanel?.monoId ? findMono(stuckPanel.monoId) : undefined;
   const menuMono = menu ? findMono(menu.id) : undefined;
   const menuTeam = rank && menuMono ? teamFor({ id: menuMono.id, name: monoLook(menuMono).name }, hubData().listProjects()) : undefined;
@@ -612,6 +615,7 @@ export function MonoRailSection({
           title={panelMono ? monoLook(panelMono).name : "Monos"}
           stuck={panelStuck}
           jobs={panel?.jobs}
+          asks={panelAsks}
           now={now}
           showLead={!stuckPanel.monoId}
           onClose={() => setStuckPanel(undefined)}
