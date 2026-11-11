@@ -62,3 +62,20 @@ test("hung CI jobs stop well under the six hour default", () => {
   assert.equal(stepTimeout(workflow, "hub:ship -- --drill-rollback under a temporary HOME"), 10);
   for (const minutes of Object.values(jobs)) assert.ok(minutes < 360);
 });
+
+test("the rpm jobs drop a slow package mirror before their first dnf call", () => {
+  // 11 Nov 2026: a crawling AlmaLinux mirror ran the rpm job into its 25 minute limit in "Install git".
+  const lines = workflow.split("\n");
+  for (const job of ["rpm", "rpm-clean-install"]) {
+    const start = lines.findIndex((line) => line === `  ${job}:`);
+    assert.notEqual(start, -1, job);
+    let end = start + 1;
+    while (end < lines.length && !/^ {2}[A-Za-z0-9-]+:\s*$/.test(lines[end])) end += 1;
+    const body = lines.slice(start, end);
+    const skip = body.findIndex((line) => line.includes("name: Skip slow package mirrors"));
+    const firstDnf = body.findIndex((line) => !line.trim().startsWith("#") && /\bdnf (install|makecache)\b/.test(line));
+    assert.notEqual(skip, -1, `${job} has no slow-mirror step`);
+    assert.ok(skip < firstDnf, `${job} calls dnf before it drops slow mirrors`);
+    assert.match(body.slice(skip, firstDnf).join("\n"), /minrate=100k/);
+  }
+});
