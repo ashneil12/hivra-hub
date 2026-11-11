@@ -6470,3 +6470,89 @@ mod review214_r5_trashed_move {
         }
     }
 }
+
+/// PR #214 review r6: the window flushes its pending save before it reads a row a move step changed (709a9134f). That
+/// save is an ordinary one, of the copy the window last took. After a step that removed a note (a thaw, a settle), the
+/// copy still has it, and the guard refuses only a dropped note, so the save puts it back. A thawed freeze comes back and
+/// the chat is locked with no runnable copy until a later launch's recovery. The store must refuse the stale copy.
+#[cfg(test)]
+mod review214_r6_stale_notes {
+    use super::*;
+
+    fn chat(blocks: Vec<Value>) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": "chat-r6",
+            "cwd": "/tmp/review214-r6",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": "Notes",
+            "blocks": Value::Array(blocks),
+        }))
+        .unwrap()
+    }
+
+    fn base() -> Vec<Value> {
+        vec![
+            json!({ "id": "u1", "role": "user", "text": "keep this" }),
+            json!({ "id": "a1", "role": "assistant", "text": "kept" }),
+        ]
+    }
+
+    fn with(note: Value) -> Vec<Value> {
+        let mut blocks = base();
+        blocks.push(note);
+        blocks
+    }
+
+    fn note(notice: &str, move_id: &str) -> Value {
+        json!({ "id": format!("{notice}-{move_id}"), "role": "system", "text": "{\"peer\":\"host-a\",\"at\":1}", "notice": notice })
+    }
+
+    fn step(conn: &Connection, blocks: Vec<Value>, move_id: &str, op: &str) {
+        let mut session = chat(blocks);
+        session.teleport = Some(TeleportWrite {
+            move_id: move_id.into(),
+            op: op.into(),
+        });
+        upsert_session(conn, &session).unwrap();
+    }
+
+    fn stored_has(conn: &Connection, id: &str) -> bool {
+        let row = get_session(conn, "chat-r6").unwrap().unwrap();
+        blocks_of(&row.blocks)
+            .iter()
+            .any(|block| id_of(block) == id)
+    }
+
+    #[test]
+    fn a_stale_copy_cannot_put_back_a_thawed_freeze() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(base())).unwrap();
+        step(&conn, with(note("teleport-frozen", "m1")), "m1", "freeze");
+        // The window took the frozen row. The move fails at once and thaws.
+        let window_copy = with(note("teleport-frozen", "m1"));
+        step(&conn, base(), "m1", "thaw");
+        let _ = upsert_session(&conn, &chat(window_copy));
+        assert!(
+            !stored_has(&conn, "teleport-frozen-m1"),
+            "an ordinary save of the window's copy put the thawed freeze back"
+        );
+    }
+
+    #[test]
+    fn a_stale_copy_cannot_put_back_a_settled_release() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(with(note("teleport-release-owed", "m2")))).unwrap();
+        let window_copy = with(note("teleport-release-owed", "m2"));
+        step(&conn, base(), "m2", "settle");
+        let _ = upsert_session(&conn, &chat(window_copy));
+        assert!(
+            !stored_has(&conn, "teleport-release-owed-m2"),
+            "an ordinary save of the window's copy put the settled release note back"
+        );
+    }
+}
