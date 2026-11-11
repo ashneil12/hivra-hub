@@ -492,14 +492,21 @@ test("the real script fails when one half fails, and the other half still finish
   }
 });
 
-test("macOS stays one check job and runs the two halves together", () => {
+test("macOS stays one check job: the Rust half by default, both halves together when every OS runs", () => {
   const check = jobBlock("check");
-  // The matrix is chosen by the repository variable HUB_CROSS_PLATFORM_CI: macOS only by default, every OS when "true".
+  // The matrix is chosen by the repository variable HUB_CROSS_PLATFORM_CI. By default the web half runs on two Linux
+  // runners and macOS runs the Rust half alone; when "true", every OS runs and macOS runs both halves together.
   const include = /include: \$\{\{ fromJSON\(vars\.HUB_CROSS_PLATFORM_CI == 'true' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}/.exec(check);
   assert.ok(include, "the check matrix is not chosen by HUB_CROSS_PLATFORM_CI");
   const full = JSON.parse(include[1]);
-  const macOnly = JSON.parse(include[2]);
-  assert.deepEqual(macOnly, [{ os: "macos-latest", part: "all" }]);
+  const byDefault = JSON.parse(include[2]);
+  assert.deepEqual(byDefault, [
+    { os: "ubuntu-latest", part: "web", shard: "1/2" },
+    { os: "ubuntu-latest", part: "web", shard: "2/2" },
+    { os: "macos-latest", part: "rust" },
+  ]);
+  assert.ok(!byDefault.some((entry) => entry.os === "windows-latest"), "Windows is off by default");
+  assert.ok(!byDefault.some((entry) => entry.os === "ubuntu-latest" && entry.part !== "web"), "Linux runs only the web half by default");
   assert.equal(full.filter((entry) => entry.os === "macos-latest").length, 1);
   assert.deepEqual(full.find((entry) => entry.os === "macos-latest"), { os: "macos-latest", part: "all" });
   assert.match(check, /node scripts\/ci-check-parallel\.mjs/);
