@@ -68,3 +68,6 @@ Desktop.ini
 
 # Local-only research and planning notes (never pushed): put them in docs/local/
 /docs/local/
+
+# Claude Code keeps approved commands here, passwords included (latent.tokyo, 8 Nov 2026). Never commit it.
+.claude/settings.local.json
