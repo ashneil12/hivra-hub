@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-// Review of PR 235 (r1): repro tests. Each one fails on e4609a16e.
+// Review of PR 235 (r1): repro tests. Each one failed on e4609a16e; the fixes follow the review.
 //
 // 1. A Page's agents.pick takes the pick on a red-line ask as Ash. Autopilot is refused there (waitingChats takePick
 //    `by: "autopilot"`), but appActionDeps calls takePick with `by: "ash"`, and a chat that is not on Waiting on you
@@ -103,8 +103,58 @@ it("a Page with a blank id is still not the person", async () => {
   const pending: Promise<unknown>[] = [];
   const d = { answerNeed: (id: string, a: Record<string, unknown>) => void pending.push(source.act("answer", { id, ...a }).catch((e: unknown) => e)) } as unknown as PageActionDeps;
 
-  await runPageAction("agents.answer", { needId: decisionNeedId(open), text: "B" }, { pageId: "   ", pageTitle: "Blank" }, d);
+  // The tap refuses before anything is sent; the store refuses a blank `from` too, whoever sends it.
+  await expect(runPageAction("agents.answer", { needId: decisionNeedId(open), text: "B" }, { pageId: "   ", pageTitle: "Blank" }, d)).rejects.toThrow("This page has no id");
+  await expect(source.act("answer", { id: decisionNeedId(open), text: "B", from: "   " })).rejects.toThrow("This page has no id");
+  await expect(source.act("answer", { id: decisionNeedId(open), text: "B", from: 7 })).rejects.toThrow("This page has no id");
   await Promise.all(pending);
-  expect(by).toHaveLength(1);
-  expect(by[0]).not.toBe("user");
+  expect(by).toEqual([]);
+  // A real page id still answers, as the page.
+  await source.act("answer", { id: decisionNeedId(open), text: "B", from: "pg_1" });
+  expect(by).toEqual(["page:pg_1"]);
+});
+
+it("a Page's take-the-pick on a decision answers with the suggested option, and refuses when none was suggested", async () => {
+  const base: Decision = {
+    project: "/Users/example/Projects/web", decisionKey: "copy/headline", question: "Example: which headline?", options: ["A", "B"],
+    recommended: "B", askedBy: "lead", askedByMono: null, waiting: [], state: "open", answer: null, answeredBy: null,
+    answeredAt: null, createdAt: 1, updatedAt: 1, version: 1,
+  };
+  let current = base;
+  const got: Array<[string, string]> = [];
+  const source = delegationDecisions(async () => [], {
+    decisions: async () => [current],
+    answer: async (_p, _k, answer, who) => {
+      got.push([answer, who ?? ""]);
+      return { applied: true, decision: { ...current, state: "answered", answer, answeredBy: who ?? null }, released: [], releasedTasks: [] };
+    },
+  });
+  await source.act("answer", { id: decisionNeedId(base), quick: "agree", from: "pg_1" });
+  expect(got).toEqual([["B", "page:pg_1"]]);
+  current = { ...base, recommended: null };
+  await expect(source.act("answer", { id: decisionNeedId(current), quick: "agree", from: "pg_1" })).rejects.toThrow("No answer was suggested");
+  expect(got).toHaveLength(1);
+});
+
+it("a Page never answers a red-line ask in words either, on Waiting on you or in the chat", async () => {
+  const responded: unknown[] = [];
+  const sent: unknown[] = [];
+  setWaitingChatsHost({
+    liveQuestion: (id) => (id === "s-lead" ? redAsk : undefined),
+    respond: (...a) => void responded.push(a),
+    send: async (...a) => { sent.push(a); return true; },
+    open: () => undefined,
+  });
+  noteChats([{ id: "s-lead", cwd: "/Users/example/Projects/web", title: "claude · Release", harness: "claude", busy: true, pendingQuestion: redAsk, blocks: [] }]);
+  await expect(runPageAction("agents.answer", { chatId: "s-lead", text: "Yes, force-push" }, ctx, appActionDeps)).rejects.toThrow("Only you can answer that one");
+  const d = {
+    ...appActionDeps,
+    findWaiting: () => undefined,
+    host: () => ({ liveQuestion: (id: string) => (id === "w-1" ? redAsk : undefined), respond: (...a: unknown[]) => void responded.push(a), send: async () => true, open: () => undefined, openMono: () => undefined }),
+    monoForSession: () => undefined,
+    rows: () => [],
+  } as PageActionDeps;
+  await expect(runPageAction("agents.answer", { chatId: "w-1", text: "Yes, force-push" }, ctx, d)).rejects.toThrow("Only you can answer that one");
+  expect(responded).toEqual([]);
+  expect(sent).toEqual([]);
 });

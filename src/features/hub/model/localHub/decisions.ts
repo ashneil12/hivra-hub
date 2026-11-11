@@ -142,13 +142,18 @@ async function findDecision(backend: Pick<FirstMateBackend, "decisions">, id: un
  * it, and the first mate that asked hears it.
  */
 async function answerDecision(backend: Pick<FirstMateBackend, "decisions" | "answer">, payload: Record<string, unknown>) {
+  // A Page's tap is the Page's answer, not the person's: decisions.rs refuses it on a key only the person answers. A
+  // `from` that is there but blank (or not a string) is refused rather than read as the person.
+  const from = typeof payload.from === "string" ? payload.from.trim() : "";
+  if (payload.from !== undefined && !from) throw new HubCallError("refused", "This page has no id, so it can't answer.");
   const d = await findDecision(backend, payload.id);
   const choice = typeof payload.choice === "number" ? d.options[payload.choice] : undefined;
   const words = typeof payload.text === "string" ? payload.text.trim() : "";
-  const answer = choice ?? words;
+  // "agree" takes the suggested answer (a Page's Take the pick); with none suggested there is nothing to take.
+  const agreed = payload.quick === "agree" ? (d.recommended ?? undefined) : undefined;
+  if (payload.quick === "agree" && !agreed) throw new HubCallError("refused", "No answer was suggested. Pick an option or write your answer.");
+  const answer = choice ?? agreed ?? words;
   if (!answer) throw new HubCallError("refused", "Pick an option or write your answer.");
-  // A Page's tap is the Page's answer, not the person's: decisions.rs refuses it on a key only the person answers.
-  const from = typeof payload.from === "string" ? payload.from.trim() : "";
   const out = await backend.answer(d.project, d.decisionKey, answer, from ? `page:${from}` : "user");
   if (!out.applied) return { receipt: `Already answered: ${out.decision?.answer ?? ""}`, rowDone: true };
   const n = out.releasedTasks.length;
