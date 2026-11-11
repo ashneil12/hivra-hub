@@ -70,9 +70,12 @@ the person turns it on.
 
 ## Done when
 
-- [x] Tests against a loopback stand-in: sign-in, pairing, account check failing soft, routine caps, away feed
-      (`cargo test --lib hivra_cloud`, 25 tests).
-- [ ] `npm run check` passes; a dev-copy check against a staging service once one exists. Only the scoped checks
+- [x] Tests against a loopback stand-in: sign-in, pairing, account check failing soft, routine caps, away feed.
+      The previous run of `cargo test --lib hivra_cloud` was 25 tests. This pass adds save, a stale revision,
+      the notice file, and no socket on save. That command was not re-run, so the new count is not claimed.
+- [ ] Browser spec `tests/browser/wp61-cloud.spec.ts` on Chromium and WebKit, and its screenshots. The spec is
+      written. It was not run.
+- [ ] `npm run check` passes; a dev-copy check against a staging service once one exists. Only some scoped checks
       were run for this package, and no staging service exists yet.
 
 ## See also
