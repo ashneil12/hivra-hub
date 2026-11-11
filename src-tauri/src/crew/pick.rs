@@ -675,6 +675,7 @@ mod tests {
             cli: Some("codex".into()),
             model: Some("gpt-codex".into()),
             effort: Some("high".into()),
+            task_ceiling_micros: None,
             source: "person".into(),
         }
     }
