@@ -103,7 +103,8 @@ export function MonoCard({
   const fastOn = modelOffersFast(resolved);
   const effort = modelEffortSetting(resolved);
   const effortLabel = modelEffortLabel(resolved, run.settings);
-  const fast = fastOn && run.settings.fast === "true";
+  // The session's own fast wins; with none, the launch uses the Mono's flag, so show that.
+  const fast = fastOn && (run.settings.fast !== undefined ? run.settings.fast === "true" : mono?.engineFast === true);
 
   function commit(next: Run, engineFast: boolean | undefined, summary: string) {
     const chosen = resolveModel(next.harness, next.model);
@@ -134,7 +135,8 @@ export function MonoCard({
 
   function onHarness(nextHarness: HarnessId) {
     const nextModel = resolveModel(nextHarness, defaultModelId(nextHarness));
-    const keptFast = modelOffersFast(nextModel) ? mono?.engineFast : undefined;
+    // Read now, not from the last render: another window may have changed it.
+    const keptFast = modelOffersFast(nextModel) ? findMono(monoId)?.engineFast : undefined;
     commit(
       { harness: nextHarness, model: nextModel.id, settings: run.settings },
       keptFast,
@@ -150,7 +152,7 @@ export function MonoCard({
       : setting?.value;
     const settings = { ...run.settings };
     if (setting && kept) settings[setting.id] = kept;
-    const keptFast = modelOffersFast(chosen) ? mono?.engineFast : undefined;
+    const keptFast = modelOffersFast(chosen) ? findMono(monoId)?.engineFast : undefined;
     commit(
       { harness: run.harness, model: chosen.id, settings },
       keptFast,
@@ -162,7 +164,7 @@ export function MonoCard({
     if (!effort) return;
     commit(
       { ...run, settings: { ...run.settings, [effort.id]: value } },
-      mono?.engineFast,
+      findMono(monoId)?.engineFast,
       `Effort set to ${effort.options.find((option) => option.value === value)?.label ?? value}.`,
     );
   }
@@ -298,14 +300,18 @@ function OfferList({
   const names = [...offers];
   for (const name of saved) if (!names.includes(name)) names.push(name);
   function toggle(name: string) {
-    const next = saved.includes(name) ? saved.filter((item) => item !== name) : [...saved, name];
-    const clean = cardNames([...next]);
-    updateMono(monoId, (current) => {
+    const field = kind === "skill" ? "skills" : "commands";
+    const on = !saved.includes(name);
+    // Apply this tick to the roster as it is now, so a name another window added is kept.
+    const stored = updateMono(monoId, (current) => {
+      const now = current[field] ?? [];
+      const list = cardNames(on ? [...now.filter((item) => item !== name), name] : now.filter((item) => item !== name));
       const updated = { ...current };
-      if (clean) updated[kind === "skill" ? "skills" : "commands"] = clean;
-      else delete updated[kind === "skill" ? "skills" : "commands"];
+      if (list) updated[field] = list;
+      else delete updated[field];
       return updated;
     });
+    const clean = stored?.[field]?.length ? stored[field] : undefined;
     noteMonoSettings(
       monoId,
       clean ? `${label} set to ${clean.join(", ")}.` : `${label} cleared. Everything installed is offered.`,

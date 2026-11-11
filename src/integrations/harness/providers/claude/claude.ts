@@ -3224,9 +3224,13 @@ export async function applyClaudeSettings(
   return "applied";
 }
 
-/** The Mono's fast flag, when this model offers fast. Anything else leaves the session settings alone. */
+/**
+ * The Mono's fast flag, when this model offers fast and the session does not already say fast.
+ * A session's own fast (the composer's switch, or the card's write) wins, so what it shows is what runs.
+ */
 function settingsWithMonoFast(input: HarnessSessionInput): HarnessSessionInput["modelSettings"] {
   if (!input.sessionId) return input.modelSettings;
+  if (input.modelSettings?.fast !== undefined) return input.modelSettings;
   const engineFast = monoForSession(input.sessionId)?.engineFast;
   if (typeof engineFast !== "boolean") return input.modelSettings;
   const resolved = resolveModel("claude", input.model);

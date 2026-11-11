@@ -169,3 +169,56 @@ it("drops fast when the chosen model does not offer it, and applies the change w
   const settings = last?.[0] as Record<string, string>;
   expect(settings).not.toHaveProperty("fast");
 });
+
+it("keeps the picked effort and this chat's context when another chat's last settings differ", async () => {
+  const context = {
+    id: "context",
+    label: "Context",
+    kind: "select" as const,
+    value: "200k",
+    options: [
+      { value: "200k", label: "200k" },
+      { value: "1m", label: "1M" },
+    ],
+  };
+  const wide: AgentModel = { id: "claude:opus-wide", harness: "claude", name: "Opus Wide", settings: [effort, context, fast] };
+  setHarnessModels("claude", [wide]);
+  // What another chat last picked. A card edit must not pull it into this Mono's chat.
+  localStorage.setItem("monocode.lastModelSettings", JSON.stringify({ effort: "high", context: "1m", fast: "true" }));
+  await act(async () => {
+    root.render(
+      createElement(MonoCard, {
+        monoId: "ada",
+        cwd: "/work/hivra",
+        harness: "claude",
+        model: wide.id,
+        modelSettings: { effort: "high", context: "200k", fast: "false" },
+        offers: [],
+        onModelChange,
+        onModelSettingsChange,
+      }),
+    );
+  });
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>('[data-mono-card-section="runs"]')!.click();
+  });
+  const select = container.querySelector<HTMLSelectElement>('[data-mono-card-runs] [aria-label="Effort"]')!;
+  await act(async () => pick(select, "low"));
+  expect(onModelSettingsChange).toHaveBeenLastCalledWith({ effort: "low", context: "200k", fast: "false" });
+  expect(select.value).toBe("low");
+});
+
+it("keeps a skill another window added when a skill is ticked here", async () => {
+  await render(false);
+  await act(async () => {
+    container.querySelector<HTMLButtonElement>('[data-mono-card-section="skills"]')!.click();
+  });
+  // Another window adds "tdd". Its change event never reaches this window.
+  const roster = JSON.parse(localStorage.getItem("monocode:mono-roster")!) as Array<{ id: string; skills?: string[] }>;
+  roster.find((mono) => mono.id === "ada")!.skills = ["gone-skill", "tdd"];
+  localStorage.setItem("monocode:mono-roster", JSON.stringify(roster));
+  await act(async () => {
+    container.querySelector<HTMLInputElement>('[aria-label="Skills grill-me"]')!.click();
+  });
+  expect(findMono("ada")?.skills).toEqual(["gone-skill", "tdd", "grill-me"]);
+});

@@ -1,7 +1,7 @@
 // WP-182: fast mode on a Mono uses the catalog's `fast` setting. A model without
 // that setting never carries it. A change made while a turn is running waits here
 // until the turn is idle, so nothing restarts the running turn.
-import { preferredModelSettings, type AgentModel } from "../../sessions/model/models";
+import { mergeModelSettings, type AgentModel } from "../../sessions/model/models";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import { findMono, monoForSession, type Mono } from "./mono";
 
@@ -27,15 +27,16 @@ export function withMonoFast(
 }
 
 /**
- * What a card edit stores. Starts from the same merge a model change uses, then
- * overlays this Mono's fast flag. Keys the model does not offer are dropped.
+ * What a card edit stores. Keeps this session's own compatible settings (not the
+ * last ones another chat used, so a picked effort or this chat's context stays),
+ * then overlays this Mono's fast flag. Keys the model does not offer are dropped.
  */
 export function settingsForCard(
   model: AgentModel,
   current: Record<string, string> | undefined,
   engineFast: boolean | undefined,
 ): Record<string, string> {
-  return withMonoFast(model, preferredModelSettings(model, current), engineFast);
+  return withMonoFast(model, mergeModelSettings(model, current), engineFast);
 }
 
 export type CardRun = {
@@ -191,6 +192,8 @@ export function applyIdleCardRuns(
   sessions: readonly { id: string; busy?: boolean }[],
   apply: (sessionId: string, run: CardRun) => void,
 ): void {
+  // Runs on every session change, so nothing queued means no roster reads.
+  if (!readBag().bag.runs.length) return;
   for (const session of sessions) {
     if (session.busy) continue;
     const mono = monoForSession(session.id);

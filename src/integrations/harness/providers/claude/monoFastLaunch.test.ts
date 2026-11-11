@@ -33,3 +33,25 @@ it("sets fastMode from the Mono when the session settings do not already say fas
   });
   expect(launch.settings?.fastMode).toBe(true);
 });
+
+it("lets the session's own fast win, so the composer's switch is what runs", () => {
+  addMono({
+    id: "ada",
+    name: "Ada",
+    mascot: "robot",
+    color: "x",
+    projects: [],
+    engine: "claude",
+    engineModel: "claude:opus-5",
+    engineFast: true,
+    sessionId: "sess-ada",
+  });
+  const launch = launchOptions({
+    sessionId: "sess-ada",
+    cwd: "/work/hivra",
+    model: "claude:opus-5",
+    modelSettings: { effort: "high", fast: "false" },
+    runtimeMode: "auto",
+  });
+  expect(launch.settings?.fastMode).not.toBe(true);
+});
