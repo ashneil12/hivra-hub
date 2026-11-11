@@ -3278,19 +3278,30 @@ function Workspace({
     observe();
     const unsubscribe = sessionState.observe(observe);
     // WP-177: a move hashes the stored row, so this window writes its pending save for that one chat before the plan.
+    // A refused flush keeps that pending save, so the reply is not dropped.
     const unregisterFlush = registerSessionPersistFlush(async (sessionId) => {
       const session = pendingPersist.current.get(sessionId);
       if (!session) return;
-      pendingPersist.current.delete(sessionId);
       if (
         removingSessionIds.current.has(session.id) ||
         switchingWorktrees.current.has(session.id)
-      )
+      ) {
+        pendingPersist.current.delete(sessionId);
         return;
+      }
       const fingerprint = persistFingerprint(session);
-      if (lastPersisted.current.get(session.id) === fingerprint) return;
+      if (lastPersisted.current.get(session.id) === fingerprint) {
+        pendingPersist.current.delete(sessionId);
+        return;
+      }
       const summary = await upsertSession(session).catch(() => null);
-      if (!summary) return;
+      const pendingNow = pendingPersist.current.get(sessionId);
+      if (pendingNow && pendingNow !== session) return;
+      if (!summary) {
+        if (!pendingNow) pendingPersist.current.set(sessionId, session);
+        return;
+      }
+      pendingPersist.current.delete(sessionId);
       lastPersisted.current.set(session.id, fingerprint);
       if (summary.cwd === sidebarCwdRef.current) {
         setHistory((current) => mergeProjectHistorySummary(current, summary));

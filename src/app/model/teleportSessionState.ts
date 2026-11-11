@@ -14,7 +14,7 @@ function teleportNotes(session: Session): string {
     .join("\n---\n");
 }
 
-function withStoredNotes(current: Session, row: Session): Session {
+export function withStoredNotes(current: Session, row: Session): Session {
   const notes = row.blocks.filter((block) => (block.notice ?? "").startsWith("teleport"));
   const byId = new Map(notes.map((block) => [block.id, block]));
   const placed = new Set<string>();

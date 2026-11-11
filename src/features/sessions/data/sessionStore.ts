@@ -1,3 +1,4 @@
+import { withStoredNotes } from "../../../app/model/teleportSessionState";
 import { syncTeleportLock } from "../../connections/model/teleportLock";
 import { teleportStateOf } from "../../connections/model/teleportState";
 import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
@@ -565,6 +566,11 @@ function blocksHaveMoveNote(blocks: Array<{ notice?: string }>): boolean {
   return blocks.some((block) => typeof block.notice === "string" && MOVE_NOTE_NOTICES.has(block.notice));
 }
 
+/** A freeze, a move marker, or any move note. An ordinary save of one is merged with the stored row first. */
+function blocksHaveTeleportState(blocks: Array<{ notice?: string }>): boolean {
+  return blocks.some((block) => (block.notice ?? "").startsWith("teleport"));
+}
+
 /** True when an ordinary save would erase a move note the stored row still has. A failed read does not block the save. */
 async function ordinarySaveDropsMoveNote(sessionId: string, nextBlocks: Block[]): Promise<boolean> {
   let stored: Session | null;
@@ -602,17 +608,33 @@ export async function upsertSession(
   const payload = mono
     ? persistableMeta(session)
     : sanitizeSessionForPersist(session);
-  // An ordinary save (a quit, an autosave) must not erase a move note the window's copy never heard about.
-  // A move step is allowed to add or clear the note it owns; the store checks that step. Only a chat this window
-  // has stored a note for is read first, so every other save stays a single write.
-  const savedBlocks = (payload as SessionUpsertPayload).blocks;
+  // An ordinary save (a quit, an autosave, the flush before a row read) must not put a thawed freeze or a settled
+  // note back, and must not erase one the window's copy never heard about. A move step is allowed to add or clear
+  // the note it owns; the store checks that step. Only a chat that already carries move state is read first, so
+  // every other save stays a single write.
+  let savedBlocks = (payload as SessionUpsertPayload).blocks;
   if (
     !teleport &&
     !mono &&
-    sessionsWithMoveNotes.has(session.id) &&
-    (await ordinarySaveDropsMoveNote(session.id, savedBlocks))
+    savedBlocks &&
+    (blocksHaveTeleportState(savedBlocks) || sessionsWithMoveNotes.has(session.id))
   ) {
-    return null;
+    let stored: Session | null = null;
+    try {
+      stored = await readSession(session.id);
+    } catch {
+      // A failed read does not block the save. The store still refuses a stale freeze or note.
+      stored = null;
+    }
+    if (stored) {
+      savedBlocks = withStoredNotes({ ...session, blocks: savedBlocks }, stored).blocks;
+      (payload as SessionUpsertPayload).blocks = savedBlocks;
+    } else if (
+      sessionsWithMoveNotes.has(session.id) &&
+      (await ordinarySaveDropsMoveNote(session.id, savedBlocks))
+    ) {
+      return null;
+    }
   }
   if (session.orchestrationLeadId) {
     sessionWriteLeadById.set(session.id, session.orchestrationLeadId);
