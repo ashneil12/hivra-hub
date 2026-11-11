@@ -654,6 +654,7 @@ export function createHostServer(
           case "teleport.activate":
           case "teleport.holds":
           case "teleport.release":
+          case "teleport.abort":
             if (!isTeleportMethod(input.method)) throw new Error("Unsupported host method");
             result = await teleportRpc(teleport, input.method, params, deviceOf(token));
             break;
