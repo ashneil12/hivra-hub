@@ -2833,7 +2833,7 @@ dependencies = [
 
 [[package]]
 name = "monocode"
-version = "0.16.16"
+version = "0.16.17"
 dependencies = [
  "arboard",
  "base64 0.22.1",
@@ -2894,7 +2894,7 @@ dependencies = [
 
 [[package]]
 name = "monocode-dictation"
-version = "0.16.16"
+version = "0.16.17"
 dependencies = [
  "block2",
  "core-foundation 0.10.1",
