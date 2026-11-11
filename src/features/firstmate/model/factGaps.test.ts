@@ -514,3 +514,210 @@ describe("a flood of checks in the webview", () => {
     expect(doneGaps(facts)).toContain("A check failed this turn (npm test).");
   });
 });
+
+describe("leftover: coverage and stale follow the package", () => {
+  it("leftover: a test before the package's last edit does not cover it", () => {
+    expect(
+      coverageGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 1 }],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["No test reached web."]);
+    expect(
+      coverageGaps(
+        turn({
+          checks: [{ command: "npm test", status: "failed", at: 1 }],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["No test reached web."]);
+    expect(
+      coverageGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 2 }],
+          edits: [
+            { path: "packages/web/src/app.ts", at: 1 },
+            { path: "packages/web/src/later.ts", at: 3 },
+          ],
+        }),
+      ),
+    ).toEqual(["No test reached web."]);
+    expect(
+      coverageGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 4 }],
+          edits: [
+            { path: "packages/web/src/app.ts", at: 1 },
+            { path: "packages/web/src/later.ts", at: 3 },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 1 }],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [{ command: "npm test", status: "failed", at: 1 }],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["A check failed this turn (npm test).", "No test reached web."]);
+  });
+
+  it("leftover: a later test of another package does not clear stale", () => {
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npm test", status: "passed", at: 1 },
+            { command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 3 },
+          ],
+          edits: [{ path: "packages/web/src/app.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "cargo test -p web", status: "passed", at: 1 },
+            { command: "cargo test -p crew", status: "failed", at: 3 },
+          ],
+          edits: [{ path: "crates/web/src/lib.rs", at: 2 }],
+        }),
+      ),
+    ).toEqual([
+      "A check failed this turn (cargo test -p crew).",
+      "Tests went stale after the last edit.",
+    ]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npm test", status: "passed", at: 1 },
+            { command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 4 },
+          ],
+          edits: [
+            { path: "packages/web/src/app.ts", at: 2 },
+            { path: "src/features/crew/row.ts", at: 3 },
+          ],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npm test", status: "passed", at: 1 },
+            { command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 3 },
+          ],
+          edits: [{ path: "src/features/crew/row.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [{ command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 2 }],
+          edits: [
+            { path: "src/features/crew/row.ts", at: 1 },
+            { path: "docs/guide.md", at: 3 },
+          ],
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [{ command: "npm test", status: "passed", at: 1 }],
+          edits: [{ path: "row.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual(["Tests went stale after the last edit."]);
+    expect(
+      doneGaps(
+        turn({
+          checks: [
+            { command: "npm test", status: "passed", at: 1 },
+            { command: "npx vitest run src/features/crew/row.test.ts", status: "passed", at: 3 },
+          ],
+          edits: [{ path: "row.ts", at: 2 }],
+        }),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("leftover: sed then a check", () => {
+  function sedThen(command: string, answer: string) {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({
+        id: "run",
+        role: "tool",
+        tool: { kind: "execute", command, status: "completed" },
+      }),
+    ];
+    return factsFromBlocks(blocks, answer);
+  }
+
+  it("leftover: sed -i followed by a typecheck in the same command is after the edit", () => {
+    const commands = [
+      "sed -i 's/a/b/' src/features/crew/row.ts && npx tsc --noEmit",
+      "sed -i 's/a/b/' src/features/crew/row.ts && npm run typecheck",
+      "sed -i 's/a/b/' src/features/crew/row.ts && cargo check",
+      "sed -i 's/a/b/' src/features/crew/row.ts && cargo clippy",
+      "sed -i 's/a/b/' src/features/crew/row.ts && cargo build",
+      "sed -i 's/a/b/' src/features/crew/row.ts && npx eslint src/features/crew/row.ts",
+      "sed -i 's/a/b/' src/features/crew/row.ts\nnpx tsc --noEmit",
+    ];
+    for (const command of commands) {
+      const facts = sedThen(command, "The typecheck passed.");
+      const edit = facts.edits.find((row) => row.path.endsWith("row.ts"));
+      const check = facts.checks[0];
+      expect(edit, command).toBeDefined();
+      expect(check, command).toBeDefined();
+      expect(edit && check && edit.at < check.at, command).toBe(true);
+      expect(doneGaps(facts), command).toEqual(["No test reached crew."]);
+    }
+  });
+
+  it("leftover: a typecheck after sed does not stand in for the test", () => {
+    const blocks: Block[] = [
+      block({ role: "user", text: "do it" }),
+      block({ id: "t", role: "tool", tool: { kind: "execute", command: "npx vitest run", status: "completed" } }),
+      block({
+        id: "run",
+        role: "tool",
+        tool: {
+          kind: "execute",
+          command: "sed -i 's/a/b/' src/features/crew/row.ts && npx tsc --noEmit",
+          status: "completed",
+        },
+      }),
+    ];
+    const facts = factsFromBlocks(blocks, "The typecheck passed.");
+    expect(doneGaps(facts)).toEqual(["Tests went stale after the last edit."]);
+  });
+
+  it("leftover: a typecheck before sed, or a piped typecheck, is not after the edit", () => {
+    for (const command of [
+      "npx tsc --noEmit && sed -i 's/a/b/' src/features/crew/row.ts",
+      "sed -i 's/a/b/' src/features/crew/row.ts && npx tsc --noEmit | tail",
+    ]) {
+      const facts = sedThen(command, "The typecheck passed.");
+      expect(doneGaps(facts), command).toContain(
+        "The answer says the build passed, but no check ran after the last edit.",
+      );
+    }
+  });
+});
