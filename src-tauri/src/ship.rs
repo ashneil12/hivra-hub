@@ -417,6 +417,15 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
     let Ok(mut ship) = Ship::load(&dir) else {
         return Boot::Normal;
     };
+    // restore and reopen run outside the sandbox and used to trust state.json with no mac. A missing or wrong mac
+    // is not a record this app signed, so it is left alone. A final phase already returned above.
+    if !mac_matches(&ship) {
+        log(
+            &dir,
+            "startup: record.mac does not match, so this record is not restored",
+        );
+        return Boot::Normal;
+    }
     let Some(phase) = ship.phase() else {
         return Boot::Normal;
     };
@@ -2688,6 +2697,8 @@ mod tests {
             .unwrap()
             .insert("requestedBy".into(), json!({ "sessionId": "lead-1" }));
         ship.save().unwrap();
+        // save does not sign. This record is one the app wrote, so startup may act on it.
+        sign_ship_record(&ship).unwrap();
         let data = ship.data_dir();
         write_json(
             &data.join(SHIP_DIR).join(CURRENT),
