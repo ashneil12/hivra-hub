@@ -408,3 +408,68 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
         "{refusal}"
     );
 }
+
+/// WP-172: a stopped fan-out task starts again only on the person's yes. No chat (the model's own ask_person answer
+/// included) and no app closer can give it.
+#[test]
+fn only_the_person_answers_a_restart_decision_of_a_stopped_task() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let key = "fanout-again/r1/api/f2_r1-api";
+    ask(
+        &mut conn,
+        AskInput {
+            question: "Start api again?".into(),
+            options: vec!["Start it again".into(), "Leave it stopped".into()],
+            recommended: Some("Leave it stopped".into()),
+            ..ask_input("lead", key, &[])
+        },
+        2,
+    )
+    .unwrap();
+    for machine in [Some("chat:lead"), Some("autopilot"), Some(APP_CLOSER)] {
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Start it again",
+            machine.map(str::to_string),
+            3,
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers whether a stopped task starts again"),
+            "{refusal}"
+        );
+    }
+    assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
+    // The person's own answer goes through.
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            key,
+            "Start it again",
+            Some("user".into()),
+            4
+        )
+        .unwrap()
+        .applied
+    );
+}
+
+/// WP-172: a restart decision names a plan, a task and a request id, each up to its own length, so its key can be longer
+/// than an ordinary decision's; the longer limit is for that prefix only.
+#[test]
+fn a_restart_decision_key_names_a_whole_plan_task_and_request() {
+    let key = format!(
+        "fanout-again/{}/{}/{}",
+        "p".repeat(100),
+        "t".repeat(40),
+        "r".repeat(100)
+    );
+    assert!(key.len() > KEY_MAX && key.len() <= FANOUT_AGAIN_KEY_MAX);
+    assert_eq!(key_like(&key).unwrap(), key);
+    assert!(key_like(&"k".repeat(KEY_MAX + 1)).is_err());
+    assert!(key_like(&format!("other/{}", "x".repeat(KEY_MAX))).is_err());
+}
