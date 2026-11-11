@@ -78,8 +78,11 @@ pub(crate) fn project_of(checkout: &Path, project: &Path) -> bool {
         && folder.parent() == Some(parent)
 }
 
+type StagedSide = (String, Option<Vec<u8>>);
+type WorkerPatch = (Vec<u8>, Vec<String>, String, Vec<StagedSide>);
+
 /// The worker's whole change against where its copy started, as a binary patch, and the files it touches.
-fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>, String), String> {
+fn worker_patch(checkout: &Path, project: &Path) -> Result<WorkerPatch, String> {
     let (ok, head, why) = git(project, &["rev-parse", "HEAD"], None, None)?;
     if !ok {
         return Err(format!("the project's commit couldn't be read: {why}"));
@@ -116,23 +119,11 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
         }
         // WP-200: the staged blobs are checked, not a coloured diff. Git LFS and submodules are not followed.
         let files = crate::commit_guard::scan_landing_index(checkout, &index, &base, project)?;
-        let (ok, patch, why) = git(
-            checkout,
-            &[
-                "diff",
-                "--cached",
-                "--binary",
-                "--no-color",
-                "--no-ext-diff",
-                &base,
-            ],
-            Some(&index),
-            None,
-        )?;
-        if !ok {
-            return Err(format!("the copy's change couldn't be written out: {why}"));
-        }
-        Ok((patch, files, base.clone()))
+        // The patch and the three-way side both come from the staged blobs. A textconv driver and the working
+        // tree must not supply bytes the check never read.
+        let patch = crate::commit_guard::landing_patch(checkout, &index, &base)?;
+        let staged = crate::commit_guard::staged_blobs(checkout, &index, &files)?;
+        Ok((patch, files, base.clone(), staged))
     })();
     let _ = std::fs::remove_file(&index);
     result
@@ -141,7 +132,7 @@ fn worker_patch(checkout: &Path, project: &Path) -> Result<(Vec<u8>, Vec<String>
 /// Hivra WP-12 (the teardown guard, src/delivery/teardown.rs): whether everything the worker changed is already in the
 /// project, so removing its copy loses nothing. A change that is only partly there counts as not landed.
 pub(crate) fn landed_in(checkout: &Path, project: &Path) -> Result<bool, String> {
-    let (patch, _, _) = worker_patch(checkout, project)?;
+    let (patch, _, _, _) = worker_patch(checkout, project)?;
     if patch.is_empty() {
         return Ok(true);
     }
@@ -159,7 +150,7 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
         return Err("Only a worker's own copy of this project lands in it.".into());
     }
     let _turn = one_at_a_time();
-    let (patch, files, base) = worker_patch(checkout, project)?;
+    let (patch, files, base, staged) = worker_patch(checkout, project)?;
     if patch.is_empty() {
         return Ok(Landing {
             outcome: "nothing".into(),
@@ -185,7 +176,7 @@ pub(crate) fn land(checkout: &Path, project: &Path) -> Result<Landing, String> {
             });
         }
         // Another worker changed the same files first: a three-way merge per file, written only if every file merges.
-        return Ok(match merged(checkout, project, &base, &files)? {
+        return Ok(match merged(checkout, project, &base, &files, &staged)? {
             Ok(writes) => {
                 for (path, content) in writes {
                     let target = project.join(&path);
@@ -294,12 +285,20 @@ fn merged(
     project: &Path,
     base: &str,
     files: &[String],
+    staged: &[StagedSide],
 ) -> Result<Result<Writes, Vec<String>>, String> {
     let mut writes = Vec::new();
     let mut clashing = Vec::new();
     for path in files {
         let start = start_of(checkout, base, path)?;
-        let worker = read(&checkout.join(path));
+        let worker = match staged.iter().find(|(name, _)| name == path) {
+            Some((_, bytes)) => bytes.clone(),
+            None => {
+                return Err(
+                    "the copy's staged file couldn't be read, so nothing was landed.".into(),
+                )
+            }
+        };
         let now = read(&project.join(path));
         if worker == now || worker == start {
             continue;
@@ -354,7 +353,7 @@ pub(crate) fn refresh(checkout: &Path, project: &Path) -> Result<Vec<String>, St
         return Err("Only a worker's own copy of this project is brought up to date.".into());
     }
     let _turn = one_at_a_time();
-    let (_, files, base) = worker_patch(checkout, project)?;
+    let (_, files, base, _) = worker_patch(checkout, project)?;
     let mut marked = Vec::new();
     let kept = snapshot_dir(checkout)?;
     // r86 (c02 r85 run 1: the copy got the project's App.tsx calling `weekTotals`, but not the format.ts that defines
