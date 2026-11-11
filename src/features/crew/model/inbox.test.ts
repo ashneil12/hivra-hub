@@ -478,4 +478,22 @@ describe("review r2: sent-back reasons", () => {
     });
     expect(shown.filter((item) => item.kind === "credential")).toEqual([]);
   });
+
+  it("a real sign-in line stays a credential when a send-back line is also there", () => {
+    const shown = inboxItems({
+      project: "/work/proj",
+      rows: [
+        {
+          id: "auth",
+          project: "/work/proj",
+          title: "Connect the account",
+          status: "failed",
+          statusNotice: "not signed in",
+          error: "Sent back: npx vitest run src/features/auth/sign-in.test.ts",
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(shown.some((item) => item.kind === "credential")).toBe(true);
+  });
 });
