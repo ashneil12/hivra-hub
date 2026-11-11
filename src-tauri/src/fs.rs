@@ -5434,6 +5434,7 @@ fn already_exists(label: &str) -> String {
 pub fn create_path(parent: String, name: String, is_dir: bool) -> Result<String, String> {
     let parent_dir = expand_home(&parent);
     let dest = resolve_under(&parent_dir, &name)?;
+    guard_app_data(&dest)?;
     let label = file_label(&dest, &name);
 
     if dest.exists() {
@@ -6777,6 +6778,42 @@ pub async fn mobile_read_text_file(root: String, relative: String) -> Result<Str
     .map_err(|e| e.to_string())?
 }
 
+/// This copy's own data folder: the app's chats, its keys' records and its saved routes. The generic file commands
+/// never write, move, copy or remove anything inside it (WP-129), the same way they never touch the instance lock.
+pub(crate) fn guard_app_data(path: &Path) -> Result<(), String> {
+    let identifier = crate::instance::current().identifier.clone();
+    let Some(data) = crate::instance::data_dir(&identifier) else {
+        return Ok(());
+    };
+    guard_app_data_in(&data, path)
+}
+
+/// `path` with its real location: a path that exists is canonicalised, one that does not is its parent's real
+/// location plus its name, so a symlink or `..` cannot step out of (or into) the folder.
+fn resolved_location(path: &Path) -> PathBuf {
+    if let Ok(real) = std::fs::canonicalize(path) {
+        return real;
+    }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => std::fs::canonicalize(parent)
+            .map(|real| real.join(name))
+            .unwrap_or_else(|_| path.to_path_buf()),
+        _ => path.to_path_buf(),
+    }
+}
+
+/// The check behind `guard_app_data`, with the folder given. Refuses any path at or under `data`.
+pub(crate) fn guard_app_data_in(data: &Path, path: &Path) -> Result<(), String> {
+    let data = std::fs::canonicalize(data).unwrap_or_else(|_| data.to_path_buf());
+    if resolved_location(path).starts_with(&data) {
+        return Err(format!(
+            "{} is inside MonoCode Hub's own data folder. The app keeps that folder itself.",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
 /// Atomically replace a text file from a temporary file in the same directory.
 #[tauri::command]
 pub async fn write_text_file(path: String, content: String) -> Result<(), String> {
@@ -6795,6 +6832,7 @@ fn write_text_file_sync(path: &str, content: &str) -> Result<(), String> {
 
     let requested = expand_home(path);
     crate::instance::guard_lock_file(&requested)?;
+    guard_app_data(&requested)?;
     let destination = if requested.exists() {
         std::fs::canonicalize(&requested).map_err(|e| format!("{}: {e}", requested.display()))?
     } else {
@@ -6934,6 +6972,7 @@ fn copy_recursive(from: &Path, to: &Path) -> Result<(), String> {
 fn rename_path_sync(path: &str, name: &str) -> Result<String, String> {
     let from = expand_home(path);
     crate::instance::guard_lock_file(&from)?;
+    guard_app_data(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
@@ -6984,6 +7023,7 @@ pub async fn rename_path(path: String, name: String) -> Result<String, String> {
 fn delete_path_sync(path: &str) -> Result<(), String> {
     let path = expand_home(path);
     crate::instance::guard_lock_file(&path)?;
+    guard_app_data(&path)?;
     if !path.exists() {
         return Err(format!("{}: No such file or directory", path.display()));
     }
@@ -7011,10 +7051,12 @@ fn dir_contains(dir: &Path, dest_parent: &Path) -> bool {
 fn copy_path_sync(from: &str, dest_parent: &str) -> Result<String, String> {
     let from = expand_home(from);
     crate::instance::guard_lock_file(&from)?;
+    guard_app_data(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
     let dest_parent = expand_home(dest_parent);
+    guard_app_data(&dest_parent)?;
     if !dest_parent.is_dir() {
         return Err(format!("{} is not a folder", dest_parent.display()));
     }
@@ -7040,10 +7082,12 @@ pub async fn copy_path(from: String, dest_parent: String) -> Result<String, Stri
 fn move_path_sync(from: &str, dest_parent: &str) -> Result<String, String> {
     let from = expand_home(from);
     crate::instance::guard_lock_file(&from)?;
+    guard_app_data(&from)?;
     if !from.exists() {
         return Err(format!("{}: No such file or directory", from.display()));
     }
     let dest_parent = expand_home(dest_parent);
+    guard_app_data(&dest_parent)?;
     if !dest_parent.is_dir() {
         return Err(format!("{} is not a folder", dest_parent.display()));
     }
@@ -12006,5 +12050,37 @@ mod tests {
         assert!(git_diff_index_for(blank).files.is_empty());
         assert!(git_commit_selected_for(blank, "message", &["a.txt".into()]).is_err());
         assert!(git_push_for(blank).is_err());
+    }
+}
+
+#[cfg(test)]
+mod app_data_guard_tests {
+    use super::*;
+
+    #[test]
+    fn the_generic_file_commands_refuse_paths_inside_the_app_data_folder() {
+        let data = std::env::temp_dir().join(format!("wp129-fs-data-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data);
+        std::fs::create_dir_all(data.join("model-key-hosts")).unwrap();
+        for inside in [
+            data.join("model-key-hosts"),
+            data.join("model-key-hosts").join("custom-1"),
+            data.join("monocode.db"),
+            data.join("new-file.json"),
+        ] {
+            assert!(
+                guard_app_data_in(&data, &inside).is_err(),
+                "{}",
+                inside.display()
+            );
+        }
+        // Outside the folder, and a sibling that only shares its name's start, are not refused.
+        let sibling = data.with_file_name(format!(
+            "{}-other",
+            data.file_name().unwrap().to_string_lossy()
+        ));
+        assert!(guard_app_data_in(&data, &sibling.join("x")).is_ok());
+        assert!(guard_app_data_in(&data, &std::env::temp_dir().join("x")).is_ok());
+        let _ = std::fs::remove_dir_all(&data);
     }
 }
