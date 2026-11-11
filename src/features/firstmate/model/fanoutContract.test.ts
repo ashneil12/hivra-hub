@@ -278,3 +278,11 @@ describe("a fan-out's contract (WP-171)", () => {
     });
   });
 });
+
+// WP-141 LOW 8: a task's role reaches tasks.delegate, so the role rows apply to a fan-out's waves.
+it("passes a task's role through to tasks.delegate", () => {
+  const input = plan();
+  (input.tasks[0] as unknown as Record<string, unknown>).role = "builder";
+  const parsed = parseFanout(input);
+  expect(parsed.tasks[0].passthrough).toMatchObject({ role: "builder" });
+});

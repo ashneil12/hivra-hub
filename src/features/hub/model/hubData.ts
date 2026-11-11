@@ -185,6 +185,13 @@ export function hubProjectFolder(id: string): string | undefined {
   return (override ?? choose()).source.listProjects().find((project) => project.id === id)?.folder ?? undefined;
 }
 
+/** WP-141 round 11: every hub project folder, so a worktree can be owned by the project it belongs to. */
+export function hubProjectFolders(): string[] {
+  return (override ?? choose()).source.listProjects().flatMap((project) =>
+    typeof project.folder === "string" && project.folder.trim() !== "" ? [project.folder] : [],
+  );
+}
+
 /**
  * The live store when the hub reads its local store (the app, a dev copy); undefined with the example data. Writes that Ash's taps make (keep a page, apply a change, create or rename a project) go
  * through it, so the slices they move are read again at once.

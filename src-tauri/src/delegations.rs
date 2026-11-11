@@ -639,10 +639,19 @@ pub struct RecordInput {
     /// WP-70: the person's task this work picks up. Absent, a task is created with the delegation.
     #[serde(default)]
     pub task_id: Option<String>,
+    /// WP-141: why the crew picked this CLI or Mono, one plain line. Kept on the "recorded" line as `why`.
+    #[serde(default)]
+    pub pick_reason: Option<String>,
     /// WP-176 round 5: the owner's row this one redoes. The link is written in the same transaction as the row, so it
     /// exists before the chat's first turn is judged. Refused when that row is not the owner's.
     #[serde(default)]
     pub redoes: Option<String>,
+}
+
+/// WP-141: a pick reason as one plain line of at most 240 characters. Empty is none.
+fn pick_reason(value: Option<String>) -> Option<String> {
+    let line = value?.split_whitespace().collect::<Vec<_>>().join(" ");
+    (!line.is_empty()).then(|| cap(&line, 240))
 }
 
 const FOLLOWS: [&str; 3] = ["queue", "steer", "lead"];
@@ -816,14 +825,13 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         status: crate::firstmate::status::Status::Working,
         status_notice: None,
     };
-    row.note(
-        now,
-        &by,
-        "recorded",
-        follow
-            .map(|f| json!({ "follow": f }))
-            .unwrap_or_else(|| json!({})),
-    );
+    let mut recorded = follow
+        .map(|f| json!({ "follow": f }))
+        .unwrap_or_else(|| json!({}));
+    if let (Some(why), Some(extra)) = (pick_reason(input.pick_reason), recorded.as_object_mut()) {
+        extra.insert("why".into(), json!(why));
+    }
+    row.note(now, &by, "recorded", recorded);
     row.refresh_status();
     insert(&tx, &row)?;
     // WP-70: the brief's task, or the person's task this work picks up.
@@ -2219,6 +2227,34 @@ mod tests {
             queued_message: message.map(str::to_string),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn a_pick_reason_is_kept_on_the_recorded_line_as_one_plain_line() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let mut input = launch("mono-exo", "app-mono-exo-why", "app-mono-exo-why");
+        input.pick_reason = Some(
+            "  Grok is on Never use, so it was skipped.\nBuilder role prefers Codex.  ".into(),
+        );
+        let row = record(&mut conn, input, 10).unwrap();
+        let why = row.log[0].get("why").and_then(Value::as_str);
+        assert_eq!(
+            why,
+            Some("Grok is on Never use, so it was skipped. Builder role prefers Codex.")
+        );
+        let mut long = launch("mono-exo", "app-mono-exo-long", "app-mono-exo-long");
+        long.pick_reason = Some("x".repeat(400));
+        let row = record(&mut conn, long, 11).unwrap();
+        let kept = row.log[0].get("why").and_then(Value::as_str).unwrap_or("");
+        assert!(kept.chars().count() <= 240, "a reason is capped");
+        let mut blank = launch("mono-exo", "app-mono-exo-blank", "app-mono-exo-blank");
+        blank.pick_reason = Some("   ".into());
+        let row = record(&mut conn, blank, 12).unwrap();
+        assert!(
+            row.log[0].get("why").is_none(),
+            "an empty reason is not written"
+        );
     }
 
     #[test]

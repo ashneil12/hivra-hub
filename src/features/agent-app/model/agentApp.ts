@@ -117,6 +117,7 @@ import {
   isAppDelegate,
   TASK_FIELDS,
   APP_DELEGATE_FIELDS,
+  gateSessionStart,
   type AgentAppTasksHost,
   type DelegationMeta,
 } from "./agentAppTasks";
@@ -1939,6 +1940,8 @@ export async function handleAgentApp(
           : (optionalString(input.besideSessionId, "besideSessionId", 256) ??
             source.id);
       const id = `app-${source.id}-${requestId}`;
+      // WP-141 MEDIUM 5: a session start is gated like a worker, before its process starts.
+      await gateSessionStart(host, source, launch.harness, launch.cwd, id);
       if (besideSessionId)
         await host.start(
           launch,

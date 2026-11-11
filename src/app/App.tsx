@@ -71,7 +71,8 @@ import {
 } from "../features/monos/model/delegations";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
-import { crewRouteFor, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
   briefSentAt,
@@ -257,6 +258,7 @@ import { ShipNotice } from "../features/hub/ui/ShipNotice";
 import {
   hubData,
   hubProjectFolder,
+  hubProjectFolders,
   hubProjectIdFor,
   nameHubProject,
   useHubDataVersion,
@@ -1000,6 +1002,8 @@ import {
   setWorkerQueueBackend,
   subscribeWorkerPool,
   tauriWorkerQueue,
+  projectWorkerDefault,
+  systemWorkerDefault,
   workerPoolHost,
   type HeldSeen,
   type QueuedWorker,
@@ -10796,11 +10800,16 @@ function Workspace({
     // WP-13: a failed task is recorded from the CLI the child actually ran.
     crewFailure: (row, result) => {
       const child = sessionsRef.current.find((session) => session.id === row.childSession);
-      return recordCrewFailure(row, result, {
-        cli: child?.harness,
-        model: child?.model,
-        effort: child?.modelSettings?.effort,
-      });
+      return recordCrewFailure(
+        row,
+        result,
+        {
+          cli: child?.harness,
+          model: child?.model,
+          effort: child?.modelSettings?.effort,
+        },
+        row.project ? hubProjectFolder(row.project) : undefined,
+      );
     },
   });
   delegationsRef.current = delegations;
@@ -11287,6 +11296,8 @@ function Workspace({
         setSessions(sessionsRef.current);
       },
       submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      // WP-141 round 6: a reviewer is a launch like a worker: its CLI passes the crew gate before its session starts.
+      crewGate: (session, reviewed) => crewLaunchCheck({ cli: session.harness, folder: reviewed, sessionId: session.id }),
       stop: (sessionId) => {
         void onStopRef.current(sessionId, true);
       },
@@ -13420,6 +13431,14 @@ function Workspace({
           harness,
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
+      // WP-141 round 6: the CLIs on Never use for a folder, so an approved card is filtered before a worker starts.
+      crewPolicy: (folder, leadId) =>
+        crewPolicyForLead(folder, leadId, {
+          project: (owner) => projectWorkerDefault(hubProjectIdFor(owner) ?? owner),
+          system: () => systemWorkerDefault(),
+          // WP-141 round 11: hub project folders, so a Lead in a worktree finds the project's worker default.
+          roots: hubProjectFolders(),
+        }),
       // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
       decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
@@ -14044,9 +14063,24 @@ function Workspace({
   }, []);
   useEffect(() => {
     // WP-89: the line in force reads this project's crew rules, and a plugin's.
-    setLineRulesSource((project) =>
-      invoke("crew_rules_get", { scope: "project", scopeId: project, project }),
-    );
+    // WP-141: the line sees the project's rules, then everything's (the project's come first, as the route reads them).
+    setLineRulesSource(async (project) => {
+      const own = await invoke<{ rules?: unknown; plugins?: unknown } | undefined>("crew_rules_get", {
+        scope: "project",
+        scopeId: project,
+        project,
+      });
+      const system = await invoke<{ rules?: unknown } | undefined>("crew_rules_get", {
+        scope: "system",
+        scopeId: "system",
+        project,
+      }).catch(() => undefined);
+      const rules = [
+        ...(Array.isArray(own?.rules) ? own.rules : []),
+        ...(Array.isArray(system?.rules) ? system.rules : []),
+      ];
+      return { rules, plugins: own?.plugins };
+    });
     return () => setLineRulesSource(undefined);
   }, []);
   const removeSessionRef = useRef(onRemoveHistorySession);
@@ -14238,6 +14272,8 @@ function Workspace({
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
             ...(delegation?.taskId ? { taskId: delegation.taskId } : {}),
+            // WP-141: why the crew picked this CLI, kept on the row's first line for the Crew tab.
+            ...(delegation?.pickReason ? { pickReason: delegation.pickReason } : {}),
             // WP-176 round 5: the redo's link is written with its row, in the same transaction, before its first turn.
             ...(delegation?.redoes ? { redoes: delegation.redoes.id } : {}),
             // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
@@ -15072,6 +15108,8 @@ function Workspace({
               questions: delegationTreeRef.current.questions,
               hubProjectId: hubProjectIdFor,
               hubProjectFolder,
+              // WP-141 round 11: hub project folders, so a worktree's session, brief and pick share the project's default.
+              hubProjectRoots: hubProjectFolders,
               unqueue: (childSession, requestId) => {
                 const next = sessionsRef.current.map((session) => {
                   if (session.id !== childSession) return session;
@@ -15097,6 +15135,9 @@ function Workspace({
                 : {}),
               // WP-13: the start of a delegated task asks which CLI, model and effort to use.
               crewRoute: (query) => crewRouteFor(query),
+              // WP-141: tasks.pick, the crew's pick across CLIs and the Leads this Mono may brief.
+              crewPick: (query) => crewPickFor(query),
+              pickMonos: (monoId) => pickMonosFrom(leadTargetsFor(monoId, hubData().listProjects()), listMonos()),
               pool: workerPoolHost({
                 openRows: openDelegationRows,
                 room: providerRoomNow,
@@ -15115,12 +15156,23 @@ function Workspace({
                   }),
               }),
               // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
-              checkLead: (_owner, mono, lead) => {
-                if (!findLeadTarget(mono.id, hubData().listProjects(), lead))
+              checkLead: async (_owner, mono, lead) => {
+                const target = findLeadTarget(mono.id, hubData().listProjects(), lead);
+                if (!target)
                   throw new Error(
                     `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
                   );
+                // WP-141 LOW 7: a Lead on Never use is not briefed, read from the Lead's own project, whatever the brief says.
+                await refuseNeverUseLead(
+                  { ...target, cli: sessionsRef.current.find((session) => session.id === findMono(target.leadId)?.sessionId)?.harness },
+                  mono.id,
+                  crewPolicyInForce,
+                );
               },
+              crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
+              // WP-141: the one gate every worker and session launch passes before its process starts.
+              crewGate: (input) => crewLaunchCheck(input),
+              crewAnyLock: () => crewAnyLock(),
               // WP-156: a Lead's brief carries that Lead's project, not the chat that writes it.
               leadProject: (_owner, mono, lead) =>
                 findLeadTarget(mono.id, hubData().listProjects(), lead)?.projectId,

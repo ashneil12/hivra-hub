@@ -37,6 +37,7 @@ describe("fresh-eyes before a builder starts", () => {
     const source: Session = { ...newSession("claude", PROJECT), id: "mono-lead" };
     const start = vi.fn(async () => undefined);
     const tasks = {
+      crewGate: vi.fn(async () => undefined),
       owned: vi.fn(async () => []),
       acknowledge: vi.fn(async () => undefined),
       nextChange: vi.fn(async () => undefined),
@@ -554,6 +555,8 @@ async function heldWorld(
     rows.push(startedRow(id, notify));
   });
   const tasks = delegationTasksHost({
+    // WP-141 round 5: the app wires the crew gate; a test does too, with the no-op gate that lets a worker start.
+    crewGate: vi.fn(async () => undefined),
     backend: backend(rows),
     tracker: () => null,
     session: () => source,

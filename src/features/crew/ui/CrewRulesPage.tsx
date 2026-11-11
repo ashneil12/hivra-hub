@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CLI_ORDER, EFFORTS, cliLabel } from "../model/clis";
-import { draftRule, moveRule, taskCeilingFromRules, type CrewRule, type RuleDraft } from "../model/rules";
+import { CREW_SAVED_EVENT, isRoleSlotRule, weaveRoleSlots } from "../model/policy";
+import { draftRule, moveRule, taskCeilingFromRules, type RuleDraft } from "../model/rules";
 import { defaultLine, type Presence } from "../model/resolve";
 import { WorkerDefaultControl } from "./WorkerDefaultControl";
 import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
@@ -31,6 +32,17 @@ type Loaded = {
 
 const EMPTY: Row = { labels: "", paths: "", cli: "", model: "", effort: "", ceiling: "" };
 
+/** Role rows live on the defaults screen. They stay in the saved list, not in this editor. */
+function splitShown(rules: ShownRule[]): { shown: ShownRule[]; slots: ShownRule[] } {
+  const shown: ShownRule[] = [];
+  const slots: ShownRule[] = [];
+  for (const rule of rules) {
+    if (isRoleSlotRule(rule)) slots.push(rule);
+    else shown.push(rule);
+  }
+  return { shown, slots };
+}
+
 function toRow(rule: ShownRule): Row {
   const ceiling = typeof rule.taskCeilingUsd === "number" && Number.isFinite(rule.taskCeilingUsd) ? String(rule.taskCeilingUsd) : "";
   return {
@@ -53,18 +65,22 @@ type Props = {
   cwd?: string;
   /** When set, the page never calls the app. The browser spec and tests use this. */
   initial?: { rules: ShownRule[]; plugins: ShownRule[]; signedIn: Presence[] };
+  /** WP-141: the defaults screen already shows the worker default. */
+  hideWorkerDefault?: boolean;
 };
 
-export function CrewRulesPage({ cwd, initial }: Props) {
+export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
   const [scope, setScope] = useState<"project" | "mono">("project");
   const [monoId, setMonoId] = useState("");
-  const [rows, setRows] = useState<Row[]>(() => (initial?.rules ?? []).map(toRow));
+  const [rows, setRows] = useState<Row[]>(() => splitShown(initial?.rules ?? []).shown.map(toRow));
+  const heldRules = useRef<ShownRule[]>(initial?.rules ?? []);
   const [plugins, setPlugins] = useState<ShownRule[]>(initial?.plugins ?? []);
   const [signedIn, setSignedIn] = useState<Presence[]>(initial?.signedIn ?? []);
   const [draft, setDraft] = useState<Row>(EMPTY);
   const [revision, setRevision] = useState(0);
   const [notice, setNotice] = useState<string | null>(null);
   const loadGen = useRef(0);
+  const [reloadTick, setReloadTick] = useState(0);
   /** Unsaved row edits. A load that arrives after one must not put the old rows back. */
   const dirty = useRef(false);
   /** The scope a save in flight belongs to. A load for that same scope waits; a different scope does not. */
@@ -88,8 +104,10 @@ export function CrewRulesPage({ cwd, initial }: Props) {
     if (Array.isArray(got.plugins)) setPlugins(got.plugins);
     if (Array.isArray(got.signedIn)) setSignedIn(got.signedIn);
     if (dirty.current || saving.current === key) return;
-    const nextRows = Array.isArray(got.rules) ? got.rules.map(toRow) : [];
-    setRows(nextRows);
+    const loaded = Array.isArray(got.rules) ? got.rules : [];
+    const split = splitShown(loaded);
+    heldRules.current = loaded;
+    setRows(split.shown.map(toRow));
     setRevision(typeof got.revision === "number" ? got.revision : 0);
   }
 
@@ -115,7 +133,19 @@ export function CrewRulesPage({ cwd, initial }: Props) {
     return () => {
       alive = false;
     };
-  }, [initial, scope, monoId, cwd]);
+  }, [initial, scope, monoId, cwd, reloadTick]);
+
+  useEffect(() => {
+    const onSaved = (event: Event) => {
+      const detail = (event as CustomEvent<{ scope?: string; scopeId?: string }>).detail;
+      if (!detail || dirty.current || saving.current) return;
+      const id = scopeIdOf(scopeNow.current, monoNow.current, cwdNow.current);
+      if (detail.scope !== scopeNow.current || detail.scopeId !== id) return;
+      setReloadTick((tick) => tick + 1);
+    };
+    window.addEventListener(CREW_SAVED_EVENT, onSaved);
+    return () => window.removeEventListener(CREW_SAVED_EVENT, onSaved);
+  }, []);
 
   function changeRows(next: Row[] | ((current: Row[]) => Row[])) {
     dirty.current = true;
@@ -141,24 +171,31 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       setNotice(scope === "project" ? "Open a project first." : "Name the Mono first.");
       return;
     }
-    const rules = [];
-    const madeRules: CrewRule[] = [];
+    const shown: ShownRule[] = [];
     for (const row of rows) {
       const made = draftRule(row);
       if (typeof made === "string") {
         setNotice(made);
         return;
       }
-      madeRules.push(made);
-      rules.push({
+      shown.push({
         labels: made.labels,
         paths: made.paths,
-        cli: made.cli ?? null,
-        model: made.model ?? null,
-        effort: made.effort ?? null,
+        cli: made.cli,
+        model: made.model,
+        effort: made.effort,
         taskCeilingUsd: made.taskCeilingUsd ?? null,
       });
     }
+    const woven = weaveRoleSlots(heldRules.current, shown);
+    const rules = woven.map((rule) => ({
+      labels: [...rule.labels],
+      paths: [...rule.paths],
+      cli: rule.cli ?? null,
+      model: rule.model ?? null,
+      effort: rule.effort ?? null,
+      taskCeilingUsd: rule.taskCeilingUsd ?? null,
+    }));
     const expected = revision;
     const key = `${savingScope}\0${savingId}`;
     saving.current = key;
@@ -194,7 +231,24 @@ export function CrewRulesPage({ cwd, initial }: Props) {
       }
       setRevision(again.revision);
       if (Array.isArray(again.signedIn)) setSignedIn(again.signedIn);
-      if (savingScope === "project") applyProjectRuleCeiling(savingId, taskCeilingFromRules(madeRules));
+      heldRules.current = Array.isArray(again.rules) ? again.rules : heldRules.current;
+      window.dispatchEvent(new CustomEvent(CREW_SAVED_EVENT, { detail: { scope: savingScope, scopeId: savingId } }));
+      if (savingScope === "project") {
+        applyProjectRuleCeiling(
+          savingId,
+          taskCeilingFromRules(
+            woven.map((rule) => ({
+              labels: [...rule.labels],
+              paths: [...rule.paths],
+              cli: rule.cli,
+              model: rule.model,
+              effort: rule.effort,
+              ...(typeof rule.taskCeilingUsd === "number" ? { taskCeilingUsd: rule.taskCeilingUsd } : {}),
+              source: "person" as const,
+            })),
+          ),
+        );
+      }
       setNotice("Saved.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Those rules couldn't be saved.");
@@ -210,8 +264,8 @@ export function CrewRulesPage({ cwd, initial }: Props) {
         Each task uses the first rule that matches. Yours come first. A plugin's rules sit underneath.
       </p>
       <p className="text-[13px] text-content/80">{defaultLine(signedIn)}</p>
-      {/* WP-89: the default for every worker, above the rules list. */}
-      <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />
+      {/* WP-89: the default for every worker, above the rules list. WP-141 hides it when the defaults screen is above. */}
+      {hideWorkerDefault ? null : <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />}
       {/* WP-161: the shared ceiling and the pauses. Running builders are not stopped. */}
       <BuilderScaleControls showSharedMax />
       {/* WP-176: the measured-cost limit for this project. A running builder is not stopped. */}
