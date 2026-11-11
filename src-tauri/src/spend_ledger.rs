@@ -14,6 +14,102 @@ const MAX_TEXT: usize = 4096;
 /// One turn can cost this much at most. A larger figure is refused rather than stored.
 const MAX_MICROS: i64 = 1_000_000_000_000_000;
 
+/// The limits book could not be read or judged, so an automated turn is held.
+const BOOK_UNREADABLE: &str = "The spend limits could not be read, so this automated run is held.";
+
+pub fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// Refuses an automated turn (here: a first mate's verdict) when the app's limit, or the project's own limit, is
+/// reached on the ledger. A book that is missing its shape is unreadable, so it holds too. Nothing is written.
+pub fn admit_automated(conn: &Connection, project: Option<&str>, now: i64) -> Result<(), String> {
+    let Some((_, body)) = read_book(conn)? else {
+        return Ok(());
+    };
+    let value: serde_json::Value =
+        serde_json::from_str(&body).map_err(|_| BOOK_UNREADABLE.to_string())?;
+    let limits = value
+        .get("limits")
+        .and_then(|v| v.as_array())
+        .ok_or_else(|| BOOK_UNREADABLE.to_string())?;
+    for limit in limits {
+        let scope = limit.get("scope").and_then(|v| v.as_str()).unwrap_or("");
+        let period = limit.get("period").and_then(|v| v.as_str()).unwrap_or("");
+        let amount = limit
+            .get("amountUsd")
+            .and_then(|v| v.as_f64())
+            .filter(|v| v.is_finite() && *v > 0.0)
+            .ok_or_else(|| BOOK_UNREADABLE.to_string())?;
+        let since: i64 = conn
+            .query_row(
+                "SELECT CAST(strftime('%s', ?1 / 1000, 'unixepoch', 'localtime', ?2, 'utc') AS INTEGER) * 1000",
+                params![now, match period {
+                    "day" => "start of day",
+                    "month" => "start of month",
+                    _ => return Err(BOOK_UNREADABLE.to_string()),
+                }],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        let spent: i64 = match scope {
+            "app" => conn.query_row(
+                "SELECT COALESCE(SUM(micros), 0) FROM spend_ledger WHERE at >= ?1",
+                params![since],
+                |row| row.get(0),
+            ),
+            "project" => {
+                let Some(project) = project else { continue };
+                if limit.get("project").and_then(|v| v.as_str()) != Some(project) {
+                    continue;
+                }
+                conn.query_row(
+                    "SELECT COALESCE(SUM(micros), 0) FROM spend_ledger WHERE at >= ?1 AND project_key = ?2",
+                    params![since, project],
+                    |row| row.get(0),
+                )
+            }
+            _ => return Err(BOOK_UNREADABLE.to_string()),
+        }
+        .map_err(|e| e.to_string())?;
+        let cap = (amount * 1_000_000.0).round() as i64;
+        if spent >= cap {
+            return Err(format!(
+                "Spend limit reached: ${:.2} of ${:.2} this {}. This automated run is held.",
+                spent as f64 / 1_000_000.0,
+                amount,
+                if period == "day" { "day" } else { "month" }
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Notes an automated call whose cost is not reported (a verdict): it is counted as unpriced and adds no money.
+pub fn note_unpriced(conn: &Connection, project: &str, now: i64) -> Result<(), String> {
+    append(
+        conn,
+        &TurnEntry {
+            session_id: format!("verdict-{}", uuid::Uuid::new_v4()),
+            project_key: project.to_string(),
+            at: now,
+            micros: 0,
+            priced: false,
+        },
+    )
+}
+
+#[tauri::command(async)]
+pub fn spend_redo_links(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<crate::delegations::RedoLink>, String> {
+    let conn = store.lock_conn()?;
+    crate::delegations::redo_links(&conn)
+}
+
 pub fn ensure_table(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS spend_ledger (
@@ -346,6 +442,33 @@ mod tests {
         assert_eq!(read_book(&conn).unwrap().unwrap().0, 2);
         assert!(write_book(&conn, 2, 3, r#"{"revision":9,"limits":[]}"#).is_err());
         assert!(write_book(&conn, 2, 3, "not json").is_err());
+    }
+
+    #[test]
+    fn an_automated_verdict_is_refused_over_the_limit_and_noted_unpriced() {
+        // Round 4 M-4: claude_verdict is an automated turn. Over the app's limit it is refused; under it, the call is
+        // noted in the ledger as unpriced and counts nothing.
+        let conn = db();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        write_book(&conn, 0, 1, r#"{"revision":1,"limits":[{"scope":"app","period":"month","amountUsd":10,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        append(&conn, &turn("chat", "hivra", now, 12_000_000, true)).unwrap();
+        assert!(admit_automated(&conn, Some("hivra"), now).is_err());
+        write_book(&conn, 1, 2, r#"{"revision":2,"limits":[{"scope":"app","period":"month","amountUsd":50,"warnAt":0.8}],"ceilings":{}}"#).unwrap();
+        assert!(admit_automated(&conn, Some("hivra"), now).is_ok());
+        note_unpriced(&conn, "hivra", now).unwrap();
+        let row = totals(&conn, 0)
+            .unwrap()
+            .into_iter()
+            .find(|r| r.project_key == "hivra" && r.session_id.starts_with("verdict-"))
+            .unwrap();
+        assert_eq!((row.micros, row.priced, row.unpriced), (0, 0, 1));
+        // A book that cannot be read holds the verdict too.
+        conn.execute("UPDATE spend_limit_book SET body = 'not json'", [])
+            .unwrap();
+        assert!(admit_automated(&conn, Some("hivra"), now).is_err());
     }
 
     #[test]

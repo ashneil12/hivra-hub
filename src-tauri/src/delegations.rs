@@ -159,6 +159,15 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE delegations ADD COLUMN report TEXT;",
         )?;
     }
+    // WP-176 round 4: the redo link, kept apart from the row so a later save of the row cannot drop it.
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS delegation_redos (
+           new_id TEXT PRIMARY KEY,
+           old_id TEXT NOT NULL,
+           owner_session TEXT NOT NULL,
+           created_at INTEGER NOT NULL
+         );",
+    )?;
     // WP-42: when this run started. The log only keeps 50 lines, so a resume time stored there can be trimmed
     // before settle, and older proof would be attached as this run's.
     let has_run_started = conn
@@ -1436,6 +1445,37 @@ pub fn cancel(
     Ok(changed)
 }
 
+/// A chat that redid another: its child session and the session it took over from (WP-176 round 4).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RedoLink {
+    pub child: String,
+    pub parent: String,
+}
+
+/// Every redo link, for the spend gate: a redo counts against the ceiling of the chat it redid.
+pub fn redo_links(conn: &Connection) -> Result<Vec<RedoLink>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT new_row.child_session, old_row.child_session
+               FROM delegation_redos link
+               JOIN delegations new_row ON new_row.id = link.new_id
+               JOIN delegations old_row ON old_row.id = link.old_id
+              ORDER BY link.created_at, link.new_id",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok(RedoLink {
+                child: row.get(0)?,
+                parent: row.get(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    rows.collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())
+}
+
 /// The owner retried or split one of its tasks (delegate_task `redoes`): `task` is the new task that takes it on. Kept
 /// in the row's log, so its card can say what the Lead did after a restart too; several in one go are a split.
 pub fn note_redo(
@@ -1455,6 +1495,18 @@ pub fn note_redo(
     };
     if row.id == task {
         return Err("a task can't redo itself".into());
+    }
+    // The link is kept only for a new task that is the owner's: its chat then continues this one's spend ceiling
+    // (redo_links). A name that is not a task of the owner's is still noted in the log, as before, with no link.
+    if get(&tx, &task)?
+        .filter(|new| new.owner_session == owner)
+        .is_some()
+    {
+        tx.execute(
+            "INSERT OR REPLACE INTO delegation_redos (new_id, old_id, owner_session, created_at) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![task, row.id, owner, now],
+        )
+        .map_err(|e| e.to_string())?;
     }
     row.note(
         now,
@@ -3001,6 +3053,28 @@ mod tests {
         // Another chat's task, or itself: refused.
         assert!(note_redo(&mut conn, "someone-else", &row.id, "t-new", 600).is_err());
         assert!(note_redo(&mut conn, "lead", &row.id, &row.id, 600).is_err());
+    }
+
+    #[test]
+    fn a_redo_links_its_new_chat_to_the_one_it_redid() {
+        // Round 4 M-1: the redo the owner names is kept on the new chat's row, so the spend gate can count the redo
+        // against its parent's ceiling after a restart. Through the real record and redo path.
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        let old = record(&mut conn, launch("lead", "r1", "worker-old"), 10).unwrap();
+        let new = record(&mut conn, launch("lead", "r2", "worker-new"), 20).unwrap();
+        assert!(redo_links(&conn).unwrap().is_empty(), "no redo, no link");
+        note_redo(&mut conn, "lead", &old.id, &new.id, 30).unwrap();
+        assert_eq!(
+            redo_links(&conn).unwrap(),
+            vec![RedoLink {
+                child: "worker-new".into(),
+                parent: "worker-old".into()
+            }]
+        );
+        // A task of someone else's is refused, and links nothing.
+        assert!(note_redo(&mut conn, "someone-else", &old.id, &new.id, 40).is_err());
+        assert_eq!(redo_links(&conn).unwrap().len(), 1);
     }
 
     #[test]
