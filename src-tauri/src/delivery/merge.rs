@@ -191,9 +191,6 @@ fn gate_files(gh: &dyn Github, repo: &str, read: &PrRead) -> super::protected::C
     super::protected::judge(listed, read.changed_files)
 }
 
-/// The Inbox key of a needs_validation question for one head.
-const SECURITY_KEY: &str = "security-review/";
-
 /// The security gate's answer for one merge.
 #[derive(Debug, PartialEq, Eq)]
 enum SecurityGate {
@@ -324,11 +321,16 @@ fn security_gate(
             "{repo}#{number} is security-sensitive, and no project is known to ask the person about head {short}."
         )));
     };
-    let key = format!("{SECURITY_KEY}{head}");
-    let (question, options) = if record.pending.is_empty() {
+    let key = crate::decisions::security_decision_key(repo, number, head);
+    // A clean record is one reviewer's own report. Approve is the only other check, and only when nothing is waiting.
+    // Candidates take a different option, so an Approve from a clean card cannot pass a head that still has them.
+    let (question, options, accept) = if record.pending.is_empty() {
         (
-            format!("Security review of PR #{number} (head {short}) is clean. Approve the merge, or hold it."),
+            format!(
+                "One reviewer reported PR #{number} (head {short}) as a pass. That report is the reviewer's own word. Your Approve is the only other check. Approve the merge, or hold it."
+            ),
             vec!["Approve".to_string(), "Hold the merge".to_string()],
+            "Approve",
         )
     } else {
         (
@@ -339,43 +341,42 @@ fn security_gate(
                 record.pending.join("; "),
             ),
             vec!["Looked at it".to_string(), "Hold the merge".to_string()],
+            "Looked at it",
         )
     };
-    match crate::decisions::get(conn, project, &key)? {
-        None => {
-            crate::decisions::ask(
-                conn,
-                crate::decisions::AskInput {
-                    asked_by: "gate".into(),
-                    asked_by_mono: None,
-                    project: Some(project.to_string()),
-                    key,
-                    question: question.clone(),
-                    options,
-                    recommended: None,
-                    task_ids: Vec::new(),
-                },
-                now,
-            )?;
-            Ok(SecurityGate::Hold(question))
-        }
-        Some(decision) => {
-            // Only the person's answer counts: a chat's or a machine's is held, whatever it says.
-            let by_person = matches!(
-                decision.answered_by.as_deref(),
-                Some("person") | Some("user")
-            );
-            if decision.state != crate::decisions::ANSWERED || !by_person {
-                return Ok(SecurityGate::Hold(question));
-            }
-            match decision.answer.as_deref() {
-                Some("Looked at it") | Some("Approve") => Ok(SecurityGate::Pass),
-                Some("Hold the merge") => Ok(SecurityGate::Refuse(format!(
-                    "The person held the merge of head {short}."
-                ))),
-                _ => Ok(SecurityGate::Hold(question)),
-            }
-        }
+    // Ask every time. A chat's question under this key is replaced, and an answer that is no longer one of the options
+    // is cleared. save() would have left both in place.
+    crate::decisions::ask(
+        conn,
+        crate::decisions::AskInput {
+            asked_by: "gate".into(),
+            asked_by_mono: None,
+            project: Some(project.to_string()),
+            key: key.clone(),
+            question: question.clone(),
+            options,
+            recommended: None,
+            task_ids: Vec::new(),
+        },
+        now,
+    )?;
+    let Some(decision) = crate::decisions::get(conn, project, &key)? else {
+        return Ok(SecurityGate::Hold(question));
+    };
+    let by_person = matches!(
+        decision.answered_by.as_deref(),
+        Some("person") | Some("user")
+    );
+    let from_gate = crate::decisions::fold_key(&decision.asked_by) == "gate";
+    if decision.state != crate::decisions::ANSWERED || !by_person || !from_gate {
+        return Ok(SecurityGate::Hold(question));
+    }
+    match decision.answer.as_deref() {
+        Some(word) if word == accept => Ok(SecurityGate::Pass),
+        Some("Hold the merge") => Ok(SecurityGate::Refuse(format!(
+            "The person held the merge of head {short}."
+        ))),
+        _ => Ok(SecurityGate::Hold(question)),
     }
 }
 

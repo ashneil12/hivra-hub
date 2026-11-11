@@ -185,7 +185,15 @@ fn a_finished_task_is_not_released_and_bad_asks_are_refused() {
         4,
     )
     .unwrap();
-    let out = answer(&mut conn, "hivra", "k", "Keep 30 days", None, 5).unwrap();
+    let out = answer(
+        &mut conn,
+        "hivra",
+        "k",
+        "Keep 30 days",
+        Some("user".into()),
+        5,
+    )
+    .unwrap();
     assert!(out.applied);
     assert!(out.released_tasks.is_empty());
     // Only the asker hears it.
@@ -350,25 +358,27 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
             "{key}"
         );
     }
-    // The person, in either of the app's own answer paths, goes through.
+    // The person, named, in either of the app's own answer paths, goes through.
     for (key, by) in [
-        ("fresh-eyes/r1/00112233aabbccdd", Some("user")),
-        ("fresh-eyes-start/r1/00112233aabbccdd", None),
+        ("fresh-eyes/r1/00112233aabbccdd", "user"),
+        ("fresh-eyes-start/r1/00112233aabbccdd", "person"),
     ] {
         assert!(
-            answer(
-                &mut conn,
-                "hivra",
-                key,
-                "Approve",
-                by.map(str::to_string),
-                4
-            )
-            .unwrap()
-            .applied,
+            answer(&mut conn, "hivra", key, "Approve", Some(by.into()), 4)
+                .unwrap()
+                .applied,
             "{key}"
         );
     }
+    // An unnamed answer is not stored as the person.
+    let unnamed = "fresh-eyes/r9/00112233aabbccdd";
+    ask(&mut conn, ask_input("lead", unnamed, &[]), 4).unwrap();
+    let unnamed_err = answer(&mut conn, "hivra", unnamed, "Approve", None, 4).unwrap_err();
+    assert!(
+        unnamed_err.contains("Say who is answering"),
+        "{unnamed_err}"
+    );
+    assert_eq!(get(&conn, "hivra", unnamed).unwrap().unwrap().state, OPEN);
     // The app closes its own question when a brief is taken back, and tells the chat that asked nothing: it did it.
     let key = "fresh-eyes/r2/ffeeddccbbaa0011";
     ask(&mut conn, ask_input("lead", key, &[]), 5).unwrap();
@@ -467,13 +477,26 @@ fn a_chat_answer_to_a_folded_restart_or_security_key_is_refused() {
     let again = "FANOUT-AGAIN/plan/api/req1";
     let security = "Security-Review/abc123";
     ask(&mut conn, ask_input("lead", again, &[]), 2).unwrap();
-    ask(
+    // A chat cannot open a security review, in any spelling. The gate can, and a chat still cannot answer it.
+    let refused_ask = ask(
         &mut conn,
         AskInput {
             question: "Accept this security review?".into(),
             options: vec!["Approve".into(), "Reject".into()],
             recommended: Some("Reject".into()),
             ..ask_input("lead", security, &[])
+        },
+        3,
+    )
+    .unwrap_err();
+    assert!(refused_ask.contains("Only the gate"), "{refused_ask}");
+    ask(
+        &mut conn,
+        AskInput {
+            question: "Accept this security review?".into(),
+            options: vec!["Approve".into(), "Reject".into()],
+            recommended: Some("Reject".into()),
+            ..ask_input("gate", security, &[])
         },
         3,
     )
@@ -514,4 +537,24 @@ fn a_restart_decision_key_names_a_whole_plan_task_and_request() {
     assert_eq!(key_like(&key).unwrap(), key);
     assert!(key_like(&"k".repeat(KEY_MAX + 1)).is_err());
     assert!(key_like(&format!("other/{}", "x".repeat(KEY_MAX))).is_err());
+}
+
+/// Round 6: an answer with nobody named used to be stored as the person. It is refused, and the question stays open.
+#[test]
+fn repro_220_r5_an_unnamed_answer_is_not_stored_as_the_person() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    let err = answer(&mut conn, "hivra", "retention", "Keep 30 days", None, 3).unwrap_err();
+    assert!(err.contains("Say who is answering"), "{err}");
+    let open = get(&conn, "hivra", "retention").unwrap().unwrap();
+    assert_eq!(open.state, OPEN);
+    assert!(open.answered_by.is_none());
+    assert!(open.answer.is_none());
+    // A missing decision still changes nothing when nobody is named.
+    assert!(
+        !answer(&mut conn, "hivra", "missing", "x", None, 4)
+            .unwrap()
+            .applied
+    );
 }

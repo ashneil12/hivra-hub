@@ -4,7 +4,8 @@
 //! - **One question, one key.** A first mate asks through one tool, `ask_person(key, question, options, recommended)`.
 //!   The decision is stored once under `(project, decision_key)`; asking again with the same key changes nothing about
 //!   it (not the question, not the options), it only adds the asker's tasks that wait on it, and an answered key gives
-//!   back the answer at once.
+//!   back the answer at once. A security review is the exception: the gate replaces a question that is not its current
+//!   one, and clears an answer that is no longer one of the options.
 //! - **Questions go up one level.** Only the chat the person talks to (a first mate at the top of its work) may ask the
 //!   person. A worker, or a first mate working for another first mate, is turned back with a plain reason: its question
 //!   goes to its own first mate (`task_cannot` or its report), which answers it or asks the person itself.
@@ -177,12 +178,58 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     Ok(())
 }
 
+/// A security review the gate is asking again. The ordinary ask leaves a question alone. This one does not: a chat's
+/// question is replaced, an open question that no longer matches the record is replaced, and an answer that is not one
+/// of the new options is cleared. An answer that is still one of the options stays, including "Hold the merge".
+fn security_stale(existing: &Decision, question: &str, options: &[String]) -> bool {
+    if fold_key(&existing.asked_by) != "gate" {
+        return true;
+    }
+    if existing.question == question && existing.options == options {
+        return false;
+    }
+    if existing.state == OPEN {
+        return true;
+    }
+    !existing
+        .answer
+        .as_deref()
+        .is_some_and(|word| options.iter().any(|option| option == word))
+}
+
+/// `save` does not change the question, the options or who asked. A security review the gate takes over needs all of it.
+fn replace_asked(conn: &Connection, d: &Decision) -> Result<(), String> {
+    conn.execute(
+        "UPDATE decisions SET question = ?1, options = ?2, recommended = ?3, asked_by = ?4, asked_by_mono = ?5, \
+         waiting = ?6, state = ?7, answer = ?8, answered_by = ?9, answered_at = ?10, updated_at = ?11, version = ?12 \
+         WHERE project = ?13 AND decision_key = ?14",
+        params![
+            d.question,
+            json!(d.options).to_string(),
+            d.recommended,
+            d.asked_by,
+            d.asked_by_mono,
+            json!(d.waiting).to_string(),
+            d.state,
+            d.answer,
+            d.answered_by,
+            d.answered_at,
+            d.updated_at,
+            d.version,
+            d.project,
+            d.decision_key,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// WP-172: a restart decision of a fan-out names its plan, its task and the request id that was stopped (up to 100,
 /// 40 and 100 characters), then a 16-character owner tag, with the prefix and separators: 272 at most.
 const FANOUT_AGAIN_KEY_MAX: usize = 300;
 
 fn key_max(value: &str) -> usize {
-    if is_again_key(value) {
+    if is_again_key(value) || is_security_key(&fold_key(value)) {
         FANOUT_AGAIN_KEY_MAX
     } else {
         KEY_MAX
@@ -191,19 +238,27 @@ fn key_max(value: &str) -> usize {
 
 fn key_like(value: &str) -> Result<String, String> {
     let value = value.trim();
+    let security = is_security_key(&fold_key(value));
     let max = key_max(value);
-    if value.is_empty()
-        || value.len() > max
-        || !value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':' | b'/'))
-    {
+    let allowed = |b: u8| {
+        b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'.' | b':' | b'/')
+            || (security && matches!(b, b'#' | b'@'))
+    };
+    if value.is_empty() || value.len() > max || !value.bytes().all(allowed) {
+        let extra = if security { " # @" } else { "" };
         return Err(format!(
-            "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : / and at \
-             most {max} characters"
+            "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : /{extra} \
+             and at most {max} characters"
         ));
     }
     Ok(value.to_string())
+}
+
+/// The Inbox key of one security review: the repo, the pull request and the head. An answer for one pull request does
+/// not apply to another at the same head.
+pub fn security_decision_key(repo: &str, number: u64, head: &str) -> String {
+    format!("security-review/{repo}#{number}@{head}")
 }
 
 fn plain(value: &str, label: &str, max: usize) -> Result<String, String> {
@@ -256,7 +311,8 @@ pub struct AskInput {
 #[serde(rename_all = "camelCase")]
 pub struct AskOutcome {
     pub decision: Decision,
-    /// False when the key was already asked: nothing about the question changed.
+    /// False when the key was already asked. An ordinary question is left as it was. A security review the gate asks
+    /// again may replace the question.
     pub created: bool,
     /// Tasks that joined this time.
     pub added: Vec<String>,
@@ -366,6 +422,13 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     check_may_ask(conn, &asked_by)?;
     let project = input.project.unwrap_or_default().trim().to_string();
     let key = key_like(&input.key)?;
+    // A chat that asks security-review/... first would put its own question under the gate's key. Only the gate asks one.
+    let security = is_security_key(&fold_key(&key));
+    if security && fold_key(&asked_by) != "gate" {
+        return Err(
+            "Only the gate asks a security review. A chat cannot open that question.".into(),
+        );
+    }
     let question = plain(&input.question, "The question", QUESTION_MAX)?;
     let mut options = Vec::new();
     for option in &input.options {
@@ -417,9 +480,9 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     let mut decision = existing.unwrap_or_else(|| Decision {
         project: project.clone(),
         decision_key: key.clone(),
-        question,
-        options,
-        recommended,
+        question: question.clone(),
+        options: options.clone(),
+        recommended: recommended.clone(),
         asked_by: asked_by.clone(),
         asked_by_mono: input.asked_by_mono.clone(),
         waiting: Vec::new(),
@@ -431,6 +494,19 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         updated_at: now,
         version: 0,
     });
+    // The gate replaces a security question that is not its current one. save() cannot change the question.
+    let refresh = !created && security && security_stale(&decision, &question, &options);
+    if refresh {
+        decision.question = question;
+        decision.options = options;
+        decision.recommended = recommended;
+        decision.asked_by = asked_by.clone();
+        decision.asked_by_mono = input.asked_by_mono.clone();
+        decision.state = OPEN.into();
+        decision.answer = None;
+        decision.answered_by = None;
+        decision.answered_at = None;
+    }
     let added: Vec<String> = task_ids
         .into_iter()
         .filter(|id| !decision.waiting.contains(id))
@@ -449,11 +525,15 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
             }
         }
     }
-    if created || !added.is_empty() {
+    if created || !added.is_empty() || refresh {
         decision.waiting.extend(added.iter().cloned());
         decision.updated_at = now;
         decision.version += 1;
-        save(&tx, &decision)?;
+        if refresh {
+            replace_asked(&tx, &decision)?;
+        } else {
+            save(&tx, &decision)?;
+        }
     }
     tx.commit().map_err(|e| e.to_string())?;
     if decision.state == OPEN {
@@ -489,24 +569,45 @@ fn is_review_key(key: &str) -> bool {
     key.starts_with("fresh-eyes/") || key.starts_with("fresh-eyes-start/")
 }
 
-/// The decision key as the person-only rules read it: Unicode whitespace trimmed, NFKC, format and default-ignorable
-/// characters (zero-width joiners, bidi marks, variation selectors) dropped, lower case. The same rules as the floor's
-/// name fold (delivery/protected.rs), so a spelling that looks like a protected key can't slip past one check and not the other.
+/// Invisible characters: Unicode general category Cf (format) and the other default-ignorable code points. A spelling
+/// that differs only by them looks the same on screen, so the fold drops them.
+fn is_ignorable(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x00AD
+            | 0x034F
+            | 0x0600..=0x0605
+            | 0x061C
+            | 0x06DD
+            | 0x070F
+            | 0x08E2
+            | 0x115F..=0x1160
+            | 0x17B4..=0x17B5
+            | 0x180B..=0x180F
+            | 0x200B..=0x200F
+            | 0x202A..=0x202E
+            | 0x2060..=0x206F
+            | 0x3164
+            | 0xFE00..=0xFE0F
+            | 0xFEFF
+            | 0xFFA0
+            | 0xFFF0..=0xFFFB
+            | 0x110BD
+            | 0x110CD
+            | 0x13430..=0x1343F
+            | 0x1BCA0..=0x1BCA3
+            | 0x1D173..=0x1D17A
+            | 0xE0000..=0xE0FFF
+    )
+}
+
+/// The one form every decision-key prefix check reads: NFKC (so fullwidth and other compatibility spellings become
+/// their plain form), invisible characters dropped, trimmed (any Unicode white space, as `str::trim` takes it),
+/// lower-case. A chat can ask or answer under any spelling, so a check on the raw key is a check on the wrong string.
 pub fn fold_key(key: &str) -> String {
     use unicode_normalization::UnicodeNormalization;
-    let trimmed = key.trim_matches(char::is_whitespace);
-    let ignorable = |c: char| {
-        matches!(c,
-            '\u{00AD}' | '\u{034F}' | '\u{061C}' | '\u{115F}'..='\u{1160}' | '\u{17B4}'..='\u{17B5}'
-            | '\u{180B}'..='\u{180F}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
-            | '\u{2060}'..='\u{206F}' | '\u{3164}' | '\u{FE00}'..='\u{FE0F}' | '\u{FEFF}'
-            | '\u{FFA0}' | '\u{E0000}'..='\u{E0FFF}')
-    };
-    trimmed
-        .nfkc()
-        .filter(|c| !ignorable(*c))
-        .collect::<String>()
-        .to_lowercase()
+    let folded: String = key.nfkc().filter(|c| !is_ignorable(*c)).collect();
+    folded.trim().to_lowercase()
 }
 
 /// WP-203: a security review's question (`security-review/<head>`) is the person's to answer. A pass on a security path
@@ -593,18 +694,32 @@ pub fn answer(
             released_tasks: Vec::new(),
         });
     }
+    // Nobody named is not the person. It used to be stored as "person", so a caller that forgot `by` answered as Ash.
+    let who = by
+        .as_deref()
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .map(|word| word.chars().take(120).collect::<String>());
+    let Some(who) = who else {
+        return Err("Say who is answering.".into());
+    };
     // WP-91: an irreversible step is the person's to answer, and nobody else's. The webview puts it on its red list
     // so autopilot holds it, but that is a screen away; this refuses it at the store, whatever path asked.
-    if let Some(refusal) = person_only(decision.decision_key.trim(), by.as_deref()) {
+    if let Some(refusal) = person_only(decision.decision_key.trim(), Some(who.as_str())) {
         return Err(refusal);
+    }
+    // Words that are not on this card used to be stored, and the gate then held that head forever.
+    if is_security_key(&fold_key(decision.decision_key.trim()))
+        && !decision.options.iter().any(|option| option == &answer)
+    {
+        return Err(format!(
+            "Pick one of this card's options: {}.",
+            decision.options.join(", ")
+        ));
     }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);
-    decision.answered_by = Some(
-        by.map(|b| b.trim().chars().take(120).collect::<String>())
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| "person".into()),
-    );
+    decision.answered_by = Some(who);
     decision.answered_at = Some(now);
     decision.updated_at = now;
     decision.version += 1;
@@ -622,7 +737,9 @@ pub fn answer(
         decision.answered_by.as_deref() == Some(format!("chat:{}", decision.asked_by).as_str());
     // The app closing a review's question (a brief taken back, replaced, or accepted as clean) has nothing to tell.
     let from_app = decision.answered_by.as_deref() == Some(APP_CLOSER);
-    if !from_asker && !from_app {
+    // The gate is not a chat. A steering message to it would wait forever for a session that does not exist.
+    let from_gate = fold_key(&decision.asked_by) == "gate";
+    if !from_asker && !from_app && !from_gate {
         released.push(steering::record(
             &tx,
             SteerInput {
@@ -689,14 +806,14 @@ pub fn decisions_answer(
     project: Option<String>,
     key: String,
     answer: String,
-    by: Option<String>,
+    by: String,
 ) -> Result<AnswerOutcome, String> {
     let outcome = self::answer(
         &mut *store.lock_conn()?,
         project.as_deref().unwrap_or(""),
         &key,
         &answer,
-        by,
+        Some(by),
         now_millis(),
     )?;
     // WP-81: an answer on a check's question goes back to the check. Nothing is answered for the person.
@@ -757,6 +874,19 @@ mod person_only_fold_tests {
             "security-review"
         );
         assert_eq!(fold_key("\u{3000}key\u{00A0}"), "key");
+    }
+
+    /// Round 6: NFKC, then drop the larger default-ignorable set (Cf and the extra ignorables), then trim, then lower case.
+    /// U+070F is Syriac Abbreviation Mark. The smaller fold keeps it, so the prefix check can miss the key.
+    #[test]
+    fn repro_220_r5_fold() {
+        assert_eq!(fold_key("security\u{070F}-review/x"), "security-review/x");
+        assert_eq!(fold_key("security\u{06DD}-review/x"), "security-review/x");
+        assert_eq!(fold_key("security\u{110BD}-review/x"), "security-review/x");
+        assert_eq!(
+            fold_key("\u{FEFF}Security-Review/A\u{200B}"),
+            "security-review/a"
+        );
     }
 
     #[test]
