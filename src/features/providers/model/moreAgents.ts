@@ -171,29 +171,207 @@ function isInterpreter(command: string): boolean {
   return INTERPRETERS.includes(name) || name.startsWith("python");
 }
 
-function valuesOf(arg: string): string[] {
-  if (!arg.startsWith("-")) return [arg];
-  const out: string[] = [];
+/** Where a flag's value starts. A colon before `=` (`-javaagent:jar=opts`) yields both sides. Otherwise the value is
+ *  the text after `=` or after the colon. `eq` is -1 when there is no second side. A Windows drive colon is not a
+ *  flag colon, and only on Windows. */
+function flagParts(arg: string, platform: string): { at: number; eq: number } | null {
+  if (!arg.startsWith("-")) return null;
+  const colon = firstNondriveColon(arg, platform);
   const eq = arg.indexOf("=");
-  if (eq >= 0) out.push(arg.slice(eq + 1));
-  if (arg.length > 2 && !arg.startsWith("--")) out.push(arg.slice(2));
+  if (colon >= 0 && (eq < 0 || colon < eq)) return { at: colon, eq };
+  if (eq >= 0) return { at: eq, eq: -1 };
+  return null;
+}
+
+function firstNondriveColon(arg: string, platform: string): number {
+  for (let at = 0; at < arg.length; at++) {
+    if (arg[at] === ":" && !isDriveColon(arg, at, platform)) return at;
+  }
+  return -1;
+}
+
+/** `C:\foo` after `=`, after another colon, or as an attached short flag (`-IC:\foo`). Only Windows has drive letters. */
+function isDriveColon(arg: string, at: number, platform: string): boolean {
+  if (platform !== "win32") return false;
+  if (at === 0 || at + 1 >= arg.length) return false;
+  const letter = arg[at - 1];
+  const next = arg[at + 1];
+  if (!/[A-Za-z]/.test(letter) || (next !== "/" && next !== "\\")) return false;
+  if (at === 1 || arg[at - 2] === "=" || arg[at - 2] === ":") return true;
+  return at === 3 && arg[0] === "-" && arg[1] !== "-";
+}
+
+/** A value is a URL only when it starts with a scheme and `://`. A `://` later in a path is not a URL. */
+function startsWithUrl(value: string): boolean {
+  return /^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(value);
+}
+
+/** A non-URL word `key=value` whose key is a plain name. Leading `@` marks are not part of the key.
+ *  A word that starts with a URL is not an assignment. A `://` inside the value does not do that. */
+function plainValue(arg: string): string | null {
+  const rest = arg.replace(/^@+/, "");
+  if (startsWithUrl(rest)) return null;
+  const eq = rest.indexOf("=");
+  if (eq <= 0) return null;
+  const key = rest.slice(0, eq);
+  if (!/^[A-Za-z0-9_.-]+$/.test(key)) return null;
+  return rest.slice(eq + 1);
+}
+
+/** A flag value, or the inner value when that text is itself `key=value` (`--config=key=~/x`). */
+function pushFlagValue(out: string[], value: string): void {
+  const inner = plainValue(value);
+  out.push(inner === null ? value : inner);
+}
+
+function valuesOf(arg: string, platform: string): string[] {
+  if (!arg.startsWith("-")) {
+    const value = plainValue(arg);
+    return value === null ? [arg] : [value];
+  }
+  const out: string[] = [];
+  const parts = flagParts(arg, platform);
+  if (parts) {
+    if (parts.eq >= 0) {
+      pushFlagValue(out, arg.slice(parts.at + 1, parts.eq));
+      pushFlagValue(out, arg.slice(parts.eq + 1));
+    } else {
+      pushFlagValue(out, arg.slice(parts.at + 1));
+    }
+  }
+  if (arg.length > 2 && !arg.startsWith("--")) pushFlagValue(out, arg.slice(2));
   return out;
 }
 
-function isRelativeFile(value: string): boolean {
-  if (!value || value.includes("://") || value.startsWith("@")) return false;
-  if (value.startsWith("/") || /^[A-Za-z]:[\\/]/.test(value)) return false;
+function runningOnWindows(): boolean {
+  if (typeof navigator !== "undefined" && /Windows/.test(navigator.userAgent)) return true;
+  return typeof process !== "undefined" && process.platform === "win32";
+}
+
+/** A drive letter, a colon, and no slash: `C:foo`, `C:..\agent`. `C:\foo` is absolute and is not this.
+ *  A model tag (`o:latest`, `m:stable`, `x:nightly`) is not a path. `C:latest` is the same shape, so it is not caught. */
+function isDriveRelative(value: string): boolean {
+  if (!/^[A-Za-z]:/.test(value)) return false;
+  if (value.length > 2 && (value[2] === "/" || value[2] === "\\")) return false;
+  const rest = value.slice(2);
+  return rest !== "latest" && rest !== "stable" && rest !== "nightly";
+}
+
+/** A root with no drive: `\Users\ash`, and on Windows `/Users/ash`. A UNC path is not this.
+ *  `\t`, `\n` and `\r` are escapes, not a file at the root of the current drive. */
+function isRootedWithoutDrive(value: string, platform: string): boolean {
+  if (value.startsWith("\\\\") || value.startsWith("//")) return false;
+  if (value.startsWith("\\")) {
+    if (value.length === 2 && (value[1] === "t" || value[1] === "n" || value[1] === "r")) return false;
+    return true;
+  }
+  return platform === "win32" && value.startsWith("/");
+}
+
+/** NFKC, so a fullwidth reverse solidus, equals or colon is the ASCII character. Yen, the won sign and the division
+ *  slash are not folded; a value that contains one is refused. */
+function foldPath(value: string): string {
+  for (let i = 0; i < value.length; i++) {
+    if (value.charCodeAt(i) > 0x7f) return value.normalize("NFKC");
+  }
+  return value;
+}
+
+function hexValue(ch: string): number | null {
+  const code = ch.charCodeAt(0);
+  if (code >= 48 && code <= 57) return code - 48;
+  if (code >= 97 && code <= 102) return code - 97 + 10;
+  if (code >= 65 && code <= 70) return code - 65 + 10;
+  return null;
+}
+
+/** Percent-decode the way the app does. A truncated escape, a bad hex digit, or bytes that are not UTF-8 is null. */
+function percentDecode(input: string): string | null {
+  const bytes: number[] = [];
+  const encoder = new TextEncoder();
+  for (let i = 0; i < input.length; ) {
+    if (input[i] === "%") {
+      if (i + 2 >= input.length) return null;
+      const hi = hexValue(input[i + 1]);
+      const lo = hexValue(input[i + 2]);
+      if (hi === null || lo === null) return null;
+      bytes.push((hi << 4) | lo);
+      i += 3;
+    } else {
+      const cp = input.codePointAt(i);
+      if (cp === undefined) return null;
+      for (const byte of encoder.encode(String.fromCodePoint(cp))) bytes.push(byte);
+      i += cp > 0xffff ? 2 : 1;
+    }
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(bytes));
+  } catch {
+    return null;
+  }
+}
+
+/** A decoded file path the app will pin, or a refusal. Empty and `/` are refused. A decoded `/../x` stays local. */
+function classifyFilePath(path: string): "local" | "refuse" {
+  const decoded = percentDecode(path);
+  if (decoded === null || decoded === "" || decoded === "/") return "refuse";
+  return "local";
+}
+
+/** `file:` that is not a local file is refused. A local `file://` or `file:/` URL is pinned by the app, so it is allowed
+ *  here. The path is percent-decoded, the same way the app decodes it. */
+function fileUrlClass(value: string): "not-file" | "local" | "refuse" {
+  if (value.length < 5 || value.slice(0, 5).toLowerCase() !== "file:") return "not-file";
+  // A query or a fragment is not the path a URL parser opens. Pinning it would name a different file.
+  if (value.includes("?") || value.includes("#")) return "refuse";
+  const rest = value.slice(5);
+  if (rest.startsWith("//")) {
+    const after = rest.slice(2);
+    const slash = after.indexOf("/");
+    if (slash < 0) return "refuse";
+    const host = after.slice(0, slash);
+    if (host !== "" && host.toLowerCase() !== "localhost") return "refuse";
+    return classifyFilePath(after.slice(slash));
+  }
+  if (rest.startsWith("/")) return classifyFilePath(rest);
+  return "refuse";
+}
+
+/** `..`, or `C:..` where the drive letter would otherwise hide the parent segment. */
+function isParentSegment(segment: string): boolean {
+  return segment === ".." || /^[A-Za-z]:\.\.$/.test(segment);
+}
+
+function isRelativeFile(value: string, platform: string): boolean {
+  if (!value) return false;
+  return relativeFolded(foldPath(value), platform);
+}
+
+function relativeFolded(value: string, platform: string): boolean {
+  if (!value) return false;
+  // Windows best-fit turns yen and the won sign into `\` and the division slash into `/`. NFKC leaves them, so refuse them.
+  if (value.includes("¥") || value.includes("₩") || value.includes("∕")) return true;
+  // A leading @ is not a free pass. `@../x` and `@~/x` are paths. `@scope/pkg` is not.
+  if (value.startsWith("@")) return relativeFolded(value.slice(1), platform);
+  const fileUrl = fileUrlClass(value);
+  if (fileUrl === "refuse") return true;
+  if (fileUrl === "local") return false;
+  // A URL is not a path. `://` later in the text is a path, so only a leading scheme counts.
+  if (startsWithUrl(value)) return false;
+  if (isDriveRelative(value) || isRootedWithoutDrive(value, platform)) return true;
+  // A drive path (`C:\foo`) is absolute only on Windows, matching the app. Elsewhere it is an ordinary word.
+  if (value.startsWith("/") || (platform === "win32" && /^[A-Za-z]:[\\/]/.test(value))) return false;
   const ext = value.includes(".") ? value.slice(value.lastIndexOf(".") + 1).toLowerCase() : "";
   const segments = value.split(/[/\\]/);
   // A slash in a model name is not a path. Refuse a .. segment, a ~ path, a leading dot, or a script or config name.
-  return segments.some((segment) => segment === "..")
+  return segments.some((segment) => isParentSegment(segment))
     || segments.some((segment) => segment.startsWith("~"))
     || value.startsWith(".")
     || SCRIPT_EXTENSIONS.includes(ext);
 }
 
-/** The reason an argument list is refused, or null when it is allowed. */
-export function argumentProblem(command: string, args: string[]): string | null {
+/** The reason an argument list is refused, or null when it is allowed. `platform` is for tests; the running OS is the default. */
+export function argumentProblem(command: string, args: string[], platform = runningOnWindows() ? "win32" : "other"): string | null {
   const interpreter = isInterpreter(command);
   if (interpreter) {
     const inline = args.some((arg) => {
@@ -207,7 +385,7 @@ export function argumentProblem(command: string, args: string[]): string | null 
     });
     if (inline) return "An agent cannot be started with an inline program (-c, -e, --eval or -p). Point at its program file.";
   }
-  if (args.some((arg) => valuesOf(arg).some(isRelativeFile))) {
+  if (args.some((arg) => valuesOf(foldPath(arg), platform).some((value) => isRelativeFile(value, platform)))) {
     return "An argument that names a file must give its full absolute path. A relative path is not pinned, so it is refused.";
   }
   if (interpreter) {
@@ -222,7 +400,7 @@ export function argumentProblem(command: string, args: string[]): string | null 
         : shortCluster && !/[mr]$/i.test(arg)
           ? arg.slice(arg.search(/[mr]/i) + 1)
           : args[i + 1];
-      if (!value || !value.startsWith("/") && !/^[A-Za-z]:[\\/]/.test(value)) {
+      if (!value || (!value.startsWith("/") && !(platform === "win32" && /^[A-Za-z]:[\\/]/.test(value)))) {
         return "A loader flag (-m, -r, --require, --import, --loader, --env-file, --preload) must name an absolute file.";
       }
     }
