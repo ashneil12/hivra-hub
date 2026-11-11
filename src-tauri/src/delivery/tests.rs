@@ -2653,3 +2653,22 @@ fn a_pattern_that_matches_nothing_is_refused_on_write_and_nothing_is_saved() {
     assert!(kept.protected_extra.is_empty());
     assert_eq!(kept.updated_at, None);
 }
+
+#[test]
+fn a_refspec_push_sets_the_upstream() {
+    let remote = temp("push-sha-remote");
+    git(&remote.0, &["init", "-q", "--bare", "-b", "main"]);
+    let local = temp("push-sha");
+    git(&local.0, &["init", "-q", "-b", "main"]);
+    let url = format!("file://{}", remote.0.display());
+    git(&local.0, &["remote", "add", "origin", &url]);
+    std::fs::write(local.0.join("README.md"), "hello\n").unwrap();
+    git(&local.0, &["add", "-A"]);
+    git(&local.0, &["commit", "-q", "-m", "base"]);
+    let sha = git(&local.0, &["rev-parse", "HEAD"]);
+    deliver::push_sha(&local.0, "origin", "main", &sha).unwrap();
+    assert_eq!(
+        git(&local.0, &["rev-parse", "--abbrev-ref", "@{upstream}"]),
+        "origin/main"
+    );
+}

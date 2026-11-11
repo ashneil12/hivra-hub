@@ -3077,29 +3077,30 @@ pub(crate) fn git_push_for(root: &Path) -> Result<(), String> {
     let sha = crate::commit_guard::gate_outgoing_to(root, &remote)?;
     let branch = git_branch(root).ok_or_else(|| "Not on a branch".to_string())?;
     let refspec = format!("{sha}:refs/heads/{branch}");
-    if upstream {
-        return git_checked(
-            root,
-            &[
-                "push",
-                "--no-follow-tags",
-                "--recurse-submodules=no",
-                &remote,
-                &refspec,
-            ],
-        );
+    // A commit-graph or a pack bitmap can name a tree the guard did not read. These flags are also on the guard's
+    // own reads. `-u` with a `<sha>:refs/heads/<branch>` refspec does not set the upstream, so that is done after.
+    let mut args = vec![
+        "-c",
+        "core.commitGraph=false",
+        "-c",
+        "pack.useBitmaps=false",
+        "push",
+    ];
+    if !upstream {
+        args.push("-u");
     }
-    git_checked(
-        root,
-        &[
-            "push",
-            "-u",
-            "--no-follow-tags",
-            "--recurse-submodules=no",
-            &remote,
-            &refspec,
-        ],
-    )
+    args.extend([
+        "--no-follow-tags",
+        "--recurse-submodules=no",
+        &remote,
+        &refspec,
+    ]);
+    git_checked(root, &args)?;
+    if !upstream {
+        let tracking = format!("--set-upstream-to={remote}/{branch}");
+        git_checked(root, &["branch", &tracking, &branch])?;
+    }
+    Ok(())
 }
 
 fn git_sync_changes_for(root: &Path) -> Result<(), String> {
@@ -4788,8 +4789,13 @@ pub(crate) fn git_cmd() -> Command {
 fn git_cmd_for_args_with_path(args: &[&str], gui_path: impl FnOnce() -> String) -> Command {
     let mut cmd = git_cmd();
     let args = args.strip_prefix(&["--literal-pathspecs"]).unwrap_or(args);
+    // `-c key=value` pairs come before the action. Skipping them keeps the login-shell PATH on a push.
+    let mut rest = args;
+    while rest.first() == Some(&"-c") && rest.len() >= 2 {
+        rest = &rest[2..];
+    }
     if matches!(
-        args.first().copied(),
+        rest.first().copied(),
         Some("commit" | "push" | "pull" | "fetch" | "clone")
     ) {
         // Signers, hooks, and credential helpers may only be on the login-shell PATH.
@@ -12156,6 +12162,20 @@ mod tests {
                     && value == Some(std::ffi::OsStr::new("gui-git-path"))
             }));
         }
+        let prefixed = git_cmd_for_args_with_path(
+            &[
+                "-c",
+                "core.commitGraph=false",
+                "-c",
+                "pack.useBitmaps=false",
+                "push",
+            ],
+            || "gui-git-path".into(),
+        );
+        assert!(prefixed.get_envs().any(|(key, value)| {
+            key == std::ffi::OsStr::new("PATH")
+                && value == Some(std::ffi::OsStr::new("gui-git-path"))
+        }));
     }
 
     #[test]

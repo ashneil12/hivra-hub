@@ -251,6 +251,40 @@ pub fn announce(app: &AppHandle, ids: &[String]) {
     }
 }
 
+/// Pushes one commit. The guard runs here, not only at the caller, and the push sends the sha it just checked.
+/// `--set-upstream` does not record the upstream when the refspec is `<sha>:refs/heads/<branch>`, so the branch is
+/// pointed at the remote afterwards. The commit-graph and pack bitmaps stay off: either can name a tree the guard
+/// did not read.
+pub(crate) fn push_sha(
+    checkout: &Path,
+    remote: &str,
+    branch: &str,
+    sha: &str,
+) -> Result<(), String> {
+    let checked = crate::commit_guard::gate_outgoing_to(checkout, remote)?;
+    if checked != sha {
+        return Err("The commit that was checked is no longer HEAD, so nothing was sent.".into());
+    }
+    let refspec = format!("{sha}:refs/heads/{branch}");
+    let tracking = format!("--set-upstream-to={remote}/{branch}");
+    git(
+        checkout,
+        &[
+            "-c",
+            "core.commitGraph=false",
+            "-c",
+            "pack.useBitmaps=false",
+            "push",
+            "--set-upstream",
+            "--no-follow-tags",
+            "--recurse-submodules=no",
+            remote,
+            &refspec,
+        ],
+    )?;
+    git(checkout, &["branch", &tracking, branch]).map(|_| ())
+}
+
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
     let out = super::child("git")
         .arg("-C")
@@ -668,18 +702,8 @@ pub fn deliver(
             } else {
                 let sha = crate::commit_guard::gate_outgoing_to(&checkout, &remote)
                     .map_err(|e| format!("Pushing {branch} refused: {e}"))?;
-                git(
-                    &checkout,
-                    &[
-                        "push",
-                        "--set-upstream",
-                        "--no-follow-tags",
-                        "--recurse-submodules=no",
-                        &remote,
-                        &format!("{sha}:refs/heads/{branch}"),
-                    ],
-                )
-                .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
+                push_sha(&checkout, &remote, &branch, &sha)
+                    .map_err(|e| format!("Pushing {branch} failed: {e}"))?;
                 // WP-78: the push landed. A pull request that fails afterwards does not undo this line.
                 if let Ok(conn) = store.lock_conn() {
                     crate::activity::note(
