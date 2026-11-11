@@ -16,7 +16,7 @@ import { SessionStateContext } from "../../sessions/model/sessionStateStore";
 import { openBoardRow } from "../model/boardOpen";
 import { boardFromStores, mateStatus, type StoreCheck } from "../model/fromStores";
 import { liveBoardSessions } from "../model/liveSessions";
-import { stopBoardRow } from "../model/sessionStop";
+import { agentsBoardSessionStopVersion, stopBoardRow, subscribeAgentsBoardSessionStop } from "../model/sessionStop";
 import { flattenBoard } from "../model/tree";
 import { taskWords, workerBrief } from "../model/words";
 import { AgentsBoard } from "./AgentsBoard";
@@ -29,6 +29,11 @@ export function AgentsBoardScreen() {
   const prefsVersion = useProjectPrefsVersion();
   const codingVersion = useCodingTeamVersion();
   const watchVersion = usePrWatchesVersion();
+  const stopVersion = useSyncExternalStore(
+    subscribeAgentsBoardSessionStop,
+    agentsBoardSessionStopVersion,
+    agentsBoardSessionStopVersion,
+  );
   const delegations = useDelegationRows();
   const monos = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const store = useContext(SessionStateContext);
@@ -81,7 +86,7 @@ export function AgentsBoardScreen() {
       checks: checksFor(delegations),
       costs: sessions.map((session) => ({ id: session.id, blocks: session.blocks })),
     });
-  }, [codingVersion, delegations, hubSnap, monos, now, prefsVersion, sessions, watchVersion]);
+  }, [codingVersion, delegations, hubSnap, monos, now, prefsVersion, sessions, stopVersion, watchVersion]);
 
   const lines = useMemo(() => transcriptLines(sessions, delegations), [sessions, delegations]);
 

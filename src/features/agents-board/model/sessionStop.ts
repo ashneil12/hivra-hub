@@ -7,13 +7,36 @@ import { crewCancel, stopRequestId } from "../../crew/model/cancel";
 type SessionStop = (sessionId: string) => Promise<unknown> | unknown;
 
 let sessionStop: SessionStop | null = null;
+let readyVersion = 0;
+const readyListeners = new Set<() => void>();
+
+function noteReady(): void {
+  readyVersion += 1;
+  for (const listener of readyListeners) listener();
+}
 
 /** The app registers the same Stop a chat's own button uses. A test clears it. */
 export function setAgentsBoardSessionStop(fn: SessionStop | null): () => void {
   sessionStop = fn;
+  noteReady();
   return () => {
-    if (sessionStop === fn) sessionStop = null;
+    if (sessionStop === fn) {
+      sessionStop = null;
+      noteReady();
+    }
   };
+}
+
+/** The board reads whether Stop is registered while it builds, so it has to hear this change. */
+export function subscribeAgentsBoardSessionStop(listener: () => void): () => void {
+  readyListeners.add(listener);
+  return () => {
+    readyListeners.delete(listener);
+  };
+}
+
+export function agentsBoardSessionStopVersion(): number {
+  return readyVersion;
 }
 
 export function agentsBoardSessionStopReady(): boolean {
