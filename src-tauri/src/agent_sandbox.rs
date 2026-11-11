@@ -830,10 +830,7 @@ fn shell_source_operands(text: &str) -> Vec<String> {
 }
 
 fn source_command_words(mut words: Vec<String>) -> Vec<String> {
-    loop {
-        let Some(first) = words.first() else {
-            break;
-        };
+    while let Some(first) = words.first() {
         if matches!(first.as_str(), "then" | "else" | "do" | "elif" | "{") {
             words.remove(0);
             continue;
