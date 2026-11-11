@@ -96,7 +96,7 @@ import path from "node:path";
 import { DEV_IDENTIFIER_PREFIX, kindOf } from "./hub-bundle.mjs";
 import { DEV_PRODUCT, ROOT, isMain, planSlot, readJson, registerSlot, writeSlotConfig } from "./hub-dev.mjs";
 import { signInFakeClaude } from "./hub-fake-claude-login.mjs";
-import { parseWaitCeiling, waitFor } from "./hub-verify-live-wait.mjs";
+import { parseWaitCeiling, settleView, waitFor } from "./hub-verify-live-wait.mjs";
 
 export const MAX_RESUMES = 3;
 
@@ -1434,8 +1434,10 @@ async function main() {
     };
     /** One action for the window's driver (verifyDriver.ts perform), and its answer. */
     let driverSeq = 0;
-    // `keep: false` for a poll: only the answer that settles a wait is written to the evidence folder.
-    const act = async (op, payload = {}, timeoutMs = 60_000, { keep = true } = {}) => {
+    const writeDriverAnswer = (actionId, answer) =>
+      fs.writeFileSync(path.join(evidence, `driver-${actionId}.json`), `${JSON.stringify(answer, null, 2)}\n`);
+    // One action and its answer, not yet written to evidence (a poll decides which answer to keep).
+    const request = async (op, payload = {}, timeoutMs = 60_000) => {
       const actionId = `${String(++driverSeq).padStart(5, "0")}-${op}`;
       const tmp = path.join(driverDir, "inbox", `.${actionId}.tmp`);
       fs.writeFileSync(tmp, JSON.stringify({ id: actionId, op, ...payload }));
@@ -1452,7 +1454,11 @@ async function main() {
         { timeoutMs: scale(timeoutMs), label: `driver answer to ${actionId}`, log },
       );
       if (!answer) throw new Error(`driver: no answer to ${actionId} in ${timeoutMs / 1000}s`);
-      if (keep) fs.writeFileSync(path.join(evidence, `driver-${actionId}.json`), `${JSON.stringify(answer, null, 2)}\n`);
+      return { actionId, answer };
+    };
+    const act = async (op, payload = {}, timeoutMs = 60_000) => {
+      const { actionId, answer } = await request(op, payload, timeoutMs);
+      writeDriverAnswer(actionId, answer);
       return answer;
     };
     const kill = async (why) => {
@@ -2813,17 +2819,17 @@ async function main() {
     let driverError = null;
     // A view is read until the elements the check asserts are on screen: the window renders at its own pace, and a fixed
     // settle missed it on a busy Mac. The snapshot is read-only, so polling it changes nothing (the open is done once).
+    // The read that settles the view (or the last read, on timeout) is written once, under its own driver-<id> name.
     const settledDom = async (label, ready) => {
-      let last = null;
-      const dom = await awaitState(
+      const { view } = await settleView(() => request("snapshot"), (read) => ready(read.answer.dom ?? null), {
+        timeoutMs: scale(options.waitCeiling),
+        everyMs: 500,
         label,
-        async () => {
-          last = (await act("snapshot", {}, 60_000, { keep: false }))?.dom ?? null;
-          return last && ready(last) ? last : null;
-        },
-        500,
-      );
-      return dom ?? last;
+        log,
+      });
+      if (!view) return null;
+      writeDriverAnswer(view.actionId, view.answer);
+      return view.answer.dom ?? null;
     };
     const nestedUnder = (dom, parentAttr, parentValue, childAttr, childValue) =>
       shown(dom, parentAttr, parentValue).length > 0 && shown(dom, childAttr, childValue).length > 0;

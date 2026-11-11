@@ -60,3 +60,19 @@ export async function waitFor(
   log(`${label}: not reached after ${waited} ms (${polls} polls)${lastError ? `; last error: ${lastError.message}` : ""}`);
   return null;
 }
+
+/**
+ * Polls a view (a driver snapshot) until `ready` accepts it, and returns the read that settled it, or the last read on
+ * timeout. The caller writes that one read as evidence, so the evidence is the state the check was judged on.
+ */
+export async function settleView(read, ready, options = {}) {
+  let last = null;
+  const settled = await waitFor(
+    async () => {
+      last = await read();
+      return ready(last) ? last : null;
+    },
+    options,
+  );
+  return { settled: settled !== null, view: settled ?? last };
+}

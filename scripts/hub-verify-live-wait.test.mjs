@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { DEFAULT_WAIT_CEILING_MS, parseWaitCeiling, waitFor } from "./hub-verify-live-wait.mjs";
+import { DEFAULT_WAIT_CEILING_MS, parseWaitCeiling, settleView, waitFor } from "./hub-verify-live-wait.mjs";
 
 /** A clock that only moves when the fake sleep is called, so timeouts are exact and instant. */
 function fakeClock() {
@@ -103,4 +103,38 @@ test("a ceiling that is not a positive number fails loudly rather than becoming 
   assert.throws(() => parseWaitCeiling(["--wait-ceiling-ms", "soon"], {}), /--wait-ceiling-ms.*soon/);
   assert.throws(() => parseWaitCeiling(["--wait-ceiling-ms", "-5"], {}), /positive/);
   assert.throws(() => parseWaitCeiling([], { MONOCODE_VERIFY_WAIT_CEILING_MS: "0" }), /positive/);
+});
+
+test("settleView keeps the read that settled the view, not an earlier poll", async () => {
+  const clock = fakeClock();
+  let reads = 0;
+  const { settled, view } = await settleView(
+    async () => {
+      reads += 1;
+      return { actionId: `0000${reads}-snapshot`, answer: { dom: { elements: reads >= 3 ? ["briefed", "work"] : [] } } };
+    },
+    (v) => v.answer.dom.elements.length === 2,
+    { timeoutMs: 10_000, everyMs: 100, now: clock.now, sleep: clock.sleep },
+  );
+  assert.equal(settled, true);
+  assert.equal(reads, 3);
+  assert.equal(view.actionId, "00003-snapshot", "the third read is the one written as evidence");
+  assert.deepEqual(view.answer.dom.elements, ["briefed", "work"]);
+});
+
+test("settleView on timeout hands back the last read, so the evidence shows what the window was in", async () => {
+  const clock = fakeClock();
+  let reads = 0;
+  const lines = [];
+  const { settled, view } = await settleView(
+    async () => {
+      reads += 1;
+      return { actionId: `0000${reads}-snapshot`, answer: { dom: { elements: [] } } };
+    },
+    () => false,
+    { timeoutMs: 500, everyMs: 100, label: "team view", log: (line) => lines.push(line), now: clock.now, sleep: clock.sleep },
+  );
+  assert.equal(settled, false);
+  assert.equal(view.actionId, `0000${reads}-snapshot`, "the last read, the one that is written");
+  assert.equal(lines.length, 1);
 });
