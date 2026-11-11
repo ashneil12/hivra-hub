@@ -755,7 +755,8 @@ fn flag_only_cluster(head: &str, arg: &str) -> bool {
     match head {
         "ls" | "cat" | "wc" | "stat" | "du" => !rest.is_empty() && tail.is_empty(),
         "head" | "tail" => digits,
-        "git" => !letters.is_empty() && digits,
+        // Round 11 (LOW): `O` is git's orderfile option, which takes a file name glued on (`-Onotes`), so it is no flag letter.
+        "git" => !letters.is_empty() && digits && !letters.contains('O'),
         _ => false,
     }
 }
@@ -953,6 +954,9 @@ mod tests {
         assert!(verdict("file -fnotes.txt", "/Users/example").is_some());
         assert!(verdict("file -bfnotes.txt", "/Users/example").is_some());
         assert!(verdict("wc --files0-from=notes.txt", "/Users/example").is_some());
+        // Round 11 (LOW): git's -O reads a glued orderfile name, so it is not a flag letter.
+        assert!(verdict("git log -Onotes", "/Users/example").is_some());
+        assert!(verdict("git log -n5", "/Users/example").is_none());
     }
 
     #[test]

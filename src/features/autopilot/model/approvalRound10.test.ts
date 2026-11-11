@@ -1,12 +1,13 @@
-// Round 10: a file tool's path is checked as an absolute path only (Edit, Write, NotebookEdit, Read). A relative path is
-// resolved by the tool against its own working folder, which a Bash `cd` can move, so it waits. A search (Grep, Glob, LS)
-// with a relative or missing path resolves against the request's cwd, when the request names one; its cwd is checked in
-// the chat (canonical, inside the folder). Without a cwd, such a search waits.
+// Round 10 (rewritten in round 11): a file tool's path is absolute only. A search (Grep, Glob, LS) with a relative or missing
+// path resolves it against the chat folder when the provider pins its folder (Claude's launch keeps the shell and the
+// tools in the chat folder, so `folderPinned` is set by approvalCall, never from the tool input). Any other provider's
+// relative or missing search path waits. A symlink out of the chat is held by the lookup, pinned or not.
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
+import { approvalCall } from "../../../integrations/harness/providers/claude/claudeProtocol";
 import { approvalVerdict } from "./decide";
 import { openedForm, openedSearchPath, placeStaysInside, type Canonical, type Locate, type RealPlace } from "./safeApproval";
 
@@ -77,11 +78,9 @@ fs.writeFileSync(`${TMP}/home/Projects/other/secret.ts`, "x\n");
 fs.symlinkSync(`${TMP}/home/Projects/other`, `${chat}/out`);
 execFileSync("git", ["init", "-q", chat]);
 
-const block = (tool: string, input: Record<string, unknown>) => ({
-  text: "",
-  tool: { title: tool, kind: tool === "Edit" || tool === "Write" ? "edit" : "read" },
-  approval: { call: { tool, ...(input.paths ? { paths: input.paths } : {}), ...(input.cwd ? { cwd: input.cwd } : {}), ...(input.command ? { command: input.command } : {}) } },
-}) as any;
+/** A Claude request (approvalCall: the provider pins the folder) or a bare call from another provider (not pinned). */
+const claude = (tool: string, input: Record<string, unknown>) => ({ text: "", tool: { title: tool, kind: "search" }, approval: { call: approvalCall(tool, input) } }) as any;
+const other = (tool: string, paths?: string[]) => ({ text: "", tool: { title: tool, kind: "search" }, approval: { call: { tool, ...(paths ? { paths } : {}) } } }) as any;
 
 async function verdict(b: any): Promise<string> {
   const words = approvalVerdict(b, chat, undefined, new Set());
@@ -90,48 +89,39 @@ async function verdict(b: any): Promise<string> {
   return why ? `held: ${why}` : "allow";
 }
 
-describe("round 10: a file tool takes an absolute path only", () => {
-  it("holds a relative Edit, Write, NotebookEdit and Read, even one inside the chat", async () => {
-    expect(await verdict(block("Edit", { paths: ["src/a.ts"] }))).toMatch(/^held/);
-    expect(await verdict(block("Write", { paths: ["src/a.ts"] }))).toMatch(/^held/);
-    expect(await verdict(block("NotebookEdit", { paths: ["src/n.ipynb"] }))).toMatch(/^held/);
-    expect(await verdict(block("Read", { paths: ["src/a.ts"] }))).toMatch(/^held/);
-  });
-
-  it("allows an absolute Write and Read inside the chat", async () => {
-    expect(await verdict(block("Write", { paths: [`${chat}/src/a.ts`] }))).toBe("allow");
-    expect(await verdict(block("Read", { paths: [`${chat}/src/a.ts`] }))).toBe("allow");
-  });
-
-  it("names the relative path it holds, so the form is one check", () => {
+describe("round 10/11: a file tool takes an absolute path only", () => {
+  it("holds a relative Edit, Write, NotebookEdit and Read, even one inside the chat, pinned or not", async () => {
+    expect(await verdict(claude("Edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" }))).toMatch(/^held/);
+    expect(await verdict(claude("Read", { file_path: "src/a.ts" }))).toMatch(/^held/);
     expect(openedForm("src/a.ts", chat)).toEqual({ why: expect.stringContaining("relative") });
-    expect(openedForm(`${chat}/src/a.ts`, chat)).toEqual({ path: `${chat}/src/a.ts` });
   });
 });
 
-describe("round 10: a search resolves a relative or missing path against the request's cwd", () => {
-  it("holds a relative or missing Grep path when the request names no cwd", async () => {
-    expect(await verdict(block("Grep", { paths: ["src"] }))).toMatch(/^held/);
-    expect(await verdict(block("Grep", {}))).toMatch(/^held/);
+describe("round 11: a search with a relative or missing path resolves it against the chat folder, when the provider pins it", () => {
+  it("allows a Claude no-path Grep and Glob inside the chat", async () => {
+    expect(await verdict(claude("Grep", { pattern: "token" }))).toBe("allow");
+    expect(await verdict(claude("Grep", { pattern: "token", path: "src" }))).toBe("allow");
   });
 
-  it("allows a relative Grep path that resolves inside the chat from a cwd inside it", async () => {
-    expect(await verdict(block("Grep", { paths: ["a.ts"], cwd: `${chat}/src` }))).toBe("allow");
-    expect(await verdict(block("Grep", { cwd: `${chat}/src` }))).toBe("allow");
+  it("allows a Claude relative Grep path that resolves inside the chat", async () => {
+    expect(await verdict(claude("Grep", { pattern: "token", path: "src/a.ts" }))).toBe("allow");
   });
 
-  it("holds a cwd outside the chat", async () => {
-    expect(await verdict(block("Grep", { paths: ["x"], cwd: `${TMP}/home` }))).toMatch(/^held/);
+  it("holds a relative Grep path that climbs out of the chat", async () => {
+    expect(await verdict(claude("Grep", { pattern: "token", path: "../other" }))).toMatch(/^held/);
   });
 
-  it("holds a cwd that is a symlink out of the chat, though its own spelling is inside it (a cd through a link)", async () => {
-    // `cd out` leaves the chat through the link `out`; the search then starts in ../other, outside the chat.
-    expect(await verdict(block("Grep", { paths: ["secret.ts"], cwd: `${chat}/out` }))).toMatch(/^held/);
-    expect(await verdict(block("Grep", { cwd: `${chat}/out` }))).toMatch(/^held/);
+  it("holds a relative Grep path through a link out of the chat, though its spelling is inside it", async () => {
+    expect(await verdict(claude("Grep", { pattern: "secret", path: "out" }))).toMatch(/^held/);
+  });
+
+  it("holds a relative or missing search from a provider that doesn't pin its folder", async () => {
+    expect(await verdict(other("Grep", ["src"]))).toMatch(/^held/);
+    expect(await verdict(other("Grep"))).toMatch(/^held/);
   });
 
   it("keeps an absolute search path as it was", async () => {
-    expect(await verdict(block("Grep", { paths: [`${chat}/src`] }))).toBe("allow");
-    expect(openedSearchPath(`${chat}/src`, chat, undefined)).toEqual({ path: `${chat}/src` });
+    expect(await verdict(other("Grep", [`${chat}/src`]))).toBe("allow");
+    expect(openedSearchPath(`${chat}/src`, chat, false)).toEqual({ path: `${chat}/src` });
   });
 });

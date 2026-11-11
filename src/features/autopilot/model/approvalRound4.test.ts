@@ -12,9 +12,9 @@ const timerHolds = (command: string) => safeCommand(command, "/Users/example/Pro
 import { credentialBlock } from "../../../integrations/harness/core/credentialGuard";
 
 const FOLDER = "/Users/someone/Worktrees/hub-x";
-const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { call: { tool: "Bash", command } } }) as any;
-const read = (tool: string, paths: unknown) => ({ text: "", tool: { title: tool, kind: "read" }, approval: { call: { tool, paths } } }) as any;
-const search = (tool: string, paths: unknown) => ({ text: "", tool: { title: tool, kind: "search" }, approval: { call: { tool, paths } } }) as any;
+const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { call: { tool: "Bash", command, folderPinned: true } } }) as any;
+const read = (tool: string, paths: unknown) => ({ text: "", tool: { title: tool, kind: "read" }, approval: { call: { tool, paths, folderPinned: true } } }) as any;
+const search = (tool: string, paths: unknown) => ({ text: "", tool: { title: tool, kind: "search" }, approval: { call: { tool, paths, folderPinned: true } } }) as any;
 const held = (block: unknown) => expect(approvalVerdict(block as any, FOLDER)).toMatchObject({ kind: "held" });
 
 describe("finding 1: Read, Grep, Glob and every path field hold a dot-named place outside the chat's folder", () => {

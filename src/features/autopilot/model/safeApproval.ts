@@ -86,7 +86,7 @@ const FLAG_CLUSTERS: Readonly<Record<string, RegExp>> = {
   du: /^-[A-Za-z]+$/,
   head: /^-[A-Za-z]*\d*$/,
   tail: /^-[A-Za-z]*\d*$/,
-  git: /^-[A-Za-z]+\d*$/,
+  git: /^-[A-NP-Za-z]+\d*$/,
 };
 
 /** Whether an option word carries a value (optionValues) that the command doesn't read as a flag cluster (round 9). */
@@ -202,6 +202,9 @@ export function openedForm(raw: string, folder: string | undefined): { path: str
   if (raw !== raw.trim()) return { why: "its path has a space, tab or line break around it, which the tool trims before it opens the file, so it waits for Ash" };
   if (raw !== raw.normalize("NFC")) return { why: "its name isn't in the normal Unicode form, so it waits for Ash" };
   const windows = !!folder && windowsShaped(folder);
+  // Round 11 (HIGH, Windows): an NTFS stream or a second ":" names a stream of the file (name::$DATA, name:x), not the
+  // file a protected name is checked against, so a colon after the drive letter waits.
+  if (windows && raw.slice(2).includes(":")) return { why: `it names ${raw}, which has a colon after the drive (an NTFS stream), so it waits for Ash` };
   if (!windows && raw.includes("\\")) return { why: `it names ${raw}, which has a backslash in it (a folder separator only on Windows), so it waits for Ash` };
   if (windows && raw.includes("/")) return { why: `it names ${raw} with forward slashes, which the tool doesn't open as written, so it waits for Ash` };
   // A UNC share (\\server) is not absolute here: it is held, as a relative name that doesn't rebuild as written.
@@ -219,23 +222,22 @@ function absoluteOn(raw: string, windows: boolean): boolean {
 }
 
 /**
- * The path a search (Grep, Glob, LS) walks from (round 10). An absolute path is opened as openedForm opens it. A relative
- * path, or none, is resolved against the search's working folder, which only the request can name (`cwd`): with no cwd,
- * it waits. The cwd is itself checked in the chat (canonical, inside the folder, by the lookup as a target).
+ * The path a search (Grep, Glob, LS) walks from (round 10, round 11). An absolute path is opened as openedForm opens it. A
+ * relative path, or none, is resolved against the chat folder only when the provider pinned the folder (`pinned`, set by
+ * the Claude launch: CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR keeps the tool in the launch folder, which is the chat folder).
+ * Any other provider's relative or missing path waits. The pin comes from the provider, never from the tool input.
  */
-export function openedSearchPath(raw: string | undefined, folder: string | undefined, cwd: string | undefined): { path: string } | { why: string } {
+export function openedSearchPath(raw: string | undefined, folder: string | undefined, pinned: boolean): { path: string } | { why: string } {
   if (!folder) return { why: "the chat has no folder to search in" };
   const windows = windowsShaped(folder);
   if (raw !== undefined && typeof raw === "string" && absoluteOn(raw, windows)) return openedForm(raw, folder);
-  if (cwd === undefined) return { why: "its search starts from a relative or missing path, and the request names no working folder for it, so it waits for Ash" };
-  const base = openedForm(cwd, folder);
-  if ("why" in base) return { why: `its working folder ${base.why}` };
-  if (!pathWithin(base.path, folder)) return { why: `its working folder ${cwd} is outside the chat's folder, so it waits for Ash` };
-  if (raw === undefined) return { path: base.path };
+  if (!pinned) return { why: "its search starts from a relative or missing path, and this provider does not keep its folder to the chat's, so it waits for Ash" };
+  const base = folder.replace(/[\\/]+$/, "");
+  if (raw === undefined) return { path: base };
   if (typeof raw !== "string" || raw === "" || raw !== raw.trim() || raw !== raw.normalize("NFC") || !spelledAsOpened(raw, windows, false))
     return { why: `it names ${String(raw)}, which isn't in the form the tool opens (no . or .. and no doubled or trailing separator), so it waits for Ash` };
   if (!windows && raw.includes("\\")) return { why: `it names ${raw}, which has a backslash in it, so it waits for Ash` };
-  return { path: `${base.path.replace(/[\\/]+$/, "")}${windows ? "\\" : "/"}${raw}` };
+  return { path: `${base}${windows ? "\\" : "/"}${raw}` };
 }
 
 /**
@@ -369,7 +371,7 @@ export function searchStartsOutside(call: ApprovalCall | undefined, folder: stri
   // Under `find`, not `rg`: a search's paths are where it walks from, and none of them is a pattern to skip.
   // Round 9: the walk starts from the path the tool opens (openedForm); inside the folder it is judged as a relative place.
   const raws: (string | undefined)[] = call.paths === undefined ? [undefined] : (call.paths as string[]);
-  const forms = raws.map((raw) => openedSearchPath(raw, folder, call.cwd));
+  const forms = raws.map((raw) => openedSearchPath(raw, folder, call.folderPinned === true));
   if (forms.some((form) => "why" in form)) return true;
   const home = (folder ?? "").replace(/[\\/]+$/, "");
   const starts = forms.map((form) => {
@@ -594,7 +596,7 @@ function namesProtectedConfig(arg: string, folder: string | undefined): boolean 
   });
 }
 
-function safeCommandInner(command: string, folder: string | undefined, timer = false): SafeVerdict {
+function safeCommandInner(command: string, folder: string | undefined, timer = false, pinned = false): SafeVerdict {
   if (typeof command !== "string") return UNREADABLE_COMMAND;
   if (SHELL_META.test(command)) return "it chains, substitutes or redirects";
   const words = shellWords(command.trim());
@@ -603,6 +605,14 @@ function safeCommandInner(command: string, folder: string | undefined, timer = f
   if (!Object.prototype.hasOwnProperty.call(COMMANDS, words[0])) return `${words[0]} isn't a read autopilot runs by itself`;
   const check = COMMANDS[words[0]];
   if (typeof check !== "function") return UNREADABLE_COMMAND;
+  // Round 11 (MED): a provider that doesn't keep its shell in the chat folder can't have a relative operand judged here: the
+  // shell runs in whatever folder a cd left it in. A timer runs in its own folder, so it is judged as before.
+  const operandStart = words[0] === "git" || words[0] === "cargo" ? 2 : 1;
+  const relativeOperand = words.slice(operandStart).some((word) => {
+    if (!word.startsWith("-")) return !word.startsWith("/") && !word.startsWith("~");
+    return carriesValue(words[0], word) && optionValues(word).some((value) => !value.startsWith("/"));
+  });
+  if (!timer && !pinned && relativeOperand) return "it names a relative path, and this provider's shell may be in a folder a cd moved, so it waits for Ash";
   // Round 9 (MED): a word with a `..` segment after a name waits, since the kernel follows a link before the climb. A
   // Mac or Linux shell word with a literal backslash waits too: fold reads a backslash as a separator, the shell doesn't.
   if (words.slice(1).some(hasClimb)) return "a word climbs with .. after a name, which the shell follows through a link, so it waits for Ash";
@@ -625,9 +635,10 @@ function safeCommandInner(command: string, folder: string | undefined, timer = f
 }
 
 /** Whether a shell command is one autopilot may run by itself; why not otherwise. A command it can't read waits. */
-export function safeCommand(command: string, folder?: string | undefined, timer = false): SafeVerdict {
+// Direct callers (timers, the chat's own questions) judge a relative operand in the folder they run in; an approval passes its provider's pin.
+export function safeCommand(command: string, folder?: string | undefined, timer = false, pinned = true): SafeVerdict {
   try {
-    return safeCommandInner(command, folder, timer);
+    return safeCommandInner(command, folder, timer, pinned);
   } catch {
     return UNREADABLE_COMMAND;
   }
@@ -674,7 +685,7 @@ function safeCallInner(call: ApprovalCall | undefined, folder: string | undefine
     }
     return null;
   }
-  if (SHELL_TOOLS.has(call.tool)) return call.command === undefined ? "it doesn't say what it runs" : safeCommand(call.command, folder);
+  if (SHELL_TOOLS.has(call.tool)) return call.command === undefined ? "it doesn't say what it runs" : safeCommand(call.command, folder, false, call.folderPinned === true);
   const mcp = splitMcpTool(call.tool);
   if (mcp) {
     // A hostile server can name a write tool `get_x` and can call itself `plugin-anything`, so a name alone counts
@@ -835,15 +846,17 @@ export async function readStaysInside(
   // A path that isn't text is held by safeCall and searchStartsOutside already.
   if (Array.isArray(call.paths) && call.paths.some((path) => typeof path !== "string")) return null;
   const raws: (string | undefined)[] = call.paths === undefined ? [undefined] : (call.paths as string[]);
-  const paths = raws.map((raw) => String(raw ?? call.cwd ?? "the search's folder"));
+  const paths = raws.map((raw) => String(raw ?? "the search's folder"));
   const root = folder?.replace(/\/+$/, "");
   if (!root) return "the chat has no folder of its own to read in";
   // Round 9: each target is the path the tool opens (openedForm); a form it can't open waits. Round 10: a search's start is
   // the path it opens (openedSearchPath), resolved against the request's cwd when it is relative or missing.
-  const forms = raws.map((raw) => (search ? openedSearchPath(raw, root, call.cwd) : openedForm(raw as string, root)));
+  const forms = raws.map((raw) => (search ? openedSearchPath(raw, root, call.folderPinned === true) : openedForm(raw as string, root)));
   const refused = forms.find((form): form is { why: string } => "why" in form);
   if (refused) return refused.why;
-  const targets = forms.map((form) => (form as { path: string }).path);
+  // A search with no path walks the chat folder itself, which the probe already places: no separate lookup of the folder
+  // (a lookup of a checkout's own root would place it by its parent, which is outside git).
+  const targets = raws.every((raw) => raw === undefined) ? [] : forms.map((form) => (form as { path: string }).path);
   let places: (RealPlace | null)[];
   try {
     places = await locate([`${root}/${PROBE}`, ...targets]);

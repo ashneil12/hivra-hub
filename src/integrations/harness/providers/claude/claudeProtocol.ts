@@ -1267,6 +1267,10 @@ export function approvalCall(
   const args = toolName.startsWith("mcp__") || RESOURCE_TOOLS.has(toolName) ? textLeaves(input) : undefined;
   return {
     tool: toolName,
+    // Round 11: this builder is Claude's only. Claude's launch keeps the shell and the file tools in the chat folder
+    // (CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR, harness.rs), so a relative search or shell word is judged in it. The flag
+    // is set here by the provider, never read from the tool input.
+    folderPinned: true,
     ...(command !== undefined ? { command } : {}),
     ...(paths.length ? { paths } : {}),
     ...(server !== undefined ? { server } : {}),

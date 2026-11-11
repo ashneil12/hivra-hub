@@ -16,7 +16,7 @@ const locateWith =
       return { root: FOLDER, relative: path.slice(FOLDER.length + 1) };
     });
 
-const read = (paths: string[]) => ({ tool: "Read", paths }) as any;
+const read = (paths: string[]) => ({ tool: "Read", paths, folderPinned: true }) as any;
 
 describe("M2: reads and searches resolve through links", () => {
   it("holds a file inside the repo that links to a login in another place", async () => {
@@ -40,7 +40,7 @@ describe("M2: reads and searches resolve through links", () => {
   });
 
   it("does not look up a search with no path, which walks the folder itself", async () => {
-    // Round 10: a search with no path starts from its request's cwd, which the request names here.
-    expect(await readStaysInside({ tool: "Grep", cwd: FOLDER } as any, FOLDER, locateWith({}))).toBeNull();
+    // Round 11: a search with no path starts from the chat folder, which Claude's launch keeps as its working folder.
+    expect(await readStaysInside({ tool: "Grep", folderPinned: true } as any, FOLDER, locateWith({}))).toBeNull();
   });
 });

@@ -124,7 +124,7 @@ describe("a question with no pick", () => {
 describe("a tool approval under autopilot", () => {
   const FOLDER = "/Users/someone/Worktrees/hub-x";
   const SECRET_FILE = "/home/user/.ssh/id_ed25519";
-  const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { requestId: 1, call: { tool: "Bash", command } } });
+  const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { requestId: 1, call: { tool: "Bash", command, folderPinned: true } } });
 
   it("allows a listed check, a read, and an edit in the chat's folder", () => {
     expect(approvalVerdict(bash("git status"), FOLDER)).toEqual({ kind: "allow", what: "git status" });
@@ -349,7 +349,7 @@ describe("a tool approval under autopilot", () => {
   // WP-101 fix round 4, finding 4: the Read tool names its file in `paths`, and neither check ever looked there for a home
   // shell file (the red list's text reading splits a path at a space, and does not know a startup file at all).
   describe("a Read tool call (fix round 4, finding 4)", () => {
-    const read = (tool: string, paths: unknown) => ({ text: "", tool: { title: `${tool} file`, kind: "read" }, approval: { requestId: 11, call: { tool, paths } } }) as never;
+    const read = (tool: string, paths: unknown) => ({ text: "", tool: { title: `${tool} file`, kind: "read" }, approval: { requestId: 11, call: { tool, paths, folderPinned: true } } }) as never;
 
     it("holds a home shell file, a preferences file or a login, spelled any way", () => {
       for (const path of [
@@ -406,8 +406,8 @@ describe("a tool approval under autopilot", () => {
       expect(approvalVerdict(read("Read", ["../README.md"]), FOLDER)).toMatchObject({ kind: "held" });
       // No path at all, as with Grep, Glob and LS: nothing to judge, so the tool is read as before.
       expect(approvalVerdict(read("Read", undefined), FOLDER)).toMatchObject({ kind: "allow" });
-      // Round 10: a search with no path starts from the request's cwd; without one it waits.
-      expect(approvalVerdict(read("Grep", undefined), FOLDER)).toMatchObject({ kind: "held" });
+      // Round 11: a Claude search with no path starts from the chat folder its launch keeps (folderPinned).
+      expect(approvalVerdict(read("Grep", undefined), FOLDER)).toMatchObject({ kind: "allow" });
     });
 
     it("leaves an edit's path to the edit rule, which already holds anything outside the folder", () => {
@@ -549,7 +549,7 @@ describe("which project a chat belongs to", () => {
 import { approvalCall } from "../../../integrations/harness/providers/claude/claudeProtocol";
 describe("review fixes on approvals", () => {
   const FOLDER_R = "/Users/someone/Worktrees/hub-x";
-  const shell = (command: string) => ({ text: "", tool: { title: "Run a command", kind: "execute" }, approval: { requestId: 9, call: { tool: "Bash", command } } });
+  const shell = (command: string) => ({ text: "", tool: { title: "Run a command", kind: "execute" }, approval: { requestId: 9, call: { tool: "Bash", command, folderPinned: true } } });
   const tool = (name: string, input: Record<string, unknown>) => ({ text: "", tool: { title: name }, approval: { requestId: 10, call: approvalCall(name, input) } });
 
   // H1: a search names its folder in `path`, and a Glob names its place in `pattern`; both are checked like a path.
@@ -561,12 +561,12 @@ describe("review fixes on approvals", () => {
   it("holds a search that starts outside the chat's folder, or in a credential place (review H1)", () => {
     expect(approvalVerdict(tool("Grep", { pattern: "x", path: "/etc" }), FOLDER_R)).toMatchObject({ kind: "held" });
     expect(approvalVerdict(tool("Grep", { pattern: "x", path: "/Users/someone" }), FOLDER_R)).toMatchObject({ kind: "held" });
-    // Round 10: a Glob pattern is relative, and a relative path waits without a cwd in the request.
-    expect(approvalVerdict(tool("Glob", { pattern: "**/*.ts", path: `${FOLDER_R}/src` }), FOLDER_R)).toMatchObject({ kind: "held" });
+    // Round 11: a Claude Glob's relative pattern is judged in the chat folder its launch keeps.
+    expect(approvalVerdict(tool("Glob", { pattern: "**/*.ts", path: `${FOLDER_R}/src` }), FOLDER_R)).toMatchObject({ kind: "allow" });
     expect(approvalVerdict(tool("Grep", { pattern: "x", path: `${FOLDER_R}/.ssh` }), FOLDER_R)).toMatchObject({ kind: "held" });
     // The pattern of a Grep is what it searches for, not a path: a word such as "token" is not held for that.
-    // Round 10: a search with no path starts from a folder the request must name, so without one it waits.
-    expect(approvalVerdict(tool("Grep", { pattern: "token" }), FOLDER_R)).toMatchObject({ kind: "held" });
+    // Round 11: a Claude search with no path starts from the chat folder its launch keeps.
+    expect(approvalVerdict(tool("Grep", { pattern: "token" }), FOLDER_R)).toMatchObject({ kind: "allow" });
   });
 
   // H2: the logins that Codex, OpenCode, Gemini, sops, rclone, stripe, doctl, wrangler, glab and fish keep.
@@ -641,7 +641,7 @@ describe("round 2: review fixes on approvals", () => {
   });
 
   it("holds a shell read of the same stores (round 2, medium)", () => {
-    const shell = (command: string) => ({ text: "", tool: { title: "Run a command", kind: "execute" }, approval: { requestId: 14, call: { tool: "Bash", command } } });
+    const shell = (command: string) => ({ text: "", tool: { title: "Run a command", kind: "execute" }, approval: { requestId: 14, call: { tool: "Bash", command, folderPinned: true } } });
     expect(approvalVerdict(shell("cat ~/.config/op/config"), FOLDER_R2)).toMatchObject({ kind: "held" });
     expect(approvalVerdict(shell("cat ~/.yarnrc"), FOLDER_R2)).toMatchObject({ kind: "held" });
   });

@@ -18,7 +18,7 @@ const locateWith =
       return { root: FOLDER, relative: path.slice(FOLDER.length + 1) };
     });
 
-const read = (paths: string[]) => ({ tool: "Read", paths }) as any;
+const read = (paths: string[]) => ({ tool: "Read", paths, folderPinned: true }) as any;
 const write = (paths: string[]) => ({ tool: "Write", paths }) as any;
 
 describe("MED-1: a link as the last part of a path is placed where it points", () => {
@@ -52,7 +52,7 @@ describe("MED-1: a link as the last part of a path is placed where it points", (
 });
 
 describe("MED-1: a shell command's words are placed too (round 6)", () => {
-  const bash = (command: string) => ({ tool: "Bash", command }) as any;
+  const bash = (command: string) => ({ tool: "Bash", command, folderPinned: true }) as any;
 
   it("holds a command that reads a link out of the folder by its name in the folder", async () => {
     const locate = locateWith({ [`${FOLDER}/docs/linked`]: { root: "/Users/example", relative: ".aws", linked: true } });

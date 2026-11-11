@@ -1102,6 +1102,12 @@ pub async fn git_canonical_paths(paths: Vec<String>) -> Result<Vec<Option<String
 /// words before they open the file (Claude Code normalizes the path), and the approval side holds any path or word that
 /// still carries one. So a climb that reaches here is never one the tool opens, and the lookup never reads a `..` the
 /// kernel would follow through a link (round 8, HIGH-B and MED).
+/// Round 11 (HIGH, Windows): a colon after the drive letter names an NTFS stream (`name::$DATA`, `name:x`), a different
+/// file from the name a protected-config check sees, so a path with one is refused. `windows` says which reading applies.
+pub(crate) fn has_stream_suffix(text: &str, windows: bool) -> bool {
+    windows && text.chars().skip(2).any(|c| c == ':')
+}
+
 fn has_climb(path: &Path) -> bool {
     path.components()
         .any(|part| matches!(part, std::path::Component::ParentDir))
@@ -1109,6 +1115,9 @@ fn has_climb(path: &Path) -> bool {
 
 fn canonical_place(path: &Path) -> Option<String> {
     if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') || has_climb(path) {
+        return None;
+    }
+    if has_stream_suffix(&path.to_string_lossy(), cfg!(windows)) {
         return None;
     }
     let mut existing = path.to_path_buf();
@@ -2764,6 +2773,10 @@ fn git_locate_entry(path: &Path) -> Result<Option<GitFileLocation>, String> {
 fn locate_path(path: &Path, follow_last: bool) -> Result<Option<GitFileLocation>, String> {
     if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') {
         return Err("Invalid file path".into());
+    }
+    // Round 11: an NTFS stream suffix is not placed (the stream is not the file the protected check names).
+    if has_stream_suffix(&path.to_string_lossy(), cfg!(windows)) {
+        return Err("A path with an NTFS stream suffix isn't placed here".into());
     }
     // Round 9: a path with a climb is not placed; the tools take the climb by words before they open the file.
     if has_climb(path) {
@@ -9960,6 +9973,16 @@ mod tests {
             "placed at {placed:?}, but cat reads {}",
             read.display()
         );
+    }
+
+    /// WP-101 round 11 (HIGH, Windows): a colon after the drive names an NTFS stream, so it is refused. Pure, so it runs on
+    /// every OS with the platform passed.
+    #[test]
+    fn a_colon_after_the_drive_is_a_stream_and_refused_on_windows() {
+        assert!(has_stream_suffix("C:\\app\\opencode.json::$DATA", true));
+        assert!(has_stream_suffix("C:\\app\\AGENTS.md:x", true));
+        assert!(!has_stream_suffix("C:\\app\\src\\a.ts", true));
+        assert!(!has_stream_suffix("/app/a:b", false));
     }
 
     #[test]

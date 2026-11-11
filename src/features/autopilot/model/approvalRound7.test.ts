@@ -77,7 +77,7 @@ const realCanonical: Canonical = async (paths) =>
 /** A lookup for a chat outside every checkout: nothing is in git. */
 const outsideGit: Locate = async (paths) => paths.map(() => null);
 
-const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { call: { tool: "Bash", command } } }) as any;
+const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { call: { tool: "Bash", command, folderPinned: true } } }) as any;
 const write = (file: string) => ({ text: "", tool: { title: "Write", kind: "edit" }, approval: { call: { tool: "Write", paths: [file] } } }) as any;
 
 /** The whole approval path the hook runs: the words, then the app's lookup. */

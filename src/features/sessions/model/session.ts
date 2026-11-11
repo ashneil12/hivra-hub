@@ -419,8 +419,12 @@ export type ApprovalCall = {
   args?: string[];
   /** A Grep's glob, as given. Present (even empty or not text) means the search names files by a glob. */
   glob?: string;
-  /** The working folder a search's relative or missing path is resolved against, when the request carries one (round 10). */
-  cwd?: string;
+  /**
+   * Set by the provider that launched the chat, and only by it (never from the tool input): its Bash shell and file tools
+   * stay in the chat folder (Claude Code with CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR, round 11). A relative search path,
+   * or a relative shell word, is judged in that folder only when this is set.
+   */
+  folderPinned?: boolean;
 };
 
 export type Block = {

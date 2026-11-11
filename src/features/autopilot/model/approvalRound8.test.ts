@@ -69,7 +69,7 @@ const realCanonical: Canonical = async (paths) =>
   });
 
 const write = (file: string) => ({ text: "", tool: { title: "Write", kind: "edit" }, approval: { call: { tool: "Write", paths: [file] } } }) as any;
-const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { call: { tool: "Bash", command } } }) as any;
+const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { call: { tool: "Bash", command, folderPinned: true } } }) as any;
 
 /** The whole approval path the hook runs: the words, then the app's lookups. */
 async function verdict(block: any, folder: string): Promise<string> {

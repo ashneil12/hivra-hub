@@ -8,7 +8,7 @@ import { credentialBlock } from "../../../integrations/harness/core/credentialGu
 import { editInside, safeCall } from "./safeApproval";
 
 const FOLDER = "/Users/ash/proj";
-const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { call: { tool: "Bash", command } } }) as any;
+const bash = (command: string) => ({ text: "", tool: { title: command, kind: "execute" }, approval: { call: { tool: "Bash", command, folderPinned: true } } }) as any;
 const tool = (name: string, call: Record<string, unknown>) => ({ text: "", tool: { title: name, kind: "read" }, approval: { call: { tool: name, ...call } } }) as any;
 const held = (block: any, folder = FOLDER) => expect(approvalVerdict(block, folder)).toMatchObject({ kind: "held" });
 const allowed = (block: any, folder = FOLDER) => expect(approvalVerdict(block, folder)).toMatchObject({ kind: "allow" });
