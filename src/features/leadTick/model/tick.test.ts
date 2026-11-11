@@ -639,4 +639,28 @@ describe("lead tick: a conflicting pull request (WP-162)", () => {
     await runLeadTick(base, ports);
     expect(asked).toBe(0);
   });
+
+  it("does not update a package from main in the same pass that moved it to review", async () => {
+    const ports = fake({
+      rows: [
+        row({ id: "a", status: "building" }),
+        row({ id: "b", wp: "WP-201", status: "pr_open", branch: "wp/201-other", version: 3 }),
+      ],
+      watches: [
+        watch({ status: { mergeable: "conflicting", passed: false, pending: 1 } }),
+        watch({ number: 8, headRef: "wp/201-other", title: "WP-201: other", status: { mergeable: "conflicting", passed: false, pending: 1 } }),
+      ],
+      slot: { ok: false, reason: "full" },
+    });
+    const asked: string[] = [];
+    ports.considerConflict = async (packageId, branch) => {
+      asked.push(`${packageId} ${branch}`);
+      return { kind: "reported", message: "This package conflicts with main. It was only reported." };
+    };
+    const first = await runLeadTick(base, ports);
+    expect(ports.rows.find((r) => r.id === "a")?.status).toBe("pr_open");
+    expect(asked).toEqual(["b wp/201-other"]);
+    await runLeadTick({ ...base, noted: first.noted }, ports);
+    expect(asked).toEqual(["b wp/201-other", "a wp/200-thing"]);
+  });
 });
