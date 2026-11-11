@@ -912,6 +912,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&outside);
     }
 
+    // Review of PR #240 (MED): the in-memory token is not bound to the address that issued it. Changing the address
+    // while the switch stays on (Settings saves the address on blur) keeps the token, reports "signed in" for the new
+    // address, and the next account check or pairing sends the old address's bearer token to the new one.
+    #[test]
+    fn review_a_token_from_one_address_is_never_sent_to_another() {
+        let first = silent();
+        let second = serve(vec![(200, String::new(), r#"{"plan":"pro"}"#.into())]);
+        let dir = scratch();
+        save_config(&dir, 0, true, &first.base).unwrap();
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = Some(crate::connectors::secrets::OAuthTokens {
+                access_token: "token-issued-by-first".into(),
+                refresh_token: None,
+                expires_at: None,
+                token_endpoint: format!("{}/oauth/token", first.base),
+                client_id: "hivra-desktop".into(),
+                client_secret: None,
+                resource: None,
+            });
+        }
+        // What hivra_cloud_save does when the address changes and the switch stays on.
+        let saved = save_config(&dir, 1, true, &second.base).unwrap();
+        super::drop_token_if_off(&saved);
+        let status = status_for(&saved, super::token_now().is_some());
+        let mut cache = AccountCache::new();
+        let _ = account_with(&saved, super::token_now(), &mut cache, 0);
+        let leaked = second.seen.lock().unwrap().iter().any(|request| {
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer")
+        });
+        {
+            let mut session = super::SESSION
+                .lock()
+                .unwrap_or_else(|poison| poison.into_inner());
+            *session = None;
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(
+            !leaked,
+            "the first address's bearer token was sent to the second address"
+        );
+        assert!(
+            !status.signed_in,
+            "a new address must not report signed in with the old address's token"
+        );
+    }
+
     #[cfg(windows)]
     #[test]
     fn saving_replaces_a_normal_file_on_windows() {
