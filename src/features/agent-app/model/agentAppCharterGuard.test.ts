@@ -20,14 +20,13 @@ const FENCED = `# Soul\n\n## Who I am\nI keep the books.\n\n\`\`\`\n${CAPTAIN_CH
 function soulHost(opts: {
   chatId: string;
   monoId: string;
-  captain?: boolean;
   soul: string;
 }): { host: Host; soul: () => string; writes: () => number } {
   const files = new Map<string, string>([["SOUL.md", opts.soul]]);
   let writes = 0;
   const host = {
     isMono: (id: string) => id === opts.chatId,
-    monoOf: () => ({ id: opts.monoId, name: "Scout", projects: [] as string[], ...(opts.captain ? { captain: true } : {}) }),
+    monoOf: () => ({ id: opts.monoId, name: "Scout", projects: [] as string[] }),
     readAgentFile: async (_mono: string, path: AgentFilePath) => ({
       text: files.has(path) ? files.get(path)! : null,
       hash: "h1",
@@ -76,7 +75,12 @@ it("refuses a souls.merge that would add the charter to a mono that is not the c
 });
 
 it("lets the captain keep the charter while editing the rest of its soul", async () => {
-  const box = soulHost({ chatId: "chief", monoId: "chief", captain: true, soul: WITH_CHARTER });
+  // The app's host view does not include the captain flag. The roster does, and that is what the write checks.
+  localStorage.setItem(
+    "monocode:mono-roster",
+    JSON.stringify([{ id: "chief", name: "Ada", projects: [], captain: true }]),
+  );
+  const box = soulHost({ chatId: "chief", monoId: "chief", soul: PLAIN });
   const next = `${WITH_CHARTER}\n## Personality\nShort sentences.\n`;
   await expect(
     handleAgentApp(chat("chief"), "s3", "soul.update", { text: next, expectedHash: "h1" }, box.host),

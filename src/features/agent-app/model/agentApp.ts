@@ -1023,7 +1023,8 @@ async function handleSoul(
   const expectedHash = requiredString(input.expectedHash, "expectedHash", 128);
   // The file as this write found it, so its Bot changes row can put it back (D1).
   const before = await host.readAgentFile(monoId, "SOUL.md");
-  refuseAddedCharter(mono, before.text, input.text);
+  // The host view does not carry the captain flag. The roster does.
+  refuseAddedCharter(findMono(monoId), before.text, input.text);
   if (hasCaptainCharter(before.text) && !hasCaptainCharter(input.text)) {
     throw new Error("The captain charter is fixed. Edit the personality beside it.");
   }
