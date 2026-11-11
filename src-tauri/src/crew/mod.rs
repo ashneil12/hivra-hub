@@ -16,6 +16,8 @@ mod rules;
 mod store;
 
 #[cfg(test)]
+mod review_141d_tests;
+#[cfg(test)]
 mod review_r10_lead_tests;
 #[cfg(test)]
 mod review_r10_tests;
