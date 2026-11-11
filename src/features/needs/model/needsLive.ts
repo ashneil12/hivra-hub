@@ -24,6 +24,7 @@ import {
   takePick,
   useWaitingChatsVersion,
   waitingChats,
+  type TakeResult,
   type WaitingChat,
 } from "../../hub/model/waitingChats";
 import { currentNeedsYouRows, useNeedsYouRows } from "../../hub/model/useNeedsYouRows";
@@ -128,11 +129,46 @@ function isErrand(chat: WaitingChat): boolean {
   return Boolean(chat.provide?.trim()) || chat.flag === "provide";
 }
 
-function noteTake(result: Promise<{ ok: boolean }>): void {
+const MISSED = "That didn't go through. Try again.";
+const GONE = "That isn't waiting any more.";
+const CHANGED = "That changed while you were looking.";
+
+// A newer tap wins. A late result from an older one must not overwrite it.
+let tapEpoch = 0;
+
+function settleTap(result: Promise<unknown>, reasonOf: (out: unknown) => string | undefined): void {
+  const mine = ++tapEpoch;
   void result.then(
-    (out) => { if (!out.ok) noteOneTapRefusal(); },
-    () => noteOneTapRefusal(),
+    (out) => {
+      if (mine !== tapEpoch) return;
+      const reason = reasonOf(out);
+      if (reason) noteOneTapRefusal(reason);
+      else resetOneTapRefusal();
+    },
+    (error: unknown) => {
+      if (mine !== tapEpoch) return;
+      const raw = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+      noteOneTapRefusal(raw.trim() ? raw : MISSED);
+    },
   );
+}
+
+function takeReason(out: unknown): string | undefined {
+  if (!out || typeof out !== "object" || !("ok" in out)) return MISSED;
+  if ((out as { ok: unknown }).ok === true) return undefined;
+  const reason = (out as { reason?: unknown }).reason;
+  return typeof reason === "string" && reason.trim() ? reason : MISSED;
+}
+
+function decisionReason(out: unknown): string | undefined {
+  if (!out || typeof out !== "object" || !("applied" in out)) return MISSED;
+  if ((out as { applied: unknown }).applied !== false) return undefined;
+  const decision = (out as { decision?: unknown }).decision;
+  return decision == null ? GONE : CHANGED;
+}
+
+function noteTake(result: Promise<TakeResult>): void {
+  settleTap(result, takeReason);
 }
 
 /** One row of a card. A red-line row and a pick answer that row, never the whole card. */
@@ -231,11 +267,9 @@ export function factsFromChats(chats: readonly WaitingChat[]): { questions: Ques
 
 function sendOption(decision: Decision, option: string): () => void {
   return () => {
-    void Promise.resolve(tauriFirstMate.answer(decision.project, decision.decisionKey, option)).then(
-      (out) => {
-        if (out && typeof out === "object" && "applied" in out && out.applied === false) noteOneTapRefusal();
-      },
-      () => noteOneTapRefusal(),
+    settleTap(
+      Promise.resolve(tauriFirstMate.answer(decision.project, decision.decisionKey, option)),
+      decisionReason,
     );
   };
 }
