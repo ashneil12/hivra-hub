@@ -492,27 +492,22 @@ test("the real script fails when one half fails, and the other half still finish
   }
 });
 
-test("PRs run every check half on Linux; macOS runs the Rust half in the pre-ship run, both halves when every OS runs", () => {
+test("macOS runs only the Rust half by default, both halves when every OS runs; host and ship run on Linux on a PR", () => {
   const check = jobBlock("check");
-  // The matrix is chosen by the repository variable HUB_CROSS_PLATFORM_CI, then by the event. A PR or a push runs the
-  // web half on two Linux runners and the Rust half on a third; the pre-ship run (workflow_dispatch) runs the Rust
-  // half on macOS; when the variable is "true", every OS runs and macOS runs both halves together.
-  const include = /include: \$\{\{ fromJSON\(vars\.HUB_CROSS_PLATFORM_CI == 'true' && '(\[.*?\])' \|\| github\.event_name == 'workflow_dispatch' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}/.exec(check);
-  assert.ok(include, "the check matrix is not chosen by HUB_CROSS_PLATFORM_CI and then the event");
+  // The matrix is chosen by the repository variable HUB_CROSS_PLATFORM_CI. By default the web half runs on two Linux
+  // runners and macOS runs the Rust half alone (Linux would need Ubuntu's package mirror); when "true", every OS runs
+  // and macOS runs both halves together.
+  const include = /include: \$\{\{ fromJSON\(vars\.HUB_CROSS_PLATFORM_CI == 'true' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}/.exec(check);
+  assert.ok(include, "the check matrix is not chosen by HUB_CROSS_PLATFORM_CI");
   const full = JSON.parse(include[1]);
-  const preShip = JSON.parse(include[2]);
-  const byDefault = JSON.parse(include[3]);
+  const byDefault = JSON.parse(include[2]);
   assert.deepEqual(byDefault, [
-    { os: "ubuntu-latest", part: "web", shard: "1/2" },
-    { os: "ubuntu-latest", part: "web", shard: "2/2" },
-    { os: "ubuntu-latest", part: "rust" },
-  ]);
-  assert.deepEqual(preShip, [
     { os: "ubuntu-latest", part: "web", shard: "1/2" },
     { os: "ubuntu-latest", part: "web", shard: "2/2" },
     { os: "macos-latest", part: "rust" },
   ]);
-  assert.ok(!byDefault.some((entry) => entry.os !== "ubuntu-latest"), "a PR waits for no macOS or Windows runner");
+  assert.ok(!byDefault.some((entry) => entry.os === "windows-latest"), "Windows is off by default");
+  assert.ok(!byDefault.some((entry) => entry.os === "ubuntu-latest" && entry.part !== "web"), "Linux runs only the web half by default");
   assert.equal(full.filter((entry) => entry.os === "macos-latest").length, 1);
   assert.deepEqual(full.find((entry) => entry.os === "macos-latest"), { os: "macos-latest", part: "all" });
   for (const job of ["host", "ship"]) {

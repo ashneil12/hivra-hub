@@ -215,10 +215,10 @@ jobs:
         # By default the web half (vitest and tsc, which test no OS) runs on two Linux runners and macOS runs only the
         # Rust half. On 11 Nov 2026 the macOS job ran both halves on one 3-core runner: vitest took 25 minutes there
         # against 6 on Linux, and the Rust tests waited behind it, so every PR waited 27 minutes for that one job.
-        # Later on 11 Nov the Rust half moved to Linux for PRs and pushes too (about 3 minutes against 14 on macOS, and
-        # the free tier runs only 5 macOS jobs at once). macOS runs it in the pre-ship run (workflow_dispatch), and
-        # the Mac's own hub:check-all runs the full Rust suite before every ship.
-        include: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '[{"os":"macos-latest","part":"all"},{"os":"ubuntu-latest","part":"web"},{"os":"ubuntu-latest","part":"rust"},{"os":"windows-latest","part":"web","shard":"1/2"},{"os":"windows-latest","part":"web","shard":"2/2"},{"os":"windows-latest","part":"rust"}]' || github.event_name == 'workflow_dispatch' && '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"},{"os":"macos-latest","part":"rust"}]' || '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"},{"os":"ubuntu-latest","part":"rust"}]') }}
+        # The Rust half stays on macOS: on Linux it needs the WebKitGTK packages from Ubuntu's mirror, and on
+        # 11 Nov 2026 that mirror stopped resolving from GitHub's runners for hours, failing every Linux job that
+        # installs packages. The host and ship tests need no packages, so they run on Linux on a PR.
+        include: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '[{"os":"macos-latest","part":"all"},{"os":"ubuntu-latest","part":"web"},{"os":"ubuntu-latest","part":"rust"},{"os":"windows-latest","part":"web","shard":"1/2"},{"os":"windows-latest","part":"web","shard":"2/2"},{"os":"windows-latest","part":"rust"}]' || '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"},{"os":"macos-latest","part":"rust"}]') }}
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
