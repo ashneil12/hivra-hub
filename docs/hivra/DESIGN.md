@@ -98,8 +98,10 @@ name. Opening the Chief of Staff from Home keeps Home selected.
 14. **A row that needs you opens its own card, where it is.** In the Inbox a Needs you row opens beside the list
     (`src/features/needs/ui/NeedDetail.tsx`): what was asked, who asked and when, the row's own answers (the one-tap
     answer filled, the rest quiet), the way to the chat or page it came from, and a box that sends a few words to that
-    chat. A row never throws the person onto another screen without saying where. The Inbox's tabs read All, Asks,
-    then each source: asks and work items stay apart (`src/features/needs/model/inboxShow.ts`).
+    chat. A row never throws the person onto another screen without saying where. Open chat opens the chat that
+    asked, on the message that asked, with its words lit (`openNeed` in `needContext.ts`, the jump in
+    `src/features/sessions/model/transcriptJump.ts`), never just the chat's latest message. The Inbox's tabs read All,
+    Asks, then each source: asks and work items stay apart (`src/features/needs/model/inboxShow.ts`).
 15. **A flow asks one thing a step.** First run (`HubOnboarding.tsx`) goes welcome, the first project, its first
     mates, the coding tools, a look, done; each step has one heading and one choice, nothing is required, and the
     last step says back what was chosen before anything opens. A list a person chooses from says what each choice

@@ -2,6 +2,7 @@
 // A late read loses to a newer one. A timeout keeps the last good remote facts.
 // Only useNeedsYou publishes the list. A quiet read (Home's opening count) must not replace it.
 
+import { requestTranscriptAsk } from "../../sessions/model/transcriptJump";
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
@@ -184,6 +185,12 @@ function noteTake(result: Promise<TakeResult>): void {
   settleTap(result, takeReason);
 }
 
+/** Open a waiting chat on the message that asked (transcriptJump.ts finds it by its words, else by its time). */
+function openAsked(sessionId: string, text: string, at: number): void {
+  requestTranscriptAsk(sessionId, { text, at });
+  openWaitingChat(sessionId);
+}
+
 /** One row of a card. A red-line row and a pick answer that row, never the whole card. */
 function rowFact(chat: WaitingChat, row: AskRow, id: string): QuestionFact | ApprovalFact {
   const base = {
@@ -194,7 +201,7 @@ function rowFact(chat: WaitingChat, row: AskRow, id: string): QuestionFact | App
     at: chat.askedAt,
     sentence: row.question,
     open: { where: "chat" as const, id: chat.sessionId },
-    onOpen: () => openWaitingChat(chat.sessionId),
+    onOpen: () => openAsked(chat.sessionId, row.question, chat.askedAt),
     routedToLead: chat.routedToLead,
     sessionId: chat.sessionId,
   };
@@ -226,7 +233,7 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
     at: chat.askedAt,
     sentence: question,
     open: { where: "chat" as const, id: chat.sessionId },
-    onOpen: () => openWaitingChat(chat.sessionId),
+    onOpen: () => openAsked(chat.sessionId, question, chat.askedAt),
     routedToLead: chat.routedToLead,
     sessionId: chat.sessionId,
   };

@@ -1139,7 +1139,7 @@ import { SessionSurface } from "../features/sessions/ui/SessionSurface";
 import { ProjectTerminalDock } from "../features/terminal/ui/ProjectTerminalDock";
 import { lazySurface } from "../shared/ui/lazySurface";
 import { preloadNavigationWhenIdle } from "./model/preloadNavigation";
-import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
+import { requestTranscriptJump, resolveTranscriptAsks, setTranscriptAskChats } from "../features/sessions/model/transcriptJump";
 import { finderShortcutAction, routeFinderHit } from "../features/search/model/finder";
 // WP-93: the command palette reads what the app can do and runs each row.
 import type { PaletteContext } from "../features/search/model/commandRegistry";
@@ -13609,6 +13609,12 @@ function Workspace({
     });
     return () => setTurnTextDecorator(undefined);
   }, []);
+  // An Inbox card's "Open chat" lands on the message that asked (transcriptJump.ts): a chat already loaded jumps at
+  // once, one that loads afterwards jumps when its blocks arrive.
+  useEffect(() => setTranscriptAskChats(() => sessionsRef.current), []);
+  useEffect(() => {
+    resolveTranscriptAsks(sessions);
+  }, [sessions]);
   useEffect(() => {
     if (IS_HUB_BUNDLE) noteChats(sessions);
     // A Mono whose last turn failed (out of credits, overloaded, a limit) shows on the rail, Today and Being built.

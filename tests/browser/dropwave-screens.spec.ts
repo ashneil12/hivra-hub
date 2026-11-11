@@ -281,6 +281,24 @@ test("the Inbox shows All, only Asks or one source, and a row opens its card wit
   await expect(items).toBeVisible();
 });
 
+// Ash, 11 Nov: "Open chat lands on the latest message, not the exact one. needs fixing." The chat goes on for three
+// more turns after the ask, in a window too short to show both ends.
+test("Open chat on an Inbox card lands on the message that asked, not on the chat's latest one", async ({ page }) => {
+  await page.setViewportSize({ width: 1180, height: 560 });
+  await home(page);
+  await page.getByRole("button", { name: /^Inbox/ }).first().click();
+  const inbox = page.getByRole("region", { name: "Inbox" });
+  await inbox.getByRole("tablist", { name: "Inbox source" }).getByRole("tab", { name: "Asks" }).click();
+  const row = inbox.locator("[data-inbox-need='question']").filter({ hasText: "Which take for the boss music?" });
+  await row.locator("button").first().click();
+  await inbox.locator("[data-need-detail] [data-need-open]").click();
+  const asked = page.locator('[data-transcript-search-current="true"]');
+  await expect(asked).toContainText("Which take for the boss music?", { timeout: 15_000 });
+  await expect(asked).toBeInViewport();
+  await expect(page.getByText("I'll tell you when the build is up.")).not.toBeInViewport();
+  await page.screenshot({ path: test.info().outputPath("open-chat-on-the-ask.png") });
+});
+
 // Ash, 11 Nov: onboarding "doesn't carry you through a proper setup flow". One thing a step, said back at the end.
 test("first run: one thing a step (project, first mates, tools), the Chief of Staff recommended and ticked, and a short tour", async ({ page }) => {
   await page.goto(`${base}/mockup.html?reset&onboarding`);

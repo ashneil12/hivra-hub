@@ -6,7 +6,9 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { setHomeOpener, type HomeOpenTarget } from "../../home/model/opener";
 import { setWaitingChatsHost } from "../../hub/model/waitingChats";
+import { createMono, saveMonoSessionId, saveMonoSideChat } from "../../monos/model/mono";
 import type { NeedsItem } from "../model/needsYou";
+import { pendingTranscriptAsk, resetTranscriptJumps } from "../../sessions/model/transcriptJump";
 import { NeedDetail } from "./NeedDetail";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => []) }));
@@ -32,6 +34,7 @@ afterEach(() => {
   undo = [];
   localStorage.clear();
   vi.unstubAllGlobals();
+  resetTranscriptJumps();
 });
 
 function need(patch: Partial<NeedsItem> = {}): NeedsItem {
@@ -79,6 +82,27 @@ it("the row's own answer is the filled button, and Open chat leads to the chat t
   expect(open.className).not.toContain("bg-accent");
   await act(async () => open.click());
   expect(opened).toEqual([{ kind: "chat", id: "lead-chat", projectId: "exo" }]);
+});
+
+it("a decision's Open chat opens the chat that asked it (where the reply goes too), on the message that asked", async () => {
+  const lead = createMono();
+  saveMonoSessionId(lead.id, "lead-main");
+  saveMonoSideChat(lead.id, "lead-second");
+  const opened: HomeOpenTarget[] = [];
+  undo.push(setHomeOpener((target) => opened.push(target)));
+  await show(need({ open: undefined, decisionKey: "take", monoId: lead.id, projectId: "exo", askedBy: "lead-second" }));
+  await act(async () => (container.querySelector("[data-need-open]") as HTMLButtonElement).click());
+  expect(opened).toEqual([{ kind: "chat", id: "lead-second", projectId: "exo" }]);
+  expect(pendingTranscriptAsk("lead-second")).toEqual({ text: "Example: which take goes in the trailer?", at: 10 * HOUR });
+});
+
+it("Open chat lands on the message that asked: it leaves the ask's words and time for that chat", async () => {
+  const opened: HomeOpenTarget[] = [];
+  undo.push(setHomeOpener((target) => opened.push(target)));
+  await show(need({ projectId: "exo" }));
+  await act(async () => (container.querySelector("[data-need-open]") as HTMLButtonElement).click());
+  expect(opened).toHaveLength(1);
+  expect(pendingTranscriptAsk("lead-chat")).toEqual({ text: "Example: which take goes in the trailer?", at: 10 * HOUR });
 });
 
 it("a few words go to that chat as the person's next message", async () => {

@@ -46,6 +46,8 @@ export type NeedsItem = {
   decisionKey?: string;
   /** Set when the item is a delivery check. Home opens that check. */
   gateKey?: string;
+  /** The chat that asked this decision, as the store recorded it. The card opens it on the message that asked. */
+  askedBy?: string;
 };
 
 type FactBase = {
@@ -545,6 +547,7 @@ function collapse(drafts: Draft[]): NeedsItem[] {
       open: row.open,
       ...(row.decisionKey ? { decisionKey: row.decisionKey } : {}),
       ...(row.gateKey ? { gateKey: row.gateKey } : {}),
+      ...(row.askedBy?.trim() ? { askedBy: row.askedBy.trim() } : {}),
     }))
     .sort((a, b) => urgency(a.kind) - urgency(b.kind) || a.at - b.at || a.key.localeCompare(b.key));
 }
