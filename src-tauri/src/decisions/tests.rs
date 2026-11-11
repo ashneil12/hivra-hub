@@ -342,7 +342,8 @@ fn old_decision_rows_default_to_standing_with_no_keys() {
     ensure_tables(&conn).unwrap();
     ensure_tables(&conn).unwrap();
     let row = get(&conn, "hivra", "retention").unwrap().unwrap();
-    assert!(row.standing);
+    // An old row was never ticked. Adding the column, or the one-time reset, leaves it off.
+    assert!(!row.standing);
     assert!(row.keys.is_empty());
     assert_eq!(row.retired_at, None);
     assert_eq!(row.retired_reason, None);
@@ -402,7 +403,7 @@ fn standing_answers_stay_off_and_a_reworded_question_still_asks() {
     let kept = get(&conn, "hivra", "retention").unwrap().unwrap();
     assert_eq!(kept.state, ANSWERED);
     assert_eq!(kept.answer.as_deref(), Some("Keep 30 days"));
-    assert!(kept.standing);
+    assert!(!kept.standing);
 }
 
 #[test]
@@ -463,15 +464,13 @@ fn asking_again_keeps_standing_keys_and_a_retire_reason() {
         Some("The host changed")
     );
 
-    let off = set_standing(&mut conn, "hivra", "retention", true, 8)
-        .unwrap()
-        .unwrap();
-    assert!(off.standing);
-    assert_eq!(off.retired_reason.as_deref(), Some("The host changed"));
+    let refused = set_standing(&mut conn, "hivra", "retention", true, 8).unwrap_err();
+    assert!(refused.contains("retired"), "{refused}");
     let on = set_standing(&mut conn, "hivra", "retention", false, 9)
         .unwrap()
         .unwrap();
     assert!(!on.standing);
+    assert_eq!(on.retired_reason.as_deref(), Some("The host changed"));
     assert!(set_standing(&mut conn, "hivra", "missing", false, 10)
         .unwrap()
         .is_none());
@@ -486,8 +485,8 @@ fn insert_answered(
     at: i64,
 ) {
     conn.execute(
-        "INSERT INTO decisions (project, decision_key, question, options, asked_by, waiting, state, answer, answered_at, created_at, updated_at, version)
-         VALUES (?1, ?2, ?3, '[\"Yes\",\"No\"]', 'fm', '[]', 'answered', ?4, ?5, ?5, ?5, 1)",
+        "INSERT INTO decisions (project, decision_key, question, options, asked_by, waiting, state, answer, answered_by, answered_at, created_at, updated_at, version, standing)
+         VALUES (?1, ?2, ?3, '[\"Yes\",\"No\"]', 'fm', '[]', 'answered', ?4, 'user', ?5, ?5, ?5, 1, 1)",
         params![project, key, question, answer, at],
     )
     .unwrap();
@@ -626,6 +625,40 @@ fn the_standing_block_stops_at_twenty_rows_and_four_thousand_characters() {
     assert!(!capped.contains(&"x".repeat(4_000)));
 }
 
+/// A chat's question is untrusted. Markup cannot close the brief, and one row stays short.
+#[test]
+fn a_standing_line_escapes_markup_and_stays_short() {
+    let store = store();
+    let conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    insert_answered(
+        &conn,
+        "hivra",
+        "markup",
+        "Keep <script>alert(1)</script> sessions?",
+        "Yes <b>keep</b>",
+        2,
+    );
+    insert_answered(
+        &conn,
+        "hivra",
+        "long-row",
+        &format!("Keep the notes {}", "word ".repeat(80)),
+        "Yes",
+        1,
+    );
+    let block = standing_block(&conn, "hivra").unwrap();
+    assert!(block.contains("asked by a chat:"));
+    assert!(block.contains("Ash's answer:"));
+    assert!(!block.contains("<script>"), "{block}");
+    assert!(block.contains("&lt;script&gt;"), "{block}");
+    assert!(!block.contains("<b>"), "{block}");
+    assert!(block.contains("&lt;b&gt;"), "{block}");
+    for line in block.lines().filter(|line| line.starts_with("S-")) {
+        assert!(line.chars().count() <= 300, "{}", line.chars().count());
+    }
+}
+
 #[test]
 fn the_same_key_stays_one_decision_even_when_standing_answers_are_on() {
     let store = store();
@@ -669,6 +702,7 @@ fn a_reworded_question_reuses_the_standing_answer() {
     )
     .unwrap();
     let kept = get(&conn, "hivra", "retention").unwrap().unwrap();
+    tick(&mut conn, "retention", 4);
 
     let child = record(&mut conn, launch("fm", "r2", "w2"), 4).unwrap();
     let mut again = ask_input("fm", "retention-wording", &[&child.id]);
@@ -742,6 +776,7 @@ fn a_question_below_the_overlap_still_asks() {
         3,
     )
     .unwrap();
+    tick(&mut conn, "retention", 4);
 
     let mut logo = ask_input("fm", "logo", &[]);
     logo.question = "What colour should the new logo be?".into();
@@ -804,6 +839,7 @@ fn force_asks_again_only_with_a_reason() {
         3,
     )
     .unwrap();
+    tick(&mut conn, "retention", 4);
 
     let mut forced = ask_input("fm", "retention-force", &[]);
     forced.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
@@ -1209,6 +1245,7 @@ fn a_gate_secret_or_irreversible_key_never_reuses_or_shows_a_standing_answer() {
     assert!(!standing_eligible("secret/token-1"));
     assert!(!standing_eligible("irreversible/run/a"));
     assert!(!standing_eligible("fresh-eyes-start/r1"));
+    assert!(!standing_eligible("fanout-again/r1/t/req"));
 }
 
 /// WP-156 security, the chat-start path: a protected key never shows as guidance, whatever its case. Keys are stored as
@@ -1299,10 +1336,10 @@ fn standing_answer_flow_asks_answers_reuses_retires_and_turns_off() {
     // a. A first mate asks, with a task of its own waiting on the answer.
     let task = record(&mut conn, launch("fm", "r1", "w1"), 1).unwrap();
     let mut first = ask_input("fm", "release-target", &[&task.id]);
-    first.question = "Should the release go to staging or straight to prod?".into();
-    first.options = vec!["Staging first".into(), "Prod now".into()];
+    first.question = "Should the release go to staging or stay on the branch?".into();
+    first.options = vec!["Staging first".into(), "Keep it on the branch".into()];
     first.recommended = Some("Staging first".into());
-    first.keys = vec!["staging".into(), "prod".into(), "release".into()];
+    first.keys = vec!["staging".into(), "branch".into(), "release".into()];
     let asked = ask(&mut conn, first, 2).unwrap();
     assert!(asked.created && !asked.matched);
     assert_eq!(asked.decision.state, OPEN);
@@ -1315,7 +1352,7 @@ fn standing_answer_flow_asks_answers_reuses_retires_and_turns_off() {
         1
     );
 
-    // b. The person answers in the Inbox. The waiting task is released, and the answer is standing for the project.
+    // b. The person answers in the Inbox, then ticks reuse. The waiting task is released, and the answer stands.
     let answered = answer(
         &mut conn,
         "hivra",
@@ -1327,19 +1364,27 @@ fn standing_answer_flow_asks_answers_reuses_retires_and_turns_off() {
     .unwrap();
     assert!(answered.applied);
     assert_eq!(answered.released_tasks, vec![task.id.clone()]);
+    assert!(
+        !get(&conn, "hivra", "release-target")
+            .unwrap()
+            .unwrap()
+            .standing
+    );
+    tick(&mut conn, "release-target", 4);
     let block = standing_block(&conn, "hivra").unwrap();
     assert!(
         block.contains("S-")
-            && block
-                .contains("Should the release go to staging or straight to prod? -> Staging first"),
+            && block.contains(
+                "asked by a chat: Should the release go to staging or stay on the branch? Ash's answer: Staging first"
+            ),
         "{block}"
     );
 
     // c. Later, a reworded question on a new key returns the answer, with its id, and no Inbox item opens.
     let later = record(&mut conn, launch("fm", "r2", "w2"), 4).unwrap();
     let mut reworded = ask_input("fm", "where-do-we-ship", &[&later.id]);
-    reworded.question = "Do we ship the release to staging first, or go to prod now?".into();
-    reworded.options = vec!["Staging first".into(), "Prod now".into()];
+    reworded.question = "Do we ship the release to staging first, or keep it on the branch?".into();
+    reworded.options = vec!["Staging first".into(), "Keep it on the branch".into()];
     reworded.recommended = Some("Staging first".into());
     reworded.keys = Vec::new();
     let hit = ask(&mut conn, reworded, 5).unwrap();
@@ -1386,8 +1431,8 @@ fn standing_answer_flow_asks_answers_reuses_retires_and_turns_off() {
     assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
     assert_eq!(standing_block(&conn, "hivra").unwrap(), "");
     let mut fresh = ask_input("fm", "where-do-we-ship-again", &[]);
-    fresh.question = "Do we ship the release to staging first, or go to prod now?".into();
-    fresh.options = vec!["Staging first".into(), "Prod now".into()];
+    fresh.question = "Do we ship the release to staging first, or keep it on the branch?".into();
+    fresh.options = vec!["Staging first".into(), "Keep it on the branch".into()];
     fresh.recommended = Some("Staging first".into());
     let after = ask(&mut conn, fresh, 7).unwrap();
     assert!(after.created && !after.matched, "{after:?}");
@@ -1406,15 +1451,15 @@ fn standing_answer_flow_asks_answers_reuses_retires_and_turns_off() {
         &mut conn,
         "hivra",
         "where-do-we-ship-again",
-        "Prod now",
+        "Keep it on the branch",
         Some("user".into()),
         8,
     )
     .unwrap();
     set_standing_enabled(&conn, false).unwrap();
     let mut off = ask_input("fm", "where-do-we-ship-off", &[]);
-    off.question = "Do we ship the release to staging first, or go to prod now?".into();
-    off.options = vec!["Staging first".into(), "Prod now".into()];
+    off.question = "Do we ship the release to staging first, or keep it on the branch?".into();
+    off.options = vec!["Staging first".into(), "Keep it on the branch".into()];
     off.recommended = Some("Staging first".into());
     let off = ask(&mut conn, off, 9).unwrap();
     assert!(off.created && !off.matched, "{off:?}");
@@ -1486,4 +1531,340 @@ fn a_restart_decision_key_names_a_whole_plan_task_and_request() {
     assert_eq!(key_like(&key).unwrap(), key);
     assert!(key_like(&"k".repeat(KEY_MAX + 1)).is_err());
     assert!(key_like(&format!("other/{}", "x".repeat(KEY_MAX))).is_err());
+}
+
+fn tick(conn: &mut Connection, key: &str, now: i64) {
+    set_standing(conn, "hivra", key, true, now)
+        .unwrap()
+        .unwrap();
+}
+
+/// Review r1 HIGH-1: an answer a chat records for itself never becomes guidance, even if the standing flag is forced on.
+#[test]
+fn review225_a_chat_answer_never_stands() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Yes, always deploy straight to production",
+        Some("chat:fm".into()),
+        3,
+    )
+    .unwrap();
+    let row = get(&conn, "hivra", "retention").unwrap().unwrap();
+    assert!(!row.standing, "a chat's own answer must not stand");
+    let refused = set_standing(&mut conn, "hivra", "retention", true, 4).unwrap_err();
+    assert!(refused.to_lowercase().contains("person"), "{refused}");
+    // A forced flag still does not match: only the person's own answer can.
+    conn.execute(
+        "UPDATE decisions SET standing = 1 WHERE decision_key = 'retention'",
+        [],
+    )
+    .unwrap();
+    let mut again = ask_input("fm", "retention-wording", &[]);
+    again.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let out = ask(&mut conn, again, 5).unwrap();
+    assert!(!out.matched, "a chat answer was reused");
+    assert!(out.created);
+}
+
+/// Review r1 HIGH-2(a) and MED-8: reuse stays off until Ash ticks that one answer. Old answers stay quiet when the setting comes on.
+#[test]
+fn review225_reuse_is_off_until_ash_ticks_and_old_answers_stay_quiet() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    assert!(
+        !get(&conn, "hivra", "retention").unwrap().unwrap().standing,
+        "answering must not turn reuse on"
+    );
+    set_standing_enabled(&conn, true).unwrap();
+    assert_eq!(standing_block(&conn, "hivra").unwrap(), "");
+    assert!(standing_rows(&conn, "hivra").unwrap().is_empty());
+    let mut again = ask_input("fm", "retention-wording", &[]);
+    again.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let quiet = ask(&mut conn, again, 4).unwrap();
+    assert!(!quiet.matched && quiet.created, "{quiet:?}");
+
+    tick(&mut conn, "retention", 5);
+    let mut once = ask_input("fm", "retention-after-tick", &[]);
+    once.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let hit = ask(&mut conn, once, 6).unwrap();
+    assert!(hit.matched, "{hit:?}");
+    assert_eq!(hit.decision.decision_key, "retention");
+}
+
+/// Review r1 HIGH-2(b): a red-line question is never reused, stored or new.
+#[test]
+fn review225_a_red_line_question_never_matches() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    tick(&mut conn, "retention", 4);
+    let mut drop_users = ask_input("fm", "drop-users", &[]);
+    drop_users.question =
+        "Should we delete the users table or keep deleted sessions for 30 days?".into();
+    let out = ask(&mut conn, drop_users, 5).unwrap();
+    assert!(!out.matched, "a red-line question reused an old answer");
+    assert!(out.created);
+    assert_eq!(out.decision.state, OPEN);
+
+    insert_answered(
+        &conn,
+        "hivra",
+        "wipe",
+        "Delete the users table now?",
+        "Yes",
+        6,
+    );
+    let refused = set_standing(&mut conn, "hivra", "wipe", true, 7).unwrap_err();
+    assert!(
+        refused.to_lowercase().contains("red line")
+            || refused.to_lowercase().contains("never reused"),
+        "{refused}"
+    );
+    let mut similar = ask_input("fm", "wipe-again", &[]);
+    similar.question = "Should we delete the users table now?".into();
+    let again = ask(&mut conn, similar, 8).unwrap();
+    assert!(!again.matched, "{again:?}");
+}
+
+/// Review r1 HIGH-2(c): "prod" does not answer a drop-table question, and the asker's own keys cannot force a match.
+#[test]
+fn review225_prod_does_not_answer_a_drop_table_question() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    let mut demo = ask_input("fm", "demo-host", &[]);
+    demo.question = "Use staging or prod for the demo?".into();
+    demo.options = vec!["Staging".into(), "Prod".into()];
+    demo.recommended = Some("Staging".into());
+    ask(&mut conn, demo, 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "demo-host",
+        "prod",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    // A red-line answer cannot be ticked. Stuffing the new question's keys must not create a match either.
+    assert!(set_standing(&mut conn, "hivra", "demo-host", true, 4).is_err());
+    let mut attack = ask_input("fm", "drop-now", &[]);
+    attack.question = "Should the migration that drops the users table run on prod now?".into();
+    attack.keys = vec![
+        "staging".into(),
+        "prod".into(),
+        "demo".into(),
+        "migration".into(),
+        "drops".into(),
+        "users".into(),
+        "table".into(),
+    ];
+    let out = ask(&mut conn, attack, 5).unwrap();
+    assert!(!out.matched, "prod guidance answered a drop-table question");
+    assert!(out.created);
+    assert_eq!(out.decision.state, OPEN);
+}
+
+/// Review r1 HIGH-2(d) and the release-owner low: a match is guidance, and the note is sent as the waiting task's owner.
+#[test]
+fn review225_a_match_says_guidance_not_permission() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("elder", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    tick(&mut conn, "retention", 4);
+    let child = record(&mut conn, launch("fm", "r2", "w2"), 5).unwrap();
+    let mut again = ask_input("fm", "retention-wording", &[&child.id]);
+    again.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let out = ask(&mut conn, again, 6).unwrap();
+    assert!(out.matched, "{out:?}");
+    let text = &out.released[0].text;
+    let id = out.standing_id.clone().unwrap();
+    assert!(
+        text.to_lowercase().contains(&format!(
+            "a standing answer {} to a similar question: guidance, not permission",
+            id.to_lowercase()
+        )),
+        "{text}"
+    );
+    assert!(!text.to_lowercase().contains("outranks"), "{text}");
+    assert_eq!(out.released[0].owner_session, "fm");
+    assert_ne!(out.released[0].owner_session, "elder");
+}
+
+/// Review r1 MED-3: the same key of a retired or stopped answer is asked again, not handed out.
+#[test]
+fn review225_a_retired_or_stopped_key_reopens() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    retire(&mut conn, "hivra", "retention", "The host changed", 4).unwrap();
+    let child = record(&mut conn, launch("fm", "r2", "w2"), 5).unwrap();
+    let mut again = ask_input("fm", "retention", &[&child.id]);
+    again.question = "Keep deleted sessions for 90 days, or delete them?".into();
+    let reopened = ask(&mut conn, again, 6).unwrap();
+    assert!(!reopened.matched, "{reopened:?}");
+    assert_eq!(reopened.decision.state, OPEN);
+    assert!(reopened.decision.answer.is_none());
+    assert!(reopened.released.is_empty());
+    assert_eq!(
+        reopened.decision.question,
+        "Keep deleted sessions for 90 days, or delete them?"
+    );
+    assert!(reopened.decision.waiting.contains(&child.id));
+
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 90 days",
+        Some("person".into()),
+        7,
+    )
+    .unwrap();
+    tick(&mut conn, "retention", 8);
+    set_standing(&mut conn, "hivra", "retention", false, 9)
+        .unwrap()
+        .unwrap();
+    let mut stopped = ask_input("fm", "retention", &[]);
+    stopped.question = "Keep deleted sessions for a year, or delete them?".into();
+    let stopped = ask(&mut conn, stopped, 10).unwrap();
+    assert!(!stopped.matched, "{stopped:?}");
+    assert_eq!(stopped.decision.state, OPEN);
+    assert!(stopped.decision.answer.is_none());
+    assert_eq!(
+        stopped.decision.question,
+        "Keep deleted sessions for a year, or delete them?"
+    );
+}
+
+/// Review r1 MED-4 and MED-7: a match can only see the answers Ash sees, and a match is written down with its reason.
+#[test]
+fn review225_a_hidden_answer_does_not_match_and_a_match_is_logged() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    insert_answered(
+        &conn,
+        "hivra",
+        "hidden",
+        "Keep deleted sessions for 30 days, or delete them for good?",
+        "Keep 30 days",
+        1,
+    );
+    for n in 2..=21 {
+        insert_answered(
+            &conn,
+            "hivra",
+            &format!("font-{n}"),
+            &format!("Which font should title number {n} use?"),
+            "Serif",
+            n,
+        );
+    }
+    let mut buried = ask_input("fm", "retention-wording", &[]);
+    buried.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let hidden = ask(&mut conn, buried, 30).unwrap();
+    assert!(
+        !hidden.matched,
+        "an answer past the twenty Ash can see was reused"
+    );
+    assert!(hidden.created);
+
+    let child = record(&mut conn, launch("fm", "r2", "w2"), 31).unwrap();
+    let mut near = ask_input("fm", "font-wording", &[&child.id]);
+    near.question = "Which font should title number 21 use?".into();
+    let hit = ask(&mut conn, near, 32).unwrap();
+    assert!(hit.matched, "{hit:?}");
+    let asked_by: String = conn
+        .query_row(
+            "SELECT asked_by FROM decision_citations WHERE project = 'hivra' AND task_id = ?1",
+            [&child.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(asked_by, "fm");
+    let question: String = conn
+        .query_row(
+            "SELECT question FROM decision_citations WHERE project = 'hivra' AND task_id = ?1",
+            [&child.id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(question.contains("title number 21"), "{question}");
+
+    let lines = crate::work_log::list(
+        &conn,
+        &crate::work_log::ReadQuery {
+            project: Some("hivra".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let logged = lines.iter().any(|line| {
+        line.line.contains(&hit.standing_id.clone().unwrap())
+            && line.line.contains("fm")
+            && line.line.contains("title number 21")
+    });
+    assert!(logged, "match was not logged: {lines:?}");
+
+    let mut forced = ask_input("fm", "font-force", &[]);
+    forced.question = "Which font should title number 21 use?".into();
+    forced.force = true;
+    forced.reason = Some("The title face changed".into());
+    let opened = ask(&mut conn, forced, 33).unwrap();
+    assert!(opened.created && !opened.matched);
+    let reason: String = conn
+        .query_row(
+            "SELECT force_reason FROM decisions WHERE decision_key = 'font-force'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(reason, "The title face changed");
 }

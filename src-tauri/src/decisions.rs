@@ -14,10 +14,14 @@
 //!
 //! Own table, made by `ensure_tables` (no numbered migration, so upstream's migration numbers can't collide).
 //!
-//! WP-156 adds standing answers on the same table: `standing`, `keys`, `retired_at`, `retired_reason`. An answered
-//! row is standing unless Ash turns that off or retires it. The feature itself stays off (`decision_settings`) until
-//! it is turned on, and while it is off, asking and answering keep the exact-key behaviour above.
+//! WP-156 adds standing answers on the same table: `standing`, `keys`, `retired_at`, `retired_reason`, `reuse_stopped`,
+//! `force_reason`. An answer stands only after Ash ticks it in the Inbox. A chat's own answer never stands. The feature
+//! itself stays off (`decision_settings`) until it is turned on, and while it is off, asking and answering keep the
+//! exact-key behaviour above.
 
+use std::sync::OnceLock;
+
+use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -79,35 +83,70 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     ensure_decision_columns(conn)
 }
 
+fn column_missing(conn: &Connection, table: &str, name: &str) -> rusqlite::Result<bool> {
+    Ok(!conn
+        .prepare(&format!(
+            "SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1"
+        ))?
+        .exists([name])?)
+}
+
 fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
     for (name, decl) in [
-        ("standing", "INTEGER NOT NULL DEFAULT 1"),
+        ("standing", "INTEGER NOT NULL DEFAULT 0"),
         ("keys", "TEXT NOT NULL DEFAULT '[]'"),
         ("retired_at", "INTEGER"),
         ("retired_reason", "TEXT"),
+        ("reuse_stopped", "INTEGER NOT NULL DEFAULT 0"),
+        ("force_reason", "TEXT"),
     ] {
-        let exists = conn
-            .prepare("SELECT 1 FROM pragma_table_info('decisions') WHERE name = ?1")?
-            .exists([name])?;
-        if !exists {
+        if column_missing(conn, "decisions", name)? {
             conn.execute(
                 &format!("ALTER TABLE decisions ADD COLUMN {name} {decl}"),
                 [],
             )?;
         }
     }
+    for (name, decl) in [
+        ("asked_by", "TEXT NOT NULL DEFAULT ''"),
+        ("question", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        if column_missing(conn, "decision_citations", name)? {
+            conn.execute(
+                &format!("ALTER TABLE decision_citations ADD COLUMN {name} {decl}"),
+                [],
+            )?;
+        }
+    }
+    // Once, on a store that already had answers: none of them were ticked, so none of them stand.
+    let marked: bool = conn
+        .prepare("SELECT 1 FROM decision_settings WHERE key = 'standing_defaults_off'")?
+        .exists([])?;
+    if !marked {
+        conn.execute("UPDATE decisions SET standing = 0", [])?;
+        conn.execute(
+            "INSERT INTO decision_settings (key, value) VALUES ('standing_defaults_off', 'done')",
+            [],
+        )?;
+    }
     Ok(())
 }
 
 /// WP-156: keys that never take part in standing answers, neither as a match nor as guidance. The person alone answers
-/// an irreversible step and a fresh-eyes review; a delivery gate's approval belongs to the gate, not to an old answer;
-/// a secret is never reused. A key that is not listed here is an ordinary question the first mate chose.
+/// an irreversible step, a fresh-eyes review and a stopped fan-out's restart; a delivery gate's approval belongs to the
+/// gate, not to an old answer; a secret is never reused. A key that is not listed here is an ordinary question.
 pub fn standing_eligible(key: &str) -> bool {
     // Keys keep the case they were typed in (`key_like`), so a protected prefix is matched in any case.
     let key = key.trim().to_ascii_lowercase();
-    !["irreversible/", "fresh-eyes", "gate/", "secret/"]
-        .iter()
-        .any(|prefix| key.starts_with(prefix))
+    ![
+        "irreversible/",
+        "fresh-eyes",
+        "gate/",
+        "secret/",
+        "fanout-again/",
+    ]
+    .iter()
+    .any(|prefix| key.starts_with(prefix))
 }
 
 /// The settings key for WP-156. Only the exact value `on` enables standing answers. Anything else, including a missing
@@ -156,12 +195,16 @@ pub struct Decision {
     pub created_at: i64,
     pub updated_at: i64,
     pub version: i64,
-    /// Answered rows are standing unless this is turned off. Open rows carry it for when they are answered.
+    /// True only after the person ticks reuse on this answer. Answering does not set it.
     pub standing: bool,
     /// Short match words. Empty until a later step fills them. Untrusted text is read back as a list or nothing.
     pub keys: Vec<String>,
     pub retired_at: Option<i64>,
     pub retired_reason: Option<String>,
+    /// The person turned reuse off after it had been on. The same key is asked again instead of releasing the old answer.
+    pub reuse_stopped: bool,
+    /// Why a later question was opened anyway, when a standing answer matched and force was set.
+    pub force_reason: Option<String>,
     /// Stable label, `S-<rowid>`. Guidance, not a permission.
     pub standing_id: String,
 }
@@ -169,12 +212,12 @@ pub struct Decision {
 const COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
      state, answer, answered_by, answered_at, created_at, updated_at, version, \
-     standing, keys, retired_at, retired_reason";
+     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason";
 /// `rowid` is not written; it only names the standing answer.
 const READ_COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
      state, answer, answered_by, answered_at, created_at, updated_at, version, \
-     standing, keys, retired_at, retired_reason, rowid";
+     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, rowid";
 
 fn json_list(text: String) -> Vec<String> {
     serde_json::from_str(&text).unwrap_or_default()
@@ -201,7 +244,9 @@ fn from_row(row: &Row) -> rusqlite::Result<Decision> {
         keys: json_list(row.get(16)?),
         retired_at: row.get(17)?,
         retired_reason: row.get(18)?,
-        standing_id: format!("S-{}", row.get::<_, i64>(19)?),
+        reuse_stopped: row.get::<_, i64>(19)? != 0,
+        force_reason: row.get(20)?,
+        standing_id: format!("S-{}", row.get::<_, i64>(21)?),
     })
 }
 
@@ -243,10 +288,10 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
 fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     conn.execute(
         &format!(
-            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
+            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
              ON CONFLICT (project, decision_key) DO UPDATE SET waiting = excluded.waiting, state = excluded.state,
                answer = excluded.answer, answered_by = excluded.answered_by, answered_at = excluded.answered_at,
-               updated_at = excluded.updated_at, version = excluded.version"
+               standing = excluded.standing, updated_at = excluded.updated_at, version = excluded.version"
         ),
         params![
             d.project,
@@ -268,6 +313,8 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
             json!(d.keys).to_string(),
             d.retired_at,
             d.retired_reason,
+            if d.reuse_stopped { 1 } else { 0 },
+            d.force_reason,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -318,12 +365,13 @@ fn plain(value: &str, label: &str, max: usize) -> Result<String, String> {
 }
 
 /// A request id for the steering message that releases one waiter (stable, so a retried answer never sends twice).
-fn release_request(key: &str, target: &str) -> String {
+fn release_request(key: &str, target: &str, version: i64) -> String {
     let safe: String = key
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
-    format!("decision-{safe}-{target}")
+    // The version is part of the id so a reopened question can be answered again. The same id cannot be sent twice.
+    format!("decision-{safe}-v{version}-{target}")
         .chars()
         .take(300)
         .collect()
@@ -393,12 +441,22 @@ pub fn check_may_ask(conn: &Connection, session: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// What a waiting task is told when the person answers.
+/// What a waiting task is told when the person answers the same question.
 fn release_text(d: &Decision) -> String {
     format!(
         "The person answered \"{}\": {}\nCarry on from this answer; it outranks anything in your brief that disagrees.",
         d.question,
         d.answer.as_deref().unwrap_or("")
+    )
+}
+
+/// What a waiting task is told when a different question reused a standing answer. Guidance, not permission.
+fn match_release_text(d: &Decision) -> String {
+    format!(
+        "A standing answer {} to a similar question: guidance, not permission. Similar question: \"{}\". Answer: {}.",
+        d.standing_id,
+        one_line(&d.question),
+        one_line(d.answer.as_deref().unwrap_or(""))
     )
 }
 
@@ -420,6 +478,7 @@ fn release_one(
     conn: &Connection,
     d: &Decision,
     delegation_id: &str,
+    text: &str,
     now: i64,
 ) -> Result<Option<SteerMessage>, String> {
     let Some(row) = delegations::get(conn, delegation_id)? else {
@@ -434,11 +493,12 @@ fn release_one(
     steering::record(
         conn,
         SteerInput {
-            owner_session: d.asked_by.clone(),
+            // The task's own owner, not whoever first asked the stored question.
+            owner_session: row.owner_session.clone(),
             child_session: row.child_session.clone(),
             delegation_id: Some(row.id.clone()),
-            request_id: release_request(&d.decision_key, &row.id),
-            text: release_text(d),
+            request_id: release_request(&d.decision_key, &row.id, d.version),
+            text: text.to_string(),
             mode: Some("auto".into()),
             source: Some("decision".into()),
             decision_key: Some(d.decision_key.clone()),
@@ -616,29 +676,53 @@ fn query_words(question: &str, keys: &[String]) -> Vec<String> {
     out
 }
 
-/// `shared / shorter >= 0.6`, compared as integers so a tie stays exact.
-fn scores_match(shared: usize, left: usize, right: usize) -> bool {
-    let shorter = left.min(right);
-    shorter > 0 && shared >= MATCH_SHARED && shared * 5 >= shorter * 3
+/// Jaccard over the union, at least two shared words, and at least two fifths of the union. The asker's own keys are not
+/// part of its question: only the words in the question itself are.
+fn scores_match(shared: usize, union: usize) -> bool {
+    union > 0 && shared >= MATCH_SHARED && shared * 5 >= union * 2
 }
 
-fn better_score(shared: usize, shorter: usize, best_shared: usize, best_shorter: usize) -> bool {
-    shared * best_shorter > best_shared * shorter
+fn better_score(shared: usize, union: usize, best_shared: usize, best_union: usize) -> bool {
+    shared * best_union > best_shared * union
 }
 
-fn best_match(
-    conn: &Connection,
-    project: &str,
-    question: &str,
-    keys: &[String],
-) -> Result<Option<Decision>, String> {
-    let query = query_words(question, keys);
-    if query.len() < MATCH_SHARED {
-        return Ok(None);
+fn red_lines() -> &'static [Regex] {
+    static PATTERNS: OnceLock<Vec<Regex>> = OnceLock::new();
+    PATTERNS.get_or_init(|| {
+        // The same list as looksRedLine in chatQuestions.ts. A false alarm only means this question is asked, not reused.
+        const RAW: &[&str] = &[
+            r"(?i)\b(?:money|payments?|payouts?|billing|invoices?|refunds?|charg(?:e|es|ed|ing)\s+(?:the\s+|their\s+|his\s+)?(?:card|customer|user)s?|stripe|wallets?|transfer\w*\s+(?:the\s+)?(?:funds|money|usdc|eth|tokens?)|withdraw\w*|crypto|tokenomics|token\s+(?:sale|launch|price|marketing)|pric(?:e|es|ing)\s+(?:change|increase|cut|plan)s?)\b",
+            r"(?i)\b(?:delet|wip|purg|drop|destroy|truncat|eras)\w*\s+(?:\S+\s+){0,3}?(?:data|databases?|db|tables?|records?|rows|accounts?|users?|backups?|volumes?|buckets?|disks?|vms?|servers?|instances?|history|chats|conversations|e-?mails?|branch(?:es)?)\b|\brm\s+-rf\b",
+            r"(?i)\b(?:prod|production|live\s+site|go(?:es|ing)?\s+live|promot(?:e|es|ed|ing)\s+(?:it|this|the|to)|proxmox|pve\d*)\b",
+            r"(?i)\b(?:all|every|mass|bulk)\s+(?:the\s+)?(?:users?|customers?|accounts?|instances?|vms?|boxes|servers?|hosts?|subscribers?)\b|\bfleet\b",
+            r"(?i)\b(?:e-?mail|message|notify|dm|text)\w*\s+(?:\S+\s+){0,3}?(?:customers?|users?|subscribers?|everyone|the\s+list)\b|\b(?:newsletter|broadcast|announce\w*|tweet\w*|product\s+hunt|public\s+launch|launch\s+publicly|publish\w*)\b|\bpost\s+(?:it\s+)?(?:on|to)\s+(?:x|twitter|reddit|linkedin|hacker\s+news|hn|discord)\b",
+            r"(?i)\b(?:secrets?|credentials?|passwords?|api[\s-]keys?|private\s+keys?|irreversibl\w*|can'?t\s+be\s+undone|force[\s-]push\w*|rewrite\s+(?:the\s+)?(?:git\s+)?history)\b",
+        ];
+        RAW.iter()
+            .map(|pattern| Regex::new(pattern).expect("red line pattern"))
+            .collect()
+    })
+}
+
+/// Ash's red list, ported from `looksRedLine`. A hit is never matched and never ticked for reuse.
+fn looks_red_line(text: &str) -> bool {
+    red_lines().iter().any(|pattern| pattern.is_match(text))
+}
+
+fn person_answered(by: Option<&str>) -> bool {
+    matches!(by.map(str::trim), Some("user") | Some("person"))
+}
+
+/// The standing answers Ash can see: ticked, from the person, not a protected key, not a red line, newest twenty.
+fn visible_standing(conn: &Connection, project: &str) -> Result<Vec<Decision>, String> {
+    let project = project.trim();
+    if project.is_empty() || !standing_enabled(conn)? {
+        return Ok(Vec::new());
     }
     let sql = format!(
         "SELECT {READ_COLUMNS} FROM decisions
          WHERE project = ?1 AND state = ?2 AND standing != 0 AND retired_at IS NULL AND answer IS NOT NULL
+           AND answered_by IN ('user', 'person')
          ORDER BY answered_at DESC, rowid DESC"
     );
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
@@ -647,25 +731,51 @@ fn best_match(
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    let mut best: Option<(Decision, usize, usize)> = None;
+    let mut out = Vec::new();
     for row in rows {
+        if out.len() >= STANDING_ROWS {
+            break;
+        }
         if !standing_eligible(&row.decision_key) {
             continue;
         }
+        if looks_red_line(&row.question) || looks_red_line(row.answer.as_deref().unwrap_or("")) {
+            continue;
+        }
+        out.push(row);
+    }
+    Ok(out)
+}
+
+fn best_match(
+    conn: &Connection,
+    project: &str,
+    question: &str,
+) -> Result<Option<Decision>, String> {
+    if looks_red_line(question) {
+        return Ok(None);
+    }
+    let query = words(question);
+    if query.len() < MATCH_SHARED {
+        return Ok(None);
+    }
+    let rows = visible_standing(conn, project)?;
+    let mut best: Option<(Decision, usize, usize)> = None;
+    for row in rows {
         let theirs = query_words(&row.question, &row.keys);
         let shared = query.iter().filter(|word| theirs.contains(word)).count();
-        let shorter = query.len().min(theirs.len());
-        if !scores_match(shared, query.len(), theirs.len()) {
+        let union = query.len() + theirs.len() - shared;
+        if !scores_match(shared, union) {
             continue;
         }
         let replace = match &best {
             None => true,
-            Some((_, best_shared, best_shorter)) => {
-                better_score(shared, shorter, *best_shared, *best_shorter)
+            Some((_, best_shared, best_union)) => {
+                better_score(shared, union, *best_shared, *best_union)
             }
         };
         if replace {
-            best = Some((row, shared, shorter));
+            best = Some((row, shared, union));
         }
     }
     Ok(best.map(|(row, _, _)| row))
@@ -676,17 +786,21 @@ fn cite(
     project: &str,
     key: &str,
     task_id: &str,
+    asked_by: &str,
+    question: &str,
     now: i64,
 ) -> Result<(), String> {
     let task_id = task_id.trim();
     if task_id.is_empty() {
         return Ok(());
     }
+    let question = one_line(question);
+    let question: String = question.chars().take(300).collect();
     conn.execute(
-        "INSERT INTO decision_citations (project, decision_key, task_id, cited_at)
-         VALUES (?1, ?2, ?3, ?4)
+        "INSERT INTO decision_citations (project, decision_key, task_id, cited_at, asked_by, question)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT (project, decision_key, task_id) DO NOTHING",
-        params![project, key, task_id, now],
+        params![project, key, task_id, now, asked_by.trim(), question],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -699,7 +813,7 @@ fn citations_for(
 ) -> Result<Vec<StandingCitation>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT task_id, cited_at FROM decision_citations
+            "SELECT task_id, cited_at, asked_by, question FROM decision_citations
              WHERE project = ?1 AND decision_key = ?2 ORDER BY cited_at, task_id",
         )
         .map_err(|e| e.to_string())?;
@@ -708,12 +822,63 @@ fn citations_for(
             Ok(StandingCitation {
                 task_id: row.get(0)?,
                 cited_at: row.get(1)?,
+                asked_by: row.get(2)?,
+                question: row.get(3)?,
             })
         })
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     Ok(rows)
+}
+
+struct Reopen<'a> {
+    question: &'a str,
+    options: &'a [String],
+    recommended: &'a Option<String>,
+    keys: &'a [String],
+    added: &'a [String],
+}
+
+/// The same key of a retired or stopped answer is an open question again. The old answer is not handed out.
+fn reopen_row(
+    conn: &Connection,
+    row: &Decision,
+    next: Reopen<'_>,
+    now: i64,
+) -> Result<Decision, String> {
+    let mut waiting = row.waiting.clone();
+    waiting.extend(next.added.iter().cloned());
+    let version = row.version + 1;
+    let changed = conn
+        .execute(
+            "UPDATE decisions SET question = ?1, options = ?2, recommended = ?3, waiting = ?4,
+                state = ?5, answer = NULL, answered_by = NULL, answered_at = NULL,
+                standing = 0, reuse_stopped = 0, retired_at = NULL, retired_reason = NULL,
+                keys = ?6, force_reason = NULL, updated_at = ?7, version = ?8
+             WHERE project = ?9 AND decision_key = ?10 AND version = ?11
+               AND state = ?12 AND (retired_at IS NOT NULL OR reuse_stopped != 0)",
+            params![
+                next.question,
+                json!(next.options).to_string(),
+                next.recommended,
+                json!(waiting).to_string(),
+                OPEN,
+                json!(next.keys).to_string(),
+                now,
+                version,
+                row.project,
+                row.decision_key,
+                row.version,
+                ANSWERED,
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    if changed == 0 {
+        return Err("That question changed while it was reopened. Ask again.".into());
+    }
+    get(conn, &row.project, &row.decision_key)?
+        .ok_or_else(|| "The decision was not stored".to_string())
 }
 
 pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcome, String> {
@@ -771,25 +936,47 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
     let existing = get(&tx, &project, &key)?;
+    let eligible = standing_eligible(&key);
+    let enabled = standing_enabled(&tx)?;
+    let mut forced_reason: Option<String> = None;
     // The same key stays one decision, even when standing answers are on and even with force.
-    // A different key can reuse an active answer while the setting is on.
-    if existing.is_none() && standing_eligible(&key) && standing_enabled(&tx)? {
-        if let Some(hit) = best_match(&tx, &project, &question, &input.keys)? {
+    // A different key can reuse a ticked answer while the setting is on. The asker's keys are not part of the match.
+    if existing.is_none() && eligible && enabled && !looks_red_line(&question) {
+        if let Some(hit) = best_match(&tx, &project, &question)? {
             if !input.force {
                 let mut released = Vec::new();
                 let mut cited = task_ids.clone();
                 if cited.is_empty() {
                     cited.push(asked_by.clone());
                 }
+                let text = match_release_text(&hit);
                 for id in &task_ids {
-                    if let Some(message) = release_one(&tx, &hit, id, now)? {
+                    if let Some(message) = release_one(&tx, &hit, id, &text, now)? {
                         released.push(message);
                     }
                 }
                 for id in &cited {
-                    cite(&tx, &hit.project, &hit.decision_key, id, now)?;
+                    cite(
+                        &tx,
+                        &hit.project,
+                        &hit.decision_key,
+                        id,
+                        &asked_by,
+                        &question,
+                        now,
+                    )?;
                 }
                 let standing_id = hit.standing_id.clone();
+                crate::work_log::best_effort(&tx, "standing match", |conn| {
+                    crate::work_log::record_standing_match(
+                        conn,
+                        &hit.project,
+                        &standing_id,
+                        &asked_by,
+                        &question,
+                        now,
+                    )
+                });
                 tx.commit().map_err(|e| e.to_string())?;
                 return Ok(AskOutcome {
                     decision: hit,
@@ -801,11 +988,57 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
                 });
             }
             // A match that should not apply still needs a one-line reason, or nothing is opened.
-            plain(input.reason.as_deref().unwrap_or(""), "The reason", 300)?;
+            forced_reason = Some(plain(
+                input.reason.as_deref().unwrap_or(""),
+                "The reason",
+                300,
+            )?);
+        }
+    }
+    // A retired answer, or one whose reuse was stopped, is asked again instead of being handed out.
+    if let Some(row) = existing.as_ref() {
+        if row.state == ANSWERED && (row.retired_at.is_some() || row.reuse_stopped) {
+            let added: Vec<String> = task_ids
+                .iter()
+                .filter(|id| !row.waiting.contains(id))
+                .cloned()
+                .collect();
+            if row.waiting.len() + added.len() > WAITING_MAX {
+                return Err(format!(
+                    "{WAITING_MAX} tasks already wait on this decision; that is the most one holds."
+                ));
+            }
+            let keys = if eligible && enabled {
+                accept_keys(&input.keys, &question)
+            } else {
+                row.keys.clone()
+            };
+            let decision = reopen_row(
+                &tx,
+                row,
+                Reopen {
+                    question: &question,
+                    options: &options,
+                    recommended: &recommended,
+                    keys: &keys,
+                    added: &added,
+                },
+                now,
+            )?;
+            tx.commit().map_err(|e| e.to_string())?;
+            move_questions(conn, &added, QUESTION_FOR_PERSON, now);
+            return Ok(AskOutcome {
+                decision,
+                created: false,
+                added,
+                released: Vec::new(),
+                matched: false,
+                standing_id: None,
+            });
         }
     }
     let created = existing.is_none();
-    let store_keys = created && standing_eligible(&key) && standing_enabled(&tx)?;
+    let store_keys = created && eligible && enabled;
     // Taken before `question` moves into the new row. A repeat of the same key keeps the stored words.
     let stored_keys = if store_keys {
         accept_keys(&input.keys, &question)
@@ -828,10 +1061,12 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         created_at: now,
         updated_at: now,
         version: 0,
-        standing: true,
+        standing: false,
         keys: stored_keys,
         retired_at: None,
         retired_reason: None,
+        reuse_stopped: false,
+        force_reason: forced_reason,
         standing_id: String::new(),
     });
     let added: Vec<String> = task_ids
@@ -847,7 +1082,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     if decision.state == ANSWERED {
         // Already answered: the tasks that join now get the answer straight away.
         for id in &added {
-            if let Some(message) = release_one(&tx, &decision, id, now)? {
+            if let Some(message) = release_one(&tx, &decision, id, &release_text(&decision), now)? {
                 released.push(message);
             }
         }
@@ -971,6 +1206,8 @@ pub fn answer(
     }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);
+    // An answer does not stand until the person ticks it. A chat's answer never can.
+    decision.standing = false;
     decision.answered_by = Some(
         by.map(|b| b.trim().chars().take(120).collect::<String>())
             .filter(|b| !b.is_empty())
@@ -983,7 +1220,7 @@ pub fn answer(
     let mut released = Vec::new();
     let mut released_tasks = Vec::new();
     for id in decision.waiting.clone() {
-        if let Some(message) = release_one(&tx, &decision, &id, now)? {
+        if let Some(message) = release_one(&tx, &decision, &id, &release_text(&decision), now)? {
             released_tasks.push(id);
             released.push(message);
         }
@@ -1000,7 +1237,7 @@ pub fn answer(
                 owner_session: decision.asked_by.clone(),
                 child_session: decision.asked_by.clone(),
                 delegation_id: None,
-                request_id: release_request(&decision.decision_key, "asker"),
+                request_id: release_request(&decision.decision_key, "asker", decision.version),
                 text: owner_text(&decision, released_tasks.len()),
                 mode: Some("queue".into()),
                 source: Some("decision".into()),
@@ -1036,6 +1273,10 @@ pub fn answer(
 pub struct StandingCitation {
     pub task_id: String,
     pub cited_at: i64,
+    /// The chat that relied on it. Empty on a citation stored before this was kept.
+    pub asked_by: String,
+    /// The question that relied on it, one line. Empty on a citation stored before this was kept.
+    pub question: String,
 }
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq)]
@@ -1121,7 +1362,10 @@ pub fn retire(
     })
 }
 
-/// Turn reuse on or off for one answer. Missing key: nothing to change.
+/// Turn reuse on or off for one answer. Only the person's own answer can be turned on, and never a red line, a protected
+/// key, or a retired row. Turning it off after it was on stops the same key from being handed out again. Missing key:
+/// nothing to change. A row already in the requested state is left as it is, but turning on still checks the rules, so a
+/// flag forced on in the database cannot be confirmed.
 pub fn set_standing(
     conn: &mut Connection,
     project: &str,
@@ -1137,19 +1381,44 @@ pub fn set_standing(
     let Some(mut decision) = get(&tx, project, key)? else {
         return Ok(None);
     };
+    if standing {
+        if decision.retired_at.is_some() {
+            return Err("A retired answer is not reused. Ask the question again.".into());
+        }
+        if decision.state != ANSWERED || decision.answer.as_deref().unwrap_or("").trim().is_empty()
+        {
+            return Err("Only an answered question can be reused.".into());
+        }
+        if !person_answered(decision.answered_by.as_deref()) {
+            return Err("Only an answer from the person can be reused.".into());
+        }
+        if !standing_eligible(&decision.decision_key) {
+            return Err("This kind of question is never reused.".into());
+        }
+        if looks_red_line(&decision.question)
+            || looks_red_line(decision.answer.as_deref().unwrap_or(""))
+        {
+            return Err(
+                "A question on a red line is never reused. The person answers that one.".into(),
+            );
+        }
+    }
     if decision.standing == standing {
         return Ok(Some(decision));
     }
     let version = decision.version;
     decision.standing = standing;
+    // Off after it was on: the same key is asked again. On: a previous stop is cleared.
+    decision.reuse_stopped = !standing;
     decision.updated_at = now;
     decision.version += 1;
     let changed = tx
         .execute(
-            "UPDATE decisions SET standing = ?1, updated_at = ?2, version = ?3
-             WHERE project = ?4 AND decision_key = ?5 AND version = ?6",
+            "UPDATE decisions SET standing = ?1, reuse_stopped = ?2, updated_at = ?3, version = ?4
+             WHERE project = ?5 AND decision_key = ?6 AND version = ?7",
             params![
                 if standing { 1 } else { 0 },
+                if decision.reuse_stopped { 1 } else { 0 },
                 decision.updated_at,
                 decision.version,
                 decision.project,
@@ -1179,42 +1448,79 @@ pub struct StandingRow {
 }
 
 /// Active standing answers for one project, newest first, with how many tasks relied on each.
-/// Empty when standing answers are off, the project is blank, or nothing active is stored.
+/// The same twenty the brief shows: ticked, from the person, not a red line. Empty when standing answers are off.
 pub fn standing_rows(conn: &Connection, project: &str) -> Result<Vec<StandingRow>, String> {
+    let rows = visible_standing(conn, project)?;
+    let mut out = Vec::new();
+    for row in rows {
+        let uses = citations_for(conn, &row.project, &row.decision_key)?.len() as i64;
+        out.push(StandingRow {
+            project: row.project,
+            decision_key: row.decision_key,
+            question: row.question,
+            answer: row.answer.unwrap_or_default(),
+            standing_id: row.standing_id,
+            uses,
+        });
+    }
+    Ok(out)
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ReuseRow {
+    pub project: String,
+    pub decision_key: String,
+    pub question: String,
+    pub answer: String,
+    pub standing_id: String,
+    pub uses: i64,
+    /// False until the person ticks reuse. The Inbox lists both, so an old answer is not reused by surprise.
+    pub standing: bool,
+}
+
+/// Recent answers from the person that could be reused, ticked or not. Protected keys and red lines are left out.
+/// The setting does not hide this list: it is how the person chooses, before or after standing answers are on.
+pub fn reuse_rows(conn: &Connection, project: &str) -> Result<Vec<ReuseRow>, String> {
     let project = project.trim();
-    if project.is_empty() || !standing_enabled(conn)? {
+    if project.is_empty() {
         return Ok(Vec::new());
     }
-    let mut stmt = conn
-        .prepare(
-            "SELECT decision_key, question, answer, rowid,
-                    (SELECT COUNT(*) FROM decision_citations c
-                     WHERE c.project = decisions.project AND c.decision_key = decisions.decision_key)
-             FROM decisions
-             WHERE project = ?1 AND state = ?2 AND standing != 0 AND retired_at IS NULL
-               AND answer IS NOT NULL
-             ORDER BY answered_at DESC, rowid DESC",
-        )
-        .map_err(|e| e.to_string())?;
+    let sql = format!(
+        "SELECT {READ_COLUMNS} FROM decisions
+         WHERE project = ?1 AND state = ?2 AND retired_at IS NULL AND answer IS NOT NULL
+           AND answered_by IN ('user', 'person')
+         ORDER BY answered_at DESC, rowid DESC"
+    );
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
-        .query_map(params![project, ANSWERED], |row| {
-            Ok(StandingRow {
-                project: project.to_string(),
-                decision_key: row.get(0)?,
-                question: row.get(1)?,
-                answer: row.get(2)?,
-                standing_id: format!("S-{}", row.get::<_, i64>(3)?),
-                uses: row.get(4)?,
-            })
-        })
+        .query_map(params![project, ANSWERED], from_row)
         .map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
-    Ok(rows
-        .into_iter()
-        .filter(|row| standing_eligible(&row.decision_key))
-        .take(STANDING_ROWS)
-        .collect())
+    let mut out = Vec::new();
+    for row in rows {
+        if out.len() >= STANDING_ROWS {
+            break;
+        }
+        if !standing_eligible(&row.decision_key) {
+            continue;
+        }
+        if looks_red_line(&row.question) || looks_red_line(row.answer.as_deref().unwrap_or("")) {
+            continue;
+        }
+        let uses = citations_for(conn, &row.project, &row.decision_key)?.len() as i64;
+        out.push(ReuseRow {
+            project: row.project,
+            decision_key: row.decision_key,
+            question: row.question,
+            answer: row.answer.unwrap_or_default(),
+            standing_id: row.standing_id,
+            uses,
+            standing: row.standing,
+        });
+    }
+    Ok(out)
 }
 
 /// Newest active answers for one project, for a first mate's brief. Empty when standing answers are off, the project
@@ -1234,37 +1540,27 @@ fn one_line(value: &str) -> String {
     }
 }
 
-pub fn standing_block(conn: &Connection, project: &str) -> Result<String, String> {
-    let project = project.trim();
-    if project.is_empty() || !standing_enabled(conn)? {
-        return Ok(String::new());
-    }
-    let sql = format!(
-        "SELECT {READ_COLUMNS} FROM decisions
-         WHERE project = ?1 AND state = ?2 AND standing != 0 AND retired_at IS NULL AND answer IS NOT NULL
-         ORDER BY answered_at DESC, rowid DESC"
+/// A question or an answer is untrusted. Flatten it, and keep it from closing the brief's fence.
+fn fence_safe(value: &str) -> String {
+    one_line(value).replace('<', "&lt;").replace('>', "&gt;")
+}
+
+fn standing_line(row: &Decision) -> String {
+    let line = format!(
+        "{}: asked by a chat: {} Ash's answer: {}",
+        row.standing_id,
+        fence_safe(&row.question),
+        fence_safe(row.answer.as_deref().unwrap_or(""))
     );
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map(params![project, ANSWERED], from_row)
-        .map_err(|e| e.to_string())?
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
+    line.chars().take(300).collect()
+}
+
+pub fn standing_block(conn: &Connection, project: &str) -> Result<String, String> {
+    let rows = visible_standing(conn, project)?;
     let mut body = Vec::new();
     let mut size = STANDING_HEADER.chars().count();
     for row in rows {
-        if body.len() >= STANDING_ROWS {
-            break;
-        }
-        if !standing_eligible(&row.decision_key) {
-            continue;
-        }
-        let line = format!(
-            "{}: {} -> {}",
-            row.standing_id,
-            one_line(&row.question),
-            one_line(row.answer.as_deref().unwrap_or(""))
-        );
+        let line = standing_line(&row);
         let extra = 1 + line.chars().count();
         if size + extra > STANDING_CHARS {
             if body.is_empty() {
@@ -1301,7 +1597,7 @@ pub fn decisions_ask(
     input: AskInput,
 ) -> Result<AskOutcome, String> {
     let outcome = ask(&mut *store.lock_conn()?, input, now_millis())?;
-    if outcome.created || !outcome.added.is_empty() {
+    if outcome.created || !outcome.added.is_empty() || outcome.matched {
         announce(&app, Some(&outcome.decision), &outcome.released);
     }
     Ok(outcome)
@@ -1375,6 +1671,15 @@ pub fn decisions_standing_list(
     project: Option<String>,
 ) -> Result<Vec<StandingRow>, String> {
     standing_rows(&*store.lock_conn()?, project.as_deref().unwrap_or(""))
+}
+
+/// WP-156: the Inbox list behind "Reuse for similar questions". The webview calls this. No agent tool does.
+#[tauri::command(async)]
+pub fn decisions_reuse_list(
+    store: State<'_, SessionStore>,
+    project: Option<String>,
+) -> Result<Vec<ReuseRow>, String> {
+    reuse_rows(&*store.lock_conn()?, project.as_deref().unwrap_or(""))
 }
 
 #[tauri::command(async)]
