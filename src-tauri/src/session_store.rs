@@ -1844,6 +1844,10 @@ fn migrate(conn: &Connection) -> rusqlite::Result<()> {
     // Hivra WP-14: steering messages and decisions.
     crate::steering::ensure_tables(conn)?;
     crate::decisions::ensure_tables(conn)?;
+    // Hivra WP-92: the secret vault's metadata. Values never live here.
+    crate::secrets::ensure_tables(conn)?;
+    // A request left `saving` by a crash between the keychain write and the row update reopens at startup.
+    let _ = crate::secrets::reopen_stale(conn, now_millis());
     crate::autopilot::ensure_tables(conn)?;
     crate::pr_watch::ensure_tables(conn)?;
     crate::delivery::ensure_tables(conn)?; // Hivra WP-12

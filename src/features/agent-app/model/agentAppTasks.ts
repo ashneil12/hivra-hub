@@ -184,6 +184,8 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "gates",
       "checks",
       "code",
+      // WP-92: the keys a worker's environment holds (at most 3).
+      "secrets",
       // WP-144: a short reading list the fresh-eyes reviewers see with the plan.
       "reading",
       // WP-141: builder, reviewer or researcher. A saved role row picks the CLI.
@@ -611,6 +613,33 @@ function fileList(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.length > 400))
     throw new Error("files must be a list of the project's file or folder paths it will change");
   return value.slice(0, 30).map((item: string) => item.trim());
+}
+
+/** WP-92: delegate_task's `secrets`: up to 3 keys, each into one environment variable of its own, never a value. */
+const SECRETS_MAX = 3;
+function workerSecrets(value: unknown): { name: string; env: string }[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > SECRETS_MAX)
+    throw new Error(`secrets must be up to ${SECRETS_MAX} keys, each with a name and an env`);
+  const out = value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new Error(
+        'Each key is an object with a name and an env, like {"name": "stripe-api-key", "env": "STRIPE_API_KEY"}',
+      );
+    const row = item as Record<string, unknown>;
+    const extra = Object.keys(row).filter((key) => key !== "name" && key !== "env");
+    if (extra.length) throw new Error(`Unknown secrets fields: ${extra.join(", ")}`);
+    const name = text(row.name, "name", 64);
+    const env = text(row.env, "env", 64);
+    if (!/^[A-Z_][A-Z0-9_]{0,63}$/.test(env))
+      throw new Error("env must be capital letters, digits and underscores, like STRIPE_API_KEY");
+    return { name, env };
+  });
+  if (new Set(out.map((secret) => secret.name.toLowerCase())).size !== out.length)
+    throw new Error("Each key once: two entries name the same key");
+  if (new Set(out.map((secret) => secret.env)).size !== out.length)
+    throw new Error("Each key needs its own env name");
+  return out;
 }
 
 function scopeList(value: unknown): string[] {
@@ -1119,11 +1148,17 @@ async function delegate(
   const gates = gateRequest(input);
   // Hivra WP-10: never deeper than first mate, first mate, workers.
   if (tasks.checkDepth) await tasks.checkDepth(source.id);
+  // WP-92: the keys a worker's environment holds. Checked before anything starts.
+  const secretList = workerSecrets(input.secrets);
   // A stuck task of the caller's this one takes on (a retry, or one piece of a split): checked before anything starts.
   const redoes =
     input.redoes === undefined ? undefined : (await ownRows(source, tasks, [text(input.redoes, "redoes", 128)]))[0];
   if (input.lead !== undefined) {
     if (redoes) throw new Error("redoes is for your own workers' tasks; leave it out when you brief a Lead.");
+    if (secretList.length)
+      throw new Error(
+        "secrets are for a worker you start yourself; a Lead's delegation names its own workers' keys. Leave them out here.",
+      );
     if (!owner.mono)
       throw new Error(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
@@ -1461,6 +1496,40 @@ async function delegate(
     (firstMate || everyone.some((row) => (row.project ?? "") === projectOf(launch.cwd)));
   if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
+  // WP-92: a worker's keys are checked, approved by the person where needed, and armed for its session before it
+  // starts. Nothing is armed unless every key is ready, and none of the words here carries a value.
+  if (secretList.length) {
+    if (!owner.mono)
+      throw new Error(
+        "A worker's key comes from a Mono's own chat: the approvals are the Mono's. A coding-team chat hands this work to its Lead, whose own delegation names the key.",
+      );
+    if (!host.secretsWorkerArm) throw new Error("Keys aren't available in this build");
+    const armed = await host.secretsWorkerArm(id, {
+      chat: source.id,
+      mono: owner.mono.id,
+      project: folder,
+      executable: launch.harness,
+      secrets: secretList,
+    });
+    if (armed.state !== "ready") {
+      const note =
+        armed.state === "waiting"
+          ? forUser`The person hasn't approved ${armed.name} for this worker yet. Tell them in one line what the worker will run, then end your turn; their answer comes back to you and you delegate again.`
+          : armed.state === "denied"
+            ? forUser`The person said no to ${armed.name}. Carry on without it, or ask again later with the reason it is needed.`
+            : forUser`No key named ${armed.name} is saved. Ask for it with secrets_request, then delegate again.`;
+      return {
+        taskId: null,
+        childSessionId: id,
+        status: armed.state === "denied" ? "refused" : "waiting",
+        title,
+        cwd: launch.cwd,
+        harness: launch.harness,
+        model: launch.model,
+        note,
+      };
+    }
+  }
   // Over the project's limit, or the provider has no account with room: it waits and starts by itself (H8).
   if (tasks.pool) {
     const job = {
