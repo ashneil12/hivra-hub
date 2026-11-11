@@ -11,7 +11,7 @@
 //   - only allow-listed chat fields are written, so a secret on the sending side cannot reach this disk through a move.
 
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type CanResume,
@@ -68,6 +68,8 @@ export interface HostChatSessions {
   activity?(chatId: string): { turnRunning: boolean; approvalPending: boolean } | null;
   /** Freeze and release hold the copy so the engine refuses turns. Thaw clears it. */
   hold?(chatId: string, held: boolean): void;
+  /** Whether a host session exists for this chat, and if it is still open. */
+  presence?(chatId: string): "none" | "open" | "archived";
 }
 
 export interface HostTeleportOptions {
@@ -112,6 +114,36 @@ export class HostTeleportStore {
     this.chatsDir = join(options.dir, "chats");
     this.now = options.now ?? Date.now;
     this.leaseMs = options.leaseMs ?? DEFAULT_LEASE_MS;
+    this.finishLeftChats();
+  }
+
+  /**
+   * A release that already recorded "the chat left" and then died before it archived the session leaves a
+   * runnable copy. Finish that close. A chat that is still frozen or still live here is left alone.
+   */
+  private finishLeftChats(): void {
+    const sessions = this.options.sessions;
+    if (!sessions?.presence) return;
+    let names: string[];
+    try {
+      names = readdirSync(this.chatsDir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const chatId = name.slice(0, -".json".length);
+      if (!SAFE_ID.test(chatId)) continue;
+      let stored: StoredChat | null;
+      try {
+        stored = this.load(chatId);
+      } catch {
+        continue;
+      }
+      if (!stored || stored.live || stored.frozenBy) continue;
+      if (!stored.owner || stored.owner === this.options.selfId) continue;
+      if (sessions.presence(chatId) === "open") sessions.close(chatId);
+    }
   }
 
   // Folders appear on the first write, so an idle host does not show an empty teleport folder in its file browser.
@@ -327,10 +359,11 @@ export class HostTeleportStore {
     if (!stored || stored.frozenBy !== moveId) throw new Error("This move did not freeze the chat");
     if (stored.frozenDevice !== device) throw new Error("This move was started by another device");
     if (stored.frozenTo !== to) throw new Error("The release names a destination other than the one the move froze for");
+    // Archive first, then record that the chat has left, then hold. A crash on the hold cannot leave a
+    // runnable copy: the session is already archived, and the record already says the chat left.
     // Keep the releasing device so a later read by anyone else learns nothing, not even who holds the chat.
-    this.save(chatId, { ...stored, owner: to, device, live: null, frozenBy: null, frozenDevice: null, frozenTo: null, activatedBy: null });
-    // The chat lives on the Mac again. Hold the copy (no new turn) and stop its provider, then archive it.
-    this.options.sessions?.hold?.(chatId, true);
     this.options.sessions?.close(chatId);
+    this.save(chatId, { ...stored, owner: to, device, live: null, frozenBy: null, frozenDevice: null, frozenTo: null, activatedBy: null });
+    this.options.sessions?.hold?.(chatId, true);
   }
 }

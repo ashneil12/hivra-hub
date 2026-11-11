@@ -19,8 +19,10 @@ export function hostChatSessions(store: HostStore): HostChatSessions {
   return {
     open(chat: TransferChat, moveId: string): void {
       try {
-        // A chat already open here is left as it is. Replacing it would drop turns the host has run.
-        if (!store.session(chat.chatId).archived) return;
+        const existing = store.session(chat.chatId);
+        // A live session that is not held keeps the turns it has run. A held or archived copy is a leftover
+        // from a move that already left, and the new copy replaces it.
+        if (!existing.archived && !existing.teleportHeld) return;
       } catch {
         // No host session yet: this arrival creates one.
       }
@@ -90,6 +92,13 @@ export function hostChatSessions(store: HostStore): HostChatSessions {
         turnRunning: value.status === "running",
         approvalPending: hasPendingApproval(session.blocks) || session.pendingQuestion != null,
       };
+    },
+    presence(chatId: string): "none" | "open" | "archived" {
+      try {
+        return store.session(chatId).archived ? "archived" : "open";
+      } catch {
+        return "none";
+      }
     },
     hold(chatId: string, held: boolean): void {
       let value: HostSession;
