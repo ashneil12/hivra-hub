@@ -140,4 +140,17 @@ describe("placePopover", () => {
       ),
     ).toMatchObject({ top: 292, maxHeight: 300 });
   });
+
+  // Ash, 11 Nov: the model list "slides down" after the window was short for a moment. Squeezed to 364px, it was
+  // measured at 364px for good, so each bit of window that came back moved its top down toward the anchor.
+  it("gives a squeezed flyout its minimum height back when the window grows", () => {
+    expect(
+      placePopover(
+        anchor(100, 500, 200, 24),
+        { width: 310, height: 364 },
+        { width: 1100, height: 760 },
+        { side: "right", minHeight: 442, maxHeight: 442 },
+      ),
+    ).toMatchObject({ top: 310, maxHeight: 442 });
+  });
 });

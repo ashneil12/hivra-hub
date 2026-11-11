@@ -50,13 +50,25 @@ export type SettingsSectionId =
   | "connectors"
   | "secrets";
 
-/** Rail buckets. Sections list in order under their group label. */
-export type SettingsGroupId = "app" | "agents" | "workspace";
+/** Rail buckets. Sections list under their group label, in the order SETTINGS_GROUPS gives. */
+export type SettingsGroupId = "app" | "agents" | "tools" | "record" | "data" | "workspace";
 
-export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
-  { id: "app", label: "App" },
-  { id: "agents", label: "Agents" },
-  { id: "workspace", label: "Workspace" },
+// Dropwave (Ash, 11 Nov: "the settings area is an absolute mess"): five short lists instead of one long one. The
+// everyday ones are on top; what a non-technical owner rarely needs (machines, MCP, plugins, worktrees, archive, trash)
+// is under Advanced, folded until asked for.
+export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string; folded?: boolean; sections: SettingsSectionId[] }[] = [
+  { id: "app", label: "App", sections: ["general", "appearance", "keybindings", "usage"] },
+  // Who works for you, then what they can use (Ash, 11 Nov round 5: first mates by that name, and only useful things).
+  { id: "agents", label: "Your team", sections: ["monos", "teams", "chat"] },
+  { id: "tools", label: "What they can use", sections: ["providers", "skills", "connectors", "connected", "memory"] },
+  { id: "record", label: "What happened", sections: ["decisions", "activity", "work-log", "changes", "history"] },
+  { id: "data", label: "Your data", sections: ["portable", "backups", "secrets"] },
+  {
+    id: "workspace",
+    label: "Advanced",
+    folded: true,
+    sections: ["connections", "mcp", "plugins", "crew", "inbox", "dashboards", "archive", "trash", "worktrees"],
+  },
 ];
 
 export type SettingsSection = {
@@ -79,7 +91,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "connections",
-    group: "app",
+    group: "workspace",
     label: "Remote machines",
     description:
       "Run agents on your other machines, and pair your phone with this desktop. For app logins, see Connectors.",
@@ -97,14 +109,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "changes",
-    group: "app",
+    group: "record",
     label: "Changes",
     description: "Changes the app and your Monos made to their own screens, with Undo, and any it turned down for breaking a design rule.",
     keywords: "undo proposal self change dashboard history design rules",
   },
   {
     id: "decisions",
-    group: "app",
+    group: "record",
     label: "Decisions",
     description:
       "One project at a time: what is still waiting on you, and what is already decided or ruled out, newest first.",
@@ -112,7 +124,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "activity",
-    group: "app",
+    group: "record",
     label: "Activity",
     description:
       "What agents and the app did, newest first. Kept for 90 days.",
@@ -120,7 +132,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "work-log",
-    group: "app",
+    group: "record",
     label: "Work log",
     description: "What got done, grouped by day. One project, or every project.",
     keywords: "work log today outcomes decisions",
@@ -135,7 +147,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "connected",
-    group: "app",
+    group: "tools",
     label: "Connected apps",
     description:
       "AI tools on this computer that can read Hivra, and what each one may see.",
@@ -143,21 +155,21 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "dashboards",
-    group: "app",
+    group: "workspace",
     label: "Dashboards",
     description: "Each project's dashboard template, and reset to default.",
     keywords: "template dashboard today cards sidebar reset",
   },
   {
     id: "portable",
-    group: "app",
+    group: "data",
     label: "Export and import",
     description: "Your whole setup, and if you like your memory and workspace, saved to a file or folder and brought back after a preview.",
     keywords: "export import backup restore setup memory workspace move new mac engine portable chats",
   },
   {
     id: "backups",
-    group: "app",
+    group: "data",
     label: "Backups",
     description:
       "A checked copy on a schedule. Bring back one chat, Mono, doc or task, or put everything back.",
@@ -165,7 +177,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "history",
-    group: "app",
+    group: "record",
     label: "Chat history",
     description:
       "Read past Claude Code, Codex and Hermes chats, only with your OK, and draft how you work for you to review.",
@@ -173,21 +185,21 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "memory",
-    group: "app",
+    group: "tools",
     label: "Memory",
     description: "How Hivra remembers and what it remembers, with its source, for you to confirm, edit or delete.",
     keywords: "memory fact skill recall review tier rules cheap crew model cost",
   },
   {
     id: "connectors",
-    group: "app",
+    group: "tools",
     label: "Connectors",
     description: "The apps your Monos use (GitHub, Gmail, Slack and more), and where each login lives.",
     keywords: "connector login sign in composio apps oauth gmail slack github",
   },
   {
     id: "secrets",
-    group: "app",
+    group: "data",
     label: "Secrets",
     description: "The keys your agents can use, kept in your Mac's keychain. Never in chats, files or backups.",
     keywords: "secret key token password keychain agent approval env utility",
@@ -211,7 +223,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "providers",
-    group: "agents",
+    group: "tools",
     label: "Providers",
     description:
       "Provider accounts, agent CLIs MonoCode can drive, and the model new sessions start with.",
@@ -220,7 +232,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "mcp",
-    group: "agents",
+    group: "workspace",
     label: "MCP",
     description:
       "Find MCP servers across providers and manage their connections.",
@@ -229,7 +241,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "skills",
-    group: "agents",
+    group: "tools",
     label: "Skills",
     description:
       "Discover and manage file skills from project, personal, and harness folders.",
@@ -237,7 +249,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "plugins",
-    group: "agents",
+    group: "workspace",
     label: "Plugins",
     description:
       "Plugins you can add, what each one does and its licence, and the indexes they come from.",
@@ -245,7 +257,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "crew",
-    group: "agents",
+    group: "workspace",
     label: "Crew",
     description: "Which CLI, model and effort a task uses, in the order you set.",
     keywords: "crew rules routing cli model effort reroute labels paths",
@@ -253,17 +265,17 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "monos",
     group: "agents",
-    label: "Monos",
+    label: "First mates",
     description:
-      "The resident agent beside your tabs, and which projects have one.",
-    keywords: "mono resident agent mascot claim project title bar",
+      "Your Chief of Staff and first mates: what each is called and which projects it works on.",
+    keywords: "mono monos first mate chief of staff rename name resident agent mascot claim project title bar",
   },
   {
     id: "teams",
     group: "agents",
     label: "Teams",
-    description: "Teams of named Monos you work with (Marketing and more), each with its room, and new Monos agents propose for your okay.",
-    keywords: "team marketing named mono agent propose approve room soul engine",
+    description: "The team chats in each project, who is in them, and new teams a first mate proposes for your okay.",
+    keywords: "team marketing named mono first mate agent propose approve room soul engine leadership project",
   },
   {
     id: "inbox",
@@ -292,8 +304,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "worktrees",
     group: "workspace",
-    label: "Worktrees",
-    description: "Manage additional worktrees for each project.",
+    label: "Code and worktrees",
+    description: "Show Git, files and changes in projects, and manage each project's extra worktrees.",
     keywords: "git branch worktree working copy project create delete",
   },
 ];
@@ -301,11 +313,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
 export function settingsSectionsByGroup(): {
   id: SettingsGroupId;
   label: string;
+  folded?: boolean;
   sections: SettingsSection[];
 }[] {
-  return SETTINGS_GROUPS.map((group) => ({
+  return SETTINGS_GROUPS.map(({ sections: order, ...group }) => ({
     ...group,
-    sections: SETTINGS_SECTIONS.filter((section) => section.group === group.id),
+    sections: SETTINGS_SECTIONS.filter((section) => section.group === group.id).sort(
+      (a, b) => order.indexOf(a.id) - order.indexOf(b.id),
+    ),
   })).filter((group) => group.sections.length > 0);
 }
 
@@ -354,21 +369,21 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   {
     id: "monos-enabled",
     section: "monos",
-    label: "Show monos",
-    keywords: "mono agent rail hide",
+    label: "Show first mates",
+    keywords: "mono monos agent rail hide",
   },
   {
     id: "rail-monos-pinned",
     section: "monos",
-    label: "Pin monos to the icon rail",
+    label: "Pin first mates to the icon rail",
     keywords: "mono rail compact collapsed icons top divider project picker",
   },
   {
     id: "mono-list",
     section: "monos",
-    label: "Your monos",
+    label: "Your first mates",
     keywords:
-      "mono reset soul name projects sessions sidebar visibility hidden show",
+      "mono monos reset soul name rename chief of staff projects sessions sidebar visibility hidden show",
   },
   {
     id: "project-worktrees",
@@ -389,6 +404,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Project actions",
     keywords:
       "project file .monocode project.json setup run dev slot check ship import trust buttons",
+  },
+  {
+    id: "show-code-tools",
+    section: "worktrees",
+    label: "Show code tools",
+    keywords: "advanced files changes git diff worktree picker sidebar developer technical simple",
   },
   {
     id: "worktree-autoclear",

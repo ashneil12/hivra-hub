@@ -1,118 +1,129 @@
-// Home, wired to the app's tasks, decisions, docs and panels. A late load is dropped. A failed load keeps the last one.
+// Home, wired to the chief's chat, the needs list, running workers and what finished today.
+// A late load is dropped. A failed load keeps the last one. Home does not file tasks.
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { fileIntoProject } from "../../chief/model/answer";
-import { createHomeAsks } from "../model/ask";
-import { readingsOf } from "../../chief/model/homeReadings";
-import { summaryLines } from "../../chief/model/summary";
-import { MORNING_HABIT_ID } from "../../chief/model/habit";
-import { readsEveryProject } from "../../chief/model/scope";
-import { listMonos } from "../../monos/model/mono";
+import { readPage, type ActivityEntry } from "../../activity/model/activity";
+import { useDelegationRows } from "../../monos/model/delegationStore";
+import type { Delegation } from "../../monos/model/delegations";
 import { builderHold, spendHold, useWorkerPoolVersion } from "../../monos/model/workerPool";
 import { spendSnapshot, subscribeSpend } from "../../usage/model/spendGate";
-import { loadHabits } from "../../monos/model/monoHabits";
-import { useHubDataVersion, hubData, registryProjects } from "../../hub/model/hubData";
-import { showAppItem } from "../../hub/model/hubNav";
-import { importFromAshOsAgain, importOutcome, lastAshOsImport, subscribeAshOsImport } from "../../hub/model/localHub/ashOsImport";
-import { LOCAL_HUB_CHANGED, appHubTransport } from "../../hub/model/localHub/localTransport";
+import { listMonos, monoLook } from "../../monos/model/mono";
+import { PixelMascot } from "../../projects/ui/PixelMascot";
+import { useHubDataVersion, hubData } from "../../hub/model/hubData";
+import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
-import { hideSection, moveSection, pinPanel, showSection, unpin } from "../model/arrangement";
-import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
-import { builderHoldLine, hubProjectId, movingLines, namesFor, projectLines, recentLines, type HomeLine } from "../model/lines";
 import { useNeedsYou } from "../../needs/model/needsLive";
-import type { NeedsItem } from "../../needs/model/needsYou";
-import { openFromHome, targetFor } from "../model/opener";
-import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
-import { HomeScreen } from "./HomeScreen";
-import { keepListening } from "./listenRetry";
-import { ProgrammePanel } from "../../programme/ui/ProgrammePanel";
+import { workingCount, type NeedsItem } from "../../needs/model/needsYou";
+import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workLog";
+import { hideSection, pinPanel, showSection, unpin } from "../model/arrangement";
+import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
+import { openProjectChief } from "../../hub/ui/HubTopNav";
+import { needActions } from "../model/needActions";
+import { needTarget } from "../model/needTarget";
+
+export { needTarget };
+import { homeDateLabel } from "../model/dateLabel";
+import { doneToday, projectTag } from "../model/doneToday";
 import {
-  applyProgrammeLoad,
-  collectProgramme,
-  PROGRAMME_CHANGED,
-  READ_NOTICE,
-  READ_NOTICE_AFTER,
-  programmeShows,
-  retryDelayMs,
-  type ProgrammePackage,
-} from "../../programme/model/programme";
+  answerHomeQuestion,
+  ensureHomeChief,
+  homeChiefVersion,
+  readHomeChiefSession,
+  sendHomeTurn,
+  subscribeHomeChief,
+} from "../model/homeChief";
+import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
+import { builderHoldLine, namesFor, type HomeProject } from "../model/lines";
+import { needsRank, needsShown } from "../model/needsShown";
+import { openFromHome, targetFor, type HomeOpenTarget } from "../model/opener";
+import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
+import { workingLines } from "../model/workingNow";
+import { HOME_HEADER_BUTTON, HomeScreen, type HomeChief, type HomeDone, type HomeExtraSection, type HomeNeed, type HomeWork } from "./HomeScreen";
+import { pinnedPages, requestOpenPage, usePagesVersion } from "../../pages/model/pages";
+import { automationScheduleLabel, listAutomations, peekAutomations, type Automation } from "../../automations/model/automations";
+import { projectAutopilotOn, setProjectAutopilot, useProjectAutopilotVersion } from "../model/projectAutopilot";
+import { keepListening } from "./listenRetry";
 
 const TASKS_CHANGED = "tasks://changed";
-
-function lineFromNeed(item: NeedsItem, projectName: (id: string) => string): HomeLine {
-  const decision = item.decisionKey?.trim();
-  const gate = item.gateKey?.trim();
-  const open = item.open;
-  const projectId = item.projectId ?? "";
-  let kind: HomeLine["kind"] = "decision";
-  let target = decision || open?.id || item.key;
-  if (item.kind === "stopped") {
-    kind = "stopped";
-    target = open?.id || item.key;
-  } else if (open?.where === "chat") {
-    kind = "chat";
-    target = open.id;
-  } else if (open?.where === "page") {
-    kind = "page";
-    target = open.id;
-  } else if (item.kind === "check" && gate) {
-    kind = "decision";
-    target = gate;
-  } else if (decision) {
-    kind = "decision";
-    target = decision;
-  } else if (open?.where === "task") {
-    kind = "question";
-    target = open.id;
-  } else if (item.kind === "review") {
-    kind = "review";
-  } else if (item.kind === "question") {
-    kind = "question";
-  }
-  return {
-    id: item.key,
-    kind,
-    text: item.sentence,
-    projectId,
-    who: item.who,
-    needsKind: item.kind,
-    ...(projectId ? { projectName: projectName(projectId) } : {}),
-    target,
-    at: item.at,
-    actions: item.actions.slice(0, 3),
-  };
-}
 const RETRY_MS = 2000;
 
-export function HomeView() {
+function labelFor(projects: readonly HomeProject[]): (projectId: string) => string | undefined {
+  const name = namesFor(projects);
+  return (projectId: string) => {
+    if (!projectId.trim()) return undefined;
+    return projectTag(projectId, (id) => {
+      const named = name(id);
+      return named === id ? undefined : named;
+    });
+  };
+}
+
+function openNeed(item: NeedsItem): void {
+  openFromHome(needTarget(item));
+}
+
+/** Opens a Places view (Pages, Notes, Automations) over Home; App.tsx listens. */
+function openPlace(place: "pages" | "notes" | "automations"): void {
+  window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: place }));
+}
+
+/** Autopilot as the project's mode (Dropwave): one switch beside the title. */
+function AutopilotSwitch({ projectId, name }: { projectId?: string; name: string }) {
+  useProjectAutopilotVersion();
+  const on = projectAutopilotOn(projectId);
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      data-home-autopilot={on ? "on" : "off"}
+      title={on
+        ? `Autopilot is on: the Chief of Staff keeps ${name} moving and only asks you the big calls.`
+        : `Autopilot is off: work on ${name} waits for you.`}
+      onClick={() => void setProjectAutopilot(projectId, !on)}
+      className={HOME_HEADER_BUTTON}
+    >
+      <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}>
+        <span className={`absolute top-0.5 size-3 rounded-full bg-white transition-[left] ${on ? "left-3.5" : "left-0.5"}`} />
+      </span>
+      Autopilot {on ? "on" : "off"}
+    </button>
+  );
+}
+
+/**
+ * Home, or one project's home (Dropwave, 11 Nov): the Chief of Staff's box on top as a starting point (a message opens
+ * the full chat), then only this project's Needs you, Working now, Done today, pinned pages and automations.
+ */
+export function HomeView({ projectId }: { projectId?: string } = {}) {
+  usePagesVersion();
+  const [automations, setAutomations] = useState<Automation[]>(() => peekAutomations() ?? []);
+  useEffect(() => {
+    let stopped = false;
+    void listAutomations().then((list) => {
+      if (!stopped) setAutomations(list);
+    }).catch(() => undefined);
+    return () => {
+      stopped = true;
+    };
+  }, []);
   const source = useMemo(() => realHomeSource(), []);
   const loader = useRef(createHomeLoader(source));
   const token = useRef(0);
-  const asks = useRef<ReturnType<typeof createHomeAsks> | null>(null);
-  if (!asks.current) {
-    asks.current = createHomeAsks((projectId, title) => fileIntoProject((command, args) => invoke(command, args), projectId, title));
-  }
   const snapRef = useRef<HomeSnapshot | null>(null);
   const [snap, setSnap] = useState<HomeSnapshot | null>(null);
   const [failed, setFailed] = useState(false);
-  const [report, setReport] = useState<string | undefined>(undefined);
-  const [reply, setReply] = useState<{ text?: string; notes?: { id: string; kind: string; text: string; projectId: string }[] } | undefined>(undefined);
-  // WP-159: the programme card. A failed read keeps the last rows and does not mark Home failed.
-  const [programme, setProgramme] = useState<ProgrammePackage[]>([]);
-  const [programmeNotice, setProgrammeNotice] = useState<string | undefined>(undefined);
-  const programmeToken = useRef(0);
-  // The rows on screen (kept when a board fails), the read a notice was set by, and the failed reads in a row.
-  const programmeRows = useRef<ProgrammePackage[]>([]);
-  const programmeNoticeAt = useRef(-1);
-  const programmeFails = useRef(0);
-  const reloadProgramme = useRef<() => void>(() => undefined);
-  const [bringing, setBringing] = useState<{ busy: boolean; outcome?: string }>({ busy: false });
-  const ashOs = useSyncExternalStore(subscribeAshOsImport, lastAshOsImport, lastAshOsImport);
+  const [roster, setRoster] = useState(0);
+  const [sessionId, setSessionId] = useState<string | undefined>(undefined);
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [work, setWork] = useState<WorkLogLine[]>([]);
+  const chiefRev = useSyncExternalStore(subscribeHomeChief, homeChiefVersion, homeChiefVersion);
   useHubDataVersion();
-  // WP-161: the queue, the saved pauses and the machine's last reading, so a hold on new builders shows and clears here.
   useWorkerPoolVersion();
+  const delegations = useDelegationRows();
+  const needs = useNeedsYou();
   // WP-176: a spend limit change clears or shows the pause without waiting for the next queue tick.
   useSyncExternalStore(subscribeSpend, () => spendSnapshot().book.revision, () => 0);
   const projectKey = hubData().listProjects().map((project) => `${project.id}\0${project.name}\0${project.folder ?? ""}`).join("\n");
@@ -188,72 +199,59 @@ export function HomeView() {
   useEffect(() => {
     let stopped = false;
     let timer = 0;
-    let laterTimer = 0;
-    let unlisten: (() => void) | undefined;
+    let mine = 0;
     const load = () => {
-      window.clearTimeout(timer);
-      const mine = ++programmeToken.current;
-      const projects = hubData().listProjects().map((project) => project.id).filter((id) => id.trim() !== "");
-      void collectProgramme(projects, (project) =>
-        invoke("programme_list", { actor: { id: "person", project, kind: "person" } }),
-      ).then((loaded) => {
-        if (stopped) return;
-        const applied = applyProgrammeLoad(mine, programmeToken.current, loaded, programmeRows.current, programmeNoticeAt.current);
-        if ("drop" in applied) return;
-        programmeRows.current = applied.rows;
-        setProgramme(applied.rows);
-        if (applied.clearNotice) setProgrammeNotice(undefined);
-        if (!applied.retry) {
-          programmeFails.current = 0;
-          return;
-        }
-        // A board that did not answer keeps its rows. Retry with a longer wait each time, and say so after a few.
-        programmeFails.current += 1;
-        if (programmeFails.current >= READ_NOTICE_AFTER) {
-          programmeNoticeAt.current = mine;
-          setProgrammeNotice(READ_NOTICE);
-        }
-        timer = window.setTimeout(load, retryDelayMs(programmeFails.current));
+      const ticket = ++mine;
+      const day = localDay(new Date());
+      void invoke("activity_list", { query: {} }).then((raw) => {
+        if (stopped || ticket !== mine) return;
+        setActivity(readPage(raw).entries);
+      }).catch(() => {
+        if (stopped || ticket !== mine) return;
+        window.clearTimeout(timer);
+        timer = window.setTimeout(load, RETRY_MS);
+      });
+      void invoke("work_log_read", { day }).then((raw) => {
+        if (stopped || ticket !== mine) return;
+        setWork(readLines(raw));
+      }).catch(() => {
+        if (stopped || ticket !== mine) return;
+        window.clearTimeout(timer);
+        timer = window.setTimeout(load, RETRY_MS);
       });
     };
-    reloadProgramme.current = load;
     load();
-    keepListening(
-      () => listen(PROGRAMME_CHANGED, () => {
-        if (!stopped) load();
-      }).then((stop) => {
-        if (stopped) {
-          stop();
-          return () => undefined;
-        }
-        unlisten = stop;
-        return stop;
-      }),
-      { stopped: () => stopped, retryMs: RETRY_MS, later: (fn, ms) => (laterTimer = window.setTimeout(fn, ms)) },
-    );
     return () => {
       stopped = true;
-      programmeToken.current += 1;
+      mine += 1;
       window.clearTimeout(timer);
-      window.clearTimeout(laterTimer);
-      unlisten?.();
     };
-  }, [projectKey]);
+  }, []);
+
+  const chiefMono = pickChief(listMonos());
+  void roster;
 
   useEffect(() => {
+    if (!chiefMono) return undefined;
+    const monoId = chiefMono.id;
     let stopped = false;
-    const mono = listMonos().find((item) => readsEveryProject(item));
-    if (!mono) return undefined;
-    void loadHabits(mono.id).then((habits) => {
-      if (stopped) return;
-      const morning = habits.find((habit) => habit.id === MORNING_HABIT_ID);
-      const latest = morning?.runs?.[0];
-      setReport(latest?.outcome === "posted" ? latest.report : undefined);
-    }).catch(() => undefined);
+    let timer = 0;
+    const run = () => {
+      void ensureHomeChief(monoId).then((id) => {
+        if (stopped) return;
+        if (id) {
+          setSessionId(id);
+          return;
+        }
+        timer = window.setTimeout(run, RETRY_MS);
+      });
+    };
+    run();
     return () => {
       stopped = true;
+      window.clearTimeout(timer);
     };
-  }, [snap?.rev]);
+  }, [chiefMono?.id]);
 
   async function update(fn: (doc: HomeDoc) => HomeDoc) {
     const mine = ++token.current;
@@ -276,103 +274,188 @@ export function HomeView() {
   }
 
   const projects = snap?.projects ?? [];
-  const name = namesFor(projects);
-  const tasks = (snap?.tasks ?? []).map((task) => ({ ...task, projectId: hubProjectId(task.projectId, projects) }));
-  const arrangement = snap?.arrangement ?? { order: [], hidden: [], savedAt: 0 };
-  const readings = readingsOf({
-    projects,
-    tasks,
-    docs: snap?.docs ?? [],
-    decisions: snap?.decisions ?? [],
-    chats: snap?.chats ?? [],
-  });
-  const summary = summaryLines(report, snap?.summaryOff === true, readings);
-  function programmeSaid(error: unknown): string {
-    if (typeof error === "string" && error.trim()) return error;
-    if (error instanceof Error && error.message.trim()) return error.message;
-    return "The programme is busy. Try again.";
-  }
-
-  async function clearPark(row: ProgrammePackage) {
-    try {
-      await invoke("programme_clear", {
-        actor: { id: "person", project: row.projectId, kind: "person" },
-        input: { id: row.id, version: row.version },
-      });
-      setProgrammeNotice(undefined);
-      reloadProgramme.current();
-    } catch (error) {
-      // The notice stays until a complete read that starts after it (the reload below is the one that shows the board as it is now).
-      reloadProgramme.current();
-      programmeNoticeAt.current = programmeToken.current;
-      setProgrammeNotice(programmeSaid(error));
-    }
-  }
-
-  async function onAsk(text: string) {
-    const current = snapRef.current;
-    const next = await asks.current?.ask(text, {
-      readings: current
-        ? readingsOf({
-            projects: current.projects,
-            tasks: current.tasks.map((task) => ({ ...task, projectId: hubProjectId(task.projectId, current.projects) })),
-            docs: current.docs,
-            decisions: current.decisions,
-            chats: current.chats,
-          })
-        : [],
-      projects: (current?.projects ?? []).map((project) => ({ id: project.id, name: project.name, folder: project.folder })),
-      loaded: current != null,
-    });
-    if (!next) return;
-    setReply(next);
-  }
-  async function bringOver() {
-    setBringing({ busy: true });
-    try {
-      const decision = await importFromAshOsAgain(appHubTransport().hub);
-      setBringing({ busy: false, outcome: importOutcome(decision) });
-    } catch {
-      setBringing({ busy: false, outcome: "Couldn't bring them over just now. Try again." });
-    }
-  }
+  // On a project's home every row is this project's, so rows carry no project tag.
+  const tagFor = labelFor(projects);
+  const label = (id: string) => (projectId ? undefined : tagFor(id));
+  const now = new Date();
+  const session = sessionId ? readHomeChiefSession(sessionId) : undefined;
+  void chiefRev;
+  const pending = session?.pendingQuestion;
+  const question = pending?.questions[0];
   const hold = builderHold();
-  const liveNeeds = useNeedsYou();
-  const fromList = liveNeeds.map((item) => lineFromNeed(item, name));
   const spend = spendHold();
-  const needsYou = [...(hold ? [builderHoldLine(hold)] : []), ...(spend ? [builderHoldLine(spend)] : []), ...fromList];
-  const moving = movingLines(tasks, name);
-  // The app holds no project at all (not one hidden by the trash or Ash's own "Remove from hub"): say why.
-  const noProjects = snap && registryProjects().length === 0
-    ? { inAshOs: ashOs?.decided === "later", outcome: bringing.outcome, busy: bringing.busy }
-    : undefined;
+  const builderLines = [
+    ...(hold ? [builderHoldLine(hold)] : []),
+    ...(spend ? [builderHoldLine(spend)] : []),
+  ];
+  const scoped = hubData().listProjects().find((p) => p.id === projectId);
+  const inScope = (id: string | null | undefined) => !scoped || id === scoped.id;
+  const mine = needs.filter((item) => inScope(item.projectId));
+  const shown = needsShown(mine);
+  const totalNeeds = mine.length;
+  const lines = workingLines(delegations.filter((row) => inScope(row.project)).map((row: Delegation) => ({
+    id: row.id,
+    project: row.project,
+    title: row.title,
+    goal: row.goal,
+    state: row.state,
+    createdAt: row.createdAt,
+  })));
+  const running = workingCount(scoped?.id);
+  const finished = doneToday({
+    activity,
+    work,
+    delegations: delegations.map((row) => ({
+      id: row.id,
+      state: row.state,
+      delivery: row.delivery,
+      settledAt: row.settledAt,
+      title: row.title,
+      goal: row.goal,
+      project: row.project,
+      childSession: row.childSession,
+    })),
+    now,
+    label,
+  }).filter((line) => inScope(line.projectId));
+
+  const chiefLook = chiefMono ? monoLook(chiefMono) : { mascot: "", color: "" };
+  const chief: HomeChief = chiefMono
+    ? {
+        missing: false,
+        name: (chiefMono.name ?? "").trim() || "Chief of Staff",
+        scope: scoped ? `runs ${scoped.name} for you` : chiefScopeLine(chiefMono, hubData().listProjects().length),
+        placeholder: scoped ? `Ask anything about ${scoped.name}, or hand over work` : undefined,
+        // Dropwave (Ash, 11 Nov): the box only starts a conversation, on Home and on a project's home. The conversation
+        // itself, and anything the Chief of Staff asks, is in its chat (and under Needs you).
+        options: [],
+        avatar: <PixelMascot name={chiefLook.mascot} color={chiefLook.color} status="idle" className="size-14 shrink-0" />,
+        starters: scoped
+          ? [`Where are we on ${scoped.name}?`, "What is blocked?", "What did you decide for me?"]
+          : ["What needs me today?", "Where is everything at?", "What did you decide for me?"],
+        onAdd: () => undefined,
+        onOpenChat: () => (scoped ? void openProjectChief(scoped.id) : openChiefChat(chiefMono.id)),
+        onOption: (optionId) => {
+          if (!sessionId || !pending || !question) return;
+          answerHomeQuestion(sessionId, pending.requestId, {
+            kind: "answered",
+            answers: { [question.id]: [optionId] },
+          });
+        },
+      }
+    : {
+        missing: true,
+        name: "",
+        options: [],
+        onAdd: () => {
+          const created = addChiefOfStaff();
+          if (!created) return;
+          setRoster((n) => n + 1);
+          openChiefChat(created.id);
+        },
+        onOpenChat: () => undefined,
+        onOption: () => undefined,
+      };
+
+  const needRows: HomeNeed[] = shown.map((item) => ({
+    key: item.key,
+    project: item.projectId ? label(item.projectId) : undefined,
+    sentence: item.sentence,
+    stopped: item.kind === "stopped",
+    blocksShip: needsRank(item) === 1,
+    actions: needActions(item),
+    onOpen: () => openNeed(item),
+  }));
+  const workRows: HomeWork[] = lines.map((line) => ({
+    key: line.key,
+    project: label(line.projectId),
+    text: line.text,
+    since: line.since,
+    onOpen: line.projectId ? () => openFromHome({ kind: "coding", projectId: line.projectId }) : undefined,
+  }));
+  const doneRows: HomeDone[] = finished.map((line) => ({
+    key: line.key,
+    project: label(line.projectId),
+    text: line.text,
+    time: line.time,
+    onOpen: () => openFromHome(line.open),
+  }));
+  const arrangement = snap?.arrangement ?? { order: [], hidden: [], savedAt: 0 };
+
+  const pages = pinnedPages().filter((page) => !scoped || page.projectId === scoped.id);
+  const folder = scoped?.folder ?? undefined;
+  const autos = automations.filter((auto) => !scoped || (folder ? auto.cwd === folder || auto.cwd.startsWith(`${folder}/`) : false));
+  const extras: HomeExtraSection[] = [
+    {
+      key: "pinned-pages",
+      title: "Pinned pages",
+      layout: "tiles",
+      empty: "Pin a page to keep it here.",
+      rows: pages.map((page) => ({
+        key: page.id,
+        text: page.title,
+        meta: page.pinnedBy ? `by ${page.pinnedBy}` : undefined,
+        onOpen: () => {
+          requestOpenPage(page.id);
+          openPlace("pages");
+        },
+      })),
+      action: { label: "All pages", onClick: () => openPlace("pages") },
+    },
+    {
+      key: "automations",
+      title: "Automations",
+      empty: "Nothing runs by itself yet. Ask the Chief of Staff to set one up.",
+      rows: autos.map((auto) => ({
+        key: auto.id,
+        text: auto.name,
+        meta: auto.enabled ? automationScheduleLabel(auto) : "Paused",
+        onOpen: () => openPlace("automations"),
+      })),
+      action: { label: "Manage", onClick: () => openPlace("automations") },
+    },
+  ];
+
+  function see(target: HomeOpenTarget) {
+    openFromHome(target);
+  }
+
   return (
     <HomeScreen
-      needsYou={needsYou}
-      needsMark={liveNeeds.length}
-      projects={projectLines(projects, needsYou, moving, tasks)}
-      noProjects={noProjects}
-      onBringOver={() => void bringOver()}
-      onNewProject={() => showAppItem("new-project")}
-      moving={moving}
-      recent={recentLines(snap?.docs ?? [], snap?.chats ?? [])}
+      date={homeDateLabel(now)}
+      chief={chief}
+      needs={needRows}
+      needsTotal={totalNeeds}
+      // WP-210: the count at a glance, the card's count and the rail's badges are the one Needs you list.
+      needsGlance={totalNeeds}
+      builders={builderLines}
+      working={workRows}
+      workingTotal={running}
+      done={doneRows}
+      onSeeNeeds={() => see({ kind: "needs" })}
       arrangement={snap ? arrangement : { order: [], hidden: [], savedAt: 0 }}
       catalog={snap?.catalog ?? []}
       known={snap != null}
       failed={failed}
-      summary={summary}
-      reply={reply}
       onOpen={(line) => openFromHome(targetFor(line))}
-      onMove={(key, dir) => void update((doc) => ({ ...doc, arrangement: moveSection(doc.arrangement, key, dir) }))}
       onHide={(key) => void update((doc) => ({ ...doc, arrangement: hideSection(doc.arrangement, key) }))}
       onShow={(key) => void update((doc) => ({ ...doc, arrangement: showSection(doc.arrangement, key) }))}
       onPin={(plugin, panelId) => void update((doc) => ({ ...doc, arrangement: pinPanel(doc.arrangement, plugin, panelId) }))}
       onUnpin={(key) => void update((doc) => ({ ...doc, arrangement: unpin(doc.arrangement, key) }))}
-      onAsk={(text) => void onAsk(text)}
+      onAsk={(text) => {
+        if (!chiefMono) return;
+        // The box is a starting point: the conversation carries on in the Chief of Staff's own chat. In a project that is
+        // the project's own Chief of Staff chat, geared to it; on Home, its chat with everything in view.
+        void sendHomeTurn(chiefMono.id, text, scoped?.id).then((result) => {
+          if (result.ok && !scoped) setSessionId(result.sessionId);
+        });
+        if (scoped) openProjectChief(scoped.id);
+        else openChiefChat(chiefMono.id);
+      }}
+      title={scoped ? scoped.name : "Home"}
+      headerExtra={<AutopilotSwitch projectId={scoped?.id} name={scoped ? scoped.name : "everything"} />}
+      extraSections={extras}
       renderPanel={(panel) => <PanelFrame plugin={panel.plugin} panelId={panel.panelId} spec={panel.spec} />}
-      programme={programmeShows(programme, programmeNotice) ? (
-        <ProgrammePanel rows={programme} notice={programmeNotice} onClear={(row) => void clearPark(row)} />
-      ) : undefined}
     />
   );
 }

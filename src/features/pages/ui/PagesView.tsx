@@ -2,13 +2,14 @@ import { useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type
 import { OverlayNav } from "../../../app/shell/TitleBar";
 import { WindowControls } from "../../../app/shell/WindowControls";
 import { IS_MAC } from "../../../platform/tauri/platform";
-import { ArrowUp, DashboardSquare, Pin, Undo2 } from "../../../shared/ui/icons";
+import { ArrowUp, Book, DashboardSquare, MoreHorizontal, Pin, Plus, Undo2 } from "../../../shared/ui/icons";
 import { useHubSelection } from "../../hub/model/hubNav";
+import { homeInView } from "../../hub/model/homeScope";
 import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { recordPageSource, undoBotChange } from "../../hub/model/botChanges";
-import { allPages, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
+import { allPages, noteShownPage, shownPageId, pagesListRequests, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
 import type { PageSpec } from "../model/pageSpec";
 import { READY_BY, READY_PAGES, readyWhat, withReadySpec, type ReadyPage } from "../model/readyPages";
@@ -495,21 +496,26 @@ function AskBox({ onAsk, monos, monoId, onPick, placeholder, label = "Describe t
   const [text, setText] = useState("");
   const send = () => { if (text.trim()) { onAsk(text.trim()); setText(""); } };
   return (
-    <form className={`${card} flex items-center gap-2 px-3 py-2`} onSubmit={(e) => { e.preventDefault(); send(); }}>
+    // The same box as a chat's: the words on top, who builds it and send on the row under them.
+    <form className={`${card} flex flex-col gap-2 p-3 text-left`} onSubmit={(e) => { e.preventDefault(); send(); }}>
       <input
         aria-label={label}
         value={text}
         onChange={(e) => setText(e.target.value)}
         placeholder={placeholder}
-        className="min-w-0 flex-1 bg-transparent py-1 text-[13px] text-content outline-none placeholder:text-content/60"
+        className="min-w-0 bg-transparent px-1 py-1.5 text-[14px] text-content outline-none placeholder:text-content/40"
       />
-      <select aria-label="Mono that builds it" data-pages-mono-picker value={monoId} onChange={(e) => onPick(e.target.value)}
-        className="max-w-[160px] shrink-0 truncate rounded-md bg-surface-raised px-2 py-1 text-[12px] text-content outline-none">
-        {monos.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-      </select>
-      <button type="submit" aria-label="Send to a Mono" disabled={!text.trim()} className="grid size-7 place-items-center rounded-full bg-content/12 text-content hover:bg-content/18 disabled:opacity-40">
-        <ArrowUp className="size-3.5" strokeWidth={2} />
-      </button>
+      <div className="flex items-center gap-2">
+        <span className="pl-1 text-[12px] text-content/50">Built by</span>
+        <select aria-label="Mono that builds it" data-pages-mono-picker value={monoId} onChange={(e) => onPick(e.target.value)}
+          className="h-7 max-w-[180px] shrink-0 truncate rounded-md border border-content/10 bg-transparent px-2 text-[12px] text-content/80 outline-none hover:bg-content/5">
+          {monos.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+        </select>
+        <span className="min-w-0 flex-1" />
+        <button type="submit" aria-label="Send to a Mono" disabled={!text.trim()} className="grid size-7 place-items-center rounded-md bg-content/12 text-content hover:bg-content/18 disabled:opacity-40">
+          <ArrowUp className="size-3.5" strokeWidth={2} />
+        </button>
+      </div>
     </form>
   );
 }
@@ -562,13 +568,23 @@ function ReadyMade({ offers, onAdd, compact }: { offers: readonly ReadyPage[]; o
   );
 }
 
+/** The project tab the list opens on: the project in view, or "all" on Home, outside the hub, or for an unknown project. */
+export function pagesScope(sel: { project: string; item: string }, projectIds: readonly string[], hub: boolean): string {
+  if (!hub || !sel.project || homeInView(sel) || sel.item === "agents") return "all";
+  return projectIds.includes(sel.project) ? sel.project : "all";
+}
+
 export function PagesContent() {
   usePagesVersion();
   useHubDataVersion();
-  const selected = useHubSelection().project;
+  const selection = useHubSelection();
+  const selected = selection.project;
   const projects = hubData().listProjects();
   const nameOf = (id: string) => (id === "today" ? NOT_TIED : projects.find((p) => p.id === id)?.name ?? id);
-  const [filter, setFilter] = useState<string>("all");
+  // Dropwave (Ash, 11 Nov): opened inside a project, the list starts on that project's pages; from Home, on all.
+  const scope = pagesScope(selection, projects.map((p) => p.id), IS_HUB_BUNDLE);
+  const [filter, setFilter] = useState<string>(scope);
+  useEffect(() => setFilter(scope), [scope]);
   const [build, setBuild] = useState<Build>();
   const [open, setOpen] = useState<string>();
   const [newPage, setNewPage] = useState(false);
@@ -580,6 +596,19 @@ export function PagesContent() {
   useEffect(() => {
     if (requested) { setOpen(takeOpenRequest()); setBuild(undefined); setNewPage(false); }
   }, [requested]);
+  // Dropwave: the sidebar's Pages row asks for the list itself.
+  const listAsked = pagesListRequests();
+  const listSeen = useRef(listAsked);
+  useEffect(() => {
+    if (listSeen.current === listAsked) return;
+    listSeen.current = listAsked;
+    setOpen(undefined); setBuild(undefined); setNewPage(false); setFilter(scope);
+  }, [listAsked, scope]);
+  // Dropwave: the sidebar marks a pinned page as open while it is the one shown here.
+  useEffect(() => {
+    noteShownPage(open);
+    return () => noteShownPage(undefined);
+  }, [open]);
   const pages = allPages();
   const shown = pages.find((p) => p.id === open);
   // A new page belongs to the filtered project, else the one selected in the hub.
@@ -700,16 +729,20 @@ export function PagesContent() {
       <div className="min-h-0 flex-1 overflow-auto">
         <div className="w-full px-6 py-6 xl:px-8" data-pages-open>
           <PagesProblem />
-          <button type="button" className={`${quietBtn} -ml-3 mb-2`} onClick={() => setOpen(undefined)}>← All pages</button>
+          {/* Dropwave (Ash, 11 Nov): a page just shows up. What you can do with it sits behind one three-dot menu, and
+              a change is something you ask a Mono for. */}
           <div className="flex items-center gap-2">
             <h1 className="min-w-0 flex-1 truncate text-[17px] font-medium text-content">{shown.title}</h1>
-            <button type="button" data-pages-rebuild className={quietBtn} aria-expanded={rebuilding === shown.id} onClick={() => setRebuilding(rebuilding === shown.id ? undefined : shown.id)}>Rebuild</button>
-            <PinToggle page={shown} inHeader />
+            <DotMenu label={`${shown.title} options`} items={[
+              { id: "rebuild", label: rebuilding === shown.id ? "Never mind the change" : "Ask for a change", onPick: () => setRebuilding(rebuilding === shown.id ? undefined : shown.id) },
+              { id: "pin", label: shown.pinned ? "Unpin from the sidebar" : "Pin to the sidebar", onPick: () => setPinned(shown.id, !shown.pinned) },
+              { id: "all", label: "All pages", onPick: () => setOpen(undefined) },
+            ]} />
           </div>
           {readyWhat(shown.request) ? <p className="mt-1 text-[13px] leading-5 text-content/70" data-pages-what>{readyWhat(shown.request)}</p> : null}
           {/* "Kept" says itself once, with Undo, in the bar below; this line is just where it lives and who built it. */}
           <div className="mt-1 text-[12px] text-content/60" data-pages-meta>{nameOf(shown.projectId ?? "today")} · by {shown.by}{request ? <> · “{request}”</> : null}{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
-          <div className="mb-4 mt-1"><Limits /></div>
+          <div className="mb-4" />
           {kept === shown.title ? (
             <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
               <span className="min-w-0 flex-1">Kept.</span>
@@ -743,11 +776,11 @@ export function PagesContent() {
     return (
       <div className="flex h-full flex-col items-center justify-center gap-4 px-8 text-center" data-pages-new>
         <div>
-          <div className="text-[17px] font-medium text-content">{pages.length ? "New page" : "No pages yet"}</div>
-          <div className="mt-1 text-[13px] text-content/70">Describe the page. {asker} builds it and shows you a preview first.</div>
+          <div className="text-[20px] font-semibold leading-tight text-content">{pages.length ? "New page" : "No pages yet"}</div>
+          <div className="mt-1.5 text-[13px] text-content/50">Describe the page. {asker} builds it and shows you a preview first.</div>
           <div className="mt-2"><Limits /></div>
         </div>
-        <div className="w-full max-w-[560px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} placeholder="Describe the page…" /></div>
+        <div className="w-full max-w-[640px]"><AskBox onAsk={ask} monos={seated} monoId={askerId} onPick={setPicked} placeholder="Describe the page…" /></div>
         {pages.length ? <button type="button" className={quietBtn} onClick={() => setNewPage(false)}>Back to all pages</button> : null}
         <ReadyMade offers={offers} onAdd={addReady} compact />
       </div>
@@ -761,41 +794,57 @@ export function PagesContent() {
   const withPages = [...projects.map((p) => p.id), "today"];
   return (
     <div className="min-h-0 flex-1 overflow-auto">
-      <div className="w-full px-6 py-6 xl:px-8" data-pages-list>
+      {/* The app's own gallery look (New automation): a title, pill filters, then cards. */}
+      <div className="w-full px-6 pt-5 pb-10 xl:px-8" data-pages-list>
         <PagesProblem />
-        <div className="flex items-center gap-2">
-          <h1 className="min-w-0 flex-1 text-[17px] font-medium text-content">Pages</h1>
-          <button type="button" data-pages-new-button className={primaryBtn} onClick={() => setNewPage(true)}>New page</button>
-        </div>
-        <div className="mt-1"><Limits /></div>
-        <div role="tablist" aria-label="Filter by project" className="mt-4 flex flex-wrap gap-1">
+        <h1 className="text-[20px] font-semibold leading-tight text-content">Pages</h1>
+        <p className="mt-1.5 text-[13px] text-content/50">Pages your first mates built for you. Pin one to keep it in the sidebar.</p>
+        <div role="tablist" aria-label="Filter by project" className="mt-4 flex flex-wrap gap-1.5">
           {["all", ...withPages].map((id) => (
             <button key={id} type="button" role="tab" aria-selected={filter === id} onClick={() => setFilter(id)}
-              className={`rounded-md px-2 py-0.5 text-[12px] ${filter === id ? "bg-selection text-content" : "text-content/70 hover:bg-selection-hover"}`}>
+              className={`h-7 rounded-full px-3 text-[12px] font-medium ${filter === id ? "bg-content text-background-base" : "text-content/55 hover:bg-content/8 hover:text-content"}`}>
               {id === "all" ? "All" : nameOf(id)}
             </button>
           ))}
         </div>
+        <button
+          type="button"
+          data-pages-new-button
+          onClick={() => setNewPage(true)}
+          className="mt-4 flex w-full items-center gap-3 rounded-xl border border-dashed border-content/15 p-4 text-left hover:border-content/25 hover:bg-content/5"
+        >
+          <span className="grid size-9 shrink-0 place-items-center rounded-full bg-content/8 text-content/70">
+            <Plus className="size-4" strokeWidth={1.75} />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-[13px] font-medium text-content">New page</span>
+            <span className="mt-1 block text-[12px] leading-snug text-content/50">Describe it and a first mate builds it. You see a preview before anything is kept.</span>
+          </span>
+        </button>
         {!groups.length ? (
           <div className="mt-8 flex flex-col items-center gap-3 text-center" data-pages-filter-empty>
             <div className="text-[14px] text-content">No pages yet</div>
-            <div className="text-[13px] text-content/70">Nothing for {nameOf(filter)} so far.</div>
-            <button type="button" className={primaryBtn} onClick={() => setNewPage(true)}>New page</button>
+            <div className="text-[13px] text-content/50">Nothing for {nameOf(filter)} so far.</div>
           </div>
         ) : null}
-        <div className="mt-4 flex flex-col gap-5">
+        <div className="mt-6 flex flex-col gap-6">
           {groups.map(([id, list]) => (
             <section key={id} data-pages-group={id}>
-              <h2 className="px-2 pb-1 text-xs text-content/60">{nameOf(id)}</h2>
-              <div className="flex flex-col gap-px">
+              <h2 className="pb-2 text-[12px] font-medium text-content/50">{nameOf(id)}</h2>
+              <div className="grid grid-cols-1 gap-3 min-[780px]:grid-cols-2">
                 {list.map((p) => (
-                  <div key={p.id} className="group flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-selection-hover" data-pages-row={p.id}>
-                    <button type="button" className="flex min-w-0 flex-1 flex-col text-left" onClick={() => setOpen(p.id)}>
-                      <span className="truncate text-[13px] text-content">{p.title}</span>
-                      {readyWhat(p.request) ? <span className="truncate text-[12px] text-content/70" data-pages-what>{readyWhat(p.request)}</span> : null}
-                      <span className="truncate text-[12px] text-content/60">by {p.by}{p.pinned ? ` · pinned by ${p.pinnedBy ?? "you"}` : ""}</span>
+                  <div key={p.id} className="group relative flex rounded-xl border border-content/10 hover:border-content/16 hover:bg-content/5" data-pages-row={p.id}>
+                    <button type="button" className="flex min-w-0 flex-1 gap-3 p-4 pr-11 text-left" onClick={() => setOpen(p.id)}>
+                      <span className="grid size-9 shrink-0 place-items-center rounded-full bg-content/8 text-content/70">
+                        <Book className="size-4" strokeWidth={1.75} />
+                      </span>
+                      <span className="flex min-w-0 flex-col">
+                        <span className="truncate text-[13px] font-medium text-content">{p.title}</span>
+                        {readyWhat(p.request) ? <span className="mt-1 line-clamp-2 text-[12px] leading-snug text-content/50" data-pages-what>{readyWhat(p.request)}</span> : null}
+                        <span className="mt-1.5 truncate text-[12px] text-content/40">by {p.by}{p.pinned ? ` · pinned by ${p.pinnedBy ?? "you"}` : ""}</span>
+                      </span>
                     </button>
-                    <PinToggle page={p} />
+                    <span className="absolute right-2 top-2"><PinToggle page={p} /></span>
                   </div>
                 ))}
               </div>
@@ -803,6 +852,7 @@ export function PagesContent() {
           ))}
           <ReadyMade offers={offers} onAdd={addReady} />
         </div>
+        <div className="mt-8"><Limits /></div>
       </div>
     </div>
   );
@@ -912,6 +962,38 @@ function PageRebuild({ page, asking, onDone, seated, projectId, children }: { pa
     </>
   );
 }
+/** One three-dot menu: what you can do with what's on screen, out of the way until asked for. */
+export function DotMenu({ label, items }: { label: string; items: { id: string; label: string; onPick: () => void }[] }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: Event) => { if (!ref.current?.contains(e.target as Node)) setOpen(false); };
+    const key = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", away);
+    document.addEventListener("keydown", key);
+    return () => { document.removeEventListener("pointerdown", away); document.removeEventListener("keydown", key); };
+  }, [open]);
+  return (
+    <div ref={ref} className="relative shrink-0" data-pages-menu>
+      <button type="button" aria-label={label} title="More" aria-haspopup="menu" aria-expanded={open} data-pages-menu-button
+        onClick={() => setOpen((o) => !o)}
+        className={`grid size-7 place-items-center rounded-md text-content/70 hover:bg-surface-raised hover:text-content ${open ? "bg-surface-raised text-content" : ""}`}>
+        <MoreHorizontal className="size-4" strokeWidth={1.75} />
+      </button>
+      {open ? (
+        <div role="menu" className="popover-glass absolute right-0 top-8 z-20 min-w-[190px] rounded-lg p-1 shadow-lg ring-1 ring-surface-ring">
+          {items.map((item) => (
+            <button key={item.id} type="button" role="menuitem" data-pages-menu-item={item.id} {...(item.id === "rebuild" ? { "data-pages-rebuild": "" } : {})}
+              onClick={() => { setOpen(false); item.onPick(); }}
+              className="block w-full rounded-md px-2.5 py-1.5 text-left text-[13px] text-content/85 hover:bg-selection-hover hover:text-content">{item.label}</button>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /** Pin or unpin a page; pinned pages show in the sidebar. */
 /** Unpinned: hidden until the row is hovered (always shown, at 70% content, beside an open page's title). Pinned: solid. */
 function PinToggle({ page, inHeader }: { page: Page; inHeader?: boolean }) {
@@ -933,7 +1015,13 @@ export function PagesView({ onClose, onToggleSidebar, besideRail = true, compact
     window.addEventListener(OPEN_EDIT_TODAY, open);
     return () => window.removeEventListener(OPEN_EDIT_TODAY, open);
   }, []);
-  const tabs: ["pages" | ChangeFlow, string][] = [["pages", "Pages"], ["hub", FLOW_LABEL.hub], ["today", FLOW_LABEL.today], ["connect", FLOW_LABEL.connect]];
+  // Dropwave (Ash, 11 Nov): no row of tabs up here. A page just shows; "Change the hub", "Edit Today" and "Connect
+  // data" wait behind the list's three-dot menu.
+  usePagesVersion();
+  const listAsked = pagesListRequests();
+  useEffect(() => { if (listAsked) setTab("pages"); }, [listAsked]);
+  const pageShown = tab === "pages" && !!shownPageId() && allPages().some((p) => p.id === shownPageId());
+  const flows: ChangeFlow[] = ["hub", "today", "connect"];
   return (
     <div role="region" aria-label="Pages" data-app-pages className="flex min-h-0 min-w-0 flex-1 flex-col text-content">
       <div className="flex h-10 shrink-0 select-none items-center border-b border-stroke" data-tauri-drag-region="deep">
@@ -941,14 +1029,18 @@ export function PagesView({ onClose, onToggleSidebar, besideRail = true, compact
         {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
         {besideRail || !onToggleSidebar ? null : <OverlayNav onBack={onClose} onToggleSidebar={onToggleSidebar} />}
         <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
-          <DashboardSquare className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
-          <span className="min-w-0 truncate text-content">Pages</span>
-          <div role="tablist" aria-label="Pages and changes" className="ml-3 flex gap-0.5">
-            {tabs.map(([id, label]) => (
-              <button key={id} type="button" role="tab" aria-selected={tab === id} onClick={() => setTab(id)}
-                className={`rounded-md px-2 py-0.5 text-[12px] ${tab === id ? "bg-selection text-content" : "text-content/70 hover:bg-selection-hover"}`}>{label}</button>
-            ))}
-          </div>
+          {pageShown ? null : tab === "pages" ? (
+            <>
+              <DashboardSquare className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+              <span className="min-w-0 flex-1 truncate text-content">Pages</span>
+              <DotMenu label="More for Pages" items={flows.map((flow) => ({ id: flow, label: FLOW_LABEL[flow], onPick: () => setTab(flow) }))} />
+            </>
+          ) : (
+            <>
+              <button type="button" data-pages-back className="rounded-md px-2 py-0.5 text-[12px] text-content/70 hover:bg-selection-hover hover:text-content" onClick={() => setTab("pages")}>← Pages</button>
+              <span className="min-w-0 truncate text-content">{FLOW_LABEL[tab]}</span>
+            </>
+          )}
         </div>
         {IS_MAC ? null : <WindowControls />}
       </div>

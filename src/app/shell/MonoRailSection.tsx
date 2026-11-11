@@ -21,7 +21,7 @@ import { useNeedsYou } from "../../features/needs/model/needsLive";
 import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
-import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
+import { monoTeamInView, openCodingTeam, openMonoChat, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
 import { teamFor, useMonoTeamsVersion, type TeamTarget } from "../../features/hub/model/monoTeams";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { failedMonoName, retryMonoFailure } from "../../features/monos/model/monoFailures";
@@ -35,6 +35,7 @@ import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
 import { ensureBuiltInMonos } from "../../features/hub/model/builtInMonos";
 import { RailAction } from "./RailAction";
+import { pickChief } from "../../features/home/model/chief";
 import {
   loadMonoRailCollapsed,
   saveMonoRailCollapsed,
@@ -109,12 +110,17 @@ export function unreadLabel(count: number): string {
  * (the hub passes its selected project; Today passes none and keeps the whole roster). The hub (`rank` set) sorts the
  * list: the default four, then every project's Lead (hubMonoRank).
  */
+/** Dropwave: Home is its own project. Its sidebar lists only the Monos that work on no project (the Chief of Staff). */
+export const HOME_MONOS = "hub:home";
+
 export function railMonos<M extends { id: string; name?: string; projects: string[]; pinned?: boolean }>(
   list: M[],
   projectFilter: string | undefined,
   rank: ((mono: M) => number) | undefined,
 ): M[] {
-  const eligible = list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
+  const eligible = list.filter((mono) =>
+    projectFilter === HOME_MONOS ? mono.projects.length === 0 : !projectFilter || mono.projects.includes(projectFilter),
+  );
   const ordered = rank
     ? eligible.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m)
     : eligible;
@@ -225,7 +231,8 @@ export function MonoRailSection({
   const monos = useMemo(
     () =>
       railMonos(listMonos(), projectFilter, rank).filter(
-        (mono) => !!rank || !project || monoWorksOn(mono, project),
+        // Dropwave: the Chief of Staff has its own row at the very top of the hub's sidebar, so it isn't listed again.
+        (mono) => (rank ? mono.id !== pickChief(listMonos())?.id : !project || monoWorksOn(mono, project)),
       ),
     [snapshot, projectFilter, rank, project],
   );
@@ -330,7 +337,7 @@ export function MonoRailSection({
           <ChevronDown
             className={`size-3 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
           />
-          <span className="truncate">Monos</span>
+          <span className="truncate">{rank ? "First mates" : "Monos"}</span>
           {collapsed ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
           {collapsed && busyText ? (
             <span className="ml-1.5 flex min-w-0 items-center gap-1 text-content/55" data-mono-rail-busy={busy.length}>
@@ -471,7 +478,9 @@ export function MonoRailSection({
                 )
                   return;
                 if (sortable.consumeClick()) return;
-                onOpen(mono.id);
+                // Dropwave: in the hub every one-to-one chat opens in the same layout, the chat list beside the chat.
+                if (rank) openMonoChat(mono.id);
+                else onOpen(mono.id);
               }}
               onContextMenu={(event) => {
                 event.preventDefault();
@@ -590,7 +599,8 @@ export function MonoRailSection({
                 onOpenStuck={(anchor) => toggleStuckPanel(anchor, mono.id)}
               />
             ) : null}
-            {(childChats.get(mono.id) ?? []).length ? (
+            {/* Dropwave: sub-chat chains show only on the Agents board, never in the hub's sidebar. */}
+            {!rank && (childChats.get(mono.id) ?? []).length ? (
               // r88 (Ash, B13): its workers' chats nest under it here too, folded under a count and opening by
               // themselves when one asks, is stuck or failed (subChats.ts); one click opens a worker's chat.
               <div data-mono-sub-chats={mono.id}>

@@ -66,6 +66,13 @@ export function useHubSelection(): HubSelection {
  * One of the app's own views (Autopilot, New project, Restore) opens over the project Ash was last in: it is not a
  * project's item, but leaving it comes back to that project, and quitting from it opens the app there again.
  */
+/** Dropwave: a project's own home (HubSurface shows HomeView for that project). The rail opens it. */
+export const PROJECT_HOME_ITEM = "project-home";
+
+export function showProjectHome(projectId: string): void {
+  setHubSelection({ project: projectId, item: PROJECT_HOME_ITEM });
+}
+
 export function showAppItem(item: string): void {
   setHubSelection({ project: read().project, item });
 }
@@ -208,16 +215,18 @@ export function openMonoTeam(monoId: string, target?: MonoTeamTarget): void {
  * chat shows at once, in the Mono's team when it has one. Mac round 2 (21 Oct): through openMonoTeam alone the chat
  * opened behind Settings and only showed after Back. Without the app's opener it falls back to openMonoTeam.
  */
-let monoChatOpener: ((monoId: string) => void) | undefined;
+/** Dropwave: `project` opens the Mono's own chat for that project (the Chief of Staff's, geared to it). */
+export type MonoChatTarget = { project?: string };
+let monoChatOpener: ((monoId: string, target?: MonoChatTarget) => void) | undefined;
 
-export function setMonoChatOpener(open: (monoId: string) => void): () => void {
+export function setMonoChatOpener(open: (monoId: string, target?: MonoChatTarget) => void): () => void {
   monoChatOpener = open;
   return () => {
     if (monoChatOpener === open) monoChatOpener = undefined;
   };
 }
 
-export function openMonoChat(monoId: string): void {
-  if (monoChatOpener) monoChatOpener(monoId);
+export function openMonoChat(monoId: string, target?: MonoChatTarget): void {
+  if (monoChatOpener) monoChatOpener(monoId, target);
   else openMonoTeam(monoId, { owner: true });
 }

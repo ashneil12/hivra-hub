@@ -262,7 +262,7 @@ it("opens notification settings for all projects from the Inbox context menu", a
       }),
     ),
   );
-  const inbox = container.querySelector('button[aria-label="Needs you"]')!;
+  const inbox = container.querySelector('button[aria-label="Inbox"]')!;
   act(() =>
     inbox.dispatchEvent(
       new KeyboardEvent("keydown", {

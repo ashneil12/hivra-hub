@@ -152,7 +152,9 @@ export function placePopover(
     options.maxHeight ?? Infinity,
     Math.max(0, viewport.height - padding * 2),
   );
-  const height = Math.min(popover.height, capped);
+  // The wanted height, not only the measured one: a flyout squeezed by a short window is measured at its squeezed
+  // height, so it would stay small and slide down toward its anchor as the window grew back.
+  const height = Math.min(wanted, capped);
   const top = clamp(
     crossAxisStart(align, anchor.top, anchor.bottom, height),
     padding,

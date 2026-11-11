@@ -83,7 +83,7 @@ test("fresh install onboarding: our team with a role line under each name, and n
   await expect.poll(text).toMatch(/None are added unless you tick them/);
   const body = await text();
   for (const [name, role] of [
-    ["Coordinator", "The first mono you talk to about work."],
+    ["Chief of Staff", "The first mono you talk to about work."],
     ["Planner", "Keeps the board: owner, state, evidence."],
     ["Record keeper", "Checks plans against what was said."],
     ["Team steward", "One owner for each job. No spare seats."],

@@ -6,6 +6,7 @@ import { deleteChat } from "../model/hubChats";
 import { MoreHorizontal, Plus, Trash2, DashboardSquare as Layers, MessageMultiple as MessagesSquare, Terminal as Code2, type IconComponent } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { useNeedsYou } from "../../needs/model/needsLive";
+import { homeInView } from "../model/homeScope";
 import { useHubChatsVersion } from "../model/hubChats";
 import { useTemplatesVersion } from "../model/templates";
 import { setHubSelection, type HubSelection } from "../model/hubNav";
@@ -69,15 +70,24 @@ export function HubProjectItems({
   // A new project's draft is no project's page (PM's r60 G2): the project Ash was last in stays underneath, so leaving
   // the draft comes back to it, but its name and items aren't shown as if the draft were one of its pages.
   if (selection.item === "new-project") return null;
+  // Home is no project's page either (Dropwave): the last project's teams don't show under Home or under the Chief of
+  // Staff's chat opened from it.
+  if (homeInView(selection)) return null;
   // WP-06: Being built, Builds and the project's Decisions row are gone. Settings → Decisions still lists them.
-  const items = hubData().listProjectItems(project.id).filter((item) => keptNavItem(item));
+  // Dropwave (Ash, 11 Nov): no Coding team row (and no Tasks under it). Chats happen with the Chief of Staff and the
+  // first mates above; what is listed here are the project's teams (group chats) and its sections.
+  // A project's own pages section ("Dashboards") is gone too: its pages are under Pages, and a pinned one has a row.
+  const items = hubData().listProjectItems(project.id).filter(
+    (item) => keptNavItem(item) && item.kind !== "coding-team" && item.sectionType !== "project-pages",
+  );
   const projectNeeds = needs.filter((item) => item.projectId === project.id).length;
   return (
     <div className="mb-2 shrink-0" data-hub-items>
       <div className="group/head flex items-center gap-1 px-3 pb-1.5 pt-1" data-hub-project-header data-project-id={project.id}
         onContextMenu={(e) => { e.preventDefault(); setMenu({ x: e.clientX, y: e.clientY }); }}>
         <span className="grid size-4 shrink-0 place-items-center"><ProjectGlyph project={project} size={11} /></span>
-        <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/60">{project.name}</span>
+        {/* Dropwave: the project's optional group chats. Its name heads the sidebar's Home row instead. */}
+        <span className="min-w-0 flex-1 truncate px-1 text-xs leading-5 text-content/60" title={project.name}>Teams</span>
         {projectNeeds > 0 ? (
           <span
             data-project-needs={projectNeeds}

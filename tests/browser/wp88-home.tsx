@@ -4,6 +4,10 @@ import { createRoot } from "react-dom/client";
 import { setHubDataSource, hubData } from "../../src/features/hub/model/hubData";
 import { openCodingTeam, setHubSelection, useHubSelection } from "../../src/features/hub/model/hubNav";
 import type { HubDataSource } from "../../src/features/hub/model/types";
+import { setMonoChatOpener } from "../../src/features/hub/model/hubNav";
+import { addStarterMono } from "../../src/features/hub/model/starterMonos";
+import { notifyHomeChief, setHomeChiefHost, type HomeChiefSession } from "../../src/features/home/model/homeChief";
+import type { ExchangeBlock } from "../../src/features/home/model/exchange";
 import { applyHomeOpen, setHomeOpener, type HomeOpenHands } from "../../src/features/home/model/opener";
 import { HomeView } from "../../src/features/home/ui/HomeView";
 import { ProjectStrip } from "../../src/features/hub/ui/ProjectStrip";
@@ -40,6 +44,25 @@ const src = Object.create(base) as HubDataSource;
 src.listProjects = () => projects;
 setHubDataSource(src);
 setHubSelection({ project: "crew", item: "home" });
+addStarterMono("coordinator");
+document.body.dataset.tasksCreated = "0";
+setMonoChatOpener((id) => {
+  document.body.dataset.monoChat = id;
+});
+
+const blocks: ExchangeBlock[] = [];
+const session: HomeChiefSession = { id: "chief-session", blocks };
+setHomeChiefHost({
+  ensure: async () => ({ id: "chief-session" }),
+  submit: async (_sessionId, text) => {
+    blocks.push({ role: "user", text });
+    blocks.push({ role: "assistant", text: "EXO is fine." });
+    notifyHomeChief();
+    return true;
+  },
+  answer: () => undefined,
+  read: () => session,
+});
 
 installFakeTauri("home", (command, args) => {
   if (command === "tasks_list") {
@@ -47,6 +70,7 @@ installFakeTauri("home", (command, args) => {
     return tasks.filter((task) => belongs(project, task));
   }
   if (command === "tasks_create") {
+    document.body.dataset.tasksCreated = String(Number(document.body.dataset.tasksCreated ?? "0") + 1);
     const input = args.input as { title?: string; project?: string } | undefined;
     return { id: "filed", title: input?.title ?? "", project: input?.project ?? "" };
   }
@@ -73,6 +97,7 @@ function Shell() {
       openNotes: () => undefined,
       openSession: () => undefined,
       openTeam: (projectId) => openCodingTeam(projectId),
+      openSettings: () => undefined,
       projects: () => projects,
     };
     applyHomeOpen(target, hands);
