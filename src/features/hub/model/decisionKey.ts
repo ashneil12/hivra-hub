@@ -22,3 +22,8 @@ export function isFreshEyesDecisionKey(key: string): boolean {
 export function isIrreversibleDecisionKey(key: string): boolean {
   return foldDecisionKey(key).startsWith("irreversible/");
 }
+
+/** A restart decision of a stopped fan-out task (decisions.rs `is_again_key`). Only the person answers it. */
+export function isFanoutAgainDecisionKey(key: string): boolean {
+  return foldDecisionKey(key).startsWith("fanout-again/");
+}

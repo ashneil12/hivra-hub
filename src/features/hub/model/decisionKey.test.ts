@@ -1,7 +1,12 @@
 // A chat answer to a person-only decision key is refused whatever its case or width. Red before the fold: the raw
 // prefix check let "Irreversible/..." and "FRESH-EYES/..." through.
 import { describe, expect, it } from "vitest";
-import { foldDecisionKey, isFreshEyesDecisionKey, isIrreversibleDecisionKey } from "./decisionKey";
+import {
+  foldDecisionKey,
+  isFanoutAgainDecisionKey,
+  isFreshEyesDecisionKey,
+  isIrreversibleDecisionKey,
+} from "./decisionKey";
 
 describe("foldDecisionKey", () => {
   it("folds case, width and padding the way decisions.rs fold_key does", () => {
@@ -48,6 +53,16 @@ describe("person-only key checks", () => {
     "fresh-eyes／r1/00112233aabbccdd",
   ])("treats %j as a fresh-eyes review", (key) => {
     expect(isFreshEyesDecisionKey(key)).toBe(true);
+  });
+
+  it.each([
+    "fanout-again/r1/api/f2_r1-api/0123456789abcdef",
+    "FANOUT-AGAIN/r1/api/f2_r1-api/0123456789abcdef",
+    "ｆａｎｏｕｔ-ａｇａｉｎ/r1/api/f2_r1-api/0123456789abcdef",
+    "fanout\u200B-again/r1/api/f2_r1-api/0123456789abcdef",
+    "\u200Bfanout-again/r1/api/f2_r1-api/0123456789abcdef",
+  ])("treats %j as a restart decision", (key) => {
+    expect(isFanoutAgainDecisionKey(key)).toBe(true);
   });
 
   it("leaves an ordinary key alone", () => {
