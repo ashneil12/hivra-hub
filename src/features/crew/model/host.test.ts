@@ -182,7 +182,8 @@ describe("crewPolicyForLead routes with the project and system defaults", () => 
     const calls: [string, unknown][] = [];
     vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
       calls.push([command, args]);
-      if (command === "crew_projects_owning") return ["/pkg", "/repo"];
+      // The gate returns the most specific owner first. The webview keeps that order.
+      if (command === "crew_projects_owning") return ["/repo", "/pkg"];
       if (command === "crew_rules_get") return { policy: { lockDefault: true, neverUse: [], fallback: [] }, policyOwn: true };
       if (command === "crew_route") return { cli: "claude" };
       return undefined;
@@ -229,7 +230,8 @@ describe("crewPolicyForLead uses the owning project's worker default", () => {
 
   it("uses the most specific owning project's default, not the outermost", async () => {
     vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
-      if (command === "crew_projects_owning") return ["/repo", "/repo/pkg"];
+      // The gate returns the package before the repo that contains it. The webview does not sort again.
+      if (command === "crew_projects_owning") return ["/repo/pkg", "/repo"];
       return routeEcho(command, args);
     });
     const policy = await crewPolicyForLead("/worktrees/repo-wt/pkg", "lead", {

@@ -160,6 +160,8 @@ export function crewLaunchCheck(input: {
   lockedDefault?: string;
   /** The session this launch starts. Its spawn is judged against the decision recorded here. */
   sessionId?: string;
+  /** The session that started this one. Its grant's projects stay in force for the child. */
+  parentSession?: string;
 }): Promise<void> {
   return invoke<void>("crew_launch_check", {
     input: {
@@ -169,6 +171,7 @@ export function crewLaunchCheck(input: {
       ...(input.lockedDefault ? { lockedDefault: input.lockedDefault } : {}),
     },
     ...(input.sessionId ? { sessionId: input.sessionId } : {}),
+    ...(input.parentSession ? { parentSession: input.parentSession } : {}),
   });
 }
 
@@ -214,19 +217,12 @@ function usableDefault(
 
 type WorkerPick = Parameters<typeof routeDefaults>[0]["project"];
 
-/** Longer paths first, then the path text, so a package beats the repository that contains it. */
-function mostSpecificFirst(owners: readonly string[]): string[] {
-  return [...owners].sort((left, right) => {
-    const leftKey = pathKey(left);
-    const rightKey = pathKey(right);
-    return rightKey.length - leftKey.length || leftKey.localeCompare(rightKey);
-  });
-}
-
 /**
  * WP-141 round 11: the worker default for a folder. Its own hub project wins, then the most specific project that
  * owns it. `roots` are hub project folders, so a project with a worker default and no crew row is still found.
  * A plan, a session start, a brief and the crew pick all use this.
+ * The gate already returns owners most specific first. Sorting them again by the length of the spelling would let a
+ * long path beat the package the gate put first.
  */
 export async function projectDefaultForFolder(
   folder: string,
@@ -236,7 +232,7 @@ export async function projectDefaultForFolder(
   const own = usableDefault(lookup(folder));
   if (own) return own;
   const seen = pathKey(folder);
-  for (const owner of mostSpecificFirst(await owningProjects(folder, opts?.roots))) {
+  for (const owner of await owningProjects(folder, opts?.roots)) {
     if (pathKey(owner) === seen) continue;
     const pick = usableDefault(lookup(owner));
     if (pick) return pick;
