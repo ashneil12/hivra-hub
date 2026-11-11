@@ -1,9 +1,12 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { createPortal } from "react-dom";
 import { projectKey } from "../../../shared/lib/paths";
+import { LAYER } from "../../../shared/lib/layers";
 import {
   CLOSED_APP_WARNING,
   instantFromLocalInput,
   oneTimeStatusLabel,
+  scheduleWhenLabel,
   type OneTimeSchedule,
   type OneTimeScheduleStore,
   type OneTimeTarget,
@@ -15,6 +18,11 @@ export type OneTimeProjectChoice = { id: string; label: string };
 const FIELD = "block text-[12px] text-content/70";
 const CONTROL =
   "mt-1 h-7 w-full rounded-md border border-stroke bg-transparent px-2 text-[12px] text-content outline-none";
+
+/** A daily app warns that a closed app misses the run. A dev copy never runs it. */
+export function oneTimeConfirmWarning(runsHere: boolean): string {
+  return runsHere ? CLOSED_APP_WARNING : "This copy does not run one-time schedules.";
+}
 
 export function oneTimeProjectChoices(
   projects: OneTimeProjectChoice[],
@@ -40,10 +48,13 @@ export function OneTimeSchedulePanel({
   chats,
   projects,
   store,
+  runsHere = true,
 }: {
   chats: OneTimeChatChoice[];
   projects: OneTimeProjectChoice[];
   store: OneTimeScheduleStore;
+  /** False on a dev copy, which never fires a schedule. */
+  runsHere?: boolean;
 }) {
   const projectChoices = useMemo(() => oneTimeProjectChoices(projects), [projects]);
   const [rows, setRows] = useState<OneTimeSchedule[]>([]);
@@ -248,7 +259,7 @@ export function OneTimeSchedulePanel({
           className="mt-2 rounded-md border border-stroke p-2"
         >
           <p className="text-[12px]">Schedule this prompt?</p>
-          <p className="mt-1 text-[12px] leading-4 text-content/80">{CLOSED_APP_WARNING}</p>
+          <p className="mt-1 text-[12px] leading-4 text-content/80">{oneTimeConfirmWarning(runsHere)}</p>
           <p className="mt-1 text-[12px] text-content/60">{pending.localText.replace("T", " ")}</p>
           <p className="mt-1 text-[12px] text-content/70">{preview(pending.prompt)}</p>
           <div className="mt-2 flex gap-2">
@@ -278,7 +289,7 @@ export function OneTimeSchedulePanel({
               <p className="truncate text-[12px]">{preview(row.prompt)}</p>
               <p className="text-[11px] text-content/55">
                 {oneTimeStatusLabel(row.status)}
-                {row.localText ? ` · ${row.localText.replace("T", " ")}` : ""}
+                {` · ${scheduleWhenLabel(row)}`}
               </p>
               {row.status === "scheduled" ? (
                 <button
@@ -300,13 +311,20 @@ export function OneTimeSchedulePanel({
 export function MissedScheduleNotice({
   notices,
   onDone,
+  top = 48,
 }: {
   notices: { id: string; text: string }[];
   onDone: (id: string) => void;
+  /** Pixels from the top of the window, under the notices already there. */
+  top?: number;
 }) {
-  if (notices.length === 0) return null;
-  return (
-    <section aria-label="Missed schedules" className="pointer-events-auto px-3 py-2 text-content">
+  if (notices.length === 0 || typeof document === "undefined") return null;
+  return createPortal(
+    <section
+      aria-label="Missed schedules"
+      className="pointer-events-auto fixed right-3 w-[min(320px,calc(100vw-24px))] px-3 py-2 text-content"
+      style={{ top, zIndex: LAYER.toast }}
+    >
       {notices.map((notice) => (
         <div key={notice.id} className="mb-2 max-w-md rounded-md border border-stroke bg-background-base p-3">
           <p className="text-[13px] leading-5">{notice.text}</p>
@@ -319,6 +337,7 @@ export function MissedScheduleNotice({
           </button>
         </div>
       ))}
-    </section>
+    </section>,
+    document.body,
   );
 }

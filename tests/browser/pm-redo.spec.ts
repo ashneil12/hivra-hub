@@ -270,6 +270,9 @@ test("G4 dots in every state: working (mid-hop, grey) and idle, the dot touches 
   await expect(working).toHaveClass(/bg-content\/60/);
   expect(await working.evaluate((d) => (d as HTMLElement).style.backgroundColor)).toBe("");
   // Sampled through the hop (the working creature moves), every dot stays clear of creature and text.
+  // The pointer still rests on the row clicked last, and a hovered row's title is held back for the app's own
+  // tooltip, which would drop that row from the sample below. Park it off the rail first.
+  await page.mouse.move(1400, 880);
   for (let frame = 0; frame < 12; frame += 1) {
     const clear = await dotsClear(rail);
     expect(clear.length).toBeGreaterThan(7);

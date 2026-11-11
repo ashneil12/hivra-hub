@@ -166,7 +166,7 @@ it("a review on an upstream repo filed under one of the projects is left out", (
 // MED 5. A check answered with its own handler stays on every count: gate_respond emits no change event, nothing
 // re-reads the store, and the card stays "parked" after the answer (the run moves on later), with no look at
 // whether its decision is still open.
-it("an answered check leaves the list, and opening the card does not answer the gate", async () => {
+it("limit: an answered check leaves the list, and opening the card does not answer the gate", async () => {
   const card: GateCard = { projectId: "/Users/ash/Projects/hivra", id: "card-1", line: "Tests fail on Windows.", decisionKey: "gate/run-1", state: "parked" };
   const answered = decision("gate/run-1", "The check needs a decision: tests fail on Windows", ["Approve", "Fix", "Skip"], null, "answered");
   expect(needsYouQuiet(factsFromParts(parts({ decisions: [answered], cards: [card] })), NOW)).toEqual([]);
@@ -182,7 +182,7 @@ it("an answered check leaves the list, and opening the card does not answer the 
 
 // Limit. Tracker tasks now come from the live read. These steps build the list with no tasks and no
 // live read, so it cannot see the task the opening count sees. The live path is tested beside this file.
-it("an empty parts list does not include the task the opening count reads", async () => {
+it("limit: an empty parts list does not include the task the opening count reads", async () => {
   const source = {
     projects: () => [{ id: "hivra", name: "Hivra", folder: "/Users/ash/Projects/hivra" }],
     decisions: async () => [],

@@ -178,3 +178,42 @@ test("the web half never reads the decision, so a skipped Rust half cannot skip 
     }
   }
 });
+
+/** One top-level job's text, from its key to the next job. */
+function jobText(name) {
+  const start = ci.indexOf(`\n  ${name}:\n`);
+  assert.ok(start >= 0, `the ${name} job`);
+  const rest = ci.slice(start + 1);
+  const next = rest.slice(1).search(/\n  [a-z][\w-]*:\n/);
+  return next >= 0 ? rest.slice(0, next + 1) : rest;
+}
+
+// Hivra (11 Nov 2026, Ash: "anything else that can speed up things"): a web-only PR used to take a macOS runner only to
+// decide it could skip the Rust half, and waited 20 to 40 minutes in the five-runner macOS queue for that.
+test("the decision is made on a Linux runner, so a web-only pull request never queues for macOS", () => {
+  const plan = jobText("rust-plan");
+  assert.match(plan, /runs-on: ubuntu-latest/);
+  assert.match(plan, /node scripts\/ci-rust-changed\.mjs >> "\$GITHUB_OUTPUT"/);
+  assert.match(plan, /RUST_CHECK_EVENT: \$\{\{ github\.event_name \}\}/);
+  assert.match(plan, /fetch-depth: \$\{\{ github\.event_name == 'pull_request' && 2 \|\| 1 \}\}/);
+  assert.match(plan, /run: \$\{\{ steps\.rust\.outputs\.run \}\}/);
+  // It runs whenever the check job runs (a draft and the nightly run skip both).
+  assert.equal(/\n    if: (.*)/.exec(plan)?.[1], /\n    if: (.*)/.exec(jobText("check"))?.[1]);
+});
+
+test("the macOS Rust entry leaves the matrix only when the plan says false, and the web shards always stay", () => {
+  const check = jobText("check");
+  assert.match(check, /\n    needs: rust-plan\n/);
+  const include = /include: \$\{\{ (.*) \}\}/.exec(check)?.[1] ?? "";
+  const web = '{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"}';
+  const rust = '{"os":"macos-latest","part":"rust"}';
+  // Without the cross-platform switch: "false" drops the Rust entry; anything else (true, empty, missing) keeps it.
+  assert.ok(include.includes(`needs.rust-plan.outputs.run == 'false' && '[${web}]'`), include);
+  assert.ok(include.includes(`|| '[${web},${rust}]'`), include);
+  assert.ok(include.indexOf("vars.HUB_CROSS_PLATFORM_CI == 'true'") < include.indexOf("needs.rust-plan"), include);
+});
+
+test("a plan job that fails or is cancelled fails ci-ok, so the skipped check job cannot read as a pass", () => {
+  const needs = /\n    needs: \[(.*)\]/.exec(jobText("ci-ok"))?.[1] ?? "";
+  assert.ok(needs.split(/,\s*/).includes("rust-plan"), needs);
+});

@@ -280,6 +280,7 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
   }
   for (const found of live) {
     let row = found;
+    let openedThisPass = false;
     const watch = watchFor(row, watches, input.folder);
     if (!watch) {
       // A building package with no pull request after 6 hours no longer holds a builder slot. Its status stays as it is: a
@@ -316,6 +317,7 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
       }
       if (row.status === "building") {
         row = await ports.setStatus(row.id, row.version, "pr_open");
+        openedThisPass = true;
         did.push(`${row.wp} is in review (#${watch.number}).`);
       }
     } catch {
@@ -328,7 +330,9 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
     }
     // A conflicting pull request is handled before the green check. Asked once per head commit: a report with the
     // setting off, or the branch brought up to date from main with it on (Rust decides, and never edits main).
-    if (watch.status.mergeable === "conflicting" && watch.state === "watching" && ports.considerConflict) {
+    // Not in the pass that just moved a building package to review: its builder may still be pushing, and the
+    // update only sees the status this pass already changed.
+    if (!openedThisPass && watch.status.mergeable === "conflicting" && watch.state === "watching" && ports.considerConflict) {
       const key = noteKey("conflict", String(watch.number), head);
       if (!noted.has(key)) {
         noted.add(key);

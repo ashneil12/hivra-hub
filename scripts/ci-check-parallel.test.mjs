@@ -496,11 +496,17 @@ test("macOS runs only the Rust half by default, both halves when every OS runs; 
   const check = jobBlock("check");
   // The matrix is chosen by the repository variable HUB_CROSS_PLATFORM_CI. By default the web half runs on two Linux
   // runners and macOS runs the Rust half alone (Linux would need Ubuntu's package mirror); when "true", every OS runs
-  // and macOS runs both halves together.
-  const include = /include: \$\{\{ fromJSON\(vars\.HUB_CROSS_PLATFORM_CI == 'true' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}/.exec(check);
-  assert.ok(include, "the check matrix is not chosen by HUB_CROSS_PLATFORM_CI");
+  // and macOS runs both halves together. A pull request the rust-plan job clears (web files only) drops the macOS
+  // entry, so it never waits for a macOS runner (ci-rust-changed.test.mjs pins that part).
+  const include = /include: \$\{\{ fromJSON\(vars\.HUB_CROSS_PLATFORM_CI == 'true' && '(\[.*?\])' \|\| needs\.rust-plan\.outputs\.run == 'false' && '(\[.*?\])' \|\| '(\[.*?\])'\) \}\}/.exec(check);
+  assert.ok(include, "the check matrix is not chosen by HUB_CROSS_PLATFORM_CI and the rust plan");
   const full = JSON.parse(include[1]);
-  const byDefault = JSON.parse(include[2]);
+  const webOnly = JSON.parse(include[2]);
+  const byDefault = JSON.parse(include[3]);
+  assert.deepEqual(webOnly, [
+    { os: "ubuntu-latest", part: "web", shard: "1/2" },
+    { os: "ubuntu-latest", part: "web", shard: "2/2" },
+  ]);
   assert.deepEqual(byDefault, [
     { os: "ubuntu-latest", part: "web", shard: "1/2" },
     { os: "ubuntu-latest", part: "web", shard: "2/2" },

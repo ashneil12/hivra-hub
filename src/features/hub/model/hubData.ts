@@ -259,11 +259,12 @@ const noSnapshot = () => undefined;
 /**
  * Call this in any component that reads `hubData()` while rendering: it re-renders when the data changes, and it is
  * what starts the live store (the first screen to subscribe) and stops it (a moment after the last one leaves).
+ * The snapshot is the return value, so a memo that reads the data can list it.
  */
-export function useHubDataVersion(): void {
+export function useHubDataVersion() {
   useProjectPrefsVersion();
   const store = (override ?? choose()).store;
-  useSyncExternalStore(store ? store.subscribe : noSubscribe, store ? store.getSnapshot : noSnapshot);
+  return useSyncExternalStore(store ? store.subscribe : noSubscribe, store ? store.getSnapshot : noSnapshot);
 }
 
 /**

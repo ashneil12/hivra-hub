@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import fs from "node:fs";
-import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
+import { assertStarterTicks, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
 // G5 proof, round 18, updated round 19: a fresh install's onboarding (hub-dev.html?onboarding, empty storage, no Ash OS)
 // asks what the team should call you, and offers no pre-load (Ash 21 Oct). No "Ash" in any of it. The round 18 photos
@@ -22,7 +22,7 @@ test("fresh install onboarding: your name, and no pre-load", async ({ page }) =>
   await noAsh();
 
   await page.locator("[data-hub-onboarding-next]").click();
-  await assertStartersUnticked(page);
+  await assertStarterTicks(page);
   await expect(page.getByText("The first mono you talk to about work.").first()).toBeVisible();
   const line = page.locator("[data-hub-onboarding-dashboards]");
   const box = await line.boundingBox();

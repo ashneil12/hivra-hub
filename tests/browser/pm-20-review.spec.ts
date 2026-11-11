@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
 import { openLocalHub } from "./localHub";
-import { assertStartersUnticked, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
+import { assertStarterTicks, openOnboarding, skipAddsNobody, tickedBecomesOrdinaryMono } from "./starterOnboarding";
 
 // Round 20 review fixes, a browser preview only (not Ash's Mac): a project's own Today keeps its ask rows in one
 // column even at 2560 wide (G1 took away the all-projects board and its 1800px two-column grid; the single shrinkable
@@ -41,12 +41,12 @@ test("a Page preview has no watermark; the bar says it is a preview", async ({ p
   await page.screenshot({ path: `${SHOTS}/pm-20-pages-nowatermark.png` });
 });
 
-test("onboarding: the five starter Monos, all unticked, and skip adds nobody", async ({ page }) => {
+test("onboarding: the five starter Monos, only the Chief of Staff ticked, and skip with none ticked adds nobody", async ({ page }) => {
   fs.mkdirSync(SHOTS, { recursive: true });
   await page.setViewportSize({ width: 1440, height: 900 });
   await openOnboarding(page);
   await page.locator("[data-hub-onboarding-next]").click();
-  await assertStartersUnticked(page);
+  await assertStarterTicks(page);
   const rail = page.locator("[data-mono-rail]").first();
   await expect(rail.getByText("Critiquito")).toHaveCount(0);
   expect(await page.evaluate(() => /\bAsh\b|pre-load|Critiquito/i.test(document.body.innerText))).toBe(false);

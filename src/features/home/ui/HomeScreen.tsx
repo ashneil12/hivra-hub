@@ -8,11 +8,12 @@ import { HOME_ACTION_CAP } from "../model/needActions";
 import { FREE_UP_SPACE } from "../../monos/model/builderScale";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
 import { RAISE_LIMIT } from "../../usage/model/spendGate";
-import { Book, Check, GripVertical, Plus, SendArrow, Sparkles, Zap } from "../../../shared/ui/icons";
+import { Book, Check, ChevronDown, ChevronUp, GripVertical, Plus, SendArrow, Sparkles, Zap } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { workersLabel } from "../model/workingNow";
 import { HOME_STAGGER_MS } from "../vendor/homeLayout";
 import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
+import { OneTapNotice } from "../../needs/ui/OneTapNotice";
 import "./home.css";
 
 const CHIEF_NAME = "Chief of Staff";
@@ -27,29 +28,14 @@ const TITLE: Record<string, string> = {
 const HOME_BUTTON = "inline-flex h-7 shrink-0 items-center rounded-md px-2.5 text-[12px] leading-none";
 const PRIMARY_BUTTON = `${HOME_BUTTON} bg-accent font-medium text-black`;
 const QUIET_BUTTON = `${HOME_BUTTON} border border-content/20 text-content`;
-// Name, switch, and an unpin slot. The slot stays empty on a section so the switches line up.
-const ARRANGE_COLUMNS = { gridTemplateColumns: "minmax(0, 1fr) 2.25rem 4rem" };
+// Name, move up, move down, switch, and an unpin slot. The slot stays empty on a section so the switches line up.
+const ARRANGE_COLUMNS = { gridTemplateColumns: "minmax(0, 1fr) 1.5rem 1.5rem 2.25rem 4rem" };
 // The header's two controls (a project's Autopilot switch, Customize): one height and one look, so they sit level.
 export const HOME_HEADER_BUTTON =
   "inline-flex h-7 shrink-0 items-center gap-2 rounded-md border border-content/10 px-2.5 text-[12px] leading-none text-content/70 hover:bg-content/10 hover:text-content";
 
-// The order the cards were dragged into, by key. Kept in this window's storage: it is how this screen is laid out, not data.
-const CARD_ORDER_KEY = "monocode:home-card-order";
-function loadCardOrder(): string[] {
-  try {
-    const value: unknown = JSON.parse(localStorage.getItem(CARD_ORDER_KEY) ?? "[]");
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-function saveCardOrder(order: string[]): void {
-  try {
-    localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(order));
-  } catch {
-    // The order still holds for this visit.
-  }
-}
+// The order the cards were dragged into, by key, is part of Home's saved arrangement (G5: `arrangement.cards`, kept in
+// the local hub store), so every window and a restore agree.
 /** Cards in the dragged order; one that was never dragged keeps its own place after them. */
 export function orderCards<T extends { key: string }>(cards: readonly T[], order: readonly string[]): T[] {
   const rank = (card: T, index: number) => (order.includes(card.key) ? order.indexOf(card.key) : order.length + index);
@@ -62,6 +48,20 @@ export function dropCard(keys: readonly string[], key: string, onto: string): st
   if (from < 0 || to < 0 || from === to) return [...keys];
   const next = keys.filter((item) => item !== key);
   next.splice(to, 0, key);
+  return next;
+}
+
+/**
+ * `key` moved one place among `rows` (the cards Customize lists), for the keyboard and a screen reader: dragging is
+ * the pointer's way to do the same. It lands just before the row above it, or just after the row below, in `keys`
+ * (every card in its order, listed or not), so a card Customize doesn't list never blocks the move.
+ */
+export function stepCard(keys: readonly string[], rows: readonly string[], key: string, dir: -1 | 1): string[] {
+  const listed = keys.filter((item) => rows.includes(item));
+  const other = listed[listed.indexOf(key) + dir];
+  if (!listed.includes(key) || !other) return [...keys];
+  const next = keys.filter((item) => item !== key);
+  next.splice(next.indexOf(other) + (dir === 1 ? 1 : 0), 0, key);
   return next;
 }
 
@@ -195,7 +195,8 @@ function NeedRow({ row }: { row: HomeNeed }) {
           {...(index === 0 ? { "data-needs-answer": "" } : {})}
           title={action.title ?? action.label}
           aria-label={action.title ?? action.label}
-          className={index === 0 ? PRIMARY_BUTTON : QUIET_BUTTON}
+          // Only a one-tap answer takes the filled button. A way out ("Open", "Open chat") stays bordered (WP-210).
+          className={index === 0 && action.label !== "Open" && action.label !== "Open chat" ? PRIMARY_BUTTON : QUIET_BUTTON}
           onClick={action.onClick}
         >
           {action.label}
@@ -500,6 +501,7 @@ export function HomeScreen({
   onPin,
   onUnpin,
   onAsk,
+  onReorder,
   renderPanel,
   title = "Home",
   headerExtra,
@@ -531,11 +533,18 @@ export function HomeScreen({
   onPin: (plugin: string, panelId: string) => void;
   onUnpin: (key: string) => void;
   onAsk: (text: string) => void;
+  /** A card was dropped: the new order of every card, to keep in the arrangement. */
+  onReorder?: (keys: string[]) => void;
   renderPanel?: (panel: CatalogPanel) => ReactNode;
 }) {
   const [custom, setCustom] = useState(false);
-  // Dropwave (Ash, 11 Nov): the cards are dragged into place on the page itself; Customize only turns them on and off.
-  const [cardOrder, setCardOrder] = useState(loadCardOrder);
+  // Dropwave (Ash, 11 Nov): the cards are dragged into place on the page itself. Customize turns them on and off, and
+  // its Move up and Move down do the same move without a pointer.
+  // The saved order; a drop shows at once and holds until the saved arrangement says otherwise.
+  const savedOrder = arrangement.cards ?? [];
+  const savedKey = savedOrder.join("\n");
+  const [dropped, setDropped] = useState<{ order: string[]; over: string } | null>(null);
+  const cardOrder = dropped && dropped.over === savedKey ? dropped.order : savedOrder;
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
   const [askSeed, setAskSeed] = useState<{ text: string; n: number } | undefined>();
@@ -582,6 +591,18 @@ export function HomeScreen({
     [...visible.map((ref) => ({ key: sectionKey(ref) })), ...(known ? extraSections.map((extra) => ({ key: extra.key })) : [])],
     cardOrder,
   ).map((card) => card.key);
+  // Customize lists its rows in the order the cards are in, so Move up and Move down show where a card went.
+  const rowKeys = orderCards(
+    [...arranged.map((ref) => ({ key: sectionKey(ref) })), ...(known ? extraSections.map((extra) => ({ key: extra.key })) : [])],
+    cardOrder,
+  ).map((card) => card.key);
+  const rows = orderCards(arranged.map((ref) => ({ key: sectionKey(ref), ref })), rowKeys);
+  const stepRow = (key: string, dir: -1 | 1) => {
+    const next = stepCard(rowKeys, rows.map((row) => row.key), key, dir);
+    // The same path a drop takes (G5): shown at once, saved with the arrangement.
+    setDropped({ order: next, over: savedKey });
+    onReorder?.(next);
+  };
   const cardLook = (key: string) =>
     `${dragging === key ? " opacity-50" : ""}${dropOn === key && dragging !== key ? " border-accent/70 bg-content/5" : ""}`;
   /** A card takes a drop: the dragged card lands in its place. */
@@ -597,8 +618,8 @@ export function HomeScreen({
       if (!dragging) return;
       event.preventDefault();
       const next = dropCard(cardKeys, dragging, key);
-      setCardOrder(next);
-      saveCardOrder(next);
+      setDropped({ order: next, over: savedKey });
+      onReorder?.(next);
       setDragging(null);
       setDropOn(null);
     },
@@ -624,7 +645,7 @@ export function HomeScreen({
     <GripVertical className="size-3.5 shrink-0 text-content/30 opacity-0 transition-opacity group-hover/card:opacity-100" strokeWidth={1.75} aria-hidden />
   );
   return (
-    <div data-home data-home-order={visible.map(sectionKey).join(" ")} className="min-h-0 min-w-0 flex-1 overflow-y-auto text-content">
+    <div data-home data-home-order={orderCards(visible.map((ref) => ({ key: sectionKey(ref) })), cardKeys).map((card) => card.key).join(" ")} className="min-h-0 min-w-0 flex-1 overflow-y-auto text-content">
       <div className="mx-auto flex flex-col gap-6 px-8 pt-10 pb-10" style={{ maxWidth: HOME_WIDE_WIDTH }}>
         {/* The app's own page header (New automation, Pages): the title, a quiet line under it, the controls level on the right. */}
         <header data-home-header className="flex items-center gap-2">
@@ -646,6 +667,7 @@ export function HomeScreen({
             </button>
           ) : null}
         </header>
+        <OneTapNotice />
         {known && custom ? (
           <div
             ref={panelRef}
@@ -654,14 +676,20 @@ export function HomeScreen({
             aria-label="Customize"
             className="flex flex-col gap-1 rounded-xl border border-content/10 p-3"
           >
-            <p className="px-1 pb-1 text-[12px] text-content/50">Turn cards on or off. To move a card, drag it by its title on the page.</p>
-            {arranged.map((ref) => {
+            <p className="px-1 pb-1 text-[12px] text-content/50">Turn cards on or off. To move a card, use its arrows here or drag it by its title on the page.</p>
+            {rows.map(({ ref }, place) => {
               const key = sectionKey(ref);
               const title = titleOf(ref, catalog);
               const shown = !arrangement.hidden.includes(key);
               return (
                 <div key={key} data-home-arrange={key} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
                   <span className="min-w-0 truncate text-[13px] text-content">{title}</span>
+                  <button type="button" aria-label={`Move ${title} up`} disabled={place === 0} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8 disabled:opacity-30 disabled:hover:bg-transparent" onClick={() => stepRow(key, -1)}>
+                    <ChevronUp className="size-3.5" aria-hidden />
+                  </button>
+                  <button type="button" aria-label={`Move ${title} down`} disabled={place === rows.length - 1} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8 disabled:opacity-30 disabled:hover:bg-transparent" onClick={() => stepRow(key, 1)}>
+                    <ChevronDown className="size-3.5" aria-hidden />
+                  </button>
                   <span className="justify-self-center">
                     <ShowSwitch title={title} on={shown} onToggle={() => (shown ? onHide(key) : onShow(key))} />
                   </span>
@@ -678,6 +706,8 @@ export function HomeScreen({
             {offered.map((panel) => (
               <div key={`${panel.plugin}:${panel.panelId}`} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
                 <span className="min-w-0 truncate text-[13px] text-content/70">{panel.title}</span>
+                <span />
+                <span />
                 <span />
                 <span className="justify-self-end">
                   <button

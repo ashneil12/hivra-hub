@@ -2,9 +2,10 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { noteOneTapRefusal, resetOneTapRefusal } from "../../needs/model/oneTapNotice";
 import { defaultArrangement, hideSection, pinPanel } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
-import { HomeScreen, dropCard, orderCards, type HomeChief, type HomeDone, type HomeNeed, type HomeWork } from "./HomeScreen";
+import { HomeScreen, dropCard, orderCards, stepCard, type HomeChief, type HomeDone, type HomeNeed, type HomeWork } from "./HomeScreen";
 
 const chief: HomeChief = {
   missing: false,
@@ -25,6 +26,7 @@ beforeEach(() => {
   root = createRoot(container);
 });
 afterEach(() => {
+  resetOneTapRefusal();
   act(() => root.unmount());
   container.remove();
 });
@@ -61,6 +63,12 @@ function draw(props: Partial<Parameters<typeof HomeScreen>[0]> = {}) {
     }));
   });
 }
+
+it("says why a one tap was refused", () => {
+  noteOneTapRefusal("That chat isn't waiting any more.");
+  draw();
+  expect(container.querySelector("[data-needs-refusal]")?.textContent).toBe("That chat isn't waiting any more.");
+});
 
 it("with nothing to show, the chief says all quiet inside the card", () => {
   draw();
@@ -264,8 +272,9 @@ it("keeps customize on one button: a panel of switches, not a wall of links", ()
   const showNeeds = panel.querySelector<HTMLButtonElement>("[role='switch'][aria-label='Show Needs you']")!;
   expect(showNeeds.getAttribute("aria-checked")).toBe("false");
   expect(showNeeds.tabIndex).not.toBe(-1);
-  // Dropwave (Ash, 11 Nov): Customize only turns cards on and off. A card is moved by dragging it on the page.
-  expect(panel.querySelector("[aria-label^='Move ']")).toBeNull();
+  // A card is moved by dragging it on the page, and from the keyboard by its two arrows here.
+  expect(panel.querySelector<HTMLButtonElement>("[aria-label='Move Needs you up']")?.tabIndex).not.toBe(-1);
+  expect(panel.querySelector("[aria-label='Move Needs you down']")).not.toBeNull();
   expect(panel.querySelector("[data-home-action='add-card']")?.textContent).toContain("Ask for a new card");
   expect(panel.querySelector("[aria-label='Unpin Pinned panel']")).not.toBeNull();
   expect(panel.querySelector("[aria-label='Pin Example board']")).not.toBeNull();
@@ -300,7 +309,7 @@ it("customize rows share one set of columns, with an empty unpin slot on a secti
   act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
   const rows = [...container.querySelectorAll("[data-home-arrange]")];
   expect(rows.length).toBeGreaterThan(1);
-  for (const row of rows) expect(row.children).toHaveLength(3);
+  for (const row of rows) expect(row.children).toHaveLength(5);
   const section = container.querySelector("[data-home-arrange='moving-now'] [data-home-unpin]")!;
   expect(section.querySelector("button")).toBeNull();
   expect(container.querySelector("[data-home-arrange='panel:my-panels:board'] [data-home-unpin] button")?.textContent).toBe("Unpin");
@@ -431,6 +440,21 @@ it("a stopped row says Stopped, then the reason, then Open chat", () => {
   expect(clicked).toEqual(["action"]);
 });
 
+it("a row whose only way on is Open keeps a bordered button, not the blue one", () => {
+  const needs: HomeNeed[] = [{
+    key: "q0",
+    project: "EXO",
+    sentence: "Example: Ready to merge #12.",
+    stopped: false,
+    actions: [{ label: "Open", onClick: () => undefined }],
+    onOpen: () => undefined,
+  }];
+  draw({ needs, needsTotal: 1 });
+  const button = container.querySelector<HTMLButtonElement>("[data-home-line='need'] [data-home-action='Open']")!;
+  expect(button.className).toContain("border");
+  expect(button.className).not.toContain("bg-accent");
+});
+
 it("a question row shows its own actions, the first one blue", () => {
   const clicked: string[] = [];
   const needs: HomeNeed[] = [{
@@ -510,6 +534,38 @@ it("orders the cards the way they were dragged, and a drop takes the other card'
   expect(dropCard(keys, "moving-now", "pages")).toEqual(["recent", "pages", "moving-now", "automations"]);
   expect(dropCard(keys, "recent", "recent")).toEqual(keys);
   expect(dropCard(keys, "missing", "recent")).toEqual(keys);
+});
+
+it("Move up and Move down step a card past the row beside it, whatever sits between them on the page", () => {
+  const keys = ["needs-you", "pages", "moving-now", "recent"];
+  const rows = ["needs-you", "moving-now", "recent"];
+  expect(stepCard(keys, rows, "moving-now", -1)).toEqual(["moving-now", "needs-you", "pages", "recent"]);
+  expect(stepCard(keys, rows, "needs-you", 1)).toEqual(["pages", "moving-now", "needs-you", "recent"]);
+  expect(stepCard(keys, rows, "needs-you", -1)).toEqual(keys);
+  expect(stepCard(keys, rows, "recent", 1)).toEqual(keys);
+  expect(stepCard(keys, rows, "pages", -1)).toEqual(keys);
+});
+
+it("Move up in Customize moves the card on the page and its row in the panel, and saves the order", () => {
+  const saved: string[][] = [];
+  draw({
+    needs: [{ key: "n1", sentence: "Example: Should we ship?", stopped: false, actions: [], onOpen: () => undefined }],
+    needsTotal: 1,
+    working: [{ key: "w1", text: "Example: building the page", since: "2 min" }],
+    workingTotal: 1,
+    onReorder: (keys) => saved.push(keys),
+  });
+  const order = () => container.querySelector("[data-home]")!.getAttribute("data-home-order");
+  expect(order()).toBe("needs-you moving-now");
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
+  const up = container.querySelector<HTMLButtonElement>("[aria-label='Move Working now up']")!;
+  act(() => up.click());
+  expect(order()).toBe("moving-now needs-you");
+  const rowsNow = [...container.querySelectorAll("[data-home-arrange]")].map((row) => row.getAttribute("data-home-arrange"));
+  expect(rowsNow.indexOf("moving-now")).toBeLessThan(rowsNow.indexOf("needs-you"));
+  expect(container.querySelector<HTMLButtonElement>("[aria-label='Move Working now up']")!.disabled).toBe(true);
+  expect(saved).toHaveLength(1);
+  expect(saved[0]?.slice(0, 2)).toEqual(["moving-now", "needs-you"]);
 });
 
 it("a card is picked up by its title row, and Ask for a new card puts the words in the Chief of Staff's box", () => {

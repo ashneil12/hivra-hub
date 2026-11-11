@@ -1301,6 +1301,47 @@ export function subscribeMonoRailCollapsed(onStoreChange: () => void) {
     window.removeEventListener(MONO_RAIL_COLLAPSED_CHANGE_EVENT, onStoreChange);
 }
 
+/** G6: "Show code tools" (Git, files, changes and worktrees in a project's sidebar; Settings > Advanced > Worktrees). */
+export const SHOW_CODE_TOOLS_KEY = "monocode.showCodeTools";
+/** Where codeTools.ts kept it in one window's storage before it moved here: read once, then let go. */
+const SHOW_CODE_TOOLS_LEGACY_KEY = "monocode:show-code-tools";
+
+/** Fired on `window` when code tools are shown or hidden. */
+export const SHOW_CODE_TOOLS_CHANGE_EVENT = "monocode:show-code-tools-change";
+
+/**
+ * The saved choice, or `fallback` when there is none. The default (upstream keeps its tools, the hub hides them) comes
+ * from codeTools.ts: this file is also bundled into the host (host/build.mjs), where the hub flag can't be read.
+ */
+export function loadShowCodeTools(fallback: boolean): boolean {
+  const saved = readFlag(SHOW_CODE_TOOLS_KEY);
+  if (saved != null) return saved;
+  const legacy = readFlag(SHOW_CODE_TOOLS_LEGACY_KEY);
+  if (legacy == null) return fallback;
+  writeFlag(SHOW_CODE_TOOLS_KEY, legacy);
+  try {
+    if (readFlag(SHOW_CODE_TOOLS_KEY) === legacy) localStorage.removeItem(SHOW_CODE_TOOLS_LEGACY_KEY);
+  } catch {
+    // Read again next time; the setting already has it once written.
+  }
+  return legacy;
+}
+
+export function saveShowCodeTools(value: boolean) {
+  writeFlag(SHOW_CODE_TOOLS_KEY, value);
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(
+    new CustomEvent<boolean>(SHOW_CODE_TOOLS_CHANGE_EVENT, { detail: value }),
+  );
+}
+
+export function subscribeShowCodeTools(onStoreChange: () => void) {
+  if (typeof window === "undefined") return () => {};
+  window.addEventListener(SHOW_CODE_TOOLS_CHANGE_EVENT, onStoreChange);
+  return () =>
+    window.removeEventListener(SHOW_CODE_TOOLS_CHANGE_EVENT, onStoreChange);
+}
+
 const MONO_MENU_BAR_KEY = "monocode.monoMenuBarIcon";
 
 /** Fired on `window` when the menu bar icon is shown or hidden. */

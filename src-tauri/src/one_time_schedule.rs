@@ -16,6 +16,16 @@ const MAX_PROJECT: usize = 4096;
 const MAX_ID: usize = 80;
 /// 10000-01-01T00:00:00Z, in milliseconds. A local time cannot name a later year.
 const YEAR_10000_MS: i64 = 253_402_300_800_000;
+/// An open app that wakes days later does not fire the run. Six hours still covers a nap.
+const LATENESS_GRACE_MS: i64 = 6 * 60 * 60 * 1000;
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
+fn past_grace(run_at: i64, now: i64) -> bool {
+    now.saturating_sub(run_at) > LATENESS_GRACE_MS
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +34,7 @@ pub enum OneTimeStatus {
     Fired,
     Missed,
     Cancelled,
+    Undeliverable,
 }
 
 impl OneTimeStatus {
@@ -33,6 +44,7 @@ impl OneTimeStatus {
             Self::Fired => "fired",
             Self::Missed => "missed",
             Self::Cancelled => "cancelled",
+            Self::Undeliverable => "undeliverable",
         }
     }
 }
@@ -69,6 +81,12 @@ pub struct OneTimeSchedule {
     pub claim: Option<OneTimeClaim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_session_id: Option<String>,
+    /// The prompt was accepted. A later claim marks the run fired and does not send it again.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub handed_off: bool,
+    /// Missed because the open app woke after the grace window, not because it was closed.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub late: bool,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -269,6 +287,8 @@ fn validate_create(input: &OneTimeCreate, now: i64) -> Result<OneTimeSchedule, S
         noted_at: None,
         claim: None,
         started_session_id: None,
+        handed_off: false,
+        late: false,
     })
 }
 
@@ -393,6 +413,13 @@ fn cancel(conn: &Connection, id: &str, now: i64) -> Result<OneTimeSchedule, Stri
     if current.status != OneTimeStatus::Scheduled {
         return Ok(current);
     }
+    if current
+        .claim
+        .as_ref()
+        .is_some_and(|claim| claim.until > now)
+    {
+        return Ok(current);
+    }
     let next = OneTimeSchedule {
         status: OneTimeStatus::Cancelled,
         updated_at: now,
@@ -405,8 +432,9 @@ fn cancel(conn: &Connection, id: &str, now: i64) -> Result<OneTimeSchedule, Stri
             "UPDATE one_time_schedules
              SET body_json = ?1, status = 'cancelled', updated_at = ?2,
                  claim_token = NULL, claim_until = NULL
-             WHERE id = ?3 AND status = 'scheduled' AND updated_at = ?4",
-            params![body, now, id, current.updated_at],
+             WHERE id = ?3 AND status = 'scheduled' AND updated_at = ?4
+               AND (claim_token IS NULL OR claim_until <= ?5)",
+            params![body, now, id, current.updated_at, now],
         )
         .map_err(|error| error.to_string())?;
     if changed(conn, result) {
@@ -478,6 +506,7 @@ fn claim(
     if current.status != OneTimeStatus::Scheduled
         || current.updated_at != expected_updated_at
         || current.run_at > now
+        || past_grace(current.run_at, now)
     {
         return Ok(None);
     }
@@ -502,8 +531,18 @@ fn claim(
             "UPDATE one_time_schedules
              SET body_json = ?1, updated_at = ?2, claim_token = ?3, claim_until = ?4
              WHERE id = ?5 AND status = 'scheduled' AND updated_at = ?6 AND run_at <= ?7
+               AND (?7 - run_at) <= ?8
                AND (claim_token IS NULL OR claim_until <= ?7)",
-            params![body, now, token, until, id, expected_updated_at, now],
+            params![
+                body,
+                now,
+                token,
+                until,
+                id,
+                expected_updated_at,
+                now,
+                LATENESS_GRACE_MS
+            ],
         )
         .map_err(|error| error.to_string())?;
     if changed(conn, result) {
@@ -632,11 +671,126 @@ fn release(
     }
 }
 
+fn mark_handed_off(
+    conn: &Connection,
+    id: &str,
+    token: &str,
+    now: i64,
+) -> Result<Option<OneTimeSchedule>, String> {
+    let Some(current) = get(conn, id)? else {
+        return Ok(None);
+    };
+    if current.status != OneTimeStatus::Scheduled
+        || current.claim.as_ref().map(|claim| claim.token.as_str()) != Some(token)
+    {
+        return Ok(None);
+    }
+    let next = OneTimeSchedule {
+        handed_off: true,
+        updated_at: now,
+        ..current
+    };
+    let body = body_of(&next)?;
+    let result = conn
+        .execute(
+            "UPDATE one_time_schedules
+             SET body_json = ?1, updated_at = ?2
+             WHERE id = ?3 AND status = 'scheduled' AND claim_token = ?4",
+            params![body, now, id, token],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed(conn, result) {
+        Ok(Some(next))
+    } else {
+        Ok(None)
+    }
+}
+
+fn mark_undeliverable(
+    conn: &Connection,
+    id: &str,
+    token: &str,
+    now: i64,
+) -> Result<Option<OneTimeSchedule>, String> {
+    let Some(current) = get(conn, id)? else {
+        return Ok(None);
+    };
+    if current.status != OneTimeStatus::Scheduled
+        || current.claim.as_ref().map(|claim| claim.token.as_str()) != Some(token)
+    {
+        return Ok(None);
+    }
+    let next = OneTimeSchedule {
+        status: OneTimeStatus::Undeliverable,
+        updated_at: now,
+        claim: None,
+        ..current
+    };
+    let body = body_of(&next)?;
+    let result = conn
+        .execute(
+            "UPDATE one_time_schedules
+             SET body_json = ?1, status = 'undeliverable', updated_at = ?2,
+                 claim_token = NULL, claim_until = NULL
+             WHERE id = ?3 AND status = 'scheduled' AND claim_token = ?4",
+            params![body, now, id, token],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed(conn, result) {
+        Ok(Some(next))
+    } else {
+        Ok(None)
+    }
+}
+
+fn mark_late(conn: &Connection, id: &str, now: i64) -> Result<Option<OneTimeSchedule>, String> {
+    let Some(current) = get(conn, id)? else {
+        return Ok(None);
+    };
+    if current.status != OneTimeStatus::Scheduled || !past_grace(current.run_at, now) {
+        return Ok(None);
+    }
+    if current
+        .claim
+        .as_ref()
+        .is_some_and(|claim| claim.until > now)
+    {
+        return Ok(None);
+    }
+    let next = OneTimeSchedule {
+        status: OneTimeStatus::Missed,
+        updated_at: now,
+        claim: None,
+        late: true,
+        ..current
+    };
+    let body = body_of(&next)?;
+    let result = conn
+        .execute(
+            "UPDATE one_time_schedules
+             SET body_json = ?1, status = 'missed', updated_at = ?2,
+                 claim_token = NULL, claim_until = NULL
+             WHERE id = ?3 AND status = 'scheduled' AND updated_at = ?4
+               AND (claim_token IS NULL OR claim_until <= ?5)
+               AND (?5 - run_at) > ?6",
+            params![body, now, id, current.updated_at, now, LATENESS_GRACE_MS],
+        )
+        .map_err(|error| error.to_string())?;
+    if changed(conn, result) {
+        Ok(Some(next))
+    } else {
+        Ok(None)
+    }
+}
+
 fn note(conn: &Connection, id: &str, now: i64) -> Result<(), String> {
     let Some(current) = get(conn, id)? else {
         return Ok(());
     };
-    if current.status != OneTimeStatus::Missed || current.noted_at.is_some() {
+    if current.noted_at.is_some()
+        || (current.status != OneTimeStatus::Missed
+            && current.status != OneTimeStatus::Undeliverable)
+    {
         return Ok(());
     }
     let next = OneTimeSchedule {
@@ -648,7 +802,7 @@ fn note(conn: &Connection, id: &str, now: i64) -> Result<(), String> {
     conn.execute(
         "UPDATE one_time_schedules
          SET body_json = ?1, updated_at = ?2
-         WHERE id = ?3 AND status = 'missed' AND updated_at = ?4",
+         WHERE id = ?3 AND status IN ('missed', 'undeliverable') AND updated_at = ?4",
         params![body, now, id, current.updated_at],
     )
     .map_err(|error| error.to_string())?;
@@ -780,6 +934,56 @@ pub fn one_time_schedules_release(
     let now = now_millis();
     let conn = store.lock_conn()?;
     let saved = release(&conn, &id, &token, now)?;
+    drop(conn);
+    if saved.is_some() {
+        emit_changed(&app);
+    }
+    Ok(saved)
+}
+
+#[tauri::command(async)]
+pub fn one_time_schedules_mark_handed_off(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    id: String,
+    token: String,
+) -> Result<Option<OneTimeSchedule>, String> {
+    let now = now_millis();
+    let conn = store.lock_conn()?;
+    let saved = mark_handed_off(&conn, &id, &token, now)?;
+    drop(conn);
+    if saved.is_some() {
+        emit_changed(&app);
+    }
+    Ok(saved)
+}
+
+#[tauri::command(async)]
+pub fn one_time_schedules_mark_undeliverable(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    id: String,
+    token: String,
+) -> Result<Option<OneTimeSchedule>, String> {
+    let now = now_millis();
+    let conn = store.lock_conn()?;
+    let saved = mark_undeliverable(&conn, &id, &token, now)?;
+    drop(conn);
+    if saved.is_some() {
+        emit_changed(&app);
+    }
+    Ok(saved)
+}
+
+#[tauri::command(async)]
+pub fn one_time_schedules_mark_late(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    id: String,
+) -> Result<Option<OneTimeSchedule>, String> {
+    let now = now_millis();
+    let conn = store.lock_conn()?;
+    let saved = mark_late(&conn, &id, now)?;
     drop(conn);
     if saved.is_some() {
         emit_changed(&app);
@@ -1023,6 +1227,37 @@ mod tests {
             cancel(&conn, "sched-1", 6_300).unwrap().status,
             OneTimeStatus::Missed
         );
+    }
+
+    #[test]
+    fn cancel_does_not_succeed_while_a_claim_is_live() {
+        let conn = memory();
+        let row = create(&conn, &sample("sched-1", 2_000), 1_000).unwrap();
+        claim(&conn, "sched-1", row.updated_at, "token-a", 9_000, 2_000).unwrap();
+        let during = cancel(&conn, "sched-1", 2_100).unwrap();
+        assert_eq!(during.status, OneTimeStatus::Scheduled);
+        assert_eq!(during.claim.unwrap().token, "token-a");
+        let after = cancel(&conn, "sched-1", 9_000).unwrap();
+        assert_eq!(after.status, OneTimeStatus::Cancelled);
+        assert!(after.claim.is_none());
+    }
+
+    #[test]
+    fn a_days_late_claim_does_not_start_the_run() {
+        let conn = memory();
+        let row = create(&conn, &sample("sched-1", 2_000), 1_000).unwrap();
+        let later = 2_000 + 2 * 24 * 60 * 60 * 1000;
+        let claimed = claim(
+            &conn,
+            "sched-1",
+            row.updated_at,
+            "token-a",
+            later + 1_000,
+            later,
+        )
+        .unwrap();
+        assert!(claimed.is_none());
+        assert_eq!(list(&conn).unwrap()[0].status, OneTimeStatus::Scheduled);
     }
 
     #[test]

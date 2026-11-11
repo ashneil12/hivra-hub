@@ -4,7 +4,13 @@
 export const CLOSED_APP_WARNING =
   "Hivra only runs this while it is open. If Hivra is closed at this time, the run is missed.";
 
-export const ONE_TIME_STATUSES = ["scheduled", "fired", "missed", "cancelled"] as const;
+export const ONE_TIME_STATUSES = [
+  "scheduled",
+  "fired",
+  "missed",
+  "cancelled",
+  "undeliverable",
+] as const;
 export type OneTimeStatus = (typeof ONE_TIME_STATUSES)[number];
 
 export type OneTimeTarget =
@@ -27,6 +33,10 @@ export type OneTimeSchedule = {
   notedAt?: number;
   claim?: OneTimeClaim;
   startedSessionId?: string;
+  /** The prompt was accepted. A later check must not send it again. */
+  handedOff?: boolean;
+  /** Missed because the open app woke after the grace window, not because it was closed. */
+  late?: boolean;
 };
 
 export type OneTimeNotice = { id: string; text: string };
@@ -35,6 +45,14 @@ export class RetryableScheduleError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "RetryableScheduleError";
+  }
+}
+
+/** The chat or project is gone, or the chat refused the prompt. Retrying will not deliver it. */
+export class UndeliverableScheduleError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "UndeliverableScheduleError";
   }
 }
 
@@ -51,6 +69,8 @@ const LOCAL = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/;
 const MAX_PROMPT = 100_000;
 const MAX_PROJECT = 4096;
 const DEFAULT_CLAIM_HOLD_MS = 10 * 60 * 1000;
+/** A run this late, while the app stayed open, is missed instead of firing. A short wake still runs. */
+export const ONE_TIME_LATENESS_GRACE_MS = 6 * 60 * 60 * 1000;
 
 export function instantFromLocalInput(value: string): number | null {
   const match = LOCAL.exec(value);
@@ -78,11 +98,35 @@ export function instantFromLocalInput(value: string): number | null {
   return instant;
 }
 
+function shortPrompt(prompt: string): string {
+  const preview = prompt.replace(/\s+/g, " ").trim();
+  return preview.length > 80 ? `${preview.slice(0, 77)}...` : preview;
+}
+
+/** The wall time to show. A zone change drops the saved text, so the instant is formatted instead. */
+export function scheduleWhenLabel(schedule: Pick<OneTimeSchedule, "runAt" | "localText">): string {
+  if (schedule.localText && instantFromLocalInput(schedule.localText) === schedule.runAt) {
+    return schedule.localText.replace("T", " ");
+  }
+  const date = new Date(schedule.runAt);
+  if (!Number.isFinite(date.getTime())) return "the chosen time";
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 export function missedScheduleNotice(schedule: OneTimeSchedule): string {
-  const when = schedule.localText ? schedule.localText.replace("T", " ") : "the chosen time";
-  const preview = schedule.prompt.replace(/\s+/g, " ").trim();
-  const short = preview.length > 80 ? `${preview.slice(0, 77)}...` : preview;
-  return `A scheduled prompt was missed because Hivra was closed. "${short}" was set for ${when}.`;
+  const short = shortPrompt(schedule.prompt);
+  return `A scheduled prompt was missed because Hivra was closed. "${short}" was set for ${scheduleWhenLabel(schedule)}.`;
+}
+
+export function lateScheduleNotice(schedule: OneTimeSchedule): string {
+  const short = shortPrompt(schedule.prompt);
+  return `A scheduled prompt was missed. It was too late to run. "${short}" was set for ${scheduleWhenLabel(schedule)}.`;
+}
+
+export function undeliverableScheduleNotice(schedule: OneTimeSchedule): string {
+  const short = shortPrompt(schedule.prompt);
+  return `A scheduled prompt could not run. "${short}" was set for ${scheduleWhenLabel(schedule)}.`;
 }
 
 export function oneTimeStatusLabel(status: OneTimeStatus): string {
@@ -95,6 +139,8 @@ export function oneTimeStatusLabel(status: OneTimeStatus): string {
       return "Missed";
     case "cancelled":
       return "Cancelled";
+    case "undeliverable":
+      return "Could not run";
   }
 }
 
@@ -170,6 +216,8 @@ export function decodeOneTimeSchedule(raw: unknown): OneTimeSchedule | null {
   ) {
     schedule.claim = { token: claim.token, until: claim.until };
   }
+  if (row.handedOff === true) schedule.handedOff = true;
+  if (row.late === true) schedule.late = true;
   return schedule;
 }
 
@@ -194,6 +242,12 @@ export interface OneTimeScheduleStore {
   ): Promise<OneTimeSchedule | null>;
   ackFired(id: string, token: string, now: number): Promise<OneTimeSchedule | null>;
   release(id: string, token: string, now: number): Promise<OneTimeSchedule | null>;
+  /** The prompt was accepted under this claim. A later check finishes the run without sending again. */
+  markHandedOff(id: string, token: string, now: number): Promise<OneTimeSchedule | null>;
+  /** A deleted chat, a project off the list, or a refused send. Requires the live claim. */
+  markUndeliverable(id: string, token: string, now: number): Promise<OneTimeSchedule | null>;
+  /** The app was open, but the run is past the lateness grace. Not the closed-app miss. */
+  markLate(id: string, now: number): Promise<OneTimeSchedule | null>;
   note(id: string, now: number): Promise<void>;
   subscribe(listener: () => void): () => void;
 }
@@ -261,6 +315,7 @@ export function createMemoryOneTimeStore(dump?: string): OneTimeScheduleStore & 
     async cancel(id, now) {
       const row = requireRow(id);
       if (row.status !== "scheduled") return copy(row);
+      if (row.claim && row.claim.until > now) return copy(row);
       const next: OneTimeSchedule = {
         ...row,
         status: "cancelled",
@@ -292,6 +347,7 @@ export function createMemoryOneTimeStore(dump?: string): OneTimeScheduleStore & 
       if (!row || row.status !== "scheduled" || row.updatedAt !== expectedUpdatedAt) return null;
       if (!validId(token) || !Number.isSafeInteger(until) || until <= now) return null;
       if (row.runAt > now) return null;
+      if (now - row.runAt > ONE_TIME_LATENESS_GRACE_MS) return null;
       if (row.claim && row.claim.until > now) return null;
       const next: OneTimeSchedule = {
         ...row,
@@ -331,9 +387,39 @@ export function createMemoryOneTimeStore(dump?: string): OneTimeScheduleStore & 
       publish();
       return copy(next);
     },
+    async markHandedOff(id, token, now) {
+      const row = rows.get(id);
+      if (!row || row.status !== "scheduled" || row.claim?.token !== token) return null;
+      const next = { ...row, handedOff: true, updatedAt: now };
+      rows.set(id, next);
+      publish();
+      return copy(next);
+    },
+    async markUndeliverable(id, token, now) {
+      const row = rows.get(id);
+      if (!row || row.status !== "scheduled" || row.claim?.token !== token) return null;
+      const next: OneTimeSchedule = { ...row, status: "undeliverable", updatedAt: now };
+      delete next.claim;
+      rows.set(id, next);
+      publish();
+      return copy(next);
+    },
+    async markLate(id, now) {
+      const row = rows.get(id);
+      if (!row || row.status !== "scheduled") return null;
+      if (row.claim && row.claim.until > now) return null;
+      if (!(now - row.runAt > ONE_TIME_LATENESS_GRACE_MS)) return null;
+      const next: OneTimeSchedule = { ...row, status: "missed", late: true, updatedAt: now };
+      delete next.claim;
+      rows.set(id, next);
+      publish();
+      return copy(next);
+    },
     async note(id, now) {
       const row = rows.get(id);
-      if (!row || row.status !== "missed" || row.notedAt != null) return;
+      if (!row || (row.status !== "missed" && row.status !== "undeliverable") || row.notedAt != null) {
+        return;
+      }
       rows.set(id, { ...row, notedAt: now, updatedAt: now });
       publish();
     },
@@ -354,20 +440,58 @@ export async function tickOneTimeSchedules(options: {
   send: (schedule: OneTimeSchedule) => Promise<void>;
   tokens?: string[];
   claimHoldMs?: number;
+  /** The open app ends a run that can never be delivered. One attempt on its own leaves it scheduled. */
+  endUndeliverable?: boolean;
 }): Promise<{ notices: OneTimeNotice[] }> {
   if (options.mode === "launch") {
     const missed = await options.store.missClosed(options.now);
-    return { notices: missed.map((row) => ({ id: row.id, text: missedScheduleNotice(row) })) };
+    const blocked = (await options.store.list()).filter(
+      (row) => row.status === "undeliverable" && row.notedAt == null,
+    );
+    return {
+      notices: [
+        ...missed.map((row) => ({
+          id: row.id,
+          text: row.late ? lateScheduleNotice(row) : missedScheduleNotice(row),
+        })),
+        ...blocked.map((row) => ({ id: row.id, text: undeliverableScheduleNotice(row) })),
+      ],
+    };
   }
   const hold = options.claimHoldMs ?? DEFAULT_CLAIM_HOLD_MS;
   const rows = await options.store.list();
+  const notices: OneTimeNotice[] = [];
   let tokenIndex = 0;
+  const nextToken = () => {
+    const token = options.tokens?.[tokenIndex] ?? crypto.randomUUID();
+    tokenIndex += 1;
+    return token;
+  };
   for (const row of rows) {
     if (row.status !== "scheduled" || row.runAt > options.now) continue;
     if (row.claim && row.claim.until > options.now) continue;
+    if (options.now - row.runAt > ONE_TIME_LATENESS_GRACE_MS) {
+      const missed = await options.store.markLate(row.id, options.now);
+      if (missed) notices.push({ id: missed.id, text: lateScheduleNotice(missed) });
+      continue;
+    }
     // A fresh token per claim: a stale runner's ack or release must not land on a later claim.
-    const token = options.tokens?.[tokenIndex] ?? crypto.randomUUID();
-    tokenIndex += 1;
+    const token = nextToken();
+    if (row.handedOff) {
+      try {
+        const claimed = await options.store.claim(
+          row.id,
+          row.updatedAt,
+          token,
+          options.now + hold,
+          options.now,
+        );
+        if (claimed) await options.store.ackFired(claimed.id, token, options.now);
+      } catch (error) {
+        if (error instanceof SchedulesPausedError) throw error;
+      }
+      continue;
+    }
     let claimed: OneTimeSchedule | null;
     try {
       claimed = await options.store.claim(
@@ -393,10 +517,16 @@ export async function tickOneTimeSchedules(options: {
       }
     } catch (error) {
       if (error instanceof SchedulesPausedError) throw error;
-      await options.store.release(claimed.id, token, options.now);
+      if (options.endUndeliverable && error instanceof UndeliverableScheduleError) {
+        const ended = await options.store.markUndeliverable(claimed.id, token, options.now);
+        if (ended) notices.push({ id: ended.id, text: undeliverableScheduleNotice(ended) });
+        else await options.store.release(claimed.id, token, options.now);
+      } else {
+        await options.store.release(claimed.id, token, options.now);
+      }
     }
   }
-  return { notices: [] };
+  return { notices };
 }
 
 export type OneTimeDelivery = {
@@ -407,8 +537,20 @@ export type OneTimeDelivery = {
     schedule: OneTimeSchedule,
     sessionId: string,
   ) => Promise<OneTimeSchedule | null>;
+  /** Record that this claim's prompt was accepted, before the run is marked fired. */
+  markHandedOff?: (schedule: OneTimeSchedule) => Promise<OneTimeSchedule | null>;
   submit: (sessionId: string, prompt: string) => Promise<boolean>;
 };
+
+async function finishAccepted(
+  schedule: OneTimeSchedule,
+  delivery: OneTimeDelivery,
+  sessionId: string,
+): Promise<void> {
+  const accepted = await delivery.submit(sessionId, schedule.prompt);
+  if (!accepted) throw new UndeliverableScheduleError("The chat did not take the prompt.");
+  if (delivery.markHandedOff) await delivery.markHandedOff(schedule);
+}
 
 /** Start the prompt. A timeout or a busy chat throws {@link RetryableScheduleError} and stays scheduled. */
 export async function deliverOneTimeSchedule(
@@ -417,16 +559,15 @@ export async function deliverOneTimeSchedule(
 ): Promise<void> {
   if (schedule.target.kind === "chat") {
     const chat = delivery.findChat(schedule.target.sessionId);
-    if (!chat) throw new RetryableScheduleError("That chat is not here yet.");
+    if (!chat) throw new UndeliverableScheduleError("That chat is not here.");
     if (chat.busy) throw new RetryableScheduleError("That chat is busy.");
-    const accepted = await delivery.submit(chat.id, schedule.prompt);
-    if (!accepted) throw new RetryableScheduleError("The chat did not take the prompt.");
+    await finishAccepted(schedule, delivery, chat.id);
     return;
   }
   let sessionId = schedule.startedSessionId;
   if (!sessionId) {
     const project = delivery.findProject(schedule.target.projectId);
-    if (!project) throw new RetryableScheduleError("That project is not here yet.");
+    if (!project) throw new UndeliverableScheduleError("That project is not here.");
     sessionId = await delivery.createChat(project.folder);
     const saved = await delivery.rememberSession(schedule, sessionId);
     if (!saved) {
@@ -436,6 +577,5 @@ export async function deliverOneTimeSchedule(
   const chat = delivery.findChat(sessionId);
   if (!chat) throw new RetryableScheduleError("That chat is not here yet.");
   if (chat.busy) throw new RetryableScheduleError("That chat is busy.");
-  const accepted = await delivery.submit(chat.id, schedule.prompt);
-  if (!accepted) throw new RetryableScheduleError("The chat did not take the prompt.");
+  await finishAccepted(schedule, delivery, chat.id);
 }

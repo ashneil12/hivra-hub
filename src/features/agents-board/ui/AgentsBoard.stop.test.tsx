@@ -56,11 +56,15 @@ describe("Agents board stop", () => {
     vi.unstubAllGlobals();
   });
 
-  function render(onStop: (id: string) => void | Promise<void>, onOpen: (id: string) => void = () => undefined) {
+  function render(
+    onStop: (id: string) => void | Promise<void>,
+    onOpen: (id: string) => void = () => undefined,
+    next = tree,
+  ) {
     act(() => {
       root.render(
         createElement(AgentsBoard, {
-          tree,
+          tree: next,
           projects: [{ id: "hivra", name: "Hivra" }],
           now: NOW,
           lines: {},
@@ -69,6 +73,27 @@ describe("Agents board stop", () => {
           initialOpen: { "project-chat": true, job: true, other: true },
         }),
       );
+    });
+  }
+
+  function treeWith(jobState: "working" | "idle" | "needs-you" | "done", canStop = true) {
+    return buildAgentsTree({
+      now: NOW,
+      projects: [{ id: "hivra", name: "Hivra" }],
+      people: [
+        person({ id: "captain", role: "captain", name: "Chief of Staff", state: "idle" }),
+        person({ id: "project-chat", role: "project", name: "Example project", projectId: "hivra", state: "idle" }),
+        person({
+          id: "job",
+          role: "worker",
+          name: "Example worker",
+          projectId: "hivra",
+          parentId: "project-chat",
+          state: jobState,
+          canStop,
+          sessionId: "chat",
+        }),
+      ],
     });
   }
 
@@ -125,6 +150,35 @@ describe("Agents board stop", () => {
     expect(container.textContent).not.toContain("Stop Example worker?");
   });
 
+  it("keeps Stopped while that row is quiet, then offers Stop once it is working again", async () => {
+    const working = treeWith("working");
+    let release: () => void = () => undefined;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    render(() => pending, () => undefined, working);
+    act(() => row("job").click());
+    click("Stop");
+    click("Stop");
+    await settle();
+    await act(async () => {
+      release();
+      await pending;
+    });
+    expect(container.textContent).toContain("Stopped");
+
+    render(() => undefined, () => undefined, working);
+    expect(container.textContent).toContain("Stopped");
+
+    render(() => undefined, () => undefined, treeWith("idle", false));
+    expect(container.textContent).toContain("Stopped");
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent === "Stop")).toBe(false);
+
+    render(() => undefined, () => undefined, working);
+    expect(container.textContent).not.toContain("Stopped");
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent === "Stop")).toBe(true);
+  });
+
   it("says the stop failed and offers Stop again", async () => {
     render(async () => {
       throw new Error("the worker is gone");
@@ -148,6 +202,37 @@ describe("Agents board stop", () => {
     await settle();
     expect(container.textContent).toContain("Couldn't stop Example project: This chat can't be stopped from here");
     expect(container.textContent).not.toContain("Stopped");
+    expect([...container.querySelectorAll("button")].some((item) => item.textContent === "Stop")).toBe(true);
+  });
+
+  it("does not use Needs you red for the stop confirm or a failure", async () => {
+    render(async () => {
+      throw new Error("the worker is gone");
+    });
+    act(() => row("job").click());
+    click("Stop");
+    const ask = container.querySelector("[data-stop-ask]");
+    const confirm = [...(ask?.querySelectorAll("button") ?? [])].find((item) => item.textContent === "Stop");
+    if (!confirm) throw new Error("no confirm");
+    expect(confirm.className).not.toMatch(/e5484d|ff6b6b|text-red|bg-red/);
+    expect(row("job").innerHTML).toMatch(/e5484d|ff6b6b/);
+    click("Stop");
+    await settle();
+    const failure = [...container.querySelectorAll("p")].find((item) => item.textContent?.includes("Couldn't stop"));
+    if (!failure) throw new Error("no failure");
+    expect(failure.className).not.toMatch(/e5484d|ff6b6b|text-red|bg-red/);
+  });
+
+  it("drops an open Stop question when another row is opened", () => {
+    render(() => undefined);
+    act(() => row("job").click());
+    click("Stop");
+    expect(container.textContent).toContain("Stop Example worker?");
+    act(() => row("other").click());
+    expect(container.textContent).not.toContain("Stop Example worker?");
+    expect(container.textContent).not.toContain("Stop Example other?");
+    act(() => row("job").click());
+    expect(container.textContent).not.toContain("Stop Example worker?");
     expect([...container.querySelectorAll("button")].some((item) => item.textContent === "Stop")).toBe(true);
   });
 

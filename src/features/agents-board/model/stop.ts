@@ -1,3 +1,5 @@
+import { plainFailure } from "./words";
+
 export type StopPhase = "closed" | "asking" | "stopping" | "stopped" | "failed";
 
 /** The first click asks. A failed stop can be asked again. It does not stop. */
@@ -34,11 +36,6 @@ export function stopTarget(id: string | null, ids: readonly string[]): string | 
 /** What the panel says when a stop did not happen. */
 export function stopFailureText(name: string, reason: string): string {
   const who = name.replace(/[—–]/g, ",").replace(/\s+/g, " ").trim() || "this chat";
-  const why =
-    reason
-      .replace(/[—–]/g, ", ")
-      .replace(/\bstuck\b/gi, "stopped")
-      .replace(/\s+/g, " ")
-      .trim() || "it did not stop";
+  const why = plainFailure(reason) ?? "it did not stop";
   return `Couldn't stop ${who}: ${why}`;
 }

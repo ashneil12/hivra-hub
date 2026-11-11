@@ -14,6 +14,13 @@ it("opens the row's own chat", () => {
   expect(opened).toEqual([{ kind: "chat", id: "chat", projectId: "hivra" }]);
 });
 
+it("opens the Lead's chat to answer a worker that has its own chat", () => {
+  const opened: unknown[] = [];
+  off = setHomeOpener((target) => opened.push(target));
+  openBoardRow({ id: "job", role: "worker", sessionId: "worker-chat", projectId: "hivra" }, "lead-chat");
+  expect(opened).toEqual([{ kind: "chat", id: "lead-chat", projectId: "hivra" }]);
+});
+
 it("opens the owner's chat when the needs-you row has none of its own", () => {
   const opened: unknown[] = [];
   off = setHomeOpener((target) => opened.push(target));

@@ -192,6 +192,54 @@ fn enqueue_refuses_a_branch_that_was_not_made_for_the_package() {
 }
 
 #[test]
+fn a_lettered_package_matches_the_id_without_its_wp_prefix() {
+    assert!(branch_for_package("wp/153b-quarantine-rewrite", "WP-153b"));
+    assert!(branch_for_package("wp/141d-follow-up", "WP-141d"));
+    assert!(branch_for_package("wp/162b-update-leftovers", "WP-162b"));
+    assert!(branch_for_package("WP/153B-quarantine-rewrite", "wp-153b"));
+    assert!(branch_for_package("wp/a-notes", "WP-A"));
+    assert!(branch_for_package("wp/WP-153b", "WP-153b"));
+    assert!(branch_for_package("wp/162", "WP-162"));
+    assert!(!branch_for_package("wp/153b-quarantine-rewrite", "WP-153"));
+    assert!(!branch_for_package("wp/153-quarantine", "WP-153b"));
+    assert!(!branch_for_package("wp/162b-update-leftovers", "WP-162"));
+    assert!(!branch_for_package("wp/ab-notes", "WP-A"));
+    assert!(!branch_for_package("wp/9", "WP-90"));
+    assert!(!branch_for_package("wp/90", "WP-9"));
+    assert!(!branch_for_package("wp/90-notes", "WP-9"));
+    assert!(!branch_for_package("wp/9-notes", "WP-90"));
+    assert!(!branch_for_package("wp/0162", "WP-162"));
+    assert!(!branch_for_package("feature/153b", "WP-153b"));
+    assert!(!branch_for_package("wp/", "WP-153b"));
+    assert!(!branch_for_package("", "WP-153b"));
+    assert!(!branch_for_package("wp/153b", ""));
+    assert!(!branch_for_package("wp/153b", "WP-"));
+
+    let mut conn = memory();
+    let who = mate();
+    let mut lettered = input("WP-153b", "Quarantine");
+    lettered.branch = "wp/153b-quarantine-rewrite".into();
+    let row = enqueue(&mut conn, &who, &lettered, 1).unwrap();
+    assert_eq!(row.branch, "wp/153b-quarantine-rewrite");
+}
+
+/// A lettered id is a word as well as a number, so a short one would match any branch that happens to use it
+/// (`WP-A` and `wp/fix-a-bug`). For a lettered id only the first part after `wp/` counts. A numbered id keeps
+/// matching any part, as it did before lettered ids were read.
+#[test]
+fn a_lettered_package_matches_only_the_first_part_after_wp() {
+    assert!(!branch_for_package("wp/fix-a-bug", "WP-A"));
+    assert!(!branch_for_package("wp/notes-for-153b", "WP-153b"));
+    assert!(!branch_for_package("wp/hub/153b-quarantine", "WP-153b"));
+    assert!(branch_for_package("wp/a-notes", "WP-A"));
+    assert!(branch_for_package("wp/153b-quarantine-rewrite", "WP-153b"));
+    assert!(branch_for_package("WP/153B-quarantine-rewrite", "wp-153b"));
+    assert!(branch_for_package("wp/hub/WP-153b", "WP-153b"));
+    assert!(branch_for_package("wp/fix-162", "WP-162"));
+    assert!(branch_for_package("wp/162", "WP-162"));
+}
+
+#[test]
 fn a_repeated_enqueue_does_not_overwrite() {
     let mut conn = memory();
     let who = mate();
