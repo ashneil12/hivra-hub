@@ -164,8 +164,9 @@ export function FirstMateInboxPanel({
     const snapshot = { rows: held.current.rows, decisions: held.current.decisions };
     const decision = snapshot.decisions.find((entry) => entry.decisionKey === item.key);
     if (tries > 0 && (!decision || decision.state === "answered")) return;
-    // The version from the tap. A retry must not read a card that changed while the answer was in flight (fix round 5, M1).
-    const version = tries === 0 ? decision?.version : seenVersion;
+    // The version of the card that was painted. `held` is updated by a reload before React paints the new card, so a
+    // tap in that gap must not send the newer version (fix round 6). A retry keeps the version from the first tap.
+    const version = tries === 0 ? item.version : seenVersion;
     const optimistic = afterAnswer(snapshot.rows, decision, answerText);
     if (!optimistic.applied) return;
     // The card stays open until the server confirms. The waiters can show as working.

@@ -20,6 +20,8 @@ export type DecisionInput = {
   askedBy?: string | null;
   waiting?: unknown;
   state?: string | null;
+  /** The version this card was drawn from. An answer sends this, not a version a later reload stored. */
+  version?: number;
   /** When it was asked. The wait is counted from here, never from `updatedAt`. */
   createdAt?: number;
   updatedAt?: number;
@@ -39,6 +41,8 @@ export type FirstMateItem = {
   note?: string | null;
   project: string;
   key: string | null;
+  /** The decision version this card was drawn from. Absent on a row that is not a decision. */
+  version?: number;
   /**
    * When this item started waiting on a person: a decision from when it was asked, a blocked row from when it got
    * stuck, a failed or finished row from when it ended, any other row from when it was created. Zero when that start
@@ -254,6 +258,7 @@ export function inboxItems(input: {
       recommended: choice.recommended,
       project,
       key,
+      version: typeof decision.version === "number" && Number.isFinite(decision.version) ? decision.version : 0,
       since: stamp(decision.createdAt),
       updatedAt: decision.updatedAt ?? 0,
     });
