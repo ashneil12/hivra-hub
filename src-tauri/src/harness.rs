@@ -3514,7 +3514,6 @@ fn command_basename(command: &str) -> &str {
         .unwrap_or(command)
 }
 
-#[cfg(unix)]
 #[cfg(test)]
 mod launch_env_tests {
     use super::*;
@@ -3539,6 +3538,7 @@ mod launch_env_tests {
     }
 }
 
+#[cfg(unix)]
 #[cfg(test)]
 mod tests {
     #[cfg(unix)]
