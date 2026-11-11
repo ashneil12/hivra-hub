@@ -17,6 +17,7 @@ const OWNER_PREFIXES = [
   "gate/",
   "secret/",
   "security/",
+  "security-review/",
 ];
 
 /** A key only the owner answers, after the same fold the store uses. */
@@ -44,7 +45,7 @@ export type CaptainQuestion = {
   recommendation?: string;
   confident?: boolean;
   why?: string;
-  /** Which first mate was confident. Coding until a department is named. */
+  /** Which first mate was confident. "The first mate" until a department is named. */
   department?: string;
   rules?: readonly CaptainRule[];
   standing?: NamedAnswer | null;
@@ -160,7 +161,7 @@ export function captainDecide(input: CaptainQuestion): CaptainResult {
     // The mate's own words are the answer, even when they are not one of the options. Step 6 is the one that must pick from the list.
     const answer = matched(options, recommendation) ?? recommendation.trim();
     if (answer) {
-      const who = (input.department ?? "Coding").trim() || "Coding";
+      const who = (input.department ?? "The first mate").trim() || "The first mate";
       return {
         kind: "answer",
         answer,
@@ -212,6 +213,16 @@ export function passUpDue(pending: readonly { id: string; since: number }[], now
     }
   }
   return out;
+}
+
+/**
+ * A captain pass-up waits for the owner. A delivery that failed (the chat is busy or gone) does not:
+ * that one is tried again.
+ */
+export function captainAnswerHeld(reason: string): boolean {
+  return /red line|waits for the owner|chief of staff suggests|passed up|out of turns|owner's limit|only the owner|on the red list|has not answered yet|switch is off/i.test(
+    reason,
+  );
 }
 
 /**

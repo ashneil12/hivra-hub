@@ -72,6 +72,8 @@ export type LeadTickPorts = {
 export type LeadTickInput = {
   /** The project folder: the worker's project. */
   folder: string;
+  /** The hub id the decision store uses, when the caller has one. The folder is used when this is blank. */
+  projectId?: string;
   shipOnGreen: boolean;
   /** Keys of things already said (store.ts `noted`). */
   noted: readonly string[];
@@ -342,12 +344,15 @@ export async function runLeadTick(input: LeadTickInput, ports: LeadTickPorts): P
       }
       ports.outcome(`Merged ${row.wp}: ${row.title} (#${watch.number}).`);
       try {
-        // A note that fails is not a failed merge. The next tick sees the package already merged and does not note it again.
-        await ports.noteDecision?.({
-          project: input.folder,
-          what: `Merged ${row.wp}: ${row.title}`,
-          reason: "merge on green",
-        });
+        // A merge the person allowed is their call, not the Lead's. A note that fails is not a failed merge.
+        const allowedBy = outcome.allowedBy.trim().toLowerCase();
+        if (!allowedBy.startsWith("person")) {
+          await ports.noteDecision?.({
+            project: input.projectId?.trim() || input.folder,
+            what: `Merged ${row.wp}: ${row.title}`,
+            reason: "merge on green",
+          });
+        }
       } catch {
         // The merge already landed.
       }

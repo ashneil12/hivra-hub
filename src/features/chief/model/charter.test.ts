@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { starterOffers } from "../../hub/model/starterMonos";
-import { CAPTAIN_CHARTER, applyPersonality, editCharter, hasCaptainCharter, personalityOf } from "./charter";
+import { CAPTAIN_CHARTER, applyPersonality, editCharter, ensureCaptainCharter, hasCaptainCharter, personalityOf } from "./charter";
 
 function soul(): string {
   const offer = starterOffers().find((item) => item.name === "Coordinator");
@@ -43,5 +43,16 @@ describe("the captain charter", () => {
     expect(() => editCharter()).toThrow(/charter is fixed/);
     expect(hasCaptainCharter(soul())).toBe(true);
     expect(hasCaptainCharter("nope")).toBe(false);
+  });
+
+  it("puts the charter under Role, and leaves a soul that already has it", () => {
+    const bare = "# Soul\n\n## Role\nI run the plan.\n";
+    const next = ensureCaptainCharter(bare);
+    expect(next).toContain(`\n## Role\n${CAPTAIN_CHARTER}\n`);
+    expect(next).toContain("I run the plan.");
+    expect(ensureCaptainCharter(next)).toBe(next);
+    const loose = ensureCaptainCharter("Be brief.");
+    expect(loose.startsWith(`# Soul\n\n## Role\n${CAPTAIN_CHARTER}\n`)).toBe(true);
+    expect(loose).toContain("Be brief.");
   });
 });

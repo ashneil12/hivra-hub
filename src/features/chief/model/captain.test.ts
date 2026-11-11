@@ -1,5 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { HOUR_MS, PASS_UP_MS, TURN_CAP, captainDecide, claimTurn, passUpDue, raiseBudget, raiseCap, suggestLine, type CaptainQuestion } from "./captain";
+import {
+  HOUR_MS,
+  PASS_UP_MS,
+  TURN_CAP,
+  captainAnswerHeld,
+  captainDecide,
+  claimTurn,
+  isOwnerKey,
+  passUpDue,
+  raiseBudget,
+  raiseCap,
+  suggestLine,
+  type CaptainQuestion,
+} from "./captain";
 
 const NOW = 1_700_000_000_000;
 
@@ -34,8 +47,14 @@ describe("the captain's order", () => {
     expect(captainDecide(ask({ confident: true, why: "retry once" }))).toMatchObject({
       step: 5,
       answer: "Example: change it",
-      reason: "Coding was confident: retry once",
+      reason: "The first mate was confident: retry once",
     });
+    expect(captainDecide(ask({ confident: true, why: "retry once", department: "Docs" }))).toMatchObject({
+      reason: "Docs was confident: retry once",
+    });
+    expect(captainDecide(ask({ confident: true, why: "retry once", department: "  " })).reason).toBe(
+      "The first mate was confident: retry once",
+    );
 
     let called = false;
     const turned = captainDecide(
@@ -70,6 +89,10 @@ describe("the captain's order", () => {
       ),
     ).toMatchObject({ kind: "ask-owner", reason: "This one is only the owner's." });
     expect(captainDecide(ask({ decisionKey: "fresh-eyes/run", ...later, standing: { answer: "Example: keep it", label: "x" } })).kind).toBe("ask-owner");
+    expect(isOwnerKey("security-review/run")).toBe(true);
+    expect(captainDecide(ask({ decisionKey: "security-review/run", ...later, standing: { answer: "Example: keep it", label: "x" } })).kind).toBe(
+      "ask-owner",
+    );
     expect(captainDecide(ask({ moneyOverLimit: true, ...later, standing: { answer: "Example: keep it", label: "x" } }))).toMatchObject({
       kind: "ask-owner",
       reason: "Money is past the owner's limit.",
@@ -149,5 +172,13 @@ describe("the captain's order", () => {
   it("refuses a step-6 pick that is not one of the options", () => {
     const result = captainDecide(ask({ recommendation: undefined, turn: () => ({ pick: "something else", reason: "no" }) }));
     expect(result.kind).toBe("ask-owner");
+  });
+
+  it("holds a pass-up and retries a delivery that did not land", () => {
+    expect(captainAnswerHeld("Chief of Staff suggests: Example: retry once")).toBe(true);
+    expect(captainAnswerHeld("The captain is out of turns this hour.")).toBe(true);
+    expect(captainAnswerHeld("This one is only the owner's.")).toBe(true);
+    expect(captainAnswerHeld("couldn't take a message")).toBe(false);
+    expect(captainAnswerHeld("the app couldn't answer this one")).toBe(false);
   });
 });

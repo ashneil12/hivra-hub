@@ -10,6 +10,7 @@ import {
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { CHECKER_RULES } from "../../hub/model/checkerRules";
 import { forUser } from "../../hub/model/userName";
+import { ensureCaptainCharter, hasCaptainCharter } from "../../chief/model/charter";
 
 /**
  * The Mono's SOUL.md and MEMORY.md, kept in the app's data folder
@@ -159,7 +160,7 @@ async function readMonoFilesOnly(monoId: string): Promise<MonoFiles> {
   // Once read, its old project folder is its own.
   if (findMono(monoId)?.legacyProject)
     updateMono(monoId, ({ legacyProject: _, ...mono }) => mono);
-  if (loaded.soul != null) return { ...loaded, soul: loaded.soul };
+  if (loaded.soul != null) return keepCaptainCharter(monoId, { ...loaded, soul: loaded.soul });
   const soul = defaultSoul(findMono(monoId)?.instructions);
   try {
     // Over the missing file only, so another window's seed is never replaced.
@@ -171,7 +172,7 @@ async function readMonoFilesOnly(monoId: string): Promise<MonoFiles> {
     });
     recordSavedSoul(monoId, soul, soulHash);
     updateMono(monoId, (mono) => ({ ...mono, instructions: "" }));
-    return { ...loaded, soul, soulHash };
+    return keepCaptainCharter(monoId, { ...loaded, soul, soulHash });
   } catch (error) {
     if (error !== "conflict") throw error;
     const seeded = await invoke<LoadedFiles>("mono_load", folder(monoId));
@@ -179,10 +180,37 @@ async function readMonoFilesOnly(monoId: string): Promise<MonoFiles> {
   }
 }
 
-/** Back to the default soul and name; conversation, memory and habits stay. */
+/** A coordinator whose soul predates the charter gets it on load. Anyone else's soul is left alone. */
+function coordinatorSoul(monoId: string, soul: string): boolean {
+  if (hasCaptainCharter(soul)) return false;
+  const name = (findMono(monoId)?.name ?? "").trim();
+  if (name === "Chief of Staff" || name === "Coordinator") return true;
+  return soul.includes("I am the coordinator.");
+}
+
+async function keepCaptainCharter(monoId: string, files: MonoFiles): Promise<MonoFiles> {
+  if (!files.soul || !coordinatorSoul(monoId, files.soul)) return files;
+  const soul = ensureCaptainCharter(files.soul);
+  try {
+    const soulHash = await invoke<string>("mono_save", {
+      ...folder(monoId),
+      path: FILE_PATH.soul,
+      text: soul,
+      expectedHash: files.soulHash,
+    });
+    recordSavedSoul(monoId, soul, soulHash);
+    return { ...files, soul, soulHash };
+  } catch {
+    // A conflict or a miss is not final: the file stays as it was and the next open tries again.
+    return files;
+  }
+}
+
+/** Back to the default soul and name; conversation, memory and habits stay. The charter stays if it was there. */
 export async function resetMonoDefaults(monoId: string): Promise<void> {
   const files = await loadMonoFiles(monoId);
-  await saveMonoFile(monoId, "soul", defaultSoul(), files.soulHash);
+  const text = hasCaptainCharter(files.soul) ? ensureCaptainCharter(defaultSoul()) : defaultSoul();
+  await saveMonoFile(monoId, "soul", text, files.soulHash);
   updateMono(monoId, (mono) => ({ ...mono, name: "" }));
 }
 
@@ -238,6 +266,12 @@ export async function writeAgentFile(
   text: string,
   expectedHash?: string,
 ): Promise<string> {
+  if (path === "SOUL.md") {
+    const current = await readAgentFile(monoId, path).catch(() => undefined);
+    if (current && hasCaptainCharter(current.text) && !hasCaptainCharter(text)) {
+      throw new Error("The captain charter is fixed. Edit the personality beside it.");
+    }
+  }
   try {
     const hash = await invoke<string>("mono_save", {
       ...folder(monoId),

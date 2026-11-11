@@ -450,10 +450,6 @@ async function answer(
   return { ok: true, sent: message, chatName: chat.chatName };
 }
 
-/**
- * "Take the pick": answer with the agent's recommended answer. Autopilot calls this with `by: "autopilot"` and a Page
- * with `by: "page"`; both are refused on a red line, which always waits for Ash.
- */
 export type CaptainDoorContext = {
   decisionKey?: string;
   /** The Chief of Staff mono. A blank, a person, or a page is not used. */
@@ -465,24 +461,34 @@ export type CaptainDoorContext = {
   turns?: readonly number[];
   pendingSince?: number;
   now?: number;
+  /** Step 5 unless this is false. Money, the red list and an owner key are still checked first. */
+  confident?: boolean;
 };
 
 /** The app, or a test, supplies standing answers and owner keys. Absent means the pick stands. */
 let captainDoor: ((chat: WaitingChat) => CaptainDoorContext) | null = null;
 
-export function setCaptainDoor(next: typeof captainDoor): void {
+export function setCaptainDoor(next: typeof captainDoor): () => void {
   captainDoor = next;
+  return () => {
+    if (captainDoor === next) captainDoor = null;
+  };
 }
 
-/** A captain is `captain:<mono id>`. A person, a page, or an empty id is not one. */
+/** A captain is `captain:<mono id>`. A person, a page, or an empty id is not one. "pager" is a mono id, not a page. */
 function captainMonoId(raw: unknown): string {
   if (typeof raw !== "string") return "chief";
   const id = raw.trim();
   const folded = id.toLowerCase();
-  if (!id || folded === "user" || folded === "person" || folded.startsWith("page") || id.includes(":") || id.includes("/")) return "chief";
+  const page = folded === "page" || folded.startsWith("page:") || folded.startsWith("page/");
+  if (!id || folded === "user" || folded === "person" || page || id.includes(":") || id.includes("/")) return "chief";
   return id;
 }
 
+/**
+ * "Take the pick": answer with the agent's recommended answer. Autopilot calls this with `by: "autopilot"` and a Page
+ * with `by: "page"`; both are refused on a red line, which always waits for Ash.
+ */
 export async function takePick(sessionId: string, options: { by?: "ash" | "autopilot" | "page" } = {}): Promise<TakeResult> {
   const chat = findWaitingChat(sessionId);
   if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
@@ -509,7 +515,7 @@ export async function takePick(sessionId: string, options: { by?: "ash" | "autop
       question: chat.question,
       options: chat.options,
       recommendation: chat.pick,
-      confident: true,
+      confident: extra.confident !== false,
       rules: extra.rules,
       standing: extra.standing ?? null,
       learned: extra.learned ?? null,

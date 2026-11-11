@@ -22,6 +22,7 @@ import {
   answerInWords,
   chatQuestionVeto,
   subscribeWaitingChats,
+  setCaptainDoor,
   takePick,
   waitingChats,
   type WaitingChat,
@@ -37,7 +38,8 @@ import {
   type LogInput,
   type Resume,
 } from "../model/autopilot";
-import { clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
+import { appCaptainDoor, clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
+import { captainAnswerHeld } from "../../chief/model/captain";
 import { approvalVerdict, approvalWhat, chatProject, handBackText } from "../model/decide";
 import { appWiredServers, type WiredServersReader } from "../model/mcpTrust";
 import { placeStaysInside, type Canonical, type Locate } from "../model/safeApproval";
@@ -137,9 +139,11 @@ export function useAutopilot(options: {
   useEffect(() => {
     const stopStore = ensureAutopilotStore();
     const stopProjects = setAutopilotProjects(projectsList);
+    const stopDoor = setCaptainDoor(appCaptainDoor);
     const stopEligibility = setAutoResumeEligibility((session) => eligible(session));
     return () => {
       stopStore();
+      stopDoor();
       stopProjects();
       stopEligibility();
     };
@@ -360,7 +364,7 @@ export function useAutopilot(options: {
           return { ok: false as const, reason: "the app couldn't answer this one" };
         });
         if (taken.ok) void log({ ...base, kind: "question", outcome: "taken" });
-        else if (/red line/i.test(taken.reason)) void log({ ...base, kind: "question", outcome: "held" });
+        else if (captainAnswerHeld(taken.reason)) void log({ ...base, kind: "question", outcome: "held" });
         // Couldn't deliver (the chat is busy or gone): try again in a while.
         else retryAt.current.set(key, Date.now() + RETRY_MS);
         return;

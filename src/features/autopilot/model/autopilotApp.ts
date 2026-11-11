@@ -25,9 +25,13 @@ import {
 } from "./autopilot";
 import { chatProject, decideCall, type ProjectRef } from "./decide";
 import { captainDecide, type CaptainRule, type NamedAnswer } from "../../chief/model/captain";
+import { listMonos } from "../../monos/model/mono";
+import { judgeLaunch } from "../../usage/model/spendGate";
+import { tauriFirstMate } from "../../firstmate/model/steering";
 import { formatUntil, parseUntil } from "./endTime";
 import { isRedCategory, RED_LIST, redLabel, type RedCategory } from "./redList";
 import { forUser } from "../../hub/model/userName";
+import { foldDecisionKey } from "../../hub/model/decisionKey";
 
 export const AUTOPILOT_FIELDS: [string, readonly string[]][] = [
   ["autopilot.status", ["project"]],
@@ -52,16 +56,34 @@ export type AutopilotAppDeps = {
    * WP-215: rules, a standing answer and the spend flag for this project. Absent means none of them,
    * so a confident recommendation is still taken.
    */
-  captainContext?(input: { project: string | null; question: string; key?: string }): {
-    rules?: readonly CaptainRule[];
-    standing?: NamedAnswer | null;
-    learned?: NamedAnswer | null;
-    moneyOverLimit?: boolean;
-    turns?: readonly number[];
-    pendingSince?: number;
-    department?: string;
-    decisionKey?: string;
-  };
+  captainContext?(input: { project: string | null; question: string; key?: string }): CaptainContext | Promise<CaptainContext>;
+  /**
+   * Writes a captain answer through decisions_answer. Absent in tests, so they never call the store.
+   * A refusal or a throw holds the call instead of taking it.
+   */
+  answerDecision?(
+    project: string,
+    key: string,
+    answer: string,
+    by?: string,
+    seenVersion?: number,
+    reason?: string,
+  ): Promise<{ applied?: boolean } | unknown>;
+};
+
+export type CaptainContext = {
+  rules?: readonly CaptainRule[];
+  standing?: NamedAnswer | null;
+  learned?: NamedAnswer | null;
+  moneyOverLimit?: boolean;
+  turns?: readonly number[];
+  pendingSince?: number;
+  department?: string;
+  decisionKey?: string;
+  /** The Chief of Staff, when this copy has one. Absent keeps the asking Mono. */
+  monoId?: string;
+  /** Step 5 only when this is not false. The app sets it; money and the red list are still checked first. */
+  confident?: boolean;
 };
 
 /** The minimum of agentApp's host this needs. */
@@ -114,6 +136,96 @@ export function defaultAutopilotDeps(): AutopilotAppDeps {
     },
     isLeadership: () => false,
     leadProject: (monoId) => leadFor(monoId)?.projectId,
+    captainContext: (input) => appCaptainContext(input),
+    answerDecision: (project, key, answer, by, seenVersion, reason) =>
+      tauriFirstMate.answer(project, key, answer, by, seenVersion, reason),
+  };
+}
+
+const standingCache = new Map<string, { at: number; row: NamedAnswer | null }>();
+
+function standingKey(project: string, key: string): string {
+  return `${project}\n${foldDecisionKey(key)}`;
+}
+
+function chiefMonoId(): string | undefined {
+  try {
+    return listMonos().find((mono) => (mono.name ?? "").trim() === "Chief of Staff")?.id;
+  } catch {
+    return undefined;
+  }
+}
+
+function moneyBlocked(project: string | null): boolean {
+  if (!project) return false;
+  try {
+    return judgeLaunch({ project, harness: "claude", warn: false }).status === "over";
+  } catch {
+    // A spend book that cannot be read blocks, the same way an unreadable store does.
+    return true;
+  }
+}
+
+async function loadStanding(project: string, key?: string): Promise<NamedAnswer | null> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  const rows = await invoke<Array<{ question?: string; answer?: string; decision_key?: string }>>(
+    "decisions_standing_list",
+    { project },
+  );
+  if (!Array.isArray(rows)) return null;
+  const wanted = key ? foldDecisionKey(key) : "";
+  if (!wanted) return null;
+  const hit = rows.find((row) => foldDecisionKey(String(row.decision_key ?? "")) === wanted);
+  const answer = hit && typeof hit.answer === "string" ? hit.answer.trim() : "";
+  if (!answer) return null;
+  const label = typeof hit?.question === "string" && hit.question.trim() ? hit.question.trim() : "standing";
+  return { answer, label };
+}
+
+/** What the app's captain door and autopilot.decide read: spend, standing answers, and the chief's id. Rules wait for a store. */
+export async function appCaptainContext(input: {
+  project: string | null;
+  question: string;
+  key?: string;
+}): Promise<CaptainContext> {
+  const project = input.project;
+  let standing: NamedAnswer | null = null;
+  if (project) {
+    try {
+      standing = await loadStanding(project, input.key);
+      if (input.key && foldDecisionKey(input.key)) {
+        standingCache.set(standingKey(project, input.key), { at: Date.now(), row: standing });
+      }
+    } catch {
+      const cached = input.key ? standingCache.get(standingKey(project, input.key)) : undefined;
+      standing = cached?.row ?? null;
+    }
+  }
+  return {
+    rules: [],
+    standing,
+    learned: null,
+    moneyOverLimit: moneyBlocked(project),
+    monoId: chiefMonoId(),
+    department: "The first mate",
+    confident: true,
+  };
+}
+
+/**
+ * The waiting-chat door. A waiting chat has no decision key, so no standing row is applied.
+ * autopilot.decide loads one when the call names a key.
+ */
+export function appCaptainDoor(chat: { projectId?: string | null; question?: string }): CaptainContext {
+  const project = chat.projectId ?? null;
+  return {
+    rules: [],
+    standing: null,
+    learned: null,
+    moneyOverLimit: moneyBlocked(project),
+    monoId: chiefMonoId(),
+    department: "The first mate",
+    confident: true,
   };
 }
 
@@ -412,15 +524,15 @@ export async function handleAutopilotApp(
       }
       // WP-215: the captain answers inside this door. Off already returned. A red call already returned held.
       const key = text(input.key, "key", 200, false);
-      const ctx = deps.captainContext?.({ project, question, key }) ?? {};
+      const ctx = (await deps.captainContext?.({ project, question, key })) ?? {};
       const captain = captainDecide({
         project: project ?? "",
-        monoId: mono?.id ?? "chief",
+        monoId: ctx.monoId?.trim() || mono?.id || "chief",
         decisionKey: key ?? ctx.decisionKey,
         question,
         options: Array.isArray(input.options) ? (input.options as string[]) : undefined,
         recommendation,
-        confident: true,
+        confident: ctx.confident !== false,
         why,
         department: ctx.department,
         rules: ctx.rules,
@@ -448,6 +560,41 @@ export async function handleAutopilotApp(
         };
       }
       const answer = captain.kind === "answer" ? captain.answer : verdict.answer;
+      if (captain.kind === "answer" && deps.answerDecision && key && project) {
+        const heldNote = "The decision store did not keep the captain's answer, so it waits.";
+        try {
+          const outcome = await deps.answerDecision(project, key, answer, captain.answeredBy, undefined, captain.reason);
+          const refused =
+            !!outcome && typeof outcome === "object" && "applied" in outcome && (outcome as { applied?: boolean }).applied === false;
+          if (refused) {
+            const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+            return {
+              autopilot: "on",
+              until: new Date(verdict.until).toISOString(),
+              untilLabel,
+              decision: "held",
+              act: "ask",
+              red: null,
+              reason: heldNote,
+              ...(logged ? { logged: logged.id } : {}),
+              note: heldNote,
+            };
+          }
+        } catch {
+          const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+          return {
+            autopilot: "on",
+            until: new Date(verdict.until).toISOString(),
+            untilLabel,
+            decision: "held",
+            act: "ask",
+            red: null,
+            reason: heldNote,
+            ...(logged ? { logged: logged.id } : {}),
+            note: heldNote,
+          };
+        }
+      }
       const logged = await backend.log({ ...base, kind: "decision", outcome: "taken" });
       return {
         autopilot: "on",

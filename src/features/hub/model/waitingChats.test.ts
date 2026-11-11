@@ -432,6 +432,18 @@ describe("hooks for Autopilot and H4", () => {
     expect(calls.send.map(([, text]) => text).join("\n")).not.toContain("page:");
   });
 
+  it("keeps pager as a mono id, and does not read it as a page", async () => {
+    host();
+    const stop = setCaptainDoor(() => ({ monoId: "pager", standing: { answer: "Example: keep it", label: "merge on green" } }));
+    try {
+      noteChats([markerChat("pager-1", "Needs Ash: Example: keep the gate?\nMy pick: Example: change it")]);
+      expect(await takePick("pager-1", { by: "autopilot" })).toMatchObject({ ok: true, sent: "Example: keep it" });
+      expect(gateLog().find((row) => row.sessionId === "pager-1")?.answer?.who).toBe("captain:pager");
+    } finally {
+      stop();
+    }
+  });
+
   it("a worker's question H4 routes to its Lead is not Ash's", () => {
     setWorkerQuestionRouter((c) => c.sessionId === "worker");
     noteChats([markerChat("worker", "Needs Ash: Which test runner?\nMy pick: vitest"), markerChat("lead", "Needs Ash: Ship it?\nMy pick: yes")]);

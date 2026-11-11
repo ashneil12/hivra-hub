@@ -138,7 +138,9 @@ import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { DOC_FIELDS, handleDocs } from "./agentDocs";
 import { handleActivity, handleMemoryRecall } from "../../chief/model/tools";
 import { captainCanRead, captainHandoff, delegationId, filedTaskId } from "../../chief/model/handoff";
+import { hasCaptainCharter } from "../../chief/model/charter";
 import { recordNote } from "../../chief/model/notes";
+import { checkBrief } from "../../firstmate/model/brief";
 import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "../../docs/gateway";
 
 /** What a Mono hears if it reaches for the old proposal path. */
@@ -649,6 +651,28 @@ function requireProject(
   throw new Error(`Pass "project" to choose one. Yours: ${choices()}`);
 }
 
+/** The lead a handoff briefs. With no coding-team map, the project path is still a lead the delegate call can name. */
+function handoffLead(project: string, host: AgentAppHost): string {
+  const work = host.tasks?.monoWork;
+  if (!work) return project;
+  const id = work.codingTeam(project)?.projectId?.trim();
+  if (!id) throw new Error("That project has no first mate.");
+  return id;
+}
+
+/** A coding-team chat notes its own project only. */
+function teamFolder(
+  team: { project: string; name: string; folder: string },
+  input: Record<string, unknown>,
+): string {
+  const named = optionalString(input.project, "project", 4096);
+  if (!named) return team.folder;
+  if (pathKey(named) === pathKey(team.folder) || pathKey(named) === pathKey(team.project) || named === team.project) {
+    return team.folder;
+  }
+  throw new Error("A coding-team chat notes its own project.");
+}
+
 /** A Mono's chat lives outside its projects; project access follows its roster. */
 export function canAccessAgentAppProject(
   source: Session,
@@ -951,6 +975,9 @@ async function handleSoul(
   const expectedHash = requiredString(input.expectedHash, "expectedHash", 128);
   // The file as this write found it, so its Bot changes row can put it back (D1).
   const before = await host.readAgentFile(monoId, "SOUL.md");
+  if (hasCaptainCharter(before.text) && !hasCaptainCharter(input.text)) {
+    throw new Error("The captain charter is fixed. Edit the personality beside it.");
+  }
   try {
     const hash = await host.writeAgentFile(
       monoId,
@@ -1634,6 +1661,10 @@ export async function handleAgentApp(
     if (action === "souls.read") return readForMerge(caller, mono, files, templates);
     if (typeof input.text !== "string" || input.text.length > 240_000)
       throw new Error("text must be a string under 240000 characters");
+    const current = await host.readAgentFile(mono, "SOUL.md");
+    if (hasCaptainCharter(current.text) && !hasCaptainCharter(input.text)) {
+      throw new Error("The captain charter is fixed. Edit the personality beside it.");
+    }
     return mergeSoul(
       caller,
       { mono, text: input.text, expectedHash: requiredString(input.expectedHash, "expectedHash", 128) },
@@ -1645,15 +1676,27 @@ export async function handleAgentApp(
   // WP-215: file the task, then hand it to the project's first mate.
   if (action === "captain.handoff") {
     const mono = host.monoOf?.(source.id);
+    if (!host.isMono(source.id) || (mono?.name ?? "").trim() !== "Chief of Staff") {
+      throw new Error("Only the Chief of Staff hands work on.");
+    }
+    const project = requiredString(input.project, "project", 4096);
+    const title = requiredString(input.title, "title", 300);
+    const brief = requiredString(input.brief, "brief", 8000);
+    const lead = handoffLead(project, host);
+    const goal = brief;
+    const problem = checkBrief({ intent: brief, spec: brief, done: goal });
+    if (problem) throw new Error(problem);
+    // The probe, the brief and the lead are settled before anything is filed, so a retry cannot file a second task.
+    await harnessesProbed();
     return captainHandoff(
       {
-        project: requiredString(input.project, "project", 4096),
+        project,
         department: typeof input.department === "string" ? input.department : undefined,
-        title: requiredString(input.title, "title", 300),
-        brief: requiredString(input.brief, "brief", 8000),
+        title,
+        brief,
       },
       {
-        canRead: (project) => captainCanRead(mono, project),
+        canRead: (named) => captainCanRead(mono, named),
         createTask: async (task) => {
           const created = await handleTaskStore(source, "tasks.create", {
             title: task.title,
@@ -1667,7 +1710,8 @@ export async function handleAgentApp(
             title: task.title,
             brief: task.brief,
             intent: task.brief,
-            project: task.project,
+            goal,
+            lead,
             taskId: task.taskId,
           }, host, { startLaunch, fileStarted });
           return { id: delegationId(created) };
@@ -1675,10 +1719,19 @@ export async function handleAgentApp(
       },
     );
   }
-  // WP-215: the chat id is this chat, not a field on the call.
+  // WP-215: the chat id is this chat, not a field on the call. Only a Mono or a coding-team chat, on its own project.
   if (action === "decisions.note") {
+    const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
+    const team = mono ? undefined : host.codingTeamOf?.(source.id);
+    const folder = mono
+      ? requireProject(source, input, host)
+      : team
+        ? teamFolder(team, input)
+        : null;
+    if (!folder) throw new Error("Only a Mono or a coding-team chat notes a decision.");
+    const project = host.tasks?.hubProjectId?.(folder) ?? (team ? team.project : folder);
     return recordNote({
-      project: requiredString(input.project, "project", 4096),
+      project,
       what: requiredString(input.what, "what", 2000),
       reason: requiredString(input.reason, "reason", 500),
       sessionId: source.id,

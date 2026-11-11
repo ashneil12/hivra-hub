@@ -46,3 +46,22 @@ export function applyPersonality(soul: string, personality: string): string {
 export function editCharter(): never {
   throw new Error("The captain charter is fixed. Edit the personality beside it.");
 }
+
+/**
+ * Puts the charter into a soul that does not have it yet. One that already has it is unchanged.
+ * An existing coordinator gets it on load; a new one gets it from the starter template.
+ */
+export function ensureCaptainCharter(soul: string): string {
+  const text = soul.replace(/\r\n?/g, "\n");
+  if (text.includes(CAPTAIN_CHARTER)) return text;
+  const role = "\n## Role\n";
+  const at = text.indexOf(role);
+  if (at >= 0) {
+    const insertAt = at + role.length;
+    return `${text.slice(0, insertAt)}${CAPTAIN_CHARTER}\n${text.slice(insertAt)}`;
+  }
+  const head = text.startsWith("# Soul") ? text : `# Soul\n\n${text}`;
+  const nl = head.indexOf("\n");
+  const insertAt = nl < 0 ? head.length : nl + 1;
+  return `${head.slice(0, insertAt)}\n## Role\n${CAPTAIN_CHARTER}\n${head.slice(insertAt)}`;
+}

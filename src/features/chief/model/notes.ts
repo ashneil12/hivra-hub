@@ -1,6 +1,7 @@
 // WP-215: a first mate notes a call it settled. The chat id is the caller's, never a field it can set.
 
-import { isOwnerKey } from "./captain";
+import { foldDecisionKey } from "../../hub/model/decisionKey";
+import { redListCategory } from "../../autopilot/model/redList";
 
 export type NoteInput = {
   project: string;
@@ -24,16 +25,20 @@ function required(value: string, name: string): string {
 }
 
 /**
- * The row a note writes. `answeredBy` is this chat, not anything the caller typed.
- * A person-only key is refused here too; the store refuses it again.
+ * The row a note writes. `answeredBy` is this chat's note mark, not anything the caller typed
+ * and not a captain. Free text is not an owner key: a red-list note is refused, and the store checks again.
  */
 export function noteDecision(input: NoteInput): NotedDecision {
   const project = required(input.project, "The project");
   const what = required(input.what, "What was decided");
   const reason = required(input.reason, "The reason");
   const session = required(input.sessionId, "The chat");
-  if (isOwnerKey(what)) throw new Error("Only the owner answers this. A note cannot.");
-  return { project, session, what, reason, answeredBy: `chat:${session}` };
+  const raw = `${what}\n${reason}`;
+  const folded = `${foldDecisionKey(what)}\n${foldDecisionKey(reason)}`;
+  if (redListCategory(raw) || redListCategory(folded)) {
+    throw new Error("This is on the red list, so a note cannot record it.");
+  }
+  return { project, session, what, reason, answeredBy: `note:${session}` };
 }
 
 export type NoteWriter = (row: NotedDecision) => Promise<unknown>;
