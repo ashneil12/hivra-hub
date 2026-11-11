@@ -44,8 +44,11 @@ test("home shows the chief, the three sections, and customize", async ({ page },
 
   await page.getByLabel("Ask").fill("how is EXO going?");
   await page.getByRole("button", { name: "Send" }).click();
-  await expect(page.locator("[data-home-you]")).toHaveText("how is EXO going?");
+  await expect(page.locator("[data-home-speaker='you']")).toHaveText("You");
+  await expect(page.locator("[data-home-you] .user-message-bubble")).toHaveText("how is EXO going?");
+  await expect(page.locator("[data-home-speaker='chief']")).toHaveText("Coordinator");
   await expect(page.locator("[data-home-reply]")).toContainText("EXO is fine.");
+  await expect(page.getByRole("button", { name: "Sounds good" })).toBeVisible();
   await page.getByRole("button", { name: "Open full chat" }).click();
   await expect(page.locator("body")).toHaveAttribute("data-opened", "chief-1");
   if (testInfo.project.name === "chromium") await page.screenshot({ path: `${SHOTS}/turn.png` });

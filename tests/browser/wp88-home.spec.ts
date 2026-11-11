@@ -14,9 +14,8 @@ test("the chief chat answers across two projects and files nothing", async ({ pa
 
   await page.getByLabel("Ask").fill("how is EXO going?");
   await page.getByRole("button", { name: "Send" }).click();
-  const reply = page.locator("[data-home-reply]");
-  await expect(reply).toContainText("how is EXO going?");
-  await expect(reply).toContainText("EXO is fine.");
+  await expect(page.locator("[data-home-you]")).toContainText("how is EXO going?");
+  await expect(page.locator("[data-home-reply]")).toContainText("EXO is fine.");
   await expect(page.locator("body")).toHaveAttribute("data-tasks-created", "0");
 
   await page.getByRole("button", { name: "Open full chat" }).click();

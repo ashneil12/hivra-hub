@@ -176,10 +176,66 @@ it("names the chief, the scope, and opens the same chat", () => {
   });
   expect(container.querySelector("[data-home-chief]")?.textContent).toBe("Coordinator");
   expect(container.querySelector("[data-home-scope]")?.textContent).toBe("read all 7 projects");
-  expect(container.querySelector("[data-home-you]")?.textContent).toBe("how is EXO going?");
+  expect(container.querySelector("[data-home-you] .user-message-bubble")?.textContent).toBe("how is EXO going?");
   expect(container.querySelector("[data-home-reply]")?.textContent).toContain("EXO is fine.");
   act(() => container.querySelector<HTMLButtonElement>("[data-home-action='open-chat']")!.click());
   expect(opened).toBe(1);
+});
+
+it("labels each line with who said it, and sets Ash's line apart", () => {
+  draw({
+    chief: { ...chief, you: "how is EXO going?", reply: "EXO is fine." },
+  });
+  expect(container.querySelector("[data-home-speaker='you']")?.textContent).toBe("You");
+  expect(container.querySelector("[data-home-speaker='chief']")?.textContent).toBe("Coordinator");
+  expect(container.querySelector("[data-home-reply]")?.textContent).not.toMatch(/chief-of-staff/);
+  const you = container.querySelector("[data-home-you]")!;
+  expect(you.className).toContain("items-end");
+  expect(you.querySelector(".user-message-bubble")?.textContent).toBe("how is EXO going?");
+  draw({ chief: { ...chief, name: " ", you: "hi", reply: "ok" } });
+  expect(container.querySelector("[data-home-speaker='chief']")?.textContent).toBe("Chief of Staff");
+});
+
+it("a suggested reply is a button under the reply", () => {
+  let picked = "";
+  draw({
+    chief: {
+      ...chief,
+      you: "how is EXO going?",
+      reply: "EXO is fine.",
+      options: [{ id: "ok", label: "Sounds good" }],
+      onOption: (id) => { picked = id; },
+    },
+  });
+  const option = container.querySelector<HTMLButtonElement>("[data-home-option='ok']")!;
+  expect(option.tagName).toBe("BUTTON");
+  expect(option.textContent?.trim()).toBe("Sounds good");
+  expect((option.getAttribute("aria-label") ?? option.textContent) || "").toContain("Sounds good");
+  expect(option.tabIndex).not.toBe(-1);
+  expect(option.className).toContain("rounded-md");
+  expect(option.className).toContain("bg-content/8");
+  const text = container.querySelector("[data-home-reply-text]")!;
+  expect(text.compareDocumentPosition(option) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  act(() => option.click());
+  expect(picked).toBe("ok");
+});
+
+it("shows a streaming reply as words, not a blank box", () => {
+  draw({
+    chief: { ...chief, you: "how is EXO going?", reply: "EXO ", streaming: true },
+  });
+  const reply = container.querySelector("[data-home-reply]")!;
+  expect(reply.className).not.toContain("border");
+  expect(reply.textContent).toContain("EXO");
+  expect(reply.textContent).not.toContain("Replying");
+  expect(reply.querySelector("[data-home-streaming]")).not.toBeNull();
+});
+
+it("does not leave an empty box before the first word", () => {
+  draw({ chief: { ...chief, you: "how is EXO going?", streaming: true } });
+  expect(container.querySelector("[data-home-reply]")?.className ?? "").not.toContain("border");
+  expect(container.textContent).not.toContain("Replying");
+  expect(container.querySelector("[data-home-streaming]")?.textContent).toContain("Thinking");
 });
 
 it("a stopped row is red Needs you, never Stuck, and its action is not the row", () => {

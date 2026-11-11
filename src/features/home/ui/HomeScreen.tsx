@@ -10,6 +10,7 @@ import { ArrowUp } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { workersLabel } from "../model/workingNow";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
+import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 import "./home.css";
 
 const TITLE: Record<string, string> = {
@@ -109,10 +110,70 @@ function NeedRow({ row }: { row: HomeNeed }) {
   );
 }
 
+// The chat's one-tap option (StuckWorkerCard), so a suggested reply reads as a button.
+const OPTION_CHIP =
+  "shrink-0 rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent";
+
+function speakerName(name: string): string {
+  return name.trim() || "Chief of Staff";
+}
+
+function youBubbleClass(text: string): string {
+  const single = !text.includes("\n");
+  return `user-message-bubble relative min-w-0 w-fit max-w-[min(100%,36rem)] bg-content/10 px-3 py-2 font-sans text-sm whitespace-pre-wrap break-words text-content ${single ? "rounded-full" : "rounded-xl"}`;
+}
+
+function ChiefExchange({ chief }: { chief: HomeChief }) {
+  const showYou = Boolean(chief.you);
+  const showChief = Boolean(chief.reply || chief.streaming || chief.options.length > 0);
+  if (!showYou && !showChief) return null;
+  return (
+    <div className="flex flex-col gap-3">
+      {showYou ? (
+        <div data-home-you className="flex flex-col items-end gap-1 pl-14">
+          <span data-home-speaker="you" className="font-sans text-[12px] text-content/60">You</span>
+          <div data-chat-message-role="user" className={youBubbleClass(chief.you ?? "")}>{chief.you}</div>
+        </div>
+      ) : null}
+      {showChief ? (
+        <div data-home-reply data-chat-message-role="assistant" className="flex min-w-0 flex-col items-start gap-1">
+          <span data-home-speaker="chief" className="font-sans text-[12px] text-content/60">{speakerName(chief.name)}</span>
+          {chief.reply ? (
+            <div
+              data-home-reply-text
+              data-home-streaming={chief.streaming ? "" : undefined}
+              className="min-w-0 w-full font-sans text-sm leading-6 text-content"
+            >
+              <AgentMarkdown text={chief.reply} streaming={chief.streaming} revealOnMount={false} />
+            </div>
+          ) : chief.streaming ? (
+            <p data-home-streaming className="zen-thinking-pulse font-sans text-sm text-content/50">Thinking</p>
+          ) : null}
+          {chief.options.length > 0 ? (
+            <div className="mt-1 flex flex-wrap gap-2" role="group" aria-label="Suggested replies">
+              {chief.options.map((option) => (
+                <button
+                  key={option.id}
+                  type="button"
+                  data-home-option={option.id}
+                  aria-label={option.label}
+                  className={OPTION_CHIP}
+                  onClick={() => chief.onOption(option.id)}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function ChiefBox({ chief, onAsk }: { chief: HomeChief; onAsk: (text: string) => void }) {
   const [text, setText] = useState("");
   const ready = text.trim().length > 0;
-  const showExchange = Boolean(chief.you || chief.reply || chief.streaming);
   if (chief.missing) {
     return (
       <div data-home-start="" data-home-no-chief className="flex flex-col items-start gap-2">
@@ -160,28 +221,7 @@ function ChiefBox({ chief, onAsk }: { chief: HomeChief; onAsk: (text: string) =>
           <ArrowUp className="size-3.5" strokeWidth={2} aria-hidden />
         </button>
       </form>
-      {showExchange ? (
-        <div data-home-reply className="rounded-xl border border-stroke px-4 py-2">
-          {chief.you ? <p data-home-you className="py-1 text-[13px] text-content/70">{chief.you}</p> : null}
-          {chief.reply ? <p className="py-1 text-[13px] text-content">{chief.reply}</p> : null}
-          {chief.streaming ? <p data-home-streaming className="py-1 text-[13px] text-content/60">Replying</p> : null}
-          {chief.options.length > 0 ? (
-            <div className="flex flex-wrap gap-2 py-1">
-              {chief.options.map((option) => (
-                <button
-                  key={option.id}
-                  type="button"
-                  data-home-option={option.id}
-                  className="text-[13px] text-content underline-offset-2 hover:underline"
-                  onClick={() => chief.onOption(option.id)}
-                >
-                  {option.label}
-                </button>
-              ))}
-            </div>
-          ) : null}
-        </div>
-      ) : null}
+      <ChiefExchange chief={chief} />
       <button
         type="button"
         data-home-action="open-chat"
