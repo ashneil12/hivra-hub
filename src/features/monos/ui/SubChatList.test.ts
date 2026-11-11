@@ -154,4 +154,14 @@ describe("a Mono fold's Needs you count", () => {
     const other = folded("lead-chat", [refused]);
     expect(other.toggle.querySelector("[data-sub-chats-needs-you]")).toBeNull();
   });
+
+  it("a team fold is keyed by the Lead's chat and still counts that Lead's items", () => {
+    localStorage.setItem("monocode:mono-roster", JSON.stringify([
+      { id: "exo", sessionId: "lead-chat", name: "EXO lead", mascot: "folder", color: "hsl(0 0% 50%)", projects: [] },
+    ]));
+    liveNeeds.items = [{ monoId: "exo" }];
+    const team = folded("lead-chat", [chat("w1", NOW)]);
+    expect(team.toggle.getAttribute("data-sub-chats-toggle")).toBe("lead-chat");
+    expect(team.toggle.querySelector("[data-sub-chats-needs-you]")!.textContent).toBe(" · 1 needs you");
+  });
 });
