@@ -10,6 +10,11 @@ mergeable with it.
 Read this before building, installing or launching anything here. Building a Hivra work package? Start with
 [docs/hivra/README.md](docs/hivra/README.md); every rule in this file still applies.
 
+Changing anything a person sees? Read [docs/hivra/DESIGN.md](docs/hivra/DESIGN.md) first (the layout, the words, the
+rules every screen keeps) and follow the `dropwave-ui` skill in `.agents/skills/`. To give the owner a new board or
+tracker without changing the app, use the `make-a-hub` skill instead. What each screen calls is in
+[docs/hivra/work/dropwave-wiring.md](docs/hivra/work/dropwave-wiring.md).
+
 ## This repo is NOT upstream MonoCode
 
 Two apps look almost identical on this Mac. Confusing them loses Ash's conversations.

@@ -362,6 +362,31 @@ it("does not save a soul when the current one could not be read", async () => {
   expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(true);
 });
 
+it("refuses a soul save that adds the charter for a mono that is not the captain", async () => {
+  const { id } = createMono();
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: "# Soul\n\nBe brief.\n", hash: "h1" };
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", `# Soul\n\n${CAPTAIN_CHARTER}\n`, "h1")).rejects.toThrow(/captain/);
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(false);
+});
+
+it("lets the captain save a soul that keeps the charter", async () => {
+  const { id } = createMono();
+  updateMono(id, (mono) => ({ ...mono, captain: true }));
+  const next = `# Soul\n\n## Role\n${CAPTAIN_CHARTER}\n\n## Personality\nShort sentences.\n`;
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: `# Soul\n\n${CAPTAIN_CHARTER}\n`, hash: "h1" };
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", next, "h1")).resolves.toBe("saved");
+  const saves = invoke.mock.calls.filter(([command]) => command === "mono_save");
+  expect(saves).toHaveLength(1);
+  expect(String((saves[0]?.[1] as { text?: string }).text)).toContain(CAPTAIN_CHARTER);
+  expect(String((saves[0]?.[1] as { text?: string }).text)).toContain("Short sentences.");
+});
+
 it("a whole soul given as instructions (the hub's team) is kept as it is; anything else goes under Standing instructions", () => {
   const soul = "# Soul\n\n## Role\nI run the plan.\n";
   expect(defaultSoul(soul)).toBe(soul);

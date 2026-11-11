@@ -7,7 +7,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 import { HubOnboarding } from "./HubOnboarding";
 import { storedUserName } from "../model/userName";
-import { recordSetupFact, SETUP_FACT_IDS } from "../model/setupProof";
+import { recordSetupFact, SETUP_FACT_IDS, setupProved } from "../model/setupProof";
 import { listMonos } from "../../monos/model/mono";
 import { setHubDataSource } from "../model/hubData";
 import { mockHubData } from "../model/mockData";
@@ -129,7 +129,10 @@ it("offers the CLIs, a project and a group on the same step, and none are requir
   expect(container.querySelector("[data-hub-onboarding-count]")?.textContent).toBe("Step 2 of 4");
   const clis = [...container.querySelectorAll("[data-hub-onboarding-cli]")];
   expect(clis.map((box) => box.getAttribute("data-hub-onboarding-cli"))).toContain("claude");
-  expect(clis.every((box) => box.getAttribute("aria-checked") === "false")).toBe(true);
+  // Dropwave: a setup that already proved Claude Code starts with it ticked; nothing else is, and it can be unticked.
+  const tickedClis = clis.filter((box) => box.getAttribute("aria-checked") === "true").map((box) => box.getAttribute("data-hub-onboarding-cli"));
+  expect(setupProved()).toBe(true);
+  expect(tickedClis).toEqual(["claude"]);
   expect(container.querySelector("[data-hub-onboarding-group]")?.getAttribute("aria-checked")).toBe("false");
   expect(container.querySelector("[data-hub-onboarding-project]")).toBeTruthy();
   expect(container.querySelectorAll("[data-hub-onboarding-starter]")).toHaveLength(5);

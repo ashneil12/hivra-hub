@@ -18,7 +18,10 @@ test("a fresh start offers the starter Monos, none of them ticked", async ({ pag
   for (const id of IDS) {
     await expect(page.locator(`[data-hub-onboarding-starter="${id}"]`)).toHaveAttribute("aria-checked", "false");
   }
-  await expect(onboarding).not.toContainText(/chief of staff|projects manager|critiquito|alfred/i);
+  // The old named team is not offered. The coordinator template itself is named Chief of Staff in Dropwave, so that
+  // name is expected on its row and no longer part of this check.
+  await expect(onboarding).not.toContainText(/projects manager|critiquito|alfred/i);
+  await expect(page.locator('[data-hub-onboarding-starter="coordinator"]')).toContainText("Chief of Staff");
   await page.locator('[data-hub-onboarding-starter="coordinator"]').click();
   await expect(page.locator('[data-hub-onboarding-starter="coordinator"]')).toHaveAttribute("aria-checked", "true");
   await expect(page.locator('[data-hub-onboarding-starter="planner"]')).toHaveAttribute("aria-checked", "false");

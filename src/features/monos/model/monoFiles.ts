@@ -11,7 +11,7 @@ import {
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { CHECKER_RULES } from "../../hub/model/checkerRules";
 import { forUser } from "../../hub/model/userName";
-import { ensureCaptainCharter, hasCaptainCharter, withLockedRole } from "../../chief/model/charter";
+import { ensureCaptainCharter, hasCaptainCharter, refuseAddedCharter, withLockedRole } from "../../chief/model/charter";
 
 /**
  * The Mono's SOUL.md and MEMORY.md, kept in the app's data folder
@@ -291,6 +291,7 @@ export async function writeAgentFile(
     } catch {
       throw new Error("The soul could not be read, so it was not saved.");
     }
+    refuseAddedCharter(findMono(monoId), current.text, text);
     if (hasCaptainCharter(current.text) && !hasCaptainCharter(text)) {
       throw new Error("The captain charter is fixed. Edit the personality beside it.");
     }
