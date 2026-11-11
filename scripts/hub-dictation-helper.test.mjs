@@ -16,6 +16,10 @@ import {
   helperCheckApplies,
   helperProblemsFor,
   helperInfoPlist,
+  launchAgentPlist,
+  LAUNCH_AGENT_PLIST,
+  LAUNCH_AGENT_DIR,
+  HELPER_BUNDLE_PROGRAM,
   signingCommands,
 } from "./hub-dictation-helper.mjs";
 
@@ -266,6 +270,34 @@ test("hub:build's helper step leaves the bundle as tauri signed it while dictati
 });
 
 // The helper step finds the bundle that tauri build wrote, under CARGO_TARGET_DIR when it is set.
+test("the launch agent plist names the helper bundle and is registered only with the switch", () => {
+  assert.equal(LAUNCH_AGENT_PLIST, "com.ash.monocode-hub.dictation.plist");
+  assert.equal(LAUNCH_AGENT_DIR, "Contents/Library/LaunchAgents");
+  assert.equal(HELPER_BUNDLE_PROGRAM, "Contents/Helpers/MonoCode Dictation.app");
+  const plist = launchAgentPlist();
+  assert.match(plist, /<key>BundleProgram<\/key>\s*<string>Contents\/Helpers\/MonoCode Dictation\.app<\/string>/);
+  assert.match(plist, /<key>Label<\/key>\s*<string>com\.ash\.monocode-hub\.dictation<\/string>/);
+  assert.match(
+    plist,
+    /<key>MachServices<\/key>\s*<dict>\s*<key>com\.ash\.monocode-hub\.dictation<\/key>\s*<true\/>/,
+  );
+  assert.ok(!/<key>RunAtLoad<\/key>/.test(plist), "the helper starts when the Hub connects, not at login");
+  assert.ok(!plist.includes("/Users/"), "no private path");
+  const rust = readFileSync(path.join(root, "src-tauri/src/dictation.rs"), "utf8");
+  const rustConst = (name) => {
+    const match = new RegExp(`pub const ${name}: &str = "([^"]+)";`).exec(rust);
+    assert.ok(match, name);
+    return match[1];
+  };
+  assert.equal(rustConst("AGENT_PLIST_NAME"), LAUNCH_AGENT_PLIST);
+  assert.equal(rustConst("HELPER_BUNDLE_PROGRAM"), HELPER_BUNDLE_PROGRAM);
+  assert.equal(rustConst("LAUNCH_AGENTS_DIR"), LAUNCH_AGENT_DIR);
+  assert.ok(
+    problemsFor({ dictationEnabled: true, launchAgent: null }).some((p) => /launch agent does not name/.test(p)),
+  );
+  assert.deepEqual(problemsFor({ dictationEnabled: true, launchAgent: plist }), []);
+});
+
 test("the default bundle path follows CARGO_TARGET_DIR the way the helper binary does", () => {
   assert.equal(
     helperBundleDefault({ CARGO_TARGET_DIR: "/shared/target" }, "/repo"),

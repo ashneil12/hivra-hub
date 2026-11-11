@@ -53,7 +53,7 @@ mod devin_config;
 mod devin_usage;
 mod spend_ledger;
 // WP-131b: desktop dictation into the composer draft; the microphone is held by a helper app, never sends.
-// Off in this build (dictation::ENABLED is false): the helper is never found, checked or started.
+// Off in this build (dictation::ENABLED is false): the helper is not registered and no connection is opened.
 mod dictation;
 pub mod disclaim;
 mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.

@@ -3,8 +3,9 @@
 //
 // The Hub never holds the microphone. Dictation runs in a small helper app at
 // `Contents/Helpers/MonoCode Dictation.app`, with its own identifier (the Hub's plus `.dictation`), its two usage
-// strings and the audio-input entitlement. The Hub starts it with responsibility disclaimed (src-tauri/src/disclaim.rs),
-// so macOS charges the microphone request to the helper. Project actions and other children of the Hub inherit nothing.
+// strings and the audio-input entitlement. launchd runs it as an SMAppService agent. The Hub does not spawn it.
+// Project actions and other children of the Hub inherit nothing. This script copies the agent plist into the bundle.
+// It does not call launchctl or SMAppService.
 //
 //   node scripts/hub-dictation-helper.mjs "target/release/bundle/macos/MonoCode Hub.app"
 //
@@ -26,14 +27,26 @@ export const HELPER_EXECUTABLE = "monocode-dictation";
 export const HELPER_RELATIVE = path.join("Contents", "Helpers", HELPER_NAME);
 export const HELPER_ENTITLEMENT = "com.apple.security.device.audio-input";
 /**
- * Whether dictation is on in this build. It is off (round-3 review, HIGH 1) until the XPC follow-up lands, and it moves
- * together with `dictation::ENABLED` (src-tauri/src/dictation.rs) and `protocol::DICTATION_ENABLED`
- * (crates/dictation-helper); a test fails if they differ. While it is off, hub:build puts no helper into the bundle, and
- * hub:verify and hub:ship accept a bundle without one. The main app's microphone keys are checked either way.
+ * Whether dictation is on in this build. It stays off until the one live check, and it moves together with
+ * `dictation::ENABLED` (src-tauri/src/dictation.rs) and `protocol::DICTATION_ENABLED` (crates/dictation-helper); a test
+ * fails if they differ. While it is off, hub:build puts no helper and no launch agent into the bundle, and hub:verify
+ * and hub:ship accept a bundle without them. The main app's microphone keys are checked either way.
  */
 export const DICTATION_ENABLED = false;
+/** The LaunchAgent plist name inside `Contents/Library/LaunchAgents`. The same name the Hub registers. */
+export const LAUNCH_AGENT_PLIST = "com.ash.monocode-hub.dictation.plist";
+/** Where that plist lives, relative to the app bundle. */
+export const LAUNCH_AGENT_DIR = "Contents/Library/LaunchAgents";
+/** `BundleProgram` in the plist: the helper bundle, relative to the app bundle. */
+export const HELPER_BUNDLE_PROGRAM = "Contents/Helpers/MonoCode Dictation.app";
 const INFO_TEMPLATE = path.join(ROOT, "crates/dictation-helper/bundle/Info.plist");
+const LAUNCH_AGENT_TEMPLATE = path.join(ROOT, "crates/dictation-helper/bundle/LaunchAgent.plist");
 const HELPER_ENTITLEMENTS = path.join(ROOT, "crates/dictation-helper/bundle/Entitlements.plist");
+
+/** The launch agent plist, from the crate. It names the helper bundle and its Mach service, and it does not run at login. */
+export function launchAgentPlist() {
+  return readFileSync(LAUNCH_AGENT_TEMPLATE, "utf8");
+}
 
 /** The helper's identifier: the Hub's, plus `.dictation`. A dev slot gets its own, so its grant is its own. */
 export function helperBundleId(hubIdentifier) {
@@ -74,6 +87,7 @@ export function dictationHelperProblems({
   hubEntitlements,
   hubTeam,
   helper,
+  launchAgent,
   dictationEnabled = DICTATION_ENABLED,
 }) {
   const problems = [];
@@ -82,6 +96,9 @@ export function dictationHelperProblems({
   }
   if (hasTrueEntitlement(hubEntitlements, HELPER_ENTITLEMENT)) {
     problems.push("the main app carries the audio input entitlement; the microphone belongs to the helper only");
+  }
+  if (dictationEnabled && stringKey(launchAgent, "BundleProgram") !== HELPER_BUNDLE_PROGRAM) {
+    problems.push("the launch agent does not name the helper bundle");
   }
   if (!helper) {
     // Dictation is off, so nothing starts a helper and a bundle without one is a normal build.
@@ -187,6 +204,7 @@ export function readBundleFacts(appPath, { codesign = "/usr/bin/codesign" } = {}
   const teamOf = (text) => /TeamIdentifier=(\S+)/.exec(text)?.[1] ?? null;
   const helperApp = path.join(appPath, HELPER_RELATIVE);
   const helperExists = existsSync(helperApp);
+  const launchAgent = plistXml(path.join(appPath, LAUNCH_AGENT_DIR, LAUNCH_AGENT_PLIST));
   const hubSigning = signing(appPath);
   const helperSigning = helperExists ? signing(helperApp) : "";
   return {
@@ -201,6 +219,7 @@ export function readBundleFacts(appPath, { codesign = "/usr/bin/codesign" } = {}
           team: teamOf(helperSigning),
         }
       : null,
+    launchAgent,
   };
 }
 
@@ -242,6 +261,11 @@ export function installHelper(appPath, { binary = buildHelperBinary() } = {}) {
   writeFileSync(path.join(helperApp, "Contents/PkgInfo"), "APPL????");
   copyFileSync(binary, path.join(macos, HELPER_EXECUTABLE));
   chmodSync(path.join(macos, HELPER_EXECUTABLE), 0o755);
+  // The agent plist goes in before the app is signed again, so the app's seal covers it. This copies a file. It does
+  // not register the agent.
+  const agents = path.join(appPath, LAUNCH_AGENT_DIR);
+  mkdirSync(agents, { recursive: true });
+  writeFileSync(path.join(agents, LAUNCH_AGENT_PLIST), launchAgentPlist());
 
   const commands = signingCommands({
     identity,

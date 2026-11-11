@@ -2,17 +2,17 @@
 //!
 //! The person asks, the app explains, the person continues, and only then does the helper open the microphone.
 //! The helper is `Contents/Helpers/MonoCode Dictation.app` (crates/dictation-helper). It holds the microphone and the
-//! speech permissions, so the Hub never does, and nothing the Hub starts inherits them. The Hub starts the helper with
-//! responsibility disclaimed (disclaim.rs), so macOS charges the request to the helper, and talks to it over stdin and
-//! stdout. The words come back as `monocode:dictation` events. The webview writes them into the draft and never sends
-//! it. Audio never leaves this Mac: the helper recognises on the device only.
+//! speech permissions, so the Hub never does. launchd runs it as an SMAppService agent. The Hub registers that agent
+//! only while dictation is switched on, and it talks to the helper over the agent's XPC Mach service, never by
+//! spawning it. The words come back as `monocode:dictation` events. The webview writes them into the draft and never
+//! sends it. Audio never leaves this Mac: the helper recognises on the device only.
 //!
 //! The Hub keeps the guards, so a helper that misbehaves cannot keep the microphone. A session stops when the window
 //! that owns it is destroyed, hidden or starts loading a page, after `MAX_SESSION`, and after `SILENCE_LIMIT` with no
-//! recognised words. A stop waits briefly for the helper's last result, then the helper is killed.
+//! recognised words. A stop tells the helper to finish, then cancels the connection.
 //!
-//! Only a shipped build has the helper. A dev copy, a bundle without it, or a copy with disclaim switched off answers
-//! "not available", so the composer hides the control.
+//! Only a shipped build has the helper. A dev copy, or a bundle without it, answers "not available", so the composer
+//! hides the control. Dictation is switched off in this build, so nothing is registered and no connection is opened.
 
 // Off macOS the platform part is compiled out, so the shared bookkeeping below has no caller there.
 #![cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -42,18 +42,23 @@ pub const MAX_SESSION: Duration = Duration::from_secs(300);
 pub const SILENCE_LIMIT: Duration = Duration::from_secs(30);
 /// The most text one utterance may add (the webview caps it at the same length).
 pub const MAX_UTTERANCE_CHARS: usize = 4000;
-/// Whether this build may start the helper at all. It is off (round-3 review, HIGH 1): the helper cannot yet tell which
-/// process is asking, and a same-user process can reach it. It turns on only with the XPC service and its per-message
-/// peer requirement, which is not built yet. Nothing reads a setting or an environment variable for it.
+/// Whether this build may connect to the helper at all. The XPC service and its per-message peer requirement are in
+/// place, and this stays off until the one live check: the owner taps Allow once on a real build with dictation on.
+/// Nothing reads a setting or an environment variable for it.
 pub const ENABLED: bool = false;
+
+/// The same switch as [`ENABLED`], read at runtime so the connection code stays in the build to be checked.
+fn switched_on() -> bool {
+    ENABLED
+}
 /// After a stop, how long the helper gets to deliver its last result before it is killed. The helper waits 5 s itself.
 #[cfg(target_os = "macos")]
 const FINISH_GRACE: Duration = Duration::from_secs(7);
 /// How long a start waits for the helper's answer. A permission prompt can sit this long.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 const READY_WAIT: Duration = Duration::from_secs(600);
 /// How often the guard checks the owning window and the clock.
-#[cfg(target_os = "macos")]
+#[cfg(all(target_os = "macos", not(test)))]
 const WATCH_EVERY: Duration = Duration::from_millis(250);
 
 #[derive(Serialize)]
@@ -138,9 +143,12 @@ struct Heard<L> {
 }
 
 /// The longest line the Hub reads from the helper (LOW 4): a longer one ends the session.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
 
 /// Reads one line into `buf`. `Ok(false)` at end of input; `Err` when the line passes MAX_LINE_BYTES without a newline.
+/// The live path is an XPC message, which is capped with the same constant. This reader stays for the test.
+#[cfg(test)]
 fn read_capped_line<R: std::io::BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> Result<bool, ()> {
     use std::io::BufRead;
     buf.clear();
@@ -229,10 +237,12 @@ impl<L: Clone> Sessions<L> {
             .map(|slot| slot.id)
     }
 
+    #[cfg(not(test))]
     fn is_current(&self, id: u64) -> bool {
         self.current.as_ref().is_some_and(|slot| slot.id == id)
     }
 
+    #[cfg(not(test))]
     fn is_ending(&self, id: u64) -> bool {
         self.current
             .as_ref()
@@ -386,6 +396,40 @@ pub fn window_lost(app: &AppHandle, label: &str) {
 /// The daily Hub's identifier. Only this identity launches the helper (LOW 1).
 pub const HUB_IDENTIFIER: &str = "com.ash.monocode-hub";
 
+/// The LaunchAgent plist inside the Hub bundle (`Contents/Library/LaunchAgents/<name>`). SMAppService registers
+/// that name. The plist names the helper bundle; the Hub does not spawn it.
+pub const AGENT_PLIST_NAME: &str = "com.ash.monocode-hub.dictation.plist";
+/// `BundleProgram` in that plist, relative to the app bundle. The path the brief requires.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const HELPER_BUNDLE_PROGRAM: &str = "Contents/Helpers/MonoCode Dictation.app";
+/// Where the plist lives inside the bundle. The bundle script places the file; the tests pin this string.
+#[allow(dead_code)]
+pub const LAUNCH_AGENTS_DIR: &str = "Contents/Library/LaunchAgents";
+/// The Mach service the launch agent advertises. The Hub connects to this. It does not spawn the helper.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub const MACH_SERVICE: &str = "com.ash.monocode-hub.dictation";
+
+/// The XPC client and the real registrar. Absent from the test build, so a test cannot open the service or call
+/// SMAppService.
+#[cfg(all(target_os = "macos", not(test)))]
+mod xpc;
+
+/// Registers and unregisters the helper agent. The real one calls SMAppService. Tests pass a fake, so nothing
+/// here touches launchd.
+pub trait AgentControl {
+    fn register_agent(&mut self, plist_name: &str);
+    fn unregister_agent(&mut self, plist_name: &str);
+}
+
+/// Follows the dictation switch. On registers the agent. Off unregisters it. Nothing else is registered.
+pub fn follow_switch(enabled: bool, agent: &mut impl AgentControl) {
+    if enabled {
+        agent.register_agent(AGENT_PLIST_NAME);
+    } else {
+        agent.unregister_agent(AGENT_PLIST_NAME);
+    }
+}
+
 /// The requirement a helper must meet to be launched: its identifier (the Hub's, plus `.dictation`), Apple-anchored,
 /// under the Hub's Team ID. None when either input is not a plain identifier or a Team ID.
 pub fn helper_requirement(hub_identifier: &str, team: &str) -> Option<String> {
@@ -408,20 +452,23 @@ pub fn helper_requirement(hub_identifier: &str, team: &str) -> Option<String> {
 
 #[cfg(target_os = "macos")]
 mod platform {
-    use std::io::{BufReader, Write};
     use std::path::PathBuf;
-    use std::process::{Child, ChildStdin, ChildStdout, Stdio};
-    use std::sync::mpsc::{self, Sender};
-    use std::sync::{Arc, Mutex};
+    #[cfg(not(test))]
+    use std::sync::mpsc::{self, Receiver, Sender};
+    #[cfg(not(test))]
+    use std::sync::Arc;
+    #[cfg(not(test))]
     use std::time::Instant;
 
-    use tauri::{AppHandle, Manager};
+    use tauri::AppHandle;
+    #[cfg(not(test))]
+    use tauri::Manager;
 
     use super::{
-        emit, note_for_reason, read_capped_line, sessions, Heard, HelperEvent, Support, DENIED,
-        FINISH_GRACE, HUB_IDENTIFIER, NOT_HERE, READY_WAIT, STOPPED, WATCH_EVERY,
+        emit, sessions, switched_on, Heard, Support, FINISH_GRACE, HUB_IDENTIFIER, NOT_HERE,
     };
-    use crate::disclaim;
+    #[cfg(not(test))]
+    use super::{note_for_reason, HelperEvent, DENIED, READY_WAIT, STOPPED, WATCH_EVERY};
 
     /// The helper inside the bundle this Hub runs from, or None when this copy has none (a dev copy, or a bundle
     /// built without it).
@@ -431,31 +478,29 @@ mod platform {
         if macos.file_name()? != "MacOS" {
             return None;
         }
-        let path = macos
-            .parent()?
-            .join("Helpers/MonoCode Dictation.app/Contents/MacOS/monocode-dictation");
+        let bundle = macos.parent()?.parent()?;
+        let path = bundle
+            .join(super::HELPER_BUNDLE_PROGRAM)
+            .join("Contents/MacOS/monocode-dictation");
         path.is_file().then_some(path)
     }
 
-    /// The helper to run and the launcher that starts it disclaimed. Without both, dictation is off: a helper the Hub
-    /// started itself would be charged to the Hub.
-    fn launch_plan(app: &AppHandle) -> Result<(PathBuf, PathBuf), &'static str> {
-        // HIGH 1 (round 3): dictation is off in this build. No helper is found, checked or started.
-        if !super::ENABLED {
+    /// Whether this copy may connect to the helper. The Hub does not spawn it: launchd does, once the agent is
+    /// registered. A dev copy, a bundle without the helper, or a helper signed for someone else is not available.
+    fn launch_plan(app: &AppHandle) -> Result<(), &'static str> {
+        // Dictation is off in this build. No helper is found, checked or connected to.
+        if !switched_on() {
             return Err(NOT_HERE);
         }
         let helper = helper_path().ok_or(NOT_HERE)?;
-        // LOW 1: only the daily Hub launches a helper, and only one signed for this Hub (its identifier, and this
-        // app's Team ID). A helper copied in from elsewhere is not run.
+        // Only the daily Hub connects, and only to a helper signed for this Hub (its identifier, and this app's
+        // Team ID). A helper copied in from elsewhere is not used.
         if app.config().identifier != HUB_IDENTIFIER
             || !helper_is_signed_for_hub(&helper, HUB_IDENTIFIER)
         {
             return Err(NOT_HERE);
         }
-        let data_dir = app.path().app_data_dir().ok();
-        let launcher =
-            disclaim::launcher_for(helper.as_os_str(), data_dir.as_deref()).ok_or(NOT_HERE)?;
-        Ok((helper, launcher))
+        Ok(())
     }
 
     /// LOW 1 / MED 1: the helper is signed under this Hub's Team ID with the helper's identifier. The Team ID comes from
@@ -541,8 +586,11 @@ mod platform {
     }
 
     pub fn support(app: &AppHandle) -> Support {
+        // The real registrar. A test build does not call it, so a test never registers or unregisters an agent.
+        #[cfg(not(test))]
+        super::xpc::apply_switch(switched_on());
         match launch_plan(app) {
-            Ok(_) => Support {
+            Ok(()) => Support {
                 available: true,
                 reason: String::new(),
             },
@@ -553,80 +601,83 @@ mod platform {
         }
     }
 
-    /// The helper process of one session. Killing it, or closing its stdin, is how it stops.
+    /// The helper connection of one session. Cancelling it is how the session stops.
+    #[cfg(not(test))]
     pub struct Helper {
-        child: Mutex<Child>,
-        stdin: Mutex<Option<ChildStdin>>,
+        link: super::xpc::Link,
     }
 
+    #[cfg(not(test))]
     #[derive(Clone)]
     pub struct Live(Arc<Helper>);
 
+    /// A test build has no connection to cancel. Nothing here opens the Mach service.
+    #[cfg(test)]
+    #[derive(Clone)]
+    pub struct Live;
+
     impl Live {
+        #[cfg(not(test))]
         fn send_line(&self, line: &str) {
-            if let Ok(mut stdin) = self.0.stdin.lock() {
-                if let Some(stdin) = stdin.as_mut() {
-                    let _ = writeln!(stdin, "{line}").and_then(|()| stdin.flush());
-                }
-            }
+            let _ = self.0.link.send_line(line);
         }
 
-        /// Kills the helper and reaps it. Safe to call more than once.
-        fn stop_child(&self) {
-            if let Ok(mut stdin) = self.0.stdin.lock() {
-                stdin.take();
-            }
-            if let Ok(mut child) = self.0.child.lock() {
-                let _ = child.kill();
-                let _ = child.wait();
-            }
+        #[cfg(test)]
+        fn send_line(&self, line: &str) {
+            let _ = line;
         }
+
+        /// Cancels the helper connection. Safe to call more than once.
+        #[cfg(not(test))]
+        fn stop_child(&self) {
+            self.0.link.cancel();
+        }
+
+        #[cfg(test)]
+        fn stop_child(&self) {}
     }
 
+    #[cfg(not(test))]
     enum Answer {
         Ready,
         Refused(&'static str),
     }
 
     pub async fn start(app: AppHandle, owner: String) -> Result<u64, &'static str> {
-        let (helper, launcher) = launch_plan(&app)?;
+        launch_plan(&app)?;
+        // A test build never connects. The real connection is compiled out, so this cannot open the Mach service.
+        #[cfg(test)]
+        {
+            let _ = (app, owner);
+            Err(NOT_HERE)
+        }
+        #[cfg(not(test))]
+        connect_session(app, owner).await
+    }
+
+    /// Connects to the helper and reads until it finishes. Not compiled into a test.
+    #[cfg(not(test))]
+    async fn connect_session(app: AppHandle, owner: String) -> Result<u64, &'static str> {
         let id = sessions().begin(&owner, Instant::now())?;
-        let mut cmd = disclaim::command(helper.as_os_str(), Some(&launcher), None, None);
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null());
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(_) => {
+        let (link, lines) = match open_link() {
+            Ok(open) => open,
+            Err(()) => {
                 sessions().abort(id);
                 return Err(NOT_HERE);
             }
         };
-        let (Some(mut stdin), Some(stdout)) = (child.stdin.take(), child.stdout.take()) else {
-            let _ = child.kill();
-            let _ = child.wait();
-            sessions().abort(id);
-            return Err(NOT_HERE);
-        };
-        if writeln!(stdin, "{{\"op\":\"start\"}}")
-            .and_then(|()| stdin.flush())
-            .is_err()
-        {
-            let _ = child.kill();
-            let _ = child.wait();
+        let live = Live(Arc::new(Helper { link }));
+        if !live.0.link.send_line("{\"op\":\"start\"}") {
+            live.stop_child();
             sessions().abort(id);
             return Err(NOT_HERE);
         }
-        let live = Live(Arc::new(Helper {
-            child: Mutex::new(child),
-            stdin: Mutex::new(Some(stdin)),
-        }));
         let (answer_tx, answer_rx) = mpsc::channel::<Answer>();
         spawn_reader(
             app.clone(),
             owner.clone(),
             id,
-            stdout,
+            lines,
             answer_tx,
             live.clone(),
         );
@@ -660,25 +711,35 @@ mod platform {
         }
     }
 
+    /// The signed helper's requirement, then the connection. None of this runs in a test.
+    #[cfg(not(test))]
+    fn open_link() -> Result<(super::xpc::Link, Receiver<super::xpc::Incoming>), ()> {
+        let Some(team) = own_team_id() else {
+            return Err(());
+        };
+        let Some(requirement) = super::helper_requirement(HUB_IDENTIFIER, &team) else {
+            return Err(());
+        };
+        super::xpc::connect(&requirement)
+    }
+
     /// Reads the helper's lines until it finishes. Its words reach the webview as they arrive.
+    #[cfg(not(test))]
     fn spawn_reader(
         app: AppHandle,
         owner: String,
         id: u64,
-        stdout: ChildStdout,
+        lines: Receiver<super::xpc::Incoming>,
         answers: Sender<Answer>,
         live: Live,
     ) {
         std::thread::spawn(move || {
             let mut answers = Some(answers);
-            let mut reader = BufReader::new(stdout);
-            let mut buf = Vec::new();
-            // A line over the limit ends the session, like the helper going away (LOW 4).
-            while let Ok(true) = read_capped_line(&mut reader, &mut buf) {
-                let Ok(line) = std::str::from_utf8(&buf) else {
-                    continue;
+            while let Ok(incoming) = lines.recv() {
+                let super::xpc::Incoming::Text(line) = incoming else {
+                    break;
                 };
-                let Ok(event) = serde_json::from_str::<HelperEvent>(line) else {
+                let Ok(event) = serde_json::from_str::<HelperEvent>(line.trim()) else {
                     continue;
                 };
                 match event {
@@ -707,6 +768,7 @@ mod platform {
         });
     }
 
+    #[cfg(not(test))]
     fn reply(answers: &mut Option<Sender<Answer>>, answer: Answer) {
         if let Some(tx) = answers.take() {
             let _ = tx.send(answer);
@@ -759,6 +821,7 @@ mod platform {
 
     /// The guards for one session: the owning window must stay on screen, and the session must not run past its
     /// length or its silence limit. Any of them stops it.
+    #[cfg(not(test))]
     fn spawn_watch(app: AppHandle, id: u64, owner: String) {
         std::thread::spawn(move || loop {
             std::thread::sleep(WATCH_EVERY);
@@ -1070,15 +1133,17 @@ mod tests {
         ));
         assert!(matches!(
             serde_json::from_str::<HelperEvent>(r#"{"ev":"refused","reason":"denied"}"#),
-            Ok(HelperEvent::Refused { .. })
+            Ok(HelperEvent::Refused { reason }) if reason == "denied"
         ));
         assert!(matches!(
             serde_json::from_str::<HelperEvent>(r#"{"ev":"heard","text":"hi"}"#),
-            Ok(HelperEvent::Heard { .. })
+            Ok(HelperEvent::Heard { text }) if text == "hi"
         ));
         assert!(matches!(
-            serde_json::from_str::<HelperEvent>(r#"{"ev":"final","text":"x","error":true}"#),
-            Ok(HelperEvent::Final { error: true, .. })
+            serde_json::from_str::<HelperEvent>(
+                r#"{"ev":"final","text":"x","error":true}"#
+            ),
+            Ok(HelperEvent::Final { text, error: true }) if text == "x"
         ));
         assert!(serde_json::from_str::<HelperEvent>(r#"{"ev":"open-socket"}"#).is_err());
     }
@@ -1138,16 +1203,19 @@ mod tests {
     }
 
     #[test]
-    fn the_helper_is_started_through_the_disclaim_launcher() {
-        // A helper the Hub started itself would be charged to the Hub, so the launch goes through the launcher.
-        let cmd = crate::disclaim::command(
-            std::ffi::OsStr::new("/x/MonoCode Dictation.app/Contents/MacOS/monocode-dictation"),
-            Some(std::path::Path::new("/x/monocode")),
-            None,
-            None,
+    fn the_hub_connects_over_the_mach_service_and_does_not_spawn_the_helper() {
+        // The old path started a child. This one names the service launchd advertises and the helper's identity.
+        assert_eq!(MACH_SERVICE, "com.ash.monocode-hub.dictation");
+        let requirement = helper_requirement(HUB_IDENTIFIER, "9SB4XNH8C5").expect("requirement");
+        assert!(
+            requirement.starts_with("identifier \"com.ash.monocode-hub.dictation\""),
+            "the requirement names the helper, so a different process cannot answer"
         );
-        let args: Vec<_> = cmd.get_args().collect();
-        assert_eq!(args.first().and_then(|a| a.to_str()), Some("disclaim-exec"));
+        assert!(requirement.contains("anchor apple generic"));
+        assert!(
+            !requirement.contains("disclaim"),
+            "the Hub does not launch the helper"
+        );
     }
 
     // HIGH 1 (round 3): dictation is switched off in this build. A tripwire: flipping ENABLED fails this test, so the
@@ -1156,6 +1224,45 @@ mod tests {
     #[test]
     fn dictation_is_switched_off_in_this_build() {
         assert!(!std::hint::black_box(ENABLED));
+    }
+
+    // The helper is an SMAppService agent. The switch registers it; switching off unregisters it. A fake registrar
+    // stands in, so this test never calls SMAppService or launchd.
+
+    #[test]
+    fn register_and_unregister_follow_the_switch() {
+        struct Fake {
+            calls: Vec<(&'static str, String)>,
+        }
+        impl AgentControl for Fake {
+            fn register_agent(&mut self, plist_name: &str) {
+                self.calls.push(("register", plist_name.to_string()));
+            }
+            fn unregister_agent(&mut self, plist_name: &str) {
+                self.calls.push(("unregister", plist_name.to_string()));
+            }
+        }
+        let mut fake = Fake { calls: Vec::new() };
+        follow_switch(true, &mut fake);
+        assert_eq!(
+            fake.calls,
+            vec![("register", AGENT_PLIST_NAME.to_string())],
+            "switching dictation on registers the helper agent and nothing else"
+        );
+        follow_switch(false, &mut fake);
+        assert_eq!(
+            fake.calls,
+            vec![
+                ("register", AGENT_PLIST_NAME.to_string()),
+                ("unregister", AGENT_PLIST_NAME.to_string()),
+            ],
+            "switching dictation off unregisters it"
+        );
+        assert_eq!(
+            HELPER_BUNDLE_PROGRAM,
+            "Contents/Helpers/MonoCode Dictation.app"
+        );
+        assert_eq!(LAUNCH_AGENTS_DIR, "Contents/Library/LaunchAgents");
     }
 
     #[test]

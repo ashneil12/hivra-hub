@@ -53,9 +53,9 @@ pub fn park_main() -> ! {
 
 /// What the helper checks before any permission is asked for or the microphone opens. Dictation is off in this build
 /// (protocol::DICTATION_ENABLED), so this refuses every start. Once it is on, the helper must also be its own
-/// responsible process: started without disclaim, macOS names the launcher, and the helper refuses (LOW 4).
-fn gate() -> Result<(), &'static str> {
-    if !protocol::DICTATION_ENABLED {
+/// responsible process: a helper launchd started is; one started as a child of something else is not (LOW 4).
+pub(crate) fn gate() -> Result<(), &'static str> {
+    if !protocol::dictation_enabled() {
         return Err("not_here");
     }
     let me = unsafe { libc::getpid() };
@@ -103,11 +103,13 @@ pub fn run(tx: Sender<Input>, rx: Receiver<Input>) {
         emit(&Event::Refused { reason });
         return;
     }
-    // M1: the Hub may stop, or close stdin, while a permission prompt is up. Then the microphone stays closed.
-    if matches!(
+    // M1: the Hub may stop, or drop the connection, while a permission prompt is up. Then the microphone stays
+    // closed. mic_may_open is the same rule the unit test pins.
+    let stopped_during_prompt = matches!(
         rx.try_recv(),
         Ok(Input::Closed) | Ok(Input::Cmd(Command::Stop))
-    ) {
+    );
+    if !protocol::mic_may_open(stopped_during_prompt) {
         return;
     }
     let started = Instant::now();
