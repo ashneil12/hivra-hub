@@ -19,6 +19,10 @@
 //! `force_reason`. An answer stands only after Ash ticks it in the Inbox. A chat's own answer never stands. The feature
 //! itself stays off (`decision_settings`) until it is turned on, and while it is off, asking and answering keep the
 //! exact-key behaviour above.
+//!
+//! WP-215: `answer_reason` is nullable and `answer` stores it (null when the caller has none). An answer whose
+//! `answered_by` starts with `captain:` is refused here on an owner's key, a red-list item, a project whose switch is
+//! off, money past the limit, and past the turn cap.
 
 use std::sync::OnceLock;
 
@@ -100,6 +104,8 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("retired_reason", "TEXT"),
         ("reuse_stopped", "INTEGER NOT NULL DEFAULT 0"),
         ("force_reason", "TEXT"),
+        // WP-215: why this answer was given. Null when the caller has none. Not a numbered migration.
+        ("answer_reason", "TEXT"),
     ] {
         if column_missing(conn, "decisions", name)? {
             conn.execute(
@@ -139,15 +145,22 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
 /// standing, listed for reuse, or answered by an old answer. Case, width and hidden characters fold to the same key,
 /// so none of those spellings stand either. A key that is not listed here is an ordinary question.
 pub fn standing_eligible(key: &str) -> bool {
-    // Keys keep the case they were typed in (`key_like`). Fold before the prefix check, as `is_secret_key` does.
+    // Keys keep the case they were typed in (`key_like`). Fold once, then the prefix check, as `is_secret_key` does.
     let folded = fold_key(key);
+    if folded == "charter" || folded == "captain-cap" {
+        return false;
+    }
     if [
         "irreversible/",
         "fresh-eyes",
         "gate/",
         "secret/",
         "fanout-again/",
+        "security/",
         "security-review/",
+        "budget/",
+        "charter/",
+        "captain-cap/",
     ]
     .iter()
     .any(|prefix| folded.starts_with(prefix))
@@ -214,6 +227,8 @@ pub struct Decision {
     pub reuse_stopped: bool,
     /// Why a later question was opened anyway, when a standing answer matched and force was set.
     pub force_reason: Option<String>,
+    /// WP-215: which step gave this answer. Null when the caller stored none.
+    pub answer_reason: Option<String>,
     /// Stable label, `S-<rowid>`. Guidance, not a permission.
     pub standing_id: String,
 }
@@ -221,12 +236,12 @@ pub struct Decision {
 const COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
      state, answer, answered_by, answered_at, created_at, updated_at, version, \
-     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason";
+     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, answer_reason";
 /// `rowid` is not written; it only names the standing answer.
 const READ_COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
      state, answer, answered_by, answered_at, created_at, updated_at, version, \
-     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, rowid";
+     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, answer_reason, rowid";
 
 fn json_list(text: String) -> Vec<String> {
     serde_json::from_str(&text).unwrap_or_default()
@@ -255,7 +270,8 @@ fn from_row(row: &Row) -> rusqlite::Result<Decision> {
         retired_reason: row.get(18)?,
         reuse_stopped: row.get::<_, i64>(19)? != 0,
         force_reason: row.get(20)?,
-        standing_id: format!("S-{}", row.get::<_, i64>(21)?),
+        answer_reason: row.get(21)?,
+        standing_id: format!("S-{}", row.get::<_, i64>(22)?),
     })
 }
 
@@ -288,7 +304,7 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
     for (filter, limit) in [
         ("state = 'open' ORDER BY created_at, rowid LIMIT 200", 200),
         (
-            "state = 'answered' ORDER BY answered_at DESC, rowid DESC LIMIT ?1",
+            "state = 'answered' AND decision_key NOT LIKE 'noted/%' ORDER BY answered_at DESC, rowid DESC LIMIT ?1",
             answered.min(100),
         ),
     ] {
@@ -310,9 +326,10 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
 fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     conn.execute(
         &format!(
-            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT (project, decision_key) DO UPDATE SET waiting = excluded.waiting, state = excluded.state,
                answer = excluded.answer, answered_by = excluded.answered_by, answered_at = excluded.answered_at,
+               answer_reason = excluded.answer_reason,
                standing = excluded.standing, updated_at = excluded.updated_at, version = excluded.version"
         ),
         params![
@@ -337,6 +354,7 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
             d.retired_reason,
             if d.reuse_stopped { 1 } else { 0 },
             d.force_reason,
+            d.answer_reason,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -367,8 +385,9 @@ fn replace_asked(conn: &Connection, d: &Decision) -> Result<(), String> {
     conn.execute(
         "UPDATE decisions SET question = ?1, options = ?2, recommended = ?3, asked_by = ?4, asked_by_mono = ?5, \
          waiting = ?6, state = ?7, answer = ?8, answered_by = ?9, answered_at = ?10, updated_at = ?11, version = ?12, \
-         standing = ?13, keys = ?14, retired_at = ?15, retired_reason = ?16, reuse_stopped = ?17, force_reason = ?18 \
-         WHERE project = ?19 AND decision_key = ?20",
+         standing = ?13, keys = ?14, retired_at = ?15, retired_reason = ?16, reuse_stopped = ?17, force_reason = ?18, \
+         answer_reason = ?19 \
+         WHERE project = ?20 AND decision_key = ?21",
         params![
             d.question,
             json!(d.options).to_string(),
@@ -388,6 +407,7 @@ fn replace_asked(conn: &Connection, d: &Decision) -> Result<(), String> {
             d.retired_reason,
             if d.reuse_stopped { 1 } else { 0 },
             d.force_reason,
+            d.answer_reason,
             d.project,
             d.decision_key,
         ],
@@ -529,12 +549,32 @@ pub fn check_may_ask(conn: &Connection, session: &str) -> Result<(), String> {
 }
 
 /// What a waiting task is told when the person answers the same question.
+/// A captain's answer names the Chief of Staff and does not outrank the brief. Only the person's own answer does.
 fn release_text(d: &Decision) -> String {
+    let answer = d.answer.as_deref().unwrap_or("");
+    if captain::is_captain(d.answered_by.as_deref()) {
+        let why = reason_aside(d);
+        return format!(
+            "The Chief of Staff answered{why} \"{}\": {}\nCarry on from this answer.",
+            d.question, answer
+        );
+    }
     format!(
         "The person answered \"{}\": {}\nCarry on from this answer; it outranks anything in your brief that disagrees.",
-        d.question,
-        d.answer.as_deref().unwrap_or("")
+        d.question, answer
     )
+}
+
+fn reason_aside(d: &Decision) -> String {
+    match d
+        .answer_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        Some(reason) => format!(" ({reason})"),
+        None => String::new(),
+    }
 }
 
 /// What a waiting task is told when a different question reused a standing answer. Guidance, not permission.
@@ -553,11 +593,17 @@ fn owner_text(d: &Decision, released: usize) -> String {
         1 => " One waiting task has it and carries on.".into(),
         n => format!(" {n} waiting tasks have it and carry on."),
     };
+    let answer = d.answer.as_deref().unwrap_or("");
+    if captain::is_captain(d.answered_by.as_deref()) {
+        let why = reason_aside(d);
+        return format!(
+            "The Chief of Staff answered{why} your question \"{}\" (key {}): {}.{tasks} This is the app's note, not a new message.",
+            d.question, d.decision_key, answer
+        );
+    }
     format!(
         "The person answered your question \"{}\" (key {}): {}.{tasks} This is the app's note, not a new message.",
-        d.question,
-        d.decision_key,
-        d.answer.as_deref().unwrap_or("")
+        d.question, d.decision_key, answer
     )
 }
 
@@ -947,7 +993,7 @@ fn reopen_row(
             "UPDATE decisions SET question = ?1, options = ?2, recommended = ?3, waiting = ?4,
                 state = ?5, answer = NULL, answered_by = NULL, answered_at = NULL,
                 standing = 0, reuse_stopped = 0, retired_at = NULL, retired_reason = NULL,
-                keys = ?6, force_reason = NULL, updated_at = ?7, version = ?8
+                keys = ?6, force_reason = NULL, answer_reason = NULL, updated_at = ?7, version = ?8
              WHERE project = ?9 AND decision_key = ?10 AND version = ?11
                AND state = ?12 AND (retired_at IS NOT NULL OR reuse_stopped != 0)",
             params![
@@ -1166,6 +1212,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         retired_reason: None,
         reuse_stopped: false,
         force_reason: forced_reason,
+        answer_reason: None,
         standing_id: String::new(),
     });
     // The gate replaces a security question that is not its current one. save() cannot change the question.
@@ -1188,6 +1235,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         decision.retired_reason = None;
         decision.reuse_stopped = false;
         decision.force_reason = None;
+        decision.answer_reason = None;
     }
     let added: Vec<String> = task_ids
         .into_iter()
@@ -1360,7 +1408,7 @@ pub const APP_CLOSER: &str = "app:fresh-eyes";
 /// Invisible characters: Unicode general category Cf (format) and the other default-ignorable code points. A spelling
 /// that differs only by them looks the same on screen, so the fold drops them. Mirrored in TS by the `\p{Cf}` and
 /// `\p{Default_Ignorable_Code_Point}` classes in `foldDecisionKey`.
-fn is_ignorable(c: char) -> bool {
+pub(crate) fn is_ignorable(c: char) -> bool {
     matches!(
         c as u32,
         0x00AD
@@ -1444,13 +1492,18 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let again = is_again_key(key);
     let gate = is_gate_key(key);
     let secret = is_secret_key(key);
-    if !fold_key(key).starts_with("irreversible/")
+    let irreversible = fold_key(key).starts_with("irreversible/");
+    // A budget, the charter, the captain's cap and a `security/` question are the person's too.
+    // A security review keeps its own words below. A secret stays on its stricter rule.
+    // Nobody named is not the person here: only `user` or `person`, trimmed, exact.
+    let owner_rest = captain::owner_key(key)
+        && !irreversible
         && !review
         && !security
         && !again
         && !gate
-        && !secret
-    {
+        && !secret;
+    if !irreversible && !review && !security && !again && !gate && !secret && !owner_rest {
         return None;
     }
     // A secret card is stricter than the other person-only keys: nobody named, and `user` (the Needs sheet), are not
@@ -1459,6 +1512,15 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
         return match by.map(str::trim).filter(|word| !word.is_empty()) {
             Some("person") => None,
             _ => Some("Only the person can approve a secret run. Ask them on their card.".into()),
+        };
+    }
+    if owner_rest {
+        return match by.map(str::trim).filter(|word| !word.is_empty()) {
+            Some("user") | Some("person") => None,
+            Some(other) => Some(format!(
+                "Only the person answers this; {other} cannot. It waits until they do."
+            )),
+            None => Some("Say who is answering.".into()),
         };
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
@@ -1501,6 +1563,22 @@ fn from_person(by: Option<&str>) -> bool {
     )
 }
 
+/// Who an answer is stored as. A captain id is folded, so `CAPTAIN:Ada` and an invisible character are the same captain.
+fn stored_answerer(by: Option<&str>) -> String {
+    let raw = by.map(str::trim).filter(|word| !word.is_empty());
+    let text = if captain::is_captain(raw) {
+        fold_key(raw.unwrap_or(""))
+    } else {
+        raw.unwrap_or("person").to_string()
+    };
+    let clipped: String = text.chars().take(120).collect();
+    if clipped.is_empty() {
+        "person".into()
+    } else {
+        clipped
+    }
+}
+
 /// WP-172: the decision keys that start a stopped fan-out task again.
 pub fn is_again_key(key: &str) -> bool {
     fold_key(key).starts_with("fanout-again/")
@@ -1514,16 +1592,33 @@ pub fn answer(
     by: Option<String>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    answer_seen(conn, project, key, answer, by, None, now)
+    answer_with(conn, project, key, answer, by, None, now)
 }
 
 /// The words a refused answer says when the card changed after the person read it.
 pub const CARD_CHANGED: &str =
     "That card changed after you read it, so the answer was not recorded. Read it again and answer.";
 
+/// `answer`, plus the reason the caller gives. The reason is stored and clipped. Callers with none pass `None`.
+/// A secret card still needs the version the person read; this path passes none, so it is not the one for a secret card.
+pub fn answer_with(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    answer_both(conn, project, key, answer, by, reason, None, None, now)
+}
+
 /// [`answer`] for the card the person read: `seen_version` is the card's version on their screen. A secret card whose
 /// version has moved on (another command, folder or variable was put on it) is not answered, so an answer is only ever
 /// for the words the person read (fix round 4, N6). Checked inside the transaction that writes the answer.
+/// The app's command goes through [`answer_and_relay_with`], which carries a reason as well. Tests that have no reason
+/// use this.
+#[cfg(test)]
 pub fn answer_seen(
     conn: &mut Connection,
     project: &str,
@@ -1531,6 +1626,77 @@ pub fn answer_seen(
     answer: &str,
     by: Option<String>,
     seen_version: Option<i64>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    answer_both(
+        conn,
+        project,
+        key,
+        answer,
+        by,
+        None,
+        seen_version,
+        None,
+        now,
+    )
+}
+
+/// The command path, with the calling chat. Tests that skip the asker check pass `caller: None` through `answer_with`.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_as_caller(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    caller: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    answer_both(conn, project, key, answer, by, reason, None, caller, now)
+}
+
+/// A captain answer from a chat. That chat may answer a card it asked, or a card its first mate asked.
+/// An empty caller is refused. A first mate does not answer a card its worker asked.
+fn captain_caller_may_answer(
+    conn: &Connection,
+    asked_by: &str,
+    caller: &str,
+) -> Result<bool, String> {
+    let session = caller.trim();
+    if session.is_empty() {
+        return Ok(false);
+    }
+    let asked = asked_by.trim();
+    if asked == session {
+        return Ok(true);
+    }
+    let mate: Option<String> = conn
+        .query_row(
+            "SELECT owner_session FROM delegations
+              WHERE child_session = ?1 AND state IN ('running', 'question')
+              ORDER BY created_at DESC, rowid DESC
+              LIMIT 1",
+            [session],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(mate.as_deref() == Some(asked))
+}
+
+/// Both optional parts of an answer: the captain's reason (WP-215) and the card version the person read (WP-92).
+#[allow(clippy::too_many_arguments)]
+fn answer_both(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    seen_version: Option<i64>,
+    caller: Option<&str>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
     if is_secret_key(key) && !secret_answer_by_person(by.as_deref()) {
@@ -1550,6 +1716,11 @@ pub fn answer_seen(
     if let Some(refusal) = person_only(key, by.as_deref()) {
         return Err(refusal);
     }
+    // WP-215: the same, for a captain answer on an owner's key, including one that has no row yet.
+    if let Some(refusal) = captain::refuse_key(key, by.as_deref()) {
+        return Err(refusal);
+    }
+    let reason = captain::clip_reason(reason);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1607,12 +1778,37 @@ pub fn answer_seen(
             decision.options.join(", ")
         ));
     }
+    // WP-215: a captain answer on the command path names the calling chat. It may answer a card that chat
+    // asked, or a card its first mate asked. A missing caller fails closed. In-process tests pass none.
+    if captain::is_captain(by.as_deref()) {
+        if let Some(session) = caller {
+            if !captain_caller_may_answer(&tx, &decision.asked_by, session)? {
+                return Err(
+                    "The captain only answers a card this chat asked, or its first mate asked."
+                        .into(),
+                );
+            }
+        }
+    }
+    // WP-215: inside the write, so two windows cannot both pass the turn cap or skip the switch.
+    if let Some(refusal) = captain::refuse_stored(
+        &tx,
+        &decision,
+        by.as_deref(),
+        &answer,
+        reason.as_deref(),
+        now,
+    )? {
+        return Err(refusal);
+    }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);
+    decision.answer_reason = reason;
     // An answer does not stand until the person ticks it. A chat's answer never can.
     // `who` is the identity already checked above. Nobody named never reaches here, and is not stored as the person.
+    // A captain id is folded, so the stored name and the turn count are the same captain.
     decision.standing = false;
-    decision.answered_by = Some(who);
+    decision.answered_by = Some(stored_answerer(Some(who.as_str())));
     decision.answered_at = Some(now);
     decision.updated_at = now;
     if is_secret_key(&decision.decision_key) {
@@ -1719,6 +1915,12 @@ pub fn retire(
     let reason = plain(reason, "The reason", 300)?;
     let project = project.trim();
     let key = key.trim();
+    // A secret card is not a standing answer. Retiring it would reopen it on the next ask, which clears the person's
+    // answer and puts the card on the reuse path. Checked on the folded key, so a capital or look-alike spelling is
+    // the same refusal, including when no such card is stored.
+    if is_secret_key(key) {
+        return Err("A secret's card cannot be retired.".into());
+    }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -2031,6 +2233,7 @@ pub fn decisions_ask(
 }
 
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 pub fn decisions_answer(
     app: AppHandle,
     store: State<'_, SessionStore>,
@@ -2038,17 +2241,22 @@ pub fn decisions_answer(
     key: String,
     answer: String,
     by: Option<String>,
+    reason: Option<String>,
     seen_version: Option<i64>,
+    caller: Option<String>,
 ) -> Result<AnswerOutcome, String> {
     // The version a secret card was read at is required inside answer_seen, in any spelling of the key. A gate answer
-    // is forwarded only when this one landed and the person gave it.
-    let outcome = answer_and_relay(
+    // is forwarded only when this one landed and the person gave it. A reason is stored beside the answer (WP-215).
+    // A captain answer with no calling chat is refused. Other answers do not read the caller.
+    let outcome = answer_and_relay_with(
         &store,
         project.as_deref().unwrap_or(""),
         &key,
         &answer,
         by,
+        reason.as_deref(),
         seen_version,
+        Some(caller.as_deref().map(str::trim).unwrap_or("")),
         now_millis(),
     )?;
     if outcome.applied {
@@ -2057,7 +2265,30 @@ pub fn decisions_answer(
     Ok(outcome)
 }
 
+/// WP-215: a first mate notes a call it settled. The chat id is the caller's.
+#[tauri::command(async)]
+pub fn decisions_note(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    project: String,
+    session: String,
+    what: String,
+    reason: String,
+) -> Result<Decision, String> {
+    let saved = captain::note(
+        &mut *store.lock_conn()?,
+        &project,
+        &session,
+        &what,
+        &reason,
+        now_millis(),
+    )?;
+    announce(&app, Some(&saved), &[]);
+    Ok(saved)
+}
+
 /// What `decisions_answer` does with the store, without the window announce, so a test can run the same path.
+#[cfg(test)]
 pub(crate) fn answer_and_relay(
     store: &SessionStore,
     project: &str,
@@ -2067,13 +2298,40 @@ pub(crate) fn answer_and_relay(
     seen_version: Option<i64>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    let outcome = answer_seen(
+    answer_and_relay_with(
+        store,
+        project,
+        key,
+        answer_text,
+        by,
+        None,
+        seen_version,
+        None,
+        now,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_and_relay_with(
+    store: &SessionStore,
+    project: &str,
+    key: &str,
+    answer_text: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    seen_version: Option<i64>,
+    caller: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    let outcome = answer_both(
         &mut *store.lock_conn()?,
         project,
         key,
         answer_text,
         by,
+        reason,
         seen_version,
+        caller,
         now,
     )?;
     relay_gate_answer(store, &outcome, answer_text);
@@ -2193,6 +2451,9 @@ pub fn decisions_set_standing(
     }
     Ok(outcome)
 }
+
+mod captain;
+mod captain_text;
 
 #[cfg(test)]
 mod tests;

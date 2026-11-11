@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
+import { CAPTAIN_CHARTER } from "../../chief/model/charter";
 import { createMono, findMono, HANDED_KEY, updateMono } from "./mono";
 import {
   defaultSoul,
@@ -20,6 +21,7 @@ import {
   monoTurn,
   recordAgentContext,
   resetMonoDefaults,
+  writeAgentFile,
 } from "./monoFiles";
 
 beforeEach(() => {
@@ -264,6 +266,59 @@ it("puts what the app adds ahead of the user's message, marked as its own", () =
     turn.indexOf("what is this"),
   );
   expect(turn.endsWith("</monocode_context>\n\nwhat is this")).toBe(true);
+});
+
+it("gives an existing coordinator the charter on load, and leaves anyone else alone", async () => {
+  const { id } = createMono(["/code/app"]);
+  updateMono(id, (mono) => ({ ...mono, name: "Chief of Staff" }));
+  const soul = "# Soul\n\n## Role\nI am the coordinator.\n";
+  invoke.mockImplementation(async (command: string) =>
+    command === "mono_load" ? { ...files("old"), soul, topics: [] } : "with-charter",
+  );
+  const loaded = await loadMonoFiles(id);
+  expect(loaded.soul).toContain(CAPTAIN_CHARTER);
+  expect(loaded.soul).toContain("I am the coordinator.");
+  const saves = invoke.mock.calls.filter(([command]) => command === "mono_save");
+  expect(saves).toHaveLength(1);
+  expect(String(saves[0]?.[1] && (saves[0][1] as { text?: string }).text)).toContain(`\n## Role\n${CAPTAIN_CHARTER}\n`);
+
+  invoke.mockClear();
+  const { id: missedId } = createMono(["/code/app"]);
+  updateMono(missedId, (mono) => ({ ...mono, name: "Coordinator" }));
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_load") return { ...files("old"), soul, topics: [] };
+    throw new Error("down");
+  });
+  const missed = await loadMonoFiles(missedId);
+  expect(missed.soul).toBe(soul);
+  expect(missed.soul).not.toContain(CAPTAIN_CHARTER);
+
+  invoke.mockClear();
+  const { id: plain } = createMono();
+  invoke.mockImplementation(async (command: string) =>
+    command === "mono_load" ? { ...files("plain"), soul: "# Soul\n\nBe brief.", topics: [] } : "nope",
+  );
+  const left = await loadMonoFiles(plain);
+  expect(left.soul).toBe("# Soul\n\nBe brief.");
+  expect(invoke.mock.calls.filter(([command]) => command === "mono_save")).toHaveLength(0);
+});
+
+it("refuses a soul save that drops the charter, and keeps it when that Mono is reset", async () => {
+  const { id } = createMono();
+  const soul = `# Soul\n\n${CAPTAIN_CHARTER}\n`;
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: soul, hash: "h1" };
+    if (command === "mono_load") return { ...files("h1"), soul, topics: [] };
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", "# Soul\n\nGone.\n", "h1")).rejects.toThrow(/charter is fixed/);
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(false);
+
+  updateMono(id, (mono) => ({ ...mono, name: "Chief of Staff" }));
+  await resetMonoDefaults(id);
+  const saves = invoke.mock.calls.filter(([command]) => command === "mono_save");
+  expect(saves).toHaveLength(1);
+  expect(String((saves[0]?.[1] as { text?: string }).text)).toContain(CAPTAIN_CHARTER);
 });
 
 it("a whole soul given as instructions (the hub's team) is kept as it is; anything else goes under Standing instructions", () => {
