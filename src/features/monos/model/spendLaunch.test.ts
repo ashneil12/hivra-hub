@@ -102,7 +102,7 @@ describe("a spend limit at the launch gate", () => {
     expect(refused).toEqual({
       start: false,
       reason: "spend",
-      line: "Spend limit reached for hivra: $50 of $50 this month. Raise it, or wait for the month to reset.",
+      line: "Spend limit reached for hivra: $50 of $50 this month. Raise it, or wait for the month to reset. Estimated from Claude Code's price table.",
     });
     expect(rows).toEqual(before);
     expect(projectLoad("hivra", rows as Delegation[]).running).toBe(1);
