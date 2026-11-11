@@ -6,6 +6,7 @@ import {
   sendFxTurn,
   steerFxTurn,
   stopFxSession,
+  fxHasBackgroundWork,
 } from "./fx";
 import { refreshFxCatalog } from "./fxCatalog";
 import { registerHarness, type HarnessAdapter } from "../../core/registry";
@@ -19,6 +20,7 @@ export const fxAdapter: HarnessAdapter = {
   cancelTurn: cancelFxTurn,
   respondApproval: respondFxApproval,
   stopSession: stopFxSession,
+  hasBackgroundWork: fxHasBackgroundWork,
   forgetSession: forgetFxSession,
   bindSession: bindFxSession,
   refreshCatalog: refreshFxCatalog,

@@ -1,4 +1,5 @@
 import { mobileUsageLimit } from "../../sessions/model/usageLimit";
+import { publishedApprovals } from "./mobilePairing";
 import { invoke } from "@tauri-apps/api/core";
 import {
   gitCommit,
@@ -52,10 +53,9 @@ import {
 } from "../../sessions/data/sessionStore";
 import {
   HARNESSES,
+  DEFAULT_RUNTIME_MODE,
   HARNESS_TITLE,
   RUNTIME_MODES,
-  RUNTIME_MODE_HINT,
-  RUNTIME_MODE_LABEL,
   hasPendingApproval,
   newDefaultSession,
   sessionDisplayTitle,
@@ -72,6 +72,13 @@ import {
   resolveModel,
 } from "../../sessions/model/models";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
+import {
+  offeredRuntimeModes,
+  permissionCliForHarness,
+  phoneModeChange,
+  resolvePhoneRuntimeMode,
+  runtimeModeCopy,
+} from "../../../integrations/harness/core/permissionMatrix";
 import { mobileTranscript } from "./mobileTranscript";
 import {
   CUSTOM_OPTION_ID,
@@ -102,18 +109,38 @@ export function mobileNewSession(cwd: string, runtimeMode?: RuntimeMode): Sessio
   return newDefaultSession(cwd, runtimeMode);
 }
 
-export async function mobileCatalog(
-  live: readonly Session[],
-  runtimeMode?: RuntimeMode,
-) {
-  const roster = listMonos();
-  const paths = [
+/** The project folders the phone can reach: recents, pinned projects, and each Mono's projects. */
+function mobileReachablePaths(roster: ReturnType<typeof listMonos>): string[] {
+  return [
     ...new Set([
       ...loadRecents().map((project) => project.path),
       ...loadPinnedProjects(),
       ...roster.flatMap((mono) => mono.projects),
     ]),
   ].filter((path) => path && path !== "~");
+}
+
+/**
+ * WP-111: the ids of every private chat in the reachable projects, saved or live. The phone's inbox
+ * and crew status leave these out, so a private question or worker never reaches it.
+ */
+export async function mobilePrivateSessionIds(live: readonly Session[]): Promise<Set<string>> {
+  const ids = new Set(live.filter((session) => session.private === true).map((session) => session.id));
+  const summaries = (
+    await Promise.all(
+      mobileReachablePaths(listMonos()).map((path) => listSessionsByProject(path).catch(() => [])),
+    )
+  ).flat();
+  for (const summary of summaries) if (summary.private === true) ids.add(summary.id);
+  return ids;
+}
+
+export async function mobileCatalog(
+  live: readonly Session[],
+  runtimeMode?: RuntimeMode,
+) {
+  const roster = listMonos();
+  const paths = mobileReachablePaths(roster);
   const colors = loadTabGroupColors();
   const mascots = loadTabGroupMascots();
   const projects = paths.map((path) => {
@@ -141,10 +168,12 @@ export async function mobileCatalog(
   ).flat();
   const sessions = new Map<string, ReturnType<typeof mobileSummary>>();
   for (const summary of summaries) {
+    // WP-111: a private chat is not on the phone's list, so it cannot be opened or routed to there.
     if (
       !summary.archived &&
       !summary.sidebarHidden &&
-      !summary.orchestrationLeadId
+      !summary.orchestrationLeadId &&
+      !summary.private
     )
       sessions.set(summary.id, mobileSummary(summary));
   }
@@ -153,6 +182,7 @@ export async function mobileCatalog(
       session.inboxAsk ||
       session.orchestrationLeadId ||
       session.sidebarHidden ||
+      session.private === true ||
       roster.some((mono) => mono.sessionId === session.id)
     )
       continue;
@@ -212,11 +242,40 @@ export async function mobileCatalog(
       };
     }),
   );
+  // WP-150: the calls a paired phone may approve. A Mono's own chat is not a session card.
+  // The poll itself does not return these. A Mono's room sessions are left out: answering
+  // one goes through the Mono relay, which the phone's direct approval does not use.
+  const approvals = publishedApprovalRows(
+    live,
+    new Set(sessions.keys()),
+    roster,
+  );
   return {
     projects,
     monos,
     sessions: [...sessions.values()].sort((a, b) => b.updatedAt - a.updatedAt),
+    approvals: approvals.rows,
+    ...(approvals.truncated ? { approvalsTruncated: true as const } : {}),
   };
+}
+
+/**
+ * WP-150: the calls the phone may show and answer, filtered the same way everywhere:
+ * a listed chat or a Mono's own one-to-one chat, never a room session. The catalog
+ * publishes these; `inbox.list` shows these, so it cannot offer a line the phone
+ * could never answer.
+ */
+export function publishedApprovalRows(
+  live: readonly Session[],
+  listedSessionIds: ReadonlySet<string>,
+  roster: readonly { sessionId?: string | null; roomSessions?: Record<string, string> }[],
+) {
+  return publishedApprovals(
+    live,
+    listedSessionIds,
+    new Set(roster.flatMap((mono) => (mono.sessionId ? [mono.sessionId] : []))),
+    new Set(roster.flatMap((mono) => Object.values(mono.roomSessions ?? {}))),
+  );
 }
 /** The worktree a session works in, so the phone shows its changes and files
  *  rather than the checkout's; none once the worktree is gone. */
@@ -366,11 +425,11 @@ export async function mobileModels(
         settings: entry.settings ?? [],
       })),
     ),
-    runtimeModes: RUNTIME_MODES.map((id) => ({
-      id,
-      label: RUNTIME_MODE_LABEL[id],
-      hint: RUNTIME_MODE_HINT[id],
-    })),
+    runtimeModes: runtimeModesFor(current.harness),
+    // Every mode on every harness's CLI, named as that CLI names it, with whether the picker offers it (WP-175).
+    runtimeModesByHarness: Object.fromEntries(
+      HARNESSES.map((harness) => [harness, allRuntimeModesFor(harness)]),
+    ),
     ...mobileProviderAccounts(current.cwd),
     current: {
       harness: current.harness,
@@ -380,6 +439,23 @@ export async function mobileModels(
       providerAccountId: mobileSessionAccountId(current),
     },
   };
+}
+
+/** Every Hivra mode on a harness's CLI, with that CLI's names, and whether the picker offers it (WP-175). */
+function allRuntimeModesFor(harness: HarnessId) {
+  const cli = permissionCliForHarness(harness);
+  const offered = offeredRuntimeModes(cli);
+  return RUNTIME_MODES.map((id) => {
+    const copy = runtimeModeCopy(id, cli);
+    return { id, label: copy.label, hint: copy.hint, offered: offered.includes(id) };
+  });
+}
+
+/** The modes a picker offers on a harness's CLI, with that CLI's names and hints (WP-175). */
+function runtimeModesFor(harness: HarnessId) {
+  return allRuntimeModesFor(harness)
+    .filter((mode) => mode.offered)
+    .map(({ id, label, hint }) => ({ id, label, hint }));
 }
 
 /** A model sheet choice from the phone, keeping only what is well formed. */
@@ -447,6 +523,62 @@ export function mobileQuestionReply(
   return rebuilt.kind === "answered" ? rebuilt : undefined;
 }
 
+/**
+ * A phone's model sheet change for an open chat (WP-175). `mode` is the mode the
+ * chat ends on when the sheet picked one; `error` is the message the phone gets
+ * when its pick was looser than the chat allows. Leaving fx starts from Supervised,
+ * as onModelChange resets the chat, so fx's Full access never carries across.
+ */
+export function mobileConfigureMode(
+  chat: { harness: HarnessId; runtimeMode: RuntimeMode },
+  openMode: RuntimeMode | undefined,
+  choice: { harness?: HarnessId; runtimeMode?: RuntimeMode },
+): { targetHarness: HarnessId; mode?: RuntimeMode; error?: string } {
+  const targetHarness = choice.harness ?? chat.harness;
+  if (!choice.runtimeMode) return { targetHarness };
+  const leavingFx = chat.harness === "fx" && targetHarness !== "fx";
+  const cli = permissionCliForHarness(targetHarness);
+  const change = phoneModeChange(cli, {
+    live: leavingFx ? DEFAULT_RUNTIME_MODE : openMode,
+    saved: leavingFx ? DEFAULT_RUNTIME_MODE : chat.runtimeMode,
+    payload: choice.runtimeMode,
+  });
+  if (!change.accepted)
+    return {
+      targetHarness,
+      error: `The phone can only tighten this chat's mode. It stays on ${runtimeModeCopy(change.mode, cli).label}.`,
+    };
+  return { targetHarness, mode: change.mode };
+}
+
+/**
+ * The phone's model sheet for an open chat, as App's session.configure runs it (WP-175). The mode is checked
+ * first, so a refused pick changes nothing: no model switch, no settings, no mode.
+ */
+export function applyMobileConfigure(
+  session: Session,
+  params: Record<string, unknown>,
+  deps: {
+    openMode: (sessionId: string) => RuntimeMode | undefined;
+    onModelChange: (sessionId: string, harness: HarnessId, model: string) => void;
+    onModelSettingsChange: (sessionId: string, settings: Record<string, string>) => void;
+    onRuntimeModeChange: (sessionId: string, mode: RuntimeMode) => void;
+  },
+): { sessionId: string } {
+  const choice = mobileChoice(params);
+  const openNow = deps.openMode(session.id);
+  const plan = mobileConfigureMode(session, openNow, choice);
+  if (plan.error) throw new Error(plan.error);
+  if (choice.harness && choice.model && (choice.harness !== session.harness || choice.model !== session.model))
+    deps.onModelChange(session.id, choice.harness, choice.model);
+  if (choice.modelSettings) {
+    const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
+    deps.onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
+  }
+  if (plan.mode && plan.mode !== (openNow ?? session.runtimeMode)) deps.onRuntimeModeChange(session.id, plan.mode);
+  return { sessionId: session.id };
+}
+
 /** A new session from the phone, set to the model sheet's choice if it made one. */
 export function applyMobileChoice(
   session: Session,
@@ -465,7 +597,8 @@ export function applyMobileChoice(
       model,
       choice.modelSettings ?? session.modelSettings,
     ),
-    runtimeMode: choice.runtimeMode ?? session.runtimeMode,
+    // WP-175: the stricter of the default the chat starts from and the phone's pick.
+    runtimeMode: resolvePhoneRuntimeMode(permissionCliForHarness(model.harness), { saved: session.runtimeMode, payload: choice.runtimeMode }),
   };
 }
 

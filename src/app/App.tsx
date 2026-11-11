@@ -26,13 +26,17 @@ import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
+import { runMobilePairing } from "../features/mobile/model/mobilePairing";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
 import { useMobileWorkspace } from "../features/mobile/hooks/useMobileWorkspace";
 import { hasMobileAttachments, mobileAttachments } from "../features/mobile/model/mobileAttachments";
 import {
   applyMobileChoice,
   mobileWorkspaceChoice,
-  mobileChoice,
+  applyMobileConfigure,
+  mobileCatalog,
+  mobilePrivateSessionIds,
+  publishedApprovalRows,
   mobileNewSession,
   mobileProjectId,
   mobileQuestionReply,
@@ -810,6 +814,7 @@ import {
   type Session,
   type UsageLimit,
   type WorkspaceMode,
+  DEFAULT_RUNTIME_MODE,
 } from "../features/sessions/model/session";
 // WP-113: attention for the optional chat list inbox. Off passes no sessions.
 import { useChatListInbox } from "../features/settings/model/displayPrefs";
@@ -1214,6 +1219,7 @@ import {
   workspaceSnapshotKey,
 } from "../features/workspace/model/workspaceSnapshot";
 import type { InstalledUpdate } from "./model/updateNotice";
+
 import {
   bindResumedSessions,
   closeBusyWindow,
@@ -7983,6 +7989,8 @@ function Workspace({
       if (!current) return;
       if (isPreparingHandoff(current)) return;
       const resolved = resolveModel(harness, model);
+      // Leaving fx resets the mode: fx's Full access is its only offer and must not carry to another CLI (WP-175).
+      const leavesFx = current.harness === "fx" && resolved.harness !== "fx";
       saveRecentModelChoice(resolved.harness, resolved.id);
       if (current.modelSettings) {
         saveLastModelSettings(current.modelSettings, "fill");
@@ -8019,7 +8027,7 @@ function Workspace({
                       ? resumeMonoUsageLimit(session)
                       : resumeUsageLimitedSession(session)
                     : session;
-                  return next;
+                  return leavesFx ? { ...next, runtimeMode: DEFAULT_RUNTIME_MODE } : next;
                 }),
               );
             });
@@ -10854,6 +10862,10 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
+  const mobileApprovalRef = useRef<
+    (sessionId: string, requestId: number, decision: ApprovalDecision) => boolean
+  >(() => false);
   // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
   const steering = useSteering(sessions, {
     chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
@@ -10866,6 +10878,31 @@ function Workspace({
     sessions,
     defaultRuntimeMode: sessionDefaults?.runtimeMode,
     command: async (method, params, commandId) => {
+      // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
+      if (
+        method === "inbox.list" ||
+        method === "crew.status" ||
+        method === "session.approve" ||
+        method === "session.deny"
+      ) {
+        // WP-150: the inbox and an approve or deny match only the calls the catalog
+        // publishes, so a room session or unlisted chat is never offered or answered.
+        const published = await mobileCatalog(sessionsRef.current, sessionDefaults?.runtimeMode);
+        // Read after the await: the calls and chats are the window's current ones, not the ones
+        // the catalog was built from. A call decided meanwhile is no longer offered or answered.
+        const listed = new Set(published.sessions.map((session) => session.id));
+        const roster = listMonos();
+        return runMobilePairing(method, params, {
+          sessions: sessionsRef.current,
+          now: Date.now(),
+          approve: (sessionId, requestId, decision) =>
+            mobileApprovalRef.current(sessionId, requestId, decision),
+          remoteBlocked: (session) =>
+            !!remoteProjectFor(session.cwd) && !remoteSessionActions(session.id),
+          privateIds: await mobilePrivateSessionIds(sessionsRef.current),
+          approvals: (live) => publishedApprovalRows(live, listed, roster),
+        });
+      }
       const text = typeof params.text === "string" ? params.text.trim() : "";
       if (
         (method === "session.start" || method === "conversation.send") &&
@@ -10944,17 +10981,13 @@ function Workspace({
         return { sessionId: session.id };
       }
       if (method === "session.configure") {
-        // The phone's model sheet, through the same paths as the composer's
-        // pickers, so a provider switch hands off on the next send as here.
-        const choice = mobileChoice(params);
-        if (choice.harness && choice.model && (choice.harness !== session.harness || choice.model !== session.model))
-          onModelChange(session.id, choice.harness, choice.model);
-        if (choice.modelSettings) {
-          const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
-          onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
-        }
-        if (choice.runtimeMode) onRuntimeModeChange(session.id, choice.runtimeMode);
-        return { sessionId: session.id };
+        // The phone's model sheet, through the same paths as the composer's pickers (mobileWorkspace.applyMobileConfigure).
+        return applyMobileConfigure(session, params, {
+          openMode: (id) => sessionsRef.current.find((current) => current.id === id)?.runtimeMode,
+          onModelChange,
+          onModelSettingsChange,
+          onRuntimeModeChange,
+        });
       }
       if (method === "session.answerQuestion" || method === "session.keepQuestionOpen") {
         // As the composer's question card; only the question still waiting,
@@ -12938,10 +12971,12 @@ function Workspace({
     return () => window.removeEventListener("keydown", onEscape);
   }, [onStopFromUser]);
 
+  // Returns false when the decision was not sent (the call is gone), so the phone is
+  // told the truth and the call stays answerable.
   const onApproval = useCallback(
-    (sessionId: string, requestId: number, decision: ApprovalDecision) => {
+    (sessionId: string, requestId: number, decision: ApprovalDecision): boolean => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!session || session.worktreeRemoved) return;
+      if (!session || session.worktreeRemoved) return false;
       // An approval a habit's hidden run asked for, put to the user in the
       // Mono's chat: answer the run, and settle the question in the chat.
       if (isMonoSession(sessionId)) {
@@ -12969,17 +13004,20 @@ function Workspace({
                 : "allow"
               : "cancelled",
           );
-          return;
+          // No relay waiting: the block was settled as cancelled, the tool did not run.
+          return !!(relay && run);
         }
       }
       if (remoteProjectFor(session.cwd)) {
-        remoteSessionActions(sessionId)?.approve(requestId, decision);
-        return;
+        const actions = remoteSessionActions(sessionId);
+        if (!actions) return false;
+        return actions.approve(requestId, decision);
       }
-      respondHarnessApproval(session.harness, sessionId, requestId, decision);
+      return respondHarnessApproval(session.harness, sessionId, requestId, decision);
     },
     [],
   );
+  mobileApprovalRef.current = onApproval;
 
   const onQuestionReply = useCallback(
     (sessionId: string, requestId: number, reply: UserQuestionReply) => {

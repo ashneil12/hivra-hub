@@ -570,6 +570,7 @@ pub fn run() {
             mobile_access::mobile_cancel_invite,
             mobile_access::mobile_revoke,
             mobile_access::mobile_publish,
+            mobile_access::mobile_admits,
             mobile_access::mobile_reply,
             mobile_access::mobile_push,
             remote::remote_machines,
@@ -654,6 +655,9 @@ pub fn run() {
             // Hivra WP-12: delivery modes and the one merge path.
             delivery::delivery_settings_get,
             delivery::delivery_settings_set,
+            // WP-158: the protected-path floor. Off until the project turns it on.
+            delivery::delivery_protect_paths_set,
+            delivery::delivery_protected_paths_add,
             delivery::delivery_list,
             delivery::delivery_deliver,
             delivery::delivery_fix_ask,

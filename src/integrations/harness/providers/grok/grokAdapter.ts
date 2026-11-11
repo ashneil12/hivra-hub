@@ -8,6 +8,7 @@ import {
   sendGrokTurn,
   steerGrokTurn,
   stopGrokSession,
+  grokHasBackgroundWork,
 } from "./grok";
 import { refreshGrokCatalog } from "./grokCatalog";
 import {
@@ -34,6 +35,7 @@ export const grokAdapter: HarnessAdapter = {
   respondApproval: respondGrokApproval,
   respondQuestion: respondGrokQuestion,
   stopSession: stopGrokSession,
+  hasBackgroundWork: grokHasBackgroundWork,
   forgetSession: forgetGrokSession,
   bindSession: bindGrokSession,
   refreshCatalog: refreshGrokCatalog,
