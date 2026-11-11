@@ -114,6 +114,7 @@ import {
   monoPendingTranscriptBlocks,
   visibleMonoCompletionMessages,
 } from "../../monos/model/monoMessaging";
+import { queueWaitReasons } from "../model/queueWaitReason";
 import { GoalRow } from "./GoalRow";
 import { MessageQueue } from "./MessageQueue";
 import { useMonoTranscript } from "../../monos/hooks/useMonoTranscript";
@@ -463,7 +464,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const messageDeliveries = useMemo(
     () => monoMessageDeliveries(session),
-    [session.queuedMessages, session.queueStatus],
+    // WP-245: the wait reason reads the chat's state too (busy, a limit, an approval or question waiting).
+    [session.queuedMessages, session.queueStatus, session.busy, session.turnReady, session.usageLimit, session.pendingQuestion, session.blocks],
+  );
+  const waitReasons = useMemo(
+    () => queueWaitReasons(session),
+    [session.queuedMessages, session.queueStatus, session.busy, session.turnReady, session.usageLimit, session.pendingQuestion, session.blocks],
   );
   const recallLastTurnRef = useRef<(() => void) | null>(null);
   const remote = remoteSession;
@@ -903,6 +909,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}
+      queueWaitReasons={waitReasons}
       onDeleteQueuedMessage={(messageId) =>
         onDeleteQueuedMessage(session.id, messageId)
       }
@@ -1396,6 +1403,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     messages={visibleMonoCompletionMessages(session)}
                     status={session.queueStatus}
                     sendingId={session.sendingQueuedMessageId}
+                    waitReasons={waitReasons}
                     onDelete={(messageId) =>
                       onDeleteQueuedMessage(session.id, messageId)
                     }

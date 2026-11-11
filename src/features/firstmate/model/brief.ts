@@ -8,6 +8,7 @@
 // The fixed sentences are vendored verbatim from firstmate's bin/fm-brief.sh (https://github.com/kunchenguid/firstmate,
 // Copyright (c) 2026 Kun Chen, MIT License; see vendor/firstmate-contract.md). A binding sentence after each block is the
 // rewrite: Hivra has no status file and no inbox directory, so the worker uses task_cannot and this chat.
+import { WORKER_ASK_TEST } from "./askTest";
 import { briefSkillsSection, type BriefTask } from "./briefSkills";
 import { quoteOriginalRequest } from "./originalRequest";
 
@@ -147,6 +148,8 @@ function statusProtocol(isolation: BriefIsolation): string {
     "- Your first mate watches your work; you don't need to report progress. Speak up only when something changes what happens next.",
     question,
   ];
+  // WP-247: OpenBot's ask test, the worker's version (askTest.ts). A first mate reads the contract's own copy.
+  if (isolation.kind !== "first-mate") lines.push(`- ${WORKER_ASK_TEST}`);
   if (isolation.kind !== "first-mate") {
     // Verbatim from bin/fm-brief.sh. The binding after it is the rewrite: there is no status file.
     lines.push(

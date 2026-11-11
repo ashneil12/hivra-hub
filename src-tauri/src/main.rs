@@ -61,6 +61,10 @@ fn main() {
         Some("pre-push-guard") => {
             std::process::exit(monocode_lib::commit_guard::pre_push_main(&rest()))
         }
+        // WP-248: the pre-commit hook of a crew's repository runs the same check on what a commit takes.
+        Some("pre-commit-guard") => {
+            std::process::exit(monocode_lib::commit_guard::pre_commit_main(&rest()))
+        }
         // WP-75: put a staged backup back once this copy has released its data folder, then open the app.
         Some("backup-restore") => {
             std::process::exit(monocode_lib::backups::restore_helper_main(&rest()))

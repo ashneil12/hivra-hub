@@ -24,6 +24,26 @@ export function noteOutcome(doc: MemoryDoc, outcome: CuratorOutcome, at: number)
   return bump({ ...doc, health: next });
 }
 
+/** WP-242: a lesson or skill proposal dropped because skill learning is Off, counted for the health card. */
+export function noteSkillDropped(doc: MemoryDoc): MemoryDoc {
+  const health = doc.health ?? emptyHealth();
+  return bump({ ...doc, health: { ...health, dropped: { ...health.dropped }, skillsDropped: (health.skillsDropped ?? 0) + 1 } });
+}
+
+/**
+ * WP-240: one batch counted: every message it read is a looked-at turn, and each change it proposed is stored or
+ * dropped like a turn's.
+ */
+export function noteBatch(doc: MemoryDoc, read: number, outcomes: readonly CuratorOutcome[], at: number): MemoryDoc {
+  const health = doc.health ?? emptyHealth();
+  const next: MemoryHealth = { ...health, turns: health.turns + read, dropped: { ...health.dropped }, lastRunAt: at };
+  for (const outcome of outcomes) {
+    if (outcome.status === "stored") next.stored += 1;
+    else if (outcome.status === "dropped") next.dropped[outcome.reason] += 1;
+  }
+  return bump({ ...doc, health: next });
+}
+
 /**
  * WP-103: one turn left for later, counted once. It is not a looked-at turn: the same turn is tried again and, when it
  * goes through, noteOutcome counts it then. So this moves `deferred` only.

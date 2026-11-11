@@ -16,6 +16,8 @@
 // - running copies: each data folder's running.json whose process is still alive (pid and start time);
 // - slots: ~/.monocode-hub-dev/slots.json, and dev data folders it doesn't know;
 // - worktrees: `git worktree list` of this repo, plus any MonoCode Hub checkout under ~/Worktrees;
+// - agent approvals (WP-248): each known project whose own ignore file does not ignore .claude/settings.local.json, or
+//   that tracks one (a warning; it never changes the exit code);
 // - the ship archive: ~/Archive/monocode/ships, where old ship folders go. Nothing ever deletes them, so it only grows;
 //   the doctor says how many and how big (it never prunes).
 //
@@ -159,6 +161,68 @@ export function findWorktrees({ repo = ROOT, worktreeRoots = [] } = {}) {
   return [...seen.values()];
 }
 
+// ---- agent approvals (WP-248) -----------------------------------------------------------------------------------------
+
+/** Where Claude Code saves "don't ask again" commands, with any password typed in them. */
+export const APPROVALS_FILE = ".claude/settings.local.json";
+
+function gitStatus(args, cwd) {
+  return spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).status;
+}
+
+/**
+ * The projects to look at: each repo's main checkout (worktrees share its ignore file), and every git repository
+ * directly under ~/Projects. Ash's other projects are not in a list the doctor can read without the app's database.
+ */
+export function knownProjects({ home, worktrees = [] } = {}) {
+  const seen = new Map();
+  const add = (dir) => {
+    try {
+      const real = fs.realpathSync(dir);
+      if (!seen.has(real)) seen.set(real, real);
+    } catch {
+      /* gone */
+    }
+  };
+  for (const tree of worktrees) if (tree.main || tree.other) add(tree.path);
+  for (const dir of list(path.join(home, "Projects"))) if (fs.existsSync(path.join(dir, ".git"))) add(dir);
+  return [...seen.values()];
+}
+
+/**
+ * WP-248: whether a project's own ignore files (not the machine's global excludes, which Claude Code fills in on this
+ * Mac only, and which a fresh Mac, a temporary HOME or a Cloud box does not have) ignore the approvals file, and
+ * whether the project already tracks one (a past leak). Only reads: `git check-ignore` and `git ls-files`.
+ */
+export function approvalsCheck(dir) {
+  const ignoredCode = gitStatus(["-c", `core.excludesFile=${os.devNull}`, "check-ignore", "-q", "--no-index", APPROVALS_FILE], dir);
+  const tracked = git(["ls-files", "-z", "--", `:(glob,icase)**/${APPROVALS_FILE}`], dir);
+  return {
+    path: dir,
+    ignored: ignoredCode === 0 ? true : ignoredCode === 1 ? false : null,
+    tracked: tracked.length > 0,
+  };
+}
+
+/** The projects that need a look: not ignored (a warning), or tracked (a past leak). */
+export function approvalsWarnings(projects, check = approvalsCheck) {
+  return projects.map((dir) => check(dir)).filter((row) => row.tracked || row.ignored !== true);
+}
+
+/** The warnings as text. They never change the doctor's exit code. */
+export function renderApprovals(rows, t = (file) => file) {
+  const lines = [`Agent approvals (${APPROVALS_FILE})`];
+  if (!rows.length) lines.push("  every known project's ignore file covers it");
+  for (const row of rows) {
+    if (row.tracked)
+      lines.push(`  warning  ${t(row.path)}  tracks it: untrack it (git rm --cached), then change any password it held`);
+    else if (row.ignored === false)
+      lines.push(`  warning  ${t(row.path)}  its .gitignore does not ignore it: add the line ${APPROVALS_FILE}`);
+    else lines.push(`  warning  ${t(row.path)}  could not ask git whether it is ignored`);
+  }
+  return lines.join("\n");
+}
+
 function describeBundle(app, location) {
   const identifier = readIdentifier(app);
   const stamp = readStamp(app);
@@ -260,7 +324,10 @@ export async function collect({
   const archived = list(archive).filter((dir) => !path.basename(dir).startsWith(".") && fs.statSync(dir).isDirectory());
   const shipArchive = { path: archive, count: archived.length };
 
-  const report = { home, registry: registryPath(home), bundles, dataFolders, running, slots, worktrees: worktreeRows, shipArchive };
+  // WP-248: a project whose own ignore file lets the approvals file through, or that already tracks one.
+  const approvals = approvalsWarnings(knownProjects({ home, worktrees }));
+
+  const report = { home, registry: registryPath(home), bundles, dataFolders, running, slots, worktrees: worktreeRows, shipArchive, approvals };
   if (sizes) {
     shipArchive.size = archived.length ? await sizeOf(archive) : 0;
     const jobs = [
@@ -320,6 +387,7 @@ export function render(report) {
       : "empty";
     lines.push("", `Ship archive  ${t(where)}  ${what}`);
   }
+  if (report.approvals) lines.push("", renderApprovals(report.approvals, t));
   if (report.sharedBuildCache)
     lines.push("", `Shared Rust build cache  ${t(report.sharedBuildCache.path)}  ${report.sharedBuildCache.size == null ? "not created yet" : formatSize(report.sharedBuildCache.size)}`);
   return lines.join("\n");

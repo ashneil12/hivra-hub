@@ -260,6 +260,12 @@ fn apply_with(source: &Path, dest: &Path, list_bytes: usize, byte_cap: u64) -> I
     let mut unplaced = Unplaced::default();
     let mut budget = byte_cap;
     for relative in &chosen.paths {
+        // WP-248: an agent's settings (saved approvals, which can hold passwords typed in commands, hooks, logins)
+        // never travel into a new worktree, whatever the file names.
+        if crate::commit_guard::is_agent_settings_file(relative) {
+            unplaced.agent.push(relative.clone());
+            continue;
+        }
         match place(&top, dest, relative, &mut budget) {
             Place::Copied | Place::Already => copied += 1,
             Place::Left => unplaced.left.push(relative.clone()),
@@ -279,6 +285,8 @@ struct Unplaced {
     failed: Vec<String>,
     left: Vec<String>,
     too_big: Vec<String>,
+    /// WP-248: agent settings files the manifest names, which are never copied.
+    agent: Vec<String>,
 }
 
 fn copied_note(copied: usize) -> Option<String> {
@@ -326,8 +334,19 @@ fn warning_parts(unplaced: &Unplaced, stop: Stop, byte_cap: u64, name: bool) -> 
         failed,
         left,
         too_big,
+        agent,
     } = unplaced;
     let mut parts = Vec::new();
+    if !agent.is_empty() {
+        parts.push(match (name, agent.len()) {
+            (true, _) => format!(
+                "Did not copy {}: an agent's settings stay out of new worktrees.",
+                name_files(agent)
+            ),
+            (false, 1) => "Did not copy 1 agent settings file.".to_string(),
+            (false, n) => format!("Did not copy {n} agent settings files."),
+        });
+    }
     if !failed.is_empty() {
         parts.push(if name {
             format!("Could not copy {} into this worktree.", name_files(failed))
@@ -1302,10 +1321,106 @@ mod tests {
             failed: long.clone(),
             left: long.clone(),
             too_big: long,
+            agent: Vec::new(),
         });
         assert!(text.chars().count() <= WARNING_CHARS, "{text}");
         assert!(text.starts_with("Could not copy 5 listed files into this worktree."));
         no_secret(&text);
+    }
+
+    /// WP-248: a manifest that names an agent's settings (saved approvals, hooks, a login) never copies them into a
+    /// new worktree, even when git ignores them. The project's own files still come across.
+    #[test]
+    fn agent_settings_files_are_never_copied() {
+        let tmp = repo_with_ignore(
+            "agent",
+            ".claude/
+.codex/
+*.env
+",
+        );
+        let root = tmp.0.join("repo");
+        for rel in [
+            ".claude/settings.local.json",
+            ".claude/settings.json",
+            ".claude/projects/app/session.jsonl",
+            ".codex/config.toml",
+            ".codex/auth.json",
+        ] {
+            let path = root.join(rel);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, SECRET).unwrap();
+        }
+        std::fs::write(
+            root.join("app.env"),
+            "PORT=1
+",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join(".worktreeinclude"),
+            ".claude/
+.codex/
+*.env
+",
+        )
+        .unwrap();
+        let dest = tmp.0.join("dest");
+        std::fs::create_dir(&dest).unwrap();
+        let outcome = apply(&root, &dest);
+        assert!(
+            dest.join("app.env").is_file(),
+            "the project's own file is copied"
+        );
+        for rel in [
+            ".claude/settings.local.json",
+            ".claude/settings.json",
+            ".claude/projects/app/session.jsonl",
+            ".codex/config.toml",
+            ".codex/auth.json",
+        ] {
+            assert!(!dest.join(rel).exists(), "{rel} was copied");
+        }
+        assert_eq!(
+            outcome.note.as_deref(),
+            Some("1 file named in .worktreeinclude is in this worktree.")
+        );
+        let warning = outcome.warning.unwrap_or_default();
+        assert!(warning.starts_with("Did not copy "), "{warning}");
+        assert!(
+            warning.contains("an agent's settings stay out of new worktrees"),
+            "{warning}"
+        );
+        no_secret(&warning);
+    }
+
+    #[test]
+    fn the_agent_settings_rule_names_only_agent_files() {
+        use crate::commit_guard::is_agent_settings_file as agent;
+        for path in [
+            ".claude/settings.local.json",
+            "sub/.claude/settings.local.json",
+            ".claude/settings.json",
+            ".Claude/Settings.Local.json",
+            ".cursor/mcp.json",
+            ".codex/config.toml",
+            ".claude/.credentials.json",
+            ".claude.json",
+            ".claude/projects/x/y.jsonl",
+        ] {
+            assert!(agent(path), "{path} must be denied");
+        }
+        for path in [
+            ".env",
+            ".env.local",
+            "config/settings.local.json",
+            "settings.json",
+            "src/auth.json",
+            "node_modules/pkg/config.toml",
+            ".mcp.json",
+        ] {
+            assert!(!agent(path), "{path} must be copied");
+        }
     }
 
     #[test]

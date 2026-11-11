@@ -8,6 +8,7 @@ import {
   dequeueQueuedMessage,
   withQueued,
 } from "../../sessions/model/messageQueue";
+import { queueWaitReasons } from "../../sessions/model/queueWaitReason";
 import type {
   Attachment,
   Block,
@@ -19,6 +20,8 @@ type UserCards = Parameters<typeof appendUser>[3];
 export type MessageDelivery = {
   status: "pending" | "paused" | "failed";
   error?: string;
+  /** WP-245: why it hasn't gone in yet, in a few words ("Behind 2 messages", "Waiting for your approval"). */
+  waitReason?: string;
 };
 
 /** Show the message now; the outbox only controls its delivery (Ash's own ahead of the app's, `withQueued`). */
@@ -123,6 +126,7 @@ export function acknowledgeMonoMessage(
 export function monoMessageDeliveries(
   session: Session,
 ): ReadonlyMap<string, MessageDelivery> {
+  const reasons = queueWaitReasons(session);
   return new Map(
     (session.queuedMessages ?? [])
       .filter((message) => !message.monoSessionCompletion && !message.monoNote)
@@ -135,6 +139,10 @@ export function monoMessageDeliveries(
               ? "paused"
               : "pending",
           ...(message.error ? { error: message.error } : {}),
+          // A paused or failed bubble already says so with its own control; only a pending one needs the reason.
+          ...(!message.error && session.queueStatus !== "paused" && reasons.get(message.id)
+            ? { waitReason: reasons.get(message.id) }
+            : {}),
         },
       ]),
   );

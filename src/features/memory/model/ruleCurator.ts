@@ -240,6 +240,19 @@ export function ruleProposal(turn: { user?: string; assistant?: string }): RuleP
 }
 
 /**
+ * WP-240: only the explicit signal ("remember that …", "remember: …", "from now on …", "always …", "never …") in the
+ * person's own words, or none. This is the path that saves at once, as confirmed; everything else waits for the batch.
+ */
+export function explicitProposal(user: string): RuleProposal {
+  if (typeof user !== "string" || !user.trim()) return { kind: "none" };
+  for (const sentence of ownSentences(user)) {
+    const fact = explicitFact(sentence);
+    if (fact) return { kind: "add", text: fact, evidence: normalizeFact(sentence) };
+  }
+  return { kind: "none" };
+}
+
+/**
  * The rules tier's answer to a turn, in the same words the curator's own reply uses, so settleTurn keeps the checks
  * every proposal passes. It never asks anything and never leaves a turn deferred: the rule already decided.
  */

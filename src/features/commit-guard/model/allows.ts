@@ -7,6 +7,9 @@ export interface CommitGuardAllow {
   hash: string;
 }
 
+/** WP-248: the `hash` of an allow that lets one repository keep its tracked approvals file (commit_guard.rs `TRACKED_APPROVALS`). */
+export const TRACKED_APPROVALS = "tracked-approvals-file";
+
 /** Allows the refusal with this id. Called only from a direct click on "Allow this line"; the app keeps what the id names. */
 export function allowCommitGuardLine(id: string): Promise<void> {
   return invoke<void>("commit_guard_allow", { id });

@@ -291,6 +291,8 @@ type Props = {
   lastTurnRecall?: LastTurnRecall | null;
   queuedMessages?: QueuedMessage[];
   queueStatus?: MessageQueueStatus;
+  /** WP-245: why each queued message waits (queueWaitReason.ts). */
+  queueWaitReasons?: ReadonlyMap<string, string>;
   usageLimit?: UsageLimit;
   hotkeys?: boolean;
   onFocus: () => void;
@@ -430,6 +432,7 @@ export function Composer({
   lastTurnRecall = null,
   queuedMessages = [],
   queueStatus,
+  queueWaitReasons,
   usageLimit,
   onFocus,
   onCwdChange,
@@ -2182,6 +2185,7 @@ export function Composer({
       <MessageQueue
         messages={queuedMessages}
         status={queueStatus}
+        waitReasons={queueWaitReasons}
         onDelete={onDeleteQueuedMessage}
         onEdit={onEditQueuedMessage}
         onEditingChange={onQueuedMessageEditingChange}

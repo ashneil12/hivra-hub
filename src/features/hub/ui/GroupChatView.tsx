@@ -164,11 +164,13 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
   const working = new Set(roomWorking(chat.id).map((w) => w.monoId));
   // Turns writing now: their words show as live messages at the end, and become the message in the same place.
   const drafts = conv ? roomDrafts(chat.id, conv.id) : [];
-  const shown: { message: ChatMessage; live: boolean }[] = [
+  // WP-245: an answer held for a gathered request shows where it will land, saying it waits for the others.
+  const shown: { message: ChatMessage; live: boolean; held?: boolean }[] = [
     ...(conv?.messages ?? []).map((message) => ({ message, live: false })),
     ...drafts.map((d) => ({
       message: { id: d.id, from: d.monoId, kind: "mono" as const, text: d.text, quiet: d.quiet, pick: d.pick, ...(d.replyTo ? { replyTo: d.replyTo } : {}) },
-      live: true,
+      live: !d.held,
+      ...(d.held ? { held: true } : {}),
     })),
   ];
   // The room talks on its own: new messages (and words as they are written) keep the view at the bottom unless Ash
@@ -430,7 +432,7 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
           >
             <div className="flex w-full flex-col gap-4 px-6 py-6 text-[13px] leading-5 xl:px-8">
               {conv && shown.length ? (
-                shown.map(({ message: msg, live }, index) =>
+                shown.map(({ message: msg, live, held }, index) =>
                   msg.from === "ash" || msg.kind === "notice" || msg.kind === "system" ? (
                     <RoomMessage key={msg.id} chatId={chat.id} message={msg} previous={shown[index - 1]?.message} messages={conv.messages} nameOf={nameOf} />
                   ) : (
@@ -440,11 +442,18 @@ export function GroupChatView({ chatId, projectId }: { chatId: string; projectId
                       data-hub-msg-ref={msg.refId}
                       data-hub-msg-quiet={msg.quiet || undefined}
                       data-hub-msg-draft={live || undefined}
+                      data-hub-msg-held={held || undefined}
+                      data-hub-msg-gather={msg.gather}
                       aria-busy={live || undefined}
-                      className={`hub-fade-in group -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
+                      className={`hub-fade-in group -mx-2 rounded-lg px-2 py-1 transition-colors duration-700 ${msg.gather ? "border-l-2 border-content/15" : ""} ${held ? "opacity-70" : ""} ${msg.refId && flash === msg.refId ? "bg-content/10" : ""}`}
                     >
                       <RoomMessage chatId={chat.id} message={msg} previous={shown[index - 1]?.message} messages={conv.messages} nameOf={nameOf} live={live}>
                         <RoomText text={msg.text} className={`max-w-[75ch] ${msg.quiet ? "text-content/85" : "text-content"}`} />
+                        {held ? (
+                          <div role="status" className="pt-0.5 text-[11px] text-content/45" data-hub-msg-held-note>
+                            Waiting for the others to answer
+                          </div>
+                        ) : null}
                       </RoomMessage>
                       {(() => {
                         const w = msg.refId ? findWaiting(msg.refId) : undefined;

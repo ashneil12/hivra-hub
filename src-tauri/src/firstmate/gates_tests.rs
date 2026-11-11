@@ -135,7 +135,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             plan,
             brief: "Add a b export to app.ts.",
             done_when: "app.ts exports b",
-            report: "## Report\nSummary: added b",
+            report: "## Report\nSummary: it was harder than it looked. I added b to app.ts.",
             now: 1,
             gate_owns_checks: false,
             facts: None,
@@ -439,7 +439,11 @@ fn the_verdict_check_met_not_met_and_unsure() {
         "the definition of done"
     );
     assert!(prompt.contains("+export const b = 2;"), "the diff");
-    assert!(prompt.contains("added b"), "the report");
+    assert!(prompt.contains("[done] I added b to app.ts."), "the claims");
+    assert!(
+        !prompt.contains("harder than it looked"),
+        "never the report's own story"
+    );
     assert!(
         prompt.contains("Project checks: passed"),
         "what the app ran"

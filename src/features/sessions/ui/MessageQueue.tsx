@@ -25,6 +25,7 @@ export function MessageQueue({
   onResume,
   variant = "queue",
   sendingId,
+  waitReasons,
 }: {
   messages: QueuedMessage[];
   status?: MessageQueueStatus;
@@ -37,6 +38,8 @@ export function MessageQueue({
   onResume?: () => void;
   variant?: "queue" | "messages";
   sendingId?: string;
+  /** WP-245: why each message waits, by its id (queueWaitReason.ts). */
+  waitReasons?: ReadonlyMap<string, string>;
 }) {
   const [editingId, setEditingId] = useState<string>();
   const [editDraft, setEditDraft] = useState("");
@@ -184,6 +187,10 @@ export function MessageQueue({
                     {message.error ? (
                       <p role="alert" className="text-red-400">
                         {message.error}
+                      </p>
+                    ) : !sending && waitReasons?.get(message.id) ? (
+                      <p className="truncate text-[11px] text-content/60" data-queue-wait>
+                        {waitReasons.get(message.id)}
                       </p>
                     ) : null}
                   </div>

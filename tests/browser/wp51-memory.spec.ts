@@ -7,7 +7,7 @@ test("memory can be searched, edited, deleted, and a proposal accepted or reject
   await page.getByRole("button", { name: "Try again" }).click();
 
   await expect(page.getByText("Likes small commits", { exact: true })).toBeVisible();
-  await expect(page.locator("[data-id]").first().locator("[data-state]")).toHaveText("Unreviewed");
+  await expect(page.locator("[data-id]").first().locator("[data-state]")).toHaveText("Mentioned once");
   await expect(page.locator("[data-id]").first().locator("[data-source]")).toHaveText("turn-1");
   await expect(page.locator("body")).not.toContainText("sk-ant-");
 
@@ -27,7 +27,7 @@ test("memory can be searched, edited, deleted, and a proposal accepted or reject
   await page.getByRole("button", { name: "Save" }).click();
   await expect(page.getByText("Likes tiny commits", { exact: true })).toBeVisible();
   const edited = page.locator("[data-kind='add']", { hasText: "Likes tiny commits" });
-  await expect(edited.locator("[data-state]")).toHaveText("Edited");
+  await expect(edited.locator("[data-state]")).toHaveText("Confirmed");
 
   await page.getByRole("button", { name: "Delete Likes tiny commits" }).click();
   await expect(page.getByText("Likes tiny commits")).toHaveCount(0);

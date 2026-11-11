@@ -65,7 +65,40 @@ fn agent_file_kind(path: &str) -> Result<Option<&'static str>, String> {
     Ok(None)
 }
 
-const RECOVERY: &str = "To go on, either untrack it, add it to this project's ignore file (after you say yes), or say it is a test value. Hivra does not edit any ignore file itself.";
+/// An agent CLI's login file, wherever it is (the shared list's `cliLoginFiles`, by name).
+const AGENT_LOGIN_NAMES: &[&str] = &[".claude.json"];
+/// An agent CLI's login file inside one of its folders (`.claude/.credentials.json`, `.codex/auth.json`).
+const AGENT_FOLDER_LOGIN_NAMES: &[&str] = &[".credentials.json", "auth.json"];
+
+/// WP-248: whether `path` (repo-relative) is an agent's settings file that the `.worktreeinclude` copy must never take:
+/// local approvals, a saved transcript, a file the shared list names inside an agent folder (`.claude/settings.json`,
+/// `.codex/config.toml`, `.cursor/mcp.json`, ...), or an agent login. A list that will not load holds every path, so
+/// nothing is copied rather than an agent file.
+pub(crate) fn is_agent_settings_file(path: &str) -> bool {
+    if !matches!(agent_file_kind(path), Ok(None)) {
+        return true;
+    }
+    let Ok(list) = shared_list() else {
+        return true;
+    };
+    let Some(segments) = folded_segments(path) else {
+        return true;
+    };
+    let Some((name, folders)) = segments.split_last() else {
+        return false;
+    };
+    if AGENT_LOGIN_NAMES.contains(&name.as_str()) {
+        return true;
+    }
+    let in_agent_folder = folders.iter().any(|folder| {
+        folder != "node_modules"
+            && (list.folder_names().contains(folder) || AGENT_FOLDERS.contains(&folder.as_str()))
+    });
+    in_agent_folder
+        && (list.file_names().contains(name) || AGENT_FOLDER_LOGIN_NAMES.contains(&name.as_str()))
+}
+
+const RECOVERY: &str ="To go on, either untrack it, add it to this project's ignore file (after you say yes), or say it is a test value. Hivra does not edit any ignore file itself.";
 
 fn left_out(path: &str, kind: &str) -> String {
     format!("Left out {path}: {kind}, not for GitHub. {RECOVERY}")
@@ -77,6 +110,64 @@ fn refused_to_push(path: &str, kind: &str) -> String {
 
 fn refused_to_land(path: &str, kind: &str) -> String {
     format!("Refused to land {path}: it is {kind}, and this project does not track it. {RECOVERY}")
+}
+
+fn refused_to_commit(path: &str, kind: &str) -> String {
+    format!("Refused to commit {path}: it is {kind}, not for GitHub. {RECOVERY}")
+}
+
+/// WP-248: the `hash` of a person's allow that lets one repository keep its tracked approvals file. It is signed and
+/// stored like a line allow, and made only from the refusal below, by its id. A line allow's hash is a SHA-256 in hex,
+/// so the two never meet.
+pub(crate) const TRACKED_APPROVALS: &str = "tracked-approvals-file";
+
+/// WP-248: an approvals file is refused even when the repository already tracks it, since it saves every command
+/// Claude Code was told to stop asking about, with any password typed in it. The id lets Ash allow it, per repository.
+fn refused_tracked(refused: &str, path: &str, id: &str) -> String {
+    format!(
+        "{refused} {path}: it is {APPROVALS}, and this repository tracks it. It saves approved commands with any password typed in them (refusal {id}). To go on, untrack it (git rm --cached {path}) and change any password it held, or allow it for this repository if it must stay. Hivra does not edit any ignore file itself."
+    )
+}
+
+/// WP-248: refuses any of `paths` that is an approvals file, tracked or not, unless a person allowed this repository
+/// to keep it. The caller passes only paths whose new content is being taken; a removal is never refused.
+fn refuse_tracked_approvals_with<'a>(
+    root: &Path,
+    refused: &str,
+    paths: impl IntoIterator<Item = &'a str>,
+    allows: &[Allow],
+) -> Result<(), String> {
+    let repo = repo_id(root);
+    let mut seen = HashSet::new();
+    for path in paths {
+        if !seen.insert(path) || agent_file_kind(path)? != Some(APPROVALS) {
+            continue;
+        }
+        if is_allowed(allows, &repo, path, TRACKED_APPROVALS) {
+            continue;
+        }
+        let finding = Finding {
+            file: path.to_string(),
+            line: 0,
+            hash: TRACKED_APPROVALS.to_string(),
+            commit: String::new(),
+        };
+        let id = record_refusal(&root.to_string_lossy(), &repo, &finding);
+        return Err(refused_tracked(refused, path, &id));
+    }
+    Ok(())
+}
+
+fn refuse_tracked_approvals<'a>(
+    root: &Path,
+    refused: &str,
+    paths: impl IntoIterator<Item = &'a str>,
+) -> Result<(), String> {
+    let mut paths = paths.into_iter().peekable();
+    if paths.peek().is_none() {
+        return Ok(());
+    }
+    refuse_tracked_approvals_with(root, refused, paths, &load_allows())
 }
 
 /// A secret in a commit message or a file name: there is no file line to allow, so no id is given.
@@ -180,12 +271,16 @@ pub fn stage_all(root: &Path) -> Result<(), String> {
     crate::fs::git_checked(root, &refs)
 }
 
-/// Refuses a selection that names an untracked agent file.
+/// Refuses a selection that names an untracked agent file, or an approvals file that is still there (WP-248: tracked
+/// or not; selecting a removed one, to untrack it, is fine).
 pub fn refuse_selected(root: &Path, paths: &[String]) -> Result<(), String> {
     for path in paths {
         if let Some(kind) = agent_file_kind(path)? {
             if !tracked_at_head(root, path) {
                 return Err(left_out(path, kind));
+            }
+            if std::fs::symlink_metadata(root.join(path)).is_ok() {
+                refuse_tracked_approvals(root, "Refused to commit", [path.as_str()])?;
             }
         }
     }
@@ -211,7 +306,24 @@ pub fn refuse_staged_agent_files(root: &Path) -> Result<(), String> {
             return Err(left_out(path, kind));
         }
     }
-    Ok(())
+    // WP-248: a tracked approvals file whose content changes is refused too. A removal is not.
+    let changed = git_out(
+        root,
+        &[
+            "diff",
+            "--cached",
+            "--name-only",
+            "--diff-filter=MT",
+            "--no-renames",
+            "--no-color",
+            "-z",
+        ],
+    )?;
+    refuse_tracked_approvals(
+        root,
+        "Refused to commit",
+        changed.split('\0').filter(|path| !path.is_empty()),
+    )
 }
 
 /// Refuses a land whose changed files name an agent file the project does not track.
@@ -510,6 +622,12 @@ fn git_out_repo(repo: &objects::Repo, args: &[&str]) -> Result<String, String> {
 fn gate_repo(root: &Path, repo: &objects::Repo, revs: &[&str]) -> Result<(), String> {
     let scan = objects::scan_revs(repo, revs)?;
     refuse_paths(&scan.added)?;
+    // WP-248: an approvals file the remote already has is refused when a pushed commit adds lines to it.
+    refuse_tracked_approvals(
+        root,
+        "Refused to push",
+        scan.lines.iter().map(|hit| hit.file.as_str()),
+    )?;
     let added: Vec<Added> = scan.lines.iter().map(added_from).collect();
     refuse_lines(root, &added)?;
     for message in &scan.messages {
@@ -517,6 +635,11 @@ fn gate_repo(root: &Path, repo: &objects::Repo, revs: &[&str]) -> Result<(), Str
     }
     let extra = objects::reachable_extra(repo, revs, &scan.blobs)?;
     refuse_paths(&extra.added)?;
+    refuse_tracked_approvals(
+        root,
+        "Refused to push",
+        extra.lines.iter().map(|hit| hit.file.as_str()),
+    )?;
     let extra_added: Vec<Added> = extra.lines.iter().map(added_from).collect();
     refuse_lines(root, &extra_added)?;
     if extra.untrusted {
@@ -850,6 +973,103 @@ pub fn pre_push_main(args: &[String]) -> i32 {
         }
     }
 }
+/// WP-248: the tree a commit is checked against: HEAD's, or the empty tree in a repository with no commits yet (then
+/// every staged file is new). A HEAD that cannot be read counts as none, so everything staged is checked.
+fn commit_base(repo: &objects::Repo) -> Result<String, String> {
+    if let Ok(head) = git_out_repo(repo, &["rev-parse", "--verify", "-q", "HEAD^{commit}"]) {
+        let head = head.trim();
+        if !head.is_empty() {
+            return Ok(head.to_string());
+        }
+    }
+    let mut cmd = objects::command(repo);
+    cmd.args(["hash-object", "-t", "tree", "--stdin"]);
+    let out = objects::read_capped(cmd, Some(b""), CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
+    let empty = String::from_utf8_lossy(&out).trim().to_string();
+    if empty.is_empty() || !empty.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(objects::UNREADABLE.into());
+    }
+    Ok(empty)
+}
+
+/// WP-248: the check a crew's pre-commit hook runs on `index` (the one git is committing), in the same order as a
+/// push: a new agent file, then an approvals file the repository tracks, then file names, then every new line.
+fn pre_commit_in(root: &Path, repo: &objects::Repo, index: &Path) -> Result<(), String> {
+    let base = commit_base(repo)?;
+    let scan = objects::scan_index(repo, index, &base)?;
+    for path in &scan.added {
+        if let Some(kind) = agent_file_kind(path)? {
+            return Err(refused_to_commit(path, kind));
+        }
+    }
+    refuse_tracked_approvals(
+        root,
+        "Refused to commit",
+        scan.lines.iter().map(|hit| hit.file.as_str()),
+    )?;
+    let names: Vec<&str> = scan.added.iter().map(String::as_str).collect();
+    scan_names(&names)?;
+    let added: Vec<Added> = scan.lines.iter().map(added_from).collect();
+    refuse_lines(root, &added)
+}
+
+/// The pre-commit check of the repository at `root`, on its own index (what the hook does for a plain `git commit`).
+pub fn pre_commit_check(root: &Path) -> Result<(), String> {
+    let repo = objects::open_repo(root)?;
+    let index = repo.git_dir.join("index");
+    pre_commit_in(root, &repo, &index)
+}
+
+/// The `pre-commit-guard` subcommand, run by a crew's pre-commit hook (WP-248). Arguments: `--store <path>` (the app's
+/// allow list). Git names the index this commit takes in `GIT_INDEX_FILE` (a temporary one for `git commit -a` or
+/// `git commit <paths>`), relative to the folder the hook runs in. Prints the refusal on stderr and exits 1.
+pub fn pre_commit_main(args: &[String]) -> i32 {
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--store" {
+            if let Some(path) = rest.next() {
+                set_allow_store(PathBuf::from(path));
+            }
+        }
+    }
+    let cwd = match std::env::current_dir() {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            eprintln!("Refused to commit: the check could not find the folder ({error}).");
+            return 1;
+        }
+    };
+    let repo = match std::env::var_os("GIT_DIR") {
+        Some(dir) if !dir.is_empty() => objects::open_git_dir(Path::new(&dir), &cwd),
+        _ => objects::open_repo(&cwd),
+    };
+    let repo = match repo {
+        Ok(repo) => repo,
+        Err(error) => {
+            eprintln!("{error}");
+            return 1;
+        }
+    };
+    let index = match std::env::var_os("GIT_INDEX_FILE") {
+        Some(file) if !file.is_empty() => {
+            let file = PathBuf::from(file);
+            if file.is_absolute() {
+                file
+            } else {
+                cwd.join(file)
+            }
+        }
+        _ => repo.git_dir.join("index"),
+    };
+    match pre_commit_in(&cwd, &repo, &index) {
+        Ok(()) => 0,
+        Err(why) => {
+            eprintln!("{why}");
+            1
+        }
+    }
+}
+
 /// The gate for a patch that is about to land into a project (the text of the same change, not the binary form).
 pub fn scan_landing_patch(project: &Path, patch: &str) -> Result<(), String> {
     if patch.len() > MAX_CHECKED_BYTES {
@@ -883,6 +1103,15 @@ fn refuse_landing_scan(project: &Path, scan: &objects::Scan) -> Result<Vec<Strin
             }
         }
     }
+    // WP-248: an approvals file the project tracks does not land either, unless Ash allowed this project to keep it.
+    refuse_tracked_approvals(
+        project,
+        "Refused to land",
+        scan.added
+            .iter()
+            .map(String::as_str)
+            .chain(scan.lines.iter().map(|hit| hit.file.as_str())),
+    )?;
     let names: Vec<&str> = scan.added.iter().map(String::as_str).collect();
     scan_names(&names)?;
     let added: Vec<Added> = scan.lines.iter().map(added_from).collect();
@@ -1122,6 +1351,9 @@ pub struct RefusalView {
     pub file: String,
     pub line: usize,
     pub commit: String,
+    /// WP-248: the refusal is for a whole tracked approvals file, not a line; its Allow keeps that file in that
+    /// repository.
+    pub whole_file: bool,
 }
 static REFUSALS: Mutex<Vec<Refusal>> = Mutex::new(Vec::new());
 const MAX_REFUSALS: usize = 200;
@@ -1226,6 +1458,7 @@ pub async fn commit_guard_refusal(id: String) -> Result<Option<RefusalView>, Str
         folder: refusal.folder,
         file: refusal.file,
         line: refusal.line,
+        whole_file: refusal.hash == TRACKED_APPROVALS,
         commit: refusal.commit,
     }))
 }
@@ -1280,3 +1513,5 @@ mod review_tests_r8;
 mod review_tests_wp200b;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_wp248;

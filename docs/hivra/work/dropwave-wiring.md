@@ -31,6 +31,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | G13 | Browser specs still drive the old screens (Coding team row, Today, the floating Copy chat link, the old Compare panel markup). | `tests/browser/*.spec.ts` | Update with the screens: see "Browser specs to update" below. |
 | G15 | **Missing, found after the first cut.** "New hub" on the Hubs screen (and "Change" on a kept hub) takes the description and answers "Not connected yet": the build call behind it went with Ash OS (WP-04), and `buildOnce` returns `not-connected` unless the dev stub is on. A first mate can still build a page when asked in its own chat (`page_build`, `src/features/selfBuild/model/pagesChat.ts`). | `src/features/pages/model/buildPage.ts` `buildOnce`; `PagesView.tsx` lines around `buildPage(` and `rebuildPage(` | Send the description to the chosen first mate's own session as a page build ask and collect its `page_build` preview (the chat path already checks the spec with `checkBuiltSpec(…, {real: true})` and shows the preview on Pages), so the card on Pages and the chat are one path. Same for Change with the page's current spec. |
 | G14 | Orbit-style docs (block documents, WP-72) exist (`src/features/docs/*`) but have no entry in the Dropwave sidebar. | `ProjectRail.tsx` `placesNav` | Product call, not a bug: Ash wants these to come back later as pages ("hubs") or mods. No work until he asks. |
+| G16 | WP-242: "Learn skills" (Automatic, Ask first, Off) in Settings > Memory is one window's storage (`monocode.skillLearning`, `src/features/selfBuild/model/skillMode.ts`), beside the memory tier (`monocode.memoryTier`, `tier.ts`) which is kept the same way. Clearing the webview's storage puts it back to Automatic. | `skillMode.ts`, `tier.ts` | Move both into the app settings store (`settings.ts`) together. |
 
 ## Screen by screen
 
@@ -50,7 +51,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Chief of Staff | On Home: `openChiefChat` → `ensureMonoSession`. In a project: `openProjectChief` → `ensureMonoProjectSession` | Works; G1, G3 |
 | Inbox, red count | `onOpenInbox`; count is `useNeedsYou().length` | Works |
 | Notes | `NotesView` (`notes_list`, `notes_get`, `notes_delete`, …) | Works |
-| Automations | automations view (`automations_*`, `automation_runs_*`) | Works (off in a dev copy by design) |
+| Automations | automations view (`automations_*`, `automation_runs_*`); WP-244's "Only run when this changes" is kept in the local store document `schedule-watches` (`plugin:hub|local_hub_read`/`_write`) and read through `page_http_fetch`, `git_github_work_items` or `read_text_file` | Works (off in a dev copy by design) |
 | Hubs | `PagesView`; opens on the project in view (`pagesScope`) | Works; G8 |
 | Pinned page rows | `pinnedPages()`; all of them on Home, the project's own in a project | Works; G8 |
 
@@ -95,6 +96,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Members, add or remove a first mate | `addMember`, `removeMember` (`hubChats.ts`) | Works; G7 |
 | Conversations (new, rename, delete) | `startConversation`, `renameConversation`, `deleteConversation` | Works; G7 |
 | Sending a message, who answers | `sendMessage` → the group runner set in `App.tsx` (each member's own session through `ensureMonoRoomSession`) | Works |
+| Several seats answering one message (held, then landing together; "No answer from ...") | `roomConductor.ts` gathers (`openGather`, `releaseGather`); `GroupChatView.tsx` `data-hub-msg-held`, `data-hub-msg-gather` (WP-245) | Works |
 | Goal button | `startGoal`, `roomGoal` | Works |
 | Council mode switch | `CouncilSwitch` → `CouncilRoom`, `requestCouncil` | Works; G9 |
 | Who answers, Lead | Moved to Settings, Teams (`RoomResponder.tsx`: `setRoomResponder`, `setRoomLead`) | Works |

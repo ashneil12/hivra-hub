@@ -43,6 +43,17 @@ function Page() {
         fetchRefusal={async () => null}
       />
       <CommitGuardRefusal message="Possible secret in a commit message:2. The value is not shown." />
+      <CommitGuardRefusal
+        message="Refused to commit .claude/settings.local.json: it is an agent's local approvals, and this repository tracks it. It saves approved commands with any password typed in them (refusal bbbbbbbbbbbb). To go on, untrack it."
+        fetchRefusal={async (id) =>
+          id === "bbbbbbbbbbbb"
+            ? { id, folder: "/srv/project", file: ".claude/settings.local.json", line: 0, commit: "", wholeFile: true }
+            : null
+        }
+        allowLine={async (id) => {
+          calls.push({ id });
+        }}
+      />
       <OpenInSourceControlLink message="Possible secret in src/config.rs:12 in /srv/project (commit 1a2b3c4d5e6f, refusal 0123456789ab). The value is not shown." />
       <CommitGuardAllowsPanel
         list={async () => [...store]}

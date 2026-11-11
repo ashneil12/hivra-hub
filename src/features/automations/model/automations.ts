@@ -145,6 +145,11 @@ export type AutomationDraft = {
   triggers: AutomationTrigger[];
   missedRunGraceMinutes: number;
   enabled: boolean;
+  /**
+   * WP-244: the editor's "Only run when this changes", as typed. Saved beside the automation (automationWatches.ts),
+   * never in its definition; undefined leaves the saved one as it is.
+   */
+  watch?: string;
 };
 
 export const AUTOMATION_WEEKDAYS = [

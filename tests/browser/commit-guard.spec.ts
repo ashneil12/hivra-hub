@@ -17,6 +17,17 @@ test("a commit message finding, and a refusal the app holds no record of, have n
   await expect(page.getByRole("button", { name: "Allow this line" })).toHaveCount(1);
 });
 
+test("a tracked approvals file is refused as a whole file, and Allow keeps it in that repository only (WP-248)", async ({ page }) => {
+  await page.goto("/tests/browser/commit-guard.html");
+  await expect(
+    page.getByText("Blocked: .claude/settings.local.json in /srv/project is an agent's saved approvals, and this repository tracks it."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Allow this file in this repository" }).click();
+  await expect(page.getByText("Allowed. This repository may keep this file; its lines are still checked for secrets.")).toBeVisible();
+  const calls = await page.evaluate(() => (window as unknown as { __allowCalls: unknown[] }).__allowCalls);
+  expect(calls).toEqual([{ id: "bbbbbbbbbbbb" }]);
+});
+
 test("Settings lists the allowed lines, and Remove takes one out", async ({ page }) => {
   await page.goto("/tests/browser/commit-guard.html");
   await expect(page.getByRole("heading", { name: "Allowed lines (secret check)" })).toBeVisible();

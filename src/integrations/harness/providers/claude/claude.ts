@@ -1,5 +1,7 @@
 import { TurnNotReadyError } from "../../core/types";
 import { credentialBlock } from "../../core/credentialGuard";
+import { goalToolRefusal } from "../../../../features/sessions/model/goalIntegrity";
+import { actionHash } from "../../../../features/sessions/model/approvalAction";
 import {
   claudeAppend,
   claudeAppendArgs,
@@ -2036,7 +2038,9 @@ async function handleControlRequest(
   // A subagent started with isolation "worktree" works outside the chat folder, so its asks do not keep the pin either.
   if (toolMovesLaunchFolder(toolName)) noteFolderMoved(live);
   const pinned = live.folderMoved !== true && !childDropsFolderPin(live, control.toolUseId);
-  const blocked = credentialBlock(approvalCall(toolName, input, pinned), live.cwd);
+  // WP-247: the run can't set or clear its own goal (a SlashCommand running `/goal`), in any mode.
+  const blocked =
+    credentialBlock(approvalCall(toolName, input, pinned), live.cwd) ?? goalToolRefusal(approvalCall(toolName, input, pinned));
   if (blocked) {
     await writeJson(sessionId, buildControlResponse(control.requestId, { behavior: "deny", message: blocked }));
     return;
@@ -2073,7 +2077,10 @@ async function handleControlRequest(
     await answerChildClaudeApproval(live, uiId, control.requestId, control.toolUseId, toolName, input, child, pinned);
     return;
   }
-  const pending = waitApproval(live, uiId, control.requestId, input);
+  // WP-243: freeze the action. The card, the hash and the allow all come from this one copy of the input.
+  const askedInput = frozenCopy(input);
+  const frozen = actionHash(toolName, askedInput);
+  const pending = waitApproval(live, uiId, control.requestId, askedInput);
   live.onEvent({
     type: "approval.requested",
     requestId: uiId,
@@ -2083,17 +2090,30 @@ async function handleControlRequest(
     preview: previewFromTool(toolName, input),
     call: approvalCall(toolName, input, pinned),
     callComplete: approvalCallComplete(toolName, input),
+    actionHash: frozen,
   });
-  const decision = await pending;
+  let decision = await pending;
+  // WP-243: the allow hands back exactly the input that was asked about. Should it have changed since (nothing here
+  // should change it), the call is refused rather than run with arguments nobody saw.
+  if (decision === "allow" && actionHash(toolName, askedInput) !== frozen) decision = "deny";
   live.onEvent({ type: "approval.resolved", requestId: uiId, decision });
   if (decision === "cancelled") return;
   await writeJson(
     sessionId,
     buildControlResponse(
       control.requestId,
-      toClaudePermissionResult(decision, input),
+      toClaudePermissionResult(decision, askedInput),
     ),
   );
+}
+
+/** A deep copy of a tool's input, so nothing that holds the original can change what an allow sends back. */
+function frozenCopy(input: Record<string, unknown>): Record<string, unknown> {
+  try {
+    return structuredClone(input);
+  } catch {
+    return JSON.parse(JSON.stringify(input)) as Record<string, unknown>;
+  }
 }
 
 function applyKnownToolInput(
@@ -2204,8 +2224,8 @@ async function answerChildClaudeApproval(
   live.childInputs.set(requestId, input);
   const title = toolTitle(toolName, input);
   let pending = waitApproval(live, uiId, requestId, input);
-  live.onEvent({
-    type: "approval.requested",
+  const ask = {
+    type: "approval.requested" as const,
     requestId: uiId,
     title,
     kind: toolKindFromName(toolName),
@@ -2214,7 +2234,10 @@ async function answerChildClaudeApproval(
     call: approvalCall(toolName, input, pinned),
     callComplete: approvalCallComplete(toolName, input),
     child: { name: child.name, sessionPort: child.sessionPort, detail: title },
-  });
+    // WP-243: the subagent runs the input it asked with; the allow is bound to it.
+    actionHash: actionHash(toolName, input),
+  };
+  live.onEvent(ask);
   try {
     for (;;) {
       const decision = await pending;
@@ -2236,6 +2259,8 @@ async function answerChildClaudeApproval(
         text: "The subagent is not reachable, so the answer was not sent.",
       });
       pending = waitApproval(live, uiId, requestId, input);
+      // The same ask again, so the card can be answered again (an allow sent once is spent).
+      live.onEvent(ask);
     }
   } finally {
     live.childInputs.delete(requestId);

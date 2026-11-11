@@ -529,7 +529,9 @@ it("stops and records a habit that is still running after one hour", async () =>
       await vi.advanceTimersByTimeAsync(2_000);
     });
     expect(host.remove).toHaveBeenCalledTimes(1);
-    expect(host.post).not.toHaveBeenCalled();
+    // WP-244: a failed run says so in one line.
+    expect(host.post).toHaveBeenCalledTimes(1);
+    expect(host.post.mock.calls[0][2]).toBe('My habit "Morning CI check" couldn\'t finish: It took too long and was stopped.');
     expect(stored[0]).toMatchObject({
       lastOutcome: "failed",
       lastError: "It took too long and was stopped.",
@@ -882,4 +884,85 @@ it("says nothing about the programme when it cannot be read, and still runs", as
   } finally {
     warn.mockRestore();
   }
+});
+
+// ---- WP-244: a habit that watches one thing -------------------------------------------------------------------
+
+function watchedHabit() {
+  dueHabit();
+  stored[0] = {
+    ...stored[0],
+    instructions: "Example: tell me if the price changes.",
+    watch: { kind: "url", url: "https://example.com/price" },
+  };
+}
+
+function mountWatched(reply: string, read: () => Promise<string>) {
+  const host = { ...makeHost(reply), readWatch: vi.fn(read) };
+  mountHost(host);
+  return host;
+}
+
+it("makes no model call for a watch that is unchanged since a run that went well", async () => {
+  watchedHabit();
+  const first = mountWatched("Example: the price is $1,200.", async () => "Example: $1,200");
+  await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("posted"));
+  expect(first.run).toHaveBeenCalledTimes(1);
+  expect(first.run.mock.calls[0][1]).toContain("Before: this is the first look.");
+  await vi.waitFor(() => expect(stored[0].watchSeen).toMatchObject({ value: "Example: $1,200", lastRunOk: true }));
+
+  act(() => root.unmount());
+  root = createRoot(document.createElement("div"));
+  stored = [{ ...stored[0], nextRunAt: Date.now() - 60_000 }];
+  const again = mountWatched("Example: should not run", async () => "Example: $1,200");
+  await vi.waitFor(() => expect(stored[0].runs).toHaveLength(2));
+  expect(again.readWatch).toHaveBeenCalledTimes(1);
+  expect(again.run).not.toHaveBeenCalled();
+  expect(again.add).not.toHaveBeenCalled();
+  expect(again.post).not.toHaveBeenCalled();
+  expect(stored[0].runs?.[0]).toMatchObject({ outcome: "quiet", unchanged: true });
+  expect(stored[0].nextRunAt).toBeGreaterThan(Date.now());
+});
+
+it("shows the run the watch's before and after when it changed", async () => {
+  const { watchKey } = await import("../../features/automations/model/quietWatch");
+  watchedHabit();
+  stored[0].watchSeen = {
+    digest: "old",
+    value: "Example: $1,200",
+    at: Date.UTC(2026, 10, 10),
+    lastRunOk: true,
+    key: watchKey("Example: tell me if the price changes.", { kind: "url", url: "https://example.com/price" }),
+  };
+  const host = mountWatched("Example: the price went up to $1,500.", async () => "Example: $1,500");
+  await vi.waitFor(() => expect(host.post).toHaveBeenCalled());
+  const prompt = host.run.mock.calls[0][1] as string;
+  expect(prompt).toMatch(/Before \(seen [^)]*\):\nExample: \$1,200\nNow:\nExample: \$1,500/);
+  await vi.waitFor(() => expect(stored[0].watchSeen?.value).toBe("Example: $1,500"));
+});
+
+it("runs two overlapping ticks of one habit once", async () => {
+  const hold = deferred();
+  const host = setup("Example: done.");
+  host.run.mockImplementationOnce(async () => {
+    await hold.promise;
+    return { status: "completed" as const, text: "Example: done." };
+  });
+  await vi.waitFor(() => expect(host.run).toHaveBeenCalledTimes(1));
+  // A Run now and another check land while the first run is still going.
+  stored = [{ ...stored[0], runRequested: true }];
+  checkHabitsNow();
+  checkHabitsNow();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  expect(host.run).toHaveBeenCalledTimes(1);
+  await act(async () => hold.resolve());
+  await vi.waitFor(() => expect(stored[0].runs?.length ?? 0).toBeGreaterThan(0));
+});
+
+it("posts one line when a run fails", async () => {
+  const host = setup("");
+  host.run.mockImplementationOnce(async () => ({ status: "failed" as const, text: "", error: "The model refused.\nDetails..." }));
+  await vi.waitFor(() => expect(host.post).toHaveBeenCalledTimes(1));
+  expect(host.post.mock.calls[0][2]).toBe('My habit "Morning CI check" couldn\'t finish: The model refused.');
+  await vi.waitFor(() => expect(stored[0].lastOutcome).toBe("failed"));
 });

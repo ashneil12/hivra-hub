@@ -25,6 +25,13 @@
 //! the delegation row (`gate_verdict`, read by `derive_status`), and the evidence (commands, exit codes, output tails, the
 //! model's answer) is kept per round in `firstmate_gates`, beside the row.
 //!
+//! WP-249 (`done_check`): the report is read as a list of claims, and code checks them against the diff before any model
+//! does (a false "only touched" claim, scope creep, a weakened test, debris, an outward action Ash didn't ask for). Any
+//! finding fails the round. The model then gets the claims, the code's findings and the diff, never the report's own
+//! wording, and answers VERIFIED, VERIFIED WITH CAVEATS or REFUTED with a row per claim. The round keeps a fingerprint of
+//! the copy's files (`tree`); accepting an unsure verdict or delivering the copy re-reads it, and a change since voids
+//! the verdict (`verdict_tree_holds`).
+//!
 //! Ideas from Puppetmaster's gates (`require_diff`, `command`, `committed`, `ratchet`; MIT) and Raven's "finished is not
 //! succeeded" verdict gate (Apache-2.0, ideas only). No code is vendored.
 
@@ -37,6 +44,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::done_check::{self, ChangedFile, ClaimRow, ClaimStatus, CodeFinding};
 use super::status::GateVerdict;
 
 /// The longest output tail kept per command.
@@ -46,6 +54,9 @@ const ROUNDS_KEPT: usize = 6;
 /// How much of the report and the diff the verdict model reads.
 const REPORT_MAX: usize = 6_000;
 const DIFF_MAX: usize = 12_000;
+/// WP-249: the changed files whose text the code checks read, and the largest one read.
+const FILES_READ_MAX: usize = 400;
+const FILE_READ_MAX: usize = 256_000;
 /// The verdict model's whole call.
 pub const VERDICT_TIMEOUT: Duration = Duration::from_secs(120);
 
@@ -221,6 +232,47 @@ pub struct VerdictResult {
     pub why: String,
     /// What the model said, cut short, as evidence.
     pub said: String,
+    /// WP-249: the model's verdict word, when it gave one of the three.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<DoneLabel>,
+    /// WP-249: the model's row per claim.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claims: Vec<ClaimRow>,
+    /// WP-249: the problems the model found, one plain line each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub frauds: Vec<String>,
+}
+
+impl VerdictResult {
+    fn plain(answer: Answer, why: impl Into<String>, said: String) -> VerdictResult {
+        VerdictResult {
+            answer,
+            why: why.into(),
+            said,
+            label: None,
+            claims: Vec::new(),
+            frauds: Vec::new(),
+        }
+    }
+}
+
+/// WP-249: the three answers to "is this done?".
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum DoneLabel {
+    Verified,
+    VerifiedWithCaveats,
+    Refuted,
+}
+
+impl DoneLabel {
+    pub fn word(self) -> &'static str {
+        match self {
+            DoneLabel::Verified => "VERIFIED",
+            DoneLabel::VerifiedWithCaveats => "VERIFIED WITH CAVEATS",
+            DoneLabel::Refuted => "REFUTED",
+        }
+    }
 }
 
 /// The gates' word on a round: what goes on the row as `gate_verdict`.
@@ -256,6 +308,31 @@ pub struct GateRecord {
     /// One plain paragraph: what failed and why, or what passed. The worker reads it on a fix round; its first mate
     /// reads it in the report.
     pub summary: String,
+    /// WP-249: VERIFIED, VERIFIED WITH CAVEATS or REFUTED; none when the round couldn't say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<DoneLabel>,
+    /// WP-249: what the code found in the diff that the report's claims don't survive.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<CodeFinding>,
+    /// WP-249: each claim, what was observed, and whether it held.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub claims: Vec<ClaimRow>,
+    /// WP-249: the fingerprint of the copy's files this round judged (`tree_fingerprint`), and the copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tree: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkout: Option<String>,
+}
+
+impl GateRecord {
+    /// Every problem the round named: the code's findings, then the model's.
+    pub fn problems(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.findings.iter().map(CodeFinding::line).collect();
+        if let Some(check) = &self.check {
+            out.extend(check.frauds.iter().cloned());
+        }
+        out
+    }
 }
 
 // ---- running them -------------------------------------------------------------------------------------------------------
@@ -339,14 +416,54 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         .facts
         .map(|turn| super::fact_gaps::done_gaps_in(turn, Some(input.checkout)))
         .unwrap_or_default();
+    // WP-249: the report's claims against the diff, in code, before any model.
+    let claims = done_check::claims_of(input.report);
+    let (files, unread) = if repo.why_not.is_none() {
+        match repo.changed_files() {
+            Ok(files) => (files, None),
+            Err(why) => (Vec::new(), Some(why)),
+        }
+    } else {
+        (Vec::new(), None)
+    };
+    let findings = done_check::code_findings(input.brief, input.report, &claims, &files);
+    let checks_run = match gates.iter().find(|gate| gate.gate == GateKind::Checks) {
+        Some(gate) if gate.outcome == Outcome::Passed => done_check::ChecksRun::Passed,
+        Some(gate) if gate.outcome == Outcome::Failed => done_check::ChecksRun::Failed,
+        _ => done_check::ChecksRun::None,
+    };
+    let code_rows = done_check::code_rows(&claims, &findings, checks_run);
     let check = (gaps.is_empty() && (overall == Outcome::Passed || gates.is_empty()))
-        .then(|| verdict_check(input, &repo, &gates, runners));
+        .then(|| verdict_check(input, &repo, &gates, &claims, &findings, runners));
     let verdict = match (overall, gaps.is_empty(), check.as_ref().map(|c| c.answer)) {
         (Outcome::Failed, _, _) | (_, false, _) | (_, _, Some(Answer::NotMet)) => Verdict::Failed,
+        _ if !findings.is_empty() => Verdict::Failed,
+        // A checkout whose changed files couldn't be read had its claims checked by no one: never a pass.
+        _ if unread.is_some() => Verdict::Unsure,
         (_, _, Some(Answer::Met)) => Verdict::Passed,
         _ => Verdict::Unsure,
     };
-    let summary = summary_of(&gates, check.as_ref(), verdict, &gaps);
+    let claims = merged_rows(code_rows, check.as_ref());
+    let label = label_of(verdict, &findings, &claims, check.as_ref());
+    let mut summary = summary_of(
+        &gates,
+        check.as_ref(),
+        verdict,
+        &gaps,
+        &findings,
+        label,
+        &claims,
+    );
+    if let Some(why) = &unread {
+        summary.push_str(&format!(
+            "\nThe report's claims couldn't be checked against the diff: {why}."
+        ));
+    }
+    let tree = if repo.why_not.is_none() {
+        tree_fingerprint(input.checkout).ok()
+    } else {
+        None
+    };
     GateRecord {
         delegation_id: input.delegation_id.to_string(),
         round: input.round,
@@ -355,7 +472,68 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         gates,
         check,
         summary,
+        label,
+        findings,
+        claims,
+        tree,
+        checkout: Some(input.checkout.to_string_lossy().into_owned()),
     }
+}
+
+fn same_claim(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim().to_lowercase(), b.trim().to_lowercase());
+    !a.is_empty() && !b.is_empty() && (a == b || a.contains(&b) || b.contains(&a))
+}
+
+/// The code's rows, with the model's word on the ones code left open. The model never overturns code.
+fn merged_rows(code: Vec<ClaimRow>, check: Option<&VerdictResult>) -> Vec<ClaimRow> {
+    let model = check.map(|c| c.claims.as_slice()).unwrap_or_default();
+    code.into_iter()
+        .map(|row| {
+            if row.status != ClaimStatus::Unverifiable {
+                return row;
+            }
+            match model
+                .iter()
+                .find(|said| same_claim(&said.claim, &row.claim))
+            {
+                Some(said) => ClaimRow {
+                    claim: row.claim,
+                    observed: said.observed.clone(),
+                    status: said.status,
+                },
+                None => row,
+            }
+        })
+        .collect()
+}
+
+/// REFUTED when code or the model refuted anything; else the passed round's VERIFIED, with caveats when a claim is
+/// left unverifiable; none for a round that couldn't say.
+fn label_of(
+    verdict: Verdict,
+    findings: &[CodeFinding],
+    rows: &[ClaimRow],
+    check: Option<&VerdictResult>,
+) -> Option<DoneLabel> {
+    let refuted = !findings.is_empty()
+        || rows.iter().any(|row| row.status == ClaimStatus::Refuted)
+        || check.is_some_and(|c| c.answer == Answer::NotMet);
+    if refuted {
+        return Some(DoneLabel::Refuted);
+    }
+    if verdict != Verdict::Passed {
+        return None;
+    }
+    let caveats = rows
+        .iter()
+        .any(|row| row.status == ClaimStatus::Unverifiable)
+        || check.and_then(|c| c.label) == Some(DoneLabel::VerifiedWithCaveats);
+    Some(if caveats {
+        DoneLabel::VerifiedWithCaveats
+    } else {
+        DoneLabel::Verified
+    })
 }
 
 fn summary_of(
@@ -363,11 +541,20 @@ fn summary_of(
     check: Option<&VerdictResult>,
     verdict: Verdict,
     gaps: &[String],
+    findings: &[CodeFinding],
+    label: Option<DoneLabel>,
+    rows: &[ClaimRow],
 ) -> String {
     let mut lines = Vec::new();
     // The first line is what the task card and the inbox show.
     if !gaps.is_empty() {
         lines.push(super::fact_gaps::fact_summary(gaps));
+    }
+    if !findings.is_empty() {
+        lines.push(format!(
+            "REFUTED: the report's claims don't match the diff.\n{}",
+            done_check::findings_text(findings)
+        ));
     }
     for gate in gates {
         if gate.outcome != Outcome::Passed && gate.outcome != Outcome::Held {
@@ -389,10 +576,15 @@ fn summary_of(
         }
     }
     match check {
-        Some(c) if c.answer == Answer::NotMet => lines.push(format!(
-            "The brief's definition of done isn't met: {}",
-            c.why
-        )),
+        Some(c) if c.answer == Answer::NotMet => {
+            lines.push(format!(
+                "The brief's definition of done isn't met: {}",
+                c.why
+            ));
+            for fraud in &c.frauds {
+                lines.push(format!("- {fraud}"));
+            }
+        }
         Some(c) if c.answer == Answer::Unsure => lines.push(format!(
             "The quick check couldn't tell whether the brief was met: {}",
             c.why
@@ -415,7 +607,17 @@ fn summary_of(
         } else {
             ""
         };
-        return format!("{lead}; the quick check says the brief was met.{handoff}");
+        let caveats = if label == Some(DoneLabel::VerifiedWithCaveats) {
+            let open: Vec<String> = rows
+                .iter()
+                .filter(|row| row.status == ClaimStatus::Unverifiable)
+                .map(|row| format!("\n- unverifiable: {} ({})", row.claim, row.observed))
+                .collect();
+            format!(" Verified with caveats.{}", open.concat())
+        } else {
+            String::new()
+        };
+        return format!("{lead}; the quick check says the brief was met.{handoff}{caveats}");
     }
     lines.join("\n")
 }
@@ -519,6 +721,42 @@ impl Repo {
         Ok(files)
     }
 
+    /// WP-249: each changed file with its text before (at `base`) and now, for the code checks. A file too large or
+    /// not text reads as empty, and past `FILES_READ_MAX` files only whether each exists is kept.
+    fn changed_files(&self) -> Result<Vec<ChangedFile>, String> {
+        let base = self.base.as_deref().unwrap_or("HEAD");
+        let paths = self.changed()?;
+        Ok(paths
+            .into_iter()
+            .enumerate()
+            .map(|(index, path)| {
+                let read = index < FILES_READ_MAX;
+                let before = match git(&self.dir, &["cat-file", "blob", &format!("{base}:{path}")])
+                {
+                    Ok((true, out, _)) => Some(if read { file_text(&out) } else { String::new() }),
+                    _ => None,
+                };
+                let after = std::fs::symlink_metadata(self.dir.join(&path))
+                    .ok()
+                    .filter(|meta| !meta.is_dir())
+                    .map(|_| {
+                        if read {
+                            std::fs::read(self.dir.join(&path))
+                                .map(|bytes| file_text(&bytes))
+                                .unwrap_or_default()
+                        } else {
+                            String::new()
+                        }
+                    });
+                ChangedFile {
+                    path,
+                    before,
+                    after,
+                }
+            })
+            .collect())
+    }
+
     fn diff_text(&self) -> String {
         let base = self.base.as_deref().unwrap_or("HEAD");
         let stat = git(&self.dir, &["diff", "--stat", base, "--"])
@@ -539,6 +777,119 @@ impl Repo {
         text.push_str(&body);
         head_of(&text, DIFF_MAX)
     }
+}
+
+/// A file's text for the code checks: empty when it is too large or not text.
+fn file_text(bytes: &[u8]) -> String {
+    if bytes.len() > FILE_READ_MAX || bytes.contains(&0) {
+        return String::new();
+    }
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+/// WP-249: a fingerprint of every file git would see in `dir` (tracked, and new files it doesn't ignore), by content.
+/// Committing changes nothing here; editing, adding or removing a file does. Git lists the files and nothing else: no
+/// filter, hook or fsmonitor of the worker's copy runs, and the files are read and hashed here.
+pub fn tree_fingerprint(dir: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let (ok, out, _) = git(
+        dir,
+        &[
+            "-c",
+            "core.fsmonitor=false",
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ],
+    )?;
+    if !ok {
+        return Err("git couldn't list the copy's files".into());
+    }
+    let mut paths: Vec<&[u8]> = out.split(|b| *b == 0).filter(|p| !p.is_empty()).collect();
+    paths.sort();
+    paths.dedup();
+    let mut hash = Sha256::new();
+    for raw in paths {
+        let path = String::from_utf8_lossy(raw);
+        hash.update(raw);
+        hash.update([0]);
+        let full = dir.join(path.as_ref());
+        match std::fs::symlink_metadata(&full) {
+            Err(_) => hash.update(b"gone\0"),
+            Ok(meta) if meta.file_type().is_symlink() => {
+                hash.update(b"link\0");
+                let target = std::fs::read_link(&full).map_err(|e| format!("{path}: {e}"))?;
+                hash.update(target.to_string_lossy().as_bytes());
+            }
+            Ok(meta) if meta.is_dir() => hash.update(b"folder\0"),
+            Ok(meta) => {
+                #[cfg(unix)]
+                let exec = {
+                    use std::os::unix::fs::PermissionsExt;
+                    meta.permissions().mode() & 0o111 != 0
+                };
+                #[cfg(not(unix))]
+                let exec = {
+                    let _ = &meta;
+                    false
+                };
+                hash.update(if exec { b"exec\0" } else { b"file\0" });
+                let mut file = std::fs::File::open(&full).map_err(|e| format!("{path}: {e}"))?;
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let n = file.read(&mut buf).map_err(|e| format!("{path}: {e}"))?;
+                    if n == 0 {
+                        break;
+                    }
+                    hash.update(&buf[..n]);
+                }
+            }
+        }
+        hash.update([0]);
+    }
+    Ok(format!("sha256:{:x}", hash.finalize()))
+}
+
+/// WP-249: the newest round's verdict (`newest`, from `records_of`) still holds only on the files it judged.
+/// `checkout` is the copy being accepted or delivered (else the one the round read). No round, or a round from before
+/// WP-249 that kept no fingerprint, is not re-read. Read the round under the database lock and call this after it,
+/// since it reads every file of the copy.
+pub fn verdict_tree_holds(
+    newest: Option<&GateRecord>,
+    checkout: Option<&Path>,
+) -> Result<(), String> {
+    let Some(record) = newest else {
+        return Ok(());
+    };
+    let Some(tree) = record.tree.as_deref() else {
+        return Ok(());
+    };
+    let dir = match (checkout, record.checkout.as_deref()) {
+        (Some(dir), _) => dir.to_path_buf(),
+        (None, Some(dir)) => PathBuf::from(dir),
+        (None, None) => {
+            return Err("The checked copy isn't known, so its verdict doesn't carry over. Run the checks again.".into())
+        }
+    };
+    match tree_fingerprint(&dir) {
+        Ok(now) if now == tree => Ok(()),
+        Ok(now) => Err(format!(
+            "The work changed after its check (checked {}, now {}), so that verdict no longer holds. Run the checks again \
+             (the worker reports done again) before accepting or delivering it.",
+            short_tree(tree),
+            short_tree(&now)
+        )),
+        Err(why) => Err(format!(
+            "The checked copy couldn't be read again ({why}), so its verdict doesn't carry over. Run the checks again."
+        )),
+    }
+}
+
+fn short_tree(tree: &str) -> &str {
+    let hex = tree.strip_prefix("sha256:").unwrap_or(tree);
+    &hex[..hex.len().min(12)]
 }
 
 fn evidence(command: String, ok: bool, code: i32, output: String) -> CommandEvidence {
@@ -791,12 +1142,28 @@ fn head_of(text: &str, max: usize) -> String {
 // ---- the verdict check --------------------------------------------------------------------------------------------------
 
 const VERDICT_RULES: &str = "You check whether a worker actually did what its brief asked. You get the brief, its \
-definition of done, the worker's report and the diff of what it changed. The report is a claim, not evidence; judge \
-from the diff and the checks. Answer with one line of JSON and nothing else: {\"verdict\": \"met\" | \"not-met\" | \
-\"unsure\", \"why\": \"one plain sentence\"}. Say not-met only when something the definition of done asks for is \
-missing or wrong in the diff; say unsure when you can't tell from what you were given.";
+definition of done, the claims the worker made (a list: its own story is left out on purpose), what the app's code \
+already found, the checks the app ran, and the diff. The diff is the truth; a claim is not evidence, and you can run \
+nothing. For each claim say verified (the diff shows it), refuted (the diff shows otherwise) or unverifiable (the diff \
+can't show it). Then look for these problems: a fix that doesn't fix what the brief asks (false completion); a test \
+added or changed so it passes on a wrong value, or weakened or skipped; files changed beyond what was claimed or \
+asked (false scope, scope creep); leftover debug code or scratch files (debris); an outward action (push, pull \
+request, post) the brief doesn't ask for. Answer with one line of JSON and nothing else: {\"verdict\": \"verified\" | \
+\"verified-with-caveats\" | \"refuted\" | \"unsure\", \"why\": \"one plain sentence\", \"claims\": [{\"claim\": \"...\", \
+\"observed\": \"...\", \"status\": \"verified\" | \"refuted\" | \"unverifiable\"}], \"frauds\": [\"one plain line \
+per problem, starting with its name\"]}. Say refuted when any claim is refuted, any problem is found, or anything the \
+definition of done asks for is missing or wrong in the diff; verified-with-caveats when nothing is refuted but a claim \
+is unverifiable; verified only when the diff shows every claim and the definition of done; unsure when you can't tell \
+from what you were given.";
 
-pub fn verdict_prompt(input: &RoundInput, diff: &str, gates: &[GateResult]) -> String {
+/// WP-249: the model reads the claims (never the report's wording), the code's findings and the diff.
+pub fn verdict_prompt(
+    input: &RoundInput,
+    diff: &str,
+    gates: &[GateResult],
+    claims: &[done_check::Claim],
+    findings: &[CodeFinding],
+) -> String {
     let checks: Vec<String> = gates
         .iter()
         .map(|g| format!("- {}: {} ({})", g.gate.name(), g.outcome.word(), g.detail))
@@ -812,16 +1179,18 @@ pub fn verdict_prompt(input: &RoundInput, diff: &str, gates: &[GateResult]) -> S
         );
     }
     format!(
-        "{VERDICT_RULES}\n\n## Brief\n{}\n\n## Definition of done\n{}\n\n## Checks the app ran\n{}\n\n## Worker's report\n{}\n\n## Diff\n{}",
+        "{VERDICT_RULES}\n\n## Brief\n{}\n\n## Definition of done\n{}\n\n## Checks the app ran\n{}\n\n## The worker's claims\n{}\n\n## What the app's code found in the diff\n{}\n\n## Diff\n{}",
         head_of(input.brief.trim(), REPORT_MAX),
         input.done_when.trim(),
         checks_text,
-        head_of(input.report.trim(), REPORT_MAX),
+        done_check::claims_text(claims),
+        done_check::findings_text(findings),
         if diff.trim().is_empty() { "(no diff)" } else { diff },
     )
 }
 
-/// The model's reply as a verdict. Anything that isn't a clear met or not met is unsure, never met.
+/// The model's reply as a verdict. Anything that isn't a clear verdict is unsure, never met, and a "verified" that
+/// marks any claim refuted is read as refuted.
 pub fn parse_verdict(said: &str) -> VerdictResult {
     let found = said
         .char_indices()
@@ -833,27 +1202,62 @@ pub fn parse_verdict(said: &str) -> VerdictResult {
         });
     let said_short = crate::gates::tail(said, 500);
     let Some(value) = found else {
-        return VerdictResult {
-            answer: Answer::Unsure,
-            why: "its answer couldn't be read".into(),
-            said: said_short,
-        };
+        return VerdictResult::plain(Answer::Unsure, "its answer couldn't be read", said_short);
     };
-    let why = value
-        .get("why")
-        .and_then(Value::as_str)
-        .map(|w| w.trim().chars().take(400).collect::<String>())
-        .filter(|w| !w.is_empty());
-    let answer = match value
+    let text = |value: &Value, max: usize| {
+        value
+            .as_str()
+            .map(|w| w.trim().chars().take(max).collect::<String>())
+            .filter(|w| !w.is_empty())
+    };
+    let why = value.get("why").and_then(|w| text(w, 400));
+    let (mut answer, mut label) = match value
         .get("verdict")
         .and_then(Value::as_str)
         .map(|v| v.trim().to_ascii_lowercase().replace([' ', '_'], "-"))
         .as_deref()
     {
-        Some("met") => Answer::Met,
-        Some("not-met") => Answer::NotMet,
-        _ => Answer::Unsure,
+        Some("verified") => (Answer::Met, Some(DoneLabel::Verified)),
+        Some("verified-with-caveats") => (Answer::Met, Some(DoneLabel::VerifiedWithCaveats)),
+        Some("refuted") => (Answer::NotMet, Some(DoneLabel::Refuted)),
+        Some("met") => (Answer::Met, None),
+        Some("not-met") => (Answer::NotMet, None),
+        _ => (Answer::Unsure, None),
     };
+    let claims: Vec<ClaimRow> = value
+        .get("claims")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    Some(ClaimRow {
+                        claim: text(row.get("claim")?, 300)?,
+                        observed: row
+                            .get("observed")
+                            .and_then(|o| text(o, 300))
+                            .unwrap_or_default(),
+                        status: ClaimStatus::parse(row.get("status")?.as_str()?)?,
+                    })
+                })
+                .take(12)
+                .collect()
+        })
+        .unwrap_or_default();
+    let frauds: Vec<String> = value
+        .get("frauds")
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| text(item, 300))
+                .take(8)
+                .collect()
+        })
+        .unwrap_or_default();
+    if answer == Answer::Met && claims.iter().any(|row| row.status == ClaimStatus::Refuted) {
+        answer = Answer::NotMet;
+        label = Some(DoneLabel::Refuted);
+    }
     VerdictResult {
         answer,
         why: why.unwrap_or_else(|| match answer {
@@ -862,6 +1266,9 @@ pub fn parse_verdict(said: &str) -> VerdictResult {
             Answer::Unsure => "it couldn't tell".into(),
         }),
         said: said_short,
+        label,
+        claims,
+        frauds,
     }
 }
 
@@ -869,27 +1276,29 @@ fn verdict_check(
     input: &RoundInput,
     repo: &Repo,
     gates: &[GateResult],
+    claims: &[done_check::Claim],
+    findings: &[CodeFinding],
     runners: &dyn Runners,
 ) -> VerdictResult {
     if input.done_when.trim().is_empty() {
-        return VerdictResult {
-            answer: Answer::Unsure,
-            why: "the brief has no definition of done to check against".into(),
-            said: String::new(),
-        };
+        return VerdictResult::plain(
+            Answer::Unsure,
+            "the brief has no definition of done to check against",
+            String::new(),
+        );
     }
     let diff = if repo.why_not.is_none() {
         repo.diff_text()
     } else {
         String::new()
     };
-    match runners.verdict(&verdict_prompt(input, &diff, gates)) {
+    match runners.verdict(&verdict_prompt(input, &diff, gates, claims, findings)) {
         Ok(said) => parse_verdict(&said),
-        Err(why) => VerdictResult {
-            answer: Answer::Unsure,
-            why: format!("the quick check didn't answer ({why})"),
-            said: String::new(),
-        },
+        Err(why) => VerdictResult::plain(
+            Answer::Unsure,
+            format!("the quick check didn't answer ({why})"),
+            String::new(),
+        ),
     }
 }
 
@@ -1002,6 +1411,25 @@ pub fn evidence_markdown(record: &GateRecord) -> String {
                 out.push_str(&format!("\n{fence}text\n{}\n{fence}\n\n", run.output));
             }
         }
+    }
+    if let Some(label) = record.label {
+        out.push_str(&format!("- Claims — {}\n", label.word()));
+    }
+    for problem in record.problems() {
+        out.push_str(&format!("  - {problem}\n"));
+    }
+    if !record.claims.is_empty() {
+        let cell = |text: &str| text.replace('|', "\\|").replace('\n', " ");
+        out.push_str("\n| Claim | Observed | Status |\n| --- | --- | --- |\n");
+        for row in &record.claims {
+            out.push_str(&format!(
+                "| {} | {} | {} |\n",
+                cell(&row.claim),
+                cell(&row.observed),
+                row.status.word()
+            ));
+        }
+        out.push('\n');
     }
     if let Some(check) = &record.check {
         out.push_str(&format!(
@@ -1444,6 +1872,11 @@ fn fact_only_record(
         gates: Vec::new(),
         check: None,
         summary: super::fact_gaps::fact_summary(&gaps),
+        label: None,
+        findings: Vec::new(),
+        claims: Vec::new(),
+        tree: None,
+        checkout: None,
     })
 }
 
@@ -1615,6 +2048,11 @@ pub fn firstmate_gates_decide(
     accept: bool,
     reason: Option<String>,
 ) -> Result<delegations::Change, String> {
+    // WP-249: an accept is of the files that were checked; a later change voids the verdict.
+    if accept {
+        let newest = records_of(&*store.lock_conn()?, &id)?.pop();
+        verdict_tree_holds(newest.as_ref(), None)?;
+    }
     decide(
         &mut *store.lock_conn()?,
         &owner_session,

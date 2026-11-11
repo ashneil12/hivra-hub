@@ -9,6 +9,8 @@ import { deleteMemory } from "../model/deletion";
 import { healthOf } from "../model/health";
 import { importOrderRefusal } from "../model/orderScan";
 import { pausedNow } from "../model/memoryBudget";
+import { bringBack, forgetLetGo, LET_GO_LABEL, letGoItem, memoryStatus } from "../model/letGo";
+import { isEssential, markEssential } from "../model/essential";
 import { MemoryAsk } from "./MemoryAsk";
 import { MemoryHealthCard } from "./MemoryHealthCard";
 import { MemoryProvenance } from "./MemoryProvenance";
@@ -42,11 +44,11 @@ export type MemoryPorts = {
   undoSkill: (name: string, lesson: string) => Promise<void>;
 };
 
-function stateLabel(state: MemoryItem["state"]): string {
-  if (state === "unreviewed") return "Unreviewed";
-  if (state === "confirmed") return "Confirmed";
-  return "Edited";
-}
+const PILL = "h-7 rounded-full px-3 text-[12px] font-medium";
+const PILL_ON = "bg-content text-background-base";
+const PILL_OFF = "text-content/60 hover:bg-content/8 hover:text-content";
+
+type Tab = "kept" | "let-go";
 
 export function MemoryReview({ ports }: { ports: MemoryPorts }) {
   const [doc, setDoc] = useState<MemoryDoc | null>(null);
@@ -57,6 +59,8 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
   const [editing, setEditing] = useState<{ id: string; text: string } | null>(null);
   const [showing, setShowing] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // WP-240: what is kept, or what was let go.
+  const [tab, setTab] = useState<Tab>("kept");
   const busyRef = useRef(false);
   const portsRef = useRef(ports);
   portsRef.current = ports;
@@ -206,6 +210,33 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
         </div>
       ) : null}
       {note ? <p>{note}</p> : null}
+      {doc ? (
+        <div role="tablist" aria-label="Which memory" className="flex flex-wrap gap-1.5" data-memory-tabs>
+          {(["kept", "let-go"] as const).map((id) => (
+            <button
+              key={id}
+              type="button"
+              role="tab"
+              aria-selected={tab === id}
+              data-memory-tab={id}
+              onClick={() => setTab(id)}
+              className={`${PILL} ${tab === id ? PILL_ON : PILL_OFF}`}
+            >
+              {id === "kept" ? "Kept" : `Let go${doc.archived?.length ? ` (${doc.archived.length})` : ""}`}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {tab === "let-go" && doc ? (
+        <LetGoList
+          doc={doc}
+          query={query}
+          busy={busy}
+          onBringBack={(id) => void change((current) => bringBack(current, id, Date.now()))}
+          onDelete={(id) => void change((current) => forgetLetGo(current, id))}
+        />
+      ) : (
+        <>
       {doc && plain.length === 0 && disputes.length === 0 && proposals.length === 0 ? <p>No matches.</p> : null}
       {asking ? <MemoryAsk item={asking} busy={busy} onAnswer={answerNow} /> : null}
       <ul className="flex flex-col gap-3">
@@ -241,9 +272,10 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
         {plain.map((item) => (
           <li key={item.id} data-id={item.id} data-kind={item.action} data-skill={item.skill?.name} className="flex flex-col gap-1">
             <p>{item.text}</p>
-            <p data-state>{item.action === "skill" && item.state === "confirmed" ? "Kept as a skill" : stateLabel(item.state)}</p>
+            <p data-state>{item.action === "skill" && item.state === "confirmed" ? "Kept as a skill" : memoryStatus(item)}</p>
             <p data-source>{item.source.label}</p>
             {item.by ? <p data-by>{`Written by ${engineName(item.by)}`}</p> : null}
+            {isEssential(item) ? <p data-essential>Sent in every chat</p> : null}
             <MemoryProvenance item={item} now={now} />
             {editing?.id === item.id ? (
               <div className="flex flex-col gap-1">
@@ -319,6 +351,29 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
                     {`Edit ${item.text}`}
                   </button>
                 ) : null}
+                {item.action === "add" && item.state !== "unreviewed" ? (
+                  <button
+                    type="button"
+                    className={BTN}
+                    disabled={busy}
+                    data-essential-button
+                    aria-pressed={isEssential(item)}
+                    onClick={() => void change((current) => markEssential(current, item.id, !isEssential(item)))}
+                  >
+                    {isEssential(item) ? `Stop sending in every chat: ${item.text}` : `Send in every chat: ${item.text}`}
+                  </button>
+                ) : null}
+                {item.action === "add" ? (
+                  <button
+                    type="button"
+                    className={BTN}
+                    disabled={busy}
+                    data-let-go-button
+                    onClick={() => void change((current) => letGoItem(current, item.id, "manual", Date.now()))}
+                  >
+                    {`Let go ${item.text}`}
+                  </button>
+                ) : null}
                 <button type="button" className={BTN} disabled={busy} onClick={() => void remove(item)}>
                   {`Delete ${item.text}`}
                 </button>
@@ -363,6 +418,53 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
           );
         })}
       </ul>
+        </>
+      )}
     </section>
+  );
+}
+
+/** WP-240: the "Let go" tab. Each item says why it went, and can be brought back or deleted for good. */
+function LetGoList({
+  doc,
+  query,
+  busy,
+  onBringBack,
+  onDelete,
+}: {
+  doc: MemoryDoc;
+  query: string;
+  busy: boolean;
+  onBringBack: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const all = doc.archived ?? [];
+  const items = searchMemory(all, query).slice().reverse();
+  if (!all.length) return <p className="text-content/60">Nothing has been let go.</p>;
+  if (!items.length) return <p>No matches.</p>;
+  const textOf = (id: string | undefined) => (id ? doc.items.find((item) => item.id === id)?.text : undefined);
+  return (
+    <ul className="flex flex-col gap-3" data-let-go-list>
+      {items.map((item) => {
+        const reason = item.letGo?.reason ?? "manual";
+        const by = textOf(item.letGo?.by);
+        return (
+          <li key={item.id} data-let-go={item.id} data-reason={reason} className="flex flex-col gap-1">
+            <p>{item.text}</p>
+            <p data-let-go-why className="text-content/60">
+              {by && by !== item.text ? `${LET_GO_LABEL[reason]}: ${by}` : LET_GO_LABEL[reason]}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" className={BTN} disabled={busy} onClick={() => onBringBack(item.id)}>
+                {`Bring back ${item.text}`}
+              </button>
+              <button type="button" className={BTN} disabled={busy} onClick={() => onDelete(item.id)}>
+                {`Delete ${item.text}`}
+              </button>
+            </div>
+          </li>
+        );
+      })}
+    </ul>
   );
 }

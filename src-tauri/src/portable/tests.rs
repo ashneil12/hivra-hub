@@ -378,6 +378,109 @@ fn the_shared_patterns_compile_and_scrub() {
     assert_eq!(value["input_tokens"], 5);
 }
 
+/// WP-248: passwords typed on a command line, as Claude Code saves them in `.claude/settings.local.json`. The same
+/// samples as `src/features/portable/model/secrets.test.ts`. Made-up values.
+#[test]
+fn command_line_passwords_are_found_and_mere_flags_are_not() {
+    let s = scrubber();
+    let found: &[(&str, &str, &str)] = &[
+        (
+            r#""Bash(PGPASSWORD=hunter2 psql -h db.example.com -U app -d prod -c \"select 1\")""#,
+            "Password variable",
+            "hunter2",
+        ),
+        (
+            "export PGPASSWORD='s3cr3t-pw'",
+            "Password variable",
+            "s3cr3t-pw",
+        ),
+        (
+            "MYSQL_PWD=abcd1234 mysql -u root",
+            "Password variable",
+            "abcd1234",
+        ),
+        (
+            r#""Bash(mysql -u root -pS3cretPass99 -e \"show databases\")""#,
+            "mysql password",
+            "S3cretPass99",
+        ),
+        (
+            "mysqldump -h db -u admin -p'Tr0ub4dor' shop > shop.sql",
+            "mysql password",
+            "Tr0ub4dor",
+        ),
+        (
+            "mysql --user=root --password=S3cretPass99 app",
+            "mysql password",
+            "S3cretPass99",
+        ),
+        (
+            r#""Bash(sshpass -p MyPassw0rd ssh deploy@10.0.0.4 uptime)""#,
+            "sshpass password",
+            "MyPassw0rd",
+        ),
+        (
+            r#""Bash(curl -u admin:S3cretPass99 https://api.example.com/v1/items)""#,
+            "curl password",
+            "S3cretPass99",
+        ),
+        (
+            "curl -s --user deploy:Zx9pass https://h.example.com",
+            "curl password",
+            "Zx9pass",
+        ),
+        (
+            r#""Bash(redis-cli -h cache.internal -p 6379 -a S3cretPass99 ping)""#,
+            "redis-cli password",
+            "S3cretPass99",
+        ),
+        (
+            "redis-cli --pass hunter22 info",
+            "redis-cli password",
+            "hunter22",
+        ),
+    ];
+    for (line, name, password) in found {
+        assert!(
+            s.findings(line).iter().any(|found| found == name),
+            "{line}: {:?}",
+            s.findings(line)
+        );
+        let (clean, n) = s.redact_text(line);
+        assert!(n >= 1 && !clean.contains(password), "{line} -> {clean}");
+    }
+    let (clean, _) = s.redact_text("sshpass -p MyPassw0rd ssh deploy@host");
+    assert_eq!(clean, "sshpass -p [secret removed] ssh deploy@host");
+    for line in [
+        "mysql -p",
+        "Run mysql -u root -p and type the password when asked.",
+        "mysql -h db -u admin -p mydb",
+        "mysql -P 3306 -p -u root",
+        "ls -a ~/projects",
+        "git commit -a -m 'fix the build'",
+        "tar -a -cf out.tar.gz dir",
+        "redis-cli -a",
+        "redis-cli --no-auth-warning -a $REDIS_PASSWORD ping",
+        "redis-cli -a <password> ping",
+        "sshpass -p",
+        "sshpass -f ~/.pw ssh host",
+        "curl -u admin https://example.com:8443/x",
+        "curl -u $USER:$TOKEN https://example.com",
+        "curl -u token: https://example.com",
+        "curl -o out.json https://example.com:443/a",
+        "PGPASSWORD=$PGPASS psql",
+        r#"PGPASSWORD="${DB_PASSWORD}" psql"#,
+        "Set PGPASSWORD= to your password",
+        "The mysql client asks for a password with -p.",
+    ] {
+        assert!(
+            s.findings(line).is_empty(),
+            "{line}: {:?}",
+            s.findings(line)
+        );
+    }
+}
+
 /// The acceptance test: export everything, import into an empty data folder, and get the same thing back, minus
 /// the secrets (scrubbed), with automations paused and delegations as history.
 #[test]

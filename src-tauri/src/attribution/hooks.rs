@@ -25,6 +25,8 @@ const HOOK_TEST_LINE: &str = "hook_test='-x'";
 const PREPARE: &str = "prepare-commit-msg";
 /// The pre-push hook, which runs the commit guard (WP-200) before the repository's own one.
 const PRE_PUSH: &str = "pre-push";
+/// The pre-commit hook (WP-248), which runs the same path and secret check on what a commit takes, before git makes it.
+const PRE_COMMIT: &str = "pre-commit";
 
 /// These three must never be files in the crew folder.
 /// push-to-checkout: its presence makes receive-pack hand over the worktree
@@ -895,6 +897,39 @@ pub(crate) fn pre_push_script(
     ))
 }
 
+/// The pre-commit hook (WP-248): the commit guard checks what this commit takes (a new agent file, an approvals file
+/// the repository tracks, secrets in new lines) the way `pre_push_script` checks a push, so the commit is never made
+/// and nothing has to be taken out of history. Then the repository's own pre-commit hook runs, if it has one. Git
+/// names the index being committed in `GIT_INDEX_FILE`, which the guard reads from its environment.
+pub(crate) fn pre_commit_script(
+    guard: &str,
+    real: Option<&str>,
+    store: &str,
+) -> Result<String, String> {
+    let guard = shell_quote(guard).ok_or_else(|| refuse("pre-commit: guard path has a NUL"))?;
+    let store =
+        shell_quote(store).ok_or_else(|| refuse("pre-commit: allow list path has a NUL"))?;
+    let real = match real {
+        Some(path) => shell_quote(path).ok_or_else(|| refuse("pre-commit: hook path has a NUL"))?,
+        None => "''".to_string(),
+    };
+    Ok(format!(
+        "#!/bin/sh\n\
+         # SPDX-License-Identifier: Apache-2.0\n\
+         # Hivra WP-248. Checks what this commit takes (agent files, secrets) before git makes it. Then runs the\n\
+         # repository's own pre-commit hook, whose path was resolved when the crew started.\n\
+         guard={guard}\n\
+         store={store}\n\
+         real_hook={real}\n\
+         \"$guard\" pre-commit-guard --store \"$store\" < /dev/null || exit 1\n\
+         if [ {test} \"$real_hook\" ]; then\n\
+         \texec \"$real_hook\" \"$@\"\n\
+         fi\n\
+         exit 0\n",
+        test = hook_test()
+    ))
+}
+
 /// Remove forwarders for hooks the repository no longer has, and temp files a
 /// failed publish left behind. Only regular files and links inside the folder
 /// are touched; removing a link removes the link, never what it points at.
@@ -1050,11 +1085,24 @@ pub(crate) fn install_for_repo_with(
         PRE_PUSH,
         &pre_push_script(guard, real_pre_push, store)?,
     )?;
+    // WP-248: a crew's shell commit runs the same check first, so an agent file or a secret never becomes a local
+    // commit, even on a machine with no global ignore for it.
+    let real_pre_commit = found
+        .iter()
+        .find(|hook| hook.name == PRE_COMMIT)
+        .map(|hook| hook.path.as_str());
+    install_one(
+        &root,
+        &dir,
+        PRE_COMMIT,
+        &pre_commit_script(guard, real_pre_commit, store)?,
+    )?;
     let mut keep = BTreeSet::new();
     keep.insert(PREPARE.to_string());
     keep.insert(PRE_PUSH.to_string());
+    keep.insert(PRE_COMMIT.to_string());
     for hook in &found {
-        if hook.name == PREPARE || hook.name == PRE_PUSH {
+        if hook.name == PREPARE || hook.name == PRE_PUSH || hook.name == PRE_COMMIT {
             continue;
         }
         install_one(&root, &dir, &hook.name, &forwarder_script(&hook.path)?)?;

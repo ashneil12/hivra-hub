@@ -29,8 +29,22 @@ Nod (Apache-2.0, `src/server/schedules.ts` about lines 270 to 345, `recordObserv
 
 ## Done when
 
-- [ ] Tests:
+- [x] Tests:
   - an unchanged watch makes no model call;
   - a change shows before and after;
   - two overlapping ticks run once;
   - a failure posts a line.
+
+## Built
+
+- `src/features/automations/model/quietWatch.ts`: the watch (an https address, `github:owner/repo search`, or a file
+  path), the read through the app's existing doors (`page_http_fetch` with the address itself as the only grant,
+  the Inbox's `git_github_work_items`, `read_text_file`), the digest, the 4 KB "Before" and the one-run-at-a-time guard.
+- Habits: `watch` and `watchSeen` in `habits.json`; `habits.add` / `habits.update` take `"watch"`; a quiet skip is a
+  run with `unchanged: true`; a failed run posts one line in the first mate's chat (`useMonoHabits.ts`).
+- Automations: the editor's "Only run when this changes"; the watch and its last look live in the local store document
+  `schedule-watches` (`automationWatches.ts`), not in the automation's Rust definition. A skipped run is recorded as
+  `skipped` with its reason; a failure already writes its activity line (WP-180a).
+- A person's Run now always runs (with the before and after); only schedules stay quiet.
+- Shots: `docs/hivra/work/shots/wp-244/`. Specs: `src/features/automations/model/quietWatch.test.ts`,
+  `automationQuiet.test.ts`, `src/app/hooks/useMonoHabits.test.ts`, `tests/browser/wp244-quiet-watch.spec.ts`.

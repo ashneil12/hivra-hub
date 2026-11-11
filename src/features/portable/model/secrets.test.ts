@@ -50,3 +50,58 @@ it("a value under a secret-looking key goes whatever it looks like", () => {
   expect(value).toEqual({ apiKey: SECRET_MARKER, nested: [{ token: "abc" }, { note: SECRET_MARKER }], input_tokens: 5 });
   expect([isSecretKey("client_secret"), isSecretKey("tokens"), isSecretKey("secretName")]).toEqual([true, false, false]);
 });
+
+// WP-248: passwords typed on a command line, in the shapes Claude Code saves as "don't ask again" rules in
+// .claude/settings.local.json (LATENT, 8 Nov 2026, on Apiiro's 5 Nov report). The same samples are in the Rust test
+// (src-tauri/src/portable/tests.rs). Made-up values.
+const COMMAND_PASSWORDS: Array<[string, string, string]> = [
+  ['"Bash(PGPASSWORD=hunter2 psql -h db.example.com -U app -d prod -c \\"select 1\\")"', "Password variable", "hunter2"],
+  ["export PGPASSWORD='s3cr3t-pw'", "Password variable", "s3cr3t-pw"],
+  ["MYSQL_PWD=abcd1234 mysql -u root", "Password variable", "abcd1234"],
+  ['"Bash(mysql -u root -pS3cretPass99 -e \\"show databases\\")"', "mysql password", "S3cretPass99"],
+  ["mysqldump -h db -u admin -p'Tr0ub4dor' shop > shop.sql", "mysql password", "Tr0ub4dor"],
+  ["mysql --user=root --password=S3cretPass99 app", "mysql password", "S3cretPass99"],
+  ['"Bash(sshpass -p MyPassw0rd ssh deploy@10.0.0.4 uptime)"', "sshpass password", "MyPassw0rd"],
+  ['"Bash(curl -u admin:S3cretPass99 https://api.example.com/v1/items)"', "curl password", "S3cretPass99"],
+  ["curl -s --user deploy:Zx9pass https://h.example.com", "curl password", "Zx9pass"],
+  ['"Bash(redis-cli -h cache.internal -p 6379 -a S3cretPass99 ping)"', "redis-cli password", "S3cretPass99"],
+  ["redis-cli --pass hunter22 info", "redis-cli password", "hunter22"],
+];
+
+const NOT_COMMAND_PASSWORDS = [
+  "mysql -p",
+  "Run mysql -u root -p and type the password when asked.",
+  "mysql -h db -u admin -p mydb",
+  "mysql -P 3306 -p -u root",
+  "ls -a ~/projects",
+  "git commit -a -m 'fix the build'",
+  "tar -a -cf out.tar.gz dir",
+  "redis-cli -a",
+  "redis-cli --no-auth-warning -a $REDIS_PASSWORD ping",
+  "redis-cli -a <password> ping",
+  "sshpass -p",
+  "sshpass -f ~/.pw ssh host",
+  "curl -u admin https://example.com:8443/x",
+  "curl -u $USER:$TOKEN https://example.com",
+  "curl -u token: https://example.com",
+  "curl -o out.json https://example.com:443/a",
+  "PGPASSWORD=$PGPASS psql",
+  'PGPASSWORD="${DB_PASSWORD}" psql',
+  "Set PGPASSWORD= to your password",
+  "The mysql client asks for a password with -p.",
+];
+
+it("finds a password typed on a command line (WP-248) and scrubs only the password", () => {
+  for (const [line, name, password] of COMMAND_PASSWORDS) {
+    expect(findSecrets(line), line).toContain(name);
+    const r = redactText(line);
+    expect(r.text, line).not.toContain(password);
+    expect(r.text, line).toContain(SECRET_MARKER);
+  }
+  // The command around the password stays readable.
+  expect(redactText("sshpass -p MyPassw0rd ssh deploy@host").text).toBe(`sshpass -p ${SECRET_MARKER} ssh deploy@host`);
+});
+
+it("leaves a command that only asks for a password, a variable or a plain -a flag alone (WP-248)", () => {
+  for (const line of NOT_COMMAND_PASSWORDS) expect(findSecrets(line), line).toEqual([]);
+});

@@ -2292,6 +2292,20 @@ fn every_executable_repo_hook_is_forwarded_and_three_are_never_written() {
                 text.contains(hook_test_line()),
                 "{name} has the wrong hook test: {text}"
             );
+        } else if *name == "pre-commit" {
+            // WP-248: the pre-commit hook runs the commit guard first, stops on its refusal, then the repository's own.
+            assert!(
+                text.contains("pre-commit-guard --store"),
+                "pre-commit does not run the guard: {text}"
+            );
+            assert!(
+                text.contains("|| exit 1") && text.contains("exec \"$real_hook\" \"$@\""),
+                "pre-commit does not stop on a refusal and then forward: {text}"
+            );
+            assert!(
+                !text.contains("real_hook=''"),
+                "pre-commit did not bake the repository's own hook: {text}"
+            );
         } else if *name == "pre-push" {
             // WP-200: the pre-push hook runs the commit guard first, then the repository's own hook.
             assert!(
@@ -2333,10 +2347,15 @@ fn a_repo_with_no_hooks_gets_only_prepare_commit_msg() {
         .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
         .collect();
     names.sort();
-    // WP-200: the pre-push hook (the commit guard) is installed too, even with no repository hook of its own.
+    // WP-200: the pre-push hook (the commit guard) is installed too, even with no repository hook of its own; WP-248:
+    // so is the pre-commit hook, which runs the same check before a commit is made.
     assert_eq!(
         names,
-        vec!["pre-push".to_string(), "prepare-commit-msg".to_string()]
+        vec![
+            "pre-commit".to_string(),
+            "pre-push".to_string(),
+            "prepare-commit-msg".to_string()
+        ]
     );
     let script = fs::read_to_string(dir.join("prepare-commit-msg")).unwrap();
     assert!(script.contains("real_hook=''"));
@@ -3155,4 +3174,77 @@ fn harness_spawn_does_not_wait_on_a_slow_journal() {
         "the journal did not run in the background"
     );
     assert!(got.is_some(), "the journal did not finish");
+}
+
+/// WP-248: a crew's shell commit runs the commit guard (`pre-commit-guard`) before git makes the commit. A refusal
+/// stops the commit and the repository's own pre-commit hook does not run; a pass runs that hook next.
+#[test]
+fn pre_commit_runs_the_guard_first_and_its_refusal_stops_the_commit() {
+    let scratch = Scratch::new();
+    let made = GitRepo::new(&scratch);
+    let base = made.env();
+    git(&made.repo, &base, &["init", "-b", "main"]).unwrap();
+    fs::write(made.repo.join("keep.txt"), "base\n").unwrap();
+    git(&made.repo, &base, &["add", "keep.txt"]).unwrap();
+    git(&made.repo, &base, &["commit", "-m", "base"]).unwrap();
+    let real_ran = scratch.path().join("real-pre-commit-ran");
+    write_hook(
+        &made.repo.join(".git").join("hooks").join("pre-commit"),
+        &format!("printf 'ran\\n' >> {}\nexit 0\n", sh_quote(&real_ran)),
+    );
+    let guard_args = scratch.path().join("guard-args");
+    let verdict = scratch.path().join("guard-verdict");
+    // The stand-in guard records how it was called and answers with the exit code in `verdict`.
+    let stand_in = scratch.path().join("guard-stand-in");
+    write_hook(
+        &stand_in,
+        &format!(
+            "printf '%s\\n' \"$@\" > {}\nexit \"$(cat {})\"\n",
+            sh_quote(&guard_args),
+            sh_quote(&verdict)
+        ),
+    );
+    let data = scratch.path().join("data");
+    fs::create_dir_all(&data).unwrap();
+    let hooks =
+        super::hooks::install_for_repo_with(&data, &made.repo, &env_pairs(&base), &stand_in)
+            .unwrap();
+    let hooks_path = hooks.to_str().unwrap().to_string();
+    let (count, key, value_name) = super::logic::git_config_env(None, &hooks_path).unwrap();
+    let armed = Armed {
+        count,
+        key,
+        value_name,
+        hooks_path,
+    };
+    let crew = crew_pairs(&base, &armed);
+
+    fs::write(&verdict, "1").unwrap();
+    fs::write(made.repo.join("keep.txt"), "refused\n").unwrap();
+    assert!(git(&made.repo, &crew, &["commit", "-am", "refused"]).is_err());
+    let args = fs::read_to_string(&guard_args).unwrap_or_default();
+    let mut lines = args.lines();
+    assert_eq!(lines.next(), Some("pre-commit-guard"), "{args}");
+    assert_eq!(lines.next(), Some("--store"), "{args}");
+    assert!(
+        lines
+            .next()
+            .is_some_and(|store| store.ends_with("commit-guard-allows.json")),
+        "{args}"
+    );
+    assert!(
+        !real_ran.exists(),
+        "the repository's hook ran after a refusal"
+    );
+    let log = git(&made.repo, &base, &["log", "--format=%s"]).unwrap();
+    assert!(!log.contains("refused"), "the commit was made: {log}");
+
+    fs::write(&verdict, "0").unwrap();
+    git(&made.repo, &crew, &["commit", "-am", "passed"]).unwrap();
+    assert!(
+        real_ran.exists(),
+        "the repository's own pre-commit hook did not run"
+    );
+    let log = git(&made.repo, &base, &["log", "--format=%s"]).unwrap();
+    assert!(log.contains("passed"), "{log}");
 }

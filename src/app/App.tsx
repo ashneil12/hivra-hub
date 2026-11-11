@@ -23,6 +23,7 @@ import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel"
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
 import { parksForApproval } from "../features/sessions/model/approvalCarry";
+import { openActionHash } from "../features/sessions/model/approvalAction";
 import { stripHiddenCharacters } from "../features/sessions/model/hiddenText";
 import { heldLineForSend } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
@@ -175,6 +176,7 @@ import {
 import { useHubChecks } from "./hooks/useHubChecks";
 import { inCheckTurn, withoutQuietTurns } from "../features/hub/model/hubChecks";
 import { useAutopilot } from "../features/autopilot/hooks/useAutopilot";
+import { useOwnerWords } from "../features/autopilot/hooks/useOwnerWords";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
@@ -1120,6 +1122,9 @@ import {
   type AutomationRun,
 } from "../features/automations/model/automations";
 import { automationRunErrorClass } from "../features/automations/model/runFailure";
+// WP-244: one run of an automation at a time, and a watched one skips the model when nothing changed.
+import { EMPTY_TURN_FAILED, EMPTY_TURN_NOTE, emptyTurnStep } from "../features/sessions/model/emptyTurn";
+import { startAutomationRun } from "../features/automations/model/automationQuiet";
 import { MissedScheduleNotice } from "../features/one-time-schedule/ui/OneTimeSchedulePanel";
 import { useOneTimeScheduleRunner } from "../features/one-time-schedule/ui/useOneTimeScheduleRunner";
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
@@ -1359,6 +1364,12 @@ type SubmitOptions = ComposerTurnOptions & {
    * (habits, automations, agent apps, wakes, continue prompts, first-mate steers) leaves it out, so it is automated.
    */
   origin?: TurnOrigin;
+  /**
+   * WP-247 / WP-243: Ash typed this turn in the composer himself. Only `onComposerSubmit` sets it (and a queued message
+   * he typed keeps it); every other caller leaves it out. Only such a turn may set or clear the chat's goal, and only its
+   * words count as Ash's own when the app checks an action against what he said.
+   */
+  byOwner?: boolean;
   ciRepair?: CiRepairRequest;
   /** Saved alongside the user turn; does not replace the submitted prompt. */
   ciContext?: string;
@@ -1395,6 +1406,8 @@ type SubmitOptions = ComposerTurnOptions & {
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
   projectLocationReady?: boolean;
+  /** WP-245: this turn is the one retry after an empty turn; empty again, it is shown as failed. */
+  emptyRetried?: boolean;
 };
 
 type Submit = (
@@ -8460,6 +8473,15 @@ function Workspace({
     ): SubmissionAcceptance => {
       // Every turn is built from here: a hidden character never reaches the agent, whichever surface sent it.
       const text = stripHiddenCharacters(rawText).text;
+      // WP-247 / WP-243: Ash's own typed turn. A turn the app wrote around it (hidden, a resume, a wake) never is.
+      const byOwner =
+        options?.byOwner === true &&
+        !options.managed &&
+        !options.monoNote &&
+        !options.monoCheck &&
+        !options.monoSessionCompletion &&
+        !options.autoResume &&
+        !options.appRequestId;
       const remote = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -9034,6 +9056,7 @@ function Workspace({
                           ? { appRequestId: options.appRequestId }
                           : {}),
                         ...(options?.waitForIdle ? { waitForIdle: true } : {}),
+                        ...(byOwner ? { byOwner: true } : {}),
                       },
                     ],
                     queueStatus:
@@ -9078,6 +9101,7 @@ function Workspace({
             ...(options?.appRequestId
               ? { appRequestId: options.appRequestId }
               : {}),
+            ...(byOwner ? { byOwner: true as const } : {}),
           });
         });
         sessionsRef.current = nextSessions;
@@ -9092,6 +9116,7 @@ function Workspace({
             });
             await steerHarnessTurn({
               origin: options?.origin,
+              ...(byOwner ? { byOwner: true } : {}),
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -9258,6 +9283,8 @@ function Workspace({
         ...(options?.managed || options?.monoSessionCompletion || options?.monoCheck || options?.monoNote
           ? { internal: true }
           : {}),
+        // WP-243: Ash's own words, typed in the composer. Never on a hidden turn, a CI repair or a handoff card.
+        ...(byOwner && !ciContext && !card ? { byOwner: true as const } : {}),
         ...(options?.monoNote ? { monoNote: options.monoNote } : {}),
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
@@ -9937,6 +9964,7 @@ function Workspace({
             return sendHarnessTurn({
               // WP-176: the caller's origin. Only the composer sets "person"; an omitted origin is automated.
               origin: options?.origin,
+              ...(byOwner ? { byOwner: true } : {}),
               harness: current.harness,
               sessionId,
               cwd: workCwd,
@@ -10475,11 +10503,51 @@ function Workspace({
         .finally(() => {
           editedResend?.reject();
           if (editedResend) editedResends.finish(sessionId);
-          options?.onSettled?.(
+          let outcome: ControlOutcome =
             turnGen.current.get(sessionId) !== gen
               ? { status: "cancelled", text: controlText }
-              : controlOutcome,
-          );
+              : controlOutcome;
+          // WP-245: a turn that ended with no words and no tool call gets one retry with a short note; empty again,
+          // it shows as failed instead of leaving a silent chat. Whoever waits on the turn hears the retry's outcome.
+          const step =
+            outcome.status === "completed"
+              ? emptyTurnStep(
+                  sessionsRef.current.find((s) => s.id === sessionId),
+                  outcome,
+                  text,
+                  !!options?.emptyRetried,
+                )
+              : "settle";
+          if (step === "retry") {
+            const settle = options?.onSettled;
+            const first = outcome;
+            window.setTimeout(() => {
+              const chat = sessionsRef.current.find((s) => s.id === sessionId);
+              if (!chat || chat.busy || chat.queuedMessages?.length) {
+                settle?.(first);
+                return;
+              }
+              const accepted = submitSessionRef.current(sessionId, EMPTY_TURN_NOTE, [], {
+                // The app's own note: an automated turn (no origin), shown as an app note line.
+                emptyRetried: true,
+                ...(settle ? { onSettled: settle } : {}),
+              });
+              if (accepted === false) settle?.(first);
+              else if (typeof accepted !== "boolean")
+                void Promise.resolve(accepted)
+                  .then((ok) => {
+                    if (!ok) settle?.(first);
+                  })
+                  .catch(() => settle?.(first));
+            }, 0);
+            return;
+          }
+          if (step === "failed") {
+            outcome = { status: "failed", text: "", error: EMPTY_TURN_FAILED };
+            enqueueHarnessEvent(sessionId, { type: "session.error", message: EMPTY_TURN_FAILED });
+            flushHarnessEvents();
+          }
+          options?.onSettled?.(outcome);
         });
       return true;
     },
@@ -10509,7 +10577,7 @@ function Workspace({
   // The composer's own send is the person's turn for the spend gate. Other callers of onSubmit are automated.
   const onComposerSubmit = useCallback(
     (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean =>
-      onSubmit(sessionId, text, attachments, { ...options, origin: "person" }),
+      onSubmit(sessionId, text, attachments, { ...options, origin: "person", byOwner: true }),
     [onSubmit],
   );
 
@@ -10746,7 +10814,13 @@ function Workspace({
         role: "approval",
         text: block.text,
         ...(block.tool ? { tool: block.tool } : {}),
-        approval: { requestId, at: Date.now() },
+        // WP-243: the run's frozen action travels with the card, so Ash's allow is bound to what the run asked.
+        approval: {
+          requestId,
+          at: Date.now(),
+          ...(block.approval?.actionHash ? { actionHash: block.approval.actionHash } : {}),
+          ...(block.approval?.call ? { call: block.approval.call } : {}),
+        },
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
@@ -10775,7 +10849,17 @@ function Workspace({
         automationSessionReservations.current.delete(reservationId);
         reservationId = undefined;
       };
+      // WP-244: what the watch saw is kept once the run settles; until then no second run of it starts.
+      let finishWatch: ((ok: boolean) => Promise<void>) | undefined;
       try {
+        const start = await startAutomationRun(automation, prompt, {}, run.trigger === "manual");
+        if (start.kind === "skip") {
+          // No session, no model call: the run's line says why.
+          await updateAutomationRun(run.id, "skipped", { error: start.reason });
+          return;
+        }
+        prompt = start.prompt;
+        finishWatch = start.finish;
         const eventRun = run.trigger === "event";
         const linkedWorkItem =
           sourceWorkItem ?? linkedWorkItemFromAutomationEvent(run);
@@ -10897,6 +10981,7 @@ function Workspace({
               providerClass: outcome.errorClass,
               harness: automation.harness,
             });
+            void finishWatch?.(outcome.status === "completed");
             void updateAutomationRun(run.id, status, {
               sessionId: session.id,
               ...(outcome.error ? { error: outcome.error } : {}),
@@ -10909,6 +10994,7 @@ function Workspace({
         });
       } catch (reason: unknown) {
         const message = reason instanceof Error ? reason.message : String(reason);
+        void finishWatch?.(false);
         // WP-180a: a launch that fails before a turn still classes a missing CLI.
         const errorClass = automationRunErrorClass({
           message,
@@ -11898,6 +11984,7 @@ function Workspace({
               head.attachments,
               {
                 queuedMessageId: head.id,
+                ...(head.byOwner ? { byOwner: true } : {}),
                 followUpBehavior: steering ? "steer" : undefined,
                 noteCard: head.noteCard,
                 handoffCard: head.handoffCard,
@@ -12073,6 +12160,7 @@ function Workspace({
       onSubmit(sessionId, message.text, message.attachments, {
         followUpBehavior: "steer",
         queuedMessageId: message.id,
+        ...(message.byOwner ? { byOwner: true } : {}),
         noteCard: message.noteCard,
         handoffCard: message.handoffCard,
         intent: message.intent,
@@ -13448,9 +13536,13 @@ function Workspace({
   // Returns false when the decision was not sent (the call is gone), so the phone is
   // told the truth and the call stays answerable.
   const onApproval = useCallback(
-    (sessionId: string, requestId: number, decision: ApprovalDecision): boolean => {
+    (sessionId: string, requestId: number, decision: ApprovalDecision, boundHash?: string): boolean => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
       if (!session || session.worktreeRemoved) return false;
+      // WP-243: an allow is bound to the frozen action the card shows. A caller that judged a card names its hash;
+      // a tap on the card names the card that is open under this id. The registry sends it only if that is the action
+      // still waiting.
+      const shown = boundHash ?? openActionHash(session.blocks, requestId);
       // An approval a habit's hidden run asked for, put to the user in the
       // Mono's chat: answer the run, and settle the question in the chat.
       if (isMonoSession(sessionId)) {
@@ -13462,24 +13554,23 @@ function Workspace({
           const run = relay
             ? sessionsRef.current.find((s) => s.id === relay.runId)
             : undefined;
-          if (relay && run)
+          // WP-243: the allow names the run's frozen action the card carried; the run refuses any other.
+          const sent =
+            !!(relay && run) &&
             respondHarnessApproval(
-              run.harness,
-              run.id,
-              relay.requestId,
+              run!.harness,
+              run!.id,
+              relay!.requestId,
               decision,
+              boundHash ?? asked.approval?.actionHash,
             );
           decideMonoBlockRef.current(
             sessionId,
             asked.id,
-            relay && run
-              ? decision === "deny"
-                ? "deny"
-                : "allow"
-              : "cancelled",
+            sent ? (decision === "deny" ? "deny" : "allow") : "cancelled",
           );
-          // No relay waiting: the block was settled as cancelled, the tool did not run.
-          return !!(relay && run);
+          // Nothing sent (no relay waiting, or not the action the run asked): settled as cancelled, the tool did not run.
+          return sent;
         }
       }
       if (remoteProjectFor(session.cwd)) {
@@ -13487,7 +13578,7 @@ function Workspace({
         if (!actions) return false;
         return actions.approve(requestId, decision);
       }
-      return respondHarnessApproval(session.harness, sessionId, requestId, decision);
+      return respondHarnessApproval(session.harness, sessionId, requestId, decision, shown);
     },
     [],
   );
@@ -13575,6 +13666,17 @@ function Workspace({
       if (mono) void onOpenMono(mono.id);
       else if (!focusOpenSession(id)) void onSelectHistorySession(id);
     },
+  });
+  // WP-243: a card Ash's own words already cover is allowed, bound to its frozen action, with his words shown.
+  useOwnerWords({
+    sessions,
+    sessionsRef,
+    updateSession: (id, change) =>
+      updateSessionState(sessionsRef, setSessions, (all) =>
+        all.map((entry) => (entry.id === id ? change(entry) : entry)),
+      ),
+    approve: onApproval,
+    isDelegated: (id) => !!delegationsRef.current?.openRowFor(id),
   });
 
   const onQuestionInteraction = useCallback(
@@ -14099,8 +14201,9 @@ function Workspace({
       },
       respondApproval: (id, requestId, decision) => {
         const session = sessionsRef.current.find((entry) => entry.id === id);
+        // WP-243: the lead's allow is bound to the worker's card it read.
         if (session)
-          respondHarnessApproval(session.harness, id, requestId, decision);
+          respondHarnessApproval(session.harness, id, requestId, decision, openActionHash(session.blocks, requestId));
       },
       answerQuestion: (id, requestId, reply) => {
         const session = sessionsRef.current.find((entry) => entry.id === id);
