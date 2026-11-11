@@ -1,3 +1,4 @@
+// @vitest-environment happy-dom
 import { afterEach, describe, expect, it } from "vitest";
 import {
   encodeModelLaunchId,
@@ -103,6 +104,7 @@ describe("a card edit during a turn", () => {
     expect(peekCardRun("bo")?.monoId).toBe("bo");
     expect(peekCardRun("cam")?.monoId).toBe("cam");
     resetCardRunsForTests();
+    localStorage.clear();
 
     addMono({
       id: "ada",

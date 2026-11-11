@@ -1,9 +1,10 @@
 // WP-182: a card edit made while a turn is running is applied once that turn is idle.
 import { useEffect } from "react";
+import { resolveModel } from "../../sessions/model/models";
 import type { HarnessId } from "../../sessions/model/session";
-import { applyIdleCardRuns, isCardHarness, type CardRun } from "../model/monoRun";
+import { applyIdleCardRuns, isCardHarness, settingsForCard, type CardRun } from "../model/monoRun";
 
-type Watched = { id: string; busy?: boolean };
+type Watched = { id: string; busy?: boolean; modelSettings?: Record<string, string> };
 
 export function useApplyMonoCardRun(
   sessions: readonly Watched[],
@@ -13,8 +14,9 @@ export function useApplyMonoCardRun(
   useEffect(() => {
     applyIdleCardRuns(sessions, (sessionId, run: CardRun) => {
       if (!isCardHarness(run.harness)) return;
+      const current = sessions.find((session) => session.id === sessionId)?.modelSettings;
       onModelChange(sessionId, run.harness, run.model);
-      onModelSettingsChange(sessionId, run.settings);
+      onModelSettingsChange(sessionId, settingsForCard(resolveModel(run.harness, run.model), { ...current, ...run.settings }, run.engineFast));
     });
   }, [sessions, onModelChange, onModelSettingsChange]);
 }

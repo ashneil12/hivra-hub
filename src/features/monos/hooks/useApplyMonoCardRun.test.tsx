@@ -95,7 +95,7 @@ it("keeps compatible context and fast when a queued model change applies", async
   await act(async () => {
     root.render(createElement(Probe, { busy: false }));
   });
-  const settings = onModelSettingsChange.mock.calls.at(-1)?.[1] as Record<string, string>;
+  const settings = onModelSettingsChange.mock.calls[onModelSettingsChange.mock.calls.length - 1]?.[1] as Record<string, string>;
   expect(settings).toMatchObject({ effort: "low", context: "1m", fast: "true" });
   expect(settings).not.toHaveProperty("thinking");
 });

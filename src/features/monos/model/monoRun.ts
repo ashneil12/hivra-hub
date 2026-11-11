@@ -1,7 +1,7 @@
 // WP-182: fast mode on a Mono uses the catalog's `fast` setting. A model without
 // that setting never carries it. A change made while a turn is running waits here
 // until the turn is idle, so nothing restarts the running turn.
-import type { AgentModel } from "../../sessions/model/models";
+import { preferredModelSettings, type AgentModel } from "../../sessions/model/models";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import { findMono, monoForSession, type Mono } from "./mono";
 
@@ -26,6 +26,18 @@ export function withMonoFast(
   return next;
 }
 
+/**
+ * What a card edit stores. Starts from the same merge a model change uses, then
+ * overlays this Mono's fast flag. Keys the model does not offer are dropped.
+ */
+export function settingsForCard(
+  model: AgentModel,
+  current: Record<string, string> | undefined,
+  engineFast: boolean | undefined,
+): Record<string, string> {
+  return withMonoFast(model, preferredModelSettings(model, current), engineFast);
+}
+
 export type CardRun = {
   monoId: string;
   harness: string;
@@ -36,7 +48,7 @@ export type CardRun = {
 
 const memory = new Map<string, string>();
 
-/** Test seam. Runs after a queued run is read and before it is written, so two windows can overlap. */
+/** Test seam. Runs after the seen record still matches and before it is written, so two windows can overlap. */
 let beforeCardRunWrite: (() => void) | undefined;
 
 export function setBeforeCardRunWriteForTests(next: (() => void) | undefined): void {
@@ -93,44 +105,69 @@ function parseRun(value: unknown): CardRun | undefined {
   };
 }
 
-function readRuns(): CardRun[] {
-  try {
-    const raw = JSON.parse(getItem(KEY) ?? "[]") as unknown;
-    if (!Array.isArray(raw)) return [];
-    return raw.flatMap((row) => {
-      const run = parseRun(row);
-      return run ? [run] : [];
-    });
-  } catch {
-    return [];
-  }
+type RunBag = { rev: number; runs: CardRun[] };
+
+function runsFrom(value: unknown): CardRun[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((row) => {
+    const run = parseRun(row);
+    return run ? [run] : [];
+  });
 }
 
-function writeRuns(runs: readonly CardRun[]): void {
+/** The queued record. An older bare array is revision 0. A value that is not a record is ignored. */
+function readBag(): { raw: string | null; bag: RunBag } {
+  const raw = getItem(KEY);
+  if (!raw) return { raw, bag: { rev: 0, runs: [] } };
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed)) return { raw, bag: { rev: 0, runs: runsFrom(parsed) } };
+    if (parsed && typeof parsed === "object") {
+      const row = parsed as Record<string, unknown>;
+      const rev = typeof row.rev === "number" && Number.isFinite(row.rev) ? row.rev : 0;
+      return { raw, bag: { rev, runs: runsFrom(row.runs) } };
+    }
+  } catch {
+    /* keep the raw string so a later write still has to match it */
+  }
+  return { raw, bag: { rev: 0, runs: [] } };
+}
+
+/** Writes only when the record is still the one that was read. The seam runs between the two checks. */
+function commitBag(seenRaw: string | null, rev: number, runs: readonly CardRun[]): boolean {
+  if (getItem(KEY) !== seenRaw) return false;
   beforeCardRunWrite?.();
+  if (getItem(KEY) !== seenRaw) return false;
   if (!runs.length) {
     removeItem(KEY);
-    return;
+    return true;
   }
-  setItem(KEY, JSON.stringify(runs));
+  setItem(KEY, JSON.stringify({ rev, runs }));
+  return true;
 }
 
 export function queueCardRun(run: CardRun): void {
-  writeRuns([...readRuns().filter((row) => row.monoId !== run.monoId), run]);
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const { raw, bag } = readBag();
+    const runs = [...bag.runs.filter((row) => row.monoId !== run.monoId), run];
+    if (commitBag(raw, bag.rev + 1, runs)) return;
+  }
 }
 
 export function peekCardRun(monoId: string): CardRun | undefined {
-  return readRuns().find((row) => row.monoId === monoId);
+  return readBag().bag.runs.find((row) => row.monoId === monoId);
 }
 
-/** Drops this exact queued run. False when a newer one has replaced it. */
+/** Drops this exact queued run. True only after the matching write. False when it is already gone or a newer one replaced it. */
 export function dropCardRun(run: CardRun): boolean {
-  const runs = readRuns();
   const key = JSON.stringify(run);
-  const next = runs.filter((row) => JSON.stringify(row) !== key);
-  if (next.length === runs.length) return false;
-  writeRuns(next);
-  return true;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const { raw, bag } = readBag();
+    const next = bag.runs.filter((row) => JSON.stringify(row) !== key);
+    if (next.length === bag.runs.length) return false;
+    if (commitBag(raw, bag.rev + 1, next)) return true;
+  }
+  return false;
 }
 
 export function resetCardRunsForTests(): void {
