@@ -12,7 +12,7 @@
 // with its own entitlements, then signs the app again (its seal covers the helper) with the app's entitlements.
 // The pure functions below are what the tests pin; the CLI does the file and codesign work.
 
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { copyFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,7 +60,7 @@ function hasTrueEntitlement(entitlements, key) {
  * neither usage string nor the audio input entitlement; the helper must have its identifier, both strings and the
  * entitlement.
  */
-export function dictationHelperProblems({ identifier, hubInfo, hubEntitlements, helper }) {
+export function dictationHelperProblems({ identifier, hubInfo, hubEntitlements, hubTeam, helper }) {
   const problems = [];
   for (const key of ["NSMicrophoneUsageDescription", "NSSpeechRecognitionUsageDescription"]) {
     if (hasKey(hubInfo, key)) problems.push(`the main app carries ${key}; the microphone belongs to the helper only`);
@@ -80,8 +80,42 @@ export function dictationHelperProblems({ identifier, hubInfo, hubEntitlements, 
   }
   if (!hasTrueEntitlement(helper.entitlements, HELPER_ENTITLEMENT)) {
     problems.push("helper has no audio input entitlement");
+  } else if (entitlementKeys(helper.entitlements).length !== 1) {
+    problems.push(
+      `helper must carry exactly one entitlement, the audio input one; it carries ${entitlementKeys(helper.entitlements).join(", ")}`,
+    );
+  }
+  if (!/\(runtime\)|,runtime\b/.test(helper.signing ?? "")) {
+    problems.push("helper is not signed with the hardened runtime");
+  }
+  if (!hubTeam || helper.team !== hubTeam) {
+    problems.push(
+      `helper Team ID is ${helper.team ?? "missing"}; it must be the same Team ID as the app (${hubTeam ?? "missing"})`,
+    );
   }
   return problems;
+}
+
+function entitlementKeys(entitlements) {
+  return [...(entitlements ?? "").matchAll(/<key>([^<]+)<\/key>/g)].map((match) => match[1]);
+}
+
+/**
+ * Whether the bundle check applies. Only a Mac app can carry the helper, and only a Hub identity is checked here: the
+ * daily check already refuses any other identity.
+ */
+export function helperCheckApplies({ platform, identifier, exists }) {
+  return platform === "darwin" && exists === true && kindOf(identifier) != null;
+}
+
+/** Where cargo writes the helper binary: under CARGO_TARGET_DIR when it is set (resolved from the workspace root). */
+export function helperBinaryPath(env, root = ROOT) {
+  return path.join(path.resolve(root, env.CARGO_TARGET_DIR || "target"), "release", HELPER_EXECUTABLE);
+}
+
+/** The bundle tauri build writes, under the same target directory as the helper binary. */
+export function helperBundleDefault(env, root = ROOT) {
+  return path.join(path.resolve(root, env.CARGO_TARGET_DIR || "target"), "release/bundle/macos/MonoCode Hub.app");
 }
 
 /**
@@ -126,26 +160,29 @@ export function readBundleFacts(appPath, { codesign = "/usr/bin/codesign" } = {}
       return readFileSync(file, "utf8");
     }
   };
-  const entitlements = (target) => {
-    const args = ["-d", "--entitlements", ":-", target];
-    try {
-      const run = codesign.endsWith(".mjs")
-        ? execFileSync(process.execPath, [codesign, ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] })
-        : execFileSync(codesign, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
-      return run;
-    } catch {
-      return "";
-    }
+  // One codesign call: its stdout and stderr together (codesign -dv writes to stderr).
+  const run = (args) => {
+    const spawn = codesign.endsWith(".mjs") ? [process.execPath, [codesign, ...args]] : [codesign, args];
+    const result = spawnSync(spawn[0], spawn[1], { encoding: "utf8" });
+    return `${result.stdout ?? ""}${result.stderr ?? ""}`;
   };
+  const entitlements = (target) => run(["-d", "--entitlements", ":-", target]);
+  const signing = (target) => run(["-dv", "--verbose=4", target]);
+  const teamOf = (text) => /TeamIdentifier=(\S+)/.exec(text)?.[1] ?? null;
   const helperApp = path.join(appPath, HELPER_RELATIVE);
   const helperExists = existsSync(helperApp);
+  const hubSigning = signing(appPath);
+  const helperSigning = helperExists ? signing(helperApp) : "";
   return {
     hubInfo: plistXml(path.join(appPath, "Contents/Info.plist")),
     hubEntitlements: entitlements(appPath),
+    hubTeam: teamOf(hubSigning),
     helper: helperExists
       ? {
           info: plistXml(path.join(helperApp, "Contents/Info.plist")),
           entitlements: entitlements(helperApp),
+          signing: helperSigning,
+          team: teamOf(helperSigning),
         }
       : null,
   };
@@ -172,7 +209,7 @@ function buildHelperBinary() {
     env,
     stdio: "inherit",
   });
-  const binary = path.join(ROOT, "target/release", HELPER_EXECUTABLE);
+  const binary = helperBinaryPath(env, ROOT);
   if (!existsSync(binary)) throw new Error(`cargo did not produce ${binary}`);
   return binary;
 }
@@ -208,15 +245,15 @@ export function installHelper(appPath, { binary = buildHelperBinary() } = {}) {
 }
 
 function main(argv) {
-  const app = argv[0];
-  if (!app) {
-    console.error('usage: node scripts/hub-dictation-helper.mjs "<path to MonoCode Hub.app>"');
+  const app = path.resolve(argv[0] ?? helperBundleDefault(process.env));
+  if (!existsSync(app)) {
+    console.error(`no bundle at ${app}; run tauri build first (or pass the path to the .app)`);
     process.exit(2);
   }
-  const { helperApp, helperIdentifier } = installHelper(path.resolve(app));
+  const { helperApp, helperIdentifier } = installHelper(app);
   const problems = dictationHelperProblems({
     identifier: readConfigs().identifier,
-    ...readBundleFacts(path.resolve(app)),
+    ...readBundleFacts(app),
   });
   if (problems.length) {
     console.error(`REFUSE: dictation helper in ${helperApp}`);

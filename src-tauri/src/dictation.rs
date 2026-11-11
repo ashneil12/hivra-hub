@@ -124,11 +124,32 @@ struct Sessions<L> {
     current: Option<Slot<L>>,
 }
 
-/// What the caller must send to the webview, and what it must tear down.
+/// What the caller must send to the webview, and what it must tear down. The chunk goes to the window that owns the
+/// session only (LOW 4): a transcript is never sent to another window.
 #[derive(Debug)]
 struct Heard<L> {
+    owner: String,
     chunk: Chunk,
     release: Option<L>,
+}
+
+/// The longest line the Hub reads from the helper (LOW 4): a longer one ends the session.
+pub const MAX_LINE_BYTES: usize = 64 * 1024;
+
+/// Reads one line into `buf`. `Ok(false)` at end of input; `Err` when the line passes MAX_LINE_BYTES without a newline.
+fn read_capped_line<R: std::io::BufRead>(reader: &mut R, buf: &mut Vec<u8>) -> Result<bool, ()> {
+    use std::io::BufRead;
+    buf.clear();
+    let read = std::io::Read::take(reader.by_ref(), MAX_LINE_BYTES as u64 + 1)
+        .read_until(b'\n', buf)
+        .unwrap_or(0);
+    if read == 0 {
+        return Ok(false);
+    }
+    if buf.len() > MAX_LINE_BYTES {
+        return Err(());
+    }
+    Ok(true)
 }
 
 impl<L: Clone> Sessions<L> {
@@ -248,8 +269,10 @@ impl<L: Clone> Sessions<L> {
             text
         };
         let release = slot.live.clone();
+        let owner = slot.owner.clone();
         self.current = None;
         Some(Heard {
+            owner,
             chunk: Chunk {
                 session: id,
                 text: kept,
@@ -268,8 +291,10 @@ impl<L: Clone> Sessions<L> {
             .filter(|slot| slot.id == id && slot.ending)?;
         let text = slot.last_text.clone();
         let release = slot.live.clone();
+        let owner = slot.owner.clone();
         self.current = None;
         Some(Heard {
+            owner,
             chunk: Chunk {
                 session: id,
                 text,
@@ -292,9 +317,10 @@ fn sessions() -> std::sync::MutexGuard<'static, Sessions<platform::Live>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-fn emit(app: &AppHandle, chunk: Chunk) {
+/// Sends a chunk to the window that owns the session only (LOW 4), never to every window.
+fn emit(app: &AppHandle, owner: &str, chunk: Chunk) {
     use tauri::Emitter;
-    let _ = app.emit(EVENT, chunk);
+    let _ = app.emit_to(owner, EVENT, chunk);
 }
 
 #[tauri::command]
@@ -350,9 +376,32 @@ pub fn window_lost(app: &AppHandle, label: &str) {
     }
 }
 
+/// The daily Hub's identifier. Only this identity launches the helper (LOW 1).
+pub const HUB_IDENTIFIER: &str = "com.ash.monocode-hub";
+
+/// The requirement a helper must meet to be launched: its identifier (the Hub's, plus `.dictation`), Apple-anchored,
+/// under the Hub's Team ID. None when either input is not a plain identifier or a Team ID.
+pub fn helper_requirement(hub_identifier: &str, team: &str) -> Option<String> {
+    let plain = |s: &str| {
+        !s.is_empty()
+            && s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    };
+    let team_ok = team.len() == 10
+        && team
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    if !plain(hub_identifier) || !team_ok {
+        return None;
+    }
+    Some(format!(
+        "identifier \"{hub_identifier}.dictation\" and anchor apple generic and certificate leaf[subject.OU] = \"{team}\""
+    ))
+}
+
 #[cfg(target_os = "macos")]
 mod platform {
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufReader, Write};
     use std::path::PathBuf;
     use std::process::{Child, ChildStdin, ChildStdout, Stdio};
     use std::sync::mpsc::{self, Sender};
@@ -362,8 +411,8 @@ mod platform {
     use tauri::{AppHandle, Manager};
 
     use super::{
-        emit, note_for_reason, sessions, Heard, HelperEvent, Support, DENIED, FINISH_GRACE,
-        NOT_HERE, READY_WAIT, STOPPED, WATCH_EVERY,
+        emit, note_for_reason, read_capped_line, sessions, Heard, HelperEvent, Support, DENIED,
+        FINISH_GRACE, HUB_IDENTIFIER, NOT_HERE, READY_WAIT, STOPPED, WATCH_EVERY,
     };
     use crate::disclaim;
 
@@ -385,10 +434,64 @@ mod platform {
     /// started itself would be charged to the Hub.
     fn launch_plan(app: &AppHandle) -> Result<(PathBuf, PathBuf), &'static str> {
         let helper = helper_path().ok_or(NOT_HERE)?;
+        // LOW 1: only the daily Hub launches a helper, and only one signed for this Hub (its identifier, and this
+        // app's Team ID). A helper copied in from elsewhere is not run.
+        if app.config().identifier != HUB_IDENTIFIER
+            || !helper_is_signed_for_hub(&helper, HUB_IDENTIFIER)
+        {
+            return Err(NOT_HERE);
+        }
         let data_dir = app.path().app_data_dir().ok();
         let launcher =
             disclaim::launcher_for(helper.as_os_str(), data_dir.as_deref()).ok_or(NOT_HERE)?;
         Ok((helper, launcher))
+    }
+
+    /// LOW 1: the helper is signed under this Hub's Team ID with the helper's identifier. `codesign --verify -R` checks
+    /// the requirement against the helper's bundle; the Team ID comes from this Hub's own signature.
+    fn helper_is_signed_for_hub(helper: &std::path::Path, hub_identifier: &str) -> bool {
+        let Some(helper_bundle) = helper
+            .parent()
+            .and_then(|p| p.parent())
+            .and_then(|p| p.parent())
+        else {
+            return false;
+        };
+        let Some(hub_bundle) = std::env::current_exe().ok().and_then(|exe| {
+            exe.parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+                .map(PathBuf::from)
+        }) else {
+            return false;
+        };
+        let Some(team) = team_of(&hub_bundle) else {
+            return false;
+        };
+        let Some(requirement) = super::helper_requirement(hub_identifier, &team) else {
+            return false;
+        };
+        std::process::Command::new("/usr/bin/codesign")
+            .args(["--verify", "-R", requirement.as_str()])
+            .arg(helper_bundle)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false)
+    }
+
+    /// The Team ID a bundle is signed under, from codesign's signing details (written to stderr).
+    fn team_of(bundle: &std::path::Path) -> Option<String> {
+        let out = std::process::Command::new("/usr/bin/codesign")
+            .args(["-dv", "--verbose=4"])
+            .arg(bundle)
+            .output()
+            .ok()?;
+        let text = String::from_utf8_lossy(&out.stderr);
+        text.lines()
+            .find_map(|line| line.strip_prefix("TeamIdentifier="))
+            .map(|team| team.trim().to_string())
     }
 
     pub fn support(app: &AppHandle) -> Support {
@@ -473,7 +576,14 @@ mod platform {
             stdin: Mutex::new(Some(stdin)),
         }));
         let (answer_tx, answer_rx) = mpsc::channel::<Answer>();
-        spawn_reader(app.clone(), id, stdout, answer_tx, live.clone());
+        spawn_reader(
+            app.clone(),
+            owner.clone(),
+            id,
+            stdout,
+            answer_tx,
+            live.clone(),
+        );
         let answer =
             tauri::async_runtime::spawn_blocking(move || answer_rx.recv_timeout(READY_WAIT).ok())
                 .await
@@ -507,6 +617,7 @@ mod platform {
     /// Reads the helper's lines until it finishes. Its words reach the webview as they arrive.
     fn spawn_reader(
         app: AppHandle,
+        owner: String,
         id: u64,
         stdout: ChildStdout,
         answers: Sender<Answer>,
@@ -514,9 +625,14 @@ mod platform {
     ) {
         std::thread::spawn(move || {
             let mut answers = Some(answers);
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                let Ok(event) = serde_json::from_str::<HelperEvent>(&line) else {
+            let mut reader = BufReader::new(stdout);
+            let mut buf = Vec::new();
+            // A line over the limit ends the session, like the helper going away (LOW 4).
+            while let Ok(true) = read_capped_line(&mut reader, &mut buf) {
+                let Ok(line) = std::str::from_utf8(&buf) else {
+                    continue;
+                };
+                let Ok(event) = serde_json::from_str::<HelperEvent>(line) else {
                     continue;
                 };
                 match event {
@@ -527,7 +643,7 @@ mod platform {
                     HelperEvent::Heard { text } => {
                         let chunk = sessions().heard(id, &text, Instant::now());
                         if let Some(chunk) = chunk {
-                            emit(&app, chunk);
+                            emit(&app, &owner, chunk);
                         }
                     }
                     HelperEvent::Final { text, error } => {
@@ -552,11 +668,16 @@ mod platform {
     }
 
     fn finish_and_emit(app: &AppHandle, heard: Option<Heard<Live>>) {
-        if let Some(Heard { chunk, release }) = heard {
+        if let Some(Heard {
+            owner,
+            chunk,
+            release,
+        }) = heard
+        {
             if let Some(live) = release {
                 live.stop_child();
             }
-            emit(app, chunk);
+            emit(app, &owner, chunk);
         }
     }
 
@@ -941,5 +1062,44 @@ mod tests {
         );
         let args: Vec<_> = cmd.get_args().collect();
         assert_eq!(args.first().and_then(|a| a.to_str()), Some("disclaim-exec"));
+    }
+
+    // LOW 1: the helper launched is one signed for the daily Hub: its identifier and the Hub's Team ID.
+
+    #[test]
+    fn the_helper_requirement_names_the_helper_identifier_and_the_team() {
+        assert_eq!(
+            helper_requirement(HUB_IDENTIFIER, "9SB4XNH8C5").as_deref(),
+            Some("identifier \"com.ash.monocode-hub.dictation\" and anchor apple generic and certificate leaf[subject.OU] = \"9SB4XNH8C5\"")
+        );
+        assert!(helper_requirement(HUB_IDENTIFIER, "9SB4XNH8C5\" or true").is_none());
+        assert!(helper_requirement("com.ash\" or true", "9SB4XNH8C5").is_none());
+        assert!(
+            helper_requirement(HUB_IDENTIFIER, "").is_none(),
+            "an unsigned or unknown team gets no helper"
+        );
+    }
+
+    // LOW 4: a line from the helper is read only up to MAX_LINE_BYTES, and a longer one ends the session.
+
+    #[test]
+    fn a_runaway_line_from_the_helper_is_refused_not_buffered() {
+        let mut ok = std::io::Cursor::new(b"{\"ev\":\"ready\"}\n".to_vec());
+        let mut buf = Vec::new();
+        assert_eq!(read_capped_line(&mut ok, &mut buf), Ok(true));
+        assert_eq!(read_capped_line(&mut ok, &mut buf), Ok(false));
+        let mut runaway = std::io::Cursor::new(vec![b'x'; MAX_LINE_BYTES + 1]);
+        assert_eq!(read_capped_line(&mut runaway, &mut buf), Err(()));
+        assert!(buf.len() <= MAX_LINE_BYTES + 1);
+    }
+
+    // LOW 4: the session's words go to its owner window only.
+
+    #[test]
+    fn a_finished_session_reports_its_owner_so_its_words_go_only_there() {
+        let mut s: Sessions<()> = Sessions::new();
+        let id = s.begin("mono-2", t0()).unwrap();
+        s.install(id, ()).unwrap();
+        assert_eq!(s.finish(id, "done", false).unwrap().owner, "mono-2");
     }
 }

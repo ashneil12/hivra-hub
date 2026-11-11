@@ -8,7 +8,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   dictationHelperProblems,
+  helperBinaryPath,
+  helperBundleDefault,
   helperBundleId,
+  helperCheckApplies,
   helperProblemsFor,
   helperInfoPlist,
   signingCommands,
@@ -40,15 +43,61 @@ const goodHelperEntitlements = plist({ [HELPER_ENTITLEMENT]: true });
 const goodHubInfo = plist({ CFBundleIdentifier: HUB, CFBundleIconName: "AppIcon" });
 const goodHubEntitlements = plist({ "com.apple.security.cs.allow-jit": true });
 
+const TEAM = "9SB4XNH8C5";
+const RUNTIME = "CodeDirectory v=20500 size=1674 flags=0x10000(runtime) hashes=41+7 location=embedded";
+
 function problemsFor(overrides = {}) {
   return dictationHelperProblems({
     identifier: HUB,
     hubInfo: goodHubInfo,
     hubEntitlements: goodHubEntitlements,
-    helper: { info: goodHelperInfo, entitlements: goodHelperEntitlements },
+    hubTeam: TEAM,
+    helper: { info: goodHelperInfo, entitlements: goodHelperEntitlements, signing: RUNTIME, team: TEAM },
     ...overrides,
   });
 }
+
+// LOW 2: the helper carries exactly the audio input entitlement, the hardened runtime, and the app's Team ID.
+test("the helper must carry exactly one entitlement, the audio input one", () => {
+  const two = plist({ [HELPER_ENTITLEMENT]: true, "com.apple.security.app-sandbox": true });
+  assert.ok(
+    problemsFor({ helper: { info: goodHelperInfo, entitlements: two, signing: RUNTIME, team: TEAM } }).some((p) =>
+      /exactly one entitlement/.test(p),
+    ),
+  );
+});
+
+test("the helper must be signed with the hardened runtime", () => {
+  const noRuntime = "CodeDirectory v=20500 size=1674 flags=0x0(none) hashes=41+7 location=embedded";
+  assert.ok(
+    problemsFor({ helper: { info: goodHelperInfo, entitlements: goodHelperEntitlements, signing: noRuntime, team: TEAM } }).some(
+      (p) => /hardened runtime/.test(p),
+    ),
+  );
+});
+
+test("the helper's Team ID must equal the app's", () => {
+  assert.ok(
+    problemsFor({ helper: { info: goodHelperInfo, entitlements: goodHelperEntitlements, signing: RUNTIME, team: "OTHERTEAM1" } }).some(
+      (p) => /same Team ID/.test(p),
+    ),
+  );
+});
+
+// LOW 3: the check runs only where the bundle can be a Mac app.
+test("the helper check applies on macOS to a Hub identity only", () => {
+  assert.equal(helperCheckApplies({ platform: "darwin", identifier: HUB, exists: true }), true);
+  assert.equal(helperCheckApplies({ platform: "win32", identifier: HUB, exists: true }), false);
+  assert.equal(helperCheckApplies({ platform: "linux", identifier: HUB, exists: true }), false);
+  assert.equal(helperCheckApplies({ platform: "darwin", identifier: "com.monocode.desktop", exists: true }), false);
+  assert.equal(helperCheckApplies({ platform: "darwin", identifier: HUB, exists: false }), false);
+});
+
+// The helper binary is found where cargo writes it, including a shared CARGO_TARGET_DIR.
+test("the helper binary is looked up in CARGO_TARGET_DIR when it is set", () => {
+  assert.equal(helperBinaryPath({ CARGO_TARGET_DIR: "/shared/target" }, "/repo"), "/shared/target/release/monocode-dictation");
+  assert.equal(helperBinaryPath({}, "/repo"), "/repo/target/release/monocode-dictation");
+});
 
 test("the helper identifier is the Hub's identifier plus .dictation, in the daily and the dev slot", () => {
   assert.equal(helperBundleId(HUB), `${HUB}.dictation`);
@@ -148,4 +197,13 @@ test("the check hub:verify and hub:ship share reads a missing helper from the bu
   } finally {
     fs.rmSync(app, { recursive: true, force: true });
   }
+});
+
+// The helper step finds the bundle that tauri build wrote, under CARGO_TARGET_DIR when it is set.
+test("the default bundle path follows CARGO_TARGET_DIR the way the helper binary does", () => {
+  assert.equal(
+    helperBundleDefault({ CARGO_TARGET_DIR: "/shared/target" }, "/repo"),
+    "/shared/target/release/bundle/macos/MonoCode Hub.app",
+  );
+  assert.equal(helperBundleDefault({}, "/repo"), "/repo/target/release/bundle/macos/MonoCode Hub.app");
 });

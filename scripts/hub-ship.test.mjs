@@ -304,7 +304,8 @@ if [ "$2" = "--entitlements" ]; then cat "$last/Contents/Resources/entitlements.
 sig=$(sed -n 's/.*"signature":"\\([a-z-]*\\)".*/\\1/p' "$last/Contents/Resources/fake.json")
 if [ "$sig" = unsigned ]; then echo "$last: code object is not signed at all" >&2; exit 1; fi
 case "$1" in
-  -dv) if [ "$sig" = adhoc ]; then echo "Signature=adhoc" >&2; else echo "Authority=Apple Development: Test ($sig)" >&2; fi ;;
+  -dv) if [ "$sig" = adhoc ]; then echo "Signature=adhoc" >&2; else echo "Authority=Apple Development: Test ($sig)" >&2; fi
+       echo "TeamIdentifier=TESTTEAM01" >&2; echo "CodeDirectory v=20500 size=1674 flags=0x10000(runtime) hashes=41+7" >&2 ;;
   -d) if [ "$sig" = adhoc ]; then echo 'designated => cdhash H"0000"'; else echo "designated => identifier \\"${HUB}\\" and certificate leaf[subject.CN] = \\"$sig\\""; fi ;;
 esac
 exit 0
