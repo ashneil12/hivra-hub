@@ -32,7 +32,8 @@ export type CeilingVerdict = {
   status: "unset" | "ok" | "ask" | "stop" | "unmeasured";
   reason: string;
   stopRun: boolean;
-  ask: boolean;
+  ask: boolean;  /** Set once per chat when the person should see this verdict's reason (a soft ask, or the first unmeasured note). */
+  notice?: boolean;
 };
 
 const UNSET: CeilingVerdict = { status: "unset", reason: "", stopRun: false, ask: false };

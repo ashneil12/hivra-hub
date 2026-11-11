@@ -10,12 +10,16 @@ import { habitRunMono } from "../../monos/model/monoHabits";
 import { listMonos } from "../../monos/model/mono";
 import {
   LOCAL_KEY,
+  parseStoredBook,
+  readLocalSpendBook,
   refreshSpendFromStorage,
+  setSpendBookStore,
   setSpendLoader,
   setSpendPersist,
   setSpendProjectLookup,
   spendKey,
   useLiveSpendSink,
+  type SpendBookStore,
 } from "./spendGate";
 import type { SpendDay } from "./spend";
 
@@ -26,7 +30,29 @@ function onStorage(event: StorageEvent): void {
   if (event.key === LOCAL_KEY) refreshSpendFromStorage();
 }
 
+/** The app's database row for the limits book: the revision and the book's JSON text, as the Rust commands keep them. */
+type BookRow = { revision: number; body: string };
+
+/**
+ * The limits book in the app's database (spend_limit_book). Reads fail loudly; a missing or unreadable row is never
+ * taken for "no limits" (the gate holds automated turns until the book answers).
+ */
+const bookInDatabase: SpendBookStore = {
+  read: async () => {
+    const row = await invoke<BookRow | null>("spend_book_read");
+    if (!row) return null;
+    const parsed = parseStoredBook({ ...(JSON.parse(row.body) as Record<string, unknown>), revision: row.revision });
+    if (!parsed) throw new Error("The spend limits in the database are not a readable book.");
+    return parsed;
+  },
+  write: async ({ expected, revision, limits, ceilings }) => {
+    await invoke("spend_book_write", { expected, revision, body: JSON.stringify({ revision, limits, ceilings }) });
+  },
+};
+
 export function wireSpendGate(): void {
+  // The database holds the book. localStorage's copy is read once, for a book saved before the database held it.
+  void setSpendBookStore(bookInDatabase, readLocalSpendBook);
   setSpendProjectLookup({
     idOf: (folder) => hubProjectIdFor(folder),
     folderOf: (id) => hubProjectFolder(id),

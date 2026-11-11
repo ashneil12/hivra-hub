@@ -52,6 +52,8 @@ const TTL_MS = 5_000;
 const STALE_MS = 10 * 60_000;
 
 export const RAISE_LIMIT = "Raise limit";
+/** The reason a clear gives when no limit matches. Callers say so instead of "cleared". */
+export const NO_SPEND_LIMIT_TO_CLEAR = "There is no spend limit to clear.";
 
 export type SpendWriter = "person" | "first-mate" | "habit" | "worker" | "checker";
 /** Who started a turn. Only the composer is a person; everything else is automated. */
@@ -71,8 +73,13 @@ export type ProjectLookup = {
   firstMateOf?(key: string): string | undefined;
   /** The project a chat belongs to, when the chat itself says (a habit run runs from home, for example). */
   projectOfSession?(sessionId: string): string | undefined;
-  /** The main checkout a working copy belongs to, from git. */
+  /**
+   * The main checkout a working copy belongs to, from git, as a canonical real path (symlinks resolved, so /var and
+   * /private/var are one folder). Without it a folder is compared as written.
+   */
   resolveFolder?(cwd: string): Promise<string>;
+  /** The redo this chat continues: its parent chat, whose ceiling this run keeps counting against. */
+  redoParentOf?(sessionId: string): string | undefined;
 };
 /** The ledger's writer. The app sets it; without one, turns stay in memory. */
 export type SpendPersist = (entry: { sessionId: string; projectKey: string; at: number; micros: number; priced: boolean }) => Promise<void>;
@@ -89,7 +96,27 @@ const UNREADABLE_STORE: SpendVerdict = {
   status: "over",
   reason: "Spend limits could not be read from storage. New builders wait until you replace them in Settings.",
 };
+const UNREADABLE_DB: SpendVerdict = {
+  status: "over",
+  reason: "Spend limits could not be read from the app's database. Automated turns wait until it answers.",
+};
+const LOADING_BOOK: SpendVerdict = {
+  status: "over",
+  reason: "Spend limits are still loading from the app's database. Automated turns wait until they load.",
+};
+const SAVING_BOOK = "Spend limits are still being saved. Automated turns wait until they are.";
+const UNPLACED_LIMIT =
+  "A spend limit's project is not known yet, so this run cannot be matched to its limit. It is held until the projects load.";
 const NO_PROJECTS: ProjectLookup = { idOf: () => undefined, folderOf: () => undefined };
+
+/** The limits book as the app's database holds it. The database is the source; localStorage is not read once it is set. */
+export type StoredBook = { revision: number; limits: SpendLimit[]; ceilings: Record<string, TaskCeiling> };
+export type SpendBookStore = {
+  /** The stored book, or null when none was ever saved. Throws when the store cannot answer. */
+  read(): Promise<StoredBook | null>;
+  /** Saves the book when the stored revision is still `expected`. Throws on a conflict or a failed write. */
+  write(next: StoredBook & { expected: number }): Promise<void>;
+};
 
 let booted = false;
 let book: SpendBook = emptyBook();
@@ -106,8 +133,27 @@ let sink: WarnSink | null = null;
 let lookup: ProjectLookup = NO_PROJECTS;
 const folders = new Map<string, string>();
 const asked = new Set<string>();
+/** Chats the person has continued after a soft ask. The ask is not repeated for them. */
+const continued = new Set<string>();
+/** Chats whose unmeasured ceiling has been reported once. */
+const unmeasuredNoticed = new Set<string>();
 let pending: Pending[] = [];
 const listeners = new Set<() => void>();
+/** The app's database store for the book. Null in tests and before the app wires it. */
+let dbStore: SpendBookStore | null = null;
+let legacyBook: (() => StoredBook | null) | null = null;
+/** Set when the database read has answered (true) or failed (false). */
+let dbLoaded = false;
+let dbFailed = false;
+/** The revision the database confirmed. A turn waits while the in-memory book is ahead of it. */
+let dbSynced = -1;
+let dbLoad: Promise<boolean> | null = null;
+let dbWriting: Promise<void> = Promise.resolve();
+/** A save the database has not confirmed. It is retried as a write, never by re-reading (a re-read would drop it). */
+let pendingSave: (StoredBook & { revision: number }) | null = null;
+/** Time that only moves forward. TTLs and staleness use it, so a wall clock change cannot freeze or expire them. */
+const defaultMonotonic = (): number => (typeof performance !== "undefined" ? performance.now() : Date.now());
+let monotonic: () => number = defaultMonotonic;
 
 function notify(): void {
   for (const listener of listeners) listener();
@@ -136,13 +182,41 @@ function folderOfCwdCached(cwd: string): string {
   return folders.get(cwd.trim()) ?? projectFolderOfCwd(cwd);
 }
 
+/** The hub project ids the book refers to, for mapping a folder back to its project. */
+function bookProjectIds(): string[] {
+  const ids = new Set<string>();
+  for (const limit of book.limits) if (limit.scope === "project" && limit.project) ids.add(limit.project);
+  for (const key of Object.keys(ceilings)) ids.add(key);
+  return [...ids].filter((id) => lookup.folderOf(id) !== undefined);
+}
+
+/**
+ * The hub id whose canonical folder is `folder`. The hub may store a project under a symlinked path, so each id's
+ * folder is compared after git's canonical answer for it. Unknown answers are asked for and used by the next check.
+ */
+function idForCanonical(folder: string): string | undefined {
+  const direct = lookup.idOf(folder);
+  if (direct !== undefined) return direct;
+  for (const id of bookProjectIds()) {
+    const stored = lookup.folderOf(id);
+    if (stored === undefined) continue;
+    const canonical = folders.get(stored);
+    if (canonical === undefined) {
+      askFolder(stored);
+      continue;
+    }
+    if (canonical === folder) return id;
+  }
+  return undefined;
+}
+
 /** The key a project's limits and ceilings are stored under: the hub id. A folder maps to it; a hub id stays. */
 export function spendKey(value: string): string {
   const text = value.trim();
   if (!text) return "";
   if (lookup.folderOf(text) !== undefined) return text;
   const folder = folderOfCwdCached(text);
-  return lookup.idOf(folder) ?? pathKey(folder);
+  return idForCanonical(folder) ?? pathKey(folder);
 }
 
 async function folderOfCwd(cwd: string): Promise<string> {
@@ -170,10 +244,14 @@ function askFolder(cwd: string): void {
   void folderOfCwd(text);
 }
 
-/** The project a turn belongs to, for a check that may wait for git. */
+/** The project a turn belongs to. Waits for git's canonical answer for the turn's folder and for each project's folder. */
 async function keyForTurn(sessionId: string, cwd: string): Promise<string> {
   const own = lookup.projectOfSession?.(sessionId);
   if (own) return spendKey(own);
+  for (const id of bookProjectIds()) {
+    const stored = lookup.folderOf(id);
+    if (stored !== undefined && !folders.has(stored)) await folderOfCwd(stored);
+  }
   return spendKey(await folderOfCwd(cwd));
 }
 
@@ -200,25 +278,17 @@ function ceilingsFrom(raw: unknown): Record<string, TaskCeiling> {
   const out: Record<string, TaskCeiling> = {};
   for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
     const clean = sanitizeTaskCeiling(value);
-    const project = typeof key === "string" ? spendKey(key) : "";
+    // Kept as stored: a folder or an id is matched when it is read, so a cold start cannot re-key it.
+    const project = typeof key === "string" ? key.trim() : "";
     if (clean && project && project !== "/") out[project] = clean;
   }
   return out;
 }
 
-/** A file that cannot be parsed is unreadable, not an empty book to overwrite. */
-function readStored(): Stored | null {
-  let raw: string | null;
+/** A stored book's text, parsed. Null when it cannot be read: a broken file is unreadable, never an empty book. */
+function parseStored(raw: string | null): Stored | null {
+  if (raw == null) return { book: emptyBook(), ceilings: {} };
   try {
-    // No storage at all (a runtime without localStorage) holds no limits; that is not the same as a stored file that
-    // cannot be read, which holds launches.
-    if (typeof localStorage === "undefined") return { book: emptyBook(), ceilings: {} };
-    raw = localStorage.getItem(LOCAL_KEY);
-  } catch {
-    return { book: emptyBook(), ceilings: {} };
-  }
-  try {
-    if (raw == null) return { book: emptyBook(), ceilings: {} };
     const value = JSON.parse(raw) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     return {
@@ -230,9 +300,46 @@ function readStored(): Stored | null {
   }
 }
 
+/** The book as the database and the migration read it. Null when the object is not a book. */
+export function parseStoredBook(value: unknown): StoredBook | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const stored = parseStored(JSON.stringify(value));
+  if (!stored) return null;
+  return { revision: stored.book.revision, limits: stored.book.limits, ceilings: stored.ceilings };
+}
+
+/** The localStorage copy, read once for migration. Null when it is missing or cannot be read. */
+export function readLocalSpendBook(): StoredBook | null {
+  try {
+    if (typeof localStorage === "undefined") return null;
+    const raw = localStorage.getItem(LOCAL_KEY);
+    if (raw == null) return null;
+    return parseStoredBook(JSON.parse(raw));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A file that cannot be parsed, or a store that throws, is unreadable, not an empty book to overwrite. A runtime with no
+ * localStorage at all holds no book here (the app's database holds it, see setSpendBookStore).
+ */
+function readStored(): Stored | null {
+  if (typeof localStorage === "undefined") return { book: emptyBook(), ceilings: {} };
+  let raw: string | null;
+  try {
+    raw = localStorage.getItem(LOCAL_KEY);
+  } catch {
+    return null;
+  }
+  return parseStored(raw);
+}
+
 function boot(): void {
   if (booted) return;
   booted = true;
+  // With the app's database set, the database answers for the book (see loadDb); localStorage is not read.
+  if (dbStore) return;
   const stored = readStored();
   if (!stored) {
     storeUnreadable = true;
@@ -245,6 +352,15 @@ function boot(): void {
 
 function persistStored(nextBook: SpendBook, nextCeilings: Record<string, TaskCeiling>): boolean {
   if (storeUnreadable) return false;
+  if (dbStore) {
+    // Nothing is written until the database has answered once. The change is queued for it.
+    if (!dbLoaded || dbFailed) return false;
+    book = nextBook;
+    ceilings = nextCeilings;
+    notify();
+    queueDbWrite();
+    return true;
+  }
   try {
     const stored = readStored();
     if (stored == null) return false;
@@ -265,6 +381,7 @@ function persistStored(nextBook: SpendBook, nextCeilings: Record<string, TaskCei
 }
 
 function adoptIfNewer(expected: number): boolean {
+  if (dbStore) return book.revision === expected;
   const stored = readStored();
   if (stored && stored.book.revision !== expected) {
     book = stored.book;
@@ -295,13 +412,127 @@ export function spendSnapshot(): { book: SpendBook; ceilings: Record<string, Tas
 /** True when the stored limits cannot be read. Launches hold until the person replaces them in Settings. */
 export function spendUnreadable(): boolean {
   boot();
-  return storeUnreadable;
+  return storeUnreadable || dbFailed;
+}
+
+// ---- the app's database -------------------------------------------------------------------------------------------
+
+/** Reads the book from the database. A read that fails leaves the book unreadable until it answers. */
+function loadDb(): Promise<boolean> {
+  const store = dbStore;
+  if (!store) return Promise.resolve(false);
+  dbLoaded = false;
+  return store
+    .read()
+    .then((got) => {
+      if (dbStore !== store) return false;
+      pendingSave = null;
+      if (got) {
+        book = { revision: got.revision, limits: got.limits };
+        ceilings = got.ceilings;
+        dbSynced = got.revision;
+      } else {
+        // No book saved yet. Limits kept from before the database existed are carried over, once.
+        const legacy = legacyBook?.() ?? null;
+        book = legacy ? { revision: legacy.revision, limits: legacy.limits } : emptyBook();
+        ceilings = legacy ? legacy.ceilings : {};
+        dbSynced = 0;
+        if (legacy && (legacy.limits.length > 0 || Object.keys(legacy.ceilings).length > 0)) queueDbWrite();
+      }
+      dbLoaded = true;
+      dbFailed = false;
+      notify();
+      return true;
+    })
+    .catch(() => {
+      if (dbStore !== store) return false;
+      dbFailed = true;
+      notify();
+      return false;
+    });
+}
+
+/** Queues a save of the in-memory book. Saves run in order. A refused save stays pending and holds automated turns. */
+function queueDbWrite(): void {
+  const store = dbStore;
+  if (!store) return;
+  pendingSave = { revision: book.revision, limits: book.limits, ceilings: { ...ceilings } };
+  dbWriting = dbWriting.then(() => attemptSave(store));
+}
+
+async function attemptSave(store: SpendBookStore): Promise<void> {
+  const snapshot = pendingSave;
+  if (dbStore !== store || !snapshot) return;
+  if (snapshot.revision <= dbSynced) {
+    if (pendingSave === snapshot) pendingSave = null;
+    dbFailed = false;
+    notify();
+    return;
+  }
+  try {
+    await store.write({ ...snapshot, expected: dbSynced });
+    if (dbStore !== store) return;
+    dbSynced = snapshot.revision;
+    if (pendingSave === snapshot) pendingSave = null;
+    dbFailed = false;
+  } catch {
+    if (dbStore !== store) return;
+    // The database refused it (a conflict, or no answer). It stays pending: automated turns are held until it lands.
+    if (!dbFailed) activity("spend.changed", "A spend limit change did not save. Set it again in Settings.", "app", "app");
+    dbFailed = true;
+  }
+  notify();
+}
+
+/** Waits for the database to answer and for queued saves; retries a refused save. False when the book is not saved. */
+async function settleBook(): Promise<boolean> {
+  const store = dbStore;
+  if (!store) return !storeUnreadable;
+  if (dbFailed && !pendingSave) dbLoad = loadDb();
+  else if (dbLoad && !dbLoaded) await dbLoad;
+  if (dbFailed && !pendingSave && dbLoad) await dbLoad;
+  if (pendingSave) dbWriting = dbWriting.then(() => attemptSave(store));
+  await dbWriting;
+  return dbLoaded && !dbFailed && !pendingSave && dbSynced === book.revision;
+}
+
+function bookHoldReason(): string {
+  if (dbFailed) return UNREADABLE_DB.reason;
+  if (!dbLoaded) return LOADING_BOOK.reason;
+  return SAVING_BOOK;
+}
+
+/**
+ * Sets the database store for the book and reads it. `legacy` is the localStorage copy, carried over once when the
+ * database has none. Passing null goes back to localStorage (tests and runtimes with no database).
+ */
+export function setSpendBookStore(next: SpendBookStore | null, legacy?: () => StoredBook | null): Promise<boolean> {
+  dbStore = next;
+  legacyBook = legacy ?? null;
+  dbSynced = -1;
+  dbLoaded = false;
+  dbFailed = false;
+  dbLoad = null;
+  dbWriting = Promise.resolve();
+  pendingSave = null;
+  if (!next) {
+    booted = false;
+    return Promise.resolve(true);
+  }
+  booted = true;
+  dbLoad = loadDb();
+  return dbLoad;
+}
+
+/** Sets the clock for TTLs and staleness. It must only move forward; tests set it to control time. */
+export function setSpendMonotonicClock(next: (() => number) | null): void {
+  monotonic = next ?? defaultMonotonic;
 }
 
 /** The person's own choice in Settings: drop what cannot be read and start an empty book. Logged like any change. */
 export function replaceUnreadableSpendStore(): boolean {
   boot();
-  if (!storeUnreadable) return false;
+  if (dbStore || !storeUnreadable) return false;
   try {
     localStorage.removeItem(LOCAL_KEY);
   } catch {
@@ -318,6 +549,11 @@ export function replaceUnreadableSpendStore(): boolean {
 
 /** Another window saved the limits. Read them again on the next check. */
 export function refreshSpendFromStorage(): void {
+  if (dbStore) {
+    dbLoad = loadDb();
+    notify();
+    return;
+  }
   booted = false;
   book = emptyBook();
   ceilings = {};
@@ -334,7 +570,7 @@ export function setSpendClock(next: (() => number) | null): void {
 /** The ledger's day records, set directly. Tests use this; the app's loader sets them every TTL. */
 export function setSpendRecords(next: readonly SpendDay[] | null): void {
   records = next == null ? null : [...next];
-  loadedAt = clock();
+  loadedAt = monotonic();
 }
 
 /** Chat rows as day records, for tests that start from chats. */
@@ -360,8 +596,8 @@ function startOfMonth(now: number): number {
 function refreshIfStale(): void {
   if (!loader || loading) return;
   const now = clock();
-  if (records !== null && now - loadedAt < TTL_MS) return;
-  const started = now;
+  const started = monotonic();
+  if (records !== null && started - loadedAt < TTL_MS) return;
   loading = loader(startOfMonth(now))
     .then((rows) => {
       if (!Array.isArray(rows)) return;
@@ -383,7 +619,7 @@ function refreshIfStale(): void {
 /** The day records as of now, or null when they cannot be trusted. Includes turns this app has not saved yet. */
 function currentRecords(): SpendDay[] | null {
   if (records === null) return null;
-  if (loader && clock() - loadedAt >= STALE_MS) return null;
+  if (loader && monotonic() - loadedAt >= STALE_MS) return null;
   return [...records, ...pending.map((row) => row.record)];
 }
 
@@ -404,7 +640,7 @@ function saveTurn(row: Pending): void {
     priced: record.priced === 1,
   })
     .then(() => {
-      row.savedAt = clock();
+      row.savedAt = monotonic();
     })
     .catch(() => {
       /* kept in memory and tried again on the next read */
@@ -444,15 +680,29 @@ function readingFor(limit: SpendLimit, reportsCost: boolean): SpendReading {
   return { ...base, reportsCost };
 }
 
-/** A run's total across all days, from the ledger. */
+/** A chat and the redo chain it continues, newest first. A redo keeps counting against its parent's ceiling. */
+function lineageOf(sessionId: string): Set<string> {
+  const chain = new Set<string>([sessionId]);
+  let current = sessionId;
+  for (let hop = 0; hop < 50; hop += 1) {
+    const parent = lookup.redoParentOf?.(current);
+    if (!parent || chain.has(parent)) break;
+    chain.add(parent);
+    current = parent;
+  }
+  return chain;
+}
+
+/** A run's total across all days, from the ledger, including the chats it redid. */
 export function sessionTotal(sessionId: string): { micros: number; priced: number; unpriced: number; unreadable: boolean } {
   const rows = currentRecords();
   if (rows === null) return { micros: 0, priced: 0, unpriced: 0, unreadable: true };
+  const chain = lineageOf(sessionId);
   let micros = 0;
   let priced = 0;
   let unpriced = 0;
   for (const row of rows) {
-    if (row.sessionId !== sessionId) continue;
+    if (!chain.has(row.sessionId)) continue;
     micros += row.micros;
     priced += row.priced;
     unpriced += row.unpriced;
@@ -559,7 +809,7 @@ export function clearSpendLimit(
   if (!adoptIfNewer(expectedRevision)) return { book, written: false };
   const key = scope === "app" ? "" : spendKey(project);
   const existing = findLimit(scope, key, period);
-  if (!existing) return { book, written: false };
+  if (!existing) return { book, written: false, reason: NO_SPEND_LIMIT_TO_CLEAR };
   const allowed = chatMayWrite(opts.by, null, existing);
   if (!allowed.ok) return { book, written: false, reason: allowed.reason };
   const dropped = dropLimit(book, scope, existing.project, period, expectedRevision);
@@ -681,6 +931,8 @@ export function spendLimitsSetting(): string | null {
 export function judgeLaunch(input: { project: string; harness: string; ownerSession?: string; warn?: boolean }): SpendVerdict {
   boot();
   if (storeUnreadable) return UNREADABLE_STORE;
+  // A builder waits for the database's book, as an automated turn does: a launch is never allowed on an unknown book.
+  if (dbStore && (!dbLoaded || dbFailed)) return dbFailed ? UNREADABLE_DB : LOADING_BOOK;
   const key = spendKey(input.project);
   const limits = limitsFor(key);
   if (!limits.length) return UNSET;
@@ -745,13 +997,14 @@ export function useLiveSpendSink(): void {
 /** True when a limit or a ceiling is set, or the stored limits cannot be read: only then does a turn need admission. */
 export function spendGateActive(): boolean {
   boot();
-  return storeUnreadable || book.limits.length > 0 || Object.keys(ceilings).length > 0;
+  return storeUnreadable || dbStore !== null || book.limits.length > 0 || Object.keys(ceilings).length > 0;
 }
 
 /**
  * The one admission point. Every turn passes it before it starts. Returns why a turn is refused. A person's own
- * composer turn is never refused by a limit: it is warned instead. An automated turn over a limit, or past its
- * run's ceiling, is refused. Unreadable storage refuses every automated turn.
+ * composer turn is never refused by a limit: it is warned instead. An automated turn is held while the book is not
+ * known to be saved, held when its folder cannot be matched to a project whose limit is still unplaced, refused over
+ * a limit or past its run's ceiling. Unreadable storage refuses every automated turn.
  */
 export async function admitSpendTurn(input: {
   sessionId: string;
@@ -762,10 +1015,20 @@ export async function admitSpendTurn(input: {
 }): Promise<{ ok: true } | { ok: false; reason: string }> {
   boot();
   const isAutomated = automated(input.origin);
+  // The person continues a chat that was asked about its soft ceiling by sending a turn from the composer.
+  if (!isAutomated && asked.has(input.sessionId)) continued.add(input.sessionId);
   // Nothing set, nothing stored that cannot be read: the common case answers without waiting, so a turn starts as it did.
-  if (!storeUnreadable && !book.limits.length && !Object.keys(ceilings).length) return { ok: true };
+  if (!dbStore && !storeUnreadable && !book.limits.length && !Object.keys(ceilings).length) return { ok: true };
+  if (dbStore) {
+    const settled = await settleBook();
+    if (!settled && isAutomated) return { ok: false, reason: bookHoldReason() };
+  }
   if (storeUnreadable) return isAutomated ? { ok: false, reason: UNREADABLE_STORE.reason } : { ok: true };
   const key = await keyForTurn(input.sessionId, input.cwd);
+  const unplaced = (value: string) => lookup.folderOf(spendKey(value)) === undefined;
+  if (isAutomated && lookup.folderOf(key) === undefined && (book.limits.some((limit) => limit.scope === "project" && unplaced(limit.project)) || Object.keys(ceilings).some(unplaced))) {
+    return { ok: false, reason: UNPLACED_LIMIT };
+  }
   const billed = isBilledModel(input.model);
   const ceiling = ceilingFor(key);
   const limits = limitsFor(key);
@@ -835,6 +1098,16 @@ export function taskCeilingNote(project: string, chatId?: string | null): { line
 }
 
 /**
+ * A turn whose CLI reports no cost (a text prompt, a cheap memory call): counted as unpriced, so the ledger shows that
+ * it ran. It adds no money, and no limit counts it as $0.
+ */
+export function noteUnpricedTurn(input: { sessionId: string; cwd: string }): void {
+  boot();
+  if (!input.sessionId) return;
+  recordTurn(input.sessionId, keyForTurnNow(input.sessionId, input.cwd), { kind: "unpriced" });
+}
+
+/**
  * One finished turn. Records its price in the ledger, whatever the model, and judges the run's total for the soft ask
  * and the hard stop. A project or app limit is not judged here: it is judged at admission.
  */
@@ -869,11 +1142,14 @@ export function reviewReportedTurn(input: {
     dailyMeasuredUsd: daily.unreadable ? Number.NaN : daily.micros / MICRO,
     unattended: automated(input.origin),
     asked: asked.has(input.sessionId),
-    continued: false,
+    continued: continued.has(input.sessionId),
   });
   if (verdict.ask) asked.add(input.sessionId);
+  // Reported once per chat: the soft ask, and the first time a task has only unpriced turns (so it cannot be counted).
+  const firstUnmeasured = verdict.status === "unmeasured" && !unmeasuredNoticed.has(input.sessionId);
+  if (firstUnmeasured) unmeasuredNoticed.add(input.sessionId);
   if (verdict.stopRun) notify();
-  return verdict;
+  return { ...verdict, notice: verdict.ask || firstUnmeasured };
 }
 
 // ---- lifecycle ----------------------------------------------------------------------------------------------------
@@ -883,6 +1159,17 @@ export function resetSpendGate(): void {
   book = emptyBook();
   ceilings = {};
   storeUnreadable = false;
+  dbStore = null;
+  legacyBook = null;
+  dbLoaded = false;
+  dbFailed = false;
+  dbSynced = -1;
+  dbLoad = null;
+  dbWriting = Promise.resolve();
+  pendingSave = null;
+  monotonic = defaultMonotonic;
+  continued.clear();
+  unmeasuredNoticed.clear();
   records = null;
   loadedAt = -Infinity;
   loader = null;
@@ -905,6 +1192,11 @@ export function resetSpendGate(): void {
 
 /** Drop the in-memory book so the next read comes back from storage, as after a restart. The ledger stays. */
 export function forgetSpendMemory(): void {
+  if (dbStore) {
+    dbLoad = loadDb();
+    asked.clear();
+    return;
+  }
   booted = false;
   book = emptyBook();
   ceilings = {};

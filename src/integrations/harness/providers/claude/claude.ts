@@ -1871,7 +1871,8 @@ function noteBilledCeiling(live: Live, metrics: { costUsd?: number } | undefined
     harness: "claude",
     metrics: metrics ?? null,
   });
-  if (verdict.ask && verdict.reason.trim()) {
+  // The soft ask, and once per chat a ceiling that only unpriced turns reach, are shown to the person here.
+  if (verdict.notice && verdict.reason.trim()) {
     live.onEvent({ type: "status", text: verdict.reason.trim() });
   }
   if (!verdict.stopRun) return false;

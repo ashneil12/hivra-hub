@@ -18,6 +18,7 @@ import {
   saveTaskCeiling,
   setSpendClock,
   setSpendLoader,
+  setSpendMonotonicClock,
   setSpendProjectLookup,
   setSpendSessions,
   setSpendWarnSink,
@@ -85,6 +86,8 @@ describe("C2: limits and spend share one project key", () => {
 
 describe("C1: spend is read again, not frozen at the first read", () => {
   it("a limit moves from ok to over as spend grows after the first read", async () => {
+    let monotonicMs = 0;
+    setSpendMonotonicClock(() => monotonicMs);
     let rows: UsageSession[] = [row("chat", "/work/monocode-hub", 1)];
     setSpendLoader(async () => daysFromSessions(rows, () => false) ?? []);
     saveSpendLimit({ scope: "project", project: "hivra", period: "month", amountUsd: 10, warnAt: 0.8 }, 0, { by: "person" });
@@ -94,6 +97,8 @@ describe("C1: spend is read again, not frozen at the first read", () => {
 
     rows = [row("chat", "/work/monocode-hub", 501)];
     setSpendClock(() => month + 60_000);
+    // The record TTL runs on the monotonic clock (WP-176 round 3), so the test moves that clock past it.
+    monotonicMs += 60_000;
     judgeLaunch({ project: "hivra", harness: "claude" });
     await flush();
     expect(judgeLaunch({ project: "hivra", harness: "claude" }).status).toBe("over");
