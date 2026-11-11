@@ -17,6 +17,7 @@ import {
   setSpendLoader,
   setSpendPersist,
   setSpendProjectLookup,
+  setSpendRedoLinks,
   spendKey,
   useLiveSpendSink,
   type SpendBookStore,
@@ -66,16 +67,21 @@ export function wireSpendGate(): void {
     resolveFolder: (cwd) => invoke<string>("spend_project_folder", { cwd }),
   });
   setSpendLoader((since) =>
-    invoke<LedgerRow[]>("spend_ledger_totals", { since }).then((rows) =>
-      rows.map((row): SpendDay => ({
+    Promise.all([
+      invoke<LedgerRow[]>("spend_ledger_totals", { since }),
+      // The redo links are read with the ledger, so a redo's ceiling follows its parent after a restart (WP-176 round 4).
+      invoke<{ child: string; parent: string }[]>("spend_redo_links"),
+    ]).then(([rows, links]) => {
+      setSpendRedoLinks(links);
+      return rows.map((row): SpendDay => ({
         projectKey: row.projectKey,
         sessionId: row.sessionId,
         day: row.day,
         micros: row.micros,
         priced: row.priced,
         unpriced: row.unpriced,
-      })),
-    ),
+      }));
+    }),
   );
   setSpendPersist((entry) => invoke("spend_ledger_append", { entry }));
   useLiveSpendSink();

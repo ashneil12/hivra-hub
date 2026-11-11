@@ -19,8 +19,10 @@ import {
   setSpendMonotonicClock,
   setSpendProjectLookup,
   setSpendRecords,
+  setSpendRedoLinks,
   setSpendSessions,
   setSpendWarnSink,
+  spendLine,
   type SpendBookStore,
 } from "./spendGate";
 
@@ -220,5 +222,38 @@ describe("R3-L: clearing a limit that does not exist says so", () => {
     const result = clearSpendLimit("app", "", "month", 0, { by: "person" });
     expect(result.written).toBe(false);
     expect(result.reason).toBe("There is no spend limit to clear.");
+  });
+});
+
+describe("R4-M1: a redo sums its parent's spend from the link the app keeps", () => {
+  it("a redo chat over its parent's task ceiling is held, from the persisted link alone", async () => {
+    setSpendSessions([{ id: "parent", cwd: HUB.folder, harness: "claude", model: "opus", blocks: [{ id: "p-t", role: "user", startedAt: now, turnMetrics: { costUsd: 9.5, inputTokens: 5 } }] }]);
+    setSpendProjectLookup({ idOf: (f) => (f === HUB.folder ? HUB.id : undefined), folderOf: (id) => (id === HUB.id ? HUB.folder : undefined) });
+    setSpendRedoLinks([{ child: "redo", parent: "parent" }]);
+    saveTaskCeiling(HUB.id, { hardUsd: 9 }, 0);
+    expect(await admitSpendTurn({ sessionId: "redo", cwd: HUB.folder, harness: "claude", model: "custom:acme", origin: "automated" })).toMatchObject({ ok: false });
+    setSpendRedoLinks([]);
+  });
+});
+
+describe("R4-M5: a reported custom-model cost is labelled as an estimate", () => {
+  it("the limit line says the cost is estimated from Claude Code's price table", () => {
+    setSpendSessions([{ id: "chat", cwd: HUB.folder, harness: "claude", model: "opus", blocks: [{ id: "c-t", role: "user", startedAt: now, turnMetrics: { costUsd: 4, inputTokens: 5 } }] }]);
+    setSpendProjectLookup({ idOf: (f) => (f === HUB.folder ? HUB.id : undefined), folderOf: (id) => (id === HUB.id ? HUB.folder : undefined) });
+    saveSpendLimit({ scope: "project", project: HUB.id, period: "month", amountUsd: 10, warnAt: 0.8 }, 0, { by: "person" });
+    expect(spendLine(HUB.id, "claude")).toContain("Estimated from Claude Code's price table.");
+  });
+});
+
+describe("R4-M3: a failed startup read says to restart, and does not claim there are no limits", () => {
+  it("the limit line tells the person to restart the app to retry", async () => {
+    await setSpendBookStore({
+      read: async () => {
+        throw new Error("database unavailable");
+      },
+      write: async () => undefined,
+    });
+    expect(spendLine(HUB.id, "claude")).toContain("Restart MonoCode Hub to retry");
+    await setSpendBookStore(null as unknown as SpendBookStore);
   });
 });

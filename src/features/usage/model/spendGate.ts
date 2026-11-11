@@ -133,6 +133,8 @@ let sink: WarnSink | null = null;
 let lookup: ProjectLookup = NO_PROJECTS;
 const folders = new Map<string, string>();
 const asked = new Set<string>();
+/** The redo links the app keeps: a chat's child session to the session it redid. Read with the ledger each TTL. */
+let redoLinks = new Map<string, string>();
 /** Chats the person has continued after a soft ask. The ask is not repeated for them. */
 const continued = new Set<string>();
 /** Chats whose unmeasured ceiling has been reported once. */
@@ -261,6 +263,11 @@ function keyForTurnNow(sessionId: string, cwd: string): string {
   if (own) return spendKey(own);
   askFolder(cwd);
   return spendKey(folderOfCwdCached(cwd));
+}
+
+/** The redo links from the app's delegation rows. A redo's chat sums its parent's spend (lineageOf). */
+export function setSpendRedoLinks(links: readonly { child: string; parent: string }[] | null | undefined): void {
+  redoLinks = new Map(Array.isArray(links) ? links.map((link) => [link.child, link.parent] as const) : []);
 }
 
 /** Tests and the app register the hub's project lookup. The default knows no projects. */
@@ -685,7 +692,7 @@ function lineageOf(sessionId: string): Set<string> {
   const chain = new Set<string>([sessionId]);
   let current = sessionId;
   for (let hop = 0; hop < 50; hop += 1) {
-    const parent = lookup.redoParentOf?.(current);
+    const parent = lookup.redoParentOf?.(current) ?? redoLinks.get(current);
     if (!parent || chain.has(parent)) break;
     chain.add(parent);
     current = parent;
@@ -1170,6 +1177,7 @@ export function resetSpendGate(): void {
   monotonic = defaultMonotonic;
   continued.clear();
   unmeasuredNoticed.clear();
+  redoLinks = new Map();
   records = null;
   loadedAt = -Infinity;
   loader = null;
@@ -1210,11 +1218,16 @@ export function forgetSpendMemory(): void {
  */
 export function spendLine(project: string, harness: string, scope: SpendScope = "project"): string {
   boot();
+  // A book the database could not answer is not "no limit". The person restarts the app to retry it.
+  if (dbStore && dbFailed) return `${UNREADABLE_DB.reason} Restart MonoCode Hub to retry.`;
   const key = scope === "app" ? "" : spendKey(project);
   const own = findLimit(scope, key, "month") ?? findLimit(scope, key, "day");
   const limit = own ?? (scope === "project" ? book.limits.find((row) => row.scope === "app") : undefined);
   if (!limit) return "No spend limit is set.";
   const reading = readingFor(limit, cliReportsCost(harness));
   if (reading.unreadable) return spendAllowed(reading, limit).reason;
-  return spendStatusLine(reading, limit);
+  const line = spendStatusLine(reading, limit);
+  // Claude Code's own cost figure is its price table's estimate, not a bill. The line says so.
+  if (harness.trim().toLowerCase() === "claude" && reading.measuredUsd > 0) return `${line} Estimated from Claude Code's price table.`;
+  return line;
 }

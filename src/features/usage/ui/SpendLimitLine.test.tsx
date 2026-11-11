@@ -59,7 +59,7 @@ describe("the spend limit line", () => {
     saveSpendLimit({ scope: "project", project: "hivra", period: "month", amountUsd: 50, warnAt: 0.8 }, 0);
     draw();
     expect(container.querySelector("[data-spend-line]")?.textContent).toBe(
-      "Spent $12.40 of $50 this month (25%). New builders pause at $50.",
+      "Spent $12.40 of $50 this month (25%). New builders pause at $50. Estimated from Claude Code's price table.",
     );
     expect(container.textContent).not.toMatch(/[—–]/);
     expect(container.textContent).not.toMatch(/your bill/i);
