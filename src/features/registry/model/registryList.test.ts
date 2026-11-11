@@ -1,7 +1,15 @@
 // WP-134b. The More agents copy the chat screens read, and the chat links kept in browser storage.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ loadMoreAgents: vi.fn(), subscribeMoreAgents: vi.fn(() => () => undefined) }));
+const mocks = vi.hoisted(() => ({
+  loadMoreAgents: vi.fn(),
+  subscribeMoreAgents: vi.fn(() => () => undefined),
+  stopMoreAgentRuns: vi.fn(),
+}));
+
+vi.mock("../../../integrations/harness/moreAgents/moreAgentAdapter", () => ({
+  stopMoreAgentRuns: mocks.stopMoreAgentRuns,
+}));
 
 vi.mock("../../providers/model/moreAgents", () => ({
   loadMoreAgents: mocks.loadMoreAgents,
@@ -100,3 +108,37 @@ describe("requestRegistryChat", () => {
     expect(heard).toEqual([{ agentId: "copilot", cwd: "/repo" }]);
   });
 });
+
+describe("a withdrawn or edited entry stops its running agent", () => {
+  const row = (id: string, command: string) => ({
+    usable: true,
+    entry: { id, name: id, command, args: ["--acp"], protocol: "acp-v1" },
+    raw: { id },
+  });
+
+  it("stops the run when the list no longer allows it, and when its command changes", async () => {
+    mocks.loadMoreAgents.mockResolvedValueOnce({ revision: 0, rows: [], approved: [], fingerprints: {}, resolved: {} });
+    await refreshRegistry();
+    mocks.stopMoreAgentRuns.mockClear();
+    mocks.loadMoreAgents.mockResolvedValueOnce({
+      revision: 1,
+      rows: [row("copilot", "/opt/copilot")],
+      approved: ["copilot"],
+      fingerprints: { copilot: "fp-1" },
+      resolved: { copilot: "/opt/copilot" },
+    });
+    await refreshRegistry();
+    expect(mocks.stopMoreAgentRuns).not.toHaveBeenCalled();
+
+    mocks.loadMoreAgents.mockResolvedValueOnce({
+      revision: 2,
+      rows: [row("copilot", "/opt/copilot")],
+      approved: [],
+      fingerprints: { copilot: "fp-1" },
+      resolved: { copilot: "/opt/copilot" },
+    });
+    await refreshRegistry();
+    expect(mocks.stopMoreAgentRuns).toHaveBeenCalledWith("copilot");
+  });
+});
+

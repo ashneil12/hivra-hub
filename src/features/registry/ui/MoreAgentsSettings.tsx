@@ -20,7 +20,7 @@ import {
   suggestMoreAgentId,
   type MoreAgentsList,
 } from "../../providers/model/moreAgents";
-import { refreshRegistry, requestRegistryChat } from "../model/registryList";
+import { REGISTRY_CHAT_REFUSED_EVENT, refreshRegistry, requestRegistryChat } from "../model/registryList";
 
 const UNREADABLE = "The list could not be read. Nothing was changed.";
 
@@ -45,6 +45,15 @@ export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
       setReadable(false);
     }
   }
+
+  useEffect(() => {
+    const onRefused = (event: Event) => {
+      const sentence = (event as CustomEvent<{ sentence?: unknown }>).detail?.sentence;
+      if (typeof sentence === "string") setError(sentence);
+    };
+    window.addEventListener(REGISTRY_CHAT_REFUSED_EVENT, onRefused);
+    return () => window.removeEventListener(REGISTRY_CHAT_REFUSED_EVENT, onRefused);
+  }, []);
 
   useEffect(() => {
     if (!on) return;
@@ -79,7 +88,9 @@ export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
 
   async function toggleApproval(id: string, allowed: boolean) {
     try {
-      setList(await approveMoreAgent(id, allowed));
+      // The allow carries the fingerprint this row shows; the app refuses if the entry changed since.
+      const shown = list?.fingerprints[id];
+      setList(await approveMoreAgent(id, allowed, allowed ? shown : undefined));
       setError(null);
     } catch (failure) {
       setError((failure as Error).message);
@@ -185,6 +196,12 @@ export function MoreAgentsSettings({ cwd }: { cwd?: string }) {
                   <span className="text-content/50">{entry.command}</span>
                   <span className="text-content/50">
                     {entry.args.length === 1 ? "1 argument" : `${entry.args.length} arguments`}
+                  </span>
+                  <span className="w-full break-all font-mono text-[12px] text-content/60" data-agent-exact>
+                    {[entry.command, ...entry.args].join(" ")}
+                  </span>
+                  <span className="w-full break-all font-mono text-[12px] text-content/60" data-agent-resolved>
+                    {list?.resolved[entry.id] ?? "Not found on this Mac. Check the command before you allow it."}
                   </span>
                   <span className="text-content/50">{approved ? "Allowed to run." : "Not allowed to run yet."}</span>
                   <button

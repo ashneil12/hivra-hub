@@ -38,13 +38,11 @@ test("a local command is kept, it waits for an approval, and a built-in name is 
   await expect(list).toContainText("/opt/agents/copilot");
   await expect(list).toContainText("2 arguments");
   await expect(list).toContainText("Not allowed to run yet.");
-
-  await page.reload();
-  await expect(page.locator("[data-agent-list]")).toContainText("My Copilot");
+  // Every argument is on screen, exactly, and the file it resolves to.
+  await expect(list.locator("[data-agent-exact]")).toHaveText("/opt/agents/copilot acp hello world");
+  await expect(list.locator("[data-agent-resolved]")).toHaveText("/opt/agents/copilot");
 
   await page.getByRole("button", { name: "Allow My Copilot" }).click();
-  await expect(page.locator("[data-agent-list]")).toContainText("Allowed to run.");
-  await page.reload();
   await expect(page.locator("[data-agent-list]")).toContainText("Allowed to run.");
 
   await page.getByRole("button", { name: "Start a chat with My Copilot" }).click();
@@ -100,4 +98,30 @@ test("a bad entry is skipped and does not wipe the list", async ({ page }) => {
   expect(text).not.toContain("secret-value");
   expect(text).not.toMatch(/[—–]/);
   expect(text).not.toContain("/Users/");
+});
+
+test("an entry allowed or edited in the same visit starts, or is refused, without a reload", async ({ page }) => {
+  await page.goto("/tests/browser/wp134b-more-agents.html");
+  await page.getByRole("switch", { name: "More agents" }).click();
+
+  await page.getByLabel("Agent name").fill("Copilot");
+  await page.getByLabel("Command").fill("/opt/agents/copilot");
+  await page.getByRole("button", { name: "Add agent" }).click();
+  await page.getByRole("button", { name: "Start a chat with Copilot" }).click();
+  await expect(page.getByText("This agent is not approved to run. Allow it in More agents first.")).toBeVisible();
+  await expect(page.locator("[data-chat-request]")).toHaveCount(0);
+
+  // Allowed in this visit, then started in the same visit: no reload in between.
+  await page.getByRole("button", { name: "Allow Copilot" }).click();
+  await page.getByRole("button", { name: "Start a chat with Copilot" }).click();
+  await expect(page.locator("[data-chat-request]")).toHaveAttribute("data-chat-request", "copilot");
+
+  // Removed and added again with another command: the old allowance does not carry over, and the refusal shows.
+  await page.getByRole("button", { name: "Remove Copilot" }).click();
+  await page.getByLabel("Agent name").fill("Copilot");
+  await page.getByLabel("Command").fill("/opt/agents/other");
+  await page.getByRole("button", { name: "Add agent" }).click();
+  await page.getByRole("button", { name: "Start a chat with Copilot" }).click();
+  await expect(page.getByText("This agent is not approved to run. Allow it in More agents first.")).toBeVisible();
+  await expect(page.locator("[data-agent-list]")).toContainText("Not allowed to run yet.");
 });

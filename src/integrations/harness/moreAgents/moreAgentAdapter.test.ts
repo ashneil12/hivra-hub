@@ -21,6 +21,13 @@ const fake = vi.hoisted(() => ({
   spawnCalls: [] as string[],
 }));
 
+const approval = vi.hoisted(() => ({ check: vi.fn(async (_id: string) => undefined) }));
+
+vi.mock("../../../features/providers/model/moreAgents", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../features/providers/model/moreAgents")>()),
+  checkMoreAgentApproval: approval.check,
+}));
+
 vi.mock("../core/child", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../core/child")>();
   return {
@@ -215,5 +222,19 @@ describe("More agents check", () => {
     const result = await checkMoreAgentEntry("fake", 300);
     expect(result.status).toBe("not_answering");
     expect(fake.procs.size).toBe(0);
+  });
+});
+
+describe("More agents adapter, approval on every turn", () => {
+  it("a running agent answers the next turn only while the app still approves it", async () => {
+    openMoreAgentSession("chat-recheck", "fake");
+    const events: HarnessEvent[] = [];
+    await moreAgentAdapter.sendTurn(turn("chat-recheck", "first", events));
+    expect(fake.procs.size).toBe(1);
+
+    approval.check.mockRejectedValueOnce(new Error("This agent is not approved to run. Allow it in More agents first."));
+    await expect(moreAgentAdapter.sendTurn(turn("chat-recheck", "second", events))).rejects.toThrow("not approved");
+    expect(fake.procs.size).toBe(0);
+    expect(approval.check).toHaveBeenCalled();
   });
 });

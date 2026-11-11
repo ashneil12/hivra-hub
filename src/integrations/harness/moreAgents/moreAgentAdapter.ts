@@ -1,4 +1,4 @@
-import { MORE_AGENT_COPY } from "../../../features/providers/model/moreAgents";
+import { checkMoreAgentApproval, MORE_AGENT_COPY } from "../../../features/providers/model/moreAgents";
 import { AcpClient, type AcpHandlers } from "../core/acp";
 import { killChild, spawnMoreAgentChild, unwatchChild, watchChild } from "../core/child";
 import { TURN_IDLE_TIMEOUT_MS } from "../core/jsonRpc";
@@ -89,6 +89,13 @@ async function start(input: SendTurnInput, agentId: string): Promise<Live> {
   }
   const existing = liveBySession.get(input.sessionId);
   if (existing && existing.cwd === input.cwd && existing.agentId === agentId) {
+    // A running agent answers the next turn only while the app still approves it as it is now.
+    try {
+      await checkMoreAgentApproval(agentId);
+    } catch (error) {
+      await stop(input.sessionId);
+      throw error instanceof Error ? error : new Error(errorText(error));
+    }
     existing.onEvent = input.onEvent;
     return existing;
   }
@@ -312,6 +319,13 @@ export const moreAgentAdapter: SessionRouteAdapter = {
     resumeBySession.set(threadId, { acpSessionId: id, cwd });
   },
 };
+
+/** Stops every live run of one entry, for when it is withdrawn, removed or edited in the list. */
+export function stopMoreAgentRuns(agentId: string): void {
+  for (const [sessionId, live] of [...liveBySession]) {
+    if (live.agentId === agentId) void stop(sessionId);
+  }
+}
 
 /** Run this chat on a More agents entry. Its turns, stops and answers go through the generic adapter from now on. */
 export function openMoreAgentSession(sessionId: string, agentId: string): void {

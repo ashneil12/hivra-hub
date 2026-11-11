@@ -6,9 +6,16 @@
 
 import { loadMoreAgents, subscribeMoreAgents } from "../../providers/model/moreAgents";
 import { loadMoreAgentsEnabled } from "../../settings/model/settings";
+import { stopMoreAgentRuns } from "../../../integrations/harness/moreAgents/moreAgentAdapter";
 import { AGENT_GONE } from "./registryCopy";
 
 export const START_REGISTRY_CHAT_EVENT = "monocode:start-registry-chat";
+/** Dispatched when a Start a chat request is refused, so Settings can say why. */
+export const REGISTRY_CHAT_REFUSED_EVENT = "monocode:registry-chat-refused";
+
+export function reportRegistryChatRefused(sentence: string): void {
+  window.dispatchEvent(new CustomEvent(REGISTRY_CHAT_REFUSED_EVENT, { detail: { sentence } }));
+}
 
 /** Which chat belongs to which entry. Browser storage: a link for display and restore only, never a command. */
 export const REGISTRY_CHAT_LINKS_KEY = "monocode.moreAgentChats";
@@ -24,6 +31,10 @@ export type RegistryAgent = {
   protocol: "acp-v1";
   /** The person has allowed this entry's current command to run. */
   approved: boolean;
+  /** What an allow sends back so the app refuses a changed entry; null when it cannot be shown. */
+  fingerprint: string | null;
+  /** The absolute file this entry resolves to right now, or null when it is not found. */
+  resolved: string | null;
 };
 
 export type LoadedRegistry = {
@@ -67,6 +78,8 @@ export async function refreshRegistry(): Promise<LoadedRegistry> {
           args: entry.args,
           protocol: "acp-v1",
           approved: list.approved.includes(entry.id),
+          fingerprint: list.fingerprints?.[entry.id] ?? null,
+          resolved: list.resolved?.[entry.id] ?? null,
         });
       } else {
         rejected.push({
@@ -76,6 +89,13 @@ export async function refreshRegistry(): Promise<LoadedRegistry> {
         });
       }
     });
+    // A run stops when its entry is withdrawn, removed or edited, and a turn in a chat that is still open is checked
+    // against the app before it goes out (moreAgentAdapter).
+    for (const before of loaded.agents) {
+      if (!before.approved) continue;
+      const now = agents.find((agent) => agent.id === before.id);
+      if (!now?.approved || now.fingerprint !== before.fingerprint) stopMoreAgentRuns(before.id);
+    }
     loaded = { rev: list.revision, agents, rejected, readable: true };
   } catch {
     loaded = { ...loaded, readable: false };

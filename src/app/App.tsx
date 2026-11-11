@@ -822,9 +822,11 @@ import {
   linkRegistryChat,
   loadRegistryDocument,
   refreshRegistry,
+  reportRegistryChatRefused,
+  subscribeRegistry,
 } from "../features/registry/model/registryList";
 import { registrySendPlan, registrySessionFields } from "../features/registry/model/registryPlan";
-import { openMoreAgentSession } from "../integrations/harness/moreAgents/moreAgentAdapter";
+import { moreAgentOfSession, openMoreAgentSession } from "../integrations/harness/moreAgents/moreAgentAdapter";
 // WP-113: attention for the optional chat list inbox. Off passes no sessions.
 import { useChatListInbox } from "../features/settings/model/displayPrefs";
 import {
@@ -3440,23 +3442,30 @@ function Workspace({
     [insertBesideActive],
   );
 
-  // WP-134b: the More agents list the chat screens read is the app's own list. Read it once at start.
+  // WP-134b: the More agents list the chat screens read is the app's own list. Read it at start, and again whenever
+  // it changes in any window (Settings adds, allows, withdraws or removes an entry).
   useEffect(() => {
     void refreshRegistry();
+    return subscribeRegistry(() => undefined);
   }, []);
 
   // WP-134b: Start a chat opens a More agents session. The harness stays one of the eleven.
   useEffect(() => {
-    const onStart = (event: Event) => {
+    const onStart = async (event: Event) => {
       const detail = (event as CustomEvent<{ agentId?: unknown; cwd?: unknown }>).detail;
       const agentId = typeof detail?.agentId === "string" ? detail.agentId : "";
+      // The entry may have been added or allowed a moment ago in Settings: read the app's list before deciding.
+      await refreshRegistry();
       const plan = registrySendPlan({
         registryAgentId: agentId,
         enabled: loadMoreAgentsEnabled(),
         agents: loadRegistryDocument().agents,
         busy: false,
       });
-      if (plan.action !== "prompt") return;
+      if (plan.action !== "prompt") {
+        reportRegistryChatRefused(plan.action === "refuse" ? plan.sentence : AGENT_GONE);
+        return;
+      }
       const rawCwd = detail?.cwd;
       const cwd =
         typeof rawCwd === "string" && rawCwd.length > 0 && rawCwd.length <= 4096 && !/[\0\r\n]/.test(rawCwd)
@@ -3476,6 +3485,16 @@ function Workspace({
     window.addEventListener(START_REGISTRY_CHAT_EVENT, onStart);
     return () => window.removeEventListener(START_REGISTRY_CHAT_EVENT, onStart);
   }, [appendTab]);
+
+  // WP-134b: a More agents chat is routed to its entry as soon as it is in the list, so its first send, compact,
+  // rewind and restore never reach the harness it was saved with. Sends still check the list and the switch.
+  useEffect(() => {
+    for (const session of sessions) {
+      if (session.registryAgentId && moreAgentOfSession(session.id) !== session.registryAgentId) {
+        openMoreAgentSession(session.id, session.registryAgentId);
+      }
+    }
+  }, [sessions]);
 
   const usageLimitAccountChangeRef = useRef<
     ((sessionId: string, accountId: string) => Promise<void>) | null
