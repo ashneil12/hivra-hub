@@ -14,10 +14,13 @@ import type {
 
 export type HostCall = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 
-/** The host as the target or source of a move. Its id is the machine id the person added. */
-export function sshMoveEndpoint(machineId: string, call: HostCall): MoveEndpoint {
+/**
+ * The host as the target or source of a move. Its identity is the host's environment id (the host checks a move's
+ * destination against it), while the machine id is what the desktop uses to reach the host.
+ */
+export function sshMoveEndpoint(machineId: string, call: HostCall, environmentId: string = machineId): MoveEndpoint {
   return {
-    id: machineId,
+    id: environmentId,
     read: (chatId) => call("teleport.read", { chatId }) as Promise<ChatRecord | null>,
     freeze: async (chatId, moveId, peer) => (await call("teleport.freeze", { chatId, moveId, peer })) === true,
     thaw: async (chatId, moveId) => {

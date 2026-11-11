@@ -41,18 +41,23 @@ export async function recoverSavedMoves(input: {
     const session = await input.port.get(chatId);
     if (!session) continue;
     for (const freeze of savedFreezes(session)) {
-      const result = await recoverMove({ chatId, moveId: freeze.moveId, from: input.local, to: input.remoteFor(freeze.peer) });
-      lines.push({ chatId, moveId: freeze.moveId, status: result.status });
+      // M4: a chat whose host cannot be reached is reported as failed, and the other chats are still recovered.
+      try {
+        const result = await recoverMove({ chatId, moveId: freeze.moveId, from: input.local, to: input.remoteFor(freeze.peer) });
+        lines.push({ chatId, moveId: freeze.moveId, status: result.status });
+      } catch {
+        lines.push({ chatId, moveId: freeze.moveId, status: "failed" });
+      }
     }
   }
   return lines;
 }
 
 /** The paired hosts the app knows, as the start panel lists them. Empty when the machine list cannot be read. */
-export async function listPairedHosts(): Promise<Array<{ id: string; name: string }>> {
+export async function listPairedHosts(): Promise<Array<{ id: string; name: string; environmentId: string }>> {
   const { invoke } = await import("@tauri-apps/api/core");
-  const machines = await invoke<Array<{ id: string; name: string }>>("remote_machines");
-  return Array.isArray(machines) ? machines.map((m) => ({ id: m.id, name: m.name })) : [];
+  const machines = await invoke<Array<{ id: string; name: string; environmentId: string }>>("remote_machines");
+  return Array.isArray(machines) ? machines.map((m) => ({ id: m.id, name: m.name, environmentId: m.environmentId })) : [];
 }
 
 /**

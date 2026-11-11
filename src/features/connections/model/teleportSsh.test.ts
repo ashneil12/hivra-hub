@@ -158,3 +158,24 @@ describe("WP-177 SSH transport for a chat move", () => {
     expect(JSON.stringify(seen)).not.toMatch(/token|apiKey|secret|password/i);
   });
 });
+
+describe("WP-177 H3: the endpoint's identity is the host's environment id, not the machine id", () => {
+  it("a move to a host whose machine id differs from its environment id is accepted by that host", async () => {
+    const dirH = mkdtempSync(path.join(tmpdir(), "wp177-h3-"));
+    try {
+      const store = new HostTeleportStore({ dir: dirH, selfId: "env-host-a", providers: ["claude"], leaseRoot: path.join(dirH, "leases") });
+      const wire: HostCall = async (method, params) =>
+        JSON.parse(JSON.stringify((await teleportRpc(store, method, JSON.parse(JSON.stringify(params)), "dev-desktop")) ?? null));
+      const mac = memoryMac();
+      mac.seed(chat);
+      const host = sshMoveEndpoint("machine-uuid-7f3a", wire, "env-host-a");
+      expect(host.id).toBe("env-host-a");
+      const planned = await planMove(chat, MAC, host.id);
+      if (!planned.ok) throw new Error("plan");
+      const result = await moveChat({ chatId: CHAT, from: mac, to: host, approval: approvePlan(planned.plan, CLICK), moveId: "h3", at: AT });
+      expect(result.status).toBe("moved");
+    } finally {
+      rmSync(dirH, { recursive: true, force: true });
+    }
+  });
+});

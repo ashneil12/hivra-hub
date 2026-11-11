@@ -136,8 +136,13 @@ export class HostTeleportStore {
   async holds(chatId: string, moveId: string, device: string): Promise<Holds> {
     const stored = this.load(chatId);
     if (!stored) return "none";
-    if (stored.incoming?.moveId === moveId && stored.incoming.device !== device) return "none";
-    if (stored.live && stored.device !== null && stored.device !== device) return "none";
+    // M2: a device that did not start this copy is refused with an error, not told there is nothing here.
+    if (stored.incoming?.moveId === moveId && stored.incoming.device !== device) {
+      throw new Error("This copy belongs to another device");
+    }
+    if (stored.live && stored.device !== null && stored.device !== device) {
+      throw new Error("This chat belongs to another device");
+    }
     if (stored.activatedBy === moveId && stored.owner === this.options.selfId) return "live";
     if (stored.incoming?.moveId === moveId) return "incoming";
     return "none";

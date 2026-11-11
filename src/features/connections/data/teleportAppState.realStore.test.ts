@@ -151,3 +151,23 @@ describe("WP-177 quit after a move, then reopen: the row stays moved and the cha
     }
   });
 });
+
+describe("WP-177 M3: an old 'Moved back' notice does not let a stale copy return a chat that moved away again", () => {
+  it("a copy whose back notice is older than the move away is refused", async () => {
+    const id = "m3-chat";
+    await upsertSession({ ...preMove(), id } as Session);
+    const mac = localMoveEndpoint({ machineId: "this-mac", port: sessionStoreChatPort(), labelFor: () => "Studio box" });
+    expect(await mac.freeze(id, "m3-away", "host-a")).toBe(true);
+    await mac.release(id, "m3-away", "host-a");
+    const stale = {
+      ...preMove(),
+      id,
+      blocks: [
+        ...preMove().blocks,
+        { id: "teleported-back-old", role: "system", text: "Moved back to this Mac", notice: "teleported-back", startedAt: 1000 },
+      ],
+    } as unknown as Session;
+    await upsertSession(stale);
+    expect(teleportStateOf((await getSession(id))!)).toMatchObject({ moved: true, host: "Studio box" });
+  });
+});

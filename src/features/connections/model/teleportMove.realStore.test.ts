@@ -200,3 +200,27 @@ describe("WP-177 startup recovery finds every move in the store", () => {
     expect(ids.sort()).toEqual(["frozen-1", "incoming-1"]);
   });
 });
+
+describe("WP-177 M4: one chat's failure does not stop the others at launch", () => {
+  it("recovery of a chat whose host is unreachable is reported, and the other chats are still recovered", async () => {
+    const { recoverSavedMoves } = await import("./teleportMove");
+    backend.clear();
+    forgetMovedRowsForTests();
+    await upsertSession({ ...savedChat(), id: "m4-bad" } as Session);
+    await upsertSession({ ...savedChat(), id: "m4-good" } as Session);
+    const local = localMoveEndpoint({ machineId: MAC, port: sessionStoreChatPort(), labelFor: () => "Studio box" });
+    await local.freeze("m4-bad", "m4-b", "unreachable-host");
+    await local.freeze("m4-good", "m4-g", "reachable-host");
+    const down = async () => { throw new Error("no route to host"); };
+    const dead = { id: "unreachable-host", read: down, holds: down, thaw: down, freeze: down, canResume: down } as never;
+    const alive = { id: "reachable-host", holds: async () => "none", thaw: async () => undefined, read: async () => null } as never;
+    const lines = await recoverSavedMoves({
+      chatIds: ["m4-bad", "m4-good"],
+      port: sessionStoreChatPort(),
+      local,
+      remoteFor: (peer) => (peer === "unreachable-host" ? dead : alive),
+    });
+    expect(lines.find((l) => l.chatId === "m4-good")?.status).toBe("recovered");
+    expect(lines.find((l) => l.chatId === "m4-bad")?.status).toBe("failed");
+  });
+});

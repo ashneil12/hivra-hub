@@ -481,11 +481,22 @@ function enqueueSessionWrite<T>(
  * no writer (quit, a queue drain, a stale window) can bring a chat back to life on this Mac. A chat returns only with its
  * "teleported-back" notice. Filled when a chat is read, so the guard holds after a restart too.
  */
-const movedSessionIds = new Set<string>();
+const movedSessionIds = new Map<string, number>();
 
 /** Test-only reset: a new process starts with no moved rows known, and reads fill the set again. */
 export function forgetMovedRowsForTests(): void {
   movedSessionIds.clear();
+}
+
+/** When a chat was moved away (the marker's time), or 0 when the row does not say. */
+function movedAtOf(session: Session): number {
+  const moved = session.blocks.find((b) => b.notice === "teleported");
+  return moved?.startedAt ?? 0;
+}
+
+/** A "Moved back" notice counts only when it is newer than the move away it answers (M3). */
+function returnedAfterMove(session: Session, movedAt: number): boolean {
+  return session.blocks.some((b) => b.notice === "teleported-back" && (b.startedAt ?? 0) > movedAt);
 }
 
 export async function upsertSession(
@@ -495,9 +506,9 @@ export async function upsertSession(
     return null;
   }
   const moved = teleportStateOf(session).moved;
-  const returning = session.blocks.some((b) => b.notice === "teleported-back");
+  const returning = returnedAfterMove(session, movedSessionIds.get(session.id) ?? 0);
   if (movedSessionIds.has(session.id) && !moved && !returning) return null;
-  if (moved) movedSessionIds.add(session.id);
+  if (moved) movedSessionIds.set(session.id, movedAtOf(session));
   else if (returning) movedSessionIds.delete(session.id);
   const mono = !!session.monoTranscript || isMonoSession(session.id);
   const snapshot = mono
@@ -737,7 +748,7 @@ export async function readSession(sessionId: string): Promise<Session | null> {
   if (session.monoTranscript) monoSavedBlocks.set(sessionId, session.blocks);
   // WP-177: every read of a saved chat sets its send lock (moved or frozen), so a restart keeps it.
   syncTeleportLock(session);
-  if (teleportStateOf(session).moved) movedSessionIds.add(session.id);
+  if (teleportStateOf(session).moved) movedSessionIds.set(session.id, movedAtOf(session));
   return session;
 }
 

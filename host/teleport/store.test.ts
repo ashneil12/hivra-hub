@@ -180,7 +180,8 @@ describe("WP-177 MEDIUM E: only the device that started a move can drive it", ()
     await store.receive(CHAT, "m1", payloadFor(), DEV);
     await expect(store.activate(CHAT, "m1", OTHER)).rejects.toThrow(/another device/);
     await store.discard(CHAT, "m1", OTHER);
-    expect(await store.holds(CHAT, "m1", OTHER)).toBe("none");
+    // M2: another device asking about the copy is an error, never "none": a re-paired device must not read as "nothing here".
+    await expect(store.holds(CHAT, "m1", OTHER)).rejects.toThrow(/another device/);
     expect(await store.holds(CHAT, "m1", DEV)).toBe("incoming");
     await store.activate(CHAT, "m1", DEV);
     expect(await store.read(CHAT, OTHER)).toBeNull();

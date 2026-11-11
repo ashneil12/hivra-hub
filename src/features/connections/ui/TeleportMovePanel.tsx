@@ -8,6 +8,7 @@ import { approveAndMove, planFromSession } from "../model/teleportMove";
 import { startRecapChat } from "../model/teleportRecap";
 import type { MoveEndpoint, MovePlan, MoveRefusal, MoveResult } from "../model/teleport";
 import { TeleportNotice } from "./TeleportNotice";
+import { moveResultMessage } from "./teleportCopy";
 import { localMoveEndpoint } from "../model/teleportLocal";
 import { sshMoveEndpoint } from "../model/teleportSsh";
 import { remoteRequest } from "../model/connections";
@@ -17,8 +18,11 @@ import { getSession, upsertSession } from "../../sessions/data/sessionStore";
 import { listPairedHosts } from "../model/teleportMove";
 
 export interface PairedHost {
+  /** The machine id the desktop uses to reach the host. */
   id: string;
   name: string;
+  /** The host's environment id: the identity a move is addressed to. */
+  environmentId?: string;
 }
 
 export interface TeleportMovePanelProps {
@@ -49,15 +53,19 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
 
   const start = async () => {
     try {
-      const planned = await planFromSession(session, "this-mac", hostId);
+      // The plan names the endpoint's identity, the same one the approved move will check.
+      const { remote } = endpointsFor(hostId);
+      const planned = await planFromSession(session, "this-mac", remote.id);
       setPhase(planned.ok ? { kind: "plan", hostId, plan: planned.plan } : { kind: "refused", refusal: planned.refusal, hostId });
     } catch (error) {
       setPhase({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
     }
   };
 
+  const [approving, setApproving] = useState(false);
   const approve = async (event: React.MouseEvent) => {
-    if (phase.kind !== "plan") return;
+    if (phase.kind !== "plan" || approving) return;
+    setApproving(true);
     const { local, remote } = endpointsFor(phase.hostId);
     try {
       const { result } = await approveAndMove({
@@ -76,9 +84,11 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
         setPhase({ kind: "done", hostId: phase.hostId, result });
       }
       else if (result.status === "refused") setPhase({ kind: "refused", refusal: result.refusal, hostId: phase.hostId });
-      else setPhase({ kind: "failed", message: result.status === "failed" ? result.message : "The move did not finish. The chat stayed where it was." });
+      else setPhase({ kind: "failed", message: moveResultMessage(result) });
     } catch (error) {
       setPhase({ kind: "failed", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -120,7 +130,7 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
             Values redacted before the move: {phase.plan.redactions}
           </p>
           <div style={{ display: "flex", gap: 8 }}>
-            <button type="button" data-testid="teleport-approve" onClick={approve}>
+            <button type="button" data-testid="teleport-approve" onClick={approve} disabled={approving}>
               Approve and move
             </button>
             <button type="button" onClick={() => setPhase({ kind: "idle" })}>
@@ -185,7 +195,7 @@ export function AppTeleportPanel(props: { session: Session; onRow?: (row: Sessio
             port: sessionStoreChatPort({ isBusy: () => session.busy === true }),
             labelFor: () => hostName,
           }),
-          remote: sshMoveEndpoint(hostId, (method, params) => remoteRequest(hostId, method, params)),
+          remote: sshMoveEndpoint(hostId, (method, params) => remoteRequest(hostId, method, params), hosts.find((h) => h.id === hostId)?.environmentId ?? hostId),
         };
       }}
       onRow={onRow}

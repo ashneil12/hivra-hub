@@ -32,3 +32,26 @@ describe("WP-177 teleport copy", () => {
     }
   });
 });
+
+describe("WP-177 H1: what the person is told for a move that did not finish cleanly", () => {
+  it("a partial move says the host has the chat, and never that it stayed where it was", async () => {
+    const { moveResultMessage } = await import("./teleportCopy");
+    const text = moveResultMessage({ status: "partial", stage: "release", chatId: "c", to: "h", moveId: "m", message: "x" } as never);
+    expect(text).toMatch(/host has the chat/i);
+    expect(text).not.toMatch(/stayed where it was/i);
+  });
+
+  it("an unknown result says it is unknown and that the chat stays locked here until it is checked", async () => {
+    const { moveResultMessage } = await import("./teleportCopy");
+    const text = moveResultMessage({ status: "unknown", chatId: "c", to: "h", moveId: "m", message: "x" } as never);
+    expect(text).toMatch(/unknown/i);
+    expect(text).toMatch(/locked/i);
+    expect(text).not.toMatch(/stayed where it was/i);
+  });
+
+  it("a failed move, which did stay where it was, says so", async () => {
+    const { moveResultMessage } = await import("./teleportCopy");
+    const text = moveResultMessage({ status: "failed", stage: "receive", message: "x", chatStayedOn: "this-mac" } as never);
+    expect(text).toMatch(/stayed where it was/i);
+  });
+});
