@@ -123,7 +123,10 @@ export function failureWords(notice?: string | null, error?: string | null): str
 
 function credential(row: CrewWorkerInput): boolean {
   if (CREDENTIAL_CLASS.has((row.errorClass ?? "").trim())) return true;
-  const text = `${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
+  // A send-back quotes the worker's own command. "sign-in.test.ts" in that reason is not a sign-in to do.
+  const notice = (row.statusNotice ?? "").trim();
+  const noticeText = notice.toLowerCase().startsWith("sent back:") ? "" : notice;
+  const text = `${noticeText}\n${row.error ?? ""}`.toLowerCase();
   if (knownStatus(row.status) === "paused" && /usage limit|quota/.test(text)) return true;
   return /sign[- ]in|not signed in|missing cli|isn't installed|is not installed/.test(text);
 }

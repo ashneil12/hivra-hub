@@ -435,3 +435,24 @@ describe("answering a decision", () => {
     expect(next.rows[0]?.status).toBe("failed");
   });
 });
+
+// Review round 1 (PR #232), LOW: a sent-back reason quotes the worker's own to-do or command. A working row whose
+// reason names a sign-in test is not a sign-in the person has to do.
+describe("review r1: sent-back reasons", () => {
+  it("r1: a sent-back reason that mentions sign-in is not a credential card", () => {
+    const shown = inboxItems({
+      project: "/work/proj",
+      rows: [
+        {
+          id: "fixing",
+          project: "/work/proj",
+          title: "Fix the login page",
+          status: "working",
+          statusNotice: "Sent back: a check failed this turn (npx vitest run src/features/auth/sign-in.test.ts).",
+          updatedAt: 1,
+        },
+      ],
+    });
+    expect(shown.filter((item) => item.kind === "credential")).toEqual([]);
+  });
+});
