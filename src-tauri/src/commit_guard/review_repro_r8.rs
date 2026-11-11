@@ -330,6 +330,8 @@ fn rr8_m2_a_sparse_shell_push_sends_a_key_the_graph_walk_counted_as_upstream() {
     );
 }
 
+// Only the unix child test calls it; Windows CI builds tests with `-D warnings`.
+#[cfg(unix)]
 fn in_child() -> bool {
     std::env::var_os("CG_RR8_CHILD").is_some()
 }
