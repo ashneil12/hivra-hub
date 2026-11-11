@@ -35,6 +35,7 @@ test("home shows the chief, the three sections, and customize", async ({ page },
   await expect(page.locator("[data-home-time]")).toHaveText("09:05");
   await expect(page.getByText("All quiet.")).toHaveCount(0);
   expect(await home.innerText()).not.toMatch(/[—–]/);
+  await expect(page.locator("[data-home-section='recent']")).toHaveCSS("opacity", "1");
 
   if (testInfo.project.name === "chromium") {
     mkdirSync(SHOTS, { recursive: true });
@@ -59,7 +60,13 @@ test("home shows the chief, the three sections, and customize", async ({ page },
   await expect(page.getByRole("button", { name: "Show Done today" })).toBeVisible();
   await page.getByRole("button", { name: "Pin Example board" }).click();
   await expect(home).toHaveAttribute("data-home-order", "moving-now needs-you panel:my-panels:board");
-  await expect(page.getByText("Example: board")).toBeVisible();
+  const pinned = page.locator("[data-home-section='panel:my-panels:board']");
+  await expect(pinned).toBeVisible();
+  await pinned.scrollIntoViewIfNeeded();
+  const box = await pinned.boundingBox();
+  expect(box).toBeTruthy();
+  expect(box!.y).toBeGreaterThanOrEqual(0);
+  expect(box!.y + box!.height).toBeLessThanOrEqual(900);
   if (testInfo.project.name === "chromium") await page.screenshot({ path: `${SHOTS}/customize.png` });
 
   await page.reload();
