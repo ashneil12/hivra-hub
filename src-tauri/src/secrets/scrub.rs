@@ -106,6 +106,18 @@ pub fn needles(value: &str) -> Vec<String> {
         value.nfc().collect(),
         value.nfd().collect(),
     ];
+    // Fix round 3 (M2): base64 of the value after a prefix (`curl -u` gives `KEY:`, a Basic header gives `user:KEY`) holds
+    // the value's own groups from one, two or three bytes in. Those groups are the value without its leading bytes.
+    let bytes = value.as_bytes();
+    for skip in 1..3 {
+        if bytes.len() > skip {
+            let tail = &bytes[skip..];
+            list.push(STANDARD.encode(tail));
+            list.push(STANDARD_NO_PAD.encode(tail));
+            list.push(URL_SAFE.encode(tail));
+            list.push(URL_SAFE_NO_PAD.encode(tail));
+        }
+    }
     if value.contains('\n') {
         for line in value.split('\n') {
             let line = line.trim_end_matches('\r');

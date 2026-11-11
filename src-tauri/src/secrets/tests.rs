@@ -839,7 +839,8 @@ fn delete_takes_the_grants_and_the_row_before_the_keychain_item() {
         "stripe-api-key",
         "mono",
         "mono-1",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "always",
         bench.now,
@@ -865,7 +866,8 @@ fn delete_takes_the_grants_and_the_row_before_the_keychain_item() {
             "stripe-api-key",
             Some("mono-1"),
             None,
-            "stripe",
+            "/usr/bin/true",
+            "",
             ""
         )
         .unwrap(),
@@ -966,7 +968,8 @@ fn delete_removes_every_grant_and_names_what_stops_working() {
         "stripe-api-key",
         "mono",
         "mono-1",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "always",
         bench.now,
@@ -978,7 +981,8 @@ fn delete_removes_every_grant_and_names_what_stops_working() {
         "stripe-api-key",
         "project",
         "/p",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "always",
         bench.now,
@@ -1008,7 +1012,8 @@ fn renaming_changes_the_label_and_keeps_the_slug_and_grants() {
         "stripe-api-key",
         "mono",
         "mono-1",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "always",
         bench.now,
@@ -1056,7 +1061,8 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         "stripe-api-key",
         "mono",
         "mono-1",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "always",
         bench.now,
@@ -1068,7 +1074,8 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         "stripe-api-key",
         Some("mono-1"),
         None,
-        "stripe",
+        "/usr/bin/true",
+        "",
         ""
     )
     .unwrap()
@@ -1079,7 +1086,8 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         "stripe-api-key",
         Some("mono-2"),
         None,
-        "stripe",
+        "/usr/bin/true",
+        "",
         ""
     )
     .unwrap()
@@ -1092,6 +1100,7 @@ fn a_mono_grant_works_for_that_mono_and_not_another() {
         Some("mono-1"),
         None,
         "curl",
+        "",
         ""
     )
     .unwrap()
@@ -1109,7 +1118,8 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
         "stripe-api-key",
         "project",
         "/p",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "always",
         bench.now,
@@ -1122,7 +1132,8 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
             "stripe-api-key",
             Some(mono),
             Some("/p"),
-            "stripe",
+            "/usr/bin/true",
+            "",
             ""
         )
         .unwrap()
@@ -1134,7 +1145,8 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
         "stripe-api-key",
         Some("mono-1"),
         Some("/other"),
-        "stripe",
+        "/usr/bin/true",
+        "",
         ""
     )
     .unwrap()
@@ -1145,7 +1157,8 @@ fn a_project_grant_works_for_every_mono_in_the_project_and_not_outside_it() {
         "stripe-api-key",
         Some("mono-1"),
         None,
-        "stripe",
+        "/usr/bin/true",
+        "",
         ""
     )
     .unwrap()
@@ -1163,7 +1176,8 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
         "stripe-api-key",
         "mono",
         "mono-1",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "once",
         bench.now,
@@ -1174,7 +1188,8 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
         SCOPE_GLOBAL,
         "stripe-api-key",
         "mono-1",
-        "stripe",
+        "/usr/bin/true",
+        "",
         ""
     )
     .unwrap());
@@ -1183,7 +1198,8 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
         SCOPE_GLOBAL,
         "stripe-api-key",
         "mono-1",
-        "stripe",
+        "/usr/bin/true",
+        "",
         ""
     )
     .unwrap());
@@ -1193,7 +1209,8 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
         "stripe-api-key",
         Some("mono-1"),
         None,
-        "stripe",
+        "/usr/bin/true",
+        "",
         ""
     )
     .unwrap()
@@ -1213,7 +1230,8 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
         "stripe-api-key",
         "mono",
         "mono-1",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "once",
         bench.now,
@@ -1234,7 +1252,8 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
                     SCOPE_GLOBAL,
                     "stripe-api-key",
                     "mono-1",
-                    "stripe",
+                    "/usr/bin/true",
+                    "",
                     "",
                 )
                 .unwrap()
@@ -1255,21 +1274,21 @@ fn a_once_grant_is_spent_once_even_when_two_runs_race_for_it() {
 #[test]
 fn a_shell_wrapper_is_refused_and_an_argv_is_taken() {
     for command in [
-        vec!["sh".to_string(), "-c".into(), "stripe".into()],
+        vec!["sh".to_string(), "-c".into(), "/usr/bin/true".into()],
         vec!["bash".into(), "-lc".into(), "x".into()],
         vec!["cmd".into(), "/c".into(), "x".into()],
         vec!["cmd.exe".into(), "/c".into(), "x".into()],
         vec!["powershell".into(), "-Command".into(), "x".into()],
         vec!["powershell.exe".into(), "-Command".into(), "x".into()],
         vec!["pwsh".into(), "-c".into(), "x".into()],
-        vec!["env".into(), "stripe".into()],
-        vec!["/usr/bin/env".into(), "stripe".into()],
+        vec!["env".into(), "/usr/bin/true".into()],
+        vec!["/usr/bin/env".into(), "/usr/bin/true".into()],
     ] {
         assert!(executable_of(&command).is_err(), "{command:?}");
     }
     assert_eq!(
-        executable_of(&["stripe".into(), "customers".into(), "list".into()]).unwrap(),
-        "stripe"
+        executable_of(&["/usr/bin/true".into(), "customers".into(), "list".into()]).unwrap(),
+        "/usr/bin/true"
     );
     assert_eq!(
         executable_of(&["/usr/local/bin/stripe".into(), "list".into()]).unwrap(),
@@ -1318,7 +1337,7 @@ fn run_request(project: Option<&str>, mono: &str) -> RunRequest {
         project: project.map(str::to_string),
         name: "stripe-api-key".into(),
         env: "STRIPE_API_KEY".into(),
-        command: vec!["stripe".into(), "customers".into(), "list".into()],
+        command: vec!["/usr/bin/true".into(), "customers".into(), "list".into()],
         cwd: None,
         timeout_seconds: None,
     }
@@ -1344,7 +1363,7 @@ fn first_use_asks_once_and_always_for_this_mono_stops_the_asking() {
         .unwrap()
         .unwrap();
     assert_eq!(asked.options, vec!["Once", "Always for this Mono", "No"]);
-    assert!(asked.question.contains("stripe"));
+    assert!(asked.question.contains("/usr/bin/true"));
     // Answer "Always for this Mono".
     // The person answers on their own path (the Inbox sends `user`); a bare `None` is no one's and never settles a
     // secret card.
@@ -1353,7 +1372,7 @@ fn first_use_asks_once_and_always_for_this_mono_stops_the_asking() {
         "",
         &decision_key,
         "Always for this Mono",
-        Some("user".into()),
+        None,
         bench.now + 1,
     )
     .unwrap();
@@ -1405,15 +1424,7 @@ fn once_asks_again_after_it_is_spent() {
     .unwrap() else {
         panic!("asks first");
     };
-    crate::decisions::answer(
-        &mut conn,
-        "",
-        &decision_key,
-        "Once",
-        Some("user".into()),
-        bench.now + 1,
-    )
-    .unwrap();
+    crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 1).unwrap();
     assert!(matches!(
         prepare_run(
             &bench.vault,
@@ -1451,15 +1462,7 @@ fn no_writes_nothing_and_says_so() {
     .unwrap() else {
         panic!("asks first");
     };
-    crate::decisions::answer(
-        &mut conn,
-        "",
-        &decision_key,
-        "No",
-        Some("user".into()),
-        bench.now + 1,
-    )
-    .unwrap();
+    crate::decisions::answer(&mut conn, "", &decision_key, "No", None, bench.now + 1).unwrap();
     assert!(matches!(
         prepare_run(
             &bench.vault,
@@ -1500,7 +1503,7 @@ fn always_for_this_project_covers_every_mono_in_it_and_no_other_project() {
         "/p",
         &decision_key,
         "Always for this project",
-        Some("user".into()),
+        None,
         bench.now + 1,
     )
     .unwrap();
@@ -1579,7 +1582,7 @@ fn a_signed_grant_round_trips_and_the_wrong_store_refuses_it() {
         version: 1,
         subject: "mono-1".into(),
         env: "STRIPE_API_KEY".into(),
-        command: vec!["stripe".into()],
+        command: vec!["/usr/bin/true".into()],
         cwd: None,
         nonce: "0011223344556677".into(),
         expires_at: grant::now_millis() + 60_000,

@@ -408,3 +408,43 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
         "{refusal}"
     );
 }
+
+// Fix round 3, H1: a secret run's card is answered by the person on the card alone. A page or the Needs sheet
+// (answered as "user") and a chat's own answer are refused; the card's own answer (no answerer) still applies.
+#[test]
+fn a_secret_card_takes_no_answer_from_a_page_or_needs() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(
+        &mut conn,
+        ask_input("chat", "secret/stripe-api-key/9f", &[]),
+        1,
+    )
+    .unwrap();
+    for by in ["user", "page:pg_1", "chat:abc"] {
+        assert!(
+            answer(
+                &mut conn,
+                "hivra",
+                "secret/stripe-api-key/9f",
+                "Once",
+                Some(by.into()),
+                2
+            )
+            .is_err(),
+            "{by} must not answer a secret card"
+        );
+    }
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            "secret/stripe-api-key/9f",
+            "Once",
+            None,
+            3
+        )
+        .unwrap()
+        .applied
+    );
+}

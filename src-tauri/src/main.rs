@@ -19,6 +19,17 @@ fn main() {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
     };
+    // Fix round 3 (H4): a subcommand that reads the Keychain runs only from the daily app's folder, as the app does. It is
+    // checked before the subcommand runs, since the subcommands run before the app's own startup check.
+    if matches!(
+        args.first().and_then(|arg| arg.to_str()),
+        Some("secret-run") | Some("connector-run")
+    ) {
+        if let Some(why) = monocode_lib::instance::keychain_subcommand_refusal() {
+            eprintln!("monocode: {why}");
+            std::process::exit(78);
+        }
+    }
     match args.first().and_then(|arg| arg.to_str()) {
         Some("control") => std::process::exit(monocode_lib::control_cli::run(rest())),
         Some("app") => std::process::exit(monocode_lib::control_cli::run_app(rest())),

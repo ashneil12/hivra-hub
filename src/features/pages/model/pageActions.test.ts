@@ -136,3 +136,13 @@ it("tasks.write answers, stops or hands out a task the way the taps do, and refu
   expect(calls.map((c) => c[0])).toEqual(["answerInWords", "stopRow", "send"]);
   await expect(runPageAction("tasks.write", { op: "delete", workerId: "d1" }, ctx, d)).rejects.toThrow("A page can answer, stop or add a task (op: answer, stop or add).");
 });
+
+it("a page cannot answer a secret run's card, through its answer or its pick (fix round 3, H1)", async () => {
+  const { d, calls } = deps();
+  const answered = await runPageAction("agents.answer", { needId: "decision:%2Fcode%2Ftally:secret%2Fstripe-api-key%2F9f", text: "Always for this Mono" }, ctx, d).catch((e) => String(e));
+  const picked = await runPageAction("agents.pick", { needId: "decision::secret/stripe-api-key/9f" }, ctx, d).catch((e) => String(e));
+  expect(String(answered)).toMatch(/secret/);
+  expect(String(picked)).toMatch(/secret/);
+  expect(calls.filter((c) => c[0] === "answerNeed")).toEqual([]);
+});
+

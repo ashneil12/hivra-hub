@@ -86,6 +86,14 @@ pub enum WorkerOutcome {
     Ready { secrets: Vec<ArmedSecret> },
 }
 
+/// The worker card's words. The whole worker session holds the value, and the CLI keeps a transcript of what it prints on
+/// disk, so a value it prints stays there (fix round 3, M3).
+pub fn worker_card_question(mono: &str, label: &str, whose: &str) -> String {
+    format!(
+        "Let {mono} start a worker with {label} ({whose}) in its environment? The whole worker session will hold the value, including anything it starts, and the CLI keeps a transcript of what it prints on disk, so a value it prints stays there. Running one command with it is narrower: ask for that instead."
+    )
+}
+
 /// Resolve every name, asking the person where there is no grant. Nothing is armed unless all names are ready.
 pub fn prepare(
     vault: &dyn Vault,
@@ -160,12 +168,7 @@ pub fn prepare(
                 scope: row.scope,
             });
         }
-        let question = format!(
-            "Let {mono} start a worker with {} ({}) in its environment? The whole worker session will hold the value, \
-             including anything it starts. Running one command with it is narrower: ask for that instead.",
-            row.label,
-            scope_words(&row.scope)
-        );
+        let question = worker_card_question(mono, &row.label, &scope_words(&row.scope));
         // A worker's grant is its own: keyed by the worker entry, never the CLI's name, so a `secrets.run` grant for the
         // same CLI does not spend it. A worker CLI can run any code, so the card offers no "Always".
         let worker_key = format!("worker:{executable}");

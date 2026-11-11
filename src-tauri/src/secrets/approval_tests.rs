@@ -77,7 +77,7 @@ fn person_answers(bench: &Bench, key: &str, answer: &str, at: i64) {
 
 fn person_answers_in(bench: &Bench, project: &str, key: &str, answer: &str, at: i64) {
     let mut conn = bench.store.lock_conn().unwrap();
-    crate::decisions::answer(&mut conn, project, key, answer, Some("user".into()), at).unwrap();
+    crate::decisions::answer(&mut conn, project, key, answer, None, at).unwrap();
 }
 
 // ---- which programs can run any code --------------------------------------------------------------------------------
@@ -141,7 +141,6 @@ fn run_anything_programs_match_by_basename_and_ignore_dot_exe() {
     for program in [
         "curl",
         "stripe",
-        "psql",
         "nodemon",
         "gofmt",
         "javac",
@@ -464,6 +463,7 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
             "mono-1",
             program,
             "",
+            "",
             "always",
             NOW,
         )
@@ -482,6 +482,7 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
         "mono-1",
         "python3",
         "",
+        "",
         "once",
         NOW,
     )
@@ -493,6 +494,7 @@ fn the_grant_writer_itself_refuses_always_for_a_run_anything_program() {
         "mono",
         "mono-1",
         "curl",
+        "",
         "",
         "always",
         NOW,
@@ -566,16 +568,27 @@ fn with_the_setting_on_always_is_offered_warned_about_and_allowed() {
         .unwrap(),
         RunOutcome::Granted { .. }
     ));
-    // The next run never asks.
+    // The same command never asks again (fix round 3, H3: Always is for the exact command).
+    assert!(matches!(
+        prepare_run(
+            &bench.vault,
+            &mut conn,
+            request("mono-1", &["python3", "script.py"]),
+            NOW + 3
+        )
+        .unwrap(),
+        RunOutcome::Granted { .. }
+    ));
+    // Other arguments with the same program ask again.
     assert!(matches!(
         prepare_run(
             &bench.vault,
             &mut conn,
             request("mono-1", &["python3", "other.py"]),
-            NOW + 3
+            NOW + 4
         )
         .unwrap(),
-        RunOutcome::Granted { .. }
+        RunOutcome::Waiting { .. }
     ));
 }
 
@@ -634,6 +647,7 @@ fn turning_the_setting_off_takes_back_the_always_grants_it_allowed() {
             subject,
             program,
             "",
+            "",
             "always",
             NOW,
         )
@@ -646,6 +660,7 @@ fn turning_the_setting_off_takes_back_the_always_grants_it_allowed() {
         "mono",
         "mono-2",
         "make",
+        "",
         "",
         "once",
         NOW,
@@ -926,6 +941,7 @@ fn a_grant_names_the_file_it_was_given_for() {
         "m1",
         "/opt/homebrew/bin/stripe",
         "1:2:3:4",
+        "",
         "always",
         NOW,
     )
@@ -939,6 +955,7 @@ fn a_grant_names_the_file_it_was_given_for() {
             None,
             "/opt/homebrew/bin/stripe",
             identity,
+            "",
         )
         .unwrap()
         .is_some()
@@ -984,4 +1001,108 @@ fn an_unreadable_value_fails_closed_for_the_needles_and_the_checks() {
         None,
         "anything at all"
     ));
+}
+
+// ---- fix round 3 (H2, H3): judge the typed word and the canonical path, shebangs included; Always binds the fingerprint
+
+#[cfg(unix)]
+#[test]
+fn a_script_is_judged_by_the_interpreter_on_its_shebang_line() {
+    let dir = std::env::temp_dir().join(format!("mc-shebang-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let node_script = dir.join("npx-cli.js");
+    std::fs::write(&node_script, "#!/usr/bin/env node\nconsole.log(1)\n").unwrap();
+    assert!(
+        runs_any_for(&node_script.to_string_lossy()),
+        "a node script runs any code"
+    );
+    let shell_script = dir.join("tool");
+    std::fs::write(&shell_script, "#!/bin/sh\necho hi\n").unwrap();
+    assert!(
+        runs_any_for(&shell_script.to_string_lossy()),
+        "a shell script runs any code"
+    );
+    let plain = dir.join("plain");
+    std::fs::write(&plain, "#!/usr/bin/env stripe\n").unwrap();
+    assert!(!runs_any_for(&plain.to_string_lossy()));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_typed_word_and_the_canonical_path_are_both_judged() {
+    // `npx` pins to a JavaScript file under npm's folder: the typed word is what says it runs code.
+    assert!(runs_any_for("npx"));
+    assert!(runs_any_for("/opt/homebrew/bin/npx"));
+    assert!(!runs_any_for("/usr/bin/true"));
+}
+
+#[test]
+fn the_no_always_list_covers_the_programs_found_to_leak_or_run_code() {
+    for program in [
+        "sqlite3",
+        "jq",
+        "psql",
+        "m4",
+        "script",
+        "lldb",
+        "gsed",
+        "gfind",
+        "gxargs",
+        "genv",
+        "gnohup",
+        "terraform",
+        "pytest",
+    ] {
+        assert!(runs_any_code(program), "{program} must ask every time");
+    }
+}
+
+#[test]
+fn an_always_grant_covers_only_the_fingerprint_it_was_given_for() {
+    let conn = Connection::open_in_memory().unwrap();
+    ensure_tables(&conn).unwrap();
+    put_grant(
+        &conn,
+        "global",
+        "stripe-api-key",
+        "mono",
+        "m1",
+        "/usr/bin/true",
+        "1:2:3:4",
+        "fingerprint-a",
+        "always",
+        NOW,
+    )
+    .unwrap();
+    let found = |fingerprint: &str| {
+        find_grant(
+            &conn,
+            "global",
+            "stripe-api-key",
+            Some("m1"),
+            None,
+            "/usr/bin/true",
+            "1:2:3:4",
+            fingerprint,
+        )
+        .unwrap()
+        .is_some()
+    };
+    assert!(found("fingerprint-a"));
+    // Other arguments, another environment name or another folder: a different fingerprint, so the card comes back.
+    assert!(!found("fingerprint-b"));
+}
+
+#[test]
+fn an_always_card_says_it_covers_the_exact_command() {
+    let text = run_question(
+        "Tally",
+        "Stripe key",
+        "your global keys",
+        &["/usr/bin/true".to_string(), "x".to_string()],
+        true,
+        false,
+    )
+    .unwrap();
+    assert!(text.contains("exact command"), "{text}");
 }

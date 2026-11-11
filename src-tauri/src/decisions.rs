@@ -477,6 +477,15 @@ fn is_person(by: Option<&str>) -> bool {
     }
 }
 
+/// A secret run's card is answered by the person on the card: no answerer (the Inbox) or "person". Not "user" (the Needs
+/// sheet), not a page, not a chat (fix round 3, H1).
+fn secret_answer_by_person(by: Option<&str>) -> bool {
+    match by.map(str::trim).filter(|b| !b.is_empty()) {
+        None => true,
+        Some(by) => by == "person",
+    }
+}
+
 /// Whether a decision's recorded answerer is the person's own path. WP-92's grant check reads it: an answer recorded
 /// any other way (a chat, a Mono, a worker) is not the person's and never becomes a secret grant.
 pub fn answered_by_person(answered_by: Option<&str>) -> bool {
@@ -585,7 +594,7 @@ pub fn answer(
     by: Option<String>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    if key.trim().starts_with("secret/") && !is_person(by.as_deref()) {
+    if key.trim().starts_with("secret/") && !secret_answer_by_person(by.as_deref()) {
         return Err("Only the person can approve a secret run. Ask them on their card.".into());
     }
     let answer = plain(answer, "The answer", ANSWER_MAX)?;

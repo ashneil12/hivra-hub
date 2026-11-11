@@ -259,6 +259,17 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              DELETE FROM secret_grants;",
         )?;
     }
+    // Fix round 3 (H3): a grant names the exact command it covers. A table from before that is emptied: those grants
+    // named only the program, which Always must no longer cover.
+    if conn
+        .prepare("SELECT fingerprint FROM secret_grants LIMIT 0")
+        .is_err()
+    {
+        conn.execute_batch(
+            "ALTER TABLE secret_grants ADD COLUMN fingerprint TEXT NOT NULL DEFAULT '';
+             DELETE FROM secret_grants;",
+        )?;
+    }
     Ok(())
 }
 
@@ -284,6 +295,7 @@ fn ensure_tables_batch(conn: &Connection) -> rusqlite::Result<()> {
            mode TEXT NOT NULL,
            created_at INTEGER NOT NULL,
            identity TEXT NOT NULL DEFAULT '',
+           fingerprint TEXT NOT NULL DEFAULT '',
            PRIMARY KEY (scope, name, subject_kind, subject_id, executable)
          );
          CREATE TABLE IF NOT EXISTS secret_requests (
@@ -380,6 +392,8 @@ pub struct GrantRow {
     pub created_at: i64,
     /// The program's file identity the grant was given for (empty for a worker's grant, which names no file).
     pub identity: String,
+    /// The exact command the grant covers (arguments, environment name, folder, timeout): another command asks again.
+    pub fingerprint: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -1129,7 +1143,7 @@ pub fn reopen_stale(conn: &Connection, now: i64) -> Result<usize, String> {
 pub fn grants_for(conn: &Connection, scope: &str, name: &str) -> Result<Vec<GrantRow>, String> {
     let mut stmt = conn
         .prepare(
-            "SELECT scope, name, subject_kind, subject_id, executable, mode, created_at, identity
+            "SELECT scope, name, subject_kind, subject_id, executable, mode, created_at, identity, fingerprint
              FROM secret_grants WHERE scope = ?1 AND name = ?2 ORDER BY created_at, rowid",
         )
         .map_err(|e| e.to_string())?;
@@ -1144,6 +1158,7 @@ pub fn grants_for(conn: &Connection, scope: &str, name: &str) -> Result<Vec<Gran
                 mode: row.get(5)?,
                 created_at: row.get(6)?,
                 identity: row.get(7)?,
+                fingerprint: row.get(8)?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -1154,6 +1169,7 @@ pub fn grants_for(conn: &Connection, scope: &str, name: &str) -> Result<Vec<Gran
 
 /// Which grant covers this run: the Mono's own first, then its project's. The program must be the same file (its
 /// identity), not only the same name.
+#[allow(clippy::too_many_arguments)]
 pub fn find_grant(
     conn: &Connection,
     scope: &str,
@@ -1162,8 +1178,11 @@ pub fn find_grant(
     project: Option<&str>,
     executable: &str,
     identity: &str,
+    fingerprint: &str,
 ) -> Result<Option<GrantRow>, String> {
-    let same = |g: &GrantRow| g.executable == executable && g.identity == identity;
+    let same = |g: &GrantRow| {
+        g.executable == executable && g.identity == identity && g.fingerprint == fingerprint
+    };
     if let Some(mono) = mono {
         if let Some(grant) = grants_for(conn, scope, name)?
             .into_iter()
@@ -1193,20 +1212,22 @@ pub fn put_grant(
     subject_id: &str,
     executable: &str,
     identity: &str,
+    fingerprint: &str,
     mode: &str,
     now: i64,
 ) -> Result<(), String> {
     // The one place an `always` grant is written: a program that can run any code only gets one when the person has
     // turned that on for this install. Checked here, so no caller (and no webview) can go around it.
-    if mode == "always" && runs_any_code(executable) && !always_for_any_code(conn) {
+    if mode == "always" && runs_any_for(executable) && !always_for_any_code(conn) {
         return Err(ALWAYS_REFUSED.into());
     }
     conn.execute(
-        "INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at, identity)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO secret_grants (scope, name, subject_kind, subject_id, executable, mode, created_at, identity, fingerprint)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
          ON CONFLICT (scope, name, subject_kind, subject_id, executable)
-         DO UPDATE SET mode = excluded.mode, created_at = excluded.created_at, identity = excluded.identity",
-        params![scope, name, subject_kind, subject_id, executable, mode, now, identity],
+         DO UPDATE SET mode = excluded.mode, created_at = excluded.created_at, identity = excluded.identity,
+           fingerprint = excluded.fingerprint",
+        params![scope, name, subject_kind, subject_id, executable, mode, now, identity, fingerprint],
     )
     .map_err(|e| e.to_string())?;
     Ok(())
@@ -1220,12 +1241,13 @@ pub fn spend_once(
     mono: &str,
     executable: &str,
     identity: &str,
+    fingerprint: &str,
 ) -> Result<bool, String> {
     let changed = conn
         .execute(
             "DELETE FROM secret_grants WHERE scope = ?1 AND name = ?2 AND subject_kind = 'mono'
-             AND subject_id = ?3 AND executable = ?4 AND identity = ?5 AND mode = 'once'",
-            params![scope, name, mono, executable, identity],
+             AND subject_id = ?3 AND executable = ?4 AND identity = ?5 AND fingerprint = ?6 AND mode = 'once'",
+            params![scope, name, mono, executable, identity, fingerprint],
         )
         .map_err(|e| e.to_string())?;
     Ok(changed == 1)
@@ -1495,6 +1517,12 @@ pub fn pin_program(
         run::resolve_program(word, &run::search_path()).ok_or_else(not_installed)?
     };
     let canonical = std::fs::canonicalize(&found).map_err(|_| not_installed())?;
+    if run::refuse_shell_program(&canonical) {
+        return Err(
+            "Give the command itself, not a shell. A link to a shell is a shell, so it wasn't run."
+                .into(),
+        );
+    }
     if let Some(why) = run::program_location_refusal(&canonical, project, cwd) {
         return Err(why);
     }
@@ -1587,7 +1615,7 @@ pub fn approval_options(has_project: bool, always_allowed: bool) -> Vec<String> 
 /// Whether the card may offer "Always" for this program: any program, unless it can run any code and the person has not
 /// turned the choice on.
 pub fn always_allowed_for(conn: &Connection, executable: &str) -> bool {
-    !runs_any_code(executable) || always_for_any_code(conn)
+    !runs_any_for(executable) || always_for_any_code(conn)
 }
 
 // ---- programs that can run any code, and the person's choice about them ------------------------------------------------
@@ -1695,6 +1723,27 @@ pub const RUN_ANYTHING: &[&str] = &[
     "gemini",
     "copilot",
     "amp",
+    "sqlite3",
+    "jq",
+    "psql",
+    "m4",
+    "script",
+    "lldb",
+    "gsed",
+    "gfind",
+    "gxargs",
+    "genv",
+    "gnohup",
+    "terraform",
+    "pytest",
+    "sh",
+    "bash",
+    "zsh",
+    "dash",
+    "ksh",
+    "fish",
+    "csh",
+    "tcsh",
 ];
 
 /// The line the card carries for such a program while "Always" is not allowed.
@@ -1706,6 +1755,32 @@ pub const ALWAYS_WARNING: &str =
 
 /// What a refused "Always" says.
 pub const ALWAYS_REFUSED: &str = "This can run any code, so it asks every time. To allow Always for programs like this, turn on \"Let me choose 'Always' for programs that can run any code\" on the Secrets page.";
+
+/// Whether a program can run any code it is handed, judged by its typed word and by its canonical path. A script is judged
+/// by the interpreter on its `#!` line (`npx` pins to a JavaScript file that runs `node`; a `#!/bin/sh` script is a shell).
+pub fn runs_any_for(executable: &str) -> bool {
+    if runs_any_code(executable) {
+        return true;
+    }
+    shebang_interpreter(std::path::Path::new(executable)).is_some_and(|word| runs_any_code(&word))
+}
+
+/// The interpreter a script names on its first line: `#!/usr/bin/env node` gives `node`, `#!/bin/sh` gives `sh`.
+fn shebang_interpreter(path: &std::path::Path) -> Option<String> {
+    use std::io::Read;
+    let mut head = [0u8; 256];
+    let read = std::fs::File::open(path).ok()?.read(&mut head).ok()?;
+    let text = std::str::from_utf8(&head[..read]).ok()?;
+    let line = text.strip_prefix("#!")?.lines().next()?.trim();
+    let mut words = line.split_whitespace();
+    let first = program_base(words.next()?);
+    if first.eq_ignore_ascii_case("env") {
+        return words
+            .find(|word| !word.starts_with('-'))
+            .map(|word| program_base(word).to_string());
+    }
+    Some(first.to_string())
+}
 
 /// The program a path names: the part after the last `/` or `\`.
 pub fn program_base(executable: &str) -> &str {
@@ -1916,6 +1991,10 @@ pub fn run_question(
     let mut text = format!(
         "Let {mono} run `{program}` with {label}?\nThe program is {program}.\nKey: {label}, saved for {whose}\nCommand: {line}"
     );
+    if always_allowed {
+        // Fix round 3 (H3): "Always" is for this exact command, not the program at large.
+        text.push_str("\n'Always' covers this exact command only: the same program, arguments, environment name and folder.");
+    }
     if runs_any && !always_allowed {
         text.push('\n');
         text.push_str(RUN_ANYTHING_NOTE);
@@ -1974,6 +2053,7 @@ pub fn ensure_grant(
         input.project.as_deref(),
         &input.executable,
         &input.identity,
+        &input.fingerprint,
     )?
     .is_some()
     {
@@ -2023,6 +2103,7 @@ pub fn ensure_grant(
                             project,
                             &input.executable,
                             &input.identity,
+                            &input.fingerprint,
                             "always",
                             now,
                         )?;
@@ -2036,6 +2117,7 @@ pub fn ensure_grant(
                         mono,
                         &input.executable,
                         &input.identity,
+                        &input.fingerprint,
                         "always",
                         now,
                     )?;
@@ -2049,6 +2131,7 @@ pub fn ensure_grant(
                         mono,
                         &input.executable,
                         &input.identity,
+                        &input.fingerprint,
                         "once",
                         now,
                     )?;
@@ -2059,6 +2142,7 @@ pub fn ensure_grant(
                         mono,
                         &input.executable,
                         &input.identity,
+                        &input.fingerprint,
                     )? {
                         return Ok(false);
                     }
@@ -2250,7 +2334,9 @@ pub fn prepare_run(
         timeout_seconds,
     );
     // 3. a live grant for this Mono (then its project), or ask the person first, on a card that shows the whole command.
-    let always_allowed = always_allowed_for(conn, &program);
+    // Judged by the typed word as well as the canonical path: a name that runs code is that program, wherever it resolves.
+    let runs_any = runs_any_code(&executable) || runs_any_for(&program);
+    let always_allowed = !runs_any || always_for_any_code(conn);
     // Which copy this run uses, in plain words: where the key lives, and that a project's copy beats the global one.
     let whose = if has_global_twin(conn, &row) {
         format!("{}. {PROJECT_COPY_USED}", scope_words(&row.scope))
@@ -2263,8 +2349,14 @@ pub fn prepare_run(
         &whose,
         &command,
         always_allowed,
-        runs_any_code(&program),
+        runs_any,
     )?;
+    // A program in a folder the person writes to can be replaced by anything running as them: the card says so.
+    let question = match crate::secrets::run::program_folder_warning(std::path::Path::new(&program))
+    {
+        Some(warning) => format!("{question}\n{warning}"),
+        None => question,
+    };
     match ensure_grant(
         conn,
         Approval {

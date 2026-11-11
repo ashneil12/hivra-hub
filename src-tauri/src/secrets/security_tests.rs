@@ -62,7 +62,7 @@ fn run_request(mono: &str) -> RunRequest {
         project: None,
         name: NAME.into(),
         env: "STRIPE_API_KEY".into(),
-        command: vec!["stripe".into(), "customers".into(), "list".into()],
+        command: vec!["/usr/bin/true".into(), "customers".into(), "list".into()],
         cwd: None,
         timeout_seconds: None,
     }
@@ -104,7 +104,8 @@ fn a_saved_value_is_in_no_database_row_whatever_window_wrote_it() {
         NAME,
         "mono",
         "Tally",
-        "stripe",
+        "/usr/bin/true",
+        "",
         "",
         "always",
         bench.now,
@@ -165,7 +166,7 @@ fn no_handle_or_error_sentence_carries_the_value() {
         project: None,
         name: NAME.into(),
         env: "PATH".into(),
-        command: vec!["stripe".into()],
+        command: vec!["/usr/bin/true".into()],
         cwd: None,
         timeout_seconds: None,
     };
@@ -198,7 +199,7 @@ fn dev_and_daily_names_never_cross_and_a_daily_grant_does_not_verify_in_a_dev_co
         version: 1,
         subject: "Tally".into(),
         env: "STRIPE_API_KEY".into(),
-        command: vec!["stripe".into()],
+        command: vec!["/usr/bin/true".into()],
         cwd: None,
         nonce: "0123456789abcdef".into(),
         expires_at: 9_999_999_999_999,
@@ -321,6 +322,7 @@ fn a_worker_gets_the_one_variable_and_its_output_is_scrubbed() {
         "Tally",
         "worker:claude",
         "",
+        "worker:claude",
         "always",
         bench.now,
     )
@@ -385,6 +387,7 @@ fn the_worker_environment_holds_no_inherited_monocode_value() {
         "Tally",
         "worker:claude",
         "",
+        "worker:claude",
         "always",
         bench.now,
     )
@@ -442,6 +445,7 @@ fn a_worker_whose_output_cannot_be_scrubbed_is_refused_the_value() {
         "Tally",
         "worker:opencode",
         "",
+        "worker:opencode",
         "always",
         bench.now,
     )
@@ -463,6 +467,7 @@ fn a_worker_whose_output_cannot_be_scrubbed_is_refused_the_value() {
         "Tally",
         "worker:claude",
         "",
+        "worker:claude",
         "always",
         bench.now,
     )
@@ -552,15 +557,7 @@ fn a_worker_without_an_approval_is_asked_first_and_gets_nothing() {
     .unwrap();
     assert_eq!(cmd.get_envs().count(), 0);
     // "Once" is a grant for exactly one worker.
-    crate::decisions::answer(
-        &mut conn,
-        "",
-        &key,
-        "Once",
-        Some("user".into()),
-        bench.now + 1,
-    )
-    .unwrap();
+    crate::decisions::answer(&mut conn, "", &key, "Once", None, bench.now + 1).unwrap();
     let second = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 2).unwrap();
     assert!(matches!(second, worker::WorkerOutcome::Ready { .. }));
     let third = worker::prepare(&bench.vault, &mut conn, worker_request(), bench.now + 3).unwrap();
@@ -619,10 +616,10 @@ fn a_chat_forwarding_an_answer_on_a_secret_key_leaves_it_open_and_waiting() {
 
 #[test]
 fn only_the_persons_own_paths_settle_a_secret_card() {
-    // The Inbox sends no answerer, the Needs sheet `user`, the check cards `person`. An agent names itself.
+    // The Inbox sends no answerer and the check cards `person`; the Needs sheet `user` and an agent's name do not settle it.
     for (by, settles) in [
         (None, true),
-        (Some("user"), true),
+        (Some("user"), false),
         (Some("person"), true),
         (Some("chat:chat-1"), false),
         (Some("Tally"), false),
@@ -660,15 +657,8 @@ fn only_the_persons_own_paths_settle_a_secret_card() {
                 "{by:?}"
             );
         }
-        crate::decisions::answer(
-            &mut conn,
-            "",
-            &decision_key,
-            "Once",
-            Some("user".into()),
-            bench.now + 2,
-        )
-        .unwrap();
+        crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 2)
+            .unwrap();
         assert!(
             matches!(
                 prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 3).unwrap(),
@@ -681,7 +671,7 @@ fn only_the_persons_own_paths_settle_a_secret_card() {
 
 #[test]
 fn the_person_answering_through_their_own_path_still_grants() {
-    for by in [None, Some("person".to_string()), Some("user".to_string())] {
+    for by in [None, Some("person".to_string())] {
         let bench = Bench::new();
         let mut conn = bench.store.lock_conn().unwrap();
         save_value(
@@ -753,15 +743,7 @@ fn an_answered_secret_row_not_answered_by_the_person_is_never_a_grant() {
     assert!(crate::decisions::get(&conn, "", &decision_key)
         .unwrap()
         .is_some());
-    crate::decisions::answer(
-        &mut conn,
-        "",
-        &decision_key,
-        "Once",
-        Some("user".into()),
-        bench.now + 3,
-    )
-    .unwrap();
+    crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 3).unwrap();
     assert!(matches!(
         prepare_run(&bench.vault, &mut conn, run_request("Tally"), bench.now + 4).unwrap(),
         RunOutcome::Granted { .. }
@@ -788,15 +770,7 @@ fn a_once_answer_for_one_mono_is_not_spent_by_another() {
         panic!("the first use must ask");
     };
     // The person answered the card Tally's first run put up.
-    crate::decisions::answer(
-        &mut conn,
-        "",
-        &decision_key,
-        "Once",
-        Some("user".into()),
-        bench.now + 1,
-    )
-    .unwrap();
+    crate::decisions::answer(&mut conn, "", &decision_key, "Once", None, bench.now + 1).unwrap();
     // Another Mono never gets that answer as its own run.
     assert!(matches!(
         prepare_run(&bench.vault, &mut conn, run_request("Other"), bench.now + 2).unwrap(),
@@ -880,6 +854,7 @@ fn armed_for(bench: &Bench, vault: &dyn Vault, session: &str) {
         "Tally",
         "worker:claude",
         "",
+        "worker:claude",
         "always",
         bench.now,
     )
@@ -1151,4 +1126,27 @@ fn a_workers_spawn_reads_the_keychain_with_the_database_lock_free() {
         vec![("STRIPE_API_KEY".to_string(), VALUE.to_string())]
     );
     worker::forget("worker-probe");
+}
+
+// ---- fix round 3 (M2, M3): the base64 of the key at every alignment is scrubbed; a worker's card says its transcript
+// keeps what it prints.
+
+#[test]
+fn base64_of_the_key_at_every_alignment_is_masked() {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+    let value = "sk_live_51NxAbCdEfGhIjKl";
+    for prefix in ["", "u", "user:", "KEY:"] {
+        let encoded = STANDARD.encode(format!("{prefix}{value}"));
+        // Characters 8..24 are fixed by the key alone, whatever came before it (`curl -u`, `Authorization: Basic`).
+        let window = &encoded[8..24];
+        let masked = scrub::mask(&encoded, &scrub::needles(value));
+        assert!(!masked.contains(window), "{prefix:?}: {masked}");
+    }
+}
+
+#[test]
+fn a_worker_card_says_its_transcript_keeps_what_it_prints() {
+    let text = worker::worker_card_question("Tally", "Stripe API key", "your global keys");
+    assert!(text.contains("transcript"), "{text}");
 }

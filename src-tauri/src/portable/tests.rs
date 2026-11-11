@@ -4182,7 +4182,13 @@ fn an_export_whose_setup_files_are_past_the_budget_stops_with_one_line() {
     request
         .files
         .insert("setup/big.json".into(), " ".repeat(3 * 1024 * 1024));
-    let why = export_within(&source, &request, 2 * 1024 * 1024).unwrap_err();
+    let why = export_within(
+        &source,
+        &request,
+        2 * 1024 * 1024,
+        &crate::secrets::store::Memory::new(),
+    )
+    .unwrap_err();
     assert!(
         why.contains("setup files") && why.contains("3.0 MB") && why.contains("2 MB"),
         "{why}"
@@ -4190,7 +4196,13 @@ fn an_export_whose_setup_files_are_past_the_budget_stops_with_one_line() {
     assert!(!why.contains('\n'), "{why}");
     assert!(!dest.exists(), "an export was written");
     // Within it, the same request goes through.
-    assert!(export_within(&source, &request, 8 * 1024 * 1024).is_ok());
+    assert!(export_within(
+        &source,
+        &request,
+        8 * 1024 * 1024,
+        &crate::secrets::store::Memory::new()
+    )
+    .is_ok());
 }
 
 /// A chat the writer leaves out (here: its name clashes with another's apart from capitals) isn't counted as exported.

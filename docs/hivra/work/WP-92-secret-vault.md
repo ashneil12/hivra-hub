@@ -185,7 +185,10 @@ write a second copy of any of them.
    the fixed search path; a relative path (`./x`, `node_modules/.bin/x`) is refused; the canonical absolute path and the
    file's identity (device, inode, size, modification time) go into the approval, the grant row and the signed payload.
    A program inside the project, the run's folder, a temporary folder or a worktree is refused, because the agent can
-   write there. A timeout is reported as `timedOut: true` with the
+   write there. The identity also carries the change time and a SHA-256 of the file's bytes, so a rewrite that keeps the
+   size and restores the modification time is still a different program. A program in a folder the person owns gets a
+   warning on the card. The command's process group is ended when the command ends, not only on a timeout, so a
+   background child keeps the key only until then. A timeout is reported as `timedOut: true` with the
    output so far, not as a failure; a keychain refusal (the person clicked Deny on the system prompt) is "not now,
    try again", not "wrong secret". The app writes the run to the activity log (WP-78) with the name, scope, Mono,
    executable, exit code and duration — never the grant, never the value.
@@ -251,7 +254,8 @@ write a second copy of any of them.
    not on that list (gzip, base32, double base64, ROT13), one character at a time, or split across lines; it can
    write the value to a file, the clipboard or the network instead of stdout; a child it leaves behind keeps the
    environment after the run. The scrubber is a second line of defence, not the first. The first is that only an
-   executable the person approved ever gets the value at all. For a worker the scrub values are kept for the session's
+   executable the person approved ever gets the value at all. A worker's CLI also keeps a transcript of what it prints on
+   disk, so a value a worker prints stays there; the worker card says so (fix round 3, M3). For a worker the scrub values are kept for the session's
    life, not the child's, so a respawn is scrubbed too (step 6); a worker's output is never shown unscrubbed.
 
 9. **Redaction: the value never lands in a transcript, an export or memory.**
@@ -276,7 +280,9 @@ write a second copy of any of them.
     program file (its path and identity), and the card records the exact command it shows: an answer approves that
     command only, checked before any grant, so another command with the same program asks again. Once writes a `once`
     grant for the Mono that is consumed by the next spawn; Always writes an `always` grant for the Mono or for the
-    project, and a project grant covers every Mono working in that project. Round 2 refuses Always for shells, exec
+    project, and a project grant covers every Mono working in that project. Round 3 binds Always to the full fingerprint
+    (arguments, environment name, folder and timeout): the same program with other arguments asks again, and the card
+    says "covers this exact command only". Round 2 refuses Always for shells, exec
     wrappers (`env`, `nohup`, `timeout`, `sudo`, `xcrun` and similar), `git`, `gh`, `ssh`, `rsync`, `docker`, archive
     tools, package managers and build tools, editors and pagers, and the worker CLIs (`claude`, `codex` and the rest):
     each can run other code, so each asks every time while the setting is off. Resolution is the Mono's own grant first, then the project's. No writes
@@ -449,6 +455,19 @@ assumed one.
   `MONOCODE_*` variable after the child is configured, but it does not clear the rest of the tool's environment (the
   tool needs its own HOME, PATH and login). Step 6 says "cleared environment"; this is the narrower thing the code does,
   and the difference is open for Ash to decide. The app's tokens stay out of an armed worker because the strip runs last.
+- **An agent that can build or run the app's own tools can read the vault as Ash.** Vault items are plain generic
+  passwords with the default access list, so any binary signed with the daily app's identity can read them. A worktree
+  agent can add a subcommand, build it with `npm run hub:build` (which signs with Ash's identity and the daily
+  identifier), and read every saved key without a card. Two things hold back part of this: the Keychain-reading
+  subcommands (`secret-run`, `connector-run`) refuse to run unless they run from `~/Applications/MonoCode Hub.app`, the
+  same check the app applies, and the Keychain is not read from a build run anywhere else. Neither closes it: a binary
+  placed in the app's folder, or a build that is copied there, still reads. The real fix needs per-read access control on
+  each vault item (so a read names the app's own binary and asks), and agent builds that are not signed with the daily
+  identity. It is already an open decision in Ash's decisions doc (section 2.x).
+- **A program swapped in the instant between its check and its start is seen after it starts.** The identity is checked
+  before the spawn and again once the child has started; a change in that gap is caught and the run is stopped, but the
+  command may already have run. Closing the gap needs an exec from an open file descriptor, which the standard library
+  does not offer.
 - **A dev copy can be seeded with plaintext values through its environment.** `MONOCODE_SECRET_VAULT_SEED` exists for
   tests under a temporary HOME and is read by dev copies only; a daily copy refuses it. It is removed from every harness
   child's environment, so it reaches no CLI. A value placed there is visible to `ps` and to a crash report of that

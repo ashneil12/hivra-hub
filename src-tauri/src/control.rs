@@ -261,6 +261,7 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
             );
             grant
         };
+        let reply_wait = crate::control_cli::reply_seconds(&request.action, &request.input);
         let event = Event {
             id: id.clone(),
             namespace: request.namespace,
@@ -273,7 +274,7 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
         let result = if delivered.is_err() {
             Err("MonoCode executor is unavailable".into())
         } else {
-            rx.recv_timeout(Duration::from_secs(35))
+            rx.recv_timeout(Duration::from_secs(reply_wait))
                 .map_err(|_| "Control request timed out. Retry with the same request ID.".into())
         };
         if let Ok(mut host) = inner.lock() {
@@ -870,5 +871,24 @@ mod tests {
         assert!(!app_action_allowed("secrets.reveal"));
         assert!(!app_action_allowed("settings.write"));
         assert!(!app_action_allowed(""));
+    }
+}
+
+// Fix round 3, L1: a run's reply waits as long as the run may take (its own timeout plus a margin), not a fixed 35 s.
+#[cfg(test)]
+mod reply_wait_tests {
+    use super::*;
+
+    #[test]
+    fn a_secrets_run_reply_waits_past_its_own_timeout() {
+        assert!(
+            crate::control_cli::reply_seconds("secrets.run", &json!({"timeoutSeconds": 600}))
+                >= 660
+        );
+        assert!(crate::control_cli::reply_seconds("secrets.run", &json!({})) >= 180);
+        assert_eq!(
+            crate::control_cli::reply_seconds("tasks.delegate", &json!({})),
+            35
+        );
     }
 }

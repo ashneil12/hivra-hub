@@ -98,20 +98,89 @@ pub fn program_identity(path: &Path) -> Option<String> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_nanos();
+    // Fix round 3 (M1): a rewrite that keeps the size and restores the modification time still changes the content digest,
+    // and the change time records the write itself.
+    let digest = content_digest(path)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         Some(format!(
-            "{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}",
             meta.dev(),
             meta.ino(),
             meta.len(),
-            modified
+            modified,
+            meta.ctime(),
+            meta.ctime_nsec(),
+            digest
         ))
     }
     #[cfg(not(unix))]
     {
-        Some(format!("{}:{}", meta.len(), modified))
+        Some(format!("{}:{}:{}", meta.len(), modified, digest))
+    }
+}
+
+/// The SHA-256 of a file's bytes, in hex.
+fn content_digest(path: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hasher = Sha256::new();
+    let mut buffer = vec![0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer).ok()?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect(),
+    )
+}
+
+/// Whether a program is a shell, or `env` (which runs one), by its name once a link is followed. The caller passes the
+/// canonical path, so a link named `tool` to a shell is refused (fix round 3, M1).
+pub fn refuse_shell_program(program: &Path) -> bool {
+    let program = std::fs::canonicalize(program).unwrap_or_else(|_| program.to_path_buf());
+    let base = program
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let base = base.strip_suffix(".exe").unwrap_or(&base);
+    base == "env"
+        || super::SHELLS
+            .iter()
+            .any(|shell| shell.strip_suffix(".exe").unwrap_or(shell) == base)
+}
+
+/// The card's warning for a program in a folder the person owns: anything running as them can replace it, after the
+/// approval, under the same name. `None` for a folder the account does not own (a system folder). Fix round 3, M1.
+pub fn program_folder_warning(program: &Path) -> Option<String> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let folder = program.parent()?;
+        let meta = std::fs::metadata(folder).ok()?;
+        // SAFETY: getuid has no preconditions and cannot fail.
+        if meta.uid() == unsafe { libc::getuid() } {
+            return Some(format!(
+                "{} is in a folder you can write to, so anything that runs as you can replace it.",
+                folder.display()
+            ));
+        }
+        None
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = program;
+        None
     }
 }
 
@@ -426,6 +495,13 @@ pub fn execute_with_grace(
     let mut child = command
         .spawn()
         .map_err(|_| format!("Couldn't start {executable}."))?;
+    // Fix round 3 (M1): the file is checked again once it has started. A swap in the gap before the spawn is seen here,
+    // and the run is stopped; the gap itself is a known limit (see the vault doc).
+    if program_identity(program).as_deref() != Some(payload.program_identity.as_str()) {
+        kill_group(child.id());
+        let _ = child.wait();
+        return Err("The program changed as it started, so the run was stopped. Ask again.".into());
+    }
     let stdout = read_stream(child.stdout.take().expect("stdout is piped"));
     let stderr = read_stream(child.stderr.take().expect("stderr is piped"));
     let started = Instant::now();
@@ -447,6 +523,10 @@ pub fn execute_with_grace(
             }
         }
     };
+    // Fix round 3 (H3, the process group): a background child the command left behind keeps the key only until the group
+    // is ended, and that is now also when the command ends, not only on a timeout or an error.
+    #[cfg(unix)]
+    kill_group(child.id());
     let duration_ms = started.elapsed().as_millis() as i64;
     let out_bytes = collect(stdout, grace);
     let err_bytes = collect(stderr, grace);
@@ -811,7 +891,12 @@ mod tests {
     fn a_stream_that_stays_open_after_the_command_exits_is_reported_as_unread() {
         let data = std::env::temp_dir();
         // `sh` exits at once, but the `sleep` it started keeps the output pipe open past the reader's grace.
-        let payload = payload_for(&["/bin/sh", "-c", "sleep 4 & echo started"]);
+        // The pipe is held by a child in its own session, which the command's group kill does not reach.
+        let payload = payload_for(&[
+            "/bin/sh",
+            "-c",
+            "/usr/bin/python3 -c 'import os,time; os.setsid(); time.sleep(4)' & echo started",
+        ]);
         let outcome = execute_with_grace(
             &payload,
             "sk_live_abcdefgh",
@@ -959,5 +1044,83 @@ mod tests {
             search_path()
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- fix round 3 (M1, the process group): content and change time in the identity; shells by canonical path; a
+    // warning for a program in a folder the person writes to; the group is killed when the main child exits too.
+
+    #[cfg(unix)]
+    #[test]
+    fn a_same_size_rewrite_with_the_old_modification_time_changes_the_identity() {
+        let tmp = std::env::temp_dir().join(format!("mc-id-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join("tool");
+        std::fs::write(&file, "#!/bin/sh\necho aaaa\n").unwrap();
+        let before_mtime = std::fs::metadata(&file).unwrap().modified().unwrap();
+        let before = program_identity(&file).unwrap();
+        std::fs::write(&file, "#!/bin/sh\necho bbbb\n").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&file)
+            .unwrap()
+            .set_modified(before_mtime)
+            .unwrap();
+        assert_ne!(program_identity(&file).unwrap(), before);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_shell_reached_through_a_link_is_refused_by_its_canonical_path() {
+        let tmp = std::env::temp_dir().join(format!("mc-link-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let link = tmp.join("tool");
+        std::os::unix::fs::symlink("/bin/sh", &link).unwrap();
+        assert!(refuse_shell_program(&link), "a link to a shell is a shell");
+        assert!(!refuse_shell_program(Path::new("/usr/bin/true")));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_program_in_a_folder_the_person_writes_to_gets_a_warning() {
+        let tmp = std::env::temp_dir().join(format!("mc-warn-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let file = tmp.join("tool");
+        std::fs::write(&file, "#!/bin/sh\n").unwrap();
+        let warning = program_folder_warning(&file)
+            .expect("a folder the person owns can be written by anyone who runs as them");
+        assert!(warning.contains("can write"), "{warning}");
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_background_child_is_killed_when_the_command_exits() {
+        let tmp = std::env::temp_dir().join(format!("mc-bg-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let script = fixture(&tmp, "bg", "#!/bin/sh\nsleep 30 &\necho $!\n");
+        let payload = run_payload(vec![crate::fs::path_to_js(&script)]);
+        let outcome = execute(&payload, "sk_live_abcdefgh", &tmp).unwrap();
+        let pid: i32 = outcome
+            .stdout
+            .text
+            .trim()
+            .parse()
+            .expect("the background pid");
+        // The reaper may take a moment; poll briefly. A live background child is the failure.
+        let mut alive = true;
+        for _ in 0..40 {
+            if unsafe { libc::kill(pid, 0) } != 0 {
+                alive = false;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(
+            !alive,
+            "the background child kept the key after the command exited"
+        );
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
