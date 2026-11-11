@@ -515,6 +515,16 @@ fn gate_repo(root: &Path, repo: &objects::Repo, revs: &[&str]) -> Result<(), Str
     for message in &scan.messages {
         scan_message(message)?;
     }
+    let extra = objects::reachable_extra(repo, revs, &scan.blobs)?;
+    refuse_paths(&extra.added)?;
+    let extra_added: Vec<Added> = extra.lines.iter().map(added_from).collect();
+    refuse_lines(root, &extra_added)?;
+    if extra.untrusted {
+        return Err(
+            "The secret check cannot trust this repository's commit graph, so nothing was sent."
+                .into(),
+        );
+    }
     Ok(())
 }
 
@@ -918,7 +928,7 @@ fn digest(text: &str) -> String {
 
 /// The repository's id in the allow list: a hash of its canonical path, so the UI's path and the gate's path match.
 fn repo_id(root: &Path) -> String {
-    let canonical = std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+    let canonical = crate::fs::canonical(root).unwrap_or_else(|_| root.to_path_buf());
     digest(&canonical.to_string_lossy())
 }
 
@@ -1181,5 +1191,7 @@ mod review_tests_r3;
 mod review_tests_r4;
 #[cfg(test)]
 mod review_tests_r6;
+#[cfg(test)]
+mod review_tests_r8;
 #[cfg(test)]
 mod tests;

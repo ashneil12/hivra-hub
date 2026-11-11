@@ -11,8 +11,12 @@
 //! The one network read (`ls-remote`) runs in a fresh empty folder under a scratch directory, with the discovery
 //! ceiling set to that scratch directory's parent. Git stops only at a proper ancestor, so a ceiling equal to the
 //! current folder would still use a repository above it. The push URL is resolved with the same global config `git
-//! push` reads. `ls-remote` then keeps the credential helper and drops `url.*`, so a second rewrite cannot point the
-//! base at a decoy. A commit is treated as already on the remote only when every push destination advertises it.
+//! push` reads. `ls-remote` then keeps credential helpers from that config, from its includes, and from the system
+//! config, and drops `url.*` and `protocol.*`. The system file itself is not given to git, so a rewrite there cannot
+//! point the base at a decoy. A commit is treated as already on the remote only when every push destination advertises it.
+//!
+//! A commit-graph and a pack bitmap are unverified caches. Guard reads turn both off. A blob those caches name and the
+//! raw objects do not is scanned and then refused. A blob the diff skipped but the raw objects do contain is scanned in full.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -151,7 +155,10 @@ fn classify_env(name: &str, fold: bool) -> EnvKind {
             || name.starts_with("GIT_ALTERNATE")
             || name.starts_with("GIT_COMMON")
             || name.starts_with("GIT_NAMESPACE")
-            || name.starts_with("GIT_REPLACE"),
+            || name.starts_with("GIT_REPLACE")
+            || name == "GIT_SHALLOW_FILE"
+            || name == "GIT_GRAFT_FILE"
+            || name == "GIT_REDIRECT_STDOUT",
         injected: name == "GIT_CONFIG_PARAMETERS"
             || name == "GIT_CONFIG_COUNT"
             || name.starts_with("GIT_CONFIG_KEY_")
@@ -213,6 +220,8 @@ fn command_with(repo: &Repo, keep_global: bool) -> Command {
         .args(["-c", "filter.lfs.process="])
         .args(["-c", "filter.lfs.clean="])
         .args(["-c", "filter.lfs.smudge="])
+        .args(["-c", "core.commitGraph=false"])
+        .args(["-c", "pack.useBitmaps=false"])
         .env("GIT_NO_REPLACE_OBJECTS", "1")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0");
@@ -246,6 +255,8 @@ pub(super) struct Scan {
     pub files: Vec<String>,
     pub lines: Vec<LineHit>,
     pub messages: Vec<String>,
+    /// Blob ids `cat-file` actually returned. A later walk refuses any blob a push would send that is not in here.
+    pub blobs: HashSet<String>,
 }
 
 impl Scan {
@@ -255,6 +266,7 @@ impl Scan {
             files: Vec::new(),
             lines: Vec::new(),
             messages: Vec::new(),
+            blobs: HashSet::new(),
         }
     }
 }
@@ -366,6 +378,7 @@ fn scan_commit(repo: &Repo, sha: &str, scan: &mut Scan) -> Result<(), String> {
         }
     }
     let blobs = cat_blobs(repo, &wanted)?;
+    scan.blobs.extend(blobs.keys().cloned());
     for (path, (new_sha, new_mode)) in &new_of {
         if super::is_zero_sha(new_sha) {
             continue;
@@ -890,6 +903,7 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
         }
     }
     let blobs = cat_blobs(repo, &wanted)?;
+    scan.blobs.extend(blobs.keys().cloned());
     for change in &changes {
         if change.new_mode == "160000" || super::is_zero_sha(&change.new_sha) {
             continue;
@@ -915,22 +929,185 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
     Ok(scan)
 }
 
-/// The patch `land` applies. Built through the guard's git command, with textconv off, so a diff driver cannot
-/// write bytes the blob scan never read.
+/// The patch `land` applies. `git diff --cached` can return the work tree when the index stat matches, so this
+/// writes the index to a tree and diffs that tree. Textconv stays off, and the patch has no commit line, so
+/// `git apply` can still take it.
 pub(super) fn index_patch(repo: &Repo, index: &Path, base: &str) -> Result<Vec<u8>, String> {
-    let mut cmd = command(repo);
-    cmd.env("GIT_INDEX_FILE", index).args([
-        "diff",
-        "--cached",
+    let mut write = command(repo);
+    write.env("GIT_INDEX_FILE", index).args(["write-tree"]);
+    let written = read_capped(write, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
+    let tree = String::from_utf8_lossy(&written).trim().to_string();
+    if !is_oid(&tree) {
+        return Err(UNREADABLE_CHANGE.into());
+    }
+    let base_tree = git_text(repo, &["rev-parse", &format!("{base}^{{tree}}")])?;
+    let base_tree = base_tree.trim().to_string();
+    if !is_oid(&base_tree) {
+        return Err(UNREADABLE_CHANGE.into());
+    }
+    let mut diff = command(repo);
+    diff.args([
+        "diff-tree",
+        "-p",
         "--binary",
         "--full-index",
         "--no-abbrev",
         "--no-color",
         "--no-ext-diff",
         "--no-textconv",
-        base,
+        "--no-renames",
+        "--no-commit-id",
+        &base_tree,
+        &tree,
     ]);
-    read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)
+    read_capped(diff, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)
+}
+
+fn is_oid(text: &str) -> bool {
+    (text.len() == 40 || text.len() == 64) && text.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+/// Blobs a push of `revs` would send that `read` did not already scan.
+///
+/// The honest walk turns the commit-graph and pack bitmaps off, which is what the app's own push does. A second
+/// walk turns each cache back on, because a pre-push hook cannot pass those flags to the parent `git push`. A blob
+/// only the cache names is scanned and then refused. A blob the honest walk names and the diff skipped is scanned
+/// and allowed when it is clean.
+pub(super) struct Reach {
+    pub added: Vec<String>,
+    pub lines: Vec<LineHit>,
+    pub untrusted: bool,
+}
+
+pub(super) fn reachable_extra(
+    repo: &Repo,
+    revs: &[&str],
+    read: &HashSet<String>,
+) -> Result<Reach, String> {
+    if revs.iter().all(|rev| rev.trim().is_empty()) {
+        return Ok(Reach {
+            added: Vec::new(),
+            lines: Vec::new(),
+            untrusted: false,
+        });
+    }
+    let honest = blob_map(repo, &[], &[], revs)?;
+    let graphed = blob_map(repo, &["-c", "core.commitGraph=true"], &[], revs)?;
+    let bitmapped = match blob_map(
+        repo,
+        &["-c", "pack.useBitmaps=true"],
+        &["--use-bitmap-index"],
+        revs,
+    ) {
+        Ok(map) => map,
+        Err(error) => {
+            let lower = error.to_ascii_lowercase();
+            let unknown = lower.contains("unknown")
+                || lower.contains("unrecognized")
+                || lower.contains("invalid");
+            if unknown && lower.contains("bitmap") {
+                HashMap::new()
+            } else {
+                return Err(error);
+            }
+        }
+    };
+    let untrusted = graphed
+        .keys()
+        .chain(bitmapped.keys())
+        .any(|oid| !honest.contains_key(oid));
+    let mut wanted: HashMap<String, String> = HashMap::new();
+    for map in [&honest, &graphed, &bitmapped] {
+        for (oid, path) in map {
+            if read.contains(oid) {
+                continue;
+            }
+            wanted.entry(oid.clone()).or_insert_with(|| path.clone());
+        }
+    }
+    let oids: Vec<String> = wanted.keys().cloned().collect();
+    let blobs = cat_blobs(repo, &oids)?;
+    let mut added = Vec::new();
+    let mut lines = Vec::new();
+    for (oid, path) in &wanted {
+        let Some(blob) = blobs.get(oid) else {
+            return Err(UNREADABLE_CHANGE.into());
+        };
+        if !path.is_empty() && !added.iter().any(|have| have == path) {
+            added.push(path.clone());
+        }
+        lines.extend(all_hits(blob, path, ""));
+    }
+    Ok(Reach {
+        added,
+        lines,
+        untrusted,
+    })
+}
+
+/// `rev-list --objects` lines are `<oid>` or `<oid> <path>`. Later `-c` overrides the guard's own flags.
+/// Only blobs are kept. A missing object is not a blob a push can send.
+fn blob_map(
+    repo: &Repo,
+    config: &[&str],
+    flags: &[&str],
+    revs: &[&str],
+) -> Result<HashMap<String, String>, String> {
+    let mut cmd = command(repo);
+    cmd.args(config);
+    cmd.arg("rev-list");
+    cmd.arg("--objects");
+    cmd.args(flags);
+    for rev in revs {
+        if !rev.trim().is_empty() {
+            cmd.arg(*rev);
+        }
+    }
+    let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
+    if colour_wrapped(&out) {
+        return Err(COLOUR_REFUSED.into());
+    }
+    let mut listed: HashMap<String, String> = HashMap::new();
+    for line in String::from_utf8_lossy(&out).lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let (oid, path) = match line.split_once(' ') {
+            Some((oid, path)) => (oid, path),
+            None => (line, ""),
+        };
+        if !is_oid(oid) {
+            continue;
+        }
+        listed
+            .entry(oid.to_string())
+            .or_insert_with(|| path.to_string());
+    }
+    if listed.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut input = String::new();
+    for oid in listed.keys() {
+        input.push_str(oid);
+        input.push('\n');
+    }
+    let checked = git_bytes(repo, &["cat-file", "--batch-check"], Some(input.as_bytes()))?;
+    if colour_wrapped(&checked) {
+        return Err(COLOUR_REFUSED.into());
+    }
+    let mut blobs = HashMap::new();
+    for line in String::from_utf8_lossy(&checked).lines() {
+        let mut parts = line.split_whitespace();
+        let oid = parts.next().unwrap_or("");
+        let kind = parts.next().unwrap_or("");
+        if kind == "blob" {
+            if let Some(path) = listed.get(oid) {
+                blobs.insert(oid.to_string(), path.clone());
+            }
+        }
+    }
+    Ok(blobs)
 }
 
 /// The staged blob for each path, or `None` when the index does not have that path (a deletion). Not the work tree.
@@ -1022,12 +1199,24 @@ fn push_unique(urls: &mut Vec<String>, url: String) {
 
 /// Every URL `git push` uses for `remote`. `get-url --push` already applies `pushInsteadOf`, or `insteadOf` when no
 /// push rewrite matches, which is the same URL the push itself contacts. This call keeps the global config, because
-/// the push does too. The configured string is not added as well: a checkout may rewrite a public name onto a local
-/// stand-in, and asking that public name would refuse a push that never goes there. The caller then reads each of
-/// these URLs from outside the repository, with `url.*` hidden, so a second `insteadOf` cannot point the check at a
-/// decoy.
+/// the push does too. It does not keep the system config: a system `url.insteadOf` must not point the check at a
+/// decoy, and `GIT_CONFIG_NOSYSTEM` does not hide a file named by `GIT_CONFIG_SYSTEM`. The configured string is not
+/// added as well: a checkout may rewrite a public name onto a local stand-in, and asking that public name would
+/// refuse a push that never goes there. The caller then reads each of these URLs from outside the repository, with
+/// `url.*` hidden, so a second `insteadOf` cannot point the check at a decoy.
 pub(super) fn push_destinations(repo: &Repo, remote: &str) -> Result<Vec<String>, String> {
+    let scratch = exclusive_scratch("cg-url")?;
+    let result = push_destinations_in(repo, remote, &scratch);
+    let _ = std::fs::remove_dir_all(&scratch);
+    result
+}
+
+fn push_destinations_in(repo: &Repo, remote: &str, scratch: &Path) -> Result<Vec<String>, String> {
+    let blank = scratch.join("blank-system.gitconfig");
+    std::fs::write(&blank, "").map_err(|error| error.to_string())?;
     let mut cmd = command_with(repo, true);
+    cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_SYSTEM", &blank);
     cmd.args(["remote", "get-url", "--push", "--all", remote]);
     let output = match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
         Ok(output) => output,
@@ -1068,22 +1257,32 @@ pub(super) fn destinations_for(repo: &Repo, target: &str) -> Result<Vec<String>,
 
 /// Tips a remote advertises, read from outside the repository. The credential helper is kept. `url.*` is not.
 pub(super) fn advertised_shas(url: &str) -> Result<Vec<String>, String> {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    let scratch = std::env::temp_dir().join(format!("cg-ls-{}-{nanos}", std::process::id()));
-    std::fs::create_dir_all(&scratch).map_err(|error| error.to_string())?;
+    let scratch = exclusive_scratch("cg-ls")?;
     let result = advertised_in(&scratch, url);
     let _ = std::fs::remove_dir_all(&scratch);
     result
 }
 
+/// A scratch folder whose name a same-user racer cannot guess, created so that an existing path fails the attempt.
+fn exclusive_scratch(prefix: &str) -> Result<PathBuf, String> {
+    for _ in 0..8 {
+        let path = std::env::temp_dir().join(format!(
+            "{prefix}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        match std::fs::create_dir(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+    Err("The secret check could not make a temporary folder, so nothing was sent.".into())
+}
+
 fn advertised_in(scratch: &Path, url: &str) -> Result<Vec<String>, String> {
     let empty = scratch.join("empty");
     std::fs::create_dir_all(&empty).map_err(|error| error.to_string())?;
-    let xdg = scratch.join("xdg");
-    std::fs::create_dir_all(&xdg).map_err(|error| error.to_string())?;
     // Git ignores a ceiling equal to the current directory. The ceiling has to be a proper ancestor, and the
     // command has to run somewhere that ancestor actually contains.
     let ceiling = match scratch.parent() {
@@ -1091,13 +1290,18 @@ fn advertised_in(scratch: &Path, url: &str) -> Result<Vec<String>, String> {
         None => scratch.to_path_buf(),
     };
     let global = sanitized_global(scratch)?;
+    // `GIT_CONFIG_NOSYSTEM` does not hide a file named by `GIT_CONFIG_SYSTEM` on this git. Credential lines from that
+    // file are already in the sanitized global. Point the variable at an empty file so `url.*` in the real one cannot
+    // steer `ls-remote`. Removing the variable is not enough: git still reads the inherited path.
+    let blank_system = scratch.join("blank-system.gitconfig");
+    std::fs::write(&blank_system, "").map_err(|error| error.to_string())?;
     let mut cmd = crate::fs::git_cmd();
     strip_repo_env(&mut cmd, true);
     cmd.current_dir(&empty)
+        .env("GIT_CONFIG_SYSTEM", &blank_system)
         .env("GIT_CEILING_DIRECTORIES", &ceiling)
         .env("GIT_CONFIG_NOSYSTEM", "1")
         .env("GIT_CONFIG_GLOBAL", &global)
-        .env("XDG_CONFIG_HOME", &xdg)
         .env("GIT_TERMINAL_PROMPT", "0")
         .args(["--no-pager", "-c", "color.ui=never", "ls-remote", url]);
     let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
@@ -1241,9 +1445,11 @@ pub(super) fn read_capped(
 }
 
 /// A copy of the global git config with `url.*` and includes removed, so `ls-remote` cannot be steered onto a decoy
-/// and an include cannot put a rewrite back. The credential helper stays. The real config file is only read.
+/// and an include cannot put a rewrite back. Credential helpers stay, including ones behind `include` / `includeIf`
+/// and ones in the system config. `protocol.*` does not. The real config files are only read.
 fn sanitized_global(scratch: &Path) -> Result<PathBuf, String> {
     let mut combined = String::new();
+    let mut sources = Vec::new();
     for path in global_config_files() {
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
@@ -1252,10 +1458,180 @@ fn sanitized_global(scratch: &Path) -> Result<PathBuf, String> {
         if !combined.ends_with('\n') {
             combined.push('\n');
         }
+        sources.push((path, text));
+    }
+    let mut out = strip_url_config(&combined);
+    let mut seen = HashSet::new();
+    for (path, text) in &sources {
+        let base = path.parent().unwrap_or_else(|| Path::new("."));
+        out.push_str(&included_credentials(text, base, 0, &mut seen));
+    }
+    if let Some(system) = read_system_config() {
+        out.push_str(&credential_sections(&system.text));
+        let base = system.path.parent().unwrap_or_else(|| Path::new("."));
+        out.push_str(&included_credentials(&system.text, base, 0, &mut seen));
+    }
+    if !out.is_empty() && !out.ends_with('\n') {
+        out.push('\n');
     }
     let file = scratch.join("global.gitconfig");
-    std::fs::write(&file, strip_url_config(&combined)).map_err(|error| error.to_string())?;
+    std::fs::write(&file, out).map_err(|error| error.to_string())?;
     Ok(file)
+}
+
+struct SystemConfig {
+    path: PathBuf,
+    text: String,
+}
+
+/// The system git config, read only. A missing file or a failed lookup means no extra credentials, not a failed push.
+fn read_system_config() -> Option<SystemConfig> {
+    let path = system_config_file()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    Some(SystemConfig { path, text })
+}
+
+fn system_config_file() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("GIT_CONFIG_SYSTEM") {
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    let mut cmd = crate::fs::git_cmd();
+    cmd.env_remove("GIT_CONFIG_NOSYSTEM");
+    cmd.args(["config", "--system", "--show-origin", "--list"]);
+    let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES).ok()?;
+    let text = String::from_utf8_lossy(&out);
+    for line in text.lines() {
+        let origin = line.split('\t').next().unwrap_or("");
+        let Some(path) = origin.strip_prefix("file:") else {
+            continue;
+        };
+        if !path.is_empty() {
+            return Some(PathBuf::from(path));
+        }
+    }
+    None
+}
+
+/// `[credential]` and `[credential "..."]` only. `url`, `include`, `protocol` and `includeIf` sections are dropped.
+fn credential_sections(text: &str) -> String {
+    let mut out = String::new();
+    let mut keeping = false;
+    let mut in_section = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim().trim_end_matches('\r');
+        if trimmed.starts_with('[') && trimmed.contains(']') {
+            in_section = true;
+            keeping = section_name(trimmed) == "credential";
+            if keeping {
+                out.push_str(line);
+            }
+            continue;
+        }
+        if keeping {
+            out.push_str(line);
+            continue;
+        }
+        if !in_section {
+            let key = trimmed
+                .split(['=', ' ', '\t'])
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if key.starts_with("credential.") {
+                out.push_str(line);
+            }
+        }
+    }
+    out
+}
+
+/// Credential sections reached through `include` and `includeIf`, without asking git to apply the condition.
+/// `ls-remote` runs outside a repository, so git itself would skip `gitdir:` includes. Depth stops at 4.
+fn included_credentials(
+    text: &str,
+    base_dir: &Path,
+    depth: usize,
+    seen: &mut HashSet<PathBuf>,
+) -> String {
+    if depth >= 4 {
+        return String::new();
+    }
+    let mut out = String::new();
+    for include in include_paths(text) {
+        let path = resolve_include(&include, base_dir);
+        let key = crate::fs::canonical(&path).unwrap_or_else(|_| path.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        let Ok(inner) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        out.push_str(&credential_sections(&inner));
+        if !out.is_empty() && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        let base = path.parent().unwrap_or(base_dir);
+        out.push_str(&included_credentials(&inner, base, depth + 1, seen));
+    }
+    out
+}
+
+fn include_paths(text: &str) -> Vec<String> {
+    let mut paths = Vec::new();
+    let mut in_include = false;
+    for line in text.lines() {
+        let trimmed = line.trim().trim_end_matches('\r');
+        if trimmed.starts_with('[') && trimmed.contains(']') {
+            let name = section_name(trimmed);
+            in_include = name == "include" || name == "includeif";
+            continue;
+        }
+        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';') {
+            continue;
+        }
+        let Some((key, value)) = split_key_value(trimmed) else {
+            continue;
+        };
+        let take = (in_include && key == "path")
+            || key == "include.path"
+            || (key.starts_with("includeif.") && key.ends_with(".path"));
+        if take {
+            let value = value.trim().trim_matches('"').trim();
+            if !value.is_empty() {
+                paths.push(value.to_string());
+            }
+        }
+    }
+    paths
+}
+
+fn split_key_value(line: &str) -> Option<(String, &str)> {
+    let (key, value) = line.split_once('=')?;
+    let key = key.trim().to_ascii_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    Some((key, value.trim()))
+}
+
+fn resolve_include(value: &str, base_dir: &Path) -> PathBuf {
+    let value = value.trim();
+    if let Some(rest) = value
+        .strip_prefix("~/")
+        .or_else(|| value.strip_prefix("~\\"))
+    {
+        if let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    let path = Path::new(value);
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    }
 }
 
 fn global_config_files() -> Vec<PathBuf> {
@@ -1298,14 +1674,19 @@ fn strip_url_config(text: &str) -> String {
     out
 }
 
-fn url_or_include_section(header: &str) -> bool {
-    let inner = header.trim().trim_start_matches('[').trim_end_matches(']');
-    let name = inner
+fn section_name(header: &str) -> String {
+    let inner = header.trim().trim_start_matches('[');
+    let inner = inner.split(']').next().unwrap_or("");
+    inner
         .split(|c: char| c.is_whitespace() || c == '"')
         .next()
         .unwrap_or("")
-        .to_ascii_lowercase();
-    name == "url" || name == "include" || name.starts_with("includeif")
+        .to_ascii_lowercase()
+}
+
+fn url_or_include_section(header: &str) -> bool {
+    let name = section_name(header);
+    name == "url" || name == "include" || name == "includeif"
 }
 
 #[cfg(test)]
@@ -1319,13 +1700,22 @@ mod tests {
             work_tree: PathBuf::from("work"),
         };
         let cmd = command(&repo);
-        for arg in cmd.get_args() {
-            let arg = arg.to_string_lossy();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        for arg in &args {
             assert!(
-                !numeric_abbrev(&arg),
+                !numeric_abbrev(arg),
                 "a numeric abbrev is out of range on git 2.43: {arg}"
             );
         }
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1] == "core.commitGraph=false"));
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "-c" && pair[1] == "pack.useBitmaps=false"));
         for arg in ["--no-abbrev", "--full-index", "--no-textconv"] {
             assert!(!numeric_abbrev(arg), "{arg}");
         }
@@ -1343,6 +1733,61 @@ mod tests {
         assert!(!classify_env("git_config_count", false).injected);
         assert!(classify_env("Git_Config_Global", true).config);
         assert!(!classify_env("PATH", true).config);
+        assert!(classify_env("GIT_SHALLOW_FILE", false).location);
+        assert!(classify_env("GIT_GRAFT_FILE", false).location);
+        assert!(classify_env("GIT_REDIRECT_STDOUT", false).location);
+        assert!(classify_env("git_shallow_file", true).location);
+        assert!(!classify_env("git_shallow_file", false).location);
+    }
+
+    #[test]
+    fn the_ls_remote_scratch_folder_is_unpredictable_and_exclusive() {
+        let path = exclusive_scratch("cg-ls").unwrap();
+        let id = path.file_name().unwrap().to_string_lossy();
+        let id = id.rsplit('-').next().unwrap();
+        assert_eq!(id.len(), 32);
+        assert!(id.chars().all(|c| c.is_ascii_hexdigit()));
+        let err = std::fs::create_dir(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        std::fs::remove_dir_all(&path).unwrap();
+    }
+
+    #[test]
+    fn system_credential_sections_drop_url_and_protocol() {
+        let text = "\
+[credential]\n\thelper = !'/tmp/helper.sh'\n\
+[url \"http://127.0.0.1:1/decoy/\"]\n\tinsteadOf = http://127.0.0.1:\n\
+[protocol]\n\tversion = 0\n\
+";
+        let kept = credential_sections(text);
+        assert!(kept.contains("helper"));
+        assert!(!kept.contains("insteadOf"));
+        assert!(!kept.contains("version"));
+    }
+
+    #[test]
+    fn an_include_if_credential_helper_is_copied_and_its_url_rewrite_is_not() {
+        let dir = std::env::temp_dir().join(format!(
+            "cg-include-{}-{}",
+            std::process::id(),
+            uuid::Uuid::new_v4().simple()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let included = dir.join("included.gitconfig");
+        std::fs::write(
+            &included,
+            "[credential]\n\thelper = !'/tmp/from-include.sh'\n[url \"http://127.0.0.1:1/\"]\n\tinsteadOf = https://\n",
+        )
+        .unwrap();
+        let text = format!(
+            "[includeIf \"gitdir:**\"]\n\tpath = {}\n",
+            included.display()
+        );
+        let mut seen = std::collections::HashSet::new();
+        let kept = included_credentials(&text, &dir, 0, &mut seen);
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(kept.contains("from-include.sh"), "{kept}");
+        assert!(!kept.contains("insteadOf"), "{kept}");
     }
 
     #[test]
