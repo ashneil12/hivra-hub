@@ -118,6 +118,24 @@ describe("app ports", () => {
     expect(h.delegated).toEqual([["s-lead", "lead-tick-a-2", { title: "x" }]]);
   });
 
+  it("notes a settled call as the Lead's own chat", () => {
+    const h = host();
+    appPorts(h.value, "/code/app", context).noteDecision?.({
+      project: "/code/app",
+      what: "Merged WP-200: Build the thing",
+      reason: "merge on green",
+    });
+    expect(h.calls[0]).toEqual({
+      command: "decisions_note",
+      args: {
+        project: "/code/app",
+        session: "s-lead",
+        what: "Merged WP-200: Build the thing",
+        reason: "merge on green",
+      },
+    });
+  });
+
   it("writes the activity line as the Lead, cut to the log's limit", async () => {
     const h = host();
     appPorts(h.value, "/code/app", context).note("x".repeat(900));

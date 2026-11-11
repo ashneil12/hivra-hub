@@ -62,6 +62,7 @@ type Fake = LeadTickPorts & {
   rows: ProgrammePackage[];
   notes: string[];
   outcomes: string[];
+  decisions: { project: string; what: string; reason: string }[];
 };
 
 function fake(options: {
@@ -78,6 +79,7 @@ function fake(options: {
     rows: options.rows ?? [],
     notes: [],
     outcomes: [],
+    decisions: [],
     async list() {
       state.calls.push("list");
       if (options.listFails) throw new Error("db busy");
@@ -114,6 +116,9 @@ function fake(options: {
     },
     outcome(line) {
       state.outcomes.push(line);
+    },
+    async noteDecision(input) {
+      state.decisions.push(input);
     },
   };
   return state;
@@ -280,6 +285,7 @@ describe("lead tick step (d): ship on green", () => {
     expect(ports.calls).toContain("merge owner/app#7");
     expect(ports.rows[0].status).toBe("merged");
     expect(ports.outcomes).toEqual(["Merged WP-200: Build the thing (#7)."]);
+    expect(ports.decisions).toEqual([{ project: "/code/app", what: "Merged WP-200: Build the thing", reason: "merge on green" }]);
     expect(result.line).toContain("Merged WP-200");
   });
 
@@ -292,6 +298,18 @@ describe("lead tick step (d): ship on green", () => {
     const result = await runLeadTick({ ...base, shipOnGreen: true }, ports);
     expect(ports.rows[0].status).toBe("pr_open");
     expect(result.attention).toEqual(["#7 (WP-200) needs your word to merge: owner/app#7 is green. Merge it?"]);
+  });
+
+  it("does not note a merge the person allowed as the Lead's own call (review of PR #244)", async () => {
+    // merge.rs: an agent's merge of a head the person approved carries `<by> (approved this head)`.
+    const ports = fake({
+      rows: [row({ id: "a", status: "pr_open" })],
+      watches: [watch({})],
+      merge: { outcome: "merged", headSha: "abc1234", allowedBy: "person (approved this head)" },
+    });
+    await runLeadTick({ ...base, shipOnGreen: true }, ports);
+    expect(ports.rows[0].status).toBe("merged");
+    expect(ports.decisions).not.toContainEqual(expect.objectContaining({ reason: "merge on green" }));
   });
 
   it("never merges a security-parked package, even with Ship on green on", async () => {
@@ -435,6 +453,7 @@ describe("lead tick: the merge is checked again on the row", () => {
     expect(ports.rows[0].status).toBe("merged");
     expect(result.attention).toEqual([]);
     expect(ports.outcomes).toEqual(["Merged WP-200: Build the thing (#7)."]);
+    expect(ports.decisions).toEqual([]);
   });
 
   it("does not read a refusal that only mentions 'already merged' as a settled merge", async () => {
