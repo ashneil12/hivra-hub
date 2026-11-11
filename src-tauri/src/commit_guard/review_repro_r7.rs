@@ -360,6 +360,7 @@ fn r7_n2_the_landing_patch_carries_only_the_staged_blob() {
     );
 }
 
+#[cfg(unix)]
 fn pkt(payload: &str) -> Vec<u8> {
     let mut out = format!("{:04x}", payload.len() + 4).into_bytes();
     out.extend(payload.as_bytes());
@@ -420,6 +421,7 @@ fn advertise_base(
     }
 }
 
+#[cfg(unix)]
 fn in_child() -> bool {
     std::env::var_os("CG_R7_CHILD").is_some()
 }
