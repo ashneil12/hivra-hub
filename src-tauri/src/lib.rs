@@ -47,6 +47,7 @@ mod pinned_tool;
 mod crew;
 mod devin_config;
 mod devin_usage;
+mod spend_ledger;
 // WP-131: desktop dictation into the composer draft. Off in this build (see dictation.rs); never sends.
 mod dictation;
 pub mod disclaim;
@@ -697,6 +698,13 @@ pub fn run() {
             watcher::watcher_check_cancel,
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
+            spend_ledger::spend_ledger_append,
+            spend_ledger::spend_ledger_totals,
+            spend_ledger::spend_project_folder,
+            spend_ledger::spend_book_read,
+            spend_ledger::spend_book_write,
+            spend_ledger::spend_redo_links,
+            spend_ledger::spend_set_project_folders,
             crew::crew_rules_set,
             crew::crew_route,
             crew::crew_on_failure,
@@ -708,6 +716,14 @@ pub fn run() {
             decisions::decisions_ask,
             decisions::decisions_answer,
             decisions::decisions_list,
+            // WP-156: standing answers stay off until this setting is on.
+            decisions::decisions_standing_enabled,
+            decisions::decisions_standing_brief,
+            decisions::decisions_standing_list,
+            decisions::decisions_reuse_list,
+            decisions::decisions_set_standing_enabled,
+            decisions::decisions_retire,
+            decisions::decisions_set_standing,
             // WP-91: the goal graph's rules, its finish-line check and a worker's handoff.
             goal_graph::goal_graph_check_plan,
             goal_graph::goal_graph_check_repair,
@@ -834,6 +850,7 @@ pub fn run() {
             fs::git_unstage_all,
             fs::git_commit,
             fs::git_locate_files,
+            fs::git_canonical_paths,
             fs::git_head_message,
             fs::git_staged_context,
             fs::git_push,
@@ -1044,6 +1061,7 @@ pub fn run() {
             more_agents::more_agents_read,
             more_agents::more_agents_write,
             more_agents::more_agents_approve,
+            more_agents::more_agents_set_enabled,
             more_agents::more_agents_check,
             codex_mono_store::codex_mono_store_prepare,
             codex_mono_store::codex_mono_store_copy,
@@ -1094,6 +1112,8 @@ pub fn run() {
             session_store::session_set_pinned,
             // WP-111: the private flag, written on its own so a transcript save cannot clear it.
             session_store::session_set_private,
+            // WP-134: one browser link copied onto the session row, and only while the row has none.
+            session_store::session_adopt_registry_agent,
             session_store::session_set_linked_work_item,
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,

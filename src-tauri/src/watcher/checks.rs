@@ -170,6 +170,53 @@ fn folder(raw: &str) -> Result<String, String> {
         .ok_or_else(|| format!("{WHICH}: that folder name can't be used"))
 }
 
+/// Why a timer's command waits, or None: the verdict on its words, then whether a word that names a link on disk leads out of
+/// the check's folder (round 6, MED-1; the approval's lookup does the same for a chat's own words).
+fn judged(command: &str, cwd: &str) -> Option<String> {
+    safe_cmd::verdict(command, cwd).or_else(|| link_outside(command, cwd))
+}
+
+/// A word that names a file in the check's folder must really be in it once links are followed (round 6, MED-1). A word
+/// that names nothing on disk (a pattern, a revision) is no path and passes; the verdict has already held what is outside.
+fn link_outside(command: &str, cwd: &str) -> Option<String> {
+    let words = safe_cmd::shell_words(command.trim())?;
+    let root = std::fs::canonicalize(cwd).ok()?;
+    for word in words.iter().skip(1) {
+        // An option's value is a place too (`--file=x`), and so is the word itself.
+        let values = match word.split_once('=') {
+            Some((_, value)) if word.starts_with('-') => vec![word.as_str(), value],
+            _ => vec![word.as_str()],
+        };
+        for value in values {
+            if value.is_empty() || value.starts_with('-') {
+                continue;
+            }
+            // A word that doesn't exist names nothing to read.
+            let Ok(real) = std::fs::canonicalize(Path::new(cwd).join(value)) else {
+                continue;
+            };
+            if !real.starts_with(&root) {
+                return Some(format!(
+                    "{value} is a link out of the chat's folder, so it waits for Ash"
+                ));
+            }
+        }
+    }
+    None
+}
+
+/// The command judgement `set` makes, on its own. `watcher_check_set` runs it before it takes the store's lock (round 4,
+/// item 9), so a refused command never holds the lock, and a check that can't be judged never reaches the database.
+pub fn vet_command(command: &str, folder_raw: &str) -> Result<String, String> {
+    let cwd = folder(folder_raw)?;
+    if let Some(why) = judged(command, &cwd) {
+        return Err(why);
+    }
+    // Parse once here so a command the table allows is also one we can exec with no shell.
+    safe_cmd::argv(command, &cwd)?;
+    Ok(cwd)
+}
+
 /// Arm a check. Refuses a command the safe table does not already allow, and does not insert a row then.
 pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, String> {
     let owner = input.owner_session.trim().to_string();
@@ -190,12 +237,7 @@ pub fn set(conn: &mut Connection, input: CheckInput, now: i64) -> Result<Check, 
     if command.chars().count() > COMMAND_MAX {
         return Err("that command is too long".into());
     }
-    if let Some(why) = safe_cmd::verdict(command) {
-        return Err(why);
-    }
-    // Parse once here so a command the table allows is also one we can exec with no shell.
-    safe_cmd::argv(command)?;
-    let cwd = folder(&input.cwd)?;
+    let cwd = vet_command(command, &input.cwd)?;
     if input.pattern.chars().count() > PATTERN_MAX {
         return Err("the text to watch for is too long".into());
     }
@@ -443,7 +485,7 @@ impl Runner for LiveRunner {
 /// never runs, and never runs wherever the app happens to be. A folder that has gone waits, and runs again if it
 /// comes back (an unplugged drive or a renamed working copy is not a final failure).
 pub(crate) fn look(item: &Claimed, runner: &impl Runner) -> Attempt {
-    if safe_cmd::verdict(&item.command).is_some() || item.cwd.is_empty() {
+    if item.cwd.is_empty() || judged(&item.command, &item.cwd).is_some() {
         return Attempt::Stop;
     }
     let cwd = Path::new(&item.cwd);
@@ -475,6 +517,10 @@ fn command_for(words: &[String], cwd: &Path, search: &str, windows: bool) -> Opt
     let program = crate::harness::which_in_path_as(search, words.first()?, windows)?;
     let mut cmd = Command::new(program);
     cmd.args(&words[1..]).current_dir(cwd);
+    // Round 7, HIGH-A (part b): a check's git reads only the repository git is told about, never a folder planted beside it.
+    if words.first().map(String::as_str) == Some("git") {
+        crate::fs::git_safe_env(&mut cmd);
+    }
     Some(cmd)
 }
 
@@ -482,7 +528,7 @@ fn command_for(words: &[String], cwd: &Path, search: &str, windows: bool) -> Opt
 /// `search` the way the app finds every CLI (`npm` is `npm.cmd` on Windows); one that isn't there waits. Output is
 /// dropped after the decision.
 fn run_in(command: &str, pattern: &str, cwd: &Path, search: &str) -> Attempt {
-    let words = match safe_cmd::argv(command) {
+    let words = match safe_cmd::argv(command, &cwd.to_string_lossy()) {
         Ok(words) => words,
         Err(_) => return Attempt::Stop,
     };
@@ -517,6 +563,47 @@ mod tests {
     const MIN: i64 = 60_000;
     const DAY: i64 = 24 * 60 * 60 * 1000;
     const SECRET: &str = "SECRET-OUTPUT";
+
+    // WP-101 review round 4, items 4 and 9: the timer's command judgement, with no lock or store in the way.
+    #[test]
+    fn a_command_the_timer_would_hold_is_refused_before_any_lock_is_taken() {
+        let folder = TempDir::new("proj");
+        let folder = folder.path();
+        for command in [
+            "grep -rn TODO src",
+            "git log --textconv -p",
+            "cat ~/.pi/agent/auth.json",
+            "cat ./ENV~1",
+            "cat .secrets",
+        ] {
+            assert!(
+                vet_command(command, &folder).is_err(),
+                "{command} was accepted"
+            );
+        }
+        assert!(vet_command("git status", &folder).is_ok());
+        assert!(vet_command("rg -n token src", &folder).is_ok());
+    }
+
+    /// WP-101 review round 6, MED-1: a timer's word that is a real link out of the check's folder waits, a link inside it
+    /// does not, and a word that names nothing on disk is no path.
+    #[cfg(unix)]
+    #[test]
+    fn a_timer_word_that_is_a_link_out_of_the_folder_waits() {
+        use std::os::unix::fs::symlink;
+        let folder = TempDir::new("proj");
+        let outside = TempDir::new("outside");
+        std::fs::write(outside.0.join("secret.txt"), "SECRET\n").unwrap();
+        std::fs::write(folder.0.join("inside.txt"), "ok\n").unwrap();
+        symlink(outside.0.join("secret.txt"), folder.0.join("linked")).unwrap();
+        symlink(folder.0.join("inside.txt"), folder.0.join("alias")).unwrap();
+        let path = folder.path();
+        assert!(vet_command("cat linked", &path).is_err());
+        assert!(vet_command("grep -n SECRET linked", &path).is_err());
+        assert!(vet_command("cat alias", &path).is_ok());
+        assert!(vet_command("cat inside.txt", &path).is_ok());
+        assert!(vet_command("rg -n token inside.txt", &path).is_ok());
+    }
 
     fn store() -> SessionStore {
         SessionStore::open_in_memory().unwrap()
@@ -657,7 +744,7 @@ mod tests {
     fn an_exit_of_zero_wakes_once_and_a_miss_does_not() {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let check = set(&mut conn, input("npm test", "", "the build"), 0).unwrap();
+        let check = set(&mut conn, input("cargo fmt --check", "", "the build"), 0).unwrap();
         assert_eq!(check.next_at, MIN);
         assert_eq!(check.deadline, DAY);
         let early = poll(&mut conn, MIN - 1, &Script::exit(0, SECRET)).unwrap();
@@ -682,7 +769,12 @@ mod tests {
     fn matching_text_wakes_even_when_the_exit_is_not_zero() {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let check = set(&mut conn, input("rg -n ready src", "ready", "the word"), 0).unwrap();
+        // A walk (rg) runs only from a folder at least three levels deep, so this check gets its own folder: the temp
+        // folder itself is `/tmp` on Linux, one level deep.
+        let dir = TempDir::new("project");
+        let mut ready = input("rg -n ready src", "ready", "the word");
+        ready.cwd = dir.path();
+        let check = set(&mut conn, ready, 0).unwrap();
         let mut script = Script::exit(1, "not yet");
         script.stderr = "build is ready\r\n".into();
         // stdout does not match; stderr does. An empty pattern would not.
@@ -808,7 +900,7 @@ mod tests {
     fn a_timeout_is_not_a_final_failure() {
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let check = set(&mut conn, input("npm test", "", "ci"), 0).unwrap();
+        let check = set(&mut conn, input("cargo fmt --check", "", "ci"), 0).unwrap();
         let woke = poll(&mut conn, MIN, &Script::wait()).unwrap();
         assert!(woke.is_empty());
         let row = query(&conn, "WHERE id = ?1", &[&check.id]).unwrap();
@@ -885,7 +977,7 @@ mod tests {
         let folder = TempDir::new("héllo wörld 日本語");
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let mut one = input("npm test", "", "in the folder");
+        let mut one = input("cargo fmt --check", "", "in the folder");
         one.cwd = folder.path();
         let check = set(&mut conn, one, 0).unwrap();
         let stored: String = conn
@@ -951,7 +1043,7 @@ mod tests {
         let folder = TempDir::new("comes and goes");
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let mut one = input("npm test", "", "the build");
+        let mut one = input("cargo fmt --check", "", "the build");
         one.cwd = folder.path();
         let check = set(&mut conn, one, 0).unwrap();
         std::fs::remove_dir(&folder.0).unwrap();
@@ -974,7 +1066,7 @@ mod tests {
         conn.execute(
             "INSERT INTO firstmate_checks
                (id, owner_session, command, pattern, note, interval_ms, next_at, deadline, generation, state, wake_id, created_at, updated_at)
-             VALUES ('check-nofolder', 'lead', 'npm test', '', 'old', ?1, ?1, ?2, 1, 'armed', NULL, 0, 0)",
+             VALUES ('check-nofolder', 'lead', 'cargo fmt --check', '', 'old', ?1, ?1, ?2, 1, 'armed', NULL, 0, 0)",
             params![MIN, DAY],
         )
         .unwrap();
@@ -993,7 +1085,7 @@ mod tests {
                generation INTEGER NOT NULL, state TEXT NOT NULL, wake_id TEXT, created_at INTEGER NOT NULL,
                updated_at INTEGER NOT NULL
              );
-             INSERT INTO firstmate_checks VALUES ('check-old', 'lead', 'npm test', '', 'old', 60000, 60000, 86400000, 1, 'armed', NULL, 0, 0);",
+             INSERT INTO firstmate_checks VALUES ('check-old', 'lead', 'cargo fmt --check', '', 'old', 60000, 60000, 86400000, 1, 'armed', NULL, 0, 0);",
         )
         .unwrap();
         ensure_tables(&conn).unwrap();
@@ -1004,26 +1096,20 @@ mod tests {
         assert_eq!(rows[0].check.id, "check-old");
     }
 
-    /// A stand-in for npm that exits 0 only when it is run in a folder holding `wp104-marker`. It is a shell script
-    /// on Unix and an `npm.cmd` on Windows, which is the shape the real npm has there.
-    fn fake_npm(dir: &Path) {
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let path = dir.join("npm");
-            std::fs::write(&path, "#!/bin/sh\ntest -f wp104-marker\n").unwrap();
-            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
-        #[cfg(windows)]
-        std::fs::write(
-            dir.join("npm.cmd"),
-            "@echo off\r\nif exist wp104-marker exit /b 0\r\nexit /b 1\r\n",
-        )
-        .unwrap();
+    /// A stand-in for cargo that exits 0 only when it is run in a folder holding `wp104-marker`. A shell script, so the
+    /// tests that run it are Unix only. A check now runs `cargo fmt --check`, the one cargo command the table allows.
+    #[cfg(unix)]
+    fn fake_cargo(dir: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("cargo");
+        std::fs::write(&path, "#!/bin/sh\ntest -f wp104-marker\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
+    #[cfg(unix)]
     struct Search(String);
 
+    #[cfg(unix)]
     impl Runner for Search {
         fn run(&self, command: &str, pattern: &str, cwd: &Path) -> Attempt {
             run_in(command, pattern, cwd, &self.0)
@@ -1037,26 +1123,31 @@ mod tests {
             .into_owned()
     }
 
+    #[cfg(unix)]
     #[test]
-    fn npm_is_found_through_the_search_path_and_runs_in_the_chats_folder() {
+    fn a_program_is_found_through_the_search_path_and_runs_in_the_chats_folder() {
         let bin = TempDir::new("bin dir");
-        fake_npm(&bin.0);
+        fake_cargo(&bin.0);
         let project = TempDir::new("project one");
         let elsewhere = TempDir::new("project two");
         std::fs::write(project.0.join("wp104-marker"), "").unwrap();
         let search = path_of(&bin.0);
-        // The shim is found by its Windows name too: `npm` is `npm.cmd` there.
-        let found = crate::harness::which_in_path(&search, "npm").unwrap();
+        let found = crate::harness::which_in_path(&search, "cargo").unwrap();
+        assert_eq!(found.file_name().unwrap().to_string_lossy(), "cargo");
         assert_eq!(
-            found.file_name().unwrap().to_string_lossy(),
-            if cfg!(windows) { "npm.cmd" } else { "npm" }
+            run_in("cargo fmt --check", "", &project.0, &search),
+            Attempt::Wake
         );
-        assert_eq!(run_in("npm test", "", &project.0, &search), Attempt::Wake);
-        assert_eq!(run_in("npm test", "", &elsewhere.0, &search), Attempt::Wait);
+        assert_eq!(
+            run_in("cargo fmt --check", "", &elsewhere.0, &search),
+            Attempt::Wait
+        );
     }
 
+    /// The launcher tests name programs by their words. They test which file a program name starts, not whether a
+    /// check may run it, so these words are not run through the safe table.
     fn words(command: &str) -> Vec<String> {
-        safe_cmd::argv(command).unwrap()
+        command.split(' ').map(String::from).collect()
     }
 
     #[test]
@@ -1105,18 +1196,25 @@ mod tests {
         let empty = TempDir::new("nothing here");
         let project = TempDir::new("project");
         let search = path_of(&empty.0);
-        assert_eq!(run_in("npm test", "", &project.0, &search), Attempt::Wait);
-        assert_eq!(run_in("cargo test", "", &project.0, &search), Attempt::Wait);
+        assert_eq!(
+            run_in("cargo fmt --check", "", &project.0, &search),
+            Attempt::Wait
+        );
+        assert_eq!(
+            run_in("rg -n wp104 src", "", &project.0, &search),
+            Attempt::Wait
+        );
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_real_check_runs_in_its_folder_from_set_to_one_wake() {
         let bin = TempDir::new("bin");
-        fake_npm(&bin.0);
+        fake_cargo(&bin.0);
         let project = TempDir::new("the chat's project");
         let store = store();
         let mut conn = store.lock_conn().unwrap();
-        let mut one = input("npm test", "", "the build");
+        let mut one = input("cargo fmt --check", "", "the build");
         one.cwd = project.path();
         let check = set(&mut conn, one, 0).unwrap();
         let runner = Search(path_of(&bin.0));
@@ -1164,7 +1262,12 @@ mod tests {
         let id = {
             let store = SessionStore::open(file.0.clone()).unwrap();
             let mut conn = store.lock_conn().unwrap();
-            let check = set(&mut conn, input("npm test", "ready", "after a restart"), 0).unwrap();
+            let check = set(
+                &mut conn,
+                input("cargo fmt --check", "ready", "after a restart"),
+                0,
+            )
+            .unwrap();
             let woke = poll(&mut conn, MIN, &Script::exit(1, "still compiling")).unwrap();
             assert!(woke.is_empty());
             check.id

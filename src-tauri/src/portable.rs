@@ -1278,6 +1278,7 @@ struct SessionRow {
     sidebar_hidden: bool,
     private_chat: bool,
     private_boundary_id: Option<String>,
+    registry_agent_id: Option<String>,
 }
 
 fn export_workspace(
@@ -1292,11 +1293,17 @@ fn export_workspace(
     } else {
         ""
     };
+    // A database from before the column has no More agents link to export.
+    let registry_select = if columns.iter().any(|c| c == "registry_agent_id") {
+        "registry_agent_id"
+    } else {
+        "NULL"
+    };
     let mut statement = conn.prepare(&format!(
         "SELECT id, cwd, harness, model, model_settings, runtime_mode, title, provider_session_id, blocks_json,
                 created_at, updated_at, branch, context_used, context_window, archived, worktree_cwd, pinned,
                 linked_work_item_json, worktree_removed, automation_id, sidebar_hidden,
-                private_chat, private_boundary_id
+                private_chat, private_boundary_id, {registry_select}
          FROM sessions {legacy_inbox} ORDER BY created_at, id"
     ))?;
     let rows = statement
@@ -1325,6 +1332,7 @@ fn export_workspace(
                 sidebar_hidden: row.get::<_, i64>(20)? != 0,
                 private_chat: row.get::<_, i64>(21)? != 0,
                 private_boundary_id: crate::session_store::boundary_for_read(row.get(22)?),
+                registry_agent_id: row.get(23)?,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1370,6 +1378,7 @@ fn export_workspace(
             "sidebarHidden": row.sidebar_hidden,
             "private": row.private_chat,
             "privateBoundaryId": row.private_boundary_id,
+            "registryAgentId": row.registry_agent_id,
             "linkedWorkItem": row.linked_work_item_json.as_deref().and_then(|raw| serde_json::from_str::<Value>(raw).ok()),
             "automationId": row.automation_id,
             "contextUsed": row.context_used,
@@ -3665,6 +3674,8 @@ fn insert_session(
         goal: None,
         // WP-111: a private chat stays private after import. An old file has no flag, so it stays readable.
         private_chat: file["private"].as_bool().unwrap_or(false),
+        // The entry id only. The target's own list and approval still decide whether the chat runs.
+        registry_agent_id: file["registryAgentId"].as_str().map(str::to_string),
         private_boundary_id: match &file["privateBoundaryId"] {
             Value::Null => None,
             Value::String(value) => crate::session_store::boundary_for_read(Some(value.clone())),
