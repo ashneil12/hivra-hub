@@ -3630,6 +3630,19 @@ fn insert_session(
     insert_session_as(env, conn, id, title, file, rules, false)
 }
 
+/// A copy is a new chat, so it does not keep the source chat's move notices.
+fn strip_copy_move_notices(blocks: &mut Value) {
+    let Some(list) = blocks.as_array_mut() else {
+        return;
+    };
+    list.retain(|block| {
+        !block
+            .get("notice")
+            .and_then(Value::as_str)
+            .is_some_and(|notice| notice.starts_with("teleport"))
+    });
+}
+
 /// `is_copy`: the chat was added under a new id (a copy), which never resumes the file's provider conversation (WP-177).
 fn insert_session_as(
     env: &Env,
@@ -3664,6 +3677,10 @@ fn insert_session_as(
         })
         .map(str::to_string);
     let mut blocks = file.get("blocks").cloned().unwrap_or(json!([]));
+    // WP-177: a copy is a new chat. A move note belongs to the chat that was mid-move, not to this copy.
+    if is_copy {
+        strip_copy_move_notices(&mut blocks);
+    }
     let files_left_out = drop_imported_file_paths(&mut blocks);
     let paths_dropped = rules.confine_tool_paths(&mut blocks, &folders.roots);
     let session = SessionUpsert {

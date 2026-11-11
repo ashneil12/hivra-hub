@@ -6848,3 +6848,119 @@ fn review_231_r2_an_imported_more_agents_chat_does_not_become_a_claude_chat() {
         "the imported More agents chat lost its entry and runs as a Claude chat"
     );
 }
+
+/// A chat exported while a move is open, then brought in as a copy, must not keep that move's notices. The same chat
+/// imported under its own id keeps them, so recovery on the machine it belongs to can still finish the move.
+#[test]
+fn an_imported_copy_drops_move_notices_and_the_same_chat_keeps_them() {
+    let source_dir = TestDir::new("move-source");
+    let same_dir = TestDir::new("move-same");
+    let copy_dir = TestDir::new("move-copy");
+    let out = TestDir::new("move-out");
+    let source = env_for(&source_dir.0);
+    let store = open_store(&source);
+    {
+        let conn = store.lock_conn().unwrap();
+        add_session(
+            &conn,
+            "chat-move",
+            "Mid move",
+            "claude",
+            json!([
+                block("b1", "user", "keep this message"),
+                {
+                    "id": "teleport-frozen-m1",
+                    "role": "system",
+                    "text": "{}",
+                    "notice": "teleport-frozen"
+                },
+                {
+                    "id": "teleported@host-a@1",
+                    "role": "system",
+                    "text": "Moved to Studio box",
+                    "notice": "teleported"
+                }
+            ]),
+            5_000,
+        );
+    }
+    drop(store);
+
+    let dest = out.0.join("export");
+    let mut request = export_request(&dest, Form::Folder);
+    request.memory = None;
+    request.files.clear();
+    export(&source, &request).unwrap();
+
+    let same = env_for(&same_dir.0);
+    let same_store = open_store(&same);
+    let conn = same_store.lock_conn().unwrap();
+    let added = import_held(
+        &same,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["chat-move".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(added.sessions_added, 1);
+    let kept: String = conn
+        .query_row(
+            "SELECT blocks_json FROM sessions WHERE id = 'chat-move'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(kept.contains("keep this message"));
+    assert!(
+        kept.contains("teleport-frozen"),
+        "a chat imported under its own id lost the note recovery needs"
+    );
+    drop(conn);
+    drop(same_store);
+
+    let copy_env = env_for(&copy_dir.0);
+    let copy_store = open_store(&copy_env);
+    let conn = copy_store.lock_conn().unwrap();
+    add_session(
+        &conn,
+        "chat-move",
+        "Already here",
+        "claude",
+        json!([block("x", "user", "mine")]),
+        9_000,
+    );
+    let report = import_held(
+        &copy_env,
+        &conn,
+        &ImportRequest {
+            path: dest.to_string_lossy().into_owned(),
+            memory: None,
+            workspace: Some(WorkspaceImport {
+                sessions: vec!["chat-move".into()],
+                session_copies: vec!["chat-move".into()],
+                ..Default::default()
+            }),
+        },
+    )
+    .unwrap();
+    assert_eq!(report.sessions_copied, 1, "{report:?}");
+    let copy_id = &report.renamed["chat-move"];
+    let blocks: String = conn
+        .query_row(
+            "SELECT blocks_json FROM sessions WHERE id = ?1",
+            [copy_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(blocks.contains("keep this message"), "{blocks}");
+    assert!(
+        !blocks.contains("teleport"),
+        "an imported copy kept a move notice: {blocks}"
+    );
+}
