@@ -42,6 +42,8 @@ const KINDS: Record<string, string> = {
   "ship.trial": "Trial",
   "ship.rollback": "Rollback",
   "permission.grant": "Permission",
+  // WP-182: a change on a Mono's card.
+  "mono.settings": "Mono settings",
 };
 
 /** A blank filter means no filter. Surrounding spaces don't count. */
