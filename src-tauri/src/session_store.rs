@@ -6579,3 +6579,137 @@ mod review214_r6_stale_notes {
         );
     }
 }
+
+// PR #214 hard review, round 7: red repro for 4863e761e. Each case states the RIGHT outcome.
+// 1. The guard lets an ordinary save add a freeze ask, so a stale copy puts back an ask its clear step already settled.
+//    Launch recovery then runs that ask: it writes a refused-move note and asks the named host to thaw, with no person.
+// 2. A step is checked only on its own move notes. The port builds a step from a row it read earlier, so a step that
+//    lands after an ordinary save of a reply writes the row back without that reply, and the store takes it.
+#[cfg(test)]
+mod review214_r7_steps_and_asks {
+    use super::*;
+
+    fn chat(blocks: Vec<Value>) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": "chat-r7",
+            "cwd": "/tmp/review214-r7",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": "Notes",
+            "blocks": Value::Array(blocks),
+        }))
+        .unwrap()
+    }
+
+    fn base() -> Vec<Value> {
+        vec![
+            json!({ "id": "u1", "role": "user", "text": "keep this" }),
+            json!({ "id": "a1", "role": "assistant", "text": "kept" }),
+        ]
+    }
+
+    fn with(extra: Vec<Value>) -> Vec<Value> {
+        let mut blocks = base();
+        blocks.extend(extra);
+        blocks
+    }
+
+    fn note(notice: &str, move_id: &str) -> Value {
+        json!({ "id": format!("{notice}-{move_id}"), "role": "system", "text": "{\"peer\":\"host-a\",\"at\":1}", "notice": notice })
+    }
+
+    fn reply() -> Value {
+        json!({ "id": "a2", "role": "assistant", "text": "the reply saved after the step read the row" })
+    }
+
+    fn step(conn: &Connection, blocks: Vec<Value>, move_id: &str, op: &str) -> Result<(), String> {
+        let mut session = chat(blocks);
+        session.teleport = Some(TeleportWrite {
+            move_id: move_id.into(),
+            op: op.into(),
+        });
+        upsert_session(conn, &session)
+            .map(|_| ())
+            .map_err(|error| error.to_string())
+    }
+
+    fn stored_has(conn: &Connection, id: &str) -> bool {
+        let row = get_session(conn, "chat-r7").unwrap().unwrap();
+        blocks_of(&row.blocks)
+            .iter()
+            .any(|block| id_of(block) == id)
+    }
+
+    #[test]
+    fn a_stale_copy_cannot_put_back_a_cleared_freeze_ask() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(base())).unwrap();
+        step(
+            &conn,
+            with(vec![note("teleport-freeze-asked", "m3")]),
+            "m3",
+            "freeze-ask",
+        )
+        .unwrap();
+        // The window took the row with the ask. The move settles and its clear step removes the ask.
+        let window_copy = with(vec![note("teleport-freeze-asked", "m3")]);
+        step(&conn, base(), "m3", "clear-freeze-ask").unwrap();
+        let _ = upsert_session(&conn, &chat(window_copy));
+        assert!(
+            !stored_has(&conn, "teleport-freeze-asked-m3"),
+            "an ordinary save of the window's copy put the cleared freeze ask back"
+        );
+    }
+
+    #[test]
+    fn a_freeze_step_cannot_drop_a_saved_reply() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        upsert_session(&conn, &chat(base())).unwrap();
+        // The move read the row, then the window saved a reply, then the freeze is written from the earlier read.
+        upsert_session(&conn, &chat(with(vec![reply()]))).unwrap();
+        let _ = step(
+            &conn,
+            with(vec![note("teleport-frozen", "m4")]),
+            "m4",
+            "freeze",
+        );
+        assert!(
+            stored_has(&conn, "a2"),
+            "the freeze step wrote the row back without the saved reply"
+        );
+    }
+
+    #[test]
+    fn a_settle_step_cannot_drop_a_saved_reply() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let back = json!({ "id": "teleported-back-m5", "role": "system", "text": "Moved back", "notice": "teleported-back" });
+        upsert_session(
+            &conn,
+            &chat(with(vec![
+                back.clone(),
+                note("teleport-release-owed", "m5"),
+            ])),
+        )
+        .unwrap();
+        // The chat is back here and the person is chatting. Recovery read the row, then the reply was saved.
+        upsert_session(
+            &conn,
+            &chat(with(vec![
+                back.clone(),
+                note("teleport-release-owed", "m5"),
+                reply(),
+            ])),
+        )
+        .unwrap();
+        let _ = step(&conn, with(vec![back]), "m5", "settle");
+        assert!(
+            stored_has(&conn, "a2"),
+            "the settle step wrote the row back without the saved reply"
+        );
+    }
+}
