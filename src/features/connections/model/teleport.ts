@@ -274,9 +274,9 @@ const PGP_BLOCK = /-----BEGIN PGP PRIVATE KEY BLOCK-----[\s\S]*?(?:-----END PGP 
 const PUTTY_PRIVATE_LINE = /(Private-Lines:[ \t]*\d+[ \t]*\r?\n)([^\r\n]*)/g;
 const AGE_SECRET = /AGE-SECRET-KEY-1[0-9A-Z]+/g;
 // base64("-----BEGIN") when that text starts at byte offset 0, 1 or 2. A wrapped encoding splits it across lines.
-// The three strings only locate a one-line token. A run is decoded and checked, so a marker alone is not a private key.
+// The base64url form of each marker is the same string (none of them contains + or /). A marker alone is not a private
+// key: it decodes to "-----BEGIN". A marker that does not decode at all holds the move.
 const PEM_MARKERS = ["LS0tLS1CRUdJTi", "0tLS0tQkVHSU4", "tLS0tLUJFR0lO"] as const;
-const MIN_BASE64_RUN = 40;
 // No `g` flag: privateKeyPresent uses test(), which is stateful on a global expression.
 // The base64 clause is bounded so a line of repeated markers cannot backtrack.
 // OpenSSH bodies start with base64("openssh-key-v1\0") even when the armor lines were cut off. SSH2 (RFC 4716) armor
@@ -358,10 +358,11 @@ function redactString(text: string): { text: string; count: number } {
 
 function pureBase64Line(line: string, min = 4): boolean {
   const trimmed = line.trim();
-  return trimmed.length >= min && /^[A-Za-z0-9+/=]+$/.test(trimmed);
+  // `-` and `_` are base64url. A line of either alphabet joins a run.
+  return trimmed.length >= min && /^[A-Za-z0-9+/=_-]+$/.test(trimmed);
 }
 
-/** A pure base64 run of at least 40 characters, including one short wrapped tail. */
+/** A pure base64 run, including one short wrapped tail. There is no minimum length: a short wrap can still be a key. */
 function collectBase64Runs(lines: string[]): Array<{ start: number; end: number; compact: string }> {
   const runs: Array<{ start: number; end: number; compact: string }> = [];
   let index = 0;
@@ -384,16 +385,29 @@ function collectBase64Runs(lines: string[]): Array<{ start: number; end: number;
       .slice(start, index)
       .map((line) => (line ?? "").trim())
       .join("");
-    if (compact.length >= MIN_BASE64_RUN) runs.push({ start, end: index, compact });
+    if (compact.length > 0) runs.push({ start, end: index, compact });
   }
   return runs;
 }
 
-function decodeBase64Text(compact: string): string | null {
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(compact) || compact.length < MIN_BASE64_RUN) return null;
-  // One leftover character is a truncated quantum, not a reason to skip the key in front of it.
-  const body = compact.length % 4 === 1 ? compact.slice(0, -1) : compact;
-  if (body.length < MIN_BASE64_RUN) return null;
+function isBase64Body(code: number): boolean {
+  return (
+    (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    code === 43 ||
+    code === 47 ||
+    code === 45 ||
+    code === 95
+  );
+}
+
+/** Standard or url-safe base64, or null when it does not decode. A length of 1 mod 4 drops one character and tries again. */
+function tryDecodeBase64(compact: string): string | null {
+  let body = compact.replace(/-/g, "+").replace(/_/g, "/");
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(body)) return null;
+  if (body.length % 4 === 1) body = body.slice(0, -1);
+  if (body.length < 4) return null;
   const padded = body.length % 4 === 0 ? body : `${body}${"=".repeat(4 - (body.length % 4))}`;
   try {
     return globalThis.atob(padded);
@@ -402,35 +416,131 @@ function decodeBase64Text(compact: string): string | null {
   }
 }
 
-function decodedIsPrivateKey(compact: string): boolean {
-  const decoded = decodeBase64Text(compact);
-  return decoded !== null && PRIVATE_KEY_HEADER.test(decoded);
+type KeyVerdict = "private" | "hold" | "clear";
+
+/**
+ * Split on internal `=` padding, then read each piece at the four alignments at or before a `-----BEGIN` marker.
+ * A private-key header holds. A marker that never decodes holds. A decode that is not a private key (a bare marker,
+ * a certificate, a public key) does not.
+ */
+function runVerdict(compact: string): KeyVerdict {
+  if (!PEM_MARKERS.some((marker) => compact.indexOf(marker) >= 0)) return "clear";
+  let hold = false;
+  let start = 0;
+  for (let i = 0; i <= compact.length; i += 1) {
+    const code = i < compact.length ? compact.charCodeAt(i) : -1;
+    const pad = code === 61;
+    const end = pad || code < 0 || !isBase64Body(code);
+    if (!end) continue;
+    let cut = i;
+    if (pad) {
+      let pads = 0;
+      while (pads < 2 && cut < compact.length && compact.charCodeAt(cut) === 61) {
+        cut += 1;
+        pads += 1;
+      }
+    }
+    if (cut > start) {
+      const verdict = verdictOf(compact.slice(start, cut));
+      if (verdict === "private") return "private";
+      if (verdict === "hold") hold = true;
+    }
+    start = pad ? cut : i + 1;
+    if (pad) i = cut - 1;
+  }
+  return hold ? "hold" : "clear";
 }
 
-/** The earliest marker at or after `from`, or -1. */
-function markerIndex(text: string, from: number): number {
-  let found = -1;
+/** Enough base64 for any PEM header line, and no more. A long run is not decoded whole. */
+const HEADER_WINDOW = 96;
+
+/** The marker length when `segment` is nothing but that marker repeated, else 0. */
+function repeatedRun(segment: string): number {
   for (const marker of PEM_MARKERS) {
-    const at = text.indexOf(marker, from);
-    if (at >= 0 && (found < 0 || at < found)) found = at;
+    if (segment.length < marker.length || segment.length % marker.length !== 0) continue;
+    if (!segment.startsWith(marker)) continue;
+    let same = true;
+    for (let i = marker.length; i < segment.length; i += marker.length) {
+      if (!segment.startsWith(marker, i)) {
+        same = false;
+        break;
+      }
+    }
+    if (same) return marker.length;
   }
-  return found;
+  return 0;
+}
+
+/**
+ * A window at each of the four alignments at or before every marker. A private-key header holds. A marker whose windows
+ * never decode holds. A decode that is not a private key (a bare marker, a certificate, a public key) does not. The
+ * window is cached, so a line of the same marker is not decoded again. A pure repeat is sampled once: every copy has
+ * the same windows.
+ */
+function verdictOf(segment: string): KeyVerdict {
+  if (!PEM_MARKERS.some((marker) => segment.indexOf(marker) >= 0)) return "clear";
+  const period = repeatedRun(segment);
+  const body = period > 0 ? segment.slice(0, Math.min(segment.length, period + HEADER_WINDOW)) : segment;
+  const find = markerFinder(body);
+  const seen = new Map<string, KeyVerdict>();
+  let from = 0;
+  let decoded = false;
+  while (from < body.length) {
+    const at = find(from);
+    if (at < 0) break;
+    let any = false;
+    for (let offset = 0; offset < 4; offset += 1) {
+      const start = at - offset;
+      if (start < 0) continue;
+      const window = body.slice(start, Math.min(body.length, start + HEADER_WINDOW));
+      let kind = seen.get(window);
+      if (!kind) {
+        const text = tryDecodeBase64(window);
+        kind = text === null ? "hold" : PRIVATE_KEY_HEADER.test(text) ? "private" : "clear";
+        seen.set(window, kind);
+      }
+      if (kind === "private") return "private";
+      if (kind === "clear") any = true;
+    }
+    if (!any) return "hold";
+    decoded = true;
+    from = at + 1;
+  }
+  return decoded ? "clear" : "hold";
+}
+
+/**
+ * The next marker at or after `from`. Each marker's position is remembered, and a marker that is not in the text is
+ * searched once. Searching again from every word is quadratic.
+ */
+function markerFinder(text: string): (from: number) => number {
+  const next = PEM_MARKERS.map((marker) => ({ marker, at: text.indexOf(marker) }));
+  return (from: number) => {
+    let found = -1;
+    for (const slot of next) {
+      if (slot.at >= 0 && slot.at < from) slot.at = text.indexOf(slot.marker, from);
+      if (slot.at >= 0 && (found < 0 || slot.at < found)) found = slot.at;
+    }
+    return found;
+  };
+}
+
+/** Same short words repeat. Decoding each one again dominates a long line of markers. */
+function cachedVerdicts(): (word: string) => KeyVerdict {
+  const cache = new Map<string, KeyVerdict>();
+  return (word: string) => {
+    const hit = cache.get(word);
+    if (hit) return hit;
+    const verdict = runVerdict(word);
+    if (word.length <= 96) cache.set(word, verdict);
+    return verdict;
+  };
 }
 
 /**
  * The base64 word that contains `at`. Scanning back stops at `=`, so a token like KEY= is not pulled into the word.
  * The caller always continues from `end`, so repeated markers are one word.
  */
-function isBase64Body(code: number): boolean {
-  return (
-    (code >= 48 && code <= 57) ||
-    (code >= 65 && code <= 90) ||
-    (code >= 97 && code <= 122) ||
-    code === 43 ||
-    code === 47
-  );
-}
-
 function base64WordAt(text: string, at: number): { start: number; end: number } {
   let start = at;
   while (start > 0 && isBase64Body(text.charCodeAt(start - 1))) start -= 1;
@@ -444,47 +554,52 @@ function base64WordAt(text: string, at: number): { start: number; end: number } 
   return { start, end };
 }
 
-function lineHoldsPrivateKey(line: string): boolean {
+function lineHoldsPrivateKey(line: string, verdict: (word: string) => KeyVerdict): boolean {
+  const find = markerFinder(line);
   let from = 0;
   while (from < line.length) {
-    const at = markerIndex(line, from);
+    const at = find(from);
     if (at < 0) return false;
     const word = base64WordAt(line, at);
-    if (decodedIsPrivateKey(line.slice(word.start, word.end))) return true;
+    const kind = verdict(line.slice(word.start, word.end));
+    if (kind === "private" || kind === "hold") return true;
     from = Math.max(word.end, at + 1);
   }
   return false;
 }
 
-/** A base64 run that decodes to a private-key header, including one wrapped across lines or written on one line. */
+/**
+ * A base64 private key holds the move, including one wrapped across lines or written on one line. No line is skipped:
+ * a run that does not decode from its first character is still scanned, and a marker that does not decode holds.
+ */
 function decodedPemMatchesHeader(text: string): boolean {
+  const compact = text.replace(/[ \t\r\n\f\v]+/g, "");
+  const whole = runVerdict(compact);
+  if (whole === "private" || whole === "hold") return true;
+  const verdict = cachedVerdicts();
   const lines = text.split(/\r?\n/);
-  const inRun = new Set<number>();
-  for (const run of collectBase64Runs(lines)) {
-    if (decodedIsPrivateKey(run.compact)) return true;
-    for (let i = run.start; i < run.end; i += 1) inRun.add(i);
-  }
   for (let i = 0; i < lines.length; i += 1) {
-    if (inRun.has(i)) continue;
-    if (lineHoldsPrivateKey(lines[i] ?? "")) return true;
+    if (lineHoldsPrivateKey(lines[i] ?? "", verdict)) return true;
   }
   return false;
 }
 
 /** Replaces a one-line base64 private key. A word that is not a key is copied through, and the scan jumps past it. */
-function redactBase64Words(line: string): { text: string; count: number } {
+function redactBase64Words(line: string, verdict: (word: string) => KeyVerdict): { text: string; count: number } {
+  const find = markerFinder(line);
   let count = 0;
   let out = "";
   let cursor = 0;
   while (cursor < line.length) {
-    const at = markerIndex(line, cursor);
+    const at = find(cursor);
     if (at < 0) {
       out += line.slice(cursor);
       break;
     }
     const word = base64WordAt(line, at);
     const end = Math.max(word.end, at + 1);
-    if (decodedIsPrivateKey(line.slice(word.start, word.end))) {
+    const kind = verdict(line.slice(word.start, word.end));
+    if (kind === "private" || kind === "hold") {
       out += `${line.slice(cursor, word.start)}[secret removed]`;
       count += 1;
     } else {
@@ -496,12 +611,13 @@ function redactBase64Words(line: string): { text: string; count: number } {
 }
 
 /**
- * Replaces a base64 private key, including one wrapped across lines. A run that is not a key is copied once and the
- * scan jumps to the run's end, so a long file of ordinary base64 is not read again from every line.
+ * Replaces a base64 private key, including one wrapped across lines. A run that is not a key is still scanned line by
+ * line, so a key sharing its run with a label is not copied through.
  */
 function redactBase64Pem(text: string): { text: string; count: number } {
   const lines = text.split("\n");
   const runs = collectBase64Runs(lines);
+  const verdict = cachedVerdicts();
   let count = 0;
   const out: string[] = [];
   let index = 0;
@@ -509,12 +625,13 @@ function redactBase64Pem(text: string): { text: string; count: number } {
   while (index < lines.length) {
     const run = runs[runAt];
     if (run && run.start === index) {
-      if (decodedIsPrivateKey(run.compact)) {
+      const kind = runVerdict(run.compact);
+      if (kind === "private" || kind === "hold") {
         out.push("[secret removed]");
         count += 1;
       } else {
         for (let line = run.start; line < run.end; line += 1) {
-          const redacted = redactBase64Words(lines[line] ?? "");
+          const redacted = redactBase64Words(lines[line] ?? "", verdict);
           out.push(redacted.text);
           count += redacted.count;
         }
@@ -523,7 +640,7 @@ function redactBase64Pem(text: string): { text: string; count: number } {
       runAt += 1;
       continue;
     }
-    const redacted = redactBase64Words(lines[index] ?? "");
+    const redacted = redactBase64Words(lines[index] ?? "", verdict);
     out.push(redacted.text);
     count += redacted.count;
     index += 1;
