@@ -278,6 +278,18 @@ pub struct SessionUpsert {
     /// WP-111: after privacy is switched off, this message and everything before it stay unread.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub private_boundary_id: Option<String>,
+    /// WP-177: set only by one step of a chat move (freeze, thaw, release, incoming, discard, activate, abort). An ordinary
+    /// save leaves it out, and the guard then refuses any save that drops a freeze or changes where the chat is.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub teleport: Option<TeleportWrite>,
+}
+
+/// WP-177: the step a chat move takes with this write, so the guard can check it is that step's own change only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TeleportWrite {
+    pub move_id: String,
+    pub op: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -446,12 +458,19 @@ fn check_upsert(session: &SessionUpsert) -> Result<(), String> {
 
 #[tauri::command(async)]
 pub fn session_upsert(
+    app: AppHandle,
     store: State<'_, SessionStore>,
     session: SessionUpsert,
 ) -> Result<SessionSummary, String> {
     check_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    let moved = session.teleport.is_some();
+    let id = session.id.clone();
     let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
+    if moved {
+        // WP-177: every window replaces its copy of a chat a move just changed, and locks it if it is frozen or moved.
+        let _ = app.emit("teleport-row-changed", serde_json::json!({ "id": id }));
+    }
     Ok(summary)
 }
 
@@ -1830,6 +1849,168 @@ fn orchestration_summary(conn: &Connection, id: &str) -> rusqlite::Result<Option
     ))
 }
 
+const TELEPORT_CONFLICT: &str = "teleport-conflict";
+const TELEPORT_REFUSED: &str = "teleport-refused";
+
+fn blocks_of(value: &Value) -> &[Value] {
+    value.as_array().map(Vec::as_slice).unwrap_or(&[])
+}
+
+fn notice_of(block: &Value) -> &str {
+    block.get("notice").and_then(Value::as_str).unwrap_or("")
+}
+
+fn id_of(block: &Value) -> &str {
+    block.get("id").and_then(Value::as_str).unwrap_or("")
+}
+
+fn ids_with_notice(blocks: &Value, notice: &str) -> Vec<String> {
+    blocks_of(blocks)
+        .iter()
+        .filter(|block| notice_of(block) == notice)
+        .map(|block| id_of(block).to_string())
+        .collect()
+}
+
+/// Where the chat is away: the id of its latest move-away marker, when no move back came after it. None when it is here.
+fn moved_away(blocks: &Value) -> Option<String> {
+    for block in blocks_of(blocks).iter().rev() {
+        match notice_of(block) {
+            "teleported-back" => return None,
+            "teleported" => return Some(id_of(block).to_string()),
+            _ => {}
+        }
+    }
+    None
+}
+
+/// WP-177: the guard on every write of a chat's blocks. An ordinary save (an autosave, a quit, a stale window's copy) may
+/// not drop a freeze and may not change whether the chat is away, so an old copy cannot bring a moved chat back and a
+/// window cannot send from a chat another window froze. A move's own step is checked against the stored state: it may
+/// make only the change that step makes. A refusal names its reason with a prefix the webview reads.
+pub(crate) fn teleport_guard(
+    previous: &Value,
+    next: &Value,
+    write: Option<&TeleportWrite>,
+) -> Result<(), String> {
+    let stored_frozen = ids_with_notice(previous, "teleport-frozen");
+    let next_frozen = ids_with_notice(next, "teleport-frozen");
+    let stored_away = moved_away(previous);
+    let next_away = moved_away(next);
+    let Some(write) = write else {
+        if stored_frozen.iter().any(|id| !next_frozen.contains(id)) {
+            return Err(format!(
+                "{TELEPORT_REFUSED}: this save would drop a chat move's freeze, so it was refused"
+            ));
+        }
+        if stored_away != next_away {
+            return Err(format!(
+                "{TELEPORT_REFUSED}: this save would change whether the chat is on another machine, so it was refused"
+            ));
+        }
+        return Ok(());
+    };
+    let frozen_id = format!("teleport-frozen-{}", write.move_id);
+    let incoming_id = format!("teleport-incoming-{}", write.move_id);
+    let aborted_id = format!("teleport-aborted-{}", write.move_id);
+    let back_id = format!("teleported-back-{}", write.move_id);
+    let stored_incoming = ids_with_notice(previous, "teleport-incoming");
+    let next_incoming = ids_with_notice(next, "teleport-incoming");
+    let same_frozen = stored_frozen == next_frozen;
+    let refused = |what: &str| Err(format!("{TELEPORT_REFUSED}: {what}"));
+    let conflict = |what: &str| Err(format!("{TELEPORT_CONFLICT}: {what}"));
+    match write.op.as_str() {
+        "freeze" => {
+            if !stored_frozen.is_empty() || stored_away.is_some() {
+                return conflict("another move or a resume already holds this chat");
+            }
+            if next_frozen != [frozen_id] || next_away.is_some() {
+                return refused("a freeze must only add its own freeze");
+            }
+            Ok(())
+        }
+        "thaw" => {
+            let expected: Vec<String> = stored_frozen
+                .iter()
+                .filter(|id| **id != frozen_id)
+                .cloned()
+                .collect();
+            if next_frozen != expected || next_away != stored_away {
+                return refused("a thaw must only remove its own freeze");
+            }
+            Ok(())
+        }
+        "release" => {
+            if !stored_frozen.contains(&frozen_id) || stored_away.is_some() {
+                return conflict("this move did not freeze the chat");
+            }
+            if !next_frozen.is_empty() || next_away.is_none() {
+                return refused("a release must drop the freeze and mark the chat moved");
+            }
+            Ok(())
+        }
+        "incoming" => {
+            if stored_away.is_none() {
+                return conflict(
+                    "this chat is not moved away from here, so a copy would overwrite live work",
+                );
+            }
+            if stored_incoming.iter().any(|id| *id != incoming_id) {
+                return conflict("another move's copy is already stored for this chat");
+            }
+            if !next_incoming.contains(&incoming_id) || !same_frozen || next_away != stored_away {
+                return refused("a copy must only add its own incoming block");
+            }
+            Ok(())
+        }
+        "discard" => {
+            let expected: Vec<String> = stored_incoming
+                .iter()
+                .filter(|id| **id != incoming_id)
+                .cloned()
+                .collect();
+            if next_incoming != expected || !same_frozen || next_away != stored_away {
+                return refused("a discard must only remove its own copy");
+            }
+            Ok(())
+        }
+        "activate" => {
+            if !stored_incoming.contains(&incoming_id) || stored_away.is_none() {
+                return conflict("no copy of this chat is stored here to open");
+            }
+            let returned = blocks_of(next).iter().any(|block| id_of(block) == back_id);
+            if !returned
+                || next_incoming.contains(&incoming_id)
+                || next_away.is_some()
+                || !same_frozen
+            {
+                return refused("opening a copy must mark the chat back here and drop its copy");
+            }
+            Ok(())
+        }
+        "abort" => {
+            if blocks_of(previous)
+                .iter()
+                .any(|block| id_of(block) == back_id)
+            {
+                return conflict("this copy was already opened here");
+            }
+            let aborted = blocks_of(next)
+                .iter()
+                .any(|block| id_of(block) == aborted_id);
+            if !aborted
+                || next_incoming.contains(&incoming_id)
+                || !same_frozen
+                || next_away != stored_away
+            {
+                return refused("an abort must refuse its own move and drop its own copy");
+            }
+            Ok(())
+        }
+        _ => refused("this chat move step is not known"),
+    }
+}
+
 pub(crate) fn upsert_session(
     conn: &Connection,
     session: &SessionUpsert,
@@ -1847,6 +2028,10 @@ pub(crate) fn upsert_session(
     let previous_blocks: Option<Value> = existing
         .as_ref()
         .and_then(|(_, _, raw, _, _, _)| serde_json::from_str(raw).ok());
+    if let Some(previous) = &previous_blocks {
+        teleport_guard(previous, &session.blocks, session.teleport.as_ref())
+            .map_err(|message| rusqlite::Error::ToSqlConversionFailure(message.into()))?;
+    }
     let blocks = crate::artifacts::retain_existing_cards(conn, &session.blocks)?;
     // Loaded transcripts omit large tool output; never let a save erase it.
     let blocks = match &previous_blocks {
@@ -3180,6 +3365,7 @@ mod tests {
             goal: None,
             private_chat: false,
             private_boundary_id: None,
+            teleport: None,
         }
     }
 
@@ -5268,5 +5454,217 @@ mod tests {
         .unwrap();
         assert!(result.hits.is_empty());
         assert!(!result.truncated);
+    }
+}
+
+/// WP-177: the persisted guard on a chat's blocks. Each case goes through the real upsert, so a stale copy is refused by
+/// the stored row, not by any window's memory.
+#[cfg(test)]
+mod teleport_guard_tests {
+    use super::*;
+
+    fn chat(blocks: Value) -> SessionUpsert {
+        serde_json::from_value(json!({
+            "id": "chat-1",
+            "cwd": "/tmp/teleport-guard",
+            "harness": "claude",
+            "model": "model",
+            "modelSettings": { "effort": "high" },
+            "runtimeMode": "default",
+            "title": "Guarded",
+            "providerSessionId": "provider-1",
+            "blocks": blocks,
+        }))
+        .unwrap()
+    }
+
+    fn base() -> Vec<Value> {
+        vec![
+            json!({ "id": "u1", "role": "user", "text": "keep this" }),
+            json!({ "id": "a1", "role": "assistant", "text": "kept" }),
+        ]
+    }
+
+    fn with(extra: Vec<Value>) -> Value {
+        let mut blocks = base();
+        blocks.extend(extra);
+        Value::Array(blocks)
+    }
+
+    fn frozen(move_id: &str) -> Value {
+        json!({ "id": format!("teleport-frozen-{move_id}"), "role": "system", "text": "{}", "notice": "teleport-frozen" })
+    }
+
+    fn moved_away(at: f64) -> Value {
+        json!({ "id": format!("teleported@host-a@{at}"), "role": "system", "text": "Moved to Studio box", "notice": "teleported", "startedAt": at })
+    }
+
+    fn moved_back(move_id: &str, at: f64) -> Value {
+        json!({ "id": format!("teleported-back-{move_id}"), "role": "system", "text": "Moved back to this Mac", "notice": "teleported-back", "startedAt": at })
+    }
+
+    fn incoming(move_id: &str) -> Value {
+        json!({ "id": format!("teleport-incoming-{move_id}"), "role": "system", "text": "{}", "notice": "teleport-incoming" })
+    }
+
+    fn step(
+        conn: &Connection,
+        blocks: Value,
+        move_id: &str,
+        op: &str,
+    ) -> rusqlite::Result<SessionSummary> {
+        let mut session = chat(blocks);
+        session.teleport = Some(TeleportWrite {
+            move_id: move_id.into(),
+            op: op.into(),
+        });
+        upsert_session(conn, &session)
+    }
+
+    fn save(conn: &Connection, blocks: Value) -> rusqlite::Result<SessionSummary> {
+        upsert_session(conn, &chat(blocks))
+    }
+
+    fn refused(error: rusqlite::Error) -> bool {
+        error.to_string().starts_with("teleport-refused")
+    }
+
+    fn conflict(error: rusqlite::Error) -> bool {
+        error.to_string().starts_with("teleport-conflict")
+    }
+
+    #[test]
+    fn an_ordinary_save_cannot_drop_a_freeze() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        // A window whose copy predates the freeze writes the chat: refused, and the freeze stays.
+        assert!(refused(save(&conn, Value::Array(base())).unwrap_err()));
+        let row = get_session(&conn, "chat-1").unwrap().unwrap();
+        assert!(blocks_of(&row.blocks)
+            .iter()
+            .any(|b| b.get("notice") == Some(&json!("teleport-frozen"))));
+    }
+
+    #[test]
+    fn a_second_freeze_is_a_conflict_not_a_second_hold() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        assert!(conflict(
+            step(
+                &conn,
+                with(vec![frozen("m1"), frozen("m2")]),
+                "m2",
+                "freeze"
+            )
+            .unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn a_moved_chat_refuses_a_pre_move_copy_and_keeps_its_marker() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
+        assert!(refused(save(&conn, Value::Array(base())).unwrap_err()));
+        // The marker itself is an ordinary save the row accepts.
+        save(&conn, with(vec![moved_away(1000.0)])).unwrap();
+    }
+
+    #[test]
+    fn a_thaw_removes_only_its_own_freeze() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        // Another move's thaw cannot clear this move's freeze.
+        assert!(refused(
+            step(&conn, Value::Array(base()), "m2", "thaw").unwrap_err()
+        ));
+        step(&conn, Value::Array(base()), "m1", "thaw").unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+    }
+
+    #[test]
+    fn a_move_back_then_a_later_move_refuses_the_old_copy() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
+        // The host sends the copy back: stored as incoming, then opened here.
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), incoming("m2")]),
+            "m2",
+            "incoming",
+        )
+        .unwrap();
+        step(
+            &conn,
+            with(vec![moved_back("m2", 2000.0)]),
+            "m2",
+            "activate",
+        )
+        .unwrap();
+        // The chat runs here, then moves away again.
+        save(&conn, with(vec![moved_back("m2", 2000.0)])).unwrap();
+        step(
+            &conn,
+            with(vec![moved_back("m2", 2000.0), frozen("m3")]),
+            "m3",
+            "freeze",
+        )
+        .unwrap();
+        step(
+            &conn,
+            with(vec![moved_back("m2", 2000.0), moved_away(3000.0)]),
+            "m3",
+            "release",
+        )
+        .unwrap();
+        // The copy App held before the second move still says it is back here: refused, not resurrected.
+        assert!(refused(
+            save(&conn, with(vec![moved_back("m2", 2000.0)])).unwrap_err()
+        ));
+    }
+
+    #[test]
+    fn an_abort_refuses_its_move_and_drops_its_copy_only() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        save(&conn, Value::Array(base())).unwrap();
+        step(&conn, with(vec![frozen("m1")]), "m1", "freeze").unwrap();
+        step(&conn, with(vec![moved_away(1000.0)]), "m1", "release").unwrap();
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), incoming("m2")]),
+            "m2",
+            "incoming",
+        )
+        .unwrap();
+        let aborted = json!({ "id": "teleport-aborted-m2", "role": "system", "text": "", "notice": "teleport-aborted" });
+        step(
+            &conn,
+            with(vec![moved_away(1000.0), aborted.clone()]),
+            "m2",
+            "abort",
+        )
+        .unwrap();
+        // Once aborted, the same move cannot open its copy.
+        assert!(conflict(
+            step(
+                &conn,
+                with(vec![moved_away(1000.0), aborted]),
+                "m2",
+                "activate"
+            )
+            .unwrap_err()
+        ));
     }
 }

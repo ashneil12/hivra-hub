@@ -51,6 +51,7 @@ export function moveResultMessage(result: { status: string; message?: string }):
     case "unknown":
       return "The result is unknown: the host may already have the chat. The chat stays locked here until it is checked. Retry to check.";
     case "failed":
+    case "recovered":
       return `The move did not finish, and the chat stayed where it was. ${result.message ?? ""}`.trim();
     case "refused":
       return result.message ?? "The move was refused. Nothing was sent.";

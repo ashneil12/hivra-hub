@@ -400,6 +400,7 @@ fn supported_remote_method(method: &str) -> bool {
             | "teleport.activate"
             | "teleport.release"
             | "teleport.holds"
+            | "teleport.abort"
     )
 }
 
@@ -713,6 +714,7 @@ mod tests {
             "teleport.activate",
             "teleport.release",
             "teleport.holds",
+            "teleport.abort",
         ] {
             assert!(
                 supported_remote_method(method),

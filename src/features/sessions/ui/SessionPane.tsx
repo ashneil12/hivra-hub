@@ -1,7 +1,7 @@
 import { TeleportHeaderBand } from "../../connections/ui/TeleportNotice";
 import { AppTeleportPanel } from "../../connections/ui/TeleportMovePanel";
-import { teleportStateOf } from "../../connections/model/teleportState";
-import { syncTeleportLock } from "../../connections/model/teleportLock";
+import { chatLocked, teleportStateOf } from "../../connections/model/teleportState";
+import { isChatLocked, syncTeleportLock } from "../../connections/model/teleportLock";
 import { GripVertical, X } from "../../../shared/ui/icons";
 import type { LayoutNode, SplitDir } from "../../workspace/model/layout";
 import { PaneSplitButtons, PaneSplitCorner } from "../../workspace/ui/PaneSplitButtons";
@@ -758,10 +758,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
     : session.busy && cannotRedirect
       ? cantRedirectTurn(session.harness)
       : undefined;
+  // WP-177: a chat frozen by a move, or moved away, takes no message here (the composer is disabled, not just refused).
+  const teleportComposerLocked = chatLocked(session) || isChatLocked(session.id);
   const composer = (
     <Composer
       key={session.id}
-      disabled={workspaceSwitchingSessionId === session.id}
+      disabled={workspaceSwitchingSessionId === session.id || teleportComposerLocked}
       remoteSession={remoteSession}
       remoteFeatures={remoteFeatures}
       allowedModelHarnesses={allowedModelHarnesses}

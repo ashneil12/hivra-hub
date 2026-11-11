@@ -47,6 +47,17 @@ interface StoredChat {
   frozenBy: string | null;
   frozenDevice: string | null;
   frozenTo: string | null;
+  /** M1: the move ids this host refused for good. A late copy or activation of one of them is turned away. */
+  aborted?: string[];
+}
+
+/**
+ * The host's session list as the copy lands in it (H4). A copy the host activated is a real session the desktop can open
+ * and use before the source releases it; a released copy is archived here, because the chat lives on the Mac again.
+ */
+export interface HostChatSessions {
+  open(chat: TransferChat, moveId: string): void;
+  close(chatId: string): void;
 }
 
 export interface HostTeleportOptions {
@@ -57,6 +68,8 @@ export interface HostTeleportOptions {
   providers: readonly string[];
   /** The WP-60 lease root (the first-mate lease folder). Chat leases are taken there, not beside the chats. */
   leaseRoot: string;
+  /** The host's session list. Without it a copy stays in the teleport store only (tests). */
+  sessions?: HostChatSessions;
   now?: () => number;
   leaseMs?: number;
 }
@@ -178,6 +191,7 @@ export class HostTeleportStore {
       throw new Error("The move names another chat than the one being received");
     }
     const stored = this.load(chatId);
+    if (stored?.aborted?.includes(moveId)) throw new Error("This move was refused here, so its copy is turned away");
     const chat = pick(payload.chat);
     if (stored?.incoming?.moveId === moveId) {
       // A repeat reports the stored copy's hash, never the hash of a payload that arrived this time.
@@ -201,6 +215,7 @@ export class HostTeleportStore {
       frozenBy: null,
       frozenDevice: null,
       frozenTo: null,
+      aborted: stored?.aborted,
     });
     return { ok: true, transcriptSha256: sha256(chat.transcript) };
   }
@@ -220,6 +235,9 @@ export class HostTeleportStore {
     }
     if (stored.incoming.device !== device) throw new Error("This move was started by another device");
     if (stored.incoming.expiresAt <= this.now()) throw new Error("The copy's lease expired before it was opened");
+    // H4: the copy becomes a real session the desktop can open and use. If the session cannot be made, nothing is
+    // activated, and the source's recovery refuses this move.
+    this.options.sessions?.open(stored.incoming.payload, moveId);
     this.save(chatId, {
       owner: this.options.selfId,
       device,
@@ -229,8 +247,38 @@ export class HostTeleportStore {
       frozenBy: null,
       frozenDevice: null,
       frozenTo: null,
+      aborted: stored.aborted,
     });
     this.releaseLease(chatId);
+  }
+
+  /**
+   * M1: the atomic answer the source asks for when a move will not complete. A copy this move opened is "live". Otherwise
+   * the move id is refused for good (a late copy or activation of it is turned away), any copy it stored is dropped, and
+   * the source may thaw. A chat this host holds for another device is not touched.
+   */
+  async abort(chatId: string, moveId: string, device: string): Promise<"aborted" | "live"> {
+    const stored = this.load(chatId);
+    if (stored && stored.device !== null && stored.device !== device) throw new Error("This chat belongs to another device");
+    if (stored?.activatedBy === moveId && stored.owner === this.options.selfId) return "live";
+    const base: StoredChat = stored ?? {
+      owner: null,
+      device: null,
+      live: null,
+      incoming: null,
+      activatedBy: null,
+      frozenBy: null,
+      frozenDevice: null,
+      frozenTo: null,
+    };
+    if (base.incoming?.moveId === moveId) this.releaseLease(chatId);
+    const aborted = [...(base.aborted ?? []).filter((id) => id !== moveId), moveId].slice(-200);
+    this.save(chatId, {
+      ...base,
+      incoming: base.incoming?.moveId === moveId ? null : base.incoming,
+      aborted,
+    });
+    return "aborted";
   }
 
   async release(chatId: string, moveId: string, to: string, device: string): Promise<void> {
@@ -239,5 +287,7 @@ export class HostTeleportStore {
     if (stored.frozenDevice !== device) throw new Error("This move was started by another device");
     if (stored.frozenTo !== to) throw new Error("The release names a destination other than the one the move froze for");
     this.save(chatId, { ...stored, owner: to, device: null, live: null, frozenBy: null, frozenDevice: null, frozenTo: null, activatedBy: null });
+    // The chat lives on the Mac again, so the host's copy is archived, not run.
+    this.options.sessions?.close(chatId);
   }
 }

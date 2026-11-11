@@ -33,6 +33,7 @@ export function sshMoveEndpoint(machineId: string, call: HostCall, environmentId
     discard: async (chatId, moveId) => {
       await call("teleport.discard", { chatId, moveId });
     },
+    abort: async (chatId, moveId) => (await call("teleport.abort", { chatId, moveId })) as "aborted" | "live",
     activate: async (chatId, moveId) => {
       await call("teleport.activate", { chatId, moveId });
     },

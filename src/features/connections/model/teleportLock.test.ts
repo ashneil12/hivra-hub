@@ -31,11 +31,15 @@ describe("WP-177 the lock follows the saved chat, so a restart keeps it", () => 
     expect(() => assertChatAcceptsTurns("chat-restart")).toThrow(/Nothing was sent/);
   });
 
-  it("a saved chat frozen by a move that never finished locks too, and a clean chat unlocks", async () => {
+  it("a saved chat frozen by a move that never finished locks too, and only a settle unlocks it", async () => {
     const { syncTeleportLock } = await import("./teleportLock");
     syncTeleportLock({ id: "chat-frozen", blocks: [{ id: "teleport-frozen-m9", role: "system", text: "", notice: "teleport-frozen" }] } as never);
     expect(isChatLocked("chat-frozen")).toBe(true);
+    // H1: a render sync never unlocks: the lock is released only by the move's own steps.
     syncTeleportLock({ id: "chat-frozen", blocks: [] } as never);
+    expect(isChatLocked("chat-frozen")).toBe(true);
+    const { settleTeleportLock } = await import("./teleportLock");
+    settleTeleportLock({ id: "chat-frozen", blocks: [] } as never);
     expect(isChatLocked("chat-frozen")).toBe(false);
   });
 });

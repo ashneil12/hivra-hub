@@ -25,10 +25,19 @@ export function assertChatAcceptsTurns(chatId: string): void {
 }
 
 /**
- * Sets or clears the lock from a saved chat: a moved chat, or one frozen by a move that never finished, is locked
- * whatever this process did before. Called whenever a chat is read from the store, so a restart keeps the lock.
+ * Locks a chat that the saved row shows as frozen or moved, whatever this process did before. It never unlocks: a render
+ * or a read of a stale copy must not reopen a chat a move froze (H1). Only the move's own steps unlock, and a restart
+ * starts with no lock, so the saved row locks it again on the first read.
  */
 export function syncTeleportLock(session: { id: string; blocks: readonly { id: string; notice?: string }[] }): void {
+  if (chatLockedFromBlocks(session.blocks as never)) lockChat(session.id);
+}
+
+/**
+ * Sets the lock to match a saved row exactly. Used only when a window hears that the store changed the row (H2): a window
+ * that never saw the move must lock, and one whose chat came back must unlock.
+ */
+export function settleTeleportLock(session: { id: string; blocks: readonly { id: string; notice?: string }[] }): void {
   if (chatLockedFromBlocks(session.blocks as never)) lockChat(session.id);
   else unlockChat(session.id);
 }

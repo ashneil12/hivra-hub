@@ -1,7 +1,9 @@
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
 import { applyTeleportRow } from "./model/teleportSessionState";
-import { launchRecovery } from "../features/connections/model/teleportMove";
+import { launchRecovery, needsAnotherPass } from "../features/connections/model/teleportMove";
+import { settleTeleportLock } from "../features/connections/model/teleportLock";
+import { WINDOW_OWNER } from "../features/connections/model/teleportLocal";
 import { teleportStateOf } from "../features/connections/model/teleportState";
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
 import { TerminalMirrorPane } from "../features/terminalMirror/ui/TerminalMirrorPane";
@@ -3554,12 +3556,46 @@ function Workspace({
       .listProjects()
       .map((project) => project.folder ?? "")
       .filter((folder) => folder.trim() !== "");
-    void launchRecovery([...sessions.map((session) => session.cwd), ...knownFolders], {
-      onRow: (row) => {
-        applyTeleportRow(sessionsRef, setSessions, row);
-      },
-    }).catch(() => undefined);
+    // A move that is unfinished (a host offline, a young freeze, an unknown result) gets another pass, and the window
+    // tries again when the network comes back.
+    const RECOVERY_RETRY_MS = 30_000;
+    const RECOVERY_PASSES = 10;
+    const folders = [...sessions.map((session) => session.cwd), ...knownFolders];
+    const attempt = (passesLeft: number) => {
+      void launchRecovery(folders, {
+        owner: WINDOW_OWNER,
+        onRow: (row) => {
+          applyTeleportRow(sessionsRef, setSessions, row);
+        },
+      })
+        .then((lines) => {
+          if (passesLeft > 0 && needsAnotherPass(lines)) window.setTimeout(() => attempt(passesLeft - 1), RECOVERY_RETRY_MS);
+        })
+        .catch(() => {
+          if (passesLeft > 0) window.setTimeout(() => attempt(passesLeft - 1), RECOVERY_RETRY_MS);
+        });
+    };
+    attempt(RECOVERY_PASSES);
+    window.addEventListener("online", () => attempt(RECOVERY_PASSES));
   }, [sessions]);
+  // WP-177: a chat move in another window changed a row this window holds. Take the stored row, and lock or unlock to match
+  // it, so a window that never saw the move cannot send from the chat (H2).
+  useEffect(() => {
+    const listening = listen<{ id: string }>("teleport-row-changed", (event) => {
+      const id = event.payload?.id;
+      if (!id) return;
+      void getSession(id)
+        .then((row) => {
+          if (!row) return;
+          settleTeleportLock(row);
+          applyTeleportRow(sessionsRef, setSessions, row);
+        })
+        .catch(() => undefined);
+    });
+    return () => {
+      void listening.then((unlisten) => unlisten());
+    };
+  }, []);
   const openForkedSession = useCallback(
     (session: Session) => {
       updateSessionState(sessionsRef, setSessions, (sessions) =>

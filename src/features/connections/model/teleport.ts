@@ -97,6 +97,12 @@ export interface MoveEndpoint {
   receive(chatId: string, moveId: string, payload: MovePayload): Promise<ReceiveReply>;
   /** Remove an incoming copy this move stored. Nothing else is touched. */
   discard(chatId: string, moveId: string): Promise<void>;
+  /**
+   * The target's atomic answer for a move that will not complete (M1). It either drops the move's incoming copy and
+   * refuses this move id from now on, so a late copy or activation of it is turned away (returns "aborted"), or, when
+   * it already opened the copy, reports "live". Only "aborted" lets the source thaw its freeze.
+   */
+  abort(chatId: string, moveId: string): Promise<"aborted" | "live">;
   /** Turn the incoming copy into the live one, owned here. Throws when there is no copy. Idempotent for this move. */
   activate(chatId: string, moveId: string): Promise<void>;
   /** Drop this machine's transcript and record the new owner. Only after the target activated. */
@@ -450,6 +456,29 @@ function failed(stage: MoveStage, chatStayedOn: string, error: unknown): MoveRes
 }
 
 /**
+ * Asks the target to refuse the move for good, then lets the source thaw only if the target answered "aborted" (M1). The
+ * target's answer is atomic, so a copy it opened in the meantime is never thawed here: "live" and "unknown" both leave
+ * the source frozen, and recoverMove settles the move once the target can be asked.
+ */
+async function refuseOnTarget(from: MoveEndpoint, to: MoveEndpoint, chatId: string, moveId: string): Promise<"aborted" | "live" | "unknown"> {
+  let answer: "aborted" | "live";
+  try {
+    answer = await to.abort(chatId, moveId);
+  } catch {
+    return "unknown";
+  }
+  if (answer === "aborted") {
+    try {
+      await from.thaw(chatId, moveId);
+    } catch {
+      // The chat stays frozen here, which is safe: recovery thaws it later.
+      return "unknown";
+    }
+  }
+  return answer;
+}
+
+/**
  * Hand a chat from one machine to the other, in the order the module comment gives. Every result except "partial"
  * leaves the chat live on exactly one machine. "partial" means the target has the chat and the source still holds its
  * transcript; completeMove finishes it.
@@ -526,25 +555,29 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
     return failed("manifest", from.id, error);
   }
 
+  // Every failure after the target was asked goes through its atomic abort (M1): the target answers for this move id, and
+  // only "aborted" lets the source thaw. A target that cannot answer leaves the chat frozen here, as "unknown".
+  const unknownAfter = (message: string): MoveResult => ({ status: "unknown", chatId, to: to.id, moveId, message });
   let received: ReceiveReply;
   try {
     received = await to.receive(chatId, moveId, payload);
   } catch (error) {
-    await to.discard(chatId, moveId).catch(noop);
-    await undoFreeze();
+    const answer = await refuseOnTarget(from, to, chatId, moveId);
+    if (answer !== "aborted") return unknownAfter(error instanceof Error ? error.message : String(error));
     return failed("receive", from.id, error);
   }
   if (!received.ok) {
-    await undoFreeze();
+    const answer = await refuseOnTarget(from, to, chatId, moveId);
+    if (answer !== "aborted") return unknownAfter("The other machine did not answer the move's copy step.");
     return refuse("held-elsewhere", "Another move or a resume already holds this chat. Its result shows when it finishes.");
   }
   if (received.transcriptSha256 !== payload.manifest.transcriptSha256) {
-    await to.discard(chatId, moveId).catch(noop);
-    await undoFreeze();
+    const answer = await refuseOnTarget(from, to, chatId, moveId);
+    if (answer !== "aborted") return unknownAfter("The other machine did not answer the transcript check.");
     return failed("verify", from.id, new Error("The copy on the other machine does not match the transcript. Nothing moved."));
   }
 
-  // The target activates before the source lets go. If activation fails, the copy is discarded and the chat stays here.
+  // The target activates before the source lets go. If activation fails, the target refuses the move and the chat stays here.
   try {
     await to.activate(chatId, moveId);
   } catch (error) {
@@ -554,17 +587,11 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
     try {
       held = await to.holds(chatId, moveId);
     } catch (holdsError) {
-      return {
-        status: "unknown",
-        chatId,
-        to: to.id,
-        moveId,
-        message: holdsError instanceof Error ? holdsError.message : String(holdsError),
-      };
+      return unknownAfter(holdsError instanceof Error ? holdsError.message : String(holdsError));
     }
     if (held !== "live") {
-      await to.discard(chatId, moveId).catch(noop);
-      await undoFreeze();
+      const answer = await refuseOnTarget(from, to, chatId, moveId);
+      if (answer !== "aborted") return unknownAfter(error instanceof Error ? error.message : String(error));
       return failed("activate", from.id, error);
     }
   }
@@ -591,9 +618,28 @@ export async function moveChat(input: MoveInput): Promise<MoveResult> {
  */
 export async function recoverMove(input: { chatId: string; moveId: string; from: MoveEndpoint; to: MoveEndpoint }): Promise<MoveResult> {
   const { chatId, moveId, from, to } = input;
-  const hold = await to.holds(chatId, moveId);
-  if (hold === "live") {
-    const record = await from.read(chatId);
+  const unknown = (error: unknown): MoveResult => ({
+    status: "unknown",
+    chatId,
+    to: to.id,
+    moveId,
+    message: error instanceof Error ? error.message : String(error),
+  });
+  // The target decides, atomically (M1): a copy it opened completes the move; otherwise it refuses this move id for good,
+  // and only then does the source thaw. A target that cannot be asked leaves the chat frozen until it can.
+  let answer: "aborted" | "live";
+  try {
+    answer = await to.abort(chatId, moveId);
+  } catch (error) {
+    return unknown(error);
+  }
+  if (answer === "live") {
+    let record: ChatRecord | null;
+    try {
+      record = await from.read(chatId);
+    } catch (error) {
+      return unknown(error);
+    }
     if (record?.live) {
       try {
         await from.release(chatId, moveId, to.id);
@@ -603,8 +649,11 @@ export async function recoverMove(input: { chatId: string; moveId: string; from:
     }
     return { status: "moved", chatId, to: to.id, from: from.id };
   }
-  if (hold === "incoming") await to.discard(chatId, moveId).catch(noop);
-  await from.thaw(chatId, moveId).catch(noop);
+  try {
+    await from.thaw(chatId, moveId);
+  } catch (error) {
+    return unknown(error);
+  }
   return { status: "recovered", chatId, chatStayedOn: from.id };
 }
 

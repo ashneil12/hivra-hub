@@ -232,7 +232,7 @@ describe("WP-177 MEDIUM C: what a freeze saves, and what it does to the lock", (
     const { savedFreezes } = await import("./teleportState");
     const port = memoryPort([session()]);
     await localMoveEndpoint({ machineId: "this-mac", port }).freeze(CHAT, "m-peer", HOST);
-    expect(savedFreezes(port.all()[0])).toEqual([{ moveId: "m-peer", peer: HOST }]);
+    expect(savedFreezes(port.all()[0])).toMatchObject([{ moveId: "m-peer", peer: HOST }]);
   });
 
   it("a freeze locks the chat at once, and a thaw that leaves nothing frozen unlocks it", async () => {

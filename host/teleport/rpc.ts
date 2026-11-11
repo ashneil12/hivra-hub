@@ -14,6 +14,7 @@ const TELEPORT_METHODS = [
   "teleport.activate",
   "teleport.release",
   "teleport.holds",
+  "teleport.abort",
 ] as const;
 
 export type TeleportMethod = (typeof TELEPORT_METHODS)[number];
@@ -47,7 +48,7 @@ export async function teleportRpc(
   method: string,
   params: Record<string, unknown>,
   device: string,
-): Promise<ChatRecord | boolean | CanResume | ReceiveReply | Holds | { ok: true } | null> {
+): Promise<ChatRecord | boolean | CanResume | ReceiveReply | Holds | "aborted" | "live" | { ok: true } | null> {
   if (!isTeleportMethod(method)) throw new Error("Unsupported teleport operation");
   if (!device) throw new Error("A teleport call needs the paired device that makes it");
   switch (method) {
@@ -70,6 +71,8 @@ export async function teleportRpc(
       return { ok: true };
     case "teleport.holds":
       return store.holds(chatId(params), text(params, "moveId", "move id"), device);
+    case "teleport.abort":
+      return store.abort(chatId(params), text(params, "moveId", "move id"), device);
     case "teleport.release":
       await store.release(chatId(params), text(params, "moveId", "move id"), text(params, "to", "destination"), device);
       return { ok: true };

@@ -48,6 +48,7 @@ import {
   writeHostFile,
 } from "./workspace";
 import { WorkspaceCommands } from "./workspace-commands";
+import { hostChatSessions } from "./teleport/sessions";
 import { discoverCodexModels } from "../src/integrations/harness/providers/codex/codexCatalog";
 import { discoverClaudeModels } from "../src/integrations/harness/providers/claude/claudeCatalog";
 import { discoverCursorModels } from "../src/integrations/harness/providers/cursor/cursorCatalog";
@@ -157,6 +158,8 @@ export function createHostServer(
     providers,
     // The WP-60 lease root: the first mate's leases, so one place holds every host lease.
     leaseRoot: join(dirname(engine.store.attachmentDir), "firstmate-leases"),
+    // H4: a copy this host activates is a real session in its own session list.
+    sessions: hostChatSessions(engine.store),
   });
   const workspace = new WorkspaceCommands(
     engine.store,

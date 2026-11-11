@@ -147,6 +147,7 @@ class StubMachine implements MoveEndpoint {
   async receive(chatId: string, moveId: string, payload: MovePayload) {
     this.onReceive?.();
     if (this.fail.receive) throw new Error(this.fail.receive);
+    if (this.refused.has(moveId)) throw new Error("This move was refused here");
     if (payload.chat.chatId !== chatId) throw new Error("The move names a different chat");
     if (!this.leases.acquire(chatId, moveId)) return { ok: false as const, reason: "held" as const };
     this.payloads.push(payload);
@@ -159,6 +160,19 @@ class StubMachine implements MoveEndpoint {
     if (this.incoming.get(chatId)?.moveId !== moveId) return;
     this.incoming.delete(chatId);
     this.leases.release(chatId, moveId);
+  }
+
+  readonly refused = new Set<string>();
+
+  /** M1: a live copy answers "live"; otherwise this move id is refused for good and any copy it stored is dropped. */
+  async abort(chatId: string, moveId: string): Promise<"aborted" | "live"> {
+    if (this.activatedBy.get(chatId) === moveId) return "live";
+    this.refused.add(moveId);
+    if (this.incoming.get(chatId)?.moveId === moveId) {
+      this.incoming.delete(chatId);
+      this.leases.release(chatId, moveId);
+    }
+    return "aborted";
   }
 
   async activate(chatId: string, moveId: string): Promise<void> {

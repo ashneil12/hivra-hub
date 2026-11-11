@@ -71,29 +71,73 @@ export function copyForMoved(host: string, time: string): string {
   return `Moved to ${host}, ${time}. It continues in a fresh session there, started from the saved messages.`;
 }
 
-/** The saved notice a move leaves while it freezes this chat. It lives in the chat, so a restart still sees it. */
-export function frozenBlock(moveId: string, peer: string): Block {
-  return { id: `teleport-frozen-${moveId}`, role: "system", text: JSON.stringify({ peer }), notice: "teleport-frozen" } as unknown as Block;
+/**
+ * The saved notice a move leaves while it freezes this chat. It lives in the chat, so a restart still sees it. The text
+ * names the machine the move is for, the window that froze the chat (its owner) and when (M1): recovery skips a young
+ * freeze and never thaws another window's move.
+ */
+export function frozenBlock(moveId: string, peer: string, owner = "", at = new Date().toISOString()): Block {
+  return { id: `teleport-frozen-${moveId}`, role: "system", text: JSON.stringify({ peer, owner, at }), notice: "teleport-frozen" } as unknown as Block;
 }
 
-/** The freezes saved in a chat, each with the machine it is for. A restart uses them to finish or undo a move. */
-export function savedFreezes(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string }> {
+function parseText(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text) as unknown;
+    return value && typeof value === "object" ? (value as Record<string, unknown>) : {};
+  } catch {
+    return {};
+  }
+}
+
+function asText(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+/** The freezes saved in a chat, each with the machine it is for, its owner window and its start. A restart uses them. */
+export function savedFreezes(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string; owner: string; at: number }> {
   return session.blocks
     .filter((b) => b.notice === "teleport-frozen")
     .map((b) => {
-      let peer = "";
-      try {
-        peer = String((JSON.parse(b.text) as { peer?: unknown }).peer ?? "");
-      } catch {
-        peer = "";
-      }
-      return { moveId: b.id.replace(/^teleport-frozen-/, ""), peer };
+      const meta = parseText(b.text);
+      return {
+        moveId: b.id.replace(/^teleport-frozen-/, ""),
+        peer: asText(meta.peer),
+        owner: asText(meta.owner),
+        at: Date.parse(asText(meta.at)) || 0,
+      };
     });
 }
 
-/** The saved notice that carries a moved copy until it is activated here. */
-export function incomingBlock(moveId: string, chatJson: string): Block {
-  return { id: `teleport-incoming-${moveId}`, role: "system", text: chatJson, notice: "teleport-incoming" } as unknown as Block;
+/** The saved notice that carries a moved copy until it is activated here. The text names the machine that sent it. */
+export function incomingBlock(moveId: string, peer: string, chatJson: string, at = Date.now()): Block {
+  return { id: `teleport-incoming-${moveId}`, role: "system", text: JSON.stringify({ peer, chat: chatJson, at }), notice: "teleport-incoming" } as unknown as Block;
+}
+
+/** The copies stored here, each with the machine that sent it, its chat JSON and when it arrived. */
+export function savedIncoming(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string; chat: string; at: number }> {
+  return session.blocks
+    .filter((b) => b.notice === "teleport-incoming")
+    .map((b) => {
+      const meta = parseText(b.text);
+      return { moveId: b.id.replace(/^teleport-incoming-/, ""), peer: asText(meta.peer), chat: asText(meta.chat), at: typeof meta.at === "number" ? meta.at : 0 };
+    });
+}
+
+/** The notice a move leaves here when this machine refuses that move id for good: a late copy of it is refused. */
+export function abortedBlock(moveId: string, peer = ""): Block {
+  return { id: `teleport-aborted-${moveId}`, role: "system", text: JSON.stringify({ peer }), notice: "teleport-aborted" } as unknown as Block;
+}
+
+/** The refused moves saved here, each with the machine the move was from or to: recovery tells that machine to thaw. */
+export function savedAborted(session: Pick<Session, "blocks">): Array<{ moveId: string; peer: string }> {
+  return session.blocks
+    .filter((b) => b.notice === "teleport-aborted")
+    .map((b) => ({ moveId: b.id.replace(/^teleport-aborted-/, ""), peer: asText(parseText(b.text).peer) }));
+}
+
+/** The move ids this machine has refused for good. */
+export function abortedMoves(blocks: Block[]): string[] {
+  return blocks.filter((b) => b.notice === "teleport-aborted").map((b) => b.id.replace(/^teleport-aborted-/, ""));
 }
 
 export function hasBlock(blocks: Block[], id: string): boolean {

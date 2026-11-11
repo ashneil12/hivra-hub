@@ -499,15 +499,30 @@ function returnedAfterMove(session: Session, movedAt: number): boolean {
   return session.blocks.some((b) => b.notice === "teleported-back" && (b.startedAt ?? 0) > movedAt);
 }
 
+/** One step of a chat move (WP-177). The store checks that the step makes only its own change. */
+export type TeleportStep = {
+  moveId: string;
+  op: "freeze" | "thaw" | "release" | "incoming" | "discard" | "activate" | "abort";
+};
+
+/** The store refused a move step because the chat is not in the state the step needs (another move holds it). */
+export class TeleportConflict extends Error {}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function upsertSession(
   session: Session,
+  teleport?: TeleportStep,
 ): Promise<SessionSummary | null> {
   if (!shouldPersistSession(session) || deletedSessionIds.has(session.id)) {
     return null;
   }
   const moved = teleportStateOf(session).moved;
   const returning = returnedAfterMove(session, movedSessionIds.get(session.id) ?? 0);
-  if (movedSessionIds.has(session.id) && !moved && !returning) return null;
+  // A move step is checked by the store itself (session_upsert's guard). Only an ordinary save uses this window's copy.
+  if (!teleport && movedSessionIds.has(session.id) && !moved && !returning) return null;
   if (moved) movedSessionIds.set(session.id, movedAtOf(session));
   else if (returning) movedSessionIds.delete(session.id);
   const mono = !!session.monoTranscript || isMonoSession(session.id);
@@ -567,7 +582,14 @@ export async function upsertSession(
             ? { ...block, orchestrationLeadId: undefined }
             : block,
         ),
+        ...(teleport ? { teleport: { moveId: teleport.moveId, op: teleport.op } } : {}),
       },
+    }).catch((error: unknown) => {
+      // The store's own guard (WP-177): a conflict is the move's answer; a refused ordinary save is dropped, not an error.
+      const message = errorText(error);
+      if (message.startsWith("teleport-conflict")) throw new TeleportConflict(message);
+      if (message.startsWith("teleport-refused")) return null;
+      throw error;
     });
   });
   return summary ? normalizeSummary(summary) : null;
@@ -1310,7 +1332,8 @@ function sanitizeBlock(
 block.notice === "teleported" ||
 block.notice === "teleported-back" ||
 block.notice === "teleport-frozen" ||
-block.notice === "teleport-incoming"
+block.notice === "teleport-incoming" ||
+block.notice === "teleport-aborted"
     ) {
       next.notice = block.notice;
     }

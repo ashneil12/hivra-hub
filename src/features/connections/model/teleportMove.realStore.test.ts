@@ -32,7 +32,7 @@ import { localMoveEndpoint } from "./teleportLocal";
 import { sshMoveEndpoint, type HostCall } from "./teleportSsh";
 import { HostTeleportStore } from "../../../../host/teleport/store";
 import { teleportRpc } from "../../../../host/teleport/rpc";
-import { approveAndMove, planFromSession, recoverSavedMoves } from "./teleportMove";
+import { approveAndMove, planFromSession, recoverSavedMoves, YOUNG_MOVE_MS } from "./teleportMove";
 import { teleportStateOf } from "./teleportState";
 import { isChatLocked, unlockChat } from "./teleportLock";
 
@@ -133,7 +133,7 @@ describe("WP-177 the app's move path, against the real stores", () => {
     const first = await moveChat({ chatId: CHAT, from: stopsBeforeRelease, to: sshMoveEndpoint(HOST, call), approval: approvePlan(planned.plan, click()), moveId: "crash-1", at: "t" });
     expect(first.status).toBe("partial");
 
-    const recovered = await recoverSavedMoves({ chatIds: [CHAT], port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call) });
+    const recovered = await recoverSavedMoves({ chatIds: [CHAT], port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), now: Date.now() + YOUNG_MOVE_MS + 1 });
     expect(recovered).toEqual([expect.objectContaining({ chatId: CHAT, status: "moved" })]);
     expect(teleportStateOf((await getSession(CHAT))!)).toMatchObject({ moved: true });
     expect((await host.read(CHAT, "dev-desktop"))?.live).not.toBeNull();
@@ -166,7 +166,7 @@ describe("WP-177 startup recovery, called at launch", () => {
     const { approvePlan, moveChat } = await import("./teleport");
     const stopped = { ...local, release: async () => { throw new Error("process stopped"); } };
     await moveChat({ chatId: CHAT, from: stopped, to: sshMoveEndpoint(HOST, call), approval: approvePlan(planned.plan, click()), moveId: "launch-1", at: "t" });
-    const lines = await launchRecovery(["/projects/app"], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), onRow: (r) => rows.push(r) });
+    const lines = await launchRecovery(["/projects/app"], { port: sessionStoreChatPort(), local, remoteFor: () => sshMoveEndpoint(HOST, call), onRow: (r) => rows.push(r), now: Date.now() + YOUNG_MOVE_MS + 1 });
     expect(lines).toEqual([expect.objectContaining({ chatId: CHAT, status: "moved" })]);
     expect(rows).toHaveLength(1);
     expect(teleportStateOf(rows[0])).toMatchObject({ moved: true });
@@ -212,15 +212,17 @@ describe("WP-177 M4: one chat's failure does not stop the others at launch", () 
     await local.freeze("m4-bad", "m4-b", "unreachable-host");
     await local.freeze("m4-good", "m4-g", "reachable-host");
     const down = async () => { throw new Error("no route to host"); };
-    const dead = { id: "unreachable-host", read: down, holds: down, thaw: down, freeze: down, canResume: down } as never;
-    const alive = { id: "reachable-host", holds: async () => "none", thaw: async () => undefined, read: async () => null } as never;
+    const dead = { id: "unreachable-host", read: down, holds: down, abort: down, thaw: down, freeze: down, canResume: down } as never;
+    const alive = { id: "reachable-host", holds: async () => "none", abort: async () => "aborted", thaw: async () => undefined, read: async () => null } as never;
     const lines = await recoverSavedMoves({
       chatIds: ["m4-bad", "m4-good"],
       port: sessionStoreChatPort(),
       local,
       remoteFor: (peer) => (peer === "unreachable-host" ? dead : alive),
+      now: Date.now() + YOUNG_MOVE_MS + 1,
     });
     expect(lines.find((l) => l.chatId === "m4-good")?.status).toBe("recovered");
-    expect(lines.find((l) => l.chatId === "m4-bad")?.status).toBe("failed");
+    // The unreachable host cannot be asked, so its chat stays frozen and is reported as unknown, not thawed.
+    expect(lines.find((l) => l.chatId === "m4-bad")?.status).toBe("unknown");
   });
 });
