@@ -22,7 +22,10 @@ const HOST = "local";
 const MAX_ID = 128;
 const MAX_PROMPT = 8_000;
 
-const ID_PATTERN = /^[\p{L}\p{N}][\p{L}\p{N}_-]{0,127}$/u;
+// The same ASCII alphabet Rust's session_store validate_id allows. A unicode id
+// can never be stored, so it is not a local id. The first character stays a
+// letter or digit; a leading hyphen is still rejected.
+const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 /** Path words that would be a public or signed share, never a local chat. */
 const PUBLIC_PATHS = new Set(["guest", "share", "public", "signed", "sign"]);

@@ -36,12 +36,18 @@ describe("local thread links", () => {
     });
   });
 
-  it("accepts a unicode project id and an empty prompt", () => {
-    expect(isLocalThreadId("café")).toBe(true);
-    const prompt = promptLink("café", "");
+  it("rejects a unicode id and still accepts an empty prompt", () => {
+    expect(isLocalThreadId("café")).toBe(false);
+    expect(isLocalThreadId("café")).toBe(false);
+    expect(chatLink("café")).toBeNull();
+    expect(promptLink("café", "hello")).toBeNull();
+    expect(rejected(`hivra://local/chat/${encodeURIComponent("café")}`).reason).toBe(
+      "unknown",
+    );
+    const prompt = promptLink("exo", "");
     expect(parseThreadLink(prompt!)).toEqual({
       ok: true,
-      link: { kind: "prompt", projectId: "café", text: "" },
+      link: { kind: "prompt", projectId: "exo", text: "" },
     });
     expect(parseThreadLink(`hivra://local/chat/${CHAT}?`)).toEqual({
       ok: true,

@@ -106,6 +106,32 @@ describe("resolve and open", () => {
     expect(threadLinkNotice()).toBeNull();
   });
 
+  it("an invalid id error is not on this computer, not a retry", async () => {
+    const asError = hands({
+      hasChat: () => Promise.reject(new Error("Invalid session id")),
+    });
+    await acceptThreadLink(chatLink(CHAT)!, asError);
+    expect(asError.opened).toEqual([]);
+    expect(threadLinkNotice()?.message).toBe(THREAD_LINK_MESSAGE.missingChat);
+
+    resetThreadLinkStateForTests();
+    const asString = hands({
+      hasChat: () => Promise.reject("Invalid session id"),
+    });
+    await acceptThreadLink(chatLink(CHAT)!, asString);
+    expect(asString.opened).toEqual([]);
+    expect(threadLinkNotice()?.message).toBe(THREAD_LINK_MESSAGE.missingChat);
+
+    resetThreadLinkStateForTests();
+    const project = hands({
+      hasChat: () => false,
+      hasProject: () => Promise.reject(new Error("Invalid project id")),
+    });
+    await acceptThreadLink(promptLink("exo", "hello")!, project);
+    expect(project.opened).toEqual([]);
+    expect(threadLinkNotice()?.message).toBe(THREAD_LINK_MESSAGE.missingProject);
+  });
+
   it("a thrown lookup is a retry, not a missing chat", async () => {
     const opened = hands({
       hasChat: () => {

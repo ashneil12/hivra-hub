@@ -113,9 +113,21 @@ export function resetThreadLinkStateForTests(): void {
   }
 }
 
+/** Rust's validate_id: "Invalid session id", and the same shape for other labels. */
+function invalidIdError(error: unknown): boolean {
+  const text =
+    typeof error === "string"
+      ? error
+      : error instanceof Error
+        ? error.message
+        : "";
+  return /^Invalid [\w ]+ id$/.test(text.trim());
+}
+
 /**
  * One lookup. A throw, a rejection, or a timeout is "later": the chat may
- * still be there, so it is not reported as missing.
+ * still be there, so it is not reported as missing. An invalid id can never
+ * resolve, so that error is "no" (not on this computer), not a retry.
  */
 function ask(run: () => boolean | Promise<boolean>): Promise<LookupAnswer> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -132,7 +144,7 @@ function ask(run: () => boolean | Promise<boolean>): Promise<LookupAnswer> {
       .then(run)
       .then(
         (value) => finish(value === true ? "yes" : "no"),
-        () => finish("later"),
+        (error: unknown) => finish(invalidIdError(error) ? "no" : "later"),
       );
   });
 }
