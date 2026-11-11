@@ -153,7 +153,7 @@ impl Gh for CliGh {
         let program = Self::program().ok_or_else(|| {
             "GitHub CLI (`gh`) is not installed, so MonoCode can't read pull requests.".to_string()
         })?;
-        let mut command = Command::new(program);
+        let mut command = crate::git_cmd::contained_command(&program);
         command
             .args(graphql_args(query, vars))
             .env("GH_PROMPT_DISABLED", "1")

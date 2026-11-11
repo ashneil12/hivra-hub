@@ -148,6 +148,21 @@ pub(crate) fn child_keep_hooks() -> Command {
     command_for(true, true, Contain::Plain)
 }
 
+/// A program the app runs on its own (the login shell, `gh`). While the sandbox is on it starts inside the container
+/// profile. Unit tests stay plain, the same as `contain_now`. A container that cannot be built is a program that does
+/// not exist, so the caller fails before the real program runs.
+pub(crate) fn contained_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    match contain_now() {
+        Contain::Plain => Command::new(program),
+        Contain::Refused => Command::new(REFUSED_PROGRAM),
+        Contain::Profile(profile) => {
+            let mut command = Command::new(crate::agent_sandbox::SANDBOX_EXEC);
+            command.arg("-p").arg(profile).arg(program);
+            command
+        }
+    }
+}
+
 /// Read-only subcommands. Anything else (commit, restore, config) is left unchanged: attribute flags would break a write.
 const READONLY: &[&str] = &[
     "status",

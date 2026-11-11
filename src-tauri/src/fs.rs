@@ -1284,7 +1284,7 @@ fn git_github_status_for() -> GitHubStatus {
             authenticated: false,
         };
     };
-    let mut cmd = Command::new(program);
+    let mut cmd = crate::git_cmd::contained_command(&program);
     cmd.args(["auth", "status", "--active", "--hostname", "github.com"])
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GH_PROMPT_DISABLED", "1")
@@ -4531,7 +4531,7 @@ fn parse_github_rate_limit_backoff(json: &str) -> Result<Option<SystemTime>, Str
 fn gh_run_raw(root: &Path, args: &[&str], allow_empty: bool) -> Result<String, String> {
     let program = crate::harness::resolve_gui_binary("gh")
         .ok_or_else(|| "GitHub CLI (`gh`) is not installed.".to_string())?;
-    let mut cmd = Command::new(&program);
+    let mut cmd = crate::git_cmd::contained_command(&program);
     cmd.current_dir(root)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -4591,26 +4591,38 @@ pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, S
 /// cached search path finds it without waiting on the login shell.
 /// WP-104: the health list reads `git --version` through this same command.
 pub(crate) fn git_cmd() -> Command {
-    // Ash's own commit, push and pull: fsmonitor stays off, and the repo's hooks run. Background git stays on
-    // git_cmd::git, which turns hooks off.
-    let mut cmd = crate::git_cmd::git_with_hooks();
+    // Panel reads and every other background git: no hooks, and inside the container while the sandbox is on.
+    // Ash's commit, push, pull and fetch go through `git_cmd_for_args`, which keeps the repo's hooks.
+    let mut cmd = crate::git_cmd::git();
     crate::background_work::configure_child(&mut cmd);
     crate::hide_window_console(&mut cmd);
     cmd.env("PATH", crate::harness::cached_gui_search_path());
     cmd
 }
 
-fn git_cmd_for_args_with_path(args: &[&str], gui_path: impl FnOnce() -> String) -> Command {
-    let mut cmd = git_cmd();
-    let args = args.strip_prefix(&["--literal-pathspecs"]).unwrap_or(args);
-    if matches!(
-        args.first().copied(),
-        Some("commit" | "push" | "pull" | "fetch" | "clone")
-    ) {
-        // Signers, hooks, and credential helpers may only be on the login-shell PATH.
-        cmd.env("PATH", gui_path());
-    }
+fn git_cmd_keeping_hooks() -> Command {
+    let mut cmd = crate::git_cmd::git_with_hooks();
+    crate::background_work::configure_child(&mut cmd);
+    crate::hide_window_console(&mut cmd);
     cmd
+}
+
+fn git_cmd_for_args_with_path(args: &[&str], gui_path: impl FnOnce() -> String) -> Command {
+    let stripped = args.strip_prefix(&["--literal-pathspecs"]).unwrap_or(args);
+    let kind = stripped.first().copied();
+    if matches!(kind, Some("commit" | "push" | "pull" | "fetch")) {
+        // Signers, hooks and credential helpers may only be on the login-shell PATH. Hooks stay on.
+        let mut cmd = git_cmd_keeping_hooks();
+        cmd.env("PATH", gui_path());
+        return cmd;
+    }
+    if kind == Some("clone") {
+        // The login-shell PATH, so a helper on it can run. Hooks stay off: a cloned repo must not run one.
+        let mut cmd = git_cmd();
+        cmd.env("PATH", gui_path());
+        return cmd;
+    }
+    git_cmd()
 }
 
 fn git_cmd_for_args(args: &[&str]) -> Command {
@@ -4637,11 +4649,9 @@ fn no_blank_root(root: &Path) -> Result<(), String> {
 pub(crate) fn git_checked(root: &Path, args: &[&str]) -> Result<(), String> {
     no_blank_root(root)?;
     let mut cmd = git_cmd_for_args(args);
+    cmd.arg("--no-pager").arg("-C").arg(root);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
     let output = cmd
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
-        .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -4672,11 +4682,10 @@ fn git_run(root: &Path, args: &[&str]) -> Option<String> {
 
 fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
     no_blank_root(root).ok()?;
-    let output = git_cmd_for_args(args)
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
-        .args(args)
+    let mut cmd = git_cmd_for_args(args);
+    cmd.arg("--no-pager").arg("-C").arg(root);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
+    let output = cmd
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -4708,11 +4717,10 @@ pub(crate) fn git_output_capped(
     cancel: Option<&AtomicBool>,
 ) -> Option<(Vec<u8>, bool)> {
     no_blank_root(root).ok()?;
-    let mut child = git_cmd()
-        .arg("--no-pager")
-        .arg("-C")
-        .arg(root)
-        .args(args)
+    let mut cmd = git_cmd();
+    cmd.arg("--no-pager").arg("-C").arg(root);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
+    let mut child = cmd
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .stdin(Stdio::null())
@@ -7224,7 +7232,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_git_panel_keeps_repo_hooks_and_still_turns_fsmonitor_off() {
+    fn the_git_panel_reads_turn_hooks_off_and_fsmonitor_stays_off() {
         let args: Vec<String> = git_cmd()
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
@@ -7234,8 +7242,8 @@ mod tests {
             "{args:?}"
         );
         assert!(
-            !args.iter().any(|arg| arg.contains("core.hooksPath")),
-            "the panel turns hooks off: {args:?}"
+            args.iter().any(|arg| arg == "core.hooksPath=/dev/null"),
+            "a panel read still runs hooks: {args:?}"
         );
     }
 

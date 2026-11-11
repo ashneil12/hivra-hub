@@ -3494,7 +3494,7 @@ fn load_unix_login_shell_env() -> HashMap<String, String> {
             "/bin/bash".into()
         }
     });
-    let mut cmd = Command::new(&shell);
+    let mut cmd = crate::git_cmd::contained_command(&shell);
     cmd.args(["-lic", "printenv"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
