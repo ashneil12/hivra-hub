@@ -41,37 +41,35 @@ export function stableDeviceKey(): string {
 
 const hostDeviceKeys = new Map<string, string>();
 
-/** A key that still fits the host's device check when the digest is unavailable. It differs per host. */
-function fallbackDeviceKey(base: string, machineId: string): string {
-  let hash = 2166136261;
-  const material = `${base}:${machineId}`;
-  for (let i = 0; i < material.length; i += 1) hash = Math.imul(hash ^ material.charCodeAt(i), 16777619);
-  const mixed = `${(hash >>> 0).toString(16)}${base}${machineId}`.replace(/[^A-Za-z0-9]/g, "");
-  return (mixed.length >= 16 ? mixed : `${mixed}devicekeyfallback`).slice(0, 64);
-}
-
 /**
- * One device key per host, derived from this Mac's stable key and that host's id. The same key must not go to
- * every host: whoever runs one host would otherwise own this Mac's moved chats on the others.
+ * One device key per host, derived from this Mac's stable key and that host's pinned environment id. The desktop's
+ * connection id changes when a host is removed and added again, so keying on it orphaned chats already on that host.
+ * The same key must not go to every host: whoever runs one host would otherwise own this Mac's moved chats on the others.
+ * When the digest cannot be made, nothing is sent: a fallback that still contains the base key would leak it.
  */
-async function deviceKeyFor(machineId: string): Promise<string> {
-  const cached = hostDeviceKeys.get(machineId);
+async function deviceKeyFor(environmentId: string): Promise<string> {
+  const cached = hostDeviceKeys.get(environmentId);
   if (cached) return cached;
   const base = stableDeviceKey();
   let key = "";
   try {
-    const digest = await globalThis.crypto.subtle.digest("SHA-256", new TextEncoder().encode(`hivra-device:${base}:${machineId}`));
+    const digest = await globalThis.crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`hivra-device:${base}:${environmentId}`),
+    );
     key = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
   } catch {
-    key = fallbackDeviceKey(base, machineId);
+    throw new Error("This Mac could not make a device key for that host, so the move was not sent.");
   }
-  if (!/^[A-Za-z0-9]{16,80}$/.test(key)) key = fallbackDeviceKey(base, machineId);
-  hostDeviceKeys.set(machineId, key);
+  if (!/^[A-Za-z0-9]{16,80}$/.test(key)) {
+    throw new Error("This Mac could not make a device key for that host, so the move was not sent.");
+  }
+  hostDeviceKeys.set(environmentId, key);
   return key;
 }
 
-async function withDevice(machineId: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return { ...params, deviceKey: await deviceKeyFor(machineId) };
+async function withDevice(environmentId: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return { ...params, deviceKey: await deviceKeyFor(environmentId) };
 }
 
 /**
@@ -81,25 +79,27 @@ async function withDevice(machineId: string, params: Record<string, unknown>): P
 export function sshMoveEndpoint(machineId: string, call: HostCall, environmentId: string = machineId): MoveEndpoint {
   return {
     id: environmentId,
-    read: async (chatId) => (await call("teleport.read", await withDevice(machineId, { chatId }))) as ChatRecord | null,
-    freeze: async (chatId, moveId, peer) => (await call("teleport.freeze", await withDevice(machineId, { chatId, moveId, peer }))) === true,
+    read: async (chatId) => (await call("teleport.read", await withDevice(environmentId, { chatId }))) as ChatRecord | null,
+    freeze: async (chatId, moveId, peer) =>
+      (await call("teleport.freeze", await withDevice(environmentId, { chatId, moveId, peer }))) === true,
     thaw: async (chatId, moveId) => {
-      await call("teleport.thaw", await withDevice(machineId, { chatId, moveId }));
+      await call("teleport.thaw", await withDevice(environmentId, { chatId, moveId }));
     },
     canResume: async (provider: Provider, model: string, effort: string) =>
-      (await call("teleport.canResume", await withDevice(machineId, { provider, model, effort }))) as CanResume,
+      (await call("teleport.canResume", await withDevice(environmentId, { provider, model, effort }))) as CanResume,
     receive: async (chatId, moveId, payload: MovePayload) =>
-      (await call("teleport.receive", await withDevice(machineId, { chatId, moveId, payload }))) as ReceiveReply,
+      (await call("teleport.receive", await withDevice(environmentId, { chatId, moveId, payload }))) as ReceiveReply,
     discard: async (chatId, moveId) => {
-      await call("teleport.discard", await withDevice(machineId, { chatId, moveId }));
+      await call("teleport.discard", await withDevice(environmentId, { chatId, moveId }));
     },
-    abort: async (chatId, moveId) => (await call("teleport.abort", await withDevice(machineId, { chatId, moveId }))) as "aborted" | "live",
+    abort: async (chatId, moveId) =>
+      (await call("teleport.abort", await withDevice(environmentId, { chatId, moveId }))) as "aborted" | "live",
     activate: async (chatId, moveId) => {
-      await call("teleport.activate", await withDevice(machineId, { chatId, moveId }));
+      await call("teleport.activate", await withDevice(environmentId, { chatId, moveId }));
     },
     release: async (chatId, moveId, to) => {
-      await call("teleport.release", await withDevice(machineId, { chatId, moveId, to }));
+      await call("teleport.release", await withDevice(environmentId, { chatId, moveId, to }));
     },
-    holds: async (chatId, moveId) => (await call("teleport.holds", await withDevice(machineId, { chatId, moveId }))) as Holds,
+    holds: async (chatId, moveId) => (await call("teleport.holds", await withDevice(environmentId, { chatId, moveId }))) as Holds,
   };
 }
