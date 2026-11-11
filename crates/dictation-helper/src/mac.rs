@@ -1,8 +1,9 @@
 //! The macOS side of the helper: the gate, the microphone and speech permissions, the on-device recogniser and the
 //! audio tap.
 //!
-//! The recogniser delivers its results on the main dispatch queue. So the main thread runs that queue (`park_main`),
-//! and the dictation runs on a worker thread (main.rs). The worker never blocks the main thread.
+//! The recogniser delivers its results on its own serial queue, not the main queue. The main thread only pumps a run
+//! loop so a permission dialog can appear (`pump_dialogs`). The dictation and the XPC service run on a worker, so a
+//! stop is read even while a result is still pending.
 
 use std::cell::Cell;
 use std::ffi::CString;
@@ -10,7 +11,7 @@ use std::panic::AssertUnwindSafe;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use block2::RcBlock;
@@ -18,6 +19,7 @@ use objc2::exception;
 use objc2::msg_send;
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyClass, AnyObject, Bool};
+use objc2::sel;
 use objc2_foundation::NSString;
 
 use crate::protocol::{self, cap, emit, over_limit, Command, Event, Input};
@@ -28,9 +30,21 @@ extern "C" {}
 #[link(name = "AVFoundation", kind = "framework")]
 extern "C" {}
 extern "C" {
-    /// libdispatch: runs the main queue on the calling thread, which must be the main thread. Never returns.
-    fn dispatch_main() -> !;
+    /// A new serial queue. `attr` null means serial. The queue lives for the process; it is not released.
+    fn dispatch_queue_create(
+        label: *const libc::c_char,
+        attr: *const libc::c_void,
+    ) -> *mut libc::c_void;
+    /// `dispatch_get_main_queue()` is a macro for this symbol. Taking its address is the main queue.
+    static _dispatch_main_q: u8;
+    /// Copies `block` before it returns, so the caller may drop its own copy. Only the test posts a job; a live
+    /// result is delivered by Speech because `setQueue:` points at this queue.
+    #[cfg(test)]
+    fn dispatch_async(queue: *mut libc::c_void, block: *mut libc::c_void);
 }
+
+/// The recogniser's queue, as a pointer-sized integer so it can sit in a `OnceLock` (a raw pointer is not `Send`).
+static RECOGNISER_QUEUE: OnceLock<usize> = OnceLock::new();
 
 /// AVMediaTypeAudio ("soun"), AVAuthorizationStatusNotDetermined (0) and AVAuthorizationStatusAuthorized (3).
 const MEDIA_TYPE_AUDIO: &str = "soun";
@@ -46,14 +60,71 @@ const FINISH_WAIT: Duration = Duration::from_secs(5);
 /// How often the worker checks the limits while it waits for the Hub.
 const POLL: Duration = Duration::from_millis(250);
 
-/// Parks the main thread on the main dispatch queue, where the recogniser delivers its results. Never returns.
-pub fn park_main() -> ! {
-    unsafe { dispatch_main() }
+/// Pumps the main thread's run loop so a permission dialog can appear. Recogniser results are not delivered here.
+/// Never returns: the service thread ends the process.
+pub fn pump_dialogs() -> ! {
+    core_foundation::runloop::CFRunLoop::run_current();
+    std::process::exit(0);
 }
 
-/// What the helper checks before any permission is asked for or the microphone opens. Dictation is off in this build
-/// (protocol::DICTATION_ENABLED), so this refuses every start. Once it is on, the helper must also be its own
-/// responsible process: a helper launchd started is; one started as a child of something else is not (LOW 4).
+/// The private serial queue the recogniser delivers on. Not the main queue. Null if it could not be created.
+fn recogniser_queue() -> *mut libc::c_void {
+    let bits = *RECOGNISER_QUEUE.get_or_init(|| {
+        let Ok(label) = CString::new("com.ash.monocode-hub.dictation.recogniser") else {
+            return 0;
+        };
+        unsafe { dispatch_queue_create(label.as_ptr(), ptr::null()) as usize }
+    });
+    bits as *mut libc::c_void
+}
+
+fn main_dispatch_queue() -> *mut libc::c_void {
+    std::ptr::addr_of!(_dispatch_main_q).cast_mut().cast()
+}
+
+/// Runs `job` on the recogniser queue. Does nothing if that queue is missing or is the main queue, so a result can
+/// never be posted onto the thread that pumps dialogs. The live handler is not posted from here: Speech calls it
+/// because the recogniser's queue was set.
+#[cfg(test)]
+fn post_on_recogniser(job: impl FnOnce() + Send + 'static) {
+    let queue = recogniser_queue();
+    if queue.is_null() || std::ptr::eq(queue, main_dispatch_queue()) {
+        return;
+    }
+    let slot = Mutex::new(Some(job));
+    let block = RcBlock::new(move || {
+        if let Some(job) = slot.lock().ok().and_then(|mut guard| guard.take()) {
+            job();
+        }
+    });
+    unsafe { dispatch_async(queue, RcBlock::as_ptr(&block).cast()) };
+}
+
+/// Points the recogniser at its own queue. A missing `setQueue:`, a null queue, or the main queue refuses the start.
+/// Called before the audio engine exists, so a refusal never opens the microphone.
+fn install_recogniser_queue(recognizer: &AnyObject) -> Result<(), &'static str> {
+    let selector = sel!(setQueue:);
+    let responds: Bool = unsafe { msg_send![recognizer, respondsToSelector: selector] };
+    if !responds.as_bool() {
+        return Err("not_here");
+    }
+    let queue = recogniser_queue();
+    if queue.is_null() || std::ptr::eq(queue, main_dispatch_queue()) {
+        return Err("not_here");
+    }
+    if guard(|| unsafe {
+        let _: () = msg_send![recognizer, setQueue: queue];
+    })
+    .is_err()
+    {
+        return Err("not_here");
+    }
+    Ok(())
+}
+
+/// What the helper checks before any permission is asked for or the microphone opens. The setting has to say on, and
+/// the helper must be its own responsible process: a helper launchd started is; one started as a child of something
+/// else is not (LOW 4). A test build does not read the setting file, so this refuses there.
 pub(crate) fn gate() -> Result<(), &'static str> {
     if !protocol::dictation_enabled() {
         return Err("not_here");
@@ -64,6 +135,45 @@ pub(crate) fn gate() -> Result<(), &'static str> {
     } else {
         Err("not_here")
     }
+}
+
+/// The setting file in the Hub's application-support folder, read only by a real helper. A test build does not call
+/// this, so a test cannot read the daily app's folder. None when this process is not the helper bundle, the home is
+/// empty or walks upwards, or the file cannot be read. A missing file is off.
+#[cfg(not(test))]
+pub(crate) fn saved_setting_text() -> Option<String> {
+    let bundle_id = current_bundle_id()?;
+    let hub = protocol::hub_id_from_helper_bundle(&bundle_id)?;
+    let home = std::env::var_os("HOME")?;
+    let home = std::path::PathBuf::from(home);
+    if home.as_os_str().is_empty()
+        || home
+            .components()
+            .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    let path = home
+        .join("Library")
+        .join("Application Support")
+        .join(hub)
+        .join(protocol::SETTING_FILE);
+    if path.file_name().and_then(|name| name.to_str()) != Some(protocol::SETTING_FILE) {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
+/// This process's bundle identifier, when it has one. A raw test binary has none.
+#[cfg(not(test))]
+fn current_bundle_id() -> Option<String> {
+    let class = AnyClass::get(c"NSBundle")?;
+    let bundle: *mut AnyObject = unsafe { msg_send![class, mainBundle] };
+    let bundle = unsafe { bundle.as_ref() }?;
+    let identifier: Option<Retained<NSString>> = unsafe { msg_send![bundle, bundleIdentifier] };
+    identifier
+        .map(|text| text.to_string())
+        .filter(|text| !text.is_empty())
 }
 
 /// The Mac's responsible process for `pid`, from the same private symbol the Hub's launcher uses (disclaim.rs).
@@ -147,6 +257,11 @@ fn smoke_file(path: &std::ffi::OsStr, tx: Sender<Input>) {
         emit(&Event::Refused { reason: "not_here" });
         return;
     };
+    // Same queue as a live session. Smoke never opens the microphone, and it does not park the main thread.
+    if install_recogniser_queue(&recognizer).is_err() {
+        emit(&Event::Refused { reason: "not_here" });
+        return;
+    }
     let Some(path) = path.to_str() else {
         emit(&Event::Refused { reason: "not_here" });
         return;
@@ -295,6 +410,8 @@ impl Session {
         if !on_device.as_bool() {
             return Err("not_on_device");
         }
+        // Before the audio engine exists, so a missing queue never opens the microphone.
+        install_recogniser_queue(&recognizer)?;
 
         let request_class =
             AnyClass::get(c"SFSpeechAudioBufferRecognitionRequest").ok_or("not_here")?;
@@ -350,8 +467,9 @@ impl Session {
             return Err("no_microphone");
         }
 
-        // Results arrive on the main queue. Each partial is shown and counts as words for the silence limit; the
-        // final one (or an error) ends the session.
+        // Results arrive on the recogniser queue, not the main queue. Each partial is shown and counts as words for
+        // the silence limit; the final one (or an error) ends the session. A stop is read on this thread, so it is
+        // not stuck behind a result that is still running.
         let finished = Arc::new(AtomicBool::new(false));
         let result_finished = finished.clone();
         let result_handler = RcBlock::new(move |result: *mut AnyObject, error: *mut AnyObject| {
@@ -498,8 +616,8 @@ mod tests {
         assert_eq!(guard(|| 7u8), Ok(7));
     }
 
-    // HIGH 1 (round 3): the helper does not trust its parent. While dictation is off in this build, the gate refuses
-    // before any permission is asked for, whoever started the helper.
+    // HIGH 1 (round 3): the helper does not trust its parent. A test build does not read the setting file, so the gate
+    // refuses before any permission is asked for, whoever started the helper.
     #[test]
     fn the_gate_refuses_before_any_prompt_while_dictation_is_off() {
         assert_eq!(gate(), Err("not_here"));
@@ -519,5 +637,55 @@ mod tests {
         let _ = child.kill();
         let _ = child.wait();
         assert!(!protocol::is_own_responsible(pid, responsible));
+    }
+
+    // M1: a result runs on the recogniser's own queue. The session thread reads a stop while that result is still
+    // pending. This does not open the microphone, ask for speech, or touch the recogniser class.
+    #[test]
+    fn a_stop_is_handled_while_a_result_is_pending() {
+        let pending = Arc::new(AtomicBool::new(true));
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let flag = pending.clone();
+        post_on_recogniser(move || {
+            let _ = entered_tx.send(());
+            let _ = release_rx.recv();
+            flag.store(false, Ordering::SeqCst);
+        });
+        entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("the result started on the recogniser queue");
+        let (cmd_tx, cmd_rx) = mpsc::channel();
+        cmd_tx.send(Input::Cmd(Command::Stop)).unwrap();
+        let handled = std::thread::spawn(move || {
+            matches!(
+                cmd_rx.recv_timeout(Duration::from_secs(2)),
+                Ok(Input::Cmd(Command::Stop))
+            )
+        });
+        assert!(
+            handled.join().unwrap(),
+            "a stop is handled while the result is still pending"
+        );
+        assert!(
+            pending.load(Ordering::SeqCst),
+            "the result was still pending when the stop was handled"
+        );
+        release_tx.send(()).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while pending.load(Ordering::SeqCst) {
+            assert!(
+                Instant::now() < deadline,
+                "the pending result never finished"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn the_recogniser_queue_is_not_the_main_queue() {
+        let queue = recogniser_queue();
+        assert!(!queue.is_null());
+        assert!(!std::ptr::eq(queue, main_dispatch_queue()));
     }
 }

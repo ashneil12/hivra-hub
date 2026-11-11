@@ -29,15 +29,53 @@ pub const MAX_LINE_BYTES: usize = 64 * 1024;
 pub const MAX_SESSION: Duration = Duration::from_secs(300);
 /// No recognised words for this long ends the dictation, enforced here as well as by the Hub.
 pub const SILENCE_LIMIT: Duration = Duration::from_secs(30);
-/// Whether this build may open the microphone at all. The XPC service and its per-message peer requirement are in
-/// place (xpc.rs), but this stays off until the one live check: the owner taps Allow once on a real build. There is
-/// no setting, environment variable or flag that turns this on.
-pub const DICTATION_ENABLED: bool = false;
+/// Kill switch for this build. True lets the saved setting decide. False refuses every start, even when the setting
+/// says on. The setting itself stays off until its file says `on`.
+pub const DICTATION_ENABLED: bool = true;
+/// The file the Hub writes and this helper reads, inside the Hub's own application-support folder.
+pub const SETTING_FILE: &str = "dictation-enabled";
 
-/// The same switch as [`DICTATION_ENABLED`], read at runtime so the listener code stays in the build to be checked.
-/// Nothing else can turn it on: there is no setting and no environment variable.
+/// True only for the exact word `on`, after trimming. Anything else, including a missing file, is off.
+pub fn setting_word_on(text: Option<&str>) -> bool {
+    text.is_some_and(|text| text.trim() == "on")
+}
+
+/// The kill switch and the setting both have to allow it.
+pub fn allows_dictation(kill_switch: bool, text: Option<&str>) -> bool {
+    kill_switch && setting_word_on(text)
+}
+
+/// The Hub identifier inside a helper bundle id (`<hub>.dictation`). None when it is empty, has a slash, or walks up.
+pub fn hub_id_from_helper_bundle(bundle_id: &str) -> Option<&str> {
+    let hub = bundle_id.strip_suffix(".dictation")?;
+    if hub.is_empty()
+        || hub.contains("..")
+        || hub.contains('/')
+        || hub.contains('\\')
+        || !hub
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+    {
+        return None;
+    }
+    Some(hub)
+}
+
+/// Whether this process may open the microphone. A test build does not read a setting file, so this is off there.
+/// A real build is on only when the kill switch allows it and the Hub's setting file says `on`.
 pub fn dictation_enabled() -> bool {
-    DICTATION_ENABLED
+    allows_dictation(DICTATION_ENABLED, saved_setting().as_deref())
+}
+
+fn saved_setting() -> Option<String> {
+    #[cfg(all(target_os = "macos", not(test)))]
+    {
+        crate::mac::saved_setting_text()
+    }
+    #[cfg(not(all(target_os = "macos", not(test))))]
+    {
+        None
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -222,6 +260,42 @@ pub fn emit(event: &Event) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_setting_word_is_on_only_when_it_is_exactly_on() {
+        assert!(!setting_word_on(None));
+        assert!(!setting_word_on(Some("")));
+        assert!(!setting_word_on(Some("ON")));
+        assert!(!setting_word_on(Some("true")));
+        assert!(!setting_word_on(Some("on\nno")));
+        assert!(setting_word_on(Some("on")));
+        assert!(setting_word_on(Some("on\n")));
+        assert!(setting_word_on(Some("  on  ")));
+        assert!(allows_dictation(true, Some("on")));
+        assert!(!allows_dictation(true, Some("off")));
+        assert!(!allows_dictation(false, Some("on")));
+        assert!(
+            !dictation_enabled(),
+            "a test build does not read a setting file"
+        );
+    }
+
+    #[test]
+    fn the_helper_reads_the_hub_setting_folder_not_its_own() {
+        assert_eq!(
+            hub_id_from_helper_bundle("com.ash.monocode-hub.dictation"),
+            Some("com.ash.monocode-hub")
+        );
+        assert_eq!(
+            hub_id_from_helper_bundle("com.ash.monocode-hub.dev.slot.dictation"),
+            Some("com.ash.monocode-hub.dev.slot")
+        );
+        assert_eq!(hub_id_from_helper_bundle("com.ash.monocode-hub"), None);
+        assert_eq!(hub_id_from_helper_bundle(".dictation"), None);
+        assert_eq!(hub_id_from_helper_bundle("../x.dictation"), None);
+        assert_eq!(hub_id_from_helper_bundle("a/b.dictation"), None);
+        assert_eq!(SETTING_FILE, "dictation-enabled");
+    }
 
     #[test]
     fn start_and_stop_are_the_only_commands() {
