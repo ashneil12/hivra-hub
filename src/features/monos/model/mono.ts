@@ -339,22 +339,31 @@ function parseMono(value: unknown): Mono | undefined {
   };
 }
 
-/** Set only after a read-back shows the flag write stuck, or the roster needed nothing. */
-let captainFlagsMigrated = false;
+/** The stored roster text already checked. A different roster is checked again. */
+let captainFlagsDoneFor: string | null = null;
 /** saveRoster tells the window, and that can list Monos again. This stops that listing from migrating again. */
 let captainFlagsMigrating = false;
 
+function readRosterRaw(): { text: string | null; value: unknown } {
+  try {
+    const text = localStorage.getItem(ROSTER_KEY);
+    return { text, value: text ? (JSON.parse(text) as unknown) : undefined };
+  } catch {
+    return { text: null, value: undefined };
+  }
+}
+
 /**
- * One pass over the stored roster: a Mono whose instructions already carry the charter is flagged.
+ * One pass over this stored roster: a Mono whose instructions already carry the charter is flagged.
+ * The same roster text is not parsed again. A different roster, or a write that did not stick, is.
  * The write goes through the roster save, so MONOS.json and the change event happen too.
- * A write that does not stick is tried again on the next read. Nothing else in the row is rewritten.
+ * Nothing else in the row is rewritten. Returns true when the stored roster was rewritten.
  */
-function migrateCaptainFlags(): void {
-  if (captainFlagsMigrated || captainFlagsMigrating) return;
+function migrateCaptainFlags(text: string | null, raw: unknown): boolean {
+  if (captainFlagsMigrating || text === captainFlagsDoneFor) return false;
   captainFlagsMigrating = true;
   try {
-    const raw = readJson(ROSTER_KEY);
-    if (!Array.isArray(raw)) return;
+    if (!Array.isArray(raw)) return false;
     let changed = false;
     const next = raw.map((entry) => {
       if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
@@ -366,11 +375,16 @@ function migrateCaptainFlags(): void {
       return { ...row, captain: true };
     });
     if (!changed) {
-      captainFlagsMigrated = true;
-      return;
+      captainFlagsDoneFor = text;
+      return false;
     }
     saveRoster(next as Mono[]);
-    if (JSON.stringify(readJson(ROSTER_KEY)) === JSON.stringify(next)) captainFlagsMigrated = true;
+    const after = readRosterRaw();
+    if (JSON.stringify(after.value) === JSON.stringify(next)) {
+      captainFlagsDoneFor = after.text;
+      return true;
+    }
+    return false;
   } finally {
     captainFlagsMigrating = false;
   }
@@ -379,8 +393,9 @@ function migrateCaptainFlags(): void {
 /** Every Mono, in the order the rail shows them. */
 export function listMonos(): Mono[] {
   migrateLegacyMonoStorage();
-  migrateCaptainFlags();
-  const parsed = readJson(ROSTER_KEY);
+  const loaded = readRosterRaw();
+  const rewritten = migrateCaptainFlags(loaded.text, loaded.value);
+  const parsed = rewritten ? readRosterRaw().value : loaded.value;
   if (!Array.isArray(parsed)) return [];
   // Each Mono has its own conversation. A roster that names one session twice (a restored setup file, a hand-edited
   // roster, an old copy) would make both Monos answer as the first one and write its memory and soul, so only the

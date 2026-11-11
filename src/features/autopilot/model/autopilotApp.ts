@@ -644,21 +644,6 @@ export async function handleAutopilotApp(
           note: captain.line ? `${captain.line} ${captain.reason}` : captain.reason,
         };
       }
-      // The captain is still waiting. Do not take the chat's own recommendation while it does.
-      if (captain.kind === "waiting") {
-        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
-        return {
-          autopilot: "on",
-          until: new Date(verdict.until).toISOString(),
-          untilLabel,
-          decision: "held",
-          act: "ask",
-          red: null,
-          reason: captain.reason,
-          ...(logged ? { logged: logged.id } : {}),
-          note: captain.reason,
-        };
-      }
       // A keyed call outside this chat's project never takes, and a captain answer that is not written never takes.
       if (key && project && !inProject) {
         const heldNote = "This call names another project's question, so it is held.";
@@ -673,6 +658,21 @@ export async function handleAutopilotApp(
           reason: heldNote,
           ...(logged ? { logged: logged.id } : {}),
           note: heldNote,
+        };
+      }
+      // The captain is still waiting. Do not take the chat's own recommendation while it does.
+      if (captain.kind === "waiting") {
+        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+        return {
+          autopilot: "on",
+          until: new Date(verdict.until).toISOString(),
+          untilLabel,
+          decision: "held",
+          act: "ask",
+          red: null,
+          reason: captain.reason,
+          ...(logged ? { logged: logged.id } : {}),
+          note: captain.reason,
         };
       }
       const answer = captain.kind === "answer" ? captain.answer : verdict.answer;

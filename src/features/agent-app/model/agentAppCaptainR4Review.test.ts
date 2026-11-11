@@ -64,7 +64,7 @@ describe("captain.handoff retried (review of PR #244, round 4)", () => {
     const filed: string[] = [];
     const hostForOneCall = () =>
       ({
-        isMono: (id: string) => id === "chief",
+        isMono: (id: string) => id === "chief-retry",
         monoOf: () => ({ id: "ada", name: "Chief of Staff", captain: true, projects: [PROJECT] }),
         taskStore: vi.fn(async () => {
           const id = `T-${filed.length + 1}`;
@@ -73,10 +73,11 @@ describe("captain.handoff retried (review of PR #244, round 4)", () => {
         }),
         tasks: {},
       }) as unknown as Host;
-    await expect(handleAgentApp(chat("chief"), "h1", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
-    await expect(handleAgentApp(chat("chief"), "h2", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
+    const caller = chat("chief-retry");
+    await expect(handleAgentApp(caller, "h1", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
+    await expect(handleAgentApp(caller, "h2", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
     expect(filed).toEqual(["T-1"]);
-    await expect(handleAgentApp(chat("chief"), "h3", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
+    await expect(handleAgentApp(caller, "h3", "captain.handoff", INPUT, hostForOneCall())).rejects.toThrow();
     expect(filed).toEqual(["T-1", "T-2"]);
   });
 });

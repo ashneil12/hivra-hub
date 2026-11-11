@@ -309,7 +309,9 @@ describe("useAutopilot", () => {
     // Nothing was sent. The unreadable one is held, and a plain pick is not the captain's answer.
     expect(sent.map((m) => m.id)).toEqual([]);
     expect(backend.entries.filter((e) => e.chatId === "bad" && e.outcome === "held")).toHaveLength(1);
-    expect(backend.entries.find((e) => e.chatId === "good")).toBeUndefined();
+    const good = backend.entries.find((e) => e.chatId === "good");
+    expect(good).toMatchObject({ kind: "question", outcome: "held" });
+    expect(good?.detail).toMatch(/engine is down/);
     // The hook is still working: another change is decided the same way, and the unreadable one is still not sent.
     await act(async () =>
       setAll((all) => [...all, session("later", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old cache?\nMy pick: yes" }] })]),
@@ -317,7 +319,10 @@ describe("useAutopilot", () => {
     await settle();
     expect(sent.map((m) => m.id)).toEqual([]);
     expect(sent.find((m) => m.id === "bad")).toBeUndefined();
-    expect(backend.entries.find((e) => e.chatId === "later")).toBeUndefined();
+    const later = backend.entries.find((e) => e.chatId === "later");
+    expect(later).toMatchObject({ kind: "question", outcome: "held" });
+    expect(later?.detail).toMatch(/engine is down/);
+    expect(sent.find((m) => m.id === "later")).toBeUndefined();
   });
 
   it("allows an MCP read only from a server the app says it wired for that chat", async () => {
