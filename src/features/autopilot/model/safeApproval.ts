@@ -63,14 +63,26 @@ const GIT_DIR_FILES: ReadonlySet<string> = new Set(["head", "config", "packed-re
 /** A git folder's object and ref stores (round 7, HIGH-A): held under any folder in a chat's own. */
 const GIT_DIR_FOLDERS: ReadonlySet<string> = new Set(["objects", "refs"]);
 
-/** An absolute POSIX path with ".", ".." and repeated slashes resolved; null when it isn't one or climbs past /. */
+/** A drive path, C:\ or C:/ (round 7, Windows CI). */
+const DRIVE = /^[a-z]:[\\/]/i;
+
+/** Whether a path is absolute: rooted at / or at a drive (round 7, Windows CI). */
+const isAbsolutePath = (path: string) => path.startsWith("/") || DRIVE.test(path);
+
+/**
+ * An absolute path with ".", ".." and repeated slashes resolved; null when it isn't one or climbs past its root. A drive
+ * path (round 7, Windows CI) keeps its drive as the first part.
+ */
 function normalize(path: string): string[] | null {
-  if (!path.startsWith("/")) return null;
-  const out: string[] = [];
-  for (const part of path.split("/")) {
+  const text = path.replace(/\\/g, "/");
+  const drive = DRIVE.test(text);
+  if (!drive && !text.startsWith("/")) return null;
+  const floor = drive ? 1 : 0;
+  const out: string[] = drive ? [text.slice(0, 2).toLowerCase()] : [];
+  for (const part of (drive ? text.slice(2) : text).split("/")) {
     if (!part || part === ".") continue;
     if (part === "..") {
-      if (!out.length) return null;
+      if (out.length <= floor) return null;
       out.pop();
       continue;
     }
@@ -79,13 +91,46 @@ function normalize(path: string): string[] | null {
   return out;
 }
 
+/**
+ * Whether a folder's file system ignores case: Windows (a drive or a UNC share) and the Mac's own folders (/Users, /Volumes,
+ * /private). Elsewhere names are compared as written (round 7, Windows CI).
+ */
+export function ignoresCase(folder: string): boolean {
+  return DRIVE.test(folder) || /^\\\\|^\/\//.test(folder) || /^\/(users|volumes|private)\//i.test(folder);
+}
+
+/**
+ * A path as a containment check compares it (round 7, Windows CI): forward slashes, a verbatim `\\?\` prefix gone, repeated
+ * and trailing slashes gone, and case folded where the file system ignores case.
+ */
+export function comparablePath(path: string, caseless: boolean): string {
+  const text = path
+    .replace(/^(\\\\\?\\|\/\/\?\/)/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/+/g, "/")
+    .replace(/(.)\/$/, "$1");
+  return caseless ? text.toLowerCase() : text;
+}
+
+/**
+ * Whether `real` is `folder` or inside it, compared by whole path components, never by a string prefix (so `chat2` is not
+ * inside `chat`). Both sides are read the same way, whatever their separators.
+ */
+export function pathWithin(real: string, folder: string, caseless = ignoresCase(folder)): boolean {
+  const r = comparablePath(real, caseless).split("/");
+  const f = comparablePath(folder, caseless).split("/");
+  return r.length >= f.length && f.every((part, i) => r[i] === part);
+}
+
 /** Whether an edit to `path` may go ahead in `folder`; why not otherwise. */
 export function editInside(path: string, folder: string | undefined): SafeVerdict {
   const root = folder ? normalize(folder.replace(/\/+$/, "") || "/") : null;
   if (!root) return "the chat has no folder of its own to edit in";
   if (root.length < MIN_FOLDER_DEPTH) return "the chat's folder is too broad to edit in by itself";
   if (path.includes("\0") || path.startsWith("~")) return `it edits ${path}, outside the chat's folder`;
-  const parts = normalize(path.startsWith("/") ? path : `/${root.join("/")}/${path}`);
+  // The folder's own parts, a drive first when it has one (round 7, Windows CI), so a relative path is placed under it.
+  const base = /^[a-z]:$/.test(root[0]) ? root.join("/") : `/${root.join("/")}`;
+  const parts = normalize(DRIVE.test(path) || path.startsWith("/") ? path : `${base}/${path}`);
   if (!parts || parts.length <= root.length || root.some((part, i) => parts[i] !== part))
     return `it edits ${path}, outside the chat's folder`;
   const inner = parts.slice(root.length);
@@ -546,7 +591,7 @@ async function outsideGitStays(
   for (let i = 0; i < targets.length; i++) {
     const real = resolved[i + 1];
     if (!real) return `${names[i]} can't be resolved, so it waits for Ash`;
-    if (!within(real, realFolder)) return `${names[i]} really lands at ${real}, outside the chat's folder`;
+    if (!pathWithin(real, realFolder)) return `${names[i]} really lands at ${real}, outside the chat's folder`;
     const why = check?.(real, realFolder, i);
     if (why) return why;
   }
@@ -567,7 +612,7 @@ export async function editStaysInside(
   if (!call || !EDIT_TOOLS.has(call.tool)) return null;
   const root = folder?.replace(/\/+$/, "");
   if (!root || !call.paths?.length) return "it doesn't say which file it edits";
-  const targets = call.paths.map((path) => (path.startsWith("/") ? path : `${root}/${path}`));
+  const targets = call.paths.map((path) => (isAbsolutePath(path) ? path : `${root}/${path}`));
   let places: (RealPlace | null)[];
   try {
     places = await locate([`${root}/${PROBE}`, ...targets]);
@@ -609,7 +654,7 @@ export async function readStaysInside(
   const paths = call.paths as string[];
   const root = folder?.replace(/\/+$/, "");
   if (!root) return "the chat has no folder of its own to read in";
-  const targets = paths.map((path) => (path.startsWith("/") ? path : `${root}/${path}`));
+  const targets = paths.map((path) => (isAbsolutePath(path) ? path : `${root}/${path}`));
   let places: (RealPlace | null)[];
   try {
     places = await locate([`${root}/${PROBE}`, ...targets]);
@@ -673,7 +718,7 @@ export async function bashStaysInside(
   // git with no words still runs in the folder, so its folder is placed even when it names no file (round 7).
   const git = words[0] === "git";
   if (!names.length && !git) return null;
-  const targets = names.map((name) => (name.startsWith("/") ? name : `${root}/${name}`));
+  const targets = names.map((name) => (isAbsolutePath(name) ? name : `${root}/${name}`));
   let places: (RealPlace | null)[];
   try {
     places = await locate([`${root}/${PROBE}`, ...targets]);

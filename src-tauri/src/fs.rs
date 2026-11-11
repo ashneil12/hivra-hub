@@ -1108,7 +1108,8 @@ fn canonical_place(path: &Path) -> Option<String> {
         missing.push(existing.file_name()?.to_os_string());
         existing.pop();
     }
-    let mut real = std::fs::canonicalize(&existing).ok()?;
+    // dunce drops the verbatim `\\?\` prefix Windows gives a canonical path, so it compares as the path the user sees.
+    let mut real = dunce::canonicalize(&existing).ok()?;
     for part in missing.iter().rev() {
         real.push(part);
     }

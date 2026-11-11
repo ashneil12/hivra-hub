@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { approvalVerdict } from "./decide";
-import { placeStaysInside, safeCommand, type Canonical, type Locate, type RealPlace } from "./safeApproval";
+import { editInside, ignoresCase, pathWithin, placeStaysInside, safeCommand, type Canonical, type Locate, type RealPlace } from "./safeApproval";
 import { credentialBlock } from "../../../integrations/harness/core/credentialGuard";
 
 /** The git environment the app's own lookups run under (fs.rs git_safe_env): command-line config, so a repo's cannot undo it. */
@@ -69,7 +69,9 @@ const realCanonical: Canonical = async (paths) =>
         existing = path.dirname(existing);
       }
     }
-    return path.join(fs.realpathSync(existing), ...missing);
+    // The long form of each name (realpath.native, as Rust's canonicalize gives on Windows), so the folder and the
+    // landing path are spelled the same way.
+    return path.join(fs.realpathSync.native(existing), ...missing);
   });
 
 /** A lookup for a chat outside every checkout: nothing is in git. */
@@ -88,8 +90,12 @@ async function verdict(block: any, folder: string): Promise<"allow" | "held"> {
 const TMP = fs.mkdtempSync(path.join(os.tmpdir(), "r201r7-"));
 afterAll(() => fs.rmSync(TMP, { recursive: true, force: true }));
 
-/** The git folder's own files a planted repository needs, with an fsmonitor and a diff.external that write a marker. */
-function plantGitFolder(chat: string, marker: string) {
+/**
+ * The git folder's own files a planted repository needs, with an fsmonitor and a diff.external that write a marker. The
+ * marker is a relative name: git runs both in the worktree, the chat's own folder, so it is written there, with no drive
+ * letter or backslash for git's shell to read (round 7, Windows CI).
+ */
+function plantGitFolder(chat: string) {
   fs.mkdirSync(`${chat}/objects`, { recursive: true });
   fs.mkdirSync(`${chat}/refs`, { recursive: true });
   fs.writeFileSync(`${chat}/objects/readme`, "x\n");
@@ -97,7 +103,7 @@ function plantGitFolder(chat: string, marker: string) {
   fs.writeFileSync(`${chat}/HEAD`, "ref: refs/heads/main\n");
   fs.writeFileSync(
     `${chat}/config`,
-    `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = "echo ran > ${marker}; false"\n[diff]\n\texternal = "echo ran > ${marker}"\n`,
+    `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = "echo ran > ran.txt; false"\n[diff]\n\texternal = "echo ran > ran.txt"\n`,
   );
 }
 
@@ -139,19 +145,23 @@ describe("HIGH: a git folder planted by allowed writes makes an allowed git comm
   it("runs the app's git with safe.bareRepository=explicit, so a planted folder's fsmonitor and diff.external never run", () => {
     const repo = `${TMP}/proof/mono`;
     const chat = `${repo}/packages/app`;
-    const marker = `${TMP}/proof/ran.txt`;
+    const marker = `${chat}/ran.txt`;
     fs.mkdirSync(`${chat}/src`, { recursive: true });
     fs.writeFileSync(`${chat}/src/app.ts`, "x\n");
     execFileSync("git", ["init", "-q", repo]);
-    plantGitFolder(chat, marker);
-    // Control: without the app's environment, git takes the planted folder for its repository and runs the program.
-    try {
-      execFileSync("git", ["-C", chat, "status"], { stdio: "ignore" });
-    } catch {
-      // The planted fsmonitor exits non-zero by design; only the marker matters.
+    plantGitFolder(chat);
+    // Control: without the app's environment, git takes the planted folder for its repository and runs the program. Checked
+    // on macOS and Linux only: Git for Windows' bundled shell did not run the planted program in this harness, so on
+    // win32 this one assertion is skipped. The "never runs under the environment" assertion below runs on every platform.
+    if (process.platform !== "win32") {
+      try {
+        execFileSync("git", ["-C", chat, "status"], { stdio: "ignore" });
+      } catch {
+        // The planted fsmonitor exits non-zero by design; only the marker matters.
+      }
+      expect(fs.existsSync(marker), "control: the planted program runs without the app's environment").toBe(true);
     }
-    expect(fs.existsSync(marker), "control: the planted program runs without the app's environment").toBe(true);
-    fs.rmSync(marker);
+    fs.rmSync(marker, { force: true });
     // The app's own lookup and a status and diff under its environment: the planted program does not run, and the
     // lookup places the chat in the real checkout.
     // Under the app's environment git refuses the planted folder as a bare repository (an error, which the lookup holds on),
@@ -238,6 +248,50 @@ describe("LOW: a timer at home reads no file it names", () => {
     expect(safeCommand("git status", "/Users/example", true)).toBeNull();
     // A chat (not a timer) keeps its own rule.
     expect(safeCommand("grep -c X Documents/f", "/Users/example/proj")).toBeNull();
+  });
+});
+
+// Round 7, Windows CI: the containment comparison is pure, so it runs the Windows shapes on every OS.
+describe("containment compares whole path components, the same on every platform", () => {
+  const folder = "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\r201r7-x\\outside\\chat";
+
+  it("reads a Windows drive path, a forward-slash path and a verbatim \\\\?\\ path the same way", () => {
+    expect(pathWithin(`${folder}\\src\\app.ts`, folder)).toBe(true);
+    expect(pathWithin("C:/Users/runneradmin/AppData/Local/Temp/r201r7-x/outside/chat/src/app.ts", folder)).toBe(true);
+    expect(pathWithin(`\\\\?\\${folder}\\src\\app.ts`, folder)).toBe(true);
+    expect(pathWithin(`\\\\?\\${folder}`, folder)).toBe(true);
+  });
+
+  it("folds case where the file system ignores it (Windows, and the Mac's own folders), and only there", () => {
+    expect(ignoresCase(folder)).toBe(true);
+    expect(ignoresCase("/Users/example/chat")).toBe(true);
+    expect(ignoresCase("/home/example/chat")).toBe(false);
+    expect(pathWithin(`${folder.toUpperCase()}\\src\\app.ts`, folder)).toBe(true);
+    expect(pathWithin("/home/example/CHAT/a.ts", "/home/example/chat", false)).toBe(false);
+  });
+
+  it("is not fooled by a string prefix or a sibling folder", () => {
+    expect(pathWithin("C:\\Users\\r\\chat2\\a.ts", "C:\\Users\\r\\chat")).toBe(false);
+    expect(pathWithin("C:\\Users\\r\\other\\a.ts", "C:\\Users\\r\\chat")).toBe(false);
+    expect(pathWithin("/home/example/chat2/a.ts", "/home/example/chat", false)).toBe(false);
+  });
+
+  it("holds a short name against a long one: both sides must be canonical, which the app's lookup makes them", () => {
+    expect(pathWithin("C:\\Users\\runneradmin\\chat\\a.ts", "C:\\Users\\RUNNER~1\\chat")).toBe(false);
+  });
+
+  it("places a Windows edit inside its folder, and holds a git folder's own file there", () => {
+    expect(editInside(`${folder}\\src\\new.ts`, folder)).toBeNull();
+    expect(editInside(`${folder}\\HEAD`, folder)).not.toBeNull();
+    expect(editInside(`${folder}\\..\\other.ts`, folder)).not.toBeNull();
+  });
+
+  it("allows a Windows chat outside git whose canonical paths are backslashed, and holds a link out of it", async () => {
+    const toWindows: Canonical = async (paths) => paths.map((p) => p.replace(/\//g, "\\"));
+    const outside: Canonical = async (paths) => paths.map((p) => (p.endsWith("linked.ts") ? "C:\\Users\\runneradmin\\Secret\\s.txt" : p.replace(/\//g, "\\")));
+    expect(await placeStaysInside({ tool: "Write", paths: ["src\\new.ts"] } as any, folder, outsideGit, toWindows)).toBeNull();
+    expect(await placeStaysInside({ tool: "Write", paths: [`${folder}\\src\\new.ts`] } as any, folder, outsideGit, toWindows)).toBeNull();
+    expect(await placeStaysInside({ tool: "Read", paths: ["src\\linked.ts"] } as any, folder, outsideGit, outside)).not.toBeNull();
   });
 });
 
