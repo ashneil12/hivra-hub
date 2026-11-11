@@ -3173,3 +3173,83 @@ mod review_r4_repro {
         );
     }
 }
+
+/// Review r5 repro for PR #208 (WP-178). The mac round 5 added (`record.mac`) is checked only in `restart_runner`. The
+/// app's own startup `restore` and `reopen` act on `state.json` before and without it: a record with no mac, phase
+/// `rolling-back` and `from.sha` set to this build's stamp (`monocode version` prints it) makes the daily app, outside
+/// any sandbox, rename the ship folder's `previous.app.off` to the record's `appPath`. That path is any file name the
+/// record chooses (a LaunchAgent plist here); with `to.sha` instead, `reopen` also runs `<appPath>`'s binary with the
+/// record's `launch.env`. The data folder is write-denied, so this is the second line (MED1 still open). Red at
+/// a5bc60a97.
+#[cfg(all(test, unix))]
+mod review_r5_repro {
+    use super::*;
+
+    #[test]
+    fn startup_does_not_restore_from_a_record_this_app_did_not_sign() {
+        let own = instance::stamp().sha.clone();
+        // An empty stamp makes the plan Leave, which exits the test process: refuse to run instead.
+        assert!(!own.is_empty(), "this test needs a build stamp");
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root = std::env::temp_dir().join(format!("ship-r5-{}-{nanos}", std::process::id()));
+        let data = root.join("data");
+        let dir = data.join(SHIP_DIR).join("planted");
+        let agents = root.join("LaunchAgents");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(&agents).unwrap();
+        let target = agents.join("com.agent.plist");
+        std::fs::write(dir.join(PREVIOUS_APP), "<plist>agent job</plist>\n").unwrap();
+        write_json(
+            &dir.join(STATE),
+            &json!({
+                "id": "planted",
+                "phase": "rolling-back",
+                "to": { "sha": "0000000" },
+                "from": { "sha": own },
+                "appPath": target.to_string_lossy(),
+                "dataDir": data.to_string_lossy(),
+            }),
+        )
+        .unwrap();
+        write_json(
+            &data.join(SHIP_DIR).join(CURRENT),
+            &json!({ "id": "planted" }),
+        )
+        .unwrap();
+        let daily = Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        };
+        let _ = startup(&daily, &data);
+        let moved = target.exists();
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(
+            !moved,
+            "startup moved a file from an unsigned ship record to the path that record chose, outside the sandbox"
+        );
+    }
+
+    /// Not a finding: the hand-rolled HMAC matches RFC 4231 test cases 1, 2 and 6 (a key longer than the block).
+    #[test]
+    fn the_ship_mac_is_hmac_sha256_per_rfc_4231() {
+        assert_eq!(
+            hex_encode(&hmac_sha256(&[0x0b; 20], b"Hi There")),
+            "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+        );
+        assert_eq!(
+            hex_encode(&hmac_sha256(b"Jefe", b"what do ya want for nothing?")),
+            "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+        );
+        assert_eq!(
+            hex_encode(&hmac_sha256(
+                &[0xaa; 131],
+                b"Test Using Larger Than Block-Size Key - Hash Key First"
+            )),
+            "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+}

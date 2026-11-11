@@ -1528,3 +1528,30 @@ pub fn decide(
 #[cfg(test)]
 #[path = "gates_tests.rs"]
 mod tests;
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(test)]
+mod review_r5_repro {
+    /// HIGH (new, H-E class): when a delegated worker reports done, the app runs the verdict gate by itself:
+    /// `claude -p …` through `claude_verdict`, plain, outside the sandbox. The program is the same Claude Code the worker
+    /// runs as, and its real file is writable from inside the sandbox: `~/.local/bin/claude` is a link into
+    /// `~/.local/share/claude/versions/<v>` (only the link's own folder is denied), and an npm install lives under
+    /// `/opt/homebrew/lib/node_modules` or `~/.claude/local`. The worker replaces that file, reports done, and the app
+    /// runs it unwrapped. The seam is `agent_sandbox::under_wrap` (gates' own scripts already use it); a unit test cannot
+    /// turn the sandbox on off macOS, so this reads the function.
+    #[test]
+    fn the_verdict_gate_runs_claude_under_the_agent_sandbox() {
+        let source = include_str!("gates.rs");
+        let start = source
+            .find("pub fn claude_verdict(")
+            .expect("claude_verdict");
+        let end = source[start..]
+            .find("\n}\n")
+            .map(|end| start + end)
+            .expect("end of claude_verdict");
+        assert!(
+            source[start..end].contains("agent_sandbox::"),
+            "the verdict gate runs the worker's own Claude Code binary outside the sandbox"
+        );
+    }
+}

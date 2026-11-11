@@ -2720,3 +2720,26 @@ mod tests {
         assert_eq!(human_age(9 * DAY_MS), "9 days");
     }
 }
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(test)]
+mod review_r5_repro {
+    /// HIGH (H-E still open): round 5 moved the PR watch's and the Git panel's `gh` into `contained_command`, but the
+    /// worktree sweep (worktree_autoclean, every 15 minutes and 2 minutes after launch, no tap) still runs
+    /// `Command::new("gh")` plain, with the cached GUI PATH, in a worktree an agent wrote. Whatever `gh` that PATH finds
+    /// first, and whatever it loads, runs outside the sandbox. The seam is `contained_command`; a unit test cannot see the
+    /// container (`contain_now` is plain in tests), so this reads the function.
+    #[test]
+    fn the_sweeps_gh_pr_list_runs_contained() {
+        let source = include_str!("worktree_janitor.rs");
+        let start = source
+            .find("pub fn gh_prs_for_branch(")
+            .expect("gh_prs_for_branch");
+        let body = &source[start..start + 400];
+        assert!(
+            body.contains("contained_command"),
+            "the sweep's gh pr list starts outside the sandbox: {}",
+            body.lines().nth(1).unwrap_or("")
+        );
+    }
+}

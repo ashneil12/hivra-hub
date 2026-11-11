@@ -1181,3 +1181,29 @@ mod tests {
         assert!(!dump(&conn).contains(SECRET));
     }
 }
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(test)]
+mod review_r5_repro {
+    /// HIGH (new): `monocode app timers.check {"command":"npm test"}` from a Mono's or a team's chat (agentAppTimers.ts)
+    /// stores the command with the chat's folder, and the watcher runs it every minute through `LiveRunner`: no shell,
+    /// but no sandbox either. `npm test`, `npm run check|lint|build`, `cargo test|check|clippy` (build.rs, proc macros)
+    /// and `node --test` all run code the agent wrote in that folder. The agent sets `"test": "printf off > …/settings/
+    /// agent-sandbox"` in package.json, arms the check and ends its turn; within a minute the app turns the sandbox off
+    /// (or plants a LaunchAgent, or reads ~/.ssh) outside the sandbox. Verify runs and goal checks are wrapped
+    /// (`action_wrap`); this runner is not. The seam is `agent_sandbox::action_wrap` / `under_wrap`; a unit test cannot
+    /// turn the sandbox on off macOS, so this reads the live runner.
+    #[test]
+    fn a_check_an_agent_armed_runs_under_the_agent_sandbox() {
+        let source = include_str!("checks.rs");
+        let start = source
+            .find("impl Runner for LiveRunner")
+            .expect("LiveRunner");
+        let end = source.find("#[cfg(test)]\nmod tests").expect("tests");
+        let live = &source[start..end];
+        assert!(
+            live.contains("agent_sandbox::"),
+            "a check an agent armed (npm test, cargo test, node --test in its own folder) runs outside the sandbox"
+        );
+    }
+}
