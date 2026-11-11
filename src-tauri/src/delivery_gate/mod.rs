@@ -632,7 +632,28 @@ fn tool_command(program: &Path, nm_home: &Path) -> Command {
     command.env("NO_MISTAKES_NO_UPDATE_CHECK", "1");
     command.env("NO_MISTAKES_TELEMETRY", "0");
     command.stdin(Stdio::null());
-    command
+    // The daemon then runs the repo's own checks and a pipeline agent. Only its home stays writable.
+    match gate_sandbox_prefix(nm_home) {
+        Ok(prefix) => crate::agent_sandbox::under_wrap(command, prefix.as_deref()),
+        Err(_) => Command::new("/nonexistent/monocode-sandbox-refused"),
+    }
+}
+
+/// The sandbox prefix for the no-mistakes tool, or nothing when the sandbox is off.
+/// Off means the switch file in the data folder is absent, so unit tests stay plain.
+/// A profile that cannot be built refuses the start instead of running the tool unwrapped.
+fn gate_sandbox_prefix(nm_home: &Path) -> Result<Option<Vec<std::ffi::OsString>>, String> {
+    let Some(data) = nm_home.parent() else {
+        return Err("The check's home has no data folder.".into());
+    };
+    if !crate::agent_sandbox::enabled(Some(data)) {
+        return Ok(None);
+    }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "HOME is not set, so the macOS sandbox cannot be built.".to_string())?;
+    let allowed = [nm_home.to_path_buf()];
+    crate::agent_sandbox::more_agent_wrap(&home, Some(data), &[], &allowed)
 }
 
 /// Keys a check's child may see. Values are not logged.

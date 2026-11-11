@@ -63,6 +63,11 @@ pub async fn run_project_tests(project: String) -> Result<Option<ProjectTestRun>
         if let Some(path) = crate::harness::login_shell_path() {
             cmd.env("PATH", path);
         }
+        // The app starts this itself, with no tap, and the script is one the agents wrote. Same wrap as a project action.
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        let prefix =
+            crate::agent_sandbox::action_wrap(data.as_deref(), std::slice::from_ref(&folder))?;
+        let cmd = crate::agent_sandbox::under_wrap(cmd, prefix.as_deref());
         let (ok, output) = run_collected(cmd, TEST_TIMEOUT, "test run");
         Ok(Some(ProjectTestRun {
             command: "npm test".into(),

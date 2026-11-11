@@ -3175,12 +3175,8 @@ fn validate_harness_binary_version(
     if provider == "antigravity" {
         return Ok(());
     }
-    let version = exec_capture_within(
-        &path.to_string_lossy(),
-        &["--version".to_string()],
-        None,
-        timeout,
-    )?;
+    // A stored path is untrusted. Run it inside the container, not through exec_output.
+    let version = contained_version_output(path, timeout)?;
     let lower = version.to_ascii_lowercase();
     let has_version = is_supported_harness_version(&version);
     let provider_marker = match provider {
@@ -3197,6 +3193,39 @@ fn validate_harness_binary_version(
             "Configured {provider} binary returned an invalid version."
         ))
     }
+}
+
+/// `--version` of a stored harness path. The container is `contained_command`: unit tests stay plain, and a container
+/// that cannot be built is a program that does not exist.
+fn contained_version_output(path: &Path, timeout: Duration) -> Result<String, String> {
+    let program = path.to_string_lossy();
+    crate::verify_live::provider_start_allowed(crate::verify_live::plan(), None, &program)?;
+    let mut cmd = crate::git_cmd::contained_command(path);
+    cmd.arg("--version")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    prepare_child(&mut cmd, &program);
+    let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {program}: {e}"))?;
+    let pid = child.id();
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let _ = tx.send(child.wait_with_output());
+    });
+    let output = match rx.recv_timeout(timeout) {
+        Ok(Ok(output)) => output,
+        Ok(Err(e)) => return Err(format!("Failed to run {program}: {e}")),
+        Err(_) => {
+            terminate(pid);
+            return Err(format!("{program} timed out"));
+        }
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+    if output.status.success() || !stdout.trim().is_empty() {
+        return Ok(stdout);
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(stderr.trim().to_string())
 }
 
 fn resolve_configured_harness_binary(
@@ -3588,7 +3617,7 @@ fn help_mentions_rpc_mode(path: &Path) -> bool {
     if bench_refuses_path(path) {
         return false;
     }
-    let mut cmd = Command::new(path);
+    let mut cmd = crate::git_cmd::contained_command(path);
     cmd.arg("--help")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -3682,7 +3711,7 @@ fn fx_help_mentions_acp(path: &Path) -> bool {
     if bench_refuses_path(path) {
         return false;
     }
-    let mut cmd = Command::new(path);
+    let mut cmd = crate::git_cmd::contained_command(path);
     cmd.arg("--help")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -3748,7 +3777,7 @@ fn grok_help_mentions_agent(path: &Path) -> bool {
     if bench_refuses_path(path) {
         return false;
     }
-    let mut cmd = Command::new(path);
+    let mut cmd = crate::git_cmd::contained_command(path);
     cmd.arg("--help")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
