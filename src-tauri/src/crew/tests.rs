@@ -3594,8 +3594,9 @@ fn a_project_with_dubious_git_elsewhere_does_not_refuse_an_unrelated_start() {
     judged.expect("an unrelated start is not refused by another project's git");
 }
 
-/// WP-141 round 9 (MED-A): a candidate whose checkout git cannot read refuses the judgment. Both folders are real
-/// checkouts of one repository (a worktree and its main checkout); the repository's config is then broken.
+/// WP-141 round 11: a worktree stays owned from the project's registered worktrees, even when the repository config
+/// is broken. The banned CLI is still refused. A CLI the project does not ban is allowed, because the place no longer
+/// depends on git being able to read the checkout.
 #[test]
 fn a_candidate_whose_checkout_git_cannot_read_refuses_the_judgment() {
     use super::gate::judge_start;
@@ -3636,15 +3637,22 @@ fn a_candidate_whose_checkout_git_cannot_read_refuses_the_judgment() {
     )
     .unwrap();
     std::fs::write(repo.join(".git").join("config"), "[core\n garbage = = \n").unwrap();
-    let judged = judge_start(
+    let allowed = judge_start(
         &conn,
         "7d3e5c2a-lead-chat",
         "claude",
         worktree.to_str().unwrap(),
     );
+    let banned = judge_start(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "codex",
+        worktree.to_str().unwrap(),
+    );
     let _ = std::fs::remove_dir_all(&root);
-    let err = judged.expect_err("a candidate git cannot read refuses the judgment");
-    assert!(err.contains("could not be read"), "{err}");
+    allowed.expect("a CLI the project does not ban still starts");
+    let err = banned.expect_err("the project's Never use still applies");
+    assert!(err.contains("Never use"), "{err}");
 }
 
 /// WP-141 round 9 (LOW-1): a project saved before its folder existed still owns that folder once it exists.
@@ -3679,8 +3687,8 @@ fn a_project_saved_before_its_folder_existed_still_owns_it() {
 }
 
 /// WP-141 round 10: a linked worktree whose own `.git` file is garbage must not lose its project's Never use.
-/// The files cannot name a common directory, so the judgment asks git and refuses when that read fails too.
-/// An unrelated project's unreadable entry still refuses nothing (the round 9 MED-A tests).
+/// Round 11: the project owns the worktree from the worktrees it has registered, so Never use applies and a CLI it
+/// does not ban is allowed. An unrelated project's unreadable entry still refuses nothing (the round 9 MED-A tests).
 #[test]
 fn a_worktree_with_a_garbage_git_file_refuses_a_banned_cli() {
     use super::gate::judge_spawn;
@@ -3726,6 +3734,13 @@ fn a_worktree_with_a_garbage_git_file_refuses_a_banned_cli() {
     )
     .unwrap();
     std::fs::write(worktree.join(".git"), "garbage\n").unwrap();
+    let allowed = judge_spawn(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "claude",
+        worktree.to_str().unwrap(),
+        None,
+    );
     let judged = judge_spawn(
         &conn,
         "7d3e5c2a-lead-chat",
@@ -3734,8 +3749,9 @@ fn a_worktree_with_a_garbage_git_file_refuses_a_banned_cli() {
         None,
     );
     let _ = std::fs::remove_dir_all(&root);
+    allowed.expect("a CLI the project does not ban still starts");
     let err = judged.expect_err(
         "a worktree whose own git file cannot be read must not drop its project's Never use",
     );
-    assert!(err.contains("could not be read"), "{err}");
+    assert!(err.contains("Never use"), "{err}");
 }

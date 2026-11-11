@@ -2,6 +2,8 @@
 //! `delegations` is positional upstream. Two windows compare-and-swap the revision. A usage-limit note
 //! records a hold for display and does not change the row. The app resumes that chat itself.
 
+use std::io::Read;
+
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -743,35 +745,131 @@ fn git_entry(folder: &std::path::Path) -> Option<std::path::PathBuf> {
         .find(|entry| entry.exists())
 }
 
-/// The git common directory a `.git` entry names, read from its files alone, so no git runs to decide whether a project
-/// could share a checkout. A directory is its own common directory unless it has a `commondir` file. A file holds
-/// `gitdir: <path>`, and that directory's `commondir` file, when present, names the common directory. None when the
-/// entry cannot be read this way; such a project is then not a candidate.
-fn common_from_entry(entry: &std::path::Path) -> Option<String> {
-    let dir = if entry.is_dir() {
+/// How much of a git file is read. A `.git` file and a `commondir` or `gitdir` file are a path, a few dozen bytes.
+/// Anything larger is not treated as one, and a fifo is never opened.
+const GIT_FILE_CAP: u64 = 8192;
+
+/// A regular file, or a symlink to one, no bigger than `GIT_FILE_CAP`. A fifo, a directory or a huge file is None, and
+/// nothing is opened that is not a regular file, so a fifo named `.git` cannot stall the judgment.
+fn read_git_file(path: &std::path::Path) -> Option<String> {
+    let listed = std::fs::symlink_metadata(path).ok()?;
+    let meta = if listed.file_type().is_symlink() {
+        std::fs::metadata(path).ok()?
+    } else {
+        listed
+    };
+    if !meta.is_file() || meta.len() > GIT_FILE_CAP {
+        return None;
+    }
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut buf = vec![0u8; meta.len() as usize];
+    file.read_exact(&mut buf).ok()?;
+    String::from_utf8(buf).ok()
+}
+
+fn meta_of(path: &std::path::Path) -> Option<std::fs::Metadata> {
+    let listed = std::fs::symlink_metadata(path).ok()?;
+    if listed.file_type().is_symlink() {
+        std::fs::metadata(path).ok()
+    } else {
+        Some(listed)
+    }
+}
+
+/// A git common directory, as git itself accepts one: `HEAD` is a file, and `objects` and `refs` are directories.
+fn git_admin_ok(dir: &std::path::Path) -> bool {
+    meta_of(&dir.join("HEAD")).is_some_and(|meta| meta.is_file())
+        && meta_of(&dir.join("objects")).is_some_and(|meta| meta.is_dir())
+        && meta_of(&dir.join("refs")).is_some_and(|meta| meta.is_dir())
+}
+
+/// The git common directory a `.git` entry names, read from its files alone. A directory is its own common directory
+/// unless it has a `commondir` file. A file holds `gitdir: <path>`, and that directory's `commondir` file, when
+/// present, names the common directory. The common directory must be a real git dir. A `commondir` that is present but
+/// not a readable file is None: the directory is not then treated as its own common directory. None for a fifo or
+/// anything else that is not a file or a directory, and that entry is never opened.
+fn common_dir(entry: &std::path::Path) -> Option<std::path::PathBuf> {
+    let meta = meta_of(entry)?;
+    if !meta.is_file() && !meta.is_dir() {
+        return None;
+    }
+    let dir = if meta.is_dir() {
         entry.to_path_buf()
     } else {
-        let text = std::fs::read_to_string(entry).ok()?;
+        let text = read_git_file(entry)?;
         let target = text.lines().find_map(|line| line.strip_prefix("gitdir:"))?;
         let target = std::path::Path::new(target.trim());
+        if target.as_os_str().is_empty() {
+            return None;
+        }
         if target.is_absolute() {
             target.to_path_buf()
         } else {
             entry.parent()?.join(target)
         }
     };
-    let common = match std::fs::read_to_string(dir.join("commondir")) {
-        Ok(relative) => {
-            let relative = std::path::Path::new(relative.trim());
-            if relative.is_absolute() {
-                relative.to_path_buf()
-            } else {
-                dir.join(relative)
-            }
+    let common = if std::fs::symlink_metadata(dir.join("commondir")).is_ok() {
+        let text = read_git_file(&dir.join("commondir"))?;
+        let relative = std::path::Path::new(text.trim());
+        if relative.as_os_str().is_empty() {
+            return None;
         }
-        Err(_) => dir,
+        if relative.is_absolute() {
+            relative.to_path_buf()
+        } else {
+            dir.join(relative)
+        }
+    } else {
+        dir
     };
-    common.exists().then(|| path_key(&common.to_string_lossy()))
+    if !git_admin_ok(&common) {
+        return None;
+    }
+    Some(crate::fs::canonical(&common).unwrap_or(common))
+}
+
+/// The main checkout's top-level folder, when the common directory is a `.git` folder. A bare repository has none.
+fn main_checkout_top(common: &std::path::Path) -> Option<String> {
+    if common.file_name().and_then(|name| name.to_str()) != Some(".git") {
+        return None;
+    }
+    let parent = common.parent()?;
+    parent.is_dir().then(|| path_key(&parent.to_string_lossy()))
+}
+
+/// Tops of the linked worktrees this common directory has registered (`worktrees/*/gitdir`, files only). The file names
+/// the worktree's `.git` file, and the top is that file's parent.
+fn registered_worktree_tops(common: &std::path::Path) -> Vec<String> {
+    let Ok(read) = std::fs::read_dir(common.join("worktrees")) else {
+        return Vec::new();
+    };
+    let mut tops = Vec::new();
+    for entry in read.flatten() {
+        let gitdir = entry.path().join("gitdir");
+        let Some(text) = read_git_file(&gitdir) else {
+            continue;
+        };
+        let named = text.lines().next().unwrap_or("").trim();
+        if named.is_empty() {
+            continue;
+        }
+        let path = std::path::Path::new(named);
+        let resolved = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            gitdir
+                .parent()
+                .map(|dir| dir.join(path))
+                .unwrap_or_else(|| path.to_path_buf())
+        };
+        let Some(top) = resolved.parent() else {
+            continue;
+        };
+        if top.is_dir() {
+            tops.push(path_key(&top.to_string_lossy()));
+        }
+    }
+    tops
 }
 
 /// The most checkouts kept in the cache. The oldest goes first when a new one is put in.
@@ -813,9 +911,13 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
     let Some(entry) = git_entry(folder) else {
         return Ok(None);
     };
-    let stamp = std::fs::metadata(&entry)
-        .and_then(|meta| meta.modified())
-        .ok();
+    // A fifo or anything else that is not a file or a directory is not a git dir. Git is not run, and the entry is
+    // not opened, so one project's fifo cannot stall the judgment that holds the session store.
+    let meta = match meta_of(&entry) {
+        Some(meta) if meta.is_file() || meta.is_dir() => meta,
+        _ => return Err(unreadable()),
+    };
+    let stamp = meta.modified().ok();
     if let Ok(cache) = CHECKOUTS.lock() {
         if let Some((_, (seen, found))) = cache.iter().find(|(key, _)| key == folder) {
             if *seen == stamp {
@@ -823,18 +925,23 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
             }
         }
     }
-    let output = std::process::Command::new("git")
+    let mut command = crate::fs::git_cmd();
+    command
         .arg("-C")
         .arg(folder)
         .args(["rev-parse", "--git-common-dir", "--show-toplevel"])
         .env("LC_ALL", "C")
         .env("LANGUAGE", "C")
-        .output()
-        .map_err(|_| unreadable())?;
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    let output = match crate::pr_watch::bounded::run(command, std::time::Duration::from_secs(5)) {
+        Ok(ran) => ran,
+        Err(_) => return Err(unreadable()),
+    };
     if !output.status.success() {
         return Err(unreadable());
     }
-    let text = String::from_utf8(output.stdout).map_err(|_| unreadable())?;
+    let text = output.stdout;
     let mut lines = text.lines();
     let (Some(common), Some(top)) = (lines.next(), lines.next()) else {
         return Err(unreadable());
@@ -854,91 +961,252 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
     Ok(Some(found))
 }
 
+/// Where a candidate project sits relative to the folder being judged.
+enum Place {
+    /// It owns the folder.
+    Yes,
+    /// It does not.
+    No,
+    /// Its git dir cannot be read, and neither can the folder's, so the answer is not known.
+    Undecided,
+}
+
+/// What a caller wants from the owning-project read. `cli` None (or blank) fails closed when a place is undecided.
+/// `agent` is an `app-` session, or the launch gate, where the lock can change the answer.
+pub(crate) struct OwningQuery<'a> {
+    pub roots: &'a [String],
+    pub cli: Option<&'a str>,
+    pub agent: bool,
+}
+
+/// The folder's own `.git` cannot be read as a repository. A folder with no `.git` is not unreadable.
+fn folder_unreadable(folder_key: &str) -> bool {
+    let Some(entry) = git_entry(std::path::Path::new(folder_key)) else {
+        return false;
+    };
+    if common_dir(&entry).is_some() {
+        return false;
+    }
+    !matches!(checkout_of(std::path::Path::new(folder_key)), Ok(Some(_)))
+}
+
+/// Membership from git, used when the project's files do not name a common directory (a bare repo, or a broken one).
+fn place_by_git(folder_key: &str, root_key: &str) -> Place {
+    let theirs = match checkout_of(std::path::Path::new(root_key)) {
+        Ok(Some(checkout)) => checkout,
+        Ok(None) | Err(_) => {
+            return if folder_unreadable(folder_key) {
+                Place::Undecided
+            } else {
+                Place::No
+            };
+        }
+    };
+    let mine = match checkout_of(std::path::Path::new(folder_key)) {
+        Ok(Some(checkout)) => checkout,
+        Ok(None) | Err(_) => {
+            return if folder_unreadable(folder_key) {
+                Place::Undecided
+            } else {
+                Place::No
+            };
+        }
+    };
+    if mine.common != theirs.common {
+        return Place::No;
+    }
+    match owns_within_checkout(folder_key, &mine.top, root_key, &theirs.top) {
+        Ok(true) => Place::Yes,
+        Ok(false) => Place::No,
+        Err(_) => Place::Undecided,
+    }
+}
+
+/// Membership from the project's side: the main checkout and every linked worktree it has registered. A folder that
+/// sits in none of those tops is not owned. Git is not asked about the folder's own `.git`.
+fn place_inside_common(folder_key: &str, root_id: &str, common: &std::path::Path) -> Place {
+    let root_key = path_key(root_id);
+    let Some(main) = main_checkout_top(common) else {
+        return place_by_git(folder_key, &root_key);
+    };
+    let mut tops = vec![main.clone()];
+    tops.extend(registered_worktree_tops(common));
+    let mut saw_error = false;
+    for top in &tops {
+        if !key_within(folder_key, top) {
+            continue;
+        }
+        match owns_within_checkout(folder_key, top, &root_key, &main) {
+            Ok(true) => return Place::Yes,
+            Ok(false) => {}
+            Err(_) => saw_error = true,
+        }
+    }
+    if saw_error {
+        Place::Undecided
+    } else {
+        Place::No
+    }
+}
+
+fn place_project(folder_key: &str, root_id: &str) -> Place {
+    let root_key = path_key(root_id);
+    if root_key.is_empty() {
+        return Place::No;
+    }
+    // A folder inside the project's own folder is owned before any git read, so a fifo `.git` on the project does
+    // not stall a launch inside it.
+    if key_within(folder_key, &root_key) {
+        return Place::Yes;
+    }
+    let Some(entry) = git_entry(std::path::Path::new(&root_key)) else {
+        return Place::No;
+    };
+    if let Some(common) = common_dir(&entry) {
+        return place_inside_common(folder_key, root_id, &common);
+    }
+    place_by_git(folder_key, &root_key)
+}
+
+/// Saved project ids, then any hub root that is not already one of them (the crew row's spelling wins).
+fn candidate_ids(conn: &Connection, roots: &[String]) -> Result<Vec<String>, String> {
+    let mut statement = conn
+        .prepare("SELECT DISTINCT scope_id FROM crew_rule_meta WHERE scope = 'project'")
+        .map_err(|error| error.to_string())?;
+    let mut ids = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?
+        .collect::<rusqlite::Result<Vec<String>>>()
+        .map_err(|error| error.to_string())?;
+    for root in roots {
+        let root = root.trim();
+        if root.is_empty() {
+            continue;
+        }
+        let key = path_key(root);
+        if key.is_empty() || ids.iter().any(|id| path_key(id) == key) {
+            continue;
+        }
+        ids.push(root.to_string());
+    }
+    Ok(ids)
+}
+
+/// An undecided place refuses when the caller did not name a CLI, or when one of those projects' own saved policy
+/// would change the answer: the CLI is on its Never use list, or its lock is on and this is an agent launch.
+fn doubtful_refuses(
+    conn: &Connection,
+    ids: &[String],
+    query: &OwningQuery,
+) -> Result<bool, String> {
+    let Some(cli) = query.cli.map(str::trim).filter(|id| !id.is_empty()) else {
+        return Ok(true);
+    };
+    for id in ids {
+        let Some(policy) = saved_policy(conn, "project", id)? else {
+            continue;
+        };
+        if listed_never_use(&policy).iter().any(|banned| banned == cli) {
+            return Ok(true);
+        }
+        if query.agent && policy.get("lockDefault").and_then(Value::as_bool) == Some(true) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn specific_first(ids: &mut [String]) {
+    ids.sort_by(|left, right| {
+        let left_key = path_key(left);
+        let right_key = path_key(right);
+        right_key
+            .len()
+            .cmp(&left_key.len())
+            .then_with(|| left_key.cmp(&right_key))
+    });
+}
+
 /// Every hub project that owns a folder. A project owns a folder when the folder is inside the project's folder, or
-/// when both are in one checkout (a worktree included) and `owns_within_checkout` says so. A project is a candidate for
-/// the git read only when its `.git` entry and the folder's name the same common directory, read from the files. When
-/// the folder's own entry exists but those files do not name one, git reads it and a failure refuses the judgment. A
-/// project whose entry is unreadable or elsewhere refuses nothing.
-pub(crate) fn projects_owning(conn: &Connection, folder: &str) -> Result<Vec<String>, String> {
+/// when the project's git dir (its main checkout and its registered worktrees) contains the folder. The folder's own
+/// `.git` is not what decides that. A place that cannot be read refuses only when a doubtful project's own policy
+/// could change the answer for this CLI. Callers that pass no CLI fail closed.
+pub(crate) fn projects_owning_for(
+    conn: &Connection,
+    folder: &str,
+    query: &OwningQuery,
+) -> Result<Vec<String>, String> {
     let folder = folder.trim();
     if folder.is_empty() {
         return Ok(Vec::new());
     }
     let here = path_key(&crate::delivery::settings::key(folder));
-    let mut statement = conn
-        .prepare("SELECT DISTINCT scope_id FROM crew_rule_meta WHERE scope = 'project'")
-        .map_err(|error| error.to_string())?;
-    let roots = statement
-        .query_map([], |row| row.get::<_, String>(0))
-        .map_err(|error| error.to_string())?
-        .collect::<rusqlite::Result<Vec<String>>>()
-        .map_err(|error| error.to_string())?;
-    let here_entry = git_entry(std::path::Path::new(&here));
     let mut owners = Vec::new();
-    for root_key in roots {
-        let root = path_key(&root_key);
-        if key_within(&here, &root) {
-            owners.push(root_key);
-            continue;
-        }
-        let Some(root_entry) = git_entry(std::path::Path::new(&root)) else {
-            continue;
-        };
-        let (Some(theirs_common), Some(entry)) =
-            (common_from_entry(&root_entry), here_entry.as_ref())
-        else {
-            continue;
-        };
-        // The folder's own `.git` is present, but its files do not name a common directory (garbage written into a
-        // linked worktree's `.git` file, or a gitdir that is gone). Git must say which checkout this is. If git cannot
-        // read it either, refuse: skipping the candidate would drop the project's Never use and lock. An unrelated
-        // project's unreadable entry never reaches here.
-        let mine_common = match common_from_entry(entry) {
-            Some(common) => common,
-            None => match checkout_of(std::path::Path::new(&here))? {
-                Some(checkout) => checkout.common,
-                None => {
-                    return Err(
-                        "The crew policy could not be read, so nothing was started (a folder's place in its git checkout could not be decided)."
-                            .to_string(),
-                    );
-                }
-            },
-        };
-        if mine_common != theirs_common {
-            continue;
-        }
-        // A candidate: git reads both checkouts now, and a failure refuses the judgment (it is not hidden as no owner).
-        let Some(mine) = checkout_of(std::path::Path::new(&here))? else {
-            continue;
-        };
-        let Some(theirs) = checkout_of(std::path::Path::new(&root))? else {
-            continue;
-        };
-        if mine.common != theirs.common {
-            continue;
-        }
-        if owns_within_checkout(&here, &mine.top, &root, &theirs.top)? {
-            owners.push(root_key);
+    let mut doubtful = Vec::new();
+    for id in candidate_ids(conn, query.roots)? {
+        match place_project(&here, &id) {
+            Place::Yes => owners.push(id),
+            Place::No => {}
+            Place::Undecided => doubtful.push(id),
         }
     }
+    if !doubtful.is_empty() && doubtful_refuses(conn, &doubtful, query)? {
+        return Err(
+            "The crew policy could not be read, so nothing was started (a folder's place in its git checkout could not be decided)."
+                .to_string(),
+        );
+    }
+    specific_first(&mut owners);
     Ok(owners)
 }
 
-/// Every project that owns one of the folders, each once, in the order given. A folder no project owns adds nothing.
-pub(crate) fn projects_owning_all(
+pub(crate) fn projects_owning(conn: &Connection, folder: &str) -> Result<Vec<String>, String> {
+    projects_owning_for(
+        conn,
+        folder,
+        &OwningQuery {
+            roots: &[],
+            cli: None,
+            agent: false,
+        },
+    )
+}
+
+/// Every project that owns one of the folders, each once. The same refusal rule as `projects_owning_for`.
+pub(crate) fn projects_owning_all_for(
     conn: &Connection,
     folders: &[String],
+    query: &OwningQuery,
 ) -> Result<Vec<String>, String> {
     let mut projects: Vec<String> = Vec::new();
     for folder in folders {
-        for owner in projects_owning(conn, folder)? {
-            if !projects.contains(&owner) {
+        for owner in projects_owning_for(conn, folder, query)? {
+            if !projects
+                .iter()
+                .any(|have| path_key(have) == path_key(&owner))
+            {
                 projects.push(owner);
             }
         }
     }
+    specific_first(&mut projects);
     Ok(projects)
+}
+
+/// Every project that owns one of the folders, each once. A place that cannot be read refuses the read.
+pub(crate) fn projects_owning_all(
+    conn: &Connection,
+    folders: &[String],
+) -> Result<Vec<String>, String> {
+    projects_owning_all_for(
+        conn,
+        folders,
+        &OwningQuery {
+            roots: &[],
+            cli: None,
+            agent: false,
+        },
+    )
 }
 
 pub(crate) fn policy_for_all(

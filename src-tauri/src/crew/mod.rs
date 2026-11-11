@@ -16,6 +16,8 @@ mod rules;
 mod store;
 
 #[cfg(test)]
+mod review_r10_tests;
+#[cfg(test)]
 mod tests;
 
 use std::path::PathBuf;
@@ -321,10 +323,26 @@ pub fn crew_on_failure(
 }
 
 /// Round 9 (LOW-3): the saved projects that own a folder, for the Lead's policy read.
+/// Round 11: `roots` are hub project folders that have no crew row yet, so a worker default there still applies.
 #[tauri::command(async)]
 pub fn crew_projects_owning(
     store: State<'_, SessionStore>,
     folder: String,
+    roots: Option<Vec<String>>,
 ) -> Result<Vec<String>, String> {
-    store::projects_owning(&*store.lock_conn()?, &folder)
+    let roots = roots.unwrap_or_default();
+    let conn = store.lock_conn()?;
+    // No hub roots is the fail-closed read: a place that cannot be decided refuses the read.
+    if roots.is_empty() {
+        return store::projects_owning(&conn, &folder);
+    }
+    store::projects_owning_for(
+        &conn,
+        &folder,
+        &store::OwningQuery {
+            roots: &roots,
+            cli: None,
+            agent: false,
+        },
+    )
 }

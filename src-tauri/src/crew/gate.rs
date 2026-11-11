@@ -65,10 +65,19 @@ fn unreadable(error: String) -> String {
 /// Ok when the launch may start. The reason is one plain line, shown to the person and the Lead.
 pub fn check_launch(conn: &Connection, input: &LaunchCheck) -> Result<(), String> {
     let folders: Vec<String> = input.project.iter().cloned().collect();
-    let projects = store::projects_owning_all(conn, &folders).map_err(unreadable)?;
+    let cli = input.cli.trim();
+    let projects = store::projects_owning_all_for(
+        conn,
+        &folders,
+        &store::OwningQuery {
+            roots: &[],
+            cli: Some(cli),
+            agent: true,
+        },
+    )
+    .map_err(unreadable)?;
     let policy =
         store::policy_for_all(conn, input.mono.as_deref(), &projects).map_err(unreadable)?;
-    let cli = input.cli.trim();
     let name = label_of(cli);
     if never_listed(&policy).iter().any(|id| id == cli) {
         return Err(never_use_message(
@@ -168,13 +177,24 @@ fn projects_in_force(
     conn: &Connection,
     grant: Option<&Grant>,
     folder: &str,
+    cli: &str,
+    agent: bool,
 ) -> Result<Vec<String>, String> {
     let mut folders = Vec::new();
     if let Some(project) = grant.and_then(|grant| grant.project.clone()) {
         folders.push(project);
     }
     folders.push(folder.to_string());
-    store::projects_owning_all(conn, &folders).map_err(unreadable)
+    store::projects_owning_all_for(
+        conn,
+        &folders,
+        &store::OwningQuery {
+            roots: &[],
+            cli: Some(cli),
+            agent,
+        },
+    )
+    .map_err(unreadable)
 }
 
 fn policy_of(
@@ -215,10 +235,10 @@ pub fn judge_start(
     cli: &str,
     folder: &str,
 ) -> Result<(), String> {
-    let grant = store::grant_of(conn, session_of(session))?;
-    let projects = projects_in_force(conn, grant.as_ref(), folder)?;
-    let policy = policy_of(conn, grant.as_ref(), &projects)?;
     let cli = cli.trim();
+    let grant = store::grant_of(conn, session_of(session))?;
+    let projects = projects_in_force(conn, grant.as_ref(), folder, cli, is_agent_session(session))?;
+    let policy = policy_of(conn, grant.as_ref(), &projects)?;
     let name = label_of(cli);
     if never_listed(&policy).iter().any(|id| id == cli) {
         return Err(never_use_message(
