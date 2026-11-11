@@ -1,8 +1,10 @@
 //! Every process start under `src-tauri/src` is wrapped in the agent sandbox, or named in `ALLOW` with a reason.
 //!
 //! A start is `Command::new`, an empty `.spawn()`, `.output()` or `.status()` (turbofish allowed, HTTP
-//! `response.status()` is not a start), or a call that runs a command built elsewhere: `bounded::run`,
-//! `run_collected`, `spawn_managed`, `spawn_command`, `delivery::child`, and a `use ... as` alias of one of those.
+//! `response.status()` is not a start), an empty `.exec()` (it replaces the process), `open::that` or
+//! `open::that_detached` (they start `/usr/bin/open`), or a call that runs a command built elsewhere:
+//! `bounded::run`, `run_collected`, `spawn_managed`, `spawn_command`, `delivery::child`, and a
+//! `use ... as` alias of one of those.
 //! It is not a start when it sits in a comment or a string, when the call takes arguments (a thread, a
 //! rayon scope, or some other method), or when it is test-only. Test-only means a `#[cfg(test)]` function,
 //! a `#[cfg(test)]` module body, or a file brought in by `#[cfg(test)] mod` (including `tests.rs`). Those are
@@ -157,6 +159,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "The disclaim helper runs the argv it was itself started with. Unix and the other copy share this name.",
     ),
     (
+        "disclaim.rs",
+        "disclaimed_exec",
+        "The macOS disclaim helper replaces this process with posix_spawn SETEXEC. When a hash was approved, the file is hashed first and a mismatch does not exec. Not an agent shell.",
+    ),
+    (
         "external_editor.rs",
         "launch_editor_sync",
         "/usr/bin/open -a of an editor Ash picked, or that editor's own program, on a folder that exists.",
@@ -182,6 +189,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "open -R, explorer, or xdg-open, of a path Ash asked to show. Fixed programs.",
     ),
     (
+        "fs.rs",
+        "open_path_with_default_app",
+        "open of a path Ash asked to open with the default app. A file that would launch a program (a .command, an .app, a disk image, a script) is refused first. Not inside the agent sandbox.",
+    ),
+    (
         "gates.rs",
         "run_collected",
         "Spawns a Command the caller built. run_script and run_project_tests wrap with under_wrap before they call this.",
@@ -189,7 +201,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "harness.rs",
         "exec_output",
-        "Command::new after provider_start_allowed, for the MCP binary probe and harness_update of a resolved CLI. The stored-path --version probe is contained_command in contained_version_output, not here.",
+        "Command::new after provider_start_allowed. harness_exec (exec_args_allowed and is_resolved_harness_binary), the MCP probe and harness_update all start here with no sandbox-exec. A swapped binary is refused because the resolved file, its link target, its package folder and the Homebrew prefix are write-denied. The stored-path --version probe is contained_command in contained_version_output.",
     ),
     (
         "harness.rs",
@@ -209,7 +221,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "harness.rs",
         "spawn_managed",
-        "The one place a harness child is started. An agent CLI is sandbox-exec before it reaches here. The help probes are the app's own.",
+        "Starts the harness child. An agent CLI is sandbox-exec before a chat reaches here. exec_output (harness_exec, the MCP probe and harness_update) also starts here with no sandbox-exec. The resolved file, its link target, its package folder and the Homebrew prefix are write-denied, which keeps a swapped binary from running.",
     ),
     (
         "harness.rs",
@@ -245,6 +257,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "macos.rs",
         "relaunch_from_dev_bundle",
         "codesign of the dev bundle this debug build just wrote, then exec of that bundle's own binary. It refuses an identifier that is not a dev copy.",
+    ),
+    (
+        "menu.rs",
+        "dispatch",
+        "open of a fixed https address (the help menu). Not a path an agent wrote.",
     ),
     (
         "macos.rs",
@@ -339,7 +356,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "pty.rs",
         "spawn_unix",
-        "Ash's own terminal login shell. The files a login shell sources are write-denied. Not wrapped on purpose.",
+        "Ash's own terminal login shell. The files a login shell sources are write-denied, including the lines installers write, and a login PATH directory that is a link is write-denied where it points. Not wrapped on purpose.",
     ),
     (
         "pty.rs",
@@ -459,7 +476,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "terminal_mirror.rs",
         "run",
-        "Starts claude only, with an allow-listed environment. It is not inside the agent sandbox. The versions directory a swapped binary would need is write-denied.",
+        "Starts claude only, with an allow-listed environment. It resolves claude (a cask, an npm link, or a versions directory) and runs that file with no sandbox-exec. The resolved file, its link target, its package folder and the Homebrew prefix are write-denied.",
     ),
     (
         "watcher/checks.rs",
@@ -520,6 +537,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "connectors/launch.rs",
         "exec_stdio",
         "On Windows, starts the connector command stdio_command built, environment cleared. On Unix this process is replaced with exec. The .status() line is cfg(not(unix)), which the scanner still sees.",
+    ),
+    (
+        "connectors/commands.rs",
+        "connector_oauth",
+        "open of the connector's own OAuth https address, so Ash can sign in. Not a file path.",
     ),
     (
         "crew/store.rs",
@@ -1031,6 +1053,22 @@ fn find_sites(scan: &Scan, found: &mut Vec<Site>) {
     }
     for alias in call_aliases(scan.masked) {
         push_calls(scan, &alias, found);
+    }
+    // `open::that` is a prefix of `open::that_detached`, so the longer name is listed first. token_at still
+    // keeps them apart: the byte after `that` is `_`, which is an identifier.
+    for name in ["open::that_detached", "open::that"] {
+        push_calls(scan, name, found);
+    }
+    // `.exec` replaces the process. The byte before `.` is an identifier, so token_at would miss it, the same
+    // way `.spawn` is found.
+    let method = b".exec";
+    i = 0;
+    while let Some(rel) = find_at(&bytes[i..], method) {
+        let at = i + rel;
+        if empty_spawn(bytes, at + method.len()) {
+            push_site(scan, at, found);
+        }
+        i = at + method.len();
     }
 }
 

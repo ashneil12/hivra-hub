@@ -7829,15 +7829,76 @@ pub async fn open_path_with_default_app(path: String) -> Result<(), String> {
             return Err("Expected an absolute file path".to_string());
         }
         std::fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        if path_is_launchable(&path)
+            || std::fs::canonicalize(&path).is_ok_and(|real| path_is_launchable(&real))
+        {
+            return Err("That file would launch a program, so it was not opened.".to_string());
+        }
         open::that(&path).map_err(|error| error.to_string())
     })
     .await
     .map_err(|error| error.to_string())?
 }
 
+/// A path LaunchServices would run rather than hand to an editor. `.app` matches any component, so a file inside
+/// a bundle is refused too. The other types match a component's own extension. A link is checked by the caller
+/// after canonicalize.
+fn path_is_launchable(path: &Path) -> bool {
+    const EXTS: &[&str] = &[
+        "command",
+        "tool",
+        "pkg",
+        "mpkg",
+        "dmg",
+        "sparseimage",
+        "sparsebundle",
+        "iso",
+        "workflow",
+        "wflow",
+        "scpt",
+        "scptd",
+        "applescript",
+        "terminal",
+        "action",
+        "kext",
+        "saver",
+        "inetloc",
+        "fileloc",
+        "webloc",
+    ];
+    path.components().any(|comp| {
+        let Some(name) = comp.as_os_str().to_str() else {
+            return false;
+        };
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".app") && lower != ".app" {
+            return true;
+        }
+        EXTS.iter().any(|ext| {
+            let suffix = format!(".{ext}");
+            lower.ends_with(&suffix) && lower != suffix
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_launchable_file_is_not_opened_with_the_default_app() {
+        assert!(path_is_launchable(Path::new("/tmp/Run.command")));
+        assert!(path_is_launchable(Path::new("/tmp/Evil.APP")));
+        assert!(path_is_launchable(Path::new(
+            "/tmp/Evil.app/Contents/MacOS/Evil"
+        )));
+        assert!(path_is_launchable(Path::new("/tmp/disk.dmg")));
+        assert!(path_is_launchable(Path::new("/tmp/job.workflow")));
+        assert!(!path_is_launchable(Path::new("/tmp/notes.txt")));
+        assert!(!path_is_launchable(Path::new("/tmp/.app")));
+        assert!(!path_is_launchable(Path::new("/tmp/.command")));
+        assert!(!path_is_launchable(Path::new("/tmp/readme.md")));
+    }
 
     #[test]
     fn the_git_panel_reads_turn_hooks_off_and_fsmonitor_stays_off() {
