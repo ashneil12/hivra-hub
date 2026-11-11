@@ -200,8 +200,22 @@ function isDriveColon(arg: string, at: number): boolean {
   return at === 3 && arg[0] === "-" && arg[1] !== "-";
 }
 
+/** A non-URL word `key=value` whose key is a plain name. Leading `@` marks are not part of the key. */
+function plainValue(arg: string): string | null {
+  const rest = arg.replace(/^@+/, "");
+  if (rest.includes("://")) return null;
+  const eq = rest.indexOf("=");
+  if (eq <= 0) return null;
+  const key = rest.slice(0, eq);
+  if (!/^[A-Za-z0-9_.-]+$/.test(key)) return null;
+  return rest.slice(eq + 1);
+}
+
 function valuesOf(arg: string): string[] {
-  if (!arg.startsWith("-")) return [arg];
+  if (!arg.startsWith("-")) {
+    const value = plainValue(arg);
+    return value === null ? [arg] : [value];
+  }
   const out: string[] = [];
   const parts = flagParts(arg);
   if (parts) {

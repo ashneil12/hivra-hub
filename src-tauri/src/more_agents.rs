@@ -305,11 +305,14 @@ pub(crate) fn set_enabled(data_dir: &Path, on: bool) -> Result<(), String> {
 pub(crate) const FILE_ARG_REFUSED: &str =
     "A file named in the arguments must exist and be a file, given by its absolute path. A folder is not pinned.";
 
-/// The text an argument may carry a path in: the argument itself, the part after `=` or a flag colon, both sides when
-/// a colon flag also has `=options` (`-javaagent:jar=opts`), or the rest of a short flag. A Windows drive colon
-/// (`C:\foo`) is not a flag colon.
+/// The text an argument may carry a path in: the argument itself, the value of a plain `key=value` word, the part
+/// after `=` or a flag colon, both sides when a colon flag also has `=options` (`-javaagent:jar=opts`), or the rest
+/// of a short flag. A Windows drive colon (`C:\foo`) is not a flag colon.
 fn candidates(arg: &str) -> Vec<&str> {
     if !arg.starts_with('-') {
+        if let Some((_, _, value)) = plain_assignment(arg) {
+            return vec![value];
+        }
         return vec![arg];
     }
     let mut out = Vec::new();
@@ -360,6 +363,26 @@ fn flag_parts(arg: &str) -> Option<FlagParts> {
         (_, Some(eq)) => Some(FlagParts { at: eq, eq: None }),
         (None, None) => None,
     }
+}
+
+/// A non-URL word `[@…]key=value` whose key is a plain name (letters, digits, `_`, `.`, `-`). The three parts are
+/// the leading `@` marks, the key, and the value. `None` when the word is not that shape.
+fn plain_assignment(arg: &str) -> Option<(&str, &str, &str)> {
+    let rest = arg.trim_start_matches('@');
+    if rest.contains("://") {
+        return None;
+    }
+    let eq = rest.find('=')?;
+    let key = &rest[..eq];
+    if key.is_empty()
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    {
+        return None;
+    }
+    let marks_len = arg.len() - rest.len();
+    Some((&arg[..marks_len], key, &rest[eq + 1..]))
 }
 
 fn first_nondrive_colon(arg: &str) -> Option<usize> {
@@ -552,11 +575,18 @@ fn fold_path(value: &str) -> Cow<'_, str> {
     }
 }
 
-/// One argument as the child will get it, and the absolute files it names (whole, after `=` or a flag colon, both the
-/// file and the options when a colon flag has `=options`, a short flag's value, a leading `@`, or the file a `file:`
-/// URL names). The pin is the path without `@`. The child still sees the `@`.
+/// One argument as the child will get it, and the absolute files it names (whole, after `=` in a plain `key=value`
+/// word, after `=` or a flag colon, both the file and the options when a colon flag has `=options`, a short flag's
+/// value, a leading `@`, or the file a `file:` URL names). The pin is the path without `@`. The child still sees
+/// the `@`.
 fn pin_arg(arg: &str) -> Result<(String, Vec<String>), String> {
     if !arg.starts_with('-') {
+        if let Some((marks, key, value)) = plain_assignment(arg) {
+            if let Some((body, pins)) = rewrite_pinned(value)? {
+                return Ok((format!("{marks}{key}={body}"), pins));
+            }
+            return Ok((arg.to_string(), Vec::new()));
+        }
         if let Some((text, pins)) = rewrite_pinned(arg)? {
             return Ok((text, pins));
         }
