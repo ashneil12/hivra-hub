@@ -1,4 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { queueMonoNote } from "../../monos/model/monoMessaging";
+import { detachSessionWorktree } from "../../source-control/model/worktrees";
 import { appendPreparingHandoff } from "./handoff";
 import {
   canDispatchQueuedHead,
@@ -7,8 +9,10 @@ import {
   isAppDelivery,
   isEditingQueuedHead,
   isWaitingBrief,
+  pausedQueueStatus,
   queuedHead,
   queuedMessageForSubmit,
+  queueStatusOnEnqueue,
   restoredQueue,
   typedQuestionAnswer,
   waitsOnCutTurn,
@@ -369,5 +373,31 @@ describe("typedQuestionAnswer: Ash types while the agent waits on its own questi
       expect(typedQuestionAnswer(asking(), words, app as never)).toBeUndefined();
     // Today's and a Page's words are Ash's own: they answer too.
     expect(typedQuestionAnswer(asking(), words, { followsUp: true })?.kind).toBe("answer");
+  });
+});
+
+describe("the queue's moves", () => {
+  const one = [queued("a")];
+
+  it("adding a message keeps paused and resuming, and makes anything else active", () => {
+    expect(queueStatusOnEnqueue({ queueStatus: "paused" })).toBe("paused");
+    // Before, every enqueue but a paused one wrote active, so a report queued while Ash's Continue ran undid his resume.
+    expect(queueStatusOnEnqueue({ queueStatus: "resuming" })).toBe("resuming");
+    expect(queueStatusOnEnqueue({ queueStatus: "active" })).toBe("active");
+    expect(queueStatusOnEnqueue({})).toBe("active");
+  });
+
+  it("a report queued while Ash's Continue runs keeps his resume", () => {
+    const resuming = chat({ busy: true, queueStatus: "resuming" });
+    const next = queueMonoNote(resuming, { id: "wake-1", text: "room wake", note: { kind: "room" } as never });
+    expect(next.queueStatus).toBe("resuming");
+  });
+
+  it("a chat that lost its worktree pauses only a queue with something in it", () => {
+    expect(pausedQueueStatus({ queuedMessages: one })).toBe("paused");
+    expect(pausedQueueStatus({ queuedMessages: [] })).toBeUndefined();
+    const detached = detachSessionWorktree(chat({ queuedMessages: undefined, queueStatus: undefined }), "/tmp/project", "/tmp/wt");
+    expect(detached.queueStatus).toBeUndefined();
+    expect(detachSessionWorktree(chat(), "/tmp/project", "/tmp/wt").queueStatus).toBe("paused");
   });
 });

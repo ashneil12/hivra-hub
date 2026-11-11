@@ -871,6 +871,7 @@ import {
   canDispatchQueuedHead,
   canSteerQueuedHead,
   dequeueQueuedMessage,
+  queueStatusOnEnqueue,
   isWaitingBrief,
   queuedMessageForSubmit,
   typedQuestionAnswer,
@@ -9059,8 +9060,7 @@ function Workspace({
                         ...(byOwner ? { byOwner: true } : {}),
                       },
                     ],
-                    queueStatus:
-                      s.queueStatus === "paused" ? "paused" : "active",
+                    queueStatus: queueStatusOnEnqueue(s),
                   }
                 : s,
             ),

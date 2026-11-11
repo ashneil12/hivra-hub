@@ -77,6 +77,26 @@ export function restoredQueue(
   return { queuedMessages: left, queueStatus: keepsGoing ? "active" : "paused" };
 }
 
+/**
+ * The queue's moves (its states are `MessageQueueStatus`, see session.ts):
+ * - adding a message keeps `paused` (it waits for Ash, or holds a chat being reset or removed) and `resuming` (it waits
+ *   for his Continue turn to end, then the queue effect makes it `active`); anything else becomes `active`. Every
+ *   enqueue goes through here: before, each wrote `paused ? paused : active` itself, so a report queued while Ash's
+ *   Continue ran undid his resume;
+ * - emptying the queue leaves no status (`dequeueQueuedMessage`).
+ */
+export function queueStatusOnEnqueue(before: Pick<Session, "queueStatus">): MessageQueueStatus {
+  return before.queueStatus === "paused" || before.queueStatus === "resuming" ? before.queueStatus : "active";
+}
+
+/**
+ * A pause for a chat that lives on (it lost its worktree): `paused` while the queue holds anything, else no status, so
+ * a pause with nothing to hold doesn't outlive the worktree choice and catch the next message Ash queues.
+ */
+export function pausedQueueStatus(session: { queuedMessages?: readonly unknown[] }): MessageQueueStatus | undefined {
+  return session.queuedMessages?.length ? "paused" : undefined;
+}
+
 /** Hold auto-dispatch only while the item about to send is being edited. */
 export function isEditingQueuedHead(session: Session): boolean {
   const head = queuedHead(session);

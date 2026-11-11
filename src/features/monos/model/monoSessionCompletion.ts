@@ -1,4 +1,4 @@
-import { isOwnMessage } from "../../sessions/model/messageQueue";
+import { isOwnMessage, queueStatusOnEnqueue } from "../../sessions/model/messageQueue";
 import { cutTestOutput } from "./testOutput";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
@@ -830,6 +830,6 @@ export function enqueueMonoSessionCompletion(
   return {
     ...mono,
     queuedMessages: at < 0 ? [...queue, message] : [...queue.slice(0, at), message, ...queue.slice(at)],
-    queueStatus: mono.queueStatus === "paused" ? "paused" : "active",
+    queueStatus: queueStatusOnEnqueue(mono),
   };
 }
