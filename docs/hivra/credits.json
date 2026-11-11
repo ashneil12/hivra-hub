@@ -277,6 +277,12 @@
       "gave": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
     },
     {
+      "name": "agentmon-live",
+      "url": "https://github.com/codenotary/agentmon-live",
+      "licence": "Apache-2.0",
+      "gave": "fact gaps that stop a worker's done when a check failed, went stale after a later edit, never reached the edit, or was only claimed (WP-145)"
+    },
+    {
       "name": "precedent-log",
       "url": "https://github.com/quotumorg/precedent-log",
       "licence": "MIT",

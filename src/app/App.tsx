@@ -14453,7 +14453,8 @@ function Workspace({
               return;
             }
             if (gateDue(result)) {
-              const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
+              const session = sessionsRef.current.find((session) => session.id === sessionId);
+              const checkout = gateCheckout(session);
               const projectId = delegation?.project ?? hubProjectIdFor(project);
               // WP-40: a brief with gates is checked in code; one without keeps the routes check below.
               // No copy on hand is not a pass when a plan was stored: the id is not a checkout, so those gates
@@ -14466,6 +14467,8 @@ function Workspace({
                     signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []),
                     report: result.result ?? "",
                     failures: gateFailures,
+                    // WP-145: this turn's checks, edits and to-dos.
+                    blocks: session?.blocks,
                   })
                 : null;
               if (briefGates?.action === "resend") {
