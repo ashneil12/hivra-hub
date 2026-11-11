@@ -90,7 +90,9 @@ async function verdict(b: any): Promise<string> {
 }
 
 describe("round 10/11: a file tool takes an absolute path only", () => {
-  it("holds a relative Edit, Write, NotebookEdit and Read, even one inside the chat, pinned or not", async () => {
+  // POSIX fixture. On Windows the temp folder is a drive path, so a forward slash is held before this can say "relative".
+  // The Windows-shaped twin below runs on every OS (round 8 skipped the Mac reading the same way).
+  it.skipIf(process.platform === "win32")("holds a relative Edit, Write, NotebookEdit and Read, even one inside the chat, pinned or not", async () => {
     expect(await verdict(claude("Edit", { file_path: "src/a.ts", old_string: "a", new_string: "b" }))).toMatch(/^held/);
     expect(await verdict(claude("Read", { file_path: "src/a.ts" }))).toMatch(/^held/);
     expect(openedForm("src/a.ts", chat)).toEqual({ why: expect.stringContaining("relative") });
@@ -98,12 +100,14 @@ describe("round 10/11: a file tool takes an absolute path only", () => {
 });
 
 describe("round 11: a search with a relative or missing path resolves it against the chat folder, when the provider pins it", () => {
-  it("allows a Claude no-path Grep and Glob inside the chat", async () => {
+  // POSIX fixture. On Windows the temp folder is a drive path, so this path is not the one the Windows reading opens.
+  it.skipIf(process.platform === "win32")("allows a Claude no-path Grep and Glob inside the chat", async () => {
     expect(await verdict(claude("Grep", { pattern: "token" }))).toBe("allow");
     expect(await verdict(claude("Grep", { pattern: "token", path: "src" }))).toBe("allow");
   });
 
-  it("allows a Claude relative Grep path that resolves inside the chat", async () => {
+  // POSIX fixture. On Windows the temp folder is a drive path, so `src/a.ts` is held for its forward slash, not resolved.
+  it.skipIf(process.platform === "win32")("allows a Claude relative Grep path that resolves inside the chat", async () => {
     expect(await verdict(claude("Grep", { pattern: "token", path: "src/a.ts" }))).toBe("allow");
   });
 
@@ -120,8 +124,49 @@ describe("round 11: a search with a relative or missing path resolves it against
     expect(await verdict(other("Grep"))).toMatch(/^held/);
   });
 
-  it("keeps an absolute search path as it was", async () => {
+  // POSIX fixture. On Windows the temp folder is a drive path, so `${chat}/src` is held for its forward slash.
+  it.skipIf(process.platform === "win32")("keeps an absolute search path as it was", async () => {
     expect(await verdict(other("Grep", [`${chat}/src`]))).toBe("allow");
     expect(openedSearchPath(`${chat}/src`, chat, false)).toEqual({ path: `${chat}/src` });
+  });
+});
+
+describe("round 13: the same file and search rules on a Windows path", () => {
+  // A chat folder that is itself an 8.3 name, as a Windows runner temp is. The short-name hold must not catch the folder.
+  // Path shapes only: a fake lookup, so this runs on every OS. An absolute path outside the chat stays held (round 12).
+  const win = "C:\\Users\\RUNNER~1\\Projects\\app";
+  const norm = (p: string) => p.replace(/[\\/]+/g, "/").replace(/\/+$/, "").toLowerCase();
+  const locate: Locate = async (paths) =>
+    paths.map((p) => {
+      const place = norm(p);
+      const base = norm(win);
+      if (place !== base && !place.startsWith(`${base}/`)) return null;
+      const relative = place === base ? "" : place.slice(base.length + 1);
+      return { root: win, relative, linked: false, dotGit: true };
+    });
+
+  async function judged(b: any): Promise<string> {
+    const words = approvalVerdict(b, win, undefined, new Set());
+    if (words.kind === "held") return `held: ${words.why}`;
+    const why = await placeStaysInside(b.approval.call, win, locate, async (paths) => paths);
+    return why ? `held: ${why}` : "allow";
+  }
+
+  it("holds a relative Edit and Read, and the reason says relative", async () => {
+    expect(await judged(claude("Edit", { file_path: "src\\a.ts", old_string: "a", new_string: "b" }))).toMatch(/^held/);
+    expect(await judged(claude("Read", { file_path: "src\\a.ts" }))).toMatch(/^held/);
+    expect(openedForm("src\\a.ts", win)).toEqual({ why: expect.stringContaining("relative") });
+  });
+
+  it("allows a Claude no-path Grep and a relative Grep inside a chat folder that has a short name", async () => {
+    expect(await judged(claude("Grep", { pattern: "token" }))).toBe("allow");
+    expect(await judged(claude("Grep", { pattern: "token", path: "src" }))).toBe("allow");
+    expect(await judged(claude("Grep", { pattern: "token", path: "src\\a.ts" }))).toBe("allow");
+  });
+
+  it("keeps an absolute search path inside the chat, and holds one outside it", async () => {
+    expect(await judged(other("Grep", [`${win}\\src`]))).toBe("allow");
+    expect(openedSearchPath(`${win}\\src`, win, false)).toEqual({ path: `${win}\\src` });
+    expect(await judged(other("Grep", ["C:\\Users\\dev\\other"]))).toMatch(/^held/);
   });
 });
