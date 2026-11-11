@@ -112,6 +112,19 @@ fn from_row(row: &Row) -> rusqlite::Result<Decision> {
     })
 }
 
+/// The decision a key names: as stored, or else under its folded form (a spelling that differs only in case or width).
+/// Rows written before the fold are found by their exact key, so they stay answerable as they were.
+fn find(conn: &Connection, project: &str, key: &str) -> Result<Option<Decision>, String> {
+    if let Some(found) = get(conn, project, key)? {
+        return Ok(Some(found));
+    }
+    let folded = fold_key(key);
+    if folded == key {
+        return Ok(None);
+    }
+    get(conn, project, &folded)
+}
+
 pub fn get(conn: &Connection, project: &str, key: &str) -> Result<Option<Decision>, String> {
     conn.query_row(
         &format!("SELECT {COLUMNS} FROM decisions WHERE project = ?1 AND decision_key = ?2"),
@@ -471,8 +484,18 @@ pub struct AnswerOutcome {
 /// clean review). It tells no one: the chat that asked did the thing, or the person allowed it.
 pub const APP_CLOSER: &str = "app:fresh-eyes";
 
+/// The one form every decision-key prefix check reads: NFKC (so fullwidth and other compatibility spellings become
+/// their plain form), trimmed, lower-case. A chat can ask or answer under any spelling, so a check on the raw key is
+/// a check on the wrong string. Mirrored in TS by `foldDecisionKey` (src/features/hub/model/decisionKey.ts).
+pub fn fold_key(key: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+    let folded: String = key.nfkc().collect();
+    folded.trim().to_lowercase()
+}
+
 /// WP-144: the questions a fresh-eyes review puts to the person (the review itself, and a brief that could not start).
 fn is_review_key(key: &str) -> bool {
+    let key = fold_key(key);
     key.starts_with("fresh-eyes/") || key.starts_with("fresh-eyes-start/")
 }
 
@@ -487,7 +510,7 @@ fn is_review_key(key: &str) -> bool {
 /// person's Inbox, and the review ignores its answer anyway. The app itself may close them (`app:fresh-eyes`).
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let review = is_review_key(key);
-    if !key.starts_with("irreversible/") && !review {
+    if !fold_key(key).starts_with("irreversible/") && !review {
         return None;
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
@@ -511,10 +534,15 @@ pub fn answer(
     now: i64,
 ) -> Result<AnswerOutcome, String> {
     let answer = plain(answer, "The answer", ANSWER_MAX)?;
+    // The key as asked, before any lookup: a chat's spelling of a person-only key is refused even when no such
+    // decision exists, so nothing about the lookup can turn a refusal into a quiet no-op or a bypass.
+    if let Some(refusal) = person_only(key, by.as_deref()) {
+        return Err(refusal);
+    }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
-    let Some(mut decision) = get(&tx, project.trim(), key.trim())? else {
+    let Some(mut decision) = find(&tx, project.trim(), key.trim())? else {
         return Ok(AnswerOutcome {
             applied: false,
             decision: None,
@@ -531,8 +559,9 @@ pub fn answer(
         });
     }
     // WP-91: an irreversible step is the person's to answer, and nobody else's. The webview puts it on its red list
-    // so autopilot holds it, but that is a screen away; this refuses it at the store, whatever path asked.
-    if let Some(refusal) = person_only(decision.decision_key.trim(), by.as_deref()) {
+    // so autopilot holds it, but that is a screen away; this refuses it at the store, whatever path asked. It reads the
+    // stored key, so a decision stored in any case is checked as the person-only key it is.
+    if let Some(refusal) = person_only(&decision.decision_key, by.as_deref()) {
         return Err(refusal);
     }
     decision.state = ANSWERED.into();
@@ -636,9 +665,12 @@ pub fn decisions_answer(
         by,
         now_millis(),
     )?;
-    // WP-81: an answer on a check's question goes back to the check. Nothing is answered for the person.
-    if key.starts_with("gate/") {
-        let _ = crate::delivery_gate::forward_answer(&store, &key, &answer);
+    // WP-81: an answer on a check's question goes back to the check. Nothing is answered for the person. It goes back
+    // under the stored key, the one the check's run was parked under, whatever case the answer was typed in.
+    if let Some(stored) = outcome.decision.as_ref().map(|d| d.decision_key.clone()) {
+        if fold_key(&stored).starts_with("gate/") {
+            let _ = crate::delivery_gate::forward_answer(&store, &stored, &answer);
+        }
     }
     if outcome.applied {
         announce(&app, outcome.decision.as_ref(), &outcome.released);

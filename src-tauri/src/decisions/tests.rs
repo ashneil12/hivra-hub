@@ -408,3 +408,107 @@ fn only_the_person_answers_a_fresh_eyes_review_and_the_app_may_close_it() {
         "{refusal}"
     );
 }
+
+#[test]
+fn a_chat_cannot_settle_a_person_only_key_by_changing_its_case_or_width() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    // A chat can ask under any spelling, so a person-only key can be stored in mixed case. The check reads the stored
+    // key folded (trimmed, NFKC, lower-case), so the stored key and the checked key cannot differ.
+    let stored = [
+        "FRESH-EYES/r3/00112233aabbccdd",
+        "irreversible/lead/task-4",
+        "Irreversible/lead/task-5",
+    ];
+    for key in stored {
+        ask(&mut conn, ask_input("lead", key, &[]), 2).unwrap();
+    }
+    let spellings = [
+        (
+            "Irreversible/lead/task-4",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            " irreversible/lead/task-4",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "ｉｒｒｅｖｅｒｓｉｂｌｅ/lead/task-4",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "irreversible／lead/task-4",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "Irreversible/lead/task-5",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "IRREVERSIBLE/lead/task-5",
+            "Only the person answers an irreversible step",
+        ),
+        (
+            "FRESH-EYES/r3/00112233aabbccdd",
+            "Only the person answers a fresh-eyes review",
+        ),
+        (
+            "Fresh-Eyes/r3/00112233aabbccdd",
+            "Only the person answers a fresh-eyes review",
+        ),
+        (
+            "ｆｒｅｓｈ-ｅｙｅｓ/r3/00112233aabbccdd",
+            "Only the person answers a fresh-eyes review",
+        ),
+        (
+            "fresh-eyes／r3/00112233aabbccdd",
+            "Only the person answers a fresh-eyes review",
+        ),
+    ];
+    for (key, why) in spellings {
+        for machine in [Some("chat:lead"), Some("autopilot")] {
+            let refusal = answer(
+                &mut conn,
+                "hivra",
+                key,
+                "Approve",
+                machine.map(str::to_string),
+                3,
+            )
+            .unwrap_err();
+            assert!(refusal.contains(why), "{key}: {refusal}");
+        }
+    }
+    for key in stored {
+        assert_eq!(
+            get(&conn, "hivra", key).unwrap().unwrap().state,
+            OPEN,
+            "{key}"
+        );
+    }
+    // The person still answers a mixed-case decision as it is stored: rows written before this fix stay answerable.
+    let out = answer(
+        &mut conn,
+        "hivra",
+        "FRESH-EYES/r3/00112233aabbccdd",
+        "Approve",
+        Some("user".into()),
+        4,
+    )
+    .unwrap();
+    assert!(out.applied);
+    // An ordinary key is still answered by a chat on the first mate's behalf, whatever its case.
+    ask(&mut conn, ask_input("fm", "Retention-Policy", &[]), 5).unwrap();
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            "Retention-Policy",
+            "Keep 30 days",
+            Some("chat:fm".into()),
+            6
+        )
+        .unwrap()
+        .applied
+    );
+}

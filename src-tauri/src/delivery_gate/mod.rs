@@ -1447,7 +1447,7 @@ fn run_by_key(conn: &Connection, key: &str) -> Result<Option<RunRow>, String> {
 /// Sends an answer the person already gave. A second send of the same answer does nothing.
 /// A tool that doesn't answer is not final: it can be tried again.
 pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(), String> {
-    if !key.starts_with("gate/") {
+    if !crate::decisions::fold_key(key).starts_with("gate/") {
         return Ok(());
     }
     let action = action_of(answer)?;
