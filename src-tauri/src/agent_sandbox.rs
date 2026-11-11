@@ -56,8 +56,9 @@ pub const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
 /// The daily app's data folder under home. A dev copy's folder (`com.ash.monocode-hub.dev.<slot>`) matches the same rule.
 const APP_DATA_UNDER_HOME: &str = "Library/Application Support/com.ash.monocode-hub";
 
-/// Programs refused by path. `security` is not here: Claude Code logs in through it (review r4, H3). A copy of one of
-/// these under another name is not caught by this list; `job-creation` and `lsopen` cover what the copy would do.
+/// Programs refused by path. `security` is not here: Claude Code logs in through it (review r4, H3). A copy under
+/// another name is not caught by this list. `job-creation` refuses the job a copied `launchctl` would submit, and
+/// `lsopen` covers a copied `open`.
 const DENIED_PROGRAMS: [&str; 7] = [
     "/bin/launchctl",
     "/usr/bin/open",
@@ -510,6 +511,7 @@ fn profile_scoped(
     push_cron_tables(&mut lines);
     push_docker_sockets(&mut lines, home)?;
     push_disk_services(&mut lines);
+    push_launchd_services(&mut lines);
     if deny_git {
         push_git_writes(&mut lines, home, checkouts, &mut seen)?;
     }
@@ -895,6 +897,16 @@ fn push_disk_services(lines: &mut Vec<String>) {
         .collect::<Vec<_>>()
         .join(" ");
     lines.push(format!("(deny mach-lookup {body})"));
+}
+
+/// The path deny does not name a copy of `launchctl`. These launchd service names are denied as well. A lookup deny
+/// alone does not stop `bootstrap` or `submit` when job creation is allowed. `(deny job-creation)`, later in the
+/// profile, is what refuses the submission.
+fn push_launchd_services(lines: &mut Vec<String>) {
+    lines.push(
+        "(deny mach-lookup (global-name \"com.apple.xpc.launchd\") (global-name-regex #\"^com\\.apple\\.xpc\\.launchd\\.\") (xpc-service-name-prefix \"com.apple.xpc.launchd\"))"
+            .to_string(),
+    );
 }
 
 /// The first `name` on `PATH`. Not run: only `metadata`, so a directory that is not executable is still named.
@@ -2937,6 +2949,36 @@ mod review_r3_repro {
         }
     }
 
+    /// Strip Apple's signature and ad-hoc sign, so the copy is allowed to execute and the test is not just the system
+    /// killing an untrusted platform binary.
+    #[cfg(target_os = "macos")]
+    fn resign_adhoc(path: &Path) {
+        let removed = Command::new("/usr/bin/codesign")
+            .args(["--remove-signature"])
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            removed.status.success(),
+            "could not remove the signature: {}",
+            String::from_utf8_lossy(&removed.stderr)
+        );
+        let signed = Command::new("/usr/bin/codesign")
+            .args(["-s", "-", "-f"])
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            signed.status.success(),
+            "could not ad-hoc sign the copy: {}",
+            String::from_utf8_lossy(&signed.stderr)
+        );
+    }
+
     #[cfg(target_os = "macos")]
     fn temp_home(tag: &str) -> PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -2971,27 +3013,134 @@ mod review_r3_repro {
         assert!(on, "after the rename the switch reads off");
     }
 
-    /// The exec denies are by path. A copy of launchctl runs under the profile, and a job it submits starts outside
-    /// the sandbox. This only runs `version`; it submits nothing.
+    /// The path deny names `/bin/launchctl` only. `version` never talks to launchd, and with System Integrity Protection
+    /// on, the system kills a byte copy before `main`, so a passing `version` check does not mean the profile refused it.
+    /// An ad-hoc copy does run. `bootstrap` and `submit` must still fail, and no job may stay registered. The program is
+    /// `/usr/bin/true` with no RunAtLoad, KeepAlive or StartInterval. The plist is only in the temp folder. It is booted
+    /// out with the real `/bin/launchctl`, outside the sandbox, whether the assertions hold.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_copied_launchctl_is_refused_too() {
+        use std::os::unix::fs::PermissionsExt;
         let home = temp_home("copy");
         let copy = home.join("lc");
         std::fs::copy("/bin/launchctl", &copy).unwrap();
+        std::fs::set_permissions(&copy, std::fs::Permissions::from_mode(0o755)).unwrap();
+        resign_adhoc(&copy);
+        let uid = unsafe { libc::getuid() };
+        let label = format!("com.monocode.wp178.r6bprobe.{uid}.{}", std::process::id());
+        let target = format!("gui/{uid}/{label}");
+        let plist = home.join("probe.plist");
+        std::fs::write(
+            &plist,
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>{label}</string>
+<key>ProgramArguments</key><array><string>/usr/bin/true</string></array>
+</dict></plist>
+"#
+            ),
+        )
+        .unwrap();
+        struct Bootout {
+            target: String,
+            plist: PathBuf,
+        }
+        impl Drop for Bootout {
+            fn drop(&mut self) {
+                let _ = Command::new("/bin/launchctl")
+                    .args(["bootout", &self.target])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status();
+                let _ = std::fs::remove_file(&self.plist);
+            }
+        }
+        let _guard = Bootout {
+            target: target.clone(),
+            plist: plist.clone(),
+        };
+        let _ = Command::new("/bin/launchctl")
+            .args(["bootout", &target])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
         let profile = profile_text(&home).unwrap();
-        let ran = Command::new(SANDBOX_EXEC)
-            .args(["-p", &profile])
-            .arg(&copy)
-            .arg("version")
+        assert!(
+            profile.contains("(deny mach-lookup") && profile.contains("com.apple.xpc.launchd"),
+            "the profile does not deny launchd lookups"
+        );
+        let real = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile, "/bin/launchctl", "version"])
             .env("HOME", &home)
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
-            .unwrap()
-            .success();
+            .unwrap();
+        assert!(
+            !real.success(),
+            "the path deny no longer refuses /bin/launchctl"
+        );
+        let version = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile])
+            .arg(&copy)
+            .arg("version")
+            .env("HOME", &home)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .unwrap();
+        assert!(
+            version.status.success(),
+            "the ad-hoc copy did not start, so this only rechecks an exec deny: {}",
+            String::from_utf8_lossy(&version.stderr)
+        );
+        let domain = format!("gui/{uid}");
+        let boot = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile])
+            .arg(&copy)
+            .args(["bootstrap", &domain])
+            .arg(&plist)
+            .current_dir(&home)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        let boot_err = String::from_utf8_lossy(&boot.stderr);
+        assert!(
+            !boot.status.success() && boot_err.contains("Bootstrap failed"),
+            "bootstrap was not refused by launchd: status={:?} {boot_err}",
+            boot.status.code()
+        );
+        let submit = Command::new(SANDBOX_EXEC)
+            .args(["-p", &profile])
+            .arg(&copy)
+            .args(["submit", "-l", &label, "--", "/usr/bin/true"])
+            .current_dir(&home)
+            .env("HOME", &home)
+            .output()
+            .unwrap();
+        assert!(
+            !submit.status.success(),
+            "submit succeeded: {}",
+            String::from_utf8_lossy(&submit.stderr)
+        );
+        let printed = Command::new("/bin/launchctl")
+            .args(["print", &target])
+            .output()
+            .unwrap();
+        let out = String::from_utf8_lossy(&printed.stdout);
+        let err = String::from_utf8_lossy(&printed.stderr);
+        assert!(
+            !out.contains("state = ") && !err.contains("state = "),
+            "a job stayed registered: {out}{err}"
+        );
+        assert!(
+            err.contains("Could not find service"),
+            "launchctl print did not report the job missing: {err}"
+        );
         let _ = std::fs::remove_dir_all(&home);
-        assert!(!ran, "a copy of /bin/launchctl ran under the profile");
     }
 
     /// Functional: Claude Code on macOS reads its sign-in with `security find-generic-password -a $USER -w -s "Claude
