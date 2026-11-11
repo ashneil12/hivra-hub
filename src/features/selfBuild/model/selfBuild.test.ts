@@ -44,6 +44,18 @@ const ME = {
   projects: ["/Users/ash/Projects/hivra"],
 };
 
+it("refuses a draft named Chief of Staff, including one folded with an invisible character", async () => {
+  const a = await app();
+  const fields = {
+    role: "Runs the day",
+    who: "I keep the list.",
+    watchFor: "A decision with no owner.",
+  };
+  expect(() => a.make.draftMono({ name: "Chief of Staff", ...fields }, ME, 1000)).toThrow(/Chief of Staff/);
+  expect(() => a.make.draftMono({ name: "Chief​ of Staff", ...fields }, ME, 1001)).toThrow(/Chief of Staff/);
+  expect(a.mono.listMonos().some((mono) => mono.name === "Chief of Staff")).toBe(false);
+});
+
 it("a drafted Mono is made only after Ash answers, once, with its role and an Undo row", async () => {
   const a = await app();
   const draft = a.make.draftMono(

@@ -17,6 +17,7 @@ import {
 import { ASK_ASH_FIRST } from "./ashSaid";
 import SOUL_TEMPLATE from "../templates/SOUL.md?raw";
 import { forUser } from "../../hub/model/userName";
+import { isChiefOfStaffName } from "../../chief/model/charter";
 
 /**
  * A Mono makes a new Mono with Ash, Dr Eggbot style (ash-day step 13): it asks him a few questions, drafts the one
@@ -249,6 +250,7 @@ export function draftMono(
   note: string;
 } {
   const name = text(input.name, "name", 40, true)!;
+  if (isChiefOfStaffName(name)) throw new Error("Chief of Staff is the captain's name. Pick another.");
   if (
     listMonos().some(
       (m) => monoLook(m).name.toLowerCase() === name.toLowerCase(),

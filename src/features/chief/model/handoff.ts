@@ -36,8 +36,8 @@ export function captainCanRead(
 export function handoffGoal(title: string, brief: string): string {
   const name = title.trim();
   const words = brief.trim();
-  if (name && name !== words) return `Done when ${name} is finished and the change keeps what it should.`;
-  return "Done when the change is in and the check that covers it passes.";
+  if (name && name !== words) return `Done when ${name}. The check for it passes, and the report says what changed.`;
+  return "Done when the change is in, the check the brief names passes, and the report says what changed.";
 }
 
 export type HandoffInput = {

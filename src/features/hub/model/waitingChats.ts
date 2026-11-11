@@ -461,11 +461,11 @@ export type CaptainDoorContext = {
   turns?: readonly number[];
   pendingSince?: number;
   now?: number;
-  /** Step 5 unless this is false. Money, the red list and an owner key are still checked first. */
+  /** Step 5 only when this is true. A missing flag is not a confident pick. */
   confident?: boolean;
 };
 
-/** The app, or a test, supplies standing answers and owner keys. Absent means the pick stands. */
+/** The app, or a test, supplies standing answers and owner keys. Absent does not mark a pick confident. */
 let captainDoor: ((chat: WaitingChat) => CaptainDoorContext) | null = null;
 
 export function setCaptainDoor(next: typeof captainDoor): () => void {
@@ -522,7 +522,7 @@ export async function takePick(
       question: chat.question,
       options: chat.options,
       recommendation: chat.pick,
-      confident: extra.confident !== false,
+      confident: extra.confident === true,
       rules: extra.rules,
       standing: extra.standing ?? null,
       learned: extra.learned ?? null,
@@ -533,10 +533,10 @@ export async function takePick(
       pendingSince: extra.pendingSince,
     });
     if (decided.kind === "ask-owner") {
-      return { ok: false, reason: forYou(decided.line ?? "This one waits for the owner.") };
+      return { ok: false, reason: forYou(decided.line ?? decided.reason) };
     }
     if (decided.kind === "waiting") {
-      return { ok: false, reason: forYou("The captain has not answered yet. It passes up if it is still open in 10 minutes.") };
+      return { ok: false, reason: forYou(decided.reason) };
     }
     const who = decided.answeredBy === `captain:${monoId}` ? decided.answeredBy : `captain:${monoId}`;
     if (decided.answer !== chat.pick) {
