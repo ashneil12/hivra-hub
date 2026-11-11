@@ -559,10 +559,14 @@ fn is_review_key(key: &str) -> bool {
 /// WP-172: so is the decision that starts a stopped fan-out task again (`fanout-again/<plan>/<task>/<stopped request id>`).
 /// A stopped worker runs again only on Ash's yes, so an agent's `ask_person` answer (a chat, whatever the words) is refused
 /// here, and the app's own closers are not a way round it.
+///
+/// WP-81: so is a delivery check (`gate/<run>`). Approving it tells the check to send the work on, so a chat that knows
+/// the run id must not answer it, whatever the spelling. The app's own closers are not a way round it either.
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let review = is_review_key(key);
     let again = is_again_key(key);
-    if !fold_key(key).starts_with("irreversible/") && !review && !again {
+    let gate = is_gate_key(key);
+    if !fold_key(key).starts_with("irreversible/") && !review && !again && !gate {
         return None;
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
@@ -574,10 +578,26 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
         Some(other) if again => Some(format!(
             "Only the person answers whether a stopped task starts again; {other} cannot. It waits in Needs until they do."
         )),
+        Some(other) if gate => Some(format!(
+            "Only the person answers the check; {other} cannot. It waits in Needs until they do."
+        )),
         Some(other) => Some(format!(
             "Only the person answers an irreversible step; {other} cannot. It waits in Needs until they do."
         )),
     }
+}
+
+/// WP-81: a delivery check parked under `gate/<run>`. Read through `fold_key`, like the other person-only prefixes.
+pub fn is_gate_key(key: &str) -> bool {
+    fold_key(key).starts_with("gate/")
+}
+
+/// The person, as an answer is recorded: nobody named, or the words the app uses for them.
+fn from_person(by: Option<&str>) -> bool {
+    matches!(
+        by.map(str::trim).filter(|word| !word.is_empty()),
+        None | Some("user") | Some("person")
+    )
 }
 
 /// WP-172: the decision keys that start a stopped fan-out task again.
@@ -717,25 +737,52 @@ pub fn decisions_answer(
     answer: String,
     by: Option<String>,
 ) -> Result<AnswerOutcome, String> {
-    let outcome = self::answer(
-        &mut *store.lock_conn()?,
+    let outcome = answer_and_relay(
+        &store,
         project.as_deref().unwrap_or(""),
         &key,
         &answer,
         by,
         now_millis(),
     )?;
-    // WP-81: an answer on a check's question goes back to the check. Nothing is answered for the person. It goes back
-    // under the stored key, the one the check's run was parked under, whatever case the answer was typed in.
-    if let Some(stored) = outcome.decision.as_ref().map(|d| d.decision_key.clone()) {
-        if fold_key(&stored).starts_with("gate/") {
-            let _ = crate::delivery_gate::forward_answer(&store, &stored, &answer);
-        }
-    }
     if outcome.applied {
         announce(&app, outcome.decision.as_ref(), &outcome.released);
     }
     Ok(outcome)
+}
+
+/// What `decisions_answer` does with the store, without the window announce, so a test can run the same path.
+pub(crate) fn answer_and_relay(
+    store: &SessionStore,
+    project: &str,
+    key: &str,
+    answer_text: &str,
+    by: Option<String>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    let outcome = answer(&mut *store.lock_conn()?, project, key, answer_text, by, now)?;
+    relay_gate_answer(store, &outcome, answer_text);
+    Ok(outcome)
+}
+
+/// WP-81: a check hears an answer only when this one just landed and the person gave it.
+/// The key and the project are the stored decision's, not the spelling the caller typed.
+pub(crate) fn relay_gate_answer(store: &SessionStore, outcome: &AnswerOutcome, answer: &str) {
+    if !outcome.applied {
+        return;
+    }
+    let Some(decision) = outcome.decision.as_ref() else {
+        return;
+    };
+    if !from_person(decision.answered_by.as_deref()) || !is_gate_key(&decision.decision_key) {
+        return;
+    }
+    let _ = crate::delivery_gate::forward_answer(
+        store,
+        &decision.project,
+        &decision.decision_key,
+        answer,
+    );
 }
 
 #[tauri::command(async)]

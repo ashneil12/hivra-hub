@@ -676,3 +676,66 @@ fn a_chat_cannot_start_a_stopped_task_again_by_spelling_its_restart_key_another_
     }
     assert_eq!(get(&conn, "hivra", key).unwrap().unwrap().state, OPEN);
 }
+
+/// A delivery check is the person's. A chat that knows the run id must not approve `gate/<run>`, in any spelling
+/// (mixed case, fullwidth, or invisible characters). The decision stays open.
+#[test]
+fn review225_a_chat_cannot_answer_a_gate_key_in_any_spelling() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    ask(&mut conn, ask_input("fm", "gate/r1", &[]), 2).unwrap();
+    let spellings = [
+        "gate/r1",
+        "GATE/r1",
+        "Gate/r1",
+        " gate/r1",
+        "ｇａｔｅ/r1",
+        "gate／r1",
+        "g\u{200B}ate/r1",
+        "\u{200B}gate/r1",
+        "gate\u{200B}/r1",
+        "\u{FEFF}gate/r1",
+    ];
+    for key in spellings {
+        assert!(
+            person_only(key, Some("chat:s1")).is_some(),
+            "{key:?} is not person-only"
+        );
+        let refusal = answer(
+            &mut conn,
+            "hivra",
+            key,
+            "approve",
+            Some("chat:s1".into()),
+            3,
+        )
+        .unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers the check"),
+            "{key:?}: {refusal}"
+        );
+    }
+    // A machine by another name, and the app's own closer, are not the person either.
+    for by in ["autopilot", "app:fresh-eyes", " chat:s1 "] {
+        let refusal =
+            answer(&mut conn, "hivra", "gate/r1", "approve", Some(by.into()), 3).unwrap_err();
+        assert!(
+            refusal.contains("Only the person answers the check"),
+            "{by}: {refusal}"
+        );
+    }
+    assert_eq!(get(&conn, "hivra", "gate/r1").unwrap().unwrap().state, OPEN);
+    // The person still answers it, including under another spelling of the same key.
+    assert!(
+        answer(
+            &mut conn,
+            "hivra",
+            "GATE/r1",
+            "approve",
+            Some("user".into()),
+            4,
+        )
+        .unwrap()
+        .applied
+    );
+}

@@ -92,7 +92,7 @@ export function GateCards({ project }: { project: string }) {
     const mine = gen.current;
     setSending(key);
     try {
-      await invoke("gate_respond", { decisionKey: key, answer });
+      await invoke("gate_respond", { decisionKey: key, answer, project: project.trim() });
     } catch {
       if (mine !== gen.current) return;
       setSending(null);

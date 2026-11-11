@@ -1434,28 +1434,52 @@ fn action_of(answer: &str) -> Result<&'static str, String> {
     }
 }
 
-fn run_by_key(conn: &Connection, key: &str) -> Result<Option<RunRow>, String> {
+fn run_by_key(conn: &Connection, project: &str, key: &str) -> Result<Option<RunRow>, String> {
     conn.query_row(
-        &format!("SELECT {RUN_COLS} FROM gate_runs WHERE decision_key = ?1 ORDER BY created_at DESC LIMIT 1"),
-        [key],
+        &format!(
+            "SELECT {RUN_COLS} FROM gate_runs \
+             WHERE decision_key = ?1 AND project = ?2 ORDER BY created_at DESC LIMIT 1"
+        ),
+        params![key, project],
         run_from,
     )
     .optional()
     .map_err(|e| e.to_string())
 }
 
-/// Sends an answer the person already gave. A second send of the same answer does nothing.
+/// The project of the newest run parked under this key, for a caller that did not name one.
+fn project_for_key(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT project FROM gate_runs WHERE decision_key = ?1 ORDER BY created_at DESC LIMIT 1",
+        [key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Sends an answer the person already gave, for this project's run of that key.
+/// A run in another project with the same key is left alone. A second send of the same answer does nothing.
 /// A tool that doesn't answer is not final: it can be tried again.
-pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(), String> {
-    if !crate::decisions::fold_key(key).starts_with("gate/") {
+pub fn forward_answer(
+    store: &SessionStore,
+    project: &str,
+    key: &str,
+    answer: &str,
+) -> Result<(), String> {
+    if !crate::decisions::is_gate_key(key) {
+        return Ok(());
+    }
+    let project = project.trim();
+    if project.is_empty() {
         return Ok(());
     }
     let action = action_of(answer)?;
     let data = data_dir()?;
     let home = nm_home_at(&data)?;
-    let (run_id, finding_id, project) = {
+    let (row_id, run_id, finding_id, run_project) = {
         let conn = store.lock_conn()?;
-        let Some(run) = run_by_key(&conn, key)? else {
+        let Some(run) = run_by_key(&conn, project, key)? else {
             return Ok(());
         };
         if run.responded.as_deref() == Some(action) {
@@ -1463,15 +1487,17 @@ pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(
         }
         let claimed = conn
             .execute(
-                "UPDATE gate_runs SET responded = 'sending', updated_at = ?2
-                 WHERE decision_key = ?1 AND (responded IS NULL OR responded = 'retry')",
-                params![key, now_millis()],
+                "UPDATE gate_runs SET responded = 'sending', updated_at = ?3
+                 WHERE id = ?1 AND project = ?2 AND decision_key = ?4
+                   AND (responded IS NULL OR responded = 'retry')",
+                params![run.id, project, now_millis(), key],
             )
             .map_err(|e| e.to_string())?;
         if claimed == 0 {
             return Ok(());
         }
         (
+            run.id,
             run.run_id.unwrap_or_default(),
             run.finding_id.unwrap_or_default(),
             run.project,
@@ -1482,8 +1508,9 @@ pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(
         Err(_) => {
             let conn = store.lock_conn()?;
             let _ = conn.execute(
-                "UPDATE gate_runs SET responded = 'retry', detail = ?2, updated_at = ?3 WHERE decision_key = ?1",
-                params![key, TRY_AGAIN, now_millis()],
+                "UPDATE gate_runs SET responded = 'retry', detail = ?2, updated_at = ?3
+                 WHERE id = ?1 AND project = ?4 AND decision_key = ?5 AND responded = 'sending'",
+                params![row_id, TRY_AGAIN, now_millis(), project, key],
             );
             return Err(TRY_AGAIN.into());
         }
@@ -1502,12 +1529,13 @@ pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(
         args.push("--findings".into());
         args.push(finding_id);
     }
-    match invoke(&program, &home, &args, Some(Path::new(&project))) {
+    match invoke(&program, &home, &args, Some(Path::new(&run_project))) {
         Ok(_) => {
             let conn = store.lock_conn()?;
             conn.execute(
-                "UPDATE gate_runs SET responded = ?2, updated_at = ?3 WHERE decision_key = ?1 AND responded = 'sending'",
-                params![key, action, now_millis()],
+                "UPDATE gate_runs SET responded = ?2, updated_at = ?3
+                 WHERE id = ?1 AND project = ?4 AND decision_key = ?5 AND responded = 'sending'",
+                params![row_id, action, now_millis(), project, key],
             )
             .map_err(|e| e.to_string())?;
             Ok(())
@@ -1515,8 +1543,9 @@ pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(
         Err(_) => {
             let conn = store.lock_conn()?;
             let _ = conn.execute(
-                "UPDATE gate_runs SET responded = 'retry', detail = ?2, updated_at = ?3 WHERE decision_key = ?1",
-                params![key, TRY_AGAIN, now_millis()],
+                "UPDATE gate_runs SET responded = 'retry', detail = ?2, updated_at = ?3
+                 WHERE id = ?1 AND project = ?4 AND decision_key = ?5 AND responded = 'sending'",
+                params![row_id, TRY_AGAIN, now_millis(), project, key],
             );
             Err(TRY_AGAIN.into())
         }
@@ -1595,20 +1624,33 @@ pub fn gate_respond(
     store: State<'_, SessionStore>,
     decision_key: String,
     answer: String,
+    project: Option<String>,
 ) -> Result<(), String> {
-    let project = {
-        let conn = store.lock_conn()?;
-        run_by_key(&conn, &decision_key)?.map(|run| run.project)
+    // A named project is the one the card is showing. An empty one matches nothing, so a blank folder cannot
+    // fall through onto whichever run happens to share the key. An omitted project keeps the older callers working.
+    let project = match project {
+        Some(named) => {
+            let named = named.trim();
+            if named.is_empty() {
+                return Ok(());
+            }
+            project_key(named)?
+        }
+        None => {
+            let conn = store.lock_conn()?;
+            match project_for_key(&conn, &decision_key)? {
+                Some(found) => found,
+                None => return Ok(()),
+            }
+        }
     };
-    if let Some(project) = project {
-        let _ = decisions::answer(
-            &mut *store.lock_conn()?,
-            &project,
-            &decision_key,
-            &answer,
-            Some("person".into()),
-            now_millis(),
-        );
-    }
-    forward_answer(&store, &decision_key, &answer)
+    let _ = decisions::answer(
+        &mut *store.lock_conn()?,
+        &project,
+        &decision_key,
+        &answer,
+        Some("person".into()),
+        now_millis(),
+    );
+    forward_answer(&store, &project, &decision_key, &answer)
 }
