@@ -279,7 +279,8 @@ test("the Inbox shows All, only Asks or one source, and a row opens its card wit
   await expect(items).toBeVisible();
 });
 
-test("first run: Dropwave's words, the Chief of Staff recommended and ticked, and a short tour", async ({ page }) => {
+// Ash, 11 Nov: onboarding "doesn't carry you through a proper setup flow". One thing a step, said back at the end.
+test("first run: one thing a step (project, first mates, tools), the Chief of Staff recommended and ticked, and a short tour", async ({ page }) => {
   await page.goto(`${base}/mockup.html?reset&onboarding`);
   const card = page.locator("[data-hub-onboarding]");
   await expect(card).toBeVisible({ timeout: 60_000 });
@@ -295,17 +296,36 @@ test("first run: Dropwave's words, the Chief of Staff recommended and ticked, an
   await page.locator("[data-hub-onboarding-name]").fill("Sam");
   await page.locator("[data-hub-onboarding-next]").click();
 
+  // The project, alone on its step.
+  await expect(card).toHaveAttribute("data-step", "start");
+  await expect(page.locator("[data-hub-onboarding-starter]")).toHaveCount(0);
+  await page.locator("[data-hub-onboarding-project]").fill("Field notes");
+  await page.locator("[data-hub-onboarding-next]").click();
+
+  // Its first mates: each says what it does in full, and the ticked ones join the project.
+  await expect(card).toHaveAttribute("data-step", "team");
   const starters = page.locator("[data-hub-onboarding-starter]");
   await expect(starters.first()).toContainText("Chief of Staff");
   await expect(starters.first().locator("[data-hub-onboarding-tag]")).toHaveText("Recommended");
   await expect(starters.first()).toHaveAttribute("aria-checked", "true");
   for (const box of (await starters.all()).slice(1)) await expect(box).toHaveAttribute("aria-checked", "false");
   await expect(page.locator("[data-hub-onboarding-team]")).toContainText("Chief of Staff is ticked to get you started");
-  await page.locator("[data-hub-onboarding-project]").fill("Field notes");
+  await expect(page.locator("[data-hub-onboarding-team]")).toContainText("They join Field notes.");
+  await page.locator('[data-hub-onboarding-starter="planner"]').click();
+  await page.screenshot({ path: test.info().outputPath("onboarding-first-mates.png") });
   await page.locator("[data-hub-onboarding-next]").click();
+
+  // The coding tools, then the look.
+  await expect(card).toHaveAttribute("data-step", "tools");
+  await expect(page.locator("[data-hub-onboarding-cli]").first()).toBeVisible();
+  await page.locator("[data-hub-onboarding-next]").click();
+  await expect(card).toHaveAttribute("data-step", "theme");
   await page.locator("[data-hub-onboarding-next]").click();
 
   await expect(card).toHaveAttribute("data-step", "done");
+  await expect(page.locator("[data-hub-onboarding-summary]")).toContainText("Project: Field notes");
+  await expect(page.locator("[data-hub-onboarding-summary]")).toContainText("First mates: Chief of Staff, Planner");
+  await page.screenshot({ path: test.info().outputPath("onboarding-done.png") });
   await expect(page.locator("[data-hub-onboarding-tour]")).toContainText("Home");
   await expect(page.locator("[data-hub-onboarding-tour]")).not.toContainText("You didn't add one");
   await expect(page.locator("[data-hub-onboarding-done]")).toHaveText("Open Field notes");

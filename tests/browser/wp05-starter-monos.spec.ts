@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { toOnboardingStep } from "./starterOnboarding";
 
 // WP-05: a fresh start offers the starter Monos, all unticked. Ticking one is a choice, not a special team.
 test.use({ viewport: { width: 1440, height: 900 } });
@@ -12,7 +13,7 @@ test("a fresh start offers the starter Monos, only the Chief of Staff ticked", a
   const notNow = page.getByRole("button", { name: "Not now" });
   if (await notNow.isVisible().catch(() => false)) await notNow.click();
   await expect(page.getByText("What should your team call you?")).toBeVisible();
-  await page.locator("[data-hub-onboarding-next]").click();
+  await toOnboardingStep(page, "team");
   await expect(page.locator("[data-hub-onboarding-team]")).toContainText("Chief of Staff is ticked to get you started. Only ticked ones are added.");
   await expect(page.locator("[data-hub-onboarding-starter]")).toHaveCount(IDS.length);
   for (const id of IDS) {
