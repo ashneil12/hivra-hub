@@ -472,6 +472,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn a_folder_reached_through_a_symlink_resolves_to_its_real_path() {
         // WP-176 round 3: macOS temp folders are symlinks (/var -> /private/var). Both sides must compare real paths.
         let dir = std::env::temp_dir().join(format!("wp176-link-{}", std::process::id()));
