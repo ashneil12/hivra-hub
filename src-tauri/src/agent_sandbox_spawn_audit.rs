@@ -1802,3 +1802,7 @@ mod review_r6_repro {
         }
     }
 }
+
+/// Review r7 repro for PR #208 (WP-178).
+#[path = "agent_sandbox_spawn_audit_review_r7_repro.rs"]
+mod review_r7_repro;
