@@ -911,7 +911,9 @@ fn common_dir(entry: &std::path::Path) -> Option<std::path::PathBuf> {
     };
     // A real admin is the common dir. Following `commondir` here would let a worker point the project at a repo they
     // made, or pad the file past the read cap so the real admin is skipped.
-    let common = if git_admin_ok(&dir) {
+    // A `.git` file's admin dir that sits in the named common's `worktrees/` is a linked worktree even when a worker
+    // added `objects/` and `refs/` to it, so its `commondir` is still followed.
+    let common = if meta.is_dir() && git_admin_ok(&dir) {
         dir
     } else if std::fs::symlink_metadata(dir.join("commondir")).is_ok() {
         let text = read_git_file(&dir.join("commondir"))?;
@@ -919,10 +921,15 @@ fn common_dir(entry: &std::path::Path) -> Option<std::path::PathBuf> {
         if relative.as_os_str().is_empty() {
             return None;
         }
-        if relative.is_absolute() {
+        let named = if relative.is_absolute() {
             relative.to_path_buf()
         } else {
             dir.join(relative)
+        };
+        if git_admin_ok(&dir) && !worktree_admin_of(&dir, &named) {
+            dir
+        } else {
+            named
         }
     } else {
         dir
@@ -1178,28 +1185,60 @@ fn known_checkout(
 /// What sits above the checkout that owns `entry`. An unreadable `.git` is not skipped: walking past it would trust a
 /// repository a worker made underneath.
 enum Enclosing {
-    Found(std::path::PathBuf),
+    Found(Vec<std::path::PathBuf>),
     /// A `.git` above the checkout exists, but its common directory cannot be read.
     Unreadable,
     None,
 }
 
-/// The nearest git common directory above the checkout that owns `entry`.
+/// Every git common directory above the checkout that owns `entry`, nearest first. A repository a worker made between
+/// the project and its real checkout does not hide the real one.
 fn enclosing_common(entry: &std::path::Path) -> Enclosing {
     let Some(checkout) = entry.parent() else {
         return Enclosing::None;
     };
+    let mut found = Vec::new();
     for dir in checkout.ancestors().skip(1) {
         let candidate = dir.join(".git");
         if !candidate.exists() {
             continue;
         }
-        if let Some(common) = common_dir(&candidate) {
-            return Enclosing::Found(common);
+        match common_dir(&candidate) {
+            Some(common) => found.push(common),
+            None => return Enclosing::Unreadable,
         }
-        return Enclosing::Unreadable;
     }
-    Enclosing::None
+    if found.is_empty() {
+        Enclosing::None
+    } else {
+        Enclosing::Found(found)
+    }
+}
+
+/// Yes from any enclosing checkout is Yes, then Undecided from any is Undecided, else No.
+fn place_enclosing(
+    folder_key: &str,
+    root_id: &str,
+    outers: &[std::path::PathBuf],
+    skip: Option<&std::path::Path>,
+    cache: &mut RegOnce,
+) -> Place {
+    let mut undecided = false;
+    for outer in outers {
+        if skip.is_some_and(|inner| same_key(inner, outer)) {
+            continue;
+        }
+        match place_inside_common(folder_key, root_id, outer, cache) {
+            Place::Yes => return Place::Yes,
+            Place::Undecided => undecided = true,
+            Place::No => {}
+        }
+    }
+    if undecided {
+        Place::Undecided
+    } else {
+        Place::No
+    }
 }
 
 /// True when `admin` is `<common>/worktrees/<id>`, one level under `worktrees`, not `worktrees` itself.
@@ -1245,44 +1284,6 @@ fn folder_checkout_top(folder_key: &str, common: &std::path::Path) -> Option<Str
     top.is_dir().then(|| path_key(&top.to_string_lossy()))
 }
 
-/// A registration top that sits strictly inside the main checkout and strictly above the project. Such a top is a
-/// measuring top only when the named `.git` file points back at this common's `worktrees/<id>`. A sibling worktree is
-/// not intermediate, so its top is kept even when a worker rewrote the file.
-fn is_intermediate_top(root_key: &str, top: &str, primary: Option<&str>) -> bool {
-    let Some(primary) = primary else {
-        return false;
-    };
-    if top == primary || !key_within(top, primary) {
-        return false;
-    }
-    key_within(root_key, top) && root_key != top.trim_end_matches('/')
-}
-
-/// The named `.git` file points at `<common>/worktrees/<id>` and that admin's common dir is `common`.
-fn registration_round_trips(row: &Registered, common: &std::path::Path) -> bool {
-    let Some(named) = &row.named else {
-        return false;
-    };
-    let Some(text) = read_git_file(named) else {
-        return false;
-    };
-    let Some(target) = text.lines().find_map(|line| line.strip_prefix("gitdir:")) else {
-        return false;
-    };
-    let Some(admin) = resolve_git_path(named, target) else {
-        return false;
-    };
-    if !worktree_admin_of(&admin, common) {
-        return false;
-    }
-    common_dir(named).is_some_and(|found| same_key(&found, common))
-}
-
-fn registration_top_round_trips(top: &str, regs: &[Registered], common: &std::path::Path) -> bool {
-    regs.iter()
-        .any(|row| row.top.as_deref() == Some(top) && registration_round_trips(row, common))
-}
-
 /// The `.git` file still has the shape of a linked worktree (`gitdir:` with a `worktrees` component).
 fn linked_worktree_shape(entry: &std::path::Path) -> bool {
     let Some(text) = read_git_file(entry) else {
@@ -1326,8 +1327,8 @@ fn place_unreadable_root(folder_key: &str, root_key: &str, cache: &mut RegOnce) 
     };
     match enclosing_common(&entry) {
         Enclosing::Unreadable => Place::Undecided,
-        Enclosing::Found(common) => {
-            let placed = place_inside_common(folder_key, root_key, &common, cache);
+        Enclosing::Found(outers) => {
+            let placed = place_enclosing(folder_key, root_key, &outers, None, cache);
             if placed == Place::No && folder_unreadable(folder_key) {
                 Place::Undecided
             } else {
@@ -1417,26 +1418,6 @@ fn checkout_tops(
     tops
 }
 
-/// The longest top that contains `path`. A worktree nested inside the main checkout beats the main checkout.
-fn longest_containing<'a>(path: &str, tops: &'a [String]) -> Option<&'a str> {
-    let mut best: Option<&str> = None;
-    for top in tops {
-        if !key_within(path, top) {
-            continue;
-        }
-        let replace = match best {
-            None => true,
-            Some(have) => {
-                top.len() > have.len() || (top.len() == have.len() && top.as_str() > have)
-            }
-        };
-        if replace {
-            best = Some(top.as_str());
-        }
-    }
-    best
-}
-
 /// Membership from the project's side. The project's top is the longest checkout that contains the project, ignoring a
 /// top a worker registered between the main checkout and the project unless that registration's `.git` file points
 /// back at this common. The folder is owned when any top that contains it maps into that project. A checkout of this
@@ -1456,19 +1437,15 @@ fn place_inside_common(
         }
     }
     let tops = checkout_tops(common, &root_key, folder_key, &regs);
-    let primary = main_checkout_top(common).or_else(|| checkout_file_top(common, &root_key));
-    let measuring: Vec<String> = tops
+    // Every top that contains the project measures it: a top a worker registered between the main checkout and the
+    // project cannot replace the main checkout's measure, only add to it.
+    let project_tops: Vec<&String> = tops
         .iter()
-        .filter(|top| {
-            !is_intermediate_top(&root_key, top, primary.as_deref())
-                || registration_top_round_trips(top, &regs, common)
-        })
-        .cloned()
+        .filter(|top| key_within(&root_key, top))
         .collect();
-    let Some(project_top) = longest_containing(&root_key, &measuring) else {
+    if project_tops.is_empty() {
         return Place::Undecided;
-    };
-    let project_top = project_top.to_string();
+    }
     let mut saw_folder = false;
     let mut undecided = false;
     for top in &tops {
@@ -1476,20 +1453,39 @@ fn place_inside_common(
             continue;
         }
         saw_folder = true;
-        match owns_within_checkout(folder_key, top, &root_key, &project_top) {
-            Ok(true) => return Place::Yes,
-            Ok(false) => {}
-            Err(_) => undecided = true,
+        for project_top in &project_tops {
+            match owns_within_checkout(folder_key, top, &root_key, project_top) {
+                Ok(true) => return Place::Yes,
+                Ok(false) => {}
+                Err(_) => undecided = true,
+            }
         }
     }
     if !saw_folder {
-        return Place::No;
+        // A folder whose own git still names this repository is a checkout of it, even when its registration or admin
+        // dir was moved out of the tops.
+        return if folder_names_common(folder_key, common) {
+            Place::Undecided
+        } else {
+            Place::No
+        };
     }
     if undecided {
         Place::Undecided
     } else {
         Place::No
     }
+}
+
+/// The folder's `.git` names `common`, read from its files or, failing that, from git.
+fn folder_names_common(folder_key: &str, common: &std::path::Path) -> bool {
+    let Some(entry) = git_entry(std::path::Path::new(folder_key)) else {
+        return false;
+    };
+    if common_dir(&entry).is_some_and(|found| same_key(&found, common)) {
+        return true;
+    }
+    matches!(checkout_of(std::path::Path::new(folder_key)), Ok(Some(found)) if found.common == path_key(&common.to_string_lossy()))
 }
 
 fn place_project(folder_key: &str, root_id: &str) -> Place {
@@ -1520,13 +1516,9 @@ fn place_project(folder_key: &str, root_id: &str) -> Place {
     // A repository made above the project, or an enclosing checkout the project's own `.git` hides. Yes from either
     // side is Yes. An enclosing `.git` that cannot be read is doubt, not a reason to trust the inner repository.
     match enclosing_common(&entry) {
-        Enclosing::Found(outer) => {
-            if let Some(inner) = common_dir(&entry) {
-                if path_key(&inner.to_string_lossy()) == path_key(&outer.to_string_lossy()) {
-                    return direct;
-                }
-            }
-            match place_inside_common(folder_key, root_id, &outer, &mut cache) {
+        Enclosing::Found(outers) => {
+            let inner = common_dir(&entry);
+            match place_enclosing(folder_key, root_id, &outers, inner.as_deref(), &mut cache) {
                 Place::Yes => Place::Yes,
                 Place::Undecided => Place::Undecided,
                 Place::No => direct,
