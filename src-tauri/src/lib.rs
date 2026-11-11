@@ -67,6 +67,8 @@ mod harness_updates;
 // WP-50: read past chats, with a person's OK, into a proposal.
 mod history_import;
 mod hub_keychain;
+// Hivra WP-92: the secret vault. A value exists in the keychain and one place the person chose.
+pub mod secrets;
 // WP-85: Claude sessions started in a terminal.
 mod terminal_mirror;
 // WP-51: memory the person reviews.
@@ -414,6 +416,9 @@ pub fn run() {
     }
     // Rule 3, then one app per data folder: the lock is held until this process ends.
     let claim = instance::claim(&identity, &version);
+    // WP-92: a secret run that crashed can leave its old home under the temporary folder. Clear those. The sealed
+    // home a run uses now is not in that folder, and this never deletes it.
+    secrets::run::remove_leftover_run_homes();
     // WP-104: daily log and crash records, before the rest of startup.
     diagnostics::install(&claim.data_dir, &version);
     // Before the database opens: finish whatever a ship's runner left (a trial, a restore), or call it off

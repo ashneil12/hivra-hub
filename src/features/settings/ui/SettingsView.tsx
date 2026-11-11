@@ -13,6 +13,8 @@ import { UsagePage } from "../../usage/ui/UsagePage";
 import { ConnectedApps } from "../../outside/ui/ConnectedApps";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
+// WP-92: the keys agents ask for and use without seeing them.
+import { SecretsPage } from "../../secrets/ui/SecretsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 // WP-75: checked backups.
 import { BackupsPage } from "../../backups/ui/BackupsPage";
@@ -755,6 +757,8 @@ export function SettingsView({
                 <MemorySettingsScreen />
               ) : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
+              {/* WP-92: Settings > Secrets. */}
+              {section === "secrets" ? <SecretsPage project={cwd} /> : null}
               {section === "teams" ? <TeamsPage /> : null}
               {section === "plugins" ? (
                 // WP-32: Discover. Listing reads indexes; it never runs plugin code.

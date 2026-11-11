@@ -1380,6 +1380,19 @@ pub fn harness_spawn(
     };
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
+    // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain. This runs
+    // after configure_child, so the app's MONOCODE_* variables it just set are stripped again for an armed worker (M3).
+    // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
+    {
+        let store = app.state::<crate::session_store::SessionStore>();
+        crate::secrets::worker::apply_to_child(
+            &session_id,
+            crate::secrets::store::active(),
+            &mut cmd,
+            &store,
+            crate::session_store::now_millis(),
+        )?;
+    }
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     // WP-86: stamp this crew's commits. A failure here must not stop the crew.
     // The before-run snapshot starts here and is read only after the child
@@ -1514,6 +1527,8 @@ pub fn harness_spawn(
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
     let stdout_run = run.clone();
+    // WP-92: a worker given a secret has every line of its output scrubbed before the app stores or shows it.
+    let scrub_stdout = session_id.clone();
     // Only a More agents child is capped. A Claude or Codex line can carry a large base64 payload (a PDF or an image),
     // and cutting it would end the session, so those lines are read whole, as they always were.
     let stdout_cap = more_run.then_some(MAX_STDOUT_LINE);
@@ -1525,6 +1540,8 @@ pub fn harness_spawn(
             BufReader::new(stdout),
             stdout_cap,
             |line| {
+                // WP-92: scrub before the line is stored, shown, or read for a turn boundary.
+                let line = crate::secrets::worker::scrub_line(&scrub_stdout, line);
                 if crate::harness_runs::ends_turn(&line) {
                     stdout_run
                         .lock()
@@ -1564,6 +1581,8 @@ pub fn harness_spawn(
             BufReader::new(stderr),
             stderr_cap,
             |line| {
+                // WP-92: scrub before the line is shown.
+                let line = crate::secrets::worker::scrub_line(&stderr_id, line);
                 let _ = stderr_app.emit(
                     STDERR_EVENT,
                     HarnessLine {
@@ -1605,11 +1624,13 @@ pub fn harness_spawn(
         let _ = wait_app.emit(
             EXIT_EVENT,
             HarnessExit {
-                session_id: wait_id,
+                session_id: wait_id.clone(),
                 code,
                 pid: wait_pid,
             },
         );
+        // The scrub values stay for the session's life: a respawn (idle reclaim, crash, resume) still scrubs its output
+        // (M4). They go when the app quits.
     });
 
     Ok(pid)

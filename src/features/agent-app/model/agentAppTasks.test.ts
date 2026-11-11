@@ -3199,6 +3199,95 @@ describe("Hivra WP-14: tasks.message and tasks.ask", () => {
   });
 });
 
+describe("Hivra WP-92: a worker's keys", () => {
+  const KEYS = [{ name: "stripe-api-key", env: "STRIPE_API_KEY" }];
+  const VALUE = "sk-live-planted-value-123456";
+  const brief = "Run the stripe sync, then say how many customers it found.";
+
+  it("checks and arms every key on the worker's own session before it starts", async () => {
+    const { source, host, started } = fixture();
+    const arm = vi.fn(async () => ({ state: "ready", secrets: [{ name: "stripe-api-key", env: "STRIPE_API_KEY" }] }));
+    host.secretsWorkerArm = arm;
+    const out = (await handleAgentApp(source, "r-keys", "tasks.delegate", { brief, secrets: KEYS }, host)) as Record<string, unknown>;
+    expect(started).toHaveLength(1);
+    expect(arm).toHaveBeenCalledWith("app-mono-exo-r-keys", {
+      chat: "mono-exo",
+      mono: "vg-game-lead",
+      project: PROJECT,
+      executable: "claude",
+      secrets: KEYS,
+    });
+    expect(out.status).toBe("running");
+    expect(JSON.stringify(out)).not.toContain(VALUE);
+  });
+
+  it("waits for the person's yes without starting the worker, in plain words", async () => {
+    const { source, host, started } = fixture();
+    const arm = vi.fn(async () => ({ state: "waiting", decisionKey: "secret/stripe-api-key/claude", name: "stripe-api-key", scope: "global" }));
+    host.secretsWorkerArm = arm;
+    const out = (await handleAgentApp(source, "r-wait", "tasks.delegate", { brief, secrets: KEYS }, host)) as Record<string, unknown>;
+    expect(started).toEqual([]);
+    expect(out).toMatchObject({ taskId: null, childSessionId: "app-mono-exo-r-wait", status: "waiting" });
+    expect(String(out.note)).toMatch(/hasn't approved stripe-api-key for this worker/);
+    expect(String(out.note)).toMatch(/end your turn/);
+    expect(JSON.stringify(out)).not.toContain(VALUE);
+  });
+
+  it("brings a no back as refused, and a key that is not saved as a request to make", async () => {
+    const denied = fixture();
+    denied.host.secretsWorkerArm = vi.fn(async () => ({ state: "denied", decisionKey: "secret/stripe-api-key/claude", name: "stripe-api-key" }));
+    const no = (await handleAgentApp(denied.source, "r-no", "tasks.delegate", { brief, secrets: KEYS }, denied.host)) as Record<string, unknown>;
+    expect(denied.started).toEqual([]);
+    expect(no.status).toBe("refused");
+    expect(String(no.note)).toMatch(/said no to stripe-api-key/);
+
+    const missing = fixture();
+    missing.host.secretsWorkerArm = vi.fn(async () => ({ state: "missing", name: "stripe-api-key", scope: "global" }));
+    const ask = (await handleAgentApp(missing.source, "r-missing", "tasks.delegate", { brief, secrets: KEYS }, missing.host)) as Record<string, unknown>;
+    expect(missing.started).toEqual([]);
+    expect(ask.status).toBe("waiting");
+    expect(String(ask.note)).toMatch(/Ask for it with secrets_request/);
+  });
+
+  it("refuses keys on a Lead brief, from a coding-team chat, and with no keys here at all", async () => {
+    const { source, host, started } = fixture();
+    await expect(
+      handleAgentApp(source, "r-lead", "tasks.delegate", { brief, lead: "hub", secrets: KEYS }, host),
+    ).rejects.toThrow("secrets are for a worker you start yourself");
+    const team = fixture([], "team");
+    team.host.secretsWorkerArm = vi.fn();
+    await expect(
+      handleAgentApp(team.source, "r-team", "tasks.delegate", { brief, secrets: KEYS }, team.host),
+    ).rejects.toThrow("A worker's key comes from a Mono's own chat");
+    const bare = fixture();
+    await expect(
+      handleAgentApp(bare.source, "r-bare", "tasks.delegate", { brief, secrets: KEYS }, bare.host),
+    ).rejects.toThrow("Keys aren't available in this build");
+    expect(started).toEqual([]);
+  });
+
+  it("refuses bad key lists before anything starts: too many, a repeated name or env, a value, a bad name", async () => {
+    const { source, host, started } = fixture();
+    const arm = vi.fn();
+    host.secretsWorkerArm = arm;
+    const many = [...KEYS, { name: "b", env: "B" }, { name: "c", env: "C" }, { name: "d", env: "D" }];
+    await expect(handleAgentApp(source, "r-1", "tasks.delegate", { brief, secrets: many }, host)).rejects.toThrow("up to 3 keys");
+    await expect(
+      handleAgentApp(source, "r-2", "tasks.delegate", { brief, secrets: [KEYS[0], { name: "STRIPE-API-KEY", env: "OTHER" }] }, host),
+    ).rejects.toThrow("two entries name the same key");
+    await expect(
+      handleAgentApp(source, "r-3", "tasks.delegate", { brief, secrets: [KEYS[0], { name: "other", env: "STRIPE_API_KEY" }] }, host),
+    ).rejects.toThrow("its own env name");
+    await expect(
+      handleAgentApp(source, "r-4", "tasks.delegate", { brief, secrets: [{ name: "stripe-api-key", env: "STRIPE_API_KEY", value: VALUE }] }, host),
+    ).rejects.toThrow("Unknown secrets fields: value");
+    await expect(
+      handleAgentApp(source, "r-5", "tasks.delegate", { brief, secrets: [{ name: "stripe-api-key", env: "stripe key" }] }, host),
+    ).rejects.toThrow("capital letters, digits and underscores");
+    expect(arm).not.toHaveBeenCalled();
+    expect(started).toEqual([]);
+  });
+});
 // WP-171: a contract, waves and the tasks that wait for what they need, through the same delegate every task uses.
 describe("tasks.fanout: contracts and waves in the normal delegate path (WP-171)", () => {
   const INTENT = "Ash: a score board with an API behind it.";
@@ -3703,6 +3792,60 @@ describe("round 5 gap: a redo whose record failed does not start", () => {
     expect(redoLinkRefusal(redo, null)).toMatch(/could not be recorded/);
     expect(redoLinkRefusal(redo, { id: "t-new" } as unknown as Delegation)).toBeNull();
     expect(redoLinkRefusal({ title: "Fresh", askIds: [] }, null)).toBeNull();
+  });
+});
+
+// WP-203: the control socket (handleAgentApp) refuses a security review's request id, and the review owner, before any
+// task starts. The review launcher is the app's alone.
+import { REVIEW_OWNER, REVIEW_REQUEST_PREFIX } from "../../security-review/model/launch";
+
+describe("the control socket refuses a security review's request id and owner", () => {
+  const reviewRequest = `${REVIEW_REQUEST_PREFIX}6162`;
+
+  it("refuses a tasks.delegate whose request id names a security review, and starts nothing", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, reviewRequest, "tasks.delegate", { brief: "Build it" }, host),
+    ).rejects.toThrow(/Security review request IDs belong to the app/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a tasks.fanout with a review request id too", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, reviewRequest, "tasks.fanout", { tasks: [{ name: "a", brief: "x" }] }, host),
+    ).rejects.toThrow(/Security review request IDs belong to the app/);
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a call from the review owner's own session, whatever it asks", async () => {
+    const { source, host, started } = fixture([]);
+    const asOwner = { ...source, id: REVIEW_OWNER };
+    await expect(handleAgentApp(asOwner, "r-own", "tasks.delegate", { brief: "Build it" }, host)).rejects.toThrow(
+      /reserved for the app/,
+    );
+    expect(started).toEqual([]);
+  });
+
+  it("refuses a call from the reviewer's own chat, whose id is review-<hex>", async () => {
+    // The launcher names the reviewer's chat review-<hex> (the child session of a review), not the owner's id.
+    const { source, host, started } = fixture([]);
+    const asReviewer = { ...source, id: `review-${"6162".repeat(10)}` };
+    await expect(handleAgentApp(asReviewer, "r-chat", "tasks.delegate", { brief: "Build it" }, host)).rejects.toThrow(
+      /reserved for the app/,
+    );
+    expect(started).toEqual([]);
+  });
+
+  it("refuses an ownerSession or reviewLaunch field a caller adds to tasks.delegate", async () => {
+    const { source, host, started } = fixture([]);
+    await expect(
+      handleAgentApp(source, "r-field", "tasks.delegate", { brief: "Build it", ownerSession: REVIEW_OWNER }, host),
+    ).rejects.toThrow();
+    await expect(
+      handleAgentApp(source, "r-field2", "tasks.delegate", { brief: "Build it", reviewLaunch: true }, host),
+    ).rejects.toThrow();
+    expect(started).toEqual([]);
   });
 });
 

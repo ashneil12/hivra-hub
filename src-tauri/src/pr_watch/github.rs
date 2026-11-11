@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
 
-use serde_json::Value;
+use serde_json::{json, Value};
 
 use super::eval::{Check, CheckStatus, Detail, Mergeability, Remark, RemarkKind};
 
@@ -26,7 +26,7 @@ fn pull_request_query() -> String {
   repository(owner: $owner, name: $name) {{ nameWithOwner pullRequest(number: $number) {{ \
     number url title state isDraft merged mergedAt closedAt mergeCommit {{ oid }} changedFiles \
     headRefOid headRefName baseRefName baseRef {{ target {{ oid }} }} headRepository {{ nameWithOwner }} mergeable reviewDecision author {{ login }} \
-    labels(first: 100) {{ nodes {{ name }} }} \
+    labels(first: 100) {{ nodes {{ name }} }} mergeStateStatus \
     commits(last: 1) {{ nodes {{ commit {{ oid statusCheckRollup {{ state contexts(first: 100) {{ totalCount \
       pageInfo {{ hasNextPage endCursor }} nodes {{ {CHECK_FIELDS} }} }} }} }} }} }} \
     comments(last: 50) {{ totalCount nodes {{ {REMARK_FIELDS} isMinimized }} }} \
@@ -74,6 +74,8 @@ pub struct PrRead {
     /// The repository the head branch is in (`headRepository`); `None` when GitHub shows none (a deleted fork).
     pub head_repo: Option<String>,
     pub review_decision: Option<String>,
+    /// GitHub's merge state (`mergeStateStatus`: BEHIND, DIRTY, CLEAN, ...). `None` when the read didn't say (WP-202).
+    pub merge_state: Option<String>,
     /// The label names (the first 100). The lead tick never merges a pull request labelled security-park.
     pub labels: Vec<String>,
     pub detail: Detail,
@@ -129,6 +131,11 @@ impl std::fmt::Display for ReadError {
 /// `gh api graphql`, as a seam: the real CLI, or recorded answers in tests.
 pub trait Gh: Send + Sync {
     fn graphql(&self, query: &str, vars: &[(&str, String)]) -> Result<String, String>;
+    /// `gh api <path>` for a REST path under `repos/` (WP-202). A seam that answers GraphQL only keeps the default, so
+    /// nothing falls back to REST by accident.
+    fn rest(&self, _path: &str) -> Result<String, String> {
+        Err("REST reads aren't available here".into())
+    }
 }
 
 /// The installed `gh`, signed in as the user. A dev copy may point `MONOCODE_PR_WATCH_GH` at a stand-in (the dev-slot
@@ -136,6 +143,18 @@ pub trait Gh: Send + Sync {
 pub struct CliGh;
 
 const GH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// A REST path the installed `gh` may read. Under `repos/`, no spaces or flags, and no `.` or `..` segment.
+/// `compare/a...b` is a real GitHub path: the three dots sit inside one segment, and that is allowed.
+pub(crate) fn rest_path_allowed(path: &str) -> bool {
+    path.starts_with("repos/")
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/._-?=&%,".contains(&b))
+        && path
+            .split('/')
+            .all(|segment| segment != "." && segment != "..")
+}
 
 impl CliGh {
     fn program() -> Option<PathBuf> {
@@ -149,6 +168,25 @@ impl CliGh {
 }
 
 impl Gh for CliGh {
+    fn rest(&self, path: &str) -> Result<String, String> {
+        // A path is never a free command: under repos/, no traversal, no spaces, no flags.
+        if !rest_path_allowed(path) {
+            return Err("not a repository path".into());
+        }
+        let program = Self::program().ok_or_else(|| {
+            "GitHub CLI (`gh`) is not installed, so MonoCode can't read pull requests.".to_string()
+        })?;
+        let mut command = Command::new(program);
+        command
+            .args(["api", path])
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GH_PAGER", "cat")
+            .env("GIT_TERMINAL_PROMPT", "0")
+            .env("NO_COLOR", "1");
+        crate::harness::apply_gui_env(&mut command);
+        run_with_timeout(command, GH_TIMEOUT)
+    }
+
     fn graphql(&self, query: &str, vars: &[(&str, String)]) -> Result<String, String> {
         let program = Self::program().ok_or_else(|| {
             "GitHub CLI (`gh`) is not installed, so MonoCode can't read pull requests.".to_string()
@@ -238,9 +276,15 @@ pub fn read(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, ReadError> {
         ("name", name.to_string()),
         ("number", number.to_string()),
     ];
-    let json = gh
-        .graphql(&pull_request_query(), &vars)
-        .map_err(|error| failure(&error))?;
+    let json = match gh.graphql(&pull_request_query(), &vars) {
+        Ok(json) => json,
+        // WP-202: GraphQL's budget is its own. The same facts over REST keep the watch true; only when REST fails too
+        // does the read pause like any rate limit.
+        Err(error) if rate_limited(&error) => {
+            return read_rest(gh, repo, number).map_err(|_| ReadError::RateLimited { until: None });
+        }
+        Err(error) => return Err(failure(&error)),
+    };
     let mut read = parse(&json)?;
     let mut cursor = next_page(&json);
     let mut pages = 0;
@@ -273,6 +317,222 @@ pub fn read(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, ReadError> {
         cursor = contexts.and_then(page_cursor);
     }
     Ok(read)
+}
+
+/// The same facts as the GraphQL read, over REST (WP-202). REST can't say which checks are required, so every check
+/// counts; it reads no comments or reviews, so `remarks` is None and nothing is told as new. The base is main's branch
+/// tip (`repos/{r}/branches/{base}`), never the pull request's recorded base; without it the base is None, which holds
+/// a merge rather than passing one.
+fn read_rest(gh: &dyn Gh, repo: &str, number: u64) -> Result<PrRead, String> {
+    let (owner, name) = split_repo(repo).ok_or_else(|| format!("{repo} is not owner/name"))?;
+    let pr = rest_json(gh, &format!("repos/{owner}/{name}/pulls/{number}"))?;
+    let head_sha = pr
+        .pointer("/head/sha")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let base_ref = pr
+        .pointer("/base/ref")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let branch_tip = rest_json(gh, &format!("repos/{owner}/{name}/branches/{base_ref}"))
+        .ok()
+        .and_then(|branch| {
+            branch
+                .pointer("/commit/sha")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        });
+    let get = |path: &str| gh.rest(path);
+    let mut checks: Vec<(Check, Option<i64>)> = Vec::new();
+    if let Some(sha) = head_sha.as_deref() {
+        let runs = rest_pages(
+            &get,
+            &format!("repos/{owner}/{name}/commits/{sha}/check-runs"),
+            "check_runs",
+        )?;
+        for run in &runs.items {
+            let node = json!({
+                "name": run.get("name"),
+                "status": run.get("status"),
+                "conclusion": run.get("conclusion"),
+                "detailsUrl": run.get("html_url"),
+                "startedAt": run.get("started_at"),
+                "completedAt": run.get("completed_at"),
+            });
+            checks.extend(check_of(&node));
+        }
+        let statuses = rest_pages(
+            &get,
+            &format!("repos/{owner}/{name}/commits/{sha}/status"),
+            "statuses",
+        )?;
+        for status in &statuses.items {
+            let node = json!({
+                "context": status.get("context"),
+                "state": status.get("state"),
+                "targetUrl": status.get("target_url"),
+                "createdAt": status.get("created_at"),
+            });
+            checks.extend(check_of(&node));
+        }
+        // The combined state is GitHub's own word for all the statuses. If it says failure or pending and no listed
+        // status agrees (a status past the listed pages), the check says so: a red or unfinished commit is never green.
+        let total = statuses
+            .first
+            .get("total_count")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let combined = statuses
+            .first
+            .get("state")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        if total > 0 {
+            let listed_failed = checks.iter().any(|(c, _)| c.status.failed());
+            let listed_pending = checks.iter().any(|(c, _)| c.status == CheckStatus::Pending);
+            if matches!(combined, "failure" | "error") && !listed_failed {
+                checks.push((
+                    Check {
+                        name: "combined commit status".into(),
+                        status: CheckStatus::Failure,
+                        url: None,
+                        required: false,
+                    },
+                    None,
+                ));
+            }
+            if combined == "pending" && !listed_pending {
+                checks.push((
+                    Check {
+                        name: "combined commit status".into(),
+                        status: CheckStatus::Pending,
+                        url: None,
+                        required: false,
+                    },
+                    None,
+                ));
+            }
+        }
+    }
+    let merged = pr.get("merged").and_then(Value::as_bool) == Some(true);
+    let state = if pr.get("state").and_then(Value::as_str) == Some("open") {
+        PrState::Open
+    } else if merged {
+        PrState::Merged
+    } else {
+        PrState::Closed
+    };
+    let mergeability = match pr.get("mergeable").and_then(Value::as_bool) {
+        Some(true) => Mergeability::Mergeable,
+        Some(false) => Mergeability::Conflicting,
+        None => Mergeability::Unknown,
+    };
+    Ok(PrRead {
+        repo: format!("{owner}/{name}"),
+        number,
+        url: text(&pr, "html_url").unwrap_or_default(),
+        title: text(&pr, "title").unwrap_or_default(),
+        state,
+        draft: pr.get("draft").and_then(Value::as_bool) == Some(true),
+        merge_sha: if merged {
+            text(&pr, "merge_commit_sha")
+        } else {
+            None
+        },
+        merged_at: text(&pr, "merged_at"),
+        head_ref: pr
+            .pointer("/head/ref")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string(),
+        base_ref,
+        base_tip: branch_tip,
+        head_repo: pr
+            .pointer("/head/repo/full_name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        review_decision: None,
+        labels: items(&pr, "labels")
+            .iter()
+            .filter_map(|label| text(label, "name"))
+            .collect(),
+        detail: Detail {
+            head_sha,
+            checks: dedupe(checks),
+            mergeability,
+            viewer: None,
+            author: pr
+                .pointer("/user/login")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        },
+        merge_state: text(&pr, "mergeable_state").map(|state| state.to_ascii_uppercase()),
+        changed_files: None,
+        remarks: None,
+        rate: None,
+    })
+}
+
+/// Every item of a paged REST list, and the first page's object (for its counts and state). A list GitHub says is
+/// longer than what came back is an error: the caller holds rather than judge a partial list.
+pub struct Paged {
+    pub items: Vec<Value>,
+    pub first: Value,
+}
+
+const PER_PAGE: usize = 100;
+const MAX_PAGES: usize = 10;
+
+/// Read a REST list page by page (`per_page`, up to [`MAX_PAGES`]) until GitHub's `total_count` is met (WP-202 M2).
+pub fn rest_pages(
+    get: &dyn Fn(&str) -> Result<String, String>,
+    path: &str,
+    key: &str,
+) -> Result<Paged, String> {
+    let mut items: Vec<Value> = Vec::new();
+    let mut total: Option<usize> = None;
+    let mut first = Value::Null;
+    let sep = if path.contains('?') { '&' } else { '?' };
+    for page in 1..=MAX_PAGES {
+        let json: Value = serde_json::from_str(&get(&format!(
+            "{path}{sep}per_page={PER_PAGE}&page={page}"
+        ))?)
+        .map_err(|_| format!("GitHub's answer for {path} was not JSON"))?;
+        if page == 1 {
+            first = json.clone();
+        }
+        if total.is_none() {
+            total = json
+                .get("total_count")
+                .and_then(Value::as_u64)
+                .map(|n| n as usize);
+        }
+        let batch = json
+            .get(key)
+            .and_then(Value::as_array)
+            .ok_or_else(|| format!("GitHub's answer for {path} has no {key} list"))?;
+        let got = batch.len();
+        items.extend(batch.iter().cloned());
+        if got == 0 || total.is_some_and(|t| items.len() >= t) {
+            break;
+        }
+    }
+    match total {
+        Some(t) if items.len() < t => Err(format!(
+            "GitHub listed {} of {t} {key} for {path}, so the list is incomplete",
+            items.len()
+        )),
+        None if items.len() >= PER_PAGE * MAX_PAGES => {
+            Err(format!("{path} has too many {key} to read whole"))
+        }
+        _ => Ok(Paged { items, first }),
+    }
+}
+
+fn rest_json(gh: &dyn Gh, path: &str) -> Result<Value, String> {
+    let answer = gh.rest(path)?;
+    serde_json::from_str(&answer).map_err(|_| format!("GitHub's answer for {path} was not JSON"))
 }
 
 fn failure(error: &str) -> ReadError {
@@ -451,6 +711,15 @@ fn remark_of(node: &Value, kind: RemarkKind, fallback_path: Option<&str>) -> Opt
     })
 }
 
+/// A REST list (a plain array under `key`), where GraphQL wraps its lists in `nodes`.
+fn items<'a>(value: &'a Value, key: &str) -> &'a [Value] {
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or(&[])
+}
+
 fn nodes<'a>(value: &'a Value, key: &str) -> &'a [Value] {
     value
         .get(key)
@@ -570,8 +839,13 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         merged_at: text(pr, "mergedAt"),
         head_ref: text(pr, "headRefName").unwrap_or_default(),
         base_ref: text(pr, "baseRefName").unwrap_or_default(),
+        base_tip: pr
+            .pointer("/baseRef/target/oid")
+            .and_then(Value::as_str)
+            .map(str::to_string),
         head_repo,
         review_decision: text(pr, "reviewDecision"),
+        merge_state: text(pr, "mergeStateStatus"),
         labels: pr
             .pointer("/labels/nodes")
             .and_then(Value::as_array)
@@ -595,10 +869,6 @@ pub fn parse(json: &str) -> Result<PrRead, ReadError> {
         remarks: Some(remarks),
         rate,
         changed_files: pr.get("changedFiles").and_then(Value::as_u64),
-        base_tip: pr
-            .pointer("/baseRef/target/oid")
-            .and_then(Value::as_str)
-            .map(str::to_string),
     })
 }
 
@@ -612,10 +882,12 @@ pub(crate) mod tests {
     /// A recorded read of cli/cli#14752: reviews and review threads.
     pub const RECORDED_REVIEWS: &str = include_str!("fixtures/cli-cli-14752.json");
 
-    /// `gh`, answering from recorded JSON; every call is kept.
+    /// `gh`, answering from recorded JSON; every call is kept. REST paths answer from `rest`, by the first key the path
+    /// contains (and keep answering: the same path can be read on every sweep).
     pub struct FakeGh {
         pub answers: Mutex<Vec<Result<String, String>>>,
         pub calls: Mutex<Vec<Vec<(String, String)>>>,
+        pub rest: Vec<(String, Result<String, String>)>,
     }
 
     impl FakeGh {
@@ -623,11 +895,28 @@ pub(crate) mod tests {
             Self {
                 answers: Mutex::new(answers),
                 calls: Mutex::new(Vec::new()),
+                rest: Vec::new(),
             }
+        }
+
+        pub fn with_rest(mut self, key: &str, answer: &str) -> Self {
+            self.rest.push((key.to_string(), Ok(answer.to_string())));
+            self
         }
     }
 
     impl Gh for FakeGh {
+        fn rest(&self, path: &str) -> Result<String, String> {
+            if !rest_path_allowed(path) {
+                return Err("not a repository path".into());
+            }
+            self.rest
+                .iter()
+                .find(|(key, _)| path.contains(key.as_str()))
+                .map(|(_, answer)| answer.clone())
+                .unwrap_or_else(|| Err(format!("no recorded REST answer for {path}")))
+        }
+
         fn graphql(&self, _query: &str, vars: &[(&str, String)]) -> Result<String, String> {
             self.calls.lock().unwrap().push(
                 vars.iter()
@@ -835,5 +1124,267 @@ pub(crate) mod tests {
         assert_eq!(split_repo("a/b/c"), None);
         assert_eq!(split_repo("../x"), None);
         assert_eq!(split_repo("o/r; rm"), None);
+    }
+
+    const REST_PULL: &str = r#"{"number":7,"html_url":"https://github.com/acme/web/pull/7","title":"Fix the save bug",
+      "state":"open","draft":false,"merged":false,"merge_commit_sha":null,"merged_at":null,"mergeable":true,
+      "mergeable_state":"behind","head":{"sha":"h7h7h7h","ref":"work","repo":{"full_name":"acme/web"}},
+      "base":{"ref":"main","sha":"b2b2b2b"},"labels":[{"name":"ready"}],"user":{"login":"ash"}}"#;
+    const REST_RUNS: &str = r#"{"total_count":2,"check_runs":[
+      {"name":"build","status":"completed","conclusion":"success","html_url":"https://github.com/acme/web/runs/1","started_at":"2026-11-01T10:00:00Z","completed_at":"2026-11-01T10:05:00Z"},
+      {"name":"lint","status":"in_progress","conclusion":null,"html_url":"https://github.com/acme/web/runs/2","started_at":"2026-11-01T10:00:00Z","completed_at":null}]}"#;
+    const REST_STATUS: &str = r#"{"state":"success","statuses":[]}"#;
+
+    #[test]
+    fn the_base_tip_and_merge_state_are_read_and_an_answer_without_them_blocks_nothing() {
+        let old = parse(RECORDED_REQUIRED).unwrap();
+        assert_eq!(
+            old.base_tip, None,
+            "an answer without the base reads as unknown"
+        );
+        assert_eq!(
+            old.merge_state, None,
+            "an answer without the merge state reads as unknown"
+        );
+        let mut value: Value = serde_json::from_str(RECORDED_REQUIRED).unwrap();
+        value["data"]["repository"]["pullRequest"]["baseRef"] =
+            json!({"target": {"oid": "b2b2b2b"}});
+        value["data"]["repository"]["pullRequest"]["mergeStateStatus"] = json!("BEHIND");
+        let read = parse(&value.to_string()).unwrap();
+        assert_eq!(read.base_tip.as_deref(), Some("b2b2b2b"));
+        assert_eq!(read.merge_state.as_deref(), Some("BEHIND"));
+        assert_eq!(
+            read.detail.checks, old.detail.checks,
+            "the new fields change no check"
+        );
+    }
+
+    #[test]
+    fn a_graphql_rate_limit_reads_the_same_facts_over_rest() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded for user".into())])
+            .with_rest("/pulls/7", REST_PULL)
+            .with_rest(
+                "/branches/main",
+                r#"{"name":"main","commit":{"sha":"b2b2b2b"}}"#,
+            )
+            .with_rest("/check-runs", REST_RUNS)
+            .with_rest("/status", REST_STATUS);
+        let got = read(&gh, "acme/web", 7).unwrap();
+        assert_eq!(got.state, PrState::Open);
+        assert_eq!(got.repo, "acme/web");
+        assert_eq!(got.head_ref, "work");
+        assert_eq!(got.base_ref, "main");
+        assert_eq!(got.base_tip.as_deref(), Some("b2b2b2b"));
+        assert_eq!(got.merge_state.as_deref(), Some("BEHIND"));
+        assert_eq!(got.labels, vec!["ready"]);
+        assert_eq!(got.detail.head_sha.as_deref(), Some("h7h7h7h"));
+        assert_eq!(got.detail.mergeability, Mergeability::Mergeable);
+        assert_eq!(got.detail.author.as_deref(), Some("ash"));
+        assert_eq!(
+            got.remarks, None,
+            "REST reads no comments: none are told as new"
+        );
+        let names: Vec<(&str, CheckStatus)> = got
+            .detail
+            .checks
+            .iter()
+            .map(|c| (c.name.as_str(), c.status))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("build", CheckStatus::Success),
+                ("lint", CheckStatus::Pending)
+            ]
+        );
+        assert!(
+            got.detail.checks.iter().all(|c| !c.required),
+            "REST can't say which checks are required, so every check counts"
+        );
+    }
+
+    #[test]
+    fn a_rest_read_that_fails_too_pauses_like_a_rate_limit() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded".into())]);
+        assert_eq!(
+            read(&gh, "acme/web", 7),
+            Err(ReadError::RateLimited { until: None })
+        );
+    }
+
+    /// r3 review HIGH: the sweep reads the base move and the behind count through paths
+    /// `compare/{a}...{b}`. Those are repository paths. A segment that is `.` or `..` is not.
+    /// The check is the pure function, not `CliGh::rest`: an allowed path would start `gh`.
+    #[test]
+    fn r3_review_the_installed_gh_lets_the_paths_the_base_reads_build_through() {
+        let asked = Mutex::new(Vec::<String>::new());
+        let record = |path: &str| -> Result<String, String> {
+            asked.lock().unwrap().push(path.to_string());
+            Err("recorded only".into())
+        };
+        let mut read = parse(RECORDED_REQUIRED).unwrap();
+        read.base_tip = Some("b2b2b2b".into());
+        assert!(read.detail.head_sha.is_some());
+        let memo = crate::pr_watch::eval::Memo {
+            base_sha: Some("b1b1b1b".into()),
+            ..Default::default()
+        };
+        let _ = crate::pr_watch::base::facts(&record, "acme/web", 7, &memo, &read, false);
+        let _ = crate::pr_watch::base::merge_base(&record, "acme/web", "b2b2b2b", "a1a1a1a");
+        let paths = asked.into_inner().unwrap();
+        assert!(paths.iter().any(|p| p.contains("/compare/")), "{paths:?}");
+        for path in &paths {
+            assert!(
+                rest_path_allowed(path),
+                "a path base.rs reads is not a repository path: {path}"
+            );
+        }
+        assert!(!rest_path_allowed("repos/acme/web/../../user"));
+        assert!(!rest_path_allowed("repos/./web/pulls/7"));
+        assert!(!rest_path_allowed("user/keys"));
+    }
+
+    /// The same filter the installed `gh` uses. A compare path is allowed; a `..` segment is not.
+    #[test]
+    fn fake_gh_refuses_the_same_paths_the_installed_gh_refuses() {
+        let gh = FakeGh::new(vec![]);
+        assert_eq!(
+            gh.rest("repos/acme/web/../../user"),
+            Err("not a repository path".into())
+        );
+        assert_ne!(
+            gh.rest("repos/acme/web/compare/b1b1b1b...b2b2b2b"),
+            Err("not a repository path".into())
+        );
+    }
+
+    #[test]
+    fn rest_paths_are_limited_to_repository_paths() {
+        assert!(CliGh.rest("user/keys").is_err());
+        assert!(CliGh.rest("repos/acme/web/../../user").is_err());
+        assert!(CliGh
+            .rest("repos/acme/web/pulls/7 --method DELETE")
+            .is_err());
+    }
+
+    #[test]
+    fn r1_the_rest_fallback_reads_the_base_branch_tip_not_the_recorded_base() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded for user".into())])
+            .with_rest("/pulls/7", REST_PULL)
+            .with_rest("/check-runs", REST_RUNS)
+            .with_rest("/status", REST_STATUS)
+            .with_rest(
+                "/branches/main",
+                r#"{"name":"main","commit":{"sha":"b3b3b3b"}}"#,
+            )
+            .with_rest(
+                "/git/ref/heads/main",
+                r#"{"ref":"refs/heads/main","object":{"sha":"b3b3b3b","type":"commit"}}"#,
+            );
+        let got = read(&gh, "acme/web", 7).unwrap();
+        assert_eq!(got.base_tip.as_deref(), Some("b3b3b3b"));
+    }
+
+    #[test]
+    fn a_rest_list_is_read_page_by_page_until_githubs_total_is_met() {
+        let page = |from: usize, to: usize| {
+            json!({
+                "total_count": 150,
+                "check_runs": (from..to).map(|i| json!({ "name": format!("c{i}") })).collect::<Vec<_>>(),
+            })
+            .to_string()
+        };
+        let gh = FakeGh::new(vec![])
+            .with_rest("&page=1", &page(0, 100))
+            .with_rest("&page=2", &page(100, 150));
+        let paged = rest_pages(
+            &|p: &str| gh.rest(p),
+            "repos/acme/web/commits/h/check-runs",
+            "check_runs",
+        )
+        .unwrap();
+        assert_eq!(
+            paged.items.len(),
+            150,
+            "every page is read, not only the first 100"
+        );
+    }
+
+    #[test]
+    fn a_rest_list_that_stays_short_of_its_total_is_an_error_not_a_partial_answer() {
+        let gh = FakeGh::new(vec![]).with_rest(
+            "&page=",
+            r#"{"total_count":150,"check_runs":[{"name":"c"}]}"#,
+        );
+        assert!(rest_pages(
+            &|p: &str| gh.rest(p),
+            "repos/acme/web/commits/h/check-runs",
+            "check_runs"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn a_failed_combined_status_that_no_listed_status_shows_is_not_green() {
+        let gh = FakeGh::new(vec![Err("API rate limit exceeded".into())])
+            .with_rest("/pulls/7", REST_PULL)
+            .with_rest("/branches/main", r#"{"commit":{"sha":"b2b2b2b"}}"#)
+            .with_rest("/check-runs", r#"{"total_count":0,"check_runs":[]}"#)
+            .with_rest(
+                "/status",
+                r#"{"state":"failure","total_count":1,"statuses":[{"context":"ci/a","state":"success"}]}"#,
+            );
+        let got = read(&gh, "acme/web", 7).unwrap();
+        assert!(
+            got.detail.checks.iter().any(|c| c.status.failed()),
+            "the combined state says failure: {:?}",
+            got.detail.checks
+        );
+    }
+
+    /// r2 check (M2 edges): exactly 100 is one page, 101 is two, and a total GitHub doesn't deliver is an error.
+    #[test]
+    fn r2_rest_pages_reads_the_page_edges_and_refuses_a_short_total() {
+        let page = |total: usize, from: usize, to: usize| {
+            json!({
+                "total_count": total,
+                "check_runs": (from..to).map(|i| json!({ "name": format!("c{i}") })).collect::<Vec<_>>(),
+            })
+            .to_string()
+        };
+        let path = "repos/acme/web/commits/h/check-runs";
+        let gh = FakeGh::new(vec![]).with_rest("&page=1", &page(100, 0, 100));
+        assert_eq!(
+            rest_pages(&|p: &str| gh.rest(p), path, "check_runs")
+                .unwrap()
+                .items
+                .len(),
+            100
+        );
+        let gh = FakeGh::new(vec![])
+            .with_rest("&page=1", &page(101, 0, 100))
+            .with_rest("&page=2", &page(101, 100, 101));
+        assert_eq!(
+            rest_pages(&|p: &str| gh.rest(p), path, "check_runs")
+                .unwrap()
+                .items
+                .len(),
+            101
+        );
+        let gh = FakeGh::new(vec![])
+            .with_rest("&page=1", &page(101, 0, 100))
+            .with_rest("&page=2", &page(101, 0, 0));
+        assert!(rest_pages(&|p: &str| gh.rest(p), path, "check_runs").is_err());
+        // No total_count: read until an empty page.
+        let gh = FakeGh::new(vec![])
+            .with_rest("&page=1", r#"{"check_runs":[{"name":"a"}]}"#)
+            .with_rest("&page=2", r#"{"check_runs":[]}"#);
+        assert_eq!(
+            rest_pages(&|p: &str| gh.rest(p), path, "check_runs")
+                .unwrap()
+                .items
+                .len(),
+            1
+        );
     }
 }

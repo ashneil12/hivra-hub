@@ -15,6 +15,7 @@ import {
   Zap,
   Chatting,
   Code,
+  Lock,
   type IconComponent, Undo2, DashboardSquare, CloudUpload, CheckCheck, Folder, Clock, ChartBreakoutSquare, Book, FileScript } from "../../shared/ui/icons";
 import { useLockOverscroll } from "../../shared/hooks/useLockOverscroll";
 import {
@@ -52,6 +53,8 @@ const SECTION_ICONS: Record<SettingsSectionId, IconComponent> = {
   memory: Book, // WP-51
   connectors: Zap,
   teams: Chatting,
+  // WP-92: the key vault.
+  secrets: Lock,
 };
 
 type Props = {

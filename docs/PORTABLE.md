@@ -29,6 +29,8 @@ workspace/               only if ticked. Written by Rust (src-tauri/src/portable
   notes.json             notes and artifacts (every column), note-assets/<id>/ their pictures
   automations.json       definitions; reminders.json; delegations.json (no mirror fields)
   hub/group-chats.json   the group chats with their conversations (webview)
+secrets/                 written by Rust (src-tauri/src/secrets): the vault's index, never a value
+  index.json             [{name, scope, label, last4, createdAt}]
 ```
 
 The archive is the same tree under one top folder. Nothing in it is a secret:
@@ -38,6 +40,7 @@ The archive is the same tree under one top folder. Nothing in it is a secret:
   refuses (leaving nothing behind) on any hit. A memory folder whose git history has a secret in any commit goes without
   its history (the manifest notes say so). Settings whose name or value looks like a secret stay home.
 - A file without secrets goes byte for byte as it was.
+- Hivra WP-92: `secrets/index.json` holds each secret's name, scope, label, last four characters and date, and nothing else; the value stays in your Mac's keychain and never enters an export. An import brings those rows back in a "needs its value" state, with no grants and no `.env` records, so each one is usable only once you type its value again.
 - Note pictures go the same way they come in: plain files up to the size a note takes (20 MB), never through a link. A
   `note-assets` folder, or a note's folder in it, that is a link is not followed (the manifest notes say so), and a note
   doesn't take a picture that is a link either (`notes_save_image`).
