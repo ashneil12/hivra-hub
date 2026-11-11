@@ -7,6 +7,7 @@ import {
   cardsAfter,
   factsFromHome,
   factsFromParts,
+  keepExampleMark,
   mergeRemote,
   type GateCard,
   type NeedsParts,
@@ -149,4 +150,60 @@ it("keeps a timed-out project's cards and the last remote when a read does not a
   expect(mergeRemote(previous, undefined)).toBe(previous);
   expect(takeLatest(1, 2, mergeRemote(previous, { decisions: [] }), previous)).toBe(previous);
   expect(mergeRemote(previous, { watches: undefined })).toEqual(previous);
+});
+
+it("keeps an example mark on a plain stopped reason", () => {
+  expect(keepExampleMark("Out of credits", "Example: Out of credits")).toBe("Example: Out of credits");
+  expect(keepExampleMark("Example: Out of credits", "Example: Out of credits")).toBe("Example: Out of credits");
+  expect(keepExampleMark("Out of credits", "402 at /x/y.json")).toBe("Out of credits");
+  expect(keepExampleMark("Out of credits", "  Example: low balance  ")).toBe("Example: Out of credits");
+  expect(keepExampleMark("Out of credits", "")).toBe("Out of credits");
+});
+
+it("puts the example mark back from the worker a stopped job carries", () => {
+  const stuck = (error: string) => ({
+    row: { id: "upload-build", error, errorClass: "billing", childSession: "example-worker-chat" },
+    kind: "failed" as const,
+    line: "Failed: billing",
+    since: NOW,
+    escalated: true,
+    key: "upload-build:failed",
+  });
+  const job = (error: string) => ({
+    id: "app:upload-build",
+    projectId: "vg-game",
+    who: "EXO lead",
+    kind: "worker" as const,
+    doing: "Upload the playtest build",
+    minutes: 1,
+    steps: [],
+    stuck: "stuck" as const,
+    stuckReason: "Out of credits",
+    stuckWorker: stuck(error),
+    lead: "vg-game-lead",
+  });
+  const sentence = (error: string) => needsYouQuiet(factsFromParts(parts({}, {
+    rows: [{ key: "job:app:upload-build", lead: "vg-game-lead", projectId: "vg-game", job: job(error) }],
+  })), NOW)[0]?.sentence;
+  // The job's own reason is already the plain line. The seeded fault still sits on the worker it carries.
+  expect(sentence("Example: Out of credits")).toBe("Example: Out of credits");
+  expect(sentence("402 Payment Required")).toBe("Out of credits");
+  const lone = needsYouQuiet(factsFromParts(parts({}, {
+    rows: [{ key: "worker:upload-build:failed", lead: "vg-game-lead", projectId: "vg-game", worker: { ...stuck("Example: Out of credits"), line: "Out of credits" } }],
+  })), NOW);
+  expect(lone[0]?.sentence).toBe("Example: Out of credits");
+});
+
+it("keeps a decision key so Home can open the inbox", () => {
+  const list = needsYouQuiet(factsFromParts(parts({
+    decisions: [decision("hivra", "ship", "Should we ship?")],
+  })), NOW);
+  expect(list.map((item) => item.sentence)).toEqual(["Should we ship?"]);
+  expect(list[0]?.decisionKey).toBe("ship");
+  expect(list[0]?.kind).toBe("question");
+  const approval = needsYouQuiet(factsFromParts(parts({
+    decisions: [decision("hivra", "run", "Ada wants to run the tests")],
+  })), NOW);
+  expect(approval[0]?.kind).toBe("approval");
+  expect(approval[0]?.decisionKey).toBeUndefined();
 });

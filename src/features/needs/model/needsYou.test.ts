@@ -107,7 +107,7 @@ it("lists one item of every kind across three projects, and both counts agree", 
   expect(items.every((item) => item.sentence.length <= 140)).toBe(true);
   expect(items.every((item) => item.actions.length <= 2)).toBe(true);
   expect(items.find((item) => item.kind === "merge")?.actions[0]?.label).toBe("Yes");
-  expect(items.find((item) => item.kind === "stopped")?.actions[0]?.label).toBe("Open Hivra lead's chat");
+  expect(items.find((item) => item.kind === "stopped")?.actions[0]?.label).toBe("Open chat");
 
   for (const item of items) item.actions[0]?.run();
   expect(answered).toEqual(["approve", "question", "allow", "merge", "review", "stopped"]);

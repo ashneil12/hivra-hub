@@ -82,12 +82,25 @@ function monoName(id: string | null | undefined, fallback: string): string {
   return findMono(id)?.name || fallback;
 }
 
+/**
+ * A seeded fault starts with "Example:" so a shot cannot be read as a real one. The plain line
+ * ("Out of credits") drops that mark. Put it back when the raw fault carried it.
+ */
+export function keepExampleMark(plain: string, raw: string | null | undefined): string {
+  const line = plain.replace(/\s+/g, " ").trim();
+  const source = (raw ?? "").replace(/\s+/g, " ").trim();
+  if (!source.startsWith("Example:") || line.startsWith("Example:")) return line;
+  return `Example: ${line}`;
+}
+
 function stoppedFacts(rows: readonly NeedsYouRow[]): StoppedFact[] {
   return rows.map((row) => {
     const job = row.job;
     const worker = row.worker;
     const who = job?.who || monoName(row.lead, "Coding team");
-    const sentence = worker?.line || job?.stuckReason || job?.stateReason || job?.doing || "Needs you.";
+    const plain = worker?.line || job?.stuckReason || job?.stateReason || job?.doing || "Needs you.";
+    // A job row's stuckReason is already the plain line. The raw fault, including a seeded "Example:" mark, is on the worker it carries.
+    const sentence = keepExampleMark(plain, worker?.row.error ?? job?.stuckWorker?.row.error);
     const about = worker?.key || job?.stuckWorker?.key;
     const chatId = worker?.row.childSession || job?.id;
     return {
@@ -179,6 +192,7 @@ function decisionFacts(
       who: monoName(decision.askedByMono, "Coding team"),
       at: decision.createdAt,
       sentence: decision.question,
+      decisionKey: decision.decisionKey,
     };
     if (parked.has(decision.decisionKey)) {
       questions.push({ ...base, fromDecision: true, gateKey: decision.decisionKey, onAnswer: yesAnswer(decision) });

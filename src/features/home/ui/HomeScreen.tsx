@@ -8,6 +8,7 @@ import { FREE_UP_SPACE } from "../../monos/model/builderScale";
 import { ArrowUp } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
+import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import "./home.css";
 
 const TITLE: Record<string, string> = {
@@ -34,9 +35,40 @@ function noteLine(note: HomeNote): HomeLine {
   return { id: `${note.kind}:${note.id}`, kind, text: note.text, projectId: note.projectId, target: note.id, at: 0 };
 }
 
+const ROW_ACTIONS = 3;
+
+function NeedActions({ actions }: { actions: readonly { label: string; run: () => void }[] }) {
+  return actions.slice(0, ROW_ACTIONS).map((action, index) => {
+    const run = (event: { stopPropagation: () => void }) => {
+      event.stopPropagation();
+      action.run();
+    };
+    // Open chat is the bordered button on a stopped row, not the blue primary.
+    if (index === 0 && action.label !== "Open chat") {
+      return (
+        <button
+          key={action.label}
+          type="button"
+          data-needs-answer=""
+          className="primary-action shrink-0 rounded-md border border-transparent px-2.5 py-1 text-[12px] font-medium focus-visible:outline-2 focus-visible:outline-accent"
+          onClick={run}
+        >
+          {action.label}
+        </button>
+      );
+    }
+    return (
+      <SecondaryButton key={action.label} {...(index === 0 ? { "data-needs-answer": "" } : {})} onClick={run}>
+        {action.label}
+      </SecondaryButton>
+    );
+  });
+}
+
 function NeedRow({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) => void }) {
   const actions = line.actions ?? [];
-  if (actions.length === 0) {
+  const chip = line.projectName?.trim();
+  if (actions.length === 0 && line.kind !== "stopped") {
     return (
       <button
         type="button"
@@ -52,25 +84,29 @@ function NeedRow({ line, onOpen }: { line: HomeLine; onOpen: (line: HomeLine) =>
     <div
       data-home-line={line.kind}
       data-needs-project={line.projectId || undefined}
-      className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-[13px] text-content"
+      className="flex min-h-10 w-full flex-wrap items-center gap-3 border-t border-stroke px-3 py-1.5 text-[13px] text-content"
     >
-      <button type="button" className="min-w-0 flex-1 truncate text-left hover:underline" onClick={() => onOpen(line)}>
-        {line.text}
-      </button>
-      {actions.map((action, index) => (
+      {chip ? (
+        <span data-needs-chip className="shrink-0 rounded-md bg-content/10 px-1.5 py-0.5 text-[11px] font-medium text-content/80">
+          {chip}
+        </span>
+      ) : null}
+      {line.kind === "stopped" ? (
+        <span className="min-w-0 flex-1">
+          <span data-needs-stopped className="font-medium text-red-400">Stopped.</span>
+          {line.text ? ` ${line.text}` : null}
+        </span>
+      ) : (
         <button
-          key={action.label}
           type="button"
-          {...(index === 0 ? { "data-needs-answer": "" } : {})}
-          className="shrink-0 text-[12px] underline-offset-2 hover:underline"
-          onClick={(event) => {
-            event.stopPropagation();
-            action.run();
-          }}
+          aria-label={chip ? `${chip} · ${line.text}` : undefined}
+          className="min-w-0 flex-1 truncate text-left"
+          onClick={() => onOpen(line)}
         >
-          {action.label}
+          {line.text}
         </button>
-      ))}
+      )}
+      <NeedActions actions={actions} />
     </div>
   );
 }
@@ -297,6 +333,7 @@ export function HomeScreen({
           const rows = ref.kind === "builtin" ? lines[ref.id] ?? [] : [];
           const panel = ref.kind === "panel" ? catalog.find((item) => item.plugin === ref.plugin && item.panelId === ref.panelId) : undefined;
           const place = visible.indexOf(ref);
+          const needsHead = ref.kind === "builtin" && ref.id === "needs-you";
           return (
             <section
               key={key}
@@ -305,13 +342,13 @@ export function HomeScreen({
               className="home-enter group rounded-lg border border-stroke"
               style={{ animationDelay: `${index * HOME_STAGGER_MS}ms` }}
             >
-              <header className="flex items-center gap-3 px-3 py-2">
-                <h2 className="min-w-0 flex-1 truncate text-[13px] font-medium text-content">{title}</h2>
-                {ref.kind === "builtin" && ref.id === "needs-you" && needsMark > 0 ? (
-                  <span data-home-needs-count={needsMark} className="text-[12px] tabular-nums text-red-400">{needsMark}</span>
+              <header className="flex items-center gap-2 px-3 py-2">
+                <h2 className={`${needsHead ? "" : "min-w-0 flex-1 "}truncate text-[13px] font-medium text-content`}>{title}</h2>
+                {needsHead && needsMark > 0 ? (
+                  <span data-home-needs-count={needsMark} className="shrink-0 text-[12px] tabular-nums text-red-400">{needsMark}</span>
                 ) : null}
                 {/* Arranging is there when it's wanted: on hover or keyboard focus, not as words on every card. */}
-                <div data-home-arrange className="flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100">
+                <div data-home-arrange className={`flex items-center gap-3 opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100${needsHead ? " ml-auto" : ""}`}>
                   <Control name={`Move ${title} up`} onClick={() => place > 0 && onMove(key, -1)} />
                   <Control name={`Move ${title} down`} onClick={() => place < visible.length - 1 && onMove(key, 1)} />
                   <Control name={`Hide ${title}`} onClick={() => onHide(key)} />

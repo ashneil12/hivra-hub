@@ -19,7 +19,7 @@ import { LOCAL_HUB_CHANGED, appHubTransport } from "../../hub/model/localHub/loc
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { hideSection, moveSection, pinPanel, showSection, unpin } from "../model/arrangement";
 import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
-import { builderHoldLine, hubProjectId, movingLines, namesFor, projectLines, recentLines, type HomeLine } from "../model/lines";
+import { builderHoldLine, hubProjectId, movingLines, namesFor, needsYouLines, projectLines, recentLines, type HomeLine } from "../model/lines";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import type { NeedsItem } from "../../needs/model/needsYou";
 import { openFromHome, targetFor } from "../model/opener";
@@ -40,16 +40,20 @@ import {
 
 const TASKS_CHANGED = "tasks://changed";
 
-function lineFromNeed(item: NeedsItem): HomeLine {
-  const kind = item.kind === "review" ? "review" : item.kind === "question" ? "question" : "decision";
+function lineFromNeed(item: NeedsItem, projectName: (id: string) => string): HomeLine {
+  // A decision opens the inbox on its key. A plain question still opens its task.
+  const decision = item.decisionKey?.trim();
+  const kind = item.kind === "stopped" ? "stopped" : item.kind === "review" ? "review" : decision ? "decision" : item.kind === "question" ? "question" : "decision";
+  const projectId = item.projectId ?? "";
   return {
     id: item.key,
     kind,
     text: item.sentence,
-    projectId: item.projectId ?? "",
-    target: item.open?.id ?? item.key,
+    projectId,
+    ...(projectId ? { projectName: projectName(projectId) } : {}),
+    target: decision || item.open?.id || item.key,
     at: item.at,
-    actions: item.actions,
+    actions: item.actions.slice(0, 3),
   };
 }
 const RETRY_MS = 2000;
@@ -304,7 +308,12 @@ export function HomeView() {
   }
   const hold = builderHold();
   const liveNeeds = useNeedsYou();
-  const needsYou = [...(hold ? [builderHoldLine(hold)] : []), ...liveNeeds.map(lineFromNeed)];
+  const fromList = liveNeeds.map((item) => lineFromNeed(item, name));
+  // Tasks waiting on Ash are not in the published list. Draw them beside it, and skip one a live decision already covers.
+  const covered = new Set(fromList.filter((line) => line.kind === "decision").map((line) => `${line.projectId}\0${line.target}`));
+  const fromTasks = needsYouLines([], tasks, name).filter((line) => !covered.has(`${line.projectId}\0${line.target}`));
+  const listed = [...(hold ? [builderHoldLine(hold)] : []), ...fromList];
+  const needsYou = [...listed, ...fromTasks];
   const moving = movingLines(tasks, name);
   // The app holds no project at all (not one hidden by the trash or Ash's own "Remove from hub"): say why.
   const noProjects = snap && registryProjects().length === 0
@@ -314,7 +323,7 @@ export function HomeView() {
     <HomeScreen
       needsYou={needsYou}
       needsMark={liveNeeds.length}
-      projects={projectLines(projects, needsYou, moving, tasks)}
+      projects={projectLines(projects, listed, moving, tasks)}
       noProjects={noProjects}
       onBringOver={() => void bringOver()}
       onNewProject={() => showAppItem("new-project")}

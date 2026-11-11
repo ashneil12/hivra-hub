@@ -34,6 +34,8 @@ export type NeedsItem = {
   sentence: string;
   actions: NeedsAction[];
   open?: NeedsOpen;
+  /** Set when the item is a decision. Home opens the inbox on this key. */
+  decisionKey?: string;
 };
 
 type FactBase = {
@@ -63,6 +65,8 @@ export type QuestionFact = FactBase & {
   fromDecision?: boolean;
   /** The coding team says this is ready and waits on Ash's yes. The primary action answers it. */
   asMerge?: boolean;
+  /** Set when this ask is a decision. Home opens that decision, not a task. */
+  decisionKey?: string;
   onAnswer?: () => void;
 };
 
@@ -156,6 +160,7 @@ type Draft = NeedsItem & {
   gateKey?: string;
   same?: string;
   fromDecision?: boolean;
+  decisionKey?: string;
 };
 
 function actionsOf(list: NeedsAction[]): NeedsAction[] {
@@ -179,7 +184,7 @@ function stoppedItem(fact: StoppedFact, now: number): Draft | undefined {
     who,
     at: finite(fact.at, now),
     sentence: plainSentence(fact.sentence || `${who} stopped.`),
-    actions: openAction(`Open ${who}'s chat`, fact.onOpen),
+    actions: openAction("Open chat", fact.onOpen),
     open: fact.open,
     about: fact.about,
   };
@@ -229,6 +234,7 @@ function questionItem(fact: QuestionFact, now: number): Draft | undefined {
     about: fact.about,
     same: sentenceKey(fact.projectId, sentence),
     fromDecision: fact.fromDecision,
+    decisionKey: fact.decisionKey,
   };
 }
 
@@ -350,6 +356,7 @@ function collapse(drafts: Draft[]): NeedsItem[] {
       sentence: row.sentence,
       actions: row.actions,
       open: row.open,
+      ...(row.decisionKey ? { decisionKey: row.decisionKey } : {}),
     }))
     .sort((a, b) => RANK[a.kind] - RANK[b.kind] || a.at - b.at || a.key.localeCompare(b.key));
 }
