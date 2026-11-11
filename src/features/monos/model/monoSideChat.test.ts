@@ -76,3 +76,48 @@ it("drops a hand-edited list's bad ids and the main chat's own id", async () => 
   const fresh = await import("./mono");
   expect(fresh.findMono("ada")?.chats).toEqual(["side-1"]);
 });
+
+// G2 (Dropwave wiring): resetting a further chat keeps it a further chat. It used to be re-filed as the main chat.
+it("resets a further chat in its place and leaves the main chat alone", async () => {
+  const { mono, workspace, host } = await setup();
+  const main = await workspace.ensureMonoSession("ada", host);
+  const first = await workspace.startMonoSideChat("ada", host);
+  const second = await workspace.startMonoSideChat("ada", host);
+  const fresh = await workspace.resetMonoSession(second!, {
+    stop: async () => second!,
+    remove: async () => undefined,
+    replace: () => undefined,
+  });
+  expect(fresh.id).not.toBe(second!.id);
+  expect(fresh.firstMate).toBe(true);
+  expect(mono.findMono("ada")?.sessionId).toBe(main!.id);
+  expect(mono.findMono("ada")?.chats).toEqual([first!.id, fresh.id]);
+  expect(mono.isMonoSideChat(fresh.id)).toBe(true);
+  expect(mono.monoForSession(second!.id)).toBeUndefined();
+});
+
+it("swaps a further chat's id only for its own first mate, and never onto another's chat", async () => {
+  const { mono, workspace, host } = await setup();
+  const side = await workspace.startMonoSideChat("ada", host);
+  const edMain = await workspace.ensureMonoSession("ed", host);
+  // Not one of Ed's further chats.
+  expect(mono.replaceMonoSideChat("ed", side!.id, "new-1")).toBe(false);
+  // Ed's main chat is never taken.
+  expect(mono.replaceMonoSideChat("ada", side!.id, edMain!.id)).toBe(false);
+  expect(mono.replaceMonoSideChat("ada", side!.id, "../x")).toBe(false);
+  expect(mono.findMono("ada")?.chats).toEqual([side!.id]);
+  expect(mono.replaceMonoSideChat("ada", side!.id, "new-1")).toBe(true);
+  expect(mono.findMono("ada")?.chats).toEqual(["new-1"]);
+});
+
+it("lists every one-to-one chat of a first mate: its main chat, its further chats and its project chats", async () => {
+  const { mono } = await setup();
+  expect(mono.monoOwnChats("ada")).toEqual([]);
+  mono.saveMonoSessionId("ada", "main-1");
+  mono.saveMonoSideChat("ada", "side-1");
+  mono.saveMonoProjectSession("ada", "hivra", "proj-1");
+  mono.saveMonoRoomSession("ada", "team", "conv", "room-1");
+  // A team chat's seat belongs to its conversation, not to the first mate's own chats.
+  expect(mono.monoOwnChats("ada")).toEqual(["main-1", "side-1", "proj-1"]);
+  expect(mono.monoOwnChats("nobody")).toEqual([]);
+});

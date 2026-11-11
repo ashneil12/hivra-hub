@@ -68,6 +68,13 @@ export type PortableMono = {
   offeredSkills?: string[];
   /** WP-182: slash command names it is offered. Absent means everything installed. */
   commands?: string[];
+  /**
+   * G1: its further one-to-one chats (Mono.chats), by chat id. The chats themselves travel with the workspace under the
+   * same ids; an import makes them this first mate's again. Absent when it has none.
+   */
+  chats?: string[];
+  /** G1: its own chat in each project (Mono.projectSessions: the Chief of Staff's per-project chats), by project id. */
+  projectSessions?: Record<string, string>;
 };
 
 /** A team is a project's group chat and who is in it. Its conversations are workspace, not setup. */
@@ -424,6 +431,8 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
       ...(typeof m.engineFast === "boolean" ? { engineFast: m.engineFast } : {}),
       ...(offeredSkills ? { offeredSkills } : {}),
       ...(commands ? { commands } : {}),
+      ...(m.chats?.length ? { chats: [...m.chats] } : {}),
+      ...(m.projectSessions && Object.keys(m.projectSessions).length ? { projectSessions: { ...m.projectSessions } } : {}),
     };
   });
   const seatedIds = new Set(seated.map((m) => m.id));
@@ -562,6 +571,12 @@ function setupFilesUnscrubbed(doc: SetupDoc): Record<string, string> {
 const text = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : fallback);
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+const CHAT_ID = /^[A-Za-z0-9_-]{1,100}$/;
+/** G1: a file's chat ids for a Mono: real ids only, each once. */
+const chatIds = (v: unknown): string[] => [...new Set(strings(v).filter((id) => CHAT_ID.test(id)))];
+/** G1: a file's project chats for a Mono: a project id and a real chat id. */
+const projectChats = (v: unknown): Record<string, string> =>
+  Object.fromEntries(Object.entries(record(v)).filter((e): e is [string, string] => !!e[0].trim() && typeof e[1] === "string" && CHAT_ID.test(e[1])));
 
 function parseJson(files: Record<string, string>, path: string): unknown {
   const raw = files[path];
@@ -615,6 +630,8 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
   const workerDefault = readWorkerDefault(m.workerDefault);
   const offeredSkills = cardNames(m.offeredSkills);
   const commands = cardNames(m.commands);
+  const chats = chatIds(m.chats);
+  const projectSessions = projectChats(m.projectSessions);
   return {
     id: m.id,
     name,
@@ -637,6 +654,8 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
     ...(typeof m.engineFast === "boolean" ? { engineFast: m.engineFast } : {}),
     ...(offeredSkills ? { offeredSkills } : {}),
     ...(commands ? { commands } : {}),
+    ...(chats.length ? { chats } : {}),
+    ...(Object.keys(projectSessions).length ? { projectSessions } : {}),
   };
 }
 

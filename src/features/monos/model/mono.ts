@@ -478,6 +478,60 @@ export function forgetMonoSideChat(sessionId: string): void {
   });
 }
 
+/**
+ * G2: a further chat that was reset keeps its place in its first mate's list under the fresh chat's id. Only one of
+ * this first mate's own further chats is swapped, and never onto a chat any first mate already holds.
+ */
+export function replaceMonoSideChat(monoId: string, from: string, to: string): boolean {
+  if (!/^[A-Za-z0-9_-]+$/.test(to) || monoForSession(to)) return false;
+  if (!findMono(monoId)?.chats?.includes(from)) return false;
+  return !!updateMono(monoId, (mono) => ({ ...mono, chats: (mono.chats ?? []).map((id) => (id === from ? to : id)) }));
+}
+
+/**
+ * G2: every one-to-one chat of a first mate: its main chat, its further chats and its own chat in each project. A team
+ * chat's seat (roomSessions) is not one: it belongs to its conversation.
+ */
+export function monoOwnChats(monoId: string): string[] {
+  const mono = findMono(monoId);
+  if (!mono) return [];
+  return [...new Set([...(mono.sessionId ? [mono.sessionId] : []), ...(mono.chats ?? []), ...Object.values(mono.projectSessions ?? {})])];
+}
+
+/**
+ * G1: a setup import's further chats and project chats for this first mate (setupSouls.ts). Import only adds: a project
+ * that already has its chat here keeps it, and a chat any first mate here already holds is never taken or listed twice.
+ * Returns whether anything was added.
+ */
+export function adoptMonoChats(
+  monoId: string,
+  from: { chats?: readonly string[]; projectSessions?: Readonly<Record<string, string>> },
+): boolean {
+  const mono = findMono(monoId);
+  if (!mono) return false;
+  const valid = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
+  const taken = new Set<string>();
+  const free = (id: unknown): id is string => valid(id) && !taken.has(id) && !monoForSession(id);
+  const chats: string[] = [];
+  for (const id of from.chats ?? []) {
+    if (!free(id)) continue;
+    taken.add(id);
+    chats.push(id);
+  }
+  const projectSessions: Record<string, string> = {};
+  for (const [projectId, id] of Object.entries(from.projectSessions ?? {})) {
+    if (!projectId.trim() || mono.projectSessions?.[projectId] || !free(id)) continue;
+    taken.add(id);
+    projectSessions[projectId] = id;
+  }
+  if (!chats.length && !Object.keys(projectSessions).length) return false;
+  return !!updateMono(monoId, (current) => ({
+    ...current,
+    ...(chats.length ? { chats: [...(current.chats ?? []), ...chats] } : {}),
+    ...(Object.keys(projectSessions).length ? { projectSessions: { ...projectSessions, ...current.projectSessions } } : {}),
+  }));
+}
+
 /** Dropwave: the Mono's own chat for this project, once it has been opened there. */
 export function monoProjectSession(monoId: string, projectId: string): string | undefined {
   return findMono(monoId)?.projectSessions?.[projectId];

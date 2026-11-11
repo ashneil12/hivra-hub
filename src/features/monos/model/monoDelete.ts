@@ -1,5 +1,6 @@
 // What "Delete mono…" really does (r30f, Critiquito: say only what happens). App.tsx onDeleteMono:
-// - moves its current 1:1 chat to the trash with it (onRemoveHistorySession "delete", after the trash);
+// - moves its current 1:1 chat to the trash with it (onRemoveHistorySession "delete", after the trash), and with it its
+//   further chats and its own chat in each project (G2: they no longer stay behind as plain chats);
 // - removes it from the roster (removeMono: the WebView cache and MONOS.json), clears its chat background, and marks a
 //   default-team Mono as removed by Ash so the team repair doesn't bring it back;
 // - drops its team from the hub (forgetMonoTeam).
