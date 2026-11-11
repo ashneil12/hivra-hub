@@ -13,6 +13,8 @@ import { UsagePage } from "../../usage/ui/UsagePage";
 import { ConnectedApps } from "../../outside/ui/ConnectedApps";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
+// WP-92: the keys agents ask for and use without seeing them.
+import { SecretsPage } from "../../secrets/ui/SecretsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 // WP-75: checked backups.
 import { BackupsPage } from "../../backups/ui/BackupsPage";
@@ -21,7 +23,9 @@ import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen"
 import { MemorySettingsScreen } from "../../memory/ui/MemorySettingsScreen";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
+import { CrewDefaults } from "../../crew/ui/CrewDefaults";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
+import { hubProjectIdFor } from "../../hub/model/hubData";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
@@ -755,6 +759,8 @@ export function SettingsView({
                 <MemorySettingsScreen />
               ) : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
+              {/* WP-92: Settings > Secrets. */}
+              {section === "secrets" ? <SecretsPage project={cwd} /> : null}
               {section === "teams" ? <TeamsPage /> : null}
               {section === "plugins" ? (
                 // WP-32: Discover. Listing reads indexes; it never runs plugin code.
@@ -763,8 +769,10 @@ export function SettingsView({
               ) : null}
               {section === "crew" ? (
                 <>
+                  {/* WP-141: crew defaults, above the advanced rules. */}
+                  <CrewDefaults cwd={cwd} projectId={cwd ? hubProjectIdFor(cwd) : undefined} />
                   {/* WP-13: crew rules, the ordered list a person edits. */}
-                  <CrewRulesPage cwd={cwd} />
+                  <CrewRulesPage cwd={cwd} hideWorkerDefault />
                   {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
                   <GateSetting project={cwd} />
                   {/* WP-77: labelled GitHub issues become tasks. Off until the person turns it on. */}

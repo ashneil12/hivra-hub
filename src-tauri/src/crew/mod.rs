@@ -7,11 +7,22 @@
 
 mod budget;
 mod failure;
+pub(crate) mod gate;
+mod pick;
+mod policy;
 mod reroute;
 mod resolve;
 mod rules;
 mod store;
 
+#[cfg(test)]
+mod review_r10_lead_tests;
+#[cfg(test)]
+mod review_r10_tests;
+#[cfg(test)]
+mod review_r11_tests;
+#[cfg(test)]
+mod review_r12_tests;
 #[cfg(test)]
 mod tests;
 
@@ -39,6 +50,12 @@ pub(crate) struct RulesResponse {
     budget: Option<serde_json::Value>,
     /// Installed and signed-in CLIs, from the files the CLIs already wrote. Nothing is asked over the network.
     signed_in: Vec<Presence>,
+    /// WP-141: always use my default, never use, and the fallback order.
+    policy: serde_json::Value,
+    /// WP-141: false when this scope has no policy of its own, so `policy` is the one it inherits.
+    policy_own: bool,
+    /// Round 6: the saved policy does not parse; Ash's explicit save replaces it.
+    policy_unreadable: bool,
 }
 
 fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -> RulesResponse {
@@ -48,6 +65,9 @@ fn response(stored: StoredRules, plugins: Vec<Rule>, signed_in: Vec<Presence>) -
         revision: stored.revision,
         budget: stored.budget,
         signed_in,
+        policy: stored.policy,
+        policy_own: stored.policy_own,
+        policy_unreadable: stored.policy_unreadable,
     }
 }
 
@@ -186,6 +206,31 @@ pub fn crew_rules_set(
     ))
 }
 
+/// WP-141: the lock, the never-use list and the fallback order. The same revision as the rules.
+#[tauri::command(async)]
+pub fn crew_policy_set(
+    app: tauri::AppHandle,
+    store: State<'_, SessionStore>,
+    scope: String,
+    scope_id: String,
+    policy: serde_json::Value,
+    revision: i64,
+    project: Option<String>,
+) -> Result<RulesResponse, String> {
+    let stored = store::set_policy(
+        &mut *store.lock_conn()?,
+        &scope,
+        &scope_id,
+        &policy,
+        revision,
+    )?;
+    Ok(response(
+        stored,
+        plugin_rules(&app, project.as_deref()),
+        live_presence(&app),
+    ))
+}
+
 #[tauri::command(async)]
 pub fn crew_route(
     app: tauri::AppHandle,
@@ -195,6 +240,86 @@ pub fn crew_route(
     fill_present(&mut query.present, live_presence(&app));
     let plugins = plugin_rules(&app, query.project.as_deref());
     store::route_at(&*store.lock_conn()?, &query, &plugins, now_millis())
+}
+
+/// WP-141: the first mate's pick across CLIs and Monos, with its reason. Reads only.
+#[tauri::command(async)]
+pub fn crew_pick(
+    app: tauri::AppHandle,
+    store: State<'_, SessionStore>,
+    mut request: store::PickRequest,
+) -> Result<pick::MatePick, String> {
+    fill_present(&mut request.route.present, live_presence(&app));
+    let plugins = plugin_rules(&app, request.route.project.as_deref());
+    store::pick_at(&*store.lock_conn()?, &request, &plugins, now_millis())
+}
+
+/// WP-141: the gate a worker or session launch passes before its process starts. Refuses with one plain line. A
+/// launch that passes is recorded for its session, so the spawn that follows is judged against the same default.
+#[tauri::command(async)]
+pub fn crew_launch_check(
+    store: State<'_, SessionStore>,
+    input: gate::LaunchCheck,
+    session_id: Option<String>,
+    parent_session: Option<String>,
+) -> Result<(), String> {
+    let conn = store.lock_conn()?;
+    let parent = parent_session
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty());
+    if let Some(parent) = parent {
+        gate::check_launch_with(&conn, &input, Some(parent))?;
+    } else {
+        gate::check_launch(&conn, &input)?;
+    }
+    match session_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        Some(session) => match parent {
+            Some(parent) => gate::record_grant_with(&conn, session, &input, Some(parent)),
+            None => gate::record_grant(&conn, session, &input),
+        },
+        None => Ok(()),
+    }
+}
+
+/// WP-141: the one-time ticket `harness_spawn` requires for an agent session's process. Judged at the spawn itself.
+#[tauri::command(async)]
+pub fn crew_spawn_ticket(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    cli: String,
+    folder: String,
+) -> Result<String, String> {
+    gate::issue_ticket(&*store.lock_conn()?, &session_id, &cli, &folder)
+}
+
+/// Round 6: the OpenCode 2.x bind. The service start and the session create happen only after this consumes the ticket
+/// `crew_spawn_ticket` minted for the same session, CLI and folder.
+#[tauri::command(async)]
+pub fn crew_bind_v2_session(
+    store: State<'_, SessionStore>,
+    session_id: String,
+    cli: String,
+    folder: String,
+    ticket: Option<String>,
+) -> Result<(), String> {
+    gate::bind_v2_session(
+        &*store.lock_conn()?,
+        &session_id,
+        &cli,
+        &folder,
+        ticket.as_deref(),
+    )
+}
+
+/// WP-141: whether any saved crew policy, in any scope, has the lock on. A chat's default change is refused then.
+#[tauri::command(async)]
+pub fn crew_any_lock(store: State<'_, SessionStore>) -> Result<bool, String> {
+    store::any_lock(&*store.lock_conn()?)
 }
 
 #[tauri::command(async)]
@@ -213,4 +338,30 @@ pub fn crew_on_failure(
 ) -> Result<store::FailureResult, String> {
     fill_present(&mut input.present, live_presence(&app));
     store::on_failure(&mut *store.lock_conn()?, &input, now_millis())
+}
+
+/// Round 9 (LOW-3): the saved projects that own a folder, for the Lead's policy read.
+/// Round 11: `roots` are hub project folders that have no crew row yet, so a worker default there still applies.
+#[tauri::command(async)]
+pub fn crew_projects_owning(
+    store: State<'_, SessionStore>,
+    folder: String,
+    roots: Option<Vec<String>>,
+) -> Result<Vec<String>, String> {
+    let roots = roots.unwrap_or_default();
+    let conn = store.lock_conn()?;
+    // No hub roots is the fail-closed read: a place that cannot be decided refuses the read.
+    if roots.is_empty() {
+        return store::projects_owning(&conn, &folder);
+    }
+    store::projects_owning_for(
+        &conn,
+        &folder,
+        &store::OwningQuery {
+            roots: &roots,
+            cli: None,
+            agent: false,
+            locked_default: None,
+        },
+    )
 }

@@ -13,6 +13,8 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import { ModelLineRow, TurnStopButton, showsStop } from "../../monos/ui/TurnStop";
+// WP-92: a pasted key is never sent as a chat message; the person is pointed at the secret card instead.
+import { hasSecretText } from "../../portable/model/secrets";
 import {
   useCallback,
   useEffect,
@@ -1417,6 +1419,13 @@ export function Composer({
       return;
     }
     if (disabled || worktreeRemoved || submitLockRef.current) return;
+    // WP-92: a key typed into the chat would land in the transcript, the store and every backup. Nothing is sent.
+    if (hasSecretText(value)) {
+      setPasteError(
+        "That looks like a key, so it was not sent. Put it in the secret card instead: it goes straight to your keychain.",
+      );
+      return;
+    }
     submitLockRef.current = true;
     void completeSubmit(value).finally(() => {
       submitLockRef.current = false;

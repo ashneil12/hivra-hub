@@ -190,11 +190,31 @@ function took(result: TakeResult): void {
   if (!result.ok) throw new Error(result.reason);
 }
 
+/** A secret run's card (`secret/...`) is answered by the person on the card, never by a page (fix round 3, H1). */
+function isSecretNeed(needId: string): boolean {
+  let decoded = needId;
+  for (let i = 0; i < 3; i += 1) {
+    try {
+      const next = decodeURIComponent(decoded);
+      if (next === decoded) break;
+      decoded = next;
+    } catch {
+      break;
+    }
+  }
+  return decoded.includes("secret/");
+}
+
+function refuseSecretNeed(needId: string): void {
+  if (isSecretNeed(needId)) throw new Error("A secret run is approved on its card in the Inbox. A page can't answer it.");
+}
+
 async function answer(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
   const text = str(args.text);
   if (!text) throw new Error("Type an answer first.");
   const needId = str(args.needId);
   if (needId) {
+    refuseSecretNeed(needId);
     refusePersonOnly(needId, ctx);
     d.answerNeed(needId, { text, from: ctx.pageId });
     return `Answered ${quoteOf(text)}`;
@@ -221,6 +241,7 @@ async function answer(args: Record<string, unknown>, ctx: ActionContext, d: Page
 async function pick(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
   const needId = str(args.needId);
   if (needId) {
+    refuseSecretNeed(needId);
     refusePersonOnly(needId, ctx);
     d.answerNeed(needId, { quick: "agree", from: ctx.pageId });
     return "Took the suggested answer";

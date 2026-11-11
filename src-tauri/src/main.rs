@@ -19,6 +19,17 @@ fn main() {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect()
     };
+    // Fix round 3 (H4): a subcommand that reads the Keychain runs only from the daily app's folder, as the app does. It is
+    // checked before the subcommand runs, since the subcommands run before the app's own startup check.
+    if matches!(
+        args.first().and_then(|arg| arg.to_str()),
+        Some("secret-run") | Some("connector-run")
+    ) {
+        if let Some(why) = monocode_lib::instance::keychain_subcommand_refusal() {
+            eprintln!("monocode: {why}");
+            std::process::exit(78);
+        }
+    }
     match args.first().and_then(|arg| arg.to_str()) {
         Some("control") => std::process::exit(monocode_lib::control_cli::run(rest())),
         Some("app") => std::process::exit(monocode_lib::control_cli::run_app(rest())),
@@ -33,6 +44,8 @@ fn main() {
         // A connector for a Claude Code session: checks it is allowed, reads its login from the Keychain and serves it
         // over stdio (src/connectors/launch.rs). No window, no database.
         Some("connector-run") => std::process::exit(monocode_lib::connectors::run_main(&rest())),
+        // WP-92: one secret into one child's environment, from a grant the app signed (src/secrets/run.rs).
+        Some("secret-run") => std::process::exit(monocode_lib::secrets::run::run_main(&rest())),
         // WP-30: a plugin's stdio MCP server, started for an agent CLI's session once the plugin is checked to be on
         // (src/plugins/wiring.rs). No window, no database.
         Some("plugin-mcp") => std::process::exit(monocode_lib::plugins::run_main(&rest())),

@@ -22,6 +22,7 @@
 //!   watches 30 days on (`prune`).
 //! - **The poller** is a thread in this process, so a hidden or closed window never pauses it.
 
+pub mod base;
 pub mod bounded;
 pub mod checkout;
 pub mod eval;
@@ -63,6 +64,8 @@ const ASKS_MAX: usize = 50;
 const LOG_MAX: usize = 30;
 /// Ended watches and settled wakes are kept this long (the board shows a day of them), then deleted.
 const KEEP_ENDED: i64 = 30 * 24 * 60 * 60_000;
+/// A watch whose last read is older than this takes a fresh baseline: its first read replays no old news (WP-202).
+const STALE_AFTER: i64 = 6 * 60 * 60_000;
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
@@ -138,6 +141,15 @@ pub struct Status {
     /// The pull request's label names, as of the last read. Older stored watches read as none.
     #[serde(default)]
     pub labels: Vec<String>,
+    /// The base branch's tip as the last read saw it (WP-202). `None` when GitHub didn't say.
+    #[serde(default)]
+    pub base_oid: Option<String>,
+    /// GitHub's merge state (BEHIND, DIRTY, CLEAN, ...), empty when not read (WP-202).
+    #[serde(default)]
+    pub merge_state: String,
+    /// Commits main has that the branch lacks (WP-202): one cached compare per head and base, 0 when unknown.
+    #[serde(default)]
+    pub behind: u32,
 }
 
 impl Status {
@@ -173,6 +185,9 @@ impl Status {
             .into(),
             review_decision: read.review_decision.clone(),
             labels: read.labels.clone(),
+            base_oid: read.base_tip.clone(),
+            merge_state: read.merge_state.clone().unwrap_or_default(),
+            behind: 0,
         }
     }
 
@@ -647,12 +662,15 @@ pub fn add(store: &SessionStore, gh: &dyn Gh, input: AddInput, now: i64) -> Resu
         (None, None) => format!("none: no checkout of {repo} among your projects; pass worktree to have one kept at the head"),
     };
 
-    let memo = eval::baseline(
+    let mut memo = eval::baseline(
         &iso(now),
         &read.detail,
         read.remarks.as_deref().unwrap_or(&[]),
     );
     let status = Status::of(&read);
+    // WP-202: the base as it is now is the one to judge a move from. Which main a green run ran on is asked of GitHub
+    // at merge time, never recorded here.
+    memo.base_sha = read.base_tip.clone();
     let next_read_at = now
         + if status.in_flight(true) {
             IN_FLIGHT_EVERY
@@ -990,7 +1008,9 @@ pub fn sweep(
                         // The record runs inside this watch's transaction, so a failure rolls
                         // that watch back and leaves every other pull request to be read.
                         let at = (swept.wakes.len(), swept.changed.len());
-                        if let Err(error) = apply(store, id, &read, maker, frame, now, &mut swept) {
+                        if let Err(error) =
+                            apply(store, gh, id, &read, maker, frame, now, &mut swept)
+                        {
                             // The wake id is pushed before the commit, so a rollback must not emit it.
                             swept.wakes.truncate(at.0);
                             swept.changed.truncate(at.1);
@@ -1075,8 +1095,14 @@ fn failed_read(
 }
 
 /// One watch's share of a read: its status, and a wake when something changed (or it merged or closed).
+///
+/// Network reads (main's move, the pull request's files, how far behind) happen before the database is held. A stale
+/// watch (its last read is older than [`STALE_AFTER`]) takes a fresh baseline: nothing is told, but the delivery still
+/// hears what the read shows.
+#[allow(clippy::too_many_arguments)]
 fn apply(
     store: &SessionStore,
+    gh: &dyn Gh,
     id: &str,
     read: &PrRead,
     maker: &dyn Maker,
@@ -1087,9 +1113,45 @@ fn apply(
     let Some(w) = get(&*store.lock_conn()?, id)?.filter(|w| w.state == WATCHING) else {
         return Ok(());
     };
+    let stale = w.last_read_at.is_some_and(|at| now - at > STALE_AFTER);
+    let facts = if read.state == PrState::Open {
+        base::facts(
+            &|path: &str| gh.rest(path),
+            &w.repo,
+            w.number,
+            &w.memo,
+            read,
+            stale,
+        )
+    } else {
+        base::Facts::default()
+    };
     let status = Status::of(read);
-    let report = (read.state == PrState::Open)
+    let facts_unread = facts.unread;
+    let mut report = (read.state == PrState::Open)
         .then(|| eval::evaluate(&w.memo, &read.detail, read.remarks.as_deref()));
+    if let Some(report) = report.as_mut() {
+        if stale {
+            report.next = eval::baseline(
+                &w.memo.started_at,
+                &read.detail,
+                read.remarks.as_deref().unwrap_or(&[]),
+            );
+            base::settle_stale(&mut report.next, read);
+        } else {
+            let conflict_told = report
+                .changes
+                .iter()
+                .any(|c| matches!(c, Change::Conflicting));
+            let news = base::news(&mut report.next, read, &facts, conflict_told);
+            report.changes.extend(news);
+        }
+    }
+    let mut status = status;
+    status.behind = report
+        .as_ref()
+        .and_then(|r| r.next.behind_at.as_ref().map(|(_, _, n)| *n))
+        .unwrap_or(w.status.behind);
     // The checkout is prepared before the wake is stored (and without holding the database): git fetches. A fork's
     // head is never checked out: anyone can open a pull request and comment on it to wake the owner.
     let fork = read.fork(&w.repo);
@@ -1100,7 +1162,7 @@ fn apply(
         .is_some_and(|conn| crate::delivery::deliver::through_gate(&conn, &w.repo, w.number));
     let prepared = report
         .as_ref()
-        .filter(|r| !crate::delivery_gate::wake_changes(&r.changes, gated).is_empty())
+        .filter(|r| !stale && !crate::delivery_gate::wake_changes(&r.changes, gated).is_empty())
         .map(|report| {
             if let Some(fork) = &fork {
                 return (Outcome::Fork(fork.clone()), None);
@@ -1152,6 +1214,11 @@ fn apply(
         } else {
             QUIET_EVERY
         };
+    // WP-202: a base read that failed (a rate limit, the network) waits before GitHub is asked again, so a watch
+    // doesn't spend its budget on the same unanswerable question every poll.
+    if facts_unread {
+        w.next_read_at = w.next_read_at.max(now + base::RETRY_AFTER);
+    }
     let mut changed = before != (w.status.clone(), w.memo.clone(), w.title.clone());
     // Hivra WP-12: CI red, CI green, merged and closed feed delivery (and WP-11's classifier).
     let mut delivery_news =
@@ -1177,7 +1244,11 @@ fn apply(
             changed = true;
         }
         (PrState::Open, Some(report)) => {
-            let changes = crate::delivery_gate::wake_changes(&report.changes, gated);
+            let changes = if stale {
+                Vec::new()
+            } else {
+                crate::delivery_gate::wake_changes(&report.changes, gated)
+            };
             if !changes.is_empty() {
                 let (outcome, made) =
                     prepared.unwrap_or((Outcome::Skipped("no checkout prepared".into()), None));
@@ -2097,6 +2168,7 @@ mod tests {
         let read = github::parse(&pending()).unwrap();
         apply(
             &store,
+            &FakeGh::new(vec![]),
             &w.id,
             &read,
             &PlainMaker,
@@ -2500,5 +2572,314 @@ mod tests {
                 std::thread::sleep(Duration::from_millis((due - now_millis()).max(1_000) as u64));
             }
         }
+    }
+
+    // ---- WP-202: main moving under a pull request ---------------------------------------------------------------
+
+    const HEAD: &str = "936921fa9e67cdbf78fb25abc6252afabafef056";
+    const B1: &str = "b1b1b1b";
+    const B2: &str = "b2b2b2b";
+
+    /// The recorded read with its base at `base` (the fixture's own base name is `trunk`).
+    fn based(base: &str) -> String {
+        recorded(|v| pr(v)["baseRef"] = json!({ "target": { "oid": base } }))
+    }
+
+    fn compare_of(files: &[&str], ahead: u32) -> String {
+        json!({
+            "files": files.iter().map(|f| json!({ "filename": f })).collect::<Vec<_>>(),
+            "ahead_by": ahead,
+            "behind_by": 0,
+        })
+        .to_string()
+    }
+
+    /// The REST answers a watch reads for a move from B1 to B2 that changes `moved` files, with the pull request
+    /// changing src/lib.rs and README.md.
+    fn moves_to_b2(gh: FakeGh, moved: &[&str], behind: u32) -> FakeGh {
+        gh.with_rest(&format!("compare/{HEAD}...{B2}"), &compare_of(&[], behind))
+            .with_rest(&format!("compare/{B1}...{B2}"), &compare_of(moved, 0))
+            .with_rest(
+                "pulls/14716/files",
+                &json!([{ "filename": "src/lib.rs" }, { "filename": "README.md" }]).to_string(),
+            )
+    }
+
+    #[test]
+    fn main_moving_under_a_pull_request_wakes_once_when_it_touches_its_files() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let t1 = T0 + QUIET_EVERY;
+        let gh = moves_to_b2(
+            FakeGh::new(vec![Ok(based(B2)), Ok(based(B2))]),
+            &["src/lib.rs"],
+            1,
+        );
+        let swept = run(&store, &gh, t1, &mut paused);
+        assert_eq!(swept.wakes.len(), 1, "{swept:?}");
+        let wake = &open_wakes(&store)[0];
+        assert!(
+            wake.text.contains(
+                "(now b2b2b2b) changed files this pull request touches since the watch last saw it"
+            ),
+            "{}",
+            wake.text
+        );
+        assert!(wake.text.contains("src/lib.rs"), "{}", wake.text);
+        assert!(
+            !wake.text.contains("Merge main"),
+            "the wake names the real base, not main: {}",
+            wake.text
+        );
+        // The next poll on the same base fires nothing.
+        let swept = run(&store, &gh, t1 + QUIET_EVERY, &mut paused);
+        assert!(swept.wakes.is_empty(), "{swept:?}");
+        assert_eq!(open_wakes(&store).len(), 1);
+    }
+
+    #[test]
+    fn main_moving_over_other_files_wakes_nothing_and_still_moves_the_base() {
+        let store = store();
+        let added = add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let gh = moves_to_b2(FakeGh::new(vec![Ok(based(B2))]), &["docs/notes.md"], 1);
+        let swept = run(&store, &gh, T0 + QUIET_EVERY, &mut paused);
+        assert!(swept.wakes.is_empty(), "{swept:?}");
+        let stored = get(&store.lock_conn().unwrap(), &added.watch.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.memo.base_sha.as_deref(), Some(B2));
+        assert_eq!(stored.status.behind, 1, "how far behind main the branch is");
+    }
+
+    #[test]
+    fn a_stale_watch_takes_a_fresh_baseline_and_its_first_read_wakes_nothing() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        // Seven hours later: a required check now fails, and main moved over the pull request's file.
+        let seven_hours = T0 + 7 * 60 * 60_000;
+        let stale_red = recorded(|v| {
+            pr(v)["baseRef"] = json!({ "target": { "oid": B2 } });
+            fail_one(v, "build (ubuntu-latest)");
+        });
+        let gh = moves_to_b2(
+            FakeGh::new(vec![Ok(stale_red.clone()), Ok(stale_red.clone())]),
+            &["src/lib.rs"],
+            1,
+        );
+        let swept = run(&store, &gh, seven_hours, &mut paused);
+        assert!(
+            swept.wakes.is_empty(),
+            "a stale first read replays nothing: {swept:?}"
+        );
+        // The next read, five minutes on, says the same: still nothing new.
+        let swept = run(&store, &gh, seven_hours + QUIET_EVERY, &mut paused);
+        assert!(swept.wakes.is_empty(), "{swept:?}");
+        assert!(open_wakes(&store).is_empty());
+    }
+
+    /// The merge base of the fixture head and main B2 (where the branch last took main), as GitHub's compare says it.
+    fn took_main_at(base: &str) -> (String, String) {
+        (
+            format!("compare/{B2}...{HEAD}"),
+            json!({ "status": "ahead", "ahead_by": 1, "behind_by": 1,
+                    "merge_base_commit": { "sha": base }, "files": [] })
+            .to_string(),
+        )
+    }
+
+    /// The merge gate's view of the fixture head, judged from GitHub's answers on `gh` (no stored state).
+    fn held_at_merge(gh: &FakeGh) -> Option<String> {
+        let read = github::parse(&based(B2)).unwrap();
+        base::hold(&|p: &str| gh.rest(p), "cli/cli", 14716, HEAD, &read)
+    }
+
+    /// The branch last took main at B1; main has moved to B2 over src/lib.rs since.
+    fn took_b1(gh: FakeGh) -> FakeGh {
+        let (key, answer) = took_main_at(B1);
+        gh.with_rest(&key, &answer)
+    }
+
+    #[test]
+    fn r1_a_green_poll_after_main_moved_over_the_files_keeps_the_merge_hold() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let gh = took_b1(moves_to_b2(
+            FakeGh::new(vec![Ok(based(B2))]),
+            &["src/lib.rs"],
+            1,
+        ));
+        let swept = run(&store, &gh, T0 + QUIET_EVERY, &mut paused);
+        assert_eq!(swept.wakes.len(), 1, "the move is told: {swept:?}");
+        assert!(
+            held_at_merge(&gh).is_some(),
+            "the branch took main at B1 and main changed src/lib.rs since: the merge must wait"
+        );
+    }
+
+    #[test]
+    fn r1_a_stale_baseline_does_not_mark_a_moved_base_as_green() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let gh = took_b1(moves_to_b2(
+            FakeGh::new(vec![Ok(based(B2))]),
+            &["src/lib.rs"],
+            1,
+        ));
+        run(&store, &gh, T0 + 7 * 60 * 60_000, &mut paused);
+        assert!(
+            held_at_merge(&gh).is_some(),
+            "a stale baseline must not move the merge base"
+        );
+    }
+
+    #[test]
+    fn r1_another_agent_watching_the_pull_request_does_not_clear_the_hold() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B2))]),
+            input("mono-other"),
+            T0 + 60_000,
+        )
+        .unwrap();
+        let gh = took_b1(moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1));
+        assert!(
+            held_at_merge(&gh).is_some(),
+            "a second watch must not clear the hold"
+        );
+    }
+
+    #[test]
+    fn r1_unwatching_does_not_clear_the_hold() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        remove(
+            &store,
+            RemoveInput {
+                owner_session: "mono-hivra".into(),
+                id: None,
+                repo: Some("cli/cli".into()),
+                number: Some(14716),
+                reason: None,
+            },
+            T0 + 60_000,
+        )
+        .unwrap();
+        let gh = took_b1(moves_to_b2(FakeGh::new(vec![]), &["src/lib.rs"], 1));
+        assert!(
+            held_at_merge(&gh).is_some(),
+            "unwatching must not clear the hold"
+        );
+    }
+
+    /// A behind count that GitHub doesn't answer is informational. The move is still told, and the watch
+    /// does not drop to the 10 minute retry.
+    #[test]
+    fn a_failed_behind_count_still_wakes_and_does_not_wait_out_the_retry() {
+        let store = store();
+        let added = add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        let t1 = T0 + QUIET_EVERY;
+        let gh = FakeGh::new(vec![Ok(based(B2))])
+            .with_rest(
+                &format!("compare/{B1}...{B2}"),
+                &compare_of(&["src/lib.rs"], 0),
+            )
+            .with_rest(
+                "pulls/14716/files",
+                &json!([{ "filename": "src/lib.rs" }, { "filename": "README.md" }]).to_string(),
+            );
+        let swept = run(&store, &gh, t1, &mut paused);
+        assert_eq!(swept.wakes.len(), 1, "{swept:?}");
+        let stored = get(&store.lock_conn().unwrap(), &added.watch.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.memo.base_sha.as_deref(), Some(B2));
+        assert!(
+            stored.next_read_at < t1 + base::RETRY_AFTER,
+            "{}",
+            stored.next_read_at
+        );
+    }
+
+    #[test]
+    fn a_base_read_that_fails_waits_before_it_asks_again() {
+        let store = store();
+        add(
+            &store,
+            &FakeGh::new(vec![Ok(based(B1))]),
+            input("mono-hivra"),
+            T0,
+        )
+        .unwrap();
+        let mut paused = 0;
+        // Main moved, but GitHub can't answer the compare: the read waits RETRY_AFTER, not the quiet pace.
+        let t1 = T0 + QUIET_EVERY;
+        run(&store, &FakeGh::new(vec![Ok(based(B2))]), t1, &mut paused);
+        let id = input_id(&store);
+        let stored = get(&store.lock_conn().unwrap(), &id).unwrap().unwrap();
+        assert_eq!(stored.next_read_at, t1 + base::RETRY_AFTER);
+    }
+
+    fn input_id(store: &SessionStore) -> String {
+        let conn = store.lock_conn().unwrap();
+        conn.query_row("SELECT id FROM pr_watches LIMIT 1", [], |row| {
+            row.get::<_, String>(0)
+        })
+        .unwrap()
     }
 }
