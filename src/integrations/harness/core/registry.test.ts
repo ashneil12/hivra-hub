@@ -427,7 +427,7 @@ describe("harness registry", () => {
       vi.useFakeTimers();
       const stopSession = vi.fn(async () => undefined);
       registerHarness(
-        stub("claude", {
+        stub("opencode", {
           stopSession,
           hasBackgroundWork: () => true,
         }),
@@ -435,7 +435,7 @@ describe("harness registry", () => {
       configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
       const events: { type: string; text?: string }[] = [];
       await sendHarnessTurn({
-        harness: "claude",
+        harness: "opencode",
         sessionId: "stuck",
         cwd: "/tmp",
         model: "claude-sonnet",
@@ -458,6 +458,37 @@ describe("harness registry", () => {
 
       await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS * 2);
       expect(stopSession).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps holding a Claude chat past the ceiling while Claude still reports its own background work", async () => {
+      vi.useFakeTimers();
+      const stopSession = vi.fn(async () => undefined);
+      let busy = true;
+      registerHarness(
+        stub("claude", {
+          stopSession,
+          hasBackgroundWork: () => busy,
+        }),
+      );
+      configureHarnessIdlePark({ limit: () => Number.POSITIVE_INFINITY, keep: () => false });
+      const events: { type: string; text?: string }[] = [];
+      await sendHarnessTurn({
+        harness: "claude",
+        sessionId: "long-build",
+        cwd: "/tmp",
+        model: "claude-sonnet",
+        text: "hi",
+        runtimeMode: "supervised",
+        onEvent: (event) => events.push(event),
+      });
+
+      await vi.advanceTimersByTimeAsync(HARNESS_IDLE_PARK_MS + BACKGROUND_HOLD_CEILING_MS * 2);
+      expect(stopSession).not.toHaveBeenCalled();
+      expect(events.filter((event) => event.type === "status")).toEqual([]);
+
+      busy = false;
+      await vi.advanceTimersByTimeAsync(30_000 + HARNESS_IDLE_PARK_MS + 60_000);
+      expect(stopSession).toHaveBeenCalledWith("long-build");
     });
 
     it("skips a busy chat when the warm limit parks the longest-idle child", async () => {

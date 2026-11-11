@@ -160,6 +160,12 @@ const BACKGROUND_RECHECK_MS = 30_000;
 export const BACKGROUND_HOLD_CEILING_MS = 60 * 60_000;
 
 /**
+ * Claude reports the end of its own backgrounded shells and subagents, and a long build or test run it started is real
+ * work, so its hold has no ceiling (as before WP-174b). The ceiling guards the other adapters, whose end signals are new.
+ */
+const NO_HOLD_CEILING = new Set<HarnessId>(["claude"]);
+
+/**
  * Each warm child is a CLI process of a few hundred MB, plus its MCP servers.
  * Past `limit` idle ones, the least recently settled is parked early, never
  * one `keep` claims (the conversation on screen) unless the limit is zero.
@@ -284,7 +290,7 @@ function parkWhenQuiet(
 ): void {
   if (hasBackgroundWork(harness, sessionId)) {
     const since = holdSince ?? Date.now();
-    if (Date.now() - since < BACKGROUND_HOLD_CEILING_MS) {
+    if (NO_HOLD_CEILING.has(harness) || Date.now() - since < BACKGROUND_HOLD_CEILING_MS) {
       armIdlePark(harness, sessionId, BACKGROUND_RECHECK_MS, true, since);
       return;
     }
