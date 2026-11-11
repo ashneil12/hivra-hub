@@ -29,6 +29,7 @@ import {
 import { removeMonoBackground } from "./monoBackground";
 import { lastTurnFailure } from "./turnFailure";
 import { recordMonoChat, rosterSaved } from "./monoHome";
+import { hasCaptainCharter } from "../../chief/model/charter";
 
 /** The project palette's colors, plus indigo for a Mono's ninth preset. */
 export const MONO_COLORS = [
@@ -95,6 +96,12 @@ export type Mono = {
   captain?: boolean;
   /** WP-89: the CLI, model and effort its workers use, when this Mono sets one. */
   workerDefault?: WorkerPick;
+  /** WP-182: fast mode for its own chat, when the chosen model offers it. Only a real boolean counts. */
+  engineFast?: boolean;
+  /** WP-182: skill names it is offered. Absent or empty means everything installed. */
+  skills?: string[];
+  /** WP-182: slash command names it is offered. Absent or empty means everything installed. */
+  commands?: string[];
 };
 
 /** No id carries a built-in role. A Mono shows the role it was given, or none. */
@@ -249,6 +256,25 @@ function newMonoId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const CARD_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+
+/** Skill or command names from a roster or an import. Paths, blanks and duplicates are dropped. */
+export function cardNames(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const name = item.trim();
+    if (!CARD_NAME.test(name) || name.includes("..")) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+    if (names.length >= 64) break;
+  }
+  return names.length ? names : undefined;
+}
+
 function parseMono(value: unknown): Mono | undefined {
   const entry = record(value);
   if (typeof entry.id !== "string" || !/^[A-Za-z0-9-]+$/.test(entry.id))
@@ -264,6 +290,8 @@ function parseMono(value: unknown): Mono | undefined {
   const role = text("role");
   const crewRules = parseCrewRules(entry.crewRules);
   const workerDefault = parseWorkerDefault(entry.workerDefault);
+  const skills = cardNames(entry.skills);
+  const commands = cardNames(entry.commands);
   const roomSessions = Object.fromEntries(
     Object.entries(record(entry.roomSessions)).filter(
       (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
@@ -295,7 +323,8 @@ function parseMono(value: unknown): Mono | undefined {
     ...(typeof entry.templateId === "string" && /^[A-Za-z0-9-]+$/.test(entry.templateId)
       ? { templateId: entry.templateId }
       : {}),
-    ...(entry.captain === true ? { captain: true } : {}),
+    // A soul that already carries the charter is the captain, even when an older copy wrote no flag.
+    ...(entry.captain === true || hasCaptainCharter(instructions) ? { captain: true } : {}),
     ...(crewRules ? { crewRules } : {}),
     ...(workerDefault ? { workerDefault } : {}),
     ...(instructions ? { instructions } : {}),
@@ -303,12 +332,42 @@ function parseMono(value: unknown): Mono | undefined {
     ...(engine && engineModel ? { engineModel } : {}),
     ...(legacyProject ? { legacyProject } : {}),
     ...(role !== undefined ? { role: role.slice(0, 40) } : {}),
+    // WP-182: a string or 1 is not fast mode. Empty name lists mean today's offer.
+    ...(typeof entry.engineFast === "boolean" ? { engineFast: entry.engineFast } : {}),
+    ...(skills ? { skills } : {}),
+    ...(commands ? { commands } : {}),
   };
+}
+
+/**
+ * One pass over the stored roster: a Mono whose instructions already carry the charter is flagged.
+ * A write that does not stick is tried again on the next read. Nothing else in the row is rewritten.
+ */
+function migrateCaptainFlags(): void {
+  const raw = readJson(ROSTER_KEY);
+  if (!Array.isArray(raw)) return;
+  let changed = false;
+  const next = raw.map((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+    const row = entry as Record<string, unknown>;
+    if (row.captain === true) return entry;
+    const instructions = typeof row.instructions === "string" ? row.instructions : "";
+    if (!hasCaptainCharter(instructions)) return entry;
+    changed = true;
+    return { ...row, captain: true };
+  });
+  if (!changed) return;
+  try {
+    localStorage.setItem(ROSTER_KEY, JSON.stringify(next));
+  } catch {
+    // The read still flags it in memory. The next read tries the write again.
+  }
 }
 
 /** Every Mono, in the order the rail shows them. */
 export function listMonos(): Mono[] {
   migrateLegacyMonoStorage();
+  migrateCaptainFlags();
   const parsed = readJson(ROSTER_KEY);
   if (!Array.isArray(parsed)) return [];
   // Each Mono has its own conversation. A roster that names one session twice (a restored setup file, a hand-edited

@@ -535,7 +535,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing?.codexStore ??
     resumeByThread.get(input.sessionId)?.codexStore;
   // WP-41: a running thread is resumed when the pstack index or the plain-English ending changed.
-  const developerInstructions = await codexDeveloperInstructions(input.cwd);
+  // WP-182: pass the session so a Mono's own skill list can be applied.
+  const developerInstructions = await codexDeveloperInstructions(input.cwd, input.sessionId);
   const instructionKey = developerInstructions?.trim() ?? "";
   if (
     existing &&

@@ -42,7 +42,16 @@ const KINDS: Record<string, string> = {
   "ship.trial": "Trial",
   "ship.rollback": "Rollback",
   "permission.grant": "Permission",
+  // WP-182: a change on a Mono's card.
+  "mono.settings": "Mono settings",
+  // WP-180a: the automations screen writes these. The words match the line.
+  "automation.started": "Automation started",
+  "automation.completed": "Automation finished",
+  "automation.failed": "Automation failed",
 };
+
+/** WP-180a: `activity::CHANGED`. The runs screen refetches when this fires. */
+export const ACTIVITY_CHANGED = "monocode:activity-changed";
 
 /** A blank filter means no filter. Surrounding spaces don't count. */
 function filled(value: string | undefined): string | undefined {

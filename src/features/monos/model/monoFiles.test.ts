@@ -303,6 +303,30 @@ it("gives an existing coordinator the charter on load, and leaves anyone else al
   expect(invoke.mock.calls.filter(([command]) => command === "mono_save")).toHaveLength(0);
 });
 
+it("flags a mono the captain on load when its soul already has the charter, whatever it is called", async () => {
+  const { id } = createMono(["/code/app"]);
+  updateMono(id, (mono) => ({ ...mono, name: "Planner" }));
+  const soul = `# Soul\n\n## Role\n${CAPTAIN_CHARTER}\n`;
+  invoke.mockImplementation(async (command: string) =>
+    command === "mono_load" ? { ...files("old"), soul, topics: [] } : "same",
+  );
+  const loaded = await loadMonoFiles(id);
+  expect(loaded.soul).toBe(soul);
+  expect(findMono(id)?.captain).toBe(true);
+  expect(invoke.mock.calls.filter(([command]) => command === "mono_save")).toHaveLength(0);
+});
+
+it("flags a stored mono whose instructions already carry the charter", () => {
+  const { id } = createMono(["/code/app"]);
+  updateMono(id, (mono) => {
+    const { captain: _captain, ...rest } = mono;
+    return { ...rest, name: "Planner", instructions: `# Soul\n${CAPTAIN_CHARTER}\n` };
+  });
+  expect(findMono(id)?.captain).toBe(true);
+  const stored = JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { id: string; captain?: boolean }[];
+  expect(stored.find((row) => row.id === id)?.captain).toBe(true);
+});
+
 it("refuses a soul save that drops the charter, and keeps it when that Mono is reset", async () => {
   const { id } = createMono();
   const soul = `# Soul\n\n${CAPTAIN_CHARTER}\n`;
@@ -319,6 +343,23 @@ it("refuses a soul save that drops the charter, and keeps it when that Mono is r
   const saves = invoke.mock.calls.filter(([command]) => command === "mono_save");
   expect(saves).toHaveLength(1);
   expect(String((saves[0]?.[1] as { text?: string }).text)).toContain(CAPTAIN_CHARTER);
+});
+
+it("does not save a soul when the current one could not be read", async () => {
+  const { id } = createMono();
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") throw new Error("disk");
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", "# Soul\n\nKept.\n", "h1")).rejects.toThrow(/could not be read/);
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(false);
+
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: null, hash: "h0" };
+    return "saved-new";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", "# Soul\n\nFirst.\n")).resolves.toBe("saved-new");
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(true);
 });
 
 it("a whole soul given as instructions (the hub's team) is kept as it is; anything else goes under Standing instructions", () => {

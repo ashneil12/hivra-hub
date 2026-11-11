@@ -53,8 +53,8 @@ export type AutopilotAppDeps = {
   isLeadership(monoId: string): boolean;
   leadProject(monoId: string): string | undefined;
   /**
-   * WP-215: rules, a standing answer and the spend flag for this project. Absent means none of them,
-   * so a confident recommendation is still taken.
+   * WP-215: rules, a standing answer and the spend flag for this project. Absent means none of them.
+   * A pick is taken only when this context marks it confident.
    */
   captainContext?(input: { project: string | null; question: string; key?: string }): CaptainContext | Promise<CaptainContext>;
   /**
@@ -83,6 +83,8 @@ export type StoredCaptainCard = {
   recommended?: string | null;
   askedBy: string;
   state?: string;
+  /** The card version that was read. Absent when the store did not give one. */
+  version?: number;
 };
 
 export type CaptainContext = {
@@ -180,12 +182,14 @@ async function loadOpenCard(project: string, key: string): Promise<StoredCaptain
     (row) => row?.state === "open" && row.project === project && foldDecisionKey(row.decisionKey) === wanted,
   );
   if (!hit || typeof hit.askedBy !== "string") return null;
+  const version = typeof hit.version === "number" && Number.isInteger(hit.version) ? hit.version : undefined;
   return {
     question: typeof hit.question === "string" ? hit.question : "",
     options: Array.isArray(hit.options) ? hit.options : [],
     recommended: hit.recommended,
     askedBy: hit.askedBy,
     state: hit.state,
+    ...(version === undefined ? {} : { version }),
   };
 }
 
@@ -579,9 +583,15 @@ export async function handleAutopilotApp(
         };
       }
       // WP-215: the captain answers inside this door. Off already returned. A red call already returned held.
+      // The standing answer for a named key is loaded only after this chat is shown to work in that project.
       const key = text(input.key, "key", 200, false);
-      const ctx = (await deps.captainContext?.({ project, question, key })) ?? {};
       const inProject = !!project && callerProject(source, host, deps) === project;
+      const ctx =
+        (await deps.captainContext?.({
+          project,
+          question,
+          ...(inProject && key ? { key } : {}),
+        })) ?? {};
       let card: StoredCaptainCard | null | undefined;
       if (deps.openCard && key && project && inProject) {
         try {
@@ -594,21 +604,21 @@ export async function handleAutopilotApp(
       const captain = captainDecide({
         project: project ?? "",
         monoId: ctx.monoId?.trim() || chiefMonoId() || "chief",
-        decisionKey: key ?? ctx.decisionKey,
+        decisionKey: key ?? (inProject ? ctx.decisionKey : undefined),
         question: fromCard ? card!.question : question,
         options: fromCard ? [...(card!.options ?? [])] : Array.isArray(input.options) ? (input.options as string[]) : undefined,
         recommendation: fromCard ? (card!.recommended ?? "") : recommendation,
-        confident: ctx.confident === true,
+        confident: inProject && ctx.confident === true,
         why,
         department: ctx.department,
-        rules: ctx.rules,
-        standing: ctx.standing ?? null,
-        learned: ctx.learned ?? null,
+        rules: inProject ? ctx.rules : [],
+        standing: inProject ? (ctx.standing ?? null) : null,
+        learned: inProject ? (ctx.learned ?? null) : null,
         moneyOverLimit: ctx.moneyOverLimit === true,
         switchOn: true,
         now,
-        turns: ctx.turns,
-        pendingSince: ctx.pendingSince,
+        turns: inProject ? ctx.turns : undefined,
+        pendingSince: inProject ? ctx.pendingSince : undefined,
       });
       if (captain.kind === "ask-owner") {
         const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
@@ -625,10 +635,44 @@ export async function handleAutopilotApp(
           note: captain.line ? `${captain.line} ${captain.reason}` : captain.reason,
         };
       }
+      // A keyed call outside this chat's project never takes, and a captain answer that is not written never takes.
+      if (key && project && !inProject) {
+        const heldNote = "This call names another project's question, so it is held.";
+        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+        return {
+          autopilot: "on",
+          until: new Date(verdict.until).toISOString(),
+          untilLabel,
+          decision: "held",
+          act: "ask",
+          red: null,
+          reason: heldNote,
+          ...(logged ? { logged: logged.id } : {}),
+          note: heldNote,
+        };
+      }
       const answer = captain.kind === "answer" ? captain.answer : verdict.answer;
+      if (captain.kind === "answer" && key && project && !(deps.answerDecision && inProject)) {
+        const heldNote = "The decision store did not keep the captain's answer, so it is held.";
+        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+        return {
+          autopilot: "on",
+          until: new Date(verdict.until).toISOString(),
+          untilLabel,
+          decision: "held",
+          act: "ask",
+          red: null,
+          reason: heldNote,
+          ...(logged ? { logged: logged.id } : {}),
+          note: heldNote,
+        };
+      }
       if (captain.kind === "answer" && deps.answerDecision && key && project && inProject) {
-        const heldNote = "The decision store did not keep the captain's answer, so it waits.";
-        if (deps.openCard && !fromCard) {
+        const heldNote = "The decision store did not keep the captain's answer, so it is held.";
+        const seenVersion =
+          fromCard && typeof card?.version === "number" && Number.isInteger(card.version) ? card.version : undefined;
+        // A card was read, but it named no version: do not write an answer onto whatever the row is now.
+        if ((deps.openCard && !fromCard) || (fromCard && seenVersion === undefined)) {
           const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
           return {
             autopilot: "on",
@@ -643,7 +687,7 @@ export async function handleAutopilotApp(
           };
         }
         try {
-          const outcome = await deps.answerDecision(project, key, answer, captain.answeredBy, undefined, captain.reason, source.id);
+          const outcome = await deps.answerDecision(project, key, answer, captain.answeredBy, seenVersion, captain.reason, source.id);
           const refused =
             !!outcome && typeof outcome === "object" && "applied" in outcome && (outcome as { applied?: boolean }).applied === false;
           if (refused) {

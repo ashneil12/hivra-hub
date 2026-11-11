@@ -170,7 +170,7 @@ describe("what the hook remembers", () => {
 });
 
 describe("useAutopilot", () => {
-  it("while a project's switch is on, its chats take their recommendation; the red list and other projects wait", async () => {
+  it("while a project's switch is on, an allowed approval is taken; a waiting question is not the captain's answer", async () => {
     await backend.set({ scopes: ["hivra"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
     await mount([
@@ -182,17 +182,17 @@ describe("useAutopilot", () => {
       session("line", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Done the first half.\nNeeds Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag" }] }),
       session("nopick", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Which name do you prefer?" }] }),
     ]);
-    expect(answers).toEqual([{ id: "pick", requestId: 5, reply: { kind: "answered", answers: { q: ["a"] } } }]);
+    // The waiting-chat door does not mark a pick confident, so neither question is stored as the captain's answer.
+    expect(answers).toEqual([]);
     expect(approvals).toEqual([{ id: "tests", requestId: 9, decision: "allow" }]);
     const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
-    expect(byChat.pick).toMatchObject({ kind: "question", outcome: "taken", recommendation: "Alpha", project: "hivra", what: "Which first?" });
+    expect(byChat.pick).toBeUndefined();
     expect(byChat.money).toMatchObject({ kind: "question", outcome: "held", red: "money" });
     expect(byChat.tests).toMatchObject({ kind: "approval", outcome: "taken", recommendation: "Allowed" });
     expect(byChat.force).toMatchObject({ kind: "approval", outcome: "held", red: "mass-destructive" });
     expect(byChat.exo).toBeUndefined();
-    // A "Needs Ash:" line takes its "My pick:" as Ash's go.
-    expect(sent.find((m) => m.id === "line")?.text).toBe("Go with your pick: yes, behind a flag");
-    expect(byChat.line).toMatchObject({ kind: "question", outcome: "taken", recommendation: "yes, behind a flag" });
+    expect(sent.find((m) => m.id === "line")).toBeUndefined();
+    expect(byChat.line).toBeUndefined();
     // A question with no recommendation never reaches Waiting on you (the gate holds it in the chat), so Autopilot
     // neither takes it nor hands it back.
     expect(sent.find((m) => m.id === "nopick")).toBeUndefined();
@@ -269,11 +269,12 @@ describe("useAutopilot", () => {
       line("ping", "Needs Ash: Ping Priya on Slack?\nMy pick: yes"),
       line("plain", "Needs Ash: Keep the old endpoint for a week?\nMy pick: yes, behind a flag"),
     ]);
-    expect(sent.map((m) => m.id)).toEqual(["plain"]);
+    // A plain pick is not taken either: nobody marked it confident. The ones that send or publish are held.
+    expect(sent.map((m) => m.id)).toEqual([]);
     const held = backend.entries.filter((e) => e.kind === "question" && e.outcome === "held").map((e) => e.chatId).sort();
     expect(held).toEqual(["branch", "changelog", "mail", "merge", "migration", "notes", "ping", "public", "ship", "wire"]);
-    // Held ones stay on Today's waiting list for Ash.
-    expect(waitingChats().map((c) => c.sessionId).sort()).toEqual(held);
+    // Held ones stay on Today's waiting list for Ash, and so does the plain pick, which was not answered.
+    expect(waitingChats().map((c) => c.sessionId).sort()).toEqual([...held, "plain"].sort());
   });
 
   it("holds a saved question it can't read, instead of rejecting the hook (WP-101 fix round 2, item F)", async () => {
@@ -300,14 +301,18 @@ describe("useAutopilot", () => {
     );
     resetWaitingChats();
     await mount([session("good", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old endpoint?\nMy pick: yes" }] })]);
-    expect(sent.map((m) => m.id)).toEqual(["good"]);
-    // Nothing was sent for the unreadable one, and the hook is still working: another change still gets decided.
+    // Nothing was sent. The unreadable one is held, and a plain pick is not the captain's answer.
+    expect(sent.map((m) => m.id)).toEqual([]);
+    expect(backend.entries.filter((e) => e.chatId === "bad" && e.outcome === "held")).toHaveLength(1);
+    expect(backend.entries.find((e) => e.chatId === "good")).toBeUndefined();
+    // The hook is still working: another change is decided the same way, and the unreadable one is still not sent.
     await act(async () =>
       setAll((all) => [...all, session("later", "/home/user/projects/hivra", { blocks: [{ id: "u", role: "user", text: "go" }, { id: "r", role: "assistant", text: "Needs Ash: Keep the old cache?\nMy pick: yes" }] })]),
     );
     await settle();
-    expect(sent.map((m) => m.id)).toEqual(["good", "later"]);
+    expect(sent.map((m) => m.id)).toEqual([]);
     expect(sent.find((m) => m.id === "bad")).toBeUndefined();
+    expect(backend.entries.find((e) => e.chatId === "later")).toBeUndefined();
   });
 
   it("allows an MCP read only from a server the app says it wired for that chat", async () => {

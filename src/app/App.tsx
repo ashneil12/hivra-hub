@@ -49,6 +49,7 @@ import {
   mobileQuestionReply,
 } from "../features/mobile/model/mobileWorkspace";
 import { readMonoConversation } from "../features/monos/model/monoConversation";
+import { useApplyMonoCardRun } from "../features/monos/hooks/useApplyMonoCardRun";
 import {
   resumeMonoUsageLimit,
   switchMonoUsageLimitAccount,
@@ -1104,6 +1105,7 @@ import {
   type Automation,
   type AutomationRun,
 } from "../features/automations/model/automations";
+import { automationRunErrorClass } from "../features/automations/model/runFailure";
 import { MissedScheduleNotice } from "../features/one-time-schedule/ui/OneTimeSchedulePanel";
 import { useOneTimeScheduleRunner } from "../features/one-time-schedule/ui/useOneTimeScheduleRunner";
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
@@ -8281,6 +8283,9 @@ function Workspace({
     [],
   );
 
+  // WP-182: a card edit during a turn waits until that turn is idle.
+  useApplyMonoCardRun(sessions, onModelChange, onModelSettingsChange);
+
   const onRuntimeModeChange = useCallback(
     (sessionId: string, runtimeMode: RuntimeMode) => {
       setSessions((prev) =>
@@ -10818,17 +10823,31 @@ function Workspace({
                 : outcome.status === "cancelled"
                   ? "cancelled"
                   : "failed";
+            const errorClass = automationRunErrorClass({
+              message: outcome.error,
+              providerClass: outcome.errorClass,
+              harness: automation.harness,
+            });
             void updateAutomationRun(run.id, status, {
               sessionId: session.id,
               ...(outcome.error ? { error: outcome.error } : {}),
+              // WP-180a: a missing CLI becomes the crew class. Any other class stays.
+              ...(errorClass ? { errorClass } : {}),
             })
               .catch(() => undefined)
               .finally(releaseReservation);
           },
         });
       } catch (reason: unknown) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        // WP-180a: a launch that fails before a turn still classes a missing CLI.
+        const errorClass = automationRunErrorClass({
+          message,
+          harness: automation.harness,
+        });
         await updateAutomationRun(run.id, "failed", {
-          error: reason instanceof Error ? reason.message : String(reason),
+          error: message,
+          ...(errorClass ? { errorClass } : {}),
         }).catch(() => undefined);
         throw reason;
       } finally {

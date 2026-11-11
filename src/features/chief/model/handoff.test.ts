@@ -66,8 +66,15 @@ describe("captain.handoff", () => {
     const goal = handoffGoal(title, brief);
     expect(goal).not.toBe(brief);
     expect(goal).not.toBe(title);
+    expect(goal).not.toMatch(/what it should/);
+    expect(goal).toBe("Done when Fix the save bug. The check for it passes, and the report says what changed.");
     expect(checkBrief({ intent: brief, spec: brief, done: goal })).toBeUndefined();
-    expect(handoffGoal(brief, brief)).not.toBe(brief);
+    const same = handoffGoal(brief, brief);
+    expect(same).not.toBe(brief);
+    expect(same).toBe("Done when the change is in, the check the brief names passes, and the report says what changed.");
+    expect(handoffGoal("  ", brief)).toBe(same);
+    expect(handoffGoal(`  ${title}  `, `  ${title}  `)).toBe(same);
+    expect(checkBrief({ intent: brief, spec: brief, done: same })).toBeUndefined();
   });
 
   it("reads the filed id from the task, and the delegation id from the row", () => {

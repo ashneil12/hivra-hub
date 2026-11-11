@@ -126,7 +126,8 @@ export function projectFolderChecks(paths: string[]): Promise<Record<string, str
 async function withLocalFacts(doc: SetupDoc): Promise<Pick<PendingImport, "folders" | "folderChecks" | "skillsHere">> {
   const projectFolders = [...new Set(doc.projects.flatMap((p) => (p.folder ? [p.folder] : [])))];
   const paths = [...new Set([...projectFolders, ...doc.monos.flatMap((m) => m.projects)])];
-  const names = [...new Set(doc.monos.flatMap((m) => m.skills))];
+  // WP-182: the card's list is offeredSkills. skills stays the soul file's list, so both have to be looked up.
+  const names = [...new Set(doc.monos.flatMap((m) => [...m.skills, ...(m.offeredSkills ?? [])]))];
   const [folders, refs, folderChecks] = await Promise.all([
     paths.length ? invoke<Record<string, boolean>>("portable_paths_exist", { paths }).catch(() => ({})) : Promise.resolve({}),
     names.length ? invoke<SkillRef[]>("portable_find_skills", { names }).catch(() => [] as SkillRef[]) : Promise.resolve([] as SkillRef[]),
