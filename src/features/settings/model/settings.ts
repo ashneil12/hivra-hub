@@ -56,7 +56,8 @@ export type SettingsGroupId = "app" | "agents" | "workspace";
 export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string }[] = [
   { id: "app", label: "App" },
   { id: "agents", label: "Agents" },
-  { id: "workspace", label: "Workspace" },
+  // Dropwave: archive, trash, worktrees and the code tools, out of the way of a non-technical owner.
+  { id: "workspace", label: "Advanced" },
 ];
 
 export type SettingsSection = {
@@ -292,8 +293,8 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "worktrees",
     group: "workspace",
-    label: "Worktrees",
-    description: "Manage additional worktrees for each project.",
+    label: "Code and worktrees",
+    description: "Show Git, files and changes in projects, and manage each project's extra worktrees.",
     keywords: "git branch worktree working copy project create delete",
   },
 ];

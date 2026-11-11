@@ -66,6 +66,13 @@ export function useHubSelection(): HubSelection {
  * One of the app's own views (Autopilot, New project, Restore) opens over the project Ash was last in: it is not a
  * project's item, but leaving it comes back to that project, and quitting from it opens the app there again.
  */
+/** Dropwave: a project's own home (HubSurface shows HomeView for that project). The rail opens it. */
+export const PROJECT_HOME_ITEM = "project-home";
+
+export function showProjectHome(projectId: string): void {
+  setHubSelection({ project: projectId, item: PROJECT_HOME_ITEM });
+}
+
 export function showAppItem(item: string): void {
   setHubSelection({ project: read().project, item });
 }

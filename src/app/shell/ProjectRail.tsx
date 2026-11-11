@@ -17,7 +17,7 @@ import {
   Bot,
 } from "../../shared/ui/icons";
 import { IS_HUB_BUNDLE } from "../../features/hub/model/hubBundle";
-import { showAppItem } from "../../features/hub/model/hubNav";
+import { showAppItem, useHubSelection } from "../../features/hub/model/hubNav";
 import { pinnedPages, requestOpenPage, usePagesVersion } from "../../features/pages/model/pages";
 import {
   useEffect,
@@ -1307,7 +1307,10 @@ function AddProjectButton({ onOpenFolder }: { onOpenFolder: () => void }) {
 /** Pinned pages (by Ash or by a Mono) under Pages; one click opens the page. */
 function PinnedPages({ onOpen }: { onOpen: () => void }) {
   usePagesVersion();
-  const pinned = pinnedPages();
+  // Dropwave: inside a project, only that project's pinned pages; Home lists them all.
+  const sel = useHubSelection();
+  const inProject = IS_HUB_BUNDLE && !!sel.project && sel.item !== "home" && sel.item !== "agents";
+  const pinned = pinnedPages().filter((page) => !inProject || page.projectId === sel.project);
   if (!pinned.length) return null;
   return (
     <div className="flex flex-col gap-px pl-6" data-sidebar-pinned-pages aria-label="Pinned pages" role="group">

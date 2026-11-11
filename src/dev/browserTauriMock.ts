@@ -373,6 +373,16 @@ mockIPC(
     if (cmd === "decisions_list") return seededList("monocode:dev-decisions");
     if (cmd === "delivery_list") return seededList("monocode:dev-deliveries");
     if (cmd === "pr_watch_list") return seededList("monocode:dev-pr-watches");
+    if (cmd === "automations_list") return seededList("monocode:dev-automations");
+    // A project with no project file: no actions, no runs (the generic list answer below is an array, not a listing).
+    if (cmd === "project_actions_list") {
+      const cwd = (args as { cwd?: string } | undefined)?.cwd ?? "";
+      return {
+        status: { projectRoot: cwd, path: `${cwd}/.monocode/project.json`, state: "none", error: null, fileHash: null, file: null, trustedHash: null, trusted: null, importedAt: null },
+        actions: [],
+        runs: [],
+      };
+    }
     // WP-06: a browser spec seeds a ship summary (`monocode:dev-ship`). Missing or bad JSON is no ship.
     if (cmd === "ship_status") {
       try {

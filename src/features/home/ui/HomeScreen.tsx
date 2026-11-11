@@ -57,6 +57,15 @@ export type HomeDone = {
   onOpen: () => void;
 };
 
+/** A section a project's home adds below the built-in ones: its pinned pages, its automations (Dropwave). */
+export type HomeExtraSection = {
+  key: string;
+  title: string;
+  empty: string;
+  rows: { key: string; text: string; meta?: string; onOpen: () => void }[];
+  action?: { label: string; onClick: () => void };
+};
+
 export type HomeChief = {
   missing: boolean;
   name: string;
@@ -65,6 +74,8 @@ export type HomeChief = {
   reply?: string;
   streaming?: boolean;
   options: { id: string; label: string }[];
+  /** The box's prompt: Home's, or a project's. */
+  placeholder?: string;
   onAdd: () => void;
   onOpenChat: () => void;
   onOption: (id: string) => void;
@@ -283,7 +294,7 @@ function ChiefBox({ chief, onAsk, quiet }: { chief: HomeChief; onAsk: (text: str
         <input
           aria-label="Ask"
           value={text}
-          placeholder="Ask anything, or hand work to any project"
+          placeholder={chief.placeholder ?? "Ask anything, or hand work to any project"}
           onChange={(event) => setText(event.target.value)}
           className="min-w-0 flex-1 bg-transparent py-1.5 text-[14px] text-content outline-none placeholder:text-content/40"
         />
@@ -352,7 +363,15 @@ export function HomeScreen({
   onUnpin,
   onAsk,
   renderPanel,
+  title = "Home",
+  headerExtra,
+  extraSections = [],
 }: {
+  /** Home, or the project's name on a project's home. */
+  title?: string;
+  /** Beside the title: a project's Autopilot switch. */
+  headerExtra?: ReactNode;
+  extraSections?: readonly HomeExtraSection[];
   date: string;
   chief: HomeChief;
   needs: readonly HomeNeed[];
@@ -418,8 +437,9 @@ export function HomeScreen({
     <div data-home data-home-order={visible.map(sectionKey).join(" ")} className="min-h-0 min-w-0 flex-1 overflow-y-auto text-content">
       <div className="mx-auto flex flex-col gap-6 px-6 pt-12 pb-8" style={{ maxWidth: HOME_MAX_WIDTH }}>
         <header data-home-header className="flex items-baseline gap-3">
-          <h1 className="text-[18px] font-medium text-content">Home</h1>
+          <h1 className="text-[18px] font-medium text-content">{title}</h1>
           {date ? <p data-home-date className="min-w-0 flex-1 truncate text-[13px] text-content/60">{date}</p> : <span className="flex-1" />}
+          {headerExtra}
           {known ? (
             <button
               ref={toggleRef}
@@ -589,6 +609,40 @@ export function HomeScreen({
             </section>
           );
         })}
+        {known
+          ? extraSections.map((extra, index) => (
+              <section
+                key={extra.key}
+                data-home-section={extra.key}
+                aria-label={extra.title}
+                className="home-enter rounded-lg border border-stroke"
+                style={{ animationDelay: `${(visible.length + index) * HOME_STAGGER_MS}ms` }}
+              >
+                <header className="flex items-center gap-2 px-3 py-2">
+                  <h2 className="truncate text-[13px] font-medium text-content">{extra.title}</h2>
+                  {extra.rows.length ? <span className="text-[12px] text-content/60">{extra.rows.length}</span> : null}
+                  <span className="min-w-0 flex-1" />
+                  {extra.action ? (
+                    <button type="button" className="text-[12px] text-accent" onClick={extra.action.onClick}>{extra.action.label}</button>
+                  ) : null}
+                </header>
+                {extra.rows.length === 0 ? (
+                  <p className="border-t border-stroke px-3 py-2.5 text-[13px] text-content/60">{extra.empty}</p>
+                ) : extra.rows.map((row) => (
+                  <button
+                    key={row.key}
+                    type="button"
+                    data-home-line={extra.key}
+                    className="flex min-h-10 w-full items-center gap-3 border-t border-stroke px-3 py-1.5 text-left text-[13px] text-content hover:bg-content/8"
+                    onClick={row.onOpen}
+                  >
+                    <span className="min-w-0 flex-1">{row.text}</span>
+                    {row.meta ? <span className="shrink-0 text-content/60">{row.meta}</span> : null}
+                  </button>
+                ))}
+              </section>
+            ))
+          : null}
         {!known && failed ? <p data-home-retry className="text-[13px] text-content/70">Couldn't load home. Trying again.</p> : null}
         {!known && !failed ? <div data-home-loading className="h-8" /> : null}
       </div>

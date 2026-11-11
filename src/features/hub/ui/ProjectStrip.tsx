@@ -14,7 +14,6 @@ import { useConnectorsVersion } from "../model/connectors";
 import { useHubBuildsVersion } from "../model/hubBuilds";
 import { appItemInView, showAppItem, showProjectToday, type HubSelection } from "../model/hubNav";
 import type { HubProject } from "../model/types";
-import { useAutopilotStrip } from "../../autopilot/ui/AutopilotStripButton";
 import { readStripGroups, stripLayout, useStripGroupsVersion } from "../model/stripGroups";
 import { ShowAllProjectsButton, StripGroupHeading, StripGroupMenu } from "./StripGroups";
 import type { ProjectGroup } from "../../projects/model/projectGroups";
@@ -59,7 +58,6 @@ export function ProjectStrip({
   const draftProject = projectDraft();
   const [menu, setMenu] = useState<{ project: HubProject; anchor: PopoverAnchor }>();
   const [draftMenu, setDraftMenu] = useState<PopoverAnchor>();
-  const autopilot = useAutopilotStrip();
   // WP-137: projects in no group first, then each group under its heading, all in the saved order. "Show only this
   // group" (this window only) shows one group; the others come back in the same slots when it goes off.
   useStripGroupsVersion();
@@ -100,13 +98,6 @@ export function ProjectStrip({
           glyph={<span className="text-[13px] font-medium">H</span>}
         />
       </div>
-      <StripButton
-        label="Autopilot"
-        title={autopilot.title}
-        selected={selection.item === "autopilot"}
-        onClick={() => { onLeaveCovers?.(); showAppItem("autopilot"); }}
-        glyph={autopilot.glyph}
-      />
       <div className="h-2 shrink-0" />
       {layout.loose.map(projectButton)}
       {layout.groups.map(({ group, projects: members }) => (

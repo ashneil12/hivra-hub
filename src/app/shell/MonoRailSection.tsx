@@ -107,12 +107,17 @@ export function unreadLabel(count: number): string {
  * (the hub passes its selected project; Today passes none and keeps the whole roster). The hub (`rank` set) sorts the
  * list: the default four, then every project's Lead (hubMonoRank).
  */
+/** Dropwave: Home is its own project. Its sidebar lists only the Monos that work on no project (the Chief of Staff). */
+export const HOME_MONOS = "hub:home";
+
 export function railMonos<M extends { id: string; name?: string; projects: string[]; pinned?: boolean }>(
   list: M[],
   projectFilter: string | undefined,
   rank: ((mono: M) => number) | undefined,
 ): M[] {
-  const eligible = list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
+  const eligible = list.filter((mono) =>
+    projectFilter === HOME_MONOS ? mono.projects.length === 0 : !projectFilter || mono.projects.includes(projectFilter),
+  );
   const ordered = rank
     ? eligible.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m)
     : eligible;

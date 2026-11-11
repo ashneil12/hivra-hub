@@ -1,3 +1,4 @@
+import { useShowCodeTools } from "../../features/settings/model/codeTools";
 import { NO_BRANCH_LABEL } from "../../features/source-control/model/worktrees";
 import { formatGitLabel } from "./gitLabel";
 import {
@@ -1099,7 +1100,11 @@ function SidebarComponent({
   const sessionListKey = `${cwd}\0${sessionFilters.showArchived}\0${sessionFilters.time}\0${sessionFilters.hiddenHarnesses.join(",")}\0${sessionFilters.status.working}\0${sessionFilters.status.needsApproval}\0${sessionFilters.status.done}\0${searchQuery}`;
   const sessionHarnesses = harnessesInSessions(projectSessions);
   const narrowedByUser = searchNarrowed || filtersActive;
-  const visibleTabs = tabOrder.filter((itemId) => itemId !== "inbox");
+  // Dropwave: Explorer and Changes only when Settings > Advanced shows code tools.
+  const codeTools = useShowCodeTools();
+  const visibleTabs = tabOrder.filter(
+    (itemId) => itemId !== "inbox" && (codeTools || (itemId !== "files" && itemId !== "changes")),
+  );
   const onReorderTabs = (ids: SidebarTab[]) => {
     const reordered = new Set(ids);
     let index = 0;
@@ -2899,7 +2904,8 @@ function SidebarComponent({
           switches projects. */}
       {railVisible || inset ? (
         <>
-          {workspaceHeader}
+          {/* Dropwave: the worktree picker is a code tool (Settings > Advanced). */}
+          {codeTools ? workspaceHeader : null}
           {/* The inset sidebar has no tabs: the project tools live in the
               right panel. */}
           {inset ? null : (

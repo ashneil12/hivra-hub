@@ -1,3 +1,4 @@
+import { HOME_MONOS } from "./shell/MonoRailSection";
 import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
@@ -289,6 +290,7 @@ import {
   setMonoTeamOpener,
   showAppItem,
   showProjectToday,
+  showProjectHome,
   useHubSelection,
   type CodingTeamTarget,
   type MonoTeamTarget,
@@ -17835,7 +17837,7 @@ function Workspace({
     }
   }, [hubSel.project, hubSel.item, hubFolder, openCodingTeam]);
   const hubMonos = sidebarMonos
-    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
+    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.item === "home" ? HOME_MONOS : hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
     : undefined;
 
   const chromeSurfaceOpen =
@@ -18165,8 +18167,9 @@ function Workspace({
       selection={hubSel}
       onPickProject={(project) => {
         closeChromeViews();
-        // WP-06: its coding team, or the no-code page when it has no folder. Not Today.
-        openCodingTeam(project.id);
+        // Dropwave: its own home, the Chief of Staff's box on top. The coding team is one of its first mates.
+        if (monoViewIdRef.current) closeMonoView();
+        showProjectHome(project.id);
       }}
       onCreateProject={pickProject}
       onLeaveCovers={closeChromeViews}

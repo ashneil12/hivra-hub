@@ -220,4 +220,41 @@ function decisions(now: number) {
   ];
 }
 
-export const EXAMPLE = { projects, roster, sessions, delegations, decisions };
+// Kept pages (pages.ts reads `monocode:pages` with no record store), some pinned so the project homes show them.
+function pages(now: number) {
+  const page = (id: string, projectId: string, title: string, by: string, pinned: boolean, blocks: unknown[]) => ({
+    id, projectId, title, request: title, by, spec: { kind: "blocks", title, blocks }, permissions: [], keptAt: now - 3_600_000,
+    ...(pinned ? { pinned: true, pinnedBy: by } : {}),
+  });
+  return [
+    page("page-safetube-launch", "safetube", "Launch plan", "Chief of Staff", true, [
+      { kind: "list", title: "Before Tuesday", rows: [
+        { text: "Waitlist page live", state: "ok", label: "Done" },
+        { text: "Launch email", state: "warn", label: "Headline" },
+      ] },
+    ]),
+    page("page-safetube-signups", "safetube", "Waitlist signups", "SafeTube lead", true, [
+      { kind: "chart", title: "Signups this week", bars: [{ label: "Mon", value: 12 }, { label: "Tue", value: 30 }, { label: "Wed", value: 38 }] },
+    ]),
+    page("page-exo-map", "vg-game", "Area 3 map", "EXO lead", true, [{ kind: "note", title: "Area 3", text: "Three rooms and the boss arena." }]),
+    page("page-hivra-roadmap", "hivra", "Roadmap", "Chief of Staff", true, [{ kind: "note", title: "Next", text: "Waitlist, then the phone app." }]),
+  ];
+}
+
+// What automations_list returns (the mock reads `monocode:dev-automations`).
+function automations(now: number) {
+  const auto = (id: string, project: string, name: string, scheduleKind: string, time: string, enabled = true) => ({
+    id, name, prompt: name, harness: "claude", model: "", cwd: folderOf(project), workspaceMode: "current", reuseSession: true,
+    runtimeMode: "supervised", triggerKind: "schedule", triggerEvent: "", scheduleKind, minute: 0, time, dayOfWeek: 1,
+    missedRunGraceMinutes: 60, enabled, nextRunAt: now + 86_400_000, createdAt: now - 86_400_000, updatedAt: now - 86_400_000,
+  });
+  return [
+    auto("auto-signups", "safetube", "Weekly signups report", "weekly", "09:00"),
+    auto("auto-uptime", "safetube", "Tell me if the page goes down", "hourly", "00:00"),
+    auto("auto-playtest", "vg-game", "Nightly playtest build", "daily", "02:00"),
+    auto("auto-backup", "hivra", "Nightly backup", "daily", "03:00"),
+    auto("auto-recipes", "nibbii", "Recipe ideas digest", "weekly", "10:00", false),
+  ];
+}
+
+export const EXAMPLE = { projects, roster, sessions, delegations, decisions, pages, automations };

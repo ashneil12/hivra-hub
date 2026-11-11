@@ -36,7 +36,10 @@ import { needsRank, needsShown } from "../model/needsShown";
 import { openFromHome, targetFor, type HomeOpenTarget } from "../model/opener";
 import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
 import { workingLines } from "../model/workingNow";
-import { HomeScreen, type HomeChief, type HomeDone, type HomeNeed, type HomeWork } from "./HomeScreen";
+import { HomeScreen, type HomeChief, type HomeDone, type HomeExtraSection, type HomeNeed, type HomeWork } from "./HomeScreen";
+import { pinnedPages, requestOpenPage, usePagesVersion } from "../../pages/model/pages";
+import { automationScheduleLabel, listAutomations, peekAutomations, type Automation } from "../../automations/model/automations";
+import { projectAutopilotOn, setProjectAutopilot, useProjectAutopilotVersion } from "../model/projectAutopilot";
 import { keepListening } from "./listenRetry";
 
 const TASKS_CHANGED = "tasks://changed";
@@ -70,7 +73,51 @@ function openNeed(item: NeedsItem): void {
   openFromHome({ kind: "task", projectId: item.open.projectId ?? projectId, id: item.open.id });
 }
 
-export function HomeView() {
+/** Opens a Places view (Pages, Notes, Automations) over Home; App.tsx listens. */
+function openPlace(place: "pages" | "notes" | "automations"): void {
+  window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: place }));
+}
+
+/** Autopilot as the project's mode (Dropwave): one switch beside the title. */
+function AutopilotSwitch({ projectId, name }: { projectId?: string; name: string }) {
+  useProjectAutopilotVersion();
+  const on = projectAutopilotOn(projectId);
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={on}
+      data-home-autopilot={on ? "on" : "off"}
+      title={on
+        ? `Autopilot is on: the Chief of Staff keeps ${name} moving and only asks you the big calls.`
+        : `Autopilot is off: work on ${name} waits for you.`}
+      onClick={() => void setProjectAutopilot(projectId, !on)}
+      className="flex shrink-0 items-center gap-2 rounded-md border border-stroke px-2.5 py-1 text-[13px] text-content hover:bg-content/8"
+    >
+      <span className={`relative h-4 w-7 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}>
+        <span className={`absolute top-0.5 size-3 rounded-full bg-white transition-[left] ${on ? "left-3.5" : "left-0.5"}`} />
+      </span>
+      Autopilot {on ? "on" : "off"}
+    </button>
+  );
+}
+
+/**
+ * Home, or one project's home (Dropwave, 11 Nov): the Chief of Staff's box on top as a starting point (a message opens
+ * the full chat), then only this project's Needs you, Working now, Done today, pinned pages and automations.
+ */
+export function HomeView({ projectId }: { projectId?: string } = {}) {
+  usePagesVersion();
+  const [automations, setAutomations] = useState<Automation[]>(() => peekAutomations() ?? []);
+  useEffect(() => {
+    let stopped = false;
+    void listAutomations().then((list) => {
+      if (!stopped) setAutomations(list);
+    }).catch(() => undefined);
+    return () => {
+      stopped = true;
+    };
+  }, []);
   const source = useMemo(() => realHomeSource(), []);
   const loader = useRef(createHomeLoader(source));
   const token = useRef(0);
@@ -236,7 +283,9 @@ export function HomeView() {
   }
 
   const projects = snap?.projects ?? [];
-  const label = labelFor(projects);
+  // On a project's home every row is this project's, so rows carry no project tag.
+  const tagFor = labelFor(projects);
+  const label = (id: string) => (projectId ? undefined : tagFor(id));
   const now = new Date();
   const session = sessionId ? readHomeChiefSession(sessionId) : undefined;
   void chiefRev;
@@ -249,9 +298,11 @@ export function HomeView() {
     ...(hold ? [builderHoldLine(hold)] : []),
     ...(spend ? [builderHoldLine(spend)] : []),
   ];
-  const shown = needsShown(needs, now.getTime());
-  const totalNeeds = needsCount();
-  const lines = workingLines(delegations.map((row: Delegation) => ({
+  const scoped = hubData().listProjects().find((p) => p.id === projectId);
+  const inScope = (id: string | null | undefined) => !scoped || id === scoped.id;
+  const shown = needsShown(needs, now.getTime()).filter((item) => inScope(item.projectId));
+  const totalNeeds = scoped ? shown.length : needsCount();
+  const lines = workingLines(delegations.filter((row) => inScope(row.project)).map((row: Delegation) => ({
     id: row.id,
     project: row.project,
     title: row.title,
@@ -259,7 +310,7 @@ export function HomeView() {
     state: row.state,
     createdAt: row.createdAt,
   })));
-  const running = workingCount();
+  const running = workingCount(scoped?.id);
   const finished = doneToday({
     activity,
     work,
@@ -275,17 +326,19 @@ export function HomeView() {
     })),
     now,
     label,
-  });
+  }).filter((line) => inScope(line.projectId));
 
   const chief: HomeChief = chiefMono
     ? {
         missing: false,
         name: (chiefMono.name ?? "").trim() || "Chief of Staff",
-        scope: chiefScopeLine(chiefMono, hubData().listProjects().length),
-        you: exchange.you,
-        reply: exchange.reply,
-        streaming: exchange.streaming,
-        options: (question?.options ?? []).map((option) => ({ id: option.id, label: option.label })),
+        scope: scoped ? `runs ${scoped.name} for you` : chiefScopeLine(chiefMono, hubData().listProjects().length),
+        placeholder: scoped ? `Ask anything about ${scoped.name}, or hand over work` : undefined,
+        // On a project's home the box only starts a conversation; the last exchange may be about another project.
+        you: scoped ? undefined : exchange.you,
+        reply: scoped ? undefined : exchange.reply,
+        streaming: scoped ? false : exchange.streaming,
+        options: (scoped ? [] : question?.options ?? []).map((option) => ({ id: option.id, label: option.label })),
         onAdd: () => undefined,
         onOpenChat: () => openChiefChat(chiefMono.id),
         onOption: (optionId) => {
@@ -335,6 +388,39 @@ export function HomeView() {
   }));
   const arrangement = snap?.arrangement ?? { order: [], hidden: [], savedAt: 0 };
 
+  const pages = pinnedPages().filter((page) => !scoped || page.projectId === scoped.id);
+  const folder = scoped?.folder ?? undefined;
+  const autos = automations.filter((auto) => !scoped || (folder ? auto.cwd === folder || auto.cwd.startsWith(`${folder}/`) : false));
+  const extras: HomeExtraSection[] = [
+    {
+      key: "pinned-pages",
+      title: "Pinned pages",
+      empty: "Pin a page to keep it here.",
+      rows: pages.map((page) => ({
+        key: page.id,
+        text: page.title,
+        meta: page.pinnedBy ? `by ${page.pinnedBy}` : undefined,
+        onOpen: () => {
+          requestOpenPage(page.id);
+          openPlace("pages");
+        },
+      })),
+      action: { label: "All pages", onClick: () => openPlace("pages") },
+    },
+    {
+      key: "automations",
+      title: "Automations",
+      empty: "Nothing runs by itself yet. Ask the Chief of Staff to set one up.",
+      rows: autos.map((auto) => ({
+        key: auto.id,
+        text: auto.name,
+        meta: auto.enabled ? automationScheduleLabel(auto) : "Paused",
+        onOpen: () => openPlace("automations"),
+      })),
+      action: { label: "Manage", onClick: () => openPlace("automations") },
+    },
+  ];
+
   function see(target: HomeOpenTarget) {
     openFromHome(target);
   }
@@ -362,10 +448,16 @@ export function HomeView() {
       onUnpin={(key) => void update((doc) => ({ ...doc, arrangement: unpin(doc.arrangement, key) }))}
       onAsk={(text) => {
         if (!chiefMono) return;
-        void sendHomeTurn(chiefMono.id, text).then((result) => {
+        // The box is a starting point: the conversation carries on in the Chief of Staff's own chat.
+        const words = scoped ? `[${scoped.name}] ${text}` : text;
+        void sendHomeTurn(chiefMono.id, words).then((result) => {
           if (result.ok) setSessionId(result.sessionId);
         });
+        openChiefChat(chiefMono.id);
       }}
+      title={scoped ? scoped.name : "Home"}
+      headerExtra={<AutopilotSwitch projectId={scoped?.id} name={scoped ? scoped.name : "everything"} />}
+      extraSections={extras}
       renderPanel={(panel) => <PanelFrame plugin={panel.plugin} panelId={panel.panelId} spec={panel.spec} />}
     />
   );

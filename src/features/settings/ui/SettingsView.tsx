@@ -1,3 +1,4 @@
+import { setShowCodeTools, useShowCodeTools } from "../model/codeTools";
 import { activeThemeOf, allSchemes, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, themesOf, type SchemeTheme, type ThemeScheme } from "../model/themeSchemes";
 import { activeThemeChoice, applyOffer, discardOffer, endPreview, offeredPreviewLook, pickTheme, previewOffer, scanMonoThemes, themeOffers, themePreview, themeRefusals, useThemesVersion } from "../model/themeFiles";
 import { UserNameField } from "../../hub/ui/UserNameField";
@@ -553,6 +554,29 @@ type Props = {
   onCollapsedProjectRailModeChange?: (mode: CollapsedProjectRailMode) => void;
 };
 
+/** Dropwave: the switch that brings Explorer and Changes back to a project's sidebar. */
+function CodeToolsSetting() {
+  const on = useShowCodeTools();
+  return (
+    <div data-setting-id="show-code-tools" className="mb-6 flex items-center gap-4 rounded-lg border border-stroke px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium text-content">Show code tools</p>
+        <p className="text-[12px] text-content/60">Explorer, Changes and the worktree picker in each project's sidebar. Off keeps projects simple.</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="Show code tools"
+        onClick={() => setShowCodeTools(!on)}
+        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}
+      >
+        <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-[left] ${on ? "left-4.5" : "left-0.5"}`} />
+      </button>
+    </div>
+  );
+}
+
 export function SettingsView({
   section,
   anchor = null,
@@ -789,6 +813,7 @@ export function SettingsView({
                   <ProvidersPage cwd={cwd} recents={recents} />
                 </>
               ) : null}
+              {section === "worktrees" ? <CodeToolsSetting /> : null}
               {section === "worktrees" ? (
                 <WorktreesPage
                   cwd={cwd}

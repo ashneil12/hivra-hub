@@ -7,7 +7,7 @@
 
 import { EXAMPLE } from "./data";
 
-const SEED_VERSION = "mockup-v1";
+const SEED_VERSION = "mockup-v2";
 const SEEDED_KEY = "monocode:mockup-seeded";
 
 const url = new URL(location.href);
@@ -35,6 +35,8 @@ function seed(): void {
   set("monocode:dev-sessions", EXAMPLE.sessions(now));
   set("monocode:dev-delegations", EXAMPLE.delegations(now));
   set("monocode:dev-decisions", EXAMPLE.decisions(now));
+  set("monocode:pages", EXAMPLE.pages(now));
+  set("monocode:dev-automations", EXAMPLE.automations(now));
   localStorage.setItem("monocode:hub-nav", JSON.stringify({ project: "", item: "home" }));
   localStorage.setItem(SEEDED_KEY, SEED_VERSION);
 }
