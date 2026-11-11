@@ -12,8 +12,9 @@ test("home keeps the strip, hides empty sections, and keeps a pinned panel", asy
   await expect(page.locator("[data-hub-home] button")).toHaveAttribute("aria-current", "true");
 
   await expect(page.getByRole("heading", { name: "Home", level: 1 })).toBeVisible();
-  await expect(page.locator("[data-home-empty]")).toContainText("Nothing needs you.");
-  await expect(page.getByText("All quiet.")).toHaveCount(0);
+  await expect(page.locator("[data-home-quiet]")).toHaveText("All quiet. Ask me anything, or hand work to any project.");
+  await expect(page.locator("[data-home-empty]")).toHaveCount(0);
+  await expect(page.getByText("Nothing needs you.")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Projects" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Moving now" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Recent" })).toHaveCount(0);
@@ -43,8 +44,9 @@ test("home keeps the strip, hides empty sections, and keeps a pinned panel", asy
 
 test("an empty home says nothing needs you and keeps the chat", async ({ page }) => {
   await page.goto("/tests/browser/wp73-home.html?empty=1");
-  await expect(page.locator("[data-home-empty]")).toContainText("Nothing needs you.");
-  await expect(page.getByText("All quiet.")).toHaveCount(0);
+  await expect(page.locator("[data-home-quiet]")).toHaveText("All quiet. Ask me anything, or hand work to any project.");
+  await expect(page.locator("[data-home-empty]")).toHaveCount(0);
+  await expect(page.getByText("Nothing needs you.")).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Needs you" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Working now" })).toHaveCount(0);
   await expect(page.getByRole("heading", { name: "Done today" })).toHaveCount(0);

@@ -23,8 +23,10 @@ const TITLE: Record<string, string> = {
   recent: "Done today",
 };
 
-const PRIMARY_BUTTON = "shrink-0 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black";
-const QUIET_BUTTON = "shrink-0 rounded-md border border-content/20 px-2.5 py-1 text-[12px] text-content";
+// One size for every answer on Home. The height is fixed so a row's text size cannot stretch one of them.
+const HOME_BUTTON = "inline-flex h-7 shrink-0 items-center rounded-md px-2.5 text-[12px] leading-none";
+const PRIMARY_BUTTON = `${HOME_BUTTON} bg-accent font-medium text-black`;
+const QUIET_BUTTON = `${HOME_BUTTON} border border-content/20 text-content`;
 // Name, up, down, switch, and an unpin slot. The slot stays empty on a section so the arrows line up.
 const ARRANGE_COLUMNS = { gridTemplateColumns: "minmax(0, 1fr) 1.5rem 1.5rem 2.25rem 4rem" };
 
@@ -33,6 +35,8 @@ export type HomeNeed = {
   project?: string;
   sentence: string;
   stopped: boolean;
+  /** A merge, a gate check, or a question that asks to ship. After stopped rows, before other questions. */
+  blocksShip?: boolean;
   actions: { label: string; onClick: () => void }[];
   onOpen: () => void;
 };
@@ -65,6 +69,12 @@ export type HomeChief = {
   onOpenChat: () => void;
   onOption: (id: string) => void;
 };
+
+function homeNeedRank(row: HomeNeed): number {
+  if (row.stopped) return 0;
+  if (row.blocksShip) return 1;
+  return 2;
+}
 
 function titleOf(ref: SectionRef, catalog: readonly CatalogPanel[]): string {
   if (ref.kind === "builtin") return TITLE[ref.id] ?? ref.id;
@@ -230,7 +240,7 @@ function ChiefExchange({ chief }: { chief: HomeChief }) {
   );
 }
 
-function ChiefBox({ chief, onAsk }: { chief: HomeChief; onAsk: (text: string) => void }) {
+function ChiefBox({ chief, onAsk, quiet }: { chief: HomeChief; onAsk: (text: string) => void; quiet: boolean }) {
   const [text, setText] = useState("");
   const ready = text.trim().length > 0;
   const talking = Boolean(chief.you || chief.reply || chief.streaming || chief.options.length > 0);
@@ -254,6 +264,11 @@ function ChiefBox({ chief, onAsk }: { chief: HomeChief; onAsk: (text: string) =>
       {talking ? <ChiefExchange chief={chief} /> : (
         <div className="px-3 pt-3">
           <NameLine scope={chief.scope} />
+          {quiet ? (
+            <p data-home-quiet className="mt-2 text-[13px] leading-6 text-content/60">
+              All quiet. Ask me anything, or hand work to any project.
+            </p>
+          ) : null}
         </div>
       )}
       <form
@@ -398,6 +413,7 @@ export function HomeScreen({
   const offered = catalog.filter((panel) => !pinned.has(sectionKey({ kind: "panel", plugin: panel.plugin, panelId: panel.panelId })));
   const arranged = arrangement.order.filter((ref) => !(ref.kind === "builtin" && ref.id === "projects"));
   const quiet = known && visible.length === 0;
+  const orderedNeeds = [...needs].sort((a, b) => homeNeedRank(a) - homeNeedRank(b));
   return (
     <div data-home data-home-order={visible.map(sectionKey).join(" ")} className="min-h-0 min-w-0 flex-1 overflow-y-auto text-content">
       <div className="mx-auto flex flex-col gap-6 px-6 pt-12 pb-8" style={{ maxWidth: HOME_MAX_WIDTH }}>
@@ -405,82 +421,80 @@ export function HomeScreen({
           <h1 className="text-[18px] font-medium text-content">Home</h1>
           {date ? <p data-home-date className="min-w-0 flex-1 truncate text-[13px] text-content/60">{date}</p> : <span className="flex-1" />}
           {known ? (
-            <div className="relative">
-              <button
-                ref={toggleRef}
-                type="button"
-                data-home-action="customize"
-                aria-expanded={custom}
-                className="rounded-md border border-stroke px-2.5 py-1 text-[13px] text-content hover:bg-content/8"
-                onClick={() => setCustom((open) => !open)}
-              >
-                Customize
-              </button>
-              {custom ? (
-                <div
-                  ref={panelRef}
-                  data-home-customize
-                  role="dialog"
-                  aria-label="Customize"
-                  className="absolute right-0 z-20 mt-2 flex w-72 flex-col gap-1 rounded-lg border border-stroke bg-background-base p-2 shadow-lg"
-                >
-                  {arranged.map((ref) => {
-                    const key = sectionKey(ref);
-                    const title = titleOf(ref, catalog);
-                    const shown = !arrangement.hidden.includes(key);
-                    return (
-                      <div key={key} data-home-arrange={key} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
-                        <span className="min-w-0 truncate text-[13px] text-content">{title}</span>
-                        <button type="button" aria-label={`Move ${title} up`} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, -1)}>
-                          <ChevronUp className="size-3.5" aria-hidden />
-                        </button>
-                        <button type="button" aria-label={`Move ${title} down`} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, 1)}>
-                          <ChevronDown className="size-3.5" aria-hidden />
-                        </button>
-                        <span className="justify-self-center">
-                          <ShowSwitch title={title} on={shown} onToggle={() => (shown ? onHide(key) : onShow(key))} />
-                        </span>
-                        <span data-home-unpin="" className="min-w-0 justify-self-end">
-                          {ref.kind === "panel" ? (
-                            <button type="button" aria-label={`Unpin ${title}`} className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onUnpin(key)}>
-                              Unpin
-                            </button>
-                          ) : null}
-                        </span>
-                      </div>
-                    );
-                  })}
-                  {offered.map((panel) => (
-                    <div key={`${panel.plugin}:${panel.panelId}`} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
-                      <span className="min-w-0 truncate text-[13px] text-content/70">{panel.title}</span>
-                      <span />
-                      <span />
-                      <span />
-                      <span className="justify-self-end">
-                        <button
-                          type="button"
-                          aria-label={`Pin ${panel.title}`}
-                          className={QUIET_BUTTON}
-                          onClick={() => onPin(panel.plugin, panel.panelId)}
-                        >
-                          Pin
-                        </button>
-                      </span>
-                    </div>
-                  ))}
-                  <button
-                    type="button"
-                    className="mt-1 self-end rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black"
-                    onClick={() => setCustom(false)}
-                  >
-                    Done
-                  </button>
-                </div>
-              ) : null}
-            </div>
+            <button
+              ref={toggleRef}
+              type="button"
+              data-home-action="customize"
+              aria-expanded={custom}
+              className="rounded-md border border-stroke px-2.5 py-1 text-[13px] text-content hover:bg-content/8"
+              onClick={() => setCustom((open) => !open)}
+            >
+              Customize
+            </button>
           ) : null}
         </header>
-        {known ? <ChiefBox chief={chief} onAsk={onAsk} /> : null}
+        {known && custom ? (
+          <div
+            ref={panelRef}
+            data-home-customize
+            role="dialog"
+            aria-label="Customize"
+            className="flex flex-col gap-1 rounded-lg border border-stroke p-2"
+          >
+            {arranged.map((ref) => {
+              const key = sectionKey(ref);
+              const title = titleOf(ref, catalog);
+              const shown = !arrangement.hidden.includes(key);
+              return (
+                <div key={key} data-home-arrange={key} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
+                  <span className="min-w-0 truncate text-[13px] text-content">{title}</span>
+                  <button type="button" aria-label={`Move ${title} up`} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, -1)}>
+                    <ChevronUp className="size-3.5" aria-hidden />
+                  </button>
+                  <button type="button" aria-label={`Move ${title} down`} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, 1)}>
+                    <ChevronDown className="size-3.5" aria-hidden />
+                  </button>
+                  <span className="justify-self-center">
+                    <ShowSwitch title={title} on={shown} onToggle={() => (shown ? onHide(key) : onShow(key))} />
+                  </span>
+                  <span data-home-unpin="" className="min-w-0 justify-self-end">
+                    {ref.kind === "panel" ? (
+                      <button type="button" aria-label={`Unpin ${title}`} className="text-[12px] text-content/70 underline-offset-2 hover:underline" onClick={() => onUnpin(key)}>
+                        Unpin
+                      </button>
+                    ) : null}
+                  </span>
+                </div>
+              );
+            })}
+            {offered.map((panel) => (
+              <div key={`${panel.plugin}:${panel.panelId}`} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
+                <span className="min-w-0 truncate text-[13px] text-content/70">{panel.title}</span>
+                <span />
+                <span />
+                <span />
+                <span className="justify-self-end">
+                  <button
+                    type="button"
+                    aria-label={`Pin ${panel.title}`}
+                    className={QUIET_BUTTON}
+                    onClick={() => onPin(panel.plugin, panel.panelId)}
+                  >
+                    Pin
+                  </button>
+                </span>
+              </div>
+            ))}
+            <button
+              type="button"
+              className={`mt-1 self-end ${PRIMARY_BUTTON}`}
+              onClick={() => setCustom(false)}
+            >
+              Done
+            </button>
+          </div>
+        ) : null}
+        {known ? <ChiefBox chief={chief} onAsk={onAsk} quiet={quiet} /> : null}
         {visible.map((ref, index) => {
           const key = sectionKey(ref);
           const title = titleOf(ref, catalog);
@@ -522,7 +536,7 @@ export function HomeScreen({
                       >{line.target === "builders-spend" ? RAISE_LIMIT : FREE_UP_SPACE}</button>
                     </div>
                   ))}
-                  {needs.map((row) => <NeedRow key={row.key} row={row} />)}
+                  {orderedNeeds.map((row) => <NeedRow key={row.key} row={row} />)}
                 </>
               ) : null}
               {key === "moving-now" ? working.map((row) => {
@@ -575,11 +589,6 @@ export function HomeScreen({
             </section>
           );
         })}
-        {quiet ? (
-          <div data-home-empty>
-            <p className="text-[13px] text-content/60">Nothing needs you.</p>
-          </div>
-        ) : null}
         {!known && failed ? <p data-home-retry className="text-[13px] text-content/70">Couldn't load home. Trying again.</p> : null}
         {!known && !failed ? <div data-home-loading className="h-8" /> : null}
       </div>

@@ -32,7 +32,7 @@ import {
 } from "../model/homeChief";
 import { LateHomeLoad, createHomeLoader, mergeHomeLoad, realHomeSource, type HomeSnapshot } from "../model/load";
 import { builderHoldLine, namesFor, type HomeProject } from "../model/lines";
-import { needsShown } from "../model/needsShown";
+import { needsRank, needsShown } from "../model/needsShown";
 import { openFromHome, targetFor, type HomeOpenTarget } from "../model/opener";
 import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
 import { workingLines } from "../model/workingNow";
@@ -315,6 +315,7 @@ export function HomeView() {
     project: item.projectId ? label(item.projectId) : undefined,
     sentence: item.sentence,
     stopped: item.kind === "stopped",
+    blocksShip: needsRank(item) === 1,
     actions: needActions(item),
     onOpen: () => openNeed(item),
   }));

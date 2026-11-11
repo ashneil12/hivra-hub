@@ -13,8 +13,11 @@ function files(dir: string): string[] {
   return out;
 }
 
-it("home no longer says all quiet", () => {
+it("the only all quiet line is the chief's empty line", () => {
   const root = fileURLToPath(new URL("..", import.meta.url));
   const hits = files(root).filter((path) => readFileSync(path, "utf8").includes("All quiet."));
-  expect(hits).toEqual([]);
+  expect(hits.map((path) => path.slice(root.length))).toEqual(["ui/HomeScreen.tsx"]);
+  const text = readFileSync(hits[0], "utf8");
+  expect(text.split("All quiet.").length - 1).toBe(1);
+  expect(text).toContain("All quiet. Ask me anything, or hand work to any project.");
 });

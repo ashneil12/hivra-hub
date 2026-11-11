@@ -63,19 +63,83 @@ function draw(props: Partial<Parameters<typeof HomeScreen>[0]> = {}) {
   });
 }
 
-it("with nothing to show, says nothing needs you and keeps the chat", () => {
+it("with nothing to show, the chief says all quiet inside the card", () => {
   draw();
   expect(container.querySelector("[data-home-section]")).toBeNull();
-  expect(container.querySelector("[data-home-empty]")?.textContent).toContain("Nothing needs you.");
+  expect(container.querySelector("[data-home-empty]")).toBeNull();
+  expect(container.textContent).not.toContain("Nothing needs you.");
+  const card = container.querySelector("[data-home-start]")!;
+  const line = card.querySelector("[data-home-quiet]");
+  expect(line?.textContent).toBe("All quiet. Ask me anything, or hand work to any project.");
+  expect(card.contains(line)).toBe(true);
   expect(container.querySelector("h1")?.textContent).toBe("Home");
   expect(container.querySelector("[data-home-date]")?.textContent).toBe("Wednesday 11 November");
-  expect(container.querySelector("[data-home-start]")).not.toBeNull();
-  expect(container.textContent).not.toContain("All quiet.");
+  expect(container.textContent).not.toContain("All quiet. All quiet.");
   expect(container.textContent).not.toContain("Projects");
   expect(container.querySelector("[data-home-summary]")).toBeNull();
   expect(container.querySelector("[data-home-no-projects]")).toBeNull();
   const input = container.querySelector<HTMLInputElement>("input[aria-label='Ask']")!;
   expect(input.placeholder).toBe("Ask anything, or hand work to any project");
+});
+
+it("a stopped or failed row leads, then a ship block, then a question", () => {
+  const needs: HomeNeed[] = [
+    { key: "q", sentence: "Example: Which font?", stopped: false, actions: [], onOpen: () => undefined },
+    {
+      key: "ship",
+      sentence: "Example: Should we ship the notes?",
+      stopped: false,
+      blocksShip: true,
+      actions: [
+        { label: "Yes", onClick: () => undefined },
+        { label: "Not yet", onClick: () => undefined },
+      ],
+      onOpen: () => undefined,
+    },
+    { key: "failed", sentence: "Example: The lead failed.", stopped: true, actions: [], onOpen: () => undefined },
+  ];
+  draw({ needs, needsTotal: 3 });
+  const rows = [...container.querySelectorAll("[data-home-line='need']")];
+  expect(rows).toHaveLength(3);
+  expect(rows[0]?.textContent).toContain("Stopped.");
+  expect(rows[0]?.textContent).toContain("Example: The lead failed.");
+  expect(rows[1]?.textContent).toContain("Example: Should we ship the notes?");
+  expect(rows[2]?.textContent).toContain("Example: Which font?");
+});
+
+it("the chief's answer buttons are the same size as a needs row button", () => {
+  draw({
+    chief: {
+      ...chief,
+      you: "Example: what's blocking Hivra?",
+      reply: "Example: Hivra is waiting on the notes.",
+      options: [
+        { id: "yes", label: "Yes, do that" },
+        { id: "now", label: "Not now" },
+      ],
+    },
+    needs: [{
+      key: "n1",
+      sentence: "Example: Should we ship the notes?",
+      stopped: false,
+      actions: [
+        { label: "Yes", onClick: () => undefined },
+        { label: "Not yet", onClick: () => undefined },
+      ],
+      onOpen: () => undefined,
+    }],
+    needsTotal: 1,
+  });
+  const answer = container.querySelector("[data-home-option='yes']")!;
+  const row = container.querySelector("[data-home-action='Yes']")!;
+  const quietAnswer = container.querySelector("[data-home-option='now']")!;
+  const quietRow = container.querySelector("[data-home-action='Not yet']")!;
+  for (const token of ["h-7", "px-2.5", "text-[12px]", "leading-none"]) {
+    expect(answer.className).toContain(token);
+    expect(row.className).toContain(token);
+    expect(quietAnswer.className).toContain(token);
+    expect(quietRow.className).toContain(token);
+  }
 });
 
 it("hides an empty section and shows one that has a line", () => {
@@ -87,6 +151,7 @@ it("hides an empty section and shows one that has a line", () => {
   expect(container.querySelector("[data-home-section='recent']")).toBeNull();
   expect(container.querySelector("[data-home-section='projects']")).toBeNull();
   expect(container.querySelector("[data-home-empty]")).toBeNull();
+  expect(container.querySelector("[data-home-quiet]")).toBeNull();
   expect(container.querySelector("[data-home-section='moving-now'] h2")?.textContent).toBe("Working now");
   expect(container.querySelector("[data-home-section='needs-you'] h2")?.textContent).toBe("Needs you");
   const needsHead = container.querySelector("[data-home-section='needs-you'] header")!;
@@ -192,6 +257,13 @@ it("keeps customize on one button: a panel of switches, not a wall of links", ()
   act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
   const panel = container.querySelector("[data-home-customize]")!;
   expect(panel.getAttribute("role")).toBe("dialog");
+  const header = container.querySelector("[data-home-header]")!;
+  const card = container.querySelector("[data-home-start]")!;
+  expect(header.contains(panel)).toBe(false);
+  expect(panel.compareDocumentPosition(card) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  expect(panel.className).not.toMatch(/\b(?:absolute|fixed)\b/);
+  expect(panel.className).not.toMatch(/\bshadow-(?:md|lg|xl|2xl)\b/);
+  expect(panel.className).not.toMatch(/bg-background-base/);
   const showNeeds = panel.querySelector<HTMLButtonElement>("[role='switch'][aria-label='Show Needs you']")!;
   expect(showNeeds.getAttribute("aria-checked")).toBe("false");
   expect(showNeeds.tabIndex).not.toBe(-1);
