@@ -9,13 +9,13 @@
 //!   needs to log in;
 //! - the person's global git config (including a link's target and `include.path` files), LaunchAgents and the CLIs'
 //!   settings and hooks (`denyWrite` in the shared list);
-//! - writes and links to the named checkouts' `.git` (the directory, hooks, config and attributes). In every repository,
-//!   not only a named checkout: `commondir`, `config.worktree`, and a submodule's hooks and config, including a submodule
-//!   name that contains a slash. A temp clone's own `.git`, config and hooks stay writable;
+//! - writes and links to the named checkouts' `.git` (the directory, hooks, config and attributes), including the common
+//!   dir of a linked worktree and the repository that contains a subfolder. A temp clone that is not a named checkout
+//!   keeps its own `.git`, so `git worktree add` and `git submodule update` still work there;
 //! - the whole app data folder (`com.ash.monocode-hub` and a dev copy's), so a gate script or a ship file cannot be planted;
 //! - renaming that folder, or a parent of any protected path, up to and including the home folder (unlink of the directory
 //!   node only, so a file inside home can still be removed);
-//! - running `launchctl`, `open` and `osascript`. `security` is allowed. Creating a login item (`job-creation`), opening
+//! - running `launchctl`, `open`, `osascript`, `crontab`, `at` and `hdiutil`. `security` is allowed. Creating a login item (`job-creation`), opening
 //!   another app (`lsopen`) and sending Apple events are refused even when the program is a copy under another name.
 //!
 //! The lists come from `src/shared/security/agentConfigPaths.json`, the same file the after-turn check reads. The CLIs'
@@ -56,7 +56,14 @@ const APP_DATA_UNDER_HOME: &str = "Library/Application Support/com.ash.monocode-
 
 /// Programs refused by path. `security` is not here: Claude Code logs in through it (review r4, H3). A copy of one of
 /// these under another name is not caught by this list; `job-creation` and `lsopen` cover what the copy would do.
-const DENIED_PROGRAMS: [&str; 3] = ["/bin/launchctl", "/usr/bin/open", "/usr/bin/osascript"];
+const DENIED_PROGRAMS: [&str; 6] = [
+    "/bin/launchctl",
+    "/usr/bin/open",
+    "/usr/bin/osascript",
+    "/usr/bin/crontab",
+    "/usr/bin/at",
+    "/usr/sbin/hdiutil",
+];
 
 /// Unlink of the home directory node. A macOS probe checks that `rm` of a file inside home still works; if it does not,
 /// this stays false and home itself is not locked.
@@ -127,7 +134,12 @@ pub fn enabled(data_dir: Option<&Path>) -> bool {
         return false;
     }
     let env = std::env::var_os(ENV_SWITCH);
-    let file = data_dir.map_or(SwitchFile::Missing, read_switch_file);
+    // No data folder means the switch cannot be read. That is on, not off: a missing folder is not a choice to
+    // leave agents unwrapped. A file that is simply absent, inside a folder we could open, stays off (`Missing`).
+    let file = match data_dir {
+        Some(dir) => read_switch_file(dir),
+        None => SwitchFile::Unreadable,
+    };
     decide(env.as_deref(), file)
 }
 
@@ -449,8 +461,8 @@ pub fn profile_text(home: &Path) -> Result<String, String> {
     profile_text_for(home, None)
 }
 
-/// The agent profile, with no checkout singled out. Git metadata that must not be redirected (commondir, a worktree's
-/// config, a submodule's hooks and config) is still denied; a temp clone's own `.git` stays writable.
+/// The agent profile, with no checkout singled out. A temp clone keeps its own `.git`, so `git worktree add` and
+/// `git submodule update` still work there. A named checkout is locked by `profile_with_checkouts`.
 #[cfg(test)]
 pub fn profile_text_for(home: &Path, data_dir: Option<&Path>) -> Result<String, String> {
     profile_with_checkouts(home, data_dir, &[])
@@ -489,8 +501,10 @@ fn profile_scoped(
         push_ancestor_locks(&mut lines, home, data, &mut seen)?;
     }
     push_foreign_real_home(&mut lines, home)?;
+    push_tool_places(&mut lines, home);
+    push_cron_tables(&mut lines);
+    push_docker_sockets(&mut lines, home)?;
     if deny_git {
-        push_unscoped_git_redirects(&mut lines);
         push_git_writes(&mut lines, checkouts)?;
     }
     for program in DENIED_PROGRAMS {
@@ -524,6 +538,11 @@ fn push_foreign_real_home(lines: &mut Vec<String>, home: &Path) -> Result<(), St
         r#"(deny {WRITE_OPS} (regex #"^{}[^/]*(/|$)"))"#,
         ci_regex(&data)
     ));
+    // Renaming a parent of those two (or the real home itself) would move the protected folder out from under the
+    // write deny. Unlink of the directory node only, the same lock the profile home already has.
+    let mut seen = BTreeSet::new();
+    push_ancestor_locks(lines, &real, &real.join(".ssh"), &mut seen)?;
+    push_ancestor_locks(lines, &real, &real.join(APP_DATA_UNDER_HOME), &mut seen)?;
     Ok(())
 }
 
@@ -610,21 +629,42 @@ fn push_protected_writes(
     Ok(())
 }
 
-/// `include.path` and `includeIf.*.path` from a gitconfig, as write denies. The file is read as text; git is not run.
+/// `include.path` and `includeIf.*.path` from a gitconfig, as write denies, following nested includes. The files are
+/// read as text; git is not run. Eight levels is the cap, and a file already seen (by its real path) is not read again.
 fn push_gitconfig_includes(lines: &mut Vec<String>, home: &Path) {
-    let path = home.join(".gitconfig");
-    let Ok(meta) = std::fs::metadata(&path) else {
+    let mut seen = BTreeSet::new();
+    walk_gitconfig_includes(lines, home, &home.join(".gitconfig"), 0, &mut seen);
+}
+
+const GITCONFIG_INCLUDE_DEPTH: usize = 8;
+
+fn walk_gitconfig_includes(
+    lines: &mut Vec<String>,
+    home: &Path,
+    path: &Path,
+    depth: usize,
+    seen: &mut BTreeSet<PathBuf>,
+) {
+    if depth >= GITCONFIG_INCLUDE_DEPTH {
+        return;
+    }
+    let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    if !seen.insert(key) {
+        return;
+    }
+    let Ok(meta) = std::fs::metadata(path) else {
         return;
     };
     if !meta.is_file() || meta.len() > 1024 * 1024 {
         return;
     }
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Ok(text) = std::fs::read_to_string(path) else {
         return;
     };
     for include in gitconfig_include_paths(&text) {
-        let resolved = resolve_include(home, &path, &include);
+        let resolved = resolve_include(home, path, &include);
         deny_file_and_target(lines, &resolved);
+        walk_gitconfig_includes(lines, home, &resolved, depth + 1, seen);
     }
 }
 
@@ -663,14 +703,19 @@ fn gitconfig_include_paths(text: &str) -> Vec<String> {
 }
 
 fn resolve_include(home: &Path, gitconfig: &Path, value: &str) -> PathBuf {
+    let prefix = gitconfig.parent().unwrap_or(home);
+    let value = value.replace("%(prefix)", &prefix.to_string_lossy());
+    if value == "~" {
+        return home.to_path_buf();
+    }
     if let Some(rest) = value.strip_prefix("~/") {
         return home.join(rest);
     }
-    let path = Path::new(value);
+    let path = Path::new(&value);
     if path.is_absolute() {
         return path.to_path_buf();
     }
-    gitconfig.parent().unwrap_or(home).join(path)
+    prefix.join(path)
 }
 
 fn deny_file_and_target(lines: &mut Vec<String>, path: &Path) {
@@ -717,41 +762,110 @@ fn push_explicit_data(lines: &mut Vec<String>, data: &Path) -> Result<(), String
     Ok(())
 }
 
-/// `commondir`, `config.worktree`, and a submodule's hooks and config, in any repository. These are how git is pointed
-/// at another config or another hook. They do not match a temp clone's `.git`, `.git/config` or `.git/hooks`. The
-/// container profile does not call this: the app's own git still writes its index.
-fn push_unscoped_git_redirects(lines: &mut Vec<String>) {
-    let git = ci_regex(".git");
-    let patterns = [
-        format!(r"(^|/){git}(/.*)?{}$", ci_regex("/commondir")),
-        format!(r"(^|/){git}(/.*)?{}$", ci_regex("/config.worktree")),
-        format!(
-            r"(^|/){git}{}/.*/{}(/|$)",
-            ci_regex("/modules"),
-            ci_regex("hooks")
-        ),
-        format!(
-            r"(^|/){git}{}/.*/{}$",
-            ci_regex("/modules"),
-            ci_regex("config")
-        ),
-    ];
-    for pattern in patterns {
-        lines.push(format!(r#"(deny {WRITE_OPS} (regex #"{pattern}"))"#));
+/// Folders an agent must not replace, because the app later runs a program from them outside the sandbox: the login
+/// PATH's `gh`, `git`, `git-lfs`, `node` and `docker` (the file and, when it is a link, its target), plus the tool
+/// directories themselves. `/usr/bin` is not one of those directories.
+const TOOL_BINARIES: [&str; 5] = ["gh", "git", "git-lfs", "node", "docker"];
+const TOOL_DIRS: [&str; 4] = [
+    "/opt/homebrew/bin",
+    "/opt/homebrew/Cellar",
+    "/usr/local/Cellar",
+    "/usr/local/Homebrew",
+];
+
+fn push_tool_places(lines: &mut Vec<String>, home: &Path) {
+    if let Ok(forms) = folder_forms(home) {
+        push_home_entry(lines, &forms, ".local/bin", true, WRITE_OPS);
+        push_home_entry(lines, &forms, ".cargo/bin", true, WRITE_OPS);
+        push_home_entry(lines, &forms, ".cargo/env", false, WRITE_OPS);
+        push_home_entry(
+            lines,
+            &forms,
+            "Applications/MonoCode Hub.app",
+            true,
+            WRITE_OPS,
+        );
+    }
+    for dir in TOOL_DIRS {
+        push_absolute(lines, dir, true, WRITE_OPS);
+    }
+    for name in TOOL_BINARIES {
+        let Some(path) = tool_on_path(name) else {
+            continue;
+        };
+        deny_file_and_target(lines, &path);
     }
 }
 
-/// Writes and links inside the named checkouts only: the `.git` node, hooks, config, attributes, commondir, and a
-/// submodule's hooks and config at any depth (a name may contain a slash). A worktree's `.git` file is read and the
-/// git dir it names is locked the same way. A checkout that does not exist yet still locks the lexical path.
+/// `crontab` is setuid, so a copy of it cannot write the table, but the real one can. Denying the table folders closes
+/// that even if the program deny is missed. `/var/at` is named as well as `/private/var/at`: the profile matches the
+/// path it is given, and the two spellings are not always the same string.
+fn push_cron_tables(lines: &mut Vec<String>) {
+    for dir in ["/private/var/at", "/var/at", "/usr/lib/cron"] {
+        push_absolute(lines, dir, true, WRITE_OPS);
+    }
+}
+
+/// The Docker socket is how a sandboxed agent starts a container the app did not ask for. A subpath covers the
+/// per-user socket under `~/.docker/run`; the two system sockets are named literally.
+fn push_docker_sockets(lines: &mut Vec<String>, home: &Path) -> Result<(), String> {
+    let home_text = quote_path(home)?;
+    lines.push(format!(
+        r#"(deny network-outbound (remote unix-socket (subpath "{home_text}/.docker/run")))"#
+    ));
+    for sock in ["/var/run/docker.sock", "/private/var/run/docker.sock"] {
+        lines.push(format!(
+            r#"(deny network-outbound (remote unix-socket (literal "{sock}")))"#
+        ));
+    }
+    Ok(())
+}
+
+/// The first `name` on `PATH`. Not run: only `metadata`, so a directory that is not executable is still named.
+fn tool_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path) {
+        let candidate = dir.join(name);
+        if std::fs::symlink_metadata(&candidate).is_ok() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Writes and links for each named checkout's repository, not only `<checkout>/.git`. A folder inside a repo locks
+/// that repo's `.git`. A linked worktree's `.git` file is read, the git dir it names is locked, and so is the common
+/// dir that file's `commondir` points at (where the config, hooks and attributes actually live). A checkout that does
+/// not exist yet still locks the lexical `<checkout>/.git`. A temp clone that was not named is not locked.
 fn push_git_writes(lines: &mut Vec<String>, checkouts: &[PathBuf]) -> Result<(), String> {
     for checkout in checkouts {
-        deny_one_git(lines, &checkout.join(".git"))?;
-        if let Some(gitdir) = read_gitdir(checkout) {
+        let root = repo_root(checkout);
+        deny_one_git(lines, &root.join(".git"))?;
+        if let Some(gitdir) = read_gitdir(&root) {
             deny_one_git(lines, &gitdir)?;
+            if let Some(common) = read_commondir(&gitdir) {
+                deny_one_git(lines, &common)?;
+            }
         }
     }
     Ok(())
+}
+
+/// The checkout, or the first parent that has a `.git` file or directory. Missing paths stay as given.
+fn repo_root(start: &Path) -> PathBuf {
+    let mut cur = start.to_path_buf();
+    loop {
+        if std::fs::symlink_metadata(cur.join(".git")).is_ok() {
+            return cur;
+        }
+        let Some(parent) = cur.parent() else {
+            return start.to_path_buf();
+        };
+        if parent.as_os_str().is_empty() || parent == cur {
+            return start.to_path_buf();
+        }
+        cur = parent.to_path_buf();
+    }
 }
 
 fn deny_one_git(lines: &mut Vec<String>, git: &Path) -> Result<(), String> {
@@ -781,6 +895,13 @@ fn deny_one_git(lines: &mut Vec<String>, git: &Path) -> Result<(), String> {
             r#"(deny {WRITE_OPS} (regex #"^{base}{modules}/.*/{}$"))"#,
             ci_regex("config")
         ));
+        let worktrees = ci_regex("/worktrees");
+        for name in ["gitdir", "commondir", "config.worktree"] {
+            lines.push(format!(
+                r#"(deny {WRITE_OPS} (regex #"^{base}{worktrees}/.*/{}$"))"#,
+                ci_regex(name)
+            ));
+        }
     }
     Ok(())
 }
@@ -798,11 +919,52 @@ fn read_gitdir(checkout: &Path) -> Option<PathBuf> {
         return None;
     }
     let raw = Path::new(rest);
-    Some(if raw.is_absolute() {
-        raw.to_path_buf()
+    let joined;
+    let path = if raw.is_absolute() {
+        raw
     } else {
-        checkout.join(raw)
-    })
+        joined = checkout.join(raw);
+        &joined
+    };
+    Some(normalize_lexical(path))
+}
+
+/// The common git dir a linked worktree's git dir names in `commondir` (often `../..`). Read as text; git is not run.
+fn read_commondir(gitdir: &Path) -> Option<PathBuf> {
+    let path = gitdir.join("commondir");
+    let meta = std::fs::symlink_metadata(&path).ok()?;
+    if !meta.is_file() || meta.len() > 4096 {
+        return None;
+    }
+    let text = std::fs::read_to_string(&path).ok()?;
+    let rest = text.lines().next()?.trim();
+    if rest.is_empty() || rest.contains('\0') {
+        return None;
+    }
+    let raw = Path::new(rest);
+    let joined;
+    let path = if raw.is_absolute() {
+        raw
+    } else {
+        joined = gitdir.join(raw);
+        &joined
+    };
+    Some(normalize_lexical(path))
+}
+
+/// Collapse `.` and `..` without touching the disk. A `..` above the root is dropped.
+fn normalize_lexical(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 /// Starts `/usr/bin/true` under `profile` through `sandbox_exec`. Fails unless it exits 0, so a profile or launcher that
@@ -827,7 +989,7 @@ pub fn preflight_with(sandbox_exec: &Path, profile: &str) -> Result<(), String> 
 }
 
 /// Proves the profile refuses what it names, once per process, in a temporary home: a read of a secret folder, a read
-/// through a link to a secret, a write to the switch file and to `monocode.db`, and running `security`. An ordinary
+/// through a link to a secret, a write to the switch file and to `monocode.db`, and a rename of the data folder. An ordinary
 /// write in the same folder must still succeed, so a profile that refuses everything does not pass.
 ///
 /// Off macOS there is no sandbox to prove, so the check fails and nothing starts sandboxed.
@@ -1008,6 +1170,17 @@ pub fn skips_agent_sandbox(id: &str, name: &str) -> bool {
     matches!(id.as_str(), "ship" | "dev") || matches!(name.as_str(), "ship" | "run dev slot")
 }
 
+/// Whether this start skips the sandbox. Only Ash's own tap (`trigger == "app"`) skips Ship and Run dev slot.
+/// An agent naming those actions is wrapped.
+pub fn skip_action_sandbox(id: &str, name: &str, trigger: &str) -> bool {
+    trigger == "app" && skips_agent_sandbox(id, name)
+}
+
+/// While the sandbox is on, an agent must not start a stack: Compose runs in the app, not inside the action wrap.
+pub fn agent_stack_refused(sandbox_on: bool, trigger: &str, has_stack: bool) -> bool {
+    sandbox_on && trigger != "app" && has_stack
+}
+
 /// How a project action starts when the sandbox is on: `sandbox-exec -p <profile>` in front of its shell. Off, nothing.
 /// `checkouts` scope the `.git` write denies. An empty list denies no `.git` path.
 pub fn action_wrap(
@@ -1034,8 +1207,11 @@ pub fn action_wrap(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::ffi::{OsStr, OsString};
+    use std::ffi::OsStr;
+    #[cfg(target_os = "macos")]
+    use std::ffi::OsString;
     use std::path::{Path, PathBuf};
+    #[cfg(target_os = "macos")]
     use std::process::{Command, Stdio};
 
     /// The places named before the shared list held them (the old `agentSecretPaths.json`). Each must still be denied,
@@ -1419,11 +1595,32 @@ mod tests {
 
     #[test]
     fn the_switch_off_never_builds_a_sandbox_launch() {
-        assert!(
-            !enabled(None),
-            "off by default: no data folder, no environment switch"
-        );
-        assert!(matches!(action_wrap(None, &[]), Ok(None)));
+        // No data folder means the switch file cannot be read. On macOS that is on (fail closed). Off macOS there is
+        // no sandbox, so it stays off. A file that is simply missing, inside a folder we could open, is still off,
+        // unless the environment already says on.
+        if cfg!(target_os = "macos") {
+            assert!(
+                enabled(None),
+                "a missing data folder is unreadable, so the sandbox is on"
+            );
+        } else {
+            assert!(!enabled(None), "off macOS the sandbox is never on");
+        }
+        let data = temp_home("switch-missing");
+        let env_on = std::env::var_os(ENV_SWITCH)
+            .and_then(|value| value.into_string().ok())
+            .is_some_and(|value| word_on(&value));
+        if !env_on {
+            assert!(
+                !enabled(Some(&data)),
+                "a missing switch file in a folder we could open is off"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&data);
+        // action_wrap(None) on macOS would try to sandbox the real home. Only the off-macOS path is asserted here.
+        if !cfg!(target_os = "macos") {
+            assert!(matches!(action_wrap(None, &[]), Ok(None)));
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -1829,6 +2026,111 @@ mod tests {
         assert!(!skips_agent_sandbox("check", "Check"));
     }
 
+    /// H-A: an agent can call `app actions.run` for dev or ship. Only Ash's tap skips the wrap.
+    #[test]
+    fn an_agent_does_not_skip_the_sandbox_for_dev_or_ship() {
+        assert!(
+            !skip_action_sandbox("dev", "Run dev slot", "agent"),
+            "an agent's dev action must be wrapped"
+        );
+        assert!(
+            !skip_action_sandbox("ship", "Ship", "mono"),
+            "an agent's ship action must be wrapped"
+        );
+        assert!(skip_action_sandbox("dev", "Run dev slot", "app"));
+        assert!(skip_action_sandbox("ship", "Ship", "app"));
+        assert!(!skip_action_sandbox("setup", "Setup", "app"));
+        assert!(!skip_action_sandbox("check", "Check", "agent"));
+        assert!(
+            agent_stack_refused(true, "agent", true),
+            "an agent's stack starts Compose in the app, outside the wrap"
+        );
+        assert!(!agent_stack_refused(true, "app", true));
+        assert!(!agent_stack_refused(false, "agent", true));
+        assert!(!agent_stack_refused(true, "agent", false));
+    }
+
+    /// Nested `include.path` / `includeIf.path`, with `%(prefix)` meaning the directory of the file that included it.
+    /// A cycle stops, and the ninth nested file is not read.
+    #[test]
+    fn a_nested_gitconfig_include_follows_prefix_and_stops_at_the_cap() {
+        let home = temp_home("gitconfig-nest");
+        let nested = home.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(
+            home.join(".gitconfig"),
+            "[include]\n\tpath = %(prefix)/.gitconfig\n\tpath = %(prefix)/nested/1\n[includeIf \"gitdir:/nowhere/\"]\n\tpath = %(prefix)/nested/from-if\n",
+        )
+        .unwrap();
+        for n in 1..=9 {
+            let next = n + 1;
+            std::fs::write(
+                nested.join(n.to_string()),
+                format!("[include]\n\tpath = %(prefix)/{next}\n"),
+            )
+            .unwrap();
+        }
+        std::fs::write(nested.join("from-if"), "# leaf\n").unwrap();
+        let profile = profile_text(&home).unwrap();
+        let home_s = home.to_str().unwrap();
+        assert!(denies(
+            &profile,
+            "file-write*",
+            &format!("{home_s}/nested/1")
+        ));
+        assert!(denies(
+            &profile,
+            "file-write*",
+            &format!("{home_s}/nested/from-if")
+        ));
+        assert!(
+            denies(&profile, "file-write*", &format!("{home_s}/nested/8")),
+            "%(prefix) was not followed down to the last file the cap still reads"
+        );
+        assert!(
+            !denies(&profile, "file-write*", &format!("{home_s}/nested/9")),
+            "the include walk read past its cap"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Tool directories and the installed app are write-denied. `/usr/bin` is not. crontab, at and hdiutil cannot be
+    /// executed, and the cron tables and Docker sockets are named.
+    #[test]
+    fn tool_dirs_cron_docker_and_the_installed_app_are_denied() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        for path in [
+            "/opt/homebrew/bin/brew",
+            "/opt/homebrew/Cellar/git/1",
+            "/usr/local/Cellar/x",
+            "/usr/local/Homebrew/bin/brew",
+            "/Users/test/.local/bin/gh",
+            "/Users/test/.cargo/bin/cargo",
+            "/Users/test/.cargo/env",
+            "/Users/test/Applications/MonoCode Hub.app/Contents/MacOS/monocode",
+            "/private/var/at/tabs/test",
+            "/usr/lib/cron/tabs/test",
+        ] {
+            assert!(denies(&profile, "file-write*", path), "{path}");
+        }
+        assert!(
+            !denies(&profile, "file-write*", "/usr/bin/true"),
+            "/usr/bin itself was write-denied"
+        );
+        assert!(denies(&profile, "process-exec", "/usr/bin/crontab"));
+        assert!(denies(&profile, "process-exec", "/usr/bin/at"));
+        assert!(denies(&profile, "process-exec", "/usr/sbin/hdiutil"));
+        assert!(profile.contains(
+            "(deny network-outbound (remote unix-socket (subpath \"/Users/test/.docker/run\")))"
+        ));
+        assert!(profile.contains(
+            "(deny network-outbound (remote unix-socket (literal \"/var/run/docker.sock\")))"
+        ));
+        assert!(profile.contains(
+            "(deny network-outbound (remote unix-socket (literal \"/private/var/run/docker.sock\")))"
+        ));
+    }
+
     #[test]
     fn an_explicit_checkout_is_denied_even_under_tmp_and_the_container_denies_no_git_dir() {
         let named =
@@ -1881,6 +2183,20 @@ mod tests {
             denies(&profile, "file-write*", db.to_str().unwrap()),
             "the daily data folder is writable from a temporary home"
         );
+        assert!(
+            denies(&profile, "file-write-unlink", real.to_str().unwrap()),
+            "the login home directory itself can be renamed"
+        );
+        let library = real.join("Library");
+        assert!(
+            denies(&profile, "file-write-unlink", library.to_str().unwrap()),
+            "a parent of the daily data folder can be renamed"
+        );
+        let loose = real.join("not-a-protected-file");
+        assert!(
+            !denies(&profile, "file-write*", loose.to_str().unwrap()),
+            "files in the login home were write-denied, not only the directory node"
+        );
         let _ = std::fs::remove_dir_all(&home);
     }
 
@@ -1895,6 +2211,65 @@ mod tests {
         assert!(
             run_under(&profile, &home, &home, "rm note.txt"),
             "unlink of the home folder also blocked rm of a file in it, so home itself must not be locked"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// H-F: crontab, at and hdiutil are refused by the sandbox, not merely missing. The trace line is only on this
+    /// probe's copy of the profile, so a denial is on stderr. Nothing is installed and no image is attached.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_real_profile_crontab_at_and_hdiutil_are_denied() {
+        let home = temp_home("cron-probe");
+        let profile = profile_text(&home).unwrap();
+        let traced = profile.replacen("(version 1)\n", "(version 1)\n(debug deny)\n", 1);
+        let dmg = home.join("no-such-image.dmg");
+        let mount = home.join("mount");
+        std::fs::create_dir_all(&mount).unwrap();
+        let dmg_s = dmg.to_string_lossy().into_owned();
+        let mount_s = mount.to_string_lossy().into_owned();
+        let probes: [(&str, Vec<&str>); 3] = [
+            ("/usr/bin/crontab", vec!["-l"]),
+            ("/usr/bin/at", vec!["-l"]),
+            (
+                "/usr/sbin/hdiutil",
+                vec!["attach", &dmg_s, "-mountpoint", &mount_s],
+            ),
+        ];
+        for (program, args) in probes {
+            let output = Command::new(SANDBOX_EXEC)
+                .arg("-p")
+                .arg(&traced)
+                .arg(program)
+                .args(&args)
+                .current_dir(&home)
+                .env("HOME", &home)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&output.stderr);
+            let text = format!("{err}\n{}", String::from_utf8_lossy(&output.stdout));
+            let lower = text.to_ascii_lowercase();
+            assert!(
+                !output.status.success(),
+                "{program} ran under the sandbox: {text}"
+            );
+            assert!(
+                lower.contains("sandbox") || lower.contains("deny"),
+                "{program} failed without a sandbox denial on stderr: {text}"
+            );
+        }
+        assert!(
+            mount.read_dir().unwrap().next().is_none(),
+            "hdiutil attached an image onto the probe mount"
+        );
+        assert!(
+            run_under(&profile, &home, &home, "echo ok > allowed.txt"),
+            "a write in the temporary home was refused"
+        );
+        assert_eq!(
+            std::fs::read_to_string(home.join("allowed.txt")).unwrap(),
+            "ok\n"
         );
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -2199,7 +2574,9 @@ mod review_r3_repro {
     /// `.git/config` but not these, so the agent points git at a config it wrote (see checkout_guard's r3 repro).
     #[test]
     fn a_git_common_dir_redirect_cannot_be_written() {
-        let profile = profile_text(Path::new(HOME)).unwrap();
+        let profile =
+            profile_with_checkouts(Path::new(HOME), None, &[PathBuf::from("/Users/test/proj")])
+                .unwrap();
         for path in [
             "/Users/test/proj/.git/commondir",
             "/Users/test/proj/.git/worktrees/wt/commondir",
@@ -2255,7 +2632,9 @@ mod review_r3_repro {
     /// slash; nested submodules sit under `.git/modules/<a>/modules/<b>`. The profile allows one segment only.
     #[test]
     fn a_submodule_with_a_slash_in_its_name_has_its_hooks_and_config_denied() {
-        let profile = profile_text(Path::new(HOME)).unwrap();
+        let profile =
+            profile_with_checkouts(Path::new(HOME), None, &[PathBuf::from("/Users/test/proj")])
+                .unwrap();
         for path in [
             "/Users/test/proj/.git/modules/vendor/lib/hooks/pre-commit",
             "/Users/test/proj/.git/modules/vendor/lib/config",
