@@ -19,7 +19,9 @@
 //!
 //! **When the runner dies** (a crash, a reboot), [`startup`] finishes what it left before the database opens: a trial
 //! (this build holds and the runner is restarted to watch it), a restore (the old app and database go back), or a
-//! ship that never got as far as the swap (called off). [`plan`] is that decision, as a pure function.
+//! ship that never got as far as the swap (called off). [`plan`] is that decision, as a pure function. The restart
+//! runs only a record this app wrote: the runner scripts must be this build's own copies, and the node binary and any
+//! launchd plist must sit outside the ship folder. A record planted in the data folder is not started.
 //!
 //! Only whoever holds `<id>/runner.lock` (an exclusive SQLite transaction, like the instance lock) writes `state.json`:
 //! the runner while it runs, this app only when the runner is gone. The apps' own notes are separate files.
@@ -838,8 +840,117 @@ fn runner_submit_args(label: &str, node: &str, dir: &Path, home: &str) -> Vec<St
     ]
 }
 
-/// The runner keeps going under launchd (or as a plain detached process when the ship said so).
+/// The runner scripts this build copies into a ship folder (`scripts/hub-ship.mjs` `stageShip`). A record whose
+/// copies differ was not written by this app.
+const APP_RUNNER: &str = include_str!("../../scripts/hub-ship-runner.mjs");
+const APP_SHIP_PLATFORM: &str = include_str!("../../scripts/ship-platform.mjs");
+
+fn file_is(path: &Path, expected: &str) -> bool {
+    std::fs::read(path).is_ok_and(|bytes| bytes == expected.as_bytes())
+}
+
+/// True when `path` is inside `root` (after resolving links), or when it is not on disk but lexically inside, or when
+/// it contains `..` and cannot be resolved. An empty root matches nothing.
+fn path_is_under(root: &Path, path: &Path) -> bool {
+    if root.as_os_str().is_empty() {
+        return false;
+    }
+    let Ok(root) = std::fs::canonicalize(root) else {
+        // Not a path we can prove is outside the ship folder.
+        return true;
+    };
+    if let Ok(path) = std::fs::canonicalize(path) {
+        return path.starts_with(&root);
+    }
+    if path
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
+    {
+        return true;
+    }
+    path.starts_with(&root)
+}
+
+/// A node binary this app would have recorded: absolute, named `node`, outside the ship folder and the data folder,
+/// and not a script. A missing file or a `#!` file is not ours.
+fn node_path_is_ours(ship: &Ship, node: &str) -> bool {
+    if node.is_empty() {
+        return false;
+    }
+    let path = Path::new(node);
+    if !path.is_absolute() {
+        return false;
+    }
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some("node" | "node.exe") => {}
+        _ => return false,
+    }
+    if path_is_under(&ship.dir, path) {
+        return false;
+    }
+    if let Some(ships) = ship.dir.parent() {
+        if path_is_under(ships, path) {
+            return false;
+        }
+    }
+    if path_is_under(&ship.data_dir(), path) {
+        return false;
+    }
+    !binary_is_script(path)
+}
+
+/// True when the file is a script, or when it cannot be read as a regular file. Only the first two bytes are read.
+fn binary_is_script(path: &Path) -> bool {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return true;
+    };
+    if !meta.is_file() {
+        return true;
+    }
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return true,
+    };
+    let mut buf = [0u8; 2];
+    match std::io::Read::read(&mut file, &mut buf) {
+        Ok(2) => buf == *b"#!",
+        _ => true,
+    }
+}
+
+/// The runner scripts match this build's copies, the node binary is the app's own, and a launchd plist is not a file
+/// inside the ship folder. Anything else was planted and must not be started.
+fn runner_record_is_ours(ship: &Ship) -> bool {
+    if !file_is(&ship.dir.join("runner.mjs"), APP_RUNNER)
+        || !file_is(&ship.dir.join("ship-platform.mjs"), APP_SHIP_PLATFORM)
+        || !node_path_is_ours(ship, ship.text("/node"))
+    {
+        return false;
+    }
+    match ship.doc.pointer("/launchd/plist").and_then(Value::as_str) {
+        Some(plist) if !plist.is_empty() => {
+            !path_is_under(&ship.dir, Path::new(plist))
+                && ship
+                    .dir
+                    .parent()
+                    .is_none_or(|ships| !path_is_under(ships, Path::new(plist)))
+                && !path_is_under(&ship.data_dir(), Path::new(plist))
+        }
+        _ => true,
+    }
+}
+
+/// The runner keeps going under launchd (or as a plain detached process when the ship said so). A node path or a
+/// plist from a record this app did not write is not started: an agent can plant both in the data folder, and startup
+/// runs outside the sandbox.
 fn restart_runner(ship: &Ship) {
+    if !runner_record_is_ours(ship) {
+        log(
+            &ship.dir,
+            "refused to restart the runner: the record is not one this app wrote",
+        );
+        return;
+    }
     // WP-09: a Windows task or a systemd unit, from the script this ship stored.
     // macOS has no service record, so this does not run there.
     #[cfg(not(target_os = "macos"))]
