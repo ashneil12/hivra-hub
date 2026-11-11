@@ -44,8 +44,8 @@ export function defaultBaseUrl(id: CustomProvider): string {
  * The address to show beside a stored key, or undefined when the key goes only to the provider's own default address.
  * A custom model always shows its address. A named provider shows one only when it is a stored proxy, not the default.
  */
-export function addressShownFor(provider: string, baseUrl: string | undefined): string | undefined {
-  const url = (baseUrl ?? "").trim().replace(/\/+$/, "");
+export function addressShownFor(provider: string, storedAddress: string | null | undefined): string | undefined {
+  const url = (storedAddress ?? "").trim().replace(/\/+$/, "");
   if (!url) return undefined;
   if (provider === "custom") return url;
   const fallback = defaultBaseUrl(provider as CustomProvider).replace(/\/+$/, "");
@@ -213,6 +213,27 @@ export function isClaudeKeyError(e: unknown): boolean {
   return r.code === CLAUDE_KEY_ERROR || r.kind === CLAUDE_KEY_ERROR || (typeof r.message === "string" && r.message.includes(CLAUDE_KEY_ERROR));
 }
 
+/** The address Rust stored with each model's key, by model id. Undefined until it has been read. */
+const savedAddresses = new Map<string, string | null>();
+export function savedAddressOf(customModelId: string): string | null | undefined {
+  return savedAddresses.get(customModelId);
+}
+/** Reads the stored address of every custom model's key from Rust (addresses are not secrets; keys never come back). */
+export async function refreshSavedAddresses(): Promise<void> {
+  await Promise.all(
+    listCustomModels().map(async (m) => {
+      try {
+        const address = await store.keyAddress(m.id);
+        savedAddresses.set(m.id, typeof address === "string" ? address : null);
+      } catch {
+        savedAddresses.set(m.id, null);
+      }
+    }),
+  );
+  version++;
+  window.dispatchEvent(new CustomEvent(CHANGED));
+}
+
 export interface ModelKeyStore {
   /** Keep the key for this custom model somewhere safe (the macOS Keychain). Never in settings or a file.
    * When the provider, model and address are passed, Rust stores that address with the key. Short text
@@ -230,6 +251,8 @@ export interface ModelKeyStore {
   /** Forget this custom model's key. True when it's gone, including when there was no key to begin with; false or a
    * thrown error only for a real Keychain failure. */
   deleteModelKey(customModelId: string): Promise<boolean>;
+  /** The address the key was saved with, or null when it was saved with none (the key is then never sent). */
+  keyAddress(customModelId: string): Promise<string | null>;
   /**
    * The provider's own context window for this route, or null when the provider publishes no such field.
    *
@@ -243,14 +266,21 @@ export interface ModelKeyStore {
 /** Dev and test stand-in: keys stay in memory only. A key containing "bad" fails; Ollama is up unless its URL says "down". */
 export function createDevModelKeyStore(): ModelKeyStore & { keys: Map<string, string> } {
   const keys = new Map<string, string>();
+  const addresses = new Map<string, string>();
   return {
     keys,
-    async saveModelKey(id, key) {
+    async saveModelKey(id, key, binding) {
       keys.set(id, key);
+      if (binding) addresses.set(id, binding.baseUrl);
+      else addresses.delete(id);
     },
     async deleteModelKey(id) {
       keys.delete(id);
+      addresses.delete(id);
       return true; // a missing key counts as removed, like the backend
+    },
+    async keyAddress(id) {
+      return addresses.get(id) ?? null;
     },
     async testModelKey(provider, baseUrl, modelId, key) {
       if (provider === "ollama")
@@ -285,6 +315,7 @@ export const tauriModelKeyStore: ModelKeyStore = {
   testModelKey: (provider, baseUrl, modelId, key) =>
     invoke<KeyTestResult>("plugin:hub|model_key_test", { provider, baseUrl, modelId, key }),
   deleteModelKey: (customModelId) => invoke<boolean>("plugin:hub|model_key_delete", { customModelId }),
+  keyAddress: (customModelId) => invoke<string | null>("plugin:hub|model_key_address", { customModelId }),
   contextWindow: (provider, baseUrl, modelId, customModelId) =>
     invoke<number | null>("plugin:hub|model_context_window", { provider, baseUrl, modelId, customModelId }),
 };
@@ -328,6 +359,7 @@ export async function addCustomModel(form: CustomModelForm): Promise<CustomModel
     ...savedEfforts(form.reasoningEfforts),
   };
   writeModels([...listCustomModels(), model]);
+  void refreshSavedAddresses();
   return model;
 }
 

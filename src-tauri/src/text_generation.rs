@@ -13,10 +13,10 @@ use serde_json::{json, Value};
 
 use crate::history_import::{classify, AskOutcome, PostResult};
 use crate::key_binding::{
-    base_string, cleaned, from_json, host_for_url, normalize_base, read_one, safe_account, to_json,
-    write_atomic, NormalUrl,
+    base_string, cleaned, from_json, host_for_url, normalize_base, read_sealed, safe_account,
+    to_json, write_atomic, NormalUrl,
 };
-use crate::model_router::{may_route, read_key_in, session_token, CustomRoute, KEY_SERVICE};
+use crate::model_router::{may_route, session_token, CustomRoute};
 
 /// Commit and pull request prompts carry a patch. This is the ceiling, in characters.
 pub const PROMPT_LIMIT: usize = 60_000;
@@ -362,17 +362,21 @@ fn read_route(dir: &Path) -> Option<CustomRoute> {
     from_json(&fs::read_to_string(dir.join("route.json")).ok()?)
 }
 
-/// What is stored for a key, as the list `bound_completions_url` looks the account up in.
-fn stored_hosts(hosts: &Path, account: &str) -> Vec<CustomRoute> {
-    read_one(hosts, account).into_iter().collect()
-}
-
 /// Remember which saved model short text uses. A key's address must already be the one stored with
 /// that key, and a named provider must be its one known host.
-pub fn remember_route(dir: &Path, hosts: &Path, route: &CustomRoute) -> Result<(), ()> {
+pub fn remember_route(
+    dir: &Path,
+    read_item: crate::key_binding::ItemReader,
+    route: &CustomRoute,
+) -> Result<(), ()> {
     let url = normalize_base(&route.base_url).ok_or(())?;
     let clean = cleaned(route, &url);
-    let models = stored_hosts(hosts, &clean.custom_model_id);
+    let models: Vec<CustomRoute> = read_sealed(read_item, &clean.custom_model_id)
+        .ok()
+        .flatten()
+        .map(|sealed| sealed.binding)
+        .into_iter()
+        .collect();
     if !may_route(&clean) || bound_completions_url(&clean, &clean, &models).is_none() {
         return Err(());
     }
@@ -471,22 +475,14 @@ pub fn text_complete(
     outcome
 }
 
-fn key_for(route: &CustomRoute) -> Result<Option<String>, String> {
-    if route.provider == "ollama" {
-        return Ok(None);
-    }
-    read_key_in(KEY_SERVICE, &route.custom_model_id)
-}
-
-/// The whole ask against the store folders: `dir` holds the saved short-text route and `hosts` holds the
-/// address stored with each key. The key is read only after the route matches both, so a different
-/// account is never loaded. `read_key` and `post` are the Keychain and the network; tests stand in for both.
+/// The whole ask against the store folder: `dir` holds the saved short-text route. The key comes from the model's
+/// Keychain item, and is used only when the route matches the saved route and the address stored with the key.
+/// `read_item` and `post` are the Keychain and the network; tests stand in for both.
 pub fn ask_in(
     dir: &Path,
-    hosts: &Path,
+    read_item: crate::key_binding::ItemReader,
     route: &CustomRoute,
     prompt: &str,
-    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
     post: impl FnOnce(&str, &str, &str) -> PostResult,
 ) -> AskOutcome {
     let not_this = || refused("That model can't be used for this.");
@@ -496,14 +492,19 @@ pub fn ask_in(
     let Some(saved) = read_route(dir) else {
         return not_this();
     };
-    let models = stored_hosts(hosts, &route.custom_model_id);
+    let sealed = if route.provider == "ollama" {
+        None
+    } else {
+        match read_sealed(read_item, &route.custom_model_id) {
+            Ok(sealed) => sealed,
+            Err(_) => return refused("Couldn't reach the Keychain."),
+        }
+    };
+    let models: Vec<CustomRoute> = sealed.iter().map(|s| s.binding.clone()).collect();
     if bound_completions_url(route, &saved, &models).is_none() {
         return not_this();
     }
-    let key = match read_key(route) {
-        Ok(key) => key,
-        Err(_) => return refused("Couldn't reach the Keychain."),
-    };
+    let key = sealed.map(|s| s.key);
     if key.is_none() && route.provider != "ollama" {
         return refused("No key is saved for that model. Add it under Other models.");
     }
@@ -513,16 +514,15 @@ pub fn ask_in(
 /// One short reply. The arguments are the route and the prompt: there is no path to write.
 #[tauri::command]
 pub async fn text_generation_ask(route: CustomRoute, prompt: String) -> Result<AskOutcome, String> {
-    let (Some(dir), Some(hosts)) = (store_dir(), crate::key_binding::store_dir()) else {
+    let Some(dir) = store_dir() else {
         return Ok(refused("That model can't be used for this."));
     };
     tauri::async_runtime::spawn_blocking(move || {
         ask_in(
             &dir,
-            &hosts,
+            &crate::key_binding::keychain_item,
             &route,
             &prompt,
-            key_for,
             |url, token, body| post_chat(url, token, body, DEADLINE),
         )
     })
@@ -533,13 +533,15 @@ pub async fn text_generation_ask(route: CustomRoute, prompt: String) -> Result<A
 /// Save the short-text route. The address is checked here; the caller does not choose a host.
 #[tauri::command]
 pub async fn text_generation_remember(route: CustomRoute) -> Result<(), String> {
-    let (Some(dir), Some(hosts)) = (store_dir(), crate::key_binding::store_dir()) else {
+    let Some(dir) = store_dir() else {
         return Err("That model can't be used for this.".to_string());
     };
-    tauri::async_runtime::spawn_blocking(move || remember_route(&dir, &hosts, &route))
-        .await
-        .map_err(|_| "That model can't be used for this.".to_string())?
-        .map_err(|()| "That model can't be used for this.".to_string())
+    tauri::async_runtime::spawn_blocking(move || {
+        remember_route(&dir, &crate::key_binding::keychain_item, &route)
+    })
+    .await
+    .map_err(|_| "That model can't be used for this.".to_string())?
+    .map_err(|()| "That model can't be used for this.".to_string())
 }
 
 /// Go back to the coding agent for short text.
@@ -611,9 +613,45 @@ mod tests {
         quiet(given, given, std::slice::from_ref(given));
     }
 
-    fn completions_for(dir: &Path, hosts: &Path, given: &CustomRoute) -> Option<String> {
+    /// The model-key Keychain for these tests, by account. `bind` seals a key for a route as Other models does;
+    /// `read` counts its reads.
+    #[derive(Default)]
+    struct Keys {
+        items: std::cell::RefCell<Vec<(String, String)>>,
+        reads: std::cell::Cell<usize>,
+    }
+
+    impl Keys {
+        fn bind(&self, route: &CustomRoute) {
+            let item = crate::key_binding::sealed_item(route, "test-key1234");
+            let mut items = self.items.borrow_mut();
+            items.retain(|(account, _)| *account != route.custom_model_id);
+            items.push((route.custom_model_id.clone(), item));
+        }
+
+        fn read(&self, account: &str) -> Result<Option<String>, String> {
+            self.reads.set(self.reads.get() + 1);
+            Ok(self
+                .items
+                .borrow()
+                .iter()
+                .find(|(a, _)| a == account)
+                .map(|(_, item)| item.clone()))
+        }
+
+        fn stored(&self, account: &str) -> Vec<CustomRoute> {
+            crate::key_binding::read_sealed(&|a| self.read(a), account)
+                .ok()
+                .flatten()
+                .map(|sealed| sealed.binding)
+                .into_iter()
+                .collect()
+        }
+    }
+
+    fn completions_for(dir: &Path, hosts: &Keys, given: &CustomRoute) -> Option<String> {
         let saved = read_route(dir)?;
-        bound_completions_url(given, &saved, &stored_hosts(hosts, &given.custom_model_id))
+        bound_completions_url(given, &saved, &hosts.stored(&given.custom_model_id))
     }
 
     #[test]
@@ -1247,39 +1285,28 @@ mod tests {
         }
     }
 
-    /// The short-text folder and the folder of stored key hosts, both new.
-    fn temp_store(name: &str) -> (PathBuf, PathBuf) {
+    /// The short-text folder, and an empty Keychain for the model keys.
+    fn temp_store(name: &str) -> (PathBuf, Keys) {
         let dir = std::env::temp_dir().join(format!("wp129-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
-        let hosts = dir.join("hosts");
-        (dir, hosts)
+        (dir, Keys::default())
     }
 
     /// Runs the whole command path on temporary stores, with the Keychain and the network stood in.
     /// Returns the outcome, how many times the key was read and the URL that was posted, if any.
     fn run_ask(
         dir: &Path,
-        hosts: &Path,
+        keys: &Keys,
         given: &CustomRoute,
     ) -> (AskOutcome, usize, Option<String>) {
-        let reads = std::cell::Cell::new(0);
+        keys.reads.set(0);
         let mut posted = None;
-        let outcome = ask_in(
-            dir,
-            hosts,
-            given,
-            "Say hi",
-            |_| {
-                reads.set(reads.get() + 1);
-                Ok(Some("test-key1234".to_string()))
-            },
-            |url, _, _| {
-                posted = Some(url.to_string());
-                PostResult::Answer("A title".into())
-            },
-        );
-        (outcome, reads.get(), posted)
+        let outcome = ask_in(dir, &|a| keys.read(a), given, "Say hi", |url, _, _| {
+            posted = Some(url.to_string());
+            PostResult::Answer("A title".into())
+        });
+        (outcome, keys.reads.get(), posted)
     }
 
     #[test]
@@ -1290,12 +1317,12 @@ mod tests {
         let (outcome, reads, posted) = run_ask(&dir, &hosts, &saved);
         assert_eq!((outcome.kind.as_str(), reads, posted), ("refused", 0, None));
 
-        crate::key_binding::record(&hosts, &saved).unwrap();
+        hosts.bind(&saved);
         // A key is bound, but no short-text route is saved yet.
         let (outcome, reads, posted) = run_ask(&dir, &hosts, &saved);
         assert_eq!((outcome.kind.as_str(), reads, posted), ("refused", 0, None));
 
-        remember_route(&dir, &hosts, &saved).unwrap();
+        remember_route(&dir, &|a| hosts.read(a), &saved).unwrap();
         let (outcome, reads, posted) = run_ask(&dir, &hosts, &saved);
         assert!(outcome.ok, "{outcome:?}");
         assert_eq!(reads, 1);
@@ -1312,12 +1339,8 @@ mod tests {
         ] {
             let mut given = saved.clone();
             given.base_url = base.into();
-            let (outcome, reads, posted) = run_ask(&dir, &hosts, &given);
-            assert_eq!(
-                (outcome.kind.as_str(), reads, posted),
-                ("refused", 0, None),
-                "{base}"
-            );
+            let (outcome, _, posted) = run_ask(&dir, &hosts, &given);
+            assert_eq!((outcome.kind.as_str(), posted), ("refused", None), "{base}");
         }
         // Another saved model's account name, a different model and a different provider.
         let other_account = with_account(xai(), "other-key");
@@ -1327,10 +1350,10 @@ mod tests {
         other_provider.provider = "openrouter".into();
         other_provider.base_url = "https://openrouter.ai/api/v1".into();
         for given in [other_account, other_model, other_provider] {
-            let (outcome, reads, posted) = run_ask(&dir, &hosts, &given);
+            let (outcome, _, posted) = run_ask(&dir, &hosts, &given);
             assert_eq!(
-                (outcome.kind.as_str(), reads, posted),
-                ("refused", 0, None),
+                (outcome.kind.as_str(), posted),
+                ("refused", None),
                 "{given:?}"
             );
         }
@@ -1341,21 +1364,20 @@ mod tests {
     fn a_failing_keychain_or_a_missing_key_sends_nothing() {
         let (dir, hosts) = temp_store("keyless");
         let saved = with_account(xai(), "text-key");
-        crate::key_binding::record(&hosts, &saved).unwrap();
-        remember_route(&dir, &hosts, &saved).unwrap();
-        for key in [Err("denied".to_string()), Ok(None)] {
+        hosts.bind(&saved);
+        remember_route(&dir, &|a| hosts.read(a), &saved).unwrap();
+        // The Keychain fails, then has no item for the account: nothing is sent either way.
+        let failing = |_: &str| -> Result<Option<String>, String> { Err("denied".into()) };
+        let empty = |_: &str| -> Result<Option<String>, String> { Ok(None) };
+        for read in [
+            &failing as &dyn Fn(&str) -> Result<Option<String>, String>,
+            &empty,
+        ] {
             let mut called = false;
-            let outcome = ask_in(
-                &dir,
-                &hosts,
-                &saved,
-                "Say hi",
-                |_| key.clone(),
-                |_, _, _| {
-                    called = true;
-                    PostResult::Unreachable
-                },
-            );
+            let outcome = ask_in(&dir, read, &saved, "Say hi", |_, _, _| {
+                called = true;
+                PostResult::Unreachable
+            });
             assert!(!called);
             assert_eq!(outcome.kind, "refused");
             assert!(!outcome.reason.contains("denied"));
@@ -1372,8 +1394,8 @@ mod tests {
             route("xai", "https://proxy.example/v1", "grok-3"),
             "text-key",
         );
-        crate::key_binding::record(&hosts, &proxied).unwrap();
-        assert!(remember_route(&dir, &hosts, &proxied).is_err());
+        hosts.bind(&proxied);
+        assert!(remember_route(&dir, &|a| hosts.read(a), &proxied).is_err());
         assert!(!dir.join("route.json").exists());
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1382,8 +1404,8 @@ mod tests {
     fn plain_http_custom_is_stored_but_short_text_refuses_it() {
         let (dir, hosts) = temp_store("httpcustom");
         let local = with_account(route("custom", "http://127.0.0.1:9/v1", "m"), "custom-http");
-        crate::key_binding::record(&hosts, &local).unwrap();
-        assert!(remember_route(&dir, &hosts, &local).is_err());
+        hosts.bind(&local);
+        assert!(remember_route(&dir, &|a| hosts.read(a), &local).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1394,12 +1416,12 @@ mod tests {
         let other = with_account(xai(), "other-key");
         let text = with_account(route("xai", "https://API.X.AI./v1", "grok-3"), "text-key");
         let text_saved = with_account(xai(), "text-key");
-        crate::key_binding::record(&hosts, &custom).unwrap();
-        crate::key_binding::record(&hosts, &other).unwrap();
-        crate::key_binding::record(&hosts, &text_saved).unwrap();
-        assert!(hosts.join("custom-1").is_file());
-        assert!(hosts.join("other-key").is_file());
-        remember_route(&dir, &hosts, &text).unwrap();
+        hosts.bind(&custom);
+        hosts.bind(&other);
+        hosts.bind(&text_saved);
+        assert!(hosts.read("custom-1").unwrap().is_some());
+        assert!(hosts.read("other-key").unwrap().is_some());
+        remember_route(&dir, &|a| hosts.read(a), &text).unwrap();
         let raw = fs::read_to_string(dir.join("route.json")).unwrap();
         assert!(raw.contains("https://api.x.ai/v1"), "{raw}");
         assert!(!raw.contains("API"), "{raw}");
@@ -1413,7 +1435,7 @@ mod tests {
         assert!(completions_for(&dir, &hosts, &shifted).is_none());
         assert!(completions_for(&dir, &hosts, &other).is_none());
 
-        remember_route(&dir, &hosts, &custom).unwrap();
+        remember_route(&dir, &|a| hosts.read(a), &custom).unwrap();
         assert_eq!(
             completions_for(&dir, &hosts, &custom).as_deref(),
             Some("https://llm.example/v1/chat/completions")
@@ -1429,7 +1451,7 @@ mod tests {
         let before = fs::read_to_string(dir.join("route.json")).unwrap();
         assert!(remember_route(
             &dir,
-            &hosts,
+            &|a| hosts.read(a),
             &with_account(
                 route("xai", "https://api.x.ai@evil.example/v1", "grok-3"),
                 "text-key"
@@ -1438,13 +1460,13 @@ mod tests {
         .is_err());
         assert!(remember_route(
             &dir,
-            &hosts,
+            &|a| hosts.read(a),
             &with_account(route("xai", "http://127.0.0.1:9/v1", "grok-3"), "text-key")
         )
         .is_err());
         assert_eq!(fs::read_to_string(dir.join("route.json")).unwrap(), before);
 
-        fs::write(hosts.join("custom-1"), "{").unwrap();
+        *hosts.items.borrow_mut() = vec![("custom-1".to_string(), "{".to_string())];
         assert!(
             completions_for(&dir, &hosts, &custom).is_none(),
             "corrupt json is missing"

@@ -3,10 +3,16 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => true) }));
+// The address each model's key was saved with, as Rust stores it. The webview's own copy is not the source.
+const rust = vi.hoisted(() => new Map<string, string | null>());
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (cmd: string, args?: { customModelId?: string }) =>
+    cmd === "plugin:hub|model_key_address" ? (rust.get(args?.customModelId ?? "") ?? null) : true,
+  ),
+}));
 
 import { OtherModelsSection } from "./CustomModels";
-import { addressShownFor } from "../model/customModels";
+import { addressShownFor, setModelKeyStore, tauriModelKeyStore } from "../model/customModels";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -20,6 +26,8 @@ let root: Root;
 let host: HTMLDivElement;
 beforeEach(() => {
   localStorage.clear();
+  rust.clear();
+  setModelKeyStore(tauriModelKeyStore);
   host = document.createElement("div");
   document.body.append(host);
   root = createRoot(host);
@@ -38,10 +46,26 @@ describe("addressShownFor: an address is shown only where the key goes somewhere
   });
 });
 
+async function renderList(): Promise<void> {
+  await act(async () => {
+    root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} }));
+  });
+  // The stored addresses load after the first paint: let them arrive and the list re-render.
+  for (let i = 0; i < 20; i++) {
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+}
+
 describe("Other models shows the saved address next to each saved key", () => {
-  it("prints the address only for a proxy or a custom model", () => {
+  it("prints the address Rust stored: only for a proxy or a custom model", async () => {
     seed([grok, router, proxied, custom]);
-    act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
+    rust.set("xai-1", "https://api.x.ai/v1");
+    rust.set("or-1", "https://openrouter.ai/api/v1");
+    rust.set("or-2", "https://proxy.example.com/v1");
+    rust.set("c-1", "https://llm.example.org/v1");
+    await renderList();
     const rows = [...host.querySelectorAll("[data-saved-address]")].map((el) => ({
       model: el.getAttribute("data-saved-address"),
       text: el.textContent,
@@ -50,5 +74,20 @@ describe("Other models shows the saved address next to each saved key", () => {
       { model: "or-2", text: "https://proxy.example.com/v1" },
       { model: "c-1", text: "https://llm.example.org/v1" },
     ]);
+  });
+
+  it("uses the stored address, not the one in the webview, when they differ", async () => {
+    seed([custom]);
+    rust.set("c-1", "https://other.example.net/v1");
+    await renderList();
+    expect(host.querySelector('[data-saved-address="c-1"]')?.textContent).toBe("https://other.example.net/v1");
+  });
+
+  it("says to add a key again when its key was saved with no address", async () => {
+    seed([custom]);
+    rust.set("c-1", null);
+    await renderList();
+    expect(host.querySelector('[data-saved-address="c-1"]')).toBeNull();
+    expect(host.querySelector('[data-save-again="c-1"]')?.textContent).toContain("Add it again");
   });
 });

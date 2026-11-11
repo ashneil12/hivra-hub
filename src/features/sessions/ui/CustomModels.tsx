@@ -14,6 +14,8 @@ import {
   testCustomModel,
   validateCustomModel,
   addressShownFor,
+  refreshSavedAddresses,
+  savedAddressOf,
   defaultBaseUrl,
   defaultModelId,
   isClaudeKeyError,
@@ -38,8 +40,14 @@ export function useCustomModels(): CustomModel[] {
   return listCustomModels();
 }
 
+/** The address Rust stored with this model's key (the one the key is sent to), shown only when it is not the default. */
 function shownAddress(m: CustomModel): string | undefined {
-  return addressShownFor(m.provider, m.baseUrl);
+  return addressShownFor(m.provider, savedAddressOf(m.id));
+}
+
+/** A key saved before addresses were stored (or with none usable) is never sent until it is added again. */
+function needsAddressAgain(m: CustomModel): boolean {
+  return m.provider !== "ollama" && savedAddressOf(m.id) === null;
 }
 
 /** "Other models": Ash's own models under the subscription list, each tagged "billed separately", then Add model. */
@@ -56,6 +64,10 @@ export function OtherModelsSection({
   onAdd: (preset?: { name: string }) => void;
 }) {
   const all = useCustomModels();
+  const idList = all.map((m) => m.id).join(",");
+  useEffect(() => {
+    void refreshSavedAddresses();
+  }, [idList]);
   // Removing is a big deal (it also deletes the key), so it asks first.
   const [confirming, setConfirming] = useState<string | null>(null);
   const [editingEffort, setEditingEffort] = useState<string | null>(null);
@@ -101,6 +113,8 @@ export function OtherModelsSection({
           {/* Shown only when the key goes somewhere other than the provider's default: a custom address or a proxy. */}
           {shownAddress(m) ? (
             <span className="max-w-[45%] shrink truncate text-[10px] text-content/40 group-hover:invisible" data-saved-address={m.id} title={shownAddress(m)}>{shownAddress(m)}</span>
+          ) : needsAddressAgain(m) ? (
+            <span className="max-w-[45%] shrink truncate text-[10px] text-amber-600 group-hover:invisible" data-save-again={m.id}>Add it again to save its address</span>
           ) : null}
           <span className="shrink-0 text-[10px] text-content/40 group-hover:invisible" data-billed-separately>billed separately</span>
         </button>

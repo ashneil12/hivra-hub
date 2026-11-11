@@ -4,16 +4,13 @@
 //! The key goes in and never comes back to the webview. The call has a whole-request deadline and a hard cap on the
 //! reply, and any failure is a "try again later" for the caller, never a crash and never a key in a log.
 
-use std::path::Path;
 use std::time::Duration;
 
 use serde_json::json;
 
 use crate::history_import::{classify, completions_url, AskOutcome, PostResult};
-use crate::key_binding::{bound_route, NOT_STORED_FOR_THIS};
-use crate::model_router::{
-    may_route, read_key_in, session_token, CustomRoute, KeyTestResult, KEY_SERVICE,
-};
+use crate::key_binding::NOT_STORED_FOR_THIS;
+use crate::model_router::{may_route, session_token, CustomRoute, KeyTestResult};
 
 /// The curator's prompt is one turn plus the facts; anything longer is not this turn.
 pub const PROMPT_LIMIT: usize = 20_000;
@@ -141,36 +138,22 @@ pub fn cheap_complete(
     }
 }
 
-fn key_for(route: &CustomRoute) -> Result<Option<String>, String> {
-    if route.provider == "ollama" {
-        return Ok(None);
-    }
-    read_key_in(KEY_SERVICE, &route.custom_model_id)
-}
-
 /// The cheap ask for a route the webview gave. The key is read, and a request made, only when the route has
-/// the provider and the address stored when the key was saved (WP-129). Ollama has no key, so it passes
-/// through. `read_key` and `post` are the Keychain and the network; tests stand in for both.
+/// the provider and the address stored with the key (WP-129). Ollama has no key, so it passes through.
+/// `read_item` and `post` are the Keychain and the network; tests stand in for both.
 pub fn ask_in(
-    hosts: Option<&Path>,
     route: &CustomRoute,
     prompt: &str,
-    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
+    read_item: crate::key_binding::ItemReader,
     post: impl FnOnce(&str, &str, &str) -> PostResult,
 ) -> AskOutcome {
     if !may_route(route) {
         return refused("That model can't be used for this.");
     }
-    let Some(route) = bound_route(hosts, route) else {
-        return refused(NOT_STORED_FOR_THIS);
-    };
-    let key = if route.provider == "ollama" {
-        None
-    } else {
-        match read_key(&route) {
-            Ok(key) => key,
-            Err(_) => return refused("Couldn't reach the Keychain."),
-        }
+    let (route, key) = match crate::key_binding::bound_key(route, read_item) {
+        Ok(Some(found)) => found,
+        Ok(None) => return refused(NOT_STORED_FOR_THIS),
+        Err(_) => return refused("Couldn't reach the Keychain."),
     };
     if key.is_none() && route.provider != "ollama" {
         return refused("No key is saved for that model. Add it under Other models first.");
@@ -181,12 +164,10 @@ pub fn ask_in(
 #[tauri::command]
 pub async fn memory_cheap_ask(route: CustomRoute, prompt: String) -> Result<AskOutcome, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let hosts = crate::key_binding::store_dir();
         ask_in(
-            hosts.as_deref(),
             &route,
             &prompt,
-            key_for,
+            &crate::key_binding::keychain_item,
             |url, token, body| post_chat(url, token, body, DEADLINE),
         )
     })
@@ -204,24 +185,19 @@ fn failed(message: &str) -> KeyTestResult {
 /// "Test this model" for a route the webview gave: the saved key and one tiny request, only at the address
 /// stored with the key (WP-129). `read_key` and `test` are the Keychain and the network.
 pub fn test_in(
-    hosts: Option<&Path>,
     route: &CustomRoute,
-    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
+    read_item: crate::key_binding::ItemReader,
     test: impl FnOnce(&CustomRoute, &str) -> KeyTestResult,
 ) -> KeyTestResult {
     if !may_route(route) {
         return failed("That model can't be used for this.");
     }
-    let Some(route) = bound_route(hosts, route) else {
-        return failed(NOT_STORED_FOR_THIS);
+    let (route, key) = match crate::key_binding::bound_key(route, read_item) {
+        Ok(Some(found)) => found,
+        Ok(None) => return failed(NOT_STORED_FOR_THIS),
+        Err(_) => return failed("Couldn't reach the Keychain."),
     };
-    if route.provider == "ollama" {
-        return test(&route, "");
-    }
-    match read_key(&route) {
-        Ok(key) => test(&route, key.as_deref().unwrap_or("")),
-        Err(_) => failed("Couldn't reach the Keychain."),
-    }
+    test(&route, key.as_deref().unwrap_or(""))
 }
 
 /// "Test this model" on the Memory screen: the saved key, one tiny request, and the same plain words Other models
@@ -229,8 +205,7 @@ pub fn test_in(
 #[tauri::command]
 pub async fn memory_cheap_test(route: CustomRoute) -> Result<KeyTestResult, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let hosts = crate::key_binding::store_dir();
-        test_in(hosts.as_deref(), &route, key_for, |bound, key| {
+        test_in(&route, &crate::key_binding::keychain_item, |bound, key| {
             crate::model_router::test_key(&bound.provider, &bound.base_url, &bound.model_id, key)
         })
     })
@@ -258,11 +233,19 @@ mod tests {
         saved
     }
 
-    fn hosts_with(name: &str, saved: &CustomRoute) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("wp129-memory-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        crate::key_binding::record(&dir, saved).unwrap();
-        dir
+    const TEST_KEY: &str = "test-key1234";
+
+    /// The Keychain for these tests: one item for `saved`'s account, holding TEST_KEY sealed with `saved`'s address.
+    /// Every read is counted.
+    fn keychain<'a>(
+        saved: &'a CustomRoute,
+        reads: &'a std::cell::Cell<usize>,
+    ) -> impl Fn(&str) -> Result<Option<String>, String> + 'a {
+        let item = crate::key_binding::sealed_item(saved, TEST_KEY);
+        move |account| {
+            reads.set(reads.get() + 1);
+            Ok((account == saved.custom_model_id).then(|| item.clone()))
+        }
     }
 
     /// Addresses a key saved for `https://llm.example/v1` must never be sent to.
@@ -303,23 +286,14 @@ mod tests {
     #[test]
     fn the_memory_tier_reads_the_key_only_for_the_address_stored_with_it() {
         let saved = stored();
-        let hosts = hosts_with("ask", &saved);
         let run = |given: &CustomRoute| {
             let reads = std::cell::Cell::new(0);
             let posted = std::cell::RefCell::new(None);
-            let out = ask_in(
-                Some(&hosts),
-                given,
-                "a prompt",
-                |_| {
-                    reads.set(reads.get() + 1);
-                    Ok(Some("test-key1234".to_string()))
-                },
-                |url, token, _| {
-                    *posted.borrow_mut() = Some((url.to_string(), token.to_string()));
-                    PostResult::Answer("fine".into())
-                },
-            );
+            let store = keychain(&saved, &reads);
+            let out = ask_in(given, "a prompt", &store, |url, token, _| {
+                *posted.borrow_mut() = Some((url.to_string(), token.to_string()));
+                PostResult::Answer("fine".into())
+            });
             (out, reads.get(), posted.into_inner())
         };
         let mut same = saved.clone();
@@ -331,35 +305,27 @@ mod tests {
             posted,
             Some((
                 "https://llm.example/v1/chat/completions".to_string(),
-                "test-key1234".to_string()
+                TEST_KEY.to_string()
             ))
         );
         for given in strays() {
-            let (out, reads, posted) = run(&given);
+            let (out, _, posted) = run(&given);
             assert!(!out.ok, "{given:?}");
             assert_eq!(out.kind, "refused", "{given:?}");
-            assert!(!out.reason.contains("test-key1234"));
-            assert_eq!((reads, posted), (0, None), "{given:?}");
+            assert!(!out.reason.contains(TEST_KEY));
+            assert_eq!(posted, None, "{given:?}");
         }
-        // No data folder: no key. Ollama needs none.
-        let mut reads = 0;
-        let out = ask_in(
-            None,
-            &saved,
-            "p",
-            |_| {
-                reads += 1;
-                Ok(None)
-            },
-            |_, _, _| PostResult::Unreachable,
-        );
-        assert_eq!((out.kind.as_str(), reads), ("refused", 0));
+        // Nothing stored for the account: no key, and nothing is sent.
+        let out = ask_in(&saved, "p", &|_: &str| Ok(None), |_, _, _| {
+            PostResult::Unreachable
+        });
+        assert_eq!(out.kind, "refused");
+        // Ollama needs no key, and reads none.
         let local = route("ollama", "http://localhost:11434", "llama3.2");
         let out = ask_in(
-            None,
             &local,
             "p",
-            |_| panic!("Ollama has no key"),
+            &|_: &str| panic!("Ollama has no key"),
             |url, _, _| {
                 assert_eq!(url, "http://localhost:11434/v1/chat/completions");
                 PostResult::Answer("ok".into())
@@ -367,47 +333,30 @@ mod tests {
         );
         assert!(out.ok);
         // A failing Keychain and a missing key still say so, once the address matches.
-        let out = ask_in(
-            Some(&hosts),
-            &saved,
-            "p",
-            |_| Err("denied".into()),
-            |_, _, _| PostResult::Unreachable,
-        );
+        let out = ask_in(&saved, "p", &|_: &str| Err("denied".into()), |_, _, _| {
+            PostResult::Unreachable
+        });
         assert_eq!(out.reason, "Couldn't reach the Keychain.");
-        let out = ask_in(
-            Some(&hosts),
-            &saved,
-            "p",
-            |_| Ok(None),
-            |_, _, _| PostResult::Unreachable,
-        );
-        assert!(out.reason.contains("No key is saved"), "{}", out.reason);
-        let _ = std::fs::remove_dir_all(&hosts);
+        // A plain key (saved with no address) is unbound: it is never sent.
+        let plain = |_: &str| Ok(Some(TEST_KEY.to_string()));
+        let out = ask_in(&saved, "p", &plain, |_, _, _| PostResult::Unreachable);
+        assert_eq!(out.reason, NOT_STORED_FOR_THIS);
     }
 
     #[test]
     fn the_memory_test_uses_the_key_only_at_the_address_stored_with_it() {
         let saved = stored();
-        let hosts = hosts_with("test", &saved);
         let run = |given: &CustomRoute| {
             let reads = std::cell::Cell::new(0);
             let tested = std::cell::RefCell::new(None);
-            let out = test_in(
-                Some(&hosts),
-                given,
-                |_| {
-                    reads.set(reads.get() + 1);
-                    Ok(Some("test-key1234".to_string()))
-                },
-                |r, key| {
-                    *tested.borrow_mut() = Some((r.base_url.clone(), key.to_string()));
-                    KeyTestResult {
-                        ok: true,
-                        message: "Connected".into(),
-                    }
-                },
-            );
+            let store = keychain(&saved, &reads);
+            let out = test_in(given, &store, |r, key| {
+                *tested.borrow_mut() = Some((r.base_url.clone(), key.to_string()));
+                KeyTestResult {
+                    ok: true,
+                    message: "Connected".into(),
+                }
+            });
             (out, reads.get(), tested.into_inner())
         };
         let mut same = saved.clone();
@@ -417,13 +366,10 @@ mod tests {
         assert_eq!(reads, 1);
         assert_eq!(
             tested,
-            Some((
-                "https://llm.example/v1".to_string(),
-                "test-key1234".to_string()
-            ))
+            Some(("https://llm.example/v1".to_string(), TEST_KEY.to_string()))
         );
         for given in strays() {
-            let (out, reads, tested) = run(&given);
+            let (out, _, tested) = run(&given);
             assert!(!out.ok, "{given:?}");
             assert!(
                 out.message == crate::key_binding::NOT_STORED_FOR_THIS
@@ -431,9 +377,8 @@ mod tests {
                 "{}",
                 out.message
             );
-            assert_eq!((reads, tested), (0, None), "{given:?}");
+            assert_eq!(tested, None, "{given:?}");
         }
-        let _ = std::fs::remove_dir_all(&hosts);
     }
 
     #[test]

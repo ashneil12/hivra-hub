@@ -33,6 +33,7 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             crate::model_router::model_key_save,
             crate::model_router::model_key_test,
             crate::model_router::model_key_delete,
+            crate::model_router::model_key_address,
             crate::model_router::model_context_window,
             // WP-22: a room's auto responder asks the quick model through this.
             crate::model_router::model_quick_pick,

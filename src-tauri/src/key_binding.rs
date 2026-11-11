@@ -1,18 +1,15 @@
 //! WP-129: the host a saved model key belongs to.
 //!
-//! A key saved under Other models may only be sent to the address it was saved with. When the key is
-//! saved, Rust stores the provider, model and address beside it: one small file per Keychain account, in
-//! this copy's own data folder. Every command that reads a key by its id asks `bound_route` first, and the
-//! key is read only when the route the webview gave has the stored provider and the stored address. The
-//! address is compared after parsing, and the request URL is rebuilt from the parsed parts, so a trailing
-//! dot, a different case, a default port, userinfo, a query or a look-alike host cannot point a key
-//! somewhere else. A key with nothing stored is not used by those commands at all.
-//!
-//! The files are written only together with the key (`model_key_save`) and removed with it
-//! (`model_key_delete`). The webview cannot write the folder.
+//! A key saved under Other models may only be sent to the address it was saved with. The address is kept inside
+//! the key's own Keychain item (`model_key_save` writes the item as the key with its provider and address), so the
+//! only writer of the binding is that save, through the Keychain. Every command that reads a key by its id goes
+//! through `bound_key`: the key is returned only when the route the webview gave has the stored provider and the
+//! stored address. The address is compared after parsing, and the request URL is rebuilt from the parsed parts, so
+//! a trailing dot, a different case, a default port, userinfo, a query or a look-alike host cannot point a key
+//! somewhere else. An item with no binding (a plain key, or one saved with no usable address) is never sent.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -151,13 +148,8 @@ pub(crate) fn from_json(text: &str) -> Option<CustomRoute> {
     })
 }
 
-/// This copy's folder of stored key hosts. Missing when there is no data folder yet.
-pub fn store_dir() -> Option<PathBuf> {
-    let id = crate::instance::current().identifier.clone();
-    crate::instance::data_dir(&id).map(|dir| dir.join("model-key-hosts"))
-}
-
 /// Write one file under `root` by writing beside it and renaming, after proving the file's folder is `root`.
+/// Used for the saved short-text route only (text_generation), never for a key's address.
 pub(crate) fn write_atomic(root: &Path, path: &Path, bytes: &[u8]) -> Result<(), ()> {
     let root = crate::fs::canonical(root).map_err(|_| ())?;
     let parent = crate::fs::canonical(path.parent().ok_or(())?).map_err(|_| ())?;
@@ -189,93 +181,143 @@ pub(crate) fn write_atomic(root: &Path, path: &Path, bytes: &[u8]) -> Result<(),
     Ok(())
 }
 
-/// The file for one account, inside `dir`. The folder is made when it is missing.
-fn account_file(dir: &Path, account: &str) -> Option<PathBuf> {
-    if !safe_account(account) {
-        return None;
-    }
-    fs::create_dir_all(dir).ok()?;
-    let root = crate::fs::canonical(dir).ok()?;
-    let path = root.join(account);
-    if path.parent()? != root {
-        return None;
-    }
-    Some(path)
+/// Reads one Keychain item by its account, as the raw text. Production reads the model-key service; tests pass a map.
+pub(crate) type ItemReader<'a> = &'a dyn Fn(&str) -> Result<Option<String>, String>;
+
+/// The model-key item for one account: the key with the address it was saved with. Only `model_key_save` writes
+/// it, through the Keychain, so the binding cannot be rewritten from a file. An item that is only a plain key
+/// (saved with no usable address, or before this format) carries no binding and is never sent.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SealedItem {
+    v: u8,
+    provider: String,
+    base_url: String,
+    model_id: String,
+    key: String,
 }
 
-/// What was stored when the key for `account` was saved.
-pub fn read_one(dir: &Path, account: &str) -> Option<CustomRoute> {
-    if !safe_account(account) {
-        return None;
-    }
-    let text = fs::read_to_string(dir.join(account)).ok()?;
-    let route = from_json(&text)?;
-    (route.custom_model_id == account).then_some(route)
+const SEAL_VERSION: u8 = 1;
+/// Longer than any sealed item we write; a longer value is not one.
+const ITEM_MAX: usize = 8_192;
+
+/// An opened item: the binding (provider, normalised address, model id, account) and the key.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Sealed {
+    pub binding: CustomRoute,
+    pub key: String,
 }
 
-/// Remember the address that belongs to this key. Called only when the key itself is saved. The
-/// address must be one a router would use at all (https, or http on this Mac), for a model that is not
-/// Claude. A named provider's own host is not checked here: a person may point a provider at a proxy,
-/// and the key still goes only to that address. A command that wants one fixed host checks it too.
-pub fn record(dir: &Path, route: &CustomRoute) -> Result<(), ()> {
-    let url = normalize_base(&route.base_url).ok_or(())?;
+/// The item to store for a key saved for `account`: the key sealed with `route`'s provider and address when that
+/// route is usable for the account, otherwise the plain key (which is unbound and never sent).
+pub(crate) fn item_for_save(key: &str, route: Option<&CustomRoute>, account: &str) -> String {
+    route
+        .filter(|route| route.custom_model_id == account)
+        .and_then(|route| seal(route, key))
+        .unwrap_or_else(|| key.to_string())
+}
+
+fn seal(route: &CustomRoute, key: &str) -> Option<String> {
+    let url = normalize_base(&route.base_url)?;
     let clean = cleaned(route, &url);
-    if !may_route(&clean) {
-        return Err(());
-    }
-    let path = account_file(dir, &clean.custom_model_id).ok_or(())?;
-    let root = path.parent().ok_or(())?;
-    write_atomic(root, &path, &to_json(&clean).ok_or(())?)
-}
-
-/// Drop the address stored for one key, and only that file.
-pub fn remove(dir: &Path, account: &str) {
-    if !safe_account(account) || !dir.is_dir() {
-        return;
-    }
-    let Ok(root) = crate::fs::canonical(dir) else {
-        return;
-    };
-    let path = root.join(account);
-    if path.parent() != Some(root.as_path()) {
-        return;
-    }
-    let _ = fs::remove_file(path);
-}
-
-/// A key was just saved for `account`. Store the address it was saved with, or drop what was stored for
-/// the account before: a new key must not inherit the old key's host. With no usable address nothing is
-/// stored, and the commands that read a key by its id will not send that key anywhere.
-pub fn rebind(dir: &Path, account: &str, route: Option<&CustomRoute>) {
-    if let Some(route) = route {
-        if route.custom_model_id == account && record(dir, route).is_ok() {
-            return;
-        }
-    }
-    remove(dir, account);
-}
-
-/// The route to use for a stored key, or nothing. Ollama has no key, so its route is passed through.
-/// Any other provider needs the provider and the address that were stored with the key, and the given
-/// address must equal the stored one after parsing. The route that comes back has its address rebuilt
-/// from the parsed parts, so that is the address to build the request from. `dir` is `None` when this
-/// copy has no data folder, and then no key is used.
-pub fn bound_route(dir: Option<&Path>, route: &CustomRoute) -> Option<CustomRoute> {
-    if !may_route(route) {
+    if !may_route(&clean) || !safe_account(&clean.custom_model_id) || key.trim().is_empty() {
         return None;
+    }
+    serde_json::to_string(&SealedItem {
+        v: SEAL_VERSION,
+        provider: clean.provider,
+        base_url: clean.base_url,
+        model_id: clean.model_id,
+        key: key.trim().to_string(),
+    })
+    .ok()
+}
+
+/// An item's binding and key, or nothing when the item is not a sealed one or names an address that cannot route.
+fn open(raw: &str, account: &str) -> Option<Sealed> {
+    if raw.len() > ITEM_MAX || !raw.starts_with('{') || !safe_account(account) {
+        return None;
+    }
+    let item: SealedItem = serde_json::from_str(raw).ok()?;
+    if item.v != SEAL_VERSION || item.key.trim().is_empty() {
+        return None;
+    }
+    let url = normalize_base(&item.base_url)?;
+    let binding = CustomRoute {
+        provider: item.provider,
+        base_url: base_string(&url),
+        model_id: item.model_id,
+        custom_model_id: account.to_string(),
+        reasoning_effort: None,
+    };
+    may_route(&binding).then_some(Sealed {
+        binding,
+        key: item.key,
+    })
+}
+
+/// The opened item for `account`, or nothing. Keychain errors come back as errors.
+pub(crate) fn read_sealed(read_item: ItemReader, account: &str) -> Result<Option<Sealed>, String> {
+    if !safe_account(account) {
+        return Ok(None);
+    }
+    Ok(read_item(account)?.and_then(|raw| open(&raw, account)))
+}
+
+/// The route and key to use for a model, or nothing. The key is returned only when the item for the route's
+/// account was saved with the same provider and address (after parsing), and the route that comes back has its
+/// address rebuilt from the parsed parts. Ollama has no key, so its route passes through with none.
+pub(crate) fn bound_key(
+    route: &CustomRoute,
+    read_item: ItemReader,
+) -> Result<Option<(CustomRoute, Option<String>)>, String> {
+    if !may_route(route) {
+        return Ok(None);
     }
     if route.provider == "ollama" {
-        return Some(route.clone());
+        return Ok(Some((route.clone(), None)));
     }
-    let url = normalize_base(&route.base_url)?;
-    let bound = read_one(dir?, &route.custom_model_id)?;
-    if bound.provider != route.provider || normalize_base(&bound.base_url)? != url {
-        return None;
+    let Some(url) = normalize_base(&route.base_url) else {
+        return Ok(None);
+    };
+    let Some(sealed) = read_sealed(read_item, &route.custom_model_id)? else {
+        return Ok(None);
+    };
+    if sealed.binding.provider != route.provider
+        || normalize_base(&sealed.binding.base_url) != Some(url.clone())
+    {
+        return Ok(None);
     }
-    Some(CustomRoute {
-        base_url: base_string(&url),
-        ..route.clone()
-    })
+    Ok(Some((
+        CustomRoute {
+            base_url: base_string(&url),
+            ..route.clone()
+        },
+        Some(sealed.key),
+    )))
+}
+
+/// The production reader: the model-key Keychain item for `account`.
+pub(crate) fn keychain_item(account: &str) -> Result<Option<String>, String> {
+    crate::model_router::read_key_in(crate::model_router::KEY_SERVICE, account)
+}
+
+/// Test helpers: a reader over a fixed set of items, and the item a save would write.
+#[cfg(test)]
+pub(crate) fn fake_keychain(
+    items: Vec<(String, String)>,
+) -> impl Fn(&str) -> Result<Option<String>, String> {
+    move |account| {
+        Ok(items
+            .iter()
+            .find(|(a, _)| a == account)
+            .map(|(_, v)| v.clone()))
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn sealed_item(route: &CustomRoute, key: &str) -> String {
+    item_for_save(key, Some(route), &route.custom_model_id)
 }
 
 /// The plain sentence for a key whose host is not the one stored with it.
@@ -357,11 +399,19 @@ mod tests {
         }
     }
 
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("wp129-hosts-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&dir);
-        fs::create_dir_all(&dir).unwrap();
-        dir
+    /// The Keychain as one account sees it: `items` are (account, raw item text).
+    fn keychain(items: &[(&str, String)]) -> impl Fn(&str) -> Result<Option<String>, String> {
+        fake_keychain(
+            items
+                .iter()
+                .map(|(a, v)| (a.to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    fn bound(items: &[(&str, String)], given: &CustomRoute) -> Option<CustomRoute> {
+        let read = keychain(items);
+        bound_key(given, &read).unwrap().map(|(route, _)| route)
     }
 
     #[test]
@@ -405,8 +455,7 @@ mod tests {
     }
 
     #[test]
-    fn a_claude_model_or_an_unusable_address_is_never_stored() {
-        let dir = temp("never");
+    fn a_claude_model_or_an_unusable_address_is_never_sealed() {
         for (provider, base, model) in [
             ("custom", "https://llm.example/v1", "claude-sonnet"),
             ("custom", "https://api.anthropic.com/v1", "m"),
@@ -419,91 +468,76 @@ mod tests {
         ] {
             let mut given = route(provider, base, "acct-1");
             given.model_id = model.into();
-            assert!(record(&dir, &given).is_err(), "{provider} {base} {model}");
-            assert!(!dir.join("acct-1").exists());
+            assert!(
+                seal(&given, "sk-key").is_none(),
+                "{provider} {base} {model}"
+            );
+            // Saved with no usable address: the plain key, which is unbound.
+            assert_eq!(item_for_save("sk-key", Some(&given), "acct-1"), "sk-key");
         }
         // Plain http is fine on this Mac.
-        assert!(record(
-            &dir,
-            &route("custom", "http://127.0.0.1:1234/v1", "local-1")
-        )
-        .is_ok());
-        let _ = fs::remove_dir_all(&dir);
+        assert!(seal(&route("custom", "http://127.0.0.1:1234/v1", "local-1"), "k").is_some());
     }
 
     #[test]
-    fn saving_a_key_again_replaces_or_drops_the_address_stored_with_it() {
-        let dir = temp("rebind");
+    fn a_key_saved_again_takes_the_address_it_is_saved_with_or_none() {
         let first = route("custom", "https://llm.example/v1", "custom-1");
-        let bound = |given: &CustomRoute| bound_route(Some(&dir), given).is_some();
-        rebind(&dir, "custom-1", Some(&first));
-        assert!(bound(&first));
-        // Saved again with an address that cannot be used: the old address is not kept.
-        rebind(
-            &dir,
-            "custom-1",
+        let key_for = |raw: String| vec![("custom-1", raw)];
+        assert!(bound(&key_for(sealed_item(&first, "sk-1")), &first).is_some());
+        // Saved again with no usable address: the old address is not kept.
+        let plain = item_for_save(
+            "sk-2",
             Some(&route("custom", "ftp://llm.example", "custom-1")),
+            "custom-1",
         );
-        assert!(!bound(&first));
-        // Saved with no address at all: nothing is stored.
-        rebind(&dir, "custom-1", Some(&first));
-        rebind(&dir, "custom-1", None);
-        assert!(!bound(&first));
+        assert!(bound(&key_for(plain), &first).is_none());
         // Saved for a new address: the key follows it, and the old one is gone.
         let moved = route("custom", "https://other.example/v1", "custom-1");
-        rebind(&dir, "custom-1", Some(&first));
-        rebind(&dir, "custom-1", Some(&moved));
-        assert!(!bound(&first) && bound(&moved));
-        // An address for another account is not this account's.
-        rebind(
-            &dir,
-            "custom-1",
-            Some(&route("custom", "https://x.example/v1", "custom-2")),
+        let items = key_for(sealed_item(&moved, "sk-3"));
+        assert!(bound(&items, &first).is_none());
+        assert!(bound(&items, &moved).is_some());
+        // A route saved for another account is not this account's.
+        assert_eq!(
+            item_for_save(
+                "sk-4",
+                Some(&route("custom", "https://x.example/v1", "custom-2")),
+                "custom-1"
+            ),
+            "sk-4"
         );
-        assert!(!bound(&moved));
-        assert!(!dir.join("custom-2").exists());
-        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn a_damaged_or_foreign_file_is_not_a_binding() {
-        let dir = temp("damaged");
+    fn a_plain_or_damaged_item_is_never_a_binding() {
         let saved = route("custom", "https://llm.example/v1", "custom-1");
-        record(&dir, &saved).unwrap();
-        // The file is named for one account and holds another.
-        fs::copy(dir.join("custom-1"), dir.join("custom-2")).unwrap();
-        assert!(bound_route(
-            Some(&dir),
-            &route("custom", "https://llm.example/v1", "custom-2")
-        )
-        .is_none());
-        fs::write(dir.join("custom-1"), "{").unwrap();
-        assert!(bound_route(Some(&dir), &saved).is_none());
-        fs::write(dir.join("custom-1"), "x".repeat(5_000)).unwrap();
-        assert!(bound_route(Some(&dir), &saved).is_none());
-        let _ = fs::remove_dir_all(&dir);
+        // A key saved before this format, or with no address: no binding.
+        assert!(bound(&[("custom-1", "sk-plain-0123456789".into())], &saved).is_none());
+        for raw in [
+            "{".to_string(),
+            r#"{"v":2,"provider":"custom","baseUrl":"https://llm.example/v1","modelId":"m","key":"k"}"#.into(),
+            r#"{"v":1,"provider":"custom","baseUrl":"https://llm.example/v1","modelId":"m","key":""}"#.into(),
+            r#"{"v":1,"provider":"custom","baseUrl":"https://llm.example/v1","modelId":"claude-x","key":"k"}"#.into(),
+            format!(r#"{{"v":1,"provider":"custom","baseUrl":"https://llm.example/v1","modelId":"m","key":"{}"}}"#, "x".repeat(9_000)),
+        ] {
+            assert!(bound(&[("custom-1", raw.clone())], &saved).is_none(), "{raw:.60}");
+        }
+        assert!(bound(&[], &saved).is_none());
     }
 
     #[test]
-    fn removing_a_key_removes_only_its_own_file() {
-        let dir = temp("remove");
-        record(&dir, &route("custom", "https://llm.example/v1", "custom-1")).unwrap();
-        record(&dir, &route("custom", "https://llm.example/v1", "custom-2")).unwrap();
-        remove(&dir, "custom-1");
-        remove(&dir, "../custom-2");
-        remove(&dir, "..");
-        assert!(!dir.join("custom-1").exists());
-        assert!(dir.join("custom-2").exists());
-        let _ = fs::remove_dir_all(&dir);
+    fn a_planted_file_cannot_bind_a_key() {
+        // The address lived in a file before; nothing reads files now, so a file with an address binds nothing.
+        let saved = route("custom", "https://evil.example/v1", "custom-1");
+        let planted = r#"{"provider":"custom","baseUrl":"https://evil.example/v1","modelId":"m","customModelId":"custom-1"}"#;
+        assert!(bound(&[("custom-1", planted.into())], &saved).is_none());
     }
 
     #[test]
     fn a_key_is_bound_to_the_provider_and_address_it_was_saved_with() {
-        let dir = temp("bound");
         let saved = route("custom", "https://llm.example/v1", "custom-1");
-        record(&dir, &saved).unwrap();
-        let ok = bound_route(
-            Some(&dir),
+        let items = [("custom-1", sealed_item(&saved, "sk-0123456789"))];
+        let ok = bound(
+            &items,
             &route("custom", "https://LLM.Example./v1/", "custom-1"),
         );
         assert_eq!(ok.unwrap().base_url, "https://llm.example/v1");
@@ -516,41 +550,37 @@ mod tests {
             ("custom", "https://llm.example/v1/extra", "custom-1"),
             ("custom", "https://llm.example/v1?x=1", "custom-1"),
             ("custom", "http://llm.example/v1", "custom-1"),
-            // The same address under another provider, and under another account.
             ("openrouter", "https://llm.example/v1", "custom-1"),
             ("custom", "https://llm.example/v1", "custom-2"),
             ("custom", "https://llm.example/v1", ""),
             ("custom", "https://llm.example/v1", "../custom-1"),
         ] {
             assert!(
-                bound_route(Some(&dir), &route(provider, base, account)).is_none(),
+                bound(&items, &route(provider, base, account)).is_none(),
                 "{provider} {base} {account}"
             );
         }
-        // No data folder, nothing stored: no key is used.
-        assert!(bound_route(None, &saved).is_none());
-        assert!(bound_route(Some(&dir.join("missing")), &saved).is_none());
-        let _ = fs::remove_dir_all(&dir);
+        // No item at all: no key is used.
+        assert!(bound(&[], &saved).is_none());
     }
 
     #[test]
     fn a_named_provider_keeps_the_address_it_was_saved_with() {
         // A person may point a provider at a proxy. The key then goes to that proxy and nowhere else.
-        let dir = temp("proxy");
         let proxied = route("xai", "https://proxy.example/xai/v1", "xai-1");
-        record(&dir, &proxied).unwrap();
-        assert!(bound_route(Some(&dir), &proxied).is_some());
-        let official = route("xai", "https://api.x.ai/v1", "xai-1");
-        assert!(bound_route(Some(&dir), &official).is_none());
-        // A key with nothing stored is not used, whatever the address says.
-        let unsaved = route("xai", "https://api.x.ai/v1", "xai-2");
-        assert!(bound_route(Some(&dir), &unsaved).is_none());
-        let _ = fs::remove_dir_all(&dir);
+        let items = [("xai-1", sealed_item(&proxied, "xai-key-0123456789"))];
+        assert!(bound(&items, &proxied).is_some());
+        assert!(bound(&items, &route("xai", "https://api.x.ai/v1", "xai-1")).is_none());
+        assert!(bound(&items, &route("xai", "https://api.x.ai/v1", "xai-2")).is_none());
     }
 
     #[test]
     fn ollama_has_no_key_and_passes_through() {
         let local = route("ollama", "http://localhost:11434", "");
-        assert_eq!(bound_route(None, &local), Some(local.clone()));
+        let read = keychain(&[]);
+        assert_eq!(
+            bound_key(&local, &read).unwrap(),
+            Some((local.clone(), None))
+        );
     }
 }

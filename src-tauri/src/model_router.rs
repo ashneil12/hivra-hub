@@ -288,7 +288,14 @@ fn check_model_id(id: &str) -> Result<(), String> {
     }
 }
 
-pub fn save_key_in(service: &str, custom_model_id: &str, key: &str) -> Result<(), String> {
+/// Save a key under its account. With a route whose address is usable, the item also keeps that provider and
+/// address (WP-129), so the key can only be sent back to it. Without one the plain key is stored, which is unbound.
+pub fn save_key_in(
+    service: &str,
+    custom_model_id: &str,
+    key: &str,
+    route: Option<&CustomRoute>,
+) -> Result<(), String> {
     check_model_id(custom_model_id)?;
     let key = key.trim();
     if looks_like_claude_credential(key) {
@@ -296,10 +303,12 @@ pub fn save_key_in(service: &str, custom_model_id: &str, key: &str) -> Result<()
             "That looks like a Claude key; Other models need the provider's own key.".into(),
         );
     }
-    crate::hub_keychain::store(service, custom_model_id, key)
+    let item = crate::key_binding::item_for_save(key, route, custom_model_id);
+    crate::hub_keychain::store(service, custom_model_id, &item)
 }
 
-pub fn read_key_in(service: &str, custom_model_id: &str) -> Result<Option<String>, String> {
+/// The raw Keychain item for an account. Only `key_binding` reads it, and only through `bound_key`.
+pub(crate) fn read_key_in(service: &str, custom_model_id: &str) -> Result<Option<String>, String> {
     check_model_id(custom_model_id)?;
     crate::hub_keychain::read(service, custom_model_id)
 }
@@ -313,24 +322,20 @@ pub async fn model_key_save(
     base_url: Option<String>,
 ) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
-        save_key_in(KEY_SERVICE, &custom_model_id, &key)?;
-        // WP-129: the address stored with the key is the only host short text may send it to. A new key
-        // never keeps the old key's host. A missing or bad address does not undo the save: Other models
-        // still use the key, and short text will not.
-        if let Some(dir) = crate::key_binding::store_dir() {
-            let route = match (provider, model_id, base_url) {
-                (Some(provider), Some(model_id), Some(base_url)) => Some(CustomRoute {
-                    provider,
-                    base_url,
-                    model_id,
-                    custom_model_id: custom_model_id.clone(),
-                    reasoning_effort: None,
-                }),
-                _ => None,
-            };
-            crate::key_binding::rebind(&dir, &custom_model_id, route.as_ref());
-        }
-        Ok(())
+        // WP-129: the address saved with the key is the only host it may be sent to, and it lives in the same
+        // Keychain item. A new key replaces the old item, so it never keeps the old key's host. A missing or bad
+        // address does not undo the save: Other models still use the key, and short text will not.
+        let route = match (provider, model_id, base_url) {
+            (Some(provider), Some(model_id), Some(base_url)) => Some(CustomRoute {
+                provider,
+                base_url,
+                model_id,
+                custom_model_id: custom_model_id.clone(),
+                reasoning_effort: None,
+            }),
+            _ => None,
+        };
+        save_key_in(KEY_SERVICE, &custom_model_id, &key, route.as_ref())
     })
     .await
     .map_err(|_| "Couldn't reach the Keychain.".to_string())?
@@ -344,14 +349,24 @@ pub fn delete_outcome(result: Result<bool, String>) -> Result<bool, String> {
 
 pub fn delete_key_in(service: &str, custom_model_id: &str) -> Result<bool, String> {
     check_model_id(custom_model_id)?;
-    let deleted = delete_outcome(crate::hub_keychain::delete(service, custom_model_id))?;
-    // WP-129: drop the host stored for this key. No folder is created when there is none.
-    if service == KEY_SERVICE {
-        if let Some(dir) = crate::key_binding::store_dir() {
-            crate::key_binding::remove(&dir, custom_model_id);
-        }
-    }
-    Ok(deleted)
+    // The address is inside the item, so deleting the item deletes it too.
+    delete_outcome(crate::hub_keychain::delete(service, custom_model_id))
+}
+
+/// The address a key was saved with, for the Other models list and the memory picker (WP-129). An address is not
+/// a secret, so it may go to the webview; the key never does. `None` for a key saved without a usable address.
+pub fn address_in(service: &str, custom_model_id: &str) -> Result<Option<String>, String> {
+    check_model_id(custom_model_id)?;
+    let read = |account: &str| read_key_in(service, account);
+    Ok(crate::key_binding::read_sealed(&read, custom_model_id)?
+        .map(|sealed| sealed.binding.base_url))
+}
+
+#[tauri::command]
+pub async fn model_key_address(custom_model_id: String) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || address_in(KEY_SERVICE, &custom_model_id))
+        .await
+        .map_err(|_| "Couldn't reach the Keychain.".to_string())?
 }
 
 #[tauri::command]
@@ -368,6 +383,7 @@ fn agent(read_secs: u64) -> ureq::Agent {
         .timeout_connect(Duration::from_secs(10))
         .timeout_read(Duration::from_secs(read_secs))
         .timeout_write(Duration::from_secs(30))
+        .redirects(0)
         .build()
 }
 
@@ -718,17 +734,11 @@ pub async fn model_key_test(
 /// route has the provider and the address stored with the key (WP-129). Anything else is "unknown". Ollama has
 /// no key, so it passes through. `read_key` and `lookup` are the Keychain and the network; tests stand in for both.
 pub fn context_window_in(
-    hosts: Option<&std::path::Path>,
     route: &CustomRoute,
-    read_key: impl FnOnce(&CustomRoute) -> Option<String>,
+    read_item: crate::key_binding::ItemReader,
     lookup: impl FnOnce(&CustomRoute, Option<&str>) -> Option<u64>,
 ) -> Option<u64> {
-    let route = crate::key_binding::bound_route(hosts, route)?;
-    let key = if route.provider == "ollama" {
-        None
-    } else {
-        read_key(&route)
-    };
+    let (route, key) = crate::key_binding::bound_key(route, read_item).ok()??;
     lookup(&route, key.as_deref())
 }
 
@@ -747,12 +757,10 @@ pub async fn model_context_window(
             custom_model_id,
             reasoning_effort: None,
         };
-        let hosts = crate::key_binding::store_dir();
+        // No key is not an error for a window lookup: the answer is simply unknown.
         Ok(context_window_in(
-            hosts.as_deref(),
             &route,
-            // No key is not an error for a window lookup: the answer is simply unknown.
-            |bound| read_key_in(KEY_SERVICE, &bound.custom_model_id).unwrap_or_default(),
+            &crate::key_binding::keychain_item,
             remembered_window,
         ))
     })
@@ -1077,36 +1085,51 @@ impl StreamTranslator {
 
 // ---- the router -------------------------------------------------------------------------------------------------------
 
+/// One router. `upstream` is the key (or the Ollama stand-in) the router sends to the provider; `token` is the random
+/// token the child process is given instead of the key. The child never sees the key.
 struct Running {
     port: u16,
+    upstream: String,
     token: String,
     route: CustomRoute,
 }
 
+/// A random token for one router (256 bits from the OS). Useless anywhere but that router.
+fn new_child_token() -> String {
+    format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
 static ROUTERS: Mutex<Vec<Running>> = Mutex::new(Vec::new());
 
-/// The router for this route and token, started on first use (127.0.0.1, random port). Returns its port.
-pub fn ensure_router(route: &CustomRoute, token: &str) -> Result<u16, String> {
+/// The router for this route and upstream key, started on first use (127.0.0.1, random port). Returns its port and
+/// the token the child must send to it.
+pub fn ensure_router(route: &CustomRoute, upstream: &str) -> Result<(u16, String), String> {
     if !may_route(route) {
         return Err("This model isn't routed: Claude models always use your Claude login.".into());
     }
     let mut routers = ROUTERS.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(r) = routers
         .iter()
-        .find(|r| &r.route == route && r.token == token)
+        .find(|r| &r.route == route && r.upstream == upstream)
     {
-        return Ok(r.port);
+        return Ok((r.port, r.token.clone()));
     }
-    let port = start_router(route.clone(), token.to_string())?;
+    let token = new_child_token();
+    let port = start_router(route.clone(), upstream.to_string(), token.clone())?;
     routers.push(Running {
         port,
-        token: token.to_string(),
+        upstream: upstream.to_string(),
+        token: token.clone(),
         route: route.clone(),
     });
-    Ok(port)
+    Ok((port, token))
 }
 
-pub fn start_router(route: CustomRoute, token: String) -> Result<u16, String> {
+pub fn start_router(route: CustomRoute, upstream: String, token: String) -> Result<u16, String> {
     let listener = TcpListener::bind("127.0.0.1:0")
         .map_err(|_| "Couldn't start the model router.".to_string())?;
     let port = listener.local_addr().map_err(|e| e.to_string())?.port();
@@ -1116,8 +1139,9 @@ pub fn start_router(route: CustomRoute, token: String) -> Result<u16, String> {
             for stream in listener.incoming().flatten() {
                 let route = route.clone();
                 let token = token.clone();
+                let upstream = upstream.clone();
                 let _ = std::thread::Builder::new().spawn(move || {
-                    let _ = handle(stream, &route, &token);
+                    let _ = handle(stream, &route, &token, &upstream);
                 });
             }
         })
@@ -1228,7 +1252,12 @@ fn scrub(text: &str, token: &str) -> String {
     t
 }
 
-fn handle(mut stream: TcpStream, route: &CustomRoute, token: &str) -> std::io::Result<()> {
+fn handle(
+    mut stream: TcpStream,
+    route: &CustomRoute,
+    token: &str,
+    upstream: &str,
+) -> std::io::Result<()> {
     let req = read_request(&mut stream)?;
     if let Err((status, message)) = authorize(&req.headers, token) {
         return respond(
@@ -1258,7 +1287,7 @@ fn handle(mut stream: TcpStream, route: &CustomRoute, token: &str) -> std::io::R
             let n = (body.to_string().len() / 4) as u64;
             respond(&mut stream, 200, &json!({"input_tokens": n}))
         }
-        "/v1/messages" => forward(&mut stream, route, token, &body),
+        "/v1/messages" => forward(&mut stream, route, upstream, &body),
         _ => respond(
             &mut stream,
             404,
@@ -1362,7 +1391,7 @@ pub fn is_effort_refusal(code: u16, text: &str) -> bool {
 fn forward(
     stream: &mut TcpStream,
     route: &CustomRoute,
-    token: &str,
+    key: &str,
     body: &Value,
 ) -> std::io::Result<()> {
     let model = route.model_id.trim();
@@ -1384,7 +1413,7 @@ fn forward(
             .post(&chat_url(&route.provider, &route.base_url))
             .set("Content-Type", "application/json");
         if route.provider != "ollama" {
-            request = request.set("Authorization", &format!("Bearer {token}"));
+            request = request.set("Authorization", &format!("Bearer {key}"));
         }
         request.send_string(&payload.to_string())
     };
@@ -1404,7 +1433,7 @@ fn forward(
                 result = send(&upstream_body);
             } else {
                 record_receipt(route, sent_effort, false, code);
-                let text = scrub(&text, token);
+                let text = scrub(&text, key);
                 return respond_upstream_error(stream, route, code, &text);
             }
         }
@@ -1416,7 +1445,7 @@ fn forward(
         }
         Err(ureq::Error::Status(code, r)) => {
             record_receipt(route, sent_effort, retried_without, code);
-            let text = scrub(&r.into_string().unwrap_or_default(), token);
+            let text = scrub(&r.into_string().unwrap_or_default(), key);
             return respond_upstream_error(stream, route, code, &text);
         }
         Err(ureq::Error::Transport(_)) => {
@@ -1550,34 +1579,27 @@ fn forward_answer(
 
 /// What `harness_spawn` applies for a Claude Code session on a custom model.
 pub fn prepare_routed_session(route: &CustomRoute) -> Result<RoutedEnv, String> {
-    let hosts = crate::key_binding::store_dir();
-    prepare_routed_session_in(hosts.as_deref(), route, |bound| {
-        read_key_in(KEY_SERVICE, &bound.custom_model_id)
-    })
+    prepare_routed_session_in(route, &crate::key_binding::keychain_item)
 }
 
 /// The routed session for `route`, with the key read through `read_key`. The key is read only for the provider and
 /// address stored with it (WP-129), and the router is started at that stored address, never the caller's.
 pub(crate) fn prepare_routed_session_in(
-    hosts: Option<&std::path::Path>,
     route: &CustomRoute,
-    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
+    read_item: crate::key_binding::ItemReader,
 ) -> Result<RoutedEnv, String> {
     if !may_route(route) {
         return Err("This model isn't routed: Claude models always use your Claude login.".into());
     }
     // The route is the stored one, rebuilt from its parsed address. A key with nothing stored, or a route that
     // names another provider or address, gets no session at all.
-    let Some(route) = crate::key_binding::bound_route(hosts, route) else {
+    let Some((route, key)) = crate::key_binding::bound_key(route, read_item)? else {
         return Err(crate::key_binding::NOT_STORED_FOR_THIS.into());
     };
-    let key = if route.provider == "ollama" {
-        None
-    } else {
-        read_key(&route)?
-    };
-    let token = session_token(&route.provider, key.as_deref())?;
-    let port = ensure_router(&route, &token)?;
+    // The key is the router's upstream credential and never leaves this process: the child is given a random
+    // token that only the router accepts (WP-129).
+    let upstream = session_token(&route.provider, key.as_deref())?;
+    let (port, token) = ensure_router(&route, &upstream)?;
     // The provider's own window for this model, asked once per route. Nothing here may fail the spawn: a session on
     // an assumed-200K window is still a working session.
     let window = remembered_window(&route, key.as_deref());
@@ -1653,21 +1675,15 @@ pub fn quick_complete(
 /// route has the provider and the address that were stored when the key was saved (WP-129). Ollama has no
 /// key, so it passes through. `read_key` and `send` are the Keychain and the network; tests stand in for both.
 pub fn quick_pick_in(
-    hosts: Option<&std::path::Path>,
     route: &CustomRoute,
-    read_key: impl FnOnce(&CustomRoute) -> Result<Option<String>, String>,
+    read_item: crate::key_binding::ItemReader,
     send: impl FnOnce(&CustomRoute, Option<&str>) -> Result<String, String>,
 ) -> Result<String, String> {
     if !may_route(route) {
         return Err("That model can't be used for a quick pick.".into());
     }
-    let Some(route) = crate::key_binding::bound_route(hosts, route) else {
+    let Some((route, key)) = crate::key_binding::bound_key(route, read_item)? else {
         return Err(crate::key_binding::NOT_STORED_FOR_THIS.into());
-    };
-    let key = if route.provider == "ollama" {
-        None
-    } else {
-        read_key(&route)?
     };
     send(&route, key.as_deref())
 }
@@ -1691,21 +1707,15 @@ pub async fn model_quick_pick(
             custom_model_id,
             reasoning_effort: None,
         };
-        let hosts = crate::key_binding::store_dir();
-        quick_pick_in(
-            hosts.as_deref(),
-            &route,
-            |bound| read_key_in(KEY_SERVICE, &bound.custom_model_id),
-            |bound, key| {
-                quick_complete(
-                    bound,
-                    key,
-                    &system,
-                    &prompt,
-                    timeout_ms.unwrap_or(QUICK_PICK_MAX_MS),
-                )
-            },
-        )
+        quick_pick_in(&route, &crate::key_binding::keychain_item, |bound, key| {
+            quick_complete(
+                bound,
+                key,
+                &system,
+                &prompt,
+                timeout_ms.unwrap_or(QUICK_PICK_MAX_MS),
+            )
+        })
     })
     .await
     .map_err(|_| "The quick pick didn't finish.".to_string())?
@@ -1715,15 +1725,22 @@ pub async fn model_quick_pick(
 mod tests {
     use super::*;
 
-    /// A temporary folder of stored key hosts, with one key saved for `saved` (if any).
-    fn hosts_with(name: &str, saved: &[CustomRoute]) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("wp129-router-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        for route in saved {
-            crate::key_binding::record(&dir, route).unwrap();
-        }
-        dir
+    /// The model-key Keychain for these tests: one sealed item per saved route, holding `TEST_KEY`.
+    fn keychain_with(saved: &[CustomRoute]) -> impl Fn(&str) -> Result<Option<String>, String> {
+        crate::key_binding::fake_keychain(
+            saved
+                .iter()
+                .map(|r| {
+                    (
+                        r.custom_model_id.clone(),
+                        crate::key_binding::sealed_item(r, TEST_KEY),
+                    )
+                })
+                .collect(),
+        )
     }
+
+    const TEST_KEY: &str = "test-key1234";
 
     /// The addresses a key must never be sent to when it was saved for `https://llm.example/v1`.
     const WRONG_ADDRESSES: &[&str] = &[
@@ -1748,56 +1765,35 @@ mod tests {
     }
 
     #[test]
-    fn a_quick_pick_reads_the_key_only_for_the_address_stored_with_it() {
+    fn a_quick_pick_gets_the_key_only_for_the_address_stored_with_it() {
         let saved = stored_route();
-        let hosts = hosts_with("quick", std::slice::from_ref(&saved));
+        let store = keychain_with(std::slice::from_ref(&saved));
         let run = |given: &CustomRoute| {
-            let reads = std::cell::Cell::new(0);
             let sent = std::cell::RefCell::new(None);
-            let out = quick_pick_in(
-                Some(&hosts),
-                given,
-                |_| {
-                    reads.set(reads.get() + 1);
-                    Ok(Some("test-key1234".to_string()))
-                },
-                |r, key| {
-                    *sent.borrow_mut() = Some((r.base_url.clone(), key.map(str::to_string)));
-                    Ok("picked".to_string())
-                },
-            );
-            (out, reads.get(), sent.into_inner())
+            let out = quick_pick_in(given, &store, |r, key| {
+                *sent.borrow_mut() = Some((r.base_url.clone(), key.map(str::to_string)));
+                Ok("picked".to_string())
+            });
+            (out, sent.into_inner())
         };
-
         // The address it was saved with, written another way, goes to the saved address.
         let mut same = saved.clone();
         same.base_url = "https://LLM.Example./v1/".into();
-        let (out, reads, sent) = run(&same);
+        let (out, sent) = run(&same);
         assert_eq!(out, Ok("picked".to_string()));
-        assert_eq!(reads, 1);
         assert_eq!(
             sent,
             Some((
                 "https://llm.example/v1".to_string(),
-                Some("test-key1234".to_string())
+                Some(TEST_KEY.to_string())
             ))
         );
-
-        // Any other address: refused, the key is never read and nothing is sent.
         for base in WRONG_ADDRESSES {
             let mut given = saved.clone();
             given.base_url = (*base).into();
-            let (out, reads, sent) = run(&given);
-            // Refused either as an address no router uses (plain http off this Mac) or as not the stored one.
-            assert!(
-                [
-                    crate::key_binding::NOT_STORED_FOR_THIS.to_string(),
-                    "That model can't be used for a quick pick.".to_string()
-                ]
-                .contains(out.as_ref().unwrap_err()),
-                "{base}: {out:?}"
-            );
-            assert_eq!((reads, sent), (0, None), "{base}");
+            let (out, sent) = run(&given);
+            assert!(out.is_err(), "{base}: {out:?}");
+            assert_eq!(sent, None, "{base}");
         }
         // Another account, another provider, and a key with nothing stored at all.
         let mut other_account = saved.clone();
@@ -1806,87 +1802,62 @@ mod tests {
         other_provider.provider = "openrouter".into();
         let unsaved = route("xai", "https://api.x.ai/v1", "grok-4-fast");
         for given in [other_account, other_provider, unsaved] {
-            let (out, reads, sent) = run(&given);
+            let (out, sent) = run(&given);
             assert!(out.is_err(), "{given:?}");
-            assert_eq!((reads, sent), (0, None), "{given:?}");
+            assert_eq!(sent, None, "{given:?}");
         }
-        let _ = std::fs::remove_dir_all(&hosts);
+        // A plain key (saved with no address) is unbound and is never sent.
+        let plain = |_: &str| Ok(Some(TEST_KEY.to_string()));
+        let out = quick_pick_in(&saved, &plain, |_, _| Ok("sent".to_string()));
+        assert_eq!(
+            out,
+            Err(crate::key_binding::NOT_STORED_FOR_THIS.to_string())
+        );
     }
 
     #[test]
-    fn a_context_window_reads_the_key_only_for_the_address_stored_with_it() {
+    fn a_context_window_gets_the_key_only_for_the_address_stored_with_it() {
         let saved = stored_route();
-        let hosts = hosts_with("window", std::slice::from_ref(&saved));
+        let store = keychain_with(std::slice::from_ref(&saved));
         let run = |given: &CustomRoute| {
-            let reads = std::cell::Cell::new(0);
             let looked = std::cell::RefCell::new(None);
-            let out = context_window_in(
-                Some(&hosts),
-                given,
-                |_| {
-                    reads.set(reads.get() + 1);
-                    Some("test-key1234".to_string())
-                },
-                |r, key| {
-                    *looked.borrow_mut() = Some((r.base_url.clone(), key.map(str::to_string)));
-                    Some(1_000_000)
-                },
-            );
-            (out, reads.get(), looked.into_inner())
+            let out = context_window_in(given, &store, |r, key| {
+                *looked.borrow_mut() = Some((r.base_url.clone(), key.map(str::to_string)));
+                Some(1_000_000)
+            });
+            (out, looked.into_inner())
         };
         let mut same = saved.clone();
         same.base_url = "https://LLM.Example./v1/".into();
-        let (out, reads, looked) = run(&same);
-        assert_eq!((out, reads), (Some(1_000_000), 1));
+        let (out, looked) = run(&same);
+        assert_eq!(out, Some(1_000_000));
         assert_eq!(
             looked,
             Some((
                 "https://llm.example/v1".to_string(),
-                Some("test-key1234".to_string())
+                Some(TEST_KEY.to_string())
             ))
         );
         for base in WRONG_ADDRESSES {
             let mut given = saved.clone();
             given.base_url = (*base).into();
-            let (out, reads, looked) = run(&given);
-            assert_eq!((out, reads, looked), (None, 0, None), "{base}");
+            let (out, looked) = run(&given);
+            assert_eq!((out, looked), (None, None), "{base}");
         }
         let mut other_account = saved.clone();
         other_account.custom_model_id = "custom-2".into();
-        let mut other_provider = saved.clone();
-        other_provider.provider = "openrouter".into();
         let unsaved = route("xai", "https://api.x.ai/v1", "grok-4-fast");
-        for given in [other_account, other_provider, unsaved] {
-            let (out, reads, looked) = run(&given);
-            assert_eq!((out, reads, looked), (None, 0, None), "{given:?}");
+        for given in [other_account, unsaved] {
+            let (out, looked) = run(&given);
+            assert_eq!((out, looked), (None, None), "{given:?}");
         }
-        // No data folder: no key. Ollama needs none.
-        let (mut reads, mut asked) = (0, 0);
-        let out = context_window_in(
-            None,
-            &saved,
-            |_| {
-                reads += 1;
-                None
-            },
-            |_, _| {
-                asked += 1;
-                Some(1)
-            },
-        );
-        assert_eq!((out, reads, asked), (None, 0, 0));
+        // Ollama needs no key.
         let local = route("ollama", "http://localhost:11434", "llama3.2");
-        let out = context_window_in(
-            None,
-            &local,
-            |_| panic!("Ollama has no key"),
-            |_, key| {
-                assert_eq!(key, None);
-                Some(8192)
-            },
-        );
+        let out = context_window_in(&local, &|_: &str| panic!("Ollama has no key"), |_, key| {
+            assert_eq!(key, None);
+            Some(8192)
+        });
         assert_eq!(out, Some(8192));
-        let _ = std::fs::remove_dir_all(&hosts);
     }
 
     #[test]
@@ -1925,36 +1896,24 @@ mod tests {
     }
 
     #[test]
-    fn a_quick_pick_with_no_data_folder_uses_no_key_and_ollama_needs_none() {
+    fn a_quick_pick_with_no_stored_key_sends_nothing_and_claude_is_never_routed() {
+        let none = |_: &str| Ok(None);
         let saved = stored_route();
-        let mut reads = 0;
-        let out = quick_pick_in(
-            None,
-            &saved,
-            |_| {
-                reads += 1;
-                Ok(Some("test-key1234".to_string()))
-            },
-            |_, _| Ok("picked".to_string()),
-        );
-        assert!(out.is_err());
-        assert_eq!(reads, 0);
-        let local = route("ollama", "http://localhost:11434", "llama3.2");
-        let out = quick_pick_in(
-            None,
-            &local,
-            |_| panic!("Ollama has no key"),
-            |_, key| {
-                assert_eq!(key, None);
-                Ok("picked".to_string())
-            },
-        );
-        assert_eq!(out, Ok("picked".to_string()));
-        // A Claude model is never routed, with its own plain sentence.
-        let claude = route("custom", "https://llm.example/v1", "claude-sonnet");
-        let out = quick_pick_in(None, &claude, |_| Ok(None), |_, _| Ok(String::new()));
         assert_eq!(
-            out,
+            quick_pick_in(&saved, &none, |_, _| Ok(String::new())),
+            Err(crate::key_binding::NOT_STORED_FOR_THIS.to_string())
+        );
+        let local = route("ollama", "http://localhost:11434", "llama3.2");
+        assert_eq!(
+            quick_pick_in(&local, &|_: &str| panic!("Ollama has no key"), |_, key| {
+                assert_eq!(key, None);
+                Ok("ok".to_string())
+            }),
+            Ok("ok".to_string())
+        );
+        let claude = route("custom", "https://llm.example/v1", "claude-sonnet");
+        assert_eq!(
+            quick_pick_in(&claude, &none, |_, _| Ok(String::new())),
             Err("That model can't be used for a quick pick.".to_string())
         );
     }
@@ -2086,7 +2045,7 @@ mod tests {
     /// WP-129: a routed Claude Code session reads a key only for the provider and address stored with it. The
     /// caller's route cannot point a saved key at another address, another provider or another account.
     #[test]
-    fn a_routed_session_reads_a_key_only_for_the_address_stored_with_it() {
+    fn a_routed_session_gets_the_key_only_for_the_address_stored_with_it() {
         let stored = CustomRoute {
             provider: "custom".into(),
             base_url: "https://llm.example/v1".into(),
@@ -2094,37 +2053,34 @@ mod tests {
             custom_model_id: "routed-acct".into(),
             reasoning_effort: None,
         };
-        let hosts = hosts_with("routed-session", std::slice::from_ref(&stored));
-        let attempt = |given: &CustomRoute| {
-            let reads = std::cell::Cell::new(0usize);
-            let out = prepare_routed_session_in(Some(&hosts), given, |_| {
-                reads.set(reads.get() + 1);
-                Ok(Some("sk-routed-0123456789".to_string()))
-            });
-            (out.is_ok(), reads.get())
-        };
+        let key = "sk-routed-0123456789";
+        let store = crate::key_binding::fake_keychain(vec![(
+            "routed-acct".to_string(),
+            crate::key_binding::sealed_item(&stored, key),
+        )]);
+        let attempt = |given: &CustomRoute| prepare_routed_session_in(given, &store).is_ok();
         for address in WRONG_ADDRESSES {
             let given = CustomRoute {
                 base_url: (*address).into(),
                 ..stored.clone()
             };
-            assert_eq!(attempt(&given), (false, 0), "{address}");
+            assert!(!attempt(&given), "{address}");
         }
         let other_account = CustomRoute {
             custom_model_id: "routed-other".into(),
             ..stored.clone()
         };
-        assert_eq!(attempt(&other_account), (false, 0));
+        assert!(!attempt(&other_account));
         let other_provider = CustomRoute {
             provider: "openrouter".into(),
             ..stored.clone()
         };
-        assert_eq!(attempt(&other_provider), (false, 0));
-        // Nothing stored at all: the key is never read.
-        assert!(prepare_routed_session_in(None, &stored, |_| {
-            panic!("a key must not be read with no folder of stored hosts")
-        })
-        .is_err());
+        assert!(!attempt(&other_provider));
+        // The bound route gets a session. The child's token is not the key, and the key is in no variable.
+        let (set, _) = prepare_routed_session_in(&stored, &store).unwrap();
+        assert!(set.iter().all(|(_, value)| !value.contains(key)));
+        // Nothing stored at all: no session, and no key is sent.
+        assert!(prepare_routed_session_in(&stored, &|_: &str| Ok(None)).is_err());
     }
 
     #[test]
@@ -2161,7 +2117,7 @@ mod tests {
         assert_eq!(authorize(&h, "xai-fake").unwrap_err().0, 401);
         h.insert("authorization".to_string(), "Bearer xai-fake".to_string());
         assert!(authorize(&h, "xai-fake").is_ok());
-        assert!(save_key_in(TEST_KEY_SERVICE, "x1", "sk-ant-api03-zzz").is_err());
+        assert!(save_key_in(TEST_KEY_SERVICE, "x1", "sk-ant-api03-zzz", None).is_err());
     }
 
     /// The window a routed model really has comes from the provider's own list, under whatever name it uses; an
@@ -2418,10 +2374,10 @@ mod tests {
             "fake-model",
         );
         r.reasoning_effort = Some("high".into());
-        let port = start_router(r, "fake-key-123".into()).unwrap();
+        let port = start_router(r, "fake-key-123".into(), "child-token-123".into()).unwrap();
         let resp = agent(10)
             .post(&format!("http://127.0.0.1:{port}/v1/messages?beta=true"))
-            .set("Authorization", "Bearer fake-key-123")
+            .set("Authorization", "Bearer child-token-123")
             .send_string(&json!({"model": "x", "max_tokens": 5, "stream": true, "messages": [{"role": "user", "content": "ping"}]}).to_string())
             .unwrap();
         let text = resp.into_string().unwrap();
@@ -2477,7 +2433,7 @@ mod tests {
     fn ask(router: u16) -> Result<String, u16> {
         match agent(10)
             .post(&format!("http://127.0.0.1:{router}/v1/messages"))
-            .set("Authorization", "Bearer fake-key-123")
+            .set("Authorization", "Bearer child-token-123")
             .send_string(&json!({"model": "x", "max_tokens": 5, "messages": [{"role": "user", "content": "ping"}]}).to_string())
         {
             Ok(r) => Ok(r.into_string().unwrap()),
@@ -2493,7 +2449,8 @@ mod tests {
         );
         let mut r = route("xai", &format!("http://127.0.0.1:{up}/v1"), "grok-4.6");
         r.reasoning_effort = Some("medium".into());
-        let router = start_router(r.clone(), "fake-key-123".into()).unwrap();
+        let router =
+            start_router(r.clone(), "fake-key-123".into(), "child-token-123".into()).unwrap();
 
         // The chat gets its answer, not the provider's 400.
         let first = ask(router).expect("the retry without the effort field answers");
@@ -2506,7 +2463,7 @@ mod tests {
         }
 
         // Later messages for the same model skip the field straight away, through any router for that model.
-        let again = start_router(r, "fake-key-123".into()).unwrap();
+        let again = start_router(r, "fake-key-123".into(), "child-token-123".into()).unwrap();
         assert!(ask(router).unwrap().contains("pong"));
         assert!(ask(again).unwrap().contains("pong"));
         let bodies = seen.lock().unwrap();
@@ -2533,11 +2490,16 @@ mod tests {
         let mut high = medium.clone();
         high.reasoning_effort = Some("high".into());
 
-        let at_medium = start_router(medium.clone(), "fake-key-123".into()).unwrap();
+        let at_medium = start_router(
+            medium.clone(),
+            "fake-key-123".into(),
+            "child-token-123".into(),
+        )
+        .unwrap();
         assert!(ask(at_medium).unwrap().contains("pong"));
         assert!(ask(at_medium).unwrap().contains("pong"));
         // Medium was refused once and then skipped; High is still tried, because it may well be accepted.
-        let at_high = start_router(high, "fake-key-123".into()).unwrap();
+        let at_high = start_router(high, "fake-key-123".into(), "child-token-123".into()).unwrap();
         assert!(ask(at_high).unwrap().contains("pong"));
         let bodies = seen.lock().unwrap().clone();
         assert_eq!(bodies.len(), 5, "{bodies:?}");
@@ -2596,7 +2558,7 @@ mod tests {
             "deepseek-chat",
         );
         r.reasoning_effort = Some("high".into());
-        let router = start_router(r, "fake-key-123".into()).unwrap();
+        let router = start_router(r, "fake-key-123".into(), "child-token-123".into()).unwrap();
         assert_eq!(ask(router), Err(400));
         assert_eq!(seen.lock().unwrap().len(), 1);
         assert_eq!(ask(router), Err(400));
@@ -2626,7 +2588,7 @@ mod tests {
         assert!(session_token("xai", Some("sk-ant-oat01-x"))
             .unwrap_err()
             .contains(CLAUDE_KEY_ERROR));
-        assert!(save_key_in(TEST_KEY_SERVICE, "x1", "sk-ant-api03-x")
+        assert!(save_key_in(TEST_KEY_SERVICE, "x1", "sk-ant-api03-x", None)
             .unwrap_err()
             .contains(CLAUDE_KEY_ERROR));
         assert_eq!(
@@ -2657,7 +2619,7 @@ mod tests {
             return;
         }
         let id = format!("proof-{}", std::process::id());
-        save_key_in(TEST_KEY_SERVICE, &id, "not-a-real-key").unwrap();
+        save_key_in(TEST_KEY_SERVICE, &id, "not-a-real-key", None).unwrap();
         assert_eq!(
             read_key_in(TEST_KEY_SERVICE, &id).unwrap().as_deref(),
             Some("not-a-real-key")
@@ -2695,8 +2657,9 @@ mod tests {
             return;
         };
         let r = route("ollama", "http://localhost:11434", &model);
-        let token = session_token("ollama", None).unwrap();
-        let port = start_router(r.clone(), token.clone()).unwrap();
+        let upstream = session_token("ollama", None).unwrap();
+        let token = "child-token-123".to_string();
+        let port = start_router(r.clone(), upstream, token.clone()).unwrap();
         let (set, remove) = routed_env(&r, &token, port, None);
         let dir =
             std::env::temp_dir().join(format!("monocode-router-proof-{}", std::process::id()));
@@ -2753,8 +2716,9 @@ mod tests {
         };
         let r = route("custom", &base_url, &model_id);
         let key = read_key_in(KEY_SERVICE, &custom_model_id).unwrap();
-        let token = session_token("custom", key.as_deref()).unwrap();
-        let port = start_router(r.clone(), token.clone()).unwrap();
+        let upstream = session_token("custom", key.as_deref()).unwrap();
+        let token = "child-token-123".to_string();
+        let port = start_router(r.clone(), upstream, token.clone()).unwrap();
         let window = remembered_window(&r, key.as_deref());
         println!("[live-route] window from the provider: {window:?}");
         assert_eq!(window, Some(1048576));
