@@ -917,6 +917,8 @@ async function delegate(
       title,
       asks,
       goal,
+      // WP-156: the same project key the decision gate stores answers under (see firstMateTool).
+      standingProject: owner.team?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd,
       ...(sharedTask ? { taskId: sharedTask } : {}),
       input,
       gates,
@@ -1431,6 +1433,7 @@ async function briefLead(
     input: Record<string, unknown>;
     gates?: GateRequest;
     gateFolder?: string;
+    standingProject: string;
   },
 ) {
   const { lead, whenBusy } = leadRequest(job.input, tasks);
@@ -1439,7 +1442,7 @@ async function briefLead(
   let brief = job.brief;
   if (tasks.standingBrief) {
     try {
-      const block = (await tasks.standingBrief(lead))?.trim() ?? "";
+      const block = (await tasks.standingBrief(job.standingProject))?.trim() ?? "";
       if (block) brief = `${job.brief}\n\n${block}`;
     } catch {
       brief = job.brief;

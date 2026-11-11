@@ -113,7 +113,7 @@ describe("tasks.delegate {lead}: the leadership team briefs a project's Lead", (
     const tasks = { owned: vi.fn(async () => []), acknowledge: vi.fn(), nextChange: vi.fn(), cancel: vi.fn(), briefLead, standingBrief } as unknown as AgentAppTasksHost;
     const h = host({ tasks } as Partial<AgentAppHost>);
     await handleAgentApp(source, "b7", "tasks.delegate", { brief: "Ash: \"ship the room\"", goal: "the room shows the report", lead: "hub" }, h.api);
-    expect(standingBrief).toHaveBeenCalledWith("hub");
+    expect(standingBrief).toHaveBeenCalledWith(PROJECT);
     expect(briefLead.mock.calls[0][2].brief).toBe(`${base}\n\n${block}`);
 
     standingBrief.mockResolvedValueOnce("   ");
