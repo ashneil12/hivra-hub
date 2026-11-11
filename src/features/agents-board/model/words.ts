@@ -53,6 +53,47 @@ export function rowName(
   return "Untitled";
 }
 
+const SECRET = /sk-|api[_ -]?key|\btoken\b|bearer /i;
+const STACK = /^\s*at\b/;
+const CODE = /\b(?:stopFailed|unloaded|nonce|tasks\.cancel|sessionId|delegationId)\b/i;
+const FILE = /(?:^|[\s(])(?:~\/|\/|[A-Za-z]:\\)|\b[\w.-]+\.(?:ts|tsx|js|mjs|cjs|rs|json)(?::\d+)?\b/;
+
+const SWAPS: readonly (readonly [RegExp, string])[] = [
+  [/\bis blocked\b/gi, "needs you"],
+  [/\bare blocked\b/gi, "need you"],
+  [/\bblocked\b/gi, "needs you"],
+  [/\brunning\b/gi, "working"],
+  [/\bfailed\b/gi, "did not finish"],
+  [/\bcompleted\b/gi, "done"],
+  [/\bmonos?\b/gi, "first mate"],
+  [/\bagents?\b/gi, "first mate"],
+  [/\bbots?\b/gi, "first mate"],
+  [/\bcoordinators?\b/gi, "Chief of Staff"],
+  [/\bcaptains?\b/gi, "Chief of Staff"],
+];
+
+/** A failure line a person may read. A stack, a secret, a path or a code name is left out. */
+export function plainFailure(value: string | null | undefined): string | null {
+  const raw = (value ?? "").replace(/\r\n/g, "\n");
+  for (const line of raw.split("\n")) {
+    const text = line.trim();
+    if (!text || STACK.test(text) || SECRET.test(text) || CODE.test(text) || FILE.test(text)) continue;
+    let next = plainWords(text);
+    for (const [pattern, word] of SWAPS) next = next.replace(pattern, word);
+    next = next.replace(/[ \t]{2,}/g, " ").replace(/^[,\s]+|[,\s]+$/g, "").trim();
+    if (!next || looksLikePath(next) || looksLikeId(next)) continue;
+    return next.length > 240 ? next.slice(0, 240).trim() : next;
+  }
+  return null;
+}
+
+/** The row's own brief wins. A status notice is a failure reason and has to read as plain words. */
+export function workerBrief(brief: string | null | undefined, notice: string | null | undefined): string | null {
+  const own = (brief ?? "").replace(/\r/g, "").trim();
+  if (own) return own;
+  return plainFailure(notice);
+}
+
 export function taskWords(value: string | null | undefined): string | null {
   const text = plainWords(value ?? "");
   if (!text) return null;

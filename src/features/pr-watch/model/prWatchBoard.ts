@@ -16,9 +16,8 @@ export function currentPrWatches(): PrWatchTracker | null {
 const noSubscribe = () => () => undefined;
 const zero = () => 0;
 
-/** Re-render on any change to the watches; returns the tracker (null before the app made one). */
-export function usePrWatchesVersion(): PrWatchTracker | null {
+/** Re-render on any change to the watches. The number changes with them, so a memo can depend on it. */
+export function usePrWatchesVersion(): number {
   const tracker = current;
-  useSyncExternalStore(tracker ? tracker.subscribe : noSubscribe, tracker ? tracker.snapshot : zero);
-  return tracker;
+  return useSyncExternalStore(tracker ? tracker.subscribe : noSubscribe, tracker ? tracker.snapshot : zero);
 }
