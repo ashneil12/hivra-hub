@@ -1,4 +1,3 @@
-import { withStoredNotes } from "../../../app/model/teleportSessionState";
 import { syncTeleportLock } from "../../connections/model/teleportLock";
 import { teleportStateOf } from "../../connections/model/teleportState";
 import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
@@ -512,7 +511,6 @@ const movedSessionIds = new Map<string, number>();
 /** Test-only reset: a new process starts with no moved rows known, and reads fill the set again. */
 export function forgetMovedRowsForTests(): void {
   movedSessionIds.clear();
-  sessionsWithMoveNotes.clear();
 }
 
 /** When a chat was moved away (the marker's time), or 0 when the row does not say. */
@@ -549,42 +547,16 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-const MOVE_NOTE_NOTICES = new Set([
-  "teleport-freeze-asked",
-  "teleport-incoming",
-  "teleport-release-owed",
-  "teleport-aborted",
-]);
-
 /**
- * Chats this window has stored a move note for. An ordinary save of one is checked against the stored row, so a quit
- * cannot erase a note this window's copy never heard about. Other chats are not read first: a save must stay one write.
+ * A reply saved after a move step read the row. Release and activate send a new transcript on purpose; every other
+ * step keeps a block the stored row gained and the step's copy does not have.
  */
-const sessionsWithMoveNotes = new Set<string>();
-
-function blocksHaveMoveNote(blocks: Array<{ notice?: string }>): boolean {
-  return blocks.some((block) => typeof block.notice === "string" && MOVE_NOTE_NOTICES.has(block.notice));
-}
-
-/** A freeze, a move marker, or any move note. An ordinary save of one is merged with the stored row first. */
-function blocksHaveTeleportState(blocks: Array<{ notice?: string }>): boolean {
-  return blocks.some((block) => (block.notice ?? "").startsWith("teleport"));
-}
-
-/** True when an ordinary save would erase a move note the stored row still has. A failed read does not block the save. */
-async function ordinarySaveDropsMoveNote(sessionId: string, nextBlocks: Block[]): Promise<boolean> {
-  let stored: Session | null;
-  try {
-    stored = await readSession(sessionId);
-  } catch {
-    return false;
-  }
-  if (!stored) return false;
-  const kept = new Set(nextBlocks.map((block) => block.id));
-  return stored.blocks.some((block) => {
-    const notice = block.notice;
-    return typeof notice === "string" && MOVE_NOTE_NOTICES.has(notice) && !kept.has(block.id);
-  });
+function withRepliesSavedSince(stored: Block[], stepBlocks: Block[]): Block[] {
+  const seen = new Set(stepBlocks.map((block) => block.id));
+  const extra = stored.filter(
+    (block) => !(block.notice ?? "").startsWith("teleport") && !seen.has(block.id),
+  );
+  return extra.length === 0 ? stepBlocks : [...stepBlocks, ...extra];
 }
 
 export async function upsertSession(
@@ -608,34 +580,6 @@ export async function upsertSession(
   const payload = mono
     ? persistableMeta(session)
     : sanitizeSessionForPersist(session);
-  // An ordinary save (a quit, an autosave, the flush before a row read) must not put a thawed freeze or a settled
-  // note back, and must not erase one the window's copy never heard about. A move step is allowed to add or clear
-  // the note it owns; the store checks that step. Only a chat that already carries move state is read first, so
-  // every other save stays a single write.
-  let savedBlocks = (payload as SessionUpsertPayload).blocks;
-  if (
-    !teleport &&
-    !mono &&
-    savedBlocks &&
-    (blocksHaveTeleportState(savedBlocks) || sessionsWithMoveNotes.has(session.id))
-  ) {
-    let stored: Session | null = null;
-    try {
-      stored = await readSession(session.id);
-    } catch {
-      // A failed read does not block the save. The store still refuses a stale freeze or note.
-      stored = null;
-    }
-    if (stored) {
-      savedBlocks = withStoredNotes({ ...session, blocks: savedBlocks }, stored).blocks;
-      (payload as SessionUpsertPayload).blocks = savedBlocks;
-    } else if (
-      sessionsWithMoveNotes.has(session.id) &&
-      (await ordinarySaveDropsMoveNote(session.id, savedBlocks))
-    ) {
-      return null;
-    }
-  }
   if (session.orchestrationLeadId) {
     sessionWriteLeadById.set(session.id, session.orchestrationLeadId);
   } else {
@@ -676,6 +620,21 @@ export async function upsertSession(
       monoSavedBlocks.set(session.id, snapshot);
       return summary;
     }
+    // WP-177: a step is applied to the row as it is now, inside this write, so a reply saved since the step read
+    // the row is not overwritten. An ordinary save is not read first; the store keeps the move notes itself.
+    if (teleport && teleport.op !== "release" && teleport.op !== "activate") {
+      try {
+        const stored = await readSession(session.id);
+        if (stored) {
+          (payload as SessionUpsertPayload).blocks = withRepliesSavedSince(
+            stored.blocks,
+            (payload as SessionUpsertPayload).blocks,
+          );
+        }
+      } catch {
+        // A failed read leaves the step as the caller built it.
+      }
+    }
     return invoke<SessionSummary>("session_upsert", {
       session: {
         ...payload,
@@ -695,11 +654,6 @@ export async function upsertSession(
       throw error;
     });
   });
-  // Remember a note only after the step is stored. A refused step leaves the set as it was.
-  if (teleport && summary && !mono) {
-    if (blocksHaveMoveNote(savedBlocks)) sessionsWithMoveNotes.add(session.id);
-    else sessionsWithMoveNotes.delete(session.id);
-  }
   return summary ? normalizeSummary(summary) : null;
 }
 

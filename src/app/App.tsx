@@ -3185,13 +3185,19 @@ function Workspace({
     if (lastPersisted.current.get(session.id) === fingerprint) return;
     void upsertSession(session)
       .then((summary) => {
-        if (!summary) return;
+        // WP-177: a save that does not land stays pending, so a reply is not dropped.
+        if (!summary) {
+          if (!pendingPersist.current.has(session.id)) pendingPersist.current.set(session.id, session);
+          return;
+        }
         lastPersisted.current.set(session.id, fingerprint);
         if (summary.cwd === sidebarCwdRef.current) {
           setHistory((current) => mergeProjectHistorySummary(current, summary));
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!pendingPersist.current.has(session.id)) pendingPersist.current.set(session.id, session);
+      });
   }, []);
 
   useEffect(() => {
@@ -3268,7 +3274,13 @@ function Workspace({
             const fingerprint = persistFingerprint(session);
             if (lastPersisted.current.get(session.id) === fingerprint) return;
             const summary = await upsertSession(session).catch(() => null);
-            if (!summary) return;
+            const pendingNow = pendingPersist.current.get(session.id);
+            if (pendingNow && pendingNow !== session) return;
+            // WP-177: a refused or failed save stays pending. The timer had already cleared it.
+            if (!summary) {
+              if (!pendingNow) pendingPersist.current.set(session.id, session);
+              return;
+            }
             lastPersisted.current.set(session.id, fingerprint);
             if (summary.cwd === sidebarCwdRef.current) {
               setHistory((current) =>

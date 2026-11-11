@@ -62,6 +62,13 @@ export function applyTeleportRow(
       // move, and the stored row is the last save: it has no `busy` and none of the reply streamed since then.
       if (teleportNotes(session) === teleportNotes(row)) return session;
       if (session.busy === true) return withStoredNotes(session, row);
+      // An idle chat with a reply the stored row does not have yet keeps that reply. Taking the row whole would drop it.
+      const unsaved = session.blocks.some(
+        (block) =>
+          !(block.notice ?? "").startsWith("teleport") &&
+          !row.blocks.some((stored) => stored.id === block.id),
+      );
+      if (unsaved) return withStoredNotes(session, row);
       return row;
     });
   });
