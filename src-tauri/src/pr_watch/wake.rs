@@ -356,21 +356,25 @@ fn change_lines(change: &Change, about: &About, frame: &Frame) -> Vec<String> {
             pull_cut,
         } => {
             if files.is_empty() && (*cut_short || *pull_cut) {
+                let merge = format!(
+                    "Merge {} into the branch, push, and wait for green again.",
+                    frame.wrap(about.base_ref)
+                );
                 vec![format!(
                     "- {}",
                     match (*cut_short, *pull_cut) {
                         (true, true) => format!(
-                            "{} (now {}) changed more files than GitHub lists, and this pull request's changed-file list was cut short, so it may touch this pull request. Merge main into the branch, push, and wait for green again.",
+                            "{} (now {}) changed more files than GitHub lists, and this pull request's changed-file list was cut short, so it may touch this pull request. {merge}",
                             frame.wrap(about.base_ref),
                             short(to)
                         ),
                         (false, true) => format!(
-                            "This pull request's changed-file list was cut short, so {} (now {}) may touch it. Merge main into the branch, push, and wait for green again.",
+                            "This pull request's changed-file list was cut short, so {} (now {}) may touch it. {merge}",
                             frame.wrap(about.base_ref),
                             short(to)
                         ),
                         _ => format!(
-                            "{} (now {}) changed more files than GitHub lists since this branch last took it, so it may touch this pull request. Merge main into the branch, push, and wait for green again.",
+                            "{} (now {}) changed more files than GitHub lists since the watch last saw it, so it may touch this pull request. {merge}",
                             frame.wrap(about.base_ref),
                             short(to)
                         ),
@@ -378,12 +382,15 @@ fn change_lines(change: &Change, about: &About, frame: &Frame) -> Vec<String> {
                 )]
             } else {
                 let mut lines = vec![format!(
-                    "- {} (now {}) changed files this pull request touches since this branch last took it:",
+                    "- {} (now {}) changed files this pull request touches since the watch last saw it:",
                     frame.wrap(about.base_ref),
                     short(to)
                 )];
                 lines.extend(listed(files, |file| format!("  - {}", frame.wrap(file))));
-                lines.push("  Merge main into the branch, push, and wait for green again.".into());
+                lines.push(format!(
+                    "  Merge {} into the branch, push, and wait for green again.",
+                    frame.wrap(about.base_ref)
+                ));
                 lines
             }
         }

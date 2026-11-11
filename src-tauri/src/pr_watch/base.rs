@@ -392,19 +392,29 @@ pub fn settle_stale(memo: &mut Memo, read: &PrRead) {
 
 // ---- the merge gate -------------------------------------------------------------------------------------------------
 
+/// The pull request's base branch, as GitHub named it. Empty becomes a plain phrase, never a hard-coded main.
+fn base_name(read: &PrRead) -> String {
+    let name = read.base_ref.trim();
+    if name.is_empty() {
+        "its base branch".to_string()
+    } else {
+        name.to_string()
+    }
+}
+
 /// Which list was cut, in the hold's words. A short pull-request list does not blame the base list.
-fn cut_reason(base_cut: bool, pull_cut: bool, tail: &str) -> String {
+fn cut_reason(name: &str, base_cut: bool, pull_cut: bool, tail: &str) -> String {
     if base_cut && pull_cut {
         format!(
-            "main changed more files than GitHub lists, and this pull request's changed-file list was cut short, since this branch last took main, so it may touch this pull request; {tail}"
+            "{name} changed more files than GitHub lists, and this pull request's changed-file list was cut short, since this branch last took {name}, so it may touch this pull request; {tail}"
         )
     } else if pull_cut {
         format!(
-            "this pull request's changed-file list was cut short, so it may touch files main changed since this branch last took main; {tail}"
+            "this pull request's changed-file list was cut short, so it may touch files {name} changed since this branch last took {name}; {tail}"
         )
     } else {
         format!(
-            "main changed more files than GitHub lists since this branch last took main, so it may touch this pull request; {tail}"
+            "{name} changed more files than GitHub lists since this branch last took {name}, so it may touch this pull request; {tail}"
         )
     }
 }
@@ -415,6 +425,7 @@ fn cut_reason(base_cut: bool, pull_cut: bool, tail: &str) -> String {
 /// the pull request's files holds nothing, and a branch that has main already holds nothing.
 pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Option<String> {
     let pr = format!("{repo}#{number}");
+    let name = base_name(read);
     let Some(base) = read.base_tip.as_deref() else {
         return Some(format!(
             "{pr}'s base branch couldn't be read, so it waits. Try again."
@@ -424,12 +435,12 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
         Ok(Some(sha)) => sha,
         Ok(None) => {
             return Some(format!(
-                "{pr}'s merge base with main couldn't be read, so it waits. Try again."
+                "{pr}'s merge base with {name} couldn't be read, so it waits. Try again."
             ))
         }
         Err(error) => {
             return Some(format!(
-                "{pr} couldn't be checked against main ({error}), so it waits. Try again."
+                "{pr} couldn't be checked against {name} ({error}), so it waits. Try again."
             ))
         }
     };
@@ -439,12 +450,12 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
     let moved = match compare(get, repo, &took, base) {
         Ok(c) if c.status == "diverged" => {
             return Some(format!(
-                "main was rewritten since this branch last took main, so {pr} waits. Merge main into it, push, and wait for green again."
+                "{name} was rewritten since this branch last took {name}, so {pr} waits. Merge {name} into it, push, and wait for green again."
             ))
         }
         Ok(c) if c.status == "behind" => {
             return Some(format!(
-                "main is behind where this branch last took it, so {pr} waits. Merge main into it, push, and wait for green again."
+                "{name} is behind where this branch last took it, so {pr} waits. Merge {name} into it, push, and wait for green again."
             ))
         }
         Ok(c) => Moved {
@@ -454,7 +465,7 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
         },
         Err(error) => {
             return Some(format!(
-                "{pr} couldn't be checked against main's changes ({error}), so it waits. Try again."
+                "{pr} couldn't be checked against {name}'s changes ({error}), so it waits. Try again."
             ))
         }
     };
@@ -466,14 +477,16 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
             ))
         }
     };
-    let tail = "merge main into it, push, and wait for green again. On GitHub, the pull request's Update branch button does the merge for you.";
+    let tail = format!(
+        "merge {name} into it, push, and wait for green again. On GitHub, the pull request's Update branch button does the merge for you."
+    );
     match touch(&moved, &pr_files) {
         Touch::None => None,
         Touch::Named(files) => Some(format!(
-            "main changed {} since this branch last took main; {tail}",
+            "{name} changed {} since this branch last took {name}; {tail}",
             files.join(", ")
         )),
-        Touch::Unknown { base_cut, pull_cut } => Some(cut_reason(base_cut, pull_cut, tail)),
+        Touch::Unknown { base_cut, pull_cut } => Some(cut_reason(&name, base_cut, pull_cut, &tail)),
     }
 }
 
@@ -1063,6 +1076,46 @@ mod tests {
             "{reason}"
         );
         assert!(!reason.contains("changed-file list was cut short"), "{reason}");
+    }
+
+    /// The hold names the pull request's base branch, not a hard-coded main.
+    #[test]
+    fn the_hold_names_the_pull_requests_base_branch() {
+        let get = canned(vec![
+            (format!("compare/{B2}...{H1}"), r#"{"status":"ahead","ahead_by":1,"behind_by":1,"merge_base_commit":{"sha":"b1b1b1b"},"files":[]}"#.into()),
+            (moved_key(), compare_json(&["src/lib.rs"], 0)),
+            ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+        ]);
+        let mut read = open(H1, B2, None);
+        read.base_ref = "develop".into();
+        let reason = hold(&get, "acme/web", 7, H1, &read).expect("held");
+        assert!(
+            reason.contains(
+                "develop changed src/lib.rs since this branch last took develop; merge develop into it"
+            ),
+            "{reason}"
+        );
+        assert!(!reason.contains("main"), "{reason}");
+    }
+
+    /// An empty base name falls back to a plain phrase, still not "main".
+    #[test]
+    fn an_unnamed_base_branch_is_not_called_main() {
+        let get = canned(vec![
+            (format!("compare/{B2}...{H1}"), r#"{"status":"ahead","ahead_by":1,"behind_by":1,"merge_base_commit":{"sha":"b1b1b1b"},"files":[]}"#.into()),
+            (moved_key(), compare_json(&["src/lib.rs"], 0)),
+            ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+        ]);
+        let mut read = open(H1, B2, None);
+        read.base_ref = "  ".into();
+        let reason = hold(&get, "acme/web", 7, H1, &read).expect("held");
+        assert!(
+            reason.contains(
+                "its base branch changed src/lib.rs since this branch last took its base branch; merge its base branch into it"
+            ),
+            "{reason}"
+        );
+        assert!(!reason.contains("main"), "{reason}");
     }
 
     /// r3 MED: the hold's words say the rule: main changed these files since the branch last took main.

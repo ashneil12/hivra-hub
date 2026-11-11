@@ -2627,11 +2627,16 @@ mod tests {
         let wake = &open_wakes(&store)[0];
         assert!(
             wake.text
-                .contains("(now b2b2b2b) changed files this pull request touches since this branch last took it"),
+                .contains("(now b2b2b2b) changed files this pull request touches since the watch last saw it"),
             "{}",
             wake.text
         );
         assert!(wake.text.contains("src/lib.rs"), "{}", wake.text);
+        assert!(
+            !wake.text.contains("Merge main"),
+            "the wake names the real base, not main: {}",
+            wake.text
+        );
         // The next poll on the same base fires nothing.
         let swept = run(&store, &gh, t1 + QUIET_EVERY, &mut paused);
         assert!(swept.wakes.is_empty(), "{swept:?}");
