@@ -378,13 +378,16 @@ fn plain(value: &str, label: &str, max: usize) -> Result<String, String> {
 }
 
 /// A request id for the steering message that releases one waiter (stable, so a retried answer never sends twice).
-fn release_request(key: &str, target: &str, version: i64) -> String {
+/// A match's guidance uses its own id. The real ask of that same key, for the same task, then sends the answer
+/// under the plain id instead of being refused for reusing the guidance text's id.
+fn release_request(key: &str, target: &str, version: i64, guidance: bool) -> String {
     let safe: String = key
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect();
+    let kind = if guidance { "guidance-" } else { "" };
     // The version is part of the id so a reopened question can be answered again. The same id cannot be sent twice.
-    format!("decision-{safe}-v{version}-{target}")
+    format!("decision-{kind}{safe}-v{version}-{target}")
         .chars()
         .take(300)
         .collect()
@@ -493,6 +496,7 @@ fn release_one(
     delegation_id: &str,
     text: &str,
     now: i64,
+    guidance: bool,
 ) -> Result<Option<SteerMessage>, String> {
     let Some(row) = delegations::get(conn, delegation_id)? else {
         return Ok(None);
@@ -510,7 +514,7 @@ fn release_one(
             owner_session: row.owner_session.clone(),
             child_session: row.child_session.clone(),
             delegation_id: Some(row.id.clone()),
-            request_id: release_request(&d.decision_key, &row.id, d.version),
+            request_id: release_request(&d.decision_key, &row.id, d.version, guidance),
             text: text.to_string(),
             mode: Some("auto".into()),
             source: Some("decision".into()),
@@ -677,20 +681,8 @@ fn accept_keys(raw: &[String], question: &str) -> Vec<String> {
     out
 }
 
-fn query_words(question: &str, keys: &[String]) -> Vec<String> {
-    let mut out = words(question);
-    for key in keys {
-        for word in words(key) {
-            if !out.contains(&word) {
-                out.push(word);
-            }
-        }
-    }
-    out
-}
-
-/// Jaccard over the union, at least two shared words, and at least two fifths of the union. The asker's own keys are not
-/// part of its question: only the words in the question itself are.
+/// Jaccard over the union, at least two shared words, and at least two fifths of the union. Neither asker's keys are
+/// part of a question: only the words in the question itself are.
 fn scores_match(shared: usize, union: usize) -> bool {
     union > 0 && shared >= MATCH_SHARED && shared * 5 >= union * 2
 }
@@ -720,6 +712,11 @@ fn red_lines() -> &'static [Regex] {
 /// Ash's red list, ported from `looksRedLine`. A hit is never matched and never ticked for reuse.
 fn looks_red_line(text: &str) -> bool {
     red_lines().iter().any(|pattern| pattern.is_match(text))
+}
+
+/// The question and each option, the same parts `looksRedLine` reads (the prompt and the option labels).
+fn looks_red_line_parts(question: &str, options: &[String]) -> bool {
+    looks_red_line(question) || options.iter().any(|option| looks_red_line(option))
 }
 
 fn person_answered(by: Option<&str>) -> bool {
@@ -752,7 +749,9 @@ fn visible_standing(conn: &Connection, project: &str) -> Result<Vec<Decision>, S
         if !standing_eligible(&row.decision_key) {
             continue;
         }
-        if looks_red_line(&row.question) || looks_red_line(row.answer.as_deref().unwrap_or("")) {
+        if looks_red_line_parts(&row.question, &row.options)
+            || looks_red_line(row.answer.as_deref().unwrap_or(""))
+        {
             continue;
         }
         out.push(row);
@@ -764,18 +763,27 @@ fn best_match(
     conn: &Connection,
     project: &str,
     question: &str,
+    options: &[String],
 ) -> Result<Option<Decision>, String> {
-    if looks_red_line(question) {
+    if looks_red_line_parts(question, options) {
         return Ok(None);
     }
     let query = words(question);
     if query.len() < MATCH_SHARED {
         return Ok(None);
     }
-    let rows = visible_standing(conn, project)?;
+    // The Inbox list, exactly: the same rows, the same twenty. A ticked answer pushed off that list does not match.
+    let listed = reuse_rows(conn, project)?;
     let mut best: Option<(Decision, usize, usize)> = None;
-    for row in rows {
-        let theirs = query_words(&row.question, &row.keys);
+    for listed_row in listed {
+        if !listed_row.standing {
+            continue;
+        }
+        let Some(row) = get(conn, project, &listed_row.decision_key)? else {
+            continue;
+        };
+        // The stored keys came from the agent that first asked, and the Inbox never shows them.
+        let theirs = words(&row.question);
         let shared = query.iter().filter(|word| theirs.contains(word)).count();
         let union = query.len() + theirs.len() - shared;
         if !scores_match(shared, union) {
@@ -954,8 +962,8 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     let mut forced_reason: Option<String> = None;
     // The same key stays one decision, even when standing answers are on and even with force.
     // A different key can reuse a ticked answer while the setting is on. The asker's keys are not part of the match.
-    if existing.is_none() && eligible && enabled && !looks_red_line(&question) {
-        if let Some(hit) = best_match(&tx, &project, &question)? {
+    if existing.is_none() && eligible && enabled && !looks_red_line_parts(&question, &options) {
+        if let Some(hit) = best_match(&tx, &project, &question, &options)? {
             if !input.force {
                 let mut released = Vec::new();
                 let mut cited = task_ids.clone();
@@ -964,7 +972,7 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
                 }
                 let text = match_release_text(&hit);
                 for id in &task_ids {
-                    if let Some(message) = release_one(&tx, &hit, id, &text, now)? {
+                    if let Some(message) = release_one(&tx, &hit, id, &text, now, true)? {
                         released.push(message);
                     }
                 }
@@ -1095,7 +1103,9 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     if decision.state == ANSWERED {
         // Already answered: the tasks that join now get the answer straight away.
         for id in &added {
-            if let Some(message) = release_one(&tx, &decision, id, &release_text(&decision), now)? {
+            if let Some(message) =
+                release_one(&tx, &decision, id, &release_text(&decision), now, false)?
+            {
                 released.push(message);
             }
         }
@@ -1303,7 +1313,9 @@ pub fn answer(
     let mut released = Vec::new();
     let mut released_tasks = Vec::new();
     for id in decision.waiting.clone() {
-        if let Some(message) = release_one(&tx, &decision, &id, &release_text(&decision), now)? {
+        if let Some(message) =
+            release_one(&tx, &decision, &id, &release_text(&decision), now, false)?
+        {
             released_tasks.push(id);
             released.push(message);
         }
@@ -1320,7 +1332,12 @@ pub fn answer(
                 owner_session: decision.asked_by.clone(),
                 child_session: decision.asked_by.clone(),
                 delegation_id: None,
-                request_id: release_request(&decision.decision_key, "asker", decision.version),
+                request_id: release_request(
+                    &decision.decision_key,
+                    "asker",
+                    decision.version,
+                    false,
+                ),
                 text: owner_text(&decision, released_tasks.len()),
                 mode: Some("queue".into()),
                 source: Some("decision".into()),
@@ -1478,7 +1495,7 @@ pub fn set_standing(
         if !standing_eligible(&decision.decision_key) {
             return Err("This kind of question is never reused.".into());
         }
-        if looks_red_line(&decision.question)
+        if looks_red_line_parts(&decision.question, &decision.options)
             || looks_red_line(decision.answer.as_deref().unwrap_or(""))
         {
             return Err(
@@ -1589,7 +1606,9 @@ pub fn reuse_rows(conn: &Connection, project: &str) -> Result<Vec<ReuseRow>, Str
         if !standing_eligible(&row.decision_key) {
             continue;
         }
-        if looks_red_line(&row.question) || looks_red_line(row.answer.as_deref().unwrap_or("")) {
+        if looks_red_line_parts(&row.question, &row.options)
+            || looks_red_line(row.answer.as_deref().unwrap_or(""))
+        {
             continue;
         }
         let uses = citations_for(conn, &row.project, &row.decision_key)?.len() as i64;

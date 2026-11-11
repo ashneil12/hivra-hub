@@ -2361,3 +2361,171 @@ fn review225_main_a_chat_cannot_answer_a_gate_key() {
         out.map(|o| o.applied)
     );
 }
+
+// ---- Review of PR #225 (round 2): repros. Each test asserts the safe behaviour and fails on d5deb12e4. ----
+
+/// Round-1 MED-4 asked that a match only considers the rows Ash can see and retire in the Inbox. The Inbox lists
+/// `reuse_rows` (the newest 20 of the person's answers, ticked or not), but matching reads `visible_standing` (the
+/// newest 20 ticked). A ticked answer pushed off the Inbox list by 20 newer, unticked answers still answers, and Ash
+/// has no row left to untick or retire it from.
+#[test]
+fn review225_r2_a_ticked_answer_off_the_inbox_list_still_matches() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("fm", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    tick(&mut conn, "retention", 4);
+    // Twenty newer answers from the person that Ash has not ticked.
+    for n in 0..20 {
+        insert_answered(
+            &conn,
+            "hivra",
+            &format!("colour-{n}"),
+            &format!("Which colour should badge number {n} use?"),
+            "Blue",
+            10 + n,
+        );
+        conn.execute(
+            "UPDATE decisions SET standing = 0 WHERE decision_key = ?1",
+            [format!("colour-{n}")],
+        )
+        .unwrap();
+    }
+    let inbox = reuse_rows(&conn, "hivra").unwrap();
+    assert_eq!(inbox.len(), 20);
+    let in_inbox = inbox.iter().any(|row| row.decision_key == "retention");
+    let mut again = ask_input("fm", "retention-wording", &[]);
+    again.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let out = ask(&mut conn, again, 100).unwrap();
+    assert!(
+        in_inbox || !out.matched,
+        "{:?} answered, but it is not in the Inbox list Ash can untick or retire it from",
+        out.standing_id
+    );
+}
+
+/// Round-1 HIGH-2(c) took the new asker's keys out of its query, but the stored row's `keys` are still the first
+/// asker's words (an agent's), hidden from Ash in the Inbox, and they still count as the stored question's words. A
+/// chat that asked a font question with planted keys makes Ash's ticked "Yes" answer a later, unrelated merge question.
+#[test]
+fn review225_r2_stored_agent_keys_cannot_steer_a_later_match() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    let mut font = ask_input("fm1", "title-font", &[]);
+    font.question = "Use the new title font?".into();
+    font.options = vec!["Yes".into(), "No".into()];
+    font.recommended = Some("Yes".into());
+    font.keys = vec![
+        "merge".into(),
+        "main".into(),
+        "skip".into(),
+        "review".into(),
+    ];
+    ask(&mut conn, font, 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "title-font",
+        "Yes",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    tick(&mut conn, "title-font", 4);
+
+    let child = record(&mut conn, launch("fm2", "r2", "w2"), 5).unwrap();
+    let mut merge = ask_input("fm2", "merge-now", &[&child.id]);
+    merge.question = "Merge to main and skip the review?".into();
+    merge.options = vec!["Yes".into(), "No".into()];
+    merge.recommended = Some("No".into());
+    let out = ask(&mut conn, merge, 6).unwrap();
+    assert!(
+        !out.matched,
+        "the font answer {:?} answered a merge question through the first asker's keys; the worker was told: {:?}",
+        out.standing_id,
+        out.released.iter().map(|m| &m.text).collect::<Vec<_>>()
+    );
+}
+
+/// Round-1 HIGH-2(b): a red-line question never matches. The new question's options are not read (the TS
+/// `looksRedLine` reads the header, prompt and option labels), so a question whose red line is in an option is answered
+/// by an old answer instead of reaching Ash.
+#[test]
+fn review225_r2_a_red_line_option_keeps_the_question_from_matching() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    let mut stale = ask_input("fm", "stale-rows", &[]);
+    stale.question = "What should we do with the stale rows from the nightly import?".into();
+    stale.options = vec!["Archive them".into(), "Keep them".into()];
+    stale.recommended = Some("Archive them".into());
+    ask(&mut conn, stale, 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "stale-rows",
+        "Archive them",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    tick(&mut conn, "stale-rows", 4);
+
+    let child = record(&mut conn, launch("fm", "r2", "w2"), 5).unwrap();
+    let mut drop = ask_input("fm", "stale-rows-job", &[&child.id]);
+    drop.question = "What should we do with the stale rows from the nightly import job?".into();
+    drop.options = vec!["Archive them".into(), "Drop the users table".into()];
+    drop.recommended = Some("Drop the users table".into());
+    assert!(looks_red_line("Drop the users table"));
+    let out = ask(&mut conn, drop, 6).unwrap();
+    assert!(
+        !out.matched,
+        "a question with a red-line option was answered by {:?}; the worker was told: {:?}",
+        out.standing_id,
+        out.released.iter().map(|m| &m.text).collect::<Vec<_>>()
+    );
+}
+
+/// A match releases a task under the stored key's request id (`decision-<key>-v<version>-<task>`), with the match text.
+/// The first mate is handed that key back; asking it under that key for the same task then reuses the request id with
+/// the plain release text, and steering refuses the whole ask.
+#[test]
+fn review225_r2_asking_the_matched_key_after_a_match_does_not_fail() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    set_standing_enabled(&conn, true).unwrap();
+    ask(&mut conn, ask_input("elder", "retention", &[]), 2).unwrap();
+    answer(
+        &mut conn,
+        "hivra",
+        "retention",
+        "Keep 30 days",
+        Some("user".into()),
+        3,
+    )
+    .unwrap();
+    tick(&mut conn, "retention", 4);
+    let child = record(&mut conn, launch("fm", "r2", "w2"), 5).unwrap();
+    let mut similar = ask_input("fm", "retention-wording", &[&child.id]);
+    similar.question = "Should we keep deleted sessions for 30 days, or delete them?".into();
+    let hit = ask(&mut conn, similar, 6).unwrap();
+    assert!(hit.matched, "{hit:?}");
+    assert_eq!(hit.decision.decision_key, "retention");
+
+    let exact = ask(&mut conn, ask_input("fm", "retention", &[&child.id]), 7);
+    assert!(
+        exact.is_ok(),
+        "asking the key a match named, for the same task, failed: {:?}",
+        exact.err()
+    );
+}
