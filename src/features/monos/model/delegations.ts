@@ -10,6 +10,7 @@
 // - a resumed turn (auto-continue, a usage-limit resume, a later message in a cut-off child) re-attaches to the
 //   child's row and bumps its generation, so its report has its own receipt (`mono-completion-<request>-g<n>`).
 import { workerTitle } from "./workerTitle";
+import { isReviewRow } from "../../security-review/model/launch";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import {
@@ -154,6 +155,8 @@ export type RecordInput = {
   taskId?: string;
   /** A delegated worker's report must carry a self-review; its settle is refused without one (workerReview.ts). */
   reviewRequired?: boolean;
+  /** WP-141: why the crew picked this CLI. Stored as `why` on the row's "recorded" line. */
+  pickReason?: string;
 };
 
 export type SettleInput = {
@@ -230,7 +233,7 @@ export type DelegationsBackend = {
   /** Its owner retried or split it: `task` is the new task taking it on (delegate_task `redoes`), kept in its log. */
   noteRedo?(ownerSession: string, id: string, task: string): Promise<Change>;
   /** Hivra WP-10: the depth a delegation from this chat would sit at; rejects past the cap, with the reason. */
-  checkDepth?(ownerSession: string): Promise<number>;
+  checkDepth?(ownerSession: string, opts?: { fanout?: boolean }): Promise<number>;
   /** Hivra WP-10: the first mate passes its worker's open question on to the person, or takes it back. */
   setQuestionOwner?(id: string, generation: number, owner: "person" | "first-mate", by?: string): Promise<Change>;
 };
@@ -255,7 +258,11 @@ export const tauriDelegations: DelegationsBackend = {
   followedInto: (childSession, requestIds) => invoke("delegations_followed_into", { childSession, requestIds }),
   setStall: (input) => invoke("delegations_set_stall", { input }),
   noteRedo: (ownerSession, id, task) => invoke("delegations_note_redo", { ownerSession, id, task }),
-  checkDepth: (ownerSession) => invoke("firstmate_check_depth", { ownerSession }),
+  checkDepth: (ownerSession, opts) =>
+    invoke("firstmate_check_depth", {
+      ownerSession,
+      ...(opts?.fanout === false ? { fanout: false } : {}),
+    }),
   setQuestionOwner: (id, generation, owner, by) =>
     invoke("firstmate_set_question_owner", { id, generation, owner, by }),
 };
@@ -960,6 +967,8 @@ export class DelegationTracker {
     for (const listed of rows) {
       await this.serial(async () => {
         const row = this.rows.get(listed.id) ?? listed;
+        // WP-203: the app's own security review is no chat's work. Boot leaves it alone: its launcher restarts it.
+        if (isReviewRow(row)) return;
         if (!isOwed(row)) return;
         const mono = this.host.isMono(row.ownerSession);
         const owner = mono ? await this.host.openOwner(row.ownerSession) : null;

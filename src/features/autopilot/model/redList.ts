@@ -3,6 +3,7 @@
 // text of every call (its question, options, recommendation, a tool's command) is read here. A miss here would be the
 // one way autopilot could do something on the list, so the patterns lean to holding: a held call costs Ash one tap, a
 // taken one can't be undone.
+import { foldDecisionKey } from "../../hub/model/decisionKey";
 import { forUser } from "../../hub/model/userName";
 import { credentialInWords, credentialInText } from "./credentialPaths";
 
@@ -72,7 +73,7 @@ const PATTERNS: Record<RedCategory, readonly RegExp[]> = {
     /\b(sudo\s+)?(reboot|poweroff)\b|\bshutdown\s+-[hr]\b/,
     /\bsystemctl\s+(restart|stop|disable|reboot|poweroff)\b/,
     /\bvercel\b.{0,40}(--prod\b|\bpromote\b|\brollback\b)/,
-    /\b(fly|flyctl|heroku|railway|render)\b.{0,40}\b(deploy|scale|restart|destroy)\b/,
+    /\b(fly|flyctl|[h]eroku|heroku|railway|render)\b.{0,40}\b(deploy|scale|restart|destroy)\b/,
     /\bmigrat(e|ion|ions)\b.{0,40}\b(prod|production|moltbot|live database|live db)\b/,
     /\bpromote (it |this |the build |canary )?to (prod|production|main)\b/,
   ],
@@ -132,7 +133,7 @@ export function callText(...parts: (string | undefined | null)[]): string {
 
 /** The first red-list category the text touches, in the list's order, or null. */
 export function redListCategory(text: string): RedCategory | null {
-  const normalized = text.toLowerCase().replace(/\s+/g, " ");
+  const normalized = foldDecisionKey(text).replace(/\s+/g, " ").trim();
   for (const { id } of RED_LIST) {
     if (PATTERNS[id].some((pattern) => pattern.test(normalized))) return id;
     // WP-101 fix round 2, item B: a path is checked segment by segment against the places and names a login lives

@@ -94,6 +94,8 @@ Hivra's own rules for what to hand out and how, beside firstmate's:
   `task_message`. Only a real choice that is the person's goes to them, once, through `ask_person`: a stable key, 2 to 6
   options, your recommendation, and the tasks that wait on it. The same key is never asked twice; their answer comes
   back to you and to every waiting task. If they answer in your chat, pass their words as `answer`.
+- A call you settle yourself (merging on green, a retry, which crew, spending inside its budget) is noted with
+  `app decisions.note`. Do not note a red line, money past the limit, anything public, or a key.
 - You run at most 8 tasks at once. Past that, a new task is refused with the reason: let one report, cancel one, or
   fold the work into a running one.
 
@@ -113,6 +115,8 @@ Delivery mode and `yolo` are orthogonal.
 Never merge a red PR, or one with a required check that has not reported, under either setting unless a current explicit captain instruction names the GitHub check to waive or orders that merge for a GitLab merge request with no head pipeline; `bin/fm-pr-merge.sh`'s header owns the attended-only waiver mechanics and remaining guards.
 
 Hivra binding (rewrite: WP-12's modes are local, PR and checked PR, and there is no waiver flag): local lands in the project and pushes nothing; PR pushes and opens a pull request; checked PR is ready only once checks are green, with one fix round on red. Red or pending is never merged. The switch is off unless the person turns it on.
+
+Default delivery behaviour (WP-202): keep a pull request at the size its goal needs; when a review bot suggests more, fix the real bugs in scope and decline the rest with one written reason, and list the declined ones as follow-ups. A pull request waits when main changed files it touches since its branch last took main: merge main into the branch, push, and wait for green again. A pull request that misses those files ships as before.
 
 ## Talking to the person
 

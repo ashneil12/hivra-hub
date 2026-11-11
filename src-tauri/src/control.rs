@@ -158,6 +158,12 @@ struct Event {
     input: Value,
 }
 
+/// Whether an agent's `app` token may name this action: the CLI's list and the delegate tool's own.
+pub(crate) fn app_action_allowed(action: &str) -> bool {
+    crate::control_cli::APP_ACTIONS.contains(&action)
+        || crate::mcp_server::MCP_APP_ACTIONS.contains(&action)
+}
+
 fn request_grant(host: &Inner, namespace: &str, token: &str) -> Result<Grant, String> {
     let grant = match namespace {
         "control" => host.grants.values().find(|grant| grant.token == token),
@@ -227,12 +233,17 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
         if raw.len() > 262_144 {
             return Err("Request exceeds 256 KiB".into());
         }
-        let request: Request = serde_json::from_str(&raw).map_err(|_| "Invalid control request")?;
+        let mut request: Request =
+            serde_json::from_str(&raw).map_err(|_| "Invalid control request")?;
         if !request.input.is_object()
             || request.request_id.is_empty()
             || request.request_id.len() > 128
         {
             return Err("Invalid input or request ID".into());
+        }
+        // The agent's own token names only the app actions it is given; anything else is refused here, not by the client.
+        if request.namespace == "app" && !app_action_allowed(&request.action) {
+            return Err(format!("Unknown app action: {}", request.action));
         }
         let id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = mpsc::channel();
@@ -251,6 +262,15 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
             );
             grant
         };
+        // WP-92: a worker's app action is scrubbed of the values armed for it, except a read.
+        if request.namespace == "app" {
+            crate::secrets::worker::scrub_app_input(
+                &grant.session,
+                &request.action,
+                &mut request.input,
+            );
+        }
+        let reply_wait = crate::control_cli::reply_seconds(&request.action, &request.input);
         let event = Event {
             id: id.clone(),
             namespace: request.namespace,
@@ -263,7 +283,7 @@ fn serve(mut stream: TcpStream, app: &AppHandle, inner: &Arc<Mutex<Inner>>) {
         let result = if delivered.is_err() {
             Err("MonoCode executor is unavailable".into())
         } else {
-            rx.recv_timeout(Duration::from_secs(35))
+            rx.recv_timeout(Duration::from_secs(reply_wait))
                 .map_err(|_| "Control request timed out. Retry with the same request ID.".into())
         };
         if let Ok(mut host) = inner.lock() {
@@ -468,7 +488,9 @@ pub fn configure_child(app: &AppHandle, session_id: &str, cmd: &mut Command) {
     cmd.env_remove("MONOCODE_CONTROL_ENDPOINT")
         .env_remove("MONOCODE_CONTROL_TOKEN")
         .env_remove("MONOCODE_APP_ENDPOINT")
-        .env_remove("MONOCODE_APP_TOKEN");
+        .env_remove("MONOCODE_APP_TOKEN")
+        // A dev copy's test vault seed (secrets::store::SEED_ENV) is for the app's own tests, never for a child.
+        .env_remove(crate::secrets::store::SEED_ENV);
     let Some(host) = app.try_state::<ControlHost>() else {
         return;
     };
@@ -844,5 +866,38 @@ mod tests {
         assert!(paths_overlap("/repo", "/repo/src"));
         assert!(paths_overlap("/repo/src", "/repo"));
         assert!(!paths_overlap("/repo", "/repo2"));
+    }
+
+    // fix round 2 (C1): an agent's app token names only the actions the agent is given, checked here on the server.
+    #[test]
+    fn an_agents_app_call_must_be_a_listed_action() {
+        assert!(app_action_allowed("secrets.run"));
+        assert!(app_action_allowed("tasks.fanout"));
+        assert!(app_action_allowed("sessions.list"));
+        for action in crate::mcp_server::MCP_APP_ACTIONS {
+            assert!(app_action_allowed(action), "{action}");
+        }
+        assert!(!app_action_allowed("secrets.reveal"));
+        assert!(!app_action_allowed("settings.write"));
+        assert!(!app_action_allowed(""));
+    }
+}
+
+// Fix round 3, L1: a run's reply waits as long as the run may take (its own timeout plus a margin), not a fixed 35 s.
+#[cfg(test)]
+mod reply_wait_tests {
+    use super::*;
+
+    #[test]
+    fn a_secrets_run_reply_waits_past_its_own_timeout() {
+        assert!(
+            crate::control_cli::reply_seconds("secrets.run", &json!({"timeoutSeconds": 600}))
+                >= 660
+        );
+        assert!(crate::control_cli::reply_seconds("secrets.run", &json!({})) >= 180);
+        assert_eq!(
+            crate::control_cli::reply_seconds("tasks.delegate", &json!({})),
+            35
+        );
     }
 }

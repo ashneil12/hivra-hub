@@ -285,6 +285,35 @@ describe("local orchestration", () => {
       },
     ],
   });
+  // WP-141 round 6: an approved card on a CLI in Never use for the Lead's folder starts no worker.
+  it("refuses an approved card that names a CLI on Never use, before any worker starts", async () => {
+    const f = setup();
+    f.lead.busy = false;
+    f.host.crewPolicy = vi.fn(async () => ({ neverUse: ["codex"], lock: false }));
+    await expect(f.manager.startApproved("lead", "card", proposal())).rejects.toThrow("Codex is on Never use");
+    expect(f.host.createWorker).not.toHaveBeenCalled();
+  });
+
+  // WP-141 round 8 (MED-C): the plan is judged against the locked default for the Lead's folder, and the policy read
+  // names the Lead's session. A Lead on Claude may run Codex workers when the locked default is Codex.
+  it("compares the plan with the locked default for the Lead's folder, passing the Lead's session", async () => {
+    const f = setup();
+    f.lead.busy = false;
+    f.host.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: true, lockedDefault: "codex" }));
+    await f.manager.startApproved("lead", "card", proposal());
+    await vi.waitFor(() => expect(f.host.createWorker).toHaveBeenCalledTimes(1));
+    expect(f.host.crewPolicy).toHaveBeenCalledWith("/repo", "lead");
+  });
+
+  // WP-141 round 7 (MED-1): under the lock an approved plan starts workers only on the Lead's own CLI.
+  it("under the lock, an approved plan can only start workers on the Lead's CLI", async () => {
+    const f = setup();
+    f.lead.busy = false;
+    f.host.crewPolicy = vi.fn(async () => ({ neverUse: [], lock: true }));
+    await expect(f.manager.startApproved("lead", "card", proposal())).rejects.toThrow("Always use my default is on");
+    expect(f.host.createWorker).not.toHaveBeenCalled();
+  });
+
   it("starts exactly the approved assignments and preserves forward dependencies", async () => {
     const f = setup();
     f.lead.busy = false;
@@ -1727,3 +1756,4 @@ describe("local orchestration", () => {
     expect(f.manager.submissionError("lead")).toBeNull();
   });
 });
+

@@ -1150,10 +1150,30 @@ pub fn harness_spawn(
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
+    crew_ticket: Option<String>,
+    store: State<'_, crate::session_store::SessionStore>,
+    crew_folder: Option<String>,
     // WP-134: a More agents entry. Its command and arguments come from the saved list, and only once the person has
     // approved that command (src-tauri/src/more_agents.rs). The webview sends no command for it.
     more_agent: Option<String>,
 ) -> Result<u32, String> {
+    // WP-141: an agent session's process needs the one-time ticket its crew gate issued for this session, CLI and folder.
+    // Ash's own chats (no `app-` id) pass without one. The default CLI of a spawn with no provider is Claude Code.
+    // Round 6: judged for every session, Ash's and the Monos' chats included: Never use for this CLI in the policy the
+    // session's grant or its folder's project puts in force, and under the lock an `app-` session must be granted.
+    // A More agents entry (WP-134) is judged under its own entry id, so a lock or Never use can name it.
+    let judged_cli = match more_agent.as_deref() {
+        Some(agent) => agent.to_string(),
+        None => binary_provider.as_deref().unwrap_or("claude").to_string(),
+    };
+    crate::crew::gate::judge_spawn_in(
+        &*store.lock_conn()?,
+        &session_id,
+        &judged_cli,
+        crew_folder.as_deref().unwrap_or(&cwd),
+        &cwd,
+        crew_ticket.as_deref(),
+    )?;
     let more = match more_agent.as_deref() {
         None => None,
         Some(agent) => {
@@ -1174,6 +1194,9 @@ pub fn harness_spawn(
             )?)
         }
     };
+    let more_id = more.as_ref().map(|run| run.id.clone());
+    let more_argv0 = more.as_ref().and_then(|run| run.argv0.clone());
+    let more_sha = more.as_ref().map(|run| run.sha256.clone());
     let more_run = more.is_some();
     let (command, args) = match more {
         Some(run) => (run.command, run.args),
@@ -1240,8 +1263,12 @@ pub fn harness_spawn(
         std::ffi::OsStr::new(&command),
         app.path().app_data_dir().ok().as_deref(),
     );
-    let mut cmd =
-        crate::disclaim::command(std::ffi::OsStr::new(&command), disclaim_launcher.as_deref());
+    let mut cmd = crate::disclaim::command(
+        std::ffi::OsStr::new(&command),
+        disclaim_launcher.as_deref(),
+        more_argv0.as_deref().map(std::ffi::OsStr::new),
+        more_sha.as_deref(),
+    );
     // A More agents child runs in its own empty folder, never the chat folder: nothing a chat holds is a relative input.
     let spawn_dir = if more_run {
         crate::more_agents::run_folder(&app.path().app_data_dir().map_err(|e| e.to_string())?)?
@@ -1301,6 +1328,19 @@ pub fn harness_spawn(
     };
 
     crate::control::configure_child(&app, &session_id, &mut cmd);
+    // WP-92: a worker's approved secrets go into this one child's environment, read in Rust from the Keychain. This runs
+    // after configure_child, so the app's MONOCODE_* variables it just set are stripped again for an armed worker (M3).
+    // The Keychain is read before the store's lock is taken (secrets::worker::apply_to_child locks it itself, briefly).
+    {
+        let store = app.state::<crate::session_store::SessionStore>();
+        crate::secrets::worker::apply_to_child(
+            &session_id,
+            crate::secrets::store::active(),
+            &mut cmd,
+            &store,
+            crate::session_store::now_millis(),
+        )?;
+    }
     // WP-04: no Ash OS env any more (the ash-os entry is gone; every chat denies `mcp__ash-os`, hubMcp.ts).
     // WP-86: stamp this crew's commits. A failure here must not stop the crew.
     // The before-run snapshot starts here and is read only after the child
@@ -1324,11 +1364,32 @@ pub fn harness_spawn(
         );
     }
     // WP-134: a More agents child gets no app environment (keys, the control endpoint): only the allow-list.
-    if more_run {
+    // The last hash in this process is here, after the run folder exists and immediately before the spawn.
+    // A text-file-busy retry hashes again before the next spawn. On macOS the disclaim launcher hashes once more,
+    // immediately before exec.
+    let more_recheck = if more_run {
         crate::more_agents::restrict_env(&mut cmd, &gui_search_path());
-    }
+        let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let id = more_id.as_deref().unwrap_or("").to_string();
+        if let Err(error) = crate::more_agents::confirm_before_spawn(&data_dir, &id, &command) {
+            let _ = crate::more_agents::remove_run_folder(&data_dir, &spawn_dir);
+            return Err(error);
+        }
+        Some((data_dir, id, command.clone()))
+    } else {
+        None
+    };
+    let recheck = || match more_recheck.as_ref() {
+        Some((data_dir, id, command)) => {
+            crate::more_agents::confirm_before_spawn(data_dir, id, command)
+        }
+        None => Ok(()),
+    };
+    let recheck_ref = more_recheck
+        .is_some()
+        .then_some(&recheck as &dyn Fn() -> Result<(), String>);
     let mut child = child_or_reap(
-        spawn_managed(&mut cmd),
+        spawn_managed(&mut cmd, recheck_ref),
         more_run,
         || app.path().app_data_dir().ok(),
         &spawn_dir,
@@ -1400,6 +1461,8 @@ pub fn harness_spawn(
     let wait_store = codex_store.clone();
     let stdout_store = codex_store;
     let stdout_run = run.clone();
+    // WP-92: a worker given a secret has every line of its output scrubbed before the app stores or shows it.
+    let scrub_stdout = session_id.clone();
     // Only a More agents child is capped. A Claude or Codex line can carry a large base64 payload (a PDF or an image),
     // and cutting it would end the session, so those lines are read whole, as they always were.
     let stdout_cap = more_run.then_some(MAX_STDOUT_LINE);
@@ -1411,6 +1474,8 @@ pub fn harness_spawn(
             BufReader::new(stdout),
             stdout_cap,
             |line| {
+                // WP-92: scrub before the line is stored, shown, or read for a turn boundary.
+                let line = crate::secrets::worker::scrub_line(&scrub_stdout, line);
                 if crate::harness_runs::ends_turn(&line) {
                     stdout_run
                         .lock()
@@ -1450,6 +1515,8 @@ pub fn harness_spawn(
             BufReader::new(stderr),
             stderr_cap,
             |line| {
+                // WP-92: scrub before the line is shown.
+                let line = crate::secrets::worker::scrub_line(&stderr_id, line);
                 let _ = stderr_app.emit(
                     STDERR_EVENT,
                     HarnessLine {
@@ -1491,11 +1558,13 @@ pub fn harness_spawn(
         let _ = wait_app.emit(
             EXIT_EVENT,
             HarnessExit {
-                session_id: wait_id,
+                session_id: wait_id.clone(),
                 code,
                 pid: wait_pid,
             },
         );
+        // The scrub values stay for the session's life: a respawn (idle reclaim, crash, resume) still scrubs its output
+        // (M4). They go when the app quits.
     });
 
     Ok(pid)
@@ -1527,6 +1596,8 @@ fn child_or_reap(
 
 #[cfg(test)]
 mod failed_spawn_tests {
+    #[cfg(unix)]
+    use super::retry_text_file_busy;
     use super::{child_or_reap, spawn_managed};
     use std::path::PathBuf;
     use std::process::Command;
@@ -1565,7 +1636,7 @@ mod failed_spawn_tests {
 
         // Not a More agents start: this failure has no run folder of its own, so the working folder stays.
         let ordinary = child_or_reap(
-            spawn_managed(&mut cmd),
+            spawn_managed(&mut cmd, None),
             false,
             || Some(data.0.clone()),
             &run,
@@ -1578,7 +1649,7 @@ mod failed_spawn_tests {
         );
 
         let failed = child_or_reap(
-            spawn_managed(&mut cmd),
+            spawn_managed(&mut cmd, None),
             true,
             || Some(data.0.clone()),
             &run,
@@ -1606,6 +1677,43 @@ mod failed_spawn_tests {
             "a missing data folder was treated as a removed run folder"
         );
         crate::more_agents::remove_run_folder(&data.0, &kept).expect("reap leftover");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_text_file_busy_retry_checks_again_before_the_next_spawn() {
+        let checks = std::cell::Cell::new(0);
+        let spawns = std::cell::Cell::new(0);
+        let recheck = || {
+            checks.set(checks.get() + 1);
+            Ok(())
+        };
+        let result = retry_text_file_busy(Some(&recheck), || {
+            let n = spawns.get();
+            spawns.set(n + 1);
+            if n < 2 {
+                Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+            } else {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "stop"))
+            }
+        });
+        assert!(result.is_err());
+        assert_eq!(spawns.get(), 3);
+        assert_eq!(checks.get(), 2);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_recheck_stops_the_text_file_busy_retry() {
+        let spawns = std::cell::Cell::new(0);
+        let recheck = || Err("changed".to_string());
+        let result = retry_text_file_busy(Some(&recheck), || {
+            spawns.set(spawns.get() + 1);
+            Err(std::io::Error::from_raw_os_error(libc::ETXTBSY))
+        });
+        let error = result.expect_err("the retry stopped");
+        assert_eq!(spawns.get(), 1);
+        assert_eq!(error.to_string(), "changed");
     }
 }
 
@@ -2084,7 +2192,8 @@ pub(crate) fn exec_output(
         }
     }
 
-    let child = spawn_managed(&mut cmd).map_err(|e| format!("Failed to run {command}: {e}"))?;
+    let child =
+        spawn_managed(&mut cmd, None).map_err(|e| format!("Failed to run {command}: {e}"))?;
     let pid = child.id();
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
@@ -2144,17 +2253,22 @@ fn isolate_child(cmd: &mut Command) {
     }
 }
 
-fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_managed(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
     #[cfg(windows)]
     {
+        let _ = recheck;
         crate::windows::spawn_managed(cmd)
     }
     #[cfg(unix)]
     {
-        spawn_retrying_text_file_busy(cmd)
+        spawn_retrying_text_file_busy(cmd, recheck)
     }
     #[cfg(not(any(unix, windows)))]
     {
+        let _ = recheck;
         cmd.spawn()
     }
 }
@@ -2165,16 +2279,36 @@ fn spawn_managed(cmd: &mut Command) -> std::io::Result<std::process::Child> {
 /// So a binary written seconds ago — a CLI mid-upgrade, or a `--version` probe
 /// of a path the user just pointed us at — can be briefly unrunnable rather
 /// than wrong, and reporting it as invalid is the wrong answer.
+/// `recheck` runs after the wait and before the next spawn, so a More agents start hashes the
+/// program again. A failed recheck stops the retry.
 #[cfg(unix)]
-fn spawn_retrying_text_file_busy(cmd: &mut Command) -> std::io::Result<std::process::Child> {
+fn spawn_retrying_text_file_busy(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
+    retry_text_file_busy(recheck, || cmd.spawn())
+}
+
+#[cfg(unix)]
+fn retry_text_file_busy(
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+    mut attempt_spawn: impl FnMut() -> std::io::Result<std::process::Child>,
+) -> std::io::Result<std::process::Child> {
     const ATTEMPTS: u32 = 4;
     for attempt in 1..ATTEMPTS {
-        match cmd.spawn() {
-            Err(e) if is_text_file_busy(&e) => thread::sleep(Duration::from_millis(20) * attempt),
+        match attempt_spawn() {
+            Err(error) if is_text_file_busy(&error) => {
+                thread::sleep(Duration::from_millis(20) * attempt);
+                if let Some(check) = recheck {
+                    if let Err(error) = check() {
+                        return Err(std::io::Error::other(error));
+                    }
+                }
+            }
             settled => return settled,
         }
     }
-    cmd.spawn()
+    attempt_spawn()
 }
 
 #[cfg(unix)]
@@ -3270,7 +3404,7 @@ fn help_mentions_rpc_mode(path: &Path) -> bool {
     // fails outright without a PATH that has node on it.
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3364,7 +3498,7 @@ fn fx_help_mentions_acp(path: &Path) -> bool {
     // fails outright without a PATH that has node on it.
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();
@@ -3428,7 +3562,7 @@ fn grok_help_mentions_agent(path: &Path) -> bool {
         .stderr(Stdio::piped());
     apply_gui_env(&mut cmd);
     isolate_child(&mut cmd);
-    let Ok(child) = spawn_managed(&mut cmd) else {
+    let Ok(child) = spawn_managed(&mut cmd, None) else {
         return false;
     };
     let pid = child.id();

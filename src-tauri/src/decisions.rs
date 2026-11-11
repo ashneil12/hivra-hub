@@ -4,7 +4,8 @@
 //! - **One question, one key.** A first mate asks through one tool, `ask_person(key, question, options, recommended)`.
 //!   The decision is stored once under `(project, decision_key)`; asking again with the same key changes nothing about
 //!   it (not the question, not the options), it only adds the asker's tasks that wait on it, and an answered key gives
-//!   back the answer at once.
+//!   back the answer at once. A security review is the exception: the gate replaces a question that is not its current
+//!   one, and clears an answer that is no longer one of the options.
 //! - **Questions go up one level.** Only the chat the person talks to (a first mate at the top of its work) may ask the
 //!   person. A worker, or a first mate working for another first mate, is turned back with a plain reason: its question
 //!   goes to its own first mate (`task_cannot` or its report), which answers it or asks the person itself.
@@ -18,6 +19,10 @@
 //! `force_reason`. An answer stands only after Ash ticks it in the Inbox. A chat's own answer never stands. The feature
 //! itself stays off (`decision_settings`) until it is turned on, and while it is off, asking and answering keep the
 //! exact-key behaviour above.
+//!
+//! WP-215: `answer_reason` is nullable and `answer` stores it (null when the caller has none). An answer whose
+//! `answered_by` starts with `captain:` is refused here on an owner's key, a red-list item, a project whose switch is
+//! off, money past the limit, and past the turn cap.
 
 use std::sync::OnceLock;
 
@@ -99,6 +104,8 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
         ("retired_reason", "TEXT"),
         ("reuse_stopped", "INTEGER NOT NULL DEFAULT 0"),
         ("force_reason", "TEXT"),
+        // WP-215: why this answer was given. Null when the caller has none. Not a numbered migration.
+        ("answer_reason", "TEXT"),
     ] {
         if column_missing(conn, "decisions", name)? {
             conn.execute(
@@ -133,20 +140,35 @@ fn ensure_decision_columns(conn: &Connection) -> rusqlite::Result<()> {
 }
 
 /// WP-156: keys that never take part in standing answers, neither as a match nor as guidance. The person alone answers
-/// an irreversible step, a fresh-eyes review and a stopped fan-out's restart; a delivery gate's approval belongs to the
-/// gate, not to an old answer; a secret is never reused. A key that is not listed here is an ordinary question.
+/// an irreversible step, a fresh-eyes review, a security review and a stopped fan-out's restart; a delivery gate's
+/// approval belongs to the gate, not to an old answer; a secret card (`secret/<name>/<program>`) is never marked
+/// standing, listed for reuse, or answered by an old answer. Case, width and hidden characters fold to the same key,
+/// so none of those spellings stand either. A key that is not listed here is an ordinary question.
 pub fn standing_eligible(key: &str) -> bool {
-    // Keys keep the case they were typed in (`key_like`), so a protected prefix is matched in any case.
-    let key = key.trim().to_ascii_lowercase();
-    ![
+    // Keys keep the case they were typed in (`key_like`). Fold once, then the prefix check, as `is_secret_key` does.
+    let folded = fold_key(key);
+    if folded == "charter" || folded == "captain-cap" {
+        return false;
+    }
+    if [
         "irreversible/",
         "fresh-eyes",
         "gate/",
         "secret/",
         "fanout-again/",
+        "security/",
+        "security-review/",
+        "budget/",
+        "charter/",
+        "captain-cap/",
     ]
     .iter()
-    .any(|prefix| key.starts_with(prefix))
+    .any(|prefix| folded.starts_with(prefix))
+    {
+        return false;
+    }
+    // person_only refuses a chat on a review, a security review, a restart, a gate or an irreversible step.
+    person_only(key, Some("chat:standing")).is_none()
 }
 
 /// The settings key for WP-156. Only the exact value `on` enables standing answers. Anything else, including a missing
@@ -205,6 +227,8 @@ pub struct Decision {
     pub reuse_stopped: bool,
     /// Why a later question was opened anyway, when a standing answer matched and force was set.
     pub force_reason: Option<String>,
+    /// WP-215: which step gave this answer. Null when the caller stored none.
+    pub answer_reason: Option<String>,
     /// Stable label, `S-<rowid>`. Guidance, not a permission.
     pub standing_id: String,
 }
@@ -212,12 +236,12 @@ pub struct Decision {
 const COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
      state, answer, answered_by, answered_at, created_at, updated_at, version, \
-     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason";
+     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, answer_reason";
 /// `rowid` is not written; it only names the standing answer.
 const READ_COLUMNS: &str =
     "project, decision_key, question, options, recommended, asked_by, asked_by_mono, waiting, \
      state, answer, answered_by, answered_at, created_at, updated_at, version, \
-     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, rowid";
+     standing, keys, retired_at, retired_reason, reuse_stopped, force_reason, answer_reason, rowid";
 
 fn json_list(text: String) -> Vec<String> {
     serde_json::from_str(&text).unwrap_or_default()
@@ -246,7 +270,8 @@ fn from_row(row: &Row) -> rusqlite::Result<Decision> {
         retired_reason: row.get(18)?,
         reuse_stopped: row.get::<_, i64>(19)? != 0,
         force_reason: row.get(20)?,
-        standing_id: format!("S-{}", row.get::<_, i64>(21)?),
+        answer_reason: row.get(21)?,
+        standing_id: format!("S-{}", row.get::<_, i64>(22)?),
     })
 }
 
@@ -279,7 +304,7 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
     for (filter, limit) in [
         ("state = 'open' ORDER BY created_at, rowid LIMIT 200", 200),
         (
-            "state = 'answered' ORDER BY answered_at DESC, rowid DESC LIMIT ?1",
+            "state = 'answered' AND decision_key NOT LIKE 'noted/%' ORDER BY answered_at DESC, rowid DESC LIMIT ?1",
             answered.min(100),
         ),
     ] {
@@ -301,9 +326,10 @@ pub fn list(conn: &Connection, answered: usize) -> Result<Vec<Decision>, String>
 fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
     conn.execute(
         &format!(
-            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)
+            "INSERT INTO decisions ({COLUMNS}) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)
              ON CONFLICT (project, decision_key) DO UPDATE SET waiting = excluded.waiting, state = excluded.state,
                answer = excluded.answer, answered_by = excluded.answered_by, answered_at = excluded.answered_at,
+               answer_reason = excluded.answer_reason,
                standing = excluded.standing, updated_at = excluded.updated_at, version = excluded.version"
         ),
         params![
@@ -328,6 +354,62 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
             d.retired_reason,
             if d.reuse_stopped { 1 } else { 0 },
             d.force_reason,
+            d.answer_reason,
+        ],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// A security review the gate is asking again. The ordinary ask leaves a question alone. This one does not: a chat's
+/// question is replaced, an open question that no longer matches the record is replaced, and an answer that is not one
+/// of the new options is cleared. An answer that is still one of the options stays, including "Hold the merge".
+fn security_stale(existing: &Decision, question: &str, options: &[String]) -> bool {
+    if fold_key(&existing.asked_by) != "security-gate" {
+        return true;
+    }
+    if existing.question == question && existing.options == options {
+        return false;
+    }
+    if existing.state == OPEN {
+        return true;
+    }
+    !existing
+        .answer
+        .as_deref()
+        .is_some_and(|word| options.iter().any(|option| option == word))
+}
+
+/// `save` does not change the question, the options or who asked. A security review the gate takes over needs all of it.
+fn replace_asked(conn: &Connection, d: &Decision) -> Result<(), String> {
+    conn.execute(
+        "UPDATE decisions SET question = ?1, options = ?2, recommended = ?3, asked_by = ?4, asked_by_mono = ?5, \
+         waiting = ?6, state = ?7, answer = ?8, answered_by = ?9, answered_at = ?10, updated_at = ?11, version = ?12, \
+         standing = ?13, keys = ?14, retired_at = ?15, retired_reason = ?16, reuse_stopped = ?17, force_reason = ?18, \
+         answer_reason = ?19 \
+         WHERE project = ?20 AND decision_key = ?21",
+        params![
+            d.question,
+            json!(d.options).to_string(),
+            d.recommended,
+            d.asked_by,
+            d.asked_by_mono,
+            json!(d.waiting).to_string(),
+            d.state,
+            d.answer,
+            d.answered_by,
+            d.answered_at,
+            d.updated_at,
+            d.version,
+            if d.standing { 1 } else { 0 },
+            json!(d.keys).to_string(),
+            d.retired_at,
+            d.retired_reason,
+            if d.reuse_stopped { 1 } else { 0 },
+            d.force_reason,
+            d.answer_reason,
+            d.project,
+            d.decision_key,
         ],
     )
     .map_err(|e| e.to_string())?;
@@ -339,7 +421,7 @@ fn save(conn: &Connection, d: &Decision) -> Result<(), String> {
 const FANOUT_AGAIN_KEY_MAX: usize = 300;
 
 fn key_max(value: &str) -> usize {
-    if is_again_key(value) {
+    if is_again_key(value) || is_security_key(&fold_key(value)) {
         FANOUT_AGAIN_KEY_MAX
     } else {
         KEY_MAX
@@ -348,19 +430,27 @@ fn key_max(value: &str) -> usize {
 
 fn key_like(value: &str) -> Result<String, String> {
     let value = value.trim();
+    let security = is_security_key(&fold_key(value));
     let max = key_max(value);
-    if value.is_empty()
-        || value.len() > max
-        || !value
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b':' | b'/'))
-    {
+    let allowed = |b: u8| {
+        b.is_ascii_alphanumeric()
+            || matches!(b, b'-' | b'_' | b'.' | b':' | b'/')
+            || (security && matches!(b, b'#' | b'@'))
+    };
+    if value.is_empty() || value.len() > max || !value.bytes().all(allowed) {
+        let extra = if security { " # @" } else { "" };
         return Err(format!(
-            "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : / and at \
-             most {max} characters"
+            "key must be a stable name for the question, like \"retention-policy\": letters, digits, - _ . : /{extra} \
+             and at most {max} characters"
         ));
     }
     Ok(value.to_string())
+}
+
+/// The Inbox key of one security review: the repo, the pull request and the head. An answer for one pull request does
+/// not apply to another at the same head.
+pub fn security_decision_key(repo: &str, number: u64, head: &str) -> String {
+    format!("security-review/{repo}#{number}@{head}")
 }
 
 fn plain(value: &str, label: &str, max: usize) -> Result<String, String> {
@@ -430,7 +520,8 @@ fn skip_false(value: &bool) -> bool {
 #[serde(rename_all = "camelCase")]
 pub struct AskOutcome {
     pub decision: Decision,
-    /// False when the key was already asked: nothing about the question changed.
+    /// False when the key was already asked. An ordinary question is left as it was. A security review the gate asks
+    /// again may replace the question.
     pub created: bool,
     /// Tasks that joined this time.
     pub added: Vec<String>,
@@ -458,12 +549,32 @@ pub fn check_may_ask(conn: &Connection, session: &str) -> Result<(), String> {
 }
 
 /// What a waiting task is told when the person answers the same question.
+/// A captain's answer names the Chief of Staff and does not outrank the brief. Only the person's own answer does.
 fn release_text(d: &Decision) -> String {
+    let answer = d.answer.as_deref().unwrap_or("");
+    if captain::is_captain(d.answered_by.as_deref()) {
+        let why = reason_aside(d);
+        return format!(
+            "The Chief of Staff answered{why} \"{}\": {}\nCarry on from this answer.",
+            d.question, answer
+        );
+    }
     format!(
         "The person answered \"{}\": {}\nCarry on from this answer; it outranks anything in your brief that disagrees.",
-        d.question,
-        d.answer.as_deref().unwrap_or("")
+        d.question, answer
     )
+}
+
+fn reason_aside(d: &Decision) -> String {
+    match d
+        .answer_reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        Some(reason) => format!(" ({reason})"),
+        None => String::new(),
+    }
 }
 
 /// What a waiting task is told when a different question reused a standing answer. Guidance, not permission.
@@ -482,11 +593,17 @@ fn owner_text(d: &Decision, released: usize) -> String {
         1 => " One waiting task has it and carries on.".into(),
         n => format!(" {n} waiting tasks have it and carry on."),
     };
+    let answer = d.answer.as_deref().unwrap_or("");
+    if captain::is_captain(d.answered_by.as_deref()) {
+        let why = reason_aside(d);
+        return format!(
+            "The Chief of Staff answered{why} your question \"{}\" (key {}): {}.{tasks} This is the app's note, not a new message.",
+            d.question, d.decision_key, answer
+        );
+    }
     format!(
         "The person answered your question \"{}\" (key {}): {}.{tasks} This is the app's note, not a new message.",
-        d.question,
-        d.decision_key,
-        d.answer.as_deref().unwrap_or("")
+        d.question, d.decision_key, answer
     )
 }
 
@@ -876,7 +993,7 @@ fn reopen_row(
             "UPDATE decisions SET question = ?1, options = ?2, recommended = ?3, waiting = ?4,
                 state = ?5, answer = NULL, answered_by = NULL, answered_at = NULL,
                 standing = 0, reuse_stopped = 0, retired_at = NULL, retired_reason = NULL,
-                keys = ?6, force_reason = NULL, updated_at = ?7, version = ?8
+                keys = ?6, force_reason = NULL, answer_reason = NULL, updated_at = ?7, version = ?8
              WHERE project = ?9 AND decision_key = ?10 AND version = ?11
                AND state = ?12 AND (retired_at IS NOT NULL OR reuse_stopped != 0)",
             params![
@@ -910,6 +1027,13 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     check_may_ask(conn, &asked_by)?;
     let project = input.project.unwrap_or_default().trim().to_string();
     let key = key_like(&input.key)?;
+    // A chat that asks security-review/... first would put its own question under the gate's key. Only the gate asks one.
+    let security = is_security_key(&fold_key(&key));
+    if security && fold_key(&asked_by) != "security-gate" {
+        return Err(
+            "Only the gate asks a security review. A chat cannot open that question.".into(),
+        );
+    }
     let question = plain(&input.question, "The question", QUESTION_MAX)?;
     let mut options = Vec::new();
     for option in &input.options {
@@ -1069,9 +1193,9 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
     let mut decision = existing.unwrap_or_else(|| Decision {
         project: project.clone(),
         decision_key: key.clone(),
-        question,
-        options,
-        recommended,
+        question: question.clone(),
+        options: options.clone(),
+        recommended: recommended.clone(),
         asked_by: asked_by.clone(),
         asked_by_mono: input.asked_by_mono.clone(),
         waiting: Vec::new(),
@@ -1088,8 +1212,31 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
         retired_reason: None,
         reuse_stopped: false,
         force_reason: forced_reason,
+        answer_reason: None,
         standing_id: String::new(),
     });
+    // The gate replaces a security question that is not its current one. save() cannot change the question.
+    let refresh = !created && security && security_stale(&decision, &question, &options);
+    if refresh {
+        decision.question = question;
+        decision.options = options;
+        decision.recommended = recommended;
+        decision.asked_by = asked_by.clone();
+        decision.asked_by_mono = input.asked_by_mono.clone();
+        decision.state = OPEN.into();
+        decision.answer = None;
+        decision.answered_by = None;
+        decision.answered_at = None;
+        // A refreshed security question is never standing. The old answer's reuse, retirement and match words go too,
+        // or a later read would still treat the new question as the old standing answer.
+        decision.standing = false;
+        decision.keys.clear();
+        decision.retired_at = None;
+        decision.retired_reason = None;
+        decision.reuse_stopped = false;
+        decision.force_reason = None;
+        decision.answer_reason = None;
+    }
     let added: Vec<String> = task_ids
         .into_iter()
         .filter(|id| !decision.waiting.contains(id))
@@ -1110,12 +1257,24 @@ pub fn ask(conn: &mut Connection, input: AskInput, now: i64) -> Result<AskOutcom
             }
         }
     }
-    if created || !added.is_empty() {
+    if created || !added.is_empty() || refresh {
         decision.waiting.extend(added.iter().cloned());
         decision.updated_at = now;
-        decision.version += 1;
-        save(&tx, &decision)?;
+        // A secret card's version comes from a counter that outlives the card, so a spent card's version is never
+        // given to the next one (fix round 6). Other decisions still count up from the row itself.
+        if is_secret_key(&key) {
+            decision.version = crate::secrets::alloc_card_version(&tx, &project, &key)?;
+        } else {
+            decision.version += 1;
+        }
+        // A security question the gate replaces is written over the stale row, not as a second one.
+        if refresh {
+            replace_asked(&tx, &decision)?;
+        } else {
+            save(&tx, &decision)?;
+        }
         // Re-read so the standing id is the stored row, not a guess, and a lost race is visible.
+        // The re-read follows whichever write ran, including a security question the gate replaced.
         decision =
             get(&tx, &project, &key)?.ok_or_else(|| "The decision was not stored".to_string())?;
     }
@@ -1146,6 +1305,102 @@ pub struct AnswerOutcome {
     pub released_tasks: Vec<String>,
 }
 
+/// Whether a recorded answerer is one of the person's own names, or nobody was named. A secret card does not use
+/// this: only the exact word `person` counts there (`secret_answer_by_person`). Nobody named still counts here, so an
+/// older row that is not a secret and has no answerer stays the person's.
+fn is_person(by: Option<&str>) -> bool {
+    match by.map(str::trim).filter(|b| !b.is_empty()) {
+        None => true,
+        Some(by) => by == "person" || by == "user",
+    }
+}
+
+/// A secret run's card is answered only by the exact word `person` (trimmed). The Inbox sends that. Nobody named,
+/// `user` (the Needs sheet), a page, the captain and autopilot are refused.
+fn secret_answer_by_person(by: Option<&str>) -> bool {
+    // Nobody named is not the person on a secret card. Only the card's own answer (`person`) is.
+    matches!(by.map(str::trim).filter(|b| !b.is_empty()), Some("person"))
+}
+
+/// Whether a decision's recorded answerer is the person's own path. WP-92's grant check reads it: an answer recorded
+/// any other way (a chat, a Mono, a worker) is not the person's and never becomes a secret grant.
+pub fn answered_by_person(answered_by: Option<&str>) -> bool {
+    is_person(answered_by)
+}
+
+/// Whether a secret card's recorded answer is the person's own: the card's answer (the Inbox records `person`), never the
+/// Needs sheet's `user`, which `is_person` accepts for other decisions (fix round 4, LOW).
+pub fn secret_answered_by_person(answered_by: Option<&str>) -> bool {
+    secret_answer_by_person(answered_by)
+}
+
+/// WP-92: a secret's approval card (`secret/<name>/<program>`) is made by the app alone, with the app's own words about
+/// the exact command. An agent's `ask_person` reaches the store through `decisions_ask`, and it may not pick a key that
+/// would put its own words on a card the person approves a secret run on.
+pub fn check_ask_key(key: &str) -> Result<(), String> {
+    if is_secret_key(key) {
+        return Err(
+            "A key's approval card is made by the app when you run a command with that key; only the app can ask it. \
+             Call secrets_run and the person is asked."
+                .into(),
+        );
+    }
+    Ok(())
+}
+
+/// WP-92: a secret's card that nobody has answered shows what is being asked now. The same Mono asking again with other
+/// arguments changes the words (and only the words) so the person never answers a stale command line. A card another
+/// Mono asked, or one already answered, is left alone.
+#[allow(clippy::too_many_arguments)]
+pub fn refresh_open(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    question: &str,
+    options: &[String],
+    recommended: Option<&str>,
+    by_mono: Option<&str>,
+    now: i64,
+) -> Result<bool, String> {
+    if !is_secret_key(key) {
+        return Ok(false);
+    }
+    let Some(card) = get(conn, project, key)? else {
+        return Ok(false);
+    };
+    if card.state != OPEN || card.asked_by_mono.as_deref() != by_mono {
+        return Ok(false);
+    }
+    let question = plain(question, "The question", QUESTION_MAX)?;
+    if card.question == question && card.options == options {
+        return Ok(false);
+    }
+    // The new version is allocated with the word change, and only lands if the card is still the one that was read.
+    // A lost race spends a number. It does not reuse one.
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| e.to_string())?;
+    let next = crate::secrets::alloc_card_version(&tx, project, key)?;
+    let changed = tx
+        .execute(
+            "UPDATE decisions SET question = ?3, options = ?4, recommended = ?5, updated_at = ?6, version = ?8
+             WHERE project = ?1 AND decision_key = ?2 AND state = 'open' AND version = ?7",
+            params![
+                project,
+                key,
+                question,
+                json!(options).to_string(),
+                recommended,
+                now,
+                card.version,
+                next
+            ],
+        )
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(changed == 1)
+}
+
 /// What the app says it is when it closes a fresh-eyes question itself (a brief taken back, replaced, or accepted as a
 /// clean review). It tells no one: the chat that asked did the thing, or the person allowed it.
 pub const APP_CLOSER: &str = "app:fresh-eyes";
@@ -1153,7 +1408,7 @@ pub const APP_CLOSER: &str = "app:fresh-eyes";
 /// Invisible characters: Unicode general category Cf (format) and the other default-ignorable code points. A spelling
 /// that differs only by them looks the same on screen, so the fold drops them. Mirrored in TS by the `\p{Cf}` and
 /// `\p{Default_Ignorable_Code_Point}` classes in `foldDecisionKey`.
-fn is_ignorable(c: char) -> bool {
+pub(crate) fn is_ignorable(c: char) -> bool {
     matches!(
         c as u32,
         0x00AD
@@ -1199,6 +1454,13 @@ fn is_review_key(key: &str) -> bool {
     key.starts_with("fresh-eyes/") || key.starts_with("fresh-eyes-start/")
 }
 
+/// WP-203: a security review's question (`security-review/<head>`) is the person's to answer. A pass on a security path
+/// needs their word, so no chat or machine may answer it, not even the app. Read through `fold_key`, like the other
+/// person-only prefixes.
+fn is_security_key(key: &str) -> bool {
+    fold_key(key).starts_with("security-review/")
+}
+
 /// WP-91: the decision keys only the person may answer, whatever path asked.
 ///
 /// An irreversible step of an orchestration run is parked under `irreversible/<lead>/<task>`. A person answers it in
@@ -1213,17 +1475,59 @@ fn is_review_key(key: &str) -> bool {
 /// A stopped worker runs again only on Ash's yes, so an agent's `ask_person` answer (a chat, whatever the words) is refused
 /// here, and the app's own closers are not a way round it.
 ///
+/// WP-203: so is a security review (`security-review/<head>`). A pass on a security path needs the person's word, so no
+/// chat or machine may answer it, not even the app.
+///
 /// WP-81: so is a delivery check (`gate/<run>`). Approving it tells the check to send the work on, so a chat that knows
 /// the run id must not answer it, whatever the spelling. The app's own closers are not a way round it either.
+///
+/// Every prefix is read on the folded key, so a change of case or a hidden character does not let a machine through.
+///
+/// WP-92: so is a secret's approval card (`secret/<name>/<program>`). A chat that spells it another way (`SECRET/...`)
+/// must not approve the run. Only `person` counts. Nobody named, the Needs sheet (`user`), and the app's own closers
+/// are not a way round it.
 pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let review = is_review_key(key);
+    let security = is_security_key(key);
     let again = is_again_key(key);
     let gate = is_gate_key(key);
-    if !fold_key(key).starts_with("irreversible/") && !review && !again && !gate {
+    let secret = is_secret_key(key);
+    let irreversible = fold_key(key).starts_with("irreversible/");
+    // A budget, the charter, the captain's cap and a `security/` question are the person's too.
+    // A security review keeps its own words below. A secret stays on its stricter rule.
+    // Nobody named is not the person here: only `user` or `person`, trimmed, exact.
+    let owner_rest = captain::owner_key(key)
+        && !irreversible
+        && !review
+        && !security
+        && !again
+        && !gate
+        && !secret;
+    if !irreversible && !review && !security && !again && !gate && !secret && !owner_rest {
         return None;
+    }
+    // A secret card is stricter than the other person-only keys: nobody named, and `user` (the Needs sheet), are not
+    // the person on the card. Only `person` is.
+    if secret {
+        return match by.map(str::trim).filter(|word| !word.is_empty()) {
+            Some("person") => None,
+            _ => Some("Only the person can approve a secret run. Ask them on their card.".into()),
+        };
+    }
+    if owner_rest {
+        return match by.map(str::trim).filter(|word| !word.is_empty()) {
+            Some("user") | Some("person") => None,
+            Some(other) => Some(format!(
+                "Only the person answers this; {other} cannot. It waits until they do."
+            )),
+            None => Some("Say who is answering.".into()),
+        };
     }
     match by.map(str::trim).filter(|word| !word.is_empty()) {
         None | Some("user") | Some("person") => None,
+        Some(other) if security => Some(format!(
+            "Only the person answers a security review; {other} cannot. It holds the merge until they do."
+        )),
         Some(APP_CLOSER) if review => None,
         Some(other) if review => Some(format!(
             "Only the person answers a fresh-eyes review; {other} cannot. It waits in the Inbox until they do."
@@ -1245,12 +1549,34 @@ pub fn is_gate_key(key: &str) -> bool {
     fold_key(key).starts_with("gate/")
 }
 
-/// The person, as an answer is recorded: nobody named, or the words the app uses for them.
+/// WP-92: a secret's approval card (`secret/<name>/<program>`). Read through `fold_key`, like the other person-only
+/// prefixes, so a capital or fullwidth spelling is the same card.
+pub fn is_secret_key(key: &str) -> bool {
+    fold_key(key).starts_with("secret/")
+}
+
+/// The person, as an answer is recorded: the words the app uses for them. Nobody named is not the person.
 fn from_person(by: Option<&str>) -> bool {
     matches!(
         by.map(str::trim).filter(|word| !word.is_empty()),
-        None | Some("user") | Some("person")
+        Some("user") | Some("person")
     )
+}
+
+/// Who an answer is stored as. A captain id is folded, so `CAPTAIN:Ada` and an invisible character are the same captain.
+fn stored_answerer(by: Option<&str>) -> String {
+    let raw = by.map(str::trim).filter(|word| !word.is_empty());
+    let text = if captain::is_captain(raw) {
+        fold_key(raw.unwrap_or(""))
+    } else {
+        raw.unwrap_or("person").to_string()
+    };
+    let clipped: String = text.chars().take(120).collect();
+    if clipped.is_empty() {
+        "person".into()
+    } else {
+        clipped
+    }
 }
 
 /// WP-172: the decision keys that start a stopped fan-out task again.
@@ -1266,12 +1592,135 @@ pub fn answer(
     by: Option<String>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
+    answer_with(conn, project, key, answer, by, None, now)
+}
+
+/// The words a refused answer says when the card changed after the person read it.
+pub const CARD_CHANGED: &str =
+    "That card changed after you read it, so the answer was not recorded. Read it again and answer.";
+
+/// `answer`, plus the reason the caller gives. The reason is stored and clipped. Callers with none pass `None`.
+/// A secret card still needs the version the person read; this path passes none, so it is not the one for a secret card.
+pub fn answer_with(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    answer_both(conn, project, key, answer, by, reason, None, None, now)
+}
+
+/// [`answer`] for the card the person read: `seen_version` is the card's version on their screen. A secret card whose
+/// version has moved on (another command, folder or variable was put on it) is not answered, so an answer is only ever
+/// for the words the person read (fix round 4, N6). Checked inside the transaction that writes the answer.
+/// The app's command goes through [`answer_and_relay_with`], which carries a reason as well. Tests that have no reason
+/// use this.
+#[cfg(test)]
+pub fn answer_seen(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    seen_version: Option<i64>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    answer_both(
+        conn,
+        project,
+        key,
+        answer,
+        by,
+        None,
+        seen_version,
+        None,
+        now,
+    )
+}
+
+/// The command path, with the calling chat. Tests that skip the asker check pass `caller: None` through `answer_with`.
+#[cfg(test)]
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_as_caller(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    caller: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    answer_both(conn, project, key, answer, by, reason, None, caller, now)
+}
+
+/// A captain answer from a chat. That chat may answer a card it asked, or a card its first mate asked.
+/// An empty caller is refused. A first mate does not answer a card its worker asked.
+fn captain_caller_may_answer(
+    conn: &Connection,
+    asked_by: &str,
+    caller: &str,
+) -> Result<bool, String> {
+    let session = caller.trim();
+    if session.is_empty() {
+        return Ok(false);
+    }
+    let asked = asked_by.trim();
+    if asked == session {
+        return Ok(true);
+    }
+    let mate: Option<String> = conn
+        .query_row(
+            "SELECT owner_session FROM delegations
+              WHERE child_session = ?1 AND state IN ('running', 'question')
+              ORDER BY created_at DESC, rowid DESC
+              LIMIT 1",
+            [session],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?;
+    Ok(mate.as_deref() == Some(asked))
+}
+
+/// Both optional parts of an answer: the captain's reason (WP-215) and the card version the person read (WP-92).
+#[allow(clippy::too_many_arguments)]
+fn answer_both(
+    conn: &mut Connection,
+    project: &str,
+    key: &str,
+    answer: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    seen_version: Option<i64>,
+    caller: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    if is_secret_key(key) && !secret_answer_by_person(by.as_deref()) {
+        return Err("Only the person can approve a secret run. Ask them on their card.".into());
+    }
+    // Fix round 5 (L5): a secret card's answer names the version that was read. Checked here, after the person check, so
+    // a missing version is refused on every path into the store, not only the Tauri command. The prefix is folded, so
+    // "SECRET/..." is the same card.
+    if is_secret_key(key) && seen_version.is_none() {
+        return Err(
+            "Read the card again and answer it, so the answer is for what you read.".into(),
+        );
+    }
     let answer = plain(answer, "The answer", ANSWER_MAX)?;
     // The key as asked, before any lookup: a chat's spelling of a person-only key is refused even when no such
     // decision exists, so nothing about the lookup can turn a refusal into a quiet no-op or a bypass.
     if let Some(refusal) = person_only(key, by.as_deref()) {
         return Err(refusal);
     }
+    // WP-215: the same, for a captain answer on an owner's key, including one that has no row yet.
+    if let Some(refusal) = captain::refuse_key(key, by.as_deref()) {
+        return Err(refusal);
+    }
+    let reason = captain::clip_reason(reason);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1283,32 +1732,91 @@ pub fn answer(
             released_tasks: Vec::new(),
         });
     };
-    if decision.state != OPEN {
-        return Ok(AnswerOutcome {
-            applied: false,
-            decision: Some(decision),
-            released: Vec::new(),
-            released_tasks: Vec::new(),
-        });
+    if let Some(seen) = seen_version {
+        if is_secret_key(&decision.decision_key) && seen != decision.version {
+            return Err(CARD_CHANGED.into());
+        }
     }
+    if decision.state != OPEN {
+        // WP-92: a secret row an agent's answer had settled is still the person's to settle. Their own answer replaces
+        // it; anything else leaves it as it is. Fix round 4 (LOW): "the person" here is the card's own answer, not the
+        // Needs sheet's (`user`).
+        let person_settles_an_agents_answer = secret_answer_by_person(by.as_deref())
+            && is_secret_key(&decision.decision_key)
+            && decision.state == ANSWERED
+            && !answered_by_person(decision.answered_by.as_deref());
+        if !person_settles_an_agents_answer {
+            return Ok(AnswerOutcome {
+                applied: false,
+                decision: Some(decision),
+                released: Vec::new(),
+                released_tasks: Vec::new(),
+            });
+        }
+    }
+    // Nobody named is not the person. It used to be stored as "person", so a caller that forgot `by` answered as Ash.
+    let who = by
+        .as_deref()
+        .map(str::trim)
+        .filter(|word| !word.is_empty())
+        .map(|word| word.chars().take(120).collect::<String>());
+    let Some(who) = who else {
+        return Err("Say who is answering.".into());
+    };
     // WP-91: an irreversible step is the person's to answer, and nobody else's. The webview puts it on its red list
     // so autopilot holds it, but that is a screen away; this refuses it at the store, whatever path asked. It reads the
     // stored key, so a decision stored in any case is checked as the person-only key it is.
-    if let Some(refusal) = person_only(&decision.decision_key, by.as_deref()) {
+    if let Some(refusal) = person_only(&decision.decision_key, Some(&who)) {
+        return Err(refusal);
+    }
+    // Words that are not on this card used to be stored, and the gate then held that head forever.
+    if is_security_key(&fold_key(decision.decision_key.trim()))
+        && !decision.options.iter().any(|option| option == &answer)
+    {
+        return Err(format!(
+            "Pick one of this card's options: {}.",
+            decision.options.join(", ")
+        ));
+    }
+    // WP-215: a captain answer on the command path names the calling chat. It may answer a card that chat
+    // asked, or a card its first mate asked. A missing caller fails closed. In-process tests pass none.
+    if captain::is_captain(by.as_deref()) {
+        if let Some(session) = caller {
+            if !captain_caller_may_answer(&tx, &decision.asked_by, session)? {
+                return Err(
+                    "The captain only answers a card this chat asked, or its first mate asked."
+                        .into(),
+                );
+            }
+        }
+    }
+    // WP-215: inside the write, so two windows cannot both pass the turn cap or skip the switch.
+    if let Some(refusal) = captain::refuse_stored(
+        &tx,
+        &decision,
+        by.as_deref(),
+        &answer,
+        reason.as_deref(),
+        now,
+    )? {
         return Err(refusal);
     }
     decision.state = ANSWERED.into();
     decision.answer = Some(answer);
+    decision.answer_reason = reason;
     // An answer does not stand until the person ticks it. A chat's answer never can.
+    // `who` is the identity already checked above. Nobody named never reaches here, and is not stored as the person.
+    // A captain id is folded, so the stored name and the turn count are the same captain.
     decision.standing = false;
-    decision.answered_by = Some(
-        by.map(|b| b.trim().chars().take(120).collect::<String>())
-            .filter(|b| !b.is_empty())
-            .unwrap_or_else(|| "person".into()),
-    );
+    decision.answered_by = Some(stored_answerer(Some(who.as_str())));
     decision.answered_at = Some(now);
     decision.updated_at = now;
-    decision.version += 1;
+    if is_secret_key(&decision.decision_key) {
+        decision.version =
+            crate::secrets::alloc_card_version(&tx, &decision.project, &decision.decision_key)?;
+    } else {
+        decision.version += 1;
+    }
     save(&tx, &decision)?;
     let mut released = Vec::new();
     let mut released_tasks = Vec::new();
@@ -1325,13 +1833,19 @@ pub fn answer(
         decision.answered_by.as_deref() == Some(format!("chat:{}", decision.asked_by).as_str());
     // The app closing a review's question (a brief taken back, replaced, or accepted as clean) has nothing to tell.
     let from_app = decision.answered_by.as_deref() == Some(APP_CLOSER);
-    if !from_asker && !from_app {
+    // Neither gate is a chat. A steering message to one would wait forever for a session that does not exist.
+    // The delivery check still asks as "gate". The security review asks as "security-gate".
+    let asked = fold_key(&decision.asked_by);
+    let from_gate = asked == "gate" || asked == "security-gate";
+    if !from_asker && !from_app && !from_gate {
         released.push(steering::record(
             &tx,
             SteerInput {
                 owner_session: decision.asked_by.clone(),
                 child_session: decision.asked_by.clone(),
                 delegation_id: None,
+                // One id per answer. The version is part of it, and a secret card's version never repeats, so a later
+                // answer of the same key is not refused as a copy of the first.
                 request_id: release_request(
                     &decision.decision_key,
                     "asker",
@@ -1401,6 +1915,12 @@ pub fn retire(
     let reason = plain(reason, "The reason", 300)?;
     let project = project.trim();
     let key = key.trim();
+    // A secret card is not a standing answer. Retiring it would reopen it on the next ask, which clears the person's
+    // answer and puts the card on the reuse path. Checked on the folded key, so a capital or look-alike spelling is
+    // the same refusal, including when no such card is stored.
+    if is_secret_key(key) {
+        return Err("A secret's card cannot be retired.".into());
+    }
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1463,9 +1983,10 @@ pub fn retire(
 }
 
 /// Turn reuse on or off for one answer. Only the person's own answer can be turned on, and never a red line, a protected
-/// key, or a retired row. Turning it off after it was on stops the same key from being handed out again. Missing key:
-/// nothing to change. A row already in the requested state is left as it is, but turning on still checks the rules, so a
-/// flag forced on in the database cannot be confirmed.
+/// key, or a retired row. Turning it off after it was on stops the same key from being handed out again. A protected
+/// key is never marked stopped: that would reopen it and drop the person's own answer. Missing key: nothing to change.
+/// A row already in the requested state is left as it is, but turning on still checks the rules, so a flag forced on
+/// in the database cannot be confirmed.
 pub fn set_standing(
     conn: &mut Connection,
     project: &str,
@@ -1481,6 +2002,10 @@ pub fn set_standing(
     let Some(mut decision) = get(&tx, project, key)? else {
         return Ok(None);
     };
+    let eligible = standing_eligible(&decision.decision_key);
+    if standing && !eligible {
+        return Err("This kind of question is never reused.".into());
+    }
     if standing {
         if decision.retired_at.is_some() {
             return Err("A retired answer is not reused. Ask the question again.".into());
@@ -1492,9 +2017,6 @@ pub fn set_standing(
         if !person_answered(decision.answered_by.as_deref()) {
             return Err("Only an answer from the person can be reused.".into());
         }
-        if !standing_eligible(&decision.decision_key) {
-            return Err("This kind of question is never reused.".into());
-        }
         if looks_red_line_parts(&decision.question, &decision.options)
             || looks_red_line(decision.answer.as_deref().unwrap_or(""))
         {
@@ -1503,13 +2025,16 @@ pub fn set_standing(
             );
         }
     }
-    if decision.standing == standing {
+    // Already in the requested state, unless an ineligible key was marked stopped. Stopping one of those would
+    // reopen it and drop the person's own answer (a security review's approve, a gate's check) the next time it is asked.
+    if decision.standing == standing && (eligible || !decision.reuse_stopped) {
         return Ok(Some(decision));
     }
     let version = decision.version;
-    decision.standing = standing;
+    decision.standing = standing && eligible;
     // Off after it was on: the same key is asked again. On: a previous stop is cleared.
-    decision.reuse_stopped = !standing;
+    // A key that never stands is not marked stopped. Clearing the flag leaves the real answer in place.
+    decision.reuse_stopped = !standing && eligible;
     decision.updated_at = now;
     decision.version += 1;
     let changed = tx
@@ -1517,7 +2042,7 @@ pub fn set_standing(
             "UPDATE decisions SET standing = ?1, reuse_stopped = ?2, updated_at = ?3, version = ?4
              WHERE project = ?5 AND decision_key = ?6 AND version = ?7",
             params![
-                if standing { 1 } else { 0 },
+                if decision.standing { 1 } else { 0 },
                 if decision.reuse_stopped { 1 } else { 0 },
                 decision.updated_at,
                 decision.version,
@@ -1699,6 +2224,7 @@ pub fn decisions_ask(
     store: State<'_, SessionStore>,
     input: AskInput,
 ) -> Result<AskOutcome, String> {
+    check_ask_key(&input.key)?;
     let outcome = ask(&mut *store.lock_conn()?, input, now_millis())?;
     if outcome.created || !outcome.added.is_empty() || outcome.matched {
         announce(&app, Some(&outcome.decision), &outcome.released);
@@ -1707,6 +2233,7 @@ pub fn decisions_ask(
 }
 
 #[tauri::command(async)]
+#[allow(clippy::too_many_arguments)]
 pub fn decisions_answer(
     app: AppHandle,
     store: State<'_, SessionStore>,
@@ -1714,13 +2241,22 @@ pub fn decisions_answer(
     key: String,
     answer: String,
     by: Option<String>,
+    reason: Option<String>,
+    seen_version: Option<i64>,
+    caller: Option<String>,
 ) -> Result<AnswerOutcome, String> {
-    let outcome = answer_and_relay(
+    // The version a secret card was read at is required inside answer_seen, in any spelling of the key. A gate answer
+    // is forwarded only when this one landed and the person gave it. A reason is stored beside the answer (WP-215).
+    // A captain answer with no calling chat is refused. Other answers do not read the caller.
+    let outcome = answer_and_relay_with(
         &store,
         project.as_deref().unwrap_or(""),
         &key,
         &answer,
         by,
+        reason.as_deref(),
+        seen_version,
+        Some(caller.as_deref().map(str::trim).unwrap_or("")),
         now_millis(),
     )?;
     if outcome.applied {
@@ -1729,16 +2265,75 @@ pub fn decisions_answer(
     Ok(outcome)
 }
 
+/// WP-215: a first mate notes a call it settled. The chat id is the caller's.
+#[tauri::command(async)]
+pub fn decisions_note(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    project: String,
+    session: String,
+    what: String,
+    reason: String,
+) -> Result<Decision, String> {
+    let saved = captain::note(
+        &mut *store.lock_conn()?,
+        &project,
+        &session,
+        &what,
+        &reason,
+        now_millis(),
+    )?;
+    announce(&app, Some(&saved), &[]);
+    Ok(saved)
+}
+
 /// What `decisions_answer` does with the store, without the window announce, so a test can run the same path.
+#[cfg(test)]
 pub(crate) fn answer_and_relay(
     store: &SessionStore,
     project: &str,
     key: &str,
     answer_text: &str,
     by: Option<String>,
+    seen_version: Option<i64>,
     now: i64,
 ) -> Result<AnswerOutcome, String> {
-    let outcome = answer(&mut *store.lock_conn()?, project, key, answer_text, by, now)?;
+    answer_and_relay_with(
+        store,
+        project,
+        key,
+        answer_text,
+        by,
+        None,
+        seen_version,
+        None,
+        now,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn answer_and_relay_with(
+    store: &SessionStore,
+    project: &str,
+    key: &str,
+    answer_text: &str,
+    by: Option<String>,
+    reason: Option<&str>,
+    seen_version: Option<i64>,
+    caller: Option<&str>,
+    now: i64,
+) -> Result<AnswerOutcome, String> {
+    let outcome = answer_both(
+        &mut *store.lock_conn()?,
+        project,
+        key,
+        answer_text,
+        by,
+        reason,
+        seen_version,
+        caller,
+        now,
+    )?;
     relay_gate_answer(store, &outcome, answer_text);
     Ok(outcome)
 }
@@ -1857,5 +2452,92 @@ pub fn decisions_set_standing(
     Ok(outcome)
 }
 
+mod captain;
+mod captain_text;
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod person_only_fold_tests {
+    use super::*;
+
+    #[test]
+    fn a_security_review_key_is_person_only_in_any_spelling() {
+        for key in [
+            "security-review/abc",
+            "Security-Review/abc",
+            "\u{FF33}ecurity-review/abc",
+            "security\u{200B}-review/abc",
+            "  security-review/abc\u{FEFF}",
+            "SECURITY\u{00AD}-REVIEW/ABC",
+        ] {
+            assert!(
+                person_only(key, Some("chat:author-lead")).is_some(),
+                "{key:?} was answerable by a chat"
+            );
+            assert!(
+                person_only(key, Some("person")).is_none(),
+                "{key:?} refused the person"
+            );
+            assert!(
+                person_only(key, None).is_none(),
+                "{key:?} refused the person with no by"
+            );
+        }
+    }
+
+    #[test]
+    fn fold_key_matches_the_rules_it_states() {
+        assert_eq!(fold_key("Security-Review/A"), "security-review/a");
+        assert_eq!(
+            fold_key("\u{FF33}ecurity\u{200B}-review"),
+            "security-review"
+        );
+        assert_eq!(fold_key("\u{3000}key\u{00A0}"), "key");
+    }
+
+    /// Round 6: NFKC, then drop the larger default-ignorable set (Cf and the extra ignorables), then trim, then lower case.
+    /// U+070F is Syriac Abbreviation Mark. The smaller fold keeps it, so the prefix check can miss the key.
+    #[test]
+    fn repro_220_r5_fold() {
+        assert_eq!(fold_key("security\u{070F}-review/x"), "security-review/x");
+        assert_eq!(fold_key("security\u{06DD}-review/x"), "security-review/x");
+        assert_eq!(fold_key("security\u{110BD}-review/x"), "security-review/x");
+        assert_eq!(
+            fold_key("\u{FEFF}Security-Review/A\u{200B}"),
+            "security-review/a"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_key_is_not_person_only() {
+        assert!(person_only("ask/ordinary", Some("chat:x")).is_none());
+    }
+}
+
+// review/220-r5 repro (red at 348326363): this fold trims before it drops invisible characters, so an invisible
+// character next to white space survives as a leading space; PR #230's fold_key (NFKC, drop invisibles, then trim, then
+// lower case) reads the same key as `security-review/...`. The two folds disagree once both land, and this one is not
+// idempotent. #230 also drops U+0600..U+0605, U+06DD, U+070F, U+08E2, U+FFF0..U+FFFB and others this list keeps.
+#[cfg(test)]
+mod repro_220_r5_fold {
+    use super::*;
+
+    #[test]
+    fn repro_220_r5_fold_key_agrees_with_pr_230_and_is_idempotent() {
+        for key in [
+            "\u{200B} security-review/abc",
+            "security-review/abc \u{FEFF}",
+            "\u{0600}security-review/abc",
+        ] {
+            let once = fold_key(key);
+            assert_eq!(once, "security-review/abc", "{key:?} folds to {once:?}");
+            assert_eq!(fold_key(&once), once, "{key:?}: the fold is not idempotent");
+            assert!(
+                person_only(key, Some("chat:author-lead")).is_some(),
+                "{key:?} was answerable by a chat"
+            );
+        }
+    }
+}

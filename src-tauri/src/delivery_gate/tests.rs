@@ -1029,6 +1029,7 @@ fn a_chat_cannot_approve_a_gate_and_nothing_is_forwarded() {
                 key,
                 "approve",
                 Some(by.into()),
+                None,
                 3,
             )
             .unwrap_err();
@@ -1074,6 +1075,7 @@ fn an_answer_on_a_decision_that_is_not_open_forwards_nothing() {
         "gate/missing",
         "approve",
         Some("user".into()),
+        None,
         3,
     )
     .unwrap();
@@ -1103,6 +1105,7 @@ fn an_answer_on_a_decision_that_is_not_open_forwards_nothing() {
         "gate/r1",
         "skip",
         Some("person".into()),
+        None,
         5,
     )
     .unwrap();
@@ -1158,6 +1161,7 @@ fn the_persons_answer_still_forwards_and_another_projects_run_does_not() {
         "GATE/r1",
         "approve",
         Some("user".into()),
+        None,
         30,
     )
     .unwrap();
@@ -1173,21 +1177,87 @@ fn the_persons_answer_still_forwards_and_another_projects_run_does_not() {
     assert!(text.contains("\"--action\",\"approve\""), "{text}");
     assert!(!text.contains("r-beta"), "{text}");
 
-    // Nobody named, and the word "person", are the person too.
-    for (key, run_id, by) in [
-        ("gate/r2", "r-none", None),
-        ("gate/r3", "r-person", Some("person".into())),
+    // Nobody named is not the person. The word "person" still is.
+    ask_gate(&store, alpha, "gate/r2");
+    park(&store, "r-none", alpha, "r-none", "gate/r2", 40);
+    let unnamed =
+        crate::decisions::answer_and_relay(&store, alpha, "gate/r2", "fix", None, None, 41);
+    assert!(
+        unnamed.is_err(),
+        "an unnamed answer was treated as the person"
+    );
+    assert!(
+        unnamed.unwrap_err().contains("Say who is answering"),
+        "unnamed"
+    );
+    assert_eq!(responded(&store, alpha, "gate/r2"), None);
+
+    ask_gate(&store, alpha, "gate/r3");
+    park(&store, "r-person", alpha, "r-person", "gate/r3", 40);
+    let landed = crate::decisions::answer_and_relay(
+        &store,
+        alpha,
+        "gate/r3",
+        "fix",
+        Some("person".into()),
+        None,
+        41,
+    )
+    .unwrap();
+    assert!(landed.applied, "gate/r3");
+    assert_eq!(responded(&store, alpha, "gate/r3").as_deref(), Some("fix"));
+    let text = log_of(&log);
+    assert!(text.contains("\"--run\",\"r-person\""), "{text}");
+    assert!(text.contains("\"--action\",\"fix\""), "{text}");
+    assert!(text.contains("\"--findings\""), "{text}");
+    assert!(!text.contains("r-none"), "{text}");
+}
+
+/// The webview's answer path records the answer as the person. It must refuse every key that is not a delivery check,
+/// including a security review under another spelling, and leave that question open.
+#[test]
+fn the_checks_answer_refuses_a_key_that_is_not_a_check() {
+    let store = store();
+    let project = "proj-alpha";
+    crate::decisions::ask(
+        &mut store.lock_conn().unwrap(),
+        crate::decisions::AskInput {
+            asked_by: "security-gate".into(),
+            asked_by_mono: None,
+            project: Some(project.into()),
+            key: "security-review/abc".into(),
+            question: "Ship this?".into(),
+            options: vec!["Approve".into(), "Fix".into()],
+            recommended: None,
+            task_ids: Vec::new(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
+        },
+        2,
+    )
+    .unwrap();
+    for key in [
+        "security-review/abc",
+        "SECURITY-REVIEW/abc",
+        "security\u{200B}-review/abc",
+        "fresh-eyes/r1/00112233aabbccdd",
+        "irreversible/lead/task",
+        "fanout-again/p/t/r",
+        "ask/ordinary",
     ] {
-        ask_gate(&store, alpha, key);
-        park(&store, run_id, alpha, run_id, key, 40);
-        let landed = crate::decisions::answer_and_relay(&store, alpha, key, "fix", by, 41).unwrap();
-        assert!(landed.applied, "{key}");
-        assert_eq!(responded(&store, alpha, key).as_deref(), Some("fix"));
-        let text = log_of(&log);
-        assert!(text.contains(&format!("\"--run\",\"{run_id}\"")), "{text}");
-        assert!(text.contains("\"--action\",\"fix\""), "{text}");
-        assert!(text.contains("\"--findings\""), "{text}");
+        let err = respond(&store, key, "Approve", Some(project)).unwrap_err();
+        assert!(err.contains("Only a delivery check"), "{key:?}: {err}");
     }
+    // A blank project does not skip the refusal.
+    let blank = respond(&store, "security-review/abc", "Approve", Some(" ")).unwrap_err();
+    assert!(blank.contains("Only a delivery check"), "{blank}");
+    let open = crate::decisions::get(&store.lock_conn().unwrap(), project, "security-review/abc")
+        .unwrap()
+        .unwrap();
+    assert_eq!(open.state, crate::decisions::OPEN);
+    assert!(open.answer.is_none());
+    assert!(open.answered_by.is_none());
 }
 
 #[cfg(windows)]

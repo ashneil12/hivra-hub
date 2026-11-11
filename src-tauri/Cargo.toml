@@ -41,6 +41,8 @@ tar = "0.4"
 flate2 = "1"
 regex = "1"
 unicode-normalization = "0.1"
+# WP-92: a secret's value is cleared from memory when it drops (`secrets::SecretValue`).
+zeroize = "1"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 tauri-plugin-dialog = "2"
