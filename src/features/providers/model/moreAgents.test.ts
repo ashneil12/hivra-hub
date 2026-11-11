@@ -292,10 +292,18 @@ describe("a drive colon is only a drive on Windows", () => {
     expect(argumentProblem("/opt/node", ["-IC:\\secret"], "other")).not.toBeNull();
     expect(argumentProblem("/opt/node", ["-IC:\\foo"], "win32")).toBeNull();
   });
+
+  it("treats a drive path as absolute only on Windows", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/node", ["C:\\agent.mjs"], "other")).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["C:\\agent.mjs"], "win32")).toBeNull();
+    expect(argumentProblem("/opt/node", ["--require", "C:\\plugin.js"], "other")).not.toBeNull();
+    expect(argumentProblem("/opt/node", ["--require", "C:\\plugin.js"], "win32")).toBeNull();
+  });
 });
 
 describe("fullwidth separators and Windows best-fit slashes", () => {
-  it("folds a fullwidth equals or colon before the split, and refuses yen and the division slash", async () => {
+  it("folds a fullwidth equals or colon before the split, and refuses yen, won and the division slash", async () => {
     const { argumentProblem } = await import("./moreAgents");
     const eq = `key${String.fromCharCode(0xff1d)}../x`;
     const colon = `--config${String.fromCharCode(0xff1a)}../x`;
@@ -305,6 +313,8 @@ describe("fullwidth separators and Windows best-fit slashes", () => {
     expect(argumentProblem("/opt/node", [colon])).not.toBeNull();
     expect(argumentProblem("/opt/node", [yen])).not.toBeNull();
     expect(argumentProblem("/opt/node", [slash])).not.toBeNull();
+    const won = `${String.fromCharCode(0x20a9)}Users${String.fromCharCode(0x20a9)}ash`;
+    expect(argumentProblem("/opt/node", [won])).not.toBeNull();
     expect(argumentProblem("/opt/node", [`key${String.fromCharCode(0xff1d)}hello`])).toBeNull();
   });
 });
@@ -317,6 +327,8 @@ describe("a file URL is percent-decoded the way the app decodes it", () => {
     expect(argumentProblem("/opt/deno", ["file:///tmp/%ff"])).not.toBeNull();
     expect(argumentProblem("/opt/deno", ["file:///tmp/my%20agent.ts"])).toBeNull();
     expect(argumentProblem("/opt/deno", ["file:///%2e%2e/x"])).toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/agent.ts?v=1"])).not.toBeNull();
+    expect(argumentProblem("/opt/deno", ["file:///tmp/agent.ts#section"])).not.toBeNull();
   });
 });
 
