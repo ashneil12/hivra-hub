@@ -237,6 +237,10 @@ impl TokenStore for MemoryStore {
         *self.0.borrow_mut() = Some(token.to_string());
         Ok(())
     }
+    fn clear(&self) -> Result<(), String> {
+        *self.0.borrow_mut() = None;
+        Ok(())
+    }
 }
 
 #[test]
@@ -1312,4 +1316,303 @@ fn the_app_sends_only_to_https_and_plain_http_is_for_the_test_stand_in() {
     assert!(endpoint_rules("https://sync.example.test/v1", false).is_ok());
     assert!(endpoint_rules("http://127.0.0.1:4010", true).is_ok());
     assert!(endpoint_rules("http://sync.example.test/v1", true).is_err());
+}
+
+// --- review leftovers: the token belongs to one address ---------------------------------------
+
+#[test]
+fn an_edited_address_drops_the_token_and_sends_nothing() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let dir = std::env::temp_dir().join(format!("tw-addr-{}", Uuid::new_v4()));
+    let path = dir.join(CONFIG_FILE);
+    let store = MemoryStore::default();
+    save_config(&path, true, "https://team.example.test/v1").unwrap();
+    remember_token(&store, "device-token").unwrap();
+    save_config(&path, true, &format!("http://{addr}")).unwrap();
+
+    let loaded = load_signed_in_config(&path, &store);
+    assert!(
+        loaded.token.is_empty(),
+        "the old token was kept for a new address"
+    );
+    assert!(!status_at(&path, &store).active);
+    assert!(sync_on_write(&path, &store, &stored_projects()).is_err());
+    assert_no_connection(&listener);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn saving_the_same_address_keeps_the_token() {
+    let dir = std::env::temp_dir().join(format!("tw-same-{}", Uuid::new_v4()));
+    let path = dir.join(CONFIG_FILE);
+    let store = MemoryStore::default();
+    save_config(&path, true, "https://team.example.test/v1").unwrap();
+    remember_token(&store, "device-token").unwrap();
+    save_config(&path, true, "https://team.example.test/v1/").unwrap();
+    assert_eq!(load_signed_in_config(&path, &store).token, "device-token");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_token_is_stored_with_the_server_address_it_was_issued_for() {
+    let store = MemoryStore::default();
+    remember_token_for(&store, "https://team.example.test/v1", "device-token").unwrap();
+    let raw = store.read().unwrap().unwrap_or_default();
+    assert!(
+        raw.contains("https://team.example.test/v1"),
+        "the address was not stored with the token: {raw}"
+    );
+    assert!(raw.contains("device-token"));
+}
+
+#[test]
+fn a_token_bound_to_another_address_is_dropped_when_sharing_is_on() {
+    let dir = std::env::temp_dir().join(format!("tw-bound-{}", Uuid::new_v4()));
+    let path = dir.join(CONFIG_FILE);
+    let store = MemoryStore::default();
+    save_config(&path, true, "https://other.example.test/v1").unwrap();
+    remember_token_for(&store, "https://team.example.test/v1", "device-token").unwrap();
+    assert!(
+        load_signed_in_config(&path, &store).token.is_empty(),
+        "a token for another server was used here"
+    );
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_token_bound_to_this_address_is_kept() {
+    let dir = std::env::temp_dir().join(format!("tw-bound-ok-{}", Uuid::new_v4()));
+    let path = dir.join(CONFIG_FILE);
+    let store = MemoryStore::default();
+    save_config(&path, true, "https://team.example.test/v1").unwrap();
+    remember_token_for(&store, "https://team.example.test/v1", "device-token").unwrap();
+    assert_eq!(load_signed_in_config(&path, &store).token, "device-token");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// --- a deleted shared project stays deleted ----------------------------------------------------
+
+#[test]
+fn a_locally_deleted_shared_project_does_not_come_back() {
+    let (ann, ben, _server) = two_members();
+    sync_round(
+        &ann,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    let b1 = sync_round(&ben, &doc_with(vec![]), &SyncState::default()).unwrap();
+    assert_eq!(record(&b1.doc, "exo")["name"], "EXO");
+
+    let gone = doc_with(vec![]);
+    let b2 = sync_round(&ben, &gone, &b1.state).unwrap();
+    assert!(
+        b2.doc["projects"].as_array().unwrap().is_empty(),
+        "a deleted project came back"
+    );
+    let b3 = sync_round(&ben, &b2.doc, &b2.state).unwrap();
+    assert!(
+        b3.doc["projects"].as_array().unwrap().is_empty(),
+        "a deleted project came back on the next round"
+    );
+
+    // Putting it back locally shares it again.
+    let back = sync_round(
+        &ben,
+        &doc_with(vec![shared_record("exo", "EXO")]),
+        &b3.state,
+    )
+    .unwrap();
+    assert_eq!(record(&back.doc, "exo")["name"], "EXO");
+}
+
+// --- pulled values have to pass the local hub rules -------------------------------------------
+
+#[test]
+fn a_pulled_value_that_breaks_the_local_rules_is_not_applied() {
+    let (ann, ben, _server) = two_members();
+    let a1 = sync_round(
+        &ann,
+        &doc_with(vec![
+            shared_record("exo", "EXO"),
+            shared_record("notes", "Notes"),
+        ]),
+        &SyncState::default(),
+    )
+    .unwrap();
+    let fields = ann.get_fields("project:exo").unwrap();
+    let name_rev = fields["name"].0;
+    let short_rev = fields.get("shortName").map(|field| field.0).unwrap_or(0);
+    ben.put_fields(
+        "project:exo",
+        &[
+            ("name", name_rev, "\"Notes\""),
+            ("shortName", short_rev, "\"way too long a label\""),
+            ("iconShape", 0, "\"ghost\""),
+            ("archived", 0, "true"),
+            ("status", 0, "\"archived\""),
+        ],
+    )
+    .unwrap();
+
+    let a2 = sync_round(&ann, &a1.doc, &a1.state).unwrap();
+    let mine = record(&a2.doc, "exo");
+    assert_eq!(mine["name"], "EXO", "a clashing name was applied");
+    assert_eq!(
+        mine["shortName"], "EXO",
+        "an over-long short name was applied"
+    );
+    assert!(
+        mine.get("iconShape").is_none() || mine["iconShape"] != "ghost",
+        "an unknown icon was applied"
+    );
+    assert!(
+        mine.get("archived").is_none() || mine["archived"] != true,
+        "a pull archived the local project"
+    );
+    assert!(
+        mine.get("status").is_none() || mine["status"] != "archived",
+        "a pull set the local status to archived"
+    );
+}
+
+#[test]
+fn a_new_shared_project_with_a_bad_name_or_a_clash_is_not_added() {
+    let (ann, ben, _server) = two_members();
+    ben.put_fields("project:bad", &[("name", 0, "\"../nope\"")])
+        .unwrap();
+    ben.put_fields("project:side", &[("name", 0, "\"Side\"")])
+        .unwrap();
+    ben.put_fields(
+        "project:ok",
+        &[
+            ("name", 0, "\"Pilot\""),
+            ("shortName", 0, "\"ok\""),
+            ("iconShape", 0, "\"ghost\""),
+            ("archived", 0, "true"),
+            ("status", 0, "\"archived\""),
+        ],
+    )
+    .unwrap();
+
+    let local = doc_with(vec![
+        json!({ "id": "mine", "name": "Side", "shared": false }),
+    ]);
+    let pulled = sync_round(&ann, &local, &SyncState::default()).unwrap();
+    let ids: Vec<&str> = pulled.doc["projects"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|project| project["id"].as_str())
+        .collect();
+    assert!(!ids.contains(&"bad"), "a project with a bad name was added");
+    assert!(!ids.contains(&"side"), "a project that clashes was added");
+    let ok = record(&pulled.doc, "ok");
+    assert_eq!(ok["name"], "Pilot");
+    assert_eq!(ok["shortName"], "ok");
+    assert_eq!(ok["iconShape"], "folder");
+    assert!(ok.get("archived").is_none() || ok["archived"] != true);
+    assert!(ok.get("status").is_none() || ok["status"] != "archived");
+}
+
+// --- the joined name ----------------------------------------------------------------------------
+
+#[test]
+fn a_joined_name_that_is_not_a_name_does_not_spend_the_invitation() {
+    for bad in ["../not a name", " ", "ann\nben", &"a".repeat(41)] {
+        let mut ws = new_workspace("ws-name", "owner");
+        let token = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
+        assert!(
+            accept_invitation(&mut ws, &token, bad, NOW).is_err(),
+            "{bad:?} was accepted"
+        );
+        assert!(
+            accept_invitation(&mut ws, &token, "Ann", NOW).is_ok(),
+            "the invite was spent by {bad:?}"
+        );
+    }
+    let mut ws = new_workspace("ws-name-ok", "owner");
+    let token = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
+    assert!(accept_invitation(&mut ws, &token, "Ben's team", NOW).is_ok());
+}
+
+#[test]
+fn accepting_a_bad_name_opens_no_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let client = client_for(&format!("http://{}", listener.local_addr().unwrap()), "");
+    assert!(client.accept("invite-token", "../x").is_err());
+    assert_no_connection(&listener);
+}
+
+// --- keeping a round ----------------------------------------------------------------------------
+
+#[test]
+fn a_round_that_only_changes_sync_state_does_not_rewrite_the_projects_doc() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let doc = doc_with(vec![shared_record("exo", "EXO")]);
+    let rev = crate::local_hub::write_if(&conn, "projects", &doc, None)
+        .unwrap()
+        .unwrap();
+    let state = SyncState::default();
+    let mut round_state = state.clone();
+    round_state.conflicts.push("exo.name".into());
+    let round = Round {
+        doc: doc.clone(),
+        state: round_state,
+        pushed: 0,
+        pulled: 0,
+    };
+    let kept = keep_round(&conn, &doc, rev, &state, &round).unwrap();
+    assert_eq!(kept.projects_rev, None);
+    assert_eq!(
+        crate::local_hub::read_doc(&conn, "projects").unwrap().rev,
+        rev
+    );
+    assert!(kept.state_written);
+}
+
+#[test]
+fn a_refused_projects_write_still_saves_the_sync_state() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let doc = doc_with(vec![shared_record("exo", "EXO")]);
+    let rev = crate::local_hub::write_if(&conn, "projects", &doc, None)
+        .unwrap()
+        .unwrap();
+    crate::local_hub::write_if(&conn, "projects", &doc, None).unwrap();
+    let mut next = doc.clone();
+    next["projects"][0]["name"] = json!("EXO game");
+    let state = SyncState::default();
+    let mut round_state = state.clone();
+    round_state.conflicts.push("exo.name".into());
+    let round = Round {
+        doc: next,
+        state: round_state,
+        pushed: 1,
+        pulled: 0,
+    };
+    let kept = keep_round(&conn, &doc, rev, &state, &round).unwrap();
+    assert_eq!(kept.projects_rev, None);
+    let saved = crate::local_hub::read_doc(&conn, SYNC_STATE_KEY)
+        .unwrap()
+        .value
+        .unwrap_or(Value::Null);
+    assert_eq!(saved["conflicts"], json!(["exo.name"]));
+    assert!(kept.state_written);
+}
+
+#[test]
+fn the_module_does_not_allow_dead_code_for_everything() {
+    let source = include_str!("team_workspace.rs");
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("#!") {
+            assert!(
+                !trimmed.contains("allow(dead_code)"),
+                "the module allows dead code: {trimmed}"
+            );
+        }
+    }
 }
