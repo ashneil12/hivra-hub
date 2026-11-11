@@ -19,10 +19,12 @@
 
 import { callText, redListCategory } from "../../autopilot/model/redList";
 import { ALWAYS_ASK_REASON, questionVeto } from "../../autopilot/model/reviewerRules";
+import { foldDecisionKey, isPersonOnlyDecisionKey } from "../../hub/model/decisionKey";
+import { REPO_ALIAS } from "./repoAlias";
 
 export type NeedsKind = "stopped" | "question" | "approval" | "merge" | "review" | "check";
 
-export type NeedsAction = { label: string; run: () => void; title?: string };
+export type NeedsAction = { label: string; run: () => void; title?: string; ariaLabel?: string };
 
 export type NeedsOpen =
   | { where: "chat"; id: string }
@@ -95,8 +97,10 @@ export type ApprovalFact = FactBase & {
   risky?: boolean;
   /** A page or plugin asking for access. One Review, never Allow or Deny. */
   reviewOnly?: boolean;
-  /** Button words for the yes choice. A red-line row of a card says Approve once. */
+  /** Button words for the one tap, only when oneTapButton returned them. */
   allowLabel?: string;
+  /** Full words when the label is shortened. */
+  allowTitle?: string;
   /** Button words for the other choice. Absent means Deny. */
   denyLabel?: string;
   /** Set when this ask is a decision. Home opens the inbox on this key. */
@@ -108,6 +112,9 @@ export type ApprovalFact = FactBase & {
 export type MergeFact = FactBase & {
   /** Answers the coding team's own question. This is not a new merge path. */
   onAnswer?: () => void;
+  /** The one tap's words, from oneTapButton. Absent means Open only. */
+  answerLabel?: string;
+  answerTitle?: string;
   onNotYet?: () => void;
 };
 
@@ -242,6 +249,62 @@ function riskyStep(sentence: string): boolean {
   return reason != null && RISKY_REASON.has(reason);
 }
 
+const WAY_OUT = new Set(["open", "review", "open chat", "dismiss"]);
+
+export type OneTap = { label: string; title: string; answer: string };
+
+/** A long option is shortened on the button. The full text stays on the title. */
+export function shortenOneTap(text: string): string {
+  const full = text.replace(/\s+/g, " ").trim();
+  if (full.length <= 80) return full;
+  return `${full.slice(0, 77).trimEnd()}...`;
+}
+
+/**
+ * The one button a row may show beside Open. Null unless every condition holds:
+ * there is a recommended option, the label is that option's own words, the key
+ * is not person-only, the step is not on the red list, and the words are not a
+ * way out (Open, Review, Open chat, Dismiss) or Allow always.
+ */
+export function oneTapButton(input: {
+  recommended?: string | null;
+  options?: readonly string[];
+  decisionKey?: string | null;
+  gateCard?: boolean;
+  sentence?: string;
+  risky?: boolean;
+}): OneTap | null {
+  if (input.gateCard) return null;
+  const key = input.decisionKey?.trim() ?? "";
+  if (key && isPersonOnlyDecisionKey(key)) return null;
+  if (input.risky) return null;
+  const sentence = input.sentence?.replace(/\s+/g, " ").trim() ?? "";
+  if (sentence && riskyStep(sentence)) return null;
+  const recommended = input.recommended?.replace(/\s+/g, " ").trim() ?? "";
+  if (!recommended) return null;
+  if (input.options && !input.options.includes(recommended)) return null;
+  const folded = recommended.toLowerCase();
+  if (WAY_OUT.has(folded) || folded === "allow always") return null;
+  return { label: shortenOneTap(recommended), title: recommended, answer: recommended };
+}
+
+function shownTap(
+  label: string | undefined,
+  sentence: string,
+  extra: { risky?: boolean; decisionKey?: string | null; gateCard?: boolean },
+): OneTap | null {
+  const words = label?.trim();
+  if (!words) return null;
+  return oneTapButton({
+    recommended: words,
+    options: [words],
+    sentence,
+    risky: extra.risky,
+    decisionKey: extra.decisionKey,
+    gateCard: extra.gateCard,
+  });
+}
+
 function stoppedItem(fact: StoppedFact, now: number): Draft | undefined {
   if (fact.forAsh === false) return undefined;
   const id = fact.id.trim();
@@ -286,6 +349,9 @@ function questionItem(fact: QuestionFact, now: number): Draft | undefined {
     };
   }
   const kind: NeedsKind = fact.asMerge ? "merge" : "question";
+  const tap = fact.onAnswer
+    ? shownTap(fact.answerLabel, sentence, { decisionKey: fact.decisionKey })
+    : null;
   return {
     key: `${kind}:${id}`,
     kind,
@@ -294,21 +360,15 @@ function questionItem(fact: QuestionFact, now: number): Draft | undefined {
     who,
     at: finite(fact.at, now),
     sentence,
-    actions: actionsOf(fact.asMerge
-      ? [
-        ...(fact.onAnswer ? [{ label: "Merge", run: fact.onAnswer }] : []),
-        ...(fact.onNotYet ? [{ label: "Not yet", run: fact.onNotYet }] : []),
-        ...openAction("Open", fact.onOpen),
-      ]
-      : [
-        ...(fact.onAnswer ? [{
-          label: fact.answerLabel?.trim() || "Answer",
-          run: fact.onAnswer,
-          ...(fact.answerTitle ? { title: fact.answerTitle } : {}),
-        }] : []),
-        ...(fact.onNotYet ? [{ label: fact.otherLabel?.trim() || "Not yet", run: fact.onNotYet }] : []),
-        ...openAction("Open", fact.onOpen),
-      ]),
+    actions: actionsOf([
+      ...(tap && fact.onAnswer ? [{
+        label: tap.label,
+        run: fact.onAnswer,
+        title: fact.answerTitle || tap.title,
+        ariaLabel: fact.answerTitle || tap.title,
+      }] : []),
+      ...openAction("Open", fact.onOpen),
+    ]),
     open: fact.open,
     about: fact.about,
     same: sentenceKey(fact.projectId, fact.sentence),
@@ -327,7 +387,9 @@ function approvalItem(fact: ApprovalFact, now: number): Draft | undefined {
   const sentence = plainSentence(fact.sentence);
   if (!sentence) return undefined;
   const review = fact.reviewOnly === true || accessAsk(sentence);
-  const allow = fact.allowLabel?.trim() || (fact.risky === true || riskyStep(sentence) ? "Allow once" : "Allow");
+  const tap = review ? null : (fact.onAllow
+    ? shownTap(fact.allowLabel, sentence, { risky: fact.risky, decisionKey: fact.decisionKey })
+    : null);
   return {
     key: `approval:${id}`,
     kind: "approval",
@@ -336,16 +398,30 @@ function approvalItem(fact: ApprovalFact, now: number): Draft | undefined {
     who,
     at: finite(fact.at, now),
     sentence,
-    actions: actionsOf(review
-      ? openAction("Review", fact.onOpen)
-      : [
-        ...(fact.onAllow ? [{ label: allow, run: fact.onAllow }] : []),
-        ...(fact.onDeny ? [{ label: fact.denyLabel?.trim() || "Deny", run: fact.onDeny }] : []),
-        ...openAction("Open", fact.onOpen),
-      ]),
+    actions: actionsOf([
+      ...(tap && fact.onAllow ? [{
+        label: tap.label,
+        run: fact.onAllow,
+        title: fact.allowTitle || tap.title,
+        ariaLabel: fact.allowTitle || tap.title,
+      }] : []),
+      ...openAction("Open", fact.onOpen),
+    ]),
     open: fact.open,
     ...(fact.decisionKey ? { decisionKey: fact.decisionKey } : {}),
   };
+}
+
+function mergeTap(fact: MergeFact, sentence: string): NeedsAction[] {
+  if (!fact.onAnswer) return [];
+  const tap = shownTap(fact.answerLabel, sentence, {});
+  if (!tap) return [];
+  return [{
+    label: tap.label,
+    run: fact.onAnswer,
+    title: fact.answerTitle || tap.title,
+    ariaLabel: fact.answerTitle || tap.title,
+  }];
 }
 
 function mergeItem(fact: MergeFact, now: number): Draft | undefined {
@@ -363,19 +439,12 @@ function mergeItem(fact: MergeFact, now: number): Draft | undefined {
     at: finite(fact.at, now),
     sentence,
     actions: actionsOf([
-      ...(fact.onAnswer ? [{ label: "Merge", run: fact.onAnswer }] : []),
-      ...(fact.onNotYet ? [{ label: "Not yet", run: fact.onNotYet }] : []),
+      ...mergeTap(fact, sentence),
       ...openAction("Open", fact.onOpen),
     ]),
     open: fact.open,
   };
 }
-
-/** A checkout may still say monocode-hub after the GitHub repo was renamed. No network. */
-const REPO_ALIAS: Record<string, string> = {
-  "ashneil12/monocode-hub": "ashneil12/hivra-hub",
-  "ashneil12/hivra-hub": "ashneil12/monocode-hub",
-};
 
 /** Same repo, ignoring case, including one known rename. */
 export function sameRepo(left: string, right: string): boolean {
@@ -434,11 +503,11 @@ function checkItem(fact: CheckFact, now: number): Draft | undefined {
     who: personName(fact.who || "Coding team"),
     at: finite(fact.at, now),
     sentence,
-    actions: actionsOf([
-      ...(fact.onApprove ? [{ label: "Approve", run: fact.onApprove }] : []),
-      ...(fact.onFix ? [{ label: "Fix", run: fact.onFix }] : []),
-      ...openAction("Open", fact.onOpen),
-    ]),
+    // A gate card is never a one tap, so the only control is Open.
+    actions: openAction(
+      oneTapButton({ gateCard: true, decisionKey: fact.gateKey, sentence, recommended: null })?.label ?? "Open",
+      fact.onOpen,
+    ),
     open: fact.open,
     gateKey,
   };
@@ -456,7 +525,8 @@ function collapse(drafts: Draft[]): NeedsItem[] {
   });
   const kept = new Map<string, Draft>();
   for (const row of rows) {
-    const key = row.gateKey ? `check:${row.gateKey}` : row.key;
+    const gate = row.gateKey?.trim();
+    const key = gate ? `check:${foldDecisionKey(gate)}` : row.key;
     const prev = kept.get(key);
     const better = !prev
       || RANK[row.kind] < RANK[prev.kind]

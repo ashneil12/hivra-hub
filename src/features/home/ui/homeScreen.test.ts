@@ -270,7 +270,7 @@ it("shows a stopped worker as a chip, a red Stopped, the reason and a bordered O
   expect(row.querySelector("[data-needs-stopped]")).toBeNull();
   expect(row.textContent).toContain("Example: Out of credits");
   expect(row.textContent).not.toContain("Stopped.");
-  expect(row.querySelector("[data-needs-source]")?.textContent).toMatch(/^EXO lead, \d+ min ago$/);
+  expect(row.querySelector("[data-needs-source]")?.textContent).toMatch(/^EXO lead · \d+ min ago$/);
   expect(row.textContent).not.toMatch(/\bStuck\b/);
   const button = [...row.querySelectorAll("button")].find((item) => item.textContent === "Open chat")!;
   expect(button.className).toMatch(/\bborder\b/);
@@ -333,52 +333,49 @@ it("draws row actions as buttons, the first filled and the rest bordered, at mos
   expect(ran).toEqual(["Deny"]);
 });
 
-it("keeps a blue button on a safe approval and borders both buttons on a risky one", () => {
+it("keeps a blue button on a safe one tap and borders Open on a risky row", () => {
   draw({
     needsYou: [
       line({
         id: "safe",
         text: "frank wants to run npm test.",
         actions: [
-          { label: "Allow", run: () => undefined },
-          { label: "Deny", run: () => undefined },
+          { label: "Yes", run: () => undefined },
+          { label: "Open", run: () => undefined },
         ],
       }),
       line({
         id: "risk",
         text: "frank wants to run npm publish.",
-        actions: [
-          { label: "Allow once", run: () => undefined },
-          { label: "Deny", run: () => undefined },
-        ],
+        actions: [{ label: "Open", run: () => undefined }],
       }),
     ],
   });
   const rows = [...container.querySelectorAll("[data-home-line]")];
-  const allow = [...rows[0]!.querySelectorAll("button")].find((item) => item.textContent === "Allow")!;
-  expect(allow.className).toMatch(/\bbg-accent\b/);
-  expect(allow.className).toMatch(/\btext-black\b/);
-  const once = [...rows[1]!.querySelectorAll("button")].find((item) => item.textContent === "Allow once")!;
-  const deny = [...rows[1]!.querySelectorAll("button")].find((item) => item.textContent === "Deny")!;
-  expect(once.className).not.toMatch(/\bbg-accent\b/);
-  expect(once.className).toMatch(/\bborder\b/);
-  expect(deny.className).not.toMatch(/\bbg-accent\b/);
-  expect(deny.className).toMatch(/\bborder\b/);
+  const yes = [...rows[0]!.querySelectorAll("button")].find((item) => item.textContent === "Yes")!;
+  const safeOpen = [...rows[0]!.querySelectorAll("button")].find((item) => item.textContent === "Open")!;
+  const riskOpen = [...rows[1]!.querySelectorAll("button")].find((item) => item.textContent === "Open")!;
+  expect(yes.className).toMatch(/\bbg-accent\b/);
+  expect(yes.className).toMatch(/\btext-black\b/);
+  expect(safeOpen.className).not.toMatch(/\bbg-accent\b/);
+  expect(safeOpen.className).toMatch(/\bborder\b/);
+  expect(riskOpen.className).not.toMatch(/\bbg-accent\b/);
+  expect(riskOpen.className).toMatch(/\bborder\b/);
 });
 
-it("gives a page access ask one bordered Review", () => {
+it("gives a page access ask one bordered Open", () => {
   let opened = 0;
   draw({
     needsYou: [line({
       text: "The Weekly views page asks to read YouTube stats.",
-      actions: [{ label: "Review", run: () => { opened += 1; } }],
+      actions: [{ label: "Open", run: () => { opened += 1; } }],
     })],
   });
   const row = container.querySelector("[data-home-line]")!;
   const buttons = [...row.querySelectorAll("button")].filter((item) =>
-    item.textContent === "Review" || item.textContent === "Allow" || item.textContent === "Deny",
+    item.textContent === "Open" || item.textContent === "Allow" || item.textContent === "Deny" || item.textContent === "Review",
   );
-  expect(buttons.map((item) => item.textContent)).toEqual(["Review"]);
+  expect(buttons.map((item) => item.textContent)).toEqual(["Open"]);
   expect(buttons[0]?.className).toMatch(/\bborder\b/);
   expect(buttons[0]?.className).not.toMatch(/\bbg-accent\b/);
   act(() => buttons[0]?.click());

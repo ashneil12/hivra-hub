@@ -1,7 +1,7 @@
 // Home. Orbit's column and entrance, restyled: no counters, no status icons, no view-all links.
 // HomePage.tsx imports Orbit data hooks and shows those, so this screen is not a copy of that file.
 
-import { useState, type ReactNode } from "react";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { sectionKey, type HomeArrangement, type SectionRef } from "../model/arrangement";
 import type { HomeLine, HomeLineKind } from "../model/lines";
 import { FREE_UP_SPACE } from "../../monos/model/builderScale";
@@ -10,6 +10,7 @@ import { ArrowUp } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { HOME_MAX_WIDTH, HOME_STAGGER_MS } from "../vendor/homeLayout";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import { oneTapRefusal, subscribeOneTapRefusal } from "../../needs/model/oneTapNotice";
 import "./home.css";
 
 const TITLE: Record<string, string> = {
@@ -41,15 +42,21 @@ const ROW_ACTIONS = 3;
 // Blue primary (bg-accent, black text). Not the white primary-action fill.
 const PRIMARY_BUTTON = "shrink-0 rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-black";
 
-function NeedActions({ actions }: { actions: readonly { label: string; run: () => void; title?: string }[] }) {
+function OneTapRefusal() {
+  const text = useSyncExternalStore(subscribeOneTapRefusal, oneTapRefusal, () => undefined);
+  if (!text) return null;
+  return <p data-needs-refusal className="border-t border-stroke px-3 py-1.5 text-[12px] text-content/70">{text}</p>;
+}
+
+function NeedActions({ actions }: { actions: readonly { label: string; run: () => void; title?: string; ariaLabel?: string }[] }) {
   return actions.slice(0, ROW_ACTIONS).map((action, index) => {
     const run = (event: { stopPropagation: () => void }) => {
       event.stopPropagation();
       action.run();
     };
-    // A stopped row, a way out and a page ask stay bordered. A safe approval keeps the blue button.
-    const bordered = action.label === "Open chat" || action.label === "Open" || action.label === "Allow once" || action.label === "Review";
-    const name = action.title || action.label;
+    // A stopped row and the way out stay bordered. A one tap keeps the blue button.
+    const bordered = action.label === "Open chat" || action.label === "Open";
+    const name = action.ariaLabel || action.title || action.label;
     if (index === 0 && !bordered) {
       return (
         <button
@@ -109,7 +116,7 @@ export function needsAgo(at: number, now = Date.now()): string | undefined {
 function sourceLine(who: string | undefined, at: number): string | undefined {
   const name = who?.replace(/\s+/g, " ").trim();
   const when = needsAgo(at);
-  if (name && when) return `${name}, ${when}`;
+  if (name && when) return `${name} · ${when}`;
   return name || when;
 }
 
@@ -421,6 +428,7 @@ export function HomeScreen({
                   {ref.kind === "panel" ? <Control name={`Unpin ${title}`} onClick={() => onUnpin(key)} /> : null}
                 </div>
               </header>
+              {needsHead ? <OneTapRefusal /> : null}
               {ref.kind === "builtin" ? rows.map((line) => line.kind === "builders" ? (
                 // WP-161: a line about the machine, not a place to open. A disk pause opens Clean up.
                 // WP-176: a spend pause opens the limit. The text wraps, so the reason is never clipped.

@@ -18,10 +18,7 @@ import { allKeptPages, needsAllow, requestOpenPage, usePagesVersion, type Page }
 import { PR_WATCHES_CHANGED, tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import {
-  answerApproval,
-  answerPermission,
   answerRow,
-  approvalMessage,
   openRows,
   openWaitingChat,
   takePick,
@@ -34,6 +31,8 @@ import type { NeedsYouRow } from "../../hub/model/needsYouRows";
 import {
   accessAsk,
   needsYou,
+  oneTapButton,
+  personName,
   takeLatest,
   type ApprovalFact,
   type CheckFact,
@@ -44,6 +43,7 @@ import {
   type RunningFact,
   type StoppedFact,
 } from "./needsYou";
+import { noteOneTapRefusal, resetOneTapRefusal } from "./oneTapNotice";
 
 const REVIEW = "In review";
 const MERGE_PHRASE = /\bready to merge\b/i;
@@ -128,6 +128,13 @@ function isErrand(chat: WaitingChat): boolean {
   return Boolean(chat.provide?.trim()) || chat.flag === "provide";
 }
 
+function noteTake(result: Promise<{ ok: boolean }>): void {
+  void result.then(
+    (out) => { if (!out.ok) noteOneTapRefusal(); },
+    () => noteOneTapRefusal(),
+  );
+}
+
 /** One row of a card. A red-line row and a pick answer that row, never the whole card. */
 function rowFact(chat: WaitingChat, row: AskRow, id: string): QuestionFact | ApprovalFact {
   const base = {
@@ -144,24 +151,20 @@ function rowFact(chat: WaitingChat, row: AskRow, id: string): QuestionFact | App
   };
   if (isErrand(chat)) return base;
   if (accessAsk(row.question)) return { ...base, reviewOnly: true };
+  if (row.redLine) return { ...base, risky: true };
   const pick = row.pick?.trim() ?? "";
+  const tap = oneTapButton({
+    recommended: pick,
+    options: pick ? [pick] : undefined,
+    sentence: row.question,
+  });
+  if (!tap) return base;
   const seen = { requestId: chat.requestId, question: row.question, pick: row.pick ?? null };
-  if (row.redLine) {
-    if (pick && pick !== row.question.trim()) return base;
-    return {
-      ...base,
-      risky: true,
-      allowLabel: "Approve once",
-      onAllow: () => { void answerRow(chat.sessionId, row, approvalMessage("approve-once", row), "words", seen); },
-      onDeny: () => { void answerRow(chat.sessionId, row, approvalMessage("deny", row), "words", seen); },
-    };
-  }
-  if (!pick) return base;
-  const shown = pickButton(pick);
   return {
     ...base,
-    ...shown,
-    onAnswer: () => { void answerRow(chat.sessionId, row, pick, "pick", seen); },
+    answerLabel: tap.label,
+    answerTitle: tap.title,
+    onAnswer: () => { noteTake(answerRow(chat.sessionId, row, tap.answer, "pick", seen)); },
   };
 }
 
@@ -180,42 +183,29 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
   };
   if (isErrand(chat)) return base;
   if (accessAsk(question)) return { ...base, reviewOnly: true };
-  if (chat.source === "permission") {
-    const seen = { requestId: chat.requestId, question: chat.question };
-    return {
-      ...base,
-      onAllow: () => { answerPermission(chat.sessionId, "allow", seen); },
-      onDeny: () => { answerPermission(chat.sessionId, "deny", seen); },
-    };
-  }
+  if (chat.redLine) return { ...base, risky: true };
+  // A permission ask has no recommended option, so the row is Open only.
+  if (chat.source === "permission") return base;
   const pick = chat.pick?.trim() ?? "";
-  if (chat.redLine || chat.gate?.kind === "approval") {
-    if (pick && pick !== question.trim()) return base;
-    const seen = { question: chat.question, askedAt: chat.askedAt, pick: chat.pick };
-    return {
-      ...base,
-      ...(chat.redLine ? { risky: true } : {}),
-      onAllow: () => { void answerApproval(chat.sessionId, "approve-once", seen); },
-      onDeny: () => { void answerApproval(chat.sessionId, "deny", seen); },
-    };
-  }
-  if (!pick) return base;
+  const tap = oneTapButton({
+    recommended: pick,
+    options: pick ? [pick] : undefined,
+    sentence: question,
+    risky: chat.gate?.kind === "approval",
+  });
+  if (!tap) return base;
   return {
     ...base,
-    ...pickButton(pick),
-    onAnswer: () => { void takePick(chat.sessionId, { by: "ash", seen: { requestId: chat.requestId, question: chat.question, pick: chat.pick ?? null } }); },
+    answerLabel: tap.label,
+    answerTitle: tap.title,
+    onAnswer: () => {
+      noteTake(takePick(chat.sessionId, { by: "ash", seen: { requestId: chat.requestId, question: chat.question, pick: chat.pick ?? null } }));
+    },
   };
 }
 
-/** The button is the pick. A long pick is shortened; the full text stays on the button. */
-function pickButton(pick: string): { answerLabel: string; answerTitle: string } {
-  const full = pick.replace(/\s+/g, " ").trim();
-  const label = full.length > 80 ? `${full.slice(0, 77).trimEnd()}...` : full;
-  return { answerLabel: label, answerTitle: full };
-}
-
 function keepFact(fact: QuestionFact | ApprovalFact, questions: QuestionFact[], approvals: ApprovalFact[]) {
-  if (("reviewOnly" in fact && fact.reviewOnly) || ("onAllow" in fact && fact.onAllow)) approvals.push(fact);
+  if (("reviewOnly" in fact && fact.reviewOnly) || ("onAllow" in fact && fact.onAllow) || ("risky" in fact && fact.risky)) approvals.push(fact);
   else questions.push(fact);
 }
 
@@ -239,106 +229,32 @@ export function factsFromChats(chats: readonly WaitingChat[]): { questions: Ques
   return { questions, approvals };
 }
 
-/** The recommended option, when it is one of the options. Never the first option, and never a guessed Yes. */
-function namedOption(decision: Decision): string | undefined {
-  const recommended = decision.recommended?.trim();
-  if (!recommended || !decision.options.includes(recommended)) return undefined;
-  return recommended;
-}
-
 function sendOption(decision: Decision, option: string): () => void {
-  return () => { void tauriFirstMate.answer(decision.project, decision.decisionKey, option); };
+  return () => {
+    void Promise.resolve(tauriFirstMate.answer(decision.project, decision.decisionKey, option)).then(
+      (out) => {
+        if (out && typeof out === "object" && "applied" in out && out.applied === false) noteOneTapRefusal();
+      },
+      () => noteOneTapRefusal(),
+    );
+  };
 }
 
 function openDecision(decision: Decision, projectId: string | undefined): () => void {
   return () => openFromHome({ kind: "inbox", projectId: projectId ?? "", decisionKey: decision.decisionKey });
 }
 
-const ALLOW_WORDS = ["Allow always", "Allow once", "Allow"];
-
-function approvalDecision(
-  decision: Decision,
-  base: { id: string; projectId?: string; monoId?: string; who: string; at: number; sentence: string; decisionKey: string },
-  named: string | undefined,
-  open: () => void,
-): ApprovalFact {
-  const literal = decision.options.find((option) => ALLOW_WORDS.includes(option));
-  if (literal) {
-    const primary = named && ALLOW_WORDS.includes(named) ? named : literal;
-    const second = decision.options.find((option) => option !== primary);
-    return {
-      ...base,
-      allowLabel: primary,
-      onAllow: sendOption(decision, primary),
-      ...(second ? { denyLabel: second, onDeny: sendOption(decision, second) } : { onOpen: open }),
-    };
+/** A Mono's name, or the asker when the decision has no Mono. Never a blank. */
+function decisionWho(decision: Decision): string {
+  const mono = decision.askedByMono?.trim();
+  if (mono) {
+    const named = monoName(mono, "");
+    if (named && named !== "Coding team") return named;
   }
-  if (decision.options.includes("Yes") || decision.options.includes("No")) {
-    const yes = decision.options.includes("Yes");
-    const no = decision.options.includes("No");
-    return {
-      ...base,
-      ...(yes ? { onAllow: sendOption(decision, "Yes") } : { onOpen: open }),
-      ...(no ? { onDeny: sendOption(decision, "No") } : {}),
-    };
-  }
-  if (named) {
-    const second = decision.options.find((option) => option !== named);
-    return {
-      ...base,
-      allowLabel: named,
-      onAllow: sendOption(decision, named),
-      ...(second ? { denyLabel: second, onDeny: sendOption(decision, second) } : { onOpen: open }),
-    };
-  }
-  return { ...base, onOpen: open };
-}
-
-function mergeDecision(
-  decision: Decision,
-  base: { id: string; projectId?: string; monoId?: string; who: string; at: number; sentence: string; decisionKey: string },
-  named: string | undefined,
-  other: string | undefined,
-  open: () => void,
-): QuestionFact {
-  const askedBy = decision.askedBy;
-  const hasMerge = decision.options.includes("Merge");
-  const hasNotYet = decision.options.includes("Not yet");
-  if (hasMerge || hasNotYet) {
-    return {
-      ...base,
-      fromDecision: true,
-      askedBy,
-      asMerge: true,
-      ...(hasMerge ? { onAnswer: sendOption(decision, "Merge") } : {}),
-      ...(hasNotYet ? { onNotYet: sendOption(decision, "Not yet") } : {}),
-      ...(!hasMerge ? { onOpen: open } : {}),
-    };
-  }
-  if (decision.options.includes("Yes") || decision.options.includes("No")) {
-    const yes = decision.options.includes("Yes");
-    const no = decision.options.includes("No");
-    return {
-      ...base,
-      fromDecision: true,
-      askedBy,
-      asMerge: true,
-      ...(yes ? { onAnswer: sendOption(decision, "Yes") } : { onOpen: open }),
-      ...(no ? { onNotYet: sendOption(decision, "No") } : {}),
-    };
-  }
-  if (named) {
-    return {
-      ...base,
-      fromDecision: true,
-      askedBy,
-      answerLabel: named,
-      answerTitle: named,
-      onAnswer: sendOption(decision, named),
-      ...(other ? { onNotYet: sendOption(decision, other), otherLabel: other } : { onOpen: open }),
-    };
-  }
-  return { ...base, fromDecision: true, askedBy, onOpen: open };
+  const asked = decision.askedBy.trim();
+  if (!asked) return "Coding team";
+  const named = personName(asked);
+  return named === "Coding team" ? asked : named;
 }
 
 function decisionFacts(
@@ -354,57 +270,51 @@ function decisionFacts(
       id: `${decision.project}:${decision.decisionKey}`,
       projectId: projectIdOf(decision.project, list),
       monoId: decision.askedByMono ?? undefined,
-      who: monoName(decision.askedByMono, "Coding team"),
+      who: decisionWho(decision),
       at: decision.createdAt,
       sentence: decision.question,
       decisionKey: decision.decisionKey,
     };
-    const named = namedOption(decision);
-    const other = named ? decision.options.find((option) => option !== named) : undefined;
     const open = openDecision(decision, base.projectId);
     const askedBy = decision.askedBy;
-    if (isPersonOnlyDecisionKey(decision.decisionKey)) {
-      questions.push(parked.has(decision.decisionKey)
-        ? { ...base, fromDecision: true, askedBy, gateKey: decision.decisionKey, onOpen: open }
-        : { ...base, fromDecision: true, askedBy, onOpen: open });
-      continue;
-    }
-    if (parked.has(decision.decisionKey)) {
+    const folded = foldDecisionKey(decision.decisionKey);
+    const isParked = parked.has(folded);
+    if (isPersonOnlyDecisionKey(decision.decisionKey) || isParked) {
       questions.push({
         ...base,
         fromDecision: true,
         askedBy,
-        gateKey: decision.decisionKey,
+        ...(isParked ? { gateKey: decision.decisionKey } : {}),
         onOpen: open,
       });
       continue;
     }
+    const tap = oneTapButton({
+      recommended: decision.recommended,
+      options: decision.options,
+      decisionKey: decision.decisionKey,
+      sentence: decision.question,
+    });
     if (accessAsk(decision.question)) {
       approvals.push({ ...base, reviewOnly: true, onOpen: open });
       continue;
     }
     if (APPROVAL_PHRASE.test(decision.question)) {
-      approvals.push(approvalDecision(decision, base, named, open));
-      continue;
-    }
-    const merge = MERGE_PHRASE.test(decision.question);
-    if (merge) {
-      questions.push(mergeDecision(decision, base, named, other, open));
-      continue;
-    }
-    if (named) {
-      questions.push({
+      approvals.push({
         ...base,
-        fromDecision: true,
-        askedBy,
-        answerLabel: named,
-        answerTitle: named,
-        onAnswer: sendOption(decision, named),
+        ...(tap ? { allowLabel: tap.label, allowTitle: tap.title, onAllow: sendOption(decision, tap.answer) } : {}),
         onOpen: open,
       });
       continue;
     }
-    questions.push({ ...base, fromDecision: true, askedBy, onOpen: open });
+    questions.push({
+      ...base,
+      fromDecision: true,
+      askedBy,
+      ...(MERGE_PHRASE.test(decision.question) ? { asMerge: true } : {}),
+      ...(tap ? { answerLabel: tap.label, answerTitle: tap.title, onAnswer: sendOption(decision, tap.answer) } : {}),
+      onOpen: open,
+    });
   }
   return { questions, approvals };
 }
@@ -436,18 +346,15 @@ function cardFacts(cards: readonly GateCard[], list: readonly ProjectRef[], deci
     if (card.state !== "parked" || !card.decisionKey || !card.line.trim()) return [];
     const key = card.decisionKey;
     if (closed.has(foldDecisionKey(key))) return [];
-    const respond = (answer: "Approve" | "Fix") => {
-      void invoke("gate_respond", { decisionKey: key, answer, project: card.projectId }).finally(() => { void refreshNeedsRemote(); });
-    };
+    const projectId = projectIdOf(card.projectId, list);
     return [{
       id: card.id,
       gateKey: key,
-      projectId: projectIdOf(card.projectId, list),
+      projectId,
       who: "Coding team",
       at: 0,
       sentence: card.line,
-      onApprove: () => respond("Approve"),
-      onFix: () => respond("Fix"),
+      onOpen: () => openFromHome({ kind: "inbox", projectId: projectId ?? "", decisionKey: key }),
     }];
   });
 }
@@ -478,7 +385,7 @@ function pageFacts(pages: readonly Page[], list: readonly ProjectRef[]): Approva
   return pages.filter(needsAllow).map((page) => ({
     id: page.id,
     projectId: projectIdOf(page.projectId, list),
-    who: "Coding team",
+    who: "Pages",
     at: page.keptAt ?? 0,
     sentence: `${page.title || "A page"} asks for access.`,
     open: { where: "page" as const, id: page.id },
@@ -571,10 +478,10 @@ export function factsFromHome(
   live?: { cards?: readonly GateCard[]; watches?: readonly PrWatch[] },
 ): NeedsSources {
   const list = homeProjects.map((project) => ({ id: project.id, name: project.name, folder: project.folder }));
-  const fromDecisions = decisionFacts(decisions.map(homeDecision), list, new Set());
+  const cards = live?.cards ?? remote.cards;
+  const fromDecisions = decisionFacts(decisions.map(homeDecision), list, parkedKeys(cards));
   const fromTasks = taskFacts(tasks, list);
   const chats = factsFromChats(safeChats());
-  const cards = live?.cards ?? remote.cards;
   const watches = live?.watches ?? remote.watches;
   return {
     stopped: stoppedFacts(currentNeedsYouRows()),
@@ -606,7 +513,7 @@ function tasksFor(parts: NeedsParts): readonly HomeTask[] {
 /** One read of every source. Callers pass what they already hold, so a test never needs the live stores. */
 export function factsFromParts(parts: NeedsParts): NeedsSources {
   const list = parts.projects;
-  const parked = new Set(parts.remote.cards.filter((card) => card.state === "parked" && card.decisionKey).map((card) => card.decisionKey as string));
+  const parked = parkedKeys(parts.remote.cards);
   const decisions = decisionFacts(parts.remote.decisions, list, parked);
   const chats = factsFromChats(parts.chats);
   const tasks = taskFacts(tasksFor(parts), list);
@@ -919,7 +826,17 @@ function startListens() {
   };
 }
 
+function parkedKeys(cards: readonly GateCard[]): Set<string> {
+  const keys = new Set<string>();
+  for (const card of cards) {
+    const key = card.decisionKey?.trim();
+    if (card.state === "parked" && key) keys.add(foldDecisionKey(key));
+  }
+  return keys;
+}
+
 export function resetNeedsLiveForTest(): void {
+  resetOneTapRefusal();
   remote = EMPTY_REMOTE;
   remoteGen = 0;
   listeners.clear();

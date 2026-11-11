@@ -156,7 +156,7 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
     localStorage.setItem("monocode:ready-pages-seeded-v2", "1");
     localStorage.setItem("monocode:dev-decisions", JSON.stringify(decisions));
   }, [
-    decision("hivra", "windows-build", "Which Windows build should ship?", 20 * 60_000, {
+    decision("hivra", "windows-build", "Which version should the landing page use?", 20 * 60_000, {
       options: ["Ship 1.4.2", "Wait for 1.4.3"],
       recommended: "Ship 1.4.2",
     }),
@@ -207,7 +207,7 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   const order = (await needs.innerText()).replace(/\s+/g, " ");
   const stoppedAt = order.indexOf("Example: Out of credits");
   const mergeAt = order.indexOf("Ready to merge");
-  const askAt = order.indexOf("Which Windows build should ship?");
+  const askAt = order.indexOf("Which version should the landing page use?");
   expect(stoppedAt).toBeGreaterThanOrEqual(0);
   expect(mergeAt).toBeGreaterThan(stoppedAt);
   expect(askAt).toBeGreaterThan(mergeAt);
@@ -218,7 +218,7 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   const openChat = stopped.getByRole("button", { name: "Open chat" });
   expect(Number.parseFloat(await openChat.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
   await expect(openChat).not.toHaveClass(/bg-accent/);
-  const windows = needs.locator("[data-home-line]").filter({ hasText: "Which Windows build should ship?" });
+  const windows = needs.locator("[data-home-line]").filter({ hasText: "Which version should the landing page use?" });
   const answer = windows.getByRole("button", { name: "Ship 1.4.2", exact: true });
   const otherWay = windows.getByRole("button", { name: "Open", exact: true });
   await expect(otherWay).toHaveCount(1);
@@ -234,29 +234,30 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
   });
   expect(paint.got).toBe(paint.expected);
   expect(paint.got).not.toBe("rgb(255, 255, 255)");
-  const deny = needs.getByRole("button", { name: "Deny" }).first();
-  await expect(deny).not.toHaveClass(/bg-accent/);
-  await expect(deny).not.toHaveClass(/primary-action/);
-  expect(Number.parseFloat(await deny.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
   const bordered = async (button: Locator) => {
     await expect(button).not.toHaveClass(/bg-accent/);
     expect(Number.parseFloat(await button.evaluate((el) => getComputedStyle(el).borderTopWidth))).toBeGreaterThan(0);
   };
   await bordered(otherWay);
   const publish = needs.locator("[data-home-line]").filter({ hasText: "npm publish" });
-  const allowOnce = publish.getByRole("button", { name: "Allow once" });
-  await expect(allowOnce).toHaveCount(1);
-  await bordered(allowOnce);
-  await bordered(publish.getByRole("button", { name: "Deny" }));
+  const publishOpen = publish.getByRole("button", { name: "Open", exact: true });
+  await expect(publishOpen).toHaveCount(1);
+  await bordered(publishOpen);
+  await expect(publish.getByRole("button", { name: "Allow once" })).toHaveCount(0);
+  await expect(publish.getByRole("button", { name: "Deny" })).toHaveCount(0);
   const weekly = needs.locator("[data-home-line]").filter({ hasText: "Weekly views" });
-  const review = weekly.getByRole("button", { name: "Review" });
+  const review = weekly.getByRole("button", { name: "Open", exact: true });
   await expect(review).toHaveCount(1);
   await expect(weekly.getByRole("button", { name: "Allow", exact: true })).toHaveCount(0);
   await expect(weekly.getByRole("button", { name: "Deny" })).toHaveCount(0);
+  await expect(weekly.getByRole("button", { name: "Review", exact: true })).toHaveCount(0);
   await bordered(review);
   const mergeRow = needs.locator("[data-home-line]").filter({ hasText: "Ready to merge" });
-  await expect(mergeRow.getByRole("button", { name: "Merge", exact: true })).toHaveClass(/bg-accent/);
-  await bordered(mergeRow.getByRole("button", { name: "Not yet" }));
+  const mergeOpen = mergeRow.getByRole("button", { name: "Open", exact: true });
+  await expect(mergeOpen).toHaveCount(1);
+  await bordered(mergeOpen);
+  await expect(mergeRow.getByRole("button", { name: "Merge", exact: true })).toHaveCount(0);
+  await expect(mergeRow.getByRole("button", { name: "Not yet" })).toHaveCount(0);
   await expect(mergeRow.getByRole("button", { name: "Yes", exact: true })).toHaveCount(0);
   const dot = needs.locator("[data-home-needs-dot]");
   await expect(dot).toHaveCount(1);
@@ -310,13 +311,13 @@ test("rail, home, header, mono line and inbox share one Needs you list", async (
 
   await page.locator("[data-hub-home]").getByRole("button", { name: "Home" }).click({ force: true });
   await expect(page.locator("[data-home]")).toBeVisible();
-  await page.locator("[data-needs-project='hivra']").filter({ hasText: "Which Windows build should ship?" }).locator("[data-needs-answer]").click();
+  await page.locator("[data-needs-project='hivra']").filter({ hasText: "Which version should the landing page use?" }).locator("[data-needs-answer]").click();
   await expect.poll(async () => page.evaluate(() => {
     const rows = JSON.parse(localStorage.getItem("monocode:dev-decisions") ?? "[]") as Array<{ decisionKey?: string; answer?: string | null }>;
     return rows.find((row) => row.decisionKey === "windows-build")?.answer ?? "";
   })).toBe("Ship 1.4.2");
   await agree("4", "1");
-  await expect(page.locator("[data-home-section='needs-you']")).not.toContainText("Which Windows build should ship?");
+  await expect(page.locator("[data-home-section='needs-you']")).not.toContainText("Which version should the landing page use?");
   await expect(page.locator("[data-home-section='projects']")).toContainText("Hivra · 1 needs you");
   await expect(page.locator("[data-home-section='projects']")).not.toContainText("Hivra · 2 need you");
   if (shoot) await page.screenshot({ path: `${AFTER}/answered.png` });

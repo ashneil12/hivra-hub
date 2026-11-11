@@ -1,9 +1,9 @@
-import type { NeedsItem } from "../../features/needs/model/needsYou";
+import type { NeedsAction, NeedsItem } from "../../features/needs/model/needsYou";
 
 export type PanelAsk = {
   id: string;
   sentence: string;
-  actions: { label: string; run: () => void }[];
+  actions: NeedsAction[];
 };
 
 /**

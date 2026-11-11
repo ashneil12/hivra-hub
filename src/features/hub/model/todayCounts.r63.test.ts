@@ -36,8 +36,8 @@ it("the needs list counts only the red ones: a grey failure is left out", () => 
   expect(stuckNeedsAsh(red)).toBe(true);
   const list = needsYou({
     stopped: [
-      { id: grey.key, who: "Hivra lead", at: NOW, sentence: grey.line, forAsh: false },
-      { id: red.key, who: "Hivra lead", at: NOW, sentence: red.line, forAsh: true },
+      { id: grey.key, who: "Hivra lead", at: NOW, sentence: grey.line, forAsh: stuckNeedsAsh(grey) },
+      { id: red.key, who: "Hivra lead", at: NOW, sentence: red.line, forAsh: stuckNeedsAsh(red) },
     ],
   }, NOW);
   expect(list.map((item) => item.key)).toEqual([`stopped:${red.key}`]);

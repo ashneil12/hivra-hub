@@ -30,7 +30,7 @@ export function StuckPanel({
   /** r51: the red rows with no worker behind them (a job its Lead gave up on, a Lead that can't answer), from the same list. */
   jobs?: readonly Worker[];
   /** Questions and approvals from the one Needs you list, so the panel matches the red number. */
-  asks?: readonly { id: string; sentence: string; actions: readonly { label: string; run: () => void }[] }[];
+  asks?: readonly { id: string; sentence: string; actions: readonly { label: string; run: () => void; title?: string; ariaLabel?: string }[] }[];
   now: number;
   /** Name the Mono each worker answers to (the folded section lists several Monos' workers). */
   showLead?: boolean;
@@ -79,6 +79,8 @@ export function StuckPanel({
                 key={action.label}
                 type="button"
                 className="shrink-0 text-[12px] text-content/80"
+                title={action.title}
+                aria-label={action.ariaLabel || action.title}
                 onClick={() => {
                   action.run();
                   onClose();

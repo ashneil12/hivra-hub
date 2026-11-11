@@ -2764,6 +2764,7 @@ function SidebarComponent({
           icon: Inbox,
           active: inboxActive,
           needs: needsMark,
+          dot: inboxUnseen,
           onClick: onOpenInbox,
           onOpenContextMenu: (x, y) => {
             headerProjectMenu.close();
@@ -3850,8 +3851,6 @@ function SidebarProjectPicker({
   inboxUnseen?: boolean;
   needsMark?: number;
 }) {
-  // WP-210: the tracker boolean no longer paints this Inbox mark.
-  void inboxUnseen;
   const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
   const [inboxMenu, setInboxMenu] = useState<{ x: number; y: number } | null>(
     null,
@@ -3889,7 +3888,7 @@ function SidebarProjectPicker({
         ) : null}
         {onOpenInbox ? (
           <IconButton
-            label={needsMark > 0 ? `Needs you, ${needsMark}` : "Needs you"}
+            label={needsMark > 0 ? `Needs you, ${needsMark}` : inboxUnseen ? "Needs you, new items" : "Needs you"}
             active={inboxActive}
             onClick={onOpenInbox}
             onOpenContextMenu={(x, y) => {
@@ -3910,6 +3909,8 @@ function SidebarProjectPicker({
                 >
                   {needsMark > 99 ? "99+" : needsMark}
                 </span>
+              ) : inboxUnseen ? (
+                <span data-inbox-unseen="" aria-hidden className="absolute -right-0.5 -top-0.5 size-1.5 rounded-full bg-accent" />
               ) : null}
             </span>
           </IconButton>
@@ -4036,8 +4037,6 @@ function CompactProjectRail({
   /** A Mono fills the main area: no workspace tab is the current one. */
   monoViewActive?: boolean;
 }) {
-  // WP-210: the tracker boolean no longer paints this Inbox mark.
-  void inboxUnseen;
   const docsMode = useSyncExternalStore(subscribeDocsMode, getDocsMode, getDocsMode);
   const monosSnap = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const monosPinned = useRailMonosPinned();
@@ -4195,10 +4194,11 @@ function CompactProjectRail({
           onClick={action(searchActive, onSearch)}
         />
         <CompactRailAction
-          label={needsMark > 0 ? `Needs you, ${needsMark}` : "Needs you"}
+          label={needsMark > 0 ? `Needs you, ${needsMark}` : inboxUnseen ? "Needs you, new items" : "Needs you"}
           icon={Inbox}
           active={inboxActive}
           needs={needsMark}
+          dot={inboxUnseen}
           onClick={action(inboxActive, onOpenInbox)}
           onOpenContextMenu={(x, y) => {
             inboxTrigger.current =

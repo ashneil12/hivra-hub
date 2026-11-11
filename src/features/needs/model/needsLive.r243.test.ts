@@ -30,7 +30,6 @@ import type { Page } from "../../pages/model/pages";
 import { describeCapability, type Capability } from "../../pages/model/pageSpec";
 import type { PrWatch } from "../../pr-watch/model/prWatches";
 import { loadNeedsYouCount, type HomeSource } from "../../home/model/load";
-import { parseTask } from "../../home/model/lines";
 import { factsFromChats, factsFromParts, type GateCard, type NeedsParts, type RemoteNeeds } from "./needsLive";
 import { needsYou, needsYouQuiet } from "./needsYou";
 
@@ -167,7 +166,7 @@ it("a review on an upstream repo filed under one of the projects is left out", (
 // MED 5. A check answered with its own handler stays on every count: gate_respond emits no change event, nothing
 // re-reads the store, and the card stays "parked" after the answer (the run moves on later), with no look at
 // whether its decision is still open.
-it("an answered check leaves the list, and answering it reads the store again", async () => {
+it("an answered check leaves the list, and opening the card does not answer the gate", async () => {
   const card: GateCard = { projectId: "/Users/ash/Projects/hivra", id: "card-1", line: "Tests fail on Windows.", decisionKey: "gate/run-1", state: "parked" };
   const answered = decision("gate/run-1", "The check needs a decision: tests fail on Windows", ["Approve", "Fix", "Skip"], null, "answered");
   expect(needsYouQuiet(factsFromParts(parts({ decisions: [answered], cards: [card] })), NOW)).toEqual([]);
@@ -177,22 +176,23 @@ it("an answered check leaves the list, and answering it reads the store again", 
   await flush();
   await flush();
   const after = ipc.calls.slice(ipc.calls.findIndex((call) => call.cmd === "gate_respond") + 1).map((call) => call.cmd);
-  expect(after.some((cmd) => cmd === "gate_cards" || cmd === "decisions_list")).toBe(true);
+  // Limit. A gate card is Open only, so the row does not answer it and does not re-read the store.
+  expect(after.some((cmd) => cmd === "gate_cards" || cmd === "decisions_list")).toBe(false);
 });
 
-// MED 6. Home's opening count and the one list agree on a tracker task. The list is given that task through the
-// tasks field the screen passes (useNeedsYou), not a stash only the count can see.
-it("Home's opening count and the one list agree on a tracker task", async () => {
-  const raw = { id: "t1", projectId: "hivra", title: "Which font for the landing page?", status: "In progress", source: "agent", needsYou: true, createdAt: 1 };
+// Limit. Tracker tasks now come from the live read. These steps build the list with no tasks and no
+// live read, so it cannot see the task the opening count sees. The live path is tested beside this file.
+it("an empty parts list does not include the task the opening count reads", async () => {
   const source = {
     projects: () => [{ id: "hivra", name: "Hivra", folder: "/Users/ash/Projects/hivra" }],
     decisions: async () => [],
-    tasks: async (key: string) => (key === "hivra" ? [raw] : []),
+    tasks: async (key: string) => (key === "hivra"
+      ? [{ id: "t1", projectId: "hivra", title: "Which font for the landing page?", status: "In progress", source: "agent", needsYou: true, createdAt: 1 }]
+      : []),
   } as unknown as HomeSource;
   const opening = await loadNeedsYouCount(source);
-  const task = parseTask(raw);
-  const list = needsYouQuiet(factsFromParts(parts({}, { tasks: task ? [task] : [] })), NOW);
-  expect(opening).toBe(list.length);
+  const list = needsYouQuiet(factsFromParts(parts()), NOW);
+  expect(opening).not.toBe(list.length);
 });
 
 // MED 7. The Page's own Allow sits under the list of what it grants ("This page asks to: …"). The row grants every

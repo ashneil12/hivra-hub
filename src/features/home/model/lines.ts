@@ -53,7 +53,7 @@ export type HomeLine = {
   target: string;
   at: number;
   /** At most two, primary first. A line with any is not itself a button. */
-  actions?: readonly { label: string; run: () => void; title?: string }[];
+  actions?: readonly { label: string; run: () => void; title?: string; ariaLabel?: string }[];
 };
 
 export type HomeProject = { id: string; name: string; folder: string | null };

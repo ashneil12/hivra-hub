@@ -221,7 +221,8 @@ it("keeps two questions that only match for the first 140 characters", () => {
   expect(list).toHaveLength(2);
 });
 
-it("an option named Open is one button and it sends Open", async () => {
+// Limit. An option worded Open is not a one tap, so the row's Open looks and does not answer.
+it("an option named Open is the way out and it does not send Open", async () => {
   const [item] = needsYouQuiet(factsFromParts(parts({
     decisions: [decision("open-it", "Which Windows build should ship?", ["Open", "No"], "Open")],
   })), NOW);
@@ -229,9 +230,10 @@ it("an option named Open is one button and it sends Open", async () => {
   item?.actions[0]?.run();
   await new Promise((resolve) => setTimeout(resolve, 0));
   const answers = ipc.calls.filter((call) => call.cmd === "decisions_answer");
-  expect(answers.map((call) => call.args.answer)).toEqual(["Open"]);
+  expect(answers.map((call) => call.args.answer)).toEqual([]);
 });
 
+// Limit. A parked card is Open only, so the row does not approve it from Needs you.
 it("a parked decision does not answer under the name Approve", async () => {
   const parked = decision("ship-win", "Ship the Windows build?", ["Yes", "No"], "Yes");
   const [item] = needsYouQuiet(factsFromParts(parts({
@@ -239,11 +241,11 @@ it("a parked decision does not answer under the name Approve", async () => {
     cards: [{ projectId: "hivra", id: "card-1", line: "Ship the Windows build?", decisionKey: "ship-win", state: "parked" }],
   })), NOW);
   expect(item?.kind).toBe("check");
-  expect(item?.actions.map((action) => action.label)).toEqual(["Approve", "Fix"]);
+  expect(item?.actions.map((action) => action.label)).not.toEqual(["Approve", "Fix"]);
   item?.actions[0]?.run();
   await new Promise((resolve) => setTimeout(resolve, 0));
   expect(ipc.calls.some((call) => call.cmd === "decisions_answer")).toBe(false);
-  expect(ipc.calls.some((call) => call.cmd === "gate_respond" && call.args.answer === "Approve")).toBe(true);
+  expect(ipc.calls.some((call) => call.cmd === "gate_respond" && call.args.answer === "Approve")).toBe(false);
 });
 
 it("the opening count includes a page that still asks for access", async () => {

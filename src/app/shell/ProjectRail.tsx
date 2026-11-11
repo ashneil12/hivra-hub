@@ -203,8 +203,6 @@ export function ProjectRail({
   monos,
   hubItems,
 }: Props) {
-  // WP-210: the tracker boolean no longer paints the Inbox mark.
-  void inboxUnseen;
   const trafficLightsVisible = useTrafficLightsVisible();
   const resize = useDragResize({
     min: sharedWidth?.min ?? PROJECT_RAIL_WIDTH_MIN,
@@ -453,7 +451,8 @@ export function ProjectRail({
               }}
               active={inboxActive}
               needs={needsMark}
-              ariaLabel={needsMark > 0 ? `Needs you, ${needsMark}` : "Needs you"}
+              dot={inboxUnseen}
+              ariaLabel={needsMark > 0 ? `Needs you, ${needsMark}` : inboxUnseen ? "Needs you, new items" : "Needs you"}
             />
             {notesEnabled ? (
               <RailAction
