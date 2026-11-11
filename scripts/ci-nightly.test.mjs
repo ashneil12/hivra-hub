@@ -186,19 +186,18 @@ test("a push to main and a ready pull request that changes packaging start every
   for (const name of ["push to main", "ready pull request that changes packaging"]) {
     const { results, images } = simulate(RUNS[name]);
     for (const job of jobNames(ci)) {
-      // The browser tests run on main and on request, never on a pull request (see the next test).
-      const expected = job === "browser" && RUNS[name].eventName === "pull_request" ? "skipped" : "success";
+      // The browser tests run only in the pre-ship run (see the next test).
+      const expected = job === "browser" ? "skipped" : "success";
       assert.equal(results[job], expected, `${name}: ${job}`);
     }
     assert.deepEqual(images, IMAGES_ALL, name);
   }
 });
 
-test("the browser tests run on a push to main and on request, never on a pull request or a schedule", () => {
+test("the browser tests run only in the pre-ship run, never on a pull request, a push or a schedule", () => {
   const ran = (run) => simulate(run).results.browser;
-  assert.equal(ran(RUNS["push to main"]), "success");
   assert.equal(ran({ eventName: "workflow_dispatch", draft: null, full: "true", images: IMAGES_ALL }), "success");
-  for (const name of ["ready pull request that changes packaging", "ready pull request that does not", "draft pull request", "nightly run"]) {
+  for (const name of ["push to main", "ready pull request that changes packaging", "ready pull request that does not", "draft pull request", "nightly run"]) {
     assert.equal(ran(RUNS[name]), "skipped", name);
   }
   assert.match(onBlock(ci), /\n {2}workflow_dispatch:\n/);
