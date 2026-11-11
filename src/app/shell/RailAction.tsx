@@ -8,6 +8,8 @@ type Props = {
   active?: boolean;
   badge?: number;
   dot?: boolean;
+  /** WP-210: the Inbox mark. A count, not the tracker dot. */
+  needs?: number;
   shortcut?: string;
   ariaLabel?: string;
 };
@@ -20,6 +22,7 @@ export function RailAction({
   active = false,
   badge,
   dot = false,
+  needs,
   shortcut,
   ariaLabel,
 }: Props) {
@@ -76,7 +79,15 @@ export function RailAction({
       <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">
         {label}
       </span>
-      {dot ? (
+      {needs != null && needs > 0 ? (
+        <span
+          data-inbox-needs={needs}
+          className="min-w-4 shrink-0 rounded-full px-1 text-center text-[10px] leading-4 text-white"
+          style={{ background: "#e5484d" }}
+        >
+          {needs > 99 ? "99+" : needs}
+        </span>
+      ) : dot ? (
         <span aria-hidden className="size-2 shrink-0 rounded-full bg-accent" />
       ) : shortcut ? (
         <span aria-hidden className="shrink-0 text-[11px] text-content/40">

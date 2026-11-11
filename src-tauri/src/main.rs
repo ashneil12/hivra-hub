@@ -57,6 +57,10 @@ fn main() {
         }
         // The autopilot LaunchAgent's check: reopen the app after a crash (src/autopilot.rs).
         Some("autopilot-watch") => std::process::exit(monocode_lib::autopilot::watch_main(&rest())),
+        // WP-200: the pre-push hook of a crew's repository runs the commit guard on what a push sends (src/commit_guard.rs).
+        Some("pre-push-guard") => {
+            std::process::exit(monocode_lib::commit_guard::pre_push_main(&rest()))
+        }
         // WP-75: put a staged backup back once this copy has released its data folder, then open the app.
         Some("backup-restore") => {
             std::process::exit(monocode_lib::backups::restore_helper_main(&rest()))

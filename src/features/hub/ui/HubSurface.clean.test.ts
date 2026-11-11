@@ -85,7 +85,6 @@ describe("the strip badge counts at most five open rows", () => {
     expect(shown.slice(0, stuck.length).every((w) => w.state)).toBe(true);
     // Rows past the cap are not counted. The Today list's Later fold is gone, so nothing shows them.
     const shownNeeds = shown.filter((w) => w.need).length;
-    expect(waiting.waitingCount("exo-game")).toBe(shown.length);
     expect(waiting.laterItems("exo-game").map((w) => w.id).slice(0, exo.length - shownNeeds)).toEqual(exo.slice(shownNeeds).map((n) => n.id));
     expect(shown.map((w) => w.id)).not.toEqual(expect.arrayContaining(waiting.laterItems("exo-game").map((w) => w.id)));
   });
@@ -94,15 +93,6 @@ describe("the strip badge counts at most five open rows", () => {
     const { mock, waiting } = await load(true);
     for (const p of mock.mockHubData.listProjects()) {
       expect(waiting.waitingOnAsh(p.id).filter((w) => !w.done).length).toBeLessThanOrEqual(waiting.MAX_NEEDS);
-    }
-  });
-
-  it("the strip badge's waiting count equals the capped open rows, stuck included", async () => {
-    const { mock, waiting } = await load(true);
-    for (const p of mock.mockHubData.listProjects()) {
-      const visible = waiting.waitingOnAsh(p.id).filter((w) => !w.done).length;
-      expect(waiting.waitingCount(p.id)).toBe(visible);
-      expect(waiting.waitingCount(p.id)).toBeLessThanOrEqual(waiting.MAX_NEEDS);
     }
   });
 

@@ -297,6 +297,7 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { setAgentsBoardSessionStop } from "../features/agents-board/model/sessionStop";
 import { placePrompt, rememberPromptSession } from "../features/sessions/model/threadLinkOpen";
 import { ThreadLinkNotice, useThreadLinkOpener } from "../features/sessions/ui/ThreadLinkActions";
 import {
@@ -385,6 +386,7 @@ import {
   worktreeFocus,
 } from "../features/source-control/model/worktreeFocus";
 import { useProjectDiffStats } from "../features/source-control/hooks/useProjectDiffStats";
+import { onGuardFindingOpen } from "../features/commit-guard/model/openFinding";
 import { showWorktreeSetup } from "../features/source-control/model/worktreeSetup";
 import {
   listProjectActions,
@@ -5260,6 +5262,8 @@ function Workspace({
   const onShowSourceControl = useCallback(() => {
     setSidebarTab("changes");
   }, []);
+  // WP-200: a commit-guard refusal asked to be shown from a card or status line opens the Changes tab.
+  useEffect(() => onGuardFindingOpen(() => setSidebarTab("changes")), []);
 
   const onToggleChanges = useCallback(() => {
     onShowSourceControl();
@@ -13136,6 +13140,9 @@ function Workspace({
     openSession: openReminderSession,
   });
   const onStopFromUser = delegationTree.stopFromUser;
+  // WP-219: a project chat or a sub-chat on the Agents board uses the Stop its own chat's button uses: on a chat with
+  // work out that is the tree Stop, so its workers stop too and their reports don't wake it again.
+  useEffect(() => setAgentsBoardSessionStop((sessionId) => onStopFromUser(sessionId)), [onStopFromUser]);
 
   // The real-Claude test bench (scripts/hub-realtest.mjs): a dev copy whose verify plan names a driver folder takes Ash's
   // scripted actions through the same handlers his composer, Stop button and rail use. No plan reaches the daily app.
@@ -14446,7 +14453,8 @@ function Workspace({
               return;
             }
             if (gateDue(result)) {
-              const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
+              const session = sessionsRef.current.find((session) => session.id === sessionId);
+              const checkout = gateCheckout(session);
               const projectId = delegation?.project ?? hubProjectIdFor(project);
               // WP-40: a brief with gates is checked in code; one without keeps the routes check below.
               // No copy on hand is not a pass when a plan was stored: the id is not a checkout, so those gates
@@ -14459,6 +14467,8 @@ function Workspace({
                     signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []),
                     report: result.result ?? "",
                     failures: gateFailures,
+                    // WP-145: this turn's checks, edits and to-dos.
+                    blocks: session?.blocks,
                   })
                 : null;
               if (briefGates?.action === "resend") {
@@ -15637,7 +15647,6 @@ function Workspace({
     sameSessionSummaries,
   );
   const {
-    unseen: inboxUnseen,
     linkedSessionUpdateIds,
     linkedSessionUpdates,
   } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
@@ -18292,7 +18301,8 @@ function Workspace({
       inset={insetLayout}
       onToggleProjectRail={onToggleProjectRail}
       unseenFinishedIds={unseenFinishedIds}
-      inboxUnseen={inboxUnseen}
+      // WP-210: the Inbox mark is the Needs you count, read in the sidebar. The tracker still plays its sound.
+      inboxUnseen={false}
       linkedSessionUpdateIds={linkedSessionUpdateIds}
       settingsOpen={settingsOpen}
       settingsSection={settingsSection}

@@ -10,6 +10,7 @@ import {
   movingLines,
   namesFor,
   needsYouLines,
+  type HomeLine,
   parseChat,
   parseDecision,
   parseDoc,
@@ -214,11 +215,30 @@ it("gives each project one line: needs you first, else its first moving task, el
   const needs = needsYouLines([], tasks, name);
   const moving = movingLines(tasks, name);
   const lines = projectLines(projects, needs, moving, tasks);
-  expect(lines.map((line) => line.text)).toEqual(["Crew · needs you", "Site new · Write the notes", "Notes"]);
+  expect(lines.map((line) => line.text)).toEqual(["Crew · 1 needs you", "Site new · Write the notes", "Notes"]);
   expect(lines.map((line) => [line.kind, line.projectId, line.target])).toEqual([
     ["project", "crew", "crew"],
     ["project", "site", "site"],
     ["project", "notes", "notes"],
   ]);
-  expect(lines.some((line) => /\d/.test(line.text))).toBe(false);
+  expect(lines[0]?.text).not.toContain("· needs you");
+});
+
+it("counts Needs you items on the project line, and a machine hold is not one of them", () => {
+  const projects: HomeProject[] = [
+    { id: "hivra", name: "Hivra", folder: null },
+    { id: "vg-game", name: "EXO", folder: null },
+    { id: "notes", name: "Notes", folder: null },
+  ];
+  const needs: HomeLine[] = [
+    { id: "q1", kind: "decision", text: "Example: Ready to merge.", projectId: "hivra", target: "q1", at: 1 },
+    { id: "q2", kind: "question", text: "Example: Which font?", projectId: "hivra", target: "q2", at: 2 },
+    { id: "s1", kind: "stopped", text: "Example: Out of credits", projectId: "vg-game", target: "s1", at: 3 },
+    { id: "hold", kind: "builders", text: "New builders are waiting", projectId: "", target: "builders-disk", at: 0 },
+  ];
+  expect(projectLines(projects, needs, [], []).map((line) => line.text)).toEqual([
+    "Hivra · 2 need you",
+    "EXO · 1 needs you",
+    "Notes",
+  ]);
 });

@@ -2,6 +2,7 @@
 // again). When Ash asks a Lead how things stand, the app adds, on the wire only, the live count of this chat's asks on
 // his Inbox with their short names, so the count line's "waiting on you" is that number and the recap points to them
 // in one line instead of relisting options or picks.
+import { needsCount, needsListPublished } from "../../needs/model/needsYou";
 import { asksHowThingsStand } from "./statusAsk";
 import { CONTINUE_PROMPT } from "../../sessions/model/inFlight";
 import { openPartsOf, runningWorkers, statusTruthLine } from "./statusTruth";
@@ -60,7 +61,8 @@ export function inboxCountLine(asks: readonly string[], others: readonly string[
   const count = n
     ? `${INBOX_COUNT_PREFIX} From the app, not Ash: his Inbox's Waiting on you holds ${n} ask${n === 1 ? "" : "s"} from you right now: ${names}. In your count line, "waiting on you" is exactly ${n}. Point to them in one line with short names only ("${n} decision${n === 1 ? " is" : "s are"} waiting for you in the Inbox: …"); never list their options or picks again.`
     : `${INBOX_COUNT_PREFIX} From the app, not Ash: his Inbox holds no asks from you right now, so leave "waiting on you" out of your count line.`;
-  return `${count}${theirs}${n || others.length ? never : ""} ${STATUS_SHAPE}`;
+  const across = needsListPublished() ? ` Needs you, across every project, is ${needsCount()}.` : "";
+  return `${count}${theirs}${across}${n || others.length ? never : ""} ${STATUS_SHAPE}`;
 }
 
 /** The wire text for one turn: Ash's status question gets the live Inbox count after it; anything else is unchanged. */
