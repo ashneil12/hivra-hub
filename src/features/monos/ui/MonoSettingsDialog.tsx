@@ -13,7 +13,6 @@ import { Popover } from "../../../shared/ui/Popover";
 import { Settings, Sparkles, StickyNote } from "../../../shared/ui/icons";
 import type { HarnessId, RuntimeMode } from "../../sessions/model/session";
 import { AccessPicker } from "../../sessions/ui/AccessPicker";
-import { ModelPicker, ModelSettingRows } from "../../sessions/ui/ModelPicker";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
 import {
   defaultMonoName,
@@ -39,7 +38,7 @@ import { LongChatView } from "./LongChatView";
 import { MemoryPage, SoulPage, useMonoFiles } from "./MonoFilePages";
 import { MonoProjects } from "./MonoProjects";
 import { ColorPicker, MascotPicker, SwitchRow } from "./monoPanelParts";
-import { WorkerDefaultControl } from "../../crew/ui/WorkerDefaultControl";
+import { MonoCard } from "./MonoCard";
 
 export type MonoSettingsSection = "general" | "soul" | "memory";
 
@@ -189,36 +188,22 @@ function GeneralSection({
         <NameField key={monoId} monoId={monoId} fallback={agent.mascot} />
       </div>
 
-      <GroupHeading title="Model" />
+      {/* WP-182: the card stands in for the first page's model and worker blocks. */}
+      <MonoCard
+        monoId={monoId}
+        cwd={cwd}
+        harness={harness}
+        model={model}
+        modelSettings={modelSettings}
+        busy={busy}
+        onModelChange={onModelChange}
+        onModelSettingsChange={onModelSettingsChange}
+      />
+      {/* WP-215: the personality sits beside the engine. The charter is not edited here. */}
+      {soul && hasCaptainCharter(soul) ? <CaptainPersonality monoId={monoId} soul={soul} /> : null}
+
+      <GroupHeading title="Permissions" />
       <SettingGroup>
-        <SettingRow
-          label="Model"
-          description="What it thinks and replies with."
-        >
-          <ModelPicker
-            harness={harness}
-            model={model}
-            values={modelSettings}
-            project={cwd}
-            hideSettings
-            side="bottom"
-            variant="plain"
-            onChange={onModelChange}
-            onSettingsChange={onModelSettingsChange}
-          />
-        </SettingRow>
-        {/* WP-215: the personality sits beside the engine. The charter is not edited here. */}
-        {soul && hasCaptainCharter(soul) ? <CaptainPersonality monoId={monoId} soul={soul} /> : null}
-        <ModelSettingRows
-          harness={harness}
-          model={model}
-          values={modelSettings}
-          side="bottom"
-          onSettingsChange={onModelSettingsChange}
-          row={({ label, control }) => (
-            <SettingRow label={label}>{control}</SettingRow>
-          )}
-        />
         <SettingRow
           label="Permissions"
           description="What it may do without asking."
@@ -232,14 +217,6 @@ function GeneralSection({
             variant="plain"
           />
         </SettingRow>
-      </SettingGroup>
-
-      {/* WP-89: what the workers this Mono starts run on. */}
-      <GroupHeading title="Model for its workers" description="What the workers it starts run on." />
-      <SettingGroup>
-        <div className="px-3 py-2">
-          <WorkerDefaultControl scope="mono" monoId={monoId} />
-        </div>
       </SettingGroup>
 
       <GroupHeading

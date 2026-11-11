@@ -44,6 +44,7 @@ import {
   mobileQuestionReply,
 } from "../features/mobile/model/mobileWorkspace";
 import { readMonoConversation } from "../features/monos/model/monoConversation";
+import { useApplyMonoCardRun } from "../features/monos/hooks/useApplyMonoCardRun";
 import {
   resumeMonoUsageLimit,
   switchMonoUsageLimitAccount,
@@ -8187,6 +8188,9 @@ function Workspace({
     [],
   );
 
+  // WP-182: a card edit during a turn waits until that turn is idle.
+  useApplyMonoCardRun(sessions, onModelChange, onModelSettingsChange);
+
   const onRuntimeModeChange = useCallback(
     (sessionId: string, runtimeMode: RuntimeMode) => {
       setSessions((prev) =>
@@ -11315,7 +11319,9 @@ function Workspace({
       },
       submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
       // WP-141 round 6: a reviewer is a launch like a worker: its CLI passes the crew gate before its session starts.
-      crewGate: (session, reviewed) => crewLaunchCheck({ cli: session.harness, folder: reviewed, sessionId: session.id }),
+      // WP-141: the chat that asked is the reviewer's parent, so that chat's grant stays in force.
+      crewGate: (session, reviewed, parentSession) =>
+        crewLaunchCheck({ cli: session.harness, folder: reviewed, sessionId: session.id, parentSession }),
       stop: (sessionId) => {
         void onStopRef.current(sessionId, true);
       },

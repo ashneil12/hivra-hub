@@ -232,12 +232,10 @@ pub(crate) fn rebase_args(remote: &str, base: &str) -> Vec<String> {
     vec!["rebase".into(), format!("refs/remotes/{remote}/{base}")]
 }
 
-pub(crate) fn push_args(remote: &str, branch: &str) -> Vec<String> {
-    vec![
-        "push".into(),
-        remote.into(),
-        format!("HEAD:refs/heads/{branch}"),
-    ]
+/// What follows `git push`: the remote, then the commit the commit guard checked, sent to the package branch. No force
+/// and no `--no-verify`. Only `push` adds the verb, right after the guard has passed.
+pub(crate) fn push_target_args(remote: &str, sha: &str, branch: &str) -> Vec<String> {
+    vec![remote.into(), format!("{sha}:refs/heads/{branch}")]
 }
 
 fn fetch(worktree: &Path, remote: &str, base: &str) -> Result<(), Outcome> {
@@ -316,9 +314,21 @@ fn push(worktree: &Path, remote: &str, branch: &str, base: &str) -> Result<(), O
     if names::is_protected(branch, base) {
         return Err(refused("That branch is main. It was not updated."));
     }
-    let args = push_args(remote, branch);
-    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
-    let ran = git(worktree, &borrowed, FETCH_TIMEOUT)?;
+    // WP-200: the commit guard reads what this push would send (approval files, transcripts, secrets) before anything
+    // leaves, and the push names the commit it checked, so a HEAD that moves in between is not what goes out. The
+    // commit-graph and pack bitmaps stay off, as in the delivery push: either can name a tree the guard did not read.
+    let checked = crate::commit_guard::gate_outgoing_to(worktree, remote)
+        .map_err(|reason| refused(format!("The commit guard stopped the push: {reason}")))?;
+    let target = push_target_args(remote, &checked, branch);
+    let mut args = vec![
+        "-c",
+        "core.commitGraph=false",
+        "-c",
+        "pack.useBitmaps=false",
+        "push",
+    ];
+    args.extend(target.iter().map(String::as_str));
+    let ran = git(worktree, &args, FETCH_TIMEOUT)?;
     if ran.code == 0 {
         return Ok(());
     }

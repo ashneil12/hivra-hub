@@ -11,6 +11,8 @@ import {
   noteSessionAppend,
 } from "./claudeExtraArgs";
 import { nativeModelId, resolveModel } from "../../../../features/sessions/model/models";
+import { monoForSession } from "../../../../features/monos/model/mono";
+import { modelOffersFast, withMonoFast } from "../../../../features/monos/model/monoRun";
 import { customModelRoute, effortDroppedNotice, modelKeyStore, pickedCustomEffort } from "../../../../features/sessions/model/customModels";
 import { reviewReportedTurn } from "../../../../features/usage/model/spendGate";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
@@ -3222,7 +3224,21 @@ export async function applyClaudeSettings(
   return "applied";
 }
 
-function launchOptions(
+/**
+ * The Mono's fast flag, when this model offers fast and the session does not already say fast.
+ * A session's own fast (the composer's switch, or the card's write) wins, so what it shows is what runs.
+ */
+function settingsWithMonoFast(input: HarnessSessionInput): HarnessSessionInput["modelSettings"] {
+  if (!input.sessionId) return input.modelSettings;
+  if (input.modelSettings?.fast !== undefined) return input.modelSettings;
+  const engineFast = monoForSession(input.sessionId)?.engineFast;
+  if (typeof engineFast !== "boolean") return input.modelSettings;
+  const resolved = resolveModel("claude", input.model);
+  if (!modelOffersFast(resolved)) return input.modelSettings;
+  return withMonoFast(resolved, input.modelSettings, engineFast);
+}
+
+export function launchOptions(
   input: HarnessSessionInput,
   resume?: string,
   sessionId?: string,
@@ -3236,15 +3252,16 @@ function launchOptions(
   routedModel?: string;
   firstMate?: boolean;
 } {
-  const route = customModelRoute({ model: input.model, modelSettings: input.modelSettings ?? {} });
+  const modelSettings = settingsWithMonoFast(input);
+  const route = customModelRoute({ model: input.model, modelSettings: modelSettings ?? {} });
   const native = route ? route.modelId : nativeModelId(input.model);
-  const effortRaw = input.modelSettings?.effort;
-  const context = input.modelSettings?.context;
+  const effortRaw = modelSettings?.effort;
+  const context = modelSettings?.context;
   const settings: ClaudeCliSettings = {};
-  if (input.modelSettings?.thinking === "true") {
+  if (modelSettings?.thinking === "true") {
     settings.alwaysThinkingEnabled = true;
   }
-  if (input.modelSettings?.fast === "true") {
+  if (modelSettings?.fast === "true") {
     settings.fastMode = true;
   }
   if (isClaudeUltracodeEffort(effortRaw)) {

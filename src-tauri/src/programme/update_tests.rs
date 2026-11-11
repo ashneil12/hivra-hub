@@ -9,7 +9,7 @@ use super::checkout::{self, Bind};
 use super::gitrun;
 use super::settings::{self, Strategy};
 use super::tick::{self, Next, Tick};
-use super::update::{self, fetch_args, merge_args, push_args, rebase_args, Outcome};
+use super::update::{self, fetch_args, merge_args, push_target_args, rebase_args, Outcome};
 use super::UpdateReport;
 
 fn memory() -> Connection {
@@ -164,14 +164,14 @@ fn the_commands_never_force_push_skip_hooks_or_write_main() {
         vec!["rebase", "refs/remotes/origin/main"]
     );
     assert_eq!(
-        push_args("origin", "pkg"),
-        vec!["push", "origin", "HEAD:refs/heads/pkg"]
+        push_target_args("origin", "abc123", "pkg"),
+        vec!["origin", "abc123:refs/heads/pkg"]
     );
     for args in [
         fetch,
         merge_args("origin", "main"),
         rebase_args("origin", "main"),
-        push_args("origin", "pkg"),
+        push_target_args("origin", "abc123", "pkg"),
     ] {
         let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
         assert!(gitrun::ensure_safe(&borrowed).is_ok());
@@ -267,6 +267,40 @@ fn merge_updates_the_package_branch_and_leaves_main_alone() {
         other => panic!("expected already current, got {other:?}"),
     }
     assert_eq!(lab.sha(&lab.main, "refs/heads/main"), main_sha);
+}
+
+/// WP-200 x WP-162: the update's push goes through the commit guard like every other push the app makes. A package
+/// branch carrying an approval file is refused, nothing reaches the remote, and the branch is put back.
+#[test]
+fn an_update_whose_branch_carries_an_agent_file_is_refused_by_the_commit_guard() {
+    let lab = Lab::open("pkg-guard");
+    lab.commit(&lab.package, "pkg.txt", "pkg\n");
+    lab.push(&lab.package, "pkg");
+    let pushed = lab.sha(&lab.origin, "refs/heads/pkg");
+    fs::create_dir_all(lab.package.join(".claude")).unwrap();
+    fs::write(lab.package.join(".claude/settings.local.json"), "{}\n").unwrap();
+    git(&lab.package, &["add", "-f", ".claude/settings.local.json"]);
+    git(&lab.package, &["commit", "-m", "agent file"]);
+    let before = lab.sha(&lab.package, "HEAD");
+    lab.commit(&lab.main, "trunk.txt", "trunk\n");
+    lab.push(&lab.main, "main");
+    let conn = memory();
+    lab.bind(&conn, "pkg");
+
+    match run(&conn).outcome {
+        Outcome::Refused { reason } => assert!(reason.contains("commit guard"), "{reason}"),
+        other => panic!("expected the commit guard to refuse the push, got {other:?}"),
+    }
+    assert_eq!(
+        lab.sha(&lab.origin, "refs/heads/pkg"),
+        pushed,
+        "nothing reached the remote"
+    );
+    assert_eq!(
+        lab.sha(&lab.package, "HEAD"),
+        before,
+        "the branch was put back"
+    );
 }
 
 #[test]
