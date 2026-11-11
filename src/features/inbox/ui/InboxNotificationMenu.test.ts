@@ -78,7 +78,7 @@ async function openInboxMenu() {
     ),
   );
   const inbox = container.querySelector<HTMLElement>(
-    'button[aria-label="Inbox"]',
+    'button[aria-label="Needs you"]',
   )!;
   inbox.focus();
   await act(async () =>
@@ -113,8 +113,8 @@ it("uses already loaded Inbox activity immediately even when the provider stops 
   }
   await act(async () => root.render(createElement(Harness)));
   vi.mocked(listInboxItems).mockClear().mockImplementation(() => new Promise(() => {}));
-  // WP-210: the tracker no longer paints the Inbox mark, so the button stays "Inbox".
-  const inbox = container.querySelector<HTMLElement>('button[aria-label="Inbox"]')!;
+  // WP-210: the sidebar item is Needs you. The context menu stays Inbox actions.
+  const inbox = container.querySelector<HTMLElement>('button[aria-label="Needs you"]')!;
   expect(inbox).not.toBeNull();
   act(() => inbox.dispatchEvent(new KeyboardEvent("keydown", { key: "ContextMenu", bubbles: true })));
   expect(button("Mark all as read").disabled).toBe(false);

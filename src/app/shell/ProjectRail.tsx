@@ -440,7 +440,7 @@ export function ProjectRail({
             />
             <div className="mt-0.5" />
             <RailAction
-              label="Inbox"
+              label="Needs you"
               icon={Inbox}
               onClick={onOpenInbox}
               onOpenContextMenu={(x, y) => {
@@ -453,7 +453,7 @@ export function ProjectRail({
               }}
               active={inboxActive}
               needs={needsMark}
-              ariaLabel={needsMark > 0 ? `Inbox, ${needsMark} needs you` : "Inbox"}
+              ariaLabel={needsMark > 0 ? `Needs you, ${needsMark}` : "Needs you"}
             />
             {notesEnabled ? (
               <RailAction

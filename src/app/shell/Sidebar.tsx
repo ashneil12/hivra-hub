@@ -2760,7 +2760,7 @@ function SidebarComponent({
       }
       items={[
         onOpenInbox && {
-          label: "Inbox",
+          label: "Needs you",
           icon: Inbox,
           active: inboxActive,
           needs: needsMark,
@@ -3889,7 +3889,7 @@ function SidebarProjectPicker({
         ) : null}
         {onOpenInbox ? (
           <IconButton
-            label={needsMark > 0 ? `Inbox, ${needsMark} needs you` : "Inbox"}
+            label={needsMark > 0 ? `Needs you, ${needsMark}` : "Needs you"}
             active={inboxActive}
             onClick={onOpenInbox}
             onOpenContextMenu={(x, y) => {
@@ -4195,7 +4195,7 @@ function CompactProjectRail({
           onClick={action(searchActive, onSearch)}
         />
         <CompactRailAction
-          label={needsMark > 0 ? `Inbox, ${needsMark} needs you` : "Inbox"}
+          label={needsMark > 0 ? `Needs you, ${needsMark}` : "Needs you"}
           icon={Inbox}
           active={inboxActive}
           needs={needsMark}
@@ -4870,7 +4870,7 @@ function SidebarNavList({
             active={active}
             dot={needs != null && needs > 0 ? false : dot}
             needs={needs}
-            ariaLabel={needs != null && needs > 0 ? `${label}, ${needs} needs you` : dot ? `${label}, new items` : undefined}
+            ariaLabel={needs != null && needs > 0 ? (label === "Needs you" ? `Needs you, ${needs}` : `${label}, ${needs} needs you`) : dot ? `${label}, new items` : undefined}
             onClick={onClick}
             onOpenContextMenu={onOpenContextMenu}
           />
