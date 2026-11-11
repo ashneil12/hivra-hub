@@ -55,6 +55,10 @@ pub const SHIP_TRIAL: &str = "ship.trial";
 pub const SHIP_ROLLBACK: &str = "ship.rollback";
 pub const PERMISSION_GRANT: &str = "permission.grant";
 
+/// WP-180a: the runs screen listens for this after a line is stored.
+/// `record` has no app handle, so the writer emits it.
+pub const CHANGED: &str = "monocode:activity-changed";
+
 /// Who did a thing, or who asked for it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "role", rename_all = "kebab-case")]
