@@ -1016,7 +1016,8 @@ mod tests {
         let run = approved_start(d.path(), "wp134b", "", &[], false, &path_value)
             .expect("approved and present");
         assert_eq!(run.id, "wp134b");
-        assert_eq!(run.command, tool.to_string_lossy());
+        let canonical = std::fs::canonicalize(&tool).expect("canonical");
+        assert_eq!(run.command, canonical.to_string_lossy());
         assert_eq!(run.args, vec!["acp".to_string(), "--flag".to_string()]);
     }
 }
