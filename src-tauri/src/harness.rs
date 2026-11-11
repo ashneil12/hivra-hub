@@ -3314,6 +3314,8 @@ fn apply_gui_path(cmd: &mut Command) {
 pub(crate) fn apply_gui_env(cmd: &mut Command) {
     apply_gui_path(cmd);
     crate::hide_window_console(cmd);
+    // Round 8 (LOW): an agent's git, and any git a launched tool runs, reads a bare repository only when it is named.
+    crate::fs::git_safe_env(cmd);
     if let Some(id) = passwd_identity() {
         if std::env::var_os("HOME").is_none() {
             cmd.env("HOME", &id.home);

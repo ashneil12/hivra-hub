@@ -63,6 +63,17 @@ const GIT_DIR_FILES: ReadonlySet<string> = new Set(["head", "config", "packed-re
 /** A git folder's object and ref stores (round 7, HIGH-A): held under any folder in a chat's own. */
 const GIT_DIR_FOLDERS: ReadonlySet<string> = new Set(["objects", "refs"]);
 
+/**
+ * The values an option word carries: the text after `=`, and every suffix of a short-option cluster from its third letter
+ * (round 8, MED-B: `-bfnotes` carries `fnotes` and `notes`, and `file` reads `notes` after the `f`).
+ */
+function optionValues(word: string): string[] {
+  const out: string[] = [];
+  if (word.startsWith("-") && word.includes("=")) out.push(word.slice(word.indexOf("=") + 1));
+  if (/^-[^-]/.test(word)) for (let i = 2; i < word.length; i++) out.push(word.slice(i));
+  return out.filter(Boolean);
+}
+
 /** A drive path, C:\ or C:/ (round 7, Windows CI). */
 const DRIVE = /^[a-z]:[\\/]/i;
 
@@ -73,9 +84,10 @@ const isAbsolutePath = (path: string) => path.startsWith("/") || DRIVE.test(path
  * An absolute path with ".", ".." and repeated slashes resolved; null when it isn't one or climbs past its root. A drive
  * path (round 7, Windows CI) keeps its drive as the first part.
  */
-function normalize(path: string): string[] | null {
-  const text = path.replace(/\\/g, "/");
-  const drive = DRIVE.test(text);
+function normalize(path: string, windows = windowsShaped(path)): string[] | null {
+  // Round 8: a backslash is a separator only on Windows (a drive or UNC path). On a Mac or Linux it is a letter of a name.
+  const text = windows ? path.replace(/\\/g, "/") : path;
+  const drive = windows && DRIVE.test(text);
   if (!drive && !text.startsWith("/")) return null;
   const floor = drive ? 1 : 0;
   const out: string[] = drive ? [text.slice(0, 2).toLowerCase()] : [];
@@ -103,34 +115,49 @@ export function ignoresCase(folder: string): boolean {
  * A path as a containment check compares it (round 7, Windows CI): forward slashes, a verbatim `\\?\` prefix gone, repeated
  * and trailing slashes gone, and case folded where the file system ignores case.
  */
-export function comparablePath(path: string, caseless: boolean): string {
-  const text = path
-    .replace(/^(\\\\\?\\|\/\/\?\/)/, "")
-    .replace(/\\/g, "/")
+export function comparablePath(path: string, caseless: boolean, windows = windowsShaped(path)): string {
+  // Round 8: a backslash becomes a separator only for a Windows path; on a Mac it is part of a name and stays one.
+  const stripped = path.replace(/^(\\\\\?\\|\/\/\?\/)/, "");
+  const text = (windows ? stripped.replace(/\\/g, "/") : stripped)
     .replace(/\/+/g, "/")
     .replace(/(.)\/$/, "$1");
   return caseless ? text.toLowerCase() : text;
 }
 
+/** Whether a path is a Windows path: a drive (C:\ or C:/) or a UNC share (\\server). Round 8: only these read \ as a separator. */
+export function windowsShaped(path: string): boolean {
+  return DRIVE.test(path) || /^\\\\/.test(path);
+}
+
 /**
  * Whether `real` is `folder` or inside it, compared by whole path components, never by a string prefix (so `chat2` is not
- * inside `chat`). Both sides are read the same way, whatever their separators.
+ * inside `chat`). Both sides are read the same way, whatever their separators. `windows` says which reading of a backslash
+ * applies; by default a Windows path (a drive or a UNC share) on either side reads it as a separator, and nothing else does.
  */
-export function pathWithin(real: string, folder: string, caseless = ignoresCase(folder)): boolean {
-  const r = comparablePath(real, caseless).split("/");
-  const f = comparablePath(folder, caseless).split("/");
+export function pathWithin(
+  real: string,
+  folder: string,
+  caseless = ignoresCase(folder),
+  windows = windowsShaped(folder) || windowsShaped(real),
+): boolean {
+  const r = comparablePath(real, caseless, windows).split("/");
+  const f = comparablePath(folder, caseless, windows).split("/");
   return r.length >= f.length && f.every((part, i) => r[i] === part);
 }
 
 /** Whether an edit to `path` may go ahead in `folder`; why not otherwise. */
 export function editInside(path: string, folder: string | undefined): SafeVerdict {
-  const root = folder ? normalize(folder.replace(/\/+$/, "") || "/") : null;
+  // Round 8 (HIGH): on a Mac or Linux a backslash is a letter of a name, so a path that carries one is not read as a
+  // folder's climb (`a\b\c/../../x`), and waits. On Windows it is a separator, read as the OS reads it.
+  const windows = windowsShaped(folder ?? "") || windowsShaped(path);
+  if (!windows && path.includes("\\")) return `it edits ${path}, which has a backslash in it (a folder separator only on Windows), so it waits for Ash`;
+  const root = folder ? normalize(folder.replace(/\/+$/, "") || "/", windows) : null;
   if (!root) return "the chat has no folder of its own to edit in";
   if (root.length < MIN_FOLDER_DEPTH) return "the chat's folder is too broad to edit in by itself";
   if (path.includes("\0") || path.startsWith("~")) return `it edits ${path}, outside the chat's folder`;
   // The folder's own parts, a drive first when it has one (round 7, Windows CI), so a relative path is placed under it.
   const base = /^[a-z]:$/.test(root[0]) ? root.join("/") : `/${root.join("/")}`;
-  const parts = normalize(DRIVE.test(path) || path.startsWith("/") ? path : `${base}/${path}`);
+  const parts = normalize(DRIVE.test(path) || path.startsWith("/") ? path : `${base}/${path}`, windows);
   if (!parts || parts.length <= root.length || root.some((part, i) => parts[i] !== part))
     return `it edits ${path}, outside the chat's folder`;
   const inner = parts.slice(root.length);
@@ -447,7 +474,8 @@ function safeCommandInner(command: string, folder: string | undefined, timer = f
   // `grep -c X Documents/f` can't read a file of the person's own. Flags stay as they were.
   // A git or cargo subcommand (`status`, `fmt`) is no file name, so it is not counted.
   const operands = words[0] === "git" || words[0] === "cargo" ? words.slice(2) : words.slice(1);
-  if (timer && !projectFolder(folder) && operands.some((word) => !word.startsWith("-")))
+  // Round 8 (LOW): an option's glued or `=` value is an operand too (`file -fnotes.txt`, `wc --files0-from=notes.txt`).
+  if (timer && !projectFolder(folder) && operands.some((word) => !word.startsWith("-") || optionValues(word).length > 0))
     return "a timer in a folder this shallow can't read a file by name, so it waits for Ash";
   // Round 6, HIGH-1: a word that names a place outside the chat's own folder (a rooted path, a home word, a climb out) waits,
   // whatever the command, so a read of the hub's database copies or a browser's store by its absolute path does not pass.
@@ -705,16 +733,7 @@ export async function bashStaysInside(
   if (!root) return "the chat has no folder of its own to run in";
   // A flag's value is a place too (`--file=x`), a short option's value is glued on (`-fnotes` is notes, as file reads it,
   // round 7, MED-B), and so is the word itself.
-  const names = [
-    ...new Set(
-      words.slice(1).flatMap((word) => {
-        const out = [word];
-        if (word.startsWith("-") && word.includes("=")) out.push(word.slice(word.indexOf("=") + 1));
-        if (/^-[^-]/.test(word) && word.length > 2) out.push(word.slice(2));
-        return out;
-      }),
-    ),
-  ].filter(Boolean);
+  const names = [...new Set(words.slice(1).flatMap((word) => [word, ...optionValues(word)]))].filter(Boolean);
   // git with no words still runs in the folder, so its folder is placed even when it names no file (round 7).
   const git = words[0] === "git";
   if (!names.length && !git) return null;

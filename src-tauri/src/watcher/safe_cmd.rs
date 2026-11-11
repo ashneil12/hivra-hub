@@ -726,9 +726,22 @@ fn shallow_names(head: &str, args: &[String], folder: &str) -> Option<&'static s
     } else {
         args
     };
-    (!folder_holds_walk(folder) && operands.iter().any(|arg| !arg.starts_with('-'))).then_some(
-        "a timer in a folder this shallow can't read a file by name, so it waits for Ash",
-    )
+    // Round 8 (LOW): an option's glued or `=` value is an operand too (`file -fnotes.txt`, `wc --files0-from=notes.txt`).
+    (!folder_holds_walk(folder)
+        && operands
+            .iter()
+            .any(|arg| !arg.starts_with('-') || carries_value(arg)))
+    .then_some("a timer in a folder this shallow can't read a file by name, so it waits for Ash")
+}
+
+/// Whether an option word carries a value: the text after `=`, or a short option's letters after its first two
+/// (`-bfnotes`, `-fnotes.txt`). Mirrors optionValues in safeApproval.ts (round 8).
+fn carries_value(arg: &str) -> bool {
+    arg.starts_with('-')
+        && (arg
+            .split_once('=')
+            .is_some_and(|(_, value)| !value.is_empty())
+            || (!arg.starts_with("--") && arg.len() > 2))
 }
 
 /// Why a timer's words name a login store or a folder outside the chat's own, or None. A timer has no folder, so anything
@@ -895,6 +908,10 @@ mod tests {
         assert!(verdict("grep -c X Documents/f", "/Users/example").is_some());
         assert_eq!(verdict("grep -c X src/app.ts", "/Users/example/proj"), None);
         assert_eq!(verdict("git status", "/Users/example"), None);
+        // Round 8 (LOW): a glued or `=` option value names a file too.
+        assert!(verdict("file -fnotes.txt", "/Users/example").is_some());
+        assert!(verdict("file -bfnotes.txt", "/Users/example").is_some());
+        assert!(verdict("wc --files0-from=notes.txt", "/Users/example").is_some());
     }
 
     #[test]

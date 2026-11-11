@@ -1098,7 +1098,41 @@ pub async fn git_canonical_paths(paths: Vec<String>) -> Result<Vec<Option<String
     .map_err(|e| e.to_string())
 }
 
+/// Round 8, HIGH: on a Mac or Linux a backslash is a letter of a name, not a separator. A path that climbs (`..`) past such a
+/// letter (`a\b\c/../../x`) would be read by the Windows reading the approval side refuses, so it can't be placed here. A
+/// literal name with a backslash and no climb is read as the OS reads it, and is placed as before.
+fn climbs_past_backslash(path: &Path) -> bool {
+    !cfg!(windows)
+        && path.to_string_lossy().contains('\\')
+        && path
+            .components()
+            .any(|part| matches!(part, std::path::Component::ParentDir))
+}
+
+/// The path with its `.` and `..` taken by words, as a Write reads it (round 8, LOW): a `..` after a name goes up one name,
+/// and a climb past the root is refused, as is a climb past a backslash (climbs_past_backslash).
+fn lexical_place(path: &Path) -> Option<std::path::PathBuf> {
+    if climbs_past_backslash(path) {
+        return None;
+    }
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::ParentDir => {
+                if !out.pop() {
+                    return None;
+                }
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    Some(out)
+}
+
 fn canonical_place(path: &Path) -> Option<String> {
+    let path = lexical_place(path)?;
+    let path = path.as_path();
     if !path.is_absolute() || path.as_os_str().to_string_lossy().contains('\0') {
         return None;
     }
@@ -2763,6 +2797,11 @@ fn locate_path(path: &Path, follow_last: bool) -> Result<Option<GitFileLocation>
         let directory = actual.parent().ok_or("Invalid file path")?.to_path_buf();
         (directory, actual)
     } else {
+        // Round 8, HIGH: a place that doesn't exist yet is placed by its parent, read as written. A climb past a backslash
+        // (`a\b\c/../../x`, on a Mac or Linux) is refused rather than read as one (climbs_past_backslash).
+        if climbs_past_backslash(path) {
+            return Err("A backslash is part of a name here, so the place can't be read".into());
+        }
         let mut parent = path.parent().ok_or("Invalid file path")?;
         while !parent.is_dir() {
             parent = parent.parent().ok_or("File has no existing parent")?;
@@ -4672,6 +4711,8 @@ pub(crate) fn git_cmd() -> Command {
     crate::background_work::configure_child(&mut cmd);
     crate::hide_window_console(&mut cmd);
     cmd.env("PATH", crate::harness::cached_gui_search_path());
+    // Round 8 (LOW): every git the app runs reads a bare repository only when it is named (see git_safe_env).
+    git_safe_env(&mut cmd);
     cmd
 }
 
@@ -9866,6 +9907,17 @@ mod tests {
         );
         assert_eq!(canonical_place(&chat.join("dangling")), None);
         assert_eq!(canonical_place(Path::new("relative/x")), None);
+        // Round 8, LOW: a `..` after a name is taken by words first, as a Write reads it, so it goes up the name, not the link.
+        assert_eq!(
+            canonical_place(&chat.join("src").join("missing").join("..").join("new.ts")),
+            Some(path_to_js(&root.join("src").join("new.ts")))
+        );
+        // Round 8, HIGH: on a Mac or Linux a backslash is a letter of a name, so a path that climbs with one is refused.
+        assert_eq!(
+            canonical_place(&chat.join("a\\b\\c").join("..").join("..").join("x")),
+            None
+        );
+        assert!(git_locate_file(&chat.join("a\\b\\c").join("..").join("..").join("x")).is_err());
     }
 
     #[test]
