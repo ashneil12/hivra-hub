@@ -33,7 +33,8 @@ export type ThreadLookup = {
 };
 
 export type ThreadLinkHands = ThreadLookup & {
-  openChat: (sessionId: string) => void;
+  /** False when no pane was shown. Void is treated as shown, for older callers. */
+  openChat: (sessionId: string) => boolean | Promise<boolean> | void;
   openPrompt: (projectId: string, text: string, ticket: number) => void;
 };
 
@@ -205,7 +206,9 @@ export async function acceptThreadLink(raw: string, hands: ThreadLinkHands): Pro
       return;
     }
     if (!isThreadOpenCurrent(result.ticket)) return;
-    hands.openChat(sessionId);
+    const shown = await Promise.resolve(hands.openChat(sessionId));
+    if (!isThreadOpenCurrent(result.ticket)) return;
+    if (shown === false) reportThreadLink(THREAD_LINK_MESSAGE.missingChat);
     return;
   }
   if (!isThreadOpenCurrent(result.ticket)) return;

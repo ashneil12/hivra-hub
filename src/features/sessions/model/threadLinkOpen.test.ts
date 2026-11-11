@@ -39,7 +39,10 @@ function hands(
   const opened: string[] = [];
   return {
     hasProject: () => false,
-    openChat: (id) => opened.push(id),
+    openChat: (id) => {
+      opened.push(id);
+      return true;
+    },
     openPrompt: (id) => opened.push(`prompt:${id}`),
     opened,
     ...lookup,
@@ -194,6 +197,38 @@ describe("resolve and open", () => {
     await acceptThreadLink(chatLink(CHAT)!, opened);
     expect(opened.opened).toEqual([]);
     expect(threadLinkNotice()?.message).toBe(THREAD_LINK_MESSAGE.missingChat);
+  });
+
+  it("a chat that is not shown is not on this computer", async () => {
+    const opened = hands({
+      hasChat: () => true,
+      openChat: async () => false,
+    });
+    await acceptThreadLink(chatLink(CHAT)!, opened);
+    expect(opened.opened).toEqual([]);
+    expect(threadLinkNotice()?.message).toBe(THREAD_LINK_MESSAGE.missingChat);
+  });
+
+  it("a stale open does not warn when the pane was not shown", async () => {
+    let started = false;
+    let release: (shown: boolean) => void = () => {};
+    const first = hands({
+      hasChat: () => true,
+      openChat: () => {
+        started = true;
+        return new Promise<boolean>((resolve) => {
+          release = resolve;
+        });
+      },
+    });
+    const pending = acceptThreadLink(chatLink(CHAT)!, first);
+    for (let i = 0; i < 30 && !started; i += 1) await Promise.resolve();
+    expect(started).toBe(true);
+    const second = hands({ hasChat: () => true, openChat: async () => true });
+    await acceptThreadLink(chatLink(OTHER)!, second);
+    release(false);
+    await pending;
+    expect(threadLinkNotice()).toBeNull();
   });
 
   it("a chat that appears on the later check opens", async () => {

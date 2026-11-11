@@ -5918,15 +5918,16 @@ function Workspace({
   );
 
   const onSelectHistorySession = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string): Promise<boolean> => {
       const askedAt = Date.now();
       workspaceNavigation.cancel();
       let session = await ensureOpenSession(sessionId);
-      if (!session || session.inboxAsk) return;
+      // WP-125: false means no pane was shown (an inbox ask, or the chat is gone).
+      if (!session || session.inboxAsk) return false;
       const mono = monoForSession(session.id);
       if (mono) {
         await onOpenMono(mono.id);
-        return;
+        return true;
       }
       const parentId =
         session.orchestrationLeadId ??
@@ -5934,7 +5935,7 @@ function Workspace({
       if (parentId && parentId !== sessionId) {
         setInspectedWorkerId(sessionId);
         session = await ensureOpenSession(parentId);
-        if (!session) return;
+        if (!session) return false;
       }
       setSearchViewOpen(false);
       setSettingsOpen(false);
@@ -5949,17 +5950,18 @@ function Workspace({
       const linkedUpdate = linkedSessionUpdatesRef.current.get(session.id);
       if (focusOpenSession(session.id)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       if (replaceBlankPaneWithSession(session)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       const tab = newTab(session.id);
       appendTab(tab, session.cwd);
       setActiveTabId(tab.id);
       setComposerFocused(true);
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
+      return true;
     },
     [
       appendTab,
@@ -17533,14 +17535,13 @@ function Workspace({
     projects: () => hubData().listProjects(),
   });
   // WP-125: a local chat or prompt link opens in this window. A missing chat is a message, not a new window.
+  // openChat is false when no pane was shown, so the opener can say the chat is not on this computer.
   useThreadLinkOpener({
     hasChat: (id) =>
       sessionsRef.current.some((session) => session.id === id) ||
       getSession(id).then((session) => session != null),
     hasProject: (id) => hubData().listProjects().some((project) => project.id === id),
-    openChat: (id) => {
-      void onSelectHistorySession(id);
-    },
+    openChat: (id) => onSelectHistorySession(id),
     openPrompt: (projectId, text, ticket) => {
       placePrompt(
         projectId,
