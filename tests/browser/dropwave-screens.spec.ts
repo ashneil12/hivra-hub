@@ -150,8 +150,8 @@ test("the Inbox leads with the Needs you list, each row with its own answer", as
   await home(page);
   await page.getByRole("button", { name: /^Inbox/ }).first().click();
   // The Inbox's own list. The sidebar's count beside Inbox carries the same data-inbox-needs mark (WP-210), so the bare
-  // attribute matches two elements once that count has painted.
-  const needs = page.getByRole("region", { name: "Needs you" });
+  // attribute matches two elements once that count has painted; other regions' names contain "Needs you" too.
+  const needs = page.locator("section[data-inbox-needs]");
   await expect(needs).toBeVisible();
   const count = Number(await needs.getAttribute("data-inbox-needs"));
   expect(count).toBeGreaterThan(0);
