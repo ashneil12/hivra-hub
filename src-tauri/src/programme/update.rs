@@ -170,6 +170,10 @@ fn try_update(plan: &Plan) -> Result<Outcome, Outcome> {
 
     fetch(&worktree, remote, base)?;
     guard_main(&worktree, base, &main_before)?;
+    // The fetch can take a while and the package's builder may still be working here.
+    same_branch(&worktree, branch)?;
+    ensure_clean(&worktree)?;
+    unmoved(&worktree, &old)?;
     let tracking = format!("refs/remotes/{remote}/{base}");
     if rev(&worktree, &tracking)?.is_none() {
         return Err(not_finished(
@@ -339,7 +343,10 @@ fn cancel_rebase(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome
 
 fn settled(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
     same_branch(worktree, branch)?;
-    if head(worktree)?.as_str() == old && clean_tree(worktree)? {
+    // A failed merge or rebase leaves HEAD where it was. A HEAD that moved is someone
+    // else's commit, so it is never reset away.
+    unmoved(worktree, old)?;
+    if clean_tree(worktree)? {
         return Ok(());
     }
     if can_reset(worktree)? {
@@ -351,6 +358,15 @@ fn settled(worktree: &Path, old: &str, branch: &str) -> Result<(), Outcome> {
     }
     Err(not_finished(
         "The update could not be undone cleanly. The worktree was left for you.",
+    ))
+}
+
+fn unmoved(worktree: &Path, old: &str) -> Result<(), Outcome> {
+    if head(worktree)?.as_str() == old {
+        return Ok(());
+    }
+    Err(not_finished(
+        "The branch moved during the update, so it was left as it is. Nothing was force-pushed. Try again.",
     ))
 }
 

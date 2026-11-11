@@ -400,6 +400,64 @@ fn uncommitted_work_and_a_merge_already_in_progress_are_left_alone() {
     );
 }
 
+/// The package's builder may still be working in its worktree. A commit it makes while main is
+/// fetched is not the update's to undo: the conflict path must never reset the branch past it.
+#[cfg(unix)]
+#[test]
+fn a_commit_made_while_main_is_fetched_is_never_reset_away() {
+    use std::os::unix::fs::PermissionsExt;
+    let lab = Lab::open("pkg");
+    lab.commit(&lab.package, "README.md", "package\n");
+    lab.push(&lab.package, "pkg");
+    lab.commit(&lab.main, "README.md", "trunk\n");
+    lab.push(&lab.main, "main");
+    let origin_pkg = lab.sha(&lab.origin, "refs/heads/pkg");
+    // The fetch's upload-pack stands in for the builder: once, mid-fetch, it commits in the worktree.
+    let script = lab.root.join("builder-commits.sh");
+    let late_sha = lab.root.join("late-sha");
+    fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\nunset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR\n\
+             if [ ! -e '{sha}' ]; then\n  printf 'late\\n' > '{pkg}/late.txt'\n  \
+             git -C '{pkg}' add late.txt >/dev/null 2>&1\n  \
+             git -C '{pkg}' commit -q -m late >/dev/null 2>&1\n  \
+             git -C '{pkg}' rev-parse HEAD > '{sha}'\nfi\nexec git upload-pack \"$@\"\n",
+            sha = late_sha.display(),
+            pkg = lab.package.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    git(
+        &lab.package,
+        &[
+            "config",
+            "remote.origin.uploadpack",
+            script.to_str().unwrap(),
+        ],
+    );
+    let conn = memory();
+    lab.bind(&conn, "pkg");
+
+    let outcome = run(&conn).outcome;
+    let late = fs::read_to_string(&late_sha).expect("the stand-in builder did not commit");
+    assert!(
+        !matches!(outcome, Outcome::Updated { .. } | Outcome::AlreadyCurrent),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        lab.sha(&lab.package, "HEAD"),
+        late.trim(),
+        "the builder's commit was reset away ({outcome:?})"
+    );
+    assert_eq!(
+        fs::read_to_string(lab.package.join("late.txt")).unwrap(),
+        "late\n"
+    );
+    assert_eq!(lab.sha(&lab.origin, "refs/heads/pkg"), origin_pkg);
+}
+
 #[test]
 fn the_wrong_branch_is_refused() {
     let lab = Lab::open("pkg");
