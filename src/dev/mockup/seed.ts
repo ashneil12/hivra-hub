@@ -6,8 +6,9 @@
 // page's "Reset example" (`?reset`) or a newer seed.
 
 import { EXAMPLE } from "./data";
+import { mockupIpc, seedMockupIpc } from "./ipc";
 
-const SEED_VERSION = "mockup-v3";
+const SEED_VERSION = "mockup-v4";
 const SEEDED_KEY = "monocode:mockup-seeded";
 
 const url = new URL(location.href);
@@ -37,7 +38,10 @@ function seed(): void {
   set("monocode:dev-decisions", EXAMPLE.decisions(now));
   set("monocode:pages", EXAMPLE.pages(now));
   set("monocode:dev-automations", EXAMPLE.automations(now));
-  set("monocode:hub-chats", EXAMPLE.rooms());
+  set("monocode:hub-chats", EXAMPLE.rooms(now));
+  seedMockupIpc(now);
+  // The Inbox on Home reads every project the app has opened: the example projects' folders, so it has items to show.
+  set("monocode.recentProjects", EXAMPLE.projects.flatMap((project) => (project.folder ? [{ path: project.folder, openedAt: now }] : [])));
   localStorage.setItem("monocode:hub-nav", JSON.stringify({ project: "", item: "home" }));
   localStorage.setItem(SEEDED_KEY, SEED_VERSION);
 }
@@ -50,7 +54,7 @@ try {
 }
 if (reset || seeded !== SEED_VERSION) seed();
 
-Object.assign(window, { __MONOCODE_MOCKUP__: true });
+Object.assign(window, { __MONOCODE_MOCKUP__: true, __mockupIpc: mockupIpc });
 
 // A council in the mockup: every seat answers with an example, the third one disagrees, and the chair writes an example
 // verdict, so asking a question ends in a decision with a minority. Nothing is sent anywhere.

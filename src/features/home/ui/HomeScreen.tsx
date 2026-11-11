@@ -1,14 +1,14 @@
 // Home. The chief's own chat, then Needs you, Working now and Done today.
 // Projects, the usage line and the morning summary are not on this screen.
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type DragEvent as ReactDragEvent, type ReactNode } from "react";
 import { sectionKey, type HomeArrangement, type SectionRef } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
 import { HOME_ACTION_CAP } from "../model/needActions";
 import { FREE_UP_SPACE } from "../../monos/model/builderScale";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
 import { RAISE_LIMIT } from "../../usage/model/spendGate";
-import { Book, Check, ChevronDown, ChevronUp, SendArrow, Sparkles, Zap } from "../../../shared/ui/icons";
+import { Book, Check, GripVertical, Plus, SendArrow, Sparkles, Zap } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { workersLabel } from "../model/workingNow";
 import { HOME_STAGGER_MS } from "../vendor/homeLayout";
@@ -27,8 +27,43 @@ const TITLE: Record<string, string> = {
 const HOME_BUTTON = "inline-flex h-7 shrink-0 items-center rounded-md px-2.5 text-[12px] leading-none";
 const PRIMARY_BUTTON = `${HOME_BUTTON} bg-accent font-medium text-black`;
 const QUIET_BUTTON = `${HOME_BUTTON} border border-content/20 text-content`;
-// Name, up, down, switch, and an unpin slot. The slot stays empty on a section so the arrows line up.
-const ARRANGE_COLUMNS = { gridTemplateColumns: "minmax(0, 1fr) 1.5rem 1.5rem 2.25rem 4rem" };
+// Name, switch, and an unpin slot. The slot stays empty on a section so the switches line up.
+const ARRANGE_COLUMNS = { gridTemplateColumns: "minmax(0, 1fr) 2.25rem 4rem" };
+// The header's two controls (a project's Autopilot switch, Customize): one height and one look, so they sit level.
+export const HOME_HEADER_BUTTON =
+  "inline-flex h-7 shrink-0 items-center gap-2 rounded-md border border-content/10 px-2.5 text-[12px] leading-none text-content/70 hover:bg-content/10 hover:text-content";
+
+// The order the cards were dragged into, by key. Kept in this window's storage: it is how this screen is laid out, not data.
+const CARD_ORDER_KEY = "monocode:home-card-order";
+function loadCardOrder(): string[] {
+  try {
+    const value: unknown = JSON.parse(localStorage.getItem(CARD_ORDER_KEY) ?? "[]");
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+function saveCardOrder(order: string[]): void {
+  try {
+    localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(order));
+  } catch {
+    // The order still holds for this visit.
+  }
+}
+/** Cards in the dragged order; one that was never dragged keeps its own place after them. */
+export function orderCards<T extends { key: string }>(cards: readonly T[], order: readonly string[]): T[] {
+  const rank = (card: T, index: number) => (order.includes(card.key) ? order.indexOf(card.key) : order.length + index);
+  return cards.map((card, index) => ({ card, at: rank(card, index) })).sort((a, b) => a.at - b.at).map((entry) => entry.card);
+}
+/** `key` dropped on `onto`: it takes that card's place, and the cards between move over by one. */
+export function dropCard(keys: readonly string[], key: string, onto: string): string[] {
+  const from = keys.indexOf(key);
+  const to = keys.indexOf(onto);
+  if (from < 0 || to < 0 || from === to) return [...keys];
+  const next = keys.filter((item) => item !== key);
+  next.splice(to, 0, key);
+  return next;
+}
 
 export type HomeNeed = {
   key: string;
@@ -61,7 +96,7 @@ export type HomeDone = {
 const HOME_WIDE_WIDTH = 1120;
 const HOME_BOX_WIDTH = 760;
 // One card look for every section on Home.
-const HOME_CARD = "home-enter flex min-w-0 flex-col rounded-xl border border-stroke bg-surface pb-1.5";
+const HOME_CARD = "home-enter group/card flex min-w-0 flex-col rounded-xl border border-content/10 pb-1.5";
 const HOME_ROW = "mx-1.5 flex min-h-10 items-center gap-3 rounded-lg px-2.5 py-1.5 text-left text-[13px] text-content";
 
 /** A section a project's home adds below the built-in ones: its pinned pages, its automations (Dropwave). */
@@ -264,8 +299,17 @@ function ChiefExchange({ chief }: { chief: HomeChief }) {
   );
 }
 
-function ChiefBox({ chief, onAsk, quiet }: { chief: HomeChief; onAsk: (text: string) => void; quiet: boolean }) {
+function ChiefBox({ chief, onAsk, quiet, seed }: { chief: HomeChief; onAsk: (text: string) => void; quiet: boolean; seed?: { text: string; n: number } }) {
   const [text, setText] = useState("");
+  const box = useRef<HTMLDivElement>(null);
+  // Words put in the box for the person to finish (Customize's "Ask for a new card"): typed in, focused, not sent.
+  useEffect(() => {
+    if (!seed) return;
+    setText(seed.text);
+    const input = box.current?.querySelector<HTMLInputElement>("input[aria-label='Ask']");
+    input?.focus();
+    input?.setSelectionRange(seed.text.length, seed.text.length);
+  }, [seed]);
   const ready = text.trim().length > 0;
   const talking = Boolean(chief.you || chief.reply || chief.streaming || chief.options.length > 0);
   if (chief.missing) {
@@ -293,7 +337,7 @@ function ChiefBox({ chief, onAsk, quiet }: { chief: HomeChief; onAsk: (text: str
   }
   // Dropwave (Ash, 11 Nov): Home's chat area is one big box to start a conversation from, not a conversation.
   return (
-    <div data-home-start="" className="mx-auto flex w-full flex-col items-center gap-4 pt-6 pb-2" style={{ maxWidth: HOME_BOX_WIDTH }}>
+    <div ref={box} data-home-start="" className="mx-auto flex w-full flex-col items-center gap-4 pt-6 pb-2" style={{ maxWidth: HOME_BOX_WIDTH }}>
       <div className="flex flex-col items-center gap-2 text-center">
         {/* The same hello as an agent's empty chat (MonoHeader): its mascot standing on its name. */}
         {chief.avatar ? <span data-home-avatar="chief" className="relative z-10 grid place-items-center">{chief.avatar}</span> : <ChiefAvatar />}
@@ -321,7 +365,7 @@ function ChiefBox({ chief, onAsk, quiet }: { chief: HomeChief; onAsk: (text: str
               key={starter}
               type="button"
               data-home-starter
-              className="rounded-full border border-stroke px-3 py-1.5 text-[12px] text-content/75 hover:bg-content/8 hover:text-content"
+              className="h-7 rounded-full border border-content/10 px-3 text-[12px] font-medium text-content/55 hover:bg-content/8 hover:text-content"
               onClick={() => onAsk(starter)}
             >
               {starter}
@@ -352,7 +396,7 @@ function AskForm({
     <form
       className={
         big
-          ? "flex w-full items-center gap-3 rounded-2xl border border-stroke bg-surface py-2.5 pr-2.5 pl-5 shadow-[0_8px_30px_-12px_rgba(0,0,0,0.45)] focus-within:border-content/30"
+          ? "flex w-full items-center gap-3 rounded-xl border border-content/10 bg-surface py-2 pr-2 pl-4 focus-within:border-content/25"
           : "mt-3 flex items-center gap-2 border-t border-stroke py-1.5 pr-1.5 pl-4"
       }
       onSubmit={(event) => {
@@ -362,20 +406,20 @@ function AskForm({
         setText("");
       }}
     >
-      {big ? <Sparkles className="size-5 shrink-0 text-content/50" strokeWidth={1.75} aria-hidden /> : null}
+      {big ? <Sparkles className="size-4 shrink-0 text-content/50" strokeWidth={1.75} aria-hidden /> : null}
       <input
         aria-label="Ask"
         value={text}
         placeholder={chief.placeholder ?? "Ask anything, or hand work to any project"}
         onChange={(event) => setText(event.target.value)}
-        className={`min-w-0 flex-1 bg-transparent text-content outline-none placeholder:text-content/40 ${big ? "h-11 text-[16px]" : "py-1.5 text-[14px]"}`}
+        className={`min-w-0 flex-1 bg-transparent text-content outline-none placeholder:text-content/40 ${big ? "h-10 text-[15px]" : "py-1.5 text-[14px]"}`}
       />
       <button
         type="submit"
         aria-label="Send"
         title="Send"
         disabled={!ready}
-        className={`grid shrink-0 place-items-center transition-colors disabled:cursor-default ${big ? "size-10 rounded-xl" : "size-7 rounded-md"} ${ready ? "bg-accent text-black" : "bg-content/25 text-content"}`}
+        className={`grid shrink-0 place-items-center transition-colors disabled:cursor-default ${big ? "size-9 rounded-lg" : "size-7 rounded-md"} ${ready ? "bg-accent text-black" : "bg-content/12 text-content/60"}`}
       >
         <SendArrow className={big ? "size-4" : "size-3.5"} strokeWidth={2.25} aria-hidden />
       </button>
@@ -395,9 +439,9 @@ function Glance({ label, value, note, tone, onClick }: { label: string; value: n
       <span className="truncate text-[12px] text-content/60">{note}</span>
     </>
   );
-  const look = "home-enter flex min-w-0 flex-col gap-1 rounded-xl border border-stroke bg-surface px-4 py-3 text-left";
+  const look = "home-enter flex min-w-0 flex-col gap-1 rounded-xl border border-content/10 px-4 py-3 text-left";
   return onClick ? (
-    <button type="button" data-home-glance={label} className={`${look} hover:bg-content/8`} onClick={onClick}>{body}</button>
+    <button type="button" data-home-glance={label} className={`${look} hover:border-content/16 hover:bg-content/5`} onClick={onClick}>{body}</button>
   ) : (
     <div data-home-glance={label} className={look}>{body}</div>
   );
@@ -448,7 +492,6 @@ export function HomeScreen({
   known,
   failed,
   onOpen,
-  onMove,
   onHide,
   onShow,
   onPin,
@@ -480,7 +523,6 @@ export function HomeScreen({
   known: boolean;
   failed: boolean;
   onOpen: (line: HomeLine) => void;
-  onMove: (key: string, dir: -1 | 1) => void;
   onHide: (key: string) => void;
   onShow: (key: string) => void;
   onPin: (plugin: string, panelId: string) => void;
@@ -489,6 +531,11 @@ export function HomeScreen({
   renderPanel?: (panel: CatalogPanel) => ReactNode;
 }) {
   const [custom, setCustom] = useState(false);
+  // Dropwave (Ash, 11 Nov): the cards are dragged into place on the page itself; Customize only turns them on and off.
+  const [cardOrder, setCardOrder] = useState(loadCardOrder);
+  const [dragging, setDragging] = useState<string | null>(null);
+  const [dropOn, setDropOn] = useState<string | null>(null);
+  const [askSeed, setAskSeed] = useState<{ text: string; n: number } | undefined>();
   const panelRef = useRef<HTMLDivElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
@@ -527,12 +574,61 @@ export function HomeScreen({
   const arranged = arrangement.order.filter((ref) => !(ref.kind === "builtin" && ref.id === "projects"));
   const quiet = known && visible.length === 0;
   const orderedNeeds = [...needs].sort((a, b) => homeNeedRank(a) - homeNeedRank(b));
+  // Every card on the page, in the order it was dragged into (a card never dragged keeps its own place).
+  const cardKeys = orderCards(
+    [...visible.map((ref) => ({ key: sectionKey(ref) })), ...(known ? extraSections.map((extra) => ({ key: extra.key })) : [])],
+    cardOrder,
+  ).map((card) => card.key);
+  const cardLook = (key: string) =>
+    `${dragging === key ? " opacity-50" : ""}${dropOn === key && dragging !== key ? " border-accent/70 bg-content/5" : ""}`;
+  /** A card takes a drop: the dragged card lands in its place. */
+  const cardDrop = (key: string) => ({
+    "data-home-drop": dropOn === key && dragging !== null && dragging !== key ? "" : undefined,
+    onDragOver: (event: ReactDragEvent<HTMLElement>) => {
+      if (!dragging || dragging === key) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      if (dropOn !== key) setDropOn(key);
+    },
+    onDrop: (event: ReactDragEvent<HTMLElement>) => {
+      if (!dragging) return;
+      event.preventDefault();
+      const next = dropCard(cardKeys, dragging, key);
+      setCardOrder(next);
+      saveCardOrder(next);
+      setDragging(null);
+      setDropOn(null);
+    },
+  });
+  /** A card is picked up by its title row; the whole card follows the pointer. */
+  const cardGrip = (key: string) => ({
+    draggable: true,
+    "data-home-grip": key,
+    title: "Drag to move this card",
+    onDragStart: (event: ReactDragEvent<HTMLElement>) => {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", key);
+      const card = event.currentTarget.closest("section");
+      if (card) event.dataTransfer.setDragImage(card, 24, 20);
+      setDragging(key);
+    },
+    onDragEnd: () => {
+      setDragging(null);
+      setDropOn(null);
+    },
+  });
+  const grip = (
+    <GripVertical className="size-3.5 shrink-0 text-content/30 opacity-0 transition-opacity group-hover/card:opacity-100" strokeWidth={1.75} aria-hidden />
+  );
   return (
     <div data-home data-home-order={visible.map(sectionKey).join(" ")} className="min-h-0 min-w-0 flex-1 overflow-y-auto text-content">
       <div className="mx-auto flex flex-col gap-6 px-8 pt-10 pb-10" style={{ maxWidth: HOME_WIDE_WIDTH }}>
-        <header data-home-header className="flex items-baseline gap-3">
-          <h1 className="text-[18px] font-medium text-content">{title}</h1>
-          {date ? <p data-home-date className="min-w-0 flex-1 truncate text-[13px] text-content/60">{date}</p> : <span className="flex-1" />}
+        {/* The app's own page header (New automation, Pages): the title, a quiet line under it, the controls level on the right. */}
+        <header data-home-header className="flex items-center gap-2">
+          <div className="flex min-w-0 flex-1 flex-col">
+            <h1 className="text-[20px] font-semibold leading-tight text-content">{title}</h1>
+            {date ? <p data-home-date className="mt-1.5 truncate text-[13px] text-content/50">{date}</p> : null}
+          </div>
           {headerExtra}
           {known ? (
             <button
@@ -540,7 +636,7 @@ export function HomeScreen({
               type="button"
               data-home-action="customize"
               aria-expanded={custom}
-              className="rounded-md border border-stroke px-2.5 py-1 text-[13px] text-content hover:bg-content/8"
+              className={`${HOME_HEADER_BUTTON}${custom ? " bg-content/10 text-content" : ""}`}
               onClick={() => setCustom((open) => !open)}
             >
               Customize
@@ -553,8 +649,9 @@ export function HomeScreen({
             data-home-customize
             role="dialog"
             aria-label="Customize"
-            className="flex flex-col gap-1 rounded-lg border border-stroke p-2"
+            className="flex flex-col gap-1 rounded-xl border border-content/10 p-3"
           >
+            <p className="px-1 pb-1 text-[12px] text-content/50">Turn cards on or off. To move a card, drag it by its title on the page.</p>
             {arranged.map((ref) => {
               const key = sectionKey(ref);
               const title = titleOf(ref, catalog);
@@ -562,12 +659,6 @@ export function HomeScreen({
               return (
                 <div key={key} data-home-arrange={key} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
                   <span className="min-w-0 truncate text-[13px] text-content">{title}</span>
-                  <button type="button" aria-label={`Move ${title} up`} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, -1)}>
-                    <ChevronUp className="size-3.5" aria-hidden />
-                  </button>
-                  <button type="button" aria-label={`Move ${title} down`} className="grid size-6 place-items-center justify-self-center rounded text-content/70 hover:bg-content/8" onClick={() => onMove(key, 1)}>
-                    <ChevronDown className="size-3.5" aria-hidden />
-                  </button>
                   <span className="justify-self-center">
                     <ShowSwitch title={title} on={shown} onToggle={() => (shown ? onHide(key) : onShow(key))} />
                   </span>
@@ -585,8 +676,6 @@ export function HomeScreen({
               <div key={`${panel.plugin}:${panel.panelId}`} className="grid items-center gap-x-1.5 px-1 py-1" style={ARRANGE_COLUMNS}>
                 <span className="min-w-0 truncate text-[13px] text-content/70">{panel.title}</span>
                 <span />
-                <span />
-                <span />
                 <span className="justify-self-end">
                   <button
                     type="button"
@@ -599,16 +688,32 @@ export function HomeScreen({
                 </span>
               </div>
             ))}
-            <button
-              type="button"
-              className={`mt-1 self-end ${PRIMARY_BUTTON}`}
-              onClick={() => setCustom(false)}
-            >
-              Done
-            </button>
+            <div className="mt-1 flex items-center gap-2 border-t border-content/10 px-1 pt-2">
+              {/* A card of your own: the Chief of Staff builds it. The words land in the box below for you to finish. */}
+              <button
+                type="button"
+                data-home-action="add-card"
+                className={`${HOME_HEADER_BUTTON} gap-1.5`}
+                onClick={() => {
+                  setCustom(false);
+                  setAskSeed((seed) => ({ text: "Add a card to Home that shows ", n: (seed?.n ?? 0) + 1 }));
+                }}
+              >
+                <Plus className="size-3.5" strokeWidth={1.75} aria-hidden />
+                Ask for a new card
+              </button>
+              <span className="min-w-0 flex-1 truncate text-[12px] text-content/50">The Chief of Staff builds it for you.</span>
+              <button
+                type="button"
+                className={PRIMARY_BUTTON}
+                onClick={() => setCustom(false)}
+              >
+                Done
+              </button>
+            </div>
           </div>
         ) : null}
-        {known ? <ChiefBox chief={chief} onAsk={onAsk} quiet={quiet} /> : null}
+        {known ? <ChiefBox chief={chief} onAsk={onAsk} quiet={quiet} seed={askSeed} /> : null}
         {known && !chief.missing ? (
           <div data-home-glances className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {arrangement.hidden.includes("needs-you") ? null : (
@@ -648,16 +753,18 @@ export function HomeScreen({
               key={key}
               data-home-section={key}
               aria-label={title}
-              className={`${HOME_CARD}${key === "needs-you" || ref.kind === "panel" ? " md:col-span-2" : ""}`}
-              style={{ animationDelay: `${index * HOME_STAGGER_MS}ms` }}
+              className={`${HOME_CARD}${key === "needs-you" || ref.kind === "panel" ? " md:col-span-2" : ""}${cardLook(key)}`}
+              style={{ animationDelay: `${index * HOME_STAGGER_MS}ms`, order: cardKeys.indexOf(key) }}
+              {...cardDrop(key)}
             >
-              <header className="flex items-center gap-2 px-4 pt-3 pb-2">
+              <header {...cardGrip(key)} className="flex cursor-grab items-center gap-2 px-4 pt-3 pb-2 active:cursor-grabbing">
                 <SectionMark kind={key} />
-                <h2 className="truncate text-[14px] font-semibold text-content">{title}</h2>
+                <h2 className="truncate text-[13px] font-medium text-content">{title}</h2>
                 {key === "needs-you" && needsTotal > 0 ? <span data-home-count={needsTotal} className="text-[12px] text-content/60">{needsTotal}</span> : null}
                 {key === "moving-now" ? <span data-home-workers className="text-[12px] text-content/60">{workersLabel(workingTotal)}</span> : null}
                 {key === "recent" ? <span data-home-done className="text-[12px] text-content/60">{done.length}</span> : null}
                 <span className="min-w-0 flex-1" />
+                {grip}
                 {key === "needs-you" && needsTotal > 0 ? (
                   <button type="button" data-home-see="needs" className="text-[12px] text-accent" onClick={onSeeNeeds}>See all</button>
                 ) : null}
@@ -739,16 +846,18 @@ export function HomeScreen({
                 key={extra.key}
                 data-home-section={extra.key}
                 aria-label={extra.title}
-                className={HOME_CARD}
-                style={{ animationDelay: `${(visible.length + index) * HOME_STAGGER_MS}ms` }}
+                className={`${HOME_CARD}${cardLook(extra.key)}`}
+                style={{ animationDelay: `${(visible.length + index) * HOME_STAGGER_MS}ms`, order: cardKeys.indexOf(extra.key) }}
+                {...cardDrop(extra.key)}
               >
-                <header className="flex items-center gap-2 px-4 pt-3 pb-2">
+                <header {...cardGrip(extra.key)} className="flex cursor-grab items-center gap-2 px-4 pt-3 pb-2 active:cursor-grabbing">
                   <span className="grid size-4 shrink-0 place-items-center text-content/60">
                     {extra.layout === "tiles" ? <Book className="size-3.5" aria-hidden /> : <Zap className="size-3.5" aria-hidden />}
                   </span>
-                  <h2 className="truncate text-[14px] font-semibold text-content">{extra.title}</h2>
+                  <h2 className="truncate text-[13px] font-medium text-content">{extra.title}</h2>
                   {extra.rows.length ? <span className="text-[12px] text-content/60">{extra.rows.length}</span> : null}
                   <span className="min-w-0 flex-1" />
+                  {grip}
                   {extra.action ? (
                     <button type="button" className="text-[12px] text-accent" onClick={extra.action.onClick}>{extra.action.label}</button>
                   ) : null}
@@ -762,10 +871,10 @@ export function HomeScreen({
                         key={row.key}
                         type="button"
                         data-home-line={extra.key}
-                        className="flex min-w-0 items-center gap-3 rounded-lg border border-stroke px-3 py-2.5 text-left hover:bg-content/8"
+                        className="flex min-w-0 items-center gap-3 rounded-lg border border-content/10 px-3 py-2.5 text-left hover:border-content/16 hover:bg-content/5"
                         onClick={row.onOpen}
                       >
-                        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-content/8 text-content/70">
+                        <span className="grid size-8 shrink-0 place-items-center rounded-full bg-content/8 text-content/70">
                           <Book className="size-4" aria-hidden />
                         </span>
                         <span className="flex min-w-0 flex-col">

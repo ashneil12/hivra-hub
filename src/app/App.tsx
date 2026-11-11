@@ -32,7 +32,7 @@ import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
-import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
+import { IS_HUB_BUNDLE, ONE_CHAT_LOOK } from "../features/hub/model/hubBundle";
 import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
@@ -18394,7 +18394,7 @@ function Workspace({
 
   const usageFooter =
     (chromeSurfaceOpen && !(insetLayout && activeAppView)) ||
-    (monoCovers && !insetLayout) ? null : (
+    (monoCovers && !insetLayout && !ONE_CHAT_LOOK) ? null : (
       <UsageFooter
         pressureSlot={setPressureChipHost}
         providers={usageProviders}

@@ -703,12 +703,15 @@ describe("collapsed project rail setting", () => {
 describe("settings navigation", () => {
   it("lists every section under exactly one rail group", () => {
     const groups = settingsSectionsByGroup();
-    // Dropwave (Ash, 11 Nov: "the settings area is an absolute mess"): five short lists, the rarely needed ones last.
-    expect(groups.map((group) => group.label)).toEqual(["App", "First mates", "What happened", "Your data", "Advanced"]);
+    // Dropwave (Ash, 11 Nov: "the settings area is an absolute mess"): short lists, the rarely needed ones last. Who
+    // works for you ("Your team", with First mates by that name) is apart from what they can use.
+    expect(groups.map((group) => group.label)).toEqual(["App", "Your team", "What they can use", "What happened", "Your data", "Advanced"]);
+    expect(groups.flatMap((g) => g.sections).find((s) => s.id === "monos")?.label).toBe("First mates");
     expect(groups.filter((group) => group.folded).map((group) => group.label)).toEqual(["Advanced"]);
     expect(groups.map((group) => group.sections.map((s) => s.id))).toEqual([
       ["general", "appearance", "keybindings", "usage"],
-      ["monos", "teams", "chat", "providers", "skills", "connectors", "connected", "memory"],
+      ["monos", "teams", "chat"],
+      ["providers", "skills", "connectors", "connected", "memory"],
       ["decisions", "activity", "work-log", "changes", "history"],
       // WP-92: the key vault.
       ["portable", "backups", "secrets"],

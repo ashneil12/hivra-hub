@@ -51,18 +51,16 @@ export type SettingsSectionId =
   | "secrets";
 
 /** Rail buckets. Sections list under their group label, in the order SETTINGS_GROUPS gives. */
-export type SettingsGroupId = "app" | "agents" | "record" | "data" | "workspace";
+export type SettingsGroupId = "app" | "agents" | "tools" | "record" | "data" | "workspace";
 
 // Dropwave (Ash, 11 Nov: "the settings area is an absolute mess"): five short lists instead of one long one. The
 // everyday ones are on top; what a non-technical owner rarely needs (machines, MCP, plugins, worktrees, archive, trash)
 // is under Advanced, folded until asked for.
 export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string; folded?: boolean; sections: SettingsSectionId[] }[] = [
   { id: "app", label: "App", sections: ["general", "appearance", "keybindings", "usage"] },
-  {
-    id: "agents",
-    label: "First mates",
-    sections: ["monos", "teams", "chat", "providers", "skills", "connectors", "connected", "memory"],
-  },
+  // Who works for you, then what they can use (Ash, 11 Nov round 5: first mates by that name, and only useful things).
+  { id: "agents", label: "Your team", sections: ["monos", "teams", "chat"] },
+  { id: "tools", label: "What they can use", sections: ["providers", "skills", "connectors", "connected", "memory"] },
   { id: "record", label: "What happened", sections: ["decisions", "activity", "work-log", "changes", "history"] },
   { id: "data", label: "Your data", sections: ["portable", "backups", "secrets"] },
   {
@@ -149,7 +147,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "connected",
-    group: "agents",
+    group: "tools",
     label: "Connected apps",
     description:
       "AI tools on this computer that can read Hivra, and what each one may see.",
@@ -187,14 +185,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "memory",
-    group: "agents",
+    group: "tools",
     label: "Memory",
     description: "How Hivra remembers and what it remembers, with its source, for you to confirm, edit or delete.",
     keywords: "memory fact skill recall review tier rules cheap crew model cost",
   },
   {
     id: "connectors",
-    group: "agents",
+    group: "tools",
     label: "Connectors",
     description: "The apps your Monos use (GitHub, Gmail, Slack and more), and where each login lives.",
     keywords: "connector login sign in composio apps oauth gmail slack github",
@@ -225,7 +223,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "providers",
-    group: "agents",
+    group: "tools",
     label: "Providers",
     description:
       "Provider accounts, agent CLIs MonoCode can drive, and the model new sessions start with.",
@@ -243,7 +241,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   },
   {
     id: "skills",
-    group: "agents",
+    group: "tools",
     label: "Skills",
     description:
       "Discover and manage file skills from project, personal, and harness folders.",
@@ -267,17 +265,17 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   {
     id: "monos",
     group: "agents",
-    label: "Monos",
+    label: "First mates",
     description:
-      "The resident agent beside your tabs, and which projects have one.",
-    keywords: "mono resident agent mascot claim project title bar",
+      "Your Chief of Staff and first mates: what each is called and which projects it works on.",
+    keywords: "mono monos first mate chief of staff rename name resident agent mascot claim project title bar",
   },
   {
     id: "teams",
     group: "agents",
     label: "Teams",
-    description: "Teams of named Monos you work with (Marketing and more), each with its room, and new Monos agents propose for your okay.",
-    keywords: "team marketing named mono agent propose approve room soul engine",
+    description: "The team chats in each project, who is in them, and new teams a first mate proposes for your okay.",
+    keywords: "team marketing named mono first mate agent propose approve room soul engine leadership project",
   },
   {
     id: "inbox",
@@ -359,21 +357,21 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
   {
     id: "monos-enabled",
     section: "monos",
-    label: "Show monos",
-    keywords: "mono agent rail hide",
+    label: "Show first mates",
+    keywords: "mono monos agent rail hide",
   },
   {
     id: "rail-monos-pinned",
     section: "monos",
-    label: "Pin monos to the icon rail",
+    label: "Pin first mates to the icon rail",
     keywords: "mono rail compact collapsed icons top divider project picker",
   },
   {
     id: "mono-list",
     section: "monos",
-    label: "Your monos",
+    label: "Your first mates",
     keywords:
-      "mono reset soul name projects sessions sidebar visibility hidden show",
+      "mono monos reset soul name rename chief of staff projects sessions sidebar visibility hidden show",
   },
   {
     id: "project-worktrees",

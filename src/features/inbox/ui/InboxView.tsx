@@ -303,10 +303,13 @@ function peekInboxForRail(recents: RecentProject[], cwd: string) {
 function InboxSourceTab({
   source,
   selected,
+  compact = false,
   onSelect,
 }: {
   source: InboxSource;
   selected: boolean;
+  /** Shows the mark alone (the name stays as the tooltip and the accessible name). */
+  compact?: boolean;
   onSelect: (source: InboxSource) => void;
 }) {
   const label = INBOX_SOURCE_LABELS[source];
@@ -315,19 +318,21 @@ function InboxSourceTab({
       type="button"
       role="tab"
       aria-selected={selected}
+      aria-label={label}
+      title={label}
       onClick={() => onSelect(source)}
-      className={`flex h-6 min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] leading-none ${
+      className={`flex h-6 min-w-0 items-center justify-center rounded-md px-2 text-[12px] leading-none ${compact ? "shrink-0" : "flex-1"} ${
         selected
           ? "bg-selection text-content"
           : "text-content/50 hover:bg-content/5 hover:text-content"
       }`}
     >
-      <span className="flex items-center gap-1.5">
+      <span className="flex min-w-0 items-center gap-1.5">
         <InboxProviderMark
           provider={source}
           className="block size-3.5 shrink-0"
         />
-        <span className="leading-none">{label}</span>
+        {compact ? null : <span className="min-w-0 truncate leading-none">{label}</span>}
       </span>
     </button>
   );
@@ -945,6 +950,8 @@ export function InboxView({
                 key={option}
                 source={option}
                 selected={source === option}
+                // With four or more sources the names no longer fit a narrow list: only the open one keeps its name.
+                compact={visibleSources.length > 3 && source !== option}
                 onSelect={onSourceChange}
               />
             ))}

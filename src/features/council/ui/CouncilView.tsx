@@ -13,6 +13,7 @@ import {
 import type { CouncilRecord, CouncilSeatRecord } from "../model/record";
 import { blankProposal, carriedPast } from "../model/record";
 import { runCouncil, type CouncilModel, type CouncilRun } from "../model/run";
+import { CouncilSwitch } from "./CouncilSwitch";
 
 const PRESETS: { id: PanelPreset; label: string }[] = [
   { id: "quick", label: "Quick" },
@@ -41,6 +42,8 @@ export function CouncilView({
   onOpenSeat,
   onDelegate,
   onClose,
+  asMode = false,
+  seatNames,
 }: {
   roomId: string;
   record: CouncilRecord;
@@ -52,6 +55,13 @@ export function CouncilView({
   onOpenSeat?: (seat: CouncilSeatRecord) => void;
   onDelegate?: () => void;
   onClose?: () => void;
+  /**
+   * Dropwave: the council as a mode of the team's chat. No header of its own, a switch under the box turns it off, the
+   * panel's size and seats sit behind "Set up", and a question is asked as soon as it is sent.
+   */
+  asMode?: boolean;
+  /** The team's members by name, in seat order: in the mode a seat speaks under its member's name. */
+  seatNames?: readonly string[];
 }) {
   const [question, setQuestion] = useState(record.question);
   const [preset, setPreset] = useState<PanelPreset>(record.preset);
@@ -94,29 +104,28 @@ export function CouncilView({
     // A new question after a decision starts a fresh council; the decision joins the history above it.
     const from: CouncilRecord =
       record.phase === "done" ? { ...blankProposal(""), ...(carriedPast(record).length ? { past: carriedPast(record) } : {}) } : record;
-    if (
-      !onChange({
-        ...from,
-        question: question.trim(),
-        preset,
-        expectedCalls: proposal.expectedCalls,
-        ...(proposal.note ? { note: proposal.note } : {}),
-        seats,
-        phase: "restate",
-      })
-    ) {
-      lostSave();
-    }
+    const next: CouncilRecord = {
+      ...from,
+      question: question.trim(),
+      preset,
+      expectedCalls: proposal.expectedCalls,
+      ...(proposal.note ? { note: proposal.note } : {}),
+      seats,
+      phase: "restate",
+    };
+    // As a chat mode a sent question is asked, like any message: there is no second "confirm the question" step.
+    if (asMode) return void start(next);
+    if (!onChange(next)) lostSave();
   }
 
-  async function start() {
+  async function start(from: CouncilRecord = record) {
     if (!model) return;
     const ac = new AbortController();
     abortRef.current?.abort();
     abortRef.current = ac;
     const generation = ++gen.current;
     live.current = true;
-    const base: CouncilRecord = { ...record, question: question.trim(), phase: "running", round: "blind" };
+    const base: CouncilRecord = { ...from, question: question.trim(), phase: "running", round: "blind" };
     if (!onChange(base)) {
       lostSave();
       return;
@@ -153,6 +162,11 @@ export function CouncilView({
   }
 
   const past = record.past ?? [];
+  // In the mode a seat is a team member: the words the council wrote say the member's name, not "Member C".
+  const named = (text: string) =>
+    asMode && seatNames?.length
+      ? record.seats.reduce((out, seat, index) => (seatNames[index] ? out.split(seat.member).join(seatNames[index]!) : out), text)
+      : text;
   // The box at the bottom asks: the first question, or the next one once this council has decided.
   const asking = record.phase === "propose" || record.phase === "done";
   const answered = record.seats.length > 0 && (record.phase === "running" || record.phase === "done") && !interrupted;
@@ -170,6 +184,7 @@ export function CouncilView({
       data-council-round={round}
       data-council-outcome={record.phase === "done" && record.tally ? (record.tally.consensus ? "consensus" : "no-consensus") : undefined}
     >
+      {asMode ? null : (
       <div className="flex h-10 shrink-0 items-center gap-3 border-b border-stroke px-6 xl:px-8">
         <h2 className="text-[14px] font-medium">Council</h2>
         <span className="text-content/60">{ROUND_LABEL[round] ?? round}</span>
@@ -180,17 +195,19 @@ export function CouncilView({
           </button>
         ) : null}
       </div>
+      )}
 
       {/* Dropwave (Ash, 11 Nov: "make it like a chat"): one thread. You ask on the right, the seats and the decision
           answer on the left, and every earlier decision stays above. */}
       <div className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex w-full max-w-[820px] flex-col gap-4 px-6 py-6" data-council-thread>
+        <div className={asMode ? "flex w-full flex-col gap-4 px-6 py-6 xl:px-8" : "mx-auto flex w-full max-w-[820px] flex-col gap-4 px-6 py-6"} data-council-thread>
           {!past.length && record.phase === "propose" ? (
             <div className="flex flex-col items-center gap-1 py-10 text-center" data-council-empty>
-              <div className="text-[15px] font-medium">Ask the council</div>
+              <div className="text-[15px] font-medium">{asMode ? "Council mode is on" : "Ask the council"}</div>
               <p className="max-w-[52ch] text-content/60">
-                A few different models answer on their own, challenge each other, then vote. You get one decision, who
-                disagreed, and a next step you can hand to a first mate.
+                {asMode
+                  ? "Ask the team a question. Each of them answers on their own, they challenge each other, then they vote. You get one decision, who disagreed, and a next step. Turn the switch off to chat as usual."
+                  : "A few different models answer on their own, challenge each other, then vote. You get one decision, who disagreed, and a next step you can hand to a first mate."}
               </p>
             </div>
           ) : null}
@@ -268,8 +285,15 @@ export function CouncilView({
 
           {answered ? (
             <div className="flex flex-col gap-3" data-council-tabs>
-              {record.seats.map((seat) => (
-                <SeatMessage key={seat.id} seat={seat} record={record} onOpen={onOpenSeat ? () => onOpenSeat(seat) : undefined} />
+              {record.seats.map((seat, index) => (
+                <SeatMessage
+                  key={seat.id}
+                  seat={seat}
+                  record={record}
+                  name={asMode ? seatNames?.[index] : undefined}
+                  plain={asMode}
+                  onOpen={onOpenSeat ? () => onOpenSeat(seat) : undefined}
+                />
               ))}
             </div>
           ) : null}
@@ -277,11 +301,11 @@ export function CouncilView({
           {record.phase === "done" && record.tally && record.verdict ? (
             <Bubble who="Council" strong>
               <p className="text-[14px] font-medium" data-council-winner>
-                {record.tally.consensus ? `The council agreed on ${record.tally.winner}.` : "No consensus."}
+                {record.tally.consensus ? `${asMode ? "The team" : "The council"} agreed on ${record.tally.winner}.` : "No consensus."}
               </p>
               <StanceBar tally={record.tally} />
               <div data-council-minority className="rounded-md bg-content/10 px-3 py-2 whitespace-pre-wrap">
-                {record.verdict.minority}
+                {named(record.verdict.minority)}
               </div>
               <div data-council-verdict className="flex flex-col gap-1">
                 <p><span className="text-content/60">Unresolved. </span>{record.verdict.unresolved}</p>
@@ -289,7 +313,7 @@ export function CouncilView({
                 <p><span className="text-content/60">Next step. </span>{record.verdict.nextStep}</p>
               </div>
               {record.chairmanDifferent === false ? <p className="text-content/60">Every seat is the same provider, so the chair is not a different one.</p> : null}
-              <p className="text-content/60" data-council-meta>
+              <p className={asMode ? "hidden" : "text-content/60"} data-council-meta>
                 {record.meta.seats} {record.meta.seats === 1 ? "seat" : "seats"} · {record.meta.rounds} {record.meta.rounds === 1 ? "round" : "rounds"} · {record.meta.calls} {record.meta.calls === 1 ? "call" : "calls"}
                 {record.meta.tokensComplete && record.meta.tokens !== undefined ? ` · ${record.meta.tokens} tokens` : ""}
               </p>
@@ -302,7 +326,94 @@ export function CouncilView({
         </div>
       </div>
 
-      {asking ? (
+      {asMode ? (
+        // The mode's footer sits where the team chat's own box and switch sit, so turning the mode on and off moves nothing.
+        <div className="w-full shrink-0 px-6 pb-3 xl:px-8">
+          {asking ? (
+            <div className="flex items-end gap-2 rounded-lg bg-surface py-1.5 pr-1.5 pl-3 ring-1 ring-surface-ring" data-council-ask>
+              <textarea
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+                  e.preventDefault();
+                  if (canAsk) confirmPanel();
+                }}
+                rows={1}
+                placeholder={record.phase === "done" ? "Ask the team another question…" : "Ask the team a question…"}
+                aria-label="Question for the council"
+                data-council-question
+                className="min-h-7 w-full resize-none self-center bg-transparent text-[13px] leading-5 text-content outline-none placeholder:text-content/40"
+              />
+              <button
+                type="button"
+                data-council-confirm
+                disabled={!canAsk}
+                onClick={confirmPanel}
+                className="h-7 shrink-0 rounded-md bg-content/12 px-2.5 text-[12px] text-content hover:bg-content/18 disabled:opacity-40"
+              >
+                Ask the team
+              </button>
+            </div>
+          ) : null}
+          {asking && !model ? <p className="px-1 pt-1.5 text-[12px] text-content/70">No model is connected, so the team can't answer as a council yet.</p> : null}
+          <div className="flex items-center gap-3 px-1 pt-2">
+            <div className="min-w-0 flex-1">{onClose ? <CouncilSwitch on onChange={() => onClose()} /> : null}</div>
+            {asking ? (
+              <button
+                type="button"
+                aria-expanded={tableOpen}
+                data-council-table-toggle
+                onClick={() => setTableOpen((open) => !open)}
+                className={`h-6 shrink-0 rounded-md px-2 text-[12px] hover:bg-content/5 hover:text-content ${tableOpen ? "bg-content/8 text-content" : "text-content/60"}`}
+              >
+                Set up
+              </button>
+            ) : null}
+          </div>
+          {asking && tableOpen ? (
+            <div className="mt-2 flex flex-col gap-2 rounded-lg border border-content/10 p-3" data-council-setup>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[12px] text-content/50">How many answer</span>
+                {PRESETS.map((item) => (
+                  <button
+                    key={item.id}
+                    type="button"
+                    data-council-preset={item.id}
+                    aria-pressed={preset === item.id}
+                    onClick={() => setPreset(item.id)}
+                    className={`h-7 rounded-full px-3 text-[12px] font-medium ${preset === item.id ? "bg-content text-background-base" : "text-content/55 hover:bg-content/8 hover:text-content"}`}
+                  >
+                    {item.label}
+                  </button>
+                ))}
+              </div>
+              {proposal.note ? <p className="text-[12px] text-content/70">{proposal.note}</p> : null}
+              <ul className="flex flex-col gap-2">
+                {proposal.seats.map((seat, index) => (
+                  <li key={`${seat.cli}-${seat.family}`} className="flex items-center gap-2" data-council-seat={seat.cli}>
+                    <span className="w-28 truncate text-content/80">{seatNames?.[index] ?? memberLabel(index)}</span>
+                    <span className="min-w-0 flex-1 truncate text-content/50">{seat.label}</span>
+                    <select
+                      aria-label={`Persona for ${seat.label}`}
+                      value={picked[index] ?? ""}
+                      onChange={(e) => setPicked((cur) => ({ ...cur, [index]: e.target.value }))}
+                      className="h-7 rounded-md border border-stroke bg-transparent px-1"
+                    >
+                      <option value="">Answers as itself</option>
+                      {personas.map((persona) => (
+                        <option key={persona.id} value={persona.id}>
+                          {persona.name}
+                        </option>
+                      ))}
+                    </select>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+        </div>
+      ) : asking ? (
         <div className="shrink-0 px-6 pb-4 xl:px-8">
           <div className="mx-auto flex w-full max-w-[820px] flex-col gap-2 rounded-2xl bg-surface p-3 ring-1 ring-surface-ring" data-council-ask>
             <textarea
@@ -411,11 +522,29 @@ function Bubble({ who, strong, children }: { who: string; strong?: boolean; chil
 }
 
 /** One seat's latest words as a message. Its name opens that seat's own chat. */
-function SeatMessage({ seat, record, onOpen }: { seat: CouncilSeatRecord; record: CouncilRecord; onOpen?: () => void }) {
+function SeatMessage({
+  seat,
+  record,
+  name,
+  plain = false,
+  onOpen,
+}: {
+  seat: CouncilSeatRecord;
+  record: CouncilRecord;
+  /** The team member in this seat (council mode): the message is under their name. */
+  name?: string;
+  /** Leaves out which model and CLI the seat runs on. */
+  plain?: boolean;
+  onOpen?: () => void;
+}) {
   const blind = record.blind.find((answer) => answer.seatId === seat.id);
   const cross = record.cross.find((answer) => answer.seatId === seat.id);
   const stance = record.stances.find((item) => item.seatId === seat.id);
-  const text = stance ? `${stance.option} (${stance.confidence}). ${stance.reason}` : (cross?.text ?? blind?.text ?? "");
+  const text = stance
+    ? plain
+      ? `${stance.option.charAt(0).toUpperCase()}${stance.option.slice(1)}. ${stance.reason}`
+      : `${stance.option} (${stance.confidence}). ${stance.reason}`
+    : (cross?.text ?? blind?.text ?? "");
   const waiting = !text && !record.skipped.includes(seat.id) && record.phase === "running";
   return (
     <section className="flex min-w-0 flex-col gap-1" data-council-seat={seat.id}>
@@ -427,9 +556,9 @@ function SeatMessage({ seat, record, onOpen }: { seat: CouncilSeatRecord; record
           onClick={onOpen}
           className="w-fit shrink-0 rounded-full bg-content/8 px-2.5 py-0.5 text-[12px] font-medium text-content/80 hover:bg-content/12 hover:text-content"
         >
-          {seat.member}
+          {name ?? seat.member}
         </button>
-        <span className="min-w-0 truncate text-[12px] text-content/50">
+        <span className={plain ? "hidden" : "min-w-0 truncate text-[12px] text-content/50"}>
           {seat.label} · {seat.cli}{seat.model ? ` · ${seat.model}` : ` · ${seat.family}`}
         </span>
         {record.retried.includes(seat.id) ? <span className="shrink-0 text-[12px] text-content/60">Asked again</span> : null}

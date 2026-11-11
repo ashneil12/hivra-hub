@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { defaultArrangement, hideSection, pinPanel } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
-import { HomeScreen, type HomeChief, type HomeDone, type HomeNeed, type HomeWork } from "./HomeScreen";
+import { HomeScreen, dropCard, orderCards, type HomeChief, type HomeDone, type HomeNeed, type HomeWork } from "./HomeScreen";
 
 const chief: HomeChief = {
   missing: false,
@@ -51,7 +51,6 @@ function draw(props: Partial<Parameters<typeof HomeScreen>[0]> = {}) {
       known: true,
       failed: false,
       onOpen: () => undefined,
-      onMove: () => undefined,
       onHide: () => undefined,
       onShow: () => undefined,
       onPin: () => undefined,
@@ -243,12 +242,10 @@ it("does not say nothing needs you before the first load", () => {
 
 it("keeps customize on one button: a panel of switches, not a wall of links", () => {
   const arrangement = pinPanel(hideSection(defaultArrangement(), "needs-you"), "my-panels", "missing");
-  let moved = "";
   draw({
     needs: [{ key: "n1", sentence: "Example: Should we ship?", stopped: false, actions: [], onOpen: () => undefined }],
     needsTotal: 1,
     arrangement,
-    onMove: (key, dir) => { moved = `${key}:${dir}`; },
     catalog: [{ plugin: "my-panels", panelId: "board", title: "Example board", spec: { kind: "bespoke", title: "Example board", html: "<p>Example</p>", permissions: [] } }],
   });
   expect(container.querySelector("[data-home-section='needs-you']")).toBeNull();
@@ -267,13 +264,11 @@ it("keeps customize on one button: a panel of switches, not a wall of links", ()
   const showNeeds = panel.querySelector<HTMLButtonElement>("[role='switch'][aria-label='Show Needs you']")!;
   expect(showNeeds.getAttribute("aria-checked")).toBe("false");
   expect(showNeeds.tabIndex).not.toBe(-1);
-  const up = panel.querySelector<HTMLButtonElement>("[aria-label='Move Working now up']")!;
-  expect(up.tabIndex).not.toBe(-1);
-  act(() => up.click());
-  expect(moved).toBe("moving-now:-1");
+  // Dropwave (Ash, 11 Nov): Customize only turns cards on and off. A card is moved by dragging it on the page.
+  expect(panel.querySelector("[aria-label^='Move ']")).toBeNull();
+  expect(panel.querySelector("[data-home-action='add-card']")?.textContent).toContain("Ask for a new card");
   expect(panel.querySelector("[aria-label='Unpin Pinned panel']")).not.toBeNull();
   expect(panel.querySelector("[aria-label='Pin Example board']")).not.toBeNull();
-  expect(container.textContent).not.toContain("Move Working now up");
   act(() => panel.querySelector<HTMLButtonElement>("button")!);
   const done = [...panel.querySelectorAll("button")].find((button) => button.textContent?.trim() === "Done")!;
   act(() => done.click());
@@ -305,7 +300,7 @@ it("customize rows share one set of columns, with an empty unpin slot on a secti
   act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
   const rows = [...container.querySelectorAll("[data-home-arrange]")];
   expect(rows.length).toBeGreaterThan(1);
-  for (const row of rows) expect(row.children).toHaveLength(5);
+  for (const row of rows) expect(row.children).toHaveLength(3);
   const section = container.querySelector("[data-home-arrange='moving-now'] [data-home-unpin]")!;
   expect(section.querySelector("button")).toBeNull();
   expect(container.querySelector("[data-home-arrange='panel:my-panels:board'] [data-home-unpin] button")?.textContent).toBe("Unpin");
@@ -503,4 +498,26 @@ it("the send arrow turns blue once there is text", () => {
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   expect(container.querySelector("button[aria-label='Send']")?.className).toContain("bg-accent");
+});
+
+it("orders the cards the way they were dragged, and a drop takes the other card's place", () => {
+  const cards = [{ key: "moving-now" }, { key: "recent" }, { key: "pages" }, { key: "automations" }];
+  expect(orderCards(cards, []).map((card) => card.key)).toEqual(["moving-now", "recent", "pages", "automations"]);
+  // A card that was never dragged (a new one) keeps its own place after the dragged ones.
+  expect(orderCards(cards, ["pages", "moving-now"]).map((card) => card.key)).toEqual(["pages", "moving-now", "recent", "automations"]);
+  const keys = cards.map((card) => card.key);
+  expect(dropCard(keys, "automations", "moving-now")).toEqual(["automations", "moving-now", "recent", "pages"]);
+  expect(dropCard(keys, "moving-now", "pages")).toEqual(["recent", "pages", "moving-now", "automations"]);
+  expect(dropCard(keys, "recent", "recent")).toEqual(keys);
+  expect(dropCard(keys, "missing", "recent")).toEqual(keys);
+});
+
+it("a card is picked up by its title row, and Ask for a new card puts the words in the Chief of Staff's box", () => {
+  draw({ working: [{ key: "w1", project: "Example", text: "Example: 1 worker", since: "" }], workingTotal: 1 });
+  const grip = container.querySelector<HTMLElement>("[data-home-section='moving-now'] [data-home-grip]")!;
+  expect(grip.getAttribute("draggable")).toBe("true");
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-action='customize']")!.click());
+  act(() => container.querySelector<HTMLButtonElement>("[data-home-action='add-card']")!.click());
+  expect(container.querySelector("[data-home-customize]")).toBeNull();
+  expect(container.querySelector<HTMLInputElement>("input[aria-label='Ask']")!.value).toBe("Add a card to Home that shows ");
 });

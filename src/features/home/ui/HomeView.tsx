@@ -18,7 +18,6 @@ import { attentionCount, useAttentionVersion } from "../../hub/model/todayCounts
 import { needsCount, useNeedsYou, workingCount, type NeedsItem } from "../../needs/model/needsYou";
 import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workLog";
 import { hideSection, pinPanel, showSection, unpin } from "../model/arrangement";
-import { moveHomeSection } from "../model/arrangeHome";
 import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
 import { openProjectChief } from "../../hub/ui/HubTopNav";
 import { needActions } from "../model/needActions";
@@ -38,7 +37,7 @@ import { needsRank, needsShown } from "../model/needsShown";
 import { openFromHome, targetFor, type HomeOpenTarget } from "../model/opener";
 import { HOME_DOC_KEY, changeHome, type HomeDoc } from "../model/store";
 import { workingLines } from "../model/workingNow";
-import { HomeScreen, type HomeChief, type HomeDone, type HomeExtraSection, type HomeNeed, type HomeWork } from "./HomeScreen";
+import { HOME_HEADER_BUTTON, HomeScreen, type HomeChief, type HomeDone, type HomeExtraSection, type HomeNeed, type HomeWork } from "./HomeScreen";
 import { pinnedPages, requestOpenPage, usePagesVersion } from "../../pages/model/pages";
 import { automationScheduleLabel, listAutomations, peekAutomations, type Automation } from "../../automations/model/automations";
 import { projectAutopilotOn, setProjectAutopilot, useProjectAutopilotVersion } from "../model/projectAutopilot";
@@ -94,9 +93,9 @@ function AutopilotSwitch({ projectId, name }: { projectId?: string; name: string
         ? `Autopilot is on: the Chief of Staff keeps ${name} moving and only asks you the big calls.`
         : `Autopilot is off: work on ${name} waits for you.`}
       onClick={() => void setProjectAutopilot(projectId, !on)}
-      className="flex shrink-0 items-center gap-2 rounded-md border border-stroke px-2.5 py-1 text-[13px] text-content hover:bg-content/8"
+      className={HOME_HEADER_BUTTON}
     >
-      <span className={`relative h-4 w-7 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}>
+      <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}>
         <span className={`absolute top-0.5 size-3 rounded-full bg-white transition-[left] ${on ? "left-3.5" : "left-0.5"}`} />
       </span>
       Autopilot {on ? "on" : "off"}
@@ -454,7 +453,6 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
       known={snap != null}
       failed={failed}
       onOpen={(line) => openFromHome(targetFor(line))}
-      onMove={(key, dir) => void update((doc) => ({ ...doc, arrangement: moveHomeSection(doc.arrangement, key, dir) }))}
       onHide={(key) => void update((doc) => ({ ...doc, arrangement: hideSection(doc.arrangement, key) }))}
       onShow={(key) => void update((doc) => ({ ...doc, arrangement: showSection(doc.arrangement, key) }))}
       onPin={(plugin, panelId) => void update((doc) => ({ ...doc, arrangement: pinPanel(doc.arrangement, plugin, panelId) }))}

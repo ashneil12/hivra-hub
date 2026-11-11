@@ -284,6 +284,12 @@ mockIPC(
       (window as unknown as { __ipc: string[] }).__ipc = [...seen];
     }
     if (cmd.startsWith("plugin:hub|")) return hubIpc(cmd, args as Record<string, unknown> | undefined);
+    // The design mockup's own example answers (src/dev/mockup/ipc.ts): the Inbox's sources, Notes, the changes card.
+    const mockup = (window as unknown as { __mockupIpc?: (cmd: string, args?: Record<string, unknown>) => unknown }).__mockupIpc?.(
+      cmd,
+      args as Record<string, unknown> | undefined,
+    );
+    if (mockup !== undefined) return mockup;
     if (cmd === "set_window_glass_enabled") {
       emulateNativeGlass(args as GlassArgs);
       return true;

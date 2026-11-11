@@ -5,6 +5,7 @@ import { isHarnessAvailable } from "../../../integrations/harness/core/availabil
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import { listMonos, monoLook, monosSnapshot, subscribeMonos, type Mono } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../model/hubData";
+import { listChats, useHubChatsVersion } from "../model/hubChats";
 import { CATALOG, connectorDenied, useConnectorsView, type ConnectorsView } from "../model/hubConnectors";
 import {
   addNamedMono,
@@ -62,9 +63,14 @@ export function TeamsPage() {
   return (
     <div className="flex flex-col gap-7" data-hub-teams>
       <p className="text-[13px] leading-5 text-content/70">
-        A team is a few named Monos you talk to, with a room of their own. Their workers stay subagents and never show
-        here. To make a new Mono, ask any Mono in its chat: it drafts it with you, and it's made when you say yes.
+        A team is a group chat with a few first mates. Every project starts with a Leadership team, and you can add
+        more. You talk to a team from Teams in its project's sidebar. To make a new first mate, ask any first mate in
+        its chat: it drafts it with you, and it's made when you say yes.
       </p>
+
+      {/* Dropwave (Ash, 11 Nov: "how does teams in settings really work when you have different projects?"): every
+          project's team chats, and who is in each. */}
+      <ProjectTeams monos={monos} />
 
       {teamDrafts.length ? (
         <section data-hub-team-drafts>
@@ -90,7 +96,7 @@ export function TeamsPage() {
 
       <section className="flex flex-col gap-2">
         <div className="flex items-center px-3">
-          <h3 className="flex-1 text-xs text-content/60">Teams</h3>
+          <h3 className="flex-1 text-xs text-content/60">Teams you set up here</h3>
           {!creating ? (
             <button type="button" className={`${buttonClass} inline-flex items-center gap-1`} data-hub-new-team onClick={() => setCreating(true)}>
               <Plus className="size-3" strokeWidth={2} /> New team
@@ -105,6 +111,35 @@ export function TeamsPage() {
         ) : null}
       </section>
     </div>
+  );
+}
+
+/** Every project's team chats with their members, so Settings shows which teams exist where. */
+function ProjectTeams({ monos }: { monos: Mono[] }) {
+  useHubChatsVersion();
+  const projects = hubData().listProjects();
+  const rows = projects.flatMap((project) => listChats(project.id).map((chat) => ({ project, chat })));
+  if (!rows.length) return null;
+  return (
+    <section className="flex flex-col gap-2" data-hub-project-teams>
+      <h3 className="px-3 text-xs text-content/60">In your projects</h3>
+      <div className="flex flex-col rounded-lg border border-stroke">
+        {rows.map(({ project, chat }, index) => {
+          const members = chat.memberIds.map((id) => monos.find((mono) => mono.id === id)).filter((mono): mono is Mono => !!mono);
+          return (
+            <div key={chat.id} className={`flex items-center gap-3 px-3 py-2.5 ${index ? "border-t border-stroke" : ""}`} data-hub-project-team={chat.id}>
+              <MessageMultiple className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
+              <span className="flex min-w-0 flex-1 flex-col">
+                <span className="truncate text-[13px] text-content">{project.name} · {chat.name}</span>
+                <span className="truncate text-[12px] text-content/60">
+                  {members.length ? `You, ${members.map((mono) => monoLook(mono).name).join(", ")}` : "Only you so far"}
+                </span>
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
