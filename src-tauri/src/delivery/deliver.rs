@@ -534,6 +534,11 @@ pub fn deliver(
             .find(|row| &row.id == id),
         None => None,
     };
+    // WP-249: what is delivered must be the files the crew's verdict judged; a later change voids it.
+    if let Some(id) = &input.delegation_id {
+        let newest = crate::firstmate::gates::records_of(&*store.lock_conn()?, id)?.pop();
+        crate::firstmate::gates::verdict_tree_holds(newest.as_ref(), Some(&checkout))?;
+    }
     if let Some(row) = &row {
         input.brief = input.brief.or_else(|| row.brief.clone());
         input.report = input.report.or_else(|| row.result.clone());

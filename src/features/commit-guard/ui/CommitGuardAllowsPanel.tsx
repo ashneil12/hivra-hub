@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   listCommitGuardAllows,
   removeCommitGuardAllow,
+  TRACKED_APPROVALS,
   type CommitGuardAllow,
 } from "../model/allows";
 
@@ -58,7 +59,9 @@ export function CommitGuardAllowsPanel({
               className="flex items-center justify-between gap-3 text-sm"
             >
               <span>
-                {allow.file} <span className="opacity-70">(repository {allow.repo.slice(0, 8)})</span>
+                {allow.file}
+                {allow.hash === TRACKED_APPROVALS ? " (the whole file may stay tracked)" : ""}{" "}
+                <span className="opacity-70">(repository {allow.repo.slice(0, 8)})</span>
               </span>
               <button
                 type="button"

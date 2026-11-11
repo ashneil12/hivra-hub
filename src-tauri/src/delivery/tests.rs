@@ -4514,6 +4514,55 @@ fn a_question_opened_during_the_base_hold_stops_the_merge() {
     assert!(gh.ran("pr", "merge").is_empty());
 }
 
+/// WP-249: delivery is of the files the crew's verdict judged. A change after it voids the verdict, and nothing goes out.
+#[test]
+fn a_change_after_the_verdict_stops_its_delivery() {
+    use crate::firstmate::gates;
+    let f = fixture("wp249-void");
+    let s = store();
+    set_mode(&s, &f.project, Some(Mode::Pr), false);
+    let id = {
+        let mut conn = s.lock_conn().unwrap();
+        task(&mut conn, "lead-1", "r-void", "worker-1")
+    };
+    commit(&f.copy, "a.txt", "two\n");
+    let tree = gates::tree_fingerprint(&f.copy).unwrap();
+    {
+        let conn = s.lock_conn().unwrap();
+        let plan = gates::GatePlan {
+            gates: vec![gates::GateKind::Diff],
+            checks: Vec::new(),
+        };
+        gates::save_plan(&conn, &id, &plan, 2).unwrap();
+        let record: gates::GateRecord = serde_json::from_value(serde_json::json!({
+            "delegationId": id, "round": 1, "at": 2, "verdict": "passed", "gates": [], "check": null,
+            "summary": "passed", "label": "verified", "tree": tree,
+            "checkout": f.copy.to_string_lossy()
+        }))
+        .unwrap();
+        gates::push_record(&conn, &record).unwrap();
+    }
+    commit(&f.copy, "a.txt", "three, after the check\n");
+    let gh = FakeGithub::new(vec![]);
+    let error = deliver::deliver(
+        &s,
+        &gh,
+        DeliverInput {
+            project: f.project.to_string_lossy().into(),
+            checkout: f.copy.to_string_lossy().into(),
+            delegation_id: Some(id.clone()),
+            ..Default::default()
+        },
+        10,
+    )
+    .unwrap_err();
+    assert!(error.contains("no longer holds"), "{error}");
+    assert!(
+        !git_ok(&f.bare, &["rev-parse", "--verify", "-q", "refs/heads/work"]),
+        "nothing was pushed"
+    );
+}
+
 /// The merge base of the head and main, as GitHub's compare says it (the branch last took main there).
 const MERGE_BASE_B1: &str = r#"{"status":"ahead","ahead_by":1,"behind_by":1,"merge_base_commit":{"sha":"b1b1b1b"},"files":[]}"#;
 const MERGE_BASE_BASE: &str = r#"{"status":"ahead","ahead_by":1,"behind_by":0,"merge_base_commit":{"sha":"ba5eba5eba5eba5eba5eba5eba5eba5eba5eba5e"},"files":[]}"#;

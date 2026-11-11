@@ -7,6 +7,7 @@
 //!   flagged and offered for revert.
 //! - `gates` (WP-40): the completion gates and the verdict check a worker's "done" has to pass.
 //! - `fact_gaps` (WP-145): session facts that fail a worker's done claim.
+//! - `done_check` (WP-249): the report's claims checked against the diff in code, before the verdict model.
 //! - the depth cap (`check_depth`): a delegation is never deeper than two (first mate, first mate, workers).
 //! - WP-14's fan-out cap (`check_fanout`): one first mate runs at most `MAX_FANOUT` tasks at once.
 //! - WP-171's `mcp`: delegate_tasks, the multi-part form of delegate_task. Its contract (what each task owns, provides,
@@ -16,6 +17,7 @@
 //! written and sessions launched. The role rules are src/features/firstmate/contract.md.
 
 pub mod checkout_guard;
+pub mod done_check;
 pub mod fact_gaps;
 pub mod gates;
 pub mod mcp;

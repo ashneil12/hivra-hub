@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { allowCommitGuardLine } from "../model/allows";
-import { refusalId } from "../model/refusal";
+import { refusalId, refusalWords } from "../model/refusal";
 import { getCommitGuardRefusal, type CommitGuardRefusalView } from "../model/refusals";
 
 export type AllowLine = (id: string) => Promise<void>;
@@ -51,6 +51,7 @@ export function CommitGuardRefusal({
     );
   }
 
+  const words = refusalWords(view);
   const allow = async () => {
     setState("busy");
     try {
@@ -64,13 +65,10 @@ export function CommitGuardRefusal({
 
   return (
     <div role="alert" data-guard-refusal className="flex flex-col gap-2 text-sm">
-      <p>
-        Blocked: a possible secret is on line {view.line} of {view.file} in {view.folder} (commit {view.commit}).
-        The value is not shown.
-      </p>
-      <p>If it is a test value, allow this line. Nothing else in the file is allowed.</p>
+      <p>{words.headline}</p>
+      <p>{words.why}</p>
       {state === "allowed" ? (
-        <p data-guard-allowed>Allowed. The next push checks this line again and lets it through.</p>
+        <p data-guard-allowed>{words.allowed}</p>
       ) : (
         <button
           type="button"
@@ -78,7 +76,7 @@ export function CommitGuardRefusal({
           onClick={() => void allow()}
           className="self-start rounded border px-3 py-1"
         >
-          Allow this line
+          {words.button}
         </button>
       )}
       {state === "failed" ? <p>{error}</p> : null}

@@ -412,6 +412,13 @@ Third-party components Hivra adds:
   Used in: src/features/autopilot/model/ownerWords.ts, src/features/autopilot/model/LICENSE.nod
   trustDecision, trustBasis and the plain normaliser from src/server/trust-basis.ts adapted at commit d82e06e (WP-243): a cheap check names which of Ash's own words cover an exact action and quotes them, and the app finds the quote in that source before an allow; anything else asks Ash.
 
+- fable-method's fake-work fixture
+  Source: https://github.com/Sahir619/fable-method
+  License: MIT
+  Copyright (c) 2026 Sahir619
+  Used in: src-tauri/src/firstmate/fixtures/fable-s7, src-tauri/src/firstmate/fixtures/fable-s7/LICENSE.fable-method
+  eval/scenarios/s7-fraudulent-work (pristine/, worked/, report.md, GROUND-TRUTH.md) copied at commit 9924067, each file with a source header, as WP-249's acceptance test (src-tauri/src/firstmate/done_check_tests.rs): the worker's report must come back REFUTED with its five planted frauds named. The claims-and-diff method of its fable-judge shaped done_check.rs and the verdict rules; that code and wording are Hivra's own.
+
 MonoCode
 ========
 MonoCode is not affiliated with, endorsed by, or sponsored by the makers of the

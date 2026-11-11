@@ -556,3 +556,42 @@ test("clean: a branch just made from main is not finished, a worktree something 
   assert.deepEqual([only.worktrees, only.slots, only.configs, only.prunes], [[], [], [], []]);
   assert.match(Object.fromEntries(only.kept.map((keep) => [path.basename(keep.path), keep.why])).busy, /only its build output goes \(--output-only\)/);
 });
+
+test("WP-248: the doctor warns about a project whose own ignore file lets the approvals file through, or that tracks one", async (t) => {
+  const { APPROVALS_FILE, approvalsCheck, approvalsWarnings, knownProjects, renderApprovals } = await load();
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-doctor-approvals-")));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  // A global excludes file that ignores it, as Claude Code writes on Ash's Mac: the check must not count it.
+  const globalIgnore = path.join(home, "global-ignore");
+  fs.writeFileSync(globalIgnore, "**/.claude/settings.local.json\n");
+  const project = (name, ignore) => {
+    const dir = path.join(home, "Projects", name);
+    fs.mkdirSync(dir, { recursive: true });
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "core.excludesFile", globalIgnore);
+    if (ignore !== null) fs.writeFileSync(path.join(dir, ".gitignore"), ignore);
+    return dir;
+  };
+  const covered = project("covered", `node_modules\n${APPROVALS_FILE}\n`);
+  const bare = project("bare", "node_modules\n");
+  const none = project("none", null);
+  const leaked = project("leaked", `${APPROVALS_FILE}\n`);
+  fs.mkdirSync(path.join(leaked, ".claude"));
+  fs.writeFileSync(path.join(leaked, APPROVALS_FILE), "{}\n");
+  git(leaked, "add", "-f", APPROVALS_FILE);
+  fs.mkdirSync(path.join(home, "Projects", "not-a-repo"));
+
+  const projects = knownProjects({ home }).sort();
+  assert.deepEqual(projects, [bare, covered, leaked, none].sort());
+  assert.deepEqual(approvalsCheck(covered), { path: covered, ignored: true, tracked: false });
+  assert.deepEqual(approvalsCheck(bare), { path: bare, ignored: false, tracked: false });
+  assert.equal(approvalsCheck(leaked).tracked, true);
+
+  const rows = approvalsWarnings(projects);
+  assert.deepEqual(rows.map((row) => path.basename(row.path)).sort(), ["bare", "leaked", "none"]);
+  const text = renderApprovals(rows);
+  assert.match(text, /bare {2}its \.gitignore does not ignore it: add the line \.claude\/settings\.local\.json/);
+  assert.match(text, /leaked {2}tracks it: untrack it \(git rm --cached\), then change any password it held/);
+  assert.doesNotMatch(text, /covered/);
+  assert.match(renderApprovals([]), /every known project's ignore file covers it/);
+});
