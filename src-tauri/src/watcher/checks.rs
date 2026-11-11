@@ -535,6 +535,20 @@ fn run_in(command: &str, pattern: &str, cwd: &Path, search: &str) -> Attempt {
     let Some(mut cmd) = command_for(&words, cwd, search, cfg!(windows)) else {
         return Attempt::Wait;
     };
+    // A check an agent armed runs code from its folder (a rustup toolchain path, an npm script). A wrap that cannot
+    // be built waits, the same as a missing program: a timeout is not a final failure. Tests call `run_in` directly
+    // and must not read the daily data folder, so the wrap is not compiled into them.
+    #[cfg(not(test))]
+    {
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        let checkout = cwd.to_path_buf();
+        match crate::agent_sandbox::action_wrap(data.as_deref(), std::slice::from_ref(&checkout)) {
+            Ok(prefix) => {
+                cmd = crate::agent_sandbox::under_wrap(cmd, prefix.as_deref());
+            }
+            Err(_) => return Attempt::Wait,
+        }
+    }
     crate::background_work::configure_child(&mut cmd);
     crate::harness::apply_gui_env(&mut cmd);
     let finished = match crate::pr_watch::bounded::run(cmd, RUN_TIMEOUT) {
