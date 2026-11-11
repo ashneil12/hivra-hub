@@ -2424,7 +2424,10 @@ describe("parallel workers per project, with throttling (H8)", () => {
         host,
       )) as { spend: unknown; line: string };
       expect(cleared.spend).toBeNull();
-      expect(cleared.line).toContain("Spend limit cleared for vg-game.");
+      // The reset above left no limit to clear, so the line says so. It never says "cleared" for a limit that is gone
+      // (WP-176 round 3: this line used to read "cleared" here).
+      expect(cleared.line).toContain("There is no spend limit to clear for vg-game.");
+      expect(cleared.line).not.toContain("Spend limit cleared");
       // The whole-app limit is Settings only: a first mate's chat is refused, and the limit stays as it was.
       await expect(
         handleAgentApp(source, "app", "tasks.workers", { scope: "system", amountUsd: 5, period: "day" }, host),

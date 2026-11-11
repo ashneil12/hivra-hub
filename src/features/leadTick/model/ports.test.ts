@@ -26,6 +26,15 @@ function pkg(id: string) {
 const scale = { ...DEFAULT_BUILDER_SCALE, load: { kind: "default" as const } };
 
 describe("builder slot", () => {
+  it("a project over its spend limit takes no new builder slot (WP-176 round 3)", () => {
+    expect(
+      slotAnswer({ limits: { workers: 6 }, running: 0, waiting: 0, inFlight: 0, health: null, scale, spend: { status: "over", reason: "Monthly spend limit reached." } }),
+    ).toEqual({ ok: false, reason: "Monthly spend limit reached." });
+    expect(
+      slotAnswer({ limits: { workers: 6 }, running: 0, waiting: 0, inFlight: 0, health: null, scale, spend: { status: "warn", reason: "Near the limit." } }),
+    ).toEqual({ ok: true });
+  });
+
   it("is free under the project's worker limit with a healthy machine", () => {
     expect(slotAnswer({ limits: { workers: 6 }, running: 2, waiting: 1, inFlight: 1, health: null, scale })).toEqual({ ok: true });
   });

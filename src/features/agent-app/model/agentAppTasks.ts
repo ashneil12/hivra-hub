@@ -41,7 +41,7 @@ import {
 } from "../../monos/model/delegations";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { formatMeasuredUsd, sanitizeSpendLimit, type SpendLimit } from "../../usage/model/spend";
-import { clearSpendLimit, saveSpendLimit, spendFor, spendSnapshot } from "../../usage/model/spendGate";
+import { clearSpendLimit, NO_SPEND_LIMIT_TO_CLEAR, saveSpendLimit, spendFor, spendSnapshot } from "../../usage/model/spendGate";
 import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
@@ -1871,12 +1871,12 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
     const label = project;
     const here = spendSnapshot().book;
     if (input.spendClear === true) {
-      const exists = here.limits.some((row) => row.scope === scope && row.project === who && row.period === period);
-      if (exists) {
-        const dropped = clearSpendLimit(scope, who, period, here.revision, { by: "first-mate" });
-        if (!dropped.written) throw new Error(dropped.reason ?? "That change didn't stick. Try again.");
-      }
-      spendNote = `Spend limit cleared for ${label}.`;
+      // The gate matches a limit by its project's id or folder, so the clear asks it directly (a name match here missed
+      // a limit saved under its id). What it reports decides the line: cleared, nothing there, or refused.
+      const dropped = clearSpendLimit(scope, who, period, here.revision, { by: "first-mate" });
+      if (dropped.written) spendNote = `Spend limit cleared for ${label}.`;
+      else if (dropped.reason === NO_SPEND_LIMIT_TO_CLEAR) spendNote = `There is no spend limit to clear for ${label}.`;
+      else throw new Error(dropped.reason ?? "That change didn't stick. Try again.");
     } else {
       const warnAt = input.warnAt === undefined ? 0.8 : input.warnAt;
       if (typeof input.amountUsd !== "number" || !Number.isFinite(input.amountUsd) || input.amountUsd <= 0)
