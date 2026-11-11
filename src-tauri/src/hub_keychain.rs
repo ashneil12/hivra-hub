@@ -46,10 +46,12 @@ pub(crate) fn scoped_service(kind: Kind, service: &str) -> String {
 /// The More agents approval items (`monocode-hub:more-agents-*`) belong to the app's own code. A webview command
 /// cannot write, read or delete them: a deleted item would reset the approvals to nothing and bring a withdrawn one back.
 fn reserved(service: &str) -> bool {
-    let name = service
+    // Credential Manager names are not case-sensitive, so the reserve is not either.
+    let lower = service.to_ascii_lowercase();
+    let name = lower
         .strip_prefix(DEV_PREFIX)
-        .or_else(|| service.strip_prefix("monocode-hub:"))
-        .unwrap_or(service);
+        .or_else(|| lower.strip_prefix("monocode-hub:"))
+        .unwrap_or(&lower);
     name.starts_with("more-agents")
 }
 
@@ -238,6 +240,27 @@ pub async fn connector_login_delete(service: String, account: String) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Review r5 check (should pass): the webview's doors refuse the More agents items, daily and dev names.
+    #[test]
+    fn review_r5_the_more_agents_items_are_reserved_from_the_webview() {
+        for service in [
+            "monocode-hub:more-agents-approval-key",
+            "monocode-hub:more-agents-approval-generation",
+            "monocode-hub-dev:more-agents-approval-generation",
+        ] {
+            assert!(store(service, "approvals", "x").is_err());
+            assert!(exists(service, "approvals").is_err());
+            assert!(delete(service, "approvals").is_err());
+        }
+    }
+
+    // Review r5 repro (LOW, Windows): Credential Manager target names are not case-sensitive, so a differently cased
+    // name reaches the same item there. The reserve check is case-sensitive.
+    #[test]
+    fn review_r5_the_reserve_ignores_case() {
+        assert!(reserved("monocode-hub:More-Agents-approval-generation"));
+    }
 
     #[test]
     fn only_the_apps_own_services_are_reachable() {

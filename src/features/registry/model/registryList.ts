@@ -181,6 +181,31 @@ export function registryAgentIdForSession(sessionId: string, store?: RegistrySto
   return typeof id === "string" && id ? id : undefined;
 }
 
+type LinkStore = RegistryStore & { removeItem?(key: string): void };
+
+/**
+ * Copies each browser link onto the session row when that column is empty. The browser links stay, so a build from
+ * before this one can still read them after a rollback. Adoption only fills an empty column. A link whose write fails
+ * is tried again on the next start.
+ */
+export async function moveRegistryChatLinks(
+  adopt: (sessionId: string, agentId: string) => Promise<unknown>,
+  store?: LinkStore,
+): Promise<void> {
+  const resolved = resolveStore(store);
+  if (!resolved) return;
+  const links = readLinks(resolved);
+  for (const sessionId of Object.keys(links)) {
+    const agentId = links[sessionId];
+    if (!agentId) continue;
+    try {
+      await adopt(sessionId, agentId);
+    } catch {
+      // The row write failed. The browser copy stays, and the next start tries again.
+    }
+  }
+}
+
 export function requestRegistryChat(
   agentId: string,
   options?: { enabled?: boolean; cwd?: string; target?: Pick<Window, "dispatchEvent"> | null },

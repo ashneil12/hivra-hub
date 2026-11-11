@@ -7,6 +7,7 @@ import type { HomeLine } from "../model/lines";
 import { HOME_ACTION_CAP } from "../model/needActions";
 import { FREE_UP_SPACE } from "../../monos/model/builderScale";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
+import { RAISE_LIMIT } from "../../usage/model/spendGate";
 import { Check, ChevronDown, ChevronUp, SendArrow } from "../../../shared/ui/icons";
 import type { CatalogPanel } from "../../panels/model/panelTabs";
 import { workersLabel } from "../model/workingNow";
@@ -506,6 +507,7 @@ export function HomeScreen({
               {key === "needs-you" ? (
                 <>
                   {builders.map((line) => (
+                    // A disk pause opens Clean up. A spend pause opens the limit. The text wraps, so the reason is never clipped.
                     <div
                       key={line.id}
                       data-home-line="builders"
@@ -514,12 +516,10 @@ export function HomeScreen({
                       <span className="min-w-0 flex-1">{line.text}</span>
                       <button
                         type="button"
-                        data-home-action="free-up-space"
+                        data-home-action={line.target === "builders-spend" ? "raise-limit" : "free-up-space"}
                         className="shrink-0 text-[12px] text-content underline-offset-2 hover:underline"
                         onClick={() => onOpen(line)}
-                      >
-                        {FREE_UP_SPACE}
-                      </button>
+                      >{line.target === "builders-spend" ? RAISE_LIMIT : FREE_UP_SPACE}</button>
                     </div>
                   ))}
                   {needs.map((row) => <NeedRow key={row.key} row={row} />)}

@@ -1126,6 +1126,9 @@ fn ask_decision(
             options: vec!["Approve".into(), "Fix".into(), "Skip".into()],
             recommended: None,
             task_ids: task_ids.clone(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         now,
     );
@@ -1141,6 +1144,9 @@ fn ask_decision(
                 options: vec!["Approve".into(), "Fix".into(), "Skip".into()],
                 recommended: None,
                 task_ids: Vec::new(),
+                keys: Vec::new(),
+                force: false,
+                reason: None,
             },
             now,
         )?;

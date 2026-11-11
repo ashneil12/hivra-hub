@@ -134,6 +134,38 @@ it("a builders line sits in Needs you and does not add to the count", () => {
   expect(opened).toEqual([builders]);
 });
 
+it("shows a spend pause with Raise limit, and leaves the disk pause on Free up space", () => {
+  const opened: HomeLine[] = [];
+  const spend: HomeLine = {
+    id: "builders:builders-spend",
+    kind: "builders",
+    text: "Spend limit reached for hivra: $50 of $50 this month. Raise it, or wait for the month to reset.",
+    projectId: "",
+    target: "builders-spend",
+    at: 0,
+  };
+  const disk: HomeLine = {
+    id: "builders:builders-disk",
+    kind: "builders",
+    text: "New builders are waiting: 24 GB free, under the 30 GB floor",
+    projectId: "",
+    target: "builders-disk",
+    at: 0,
+  };
+  draw({ builders: [disk, spend], onOpen: (picked) => opened.push(picked) });
+  const rows = container.querySelectorAll("[data-home-line='builders']");
+  expect(rows).toHaveLength(2);
+  const diskAction = rows[0]?.querySelector("button") as HTMLButtonElement;
+  const spendAction = rows[1]?.querySelector("button") as HTMLButtonElement;
+  expect(diskAction.dataset.homeAction).toBe("free-up-space");
+  expect(diskAction.textContent).toBe("Free up space");
+  expect(spendAction.dataset.homeAction).toBe("raise-limit");
+  expect(spendAction.textContent).toBe("Raise limit");
+  expect(rows[1]?.textContent).not.toMatch(/[—–]/);
+  act(() => spendAction.click());
+  expect(opened).toEqual([spend]);
+});
+
 it("does not say nothing needs you before the first load", () => {
   draw({ known: false, failed: false });
   expect(container.querySelector("[data-home-loading]")).not.toBeNull();

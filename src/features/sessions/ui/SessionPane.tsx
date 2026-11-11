@@ -19,6 +19,8 @@ import { Composer } from "./Composer";
 import { PrivateMark } from "./PrivateMark";
 import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { ChatFolderBanner } from "./ChatFolderBanner";
+import { CopyThreadLinkButton } from "./ThreadLinkActions";
+import { chatLink } from "../model/threadLinks";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
 import { LeadCliNotice } from "../../firstmate/ui/LeadCliNotice";
 import { askThreadFork } from "../model/threadForkAsk";
@@ -931,6 +933,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
       />
     ) : null;
 
+  // WP-125: copy a link that opens this chat on this computer.
+  const chatUrl = chatLink(session.id);
+  const copyChatLink = chatUrl ? (
+    <CopyThreadLinkButton kind="chat" label="Copy chat link" url={chatUrl} />
+  ) : null;
+
   return (
     <div
       data-session-drop={session.id}
@@ -991,6 +999,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           </span>
           {/* WP-111 */}
           <PrivateMark on={session.private === true} />
+          {copyChatLink}
           {splitButtons}
           <button
             type="button"
@@ -1009,9 +1018,16 @@ const LocalSessionPane = memo(function LocalSessionPane({
           </button>
         </div>
       ) : session.private === true ? (
-        <div className="flex h-7 shrink-0 items-center px-3">
+        <div className="flex h-7 shrink-0 items-center gap-1.5 px-3">
           {/* WP-111 */}
           <PrivateMark on />
+          {copyChatLink}
+        </div>
+      ) : copyChatLink ? (
+        <div
+          className={`pointer-events-none absolute top-2 z-10 ${splitButtons ? "right-16" : "right-2"}`}
+        >
+          <div className="pointer-events-auto">{copyChatLink}</div>
         </div>
       ) : null}
       {/* A chat on its own has no header bar: its split buttons show in the corner while the pane is hovered. */}

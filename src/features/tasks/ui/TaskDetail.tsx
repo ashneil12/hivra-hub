@@ -51,6 +51,7 @@ export function TaskDetail({
   onPhasePath,
   onPhaseDocComment,
   appUrl,
+  ceiling = null,
 }: {
   task: TaskDetailTask;
   /** WP-86: commits credited to this task. */
@@ -76,8 +77,12 @@ export function TaskDetail({
   onPhaseDocComment?: (docNumber: number, text: string) => void;
   /** Local URL of this checkout's stack. Anything else is not shown. */
   appUrl?: string | null;
+  /** WP-176: this project's per-task ceiling, and the reason a stopped run is held. */
+  ceiling?: { line: string; held: string } | null;
 }) {
   const followsWork = Boolean(task.delegationId);
+  const held = ceiling?.held.trim() ?? "";
+  const needsYou = task.needsYou || held.length > 0;
   const link = appLink(appUrl);
   const priority = (PRIORITY_ORDER as readonly string[]).includes(task.priority ?? "") ? task.priority ?? "none" : "none";
   return (
@@ -86,7 +91,12 @@ export function TaskDetail({
         #{task.number} {task.title}
       </h3>
       <p className="mt-1 text-[12px] text-content/70">{task.status}</p>
-      {task.needsYou ? <p className="text-[12px] text-content">Needs you</p> : null}
+      {needsYou ? <p className="text-[12px] text-content">Needs you</p> : null}
+      {ceiling?.line ? (
+        <p className="text-[12px] text-content/70" data-task-ceiling>
+          {ceiling.line}
+        </p>
+      ) : null}
       {task.failed ? <p className="text-[12px] text-content">Failed</p> : null}
       {task.description ? <MarkdownView source={task.description} /> : null}
       {phase ? (
@@ -203,6 +213,9 @@ export function TaskDetail({
             {entry.text}
           </li>
         ))}
+        {held && !task.activity.some((entry) => entry.text === held) ? (
+          <li className="text-[12px] text-content/70">{held}</li>
+        ) : null}
         {task.comments.map((comment) => (
           <li key={comment.id} className="text-[12px] text-content">
             {comment.body}

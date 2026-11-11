@@ -7,7 +7,8 @@ import { listen } from "@tauri-apps/api/event";
 import { readPage, type ActivityEntry } from "../../activity/model/activity";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import type { Delegation } from "../../monos/model/delegations";
-import { builderHold, useWorkerPoolVersion } from "../../monos/model/workerPool";
+import { builderHold, spendHold, useWorkerPoolVersion } from "../../monos/model/workerPool";
+import { spendSnapshot, subscribeSpend } from "../../usage/model/spendGate";
 import { listMonos } from "../../monos/model/mono";
 import { useHubDataVersion, hubData } from "../../hub/model/hubData";
 import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
@@ -85,6 +86,8 @@ export function HomeView() {
   useWorkerPoolVersion();
   const delegations = useDelegationRows();
   const needs = useNeedsYou();
+  // WP-176: a spend limit change clears or shows the pause without waiting for the next queue tick.
+  useSyncExternalStore(subscribeSpend, () => spendSnapshot().book.revision, () => 0);
   const projectKey = hubData().listProjects().map((project) => `${project.id}\0${project.name}\0${project.folder ?? ""}`).join("\n");
 
   useEffect(() => {
@@ -241,6 +244,11 @@ export function HomeView() {
   const pending = session?.pendingQuestion;
   const question = pending?.questions[0];
   const hold = builderHold();
+  const spend = spendHold();
+  const builderLines = [
+    ...(hold ? [builderHoldLine(hold)] : []),
+    ...(spend ? [builderHoldLine(spend)] : []),
+  ];
   const shown = needsShown(needs, now.getTime());
   const totalNeeds = needsCount();
   const lines = workingLines(delegations.map((row: Delegation) => ({
@@ -336,7 +344,7 @@ export function HomeView() {
       chief={chief}
       needs={needRows}
       needsTotal={totalNeeds}
-      builders={hold ? [builderHoldLine(hold)] : []}
+      builders={builderLines}
       working={workRows}
       workingTotal={running}
       done={doneRows}

@@ -11,7 +11,7 @@ import { after, test } from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { parseTranscript, transcriptTurns } from "./claude-fixtures.mjs";
-import { FAKE_VERSION, fillTemplate, goalCommand, noConversationFrame, parseCliArgs, pickRule, promptPayload } from "./fake-claude.mjs";
+import { FAKE_VERSION, fillTemplate, fixtureCost, goalCommand, loadScenario, noConversationFrame, parseCliArgs, pickRule, promptPayload } from "./fake-claude.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FAKE = path.join(HERE, "fake-claude.mjs");
@@ -236,6 +236,47 @@ test("resumes a conversation it has, and answers a missing one exactly like Clau
   assert.deepEqual(frame.errors, ["No conversation found with session ID: gone"]);
   assert.match(dead.stderr(), /No conversation found with session ID: gone/);
   assert.deepEqual(noConversationFrame("x").errors, ["No conversation found with session ID: x"]);
+  assert.equal(frame.total_cost_usd, 0);
+  assert.equal(noConversationFrame("x").total_cost_usd, 0);
+});
+
+test("a finished turn reports the scenario's fixture cost, and 0 when it sets none", async () => {
+  const dir = scratch();
+  const file = path.join(dir, "rules.json");
+  fs.writeFileSync(
+    file,
+    JSON.stringify({
+      version: 1,
+      fixtureCost: 1.25,
+      rules: [{ name: "hi", match: "hi", steps: [{ say: "hello" }] }],
+    }),
+  );
+  const loaded = loadScenario(file);
+  assert.equal(loaded.fixtureCost, 1.25);
+  assert.equal(fixtureCost(loaded), 1.25);
+  assert.equal(fixtureCost({}), 0);
+  assert.equal(fixtureCost({ fixtureCost: 0 }), 0);
+  assert.equal(fixtureCost({ fixtureCost: -1 }), 0);
+  assert.equal(fixtureCost({ fixtureCost: "1.25" }), 0);
+  assert.equal(noConversationFrame("gone").total_cost_usd, 0);
+
+  const fake = start(["--session-id", "priced"], { FAKE_CLAUDE_STATE: dir, FAKE_CLAUDE_SCENARIO: file });
+  await fake.initialize();
+  fake.prompt("hi");
+  const result = await fake.until((f) => f.type === "result", "priced result");
+  assert.equal(result.total_cost_usd, 1.25);
+  fake.child.stdin.end();
+  await fake.exited;
+
+  const plain = path.join(dir, "plain.json");
+  fs.writeFileSync(plain, JSON.stringify({ version: 1, rules: [{ name: "hi", match: "hi", steps: [{ say: "hello" }] }] }));
+  const zero = start(["--session-id", "free"], { FAKE_CLAUDE_STATE: path.join(dir, "free"), FAKE_CLAUDE_SCENARIO: plain });
+  await zero.initialize();
+  zero.prompt("hi");
+  const free = await zero.until((f) => f.type === "result", "free result");
+  assert.equal(free.total_cost_usd, 0);
+  zero.child.stdin.end();
+  await zero.exited;
 });
 
 test("/goal like Claude Code 2.1.302: kept by --resume, gone in a fresh conversation, checked and met by steps", async () => {
