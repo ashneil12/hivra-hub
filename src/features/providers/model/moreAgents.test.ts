@@ -269,3 +269,19 @@ describe("review #231 r3: a Windows path that is not absolute is not a model nam
     expect(argumentProblem("/opt/deno", ["FILE:///tmp/agent.ts"])).toBeNull();
   });
 });
+
+// Review #241 r2 repro (MEDIUM). The window refuses what the app refuses, so the two relative shapes the app lets
+// through are let through here too: a colon flag whose file is followed by `=options` (`-javaagent:../x.jar=opts`,
+// `--config:../x=y`), and a plain `key=../x` word (`codex-acp -c key=value`, `--set key=value`).
+describe("review #241 r2: a relative file inside a flag with options or a key=value word is refused", () => {
+  it("refuses a relative file after a colon flag that also has =options", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/java", ["-javaagent:../x.jar=opts"])).not.toBeNull();
+    expect(argumentProblem("/opt/tool", ["--config:../x=y"])).not.toBeNull();
+  });
+
+  it("refuses a relative file after key= in a plain word", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/codex-acp", ["-c", "instructions_file=../x"])).not.toBeNull();
+  });
+});

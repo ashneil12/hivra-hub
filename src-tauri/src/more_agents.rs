@@ -3440,4 +3440,323 @@ mod tests {
         let remote = vec!["run".into(), "HTTPS://example.com/a.ts".into()];
         assert!(remote_note("deno", &remote).is_some());
     }
+
+    // Review #241 r2 repro (HIGH, the r3 MED-1 assertion that 222db3b53 dropped). At 8abc5795b the child ran a link
+    // made at start, so a rename of new bytes over the approved name after the last hash did not change what ran, and
+    // review_231_r3_a_program_swapped_once_the_run_folder_appears_runs_without_a_new_allow asserted exactly that: it
+    // spawned the program after the swap and required the approved bytes. 222db3b53 replaced that spawn with a call to
+    // confirm_before_spawn after the swap, which only shows that a swap before the last hash is seen. This keeps
+    // harness_spawn's own order (start, run folder, confirm_before_spawn, spawn) and renames after the last hash, the
+    // point the old assertion covered. The renamed bytes run with no new Allow.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r2_a_rename_over_the_approved_name_after_the_last_hash_does_not_run() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = dir();
+        let bin = d.path().join("bin");
+        let tool = make_tool(&bin, "wp134-tool", b"#!/bin/sh\necho approved-bytes\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_start(d.path(), "wp134", "", &[], false, &path_value)
+            .expect("starts as approved");
+        let folder = run_folder(d.path()).expect("run folder");
+        confirm_before_spawn(d.path(), "wp134", &run.command).expect("the last hash passes");
+        let swap = bin.join(".wp134-swap.new");
+        std::fs::write(&swap, b"#!/bin/sh\necho swapped-bytes\n").expect("swap file");
+        std::fs::set_permissions(&swap, std::fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::fs::rename(&swap, &tool).expect("rename over the approved name");
+        let out = crate::disclaim::command(
+            std::ffi::OsStr::new(&run.command),
+            None,
+            run.argv0.as_deref().map(std::ffi::OsStr::new),
+        )
+        .args(&run.args)
+        .current_dir(&folder)
+        .output()
+        .expect("spawn");
+        let _ = remove_run_folder(d.path(), &folder);
+        assert!(
+            !String::from_utf8_lossy(&out.stdout).contains("swapped-bytes"),
+            "a program renamed over the approved name after the last hash ran with no new approval"
+        );
+    }
+
+    // Review #241 r2 repro (MEDIUM, the hash-to-run window with no link, stated on the Allow card as a limit). A writer
+    // of the install folder needs no timing at all: it renames two files over the approved name in a loop, and some
+    // starts pass every hash (approved_spawn, then confirm_before_spawn after the run folder exists) and still run its
+    // bytes. Every lost try is a refused start, so the writer can also wait for the run folder to appear and rename
+    // right after the last hash, which wins every time (the HIGH repro above). On macOS the window is wider: the exec
+    // happens inside the disclaim launcher, a whole start of the app binary after the last hash, and a script (`#!`) is
+    // opened again by its interpreter after the exec. A rename of a parent folder or a symlink put in the path does the
+    // same. This loops until one swapped run is seen, or 3000 starts.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r2_a_writer_renaming_in_a_loop_runs_its_own_bytes_without_a_new_allow() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::sync::Arc;
+        let d = dir();
+        let bin = d.path().join("bin");
+        let tool = make_tool(&bin, "wp134-tool", b"#!/bin/sh\necho approved-bytes\n");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let good = bin.join(".wp134-good");
+        std::fs::hard_link(&tool, &good).expect("keep the approved bytes");
+        let evil = make_tool(&bin, ".wp134-evil", b"#!/bin/sh\necho swapped-bytes\n");
+        let stop = Arc::new(AtomicBool::new(false));
+        let writer = {
+            let (stop, tmp, tool) = (stop.clone(), bin.join(".wp134-next"), tool.clone());
+            let (good, evil) = (good.clone(), evil.clone());
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    for source in [&evil, &good] {
+                        let _ = std::fs::remove_file(&tmp);
+                        if std::fs::hard_link(source, &tmp).is_ok() {
+                            let _ = std::fs::rename(&tmp, &tool);
+                        }
+                    }
+                }
+            })
+        };
+        let (mut refused, mut approved_ran, mut swapped_ran) = (0, 0, 0);
+        for _ in 0..3000 {
+            let Ok(run) = approved_start(d.path(), "wp134", "", &[], false, &path_value) else {
+                refused += 1;
+                continue;
+            };
+            let folder = run_folder(d.path()).expect("run folder");
+            if confirm_before_spawn(d.path(), "wp134", &run.command).is_err() {
+                refused += 1;
+                let _ = remove_run_folder(d.path(), &folder);
+                continue;
+            }
+            let out = crate::disclaim::command(
+                std::ffi::OsStr::new(&run.command),
+                None,
+                run.argv0.as_deref().map(std::ffi::OsStr::new),
+            )
+            .args(&run.args)
+            .current_dir(&folder)
+            .output();
+            let _ = remove_run_folder(d.path(), &folder);
+            let stdout = out
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+                .unwrap_or_default();
+            if stdout.contains("swapped-bytes") {
+                swapped_ran += 1;
+                break;
+            }
+            if stdout.contains("approved-bytes") {
+                approved_ran += 1;
+            }
+        }
+        stop.store(true, Ordering::Relaxed);
+        let _ = writer.join();
+        assert_eq!(
+            swapped_ran, 0,
+            "a looping writer ran its own bytes on a start that passed every hash \
+             ({approved_ran} approved runs and {refused} refused starts before it)"
+        );
+    }
+
+    // Review #241 r2 repro (MEDIUM, the r1 colon-flag fix is partial). `-javaagent:<jar>=<options>` and
+    // `-agentpath:<library>=<options>` are the documented JVM forms with options. value_separator takes the `=` before
+    // it looks for a colon, so only `<options>` is checked: the jar (or native library) is neither pinned nor refused.
+    // java loads and runs it before main, so an edit to it runs on the old approval. `-javaagent:../x.jar=opts` and
+    // `--config:../x=y` name a file outside the run folder and are allowed.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r2_a_colon_flag_file_with_options_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-jvm", b"#!/bin/sh\n");
+        let jar = d.path().join("agent.jar");
+        let lib = d.path().join("libagent.so");
+        std::fs::write(&jar, b"approved-jar").expect("jar");
+        std::fs::write(&lib, b"approved-lib").expect("lib");
+        let path_value = bin.to_string_lossy().into_owned();
+        let java_agent = format!("-javaagent:{}=verbose", jar.to_string_lossy());
+        let agent_path = format!("-agentpath:{}=opts", lib.to_string_lossy());
+        let agents: Vec<Value> = [("ja", java_agent.as_str()), ("ap", agent_path.as_str())]
+            .into_iter()
+            .map(|(id, arg)| entry(id, "wp134-jvm", &[arg]))
+            .filter(|agent| checked_fields(agent).is_ok())
+            .collect();
+        let ids: Vec<String> = agents
+            .iter()
+            .map(|a| a["id"].as_str().unwrap_or("").to_string())
+            .collect();
+        if !agents.is_empty() {
+            write_agents(d.path(), 0, agents).expect("seed");
+            for id in &ids {
+                approve(d.path(), id, &path_value).expect("approve");
+            }
+            std::fs::write(&jar, b"changed-jar").expect("edit jar");
+            std::fs::write(&lib, b"changed-lib").expect("edit lib");
+            for id in &ids {
+                assert!(
+                    approved_spawn(d.path(), id, &path_value).is_err(),
+                    "{id}: an edited file after a colon flag with options ran on the old approval"
+                );
+            }
+        }
+        for relative in ["-javaagent:../x.jar=opts", "--config:../x=y"] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/wp134-jvm", &[relative])).is_err(),
+                "{relative} names a file outside the run folder"
+            );
+        }
+    }
+
+    // Review #241 r2 repro (MEDIUM, not new in #241, same class as the r1 colon flag). A word that is not a flag but
+    // carries `key=<path>` is checked and pinned only as a whole word. `codex-acp -c key=value` (codex-style config
+    // overrides), `--set key=value` and `-D key=value` take a file this way: an absolute file after `=` is neither
+    // pinned nor refused, so an edit to it runs on the old approval, and `key=../x` names a file outside the run
+    // folder and is allowed.
+    #[cfg(unix)]
+    #[test]
+    fn review_241_r2_a_file_after_key_equals_in_a_plain_word_is_pinned_or_refused() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-acp", b"#!/bin/sh\n");
+        let file = d.path().join("instructions.md");
+        std::fs::write(&file, b"approved instructions").expect("file");
+        let path_value = bin.to_string_lossy().into_owned();
+        let word = format!("instructions_file={}", file.to_string_lossy());
+        let agent = entry("wp134", "wp134-acp", &["-c", word.as_str()]);
+        if checked_fields(&agent).is_ok() {
+            write_agents(d.path(), 0, vec![agent]).expect("seed");
+            approve(d.path(), "wp134", &path_value).expect("approve");
+            std::fs::write(&file, b"changed instructions").expect("edit");
+            assert!(
+                approved_spawn(d.path(), "wp134", &path_value).is_err(),
+                "an edited file after key= ran on the old approval"
+            );
+        }
+        assert!(
+            checked_fields(&entry(
+                "wp134",
+                "/opt/wp134-acp",
+                &["-c", "instructions_file=../x"]
+            ))
+            .is_err(),
+            "key=../x names a file outside the run folder"
+        );
+    }
+
+    // Review #241 r2 repro (MEDIUM, not new in #241: the hash cache from #231 turns one won race into every start).
+    // file_sha256 takes its cache key from a stat of the path, then opens the path again to read the bytes. A writer
+    // that swaps the install folder with a folder of its own (one atomic rename: renameat2 RENAME_EXCHANGE on Linux,
+    // renamex_np RENAME_SWAP on macOS) while the app hashes can make the stat see its file and the read see the approved
+    // one. The cache then holds its file's stamp with the approved hash. A folder swap touches neither file, so that
+    // stamp stays true: with its file left in place, approved_spawn and confirm_before_spawn are cache hits, and every
+    // start runs its bytes with no new Allow until the app quits. Nothing has to be timed after the one win.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn review_241_r2_a_swap_between_the_stat_and_the_read_poisons_the_hash_cache() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use std::sync::Arc;
+        fn exchange(a: &Path, b: &Path) -> bool {
+            let (Ok(a), Ok(b)) = (
+                CString::new(a.as_os_str().as_bytes()),
+                CString::new(b.as_os_str().as_bytes()),
+            ) else {
+                return false;
+            };
+            // SAFETY: two NUL-terminated paths that outlive the call.
+            #[cfg(target_os = "linux")]
+            let rc = unsafe {
+                libc::renameat2(
+                    libc::AT_FDCWD,
+                    a.as_ptr(),
+                    libc::AT_FDCWD,
+                    b.as_ptr(),
+                    libc::RENAME_EXCHANGE,
+                )
+            };
+            // SAFETY: as above.
+            #[cfg(target_os = "macos")]
+            let rc = unsafe { libc::renamex_np(a.as_ptr(), b.as_ptr(), libc::RENAME_SWAP) };
+            rc == 0
+        }
+        let d = dir();
+        let inst = d.path().join("inst");
+        let other = d.path().join("other");
+        let tool = make_tool(&inst, "wp134-tool", b"#!/bin/sh\necho approved-bytes\n");
+        make_tool(&other, "wp134-tool", b"#!/bin/sh\necho swapped-bytes\n");
+        if !(exchange(&inst, &other) && exchange(&inst, &other)) {
+            eprintln!("this file system cannot swap two folders; nothing to show");
+            return;
+        }
+        let path_value = inst.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "wp134-tool", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let command = approved_start(d.path(), "wp134", "", &[], false, &path_value)
+            .expect("starts as approved")
+            .command;
+        let approved_in_place =
+            || std::fs::read(&tool).is_ok_and(|bytes| bytes.ends_with(b"approved-bytes\n"));
+        let mut poisoned = false;
+        for _ in 0..20_000 {
+            if !approved_in_place() {
+                exchange(&inst, &other);
+            }
+            let _ = file_sha256(Path::new(&command));
+            let stop = Arc::new(AtomicBool::new(false));
+            let swaps = Arc::new(AtomicUsize::new(0));
+            let swapper = {
+                let (stop, swaps) = (stop.clone(), swaps.clone());
+                let (inst, other) = (inst.clone(), other.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        if exchange(&inst, &other) {
+                            swaps.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                })
+            };
+            while swaps.load(Ordering::Relaxed) < 2 {
+                std::hint::spin_loop();
+            }
+            let _ = file_sha256(Path::new(&command));
+            stop.store(true, Ordering::Relaxed);
+            let _ = swapper.join();
+            if approved_in_place() {
+                exchange(&inst, &other);
+            }
+            if confirm_before_spawn(d.path(), "wp134", &command).is_ok() {
+                poisoned = true;
+                break;
+            }
+        }
+        let mut swapped_runs = 0;
+        if poisoned {
+            for _ in 0..5 {
+                let Ok(run) = approved_start(d.path(), "wp134", "", &[], false, &path_value) else {
+                    break;
+                };
+                let folder = run_folder(d.path()).expect("run folder");
+                let confirmed = confirm_before_spawn(d.path(), "wp134", &run.command).is_ok();
+                let out = confirmed.then(|| {
+                    std::process::Command::new(&run.command)
+                        .current_dir(&folder)
+                        .output()
+                });
+                let _ = remove_run_folder(d.path(), &folder);
+                if let Some(Ok(out)) = out {
+                    if String::from_utf8_lossy(&out.stdout).contains("swapped-bytes") {
+                        swapped_runs += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            !poisoned,
+            "the hash cache took the writer's file for the approved one: {swapped_runs} of 5 later starts then \
+             passed every check and ran its bytes"
+        );
+    }
 }
