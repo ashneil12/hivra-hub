@@ -78,7 +78,7 @@ enum Touch {
 pub fn parse_compare(json: &str) -> Result<Compare, String> {
     let value: serde_json::Value = serde_json::from_str(json)
         .map_err(|_| "GitHub's compare answer was not JSON".to_string())?;
-    let files = filenames(value.get("files"))?;
+    let (files, entries) = file_names(value.get("files"))?;
     let ahead_by = value
         .get("ahead_by")
         .and_then(serde_json::Value::as_u64)
@@ -90,7 +90,8 @@ pub fn parse_compare(json: &str) -> Result<Compare, String> {
         .unwrap_or("")
         .to_string();
     Ok(Compare {
-        cut_short: files.len() >= COMPARE_FILE_CAP,
+        // The cap counts GitHub's entries, not names. A rename lists two names for one entry.
+        cut_short: entries >= COMPARE_FILE_CAP,
         files,
         ahead_by,
         status,
@@ -101,13 +102,14 @@ pub fn parse_compare(json: &str) -> Result<Compare, String> {
 pub fn parse_pull_files(json: &str) -> Result<(Vec<String>, bool), String> {
     let value: serde_json::Value =
         serde_json::from_str(json).map_err(|_| "GitHub's file list was not JSON".to_string())?;
-    let files = filenames(Some(&value))?;
-    let full = files.len() >= PULL_FILES_PAGE;
+    let (files, entries) = file_names(Some(&value))?;
+    let full = entries >= PULL_FILES_PAGE;
     Ok((files, full))
 }
 
-/// The filenames in a GitHub file list. A list that isn't a list is an error, not an empty answer.
-fn filenames(value: Option<&serde_json::Value>) -> Result<Vec<String>, String> {
+/// The names in a GitHub file list, and how many entries GitHub sent. A rename counts under both
+/// `filename` and `previous_filename`. A list that isn't a list is an error, not an empty answer.
+fn file_names(value: Option<&serde_json::Value>) -> Result<(Vec<String>, usize), String> {
     let items = value
         .and_then(serde_json::Value::as_array)
         .ok_or_else(|| "GitHub's file list is missing".to_string())?;
@@ -118,8 +120,15 @@ fn filenames(value: Option<&serde_json::Value>) -> Result<Vec<String>, String> {
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| "a changed file has no name".to_string())?;
         out.push(name.to_string());
+        if let Some(previous) = item
+            .get("previous_filename")
+            .and_then(serde_json::Value::as_str)
+            .filter(|previous| !previous.is_empty() && *previous != name)
+        {
+            out.push(previous.to_string());
+        }
     }
-    Ok(out)
+    Ok((out, items.len()))
 }
 
 /// The files both lists name, in the order of `moved`, each once.
@@ -854,6 +863,49 @@ mod tests {
             hold(&fork, "acme/web", 7, H1, &open(H1, B2, None)),
             None,
             "a fork's green run on the current main: nothing to hold"
+        );
+    }
+
+    /// r3 review HIGH (renames): GitHub lists a renamed file under its new name in `filename` and its old name in
+    /// `previous_filename`. Main moved src/lib.rs to src/engine.rs while the branch edits src/lib.rs. The hold must
+    /// see the same file.
+    #[test]
+    fn r3_review_main_renaming_a_file_the_pull_request_edits_holds() {
+        let get = canned(vec![
+            took_main_at(B1),
+            (
+                moved_key(),
+                r#"{"status":"ahead","ahead_by":1,"behind_by":0,"files":[
+                    {"filename":"src/engine.rs","previous_filename":"src/lib.rs","status":"renamed"}]}"#
+                    .into(),
+            ),
+            (
+                "pulls/7/files".into(),
+                r#"[{"filename":"src/lib.rs","status":"modified"}]"#.into(),
+            ),
+        ]);
+        assert!(
+            hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
+            "main moved the file this pull request edits"
+        );
+    }
+
+    /// r3 review HIGH (renames), the other side: the branch renamed src/lib.rs to src/engine.rs and main changed
+    /// src/lib.rs since the branch last took main.
+    #[test]
+    fn r3_review_a_pull_request_renaming_a_file_main_changed_holds() {
+        let get = canned(vec![
+            took_main_at(B1),
+            (moved_key(), compare_json(&["src/lib.rs"], 1)),
+            (
+                "pulls/7/files".into(),
+                r#"[{"filename":"src/engine.rs","previous_filename":"src/lib.rs","status":"renamed"}]"#
+                    .into(),
+            ),
+        ]);
+        assert!(
+            hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
+            "main changed the file this pull request moved"
         );
     }
 
