@@ -700,9 +700,8 @@ pub(crate) struct Stored {
 }
 
 /// A saved entry, checked, ready to start. `command` is the canonical path that is executed.
-/// `argv0` is set when that file was reached through a same-folder name (`bunx` linking to `bun`), so the child
-/// still sees the name it was started as. A cross-folder link leaves it empty, so `dirname` of the program stays
-/// the install folder.
+/// `argv0` is the path that was invoked, as a shell passes it. A shebang script does not see that name: the kernel
+/// passes the executed file, so `dirname` of the program stays the install folder.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Resolved {
     pub id: String,
@@ -1371,9 +1370,9 @@ pub(crate) fn remove_run_folder(data_dir: &Path, run_dir: &Path) -> Result<(), S
     Ok(())
 }
 
-/// The file a saved command names. `path` is canonical and is what is hashed and executed. `argv0` is the absolute
-/// path of a same-folder name that differs from that file (`bunx` linking to `bun`). A cross-folder link, such as an
-/// npm bin pointing at `dist/index.js`, leaves `argv0` empty so the child still finds the files beside the real file.
+/// The file a saved command names. `path` is canonical and is what is hashed and executed. `argv0` is the path that
+/// was invoked, as a shell passes it. A shebang script does not see it: the kernel passes the executed file, so an
+/// npm bin still finds the files beside the real file.
 struct CommandFile {
     path: String,
     argv0: Option<String>,
@@ -1412,26 +1411,16 @@ fn resolve_command(command: &str, path_value: &str) -> Result<CommandFile, Strin
     {
         return Err(SHELL_REFUSED.into());
     }
-    let argv0 = same_dir_argv0(&candidate, &resolved);
+    let argv0 = invoked_argv0(&candidate);
     Ok(CommandFile {
         path: resolved.to_string_lossy().into_owned(),
         argv0,
     })
 }
 
-/// argv[0] when `candidate` is a same-folder link whose name differs from the file it points at. Hard links are not
-/// rewritten by canonicalize, so a hard-linked name already runs as itself. A link into another folder is left alone:
-/// the child must see the real file, or `dirname` of it would be the PATH folder instead of the install folder.
-fn same_dir_argv0(candidate: &Path, canonical: &Path) -> Option<String> {
-    let invoked = candidate.file_name()?;
-    let real = canonical.file_name()?;
-    if invoked == real {
-        return None;
-    }
-    let invoked_dir = std::fs::canonicalize(candidate.parent()?).ok()?;
-    if Some(invoked_dir.as_path()) != canonical.parent() {
-        return None;
-    }
+/// argv[0] is the path that was invoked, as a shell passes it. The child still executes the canonical file.
+/// A shebang script does not see this name: the kernel passes the file that was executed.
+fn invoked_argv0(candidate: &Path) -> Option<String> {
     candidate.to_str().map(str::to_string)
 }
 
@@ -2953,11 +2942,6 @@ mod tests {
         write_agents(d.path(), 0, vec![entry("wp134", "fake-acp", &["--acp"])]).expect("seed");
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
-        assert!(
-            run.argv0.is_none(),
-            "a cross-folder link must keep the install path as the program name, got {:?}",
-            run.argv0
-        );
         let out = std::process::Command::new(&run.command)
             .args(&run.args)
             .output()
@@ -2968,6 +2952,29 @@ mod tests {
             "the approved program could not run from {}: {}",
             run.command,
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A cross-folder link still passes the invoked path as argv[0], as a shell does. The child executes the
+    /// canonical file. A shebang does not see argv[0]; the kernel passes the executed file.
+    #[cfg(unix)]
+    #[test]
+    fn a_cross_folder_link_passes_the_invoked_path_as_argv0() {
+        let d = dir();
+        let real = make_tool(&d.path().join("lib"), "real-tool", b"#!/bin/sh\n");
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&real, bin.join("linked-tool")).expect("link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "linked-tool", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved");
+        let argv0 = run.argv0.expect("the invoked path");
+        assert!(argv0.ends_with("/linked-tool"), "{argv0}");
+        assert!(
+            run.command.ends_with("/real-tool"),
+            "the child runs the canonical file, got {}",
+            run.command
         );
     }
 
