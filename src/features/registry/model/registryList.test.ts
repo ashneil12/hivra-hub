@@ -124,6 +124,29 @@ describe("chat links", () => {
     await moveRegistryChatLinks(async () => true, store);
     expect(store.getItem(REGISTRY_CHAT_LINKS_KEY)).toBeNull();
   });
+
+  // Review #231 r2 repro (MEDIUM): the move deletes the browser links once they are on the row, but the build before
+  // this one (main at 87b454020) reads only the browser links (sessionStore.ts registryAgentIdForSession). A ship whose
+  // trial fails puts that build and the database copy from before the ship back by itself, and hub:rollback does the
+  // same by hand; both share this webview storage (same identifier). After either, every More agents chat has no link
+  // anywhere: the old build treats it as the placeholder Claude chat (its next message starts Claude Code with the
+  // agent's conversation, and binds the ACP session id to Claude), and the next ship has nothing left to move. The
+  // links should stay for an older build to read (the row is still what this build trusts; adoption only fills an
+  // empty column, so keeping them also heals a restored database on the next start).
+  it("leaves the browser links readable for an older build after moving them onto the row", async () => {
+    const raw = new Map<string, string>([
+      [REGISTRY_CHAT_LINKS_KEY, JSON.stringify({ "chat-1": "my-copilot" })],
+    ]);
+    const store = {
+      raw,
+      getItem: (key: string) => raw.get(key) ?? null,
+      setItem: (key: string, value: string) => raw.set(key, value),
+      removeItem: (key: string) => raw.delete(key),
+    };
+    await moveRegistryChatLinks(async () => true, store);
+    // What the older build's readSession calls.
+    expect(registryAgentIdForSession("chat-1", store)).toBe("my-copilot");
+  });
 });
 
 describe("requestRegistryChat", () => {

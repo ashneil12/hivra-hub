@@ -204,3 +204,14 @@ describe("argument rules match the app", () => {
     expect(argumentProblem("/usr/bin/python3", ["-m", "/abs/mod.py"])).toBeNull();
   });
 });
+
+// Review #231 r2 repro (MEDIUM, functional; mirror of review_231_r2_a_model_slug_with_a_slash_is_accepted in
+// more_agents.rs): a model name with a slash reads as a relative path, so the entry is refused when it is added.
+describe("review #231 r2: a provider/model name is not a path", () => {
+  it("allows a model slug with a slash, with or without =", async () => {
+    const { argumentProblem } = await import("./moreAgents");
+    expect(argumentProblem("/opt/agent", ["--model", "openai/gpt-4.1"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--model=anthropic/claude-sonnet-4"])).toBeNull();
+    expect(argumentProblem("/opt/agent", ["--model", "Qwen/Qwen2.5-Coder-32B-Instruct"])).toBeNull();
+  });
+});

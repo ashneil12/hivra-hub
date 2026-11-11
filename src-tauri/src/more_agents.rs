@@ -2499,4 +2499,148 @@ mod tests {
         let shown = view(&read_stored(d.path()).expect("read"), &path_value);
         assert_eq!(shown["approved"], json!([]));
     }
+
+    // Review #231 r2 repro (HIGH, functional): the approved program runs from a private copy at
+    // `<data>/more-agents/bin/<sha256>`, away from the folder it was installed in. Every npm-installed launcher or
+    // agent is a script that loads files beside it: `npx` resolves to `.../npm/bin/npx-cli.js`, whose first line is
+    // `require('../lib/cli.js')`, so the copy dies with "Cannot find module '../lib/cli.js'" (checked by hand with
+    // node 22's npx). The same holds for `gemini`, `copilot` and every `#!/usr/bin/env node` bin, and on Windows for
+    // `npx.cmd`, whose copy has no extension and is not run through cmd at all. This sh script has the same shape: a
+    // bin linked from PATH that loads `../lib/cli.sh` relative to itself.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_an_installed_program_still_finds_the_files_beside_it() {
+        let d = dir();
+        let pkg = d.path().join("lib").join("node_modules").join("fake-acp");
+        std::fs::create_dir_all(pkg.join("lib")).expect("pkg lib");
+        std::fs::write(
+            pkg.join("lib").join("cli.sh"),
+            b"echo started-from-install\n",
+        )
+        .expect("cli");
+        let cli = make_tool(
+            &pkg.join("bin"),
+            "fake-acp-cli.sh",
+            b"#!/bin/sh\n. \"$(dirname \"$0\")/../lib/cli.sh\"\n",
+        );
+        let bin = d.path().join("bin");
+        std::fs::create_dir_all(&bin).expect("bin");
+        std::os::unix::fs::symlink(&cli, bin.join("fake-acp"))
+            .expect("PATH link, as npm makes one");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "fake-acp", &["--acp"])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let out = std::process::Command::new(&run.command)
+            .args(&run.args)
+            .output()
+            .expect("spawn the approved program");
+        assert!(
+            out.status.success()
+                && String::from_utf8_lossy(&out.stdout).contains("started-from-install"),
+            "the approved program could not run from {}: {}",
+            run.command,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    // Review #231 r2 repro (MEDIUM, functional, same class as r5's dotted words): a model name with a slash is read as
+    // a relative path and refused. `--model openai/gpt-4.1`, `--model=anthropic/claude-sonnet-4` (OpenRouter, opencode,
+    // goose, aider style) and a Hugging Face id cannot be given at all, with or without `=`. The child now starts in its
+    // own empty run folder, so a relative word cannot reach a chat file anyway.
+    #[test]
+    fn review_231_r2_a_model_slug_with_a_slash_is_accepted() {
+        for args in [
+            &["--model", "openai/gpt-4.1"][..],
+            &["--model=anthropic/claude-sonnet-4"][..],
+            &["--model", "Qwen/Qwen2.5-Coder-32B-Instruct"][..],
+        ] {
+            assert!(
+                checked_fields(&entry("wp134", "/opt/agent", args)).is_ok(),
+                "{args:?} is refused as a relative file"
+            );
+        }
+    }
+
+    // Review #231 r2 repro (MEDIUM, functional): a new start sweeps every run folder whose mtime is over an hour old,
+    // and a folder's mtime does not move while its child runs (nothing is added to it). A More agents chat open for
+    // over an hour has its working folder deleted under it the moment any other More agents chat starts. After that
+    // every process it starts without its own cwd fails: node aborts in `uv_cwd`, python's os.getcwd() raises, git
+    // says "Unable to read current working directory" (an MCP server the agent launches with npx, a tool it runs).
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_a_folder_a_child_still_runs_in_is_not_swept() {
+        let d = dir();
+        let data = d.path().join("data");
+        let live = run_folder(&data).expect("first run");
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .current_dir(&live)
+            .spawn()
+            .expect("a child that is still running");
+        // An hour and more since the folder was made: the child is still there.
+        let aged = std::process::Command::new("touch")
+            .args(["-t", "202001010000.00"])
+            .arg(&live)
+            .status()
+            .expect("touch");
+        assert!(aged.success());
+        let _second = run_folder(&data).expect("another chat starts");
+        let still_there = live.is_dir();
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            still_there,
+            "a running child's folder was swept by another start"
+        );
+    }
+
+    // Review #231 r2 repro (MEDIUM): the hash cache is keyed on path, mtime, size and inode, all of which an edit in
+    // place keeps when the writer puts the mtime back (utimensat, `touch -r`). The pin check then reads the old hash
+    // from the cache and the changed script runs on the old approval. The same cache backs the private copy's check in
+    // `private_copy`. The inode change time (ctime) cannot be set back by a user and is not in the key.
+    #[cfg(unix)]
+    #[test]
+    fn review_231_r2_a_pinned_script_edited_in_place_does_not_run() {
+        use std::io::Write;
+        let d = dir();
+        let bin = d.path().join("bin");
+        make_tool(&bin, "wp134-runner", b"#!/bin/sh\n");
+        let script = d.path().join("agent.mjs");
+        std::fs::write(&script, b"console.log('approved')").expect("script");
+        let path_value = bin.to_string_lossy().into_owned();
+        let arg = script.to_string_lossy().into_owned();
+        write_agents(
+            d.path(),
+            0,
+            vec![entry("wp134", "wp134-runner", &[arg.as_str()])],
+        )
+        .expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        let before = std::fs::metadata(&script)
+            .expect("meta")
+            .modified()
+            .expect("mtime");
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .open(&script)
+                .expect("open in place");
+            // The same length, so the size in the key does not move either.
+            file.write_all(b"require('cp').exec('x')").expect("edit");
+            file.set_modified(before).expect("put the mtime back");
+        }
+        assert_ne!(
+            std::fs::read(&script).expect("read"),
+            b"console.log('approved')"
+        );
+        assert_eq!(
+            approved_spawn(d.path(), "wp134", &path_value)
+                .err()
+                .as_deref(),
+            Some(ON_DISK_CHANGED),
+            "an edited pinned script ran on the old approval"
+        );
+    }
 }
