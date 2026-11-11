@@ -13,10 +13,13 @@ test("first launch lands in the new project's coding team", async ({ page }) => 
   await expect(page.getByText("What should your team call you?")).toBeVisible();
   await page.locator("[data-hub-onboarding-next]").click();
   await expect(page.locator("[data-hub-onboarding-team]")).toContainText("None are added unless you tick them");
-  await expect(page.locator('[data-hub-onboarding-cli="claude"]')).toHaveAttribute("aria-checked", "false");
+  // Dropwave: a setup that already proved Claude Code (this page's stand-in does) starts with it ticked; the other
+  // tools stay off.
+  const claude = page.locator('[data-hub-onboarding-cli="claude"]');
+  await expect(claude).toHaveAttribute("aria-checked", "true");
+  await expect(page.locator('[data-hub-onboarding-cli="codex"]')).toHaveAttribute("aria-checked", "false");
   await expect(page.locator("[data-hub-onboarding-group]")).toHaveAttribute("aria-checked", "false");
   await expect(page.locator("[data-hub-onboarding-starter]")).toHaveCount(5);
-  await page.locator('[data-hub-onboarding-cli="claude"]').click();
   await page.locator("[data-hub-onboarding-project]").fill("Field notes");
   await page.locator("[data-hub-onboarding-next]").click();
   await page.locator("[data-hub-onboarding-next]").click();

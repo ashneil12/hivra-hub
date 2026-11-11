@@ -16,6 +16,8 @@ export type TeamWorkspaceStatus = {
   signedIn: boolean;
   /** On, the address passes the rules, and a token is held. Nothing is sent unless this is true. */
   active: boolean;
+  /** Fields where this device kept its own copy, as "project.field". Absent when there are none. */
+  conflicts?: string[];
 };
 
 export const loadTeamWorkspace = () => invoke<TeamWorkspaceStatus>("team_workspace_status");
