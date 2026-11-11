@@ -1,6 +1,11 @@
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
 import { AcpSubagents } from "../../core/acpSubagents";
+import {
+  changeMode,
+  keepCurrentMode,
+  type PermissionRowKey,
+} from "../../core/permissionMatrix";
 import { DevinSubagents } from "./devinSubagents";
 import {
   killChild,
@@ -44,6 +49,7 @@ import {
   devinPermissionCommand,
   devinPromptBlocks,
   devinRestoreError,
+  devinRowForSetting,
   devinSessionMissing,
   devinSessionTitle,
   devinStartupError,
@@ -75,6 +81,8 @@ type Live = {
   promptInFlight: boolean;
   runtimeMode: RuntimeMode;
   planning: boolean;
+  /** The mode Devin last confirmed, for the refusal rule (WP-175). */
+  appliedMode?: PermissionRowKey;
   onEvent: (event: HarnessEvent) => void;
   approvals: Map<number, (decision: ApprovalDecision) => void>;
   tools: Map<string, DevinToolInfo>;
@@ -598,14 +606,33 @@ async function applyRuntimeMode(
   planning: boolean,
 ): Promise<void> {
   const modeId = devinModeId(runtimeMode, planning);
-  if (modeId === live.modeId) return;
-  // Fail closed: a rejected downgrade must not leave bypass active.
-  await live.rpc.request(
-    "session/set_mode",
-    { sessionId: live.acpSessionId, modeId },
-    CONTROL_TIMEOUT_MS,
-  );
-  live.modeId = modeId;
+  const target: PermissionRowKey = planning ? "plan" : runtimeMode;
+  if (modeId === live.modeId) {
+    live.appliedMode = target;
+    return;
+  }
+  // A refused downgrade (or any refusal with no known mode) ends the turn as
+  // waiting, so bypass is never left active. A refused upgrade keeps the mode
+  // Devin is on and says so (core/permissionMatrix.ts, WP-175).
+  const result = await changeMode({
+    current: live.appliedMode ?? null,
+    target,
+    cli: "devin",
+    send: () =>
+      live.rpc.request(
+        "session/set_mode",
+        { sessionId: live.acpSessionId, modeId },
+        CONTROL_TIMEOUT_MS,
+      ),
+  });
+  if (result.outcome === "applied") {
+    live.modeId = modeId;
+    live.appliedMode = target;
+    return;
+  }
+  if (result.outcome === "keep") {
+    keepCurrentMode(live, result.current, result.message);
+  }
 }
 
 async function prompt(
@@ -673,7 +700,12 @@ function handleUpdate(
   }
   if (update?.sessionUpdate === "current_mode_update") {
     const mode = update.currentModeId;
-    if (typeof mode === "string") live.modeId = mode as DevinModeId;
+    if (typeof mode === "string") {
+      live.modeId = mode as DevinModeId;
+      // The CLI's own report is what it runs on now. A setting two rows share is not
+      // enough to tell which one, so the mode is unknown (and a refusal waits).
+      live.appliedMode = devinRowForSetting(mode, live.appliedMode) ?? undefined;
+    }
     return;
   }
   const tool = devinToolInfo(params);

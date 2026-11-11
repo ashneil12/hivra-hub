@@ -38,6 +38,7 @@ import {
 } from "./claudeFailure";
 import { claudeBridgeKind } from "./claudeDeepseekBridge";
 import { bridgeLaunchModel } from "../../../../features/sessions/model/deepseekBridge";
+import { cliPermissionSetting } from "../../core/permissionMatrix";
 
 /** Claude Code versions that first ship Opus 5.5 / Opus 5 / Sonnet 5 / Fable 5 / Opus 4.8 / 4.7. */
 export const MINIMUM_CLAUDE_OPUS_5_5_VERSION = "2.1.280";
@@ -159,16 +160,8 @@ export function compareSemver(left: string, right: string): number {
 export function runtimeModeToPermission(
   mode: RuntimeMode,
 ): ClaudePermissionMode {
-  switch (mode) {
-    case "auto-accept-edits":
-      return "acceptEdits";
-    case "auto":
-      return "auto";
-    case "full-access":
-      return "bypassPermissions";
-    default:
-      return "default";
-  }
+  // The table in core/permissionMatrix.ts holds every CLI's setting for each mode.
+  return cliPermissionSetting("claude", mode) as ClaudePermissionMode;
 }
 
 /** Older model ids that reject `xhigh` and want `max` instead. */

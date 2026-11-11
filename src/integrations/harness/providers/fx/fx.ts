@@ -1,5 +1,11 @@
 import { nativeModelId } from "../../../../features/sessions/model/models";
 import { AcpSubagents } from "../../core/acpSubagents";
+import {
+  cliPermissionSetting,
+  changeMode,
+  keepCurrentMode,
+  type PermissionRowKey,
+} from "../../core/permissionMatrix";
 import type { RuntimeMode } from "../../../../features/sessions/model/session";
 import { AcpClient, type AcpHandlers } from "../../core/acp";
 import { TURN_IDLE_TIMEOUT_MS } from "../../core/jsonRpc";
@@ -38,6 +44,8 @@ type SessionSetupResult = {
 
 type Live = {
   subagents: AcpSubagents;
+  /** The mode the CLI last confirmed, for the refusal rule (WP-175). */
+  appliedMode?: PermissionRowKey;
   acp: AcpClient;
   acpSessionId: string;
   cwd: string;
@@ -411,19 +419,31 @@ async function applyRuntimeMode(
 ): Promise<void> {
   // Unsupported mode control is non-fatal because handlePermission remains a
   // backstop. Transport failures and timeouts are rethrown so the wedged child
-  // is recycled rather than leaving this turn pending forever.
-  await live.acp
-    .request(
-      "session/set_mode",
-      {
-        sessionId: live.acpSessionId,
-        modeId: planning ? "ask" : fxModeId(runtimeMode),
-      },
-      CONTROL_TIMEOUT_MS,
-    )
-    .catch((error: unknown) => {
-      ignoreUnsupportedControl("set_mode", error);
-    });
+  // is recycled rather than leaving this turn pending forever. Any other refusal
+  // follows the one rule in core/permissionMatrix.ts (WP-175).
+  const target: PermissionRowKey = planning ? "plan" : runtimeMode;
+  const result = await changeMode({
+    current: live.appliedMode ?? null,
+    target,
+    cli: "fx",
+    ignoreUnsupported: true,
+    send: () =>
+      live.acp.request(
+        "session/set_mode",
+        {
+          sessionId: live.acpSessionId,
+          modeId: planning ? cliPermissionSetting("fx", "plan") : fxModeId(runtimeMode),
+        },
+        CONTROL_TIMEOUT_MS,
+      ),
+  });
+  if (result.outcome === "applied") {
+    live.appliedMode = target;
+    return;
+  }
+  if (result.outcome === "keep") {
+    keepCurrentMode(live, result.current, result.message);
+  }
 }
 
 async function setConfigOption(
