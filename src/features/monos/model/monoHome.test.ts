@@ -12,7 +12,21 @@ import {
   setHomeBackend,
   type HomeBackend,
 } from "./monoHome";
-import { addMono, listMonos, saveMonoSessionId, updateMono } from "./mono";
+import {
+  addMono,
+  findMono,
+  isMonoSideChat,
+  listMonos,
+  monoForSession,
+  monoProjectSession,
+  monoRoomSession,
+  monoSessionProject,
+  saveMonoProjectSession,
+  saveMonoRoomSession,
+  saveMonoSessionId,
+  saveMonoSideChat,
+  updateMono,
+} from "./mono";
 
 /** MONOS.json and each Mono's chats.json, as the app's commands keep them (hash-checked, like mono.rs). */
 function fakeHome() {
@@ -138,5 +152,76 @@ describe("chat ids move out of the WebView into each Mono's chats.json", () => {
     expect(home.chats("ada")).toEqual({ main: "fresh-chat", history: ["df9afb39"] });
     // The same chat again changes nothing.
     expect(await recordMonoChat("ada", "fresh-chat")).toBe(false);
+  });
+});
+
+describe("G1: a first mate's further chats, its project chats and its team-chat seats survive a relaunch", () => {
+  async function savedWithEveryKindOfChat() {
+    localStorage.setItem(ROSTER_KEY, JSON.stringify([COS, FRANK]));
+    const home = fakeHome();
+    setHomeBackend(home.backend);
+    resetHomeForTests(true);
+    await hydrateRosterFromHome();
+    expect(saveMonoSideChat("ada", "side-2")).toBe(true);
+    expect(saveMonoSideChat("ada", "side-3")).toBe(true);
+    expect(saveMonoProjectSession("ada", "hivra", "cos-hivra")).toBe(true);
+    expect(saveMonoProjectSession("ada", "vg-game", "cos-vg")).toBe(true);
+    expect(saveMonoRoomSession("ed", "team-1", "conv-1", "ed-room")).toBe(true);
+    await rosterWritesSettled();
+    return home;
+  }
+
+  function expectEveryChatKept() {
+    expect(findMono("ada")).toMatchObject({
+      sessionId: "df9afb39",
+      chats: ["side-2", "side-3"],
+      projectSessions: { hivra: "cos-hivra", "vg-game": "cos-vg" },
+    });
+    expect(monoForSession("side-2")?.id).toBe("ada");
+    expect(isMonoSideChat("side-3")).toBe(true);
+    expect(monoProjectSession("ada", "hivra")).toBe("cos-hivra");
+    expect(monoSessionProject("cos-vg")).toBe("vg-game");
+    expect(monoRoomSession("ed", "team-1", "conv-1")).toBe("ed-room");
+    expect(findMono("ed")?.sessionId).toBe("2f89e6f4");
+  }
+
+  it("writes them to MONOS.json with the rest of the Mono", async () => {
+    const home = await savedWithEveryKindOfChat();
+    const ada = home.roster()!.monos.find((m) => m.id === "ada") as Record<string, unknown>;
+    expect(ada.chats).toEqual(["side-2", "side-3"]);
+    expect(ada.projectSessions).toEqual({ hivra: "cos-hivra", "vg-game": "cos-vg" });
+    const ed = home.roster()!.monos.find((m) => m.id === "ed") as Record<string, unknown>;
+    expect(Object.values(ed.roomSessions as Record<string, string>)).toEqual(["ed-room"]);
+  });
+
+  it("keeps them when the window's roster is read back from its saved text", async () => {
+    await savedWithEveryKindOfChat();
+    const saved = localStorage.getItem(ROSTER_KEY)!;
+    localStorage.clear();
+    localStorage.setItem(ROSTER_KEY, saved);
+    resetHomeForTests(true);
+    expectEveryChatKept();
+  });
+
+  it("brings them back from MONOS.json when the WebView forgot everything", async () => {
+    const home = await savedWithEveryKindOfChat();
+    // A relaunch after a WebKit reset: the window starts with no roster at all, MONOS.json is all there is.
+    localStorage.clear();
+    setHomeBackend(home.backend);
+    resetHomeForTests(false);
+    expect(listMonos()).toEqual([]);
+    expect(await hydrateRosterFromHome()).toBe("restored");
+    expectEveryChatKept();
+  });
+
+  it("takes them from a newer MONOS.json over an older window copy that lacks them", async () => {
+    const home = await savedWithEveryKindOfChat();
+    // Another window saved them later than this one's cache.
+    localStorage.setItem(ROSTER_KEY, JSON.stringify([COS, FRANK]));
+    localStorage.setItem(ROSTER_SAVED_AT_KEY, "1");
+    setHomeBackend(home.backend);
+    resetHomeForTests(true);
+    expect(await hydrateRosterFromHome()).toBe("file-newer");
+    expectEveryChatKept();
   });
 });

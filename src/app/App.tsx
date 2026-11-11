@@ -967,6 +967,7 @@ import {
   monoWorksOn,
   isMonoSession,
   isMonoSideChat,
+  monoOwnChats,
   forgetMonoSideChat,
   isProjectLeadId,
   listMonos,
@@ -7040,6 +7041,22 @@ function Workspace({
       // happens (monoDelete.ts). WP-76: a running chat is stopped first, and the person has already been told.
       const confirmed = await confirmDelete(name, monoDeleteDetail(!!mono.sessionId), { undoable: true });
       if (!confirmed) return;
+      // G2: its further chats and its project chats go to the trash with it, the way its main chat does, instead of
+      // staying behind as plain chats. A trash restore brings them back with the roster entry (the payload keeps them).
+      const ownChats = monoOwnChats(monoId);
+      const otherChats = ownChats
+        .filter((id) => id !== mono.sessionId)
+        .map((id) => ({
+          id,
+          busy: sessionsRef.current.some((session) => session.id === id && session.busy),
+        }));
+      const removeOtherChat = async (sessionId: string) => {
+        if (monoViewIdRef.current === sessionId) closeMonoView();
+        const listed =
+          sessionsRef.current.some((session) => session.id === sessionId) ||
+          history.some((entry) => entry.id === sessionId);
+        return !listed || (await onRemoveHistorySession(sessionId, "delete", true));
+      };
       try {
         const moved = await deleteMonoToTrash({
           confirmed: true,
@@ -7050,6 +7067,7 @@ function Workspace({
                 (session) => session.id === mono.sessionId && session.busy,
               ),
           ),
+          otherChats,
           stop: (sessionId) => stopSessionForRemoval(sessionId).then(() => undefined),
           markStopped: (sessionId) => {
             const latest = sessionsRef.current.find((session) => session.id === sessionId);
@@ -7075,10 +7093,11 @@ function Workspace({
             trashMono({
               id: monoId,
               title: name,
-              sessionIds: mono.sessionId ? [mono.sessionId] : undefined,
+              sessionIds: ownChats.length ? ownChats : undefined,
               payload: JSON.stringify(mono),
             }).then(() => undefined),
-          removeChat: async () => {
+          removeChat: async (sessionId) => {
+            if (sessionId !== mono.sessionId) return removeOtherChat(sessionId);
             if (!mono.sessionId) return true;
             if (monoViewIdRef.current === mono.sessionId) closeMonoView();
             const listed =
