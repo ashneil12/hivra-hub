@@ -1,5 +1,6 @@
 use super::*;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -229,6 +230,24 @@ fn a_generic_assignment_on_a_plus_line_is_caught() {
 }
 
 #[test]
+fn an_end_line_before_begin_does_not_hide_a_private_key() {
+    let patch = patch_lines(
+        "keys/deploy.pem",
+        1,
+        &[
+            "-----END PRIVATE KEY-----",
+            "-----BEGIN PRIVATE KEY-----",
+            "AAAAfakebody",
+        ],
+    );
+    let err = scan_patch(&patch).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in keys/deploy.pem:2"),
+        "{err}"
+    );
+}
+
+#[test]
 fn a_private_key_block_across_added_lines_is_caught_at_its_first_line() {
     let patch = patch_lines(
         "keys/deploy.pem",
@@ -266,6 +285,91 @@ fn a_refusal_changes_no_ignore_file_on_disk() {
         fs::read(repo.path().join(".gitignore")).unwrap(),
         gitignore_before
     );
+}
+
+fn hash_object(repo: &Path, kind: &str, bytes: &[u8], literally: bool) -> String {
+    let mut args = vec!["hash-object", "-t", kind, "-w", "--stdin"];
+    if literally {
+        // A UTF-16 commit message contains NUL bytes. Ordinary hash-object refuses those; the guard still has to
+        // read an object that is already in the store.
+        args.insert(1, "--literally");
+    }
+    let mut child = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(&args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("git runs");
+    child.stdin.take().unwrap().write_all(bytes).expect("stdin");
+    let out = child.wait_with_output().expect("git finishes");
+    assert!(
+        out.status.success(),
+        "hash-object failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn utf16le(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    for unit in text.encode_utf16() {
+        bytes.extend(unit.to_le_bytes());
+    }
+    bytes
+}
+
+#[test]
+fn a_utf16_commit_message_is_read_as_text() {
+    let (local, _remote) = pushed_repo("utf16");
+    local.write("src/app.txt", "shipped\n");
+    local.commit("add app");
+    let key = fake_key();
+    let tree = local.git(&["rev-parse", "HEAD^{tree}"]);
+    let parent = local.git(&["rev-parse", "HEAD"]);
+    let mut object = format!(
+        "tree {}\nparent {}\nauthor Guard Test <guard@example.test> 1 +0000\ncommitter Guard Test <guard@example.test> 1 +0000\nencoding UTF-16\n\n",
+        tree.trim(),
+        parent.trim()
+    )
+    .into_bytes();
+    object.extend(utf16le(&format!("release {key}\n")));
+    let sha = hash_object(local.path(), "commit", &object, true);
+    local.git(&["update-ref", "HEAD", &sha]);
+    let err = gate_outgoing(local.path()).unwrap_err();
+    assert!(err.contains("a commit message"), "{err}");
+    assert!(!err.contains(key_body(&key)), "the value leaked: {err}");
+}
+
+#[test]
+fn a_utf16_tag_message_is_read_as_text() {
+    let (local, remote) = pushed_repo("utf16tag");
+    let key = fake_key();
+    let head = local.git(&["rev-parse", "HEAD"]);
+    let mut object = format!(
+        "object {}\ntype commit\ntag v1\ntagger Guard Test <guard@example.test> 1 +0000\nencoding UTF-16\n\n",
+        head.trim()
+    )
+    .into_bytes();
+    object.extend(utf16le(&format!("release {key}\n")));
+    let sha = hash_object(local.path(), "tag", &object, false);
+    local.git(&["update-ref", "refs/tags/v1", &sha]);
+    let zero = "0".repeat(40);
+    let stdin = format!("refs/tags/v1 {sha} refs/tags/v1 {zero}\n");
+    let err =
+        pre_push_stdin_check(local.path(), remote.path().to_str().unwrap(), &stdin).unwrap_err();
+    assert!(err.contains("a commit message"), "{err}");
+    assert!(!err.contains(key_body(&key)), "the value leaked: {err}");
+}
+
+#[test]
+fn the_push_gate_returns_the_commit_it_checked() {
+    let (local, _remote) = pushed_repo("pinned");
+    let head = local.git(&["rev-parse", "HEAD"]);
+    let sha = gate_outgoing_to(local.path(), "origin").expect("a clean push is checked");
+    assert_eq!(sha, head.trim());
 }
 
 #[test]

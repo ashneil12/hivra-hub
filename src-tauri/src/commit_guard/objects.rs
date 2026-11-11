@@ -1,16 +1,18 @@
 //! How the guard reads a repository.
 //!
-//! The git dir is the `.git` entry of the folder the check was given (a directory, or a `gitdir:` file). It is not
-//! `rev-parse --show-toplevel`, which follows `core.worktree` and would read a different checkout from the one `git
-//! push` sends. Every later read passes that git dir.
+//! The git dir is `rev-parse --absolute-git-dir` from the folder the check was given, the same discovery `git push`
+//! uses. It is not `rev-parse --show-toplevel`, which follows `core.worktree` and would read a different checkout.
+//! Every later read passes that git dir with `--git-dir` and `--work-tree`.
 //!
 //! File content is the blob, not a diff. A line is new when it occurs more times in the commit's blob than in every
-//! parent's blob. Attributes, textconv, colour and binary detection never see it.
+//! parent's blob. Attributes, textconv, colour and binary detection never see it. A gitlink is not file content: a
+//! parent entry of mode 160000 counts as absent, and only a blob is accepted as content.
 //!
-//! The one network read (`ls-remote`) runs in an empty folder, with no `-C` and no `GIT_DIR`, so the repository's url
-//! rewrites and `core.sshCommand` cannot choose what it sees. That one call keeps the global and system config so a
-//! credential helper still runs. A commit is treated as already on the remote only when every push destination
-//! advertises it.
+//! The one network read (`ls-remote`) runs in a fresh empty folder under a scratch directory, with the discovery
+//! ceiling set to that scratch directory's parent. Git stops only at a proper ancestor, so a ceiling equal to the
+//! current folder would still use a repository above it. The push URL is resolved with the same global config `git
+//! push` reads. `ls-remote` then keeps the credential helper and drops `url.*`, so a second rewrite cannot point the
+//! base at a decoy. A commit is treated as already on the remote only when every push destination advertises it.
 
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -25,35 +27,63 @@ pub(super) struct Repo {
     pub work_tree: PathBuf,
 }
 
-const UNREADABLE: &str = "The secret check could not read this repository, so nothing was sent.";
+pub(super) const UNREADABLE: &str =
+    "The secret check could not read this repository, so nothing was sent.";
 const UNREADABLE_CHANGE: &str = "The secret check could not read this change, so nothing was sent.";
+type HeaderParts = (Vec<String>, Option<String>, Vec<u8>);
+pub(super) type StagedBlob = (String, Option<Vec<u8>>);
 
 pub(super) fn open_repo(start: &Path) -> Result<Repo, String> {
     let mut dir = crate::fs::canonical(start).unwrap_or_else(|_| start.to_path_buf());
     if !dir.is_dir() {
         dir.pop();
     }
-    loop {
-        let dot = dir.join(".git");
-        if dot.is_dir() {
-            let git_dir = crate::fs::canonical(&dot).map_err(|error| error.to_string())?;
-            return Ok(Repo {
-                git_dir,
-                work_tree: dir,
-            });
-        }
-        if dot.is_file() {
-            let git_dir = gitdir_file(&dot, &dir)?;
-            return Ok(Repo {
-                git_dir,
-                work_tree: dir,
-            });
-        }
-        if !dir.pop() {
-            break;
-        }
+    let git_dir = absolute_git_dir(&dir)?;
+    Ok(Repo {
+        git_dir: git_dir.clone(),
+        work_tree: work_tree_for(&git_dir, &dir),
+    })
+}
+
+/// Git's own discovery, from the folder a push would use. The printed path keeps trailing spaces: git strips only
+/// CR and LF from a `gitdir:` line. `safe.bareRepository=explicit` (set on the app's git command) would skip a bare
+/// root and walk into a parent, so this command forces `all` and drops that injection.
+fn absolute_git_dir(dir: &Path) -> Result<PathBuf, String> {
+    let mut cmd = crate::fs::git_cmd();
+    strip_repo_env(&mut cmd, true);
+    cmd.current_dir(dir).env("GIT_TERMINAL_PROMPT", "0").args([
+        "--no-pager",
+        "-c",
+        "core.quotePath=false",
+        "-c",
+        "safe.bareRepository=all",
+        "rev-parse",
+        "--absolute-git-dir",
+    ]);
+    let out = match read_capped(cmd, None, super::CHECK_TIMEOUT, super::MAX_CHECKED_BYTES) {
+        Ok(out) => out,
+        Err(error) if error == super::TIMED_OUT || error == super::TOO_LARGE => return Err(error),
+        Err(_) => return Err(UNREADABLE.into()),
+    };
+    let text = std::str::from_utf8(&out).map_err(|_| UNREADABLE.to_string())?;
+    let path = trim_crlf(text);
+    if path.is_empty() || path.contains('\n') || path.contains('\r') {
+        return Err(UNREADABLE.into());
     }
-    Err(UNREADABLE.into())
+    let raw = PathBuf::from(path);
+    let git_dir = if raw.is_absolute() {
+        raw
+    } else {
+        dir.join(raw)
+    };
+    if !git_dir.exists() {
+        return Err(UNREADABLE.into());
+    }
+    Ok(git_dir)
+}
+
+fn trim_crlf(text: &str) -> &str {
+    text.trim_end_matches(['\r', '\n'])
 }
 
 /// The hook's git dir. Git sets `GIT_DIR` when it runs the hook; the current directory may be `core.worktree`.
@@ -73,26 +103,10 @@ pub(super) fn open_git_dir(git_dir: &Path, hint: &Path) -> Result<Repo, String> 
     })
 }
 
-fn gitdir_file(dot: &Path, dir: &Path) -> Result<PathBuf, String> {
-    let text = std::fs::read_to_string(dot).map_err(|error| error.to_string())?;
-    let rest = text
-        .trim()
-        .strip_prefix("gitdir:")
-        .ok_or_else(|| UNREADABLE.to_string())?
-        .trim();
-    let raw = PathBuf::from(rest);
-    let abs = if raw.is_absolute() {
-        raw
-    } else {
-        dir.join(raw)
-    };
-    crate::fs::canonical(&abs).map_err(|error| error.to_string())
-}
-
 fn work_tree_for(git_dir: &Path, hint: &Path) -> PathBuf {
     let pointer = git_dir.join("gitdir");
     if let Ok(text) = std::fs::read_to_string(&pointer) {
-        let raw = PathBuf::from(text.trim());
+        let raw = PathBuf::from(trim_crlf(&text));
         let abs = if raw.is_absolute() {
             raw
         } else {
@@ -114,34 +128,73 @@ fn work_tree_for(git_dir: &Path, hint: &Path) -> PathBuf {
     hint.to_path_buf()
 }
 
-fn strip_repo_env(cmd: &mut Command, keep_global_config: bool) {
-    for (name, _) in std::env::vars_os() {
-        let Some(name) = name.to_str() else {
-            continue;
-        };
-        let location = name.starts_with("GIT_DIR")
+struct EnvKind {
+    location: bool,
+    injected: bool,
+    config: bool,
+}
+
+/// `fold` is what Windows does: environment names there ignore case. Unix names stay as written.
+fn classify_env(name: &str, fold: bool) -> EnvKind {
+    let upper;
+    let name = if fold {
+        upper = name.to_ascii_uppercase();
+        upper.as_str()
+    } else {
+        name
+    };
+    EnvKind {
+        location: name.starts_with("GIT_DIR")
             || name.starts_with("GIT_WORK_TREE")
             || name.starts_with("GIT_INDEX")
             || name.starts_with("GIT_OBJECT")
             || name.starts_with("GIT_ALTERNATE")
             || name.starts_with("GIT_COMMON")
             || name.starts_with("GIT_NAMESPACE")
-            || name.starts_with("GIT_REPLACE");
-        let injected = name == "GIT_CONFIG_PARAMETERS"
+            || name.starts_with("GIT_REPLACE"),
+        injected: name == "GIT_CONFIG_PARAMETERS"
             || name == "GIT_CONFIG_COUNT"
             || name.starts_with("GIT_CONFIG_KEY_")
-            || name.starts_with("GIT_CONFIG_VALUE_");
-        let config = name.starts_with("GIT_CONFIG");
-        if location || injected || (config && !keep_global_config) {
-            cmd.env_remove(name);
-        }
+            || name.starts_with("GIT_CONFIG_VALUE_"),
+        config: name.starts_with("GIT_CONFIG"),
     }
 }
 
+fn strip_repo_env(cmd: &mut Command, keep_global_config: bool) {
+    let fold = cfg!(windows);
+    for (name, _) in std::env::vars_os() {
+        let Some(text) = name.to_str() else {
+            continue;
+        };
+        let kind = classify_env(text, fold);
+        if kind.location || kind.injected || (kind.config && !keep_global_config) {
+            cmd.env_remove(name);
+        }
+    }
+    // `git_cmd` adds `safe.bareRepository=explicit` on the command itself, under the next
+    // `GIT_CONFIG_*` index. That is not in the process environment, so the loop above does not see it.
+    // Leaving it on would skip a bare root and discover a parent repository instead.
+    let inherited = std::env::var("GIT_CONFIG_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0);
+    cmd.env_remove("GIT_CONFIG_COUNT");
+    cmd.env_remove("GIT_CONFIG_PARAMETERS");
+    cmd.env_remove(format!("GIT_CONFIG_KEY_{inherited}"));
+    cmd.env_remove(format!("GIT_CONFIG_VALUE_{inherited}"));
+}
+
 /// A guard read. Repository config is still read; the overrides below are the ones that would change the bytes.
+/// Full object ids come from `--no-abbrev` on the diff commands. A numeric `core.abbrev` is rejected by git 2.43.
 pub(super) fn command(repo: &Repo) -> Command {
+    command_with(repo, false)
+}
+
+/// `keep_global` is only for resolving the push URL, which has to see the same global config `git push` does.
+/// Content reads pass false and hide the global and system files.
+fn command_with(repo: &Repo, keep_global: bool) -> Command {
     let mut cmd = crate::fs::git_cmd();
-    strip_repo_env(&mut cmd, false);
+    strip_repo_env(&mut cmd, keep_global);
     cmd.current_dir(&repo.work_tree)
         .arg("--no-pager")
         .arg("--no-replace-objects")
@@ -154,7 +207,6 @@ pub(super) fn command(repo: &Repo) -> Command {
         .args(["-c", "i18n.logOutputEncoding=UTF-8"])
         .args(["-c", "diff.relative=false"])
         .args(["-c", "log.showRoot=true"])
-        .args(["-c", "core.abbrev=64"])
         .args(["-c", "core.fsmonitor=false"])
         .args(["-c", "diff.external="])
         .args(["-c", "filter.lfs.required=false"])
@@ -162,11 +214,24 @@ pub(super) fn command(repo: &Repo) -> Command {
         .args(["-c", "filter.lfs.clean="])
         .args(["-c", "filter.lfs.smudge="])
         .env("GIT_NO_REPLACE_OBJECTS", "1")
-        .env("GIT_CONFIG_NOSYSTEM", "1")
-        .env("GIT_CONFIG_GLOBAL", "/dev/null")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0");
+    if !keep_global {
+        cmd.env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_CONFIG_GLOBAL", "/dev/null");
+    }
     cmd
+}
+
+#[cfg(test)]
+fn numeric_abbrev(arg: &str) -> bool {
+    let rest = arg
+        .strip_prefix("core.abbrev=")
+        .or_else(|| arg.strip_prefix("--abbrev="));
+    match rest {
+        Some(rest) => !rest.is_empty() && rest.bytes().all(|byte| byte.is_ascii_digit()),
+        None => false,
+    }
 }
 
 pub(super) struct LineHit {
@@ -245,7 +310,7 @@ fn scan_commit(repo: &Repo, sha: &str, scan: &mut Scan) -> Result<(), String> {
         diffs
     };
     let mut new_of: HashMap<String, (String, String)> = HashMap::new();
-    let mut per_parent: Vec<HashMap<String, Option<String>>> = Vec::new();
+    let mut per_parent: Vec<HashMap<String, Option<(String, String)>>> = Vec::new();
     for changes in diffs {
         let mut map = HashMap::new();
         for change in changes {
@@ -256,17 +321,18 @@ fn scan_commit(repo: &Repo, sha: &str, scan: &mut Scan) -> Result<(), String> {
                 change.path.clone(),
                 (change.new_sha.clone(), change.new_mode.clone()),
             );
-            let old = if super::is_zero_sha(&change.old_sha) {
+            // A gitlink is not file content. The same object id with a different mode class is a new file.
+            let old = if parent_absent(&change.old_mode, &change.old_sha) {
                 None
             } else {
-                Some(change.old_sha)
+                Some((change.old_sha, change.old_mode))
             };
             map.insert(change.path, old);
         }
         per_parent.push(map);
     }
     let mut wanted: Vec<String> = Vec::new();
-    for (path, (new_sha, _)) in &new_of {
+    for (path, (new_sha, new_mode)) in &new_of {
         if super::is_zero_sha(new_sha) {
             continue;
         }
@@ -276,7 +342,11 @@ fn scan_commit(repo: &Repo, sha: &str, scan: &mut Scan) -> Result<(), String> {
             match map.get(path) {
                 None => same = true,
                 Some(None) => added = true,
-                Some(Some(old)) if old == new_sha => same = true,
+                Some(Some((old, old_mode)))
+                    if old == new_sha && mode_class(old_mode) == mode_class(new_mode) =>
+                {
+                    same = true
+                }
                 Some(Some(_)) => {}
             }
         }
@@ -288,15 +358,15 @@ fn scan_commit(repo: &Repo, sha: &str, scan: &mut Scan) -> Result<(), String> {
         }
         wanted.push(new_sha.clone());
         for map in &per_parent {
-            if let Some(Some(old)) = map.get(path) {
-                if old != new_sha {
+            if let Some(Some((old, old_mode))) = map.get(path) {
+                if old != new_sha || mode_class(old_mode) != mode_class(new_mode) {
                     wanted.push(old.clone());
                 }
             }
         }
     }
     let blobs = cat_blobs(repo, &wanted)?;
-    for (path, (new_sha, _)) in &new_of {
+    for (path, (new_sha, new_mode)) in &new_of {
         if super::is_zero_sha(new_sha) {
             continue;
         }
@@ -305,9 +375,15 @@ fn scan_commit(repo: &Repo, sha: &str, scan: &mut Scan) -> Result<(), String> {
         for map in &per_parent {
             match map.get(path) {
                 None => same = true,
-                Some(Some(old)) if old == new_sha => same = true,
+                Some(Some((old, old_mode)))
+                    if old == new_sha && mode_class(old_mode) == mode_class(new_mode) =>
+                {
+                    same = true
+                }
                 Some(None) => parent_blobs.push(Vec::new()),
-                Some(Some(old)) => parent_blobs.push(blobs.get(old).cloned().unwrap_or_default()),
+                Some(Some((old, _))) => {
+                    parent_blobs.push(blobs.get(old).cloned().unwrap_or_default())
+                }
             }
         }
         if same && !parents.is_empty() {
@@ -324,27 +400,137 @@ fn scan_commit(repo: &Repo, sha: &str, scan: &mut Scan) -> Result<(), String> {
 
 fn commit_body(repo: &Repo, sha: &str) -> Result<(Vec<String>, String), String> {
     let bytes = git_bytes(repo, &["cat-file", "commit", sha], None)?;
-    let text = String::from_utf8_lossy(&bytes);
-    let mut parents = Vec::new();
-    let mut message = String::new();
-    let mut header = true;
-    for line in text.split_inclusive('\n') {
-        if header {
-            if line == "\n" {
-                header = false;
-                continue;
-            }
-            if let Some(parent) = line.strip_prefix("parent ") {
-                parents.push(parent.trim().to_string());
-            }
-            continue;
-        }
-        message.push_str(line);
-    }
-    if message_is_coloured(&message) {
+    let (parents, encoding, message) = split_headers(&bytes, "parent ")?;
+    let text = decode_message(&message, encoding.as_deref())?;
+    if message_is_coloured(&text) {
         return Err(COLOUR_REFUSED.into());
     }
-    Ok((parents, message))
+    Ok((parents, text))
+}
+
+/// Headers up to the blank line, then the raw message bytes. `id_prefix` is `parent ` for a commit and `object ` for a
+/// tag. An `encoding` header is kept so the message can be turned into UTF-8 before it is scanned.
+fn split_headers(bytes: &[u8], id_prefix: &str) -> Result<HeaderParts, String> {
+    let prefix = id_prefix.as_bytes();
+    let mut ids = Vec::new();
+    let mut encoding = None;
+    let mut index = 0;
+    while index < bytes.len() {
+        let end = bytes[index..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|at| index + at)
+            .unwrap_or(bytes.len());
+        let line = &bytes[index..end];
+        let next = if end < bytes.len() { end + 1 } else { end };
+        if line.is_empty() {
+            return Ok((ids, encoding, bytes[next..].to_vec()));
+        }
+        if let Some(rest) = line.strip_prefix(prefix) {
+            let id = String::from_utf8_lossy(rest).trim().to_string();
+            if !id.is_empty() {
+                ids.push(id);
+            }
+        } else if let Some(rest) = strip_ascii_prefix(line, b"encoding ") {
+            encoding = Some(String::from_utf8_lossy(rest).trim().to_string());
+        }
+        index = next;
+    }
+    Ok((ids, encoding, Vec::new()))
+}
+
+fn strip_ascii_prefix<'a>(line: &'a [u8], prefix: &[u8]) -> Option<&'a [u8]> {
+    if line.len() < prefix.len() {
+        return None;
+    }
+    if line[..prefix.len()].eq_ignore_ascii_case(prefix) {
+        Some(&line[prefix.len()..])
+    } else {
+        None
+    }
+}
+
+fn same_encoding(name: &str, choices: &[&str]) -> bool {
+    choices
+        .iter()
+        .any(|choice| name.eq_ignore_ascii_case(choice))
+}
+
+/// A message with an `encoding` header is not scanned as raw bytes. UTF-8, ISO-8859-1 and UTF-16 are decoded here.
+/// Anything else goes through `iconv` when the name is a plain token, and a failed conversion is a refusal.
+fn decode_message(raw: &[u8], encoding: Option<&str>) -> Result<String, String> {
+    let name = encoding.unwrap_or("UTF-8").trim();
+    if name.is_empty() || same_encoding(name, &["utf-8", "utf8"]) {
+        return if encoding.is_none() {
+            Ok(String::from_utf8_lossy(raw).into_owned())
+        } else {
+            String::from_utf8(raw.to_vec()).map_err(|_| UNREADABLE_CHANGE.to_string())
+        };
+    }
+    if same_encoding(name, &["iso-8859-1", "iso8859-1", "latin1", "latin-1"]) {
+        return Ok(raw.iter().map(|byte| char::from(*byte)).collect());
+    }
+    if same_encoding(name, &["utf-16", "utf-16le", "utf-16be"]) {
+        return decode_utf16(raw, name);
+    }
+    if !name
+        .chars()
+        .all(|char| char.is_ascii_alphanumeric() || char == '_' || char == '-')
+    {
+        return Err(UNREADABLE_CHANGE.into());
+    }
+    iconv_utf8(name, raw)
+}
+
+fn decode_utf16(raw: &[u8], name: &str) -> Result<String, String> {
+    let (data, big) = if raw.starts_with(&[0xFF, 0xFE]) {
+        (&raw[2..], false)
+    } else if raw.starts_with(&[0xFE, 0xFF]) {
+        (&raw[2..], true)
+    } else if name.eq_ignore_ascii_case("utf-16be") {
+        (raw, true)
+    } else {
+        (raw, false)
+    };
+    if data.len() % 2 != 0 {
+        return Err(UNREADABLE_CHANGE.into());
+    }
+    let units: Vec<u16> = data
+        .chunks_exact(2)
+        .map(|pair| {
+            if big {
+                u16::from_be_bytes([pair[0], pair[1]])
+            } else {
+                u16::from_le_bytes([pair[0], pair[1]])
+            }
+        })
+        .collect();
+    String::from_utf16(&units).map_err(|_| UNREADABLE_CHANGE.to_string())
+}
+
+fn iconv_utf8(name: &str, raw: &[u8]) -> Result<String, String> {
+    let mut cmd = Command::new("iconv");
+    cmd.args(["-f", name, "-t", "UTF-8"])
+        .env("PATH", crate::harness::cached_gui_search_path());
+    let out = read_capped(
+        cmd,
+        Some(raw),
+        super::CHECK_TIMEOUT,
+        super::MAX_CHECKED_BYTES,
+    )?;
+    String::from_utf8(out).map_err(|_| UNREADABLE_CHANGE.to_string())
+}
+
+fn mode_class(mode: &str) -> &'static str {
+    match mode {
+        "160000" => "gitlink",
+        "120000" => "symlink",
+        _ => "file",
+    }
+}
+
+fn parent_absent(mode: &str, sha: &str) -> bool {
+    super::is_zero_sha(sha) || mode == "160000"
 }
 
 fn message_is_coloured(message: &str) -> bool {
@@ -354,6 +540,7 @@ fn message_is_coloured(message: &str) -> bool {
 }
 
 struct Change {
+    old_mode: String,
     old_sha: String,
     new_sha: String,
     new_mode: String,
@@ -368,7 +555,7 @@ fn raw_diff(repo: &Repo, trees: &[&str]) -> Result<Vec<Change>, String> {
         "--raw",
         "--no-renames",
         "--no-commit-id",
-        "--abbrev=64",
+        "--no-abbrev",
         "--no-color",
         "--no-ext-diff",
         "--no-textconv",
@@ -396,15 +583,26 @@ fn parse_raw(bytes: &[u8]) -> Result<Vec<Change>, String> {
         rest = &rest[path_end + 1..];
         let head = String::from_utf8_lossy(head);
         let mut parts = head.split_whitespace();
-        let _old_mode = parts.next().unwrap_or("").trim_start_matches(':');
+        let old_mode = parts
+            .next()
+            .unwrap_or("")
+            .trim_start_matches(':')
+            .to_string();
         let new_mode = parts.next().unwrap_or("").to_string();
         let old_sha = parts.next().unwrap_or("").to_string();
         let new_sha = parts.next().unwrap_or("").to_string();
         let status = parts.next().unwrap_or("");
-        if status.is_empty() || path.is_empty() || old_sha.is_empty() || new_sha.is_empty() {
+        if status.is_empty()
+            || path.is_empty()
+            || old_mode.is_empty()
+            || new_mode.is_empty()
+            || old_sha.is_empty()
+            || new_sha.is_empty()
+        {
             return Err(UNREADABLE_CHANGE.into());
         }
         out.push(Change {
+            old_mode,
             old_sha,
             new_sha,
             new_mode,
@@ -446,9 +644,14 @@ fn parse_batch(bytes: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> {
         if kind == "missing" {
             continue;
         }
-        let size: usize = parts
-            .next()
-            .unwrap_or("0")
+        // Content is a blob. A commit, a tree, or a header this parser does not know is a refusal.
+        if kind != "blob" {
+            return Err(UNREADABLE_CHANGE.into());
+        }
+        let Some(size_text) = parts.next() else {
+            return Err(UNREADABLE_CHANGE.into());
+        };
+        let size: usize = size_text
             .parse()
             .map_err(|_| UNREADABLE_CHANGE.to_string())?;
         if sha.is_empty() || index + size > bytes.len() {
@@ -554,12 +757,18 @@ pub(super) fn peel(repo: &Repo, sha: &str) -> Result<Peel, String> {
                 });
             }
             "tag" => {
-                let body = git_text(repo, &["cat-file", "tag", &current])?;
-                if message_is_coloured(&body) {
+                let bytes = git_bytes(repo, &["cat-file", "tag", &current], None)?;
+                let (targets, encoding, message) = split_headers(&bytes, "object ")?;
+                let next = targets
+                    .into_iter()
+                    .next()
+                    .filter(|sha| !sha.is_empty())
+                    .ok_or_else(|| UNREADABLE_CHANGE.to_string())?;
+                let text = decode_message(&message, encoding.as_deref())?;
+                if message_is_coloured(&text) {
                     return Err(COLOUR_REFUSED.into());
                 }
-                let next = tag_target(&body)?;
-                messages.push(body);
+                messages.push(text);
                 current = next;
             }
             "blob" => {
@@ -589,14 +798,6 @@ pub(super) fn peel(repo: &Repo, sha: &str) -> Result<Peel, String> {
 fn object_type(repo: &Repo, sha: &str) -> Result<String, String> {
     let text = git_text(repo, &["cat-file", "-t", sha])?;
     Ok(text.trim().to_string())
-}
-
-fn tag_target(body: &str) -> Result<String, String> {
-    body.lines()
-        .find_map(|line| line.strip_prefix("object "))
-        .map(|sha| sha.trim().to_string())
-        .filter(|sha| !sha.is_empty())
-        .ok_or_else(|| UNREADABLE_CHANGE.to_string())
 }
 
 fn one_blob(repo: &Repo, sha: &str) -> Result<Vec<u8>, String> {
@@ -654,7 +855,7 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
         "-z",
         "--raw",
         "--no-renames",
-        "--abbrev=64",
+        "--no-abbrev",
         "--no-color",
         "--no-ext-diff",
         "--no-textconv",
@@ -671,13 +872,18 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
         if change.new_mode == "160000" || super::is_zero_sha(&change.new_sha) {
             continue;
         }
-        if super::is_zero_sha(&change.old_sha)
-            && !scan.added.iter().any(|have| have == &change.path)
-        {
+        let absent = parent_absent(&change.old_mode, &change.old_sha);
+        let same = !absent
+            && change.old_sha == change.new_sha
+            && mode_class(&change.old_mode) == mode_class(&change.new_mode);
+        if absent && !scan.added.iter().any(|have| have == &change.path) {
             scan.added.push(change.path.clone());
         }
+        if same {
+            continue;
+        }
         wanted.push(change.new_sha.clone());
-        if !super::is_zero_sha(&change.old_sha) && change.old_sha != change.new_sha {
+        if !absent {
             wanted.push(change.old_sha.clone());
         }
     }
@@ -686,13 +892,17 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
         if change.new_mode == "160000" || super::is_zero_sha(&change.new_sha) {
             continue;
         }
-        if change.old_sha == change.new_sha {
+        let absent = parent_absent(&change.old_mode, &change.old_sha);
+        let same = !absent
+            && change.old_sha == change.new_sha
+            && mode_class(&change.old_mode) == mode_class(&change.new_mode);
+        if same {
             continue;
         }
         let blob = blobs
             .get(&change.new_sha)
             .ok_or_else(|| UNREADABLE_CHANGE.to_string())?;
-        let parent = if super::is_zero_sha(&change.old_sha) {
+        let parent = if absent {
             Vec::new()
         } else {
             blobs.get(&change.old_sha).cloned().unwrap_or_default()
@@ -703,18 +913,102 @@ pub(super) fn scan_index(repo: &Repo, index: &Path, base: &str) -> Result<Scan, 
     Ok(scan)
 }
 
+/// The patch `land` applies. Built through the guard's git command, with textconv off, so a diff driver cannot
+/// write bytes the blob scan never read.
+pub(super) fn index_patch(repo: &Repo, index: &Path, base: &str) -> Result<Vec<u8>, String> {
+    let mut cmd = command(repo);
+    cmd.env("GIT_INDEX_FILE", index).args([
+        "diff",
+        "--cached",
+        "--binary",
+        "--full-index",
+        "--no-abbrev",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-textconv",
+        base,
+    ]);
+    read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)
+}
+
+/// The staged blob for each path, or `None` when the index does not have that path (a deletion). Not the work tree.
+pub(super) fn index_blobs(
+    repo: &Repo,
+    index: &Path,
+    paths: &[String],
+) -> Result<Vec<StagedBlob>, String> {
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut input = String::new();
+    for path in paths {
+        if path.contains('\n') || path.contains('\0') {
+            return Err(UNREADABLE_CHANGE.into());
+        }
+        input.push(':');
+        input.push_str(path);
+        input.push('\n');
+    }
+    let mut cmd = command(repo);
+    cmd.env("GIT_INDEX_FILE", index)
+        .args(["cat-file", "--batch"]);
+    let bytes = read_capped(
+        cmd,
+        Some(input.as_bytes()),
+        CHECK_TIMEOUT,
+        MAX_CHECKED_BYTES,
+    )?;
+    let mut out = Vec::new();
+    let mut index = 0;
+    for path in paths {
+        if index >= bytes.len() {
+            return Err(UNREADABLE_CHANGE.into());
+        }
+        let Some(relative) = bytes[index..].iter().position(|byte| *byte == b'\n') else {
+            return Err(UNREADABLE_CHANGE.into());
+        };
+        let header = std::str::from_utf8(&bytes[index..index + relative])
+            .map_err(|_| UNREADABLE_CHANGE.to_string())?;
+        index += relative + 1;
+        // The object name is the path, which may contain spaces, so the type and size are the last two words.
+        if header.ends_with(" missing") {
+            out.push((path.clone(), None));
+            continue;
+        }
+        let Some((head, size_text)) = header.rsplit_once(' ') else {
+            return Err(UNREADABLE_CHANGE.into());
+        };
+        let Some((_, kind)) = head.rsplit_once(' ') else {
+            return Err(UNREADABLE_CHANGE.into());
+        };
+        if kind != "blob" {
+            return Err(UNREADABLE_CHANGE.into());
+        }
+        let size: usize = size_text
+            .parse()
+            .map_err(|_| UNREADABLE_CHANGE.to_string())?;
+        if index + size > bytes.len() {
+            return Err(UNREADABLE_CHANGE.into());
+        }
+        let blob = bytes[index..index + size].to_vec();
+        index += size;
+        if index < bytes.len() && bytes[index] == b'\n' {
+            index += 1;
+        }
+        out.push((path.clone(), Some(blob)));
+    }
+    Ok(out)
+}
+
 fn has_url_rewrite(repo: &Repo) -> Result<bool, String> {
-    let output = command(repo)
-        .args(["config", "--local", "--get-regexp", r"^url\."])
-        .output()
-        .map_err(|error| error.to_string())?;
-    if output.status.code() == Some(1) {
-        return Ok(false);
+    let mut cmd = command(repo);
+    cmd.args(["config", "--local", "--get-regexp", r"^url\."]);
+    match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
+        Ok(out) => Ok(!out.is_empty()),
+        // `git config --get-regexp` exits 1, with nothing on stderr, when no key matches.
+        Err(error) if error == "git failed" || error.is_empty() => Ok(false),
+        Err(error) => Err(error),
     }
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    Ok(!output.stdout.is_empty())
 }
 
 fn push_unique(urls: &mut Vec<String>, url: String) {
@@ -725,29 +1019,31 @@ fn push_unique(urls: &mut Vec<String>, url: String) {
 }
 
 /// Every URL `git push` uses for `remote`. `get-url --push` already applies `pushInsteadOf`, or `insteadOf` when no
-/// push rewrite matches, which is the same URL the push itself contacts. The configured string is not added as well:
-/// a checkout may rewrite a public name onto a local stand-in, and asking that public name would refuse a push that
-/// never goes there. The caller then reads each of these URLs from outside the repository, so a second `insteadOf`
-/// cannot point the check at a decoy.
+/// push rewrite matches, which is the same URL the push itself contacts. This call keeps the global config, because
+/// the push does too. The configured string is not added as well: a checkout may rewrite a public name onto a local
+/// stand-in, and asking that public name would refuse a push that never goes there. The caller then reads each of
+/// these URLs from outside the repository, with `url.*` hidden, so a second `insteadOf` cannot point the check at a
+/// decoy.
 pub(super) fn push_destinations(repo: &Repo, remote: &str) -> Result<Vec<String>, String> {
-    let output = command(repo)
-        .args(["remote", "get-url", "--push", "--all", remote])
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        if has_url_rewrite(repo)? {
-            return Err(
-                "The secret check could not read where this push goes, so nothing was sent.".into(),
-            );
+    let mut cmd = command_with(repo, true);
+    cmd.args(["remote", "get-url", "--push", "--all", remote]);
+    let output = match read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES) {
+        Ok(output) => output,
+        Err(error) => {
+            if has_url_rewrite(repo)? {
+                return Err(
+                    "The secret check could not read where this push goes, so nothing was sent."
+                        .into(),
+                );
+            }
+            if error == "git failed" || error.is_empty() {
+                return Err(format!("the remote {remote} has no push URL"));
+            }
+            return Err(error);
         }
-        let message = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if message.is_empty() {
-            return Err(format!("the remote {remote} has no push URL"));
-        }
-        return Err(message);
-    }
+    };
     let mut urls = Vec::new();
-    for url in String::from_utf8_lossy(&output.stdout).lines() {
+    for url in String::from_utf8_lossy(&output).lines() {
         push_unique(&mut urls, url.to_string());
     }
     if urls.is_empty() {
@@ -768,7 +1064,7 @@ pub(super) fn destinations_for(repo: &Repo, target: &str) -> Result<Vec<String>,
     Err(format!("the remote {target} has no push URL"))
 }
 
-/// Tips a remote advertises, read from outside the repository. Global and system config are kept.
+/// Tips a remote advertises, read from outside the repository. The credential helper is kept. `url.*` is not.
 pub(super) fn advertised_shas(url: &str) -> Result<Vec<String>, String> {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -782,10 +1078,24 @@ pub(super) fn advertised_shas(url: &str) -> Result<Vec<String>, String> {
 }
 
 fn advertised_in(scratch: &Path, url: &str) -> Result<Vec<String>, String> {
+    let empty = scratch.join("empty");
+    std::fs::create_dir_all(&empty).map_err(|error| error.to_string())?;
+    let xdg = scratch.join("xdg");
+    std::fs::create_dir_all(&xdg).map_err(|error| error.to_string())?;
+    // Git ignores a ceiling equal to the current directory. The ceiling has to be a proper ancestor, and the
+    // command has to run somewhere that ancestor actually contains.
+    let ceiling = match scratch.parent() {
+        Some(parent) => crate::fs::canonical(parent).unwrap_or_else(|_| parent.to_path_buf()),
+        None => scratch.to_path_buf(),
+    };
+    let global = sanitized_global(scratch)?;
     let mut cmd = crate::fs::git_cmd();
     strip_repo_env(&mut cmd, true);
-    cmd.current_dir(scratch)
-        .env("GIT_CEILING_DIRECTORIES", scratch)
+    cmd.current_dir(&empty)
+        .env("GIT_CEILING_DIRECTORIES", &ceiling)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", &global)
+        .env("XDG_CONFIG_HOME", &xdg)
         .env("GIT_TERMINAL_PROMPT", "0")
         .args(["--no-pager", "-c", "color.ui=never", "ls-remote", url]);
     let out = read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
@@ -870,9 +1180,23 @@ pub(super) fn read_capped(
         }
         buf
     });
+    let err_flag = over.clone();
     let err_reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = stderr.read_to_end(&mut buf);
+        let mut chunk = [0u8; 8192];
+        loop {
+            match stderr.read(&mut chunk) {
+                Ok(0) => break,
+                Ok(n) => {
+                    buf.extend_from_slice(&chunk[..n]);
+                    if buf.len() > max_bytes {
+                        err_flag.store(true, Ordering::Relaxed);
+                        break;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
         buf
     });
     let deadline = Instant::now() + limit;
@@ -901,7 +1225,7 @@ pub(super) fn read_capped(
     let _ = writer.join();
     let out = out_reader.join().unwrap_or_default();
     let err = err_reader.join().unwrap_or_default();
-    if over.load(Ordering::Relaxed) || out.len() > max_bytes {
+    if over.load(Ordering::Relaxed) || out.len() > max_bytes || err.len() > max_bytes {
         return Err(super::TOO_LARGE.into());
     }
     if !status.success() {
@@ -912,4 +1236,123 @@ pub(super) fn read_capped(
         return Err(message);
     }
     Ok(out)
+}
+
+/// A copy of the global git config with `url.*` and includes removed, so `ls-remote` cannot be steered onto a decoy
+/// and an include cannot put a rewrite back. The credential helper stays. The real config file is only read.
+fn sanitized_global(scratch: &Path) -> Result<PathBuf, String> {
+    let mut combined = String::new();
+    for path in global_config_files() {
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        combined.push_str(&text);
+        if !combined.ends_with('\n') {
+            combined.push('\n');
+        }
+    }
+    let file = scratch.join("global.gitconfig");
+    std::fs::write(&file, strip_url_config(&combined)).map_err(|error| error.to_string())?;
+    Ok(file)
+}
+
+fn global_config_files() -> Vec<PathBuf> {
+    if let Some(path) = std::env::var_os("GIT_CONFIG_GLOBAL") {
+        if !path.is_empty() {
+            return vec![PathBuf::from(path)];
+        }
+    }
+    let Some(home) = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")) else {
+        return Vec::new();
+    };
+    let home = PathBuf::from(home);
+    let xdg = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    vec![home.join(".gitconfig"), xdg.join("git").join("config")]
+}
+
+fn strip_url_config(text: &str) -> String {
+    let mut out = String::new();
+    let mut skipping = false;
+    for line in text.split_inclusive('\n') {
+        let trimmed = line.trim().trim_end_matches('\r');
+        if trimmed.starts_with('[') && trimmed.contains(']') {
+            skipping = url_or_include_section(trimmed);
+        }
+        if skipping {
+            continue;
+        }
+        let key = trimmed
+            .split(['=', ' ', '\t'])
+            .next()
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if key.starts_with("url.") || key == "include.path" || key.starts_with("includeif.") {
+            continue;
+        }
+        out.push_str(line);
+    }
+    out
+}
+
+fn url_or_include_section(header: &str) -> bool {
+    let inner = header.trim().trim_start_matches('[').trim_end_matches(']');
+    let name = inner
+        .split(|c: char| c.is_whitespace() || c == '"')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    name == "url" || name == "include" || name.starts_with("includeif")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guard_arguments_never_set_a_numeric_abbrev() {
+        let repo = Repo {
+            git_dir: PathBuf::from("git"),
+            work_tree: PathBuf::from("work"),
+        };
+        let cmd = command(&repo);
+        for arg in cmd.get_args() {
+            let arg = arg.to_string_lossy();
+            assert!(
+                !numeric_abbrev(&arg),
+                "a numeric abbrev is out of range on git 2.43: {arg}"
+            );
+        }
+        for arg in ["--no-abbrev", "--full-index", "--no-textconv"] {
+            assert!(!numeric_abbrev(arg), "{arg}");
+        }
+        assert!(numeric_abbrev("core.abbrev=64"));
+        assert!(numeric_abbrev("--abbrev=40"));
+        assert!(!numeric_abbrev("--no-abbrev"));
+        assert!(!numeric_abbrev("core.abbrev=no"));
+    }
+
+    #[test]
+    fn windows_env_names_fold_before_they_match() {
+        assert!(classify_env("Git_Dir", true).location);
+        assert!(!classify_env("Git_Dir", false).location);
+        assert!(classify_env("git_config_count", true).injected);
+        assert!(!classify_env("git_config_count", false).injected);
+        assert!(classify_env("Git_Config_Global", true).config);
+        assert!(!classify_env("PATH", true).config);
+    }
+
+    #[test]
+    fn url_sections_are_dropped_and_the_credential_helper_stays() {
+        let text = "\
+[credential]\n\thelper = !'/tmp/helper.sh'\n\
+[url \"file:///decoy\"]\n\tinsteadOf = https://example.test/\n\
+[include]\n\tpath = /tmp/more\n\
+";
+        let kept = strip_url_config(text);
+        assert!(kept.contains("helper"));
+        assert!(!kept.contains("insteadOf"));
+        assert!(!kept.contains("include"));
+    }
 }

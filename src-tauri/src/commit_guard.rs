@@ -117,17 +117,13 @@ fn colour_wrapped(bytes: &[u8]) -> bool {
 
 /// Small git answers (a name, a config value). Output with an escape byte is refused, never read.
 fn git_out(root: &Path, args: &[&str]) -> Result<String, String> {
-    let output = guard_git(root)
-        .args(args)
-        .output()
-        .map_err(|e| e.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    if colour_wrapped(&output.stdout) {
+    let mut cmd = guard_git(root);
+    cmd.args(args);
+    let out = objects::read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
+    if colour_wrapped(&out) {
         return Err(COLOUR_REFUSED.into());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 #[cfg(test)]
@@ -357,14 +353,29 @@ fn check_added(added: &[Added], allows: &[Allow], repo: &str) -> Result<(), Find
             if !lines[start].text.contains("-----BEGIN") {
                 continue;
             }
-            let end = (start..lines.len())
-                .find(|&index| lines[index].text.contains("-----END"))
-                .unwrap_or(lines.len() - 1);
-            let block = lines[start..=end]
-                .iter()
-                .map(|line| line.text.as_str())
-                .collect::<Vec<_>>()
-                .join("\n");
+            // An END that appears only before this BEGIN must not close it, and must not hide it either.
+            // Each BEGIN is its own block, so one END cannot allow a second key.
+            let end_after =
+                (start + 1..lines.len()).find(|&index| lines[index].text.contains("-----END"));
+            let block = if let Some(end) = end_after {
+                lines[start..=end]
+                    .iter()
+                    .map(|line| line.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            } else {
+                let mut parts: Vec<&str> = lines[start..]
+                    .iter()
+                    .map(|line| line.text.as_str())
+                    .collect();
+                if let Some(prior) = (0..start)
+                    .rev()
+                    .find(|&index| lines[index].text.contains("-----END"))
+                {
+                    parts.push(lines[prior].text.as_str());
+                }
+                parts.join("\n")
+            };
             if scrubber
                 .findings(&block)
                 .iter()
@@ -484,17 +495,13 @@ fn refuse_lines(root: &Path, added: &[Added]) -> Result<(), String> {
 }
 
 fn git_out_repo(repo: &objects::Repo, args: &[&str]) -> Result<String, String> {
-    let output = objects::command(repo)
-        .args(args)
-        .output()
-        .map_err(|error| error.to_string())?;
-    if !output.status.success() {
-        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
-    }
-    if colour_wrapped(&output.stdout) {
+    let mut cmd = objects::command(repo);
+    cmd.args(args);
+    let out = objects::read_capped(cmd, None, CHECK_TIMEOUT, MAX_CHECKED_BYTES)?;
+    if colour_wrapped(&out) {
         return Err(COLOUR_REFUSED.into());
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    Ok(String::from_utf8_lossy(&out).into_owned())
 }
 
 /// Gates the commits named by `revs` (for example `sha --not <tips>`). Each commit is read from its blobs, so a merge,
@@ -641,16 +648,22 @@ pub fn push_remote(root: &Path) -> String {
     "origin".to_string()
 }
 
-/// The gate before a push to `remote` of the given commits (the app's own push, a PR, a checked delivery).
-pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<(), String> {
+/// The gate before a push to `remote`. The returned sha is the commit that was checked; the push sends that sha,
+/// not a second read of HEAD.
+pub fn gate_outgoing_to(root: &Path, remote: &str) -> Result<String, String> {
     let repo = objects::open_repo(root)?;
     let urls = objects::push_destinations(&repo, remote)?;
     let head = git_out_repo(&repo, &["rev-parse", "HEAD"])?;
-    gate_shas(root, &repo, &urls, &[head.trim().to_string()])
+    let sha = head.trim().to_string();
+    if sha.is_empty() {
+        return Err(objects::UNREADABLE.into());
+    }
+    gate_shas(root, &repo, &urls, std::slice::from_ref(&sha))?;
+    Ok(sha)
 }
 /// The gate before the app's own push, a pull request or a checked delivery from this checkout.
 pub fn gate_outgoing(root: &Path) -> Result<(), String> {
-    gate_outgoing_to(root, &push_remote(root))
+    gate_outgoing_to(root, &push_remote(root)).map(|_| ())
 }
 
 fn pre_push_heads(
@@ -812,6 +825,22 @@ pub fn scan_landing_index(
     let added: Vec<Added> = scan.lines.iter().map(added_from).collect();
     refuse_lines(project, &added)?;
     Ok(scan.files)
+}
+
+/// The patch that lands, read through the guard's git command with textconv off.
+pub fn landing_patch(checkout: &Path, index: &Path, base: &str) -> Result<Vec<u8>, String> {
+    let repo = objects::open_repo(checkout)?;
+    objects::index_patch(&repo, index, base)
+}
+
+/// Staged blobs for the three-way land. A missing path is a deletion, not the working-tree file.
+pub fn staged_blobs(
+    checkout: &Path,
+    index: &Path,
+    paths: &[String],
+) -> Result<Vec<objects::StagedBlob>, String> {
+    let repo = objects::open_repo(checkout)?;
+    objects::index_blobs(&repo, index, paths)
 }
 
 // ---- person-approved allows ------------------------------------------------------------------------------------------
