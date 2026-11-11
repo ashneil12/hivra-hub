@@ -134,12 +134,14 @@ pub enum Change {
     },
     Remarks(Vec<Remark>),
     Conflicting,
-    /// Main moved to `to` and changed `files` this pull request touches (WP-202). `cut_short`: GitHub listed only part
-    /// of the files, so the overlap is unknown and `files` may be empty.
+    /// Main moved to `to` and changed `files` this pull request touches (WP-202). `cut_short`: the base compare
+    /// listed only part of its files. `pull_cut`: the pull request's own file list was short. Either one leaves
+    /// the overlap unknown, and `files` may be empty.
     BaseMoved {
         to: String,
         files: Vec<String>,
         cut_short: bool,
+        pull_cut: bool,
     },
     /// The branch is behind main (WP-202): `commits` when GitHub counted them.
     Behind {

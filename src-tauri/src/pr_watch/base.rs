@@ -15,8 +15,10 @@ use super::github::PrRead;
 
 /// GitHub's compare answer lists at most this many files; a list this long may be cut short.
 pub const COMPARE_FILE_CAP: usize = 300;
-/// One page of a pull request's files: a page this full may be cut short.
+/// One page of a pull request's files. GitHub serves at most 100 per page.
 pub const PULL_FILES_PAGE: usize = 100;
+/// GitHub lists at most this many files on a pull request. Past it, the list is short.
+const PR_FILES_LIMIT: usize = 3000;
 /// Remembered base wakes per watch (a head and base each add one key).
 const TOLD_BASE_MAX: usize = 20;
 /// How long a watch waits before it asks GitHub again after a failed base read (rate limits, the network).
@@ -68,8 +70,9 @@ pub struct Facts {
 enum Touch {
     None,
     Named(Vec<String>),
-    /// GitHub listed only part of one of the file lists: it may touch the pull request.
-    Unknown,
+    /// GitHub listed only part of a file list: it may touch the pull request.
+    /// `base_cut` is the compare list. `pull_cut` is the pull request's own list.
+    Unknown { base_cut: bool, pull_cut: bool },
 }
 
 // ---- parsing (pure) ------------------------------------------------------------------------------------------------
@@ -96,15 +99,6 @@ pub fn parse_compare(json: &str) -> Result<Compare, String> {
         ahead_by,
         status,
     })
-}
-
-/// A pull request's files (one page), and whether the page was full.
-pub fn parse_pull_files(json: &str) -> Result<(Vec<String>, bool), String> {
-    let value: serde_json::Value =
-        serde_json::from_str(json).map_err(|_| "GitHub's file list was not JSON".to_string())?;
-    let (files, entries) = file_names(Some(&value))?;
-    let full = entries >= PULL_FILES_PAGE;
-    Ok((files, full))
 }
 
 /// The names in a GitHub file list, and how many entries GitHub sent. A rename counts under both
@@ -145,15 +139,15 @@ pub fn overlap(moved: &[String], pr: &[String]) -> Vec<String> {
 /// Whether a moved list touches the pull request's files: named files, unknown when a list was cut short.
 fn touch(moved: &Moved, pr: &(Vec<String>, bool)) -> Touch {
     let (files, pr_cut) = pr;
-    if moved.files.is_empty() || files.is_empty() {
-        return Touch::None;
-    }
     let hits = overlap(&moved.files, files);
     if !hits.is_empty() {
         return Touch::Named(hits);
     }
     if moved.cut_short || *pr_cut {
-        return Touch::Unknown;
+        return Touch::Unknown {
+            base_cut: moved.cut_short,
+            pull_cut: *pr_cut,
+        };
     }
     Touch::None
 }
@@ -172,10 +166,38 @@ fn compare(get: Get, repo: &str, from: &str, to: &str) -> Result<Compare, String
     parse_compare(&get(&format!("repos/{repo}/compare/{from}...{to}"))?)
 }
 
-fn pull_files(get: Get, repo: &str, number: u64) -> Result<(Vec<String>, bool), String> {
-    parse_pull_files(&get(&format!(
-        "repos/{repo}/pulls/{number}/files?per_page={PULL_FILES_PAGE}"
-    ))?)
+/// Every file on the pull request, paged to GitHub's 3000-file limit. The bool is true when the list
+/// is short of `changed` (or of the limit, when GitHub didn't say how many).
+fn pull_files(
+    get: Get,
+    repo: &str,
+    number: u64,
+    changed: Option<u64>,
+) -> Result<(Vec<String>, bool), String> {
+    let mut names = Vec::new();
+    let mut entries: usize = 0;
+    let mut page: u32 = 1;
+    loop {
+        let body = get(&format!(
+            "repos/{repo}/pulls/{number}/files?per_page={PULL_FILES_PAGE}&page={page}"
+        ))?;
+        let value: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|_| "GitHub's file list was not JSON".to_string())?;
+        let (page_names, page_entries) = file_names(Some(&value))?;
+        names.extend(page_names);
+        entries += page_entries;
+        let short = page_entries < PULL_FILES_PAGE;
+        let capped = entries >= PR_FILES_LIMIT || page >= 30;
+        let reached = changed.is_some_and(|total| entries as u64 >= total);
+        if short || capped || reached {
+            let incomplete = match changed {
+                Some(total) => (entries as u64) < total,
+                None => !short && capped,
+            };
+            return Ok((names, incomplete));
+        }
+        page += 1;
+    }
 }
 
 /// The merge base of `base` and `head`: the commit the branch last took main at (compare's `merge_base_commit`). `None`
@@ -253,7 +275,7 @@ pub fn facts(get: Get, repo: &str, number: u64, memo: &Memo, read: &PrRead, stal
     };
     let pr = match &memo.pr_files {
         Some((h, files, cut)) if h == head => (files.clone(), *cut),
-        _ => match pull_files(get, repo, number) {
+        _ => match pull_files(get, repo, number, read.changed_files) {
             Ok((files, cut)) => {
                 facts.cache_pr_files = Some((head.into(), files.clone(), cut));
                 (files, cut)
@@ -295,6 +317,7 @@ pub fn news(memo: &mut Memo, read: &PrRead, facts: &Facts, conflict_told: bool) 
                     to: base.clone(),
                     files: Vec::new(),
                     cut_short: true,
+                    pull_cut: false,
                 });
                 memo.base_sha = Some(base.clone());
             }
@@ -306,11 +329,13 @@ pub fn news(memo: &mut Memo, read: &PrRead, facts: &Facts, conflict_told: bool) 
                             to: base.clone(),
                             files,
                             cut_short: false,
+                            pull_cut: false,
                         }),
-                        Touch::Unknown => out.push(Change::BaseMoved {
+                        Touch::Unknown { base_cut, pull_cut } => out.push(Change::BaseMoved {
                             to: base.clone(),
                             files: Vec::new(),
-                            cut_short: true,
+                            cut_short: base_cut,
+                            pull_cut,
                         }),
                         Touch::None => {}
                     }
@@ -366,6 +391,23 @@ pub fn settle_stale(memo: &mut Memo, read: &PrRead) {
 
 // ---- the merge gate -------------------------------------------------------------------------------------------------
 
+/// Which list was cut, in the hold's words. A short pull-request list does not blame the base list.
+fn cut_reason(base_cut: bool, pull_cut: bool, tail: &str) -> String {
+    if base_cut && pull_cut {
+        format!(
+            "main changed more files than GitHub lists, and this pull request's changed-file list was cut short, since this branch last took main, so it may touch this pull request; {tail}"
+        )
+    } else if pull_cut {
+        format!(
+            "this pull request's changed-file list was cut short, so it may touch files main changed since this branch last took main; {tail}"
+        )
+    } else {
+        format!(
+            "main changed more files than GitHub lists since this branch last took main, so it may touch this pull request; {tail}"
+        )
+    }
+}
+
 /// The merge gate's base check (WP-202), read from GitHub at merge time and never from the database. `Some(reason)`
 /// holds the merge. It holds when main changed the files this pull request touches since the branch last took main, and
 /// whenever the answer is unknown: no base, no merge base, a rewritten main, or a read that failed. A move that misses
@@ -410,7 +452,7 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
             ))
         }
     };
-    let pr_files = match pull_files(get, repo, number) {
+    let pr_files = match pull_files(get, repo, number, read.changed_files) {
         Ok(files) => files,
         Err(error) => {
             return Some(format!(
@@ -425,9 +467,7 @@ pub fn hold(get: Get, repo: &str, number: u64, head: &str, read: &PrRead) -> Opt
             "main changed {} since this branch last took main; {tail}",
             files.join(", ")
         )),
-        Touch::Unknown => Some(format!(
-            "main changed more files than GitHub lists since this branch last took main, so it may touch this pull request; {tail}"
-        )),
+        Touch::Unknown { base_cut, pull_cut } => Some(cut_reason(base_cut, pull_cut, tail)),
     }
 }
 
@@ -560,7 +600,8 @@ mod tests {
             vec![Change::BaseMoved {
                 to: B2.into(),
                 files: vec!["src/lib.rs".into()],
-                cut_short: false
+                cut_short: false,
+                pull_cut: false,
             }]
         );
         assert_eq!(memo.base_sha.as_deref(), Some(B2));
@@ -703,7 +744,8 @@ mod tests {
             vec![Change::BaseMoved {
                 to: B2.into(),
                 files: Vec::new(),
-                cut_short: true
+                cut_short: true,
+                pull_cut: false,
             }]
         );
         assert_eq!(memo.base_sha.as_deref(), Some(B2));
@@ -907,6 +949,70 @@ mod tests {
             hold(&get, "acme/web", 7, H1, &open(H1, B2, None)).is_some(),
             "main changed the file this pull request moved"
         );
+    }
+
+    /// r3 review MED: a pull request with 120 files is not held when main's move misses every one of them.
+    /// The file list is paged; one page of 100 is not "cut short".
+    #[test]
+    fn r3_review_a_big_pull_request_that_misses_main_s_move_is_not_held() {
+        let names: Vec<String> = (0..120).map(|i| format!("src/f{i}.rs")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let get = canned(vec![
+            took_main_at(B1),
+            (moved_key(), compare_json(&["docs/notes.md"], 1)),
+            ("page=2".into(), files_json(&refs[100..])),
+            ("page=3".into(), files_json(&[])),
+            ("pulls/7/files".into(), files_json(&refs[..100])),
+        ]);
+        assert_eq!(
+            hold(&get, "acme/web", 7, H1, &open(H1, B2, None)),
+            None,
+            "main's move misses all 120 of the pull request's files"
+        );
+    }
+
+    /// A pull request GitHub says has more files than the list we got is held, and the reason names that list.
+    #[test]
+    fn a_short_pull_request_file_list_is_held_without_blaming_the_base_list() {
+        let names: Vec<String> = (0..100).map(|i| format!("src/f{i}.rs")).collect();
+        let refs: Vec<&str> = names.iter().map(String::as_str).collect();
+        let mut read = open(H1, B2, None);
+        read.changed_files = Some(150);
+        let get = canned(vec![
+            took_main_at(B1),
+            (moved_key(), compare_json(&["docs/notes.md"], 1)),
+            ("page=2".into(), files_json(&[])),
+            ("pulls/7/files".into(), files_json(&refs)),
+        ]);
+        let reason = hold(&get, "acme/web", 7, H1, &read).expect("a short list holds");
+        assert!(
+            reason.contains("changed-file list was cut short"),
+            "{reason}"
+        );
+        assert!(
+            !reason.contains("changed more files than GitHub lists"),
+            "{reason}"
+        );
+    }
+
+    /// A compare that hits the file cap still blames the base list, not the pull request's list.
+    #[test]
+    fn a_cut_compare_list_blames_the_base_list() {
+        let many: Vec<String> = (0..300).map(|i| format!("docs/n{i}.md")).collect();
+        let refs: Vec<&str> = many.iter().map(String::as_str).collect();
+        let mut read = open(H1, B2, None);
+        read.changed_files = Some(1);
+        let get = canned(vec![
+            took_main_at(B1),
+            (moved_key(), compare_json(&refs, 1)),
+            ("pulls/7/files".into(), files_json(&["src/lib.rs"])),
+        ]);
+        let reason = hold(&get, "acme/web", 7, H1, &read).expect("a cut compare holds");
+        assert!(
+            reason.contains("changed more files than GitHub lists"),
+            "{reason}"
+        );
+        assert!(!reason.contains("changed-file list was cut short"), "{reason}");
     }
 
     /// r3 MED: the hold's words say the rule: main changed these files since the branch last took main.
