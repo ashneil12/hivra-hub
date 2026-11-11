@@ -87,23 +87,45 @@ pub(crate) fn launcher_for(program: &OsStr, data_dir: Option<&Path>) -> Option<P
 
 /// A Command that starts `program` either directly or through `launcher`. Arguments, environment, working
 /// directory, stdio and process group added later apply the same way in both cases.
-pub(crate) fn command(program: &OsStr, launcher: Option<&Path>) -> Command {
+///
+/// `argv0` is the name the child should see when it differs from `program` (a same-folder multi-call link).
+/// Through the launcher that is `--argv0 <name> -- <program>`. A direct start sets it on the command.
+pub(crate) fn command(program: &OsStr, launcher: Option<&Path>, argv0: Option<&OsStr>) -> Command {
     match launcher {
         Some(launcher) => {
             let mut cmd = Command::new(launcher);
-            cmd.arg(SUBCOMMAND).arg("--").arg(program);
+            cmd.arg(SUBCOMMAND);
+            if let Some(name) = argv0 {
+                cmd.arg("--argv0").arg(name);
+            }
+            cmd.arg("--").arg(program);
             cmd
         }
-        None => Command::new(program),
+        None => {
+            let mut cmd = Command::new(program);
+            #[cfg(unix)]
+            if let Some(name) = argv0 {
+                use std::os::unix::process::CommandExt;
+                cmd.arg0(name);
+            }
+            #[cfg(not(unix))]
+            let _ = argv0;
+            cmd
+        }
     }
 }
 
 enum Request {
-    Exec(Vec<OsString>),
+    /// `file` is executed. `argv` is what the child sees, and `argv[0]` may differ from `file`.
+    Exec {
+        file: OsString,
+        argv: Vec<OsString>,
+    },
     Responsible(i32),
 }
 
 fn parse(args: &[OsString]) -> Result<Request, String> {
+    let usage = "usage: monocode disclaim-exec -- <program> [args…]";
     match args.first().and_then(|a| a.to_str()) {
         Some("--responsible") => args
             .get(1)
@@ -112,8 +134,24 @@ fn parse(args: &[OsString]) -> Result<Request, String> {
             .filter(|pid| *pid > 0)
             .map(Request::Responsible)
             .ok_or_else(|| "usage: monocode disclaim-exec --responsible <pid>".to_string()),
-        Some("--") if args.len() > 1 => Ok(Request::Exec(args[1..].to_vec())),
-        _ => Err("usage: monocode disclaim-exec -- <program> [args…]".to_string()),
+        Some("--argv0") => {
+            let Some(name) = args.get(1).cloned() else {
+                return Err(usage.into());
+            };
+            if args.get(2).and_then(|a| a.to_str()) != Some("--") || args.len() < 4 {
+                return Err(usage.into());
+            }
+            let file = args[3].clone();
+            let mut argv = Vec::with_capacity(args.len() - 3);
+            argv.push(name);
+            argv.extend_from_slice(&args[4..]);
+            Ok(Request::Exec { file, argv })
+        }
+        Some("--") if args.len() > 1 => Ok(Request::Exec {
+            file: args[1].clone(),
+            argv: args[1..].to_vec(),
+        }),
+        _ => Err(usage.into()),
     }
 }
 
@@ -134,22 +172,27 @@ pub fn main(args: &[OsString]) -> i32 {
                 1
             }
         },
-        Ok(Request::Exec(argv)) => {
-            match disclaimed_exec(&argv) {
+        Ok(Request::Exec { file, argv }) => {
+            match disclaimed_exec(&file, &argv) {
                 Ok(never) => match never {},
                 Err(why) => eprintln!("[disclaim] {why}; starting it without disclaim"),
             }
-            plain_exec(&argv)
+            plain_exec(&file, &argv)
         }
     }
 }
 
 #[cfg(unix)]
-fn plain_exec(argv: &[OsString]) -> i32 {
+fn plain_exec(file: &OsStr, argv: &[OsString]) -> i32 {
     use std::os::unix::process::CommandExt;
     // std's exec resets SIGPIPE and the signal mask, as std's spawn does for a plain child.
-    let err = Command::new(&argv[0]).args(&argv[1..]).exec();
-    eprintln!("Failed to start {}: {err}", argv[0].to_string_lossy());
+    // argv[0] is the name the child sees. It is the file itself when no other name was asked for.
+    let shown = argv.first().map(OsString::as_os_str).unwrap_or(file);
+    let err = Command::new(file)
+        .arg0(shown)
+        .args(argv.get(1..).unwrap_or(&[]))
+        .exec();
+    eprintln!("Failed to start {}: {err}", file.to_string_lossy());
     if err.kind() == std::io::ErrorKind::NotFound {
         127
     } else {
@@ -158,11 +201,14 @@ fn plain_exec(argv: &[OsString]) -> i32 {
 }
 
 #[cfg(not(unix))]
-fn plain_exec(argv: &[OsString]) -> i32 {
-    match Command::new(&argv[0]).args(&argv[1..]).status() {
+fn plain_exec(file: &OsStr, argv: &[OsString]) -> i32 {
+    match Command::new(file)
+        .args(argv.get(1..).unwrap_or(&[]))
+        .status()
+    {
         Ok(status) => status.code().unwrap_or(1),
         Err(err) => {
-            eprintln!("Failed to start {}: {err}", argv[0].to_string_lossy());
+            eprintln!("Failed to start {}: {err}", file.to_string_lossy());
             127
         }
     }
@@ -170,7 +216,7 @@ fn plain_exec(argv: &[OsString]) -> i32 {
 
 #[cfg(target_os = "macos")]
 mod mac {
-    use std::ffi::{c_char, c_int, c_short, c_void, CString, OsString};
+    use std::ffi::{c_char, c_int, c_short, c_void, CString, OsStr, OsString};
     use std::os::unix::ffi::OsStrExt;
 
     const RTLD_DEFAULT: *mut c_void = -2isize as *mut c_void;
@@ -195,13 +241,17 @@ mod mac {
         (responsible > 0).then_some(responsible)
     }
 
-    /// The arguments as C strings, made before anything forks or spawns.
+    /// The file to execute, and the arguments the child sees, as C strings made before anything forks or spawns.
+    /// `argv[0]` may be a different name from `file` (a same-folder multi-call link).
     pub struct Prepared {
+        file: CString,
         argv: Vec<CString>,
     }
 
     impl Prepared {
-        pub fn new(argv: &[OsString]) -> Result<Self, String> {
+        pub fn new(file: &OsStr, argv: &[OsString]) -> Result<Self, String> {
+            let file = CString::new(file.as_bytes())
+                .map_err(|_| "the program path holds a NUL byte".to_string())?;
             let argv = argv
                 .iter()
                 .map(|a| CString::new(a.as_bytes()))
@@ -210,7 +260,7 @@ mod mac {
             if argv.is_empty() {
                 return Err("no program".into());
             }
-            Ok(Self { argv })
+            Ok(Self { file, argv })
         }
 
         /// Become the program, disclaimed. Returns only when that failed.
@@ -273,7 +323,7 @@ mod mac {
                     let mut pid: libc::pid_t = 0;
                     let rc = libc::posix_spawnp(
                         &mut pid,
-                        self.argv[0].as_ptr(),
+                        self.file.as_ptr(),
                         std::ptr::null(),
                         &attr,
                         ptrs.as_ptr(),
@@ -289,12 +339,12 @@ mod mac {
 }
 
 #[cfg(target_os = "macos")]
-fn disclaimed_exec(argv: &[OsString]) -> Result<std::convert::Infallible, String> {
-    Err(mac::Prepared::new(argv)?.exec())
+fn disclaimed_exec(file: &OsStr, argv: &[OsString]) -> Result<std::convert::Infallible, String> {
+    Err(mac::Prepared::new(file, argv)?.exec())
 }
 
 #[cfg(not(target_os = "macos"))]
-fn disclaimed_exec(_argv: &[OsString]) -> Result<std::convert::Infallible, String> {
+fn disclaimed_exec(_file: &OsStr, _argv: &[OsString]) -> Result<std::convert::Infallible, String> {
     Err("disclaim is macOS only".into())
 }
 
@@ -393,6 +443,7 @@ mod tests {
         let mut cmd = command(
             OsStr::new("/usr/local/bin/claude"),
             Some(Path::new("/A/monocode")),
+            None,
         );
         cmd.args(["--print", "hi"]);
         assert_eq!(cmd.get_program(), OsStr::new("/A/monocode"));
@@ -407,16 +458,52 @@ mod tests {
                 "hi"
             ]
         );
-        let plain = command(OsStr::new("claude"), None);
+        let plain = command(OsStr::new("claude"), None, None);
         assert_eq!(plain.get_program(), OsStr::new("claude"));
         assert_eq!(plain.get_args().count(), 0);
     }
 
     #[test]
-    fn launcher_arguments_parse() {
-        assert!(
-            matches!(parse(&os(&["--", "a", "b"])), Ok(Request::Exec(v)) if v == os(&["a", "b"]))
+    fn a_wrapped_command_keeps_the_invoked_name() {
+        let cmd = command(
+            OsStr::new("/usr/local/bin/bun"),
+            Some(Path::new("/A/monocode")),
+            Some(OsStr::new("/usr/local/bin/bunx")),
         );
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(
+            args,
+            [
+                "disclaim-exec",
+                "--argv0",
+                "/usr/local/bin/bunx",
+                "--",
+                "/usr/local/bin/bun",
+            ]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_direct_start_shows_the_invoked_name_as_argv0() {
+        let mut cmd = command(OsStr::new("/bin/sh"), None, Some(OsStr::new("bunx")));
+        cmd.arg("-c").arg("printf %s \"$0\"");
+        let out = cmd.output().expect("spawn");
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "bunx");
+    }
+
+    #[test]
+    fn launcher_arguments_parse() {
+        assert!(matches!(
+            parse(&os(&["--", "a", "b"])),
+            Ok(Request::Exec { ref file, ref argv }) if file == "a" && argv == &os(&["a", "b"])
+        ));
+        assert!(matches!(
+            parse(&os(&["--argv0", "bunx", "--", "/bin/bun", "-x"])),
+            Ok(Request::Exec { ref file, ref argv })
+                if file == "/bin/bun" && argv == &os(&["bunx", "-x"])
+        ));
+        assert!(parse(&os(&["--argv0", "bunx"])).is_err());
         assert!(matches!(
             parse(&os(&["--responsible", "42"])),
             Ok(Request::Responsible(42))
@@ -440,7 +527,8 @@ mod tests {
         let script =
             "echo pid=$$; echo pgid=$(ps -o pgid= -p $$ | tr -d ' '); echo cwd=$(pwd -P); \
                       echo sigpipe=$(trap -p PIPE); read line; echo got=$line; sleep 2";
-        let prepared = mac::Prepared::new(&os(&["/bin/sh", "-c", script])).unwrap();
+        let prepared =
+            mac::Prepared::new(OsStr::new("/bin/sh"), &os(&["/bin/sh", "-c", script])).unwrap();
         let mut cmd = Command::new("/usr/bin/true");
         cmd.current_dir(&cwd)
             .stdin(Stdio::piped())

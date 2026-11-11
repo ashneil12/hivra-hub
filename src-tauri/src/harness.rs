@@ -1175,6 +1175,7 @@ pub fn harness_spawn(
         }
     };
     let more_id = more.as_ref().map(|run| run.id.clone());
+    let more_argv0 = more.as_ref().and_then(|run| run.argv0.clone());
     let more_run = more.is_some();
     let (command, args) = match more {
         Some(run) => (run.command, run.args),
@@ -1241,8 +1242,11 @@ pub fn harness_spawn(
         std::ffi::OsStr::new(&command),
         app.path().app_data_dir().ok().as_deref(),
     );
-    let mut cmd =
-        crate::disclaim::command(std::ffi::OsStr::new(&command), disclaim_launcher.as_deref());
+    let mut cmd = crate::disclaim::command(
+        std::ffi::OsStr::new(&command),
+        disclaim_launcher.as_deref(),
+        more_argv0.as_deref().map(std::ffi::OsStr::new),
+    );
     // A More agents child runs in its own empty folder, never the chat folder: nothing a chat holds is a relative input.
     let spawn_dir = if more_run {
         crate::more_agents::run_folder(&app.path().app_data_dir().map_err(|e| e.to_string())?)?

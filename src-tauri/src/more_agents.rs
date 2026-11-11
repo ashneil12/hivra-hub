@@ -538,14 +538,17 @@ pub(crate) struct Stored {
     pub approvals: BTreeMap<String, Approval>,
 }
 
-/// A saved entry, checked, ready to start. `command` is the path that is executed: a hard link of the approved file
-/// in its own folder, or that file when the folder cannot take a link.
+/// A saved entry, checked, ready to start. `command` is the canonical path that is executed.
+/// `argv0` is set when that file was reached through a same-folder name (`bunx` linking to `bun`), so the child
+/// still sees the name it was started as. A cross-folder link leaves it empty, so `dirname` of the program stays
+/// the install folder.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Resolved {
     pub id: String,
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+    pub argv0: Option<String>,
 }
 
 pub(crate) fn file_path(data_dir: &Path) -> PathBuf {
@@ -979,18 +982,18 @@ pub(crate) fn set_approval(
     if allowed {
         let (checked_id, command, args) = checked_fields(&entry)?;
         let fp = fingerprint(&command, &args);
-        let path = resolve_command(&command, path_value)?;
+        let found = resolve_command(&command, path_value)?;
         // The window must have shown this command AND the file it resolves to now (a PATH change shows another file).
-        if shown != Some(shown_fingerprint(&command, &args, &path).as_str()) {
+        if shown != Some(shown_fingerprint(&command, &args, &found.path).as_str()) {
             return Err(SHOWN_CHANGED.into());
         }
-        let sha256 = file_sha256(Path::new(&path))?;
+        let sha256 = file_sha256(Path::new(&found.path))?;
         let (pins, _) = pin_set(&args)?;
         approvals.insert(
             checked_id,
             Approval {
                 fingerprint: fp,
-                path,
+                path: found.path,
                 sha256,
                 pins,
                 generation: String::new(),
@@ -1034,8 +1037,8 @@ pub(crate) fn approved_spawn(
         .get(&checked_id)
         .filter(|approval| approval.fingerprint == fp)
         .ok_or(NOT_APPROVED)?;
-    let resolved = resolve_command(&command, path_value)?;
-    if !still_approved(approval, &fp, Some(&resolved)) {
+    let found = resolve_command(&command, path_value)?;
+    if !still_approved(approval, &fp, Some(&found.path)) {
         return Err(ON_DISK_CHANGED.into());
     }
     // Pins are taken again over the same arguments: a file that changed, moved behind a link, or appeared since the
@@ -1045,9 +1048,9 @@ pub(crate) fn approved_spawn(
         return Err(ON_DISK_CHANGED.into());
     }
     // Hashed again here, then once more immediately before spawn (confirm_before_spawn), after the run folder exists.
-    // The child runs a hard link in the same folder, so a launcher still finds the files beside it, and a rename of
-    // the original name does not change the bytes. A writer of that folder can still replace the link before spawn.
-    if file_sha256(Path::new(&resolved)).ok().as_deref() != Some(approval.sha256.as_str()) {
+    // The child runs the canonical path. A writer of the install folder can still change that file between this hash
+    // and the exec. Files beside the program are not checked.
+    if file_sha256(Path::new(&found.path)).ok().as_deref() != Some(approval.sha256.as_str()) {
         return Err(ON_DISK_CHANGED.into());
     }
     let name = entry
@@ -1059,38 +1062,15 @@ pub(crate) fn approved_spawn(
     Ok(Resolved {
         id: checked_id,
         name,
-        command: spawn_path(&resolved),
+        command: found.path,
         args: canonical_args,
+        argv0: found.argv0,
     })
 }
 
-/// A hard link of `canonical` in its own folder. A rename of the original name leaves this link on the approved
-/// bytes, and the folder is unchanged so a program still loads the files installed beside it. One link per program:
-/// a later start refreshes it. When the folder cannot take a link, the canonical path is what runs.
-fn spawn_path(canonical: &str) -> String {
-    let path = Path::new(canonical);
-    let Some(parent) = path.parent() else {
-        return canonical.to_string();
-    };
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
-        return canonical.to_string();
-    };
-    if name.is_empty() || name.contains(['/', '\\']) {
-        return canonical.to_string();
-    }
-    let link = parent.join(format!(".{name}.hivra-pin"));
-    if link.symlink_metadata().is_ok() {
-        let _ = std::fs::remove_file(&link);
-    }
-    match std::fs::hard_link(path, &link) {
-        Ok(()) => link.to_string_lossy().into_owned(),
-        Err(_) => canonical.to_string(),
-    }
-}
-
-/// The last hash. Called after the run folder exists and immediately before the spawn. The command is the path that
-/// will be executed (the hard link, or the canonical file when no link could be made). A writer of the install folder
-/// can still change that path in the gap between this hash and the exec.
+/// The last hash. Called after the run folder exists and immediately before the spawn. The command is the canonical
+/// path that will be executed. A writer of the install folder can still change that file in the gap between this hash
+/// and the exec.
 pub(crate) fn confirm_before_spawn(data_dir: &Path, id: &str, command: &str) -> Result<(), String> {
     let stored = read_stored(data_dir)?;
     let approval = stored.approvals.get(id).ok_or(NOT_APPROVED)?;
@@ -1210,8 +1190,16 @@ pub(crate) fn remove_run_folder(data_dir: &Path, run_dir: &Path) -> Result<(), S
     Ok(())
 }
 
+/// The file a saved command names. `path` is canonical and is what is hashed and executed. `argv0` is the absolute
+/// path of a same-folder name that differs from that file (`bunx` linking to `bun`). A cross-folder link, such as an
+/// npm bin pointing at `dist/index.js`, leaves `argv0` empty so the child still finds the files beside the real file.
+struct CommandFile {
+    path: String,
+    argv0: Option<String>,
+}
+
 /// An absolute path that is a file, or a bare name found on `path_value`. Anything else is not started.
-fn resolve_command(command: &str, path_value: &str) -> Result<String, String> {
+fn resolve_command(command: &str, path_value: &str) -> Result<CommandFile, String> {
     let not_found = "This agent was not found. Check the command in More agents.";
     let candidate = if command.contains(['/', '\\']) {
         let path = PathBuf::from(command);
@@ -1243,7 +1231,27 @@ fn resolve_command(command: &str, path_value: &str) -> Result<String, String> {
     {
         return Err(SHELL_REFUSED.into());
     }
-    Ok(resolved.to_string_lossy().into_owned())
+    let argv0 = same_dir_argv0(&candidate, &resolved);
+    Ok(CommandFile {
+        path: resolved.to_string_lossy().into_owned(),
+        argv0,
+    })
+}
+
+/// argv[0] when `candidate` is a same-folder link whose name differs from the file it points at. Hard links are not
+/// rewritten by canonicalize, so a hard-linked name already runs as itself. A link into another folder is left alone:
+/// the child must see the real file, or `dirname` of it would be the PATH folder instead of the install folder.
+fn same_dir_argv0(candidate: &Path, canonical: &Path) -> Option<String> {
+    let invoked = candidate.file_name()?;
+    let real = canonical.file_name()?;
+    if invoked == real {
+        return None;
+    }
+    let invoked_dir = std::fs::canonicalize(candidate.parent()?).ok()?;
+    if Some(invoked_dir.as_path()) != canonical.parent() {
+        return None;
+    }
+    candidate.to_str().map(str::to_string)
 }
 
 /// The file names a bare command may resolve to in one folder. Windows also tries the PATHEXT extensions.
@@ -1424,7 +1432,9 @@ pub(crate) fn view(stored: &Stored, path_value: &str) -> Value {
             continue;
         };
         let fp = fingerprint(&command, &args);
-        let path = resolve_command(&command, path_value).ok();
+        let path = resolve_command(&command, path_value)
+            .ok()
+            .map(|found| found.path);
         let shown = shown_fingerprint(&command, &args, path.as_deref().unwrap_or(""));
         // The list checks what the start checks: the same pins over the same arguments, so a re-pointed link
         // does not show as allowed.
@@ -2754,6 +2764,11 @@ mod tests {
         write_agents(d.path(), 0, vec![entry("wp134", "fake-acp", &["--acp"])]).expect("seed");
         approve(d.path(), "wp134", &path_value).expect("approve");
         let run = approved_spawn(d.path(), "wp134", &path_value).expect("starts as approved");
+        assert!(
+            run.argv0.is_none(),
+            "a cross-folder link must keep the install path as the program name, got {:?}",
+            run.argv0
+        );
         let out = std::process::Command::new(&run.command)
             .args(&run.args)
             .output()
@@ -2764,6 +2779,31 @@ mod tests {
             "the approved program could not run from {}: {}",
             run.command,
             String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `bunx` is a same-folder link to `bun`, and bun picks its mode from argv[0]. The child runs the canonical file
+    /// and is told the name that was on PATH. A shebang script does not see that name (the kernel passes the file),
+    /// so the name the child sees is checked on a real binary in disclaim.rs.
+    #[cfg(unix)]
+    #[test]
+    fn a_same_folder_link_keeps_its_name_as_argv0() {
+        let d = dir();
+        let bin = d.path().join("bin");
+        let bun = make_tool(&bin, "bun", b"#!/bin/sh\n");
+        std::os::unix::fs::symlink(&bun, bin.join("bunx")).expect("same-folder link");
+        let path_value = bin.to_string_lossy().into_owned();
+        write_agents(d.path(), 0, vec![entry("wp134", "bunx", &[])]).expect("seed");
+        approve(d.path(), "wp134", &path_value).expect("approve");
+        let run = approved_spawn(d.path(), "wp134", &path_value).expect("approved");
+        let argv0 = run.argv0.expect("the invoked name");
+        assert!(argv0.ends_with("/bunx"), "{argv0}");
+        assert!(
+            Path::new(&run.command)
+                .file_name()
+                .is_some_and(|name| name == "bun"),
+            "the child runs the canonical file, got {}",
+            run.command
         );
     }
 
