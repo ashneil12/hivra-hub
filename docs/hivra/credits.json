@@ -58,7 +58,13 @@
       "name": "OpenBot",
       "url": "https://github.com/CopilotKit/openbot",
       "licence": "MIT",
-      "gave": "approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests"
+      "gave": "approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests, and deleted facts that are never learned again"
+    },
+    {
+      "name": "Nod",
+      "url": "https://github.com/n8n-io/nod",
+      "licence": "Apache-2.0",
+      "gave": "memory that only keeps what the owner said in their own words"
     },
     {
       "name": "Rerun",
@@ -911,6 +917,22 @@
       "copyright": "Copyright (c) 2025-2026 Cloudflare, Inc.",
       "where": "scripts/security-review/validate-findings.cjs, scripts/security-review/validate-coverage-ledger.cjs, scripts/security-review/report-schema.json, scripts/security-review/reference, scripts/security-review/LICENSE.cloudflare-security-audit",
       "how": "Vendored from commit c1c8a8c1471069fb0e188eeaff69b8e8db6564a8 with a source header on each file; no code changed. Used by scripts/security-review/review.mjs"
+    },
+    {
+      "name": "OpenBot's unkept-promise check",
+      "url": "https://github.com/CopilotKit/OpenBot",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 CopilotKit",
+      "where": "src/features/monos/vendor/unkeptPromise.ts, src/features/monos/vendor/LICENSE.openbot",
+      "how": "toolkit/src/copilotkit/unkept-promise.ts copied as written at commit 558cba6, its test cases ported to vitest. Hivra calls it from model/promiseNudge.ts on a Lead or coding-team chat whose finished turn ends on a promise with no step after it: one app message to do the step or finish with what is missing, at most twice in a row, where OpenBot nudges inside the same run."
+    },
+    {
+      "name": "OpenBot's routine checklist",
+      "url": "https://github.com/CopilotKit/OpenBot",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2026 CopilotKit",
+      "where": "src/features/monos/vendor/routineChecklist.ts, src/features/monos/model/monoHabits.ts, src/features/monos/vendor/LICENSE.openbot",
+      "how": "shared/routine-checklist.ts with checklistNotice and openPartsNudge from shared/run-notices.ts copied at commit 558cba6, its test cases ported to vitest; the notices say habit where OpenBot says routine. monoHabits.ts adds the checklist under a list habit's instructions with OpenBot's unattended-run lines (ROUTINE_RUN_LINES, adapted), and sends a finished run back once while a part is open or its answer ends on a promise."
     }
   ]
 }

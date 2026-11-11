@@ -21,6 +21,7 @@ import { progressNote, workerLineOf } from "../model/progressNote";
 import { mismatchFixNudge } from "../model/mismatchFixNudge";
 import { staleTestClaimNudge } from "../model/staleTestClaim";
 import { hubTestNote, hubTestRunDue, projectTestNote, runProjectTests } from "../model/projectTestRun";
+import { promiseNudge } from "../model/promiseNudge";
 import { joinNudges, notStartedNote, standingRuleNudge, workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
@@ -105,6 +106,7 @@ export function useFollowedBriefs(options: {
   const nudged = useRef(new Set<string>());
   const fixNudged = useRef(new Set<string>());
   const ruleNudged = useRef(new Set<string>());
+  const promiseNudged = useRef(new Set<string>());
   // Agent-to-agent notes (model/agentNotes.ts): moves from this run on, each once; which worker chats exist, once each.
   const notesSince = useRef<number | undefined>(undefined);
   const chatThere = useRef(new Map<string, boolean>());
@@ -242,6 +244,13 @@ export function useFollowedBriefs(options: {
         if (fix) {
           fixNudged.current.add(fix.id.replace(/^fix-mismatch-/, ""));
           await Promise.resolve(ask(chat.id, fix)).catch(() => undefined);
+          continue;
+        }
+        // A turn that ended on "I'll do X now" with nothing after it: one app message to do it, at most twice in a row.
+        const keep = promiseNudge(chat, promiseNudged.current);
+        if (keep) {
+          promiseNudged.current.add(keep.id.replace(/^keep-promise-/, ""));
+          await Promise.resolve(ask(chat.id, keep)).catch(() => undefined);
         }
       }
     }

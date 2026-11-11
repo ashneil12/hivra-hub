@@ -39,7 +39,8 @@ in Settings, under About.
 - [Agent Plugins standard](https://agent-plugins.org/): the plugin format.
 - [council-of-high-intelligence](https://github.com/0xnyk/council-of-high-intelligence): the council protocol (blind round, cross-exam, dissent quota and a chairman).
 - [OpenMausBot](https://github.com/milind-soni/OpenMausBot): rooms with responder modes, goal mode, teams and playbooks as one file.
-- [OpenBot](https://github.com/CopilotKit/openbot): approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests.
+- [OpenBot](https://github.com/CopilotKit/openbot): approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests, and deleted facts that are never learned again.
+- [Nod](https://github.com/n8n-io/nod): memory that only keeps what the owner said in their own words.
 - [Rerun](https://github.com/rerun-build/rerun): remote engine pairing, a memory curator and approval cards (ideas only).
 - [Puppetmaster](https://github.com/professorpalmer/Puppetmaster): completion gates, typed artifacts with evidence, failure reroutes, session leases and idempotent launch keys.
 - [Raven](https://github.com/EverMind-AI/Raven): "finished" is not "succeeded", status from the registry, provenance-required memory.

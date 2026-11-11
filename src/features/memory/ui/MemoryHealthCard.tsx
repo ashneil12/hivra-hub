@@ -8,6 +8,7 @@ import { pausedText } from "../model/memoryBudget";
 const DROP_NAMES: Array<{ key: keyof MemoryHealthView["dropped"]; label: string }> = [
   { key: "secret", label: "with a secret in them" },
   { key: "ungrounded", label: "not backed by the chat" },
+  { key: "forgotten", label: "already deleted by you" },
   { key: "late", label: "from a chat that had already moved on" },
   { key: "invalid", label: "the curator could not read" },
   { key: "orders", label: "it looks like instructions the person never gave" },

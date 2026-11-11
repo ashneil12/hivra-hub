@@ -43,7 +43,7 @@ describe("noteDeferred", () => {
       turns: 0,
       stored: 0,
       deferred: 1,
-      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0 },
+      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0, forgotten: 0 },
       lastRunAt: NOW,
     });
     // Once the same turn goes through, it is counted as a looked-at turn then, and the deferred count stays.
@@ -63,7 +63,7 @@ describe("noteOutcome", () => {
       turns: 5,
       stored: 1,
       deferred: 1,
-      dropped: { late: 0, secret: 1, ungrounded: 1, invalid: 0, orders: 0 },
+      dropped: { late: 0, secret: 1, ungrounded: 1, invalid: 0, orders: 0, forgotten: 0 },
       lastRunAt: NOW + 4,
     });
     // Every count is its own entry, so a turn with no fact still says memory was looked at.
@@ -81,7 +81,7 @@ describe("noteOutcome", () => {
       turns: 0,
       stored: 4,
       deferred: 0,
-      dropped: { late: 2, secret: 0, ungrounded: 0, invalid: 0, orders: 0 },
+      dropped: { late: 2, secret: 0, ungrounded: 0, invalid: 0, orders: 0, forgotten: 0 },
     });
   });
 });
@@ -92,7 +92,7 @@ describe("healthOf", () => {
       turns: 0,
       stored: 0,
       deferred: 0,
-      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0 },
+      dropped: { late: 0, secret: 0, ungrounded: 0, invalid: 0, orders: 0, forgotten: 0 },
       fading: 0,
       asksWaiting: 0,
       lastRunAt: undefined,

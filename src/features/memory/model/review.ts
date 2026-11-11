@@ -4,7 +4,7 @@
 import { ftsMatch } from "../vendor/mercuryBelief";
 import { contradicts } from "./contradicts";
 import { givesOrders } from "./orderScan";
-import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, type MemoryDoc, type MemoryDispute, type MemoryItem } from "./doc";
+import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, withForgotten, type MemoryDoc, type MemoryDispute, type MemoryItem } from "./doc";
 import { touch } from "./fade";
 
 /** WP-111: why a fact is parked. Shown as written. */
@@ -69,7 +69,11 @@ export function editItem(doc: MemoryDoc, id: string, text: string, now: number):
 export function deleteItem(doc: MemoryDoc, id: string): MemoryDoc {
   const item = doc.items.find((candidate) => candidate.id === id);
   if (!item || item.dispute) return doc;
-  return bump({ ...doc, items: doc.items.filter((candidate) => candidate.id !== id) });
+  const kept = { ...doc, items: doc.items.filter((candidate) => candidate.id !== id) };
+  // A deleted fact or lesson leaves a digest, so a passing mention later does not bring it back. A removal proposal
+  // is only a suggestion about another fact, so deleting it forgets nothing.
+  const text = item.action === "skill" ? (item.skill?.lesson ?? item.text) : item.text;
+  return bump(item.action === "remove" ? kept : withForgotten(kept, item.mateId, text));
 }
 
 function withoutDispute(item: MemoryItem): MemoryItem {

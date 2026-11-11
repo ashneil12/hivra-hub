@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { curateTurn, freshDoc, settleTurn, type CuratorAsk, type CuratorContext } from "./curator";
-import { acceptItem, rejectItem } from "./review";
+import { parseDoc } from "./doc";
+import { acceptItem, deleteItem, rejectItem } from "./review";
 
 const NOW = Date.parse("2026-03-01T00:00:00Z");
 const SECRET = "sk-ant-api03-abcdefghijklmnopqrst";
@@ -307,5 +308,88 @@ describe("curateTurn", () => {
     expect(removal.doc.items).toHaveLength(1);
     expect(removal.doc.items[0].action).toBe("add");
     expect(removal.doc.items.some((item) => item.action === "remove")).toBe(false);
+  });
+});
+
+describe("only the person's own words ground a fact (idea: Nod by n8n)", () => {
+  it("drops a fact whose quote is only in the reply", () => {
+    const reply = { kind: "reply" as const, text: JSON.stringify({ kind: "add", text: "Ash banks with Northwind", evidence: "Ash banks with Northwind" }) };
+    const turn = ctx({ user: "Summarise that web page for me.", assistant: "The page says Ash banks with Northwind." });
+    const result = settleTurn(freshDoc(), turn, reply);
+    expect(result.outcome).toMatchObject({ status: "dropped", reason: "ungrounded" });
+    expect(result.doc.items).toEqual([]);
+  });
+
+  it("drops an update or a removal grounded only in the reply", async () => {
+    const kept = await curateTurn(freshDoc(), ctx(), ask(JSON.stringify({ kind: "add", text: "Likes small commits", evidence: "I like small commits" })));
+    const id = kept.doc.items[0].id;
+    const turn = ctx({ turnId: "turn-2", user: "Read the tool output.", assistant: "The tool says they prefer big commits now." });
+    const update = settleTurn(kept.doc, turn, { kind: "reply", text: JSON.stringify({ kind: "update", targetId: id, text: "Likes big commits", evidence: "prefer big commits" }) });
+    expect(update.outcome).toMatchObject({ status: "dropped", reason: "ungrounded" });
+    const removal = settleTurn(kept.doc, ctx({ ...turn, turnId: "turn-3" }), { kind: "reply", text: JSON.stringify({ kind: "remove", targetId: id, evidence: "prefer big commits" }) });
+    expect(removal.outcome).toMatchObject({ status: "dropped", reason: "ungrounded" });
+  });
+
+  it("still lets a skill cite the reply, because it waits for the person anyway", () => {
+    const turn = ctx({ user: "Ship it the usual way.", assistant: "Ran check-all, then build, then ship." });
+    const reply = { kind: "reply" as const, text: JSON.stringify({ kind: "skill", name: "Shipping", lesson: "Run check-all before building.", evidence: "Ran check-all, then build" }) };
+    const result = settleTurn(freshDoc(), turn, reply);
+    expect(result.outcome.status).toBe("stored");
+    expect(result.doc.items[0]).toMatchObject({ action: "skill", state: "unreviewed" });
+  });
+
+  it("labels the person's words and the reply apart in the prompt", async () => {
+    let prompt = "";
+    await curateTurn(freshDoc(), ctx(), async (text) => {
+      prompt = text;
+      return { ok: true, text: '{"kind":"none"}' };
+    });
+    expect(prompt).toContain("The person wrote:\nPlease keep reviews async.");
+    expect(prompt).toContain("The reply was:\nI'll keep reviews async.");
+    expect(prompt).toContain("must be the person's own words");
+  });
+});
+
+describe("a deleted fact stays deleted (idea: OpenBot by CopilotKit)", () => {
+  const add = (text: string, evidence: string) => ({ kind: "reply" as const, text: JSON.stringify({ kind: "add", text, evidence }) });
+
+  it("does not learn a deleted fact again from a passing mention", () => {
+    const first = settleTurn(freshDoc(), ctx(), add("Likes small commits", "I like small commits"));
+    const deleted = deleteItem(first.doc, first.doc.items[0].id);
+    expect(deleted.items).toEqual([]);
+    expect(deleted.forgotten).toHaveLength(1);
+    expect(JSON.stringify(deleted.forgotten)).not.toContain("commits");
+    const again = settleTurn(deleted, ctx({ turnId: "turn-2" }), add("likes  small commits", "I like small commits"));
+    expect(again.outcome).toMatchObject({ status: "dropped", reason: "forgotten" });
+    expect(again.doc.items).toEqual([]);
+  });
+
+  it("brings it back when the person says remember that, and clears the digest", () => {
+    const first = settleTurn(freshDoc(), ctx(), add("Likes small commits", "I like small commits"));
+    const deleted = deleteItem(first.doc, first.doc.items[0].id);
+    const asked = settleTurn(deleted, ctx({ turnId: "turn-2", via: "rules", user: "Remember that I like small commits." }), add("Likes small commits", "I like small commits"));
+    expect(asked.outcome.status).toBe("stored");
+    expect(asked.doc.items).toHaveLength(1);
+    expect(asked.doc.forgotten).toBeUndefined();
+  });
+
+  it("keeps the digest per first mate, and through a save and load", () => {
+    const first = settleTurn(freshDoc(), ctx(), add("Likes small commits", "I like small commits"));
+    const deleted = parseDoc(JSON.parse(JSON.stringify(deleteItem(first.doc, first.doc.items[0].id))));
+    expect(deleted.forgotten).toHaveLength(1);
+    const other = settleTurn(deleted, ctx({ mateId: "other-lead", turnId: "turn-2" }), add("Likes small commits", "I like small commits"));
+    expect(other.outcome.status).toBe("stored");
+    expect(parseDoc({ ...deleted, forgotten: ["not-a-key", 5, "fgt-zz"] }).forgotten).toBeUndefined();
+  });
+
+  it("forgets nothing when a removal proposal is deleted", async () => {
+    const kept = settleTurn(freshDoc(), ctx(), add("Likes small commits", "I like small commits"));
+    const removal = settleTurn(kept.doc, ctx({ turnId: "turn-2", user: "Forget that I like small commits." }), {
+      kind: "reply",
+      text: JSON.stringify({ kind: "remove", targetId: kept.doc.items[0].id, evidence: "Forget that I like small commits" }),
+    });
+    const proposal = removal.doc.items.find((item) => item.action === "remove");
+    expect(proposal).toBeDefined();
+    expect(deleteItem(removal.doc, proposal!.id).forgotten).toBeUndefined();
   });
 });

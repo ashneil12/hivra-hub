@@ -54,3 +54,14 @@ What exists today: `src-tauri/src/provider_session_transfer.rs` copies a Claude 
 ## Licence
 
 Ideas from Cloudroom (Apache-2.0, https://github.com/davidondrej/cloudroom) and Aether (closed source, ideas only). No Cloudroom code is copied. If any file is translated later, stop unless this brief asked for it, then follow WP-121's rules: file header, NOTICE entry, credits.json component, README line and SOURCES row.
+
+## Addendum (11 Nov): what Sheprd and Nuphos do
+
+Research: `/mnt/project-files/hivra-research/reports/nov11-competitors.md`.
+
+- **Sheprd** (Apache-2.0): Teleport moves the CLI's own transcript (Claude Code or Codex) and rewrites the folder
+  paths inside it, so `--resume` on the new machine keeps the full history. Prefer this.
+- **Nuphos** (Apache-2.0): moving a chat takes an expiring lock and the chat's run slot, and a final write
+  succeeds only while the lock still holds. The new machine starts a fresh session from a text history (summary
+  first, newest turns kept within a 120K-character budget). Use that history as the fallback when the transcript
+  can't move.

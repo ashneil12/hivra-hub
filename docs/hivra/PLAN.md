@@ -286,6 +286,26 @@ to 219, then 214 last.
 | [219](work/WP-219-agents-board.md) | The Agents board, the whole tree | M | 213 | yes |
 | [214](work/WP-214-words-and-leftovers.md) | Words, Settings and leftovers | L | 210 to 213, after 215 to 219 | yes |
 
+## Wave O: memory and run-loop picks from Nod and OpenBot (11 Nov)
+
+From the deep dive of n8n's Nod (Apache-2.0), CopilotKit's OpenBot (MIT) and nightly-labs' OpenBot (PolyForm
+Noncommercial: ideas only, no code or text). The small picks are already built: facts only from Ash's own words and
+deleted facts staying deleted (#284), the unkept-promise nudge and the habit checklist with unattended-run rules. These
+are the rest, plus two from Ash's 11 Nov dump (248, 249). 243 and 248 are security packages and get the full review.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [240](work/WP-240-memory-curator-v2.md) | Memory that learns from repetition, keeps a "Let go" archive and runs in batches | M | 51, 100, 111 | yes |
+| [241](work/WP-241-two-tier-recall.md) | Two-tier recall: a small always-sent core and a search tool | M | 99, 240 | yes |
+| [242](work/WP-242-skill-learning-switch.md) | One switch for skill learning, and safer learned skills | S | 51 | yes |
+| [243](work/WP-243-approval-checker-owner-words.md) | The approval checker reads only Ash's words; a yes runs that exact action once | L | 14, 146 | no |
+| [244](work/WP-244-quiet-schedules.md) | Habits and automations that skip the model when nothing changed | M | 180a | yes |
+| [245](work/WP-245-queue-lanes.md) | Each queue says why it waits; answers from many agents arrive together | M | none | yes |
+| [246](work/WP-246-behaviour-evals.md) | Behaviour evals: score what first mates and crew actually do | L | WP5 bench | yes |
+| [247](work/WP-247-ask-test-goal-integrity.md) | Ask only when it matters; goals their own run can't close | S | 14, 215 | yes |
+| [248](work/WP-248-settings-local-leak.md) | Keep Claude Code's saved approvals (and passwords) out of commits | S | 200, 227 | no |
+| [249](work/WP-249-blind-done-check.md) | Check a "done" claim against the diff, not the worker's story | M | 40 | yes |
+
 ## Running it
 
 - Each wave runs as one agent per package, in parallel (up to about ten at once). Wave A can start the moment this
