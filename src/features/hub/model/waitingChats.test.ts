@@ -375,6 +375,63 @@ describe("hooks for Autopilot and H4", () => {
     expect(calls.send.map(([id]) => id)).toEqual(["stand"]);
   });
 
+  it("the captain is refused by the same veto and person-only check a Page is", async () => {
+    const { calls } = host();
+    const standing = { answer: "Example: keep it", label: "merge on green" };
+    setCaptainDoor(() => ({ monoId: "ada", standing }));
+    noteChats([
+      markerChat("pub", "Needs Ash: What next?\nMy pick: merge it"),
+      markerChat("pub-page", "Needs Ash: What next?\nMy pick: merge it"),
+    ]);
+    const pub = findWaitingChat("pub")!;
+    expect(pub.redLine, "this one is the veto, not the red line").toBe(false);
+    expect(chatQuestionVeto(pub)).not.toBeNull();
+    const captain = await takePick("pub", { by: "autopilot" });
+    const page = await takePick("pub-page", { by: "page" });
+    expect(captain).toEqual(page);
+    expect(captain).toEqual({
+      ok: false,
+      reason: "That one sends, deletes, moves money, publishes or changes access, so it waits for Ash.",
+    });
+    expect(calls.send).toEqual([]);
+
+    for (const key of ["gate/run-7", "Gate/run-7", "irreversible/lead/task-6", "fresh-eyes/r9/00112233aabbccdd", "fanout-again/fm/task-2"]) {
+      const id = `own-${key.replace(/[^a-z0-9]+/gi, "-")}`;
+      setCaptainDoor(() => ({ decisionKey: key, monoId: "ada", standing }));
+      noteChats([markerChat(id, "Needs Ash: Example: which name?\nMy pick: Example: keep it")]);
+      expect(await takePick(id, { by: "autopilot" }), key).toEqual({
+        ok: false,
+        reason: "Only you can answer that one. Open Needs you to answer it.",
+      });
+    }
+    expect(calls.send).toEqual([]);
+  });
+
+  it("a captain answer is stored as captain:<id>, never as the person or a page", async () => {
+    const { calls } = host();
+    const standing = { answer: "Example: keep it", label: "merge on green" };
+    setCaptainDoor(() => ({ monoId: "ada", standing }));
+    noteChats([markerChat("id", "Needs Ash: Example: keep the gate?\nMy pick: Example: change it")]);
+    expect(await takePick("id", { by: "autopilot" })).toMatchObject({ ok: true, sent: "Example: keep it" });
+    expect(gateLog().find((row) => row.sessionId === "id")?.answer).toMatchObject({ words: "Example: keep it", who: "captain:ada" });
+
+    setCaptainDoor(() => ({ monoId: "ada" }));
+    noteChats([markerChat("same", "Needs Ash: Rename the file?\nMy pick: yes")]);
+    expect((await takePick("same", { by: "autopilot" })).ok).toBe(true);
+    expect(gateLog().find((row) => row.sessionId === "same")?.answer?.who).toBe("captain:ada");
+
+    for (const monoId of ["page:ada", "user", "person", "page", ""]) {
+      const id = `bad-${monoId || "blank"}`;
+      setCaptainDoor(() => ({ monoId, standing }));
+      noteChats([markerChat(id, "Needs Ash: Example: keep the gate?\nMy pick: Example: change it")]);
+      expect((await takePick(id, { by: "autopilot" })).ok, monoId || "blank").toBe(true);
+      const who = gateLog().find((row) => row.sessionId === id)?.answer?.who;
+      expect(who, monoId || "blank").toBe("captain:chief");
+    }
+    expect(calls.send.map(([id]) => id)).toContain("id");
+    expect(calls.send.map(([, text]) => text).join("\n")).not.toContain("page:");
+  });
+
   it("a worker's question H4 routes to its Lead is not Ash's", () => {
     setWorkerQuestionRouter((c) => c.sessionId === "worker");
     noteChats([markerChat("worker", "Needs Ash: Which test runner?\nMy pick: vitest"), markerChat("lead", "Needs Ash: Ship it?\nMy pick: yes")]);
