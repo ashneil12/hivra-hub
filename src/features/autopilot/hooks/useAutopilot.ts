@@ -40,8 +40,8 @@ import {
 import { clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
 import { approvalVerdict, approvalWhat, chatProject, handBackText } from "../model/decide";
 import { appWiredServers, type WiredServersReader } from "../model/mcpTrust";
-import { placeStaysInside, type Locate } from "../model/safeApproval";
-import { gitLocateFiles } from "../../../platform/tauri/fs";
+import { placeStaysInside, type Canonical, type Locate } from "../model/safeApproval";
+import { gitCanonicalPaths, gitLocateFiles } from "../../../platform/tauri/fs";
 import { formatUntil } from "../model/endTime";
 import {
   pausedLabel,
@@ -110,6 +110,8 @@ export function useAutopilot(options: {
   openChat: (sessionId: string) => void;
   /** Where paths really are, links followed (the app's git_locate_files); tests pass their own. */
   locate?: Locate;
+  /** Canonical paths, every link followed, for a chat outside git (round 7); tests pass their own. */
+  canonical?: Canonical;
   /** The MCP servers Hivra wired from installed plugins for a chat, read fresh for each decision (mcpTrust.ts). */
   wiredServers?: WiredServersReader;
 }): void {
@@ -284,7 +286,7 @@ export function useAutopilot(options: {
               const verdict = approvalVerdict(block, folder, redHoldFor(session.id, now), trusted);
               if (verdict.kind === "held") return hold(verdict.red, verdict.why);
               // An edit its words allow is allowed only once the app has found where it really lands (links followed).
-              return placeStaysInside(block.approval!.call, folder, latest.current.locate ?? gitLocateFiles).then((why) => {
+              return placeStaysInside(block.approval!.call, folder, latest.current.locate ?? gitLocateFiles, latest.current.canonical ?? gitCanonicalPaths).then((why) => {
                 if (why) return hold(null, why);
                 return log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
                   () => latest.current.approve(session.id, requestId, "allow"),

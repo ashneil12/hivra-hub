@@ -563,8 +563,28 @@
     },
     {
       "command": "cat README.md",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "grep -c X Documents/f",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "git status",
       "held": false,
       "folder": "/Users/example"
+    },
+    {
+      "command": "grep -c X src/app.ts",
+      "held": false,
+      "folder": "/Users/example/Projects/proj"
+    },
+    {
+      "command": "cat =git",
+      "held": true,
+      "folder": "/Users/example/Projects/proj"
     },
     {
       "command": "cat proc/123/task/123/environ",

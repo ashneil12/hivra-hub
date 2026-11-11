@@ -18,8 +18,8 @@
 // main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
-import { credentialInWords, credentialPath, dotOutside, foldedFolder, timerOutside, walkHeld, wordOutside } from "./credentialPaths";
-import { guardRunHeld, isProtectedConfig, segmentsOf } from "./protectedConfig";
+import { credentialInWords, credentialPath, dotOutside, foldedFolder, projectFolder, timerOutside, walkHeld, wordOutside } from "./credentialPaths";
+import { foldSegment, guardRunHeld, isProtectedConfig, segmentsOf } from "./protectedConfig";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
 import { serverTrusted, type TrustedServers } from "./mcpTrust";
 import { shellWords } from "./shellWords";
@@ -58,6 +58,11 @@ export function foldName(name: string): string {
 /** A folder shallower than this (/, /Users, /Users/someone) is too broad to count as a chat's own. */
 const MIN_FOLDER_DEPTH = 3;
 
+/** A git folder's own files (round 7, HIGH-A): a file of one of these names makes its folder a repository to git. */
+const GIT_DIR_FILES: ReadonlySet<string> = new Set(["head", "config", "packed-refs", "commondir", "gitdir"]);
+/** A git folder's object and ref stores (round 7, HIGH-A): held under any folder in a chat's own. */
+const GIT_DIR_FOLDERS: ReadonlySet<string> = new Set(["objects", "refs"]);
+
 /** An absolute POSIX path with ".", ".." and repeated slashes resolved; null when it isn't one or climbs past /. */
 function normalize(path: string): string[] | null {
   if (!path.startsWith("/")) return null;
@@ -85,6 +90,13 @@ export function editInside(path: string, folder: string | undefined): SafeVerdic
     return `it edits ${path}, outside the chat's folder`;
   const inner = parts.slice(root.length);
   if (isProtectedConfig(inner)) return `it edits ${path}, which changes how tools run`;
+  // Round 7, HIGH-A (a): a folder with a HEAD and the other git files of a repository is a repository to git, whose config
+  // runs programs (core.fsmonitor, diff.external) on every status and diff. So a write of one of those files, and a write
+  // under an objects/ or refs/ folder, waits. The objects/ and refs/ folders are held wherever they are, not only beside a
+  // HEAD: a HEAD can be written by a later edit, and the planted folders must not be there first.
+  if (GIT_DIR_FILES.has(foldSegment(inner[inner.length - 1]))) return `it edits ${path}, a git folder's own file, which changes how git runs`;
+  if (inner.slice(0, -1).some((part) => GIT_DIR_FOLDERS.has(foldSegment(part))))
+    return `it edits ${path}, under a git folder's objects or refs, which changes how git runs`;
   // Round 5, L1: the guard's own source, matched on the whole path so the chat's own folder can't hide it.
   if (guardRunHeld(parts)) return `it edits ${path}, which is the approval guard itself`;
   return null;
@@ -346,7 +358,8 @@ const COMMANDS: Readonly<Record<string, (args: readonly string[]) => SafeVerdict
   find: findRead,
   // fd: --base-directory and --search-path move the walk to another folder, and -L/--follow read through links (M4).
   fd: (args) => readsUnless("-x", "--exec", "--exec-batch", "--base-directory", "--search-path")(args) ?? (followsLinks(args) ? "that option follows links out of the folder" : null),
-  ag: readsUnless("--pager", "-f", "--follow"),
+  // -z and --search-zip read inside compressed files, which the login rules can't see into (round 7, LOW; rg has held them since round 6).
+  ag: readsUnless("--pager", "-f", "--follow", "-z", "--search-zip"),
   // tree writes to a file with -o, and with -R and -H it writes an HTML file into every folder; -l follows links.
   // --output is held too though tree has no such option, since a stricter answer costs Ash one tap and a looser one
   // cannot be taken back.
@@ -385,6 +398,12 @@ function safeCommandInner(command: string, folder: string | undefined, timer = f
   if (typeof check !== "function") return UNREADABLE_COMMAND;
   // WP-101 fix round 2, item B: a walk through folders has to start inside the chat's own, whatever it names.
   if (walkHeld(words, folder, timer)) return "it walks folders outside the chat's own, or reads what a project keeps out of git, so it waits for Ash";
+  // Round 7, LOW: a timer in a folder that can't hold a walk (home, a parent of a project, or none) takes no bare name, so
+  // `grep -c X Documents/f` can't read a file of the person's own. Flags stay as they were.
+  // A git or cargo subcommand (`status`, `fmt`) is no file name, so it is not counted.
+  const operands = words[0] === "git" || words[0] === "cargo" ? words.slice(2) : words.slice(1);
+  if (timer && !projectFolder(folder) && operands.some((word) => !word.startsWith("-")))
+    return "a timer in a folder this shallow can't read a file by name, so it waits for Ash";
   // Round 6, HIGH-1: a word that names a place outside the chat's own folder (a rooted path, a home word, a climb out) waits,
   // whatever the command, so a read of the hub's database copies or a browser's store by its absolute path does not pass.
   if (words.slice(1).some((arg) => wordOutside(arg, folder))) return "it names a file outside the chat's own folder, so it waits for Ash";
@@ -470,9 +489,16 @@ export type RealPlace = {
   relative: string;
   /** Whether the path's last part is a link (round 6, MED-1): a read of one must land inside the chat's folder. */
   linked?: boolean;
+  /** Whether the checkout's root holds a `.git` folder or file (round 7). Git commands in a folder without one wait. */
+  dotGit?: boolean;
 };
 /** The app's lookup of real places; null for a path outside git. */
 export type Locate = (paths: string[]) => Promise<(RealPlace | null)[]>;
+/**
+ * The app's canonical path of each path, every link followed and a file that doesn't exist yet placed by its parent; null
+ * when it can't be placed. Used only for a chat outside git (round 7), where the lookup above has nothing to say.
+ */
+export type Canonical = (paths: string[]) => Promise<(string | null)[]>;
 
 /** A name looked up inside the chat's folder, so the lookup resolves the folder itself (it needn't exist). */
 const PROBE = ".monocode-autopilot-probe";
@@ -483,12 +509,61 @@ const insideFolder = (real: string, folder: string) => real.startsWith(`${folder
 const realPath = (place: RealPlace, relative = place.relative) =>
   relative ? `${place.root.replace(/\/+$/, "")}/${relative}` : place.root;
 
+/** Whether a real path is the folder itself or inside it. */
+const within = (real: string, folder: string) => real === folder.replace(/\/+$/, "") || insideFolder(real, folder);
+
+/**
+ * Whether a target's own words lie inside the folder, before any link is followed (round 7, MED-C). A read whose words
+ * are outside the folder keeps its rule (MED-D); a read whose words are inside and whose real place is not, waits.
+ */
+function namedInside(target: string, root: string): boolean {
+  const named = normalize(target);
+  const base = normalize(root);
+  return !!named && !!base && named.length > base.length && base.every((part, i) => named[i] === part);
+}
+
+/**
+ * A chat outside git (round 7, usability): each path is placed by its canonical path, every link followed. It waits unless
+ * it really lands inside the chat's own folder and `check` (when given) passes its real place. Only a chat the git lookup
+ * can't place uses this, so such a chat no longer waits on every command.
+ */
+async function outsideGitStays(
+  names: string[],
+  targets: string[],
+  folder: string,
+  canonical: Canonical | undefined,
+  check?: (real: string, realFolder: string, index: number) => SafeVerdict,
+): Promise<SafeVerdict> {
+  if (!canonical) return "the app couldn't place the chat's folder in a git checkout";
+  let resolved: (string | null)[];
+  try {
+    resolved = await canonical([folder, ...targets]);
+  } catch (error) {
+    return `the app couldn't resolve where it really lands (${error instanceof Error ? error.message : String(error)})`;
+  }
+  const realFolder = resolved[0];
+  if (!realFolder) return "the app couldn't resolve the chat's folder";
+  for (let i = 0; i < targets.length; i++) {
+    const real = resolved[i + 1];
+    if (!real) return `${names[i]} can't be resolved, so it waits for Ash`;
+    if (!within(real, realFolder)) return `${names[i]} really lands at ${real}, outside the chat's folder`;
+    const why = check?.(real, realFolder, i);
+    if (why) return why;
+  }
+  return null;
+}
+
 /**
  * Whether an edit the words allowed still lands inside the chat's folder once links are followed; why not otherwise.
  * Not an edit: nothing to check. A folder or file the app can't place (outside git, or the lookup failed) waits: a
  * file name that is itself a link isn't resolved by the lookup, which is why node_modules is held by name too.
  */
-export async function editStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
+export async function editStaysInside(
+  call: ApprovalCall | undefined,
+  folder: string | undefined,
+  locate: Locate,
+  canonical?: Canonical,
+): Promise<SafeVerdict> {
   if (!call || !EDIT_TOOLS.has(call.tool)) return null;
   const root = folder?.replace(/\/+$/, "");
   if (!root || !call.paths?.length) return "it doesn't say which file it edits";
@@ -500,6 +575,8 @@ export async function editStaysInside(call: ApprovalCall | undefined, folder: st
     return `the app couldn't find where it really edits (${error instanceof Error ? error.message : String(error)})`;
   }
   const home = places[0];
+  // Round 7, usability: a chat outside git is judged by where each edit really lands, every link followed.
+  if (!home) return outsideGitStays(call.paths, targets, root, canonical, (real, realFolder) => editInside(real, realFolder));
   if (!home || !home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
   const realFolder = realPath(home, home.relative.slice(0, -PROBE.length).replace(/\/+$/, ""));
   for (let i = 0; i < targets.length; i++) {
@@ -519,7 +596,12 @@ export async function editStaysInside(call: ApprovalCall | undefined, folder: st
  * link that leads to a login or config file is held. A path the app can't place (outside git, or the lookup failed) waits.
  * A search with no path walks the folder itself, which its ignore rules bound, so it is not looked up here.
  */
-export async function readStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
+export async function readStaysInside(
+  call: ApprovalCall | undefined,
+  folder: string | undefined,
+  locate: Locate,
+  canonical?: Canonical,
+): Promise<SafeVerdict> {
   if (!call || !(READ_ONLY_TOOLS.has(call.tool) || SEARCH_TOOLS.has(call.tool))) return null;
   if (!Array.isArray(call.paths) || !call.paths.length) return null;
   // A path that isn't text is held by safeCall and searchStartsOutside already.
@@ -535,7 +617,12 @@ export async function readStaysInside(call: ApprovalCall | undefined, folder: st
     return `the app couldn't find where it really reads (${error instanceof Error ? error.message : String(error)})`;
   }
   const home = places[0];
-  if (!home || !home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
+  // Round 7, usability: a chat outside git is judged by where each read really lands, every link followed.
+  if (!home)
+    return outsideGitStays(paths, targets, root, canonical, (real, realFolder) =>
+      credentialPath(real) || dotOutside(real, realFolder) ? `${real} is a login or config file` : null,
+    );
+  if (!home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
   const realFolder = realPath(home, home.relative.slice(0, -PROBE.length).replace(/\/+$/, ""));
   for (let i = 0; i < targets.length; i++) {
     const place = places[i + 1];
@@ -544,6 +631,10 @@ export async function readStaysInside(call: ApprovalCall | undefined, folder: st
     if (credentialPath(real) || dotOutside(real, realFolder)) return `${paths[i]} really reads ${real}, a login or config file`;
     // Round 6, MED-1: a link as the last part is held when it points outside the chat's folder, whatever it points at.
     if (place.linked && !insideFolder(real, realFolder)) return `${paths[i]} is a link to ${real}, outside the chat's folder`;
+    // Round 7, MED-C: a link in the middle of the path that leads out of the folder waits too. A path that names a place
+    // outside the folder by its own words keeps its rule (MED-D: Ash's decision, not changed here).
+    if (namedInside(targets[i], root) && !within(real, realFolder))
+      return `${paths[i]} really reads ${real}, outside the chat's folder through a link`;
   }
   return null;
 }
@@ -556,16 +647,32 @@ export async function readStaysInside(call: ApprovalCall | undefined, folder: st
  * through a link, waits; so does a word the app can't place. A word that isn't a path (a pattern, a revision) is placed
  * too, as a name in the folder, and is held only when that place is one.
  */
-export async function bashStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
+export async function bashStaysInside(
+  call: ApprovalCall | undefined,
+  folder: string | undefined,
+  locate: Locate,
+  canonical?: Canonical,
+): Promise<SafeVerdict> {
   if (!call || !SHELL_TOOLS.has(call.tool)) return null;
   const words = bashWords(call);
   if (!words) return null;
   const root = folder?.replace(/\/+$/, "");
   if (!root) return "the chat has no folder of its own to run in";
-  // A flag's value is a place too (`--file=x`), and so is the word itself.
-  const names = [...new Set(words.slice(1).flatMap((word) => (word.startsWith("-") && word.includes("=") ? [word, word.slice(word.indexOf("=") + 1)] : [word])))]
-    .filter(Boolean);
-  if (!names.length) return null;
+  // A flag's value is a place too (`--file=x`), a short option's value is glued on (`-fnotes` is notes, as file reads it,
+  // round 7, MED-B), and so is the word itself.
+  const names = [
+    ...new Set(
+      words.slice(1).flatMap((word) => {
+        const out = [word];
+        if (word.startsWith("-") && word.includes("=")) out.push(word.slice(word.indexOf("=") + 1));
+        if (/^-[^-]/.test(word) && word.length > 2) out.push(word.slice(2));
+        return out;
+      }),
+    ),
+  ].filter(Boolean);
+  // git with no words still runs in the folder, so its folder is placed even when it names no file (round 7).
+  const git = words[0] === "git";
+  if (!names.length && !git) return null;
   const targets = names.map((name) => (name.startsWith("/") ? name : `${root}/${name}`));
   let places: (RealPlace | null)[];
   try {
@@ -574,14 +681,30 @@ export async function bashStaysInside(call: ApprovalCall | undefined, folder: st
     return `the app couldn't find where it really runs (${error instanceof Error ? error.message : String(error)})`;
   }
   const home = places[0];
-  if (!home || !home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
+  if (!home) {
+    // Round 7, usability: outside git there is no checkout for git to run in, so git waits; any other word is judged by
+    // where it really lands, every link followed.
+    if (git) return "git runs in a folder outside any checkout, so it waits for Ash";
+    return outsideGitStays(names, targets, root, canonical, (real, realFolder, i) => {
+      // A word that is the chat's own name is judged by its words (a search's pattern is not a file).
+      const own = names[i].startsWith("/") ? null : `${realFolder}/${names[i]}`;
+      return own !== real && (credentialPath(real) || dotOutside(real, realFolder))
+        ? `${names[i]} really reads ${real}, a login or config file`
+        : null;
+    });
+  }
+  if (!home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
+  // Round 7: a git command whose folder's git folder isn't a .git folder or file waits (a planted or bare git folder).
+  if (git && home.dotGit === false) return "the chat's git folder isn't a .git folder or file, so git waits for Ash";
   const realFolder = realPath(home, home.relative.slice(0, -PROBE.length).replace(/\/+$/, ""));
   for (let i = 0; i < targets.length; i++) {
     const place = places[i + 1];
     // A word whose folder is a link out of git can't be placed, so it waits (a name the command reads is always in the checkout).
     if (!place) return `${names[i]} can't be placed in a git checkout, so it waits for Ash`;
     const real = realPath(place);
-    if (place.linked && !insideFolder(real, realFolder)) return `${names[i]} is a link to ${real}, outside the chat's folder`;
+    // Round 7, MED-C: a word that reaches outside the chat's folder through a link in the middle of its path waits, as a
+    // link as its last part does (round 6, MED-1).
+    if (!within(real, realFolder)) return `${names[i]} is a link to ${real}, outside the chat's folder`;
     // A word that is the chat's own name is judged by its words (a search's pattern is not a file); one that reached its
     // place through a link is judged by where it really is.
     const own = names[i].startsWith("/") ? null : `${realFolder}/${names[i]}`;
@@ -591,8 +714,13 @@ export async function bashStaysInside(call: ApprovalCall | undefined, folder: st
 }
 
 /** The lookup check for whatever a tool call touches: an edit's real place, a read's or search's, or a shell command's (round 5, M2; round 6, MED-1). */
-export function placeStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
-  if (call && EDIT_TOOLS.has(call.tool)) return editStaysInside(call, folder, locate);
-  if (call && SHELL_TOOLS.has(call.tool)) return bashStaysInside(call, folder, locate);
-  return readStaysInside(call, folder, locate);
+export function placeStaysInside(
+  call: ApprovalCall | undefined,
+  folder: string | undefined,
+  locate: Locate,
+  canonical?: Canonical,
+): Promise<SafeVerdict> {
+  if (call && EDIT_TOOLS.has(call.tool)) return editStaysInside(call, folder, locate, canonical);
+  if (call && SHELL_TOOLS.has(call.tool)) return bashStaysInside(call, folder, locate, canonical);
+  return readStaysInside(call, folder, locate, canonical);
 }

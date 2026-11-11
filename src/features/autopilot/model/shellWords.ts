@@ -24,6 +24,9 @@ const SPACE = /\p{Zs}/u;
  */
 function plainWord(word: string): boolean {
   if (CONTROL.test(word) || /[{}]/.test(word)) return false;
+  // Round 7, MED-A: zsh turns a word that starts with `=` and a command name into that command's absolute path, so
+  // `cat =git` reads /usr/bin/git. Refused whether or not it is quoted, so no reading of it is ever relied on.
+  if (word.startsWith("=")) return false;
   // A tilde expands at the start of a word or just after `=` in an assignment; anywhere else it is literal (`HEAD~1`).
   // Only a leading `~/` is known not to change what the word means.
   if (word.startsWith("~") && word[1] !== "/") return false;

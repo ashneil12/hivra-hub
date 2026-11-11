@@ -40,6 +40,12 @@ const locate = async (paths: string[]) =>
     const real = link ? `${links[link]}${path.slice(link.length)}` : path;
     return { root: "/home/user", relative: real.slice("/home/user/".length) };
   });
+/** The canonical path of each path, links followed, as fs.rs git_canonical_paths places it (round 7). */
+const canonical = async (paths: string[]) =>
+  paths.map((path) => {
+    const link = Object.keys(links).find((from) => path.startsWith(`${from}/`));
+    return link ? `${links[link]}${path.slice(link.length)}` : path;
+  });
 let setAll: (change: (sessions: Session[]) => Session[]) => void = () => undefined;
 
 function Harness({ initial }: { initial: Session[] }) {
@@ -71,6 +77,7 @@ function Harness({ initial }: { initial: Session[] }) {
     isDelegated: (id) => delegated.has(id),
     openChat: () => undefined,
     locate,
+    canonical,
     wiredServers,
   });
   return null;
@@ -224,17 +231,24 @@ describe("useAutopilot", () => {
     await backend.set({ scopes: ["*"], untilMs: Date.now() + 48 * HOUR, by: "ash" });
     await refreshAutopilot();
     const tree = "/home/user/worktrees/hivra-x";
-    links = { [`${tree}/shared`]: "/home/user/projects/hivra/shared" };
+    links = {
+      [`${tree}/shared`]: "/home/user/projects/hivra/shared",
+      // Round 7, usability: a chat outside git whose folder holds a link out of it waits.
+      [`${OUTSIDE_GIT}/notes/escape`]: "/home/user/projects/hivra/shared",
+    };
     const edit = (path: string) => approval(`Edit ${path}`, { tool: "Edit", paths: [path] });
     await mount([
       session("linked", "/home/user/projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/shared/config.ts`)] }),
       session("plain", "/home/user/projects/hivra", { worktreeCwd: tree, blocks: [edit(`${tree}/src/a.ts`)] }),
+      // Round 7, usability: outside git, an edit that really lands inside the chat's own folder is allowed.
       session("nogit", `${OUTSIDE_GIT}/notes`, { blocks: [edit(`${OUTSIDE_GIT}/notes/a.md`)] }),
+      session("nogitlink", `${OUTSIDE_GIT}/notes`, { blocks: [edit(`${OUTSIDE_GIT}/notes/escape/a.md`)] }),
     ]);
-    expect(approvals.map((a) => a.id)).toEqual(["plain"]);
+    expect(approvals.map((a) => a.id).sort()).toEqual(["nogit", "plain"]);
     const byChat = Object.fromEntries(backend.entries.filter((e) => e.chatId).map((e) => [e.chatId, e]));
     expect(byChat.linked).toMatchObject({ outcome: "held", detail: expect.stringContaining("/home/user/projects/hivra/shared/config.ts, outside the chat's folder") });
-    expect(byChat.nogit).toMatchObject({ outcome: "held", detail: expect.stringContaining("couldn't place") });
+    expect(byChat.nogit).toMatchObject({ outcome: "taken" });
+    expect(byChat.nogitlink).toMatchObject({ outcome: "held", detail: expect.stringContaining("outside the chat's folder") });
   });
 
   it("holds a waiting question whose answer would send, delete, pay, publish or change access (WP-101, row 19)", async () => {

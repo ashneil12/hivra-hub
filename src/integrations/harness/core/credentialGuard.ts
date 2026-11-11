@@ -133,7 +133,9 @@ export function credentialBlock(
   for (const raw of texts) {
     // Round 4, item 7: quotes are the shell's, not the path's (`"$HOME"/.codex`, `~/.co''dex`), so the text is read both as
     // written and with its quotes taken out.
-    for (const text of new Set([raw, raw.replace(/['"]/g, "")])) {
+    // Round 7, MED-E: a backslash escapes the next character in the shell (`Application\ Support`, `monocode.d\b`), so the
+    // text is read with its backslashes taken out as well, for every guard below.
+    for (const text of new Set([raw, raw.replace(/['"]/g, ""), raw.replace(/[\\'"]/g, "")])) {
       if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
       if (SECRET_FILES.some((re) => re.test(foldForSecrets(collapseClimbs(text))))) return CREDENTIAL_BLOCK_MESSAGE;
       // Round 6, HIGH-1: the hub's store is read with its quotes taken out too (`'.../com.ash.monocode-h'ub/...`).

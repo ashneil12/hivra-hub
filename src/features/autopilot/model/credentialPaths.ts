@@ -674,6 +674,15 @@ function startOf(arg: string, base: readonly string[] | null): { segments: strin
 }
 
 /**
+ * Whether a chat's folder can hold a walk: deep enough to be a project, and not a credential place, inside one, or a
+ * parent of one (round 6, MED-2). A timer in a folder that can't hold a walk takes no bare file name either (round 7, LOW).
+ */
+export function projectFolder(folder: string | undefined): boolean {
+  const base = foldedFolder(folder);
+  return base !== null && base.length >= MIN_PROJECT_DEPTH && !startsAtPlaceParent({ segments: base, rooted: true }) && !credentialSegments(base);
+}
+
+/**
  * Whether a walk's start is at or above a credential place: its last segments are the first segments of a place, so the
  * place lies below it (`Library`, `AppData/Roaming`, `/etc`). The filesystem root (rooted, no segments) is above all.
  */
@@ -710,9 +719,8 @@ export function walkHeld(words: readonly string[], folder: string | undefined, t
   // approval holds it. A timer has no chat folder; its words are judged alone.
   // Round 6, MED-2: a timer's check runs in the chat's folder too, so the same gate holds it. A folder at or inside a
   // credential place is held as well: its walk reaches the place with no path at all.
+  if (!projectFolder(folder)) return true;
   const base = foldedFolder(folder);
-  const deep = base !== null && base.length >= MIN_PROJECT_DEPTH;
-  if (!deep || startsAtPlaceParent({ segments: base, rooted: true }) || credentialSegments(base)) return true;
   const root = folderParts(folder);
   // A search's pattern is not a path: its first bare word, unless a -e or -f option names the pattern (round 4; the
   // same rule credentialInWords and the Rust timer check read). A Grep or Glob call's paths are walked from, so
