@@ -205,7 +205,15 @@ describe("stuck workers in the Lead's chat", () => {
 
   it("sets a failure aside with Dismiss; the rest stay", () => {
     const { card } = setup();
-    act(() => card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-dismiss]")!.click());
+    const open = card("w4")!.querySelector<HTMLButtonElement>("[data-hub-open-lead]")!;
+    const dismiss = card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-dismiss]")!;
+    expect(open.className).toMatch(/\bborder\b/);
+    expect(open.className).not.toMatch(/\bbg-accent\b/);
+    expect(open.className).not.toMatch(/bg-content\/8/);
+    expect(dismiss.className).toMatch(/\bborder\b/);
+    expect(dismiss.className).not.toMatch(/\bbg-accent\b/);
+    expect(dismiss.className).not.toMatch(/bg-content\/8/);
+    act(() => dismiss.click());
     expect(card("w4")).toBeNull();
     expect(card("w3")).not.toBeNull();
   });
