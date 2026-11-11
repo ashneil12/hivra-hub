@@ -66,7 +66,7 @@ const DENIED_PROGRAMS: [&str; 7] = [
     "/usr/bin/crontab",
     "/usr/bin/at",
     "/usr/sbin/hdiutil",
-    // macOS 26 moved the tool here. The old path stays denied for earlier systems.
+    // The binary is at one of these two paths. Both are denied.
     "/usr/bin/hdiutil",
 ];
 
@@ -555,12 +555,37 @@ pub fn container_profile(home: &Path, data_dir: Option<&Path>) -> Result<String,
     profile_scoped(home, data_dir, &[], false)
 }
 
+thread_local! {
+    static PROFILE_BUILD_OUTER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn profile_scoped(
     home: &Path,
     data_dir: Option<&Path>,
     checkouts: &[PathBuf],
     deny_git: bool,
 ) -> Result<String, String> {
+    // The login PATH has to be known before the denies are chosen. The read runs a shell under the container
+    // profile, which builds a profile again, so the inner build must not start another read (the lock is held).
+    let outer = PROFILE_BUILD_OUTER.with(|flag| {
+        let already = flag.get();
+        flag.set(true);
+        !already
+    });
+    struct Reset {
+        outer: bool,
+    }
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            if self.outer {
+                PROFILE_BUILD_OUTER.with(|flag| flag.set(false));
+            }
+        }
+    }
+    let _reset = Reset { outer };
+    if outer {
+        let _ = crate::harness::login_shell_path();
+    }
     let list = home_secrets()?;
     let forms = folder_forms(home)?;
     let mut seen = BTreeSet::new();
@@ -599,15 +624,17 @@ fn profile_scoped(
     lines.push("(deny lsopen)".to_string());
     lines.push(String::new());
     let text = lines.join("\n");
-    // sandbox-exec takes the profile as one argument. Past about a megabyte it refuses the profile, which would fail
-    // open if a caller caught the error and started anyway. Callers treat this error as "do not start".
+    // `-p` takes the profile as one argument. A larger one is passed with `-f` (see `sandbox_exec_profile_args`).
+    // Past this cap a start is refused, so a caller cannot catch the error and start unsandboxed.
     if text.len() > PROFILE_BYTE_CAP {
         return Err("The sandbox profile is too large to apply, so nothing starts.".to_string());
     }
     Ok(text)
 }
 
-const PROFILE_BYTE_CAP: usize = 900_000;
+const PROFILE_BYTE_CAP: usize = 4_000_000;
+/// Below this, `-p` is safe. Above it, the profile is a file (`-f`), so the argument list stays under ARG_MAX.
+const PROFILE_INLINE_LIMIT: usize = 100_000;
 
 /// When this profile's home is not the login home, also deny the real `~/.ssh` and the daily data folder. The files are
 /// not opened: only the password database's home directory string is used.
@@ -769,13 +796,14 @@ fn walk_shell_sources(
     Ok(())
 }
 
-/// `source` and `.` operands. A line may have the command after `&&` or `;`. An operand with `$`, a backtick or `*`
-/// is left out: the fixed globs cover the ones those expansions name, and a guessed expansion would deny the wrong file.
+/// `source` and `.` operands. A line may have the command after `&&` or `;`, or after `then`, `else`, `do`, `elif`
+/// or `{` (the shape installers write). `\.` is `.`. An operand with a leftover `$`, a backtick or `*` is left out:
+/// only `~`, `$HOME` and `${HOME}` are expanded, and a guessed expansion would deny the wrong file.
 fn shell_source_operands(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     for raw in text.split(['\n', '\r']) {
         for segment in split_shell_commands(&strip_shell_comment(raw)) {
-            let words = shell_words(&segment);
+            let words = source_command_words(shell_words(&segment));
             if words.len() < 2 {
                 continue;
             }
@@ -785,6 +813,23 @@ fn shell_source_operands(text: &str) -> Vec<String> {
         }
     }
     out
+}
+
+fn source_command_words(mut words: Vec<String>) -> Vec<String> {
+    loop {
+        let Some(first) = words.first() else {
+            break;
+        };
+        if matches!(first.as_str(), "then" | "else" | "do" | "elif" | "{") {
+            words.remove(0);
+            continue;
+        }
+        if first == "\\." {
+            words[0] = ".".to_string();
+        }
+        break;
+    }
+    words
 }
 
 fn strip_shell_comment(line: &str) -> String {
@@ -879,6 +924,7 @@ fn shell_words(segment: &str) -> Vec<String> {
 }
 
 fn resolve_shell_source(home: &Path, from: &Path, operand: &str) -> Option<PathBuf> {
+    let operand = expand_home_token(home, operand);
     if operand.is_empty()
         || operand.contains('$')
         || operand.contains('`')
@@ -896,12 +942,47 @@ fn resolve_shell_source(home: &Path, from: &Path, operand: &str) -> Option<PathB
     if let Some(rest) = operand.strip_prefix("~/") {
         return Some(normalize_lexical(&home.join(rest)));
     }
-    let raw = Path::new(operand);
+    let raw = Path::new(&operand);
     if raw.is_absolute() {
         return Some(normalize_lexical(raw));
     }
     let prefix = from.parent().unwrap_or(home);
     Some(normalize_lexical(&prefix.join(raw)))
+}
+
+/// `~` is handled by the caller. `$HOME` and `${HOME}` expand only when the next character is `/` or the end, so
+/// `$HOMEfoo` is left alone and then rejected with the other `$` operands.
+fn expand_home_token(home: &Path, operand: &str) -> String {
+    let home_text = home.to_string_lossy();
+    let mut rest = operand;
+    let mut out = String::new();
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("${HOME}") {
+            if home_token_boundary(after) {
+                out.push_str(&home_text);
+                rest = after;
+                continue;
+            }
+        }
+        if let Some(after) = rest.strip_prefix("$HOME") {
+            if home_token_boundary(after) {
+                out.push_str(&home_text);
+                rest = after;
+                continue;
+            }
+        }
+        let ch = rest.chars().next().unwrap();
+        out.push(ch);
+        rest = &rest[ch.len_utf8()..];
+    }
+    out
+}
+
+fn home_token_boundary(after: &str) -> bool {
+    match after.chars().next() {
+        None | Some('/') => true,
+        Some(_) => false,
+    }
 }
 
 /// The shared list's `denyWrite` globs under home. A glob with no `*` is one file: a link's target is denied too, and
@@ -1151,6 +1232,19 @@ fn push_tool_places(lines: &mut Vec<String>, home: &Path) {
     for dir in TOOL_DIRS {
         push_absolute(lines, dir, true, WRITE_OPS);
     }
+    // The whole Homebrew prefix. bin and Cellar were not enough: Library/Homebrew is brew's own code, Caskroom holds
+    // the binary a bin link points at, and opt/<formula> is the dylib link git loads.
+    deny_tree(lines, "/opt/homebrew");
+    // Intel Homebrew. Cellar and Homebrew are already named. bin, opt, Caskroom, lib and etc are the same hole.
+    for dir in [
+        "/usr/local/bin",
+        "/usr/local/opt",
+        "/usr/local/Caskroom",
+        "/usr/local/lib",
+        "/usr/local/etc",
+    ] {
+        deny_tree(lines, dir);
+    }
     push_absolute(lines, "/opt/homebrew/etc/gitconfig", false, WRITE_OPS);
     push_absolute(lines, "/opt/homebrew/lib/node_modules", true, WRITE_OPS);
     for name in TOOL_BINARIES {
@@ -1160,6 +1254,13 @@ fn push_tool_places(lines: &mut Vec<String>, home: &Path) {
         deny_file_and_target(lines, &path);
     }
     push_searched_home_dirs(lines, home);
+    push_cli_targets(lines, home);
+}
+
+/// A folder deny, plus the canonical directory when the path is a link. The kernel checks the resolved path.
+fn deny_tree(lines: &mut Vec<String>, path: &str) {
+    push_absolute(lines, path, true, WRITE_OPS);
+    deny_canonical_dir(lines, Path::new(path));
 }
 
 /// Home folders the app searches before the system directories, plus the resolver candidate folders that are not in
@@ -1171,6 +1272,7 @@ fn push_searched_home_dirs(lines: &mut Vec<String>, home: &Path) {
     };
     for dir in ["bin", "n/bin", ".fx/bin", ".hermes", ".local/share/agy-acp"] {
         push_home_entry(lines, &forms, dir, true, WRITE_OPS);
+        deny_canonical_dir(lines, &home.join(dir));
     }
     const SYSTEM: &[&str] = &[
         "/usr/bin",
@@ -1188,6 +1290,12 @@ fn push_searched_home_dirs(lines: &mut Vec<String>, home: &Path) {
         .position(|dir| SYSTEM.iter().any(|sys| dir.as_path() == Path::new(sys)))
         .unwrap_or(dirs.len());
     for dir in dirs.into_iter().take(cut) {
+        // A CLI the resolvers find on the login PATH, including one outside home. The folder itself is denied below
+        // only when it is under home.
+        deny_clis_in_dir(lines, &dir);
+        // The folder may itself be a link (fnm's multishell, a ~/bin into a dotfiles repo). The spelling deny does
+        // not cover the directory it points at.
+        deny_canonical_dir(lines, &dir);
         if !dir.starts_with(home) {
             continue;
         }
@@ -1204,6 +1312,179 @@ fn push_searched_home_dirs(lines: &mut Vec<String>, home: &Path) {
             continue;
         }
         push_home_entry(lines, &forms, &rel, true, WRITE_OPS);
+    }
+}
+
+/// Names the resolvers search for, under the profile's home (not the login home) and on the login PATH. A link's
+/// target and, when it sits in a package, that package folder are write-denied. `/usr`, `/bin` and the Homebrew
+/// prefixes are not treated as a package root.
+const RESOLVER_CLI_NAMES: &[&str] = &[
+    "codex",
+    "claude",
+    "opencode",
+    "pi",
+    "pi-coding-agent",
+    "omp",
+    "fx",
+    "grok",
+    "hermes",
+    "devin",
+    "cursor-agent",
+    "agent",
+    "agy_acp_server.par",
+    "git",
+    "gh",
+    "git-lfs",
+    "node",
+    "docker",
+];
+
+const RESOLVER_HOME_DIRS: &[&str] = &[
+    ".local/bin",
+    ".cargo/bin",
+    ".claude/local",
+    ".local/share/claude",
+    ".opencode/bin",
+    ".grok/bin",
+    ".npm-global/bin",
+    ".bun/bin",
+    "n/bin",
+    "bin",
+    ".fx/bin",
+    ".hermes",
+    ".hermes/hermes-agent/venv/bin",
+    ".hermes/hermes-agent/.venv/bin",
+    ".local/share/agy-acp",
+    "Applications/Codex.app/Contents/Resources",
+    "AppData/Roaming/npm",
+    "AppData/Local/Yarn/bin",
+    "scoop/shims",
+];
+
+fn push_cli_targets(lines: &mut Vec<String>, home: &Path) {
+    for rel in RESOLVER_HOME_DIRS {
+        let dir = home.join(rel);
+        deny_canonical_dir(lines, &dir);
+        deny_clis_in_dir(lines, &dir);
+    }
+    deny_configured_clis(lines);
+}
+
+fn deny_clis_in_dir(lines: &mut Vec<String>, dir: &Path) {
+    for name in RESOLVER_CLI_NAMES {
+        deny_one_cli(lines, &dir.join(name));
+    }
+}
+
+fn deny_one_cli(lines: &mut Vec<String>, candidate: &Path) {
+    if std::fs::symlink_metadata(candidate).is_err() {
+        return;
+    }
+    deny_file_and_target(lines, candidate);
+    let Ok(real) = std::fs::canonicalize(candidate) else {
+        return;
+    };
+    let Some(root) = cli_package_root(&real) else {
+        return;
+    };
+    let Some(text) = root.to_str() else {
+        return;
+    };
+    if text.contains('"') || text.contains('\\') || text.contains('\n') {
+        return;
+    }
+    push_absolute(lines, text, true, WRITE_OPS);
+}
+
+fn cli_package_root(file: &Path) -> Option<PathBuf> {
+    let comps: Vec<std::path::Component> = file.components().collect();
+    for (i, comp) in comps.iter().enumerate() {
+        if comp.as_os_str() != "node_modules" {
+            continue;
+        }
+        let name = comps.get(i + 1)?.as_os_str().to_string_lossy();
+        let end = if name.starts_with('@') { i + 2 } else { i + 1 };
+        if end >= comps.len() {
+            return None;
+        }
+        let root: PathBuf = comps[..=end].iter().collect();
+        if root.components().count() < 3 || system_prefix(&root) {
+            return None;
+        }
+        return Some(root);
+    }
+    for (i, comp) in comps.iter().enumerate() {
+        if comp.as_os_str() != "versions" {
+            continue;
+        }
+        if i + 1 >= comps.len() {
+            return None;
+        }
+        let root: PathBuf = comps[..=i + 1].iter().collect();
+        if root.components().count() < 3 || system_prefix(&root) {
+            return None;
+        }
+        return Some(root);
+    }
+    None
+}
+
+fn system_prefix(path: &Path) -> bool {
+    let text = path.to_string_lossy();
+    for prefix in [
+        "/usr",
+        "/bin",
+        "/opt/homebrew",
+        "/usr/local",
+        "/snap",
+        "/System",
+        "/Library",
+    ] {
+        if text == prefix || text.starts_with(&format!("{prefix}/")) {
+            return true;
+        }
+    }
+    false
+}
+
+fn deny_canonical_dir(lines: &mut Vec<String>, dir: &Path) {
+    let Ok(real) = std::fs::canonicalize(dir) else {
+        return;
+    };
+    if real == dir {
+        return;
+    }
+    let Some(text) = real.to_str() else {
+        return;
+    };
+    if text.contains('"') || text.contains('\\') || text.contains('\n') {
+        return;
+    }
+    push_absolute(lines, text, true, WRITE_OPS);
+}
+
+/// Configured CLI paths the webview handed over. Read when a profile is built. A path that is not there is skipped.
+static CONFIGURED_CLI_PATHS: std::sync::Mutex<Vec<PathBuf>> = std::sync::Mutex::new(Vec::new());
+
+pub fn note_configured_cli(path: &Path) {
+    if path.as_os_str().is_empty() {
+        return;
+    }
+    let mut guard = CONFIGURED_CLI_PATHS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if guard.iter().any(|have| have == path) {
+        return;
+    }
+    guard.push(path.to_path_buf());
+}
+
+fn deny_configured_clis(lines: &mut Vec<String>) {
+    let guard = CONFIGURED_CLI_PATHS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    for path in guard.iter() {
+        deny_one_cli(lines, path);
     }
 }
 
@@ -1613,8 +1894,10 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 /// Starts `/usr/bin/true` under `profile` through `sandbox_exec`. Fails unless it exits 0, so a profile or launcher that
 /// cannot start is caught before an agent is started.
 pub fn preflight_with(sandbox_exec: &Path, profile: &str) -> Result<(), String> {
+    let args = sandbox_exec_profile_args(profile)?;
     let output = Command::new(sandbox_exec)
-        .args(["-p", profile, "/usr/bin/true"])
+        .args(&args)
+        .arg("/usr/bin/true")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -1796,14 +2079,67 @@ pub fn sandboxed_launch(
     let profile = profile_with_checkouts(home, data_dir, &checkouts)?;
     self_check(sandbox_exec)?;
     preflight_with(sandbox_exec, &profile)?;
-    Ok((
-        sandbox_exec.as_os_str().to_os_string(),
-        vec![
-            OsString::from("-p"),
-            OsString::from(profile),
-            cli.to_os_string(),
-        ],
-    ))
+    let mut args = sandbox_exec_profile_args(&profile)?;
+    args.push(cli.to_os_string());
+    Ok((sandbox_exec.as_os_str().to_os_string(), args))
+}
+
+/// `-p` while the profile is small enough for one argument. `-f` and a private file once it is not, so a long
+/// project list still starts. The file is swept an hour after it was written.
+fn sandbox_exec_profile_args(profile: &str) -> Result<Vec<OsString>, String> {
+    if profile.len() <= PROFILE_INLINE_LIMIT {
+        return Ok(vec![OsString::from("-p"), OsString::from(profile)]);
+    }
+    let path = write_sandbox_profile(profile)?;
+    Ok(vec![OsString::from("-f"), path.into_os_string()])
+}
+
+fn write_sandbox_profile(profile: &str) -> Result<PathBuf, String> {
+    let dir = std::env::temp_dir();
+    sweep_sandbox_profiles(&dir);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let path = dir.join(format!(
+        "hivra-sandbox-profile-{}-{nanos}",
+        std::process::id()
+    ));
+    std::fs::write(&path, profile)
+        .map_err(|e| format!("The sandbox profile could not be written, so nothing starts. {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(path)
+}
+
+fn sweep_sandbox_profiles(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("hivra-sandbox-profile-") {
+            continue;
+        }
+        let path = entry.path();
+        if path.parent() != Some(dir) {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|meta| meta.modified()) else {
+            continue;
+        };
+        let Ok(age) = now.duration_since(modified) else {
+            continue;
+        };
+        if age > std::time::Duration::from_secs(3600) {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }
 
 /// Ship and Run dev slot are Ash's own actions. They are not wrapped: Ship runs `launchctl`, and both are not an
@@ -1825,9 +2161,11 @@ pub fn agent_stack_refused(sandbox_on: bool, trigger: &str, has_stack: bool) -> 
     sandbox_on && trigger != "app" && has_stack
 }
 
-/// `extra` plus every project folder and every session folder in `data_dir/monocode.db`. No data folder, or no database
-/// file, is just `extra` (a launch with no store yet still wraps). A database that is there but cannot be read is an
-/// error: starting would lock only the caller's own folder.
+/// `extra` plus every project folder and every session folder in `data_dir/monocode.db` that is on disk. A session or
+/// project folder that is gone is not locked: a long chat history of removed worktrees would otherwise make every
+/// profile too big to start. `extra` is kept even when it does not exist yet. No data folder, or no database file, is
+/// just `extra` (a launch with no store yet still wraps). A database that is there but cannot be read is an error:
+/// starting would lock only the caller's own folder.
 fn with_project_folders(
     data_dir: Option<&Path>,
     extra: &[PathBuf],
@@ -1853,10 +2191,14 @@ fn with_project_folders(
             .map_err(|_| project_list_unreadable())?;
     let _ = conn.busy_timeout(std::time::Duration::from_millis(400));
     for path in crate::local_hub::project_folders(&conn).map_err(|_| project_list_unreadable())? {
-        push(path);
+        if std::fs::symlink_metadata(&path).is_ok() {
+            push(path);
+        }
     }
     for path in session_folders(&conn)? {
-        push(path);
+        if std::fs::symlink_metadata(&path).is_ok() {
+            push(path);
+        }
     }
     Ok(out)
 }
@@ -1924,11 +2266,9 @@ pub fn action_wrap(
     let profile = profile_with_checkouts(&home, data_dir, &checkouts)?;
     self_check(Path::new(SANDBOX_EXEC))?;
     preflight_with(Path::new(SANDBOX_EXEC), &profile)?;
-    Ok(Some(vec![
-        OsString::from(SANDBOX_EXEC),
-        OsString::from("-p"),
-        OsString::from(profile),
-    ]))
+    let mut prefix = vec![OsString::from(SANDBOX_EXEC)];
+    prefix.extend(sandbox_exec_profile_args(&profile)?);
+    Ok(Some(prefix))
 }
 
 /// The sandbox prefix for a More agents child, or `None` when the sandbox is off.
@@ -1956,11 +2296,9 @@ pub fn more_agent_wrap(
     }
     self_check(Path::new(SANDBOX_EXEC))?;
     preflight_with(Path::new(SANDBOX_EXEC), &profile)?;
-    Ok(Some(vec![
-        OsString::from(SANDBOX_EXEC),
-        OsString::from("-p"),
-        OsString::from(profile),
-    ]))
+    let mut prefix = vec![OsString::from(SANDBOX_EXEC)];
+    prefix.extend(sandbox_exec_profile_args(&profile)?);
+    Ok(Some(prefix))
 }
 
 #[cfg(test)]
@@ -3497,11 +3835,30 @@ mod review_r3_repro {
         }
     }
 
-    /// `.git/commondir` (and a linked worktree's `commondir`) tells git where the config is. The profile denies
-    /// `.git/config` but not these, so the agent points git at a config it wrote (see checkout_guard's r3 repro).
+    /// Limit: `profile_text` does not name a checkout, so an unnamed repo stays writable. That is what lets
+    /// `git worktree add` write `.git/worktrees/<n>/commondir` in a temporary clone. A named checkout is locked
+    /// by `a_named_checkout_denies_a_git_common_dir_redirect`.
     #[cfg(unix)]
     #[test]
-    fn a_git_common_dir_redirect_cannot_be_written() {
+    fn a_git_common_dir_redirect_limit_an_unnamed_repo_stays_writable() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in [
+            "/Users/test/proj/.git/commondir",
+            "/Users/test/proj/.git/worktrees/wt/commondir",
+            "/Users/test/proj/.git/worktrees/wt/config.worktree",
+        ] {
+            assert!(
+                !denies_write(&profile, path),
+                "{path} is denied in an unnamed repo, so git worktree add fails in a temporary clone"
+            );
+        }
+    }
+
+    /// `.git/commondir` (and a linked worktree's `commondir`) tells git where the config is. A named checkout
+    /// denies these, so the agent cannot point git at a config it wrote.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_checkout_denies_a_git_common_dir_redirect() {
         let profile =
             profile_with_checkouts(Path::new(HOME), None, &[PathBuf::from("/Users/test/proj")])
                 .unwrap();
@@ -3556,11 +3913,30 @@ mod review_r3_repro {
         }
     }
 
-    /// L2: a submodule's git dir is `.git/modules/<name>`, and a name is its path (`vendor/lib`), so it often has a
-    /// slash; nested submodules sit under `.git/modules/<a>/modules/<b>`. The profile allows one segment only.
+    /// Limit: the same submodule paths stay writable when the repo was not named. `git submodule update` writes
+    /// `.git/modules/<name>/config` in a temporary clone. A named checkout is locked by
+    /// `a_named_checkout_denies_a_submodule_with_a_slash_in_its_name`.
     #[cfg(unix)]
     #[test]
-    fn a_submodule_with_a_slash_in_its_name_has_its_hooks_and_config_denied() {
+    fn a_submodule_with_a_slash_limit_an_unnamed_repo_stays_writable() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        for path in [
+            "/Users/test/proj/.git/modules/vendor/lib/hooks/pre-commit",
+            "/Users/test/proj/.git/modules/vendor/lib/config",
+            "/Users/test/proj/.git/modules/a/modules/b/hooks/pre-commit",
+        ] {
+            assert!(
+                !denies_write(&profile, path),
+                "{path} is denied in an unnamed repo, so git submodule update fails in a temporary clone"
+            );
+        }
+    }
+
+    /// L2: a submodule's git dir is `.git/modules/<name>`, and a name is its path (`vendor/lib`), so it often has a
+    /// slash; nested submodules sit under `.git/modules/<a>/modules/<b>`. A named checkout denies every segment.
+    #[cfg(unix)]
+    #[test]
+    fn a_named_checkout_denies_a_submodule_with_a_slash_in_its_name() {
         let profile =
             profile_with_checkouts(Path::new(HOME), None, &[PathBuf::from("/Users/test/proj")])
                 .unwrap();
@@ -3571,6 +3947,43 @@ mod review_r3_repro {
         ] {
             assert!(denies_write(&profile, path), "{path} is writable");
         }
+    }
+
+    /// `.ssh` is denied for reads in either case. `Documents/a.txt` is not a secret and stays readable.
+    #[cfg(unix)]
+    #[test]
+    fn the_profile_denies_ssh_reads_in_either_case_and_not_a_document() {
+        let profile = profile_text(Path::new(HOME)).unwrap();
+        let denies_read = |path: &str| {
+            profile.lines().any(|line| {
+                let line = line.trim();
+                line.starts_with("(deny ")
+                    && line.contains("file-read*")
+                    && filter_matches(line, path)
+            })
+        };
+        assert!(denies_read("/Users/test/.ssh/id_ed25519"));
+        assert!(denies_read("/Users/test/.SSH/id_ed25519"));
+        assert!(!denies_read("/Users/test/Documents/a.txt"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn installer_source_lines_expand_home_and_skip_a_longer_name() {
+        let home = Path::new(HOME);
+        let from = home.join(".zshrc");
+        let got =
+            resolve_shell_source(home, &from, "${HOME}/.iterm2_shell_integration.zsh").unwrap();
+        assert_eq!(got, home.join(".iterm2_shell_integration.zsh"));
+        assert!(resolve_shell_source(home, &from, "$HOMEfoo/x").is_none());
+        assert_eq!(
+            shell_source_operands("if [ -f '/x' ]; then . '/x'; fi\n"),
+            vec!["/x".to_string()]
+        );
+        assert_eq!(
+            shell_source_operands("\\. '/tmp/a'\n"),
+            vec!["/tmp/a".to_string()]
+        );
     }
 
     /// Strip Apple's signature and ad-hoc sign, so the copy is allowed to execute and the test is not just the system
@@ -4148,7 +4561,7 @@ mod review_r5_repro {
         std::fs::write(src.join(SETTING_FILE), "off\n").unwrap();
         let image = root.join("img.dmg");
         // Made outside the sandbox to keep the probe short; the agent can make it inside with the same copy.
-        // macOS 26 keeps hdiutil at /usr/bin. Earlier systems keep /usr/sbin. Copy whichever is here.
+        // Copy whichever hdiutil is present. The arguments are absolute, so no working directory is set.
         let hdiutil = ["/usr/bin/hdiutil", "/usr/sbin/hdiutil"]
             .into_iter()
             .find(|path| Path::new(path).is_file())
@@ -4157,7 +4570,6 @@ mod review_r5_repro {
             .args(["create", "-quiet", "-fs", "HFS+", "-srcfolder"])
             .arg(&src)
             .arg(&image)
-            .current_dir(&root)
             .status()
             .unwrap();
         assert!(made.success(), "hdiutil create");
@@ -4170,7 +4582,6 @@ mod review_r5_repro {
             .args(["attach", "-quiet", "-nobrowse", "-mountpoint"])
             .arg(&settings)
             .arg(&image)
-            .current_dir(&root)
             .env("HOME", &home)
             .status()
             .unwrap();
@@ -4178,7 +4589,6 @@ mod review_r5_repro {
         let _ = std::process::Command::new(hdiutil)
             .args(["detach", "-quiet", "-force"])
             .arg(&settings)
-            .current_dir(&root)
             .status();
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(
