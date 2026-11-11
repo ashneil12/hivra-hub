@@ -17,6 +17,9 @@
 // hubWork, hubBuilds and proposals are never read. A review whose repo is not one of Ash's
 // project repos is left out.
 
+import { callText, redListCategory } from "../../autopilot/model/redList";
+import { ALWAYS_ASK_REASON, questionVeto } from "../../autopilot/model/reviewerRules";
+
 export type NeedsKind = "stopped" | "question" | "approval" | "merge" | "review" | "check";
 
 export type NeedsAction = { label: string; run: () => void };
@@ -71,10 +74,16 @@ export type QuestionFact = FactBase & {
   /** Set when this ask is a decision. Home opens that decision, not a task. */
   decisionKey?: string;
   onAnswer?: () => void;
+  /** The other answer. A merge shows this as Not yet. */
+  onNotYet?: () => void;
 };
 
 export type ApprovalFact = FactBase & {
   routedToLead?: boolean;
+  /** The chat already marked this step as a red line, even when the sentence is plain. */
+  risky?: boolean;
+  /** A page or plugin asking for access. One Review, never Allow or Deny. */
+  reviewOnly?: boolean;
   onAllow?: () => void;
   onDeny?: () => void;
 };
@@ -82,6 +91,7 @@ export type ApprovalFact = FactBase & {
 export type MergeFact = FactBase & {
   /** Answers the coding team's own question. This is not a new merge path. */
   onAnswer?: () => void;
+  onNotYet?: () => void;
 };
 
 export type ReviewFact = FactBase & {
@@ -182,6 +192,25 @@ function openAction(label: string, run: (() => void) | undefined): NeedsAction[]
   return run ? [{ label, run }] : [];
 }
 
+const RISKY_REASON = new Set<string>([
+  ALWAYS_ASK_REASON.send,
+  ALWAYS_ASK_REASON.delete,
+  ALWAYS_ASK_REASON.pay,
+  ALWAYS_ASK_REASON.publish,
+  ALWAYS_ASK_REASON.account,
+]);
+
+/** A page or a plugin asking to read or use something. Not a red-line step Ash allows from Home. */
+export function accessAsk(sentence: string): boolean {
+  return /\b(?:page|plugin)\b/i.test(sentence) && /\basks\b/i.test(sentence);
+}
+
+function riskyStep(sentence: string): boolean {
+  if (redListCategory(callText(sentence))) return true;
+  const reason = questionVeto({ question: sentence });
+  return reason != null && RISKY_REASON.has(reason);
+}
+
 function stoppedItem(fact: StoppedFact, now: number): Draft | undefined {
   if (fact.forAsh === false) return undefined;
   const id = fact.id.trim();
@@ -237,10 +266,16 @@ function questionItem(fact: QuestionFact, now: number): Draft | undefined {
     who,
     at: finite(fact.at, now),
     sentence,
-    actions: actionsOf([
-      ...(fact.onAnswer ? [{ label: fact.asMerge ? "Yes" : "Answer", run: fact.onAnswer }] : []),
-      ...openAction("Open", fact.onOpen),
-    ]),
+    actions: actionsOf(fact.asMerge
+      ? [
+        ...(fact.onAnswer ? [{ label: "Merge", run: fact.onAnswer }] : []),
+        ...(fact.onNotYet ? [{ label: "Not yet", run: fact.onNotYet }] : []),
+        ...openAction("Open", fact.onOpen),
+      ]
+      : [
+        ...(fact.onAnswer ? [{ label: "Answer", run: fact.onAnswer }] : []),
+        ...openAction("Open", fact.onOpen),
+      ]),
     open: fact.open,
     about: fact.about,
     same: sentenceKey(fact.projectId, sentence),
@@ -256,6 +291,8 @@ function approvalItem(fact: ApprovalFact, now: number): Draft | undefined {
   const who = personName(fact.who);
   const sentence = plainSentence(fact.sentence);
   if (!sentence) return undefined;
+  const review = fact.reviewOnly === true || accessAsk(sentence);
+  const allow = fact.risky === true || riskyStep(sentence) ? "Allow once" : "Allow";
   return {
     key: `approval:${id}`,
     kind: "approval",
@@ -264,11 +301,13 @@ function approvalItem(fact: ApprovalFact, now: number): Draft | undefined {
     who,
     at: finite(fact.at, now),
     sentence,
-    actions: actionsOf([
-      ...(fact.onAllow ? [{ label: "Allow", run: fact.onAllow }] : []),
-      ...(fact.onDeny ? [{ label: "Deny", run: fact.onDeny }] : []),
-      ...openAction("Open", fact.onOpen),
-    ]),
+    actions: actionsOf(review
+      ? openAction("Review", fact.onOpen)
+      : [
+        ...(fact.onAllow ? [{ label: allow, run: fact.onAllow }] : []),
+        ...(fact.onDeny ? [{ label: "Deny", run: fact.onDeny }] : []),
+        ...openAction("Open", fact.onOpen),
+      ]),
     open: fact.open,
   };
 }
@@ -288,7 +327,8 @@ function mergeItem(fact: MergeFact, now: number): Draft | undefined {
     at: finite(fact.at, now),
     sentence,
     actions: actionsOf([
-      ...(fact.onAnswer ? [{ label: "Yes", run: fact.onAnswer }] : []),
+      ...(fact.onAnswer ? [{ label: "Merge", run: fact.onAnswer }] : []),
+      ...(fact.onNotYet ? [{ label: "Not yet", run: fact.onNotYet }] : []),
       ...openAction("Open", fact.onOpen),
     ]),
     open: fact.open,

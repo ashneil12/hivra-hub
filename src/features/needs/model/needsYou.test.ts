@@ -106,7 +106,7 @@ it("lists one item of every kind across three projects, and both counts agree", 
   expect(workingCount("nibbii")).toBe(0);
   expect(items.every((item) => item.sentence.length <= 140)).toBe(true);
   expect(items.every((item) => item.actions.length <= 2)).toBe(true);
-  expect(items.find((item) => item.kind === "merge")?.actions[0]?.label).toBe("Yes");
+  expect(items.find((item) => item.kind === "merge")?.actions[0]?.label).toBe("Merge");
   expect(items.find((item) => item.kind === "stopped")?.actions[0]?.label).toBe("Open chat");
 
   for (const item of items) item.actions[0]?.run();
@@ -259,6 +259,178 @@ it("answering through each kind's own handler removes that item on the next read
     expect(needsCount()).toBe(after.length);
   }
   expect(needsCount()).toBe(0);
+});
+
+it("borders a red-line approval as Allow once and Deny, and keeps Allow on a safe one", () => {
+  const ran: string[] = [];
+  const items = needsYou(sources({
+    approvals: [
+      {
+        id: "publish",
+        projectId: "nibbii",
+        who: "frank",
+        at: NOW - 40,
+        sentence: "frank wants to run npm publish in nibbii-web.",
+        onAllow: () => ran.push("publish-allow"),
+        onDeny: () => ran.push("publish-deny"),
+      },
+      {
+        id: "send",
+        projectId: "nibbii",
+        who: "frank",
+        at: NOW - 30,
+        sentence: "frank wants to send the customers an email.",
+        onAllow: () => ran.push("send-allow"),
+        onDeny: () => ran.push("send-deny"),
+      },
+      {
+        id: "wipe",
+        projectId: "hivra",
+        who: "frank",
+        at: NOW - 20,
+        sentence: "frank wants to delete the customer records.",
+        onAllow: () => ran.push("wipe-allow"),
+        onDeny: () => ran.push("wipe-deny"),
+      },
+      {
+        id: "money",
+        projectId: "hivra",
+        who: "frank",
+        at: NOW - 10,
+        sentence: "frank wants to refund the customer.",
+        onAllow: () => ran.push("money-allow"),
+        onDeny: () => ran.push("money-deny"),
+      },
+      {
+        id: "access",
+        projectId: "exo",
+        who: "frank",
+        at: NOW - 5,
+        sentence: "frank wants to read the api key.",
+        onAllow: () => ran.push("access-allow"),
+        onDeny: () => ran.push("access-deny"),
+      },
+      {
+        id: "safe",
+        projectId: "nibbii",
+        who: "frank",
+        at: NOW,
+        sentence: "frank wants to run npm test in nibbii-web.",
+        onAllow: () => ran.push("safe-allow"),
+        onDeny: () => ran.push("safe-deny"),
+      },
+    ],
+  }), NOW);
+  for (const id of ["publish", "send", "wipe", "money", "access"]) {
+    const item = items.find((row) => row.key === `approval:${id}`);
+    expect(item?.actions.map((action) => action.label)).toEqual(["Allow once", "Deny"]);
+    item?.actions[0]?.run();
+    item?.actions[1]?.run();
+  }
+  const safe = items.find((row) => row.key === "approval:safe");
+  expect(safe?.actions.map((action) => action.label)).toEqual(["Allow", "Deny"]);
+  safe?.actions[0]?.run();
+  safe?.actions[1]?.run();
+  expect(ran).toEqual([
+    "publish-allow", "publish-deny",
+    "send-allow", "send-deny",
+    "wipe-allow", "wipe-deny",
+    "money-allow", "money-deny",
+    "access-allow", "access-deny",
+    "safe-allow", "safe-deny",
+  ]);
+  // A marked red line stays risky even when the sentence itself is plain.
+  const marked = needsYou(sources({
+    approvals: [{
+      id: "marked",
+      who: "frank",
+      at: NOW,
+      sentence: "Allow this step?",
+      risky: true,
+      onAllow: () => undefined,
+      onDeny: () => undefined,
+    }],
+  }), NOW);
+  expect(marked[0]?.actions.map((action) => action.label)).toEqual(["Allow once", "Deny"]);
+});
+
+it("gives a page or plugin access ask one Review that opens the source, and no Allow or Deny", () => {
+  const opened: string[] = [];
+  const allowed: string[] = [];
+  const items = needsYou(sources({
+    approvals: [
+      {
+        id: "weekly",
+        projectId: "safetube",
+        who: "Pages",
+        at: NOW - 10,
+        sentence: "The Weekly views page asks to read YouTube stats.",
+        onOpen: () => opened.push("weekly"),
+        onAllow: () => allowed.push("weekly"),
+        onDeny: () => allowed.push("deny"),
+      },
+      {
+        id: "plugin",
+        projectId: "safetube",
+        who: "Pages",
+        at: NOW,
+        sentence: "The YouTube plugin asks to read your uploads.",
+        onOpen: () => opened.push("plugin"),
+      },
+      {
+        id: "kept",
+        projectId: "safetube",
+        who: "Pages",
+        at: NOW - 5,
+        sentence: "Weekly views asks for access.",
+        reviewOnly: true,
+        onOpen: () => opened.push("kept"),
+        onAllow: () => allowed.push("kept"),
+      },
+    ],
+  }), NOW);
+  expect(items.map((item) => item.actions.map((action) => action.label))).toEqual([
+    ["Review"],
+    ["Review"],
+    ["Review"],
+  ]);
+  for (const item of items) item.actions[0]?.run();
+  expect(opened).toEqual(["weekly", "kept", "plugin"]);
+  expect(allowed).toEqual([]);
+});
+
+it("says Merge and Not yet on a merge, and Merge still answers the question", () => {
+  const ran: string[] = [];
+  const items = needsYou(sources({
+    merges: [{
+      id: "217",
+      projectId: "hivra",
+      who: "Coding team",
+      at: NOW,
+      sentence: "Ready to merge #217.",
+      onAnswer: () => ran.push("merge"),
+      onNotYet: () => ran.push("later"),
+    }],
+    questions: [{
+      id: "ready",
+      projectId: "exo",
+      who: "EXO lead",
+      at: NOW - 10,
+      sentence: "Ready to merge the hit flash.",
+      asMerge: true,
+      onAnswer: () => ran.push("question-merge"),
+      onNotYet: () => ran.push("question-later"),
+    }],
+  }), NOW);
+  const merge = items.find((item) => item.kind === "merge" && item.projectId === "hivra");
+  const asked = items.find((item) => item.key === "merge:ready");
+  expect(merge?.actions.map((action) => action.label)).toEqual(["Merge", "Not yet"]);
+  expect(asked?.actions.map((action) => action.label)).toEqual(["Merge", "Not yet"]);
+  expect(merge?.actions.map((action) => action.label).join(" ")).not.toContain("Yes");
+  merge?.actions[0]?.run();
+  merge?.actions[1]?.run();
+  asked?.actions[0]?.run();
+  expect(ran).toEqual(["merge", "later", "question-merge"]);
 });
 
 it("uses a name, never a raw id, and never an em dash or the word Stuck", () => {

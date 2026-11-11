@@ -9,7 +9,8 @@ import { projectKey } from "../../../shared/lib/paths";
 import { DECISIONS_CHANGED, tauriFirstMate, type Decision } from "../../firstmate/model/steering";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { findMono } from "../../monos/model/mono";
-import { allowPage, allKeptPages, needsAllow, usePagesVersion, type Page } from "../../pages/model/pages";
+import { openFromHome } from "../../home/model/opener";
+import { allKeptPages, needsAllow, requestOpenPage, usePagesVersion, type Page } from "../../pages/model/pages";
 import { PR_WATCHES_CHANGED, tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import {
@@ -26,6 +27,7 @@ import { useNeedsYouRows } from "../../hub/model/useNeedsYouRows";
 import type { NeedsYouRow } from "../../hub/model/needsYouRows";
 import type { HomeDecision, HomeProject, HomeTask } from "../../home/model/lines";
 import {
+  accessAsk,
   needsYou,
   takeLatest,
   type ApprovalFact,
@@ -129,6 +131,7 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
     onOpen: () => openWaitingChat(chat.sessionId),
     routedToLead: chat.routedToLead,
   };
+  if (accessAsk(question)) return { ...base, reviewOnly: true };
   if (chat.source === "permission") {
     return {
       ...base,
@@ -140,6 +143,7 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
     const seen = { question: chat.question, askedAt: chat.askedAt, pick: chat.pick };
     return {
       ...base,
+      ...(chat.redLine ? { risky: true } : {}),
       onAllow: () => { void answerApproval(chat.sessionId, "approve-once", seen); },
       onDeny: () => { void answerApproval(chat.sessionId, "deny", seen); },
     };
@@ -163,7 +167,7 @@ export function factsFromChats(chats: readonly WaitingChat[]): { questions: Ques
     for (const ask of asks) {
       if (!ask.question.trim()) continue;
       const fact = rowFacts(chat, ask.question, ask.id);
-      if ("onAllow" in fact) approvals.push(fact);
+      if (("reviewOnly" in fact && fact.reviewOnly) || "onAllow" in fact) approvals.push(fact);
       else questions.push(fact);
     }
   }
@@ -173,6 +177,14 @@ export function factsFromChats(chats: readonly WaitingChat[]): { questions: Ques
 function yesAnswer(decision: Decision): () => void {
   return () => {
     void tauriFirstMate.answer(decision.project, decision.decisionKey, decision.recommended ?? decision.options[0] ?? "Yes");
+  };
+}
+
+function notYetAnswer(decision: Decision): () => void {
+  return () => {
+    const yes = decision.recommended ?? decision.options[0] ?? "Yes";
+    const other = decision.options.find((option) => option !== yes);
+    void tauriFirstMate.answer(decision.project, decision.decisionKey, other ?? "Not yet");
   };
 }
 
@@ -198,6 +210,18 @@ function decisionFacts(
       questions.push({ ...base, fromDecision: true, gateKey: decision.decisionKey, onAnswer: yesAnswer(decision) });
       continue;
     }
+    if (accessAsk(decision.question)) {
+      approvals.push({
+        ...base,
+        reviewOnly: true,
+        onOpen: () => openFromHome({
+          kind: "inbox",
+          projectId: base.projectId ?? "",
+          decisionKey: decision.decisionKey,
+        }),
+      });
+      continue;
+    }
     if (APPROVAL_PHRASE.test(decision.question)) {
       approvals.push({
         ...base,
@@ -206,11 +230,13 @@ function decisionFacts(
       });
       continue;
     }
+    const merge = MERGE_PHRASE.test(decision.question);
     questions.push({
       ...base,
       fromDecision: true,
-      asMerge: MERGE_PHRASE.test(decision.question),
+      asMerge: merge,
       onAnswer: yesAnswer(decision),
+      ...(merge ? { onNotYet: notYetAnswer(decision) } : {}),
     });
   }
   return { questions, approvals };
@@ -284,7 +310,13 @@ function pageFacts(pages: readonly Page[], list: readonly ProjectRef[]): Approva
     at: page.keptAt ?? 0,
     sentence: `${page.title || "A page"} asks for access.`,
     open: { where: "page" as const, id: page.id },
-    onAllow: () => { allowPage(page.id); },
+    reviewOnly: true,
+    onOpen: () => {
+      requestOpenPage(page.id);
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" }));
+      }
+    },
   }));
 }
 

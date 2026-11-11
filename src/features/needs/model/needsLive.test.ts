@@ -1,6 +1,8 @@
-import { expect, it } from "vitest";
-import type { Decision } from "../../firstmate/model/steering";
+import { expect, it, vi } from "vitest";
+import { tauriFirstMate, type Decision } from "../../firstmate/model/steering";
+import { setHomeOpener, type HomeOpenTarget } from "../../home/model/opener";
 import type { WaitingChat } from "../../hub/model/waitingChats";
+import { pendingOpenPage, takeOpenRequest, type Page } from "../../pages/model/pages";
 import type { PrWatch } from "../../pr-watch/model/prWatches";
 import { needsYou, needsYouQuiet, takeLatest } from "./needsYou";
 import {
@@ -102,7 +104,13 @@ it("keeps a ready-to-merge decision, and a chat asking the same thing is not a s
   )), NOW);
   expect(list).toHaveLength(1);
   expect(list[0]?.kind).toBe("merge");
-  expect(list[0]?.actions.map((action) => action.label)).toEqual(["Yes"]);
+  expect(list[0]?.actions.map((action) => action.label)).toEqual(["Merge", "Not yet"]);
+  const answer = vi.spyOn(tauriFirstMate, "answer").mockResolvedValue({ ok: true, version: 1 });
+  list[0]?.actions[0]?.run();
+  list[0]?.actions[1]?.run();
+  expect(answer).toHaveBeenNthCalledWith(1, "hivra", "m217", "Yes");
+  expect(answer).toHaveBeenNthCalledWith(2, "hivra", "m217", "No");
+  answer.mockRestore();
 });
 
 it("reads a wants-to-run and an asks-to-read as approvals", () => {
@@ -113,7 +121,77 @@ it("reads a wants-to-run and an asks-to-read as approvals", () => {
     ],
   }, { projects: [...PROJECTS, { id: "safetube", name: "SafeTube", folder: null }] })), NOW);
   expect(list.map((item) => item.kind)).toEqual(["approval", "approval"]);
-  expect(list[0]?.actions.map((action) => action.label)).toEqual(["Allow", "Deny"]);
+  const labels = (key: string) => list.find((item) => item.key === key)?.actions.map((action) => action.label);
+  expect(labels("approval:nibbii:pub")).toEqual(["Allow once", "Deny"]);
+  expect(labels("approval:safetube:weekly")).toEqual(["Review"]);
+});
+
+it("uses Allow once and Deny for a red-line step, and Allow for a safe one", () => {
+  const answer = vi.spyOn(tauriFirstMate, "answer").mockResolvedValue({ ok: true, version: 1 });
+  const list = needsYou(factsFromParts(parts({
+    decisions: [
+      decision("nibbii", "pub", "frank wants to run npm publish in nibbii-web."),
+      decision("nibbii", "send", "frank wants to run a send to the customers."),
+      decision("hivra", "wipe", "frank wants to run a delete of the customer records."),
+      decision("hivra", "money", "frank wants to run a refund for the customer."),
+      decision("exo", "key", "frank wants to run a read of the api key."),
+      decision("nibbii", "test", "frank wants to run npm test in nibbii-web."),
+    ],
+  })), NOW);
+  const labels = (key: string) => list.find((item) => item.key === `approval:${key}`)?.actions.map((action) => action.label);
+  expect(labels("nibbii:pub")).toEqual(["Allow once", "Deny"]);
+  expect(labels("nibbii:send")).toEqual(["Allow once", "Deny"]);
+  expect(labels("hivra:wipe")).toEqual(["Allow once", "Deny"]);
+  expect(labels("hivra:money")).toEqual(["Allow once", "Deny"]);
+  expect(labels("exo:key")).toEqual(["Allow once", "Deny"]);
+  expect(labels("nibbii:test")).toEqual(["Allow", "Deny"]);
+  list.find((item) => item.key === "approval:nibbii:pub")?.actions[0]?.run();
+  list.find((item) => item.key === "approval:nibbii:pub")?.actions[1]?.run();
+  list.find((item) => item.key === "approval:nibbii:test")?.actions[0]?.run();
+  expect(answer).toHaveBeenNthCalledWith(1, "nibbii", "pub", "Yes");
+  expect(answer).toHaveBeenNthCalledWith(2, "nibbii", "pub", "No");
+  expect(answer).toHaveBeenNthCalledWith(3, "nibbii", "test", "Yes");
+  answer.mockRestore();
+});
+
+it("opens a page or plugin access ask with Review and does not allow it from Home", () => {
+  const opened: HomeOpenTarget[] = [];
+  const stop = setHomeOpener((target) => { opened.push(target); });
+  const answer = vi.spyOn(tauriFirstMate, "answer").mockResolvedValue({ ok: true, version: 1 });
+  const projects = [...PROJECTS, { id: "safetube", name: "SafeTube", folder: null }];
+  const page = {
+    id: "weekly-page",
+    projectId: "safetube",
+    title: "Weekly views",
+    spec: { kind: "bespoke", title: "Weekly views", html: "", permissions: ["youtube.read"] },
+    permissions: [],
+    keptAt: NOW,
+  } as unknown as Page;
+  try {
+    const list = needsYou(factsFromParts(parts({
+      decisions: [
+        decision("safetube", "weekly", "The Weekly views page asks to read YouTube stats."),
+        decision("safetube", "plugin", "The YouTube plugin asks to read your uploads."),
+      ],
+    }, { projects, pages: [page] })), NOW);
+    const labels = (key: string) => list.find((item) => item.key === key)?.actions.map((action) => action.label);
+    expect(labels("approval:safetube:weekly")).toEqual(["Review"]);
+    expect(labels("approval:safetube:plugin")).toEqual(["Review"]);
+    expect(labels("approval:weekly-page")).toEqual(["Review"]);
+    list.find((item) => item.key === "approval:safetube:weekly")?.actions[0]?.run();
+    list.find((item) => item.key === "approval:safetube:plugin")?.actions[0]?.run();
+    list.find((item) => item.key === "approval:weekly-page")?.actions[0]?.run();
+    expect(opened).toEqual([
+      { kind: "inbox", projectId: "safetube", decisionKey: "weekly" },
+      { kind: "inbox", projectId: "safetube", decisionKey: "plugin" },
+    ]);
+    expect(pendingOpenPage()).toBe("weekly-page");
+    expect(answer).not.toHaveBeenCalled();
+  } finally {
+    takeOpenRequest();
+    answer.mockRestore();
+    stop();
+  }
 });
 
 it("collapses a parked gate and the decision that names it into one check", () => {
