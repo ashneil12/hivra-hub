@@ -4,10 +4,12 @@ import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { CLI_ORDER, EFFORTS, cliLabel } from "../model/clis";
 import { CREW_SAVED_EVENT, isRoleSlotRule, weaveRoleSlots } from "../model/policy";
-import { draftRule, moveRule, type RuleDraft } from "../model/rules";
+import { draftRule, moveRule, taskCeilingFromRules, type RuleDraft } from "../model/rules";
 import { defaultLine, type Presence } from "../model/resolve";
 import { WorkerDefaultControl } from "./WorkerDefaultControl";
 import { BuilderScaleControls } from "../../monos/ui/BuilderScaleControls";
+import { SpendLimitLine } from "../../usage/ui/SpendLimitLine";
+import { applyProjectRuleCeiling } from "../../usage/model/spendGate";
 
 export type ShownRule = {
   labels: string[];
@@ -15,6 +17,8 @@ export type ShownRule = {
   cli?: string;
   model?: string;
   effort?: string;
+  /** WP-176. Dollars. Missing means this rule sets no task ceiling. */
+  taskCeilingUsd?: number | null;
 };
 
 type Row = RuleDraft;
@@ -26,7 +30,7 @@ type Loaded = {
   signedIn?: Presence[];
 };
 
-const EMPTY: Row = { labels: "", paths: "", cli: "", model: "", effort: "" };
+const EMPTY: Row = { labels: "", paths: "", cli: "", model: "", effort: "", ceiling: "" };
 
 /** Role rows live on the defaults screen. They stay in the saved list, not in this editor. */
 function splitShown(rules: ShownRule[]): { shown: ShownRule[]; slots: ShownRule[] } {
@@ -40,12 +44,14 @@ function splitShown(rules: ShownRule[]): { shown: ShownRule[]; slots: ShownRule[
 }
 
 function toRow(rule: ShownRule): Row {
+  const ceiling = typeof rule.taskCeilingUsd === "number" && Number.isFinite(rule.taskCeilingUsd) ? String(rule.taskCeilingUsd) : "";
   return {
     labels: rule.labels.join(", "),
     paths: rule.paths.join(", "),
     cli: rule.cli ?? "",
     model: rule.model ?? "",
     effort: rule.effort ?? "",
+    ceiling,
   };
 }
 
@@ -172,14 +178,23 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
         setNotice(made);
         return;
       }
-      shown.push({ labels: made.labels, paths: made.paths, cli: made.cli, model: made.model, effort: made.effort });
+      shown.push({
+        labels: made.labels,
+        paths: made.paths,
+        cli: made.cli,
+        model: made.model,
+        effort: made.effort,
+        taskCeilingUsd: made.taskCeilingUsd ?? null,
+      });
     }
-    const rules = weaveRoleSlots(heldRules.current, shown).map((rule) => ({
+    const woven = weaveRoleSlots(heldRules.current, shown);
+    const rules = woven.map((rule) => ({
       labels: [...rule.labels],
       paths: [...rule.paths],
       cli: rule.cli ?? null,
       model: rule.model ?? null,
       effort: rule.effort ?? null,
+      taskCeilingUsd: rule.taskCeilingUsd ?? null,
     }));
     const expected = revision;
     const key = `${savingScope}\0${savingId}`;
@@ -218,6 +233,22 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
       if (Array.isArray(again.signedIn)) setSignedIn(again.signedIn);
       heldRules.current = Array.isArray(again.rules) ? again.rules : heldRules.current;
       window.dispatchEvent(new CustomEvent(CREW_SAVED_EVENT, { detail: { scope: savingScope, scopeId: savingId } }));
+      if (savingScope === "project") {
+        applyProjectRuleCeiling(
+          savingId,
+          taskCeilingFromRules(
+            woven.map((rule) => ({
+              labels: [...rule.labels],
+              paths: [...rule.paths],
+              cli: rule.cli,
+              model: rule.model,
+              effort: rule.effort,
+              ...(typeof rule.taskCeilingUsd === "number" ? { taskCeilingUsd: rule.taskCeilingUsd } : {}),
+              source: "person" as const,
+            })),
+          ),
+        );
+      }
       setNotice("Saved.");
     } catch (error) {
       setNotice(error instanceof Error ? error.message : "Those rules couldn't be saved.");
@@ -237,6 +268,9 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
       {hideWorkerDefault ? null : <WorkerDefaultControl scope="system" title="Default for every worker" projectFolder={cwd} />}
       {/* WP-161: the shared ceiling and the pauses. Running builders are not stopped. */}
       <BuilderScaleControls showSharedMax />
+      {/* WP-176: the measured-cost limit for this project. A running builder is not stopped. */}
+      <SpendLimitLine project={cwd ?? ""} indexed />
+      <SpendLimitLine project="" scope="app" />
       <div className="flex gap-2" role="group" aria-label="Where these rules apply">
         <button
           type="button"
@@ -284,6 +318,11 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
               options={EFFORTS.map((effort) => [effort, effort])}
               onChange={(effort) => update(index, { effort })}
             />
+            <Field
+              label={`Task ceiling for rule ${index + 1}`}
+              value={row.ceiling ?? ""}
+              onChange={(ceiling) => update(index, { ceiling })}
+            />
             <button type="button" className="rounded-md bg-content/8 px-2 py-1 text-xs" aria-label={`Move rule ${index + 1} up`} disabled={index === 0} onClick={() => changeRows((current) => moveRule(current, index, -1))}>
               Move up
             </button>
@@ -302,6 +341,7 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
         <Select label="CLI for a new rule" value={draft.cli} options={CLI_ORDER.map((cli) => [cli, cliLabel(cli)])} onChange={(cli) => setDraft({ ...draft, cli })} />
         <Field label="Model for a new rule" value={draft.model} onChange={(model) => setDraft({ ...draft, model })} />
         <Select label="Effort for a new rule" value={draft.effort} options={EFFORTS.map((effort) => [effort, effort])} onChange={(effort) => setDraft({ ...draft, effort })} />
+        <Field label="Task ceiling for a new rule" value={draft.ceiling ?? ""} onChange={(ceiling) => setDraft({ ...draft, ceiling })} />
         <button type="button" className="rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base" onClick={add}>
           Add rule
         </button>
@@ -317,6 +357,11 @@ export function CrewRulesPage({ cwd, initial, hideWorkerDefault }: Props) {
             ))}
           </ul>
         </div>
+      ) : null}
+      {scope === "project" ? (
+        <p className="text-[13px] text-content/70">
+          The task ceiling for this project is the lowest one on these rules. Saving a higher number raises it, and a blank one clears it.
+        </p>
       ) : null}
       {notice ? <p className="text-[13px] text-content/80">{notice}</p> : null}
       {initial ? null : (

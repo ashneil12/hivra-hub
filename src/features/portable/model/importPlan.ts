@@ -17,6 +17,8 @@ import { importSouls, mergeIntoSeated, waitingSouls, type SetupSoul } from "../.
 import { hasSavedTemplate, setTemplate, TEMPLATES } from "../../hub/model/templates";
 import type { GroupChat, HubProject } from "../../hub/model/types";
 import { isPortableSetting, MONO_TEAMS_KEY, settingLooksSecret, workerDefaultSetting, workerLimitsSetting, WORKER_DEFAULT_KEY, WORKER_LIMITS_KEY, type PortableConnector, type PortableMono, type PortableProject, type PortableTeam, type ProjectPrefsFile, type SetupDoc } from "./setupDoc";
+import { SPEND_LIMITS_KEY } from "../../usage/model/spend";
+import { spendSnapshot, takeImportedSpend } from "../../usage/model/spendGate";
 import { isCli } from "../../crew/model/clis";
 import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import {
@@ -569,6 +571,11 @@ async function applyOwnedSetting(
         });
       applied = true;
     }
+  } else if (key === SPEND_LIMITS_KEY) {
+    // WP-176: import only adds. A higher cap in the file is ignored, even when Ash asked to replace settings.
+    const before = spendSnapshot().book.revision;
+    const after = takeImportedSpend(parsed);
+    if (after.revision !== before) applied = true;
   } else if (key === WORKER_DEFAULT_KEY) {
     // Import only adds, unless Ash ticked the file's settings. A broken value is dropped.
     if (!replace && systemWorkerDefault()) return 0;
@@ -780,7 +787,7 @@ export async function applyImport(p: PendingImport, plan: Plan, choices: Choices
   if (choices.settings !== "none") {
     const keys = choices.settings === "all" ? [...plan.settings.add, ...plan.settings.differ] : plan.settings.add;
     // The Monos' teams were set before Rust (above).
-    const owned = [WORKER_LIMITS_KEY, WORKER_DEFAULT_KEY];
+    const owned = [WORKER_LIMITS_KEY, WORKER_DEFAULT_KEY, SPEND_LIMITS_KEY];
     let set = teamsSet;
     for (const key of keys) {
       if (key === MONO_TEAMS_KEY) continue;

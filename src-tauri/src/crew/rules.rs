@@ -15,7 +15,54 @@ pub struct Rule {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// WP-176. Measured-cost cap in micro-dollars. Absent means this rule sets no ceiling.
+    /// A plugin rule never carries one. `i64::MIN` means the stored number was refused.
+    #[serde(
+        default,
+        rename = "taskCeilingUsd",
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "ser_ceiling",
+        deserialize_with = "de_ceiling"
+    )]
+    pub task_ceiling_micros: Option<i64>,
     pub source: String,
+}
+
+const MAX_CEILING_USD: f64 = 1_000_000_000.0;
+
+/// A positive dollar amount as micro-dollars, or nothing when it is not one.
+pub fn ceiling_micros(usd: f64) -> Option<i64> {
+    if !usd.is_finite() || usd <= 0.0 || usd > MAX_CEILING_USD {
+        return None;
+    }
+    let scaled = (usd * 1_000_000.0).round();
+    if scaled < 1.0 || scaled > i64::MAX as f64 {
+        return None;
+    }
+    Some(scaled as i64)
+}
+
+fn ser_ceiling<S: serde::Serializer>(
+    value: &Option<i64>,
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    match value.and_then(|micros| (micros > 0).then_some(micros as f64 / 1_000_000.0)) {
+        Some(usd) => serializer.serialize_f64(usd),
+        None => serializer.serialize_none(),
+    }
+}
+
+/// A missing ceiling is off. A present one that is not a positive amount is marked refused.
+fn de_ceiling<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<Option<i64>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None => None,
+        Some(serde_json::Value::Number(number)) => match number.as_f64() {
+            Some(usd) => Some(ceiling_micros(usd).unwrap_or(i64::MIN)),
+            None => Some(i64::MIN),
+        },
+        Some(_) => Some(i64::MIN),
+    })
 }
 
 const MAX_RULES: usize = 40;
@@ -109,6 +156,8 @@ pub fn from_plugin(rule: PluginRule, source: &str) -> Rule {
         effort: rule
             .effort
             .filter(|effort| CREW_EFFORTS.contains(&effort.as_str())),
+        // A plugin cannot set a spend ceiling.
+        task_ceiling_micros: None,
         source: source.to_string(),
     }
 }

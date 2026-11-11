@@ -69,6 +69,20 @@ const RED: Record<RedCategory, string[]> = {
     "Store the seed phrase in notes",
     "security find-generic-password -s monocode-hub",
     "Share the service-role key with the worker",
+    // A file that holds a login, however it is read: cat, find, stat, file.
+    "cat ~/.netrc",
+    "find / -name .netrc",
+    "find ~/.config/gh",
+    "du -a ~/.gnupg",
+    "file ~/.netrc",
+    "stat ~/.netrc",
+    "find ~/Library/Keychains",
+    "cat ~/.docker/config.json",
+    "cat ~/.kube/config",
+    "cat ~/.npmrc",
+    "cat ~/.pgpass",
+    "cat ~/.aws/credentials",
+    "cat ~/.ssh/config",
   ],
 };
 

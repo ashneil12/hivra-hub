@@ -49,7 +49,8 @@ export async function generateCommitMessage(
   signal?.throwIfAborted();
   const fromText = await commitFromTextModel(cwd, signal, paths);
   if (fromText) return fromText;
-  return generateHarnessCommitMessage(pickTextHarness(preferred), cwd, signal, paths);
+  // Every caller is a commit Ash asked for from the app (a button or the mobile commit), so it is his turn.
+  return generateHarnessCommitMessage(pickTextHarness(preferred), cwd, signal, paths, "person");
 }
 
 export async function generatePrContent(

@@ -444,6 +444,14 @@ Actions:
                   "everywhere" is system. With no scope named, ask once
                   ("just this Mono, or everything?") unless the chat's
                   context makes it plain.
+                  A measured-cost limit, not a bill:
+                  {"scope":"project","amountUsd":50,"period":"month"}
+                  project is this project, and mono is refused. The whole-app
+                  limit (system) is set in Settings, not from a chat. A
+                  first mate may set a first limit or lower one. Raising or
+                  clearing needs your tap in Settings. period is day or
+                  month. warnAt is optional, from
+                  0.5 to 1, and defaults to 0.8.
   tasks.pick     {"role":"builder","title":"...","files":["src/a.ts"]}
                   Mono only. Which CLI or Mono the crew would use for this job,
                   and why, from Ash's crew defaults: role rows, Always use my

@@ -42,6 +42,7 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
            cli TEXT,
            model TEXT,
            effort TEXT,
+           task_ceiling_usd REAL,
            PRIMARY KEY (scope, scope_id, position)
          );
          CREATE TABLE IF NOT EXISTS crew_attempts (
@@ -82,6 +83,13 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     if !has_policy {
         conn.execute_batch("ALTER TABLE crew_rule_meta ADD COLUMN policy TEXT;")?;
     }
+    // A table made before a rule could carry a ceiling gets the column. Creating it twice is fine.
+    let has_ceiling = conn
+        .prepare("SELECT 1 FROM pragma_table_info('crew_rules') WHERE name = 'task_ceiling_usd'")?
+        .exists([])?;
+    if !has_ceiling {
+        conn.execute_batch("ALTER TABLE crew_rules ADD COLUMN task_ceiling_usd REAL;")?;
+    }
     Ok(())
 }
 
@@ -98,6 +106,9 @@ pub struct RuleDraft {
     pub model: Option<String>,
     #[serde(default)]
     pub effort: Option<String>,
+    /// WP-176. Dollars. Missing means this rule sets no task ceiling.
+    #[serde(default)]
+    pub task_ceiling_usd: Option<f64>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -277,12 +288,19 @@ fn clean_paths(values: &[String]) -> Result<Vec<String>, String> {
 fn carried_mono_rules(rules: &[Rule]) -> Vec<Rule> {
     let mut out = Vec::new();
     for rule in rules {
+        if rule.task_ceiling_micros == Some(i64::MIN) {
+            continue;
+        }
         let draft = RuleDraft {
             labels: rule.labels.clone(),
             paths: rule.paths.clone(),
             cli: rule.cli.clone(),
             model: rule.model.clone(),
             effort: rule.effort.clone(),
+            task_ceiling_usd: rule
+                .task_ceiling_micros
+                .filter(|micros| *micros > 0)
+                .map(|micros| micros as f64 / 1_000_000.0),
         };
         let Ok(clean) = prepare_rule(&draft) else {
             continue;
@@ -314,10 +332,21 @@ fn prepare_rule(draft: &RuleDraft) -> Result<Rule, String> {
         cli: blank(&draft.cli),
         model,
         effort: blank(&draft.effort),
+        task_ceiling_micros: None,
         source: "person".into(),
     };
+    // The ceiling stays out of this check. A rule still has to name a cli, model or effort.
     rules::validate_rule(&rule)?;
-    Ok(rule)
+    let task_ceiling_micros = match draft.task_ceiling_usd {
+        None => None,
+        Some(usd) => Some(
+            rules::ceiling_micros(usd).ok_or("The task ceiling has to be a positive amount.")?,
+        ),
+    };
+    Ok(Rule {
+        task_ceiling_micros,
+        ..rule
+    })
 }
 
 fn strings_from_json(text: &str) -> Option<Vec<String>> {
@@ -338,6 +367,7 @@ fn rule_from_stored(
     cli: Option<String>,
     model: Option<String>,
     effort: Option<String>,
+    ceiling: Option<f64>,
 ) -> Option<Rule> {
     let draft = RuleDraft {
         labels: strings_from_json(labels)?,
@@ -345,6 +375,7 @@ fn rule_from_stored(
         cli,
         model,
         effort,
+        task_ceiling_usd: ceiling,
     };
     prepare_rule(&draft).ok()
 }
@@ -352,7 +383,7 @@ fn rule_from_stored(
 fn read_rules(conn: &Connection, scope: &str, scope_id: &str) -> Result<Vec<Rule>, String> {
     let mut statement = conn
         .prepare(
-            "SELECT labels, paths, cli, model, effort FROM crew_rules
+            "SELECT labels, paths, cli, model, effort, task_ceiling_usd FROM crew_rules
              WHERE scope = ?1 AND scope_id = ?2 ORDER BY position",
         )
         .map_err(|e| e.to_string())?;
@@ -364,13 +395,14 @@ fn read_rules(conn: &Connection, scope: &str, scope_id: &str) -> Result<Vec<Rule
                 row.get::<_, Option<String>>(2)?,
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<f64>>(5)?,
             ))
         })
         .map_err(|e| e.to_string())?;
     let mut out = Vec::new();
     for row in rows {
-        let (labels, paths, cli, model, effort) = row.map_err(|e| e.to_string())?;
-        if let Some(rule) = rule_from_stored(&labels, &paths, cli, model, effort) {
+        let (labels, paths, cli, model, effort, ceiling) = row.map_err(|e| e.to_string())?;
+        if let Some(rule) = rule_from_stored(&labels, &paths, cli, model, effort, ceiling) {
             out.push(rule);
         }
     }
@@ -458,8 +490,8 @@ fn write_rules(tx: &Connection, scope: &str, scope_id: &str, rules: &[Rule]) -> 
         let labels = serde_json::to_string(&rule.labels).unwrap_or_else(|_| "[]".into());
         let paths = serde_json::to_string(&rule.paths).unwrap_or_else(|_| "[]".into());
         tx.execute(
-            "INSERT INTO crew_rules (scope, scope_id, position, labels, paths, cli, model, effort)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            "INSERT INTO crew_rules (scope, scope_id, position, labels, paths, cli, model, effort, task_ceiling_usd)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 scope,
                 scope_id,
@@ -468,7 +500,10 @@ fn write_rules(tx: &Connection, scope: &str, scope_id: &str, rules: &[Rule]) -> 
                 paths,
                 rule.cli,
                 rule.model,
-                rule.effort
+                rule.effort,
+                rule.task_ceiling_micros
+                    .filter(|micros| *micros > 0)
+                    .map(|micros| micros as f64 / 1_000_000.0)
             ],
         )
         .map_err(|e| e.to_string())?;

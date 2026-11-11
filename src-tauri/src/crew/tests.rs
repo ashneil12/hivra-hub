@@ -23,6 +23,7 @@ fn draft(labels: &str, paths: &str, cli: &str, model: &str, effort: &str) -> Rul
         cli: some(cli),
         model: some(model),
         effort: some(effort),
+        task_ceiling_usd: None,
     }
 }
 
@@ -214,6 +215,7 @@ fn paths_keep_spaces_and_unicode_and_refuse_parent_segments() {
         cli: Some("cursor".into()),
         model: None,
         effort: None,
+        task_ceiling_micros: None,
         source: "person".into(),
     };
     assert!(!rules::rule_matches(&both, &["ui".into()], &[]));
@@ -661,6 +663,7 @@ fn a_design_monos_stored_rule_beats_the_project_for_the_same_task() {
         cli: Some("codex".into()),
         model: None,
         effort: None,
+        task_ceiling_micros: None,
         source: "person".into(),
     }];
     let design = store::route(&conn, &asked, &[]).unwrap();
@@ -763,6 +766,125 @@ fn a_stale_save_is_refused_and_a_broken_stored_rule_is_skipped() {
         None
     )
     .is_err());
+}
+
+#[test]
+fn a_task_ceiling_is_stored_and_a_bad_one_is_refused() {
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    let mut row = draft("ui", "", "cursor", "", "");
+    row.task_ceiling_usd = Some(12.4);
+    let saved = save(&mut conn, "project", PROJECT, vec![row], 0, None).unwrap();
+    assert_eq!(saved.rules[0].task_ceiling_micros, Some(12_400_000));
+    let json = serde_json::to_value(&saved.rules[0]).unwrap();
+    assert_eq!(json["taskCeilingUsd"], json!(12.4));
+    assert!(json.get("taskCeilingMicros").is_none());
+
+    let mut bad = draft("ui", "", "cursor", "", "");
+    bad.task_ceiling_usd = Some(0.0);
+    let err = save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![bad],
+        saved.revision,
+        None,
+    )
+    .unwrap_err();
+    assert_eq!(err, "The task ceiling has to be a positive amount.");
+    assert_eq!(
+        store::get_rules(&conn, "project", PROJECT).unwrap().rules[0].task_ceiling_micros,
+        Some(12_400_000)
+    );
+
+    let mut only = draft("ui", "", "", "", "");
+    only.task_ceiling_usd = Some(10.0);
+    let err = save(
+        &mut conn,
+        "project",
+        PROJECT,
+        vec![only],
+        saved.revision,
+        None,
+    )
+    .unwrap_err();
+    assert!(
+        err.contains("cli") || err.contains("picks nothing"),
+        "{err}"
+    );
+    assert!(!err.contains("taskCeiling"));
+
+    let plugin = crate::plugins::hivra::check_crew_rule(&json!({
+        "match": {"labels": ["docs"], "paths": []},
+        "cli": "cursor",
+        "taskCeilingUsd": 10
+    }))
+    .unwrap_err();
+    assert!(plugin.contains("taskCeilingUsd"), "{plugin}");
+
+    let mut old = Connection::open_in_memory().unwrap();
+    old.execute_batch(
+        "CREATE TABLE crew_rules (
+           scope TEXT NOT NULL,
+           scope_id TEXT NOT NULL,
+           position INTEGER NOT NULL,
+           labels TEXT NOT NULL,
+           paths TEXT NOT NULL,
+           cli TEXT,
+           model TEXT,
+           effort TEXT,
+           PRIMARY KEY (scope, scope_id, position)
+         );",
+    )
+    .unwrap();
+    store::ensure_tables(&old).unwrap();
+    store::ensure_tables(&old).unwrap();
+    let kept = save(
+        &mut old,
+        "project",
+        PROJECT,
+        vec![draft("docs", "", "codex", "", "")],
+        0,
+        None,
+    )
+    .unwrap();
+    assert_eq!(kept.rules[0].task_ceiling_micros, None);
+    old.execute(
+        "UPDATE crew_rules SET task_ceiling_usd = -1 WHERE position = 0",
+        [],
+    )
+    .unwrap();
+    assert!(store::get_rules(&old, "project", PROJECT)
+        .unwrap()
+        .rules
+        .is_empty());
+
+    let good: Rule = serde_json::from_value(json!({
+        "labels": ["ui"],
+        "paths": [],
+        "cli": "codex",
+        "taskCeilingUsd": 4,
+        "source": "person"
+    }))
+    .unwrap();
+    assert_eq!(good.task_ceiling_micros, Some(4_000_000));
+    let mut asked = query("ui", "", PROJECT, "design", None, None, &[]);
+    asked.mono_rules = vec![good];
+    let won = store::route(&conn, &asked, &[]).unwrap();
+    assert_eq!(won.cli.as_deref(), Some("codex"));
+
+    let refused: Rule = serde_json::from_value(json!({
+        "labels": ["ui"],
+        "paths": [],
+        "cli": "codex",
+        "taskCeilingUsd": 0,
+        "source": "person"
+    }))
+    .unwrap();
+    assert_eq!(refused.task_ceiling_micros, Some(i64::MIN));
+    asked.mono_rules = vec![refused];
+    let fell = store::route(&conn, &asked, &[]).unwrap();
+    assert_eq!(fell.cli.as_deref(), Some("cursor"));
 }
 
 #[test]
