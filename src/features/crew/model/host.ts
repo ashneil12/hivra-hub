@@ -106,9 +106,12 @@ export async function crewPolicyInForce(
   monoId: string | undefined,
   folder: string | undefined,
 ): Promise<{ neverUse: string[]; lock: boolean }> {
+  // Round 9 (LOW-3): every project that owns the folder counts, so a Lead in a worktree or a package gets its project's
+  // lock. A folder no saved project owns reads only the Mono's and the system's.
+  const owners = folder ? await owningProjects(folder) : [];
   const scopes: [string, string][] = [];
   if (monoId) scopes.push(["mono", monoId]);
-  if (folder) scopes.push(["project", folder]);
+  for (const owner of owners) scopes.push(["project", owner]);
   scopes.push(["system", "system"]);
   const neverUse: string[] = [];
   let lock = false;
@@ -200,6 +203,10 @@ export async function judgeV2Session(input: { sessionId: string; folder: string 
 export async function crewPolicyForLead(
   folder: string,
   leadId: string,
+  defaults?: {
+    project?: (folder: string) => Parameters<typeof routeDefaults>[0]["project"];
+    system?: () => Parameters<typeof routeDefaults>[0]["system"];
+  },
 ): Promise<{ neverUse: string[]; lock: boolean; lockedDefault?: string }> {
   const mono = monoForSession(leadId);
   const policy = await crewPolicyInForce(mono?.id, folder);
@@ -211,10 +218,29 @@ export async function crewPolicyForLead(
       paths: [],
       project: folder,
       ...(mono?.id ? { mono: mono.id } : {}),
-      defaults: routeDefaults({ mono: mono?.workerDefault }),
+      defaults: routeDefaults({
+        mono: mono?.workerDefault,
+        project: defaults?.project?.(folder),
+        system: defaults?.system?.(),
+      }),
     });
   } catch (error) {
     throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
   }
   return { neverUse: policy.neverUse, lock: true, ...(route.cli ? { lockedDefault: route.cli } : {}) };
+}
+
+/**
+ * Round 9 (LOW-3): the saved projects that own a folder, read by the gate (crew_projects_owning). A folder the gate
+ * cannot answer for falls back to the folder itself, so the Mono's and the system's policies still apply.
+ */
+async function owningProjects(folder: string): Promise<string[]> {
+  let got: unknown;
+  try {
+    got = await invoke<unknown>("crew_projects_owning", { folder });
+  } catch (error) {
+    throw new Error(`The crew policy could not be read, so nothing was started (${reasonOf(error)}).`);
+  }
+  if (Array.isArray(got) && got.every((owner) => typeof owner === "string")) return got as string[];
+  return [folder];
 }

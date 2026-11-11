@@ -983,6 +983,8 @@ import {
   setWorkerQueueBackend,
   subscribeWorkerPool,
   tauriWorkerQueue,
+  projectWorkerDefault,
+  systemWorkerDefault,
   workerPoolHost,
   type HeldSeen,
   type QueuedWorker,
@@ -13225,7 +13227,11 @@ function Workspace({
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
       // WP-141 round 6: the CLIs on Never use for a folder, so an approved card is filtered before a worker starts.
-      crewPolicy: (folder, leadId) => crewPolicyForLead(folder, leadId),
+      crewPolicy: (folder, leadId) =>
+        crewPolicyForLead(folder, leadId, {
+          project: (owner) => projectWorkerDefault(hubProjectIdFor(owner) ?? owner),
+          system: () => systemWorkerDefault(),
+        }),
       // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
       decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {

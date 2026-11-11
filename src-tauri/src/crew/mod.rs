@@ -319,3 +319,12 @@ pub fn crew_on_failure(
     fill_present(&mut input.present, live_presence(&app));
     store::on_failure(&mut *store.lock_conn()?, &input, now_millis())
 }
+
+/// Round 9 (LOW-3): the saved projects that own a folder, for the Lead's policy read.
+#[tauri::command(async)]
+pub fn crew_projects_owning(
+    store: State<'_, SessionStore>,
+    folder: String,
+) -> Result<Vec<String>, String> {
+    store::projects_owning(&*store.lock_conn()?, &folder)
+}

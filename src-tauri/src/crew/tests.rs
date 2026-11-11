@@ -3412,39 +3412,6 @@ fn a_broken_project_elsewhere_does_not_refuse_an_unrelated_folder() {
     judged.expect("an unrelated folder is not refused by another project's broken git");
 }
 
-/// WP-141 round 8 (MED-A): a `.git` entry git cannot read, on a project that could own the folder, fails the judgment
-/// closed with a plain line, not a silent system-only policy.
-#[test]
-fn a_git_error_on_a_candidate_project_fails_closed() {
-    use super::gate::judge_start;
-    let root = std::env::temp_dir().join(format!("r8-candidate-{}", uuid::Uuid::new_v4()));
-    let project = root.join("project");
-    let folder = root.join("folder");
-    std::fs::create_dir_all(&project).unwrap();
-    std::fs::create_dir_all(&folder).unwrap();
-    std::fs::write(project.join(".git"), "garbage\n").unwrap();
-    std::fs::write(folder.join(".git"), "garbage\n").unwrap();
-    let store = memory();
-    let mut conn = store.lock_conn().unwrap();
-    store::set_policy(
-        &mut conn,
-        "project",
-        project.to_str().unwrap(),
-        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
-        0,
-    )
-    .unwrap();
-    let judged = judge_start(
-        &conn,
-        "7d3e5c2a-lead-chat",
-        "claude",
-        folder.to_str().unwrap(),
-    );
-    let _ = std::fs::remove_dir_all(&root);
-    let err = judged.expect_err("a candidate project whose git cannot be read refuses the launch");
-    assert!(err.contains("could not be read"), "{err}");
-}
-
 /// WP-141 round 8 (LOW): the spawn check judges the crew folder and the folder the process runs in. A clean crew folder
 /// does not clear a banned process folder.
 #[test]
@@ -3469,6 +3436,242 @@ fn a_banned_process_folder_is_refused_even_when_the_crew_folder_is_clean() {
         None,
     )
     .unwrap_err();
+    assert!(
+        err.starts_with("Codex is on Never use for this project"),
+        "{err}"
+    );
+}
+
+/// WP-141 round 9 (HIGH, Windows): the same folder spelled another way (forward slashes, a lower-case drive, or a path
+/// through a symlink such as /var on macOS) is one folder, so its worktree still gets the project's Never use.
+#[test]
+fn a_worktree_spelled_another_way_still_gets_its_projects_never_use() {
+    use super::gate::judge_start;
+    let root = std::env::temp_dir().join(format!("r9-spelling-{}", uuid::Uuid::new_v4()));
+    let repo = root.join("repo");
+    let worktree = root.join("worktree");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=r9", "-c", "user.email=r9@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "r9-wt",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        repo.to_str().unwrap(),
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let spelled = spelled_differently(&worktree);
+    let judged = judge_start(&conn, "7d3e5c2a-lead-chat", "codex", &spelled);
+    let _ = std::fs::remove_dir_all(&root);
+    let err = judged.expect_err("the worktree is its project, however it is spelled");
+    assert!(
+        err.starts_with("Codex is on Never use for this project"),
+        "{err}"
+    );
+}
+
+/// The folder spelled the other way round: forward slashes and a lower-case drive on Windows, the path as given
+/// elsewhere (on macOS that is the /var form of /private/var).
+fn spelled_differently(path: &std::path::Path) -> String {
+    if cfg!(windows) {
+        let text = path.to_string_lossy().replace('\\', "/");
+        let mut chars = text.chars();
+        match chars.next() {
+            Some(drive) if chars.next() == Some(':') => {
+                format!("{}{}", drive.to_ascii_lowercase(), &text[1..])
+            }
+            _ => text,
+        }
+    } else {
+        path.to_string_lossy().into_owned()
+    }
+}
+
+/// WP-141 round 9: the path text rules, the mapping inside a checkout, and the fail-closed case, checked on every OS.
+#[test]
+fn path_keys_and_the_checkout_mapping_follow_one_form() {
+    use super::store::{owns_within_checkout, path_key_of_text};
+    assert_eq!(path_key_of_text(r"\\?\C:\Repo\Wt\"), "c:/repo/wt");
+    assert_eq!(
+        path_key_of_text("C:/REPO/wt"),
+        path_key_of_text(r"c:\repo\wt")
+    );
+    assert_eq!(
+        path_key_of_text(r"\\?\UNC\server\share\x"),
+        "//server/share/x"
+    );
+    assert_eq!(
+        owns_within_checkout(
+            "c:/repo/wt/packages/app",
+            "c:/repo/wt",
+            "c:/repo/packages/app",
+            "c:/repo"
+        ),
+        Ok(true)
+    );
+    assert_eq!(
+        owns_within_checkout(
+            "c:/repo/wt/other",
+            "c:/repo/wt",
+            "c:/repo/packages/app",
+            "c:/repo"
+        ),
+        Ok(false)
+    );
+    // A folder outside its own checkout cannot be placed: that refuses, it is never read as no owner.
+    assert!(owns_within_checkout("/x/y", "/repo/wt", "/repo/packages/app", "/repo").is_err());
+}
+
+/// WP-141 round 9: the checkout cache is bounded, and the oldest entry goes first.
+#[test]
+fn the_checkout_cache_drops_its_oldest_entry_past_the_bound() {
+    use super::store::bounded_put;
+    let mut entries: Vec<(std::path::PathBuf, u32)> = Vec::new();
+    for index in 0..600u32 {
+        bounded_put(
+            &mut entries,
+            std::path::PathBuf::from(format!("/folder/{index}")),
+            index,
+            512,
+        );
+    }
+    assert_eq!(entries.len(), 512);
+    assert_eq!(entries.first().map(|(_, value)| *value), Some(88));
+    assert_eq!(entries.last().map(|(_, value)| *value), Some(599));
+}
+
+/// WP-141 round 9 (MED-A): a project whose `.git` cannot be read, and that shares no checkout with the folder, refuses
+/// nothing. Garbage in its `.git` is unreadable from the files, so it is never a candidate and git is not run for it.
+#[test]
+fn a_project_with_dubious_git_elsewhere_does_not_refuse_an_unrelated_start() {
+    use super::gate::judge_start;
+    let root = std::env::temp_dir().join(format!("r9-dubious-{}", uuid::Uuid::new_v4()));
+    let elsewhere = root.join("elsewhere");
+    let plain = root.join("plain");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(elsewhere.join(".git"), "garbage\n").unwrap();
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        elsewhere.to_str().unwrap(),
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    let judged = judge_start(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "codex",
+        plain.to_str().unwrap(),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    judged.expect("an unrelated start is not refused by another project's git");
+}
+
+/// WP-141 round 9 (MED-A): a candidate whose checkout git cannot read refuses the judgment. Both folders are real
+/// checkouts of one repository (a worktree and its main checkout); the repository's config is then broken.
+#[test]
+fn a_candidate_whose_checkout_git_cannot_read_refuses_the_judgment() {
+    use super::gate::judge_start;
+    let root = std::env::temp_dir().join(format!("r9-broken-{}", uuid::Uuid::new_v4()));
+    let repo = root.join("repo");
+    let worktree = root.join("worktree");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=r9", "-c", "user.email=r9@example.invalid"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "r9-broken-wt",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        repo.to_str().unwrap(),
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    std::fs::write(repo.join(".git").join("config"), "[core\n garbage = = \n").unwrap();
+    let judged = judge_start(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "claude",
+        worktree.to_str().unwrap(),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let err = judged.expect_err("a candidate git cannot read refuses the judgment");
+    assert!(err.contains("could not be read"), "{err}");
+}
+
+/// WP-141 round 9 (LOW-1): a project saved before its folder existed still owns that folder once it exists.
+#[test]
+fn a_project_saved_before_its_folder_existed_still_owns_it() {
+    use super::gate::judge_start;
+    let root = std::env::temp_dir().join(format!("r9-late-{}", uuid::Uuid::new_v4()));
+    let project = root.join("project");
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        project.to_str().unwrap(),
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    std::fs::create_dir_all(project.join("sub")).unwrap();
+    let judged = judge_start(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "codex",
+        project.join("sub").to_str().unwrap(),
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let err = judged.expect_err("the project owns its folder once the folder exists");
     assert!(
         err.starts_with("Codex is on Never use for this project"),
         "{err}"

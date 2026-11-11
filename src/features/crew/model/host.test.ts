@@ -1,6 +1,6 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { crewLaunchCheck, crewPickFor, crewPolicyInForce, pickMonosFrom, recordCrewFailure, recordCrewPause } from "./host";
+import { crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, pickMonosFrom, recordCrewFailure, recordCrewPause } from "./host";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
@@ -138,5 +138,43 @@ it("WP-141 gate: crew_launch_check is sent the CLI, the Mono, the folder and the
   ).rejects.toThrow("Codex is on Never use, so it was not started.");
   expect(invokeMock).toHaveBeenCalledWith("crew_launch_check", {
     input: { cli: "codex", mono: "vg-lead", project: "/tmp/proj", lockedDefault: "claude" },
+  });
+});
+
+// WP-141 round 9 (LOW-3): the project lock is read from every project that owns the Lead's folder, not only the exact
+// folder, so a Lead in a worktree or a package gets its project's lock.
+describe("crewPolicyInForce reads the projects that own the folder", () => {
+  it("reads each owning project's policy for a folder inside one", async () => {
+    const calls: [string, unknown][] = [];
+    vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+      calls.push([command, args]);
+      if (command === "crew_projects_owning") return ["/repo"];
+      if (command === "crew_rules_get") return { policy: { lockDefault: true, neverUse: ["codex"], fallback: [] }, policyOwn: true };
+      return undefined;
+    });
+    const policy = await crewPolicyInForce(undefined, "/repo/packages/app");
+    expect(calls).toContainEqual(["crew_rules_get", expect.objectContaining({ scope: "project", scopeId: "/repo" })]);
+    expect(policy).toMatchObject({ lock: true, neverUse: ["codex"] });
+  });
+});
+
+// WP-141 round 9 (LOW-2): a plan's locked default is routed with the project and system defaults too, as a session
+// start routes, so a lock that only a project or the system sets does not refuse every plan.
+describe("crewPolicyForLead routes with the project and system defaults", () => {
+  it("passes the project and system defaults to the route", async () => {
+    const calls: [string, unknown][] = [];
+    vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+      calls.push([command, args]);
+      if (command === "crew_rules_get") return { policy: { lockDefault: true, neverUse: [], fallback: [] }, policyOwn: true };
+      if (command === "crew_route") return { cli: "claude" };
+      return undefined;
+    });
+    const policy = await crewPolicyForLead("/repo", "lead", {
+      project: () => ({ cli: "claude" }) as never,
+      system: () => ({ cli: "codex" }) as never,
+    });
+    expect(policy).toMatchObject({ lock: true, lockedDefault: "claude" });
+    const route = calls.find(([command]) => command === "crew_route");
+    expect(route?.[1]).toMatchObject({ query: { defaults: expect.objectContaining({ project: expect.anything(), system: expect.anything() }) } });
   });
 });
