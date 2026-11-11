@@ -19410,8 +19410,12 @@ function Workspace({
           />
           {/* WP-123: fork a chat from one message. */}
           <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
-          {/* WP-128: a run the closed app missed. */}
-          <MissedScheduleNotice notices={oneTimeSchedules.notices} onDone={oneTimeSchedules.note} />
+          {/* WP-128: a run the closed app missed, stacked with the other notices. */}
+          <MissedScheduleNotice
+            notices={oneTimeSchedules.notices}
+            onDone={oneTimeSchedules.note}
+            top={toastStackTop([reminderNoticesHeight, harnessUpdateHeight, newLayoutNoticeHeight])}
+          />
           {whatsNewVersion ? (
             <WhatsNewDialog
               version={whatsNewVersion}
