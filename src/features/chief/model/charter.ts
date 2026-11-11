@@ -155,7 +155,7 @@ function isDocTitle(line: string): boolean {
 }
 
 function insertCanonical(text: string): string {
-  const lines = text.replace(/\n{3,}/g, "\n\n").split("\n");
+  const lines = text.split("\n");
   let heading = -1;
   for (let i = 0; i < lines.length; i++) {
     if (!isHeadingAt(lines, i) || isRoleAtx(lines[i] ?? "")) continue;
