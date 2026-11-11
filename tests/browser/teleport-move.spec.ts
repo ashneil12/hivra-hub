@@ -41,7 +41,7 @@ test("a moved chat moves back: the plan says it continues here, and approval bri
   await page.goto("/tests/browser/teleport-move.html?back=1");
   await expect(page.getByRole("region", { name: "Move plan" })).toHaveCount(0);
   await page.getByTestId("teleport-back-start").click();
-  await expect(page.getByTestId("teleport-plan")).toContainText("continues in a fresh session here, started from the saved messages");
+  await expect(page.getByTestId("teleport-plan")).toContainText("continues in a fresh session here, started from a brief of the saved messages");
   await page.getByTestId("teleport-approve").click();
   await expect(page.getByTestId("teleport-done")).toContainText("Moved back to this Mac");
 });

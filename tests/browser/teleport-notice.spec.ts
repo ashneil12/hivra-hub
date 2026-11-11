@@ -5,7 +5,7 @@ import { expect, test } from "@playwright/test";
 test("the marker names the host and the time", async ({ page }) => {
   await page.goto("/tests/browser/teleport-notice.html");
   await expect(page.locator("#on-host").getByRole("status")).toContainText("Moved to Studio box, 10 Nov 2026, 09:00");
-  await expect(page.locator("#on-host")).toContainText("continues in a fresh session there, started from the saved messages");
+  await expect(page.locator("#on-host")).toContainText("continues in a fresh session there, started from a brief of the saved messages");
 });
 
 test("a running turn is refused with the reason and no recap", async ({ page }) => {

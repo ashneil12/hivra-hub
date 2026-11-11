@@ -168,8 +168,8 @@ export function TeleportMovePanel(props: TeleportMovePanelProps) {
           <p style={{ margin: "0 0 4px" }}>
             {verb}: the saved messages and the title{phase.plan.queued.length ? `, with ${phase.plan.queued.length} queued message(s)` : ""}.{" "}
             {back
-              ? "It continues in a fresh session here, started from the saved messages. The host keeps no live copy after this."
-              : "It continues in a fresh session there, started from the saved messages. This Mac keeps only a marker."}
+              ? "It continues in a fresh session here, started from a brief of the saved messages. The host keeps no live copy after this."
+              : "It continues in a fresh session there, started from a brief of the saved messages. This Mac keeps only a marker."}
           </p>
           {phase.plan.queued.length > 0 && (
             <ul data-testid="teleport-plan-queued" style={{ margin: "0 0 4px", paddingLeft: 18 }}>

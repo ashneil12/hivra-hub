@@ -68,7 +68,7 @@ export function sendBlockReason(session: Pick<Session, "blocks">): string | null
 
 /** The marker line and the statement of what the target does with the chat. Plain words, no dashes. */
 export function copyForMoved(host: string, time: string): string {
-  return `Moved to ${host}, ${time}. It continues in a fresh session there, started from the saved messages.`;
+  return `Moved to ${host}, ${time}. It continues in a fresh session there, started from a brief of the saved messages.`;
 }
 
 /**

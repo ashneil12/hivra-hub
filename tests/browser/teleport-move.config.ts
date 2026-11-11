@@ -9,7 +9,7 @@ const PORT = Number(process.env.TELEPORT_PROOF_PORT ?? 1463);
 export default defineConfig({
   ...base,
   testDir: ".",
-  testMatch: "teleport-move.spec.ts",
+  testMatch: ["teleport-move.spec.ts", "teleport-notice.spec.ts"],
   timeout: 120_000,
   use: { ...base.use, baseURL: `http://127.0.0.1:${PORT}` },
   // The base chromium project (installed Chrome with the sandbox on, locally) and the base webkit project.
