@@ -398,3 +398,68 @@ test("a review whose author and reviewer are the same builder is refused at the 
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Item 5, wired into the ship helper: the one place that says a pull request is ready to merge.
+const { evaluatePullRequest } = await import("./hivra-ship-green.mjs");
+const REPO = "ashneil12/monocode-hub";
+const prFor = (over = {}) => ({
+  number: "99",
+  title: "WP-99: ordinary change",
+  branch: "wp/99-ordinary",
+  state: "open",
+  isDraft: false,
+  sha: HEAD,
+  labels: [],
+  files: SENSITIVE,
+  ...over,
+});
+const greenRuns = [
+  {
+    databaseId: 1,
+    headSha: HEAD,
+    status: "completed",
+    conclusion: "success",
+    createdAt: "2026-11-10T10:00:00Z",
+    updatedAt: "2026-11-10T10:05:00Z",
+    workflowName: "CI",
+  },
+];
+
+test("the ship helper refuses a security change whose head has no review, and names the head", () => {
+  const decision = evaluatePullRequest(prFor(), greenRuns, { repo: REPO, reviewsRoot: scratch() });
+  assert.equal(decision.ok, false);
+  assert.match(decision.message, /no security review for head/);
+});
+
+test("the ship helper refuses a security change with a confirmed high finding on its head", async () => {
+  const root = await reviewedRoot([confirmed()]);
+  try {
+    const decision = evaluatePullRequest(prFor(), greenRuns, { repo: REPO, reviewsRoot: root });
+    assert.equal(decision.ok, false);
+    assert.match(decision.message, /confirmed high/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the ship helper passes a security change with a clean review and shows the Inbox line for needs_validation", async () => {
+  const root = await reviewedRoot([needsValidation()]);
+  try {
+    const decision = evaluatePullRequest(prFor(), greenRuns, { repo: REPO, reviewsRoot: root });
+    assert.equal(decision.ok, true, decision.message);
+    assert.equal(decision.inbox.length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the ship helper skips the security gate for a change outside the security paths", () => {
+  const decision = evaluatePullRequest(prFor({ files: ["docs/hivra/PLAN.md"] }), greenRuns, { repo: REPO, reviewsRoot: scratch() });
+  assert.equal(decision.ok, true, decision.message);
+});
+
+test("a security change with no review folder known is refused, never read from the working directory", () => {
+  const decision = evaluatePullRequest(prFor(), greenRuns, { repo: REPO });
+  assert.equal(decision.ok, false);
+  assert.match(decision.message, /review folder/);
+});

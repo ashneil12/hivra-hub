@@ -218,6 +218,7 @@ export function securityGate({ head, files, labels = [], reviewsRoot, validate =
   const sha = String(head ?? "").trim().toLowerCase();
   const short = sha.slice(0, 12);
   if (!FULL_SHA.test(sha)) return refuseGate(`The security gate needs the full head sha (${why}).`);
+  if (!reviewsRoot) return refuseGate(`This change ${why}, and no review folder is known for this checkout.`);
   const file = findingsPathFor(reviewsRoot, sha);
   if (!existsSync(file)) {
     return refuseGate(`This change ${why}, and there is no security review for head ${short}. Run the review on this head first.`);
@@ -243,4 +244,16 @@ export function securityGate({ head, files, labels = [], reviewsRoot, validate =
     ? [`Security review of ${short}: ${pending.length} candidate${pending.length === 1 ? "" : "s"} need validation (${pending.map((r) => r.title).join("; ")}).`]
     : [];
   return { status: "pass", reason: "", inbox };
+}
+
+/**
+ * The folder the reviews and their gate read, shared by every worktree of one clone (git's common directory), never
+ * committed. Null when the checkout is not a git repository.
+ * @param {string} [cwd]
+ * @returns {string | null}
+ */
+export function defaultReviewsRoot(cwd = process.cwd()) {
+  const run = spawnSync("git", ["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, encoding: "utf8" });
+  if (run.status !== 0) return null;
+  return join(run.stdout.trim(), "hivra-security-review");
 }

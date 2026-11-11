@@ -46,6 +46,7 @@ function pr(over = {}) {
     isDraft: false,
     sha: SHA_A,
     labels: [],
+    files: [],
     ...over,
   };
 }
@@ -72,6 +73,7 @@ function apiPr(over = {}) {
     headRefOid: SHA_A,
     headRefName: "wp/99-ordinary",
     labels: [],
+    files: [],
     ...over,
   };
 }
@@ -369,6 +371,7 @@ test("pull request JSON is untrusted", () => {
       headRefOid: SHA_A.toUpperCase(),
       headRefName: "wp/99-ordinary",
       labels: [{ name: "area" }, "docs"],
+      files: [{ path: "docs/hivra/PLAN.md" }],
       extra: "ignored",
     },
     "99",
@@ -376,6 +379,7 @@ test("pull request JSON is untrusted", () => {
   assert.equal(ok.ok, true);
   assert.equal(ok.pr.sha, SHA_A);
   assert.deepEqual(ok.pr.labels, ["area", "docs"]);
+  assert.deepEqual(ok.pr.files, ["docs/hivra/PLAN.md"]);
 
   assert.equal(normalizePullRequest(apiPr({ number: 100 }), "99").ok, false);
   assert.equal(normalizePullRequest(apiPr({ headRefOid: "abc" }), "99").message, "pull request head sha is missing");
@@ -775,6 +779,7 @@ const pr = {
   headRefOid: sha,
   headRefName: "wp/99-ordinary",
   labels: [],
+  files: [],
 };
 const ci = [{
   databaseId: 1,

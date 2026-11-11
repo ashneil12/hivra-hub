@@ -8,6 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync, realpathSync } from "node:fs";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { defaultReviewsRoot, securityGate } from "./security-review/review.mjs";
 
 // The never-merge packages and park labels live in one file the app's lead tick reads too.
 const NEVER_MERGE_LIST = JSON.parse(
@@ -23,7 +24,7 @@ const ISO_TIME =
   /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})$/;
 const SAFE_FIELD = /^[A-Za-z0-9_.:@+\-]+$/;
 const PARK_LABELS = new Set(NEVER_MERGE_LIST.labels);
-const PR_JSON = "number,title,state,isDraft,headRefOid,headRefName,labels";
+const PR_JSON = "number,title,state,isDraft,headRefOid,headRefName,labels,files";
 const RUN_JSON = "databaseId,headSha,status,conclusion,createdAt,updatedAt,workflowName";
 const TIMING_KEYS = [
   "pr",
@@ -288,6 +289,15 @@ export function normalizePullRequest(json, expectedNumber) {
   }
   const sha = typeof record.headRefOid === "string" ? record.headRefOid.trim().toLowerCase() : "";
   if (!SHA40.test(sha)) return { ok: false, message: "pull request head sha is missing" };
+  // The changed files decide whether the security gate applies, so a list that can't be read refuses the pull request.
+  if (!Array.isArray(record.files)) return { ok: false, message: "could not read the pull request's changed files" };
+  /** @type {string[]} */
+  const files = [];
+  for (const file of record.files) {
+    const path = typeof file === "string" ? file : file && typeof file === "object" ? file.path : undefined;
+    if (typeof path !== "string" || !path) return { ok: false, message: "could not read the pull request's changed files" };
+    files.push(path);
+  }
 
   /** @type {string[]} */
   const labels = [];
@@ -309,6 +319,7 @@ export function normalizePullRequest(json, expectedNumber) {
       isDraft: record.isDraft,
       sha,
       labels,
+      files,
     },
   };
 }
@@ -414,6 +425,20 @@ export function assessCi(runs, headSha) {
 }
 
 /**
+ * The security review gate for one pull request on its head sha (WP-203). Empty of effect for other changes.
+ * @param {{ sha: string, files?: string[], labels: string[] }} pr
+ * @param {{ reviewsRoot?: string | null }} options
+ */
+export function securityReviewGate(pr, options) {
+  return securityGate({
+    head: pr.sha,
+    files: Array.isArray(pr.files) ? pr.files : [],
+    labels: pr.labels,
+    reviewsRoot: options.reviewsRoot ?? "",
+  });
+}
+
+/**
  * Reasons that do not need a CI read. Empty when CI should be read.
  * @param {{ number: string, title: string, branch: string, state: string, isDraft: boolean, sha: string, labels: string[] }} pr
  * @param {{ sha?: string, neverMerge?: string[] }} options
@@ -422,6 +447,8 @@ export function assessCi(runs, headSha) {
 export function refuseBeforeCi(pr, options) {
   const park = securityParkReason(pr, options.neverMerge);
   if (park) return park;
+  const gate = securityReviewGate(pr, options);
+  if (gate.status === "refuse") return gate.reason;
   if (pr.state !== "open") return `pull request is not open (${pr.state || "unknown"})`;
   if (pr.isDraft) return "pull request is a draft";
   const expected = (options.sha || "").toLowerCase();
@@ -447,6 +474,7 @@ export function evaluatePullRequest(pr, runs, options) {
   if (early) return { ok: false, number: pr.number, message: early };
   const ci = assessCi(runs, pr.sha);
   if (!ci.ok) return { ok: false, number: pr.number, message: ci.message };
+  const inbox = securityReviewGate(pr, options).inbox;
   if (!options.repo || !REPO_NAME.test(options.repo)) {
     return { ok: false, number: pr.number, message: "could not read the repo name" };
   }
@@ -468,6 +496,7 @@ export function evaluatePullRequest(pr, runs, options) {
     updatedAt: ci.run.updatedAt,
     mergeArgs,
     commandLine: formatCommand(mergeArgs),
+    inbox,
   };
 }
 
@@ -756,7 +785,9 @@ function writeTiming(options, plan, err) {
  * }} [options]
  * @returns {Promise<{ code: number, ready: string[] }>}
  */
-export async function shipPullRequests(numbers, options = {}) {
+export async function shipPullRequests(numbers, givenOptions = {}) {
+  // The security review folder is the clone's own (never a path read from the working directory when unknown).
+  const options = { ...givenOptions, reviewsRoot: givenOptions.reviewsRoot ?? defaultReviewsRoot() };
   const out = options.stdout ?? ((line) => console.log(line));
   const err = options.stderr ?? ((line) => console.error(line));
   const gh = options.gh ?? ((args) => Promise.resolve(runGh(args)));
@@ -812,6 +843,7 @@ export async function shipPullRequests(numbers, options = {}) {
   /** @type {string[]} */
   const ready = [];
   for (const plan of plans) {
+    for (const line of plan.inbox ?? []) out(`inbox: ${line}`);
     out(`ready: ${plan.commandLine}`);
     const logged = writeTiming(options, plan, err);
     if (!logged.ok) return { code: 1, ready };
