@@ -17,6 +17,7 @@ import {
   setSpendClock,
   setSpendLoader,
   setSpendMonotonicClock,
+  setSpendPersist,
   setSpendProjectLookup,
   setSpendRecords,
   setSpendRedoLinks,
@@ -262,7 +263,7 @@ describe("R4-M5b: a Claude-priced spend warning says its cost is an estimate, in
   it("the activity line for a warning ends with the price-table label", async () => {
     const lines: string[] = [];
     setSpendWarnSink({ wake: async () => ({ fresh: true }), activity: (input) => input.kind === "spend.warn" && lines.push(input.summary) });
-    setSpendRecords([{ projectKey: HUB.folder, sessionId: "chat", day: "2026-11-10", micros: 9_000_000, priced: 1, unpriced: 0 }]);
+    setSpendRecords([{ projectKey: HUB.folder, sessionId: "chat", day: "2026-11-10", micros: 9_000_000, priced: 1, unpriced: 0, source: "claude" }]);
     saveSpendLimit({ scope: "app", period: "month", amountUsd: 10, warnAt: 0.8 }, 0, { by: "person" });
     judgeLaunch({ project: HUB.id, harness: "claude", ownerSession: "first-mate" });
     await flush();
@@ -280,5 +281,39 @@ describe("R5-L4: a Claude-priced refusal's dollar figure carries the estimate la
     expect(refusal).toMatchObject({ ok: false });
     if (refusal.ok) throw new Error("expected a refusal");
     expect(refusal.reason).toContain("Estimated from Claude Code's price table.");
+  });
+});
+
+describe("R5-L4b: the estimate label follows the spend's source, not the harness asked about", () => {
+  const usage = (harness: string): UsageSession[] => [
+    { id: "chat", cwd: HUB.folder, harness, model: "opus", blocks: [{ id: "t1", role: "user", startedAt: now, turnMetrics: { costUsd: 4, inputTokens: 5 } }] } as UsageSession,
+  ];
+  beforeEach(() => {
+    setSpendProjectLookup({ idOf: (f) => (f === HUB.folder ? HUB.id : undefined), folderOf: (id) => (id === HUB.id ? HUB.folder : undefined) });
+    saveSpendLimit({ scope: "project", project: HUB.id, period: "month", amountUsd: 10, warnAt: 0.8 }, 0, { by: "person" });
+  });
+
+  it("a limit line over another CLI's spend is not labelled, though the line asks about Claude", () => {
+    setSpendSessions(usage("opencode"));
+    expect(spendLine(HUB.id, "claude")).not.toContain("Estimated from Claude Code");
+  });
+
+  it("a limit line over Claude's spend is labelled, whatever CLI asks", () => {
+    setSpendSessions(usage("claude"));
+    expect(spendLine(HUB.id, "opencode")).toContain("Estimated from Claude Code's price table.");
+  });
+});
+
+describe("R5-L4c: a ledger entry carries the CLI that reported its cost", () => {
+  it("a Claude turn is persisted with source claude", async () => {
+    const entries: Array<Record<string, unknown>> = [];
+    setSpendRecords([]);
+    setSpendPersist(async (entry) => {
+      entries.push(entry as unknown as Record<string, unknown>);
+    });
+    reviewReportedTurn({ sessionId: "persist-claude", cwd: HUB.folder, model: "opus", harness: "claude", origin: "person", metrics: { costUsd: 1.5, inputTokens: 4 } });
+    await flush();
+    expect(entries).toContainEqual(expect.objectContaining({ sessionId: "persist-claude", source: "claude" }));
+    setSpendPersist(null);
   });
 });

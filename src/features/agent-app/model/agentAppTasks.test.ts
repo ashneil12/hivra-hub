@@ -17,6 +17,7 @@ import { begin, counter } from "../../phases/model/machine";
 import { deliverPhaseResult } from "../../phases/model/phaseBridge";
 import { loadPhaseSettings, savePhaseSettings, seedWork, taskForCrew, workFor } from "../../phases/model/store";
 import { handleAgentApp as handleRaw, type AgentAppHost } from "./agentApp";
+import { redoLinkRefusal } from "./agentAppTasks";
 import { handleWithBriefParts as handleAgentApp, TEST_GOAL, TEST_INTENT } from "../../firstmate/testing/briefParts";
 import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
@@ -3277,5 +3278,14 @@ describe("review r4: a redo's very first turn counts its parent's spend", () => 
     ).toMatchObject({ ok: false });
     // Fails today: the first turn is admitted with the redo's own $0, because the link is written after it starts.
     expect(firstTurn[0]).toMatchObject({ ok: false });
+  });
+});
+
+describe("round 5 gap: a redo whose record failed does not start", () => {
+  it("the start is refused when the redo's link was not recorded, and allowed otherwise", () => {
+    const redo = { title: "Same job", askIds: [], redoes: { id: "t-stuck", childSession: "app-mono-exo-t-stuck" } };
+    expect(redoLinkRefusal(redo, null)).toMatch(/could not be recorded/);
+    expect(redoLinkRefusal(redo, { id: "t-new" } as unknown as Delegation)).toBeNull();
+    expect(redoLinkRefusal({ title: "Fresh", askIds: [] }, null)).toBeNull();
   });
 });

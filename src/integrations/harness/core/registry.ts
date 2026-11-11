@@ -5,7 +5,7 @@ import type {
   TaskListMeta,
   TurnIntent,
 } from "../../../features/sessions/model/session";
-import { admitSpendTurn, noteUnpricedTurn, spendGateActive } from "../../../features/usage/model/spendGate";
+import { admitSpendTurn, noteUnpricedTurn, spendGateActive, type TurnOrigin } from "../../../features/usage/model/spendGate";
 import { requireChatFolder } from "./chatFolder";
 import { credentialBlock } from "./credentialGuard";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -665,10 +665,10 @@ export async function refreshHarnessCatalogs(
  * A text call the adapter makes for the app (a title, a commit message, a PR, a branch name). It is automated work, so
  * it passes the same spend admission as runHarnessTextPrompt, and what it ran is noted in the ledger as unpriced.
  */
-async function gatedTextCall<T>(cwd: string, run: () => Promise<T>): Promise<T> {
+async function gatedTextCall<T>(cwd: string, origin: TurnOrigin, run: () => Promise<T>): Promise<T> {
   const sessionId = `text-prompt-${(textPromptSeq += 1)}`;
   if (spendGateActive()) {
-    const admitted = await admitSpendTurn({ sessionId, cwd, harness: "claude", origin: "automated" });
+    const admitted = await admitSpendTurn({ sessionId, cwd, harness: "claude", origin });
     if (!admitted.ok) throw new Error(admitted.reason);
   }
   try {
@@ -684,7 +684,7 @@ export async function generateHarnessTitle(
 ): Promise<GeneratedSessionTitle | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateTitle) return null;
-  return gatedTextCall("", () => adapter.generateTitle!(input));
+  return gatedTextCall("", "automated", () => adapter.generateTitle!(input));
 }
 
 export async function generateHarnessCommitMessage(
@@ -692,13 +692,15 @@ export async function generateHarnessCommitMessage(
   cwd: string,
   signal?: AbortSignal,
   paths?: readonly string[],
+  /** Who asked for it: a commit message Ash asks for is his turn (warned, not refused), otherwise automated. */
+  origin: TurnOrigin = "automated",
 ): Promise<string> {
   const adapter = requireHarness(harness);
   if (!adapter.generateCommitMessage) {
     throw new Error(`${harness} does not support commit message generation`);
   }
   signal?.throwIfAborted();
-  return gatedTextCall(cwd, () =>
+  return gatedTextCall(cwd, origin, () =>
     paths === undefined
       ? adapter.generateCommitMessage!(cwd, signal)
       : adapter.generateCommitMessage!(cwd, signal, paths),
@@ -711,7 +713,7 @@ export async function generateHarnessPrContent(
 ): Promise<(PrContent & { base: string; head: string }) | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generatePrContent) return null;
-  return gatedTextCall(cwd, () => adapter.generatePrContent!(cwd));
+  return gatedTextCall(cwd, "automated", () => adapter.generatePrContent!(cwd));
 }
 
 export async function generateHarnessBranchName(
@@ -721,7 +723,7 @@ export async function generateHarnessBranchName(
 ): Promise<string | null> {
   const adapter = getHarness(harness);
   if (!adapter?.generateBranchName) return null;
-  return gatedTextCall(cwd, () => adapter.generateBranchName!(cwd, message));
+  return gatedTextCall(cwd, "automated", () => adapter.generateBranchName!(cwd, message));
 }
 
 export async function warmupHarnessText(

@@ -80,7 +80,7 @@ import {
   queueBriefForIdle,
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
-import { markAppDelegate, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { markAppDelegate, redoLinkRefusal, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { deliverPhaseResult, isPhaseSession, phaseFinish } from "../features/phases/model/phaseBridge";
 import { chatMonoOwner, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { appendsHubNote, hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
@@ -14071,7 +14071,8 @@ function Workspace({
           });
           const row = await launch?.row;
           // A redo whose link could not be recorded does not start: its turn would be judged without its parent.
-          if (delegation?.redoes && !row) throw new Error("The redo could not be recorded, so this run is not started.");
+          const refusal = redoLinkRefusal(delegation, row);
+          if (refusal) throw new Error(refusal);
           // Dev-only (D5 scripted test): a worker started while a tester armed dev-faults/fail-next-workers runs, then
           // reports a failure. Off by default; see devFault.ts and docs/DEV-FAULTS.md.
           const fault = await takeWorkerFault();

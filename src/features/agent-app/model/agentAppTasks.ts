@@ -225,6 +225,14 @@ export type DelegationMeta = {
   taskId?: string;
 };
 
+/**
+ * Why a delegation's start is refused, when it is a redo whose link was not recorded (round 5). A redo that is not
+ * recorded with its parent must not run: its first turn would be judged without the parent's spend. Null when it may start.
+ */
+export function redoLinkRefusal(delegation: DelegationMeta | undefined, recorded: unknown): string | null {
+  return delegation?.redoes && !recorded ? "The redo could not be recorded, so this run is not started." : null;
+}
+
 /** A worker chat as this window has it. */
 export type TaskChild = Pick<Session, "busy" | "pendingQuestion"> & {
   /** When it last did something (now, while it works); the row's own time otherwise. */

@@ -5,7 +5,7 @@
  */
 
 import { invoke } from "@tauri-apps/api/core";
-import { hubProjectFolder, hubProjectIdFor } from "../../hub/model/hubData";
+import { hubProjectFolder, hubProjectIdFor, hubProjectList } from "../../hub/model/hubData";
 import { habitRunMono } from "../../monos/model/monoHabits";
 import { listMonos } from "../../monos/model/mono";
 import {
@@ -25,7 +25,7 @@ import {
 import type { SpendDay } from "./spend";
 
 /** One row of the ledger's day totals, as the app's command sends it. */
-type LedgerRow = { projectKey: string; sessionId: string; day: string; micros: number; priced: number; unpriced: number };
+type LedgerRow = { projectKey: string; sessionId: string; day: string; micros: number; priced: number; unpriced: number; source?: string | null };
 
 function onStorage(event: StorageEvent): void {
   if (event.key === LOCAL_KEY) refreshSpendFromStorage();
@@ -50,6 +50,28 @@ const bookInDatabase: SpendBookStore = {
     await invoke("spend_book_write", { expected, revision, body: JSON.stringify({ revision, limits, ceilings }) });
   },
 };
+
+/**
+ * The app's projects in the one folder form, for the ledger's spend keys (Rust spend_key). Sent on each loader pass, so
+ * a verdict and the limits key a folder the same way. A project whose folder git cannot answer for is left out.
+ */
+async function syncProjectFolders(): Promise<void> {
+  try {
+    const projects = hubProjectList().filter((project) => project.folder);
+    const entries = await Promise.all(
+      projects.map(async (project) => {
+        try {
+          return { id: project.id, folder: await invoke<string>("spend_project_folder", { cwd: project.folder }) };
+        } catch {
+          return null;
+        }
+      }),
+    );
+    await invoke("spend_set_project_folders", { projects: entries.filter((entry) => entry !== null) });
+  } catch {
+    /* the next pass sends them again; until then a verdict that needs a folder holds (fail closed) */
+  }
+}
 
 export function wireSpendGate(): void {
   // The database holds the book. localStorage's copy is read once, for a book saved before the database held it.
@@ -80,9 +102,11 @@ export function wireSpendGate(): void {
         micros: row.micros,
         priced: row.priced,
         unpriced: row.unpriced,
+        ...(row.source ? { source: row.source } : {}),
       }));
     }),
   );
+  void syncProjectFolders();
   setSpendPersist((entry) => invoke("spend_ledger_append", { entry }));
   useLiveSpendSink();
   if (typeof window !== "undefined") window.addEventListener("storage", onStorage);

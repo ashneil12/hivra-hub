@@ -39,7 +39,14 @@ export type SpendReading = {
   reportsCost: boolean;
   /** The usage rows could not be read. Not a final failure: the next check tries again. */
   unreadable?: boolean;
+  /** Some of the measured spend was reported by Claude Code: its figure is its price table's estimate (round 5). */
+  claudeMeasured?: boolean;
 };
+
+/** The label on a dollar figure whose cost Claude Code reported (keyed on the spend's source, round 5). */
+export function estimateNote(reading: { claudeMeasured?: boolean } | null | undefined): string {
+  return reading?.claudeMeasured === true ? " Estimated from Claude Code's price table." : "";
+}
 
 export type SpendStatus = "ok" | "warn" | "over" | "unmeasured" | "unset";
 
@@ -191,13 +198,13 @@ export function spendAllowed(spent: SpendReading | null | undefined, limit: Spen
   if (measured >= cap) {
     return {
       status: "over",
-      reason: `Spend limit reached for ${subjectOf(clean)}: ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent}. Raise it, or wait for ${words.reset} to reset.`,
+      reason: `Spend limit reached for ${subjectOf(clean)}: ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent}. Raise it, or wait for ${words.reset} to reset.${estimateNote(spent)}`,
     };
   }
   if (measured >= warnAt) {
     return {
       status: "warn",
-      reason: `Measured cost for ${subjectOf(clean)} is ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent}.`,
+      reason: `Measured cost for ${subjectOf(clean)} is ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent}.${estimateNote(spent)}`,
     };
   }
   if (!spent.reportsCost) {
@@ -223,7 +230,7 @@ export function spendStatusLine(spent: SpendReading, limit: SpendLimit): string 
   const cap = toMicro(clean.amountUsd) ?? 0;
   const measured = toMicro(spent.measuredUsd) ?? 0;
   const percent = cap > 0 ? Math.round((measured / cap) * 100) : 0;
-  return `Spent ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent} (${percent}%). New builders pause at ${formatUsd(clean.amountUsd)}.`;
+  return `Spent ${formatUsd(spent.measuredUsd)} of ${formatUsd(clean.amountUsd)} ${words.spent} (${percent}%). New builders pause at ${formatUsd(clean.amountUsd)}.${estimateNote(spent)}`;
 }
 
 export function periodId(period: SpendPeriod, now: number): string {
@@ -298,6 +305,8 @@ export type SpendDay = {
   micros: number;
   priced: number;
   unpriced: number;
+  /** The CLI that reported the cost ("claude" for Claude Code). Unset for a row written before it was kept. */
+  source?: string;
 };
 
 const dayIn = (day: string, today: string, period: SpendPeriod): boolean =>
@@ -313,13 +322,15 @@ export function sumDays(
   let micros = 0;
   let priced = 0;
   let unpriced = 0;
+  let claudeMeasured = false;
   for (const row of records) {
     if (!row || !opts.match(row.projectKey) || !dayIn(row.day, today, opts.period)) continue;
     micros += row.micros;
     priced += row.priced;
     unpriced += row.unpriced;
+    if (row.source === "claude" && row.priced > 0) claudeMeasured = true;
   }
-  return { measuredUsd: micros / MICRO, pricedTurns: priced, unpricedTurns: unpriced };
+  return { measuredUsd: micros / MICRO, pricedTurns: priced, unpricedTurns: unpriced, claudeMeasured };
 }
 
 /**
@@ -363,6 +374,7 @@ export function daysFromSessions(
         micros,
         priced: price.kind === "priced" ? 1 : 0,
         unpriced: price.kind === "priced" ? 0 : 1,
+        source: typeof session.harness === "string" ? session.harness.trim().toLowerCase() : undefined,
       });
     }
   }

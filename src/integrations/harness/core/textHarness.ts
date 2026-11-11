@@ -37,7 +37,8 @@ export function generateCommitMessage(
   signal?: AbortSignal,
   paths?: readonly string[],
 ): Promise<string> {
-  return generateHarnessCommitMessage(pickTextHarness(preferred), cwd, signal, paths);
+  // Every caller is a commit Ash asked for from the app (a button or the mobile commit), so it is his turn.
+  return generateHarnessCommitMessage(pickTextHarness(preferred), cwd, signal, paths, "person");
 }
 
 export function generatePrContent(

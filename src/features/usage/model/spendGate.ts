@@ -82,7 +82,15 @@ export type ProjectLookup = {
   redoParentOf?(sessionId: string): string | undefined;
 };
 /** The ledger's writer. The app sets it; without one, turns stay in memory. */
-export type SpendPersist = (entry: { sessionId: string; projectKey: string; at: number; micros: number; priced: boolean }) => Promise<void>;
+export type SpendPersist = (entry: {
+  sessionId: string;
+  projectKey: string;
+  at: number;
+  micros: number;
+  priced: boolean;
+  /** The CLI that reported the cost (round 5). */
+  source?: string;
+}) => Promise<void>;
 /** The ledger's reader: day totals from `since` on. The app sets it; tests set records directly. */
 export type SpendLoader = (since: number) => Promise<SpendDay[]>;
 
@@ -674,6 +682,7 @@ function saveTurn(row: Pending): void {
     at: row.at,
     micros: record.micros,
     priced: record.priced === 1,
+    source: record.source,
   })
     .then(() => {
       row.savedAt = monotonic();
@@ -684,7 +693,7 @@ function saveTurn(row: Pending): void {
 }
 
 /** A turn's price, written once when the turn ends. Counted at once; saved to the ledger in the background. */
-function recordTurn(sessionId: string, projectKey: string, price: ReturnType<typeof readTurnPrice>): void {
+function recordTurn(sessionId: string, projectKey: string, price: ReturnType<typeof readTurnPrice>, source?: string): void {
   if (price.kind === "empty") return;
   const at = clock();
   const day = dayKey(at);
@@ -698,6 +707,7 @@ function recordTurn(sessionId: string, projectKey: string, price: ReturnType<typ
       micros,
       priced: price.kind === "priced" ? 1 : 0,
       unpriced: price.kind === "priced" ? 0 : 1,
+      ...(source ? { source } : {}),
     },
     at,
   };
@@ -733,20 +743,22 @@ function lineageOf(sessionId: string): Set<string> {
  * A run's total from the ledger rows the reader holds (the ledger is read from the start of the month), including the
  * chats it redid. A redo's parent spent earlier in the month counts only if its rows are in that read.
  */
-export function sessionTotal(sessionId: string): { micros: number; priced: number; unpriced: number; unreadable: boolean } {
+export function sessionTotal(sessionId: string): { micros: number; priced: number; unpriced: number; unreadable: boolean; claude: boolean } {
   const rows = currentRecords();
-  if (rows === null) return { micros: 0, priced: 0, unpriced: 0, unreadable: true };
+  if (rows === null) return { micros: 0, priced: 0, unpriced: 0, unreadable: true, claude: false };
   const chain = lineageOf(sessionId);
   let micros = 0;
   let priced = 0;
   let unpriced = 0;
+  let claude = false;
   for (const row of rows) {
     if (!chain.has(row.sessionId)) continue;
     micros += row.micros;
     priced += row.priced;
     unpriced += row.unpriced;
+    if (row.source === "claude" && row.priced > 0) claude = true;
   }
-  return { micros, priced, unpriced, unreadable: false };
+  return { micros, priced, unpriced, unreadable: false, claude };
 }
 
 // ---- limits -------------------------------------------------------------------------------------------------------
@@ -967,11 +979,6 @@ export function spendLimitsSetting(): string | null {
  * The verdict a new builder reads, and the queue re-reads. Over refuses for any CLI, because a CLI that reports no cost
  * cannot be a way around a limit that is already reached. Reads only: it sends no warning.
  */
-/** The price-table label, on a dollar figure whose cost a Claude CLI reported (round 5). Empty for any other CLI. */
-function estimateNote(harness: string | undefined): string {
-  return (harness ?? "").trim().toLowerCase() === "claude" ? " Estimated from Claude Code's price table." : "";
-}
-
 export function judgeLaunch(input: { project: string; harness: string; ownerSession?: string; warn?: boolean }): SpendVerdict {
   boot();
   if (storeUnreadable) return UNREADABLE_STORE;
@@ -987,7 +994,7 @@ export function judgeLaunch(input: { project: string; harness: string; ownerSess
   if (over) return over.verdict;
   const warn = verdicts.find((row) => row.verdict.status === "warn");
   if (warn) {
-    if (input.warn !== false) warnFirstMate(warn.limit, key, input.ownerSession, input.harness);
+    if (input.warn !== false) warnFirstMate(warn.limit, key, input.ownerSession);
     return warn.verdict;
   }
   if (!reportsCost) return UNMEASURED;
@@ -995,7 +1002,7 @@ export function judgeLaunch(input: { project: string; harness: string; ownerSess
   return unmeasured ? unmeasured.verdict : OK;
 }
 
-function warnFirstMate(limit: SpendLimit, key: string, fallback: string | undefined, harness: string): void {
+function warnFirstMate(limit: SpendLimit, key: string, fallback: string | undefined): void {
   if (!sink) return;
   const owner = lookup.firstMateOf?.(key) ?? fallback ?? "";
   if (!owner) return;
@@ -1005,8 +1012,8 @@ function warnFirstMate(limit: SpendLimit, key: string, fallback: string | undefi
     ownerSession: owner,
     sink,
     label: limit.scope === "app" ? "the whole app" : key,
-    // Claude's cost figure is its price table's estimate (the same rule as the limit line).
-    estimated: harness.trim().toLowerCase() === "claude",
+    // Labelled by the spend's source: Claude's cost figure is its price table's estimate.
+    estimated: readingFor(limit, true).claudeMeasured === true,
   });
 }
 
@@ -1088,7 +1095,7 @@ export async function admitSpendTurn(input: {
     } else if (task.micros >= Math.round(ceiling.hardUsd * MICRO)) {
       return {
         ok: false,
-        reason: `Task ceiling reached: ${formatUsd(task.micros / MICRO)} of ${formatUsd(ceiling.hardUsd)}. This run is held. Raise the task ceiling in Crew rules to continue.${estimateNote(input.harness)}`,
+        reason: `Task ceiling reached: ${formatUsd(task.micros / MICRO)} of ${formatUsd(ceiling.hardUsd)}. This run is held. Raise the task ceiling in Crew rules to continue.${task.claude ? " Estimated from Claude Code's price table." : ""}`,
       };
     }
   }
@@ -1098,7 +1105,7 @@ export async function admitSpendTurn(input: {
     if (daily.micros >= Math.round(ceiling.dailyUsd * MICRO)) {
       return {
         ok: false,
-        reason: `Daily ceiling reached: ${formatUsd(daily.micros / MICRO)} of ${formatUsd(ceiling.dailyUsd)} today. This run is held.`,
+        reason: `Daily ceiling reached: ${formatUsd(daily.micros / MICRO)} of ${formatUsd(ceiling.dailyUsd)} today. This run is held.${daily.claude ? " Estimated from Claude Code's price table." : ""}`,
       };
     }
   }
@@ -1106,15 +1113,15 @@ export async function admitSpendTurn(input: {
   for (const limit of limits) {
     const verdict = spendAllowed(readingFor(limit, reportsCost), limit);
     if (verdict.status === "over" && isAutomated) return { ok: false, reason: verdict.reason };
-    if (verdict.status === "over" || verdict.status === "warn") warnFirstMate(limit, key, input.sessionId, input.harness);
+    if (verdict.status === "over" || verdict.status === "warn") warnFirstMate(limit, key, input.sessionId);
   }
   return { ok: true };
 }
 
 /** A project's day total from the ledger. Unreadable when the ledger has never been read. */
-function dailyReading(key: string): { micros: number; unreadable: boolean } {
+function dailyReading(key: string): { micros: number; unreadable: boolean; claude: boolean } {
   const base = sumDays(currentRecords(), { now: clock(), period: "day", match: (projectKey) => spendKey(projectKey) === key });
-  return { micros: toMicro(base.measuredUsd) ?? 0, unreadable: base.unreadable === true };
+  return { micros: toMicro(base.measuredUsd) ?? 0, unreadable: base.unreadable === true, claude: base.claudeMeasured === true };
 }
 
 /** The ceiling line for a task row, and whether its run is held now. Derived from the ledger, so a restart keeps it. */
@@ -1171,7 +1178,7 @@ export function reviewReportedTurn(input: {
   if (!input.sessionId) return idle;
   const billed = isBilledModel(input.model);
   const key = keyForTurnNow(input.sessionId, input.cwd);
-  recordTurn(input.sessionId, key, readTurnPrice(input.metrics ?? undefined, { billed }));
+  recordTurn(input.sessionId, key, readTurnPrice(input.metrics ?? undefined, { billed }), input.harness.trim().toLowerCase());
   if (!billed) return idle;
   const ceiling = ceilingFor(key);
   if (!ceiling) return idle;
@@ -1267,8 +1274,6 @@ export function spendLine(project: string, harness: string, scope: SpendScope = 
   if (!limit) return "No spend limit is set.";
   const reading = readingFor(limit, cliReportsCost(harness));
   if (reading.unreadable) return spendAllowed(reading, limit).reason;
-  const line = spendStatusLine(reading, limit);
-  // Claude Code's own cost figure is its price table's estimate, not a bill. The line says so.
-  if (harness.trim().toLowerCase() === "claude" && reading.measuredUsd > 0) return `${line} Estimated from Claude Code's price table.`;
-  return line;
+  // The estimate label comes from the spend's source (spendStatusLine), not from the harness asked about.
+  return spendStatusLine(reading, limit);
 }

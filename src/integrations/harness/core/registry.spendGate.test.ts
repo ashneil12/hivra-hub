@@ -90,6 +90,12 @@ describe("H1: the turns submitSession sends pass the spend gate by their origin"
     expect(generatedCommits).toBe(0);
   });
 
+  it("a commit message Ash asks for is a person's turn: warned, not refused, over the limit", async () => {
+    generatedCommits = 0;
+    await expect(generateHarnessCommitMessage("claude", FOLDER, undefined, undefined, "person")).resolves.toBe("feat: change");
+    expect(generatedCommits).toBe(1);
+  });
+
   it("a text prompt (a title, a memory pass) is automated work: refused over the limit", async () => {
     await expect(runHarnessTextPrompt({ harness: "claude", cwd: FOLDER, model: "custom:acme", prompt: "title?" } as never)).rejects.toThrow(/limit/i);
   });
