@@ -65,42 +65,7 @@ export function FirstMateInbox({
             </p>
           ) : null}
           {item.statusWord ? <p className="text-[12px] text-content/60">{item.statusWord}</p> : null}
-          {item.body ? (
-            <p
-              data-failure={item.kind === "failure" ? item.id : undefined}
-              className="mt-1 whitespace-pre-wrap break-words text-[12px] text-content/70"
-            >
-              {item.reasonLead ? `${item.reasonLead} ` : null}
-              {item.reasonLead ? <span data-reason-text>{item.body}</span> : item.body}
-            </p>
-          ) : null}
-          {item.options.length ? (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {item.options.map((option) => (
-                <button key={option} type="button" onClick={() => onAnswer?.(item, option)} className="text-[12px] text-content">
-                  {option}
-                  {item.recommended === option ? <span data-recommended> Recommended</span> : null}
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {item.note ? (
-            <p data-inbox-note className="mt-1.5 text-[12px] text-content/70">
-              {item.note}
-            </p>
-          ) : null}
-          <div className="mt-1.5 flex flex-wrap gap-2">
-            {item.chatId ? (
-              <button type="button" className="text-[12px] text-content/60" onClick={() => onOpenChat?.(item.chatId!)}>
-                Open the chat
-              </button>
-            ) : null}
-            {item.workerIds.map((id) => (
-              <button key={id} type="button" className="text-[12px] text-content/60" onClick={() => onOpenWorker?.(id)}>
-                Open the worker
-              </button>
-            ))}
-          </div>
+          <FirstMateAnswerParts item={item} onAnswer={onAnswer} onOpenChat={onOpenChat} onOpenWorker={onOpenWorker} />
             </div>
             {item.actions?.length ? (
               <div className="flex shrink-0 items-center gap-2">
@@ -124,5 +89,63 @@ export function FirstMateInbox({
         </article>
       ))}
     </div>
+  );
+}
+
+/**
+ * The part of a card a person answers from: its body (a secret card's exact command), the answer buttons, the note
+ * under them and the links to the chat and the worker. G10: the Inbox's Needs you row for a first mate's decision shows
+ * this same part, so the decision is answered there and not on a second card.
+ */
+export function FirstMateAnswerParts({
+  item,
+  onAnswer,
+  onOpenChat,
+  onOpenWorker,
+}: {
+  item: FirstMateItem;
+  onAnswer?: (item: FirstMateItem, answer: string) => void;
+  onOpenChat?: (sessionId: string) => void;
+  onOpenWorker?: (workerId: string) => void;
+}) {
+  return (
+    <>
+      {item.body ? (
+        <p
+          data-failure={item.kind === "failure" ? item.id : undefined}
+          className="mt-1 whitespace-pre-wrap break-words text-[12px] text-content/70"
+        >
+          {item.reasonLead ? `${item.reasonLead} ` : null}
+          {item.reasonLead ? <span data-reason-text>{item.body}</span> : item.body}
+        </p>
+      ) : null}
+      {item.options.length ? (
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {item.options.map((option) => (
+            <button key={option} type="button" onClick={() => onAnswer?.(item, option)} className="text-[12px] text-content">
+              {option}
+              {item.recommended === option ? <span data-recommended> Recommended</span> : null}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      {item.note ? (
+        <p data-inbox-note className="mt-1.5 text-[12px] text-content/70">
+          {item.note}
+        </p>
+      ) : null}
+      <div className="mt-1.5 flex flex-wrap gap-2">
+        {item.chatId ? (
+          <button type="button" className="text-[12px] text-content/60" onClick={() => onOpenChat?.(item.chatId!)}>
+            Open the chat
+          </button>
+        ) : null}
+        {item.workerIds.map((id) => (
+          <button key={id} type="button" className="text-[12px] text-content/60" onClick={() => onOpenWorker?.(id)}>
+            Open the worker
+          </button>
+        ))}
+      </div>
+    </>
   );
 }
