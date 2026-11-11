@@ -9,8 +9,9 @@
 //!   needs to log in;
 //! - the person's global git config (including a link's target and `include.path` files), LaunchAgents and the CLIs'
 //!   settings and hooks (`denyWrite` in the shared list);
-//! - writes and links to the named checkouts' `.git` hooks, config, attributes, commondir and submodule hooks or config.
-//!   Other `.git` directories, including a temp clone, stay writable;
+//! - writes and links to the named checkouts' `.git` (the directory, hooks, config and attributes). In every repository,
+//!   not only a named checkout: `commondir`, `config.worktree`, and a submodule's hooks and config, including a submodule
+//!   name that contains a slash. A temp clone's own `.git`, config and hooks stay writable;
 //! - the whole app data folder (`com.ash.monocode-hub` and a dev copy's), so a gate script or a ship file cannot be planted;
 //! - renaming that folder, or a parent of any protected path, up to and including the home folder (unlink of the directory
 //!   node only, so a file inside home can still be removed);
@@ -450,6 +451,7 @@ pub fn profile_text(home: &Path) -> Result<String, String> {
 
 /// The agent profile, with no checkout singled out. Git metadata that must not be redirected (commondir, a worktree's
 /// config, a submodule's hooks and config) is still denied; a temp clone's own `.git` stays writable.
+#[cfg(test)]
 pub fn profile_text_for(home: &Path, data_dir: Option<&Path>) -> Result<String, String> {
     profile_with_checkouts(home, data_dir, &[])
 }
@@ -488,6 +490,7 @@ fn profile_scoped(
     }
     push_foreign_real_home(&mut lines, home)?;
     if deny_git {
+        push_unscoped_git_redirects(&mut lines);
         push_git_writes(&mut lines, checkouts)?;
     }
     for program in DENIED_PROGRAMS {
@@ -712,6 +715,30 @@ fn push_explicit_data(lines: &mut Vec<String>, data: &Path) -> Result<(), String
         lines.push(format!(r#"(deny {WRITE_OPS} (regex #"^{base}(/|$)"))"#));
     }
     Ok(())
+}
+
+/// `commondir`, `config.worktree`, and a submodule's hooks and config, in any repository. These are how git is pointed
+/// at another config or another hook. They do not match a temp clone's `.git`, `.git/config` or `.git/hooks`. The
+/// container profile does not call this: the app's own git still writes its index.
+fn push_unscoped_git_redirects(lines: &mut Vec<String>) {
+    let git = ci_regex(".git");
+    let patterns = [
+        format!(r"(^|/){git}(/.*)?{}$", ci_regex("/commondir")),
+        format!(r"(^|/){git}(/.*)?{}$", ci_regex("/config.worktree")),
+        format!(
+            r"(^|/){git}{}/.*/{}(/|$)",
+            ci_regex("/modules"),
+            ci_regex("hooks")
+        ),
+        format!(
+            r"(^|/){git}{}/.*/{}$",
+            ci_regex("/modules"),
+            ci_regex("config")
+        ),
+    ];
+    for pattern in patterns {
+        lines.push(format!(r#"(deny {WRITE_OPS} (regex #"{pattern}"))"#));
+    }
 }
 
 /// Writes and links inside the named checkouts only: the `.git` node, hooks, config, attributes, commondir, and a
