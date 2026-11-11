@@ -34,7 +34,8 @@ This is their replacement and has to be the opposite: a few plain lines, each on
    including one an agent built for the person. The arrangement is kept in the app's own store, so it survives a
    restart and an export. Nothing is pinned by default.
 5. **Opening the app**: Home when something needs the person, otherwise where they were.
-6. No counters, charts, badges or status chips. Plain words and links only.
+6. No counters, charts, badges or status chips. Plain words and links only. **Replaced on 11 Nov 2026 by
+   [UX.md](../UX.md):** the one red Needs you count and the working count are the only numbers; WP-212 rebuilds Home.
 
 Port Orbit's layout and entrance animation, restyled in Hivra's theme.
 

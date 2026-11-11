@@ -6,6 +6,8 @@ import { hasSecretText } from "../../portable/model/secrets";
 import { mentionsSecret } from "../model/doc";
 import { askForLessons, redactForModel } from "../backpass/ask";
 import { acceptProposal, type Proposal } from "../backpass/learn";
+import { anchoredHunks } from "../backpass/diff";
+import { refusalFor } from "../backpass/proposalGuard";
 import { instructionFiles } from "../backpass/agentsFile";
 import { parseSchedule, stateAfterOffer } from "../backpass/schedule";
 import {
@@ -237,6 +239,10 @@ export function learnPorts(now: () => string = () => new Date().toISOString()): 
         return false;
       }
       if (current !== original && current !== next) return false;
+      // WP-101: the proposal was checked when it was measured; this checks what would actually be written, so an
+      // edit that slipped something in after that (a hand-edited store, a changed file) is caught here too.
+      const guarded = refusalFor(anchoredHunks(current, next));
+      if (guarded) throw new Error(guarded);
       if (hasSecretText(next) || mentionsSecret(next)) {
         throw new Error("That edit looks like it contains a secret, so it was not saved.");
       }

@@ -34,6 +34,8 @@ import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
 import { CommitGuardAllowsPanel } from "../../commit-guard/ui/CommitGuardAllowsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+// WP-156: standing answers stay off until this setting is on.
+import { StandingAnswersSetting } from "./StandingAnswersSetting";
 // WP-164: quiet hours for routine programme notices.
 import { QuietHoursSetting } from "../../notifications/ui/QuietHoursSetting";
 import { QUIET_HOURS_DESCRIPTION } from "../../notifications/model/quietHours";
@@ -1086,6 +1088,8 @@ function GeneralPage({
           <DailySummarySetting />
         </Row>
       </Group>
+      {/* WP-156: standing answers stay off until this is on. */}
+      <StandingAnswersSetting />
       <Group
         title="Alerts"
         description="How MonoCode reaches you while you are looking somewhere else."
