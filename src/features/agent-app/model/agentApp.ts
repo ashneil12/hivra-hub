@@ -129,6 +129,8 @@ import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRoom
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { DOC_FIELDS, handleDocs } from "./agentDocs";
 import { handleActivity, handleMemoryRecall } from "../../chief/model/tools";
+import { captainCanRead, captainHandoff, delegationId, filedTaskId } from "../../chief/model/handoff";
+import { recordNote } from "../../chief/model/notes";
 import type { DocCreateInput, DocRecord, DocUpdateInput, DocWriteResult } from "../../docs/gateway";
 
 /** What a Mono hears if it reaches for the old proposal path. */
@@ -468,6 +470,9 @@ const FIELDS = new Map<string, readonly string[]>([
   ...DOC_FIELDS,
   // WP-88: the activity log, read only.
   ["activity.list", ["project", "agent", "kind", "search", "before", "limit"]],
+  // WP-215: file a task, then hand it to the project's first mate. A first mate notes a call it settled.
+  ["captain.handoff", ["project", "department", "title", "brief"]],
+  ["decisions.note", ["project", "what", "reason"]],
 ]);
 
 /**
@@ -1620,6 +1625,48 @@ export async function handleAgentApp(
       templates,
       host.now?.() ?? new Date(),
     );
+  }
+  // WP-215: file the task, then hand it to the project's first mate.
+  if (action === "captain.handoff") {
+    const mono = host.monoOf?.(source.id);
+    return captainHandoff(
+      {
+        project: requiredString(input.project, "project", 4096),
+        department: typeof input.department === "string" ? input.department : undefined,
+        title: requiredString(input.title, "title", 300),
+        brief: requiredString(input.brief, "brief", 8000),
+      },
+      {
+        canRead: (project) => captainCanRead(mono, project),
+        createTask: async (task) => {
+          const created = await handleTaskStore(source, "tasks.create", {
+            title: task.title,
+            description: task.brief,
+            project: task.project,
+          }, host);
+          return { id: filedTaskId(created) };
+        },
+        delegate: async (task) => {
+          const created = await handleTasks(source, `${requestId}-handoff`, "tasks.delegate", {
+            title: task.title,
+            brief: task.brief,
+            intent: task.brief,
+            project: task.project,
+            taskId: task.taskId,
+          }, host, { startLaunch, fileStarted });
+          return { id: delegationId(created) };
+        },
+      },
+    );
+  }
+  // WP-215: the chat id is this chat, not a field on the call.
+  if (action === "decisions.note") {
+    return recordNote({
+      project: requiredString(input.project, "project", 4096),
+      what: requiredString(input.what, "what", 2000),
+      reason: requiredString(input.reason, "reason", 500),
+      sessionId: source.id,
+    });
   }
   if (action === "activity.list") return handleActivity(source, input, host);
   if (action === "memory.recall") return handleMemoryRecall(source, input, host);
