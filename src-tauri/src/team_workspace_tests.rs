@@ -226,18 +226,54 @@ fn a_missing_config_file_loads_as_off() {
     );
 }
 
+#[derive(Default)]
+struct MemoryStore(std::cell::RefCell<Option<String>>);
+
+impl TokenStore for MemoryStore {
+    fn read(&self) -> Result<Option<String>, String> {
+        Ok(self.0.borrow().clone())
+    }
+    fn write(&self, token: &str) -> Result<(), String> {
+        *self.0.borrow_mut() = Some(token.to_string());
+        Ok(())
+    }
+}
+
 #[test]
-fn saving_persists_the_switch_and_endpoint_and_keeps_the_token() {
+fn saving_the_switch_and_endpoint_keeps_the_token_in_the_store_not_the_file() {
     let dir = std::env::temp_dir().join(format!("tw-save-{}", uuid::Uuid::new_v4()));
     let path = dir.join(CONFIG_FILE);
+    let store = MemoryStore::default();
+    remember_token(&store, "secret-token").unwrap();
     save_config(&path, true, "https://sync.example.test/v1").unwrap();
-    store_token(&path, "secret-token").unwrap();
     save_config(&path, false, "http://127.0.0.1:4010").unwrap();
-    let loaded = load_config(&path);
+
+    let on_disk = std::fs::read_to_string(&path).unwrap();
+    assert!(
+        !on_disk.contains("secret-token"),
+        "the token reached the settings file"
+    );
+
+    let loaded = load_signed_in_config(&path, &store);
     assert!(!loaded.enabled);
     assert_eq!(loaded.endpoint, "http://127.0.0.1:4010");
     assert_eq!(loaded.token, "secret-token");
     let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_store_that_cannot_be_read_counts_as_signed_out() {
+    struct Broken;
+    impl TokenStore for Broken {
+        fn read(&self) -> Result<Option<String>, String> {
+            Err("locked".into())
+        }
+        fn write(&self, _: &str) -> Result<(), String> {
+            Err("locked".into())
+        }
+    }
+    assert_eq!(recall_token(&Broken), "");
+    assert!(remember_token(&Broken, "t").is_err());
 }
 
 #[test]
@@ -346,7 +382,7 @@ fn a_refused_endpoint_is_never_called() {
 struct Server {
     ws: Workspace,
     sessions: HashMap<String, String>,
-    docs: HashMap<String, (u64, String)>,
+    docs: HashMap<String, HashMap<String, (u64, String)>>,
     presence: HashMap<String, u64>,
     synced: Vec<Value>,
 }
@@ -460,21 +496,35 @@ fn route(req: &Req, s: &mut Server) -> (u16, Value) {
             accounts.sort();
             (200, json!({ "accounts": accounts }))
         }
-        ("GET", _, Some(id)) => match s.docs.get(&id) {
-            Some((rev, text)) => (200, json!({ "rev": rev, "body": text })),
-            None => (404, json!({ "rev": 0, "body": "" })),
-        },
+        ("GET", _, Some(id)) => {
+            let fields = s.docs.get(&id).cloned().unwrap_or_default();
+            let out: serde_json::Map<String, Value> = fields
+                .into_iter()
+                .map(|(name, (rev, text))| (name, json!({ "rev": rev, "body": text })))
+                .collect();
+            (200, json!({ "fields": out }))
+        }
         ("PUT", _, Some(id)) => {
             if !allowed(role, Action::EditProject) {
                 return (403, json!({ "error": "role cannot edit" }));
             }
-            let current = s.docs.get(&id).map(|d| d.0).unwrap_or(0);
-            if body["ifRev"].as_u64() != Some(current) {
-                return (409, json!({ "rev": current }));
+            let Some(incoming) = body["fields"].as_object() else {
+                return (400, json!({ "error": "no fields" }));
+            };
+            let doc = s.docs.entry(id).or_default();
+            let mut written = serde_json::Map::new();
+            let mut conflicts = serde_json::Map::new();
+            for (name, change) in incoming {
+                let current = doc.get(name).map(|f| f.0).unwrap_or(0);
+                if change["ifRev"].as_u64() == Some(current) {
+                    let text = change["body"].as_str().unwrap_or_default().to_string();
+                    doc.insert(name.clone(), (current + 1, text));
+                    written.insert(name.clone(), json!(current + 1));
+                } else {
+                    conflicts.insert(name.clone(), json!(current));
+                }
             }
-            let text = body["body"].as_str().unwrap_or_default().to_string();
-            s.docs.insert(id, (current + 1, text));
-            (200, json!({ "rev": current + 1 }))
+            (200, json!({ "written": written, "conflicts": conflicts }))
         }
         _ => (404, json!({})),
     }
@@ -554,12 +604,12 @@ fn a_guest_cannot_push_or_edit_through_the_stand_in() {
         .unwrap();
     let client = client_for(&endpoint, &grant.token);
     assert!(client.push_projects(&projects()).is_err());
-    assert!(client.put_doc("plan", 0, "hello").is_err());
+    assert!(client.put_fields("plan", &[("title", 0, "hello")]).is_err());
     assert!(server.lock().unwrap().synced.is_empty());
 }
 
 #[test]
-fn two_members_co_edit_a_doc_and_a_stale_write_is_refused() {
+fn two_clients_editing_different_fields_at_once_both_survive() {
     let mut ws = team();
     let invite_a = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
     let invite_b = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
@@ -580,21 +630,58 @@ fn two_members_co_edit_a_doc_and_a_stale_write_is_refused() {
             .token,
     );
 
-    assert_eq!(
-        a.put_doc("plan", 0, "first").unwrap(),
-        DocWrite::Written { rev: 1 }
+    // Both saw revision 0 of every field, then both write at once.
+    let ann = a
+        .put_fields("task-7", &[("title", 0, "Ship the pilot")])
+        .unwrap();
+    let ben = b
+        .put_fields("task-7", &[("body", 0, "Needs the stand-in first")])
+        .unwrap();
+    assert_eq!(ann.conflicts.len(), 0);
+    assert_eq!(ben.conflicts.len(), 0);
+
+    let fields = a.get_fields("task-7").unwrap();
+    assert_eq!(fields["title"].1, "Ship the pilot");
+    assert_eq!(fields["body"].1, "Needs the stand-in first");
+}
+
+#[test]
+fn two_clients_editing_the_same_field_do_not_lose_either_write() {
+    let mut ws = team();
+    let invite_a = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
+    let invite_b = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
+    let server = Arc::new(Mutex::new(Server::new(ws)));
+    let endpoint = serve(server);
+    let a = client_for(
+        &endpoint,
+        &client_for(&endpoint, "")
+            .accept(&invite_a, "ann")
+            .unwrap()
+            .token,
     );
-    // Ben saw revision 0 before Ann wrote; his write must not silently overwrite hers.
-    assert_eq!(
-        b.put_doc("plan", 0, "stale").unwrap(),
-        DocWrite::Conflict { rev: 1 }
+    let b = client_for(
+        &endpoint,
+        &client_for(&endpoint, "")
+            .accept(&invite_b, "ben")
+            .unwrap()
+            .token,
     );
-    let (rev, text) = b.get_doc("plan").unwrap();
-    assert_eq!((rev, text.as_str()), (1, "first"));
-    assert_eq!(
-        b.put_doc("plan", rev, "first, then ben").unwrap(),
-        DocWrite::Written { rev: 2 }
-    );
+
+    a.put_fields("task-7", &[("title", 0, "Ann's title")])
+        .unwrap();
+    // Ben saw revision 0 before Ann wrote: his write is reported, not stored over hers.
+    let stale = b
+        .put_fields("task-7", &[("title", 0, "Ben's title")])
+        .unwrap();
+    assert_eq!(stale.conflicts.get("title"), Some(&1));
+    assert!(stale.written.is_empty());
+    assert_eq!(b.get_fields("task-7").unwrap()["title"].1, "Ann's title");
+
+    // Ben retries from the revision he now sees, and his write lands as revision 2.
+    let retry = b
+        .put_fields("task-7", &[("title", 1, "Ben's title, after Ann")])
+        .unwrap();
+    assert_eq!(retry.written.get("title"), Some(&2));
 }
 
 #[test]
@@ -790,4 +877,120 @@ fn status_is_active_only_when_on_with_a_valid_endpoint_and_a_token() {
         token: "t".into(),
     });
     assert!(on_good.enabled && on_good.endpoint_configured && on_good.signed_in && on_good.active);
+}
+
+// --- store wiring: the app's own project document goes out when the switch is on ---------------
+
+fn stored_projects() -> Value {
+    json!({ "projects": [
+        { "id": "shared-1", "name": "Shared board", "shared": true, "folder": "/opt/local-only/projects/shared-1",
+          "shortName": "Shared", "iconShape": "folder", "tasks": ["ship the pilot"] },
+        { "id": "private-1", "name": "Private", "shared": false, "folder": "/opt/local-only/projects/private-1",
+          "secret": "PRIVATE-SECRET-TEXT" },
+        { "id": "unmarked", "name": "No flag at all", "secret": "PRIVATE-SECRET-TEXT" },
+    ]})
+}
+
+#[test]
+fn only_shared_projects_from_the_stored_document_are_kept_and_the_local_folder_is_stripped() {
+    let shared = shared_projects_from_doc(&stored_projects());
+    assert_eq!(shared.len(), 1);
+    assert_eq!(shared[0].id, "shared-1");
+    let body = shared[0].payload.to_string();
+    assert!(body.contains("ship the pilot"));
+    assert!(
+        !body.contains("/opt/local-only"),
+        "a local folder path left the machine: {body}"
+    );
+    // The keys are gone; the value "folder" in iconShape is the project's own and stays.
+    assert!(!body.contains("\"folder\":"));
+    assert!(!body.contains("\"shared\":"));
+}
+
+#[test]
+fn a_document_with_nothing_shared_or_no_projects_sends_nothing() {
+    assert!(shared_projects_from_doc(&json!({ "projects": [] })).is_empty());
+    assert!(shared_projects_from_doc(&json!({})).is_empty());
+    assert!(shared_projects_from_doc(&Value::Null).is_empty());
+}
+
+/// A token store that fails the test if anything reads it: when the switch is off, the Keychain is never touched.
+struct NeverRead;
+impl TokenStore for NeverRead {
+    fn read(&self) -> Result<Option<String>, String> {
+        panic!("the token store was read while team workspaces are off");
+    }
+    fn write(&self, _: &str) -> Result<(), String> {
+        panic!("the token store was written while team workspaces are off");
+    }
+}
+
+#[test]
+fn a_change_with_the_switch_off_reads_no_token_and_opens_no_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    listener.set_nonblocking(true).unwrap();
+    let dir = std::env::temp_dir().join(format!("tw-wire-off-{}", Uuid::new_v4()));
+    let path = dir.join(CONFIG_FILE);
+    // The address is saved, but the switch is off: nothing is read or sent.
+    save_config(
+        &path,
+        false,
+        &format!("http://{}", listener.local_addr().unwrap()),
+    )
+    .unwrap();
+    assert_eq!(
+        sync_on_write(&path, &NeverRead, &stored_projects()).unwrap(),
+        SyncOutcome::Disabled
+    );
+    assert_no_connection(&listener);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_change_with_the_switch_on_sends_only_the_shared_projects_to_the_stand_in() {
+    let mut ws = team();
+    let invite = create_invitation(&mut ws, "owner", Role::Member, NOW).unwrap();
+    let server = Arc::new(Mutex::new(Server::new(ws)));
+    let endpoint = serve(server.clone());
+    let grant = client_for(&endpoint, "").accept(&invite, "ann").unwrap();
+
+    let dir = std::env::temp_dir().join(format!("tw-wire-on-{}", Uuid::new_v4()));
+    let path = dir.join(CONFIG_FILE);
+    save_config(&path, true, &endpoint).unwrap();
+    let store = MemoryStore::default();
+    remember_token(&store, &grant.token).unwrap();
+
+    assert_eq!(
+        sync_on_write(&path, &store, &stored_projects()).unwrap(),
+        SyncOutcome::Sent { projects: 1 }
+    );
+    let guard = server.lock().unwrap();
+    assert_eq!(guard.synced.len(), 1);
+    let body = guard.synced[0].to_string();
+    assert!(body.contains("shared-1"));
+    assert!(
+        !body.contains("PRIVATE-SECRET-TEXT"),
+        "private text left the machine: {body}"
+    );
+    assert!(
+        !body.contains("/opt/local-only"),
+        "a local folder left the machine: {body}"
+    );
+    drop(guard);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn the_status_shows_the_saved_address_and_never_the_token() {
+    let config = Config {
+        enabled: true,
+        endpoint: "https://team.example.test/v1".into(),
+        token: "device-secret-token".into(),
+    };
+    let status = status_for(&config);
+    assert_eq!(status.endpoint, "https://team.example.test/v1");
+    assert!(status.signed_in && status.active);
+    let shown = serde_json::to_string(&status).unwrap();
+    assert!(shown.contains("\"endpoint\":\"https://team.example.test/v1\""));
+    assert!(!shown.contains("device-secret-token"));
 }

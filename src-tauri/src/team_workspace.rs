@@ -9,8 +9,10 @@
 //! - Roles and invitations are checked here, in one place, before any change. The shared machine runs the same rules;
 //!   the loopback stand-in in the tests is the fixture for that contract.
 //!
-//! Not built here: the real hosted server, live editing with Yjs (documents use revision checks instead), and wiring
-//! into the task and doc stores. See docs/hivra/work/WP-80-team-workspaces.md.
+//! Wired to the Hub's stored projects: every change to the `projects` document (`local_hub_write`) runs
+//! `sync_after_change`, which sends the shared projects when the switch is on. Not built here: the real hosted server,
+//! live editing with Yjs (documents use revision checks instead), and task and doc stores. See
+//! docs/hivra/work/WP-80-team-workspaces.md.
 //!
 //! The functions the rest of the app will call are only reached by tests until that wiring lands, so they are allowed
 //! to be unused outside tests for now.
@@ -242,6 +244,8 @@ pub fn remove_member(ws: &mut Workspace, actor: &str, target: &str) -> Result<()
 pub struct Config {
     pub enabled: bool,
     pub endpoint: String,
+    /// Never written to the settings file. It lives in the Keychain and is filled in at read time.
+    #[serde(skip)]
     pub token: String,
 }
 
@@ -276,11 +280,42 @@ pub fn save_config(path: &Path, enabled: bool, endpoint: &str) -> Result<Config,
     Ok(config)
 }
 
-/// Keeps the workspace token that the shared machine issued at accept time.
-pub fn store_token(path: &Path, token: &str) -> Result<(), String> {
+/// Where this device's workspace token lives: the Keychain in the app, a memory double in tests.
+pub trait TokenStore {
+    fn read(&self) -> Result<Option<String>, String>;
+    fn write(&self, token: &str) -> Result<(), String>;
+}
+
+/// The macOS Keychain (or the platform store). A dev copy's service is scoped to `monocode-hub-dev:` by hub_keychain.
+pub struct Keychain;
+
+pub const TOKEN_SERVICE: &str = "monocode-hub:team-workspace";
+pub const TOKEN_ACCOUNT: &str = "device-token";
+
+impl TokenStore for Keychain {
+    fn read(&self) -> Result<Option<String>, String> {
+        crate::hub_keychain::read(TOKEN_SERVICE, TOKEN_ACCOUNT)
+    }
+    fn write(&self, token: &str) -> Result<(), String> {
+        crate::hub_keychain::store(TOKEN_SERVICE, TOKEN_ACCOUNT, token)
+    }
+}
+
+/// Keeps the token the shared machine issued at accept time, in the store and never in the settings file.
+pub fn remember_token(store: &dyn TokenStore, token: &str) -> Result<(), String> {
+    store.write(token)
+}
+
+/// The token this device holds, or empty. A store that cannot be read counts as signed out, never as signed in.
+pub fn recall_token(store: &dyn TokenStore) -> String {
+    store.read().ok().flatten().unwrap_or_default()
+}
+
+/// The settings with the device token filled in from the store.
+pub fn load_signed_in_config(path: &Path, store: &dyn TokenStore) -> Config {
     let mut config = load_config(path);
-    config.token = token.to_string();
-    write_config(path, &config)
+    config.token = recall_token(store);
+    config
 }
 
 /// One local project. Only `shared` projects are ever sent; `payload` is whatever the project holds.
@@ -359,11 +394,12 @@ pub enum SyncOutcome {
     Sent { projects: usize },
 }
 
-/// A document write. A stale write comes back as `Conflict` with the revision the server holds now.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DocWrite {
-    Written { rev: u64 },
-    Conflict { rev: u64 },
+/// The outcome of a field write. Each field is merged on its own: a field whose revision is still current is written, and
+/// a field someone else changed first is reported with the revision the server holds, so nothing is silently lost.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct FieldWrite {
+    pub written: std::collections::HashMap<String, u64>,
+    pub conflicts: std::collections::HashMap<String, u64>,
 }
 
 /// What the shared machine grants when an invitation is accepted.
@@ -457,31 +493,51 @@ impl Client {
         Self::ok(status, body, "sync").map(|_| count)
     }
 
-    /// Writes a document if the revision the writer saw is still current. Otherwise reports the current revision.
-    pub fn put_doc(&self, id: &str, if_rev: u64, text: &str) -> Result<DocWrite, String> {
+    /// Writes fields of a document. Each change is `(field, revision the writer saw, text)`.
+    pub fn put_fields(
+        &self,
+        id: &str,
+        changes: &[(&str, u64, &str)],
+    ) -> Result<FieldWrite, String> {
+        let fields: serde_json::Map<String, Value> = changes
+            .iter()
+            .map(|(name, if_rev, text)| {
+                (name.to_string(), json!({ "ifRev": if_rev, "body": text }))
+            })
+            .collect();
         let (status, body) = self.call(
             "PUT",
             &format!("/v1/docs/{id}"),
-            Some(&json!({ "ifRev": if_rev, "body": text })),
+            Some(&json!({ "fields": fields })),
         )?;
-        if status == 409 {
-            return Ok(DocWrite::Conflict {
-                rev: body["rev"].as_u64().unwrap_or(0),
-            });
-        }
         let body = Self::ok(status, body, "saving the doc")?;
-        Ok(DocWrite::Written {
-            rev: body["rev"].as_u64().unwrap_or(0),
-        })
+        serde_json::from_value(body)
+            .map_err(|e| format!("the shared server sent an unexpected reply: {e}"))
     }
 
-    pub fn get_doc(&self, id: &str) -> Result<(u64, String), String> {
+    /// Reads every field of a document as `field -> (revision, text)`.
+    pub fn get_fields(
+        &self,
+        id: &str,
+    ) -> Result<std::collections::HashMap<String, (u64, String)>, String> {
         let (status, body) = self.call("GET", &format!("/v1/docs/{id}"), None)?;
         let body = Self::ok(status, body, "reading the doc")?;
-        Ok((
-            body["rev"].as_u64().unwrap_or(0),
-            body["body"].as_str().unwrap_or_default().to_string(),
-        ))
+        Ok(body["fields"]
+            .as_object()
+            .map(|f| {
+                f.iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            (
+                                v["rev"].as_u64().unwrap_or(0),
+                                v["body"].as_str().unwrap_or_default().to_string(),
+                            ),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default())
     }
 
     /// Says this person is here. The server takes the name from the token, not from the request.
@@ -523,11 +579,70 @@ pub fn sync_outbound(config: &Config, projects: &[LocalProject]) -> Result<SyncO
     Ok(SyncOutcome::Sent { projects: sent })
 }
 
+/// The shared projects in the app's stored `projects` document, ready for an outbound payload. Only a record with
+/// `shared: true` goes out, and its local `folder` (a path on this machine) and the `shared` flag are left out.
+pub fn shared_projects_from_doc(doc: &Value) -> Vec<LocalProject> {
+    doc["projects"]
+        .as_array()
+        .map(|list| {
+            list.iter()
+                .filter(|p| p["shared"].as_bool() == Some(true))
+                .filter_map(|p| {
+                    let id = p["id"].as_str()?.to_string();
+                    let mut payload = p.clone();
+                    if let Some(record) = payload.as_object_mut() {
+                        record.remove("folder");
+                        record.remove("shared");
+                    }
+                    Some(LocalProject {
+                        id,
+                        shared: true,
+                        payload,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// What a change to the stored projects does. The switch is read first: with it off this returns before the token store
+/// is touched, so the Keychain is never read for nothing. With it on, the token is read and the shared projects go out.
+pub fn sync_on_write(
+    path: &Path,
+    store: &dyn TokenStore,
+    doc: &Value,
+) -> Result<SyncOutcome, String> {
+    let config = load_config(path);
+    if !config.enabled {
+        return Ok(SyncOutcome::Disabled);
+    }
+    let config = Config {
+        token: recall_token(store),
+        ..config
+    };
+    sync_outbound(&config, &shared_projects_from_doc(doc))
+}
+
+/// Called after the app keeps a new `projects` document. The sync runs on a worker thread, and a failure is logged only:
+/// the local store stays the source of truth, and the next change tries again.
+pub fn sync_after_change<R: tauri::Runtime>(app: &tauri::AppHandle<R>, doc: Value) {
+    let Ok(path) = config_path(app) else {
+        return;
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        if let Err(reason) = sync_on_write(&path, &Keychain, &doc) {
+            eprintln!("team workspace: the change did not sync: {reason}");
+        }
+    });
+}
+
 /// What the settings screen may show. Reading it makes no network call and never reveals the token.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Status {
     pub enabled: bool,
+    /// The saved address. Not a secret, so the settings screen shows it and keeps it when the switch is turned off.
+    pub endpoint: String,
     pub endpoint_configured: bool,
     /// This device holds a workspace token from an accepted invitation.
     pub signed_in: bool,
@@ -540,6 +655,7 @@ pub fn status_for(config: &Config) -> Status {
     let signed_in = !config.token.is_empty();
     Status {
         enabled: config.enabled,
+        endpoint: config.endpoint.trim().to_string(),
         endpoint_configured,
         signed_in,
         active: config.enabled
@@ -549,7 +665,7 @@ pub fn status_for(config: &Config) -> Status {
     }
 }
 
-fn config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+fn config_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> Result<std::path::PathBuf, String> {
     Ok(app
         .path()
         .app_data_dir()
@@ -559,7 +675,10 @@ fn config_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
 
 #[tauri::command]
 pub fn team_workspace_status(app: tauri::AppHandle) -> Result<Status, String> {
-    Ok(status_for(&load_config(&config_path(&app)?)))
+    Ok(status_for(&load_signed_in_config(
+        &config_path(&app)?,
+        &Keychain,
+    )))
 }
 
 /// Saves the switch and endpoint that Ash sets in Settings. Off writes no network call.
@@ -585,6 +704,6 @@ pub fn team_workspace_accept(
     let client =
         Client::from_config(&config)?.ok_or("team workspaces are off; turn them on first")?;
     let grant = client.accept(invitation.trim(), account.trim())?;
-    store_token(&path, &grant.token)?;
-    Ok(status_for(&load_config(&path)))
+    remember_token(&Keychain, &grant.token)?;
+    Ok(status_for(&load_signed_in_config(&path, &Keychain)))
 }
