@@ -9920,6 +9920,69 @@ mod tests {
         assert!(git_locate_file(&chat.join("a\\b\\c").join("..").join("..").join("x")).is_err());
     }
 
+    /// Review of PR #201 round 8 (head f09194d45), HIGH-B, red first. Claude Code's Write opens `p4(file_path)`, which is
+    /// path.normalize: `<chat>/L/../S/x` is written at `<chat>/S/x`, and the kernel then follows S. The lookup follows L
+    /// first and then climbs (the kernel's reading of the raw words), so it places the Write at `<chat>/deep/S/x`, inside.
+    #[cfg(unix)]
+    #[test]
+    fn review_r8_locate_places_a_write_where_the_write_tool_opens_it() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("review-r8-locate");
+        let chat = home.0.join("app");
+        let other = home.0.join("other");
+        std::fs::create_dir_all(chat.join("deep").join("d")).unwrap();
+        std::fs::create_dir_all(chat.join("deep").join("S")).unwrap();
+        std::fs::create_dir(&other).unwrap();
+        std::fs::write(other.join("package.json"), "{}\n").unwrap();
+        symlink("deep/d", chat.join("L")).unwrap();
+        symlink("../other", chat.join("S")).unwrap();
+        assert!(init_git_commit(
+            &chat,
+            &[("deep/S/package.json", "{}\n"), ("deep/d/keep", "\n")]
+        ));
+        let words = chat.join("L").join("..").join("S").join("package.json");
+        // Where the Write lands: the words normalized (Node's path.normalize), then the kernel.
+        let lands = std::fs::canonicalize(chat.join("S").join("package.json")).unwrap();
+        assert_eq!(
+            lands,
+            std::fs::canonicalize(other.join("package.json")).unwrap()
+        );
+        let root = std::fs::canonicalize(&chat).unwrap();
+        if let Ok(Some(place)) = git_locate_file(&words) {
+            assert_ne!(
+                std::fs::canonicalize(&place.root).unwrap(),
+                root,
+                "placed in the chat at {}, but the Write lands at {}",
+                place.relative,
+                lands.display()
+            );
+        }
+    }
+
+    /// Review of PR #201 round 8 (head f09194d45), MED (regression of round 8's lexical_place), red first. Outside git a
+    /// shell word is placed by canonical_place; `cat cache/../config` is opened by the kernel as written, through the link.
+    #[cfg(unix)]
+    #[test]
+    fn review_r8_canonical_place_of_a_word_follows_a_link_before_its_climb() {
+        use std::os::unix::fs::symlink;
+        let home = tmp("review-r8-canonical");
+        let chat = home.0.join("Notes").join("research");
+        let kube = home.0.join(".kube");
+        std::fs::create_dir_all(&chat).unwrap();
+        std::fs::create_dir_all(kube.join("cache")).unwrap();
+        std::fs::write(kube.join("config"), "token: x\n").unwrap();
+        symlink(kube.join("cache"), chat.join("cache")).unwrap();
+        let word = chat.join("cache").join("..").join("config");
+        let read = std::fs::canonicalize(&word).unwrap();
+        assert_eq!(read, std::fs::canonicalize(kube.join("config")).unwrap());
+        let placed = canonical_place(&word);
+        assert!(
+            placed.is_none() || placed == Some(path_to_js(&read)),
+            "placed at {placed:?}, but cat reads {}",
+            read.display()
+        );
+    }
+
     #[test]
     fn locate_files_distinguishes_repos_worktrees_and_deleted_parents() {
         let home = tmp("locate-files");
