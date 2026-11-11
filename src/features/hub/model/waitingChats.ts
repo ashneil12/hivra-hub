@@ -37,6 +37,7 @@ import { asksHowThingsStand } from "./statusAsk";
 import { leadFor } from "./hubLeads";
 import { forUser, forYou } from "./userName";
 import { questionVeto, UNREADABLE_REASON } from "../../autopilot/model/reviewerRules";
+import { captainDecide, type CaptainRule, type NamedAnswer } from "../../chief/model/captain";
 
 /** One chat waiting on Ash, as stored. */
 export type WaitingEntry = ChatQuestion & {
@@ -452,6 +453,24 @@ async function answer(
  * "Take the pick": answer with the agent's recommended answer. Autopilot calls this with `by: "autopilot"`; it is
  * refused on a red line, which always waits for Ash.
  */
+export type CaptainDoorContext = {
+  decisionKey?: string;
+  rules?: readonly CaptainRule[];
+  standing?: NamedAnswer | null;
+  learned?: NamedAnswer | null;
+  moneyOverLimit?: boolean;
+  turns?: readonly number[];
+  pendingSince?: number;
+  now?: number;
+};
+
+/** The app, or a test, supplies standing answers and owner keys. Absent means the pick stands. */
+let captainDoor: ((chat: WaitingChat) => CaptainDoorContext) | null = null;
+
+export function setCaptainDoor(next: typeof captainDoor): void {
+  captainDoor = next;
+}
+
 export async function takePick(sessionId: string, options: { by?: "ash" | "autopilot" } = {}): Promise<TakeResult> {
   const chat = findWaitingChat(sessionId);
   if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
@@ -461,6 +480,41 @@ export async function takePick(sessionId: string, options: { by?: "ash" | "autop
   // it answers can be the action ("Send it to Priya?"), and so can any option the card points back to.
   if (options.by === "autopilot" && chatQuestionVeto(chat))
     return { ok: false, reason: forYou("That one sends, deletes, moves money, publishes or changes access, so it waits for Ash.") };
+  // WP-215: the captain answers inside this door, after the red checks above. Ash himself does not go through it.
+  if (options.by === "autopilot") {
+    const extra = captainDoor?.(chat) ?? {};
+    const decided = captainDecide({
+      project: chat.projectId ?? "",
+      monoId: "chief",
+      decisionKey: extra.decisionKey,
+      question: chat.question,
+      options: chat.options,
+      recommendation: chat.pick,
+      confident: true,
+      rules: extra.rules,
+      standing: extra.standing ?? null,
+      learned: extra.learned ?? null,
+      moneyOverLimit: extra.moneyOverLimit === true,
+      switchOn: true,
+      now: extra.now ?? Date.now(),
+      turns: extra.turns,
+      pendingSince: extra.pendingSince,
+    });
+    if (decided.kind === "ask-owner") {
+      return { ok: false, reason: forYou(decided.line ?? "This one waits for the owner.") };
+    }
+    if (decided.kind === "waiting") {
+      return { ok: false, reason: forYou("The captain has not answered yet. It passes up if it is still open in 10 minutes.") };
+    }
+    if (decided.answer !== chat.pick) {
+      const prompt = host?.liveQuestion(sessionId);
+      const live = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, decided.answer) : undefined;
+      return answer(chat, live && { reply: live, words: decided.answer }, wordsMessage(chat, decided.answer), {
+        words: decided.answer,
+        by: "pick",
+      });
+    }
+  }
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
   return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat), { words: chat.pick, by: "pick" });

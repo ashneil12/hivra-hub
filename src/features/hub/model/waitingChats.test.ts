@@ -19,6 +19,7 @@ import {
   pruneWaitingChats,
   resetWaitingChats,
   setWaitingChatsHost,
+  setCaptainDoor,
   setWorkerQuestionRouter,
   subscribeWaitingChats,
   takePick,
@@ -61,6 +62,7 @@ beforeEach(() => {
   localStorage.clear();
   localStorage.setItem("monocode:hub-team-pack", "ash"); // Ash's install: the app's words name him (userName.ts)
   resetWaitingChats();
+  setCaptainDoor(null);
   setHubDataSource({ ...mockHubData, listProjects: () => PROJECTS });
 });
 
@@ -357,6 +359,20 @@ describe("hooks for Autopilot and H4", () => {
     expect(chatQuestionVeto({ ...chat, rows: [{ question: "Rename the file?", redLine: false }] })).toBeNull();
     // And `takePick` by autopilot says so plainly: a hold, not a rejection.
     expect(await takePick("rows", { by: "autopilot" })).toMatchObject({ ok: true });
+  });
+
+  it("a standing answer is sent instead of the pick, and an owner key is not taken", async () => {
+    const { calls } = host();
+    setCaptainDoor((chat) =>
+      chat.sessionId === "own" ? { decisionKey: "secret/token" } : { standing: { answer: "Example: keep it", label: "merge on green" } },
+    );
+    noteChats([
+      markerChat("stand", "Needs Ash: Example: keep the gate?\nMy pick: Example: change it"),
+      markerChat("own", "Needs Ash: Example: which name?\nMy pick: Example: keep it"),
+    ]);
+    expect(await takePick("stand", { by: "autopilot" })).toMatchObject({ ok: true, sent: "Example: keep it" });
+    expect(await takePick("own", { by: "autopilot" })).toMatchObject({ ok: false });
+    expect(calls.send.map(([id]) => id)).toEqual(["stand"]);
   });
 
   it("a worker's question H4 routes to its Lead is not Ash's", () => {

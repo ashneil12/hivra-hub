@@ -232,6 +232,70 @@ describe("autopilot.decide", () => {
     await expect(call(worker, "autopilot.decide", { question: "x", recommendation: "y", red: "maybe" }, s)).rejects.toThrow("red must be one of");
   });
 
+  it("a standing answer beats a confident pick, and a person-only key or money past the limit is held", async () => {
+    const s = setup();
+    await on(s, ["*"]);
+    s.deps.captainContext = ({ key }) => {
+      if (key === "secret/token") return {};
+      if (key === "spend") return { moneyOverLimit: true, standing: { answer: "Example: keep it", label: "merge on green" } };
+      return {
+        rules: [{ when: "named rule", answer: "Example: change it" }],
+        standing: { answer: "Example: keep it", label: "merge on green" },
+      };
+    };
+    const stood = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      {
+        question: "Example: keep the gate?",
+        recommendation: "Example: change it",
+        why: "smaller reviews",
+        options: ["Example: keep it", "Example: change it"],
+      },
+      s,
+      "stood",
+    );
+    expect(stood).toMatchObject({
+      decision: "taken",
+      act: "proceed",
+      answer: "Example: keep it",
+      answeredBy: "captain:hivra-lead",
+      answerReason: "standing answer: merge on green",
+    });
+    const ruled = await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      {
+        question: "Example: the named rule applies?",
+        recommendation: "Example: keep it",
+        options: ["Example: keep it", "Example: change it"],
+      },
+      s,
+      "ruled",
+    );
+    expect(ruled).toMatchObject({ decision: "taken", answer: "Example: change it", answerReason: "rule: named rule" });
+    const owner = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Example: which name?", recommendation: "Example: keep it", key: "secret/token" },
+      s,
+      "owner",
+    )) as Record<string, unknown>;
+    expect(owner).toMatchObject({ decision: "held", act: "ask", red: null });
+    expect(owner.answeredBy).toBeUndefined();
+    expect(s.holds.has("hivra-chat")).toBe(false);
+    const money = (await call(
+      chat("hivra-chat"),
+      "autopilot.decide",
+      { question: "Example: keep the gate?", recommendation: "Example: keep it", key: "spend" },
+      s,
+      "money",
+    )) as Record<string, unknown>;
+    expect(money).toMatchObject({ decision: "held", act: "ask" });
+    expect(money.answeredBy).toBeUndefined();
+    expect(String(money.reason)).toContain("limit");
+  });
+
   it("status says what is on, for whom", async () => {
     const s = setup();
     await on(s, ["hivra"]);

@@ -24,13 +24,14 @@ import {
   type AutopilotStatus,
 } from "./autopilot";
 import { chatProject, decideCall, type ProjectRef } from "./decide";
+import { captainDecide, type CaptainRule, type NamedAnswer } from "../../chief/model/captain";
 import { formatUntil, parseUntil } from "./endTime";
 import { isRedCategory, RED_LIST, redLabel, type RedCategory } from "./redList";
 import { forUser } from "../../hub/model/userName";
 
 export const AUTOPILOT_FIELDS: [string, readonly string[]][] = [
   ["autopilot.status", ["project"]],
-  ["autopilot.decide", ["question", "recommendation", "why", "options", "red", "project"]],
+  ["autopilot.decide", ["question", "recommendation", "why", "options", "red", "project", "key"]],
   ["autopilot.set", ["until", "projects", "ashSaid"]],
   ["autopilot.off", ["projects", "ashSaid"]],
 ];
@@ -47,6 +48,20 @@ export type AutopilotAppDeps = {
   monoName(monoId: string): string;
   isLeadership(monoId: string): boolean;
   leadProject(monoId: string): string | undefined;
+  /**
+   * WP-215: rules, a standing answer and the spend flag for this project. Absent means none of them,
+   * so a confident recommendation is still taken.
+   */
+  captainContext?(input: { project: string | null; question: string; key?: string }): {
+    rules?: readonly CaptainRule[];
+    standing?: NamedAnswer | null;
+    learned?: NamedAnswer | null;
+    moneyOverLimit?: boolean;
+    turns?: readonly number[];
+    pendingSince?: number;
+    department?: string;
+    decisionKey?: string;
+  };
 };
 
 /** The minimum of agentApp's host this needs. */
@@ -395,6 +410,44 @@ export async function handleAutopilotApp(
             : forUser`This sends, deletes, moves money, publishes or changes access, so autopilot never takes it on its own. Ask Ash in your chat with your recommendation; it waits for him in Needs you. Carry on with other work meanwhile.`,
         };
       }
+      // WP-215: the captain answers inside this door. Off already returned. A red call already returned held.
+      const key = text(input.key, "key", 200, false);
+      const ctx = deps.captainContext?.({ project, question, key }) ?? {};
+      const captain = captainDecide({
+        project: project ?? "",
+        monoId: mono?.id ?? "chief",
+        decisionKey: key ?? ctx.decisionKey,
+        question,
+        options: Array.isArray(input.options) ? (input.options as string[]) : undefined,
+        recommendation,
+        confident: true,
+        why,
+        department: ctx.department,
+        rules: ctx.rules,
+        standing: ctx.standing ?? null,
+        learned: ctx.learned ?? null,
+        moneyOverLimit: ctx.moneyOverLimit === true,
+        switchOn: true,
+        now,
+        turns: ctx.turns,
+        pendingSince: ctx.pendingSince,
+      });
+      if (captain.kind === "ask-owner") {
+        const logged = await backend.log({ ...base, kind: "decision", outcome: "held", red: null });
+        return {
+          autopilot: "on",
+          until: new Date(verdict.until).toISOString(),
+          untilLabel,
+          decision: "held",
+          act: "ask",
+          red: null,
+          reason: captain.reason,
+          ...(captain.line ? { suggest: captain.line } : {}),
+          ...(logged ? { logged: logged.id } : {}),
+          note: captain.line ? `${captain.line} ${captain.reason}` : captain.reason,
+        };
+      }
+      const answer = captain.kind === "answer" ? captain.answer : verdict.answer;
       const logged = await backend.log({ ...base, kind: "decision", outcome: "taken" });
       return {
         autopilot: "on",
@@ -402,7 +455,8 @@ export async function handleAutopilotApp(
         untilLabel,
         decision: "taken",
         act: "proceed",
-        answer: verdict.answer,
+        answer,
+        ...(captain.kind === "answer" ? { answeredBy: captain.answeredBy, answerReason: captain.reason } : {}),
         ...(logged ? { logged: logged.id } : {}),
         note: forUser`Ash is away until ${untilLabel}. Go with your recommendation and don't ask him; this call is in the Autopilot log for him to review.`,
       };
