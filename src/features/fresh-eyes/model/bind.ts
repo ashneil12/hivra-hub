@@ -21,7 +21,7 @@ export type FreshEyesHooks = {
   stop?(sessionId: string): void;
   remove?(sessionId: string): void;
   /** WP-141 round 6: the crew gate a reviewer passes before its session starts. Throws with the reason to refuse it. */
-  crewGate?(session: Session, folder: string): Promise<void> | void;
+  crewGate?(session: Session, folder: string, parentSession?: string): Promise<void> | void;
   cwd: string | (() => string);
   /** How long one reviewer has to answer before it is stopped and counted as timed out. */
   timeoutMs?: number;
@@ -74,7 +74,12 @@ export function portFromHooks(hooks: FreshEyesHooks): ReviewerPort {
   return {
     async ask(turn) {
       const session = sessionFor(turn, folder(hooks.cwd));
-      if (hooks.crewGate) await hooks.crewGate(session, turn.folder ?? folder(hooks.cwd));
+      if (hooks.crewGate) {
+        const reviewed = turn.folder ?? folder(hooks.cwd);
+        const parent = turn.parentSession?.trim();
+        if (parent) await hooks.crewGate(session, reviewed, parent);
+        else await hooks.crewGate(session, reviewed);
+      }
       hooks.add(session);
       try {
         return await new Promise<string>((resolve, reject) => {

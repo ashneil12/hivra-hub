@@ -35,6 +35,21 @@ describe("fresh-eyes setting", () => {
 });
 
 describe("fresh-eyes reviewers", () => {
+  it("copies the chat that asked onto each reviewer", async () => {
+    const reviewers = port({});
+    const run = await runReview({
+      plan: PLAN,
+      reading: [],
+      count: 1,
+      choice: { model: null, effort: null },
+      port: reviewers,
+      folder: "/work/reviewed",
+      parentSession: " chat-1 ",
+    });
+    expect(run.calls.length).toBeGreaterThan(0);
+    expect(run.calls.every((call) => call.parentSession === "chat-1" && call.folder === "/work/reviewed")).toBe(true);
+  });
+
   it("sends an empty history and the cheap model, not the lead model", async () => {
     const reviewers = port({
       "design-critic": NO_CONCERNS,
