@@ -1013,6 +1013,7 @@ mod tests {
     }
 
     /// Allow `id` the way the window does: the fingerprint it displayed is sent back with the allow.
+    #[cfg(unix)]
     fn approve(dir: &Path, id: &str, path_value: &str) -> Result<Stored, String> {
         let stored = read_stored(dir)?;
         let shown = view(&stored, path_value)["fingerprints"][id]
@@ -1300,6 +1301,7 @@ mod tests {
         assert_eq!(run.args, vec!["acp".to_string(), "--flag".to_string()]);
     }
 
+    #[cfg(unix)]
     fn write_doc(dir: &Path, doc: &Value) {
         std::fs::write(
             file_path(dir),
