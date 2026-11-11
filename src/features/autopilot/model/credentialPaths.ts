@@ -240,7 +240,8 @@ function resolvePath(folded: string): Resolved {
   }
   const tilde = rest === "~" || rest.startsWith("~/");
   const anchored = rooted || tilde;
-  const parts = rest.split(/[/:]/);
+  // Round 5, H1: a colon is a character of a name (`a:b` is one folder), so only "/" separates levels.
+  const parts = rest.split("/");
   if (tilde) parts.shift();
   const segments: string[] = tilde ? ["users", "~"] : [];
   let climbs = false;
@@ -295,11 +296,13 @@ function credentialSegments(parts: readonly string[]): boolean {
  */
 export function credentialPath(path: string, shortNames = true): boolean {
   const folded = fold(path);
-  const written = folded.split(/[/:]/).filter(Boolean);
+  const written = folded.split("/").filter(Boolean);
   if (!written.length) return false;
+  // Round 5, H1: a colon splits a name only for the names and places it may hold (`HEAD:.env`), never for a climb.
+  const named = written.flatMap((part) => part.split(":")).filter(Boolean);
   // A Windows 8.3 short name in any segment hides the real name: held (round 3, item 2; round 4, item 5).
-  if (shortNames && written.some((part) => SHORT_NAME.test(part))) return true;
-  return credentialSegments(written) || credentialSegments(resolvePath(folded).segments);
+  if (shortNames && named.some((part) => SHORT_NAME.test(part))) return true;
+  return credentialSegments(named) || credentialSegments(resolvePath(folded).segments);
 }
 
 /**
@@ -431,7 +434,7 @@ function homeShellParts(parts: readonly string[]): boolean {
 }
 
 /** The chat's folder as folded absolute parts, or null when there is none. */
-function foldedFolder(folder: string | undefined): string[] | null {
+export function foldedFolder(folder: string | undefined): string[] | null {
   if (typeof folder !== "string" || !folder) return null;
   const resolved = resolvePath(fold(folder));
   return resolved.rooted ? resolved.segments : null;
@@ -502,6 +505,8 @@ export function credentialInPaths(paths: unknown, folder?: string): string | nul
   if (!Array.isArray(paths)) return "(a list of files it can't read)";
   for (const path of paths) {
     if (typeof path !== "string") return "(a file name that isn't text)";
+    // Round 5, H1: a colon after the drive is not a Windows path; it can only be a name that climbs out, so it is held.
+    if (path.replace(/^[a-zA-Z]:(?=[\\/]|$)/, "").includes(":")) return path;
     if (path.includes("\0") || homeShellFile(path, folder) || credentialPath(path) || dotOutside(path, folder)) return path;
   }
   return null;
@@ -638,6 +643,27 @@ function folderParts(folder: string | undefined): string[] | null {
   return parts && parts.length >= 3 ? parts : null;
 }
 
+/** Where a walk starts: under the chat's folder for an approval (`base`), or as written for a timer (no folder). */
+function startOf(arg: string, base: readonly string[] | null): { segments: string[]; rooted: boolean } {
+  const folded = fold(arg);
+  const anchored = folded.startsWith("/") || folded === "~" || folded.startsWith("~/") || /^[a-z]:/.test(folded);
+  const resolved = resolvePath(base && !anchored ? `/${base.join("/")}/${folded}` : folded);
+  return { segments: resolved.segments, rooted: resolved.rooted };
+}
+
+/**
+ * Whether a walk's start is at or above a credential place: its last segments are the first segments of a place, so the
+ * place lies below it (`Library`, `AppData/Roaming`, `/etc`). The filesystem root (rooted, no segments) is above all.
+ */
+function startsAtPlaceParent({ segments, rooted }: { segments: string[]; rooted: boolean }): boolean {
+  if (rooted && !segments.length) return true;
+  for (let k = 1; k <= segments.length; k++) {
+    const tail = segments.slice(segments.length - k);
+    if (PLACES.some((place) => place.length > k && tail.every((part, i) => part === place[i]))) return true;
+  }
+  return false;
+}
+
 /** A brace list with a slash or a climb inside it: `{/etc,src}`, `{../..,src}`, `src/{a,../../etc}` (round 3, item 5). */
 const BRACE_OUTSIDE = /\{[^}]*(\/|\.\.)[^}]*\}/;
 
@@ -649,7 +675,7 @@ const BRACE_OUTSIDE = /\{[^}]*(\/|\.\.)[^}]*\}/;
  * starts. When no folder is known, any other walk still has to start at a relative place: the shell's working folder
  * is the chat's own, but nothing absolute can be shown to be inside it.
  */
-export function walkHeld(words: readonly string[], folder: string | undefined): boolean {
+export function walkHeld(words: readonly string[], folder: string | undefined, timer = false): boolean {
   if (!words.length) return true;
   const head = words[0];
   const args = words.slice(1);
@@ -658,6 +684,11 @@ export function walkHeld(words: readonly string[], folder: string | undefined): 
   // zsh expands it before the command runs (round 3, item 5).
   if (args.some((arg) => BRACE_OUTSIDE.test(arg))) return true;
   if (!walksFolders(head, args)) return false;
+  // Round 5, H2: a walk from a chat whose folder is home or shallower (or none) is not known to stay in a project, so an
+  // approval holds it. A timer has no chat folder; its words are judged alone.
+  const base = foldedFolder(folder);
+  const deep = base !== null && base.length >= MIN_PROJECT_DEPTH;
+  if (!timer && !deep) return true;
   const root = folderParts(folder);
   // A search's pattern is not a path: its first bare word, unless a -e or -f option names the pattern (round 4; the
   // same rule credentialInWords and the Rust timer check read). A Grep or Glob call's paths are walked from, so
@@ -672,6 +703,8 @@ export function walkHeld(words: readonly string[], folder: string | undefined): 
     }
     // Home-relative words and anything through a credential place are outside the chat's folder however they resolve.
     if (arg.startsWith("~") || credentialPath(arg, shortNamesRead(head, args, arg)) || dotOutside(arg, folder)) return true;
+    // Round 5, H2: a walk that starts at a parent of a credential place (Library, AppData, /etc, /) reaches the place.
+    if (startsAtPlaceParent(startOf(arg, timer ? null : base))) return true;
     if (!root) {
       // No folder known: only a relative place below the working folder can be shown to stay inside it.
       if (arg.startsWith("/")) return true;

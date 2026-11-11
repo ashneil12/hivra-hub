@@ -84,7 +84,7 @@ export async function handleTimers(source: Session, action: string, input: Recor
       if ([...command].length > 2000) throw new Error("that command is too long");
       // Round 2: the same login-store and hidden-file check autopilot's approvals make, since the table alone allowed
       // `cat ~/.netrc` and `rg -g '.env*'`.
-      const why = safeCommand(command) ?? commandNamesLogin(command);
+      const why = safeCommand(command, undefined, true) ?? commandNamesLogin(command);
       if (why) throw new Error(`That command doesn't run by itself: ${why}`);
       const pattern = input.pattern === undefined ? "" : input.pattern;
       if (typeof pattern !== "string" || [...pattern].length > 200)

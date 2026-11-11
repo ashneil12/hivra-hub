@@ -40,7 +40,7 @@ import {
 import { clearRedHold, redHoldFor, setAutopilotProjects } from "../model/autopilotApp";
 import { approvalVerdict, approvalWhat, chatProject, handBackText } from "../model/decide";
 import { appWiredServers, type WiredServersReader } from "../model/mcpTrust";
-import { editStaysInside, type Locate } from "../model/safeApproval";
+import { placeStaysInside, type Locate } from "../model/safeApproval";
 import { gitLocateFiles } from "../../../platform/tauri/fs";
 import { formatUntil } from "../model/endTime";
 import {
@@ -284,7 +284,7 @@ export function useAutopilot(options: {
               const verdict = approvalVerdict(block, folder, redHoldFor(session.id, now), trusted);
               if (verdict.kind === "held") return hold(verdict.red, verdict.why);
               // An edit its words allow is allowed only once the app has found where it really lands (links followed).
-              return editStaysInside(block.approval!.call, folder, latest.current.locate ?? gitLocateFiles).then((why) => {
+              return placeStaysInside(block.approval!.call, folder, latest.current.locate ?? gitLocateFiles).then((why) => {
                 if (why) return hold(null, why);
                 return log({ ...base, kind: "approval", outcome: "taken", what: verdict.what, recommendation: "Allowed", dedupe: `${key}:${block.id}` }).then(
                   () => latest.current.approve(session.id, requestId, "allow"),

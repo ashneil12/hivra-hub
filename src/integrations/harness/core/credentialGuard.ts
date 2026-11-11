@@ -86,6 +86,20 @@ const SECRET_FILES: readonly RegExp[] = [
  * A command or path as a Mac, Linux or Windows file system compares it for the login-file rules: lower case, one kind of
  * slash, and trailing dots and spaces dropped per segment (`.codex.\\auth.json` is `.codex/auth.json`).
  */
+/**
+ * Round 5, H1: a climb (`name/..`) is cancelled against the name before it, at any depth, so `a:b/../../.ssh/id_rsa` reads
+ * as `.ssh/id_rsa`. Names are split on "/" only, as the file system splits them.
+ */
+function collapseClimbs(text: string): string {
+  let out = text.replace(/\/\.(?=\/|$)/g, "");
+  let before: string;
+  do {
+    before = out;
+    out = out.replace(/\/[^/\s]+\/\.\.(?=\/|$|\s)/g, "");
+  } while (out !== before);
+  return out;
+}
+
 function foldForSecrets(text: string): string {
   return text.toLowerCase().replace(/\\/g, "/").replace(/(?<=[^. /])[. ]+(?=\/|$)/gm, "");
 }
@@ -118,7 +132,7 @@ export function credentialBlock(
     // written and with its quotes taken out.
     for (const text of new Set([raw, raw.replace(/['"]/g, "")])) {
       if (KEYCHAIN.test(text)) return CREDENTIAL_BLOCK_MESSAGE;
-      if (SECRET_FILES.some((re) => re.test(foldForSecrets(text)))) return CREDENTIAL_BLOCK_MESSAGE;
+      if (SECRET_FILES.some((re) => re.test(foldForSecrets(collapseClimbs(text))))) return CREDENTIAL_BLOCK_MESSAGE;
     }
     if (HUB_DB.test(raw) || HUB_DB_TOOL.test(raw)) return HUB_DB_BLOCK_MESSAGE;
     const padded = ` ${raw}`;

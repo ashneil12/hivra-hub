@@ -100,7 +100,11 @@
   ],
   "pathSequences": [
     "src/shared/security",
-    "src/features/autopilot/model"
+    "src/features/autopilot/model",
+    "src/features/autopilot/hooks",
+    "src/integrations/harness/core/credentialGuard.ts",
+    "src-tauri/src/watcher/safe_cmd.rs",
+    "src/integrations/harness/providers/claude/claudeProtocol.ts"
   ],
   "holdAnyDotSegment": true
 }

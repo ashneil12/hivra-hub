@@ -38,6 +38,14 @@ function dotSegment(part: string): boolean {
   return text.startsWith(".") && text !== "." && text !== "..";
 }
 
+/**
+ * Whether an absolute path, given from its root, runs through the guard's own source (`pathSequences`, round 5, L1). The
+ * sequences are matched on the whole path, so a chat sitting inside src/shared cannot step around them.
+ */
+export function guardRunHeld(absoluteParts: readonly string[]): boolean {
+  return SEQUENCES.some((run) => holdsRun(absoluteParts.map(foldSegment), run));
+}
+
 const endsWith = (parts: readonly string[], suffix: readonly string[]) =>
   suffix.length <= parts.length && suffix.every((part, i) => parts[parts.length - suffix.length + i] === part);
 

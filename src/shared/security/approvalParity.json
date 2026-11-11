@@ -99,6 +99,18 @@
       "held": false
     },
     {
+      "command": "cat a:b/keep.txt",
+      "held": false
+    },
+    {
+      "command": "rg -n token src/a:b",
+      "held": false
+    },
+    {
+      "command": "rg -a -o sk-ant-api03 .",
+      "held": false
+    },
+    {
       "command": "grep -rn TODO src",
       "held": true
     },
@@ -376,6 +388,74 @@
     },
     {
       "command": "cat .gitignore",
+      "held": true
+    },
+    {
+      "command": "cat etc/./shadow",
+      "held": true
+    },
+    {
+      "command": "cat Library/./Keychains/login.keychain-db",
+      "held": true
+    },
+    {
+      "command": "cat 'Library/./Application Support/com.vercel.cli/auth.json'",
+      "held": true
+    },
+    {
+      "command": "cat AppData/Roaming/./rclone/rclone.conf",
+      "held": true
+    },
+    {
+      "command": "cat proc/self/./environ",
+      "held": true
+    },
+    {
+      "command": "wc -c Library/./Cookies/Cookies.binarycookies",
+      "held": true
+    },
+    {
+      "command": "head -c 100 etc/./master.passwd",
+      "held": true
+    },
+    {
+      "command": "grep -c x AppData/Local/./Google/Chrome/x",
+      "held": true
+    },
+    {
+      "command": "rg token Library",
+      "held": true
+    },
+    {
+      "command": "rg -a sk-ant- Library",
+      "held": true
+    },
+    {
+      "command": "rg --binary -o AKIA Library",
+      "held": true
+    },
+    {
+      "command": "cat a:b/../../.zshrc",
+      "held": true
+    },
+    {
+      "command": "cat a:b:c/../../../.zshrc",
+      "held": true
+    },
+    {
+      "command": "cat a:b/../../.config/aichat/config.yaml",
+      "held": true
+    },
+    {
+      "command": "cat ~/Library/Keychains/login.keychain-db",
+      "held": true
+    },
+    {
+      "command": "cat /Users/ash/proj/a:b/../../.zshrc",
+      "held": true
+    },
+    {
+      "command": "cat ~/Library/Preferences/x.plist",
       "held": true
     }
   ]

@@ -602,7 +602,8 @@ describe("a read that walks folders", () => {
       expect(walkHeld(words, FOLDER), words.join(" ")).toBe(true);
     // A folder too broad to be a chat's own: only a relative place can be shown to stay inside the working folder.
     // Recursive grep is held everywhere, so this is a search that still has its ignore rules.
-    expect(walkHeld(["rg", "foo", "src"], "/Users/someone")).toBe(false);
+    // Round 5, H2: an approval's walk from a folder that shallow is held, whatever it starts at.
+    expect(walkHeld(["rg", "foo", "src"], "/Users/someone")).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "/Users/someone/src"], "/Users/someone")).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "/etc"], undefined)).toBe(true);
     expect(walkHeld(["grep", "-r", "x", "../.."], undefined)).toBe(true);

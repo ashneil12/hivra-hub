@@ -604,6 +604,36 @@ fn rg_read(args: &[String]) -> Option<&'static str> {
     }
 }
 
+/// Whether a walk's start (relative, no folder known) is at or above a credential place: its last segments are the first
+/// segments of a place (`Library`, `AppData/Roaming`). Round 5, H2; credentialPaths.ts startsAtPlaceParent.
+fn starts_at_place_parent(segments: &[String]) -> bool {
+    (1..=segments.len()).any(|k| {
+        let tail = &segments[segments.len() - k..];
+        CREDENTIAL_PLACES.iter().any(|place| {
+            place.len() > k
+                && tail
+                    .iter()
+                    .map(String::as_str)
+                    .eq(place[..k].iter().copied())
+        })
+    })
+}
+
+/// Whether a command walks folders (credentialPaths.ts walksFolders): the search and listing commands, git diff, and ls or
+/// grep with the recursive option.
+fn walks_folders(head: &str, args: &[String]) -> bool {
+    match head {
+        "rg" | "ag" | "find" | "fd" | "tree" | "du" => true,
+        "git" => args.first().map(String::as_str) == Some("diff"),
+        "ls" => args.iter().any(|arg| {
+            arg == "--recursive"
+                || (arg.starts_with('-') && !arg.starts_with("--") && arg[1..].contains('R'))
+        }),
+        "grep" => grep_recurses(args),
+        _ => false,
+    }
+}
+
 /// Why a timer's words name a login store or a folder outside the chat's own, or None. A timer has no folder, so anything
 /// rooted, anything with a climb, and any dot-named part is outside (credentialPaths.ts with no folder).
 fn names_login_or_outside(
@@ -618,6 +648,7 @@ fn names_login_or_outside(
         return Some(HELD);
     }
     let search = matches!(head, "rg" | "grep" | "ag" | "fd" | "find");
+    let walks = walks_folders(head, args);
     let git = head == "git";
     let no_index = args.iter().any(|arg| arg == "--no-index");
     // A search's first bare word is its pattern, as grep reads it, unless an option names the pattern itself.
@@ -637,6 +668,17 @@ fn names_login_or_outside(
             pattern_seen = true;
             continue;
         }
+        // Round 5, H2: a walk's start that is at a parent of a credential place is held (the timer has no folder to bound it).
+        if walks && !arg.starts_with('-') {
+            let start: Vec<String> = arg
+                .split(['/', '\\'])
+                .filter(|part| !part.is_empty() && *part != ".")
+                .map(fold_segment)
+                .collect();
+            if !start.is_empty() && starts_at_place_parent(&start) {
+                return Some(HELD);
+            }
+        }
         for piece in words {
             if piece.is_empty() {
                 continue;
@@ -654,9 +696,10 @@ fn names_login_or_outside(
             let short_names_read = !(git && !no_index && !piece.contains(['/', '\\']));
             let short_name =
                 short_names_read && segments.iter().any(|part| short_name_segment(part));
+            // Round 5, M1: a "." segment is no name (`etc/./shadow` is `etc/shadow`), so it is dropped before folding.
             let folded: Vec<String> = segments
                 .iter()
-                .filter(|part| !part.is_empty())
+                .filter(|part| !part.is_empty() && **part != ".")
                 .map(|part| fold_segment(part))
                 .collect();
             if rooted

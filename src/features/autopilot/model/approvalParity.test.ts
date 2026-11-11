@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 import cases from "../../../shared/security/approvalParity.json";
 import { commandNamesLogin, safeCommand } from "./safeApproval";
 
-const timerHolds = (command: string) => safeCommand(command) ?? commandNamesLogin(command);
+const timerHolds = (command: string) => safeCommand(command, undefined, true) ?? commandNamesLogin(command);
 
 describe("timer parity with the Rust check", () => {
   it("has a shared set large enough to mean something", () => {

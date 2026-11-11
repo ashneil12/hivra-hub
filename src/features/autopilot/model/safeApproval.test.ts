@@ -47,7 +47,8 @@ describe("shell commands", () => {
     "ps -p 501 -o pid,ppid,etime,state,stat,%cpu,%mem,rss",
     "ps -p 501 -o pid",
   ])("runs by itself: %s", (command) => {
-    expect(safeCommand(command)).toBeNull();
+    // Round 5, H2: a walk needs a chat folder deep enough to be a project; the table runs from one.
+    expect(safeCommand(command, FOLDER)).toBeNull();
   });
 
   it.each([
@@ -236,7 +237,7 @@ describe("shell commands", () => {
   it("keeps an ordinary option that merely starts like an unsafe one", () => {
     // -L and -a are not -o, and --depth is not --delete.
     for (const command of ["tree -L 2 -a src", "find . --depth 2 -name '*.md'", "du -d 2 src"])
-      expect(safeCommand(command), command).toBeNull();
+      expect(safeCommand(command, FOLDER), command).toBeNull();
   });
 
   // WP-101 fix round 3, finding 4: GNU find takes a unique prefix of a predicate, so -del is -delete and -okd is
@@ -270,7 +271,7 @@ describe("shell commands", () => {
       "find . -mtime -7 -type f",
       "find . -size -10k -print",
     ])
-      expect(safeCommand(command), command).toBeNull();
+      expect(safeCommand(command, FOLDER), command).toBeNull();
   });
 
   // WP-101 fix round 3, finding 2: grep has no ignore list once it recurses, and a search that turns ignores off reads

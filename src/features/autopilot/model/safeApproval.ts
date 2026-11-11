@@ -18,8 +18,8 @@
 // main checkout) doesn't carry it out.
 
 import type { ApprovalCall } from "../../sessions/model/session";
-import { credentialInWords, timerOutside, walkHeld } from "./credentialPaths";
-import { isProtectedConfig, segmentsOf } from "./protectedConfig";
+import { credentialInWords, credentialPath, dotOutside, foldedFolder, timerOutside, walkHeld } from "./credentialPaths";
+import { guardRunHeld, isProtectedConfig, segmentsOf } from "./protectedConfig";
 import { splitMcpTool, toolEffect } from "./mcpEffect";
 import { serverTrusted, type TrustedServers } from "./mcpTrust";
 import { shellWords } from "./shellWords";
@@ -85,6 +85,8 @@ export function editInside(path: string, folder: string | undefined): SafeVerdic
     return `it edits ${path}, outside the chat's folder`;
   const inner = parts.slice(root.length);
   if (isProtectedConfig(inner)) return `it edits ${path}, which changes how tools run`;
+  // Round 5, L1: the guard's own source, matched on the whole path so the chat's own folder can't hide it.
+  if (guardRunHeld(parts)) return `it edits ${path}, which is the approval guard itself`;
   return null;
 }
 
@@ -107,8 +109,10 @@ const NAMES_PLACE = /[\\/~]|\w\.\w|:\/\/|\.\./;
 const SCHEME = /^[a-z][\w+.-]*:/i;
 /** The loopback name, as a word of its own: `localhost`, `x.localhost` (round 4, item 6). */
 const LOOPBACK = /(^|[^a-z0-9])localhost($|[^a-z0-9])/i;
+/** An IPv6 address or a bracketed host (`::1`, `[::1]`) (round 5, L2). */
+const IPV6_HOST = /::|\[|\]/;
 /** An address written as one number (`16909060` is 1.2.3.4) or in hex: an IP however it is spelled (round 4, item 6). */
-const NUMERIC_HOST = /^(\d{8,10}|0x[0-9a-f]+)$/i;
+const NUMERIC_HOST = /^(\d{8,}|0\d+|0x[0-9a-f]+)$/i;
 
 /**
  * An argument as a name reads once the look-alikes are folded (round 4, item 6): NFKC (fullwidth `．`), the ideographic
@@ -117,8 +121,8 @@ const NUMERIC_HOST = /^(\d{8,10}|0x[0-9a-f]+)$/i;
  */
 function plainName(value: string): string {
   let text = value.normalize("NFKC").replace(/[\u3002\uFF61]/g, ".");
-  for (let i = 0; i < 4 && /%(2e|2f|5c)/i.test(text); i++) {
-    text = text.replace(/%2e/gi, ".").replace(/%2f/gi, "/").replace(/%5c/gi, "\\");
+  for (let i = 0; i < 4 && /%(25|2e|2f|5c)/i.test(text); i++) {
+    text = text.replace(/%25/gi, "%").replace(/%2e/gi, ".").replace(/%2f/gi, "/").replace(/%5c/gi, "\\");
   }
   return text;
 }
@@ -133,7 +137,7 @@ function argsReason(args: unknown): SafeVerdict {
   for (const value of args) {
     if (typeof value !== "string") return "its arguments can't be read plainly, so it waits for Ash";
     const plain = plainName(value).trim();
-    if (NAMES_PLACE.test(plain) || SCHEME.test(plain) || LOOPBACK.test(plain) || NUMERIC_HOST.test(plain))
+    if (NAMES_PLACE.test(plain) || SCHEME.test(plain) || LOOPBACK.test(plain) || NUMERIC_HOST.test(plain) || IPV6_HOST.test(plain) || /%25/i.test(value))
       return "its arguments name a file, folder or address, so it waits for Ash";
   }
   return null;
@@ -148,6 +152,9 @@ export function searchStartsOutside(call: ApprovalCall | undefined, folder: stri
   if (!call || typeof call.tool !== "string" || !SEARCH_TOOLS.has(call.tool)) return false;
   // A glob names files by pattern, hidden ones too, and ripgrep's glob overrides its ignore rules: any glob waits (round 2).
   if (call.glob !== undefined) return true;
+  // Round 5, H2: a search from a chat folder that is home or shallower (or none) holds, with or without a path.
+  const base = foldedFolder(folder);
+  if (!base || base.length < 3) return true;
   if (call.paths === undefined) return false;
   if (!Array.isArray(call.paths) || call.paths.some((path) => typeof path !== "string")) return true;
   // Under `find`, not `rg`: a search's paths are where it walks from, and none of them is a pattern to skip.
@@ -363,7 +370,7 @@ function namesProtectedConfig(arg: string, folder: string | undefined): boolean 
   });
 }
 
-function safeCommandInner(command: string, folder: string | undefined): SafeVerdict {
+function safeCommandInner(command: string, folder: string | undefined, timer = false): SafeVerdict {
   if (typeof command !== "string") return UNREADABLE_COMMAND;
   if (SHELL_META.test(command)) return "it chains, substitutes or redirects";
   const words = shellWords(command.trim());
@@ -373,16 +380,16 @@ function safeCommandInner(command: string, folder: string | undefined): SafeVerd
   const check = COMMANDS[words[0]];
   if (typeof check !== "function") return UNREADABLE_COMMAND;
   // WP-101 fix round 2, item B: a walk through folders has to start inside the chat's own, whatever it names.
-  if (walkHeld(words, folder)) return "it walks folders outside the chat's own, or reads what a project keeps out of git, so it waits for Ash";
+  if (walkHeld(words, folder, timer)) return "it walks folders outside the chat's own, or reads what a project keeps out of git, so it waits for Ash";
   // A config the tools read, or a dot-named folder or file, is held as an edit is (review round 3, item 1).
   if (words.slice(1).some((arg) => namesProtectedConfig(arg, folder))) return "it names a tool's config or a dot-named file, so it waits for Ash";
   return check(words.slice(1));
 }
 
 /** Whether a shell command is one autopilot may run by itself; why not otherwise. A command it can't read waits. */
-export function safeCommand(command: string, folder?: string | undefined): SafeVerdict {
+export function safeCommand(command: string, folder?: string | undefined, timer = false): SafeVerdict {
   try {
-    return safeCommandInner(command, folder);
+    return safeCommandInner(command, folder, timer);
   } catch {
     return UNREADABLE_COMMAND;
   }
@@ -487,4 +494,45 @@ export async function editStaysInside(call: ApprovalCall | undefined, folder: st
     if (why) return why;
   }
   return null;
+}
+
+// ---- where a read or a search really lands --------------------------------------------------------------------------
+
+/**
+ * Whether a read or a search of paths inside the chat's folder stays on a file the credential rules allow, once links
+ * are followed (round 5, M2). Edits resolve through the app's lookup (editStaysInside); reads and searches do too, so a
+ * link that leads to a login or config file is held. A path the app can't place (outside git, or the lookup failed) waits.
+ * A search with no path walks the folder itself, which its ignore rules bound, so it is not looked up here.
+ */
+export async function readStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
+  if (!call || !(READ_ONLY_TOOLS.has(call.tool) || SEARCH_TOOLS.has(call.tool))) return null;
+  if (!Array.isArray(call.paths) || !call.paths.length) return null;
+  // A path that isn't text is held by safeCall and searchStartsOutside already.
+  if (call.paths.some((path) => typeof path !== "string")) return null;
+  const paths = call.paths as string[];
+  const root = folder?.replace(/\/+$/, "");
+  if (!root) return "the chat has no folder of its own to read in";
+  const targets = paths.map((path) => (path.startsWith("/") ? path : `${root}/${path}`));
+  let places: (RealPlace | null)[];
+  try {
+    places = await locate([`${root}/${PROBE}`, ...targets]);
+  } catch (error) {
+    return `the app couldn't find where it really reads (${error instanceof Error ? error.message : String(error)})`;
+  }
+  const home = places[0];
+  if (!home || !home.relative.endsWith(PROBE)) return "the app couldn't place the chat's folder in a git checkout";
+  const realFolder = realPath(home, home.relative.slice(0, -PROBE.length).replace(/\/+$/, ""));
+  for (let i = 0; i < targets.length; i++) {
+    const place = places[i + 1];
+    if (!place) return `the app couldn't place ${paths[i]} in a git checkout, so it can't tell where it really reads`;
+    const real = realPath(place);
+    if (credentialPath(real) || dotOutside(real, realFolder)) return `${paths[i]} really reads ${real}, a login or config file`;
+  }
+  return null;
+}
+
+/** The lookup check for whatever a tool call touches: an edit's real place, or a read's or search's (round 5, M2). */
+export function placeStaysInside(call: ApprovalCall | undefined, folder: string | undefined, locate: Locate): Promise<SafeVerdict> {
+  if (call && EDIT_TOOLS.has(call.tool)) return editStaysInside(call, folder, locate);
+  return readStaysInside(call, folder, locate);
 }
