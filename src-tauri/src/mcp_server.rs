@@ -729,7 +729,7 @@ fn secret_tools() -> Vec<Value> {
         json!({
             "name": "secrets_run",
             "title": "Run one command with a key",
-            "description": "Run one command (argv, never a shell line) with one saved key in its environment, then get its exit code, output and whether it timed out. The key is put straight into that child's environment: you and the transcript never see it, and its output is scrubbed first. The person approves the first run (or once for always); a refusal or a missing name comes back as a state you can act on.",
+            "description": "Run one command (argv, never a shell line) with one saved key in its environment, then get its exit code, output and whether it timed out. The key is put straight into that child's environment: you and the transcript never see it, and its output is scrubbed first. The person approves the first run; a refusal or a missing name comes back as a state you can act on.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

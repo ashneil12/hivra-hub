@@ -222,10 +222,10 @@ export function removeEnv(input: {
   return invoke(`${COMMAND}secrets_env_remove`, { input });
 }
 
-/** The label and the warning beside the setting, and the same warning under the "Always" buttons on a card. */
-export const ANY_CODE_LABEL = "Let me choose 'Always' for programs that can run any code";
+/** Words for a program that can run any code. Cards are Once or No, so these do not offer a lasting approval. */
+export const ANY_CODE_LABEL = "Programs that can run any code ask every time";
 export const ANY_CODE_WARNING =
-  "'Always' lets an agent use this key for anything, without asking you. Leave this off unless you are sure.";
+  "A program that can run any code is asked on every run. There is no way to skip that question.";
 
 export type AlwaysSetting = { on: boolean; removedGrants: number };
 

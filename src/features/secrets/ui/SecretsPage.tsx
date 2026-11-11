@@ -8,12 +8,9 @@ import { listen } from "@tauri-apps/api/event";
 import { isDevCopy } from "../../../app/model/appIdentity";
 
 import {
-  ANY_CODE_LABEL,
-  ANY_CODE_WARNING,
   dayOf,
   deleteSecret,
   envFilesFor,
-  getAlwaysForAnyCode,
   grantsFor,
   grantLabel,
   copyNotes,
@@ -27,7 +24,6 @@ import {
   saveNew,
   scopeLabel,
   SHARED_FILE_NOTE,
-  setAlwaysForAnyCode,
   slugIsValid,
   slugOf,
   writeEnv,
@@ -113,8 +109,6 @@ export function SecretsPage({ project }: { project?: string }) {
           {error}
         </p>
       ) : null}
-
-      <AnyCodeSetting onChanged={load} />
 
       <AddSecret
         project={project}
@@ -237,50 +231,6 @@ export function SecretsPage({ project }: { project?: string }) {
           );
         })}
       </ul>
-    </div>
-  );
-}
-
-/** One value per install, off by default: whether an agent's program that can run any code may be approved "Always". */
-function AnyCodeSetting({ onChanged }: { onChanged: () => void }) {
-  const [on, setOn] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  useEffect(() => {
-    let live = true;
-    getAlwaysForAnyCode()
-      .then((value) => live && setOn(value === true))
-      .catch(() => live && setOn(false));
-    return () => {
-      live = false;
-    };
-  }, []);
-  return (
-    <div className="rounded border border-content/10 p-3">
-      <label className="flex items-start gap-2 text-[13px] text-content" htmlFor="secret-any-code">
-        <input
-          id="secret-any-code"
-          type="checkbox"
-          checked={on}
-          onChange={async (event) => {
-            const next = event.target.checked;
-            setError(null);
-            try {
-              const saved = await setAlwaysForAnyCode(next);
-              setOn(saved.on);
-              if (!next && saved.removedGrants > 0) onChanged();
-            } catch {
-              setError("That setting wasn't changed. Try again.");
-            }
-          }}
-        />
-        <span>{ANY_CODE_LABEL}</span>
-      </label>
-      <p className={`mt-1 ${PLAIN}`}>{ANY_CODE_WARNING}</p>
-      {error ? (
-        <p role="alert" className="mt-1 text-[12px] text-red-400">
-          {error}
-        </p>
-      ) : null}
     </div>
   );
 }

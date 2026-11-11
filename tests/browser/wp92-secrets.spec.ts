@@ -67,27 +67,13 @@ test("the Secrets page lists a key with its last four, reveals on a tap, renames
   await expect(page.getByText("resend-key", { exact: true })).toHaveCount(0);
 });
 
-test("'Always' for programs that can run any code is off until the person turns it on, with its warning beside it", async ({
-  page,
-}) => {
+test("there is no switch that promises an Always answer for programs that can run any code", async ({ page }) => {
   await page.goto("/tests/browser/wp92-secrets.html");
-  const toggle = page.getByRole("checkbox", {
-    name: "Let me choose 'Always' for programs that can run any code",
-  });
-  await expect(toggle).toBeVisible();
-  await expect(toggle).not.toBeChecked();
+  await expect(page.getByRole("checkbox", { name: /always/i })).toHaveCount(0);
+  await expect(page.getByText("Let me choose 'Always' for programs that can run any code")).toHaveCount(0);
   await expect(
     page.getByText("'Always' lets an agent use this key for anything, without asking you. Leave this off unless you are sure."),
-  ).toBeVisible();
-  // The page asked the app, and nothing was changed by looking.
-  expect(await page.evaluate(() => (window as unknown as { __fixture: { setCalls: boolean[] } }).__fixture.setCalls)).toEqual([]);
-
-  await toggle.check();
-  await expect(toggle).toBeChecked();
-  expect(await page.evaluate(() => (window as unknown as { __fixture: { setCalls: boolean[] } }).__fixture.setCalls)).toEqual([true]);
-  await toggle.uncheck();
-  await expect(toggle).not.toBeChecked();
-  expect(await page.evaluate(() => (window as unknown as { __fixture: { setCalls: boolean[] } }).__fixture.setCalls)).toEqual([true, false]);
+  ).toHaveCount(0);
 });
 
 test("writing a key to a .env that other accounts can read says so", async ({ page }) => {
