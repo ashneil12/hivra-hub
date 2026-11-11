@@ -150,4 +150,47 @@ describe("mapLayout", () => {
     expect(triggers[0]?.y).toBeLessThan(triggers[1]?.y ?? 0);
     expect(triggers[0]?.label.localeCompare(triggers[1]?.label ?? "")).toBeLessThan(0);
   });
+
+  it("draws one trigger node for each repo, not only the first", () => {
+    const layout = mapLayout([
+      automation({
+        id: "both",
+        name: "Both",
+        triggers: [
+          createAutomationTrigger("github", "issue_opened", {
+            id: "issues",
+            repos: ["acme/web", "acme/api"],
+          }),
+        ],
+      }),
+    ]);
+    const triggers = layout.nodes.filter((node) => node.kind === "trigger");
+    expect(triggers.map((node) => node.label).sort()).toEqual([
+      "A new issue in acme/api",
+      "A new issue in acme/web",
+    ]);
+    expect(layout.edges.filter((edge) => edge.to === "automation:both")).toHaveLength(2);
+  });
+
+  it("scrubs a token in a name or a repo before it is drawn", () => {
+    const token = `ghp_${"A".repeat(30)}`;
+    const key = "sk-ant-api03-PLANTEDplantedPLANTED0123456789abcdefXYZ";
+    const layout = mapLayout([
+      automation({
+        id: "leaky",
+        name: `Audit ${key}`,
+        triggers: [
+          createAutomationTrigger("github", "issue_opened", {
+            id: "issues",
+            repo: `https://git:${token}@github.com/acme/web`,
+          }),
+        ],
+      }),
+    ]);
+    const dumped = JSON.stringify(layout);
+    expect(dumped).toContain("[secret removed]");
+    expect(dumped).not.toContain("ghp_");
+    expect(dumped).not.toContain("sk-ant-");
+    expect(dumped).not.toContain("PROMPT_SHOULD_NOT_LEAK");
+  });
 });

@@ -733,23 +733,20 @@ pub fn automation_runs_list(
     Ok(runs)
 }
 
-#[tauri::command(async)]
-pub fn automation_runs_recover(
-    app: AppHandle,
-    store: State<'_, SessionStore>,
+struct RecoveredRuns {
+    due: Vec<DueAutomationRun>,
+    changed: bool,
+    /// WP-180a: true once a restart wrote a new activity line.
+    noted: bool,
+}
+
+/// The body of `automation_runs_recover`, without the app handle, so a test can
+/// drive it. A pending event run with no prompt becomes failed.
+fn recover_stored_runs(
+    conn: &mut Connection,
     started_before: i64,
     now: i64,
-) -> Result<Vec<DueAutomationRun>, String> {
-    // A dev copy never runs automations on its own (src/instance.rs); its runs stay as they are.
-    if !crate::instance::policy().automations {
-        return Ok(Vec::new());
-    }
-    // A build on trial runs none until it commits (src/ship.rs). An error, not an empty list: the window retries
-    // recovery later instead of remembering that there was nothing to recover.
-    if crate::ship::holding() {
-        return Err("This build is on trial; automations wait until it commits.".into());
-    }
-    let mut conn = store.lock_conn()?;
+) -> Result<RecoveredRuns, String> {
     let tx = conn.transaction().map_err(|error| error.to_string())?;
     let mut statement = tx
         .prepare(
@@ -769,6 +766,7 @@ pub fn automation_runs_recover(
 
     let mut due = Vec::new();
     let mut changed = false;
+    let noted = false;
     let mut changed_automation_ids = Vec::new();
     for mut run in runs {
         if run.status != "pending" && run.status != "running" {
@@ -812,11 +810,40 @@ pub fn automation_runs_recover(
         trim_history(&tx, &automation_id)?;
     }
     tx.commit().map_err(|error| error.to_string())?;
+    Ok(RecoveredRuns {
+        due,
+        changed,
+        noted,
+    })
+}
+
+#[tauri::command(async)]
+pub fn automation_runs_recover(
+    app: AppHandle,
+    store: State<'_, SessionStore>,
+    started_before: i64,
+    now: i64,
+) -> Result<Vec<DueAutomationRun>, String> {
+    // A dev copy never runs automations on its own (src/instance.rs); its runs stay as they are.
+    if !crate::instance::policy().automations {
+        return Ok(Vec::new());
+    }
+    // A build on trial runs none until it commits (src/ship.rs). An error, not an empty list: the window retries
+    // recovery later instead of remembering that there was nothing to recover.
+    if crate::ship::holding() {
+        return Err("This build is on trial; automations wait until it commits.".into());
+    }
+    let mut conn = store.lock_conn()?;
+    let recovered = recover_stored_runs(&mut conn, started_before, now)?;
     drop(conn);
-    if changed || !due.is_empty() {
+    if recovered.changed || !recovered.due.is_empty() {
         let _ = app.emit(CHANGED, ());
     }
-    Ok(due)
+    // WP-180a: the runs screen hears the activity log's own event.
+    if recovered.noted {
+        let _ = app.emit(crate::activity::CHANGED, ());
+    }
+    Ok(recovered.due)
 }
 
 #[tauri::command(async)]
@@ -2050,5 +2077,254 @@ mod tests {
             assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
             assert!(!row.summary.contains("more "));
         }
+    }
+
+    /// Local millis for a clock on 15 Jan 2024. The offset is read twice so a
+    /// daylight boundary does not land on the wrong hour.
+    fn at_local_clock(hour: u8, minute: u8) -> i64 {
+        use time::{Date, Month, PrimitiveDateTime, Time};
+        let date = Date::from_calendar_date(2024, Month::January, 15).expect("date");
+        let clock = Time::from_hms(hour, minute, 0).expect("clock");
+        let naive = PrimitiveDateTime::new(date, clock)
+            .assume_utc()
+            .unix_timestamp();
+        for shift in [0_i64, -3600, 3600, -7200, 7200] {
+            let offset = i64::from(crate::work_log::local_offset_seconds(naive + shift));
+            let utc = naive - offset;
+            if i64::from(crate::work_log::local_offset_seconds(utc)) != offset {
+                continue;
+            }
+            let day_seconds = (utc + offset).rem_euclid(86_400);
+            if day_seconds / 3600 == i64::from(hour)
+                && (day_seconds % 3600) / 60 == i64::from(minute)
+            {
+                return utc * 1000;
+            }
+        }
+        panic!("no local instant for {hour:02}:{minute:02}");
+    }
+
+    fn time_trigger(id: &str, time: &str) -> AutomationTrigger {
+        AutomationTrigger {
+            id: id.into(),
+            kind: "time".into(),
+            event: "weekdays".into(),
+            schedule_kind: "weekdays".into(),
+            minute: 0,
+            time: time.into(),
+            day_of_week: 1,
+            repos: Vec::new(),
+            repo: String::new(),
+            branch: String::new(),
+            actor: "app".into(),
+        }
+    }
+
+    fn event_trigger(id: &str, kind: &str, event: &str, repo: &str, repos: &[&str]) -> AutomationTrigger {
+        AutomationTrigger {
+            id: id.into(),
+            kind: kind.into(),
+            event: event.into(),
+            schedule_kind: "weekdays".into(),
+            minute: 0,
+            time: "09:00".into(),
+            day_of_week: 1,
+            repos: repos.iter().map(|repo| (*repo).to_string()).collect(),
+            repo: repo.into(),
+            branch: String::new(),
+            actor: "app".into(),
+        }
+    }
+
+    /// Two repos on one GitHub trigger: the line names the repo in the event
+    /// key, not the first repo on the trigger. Linear and Jira keys have no
+    /// repo, so those lines keep the trigger repo.
+    #[test]
+    fn an_event_run_names_the_repo_in_the_key() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut automation = stored_automation("inbox", "Inbox watch", "PROMPT_SHOULD_NOT_LEAK");
+        automation.triggers = Some(vec![
+            event_trigger(
+                "issues",
+                "github",
+                "issue_opened",
+                "",
+                &["acme/web", "acme/api"],
+            ),
+            event_trigger("linear", "linear", "issue_created", "team/board", &[]),
+            event_trigger("jira", "jira", "issue_created", "jira-project", &[]),
+        ]);
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+
+        let mut issue = stored_run("run-api", "inbox");
+        issue.trigger = "event".into();
+        issue.event_kind = Some("github".into());
+        issue.event = Some("issue_opened".into());
+        issue.event_key = Some("github:issue:acme/api:12".into());
+        write_run(&conn, &issue).unwrap();
+
+        let mut linear = stored_run("run-linear", "inbox");
+        linear.trigger = "event".into();
+        linear.event_kind = Some("linear".into());
+        linear.event = Some("issue_created".into());
+        linear.event_key = Some("linear:issue:abc".into());
+        write_run(&conn, &linear).unwrap();
+
+        let mut jira = stored_run("run-jira", "inbox");
+        jira.trigger = "event".into();
+        jira.event_kind = Some("jira".into());
+        jira.event = Some("issue_created".into());
+        jira.event_key = Some("jira:issue:abc-1".into());
+        write_run(&conn, &jira).unwrap();
+
+        finish(&mut conn, "run-api", "running", None, None);
+        finish(&mut conn, "run-linear", "running", None, None);
+        finish(&mut conn, "run-jira", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows[0].summary.contains("a new issue in acme/api"),
+            "{}",
+            rows[0].summary
+        );
+        assert!(
+            !rows[0].summary.contains("acme/web"),
+            "{}",
+            rows[0].summary
+        );
+        assert!(rows[1].summary.contains("a new issue in team/board"));
+        assert!(rows[2].summary.contains("a new issue in jira-project"));
+        for row in &rows {
+            assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        }
+    }
+
+    /// Two clocks: the line names the one whose time matches `scheduled_for`.
+    /// A time that matches neither clock says "the schedule".
+    #[test]
+    fn a_schedule_run_names_the_clock_that_fired() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut automation = stored_automation("bells", "Bells", "PROMPT_SHOULD_NOT_LEAK");
+        automation.triggers = Some(vec![time_trigger("nine", "09:00"), time_trigger("six", "18:00")]);
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+
+        let mut morning = stored_run("run-nine", "bells");
+        morning.scheduled_for = at_local_clock(9, 0);
+        write_run(&conn, &morning).unwrap();
+        let mut evening = stored_run("run-six", "bells");
+        evening.scheduled_for = at_local_clock(18, 0);
+        write_run(&conn, &evening).unwrap();
+        let mut noon = stored_run("run-noon", "bells");
+        noon.scheduled_for = at_local_clock(12, 30);
+        write_run(&conn, &noon).unwrap();
+
+        finish(&mut conn, "run-nine", "running", None, None);
+        finish(&mut conn, "run-six", "running", None, None);
+        finish(&mut conn, "run-noon", "running", None, None);
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 3);
+        assert!(
+            rows[0].summary.contains("the 9:00 schedule"),
+            "{}",
+            rows[0].summary
+        );
+        assert!(
+            !rows[0].summary.contains("18:00"),
+            "{}",
+            rows[0].summary
+        );
+        assert!(
+            rows[1].summary.contains("the 18:00 schedule"),
+            "{}",
+            rows[1].summary
+        );
+        assert!(
+            !rows[1].summary.contains("9:00"),
+            "{}",
+            rows[1].summary
+        );
+        assert!(
+            rows[2].summary.contains("the schedule"),
+            "{}",
+            rows[2].summary
+        );
+        assert!(!rows[2].summary.contains("9:00"), "{}", rows[2].summary);
+        assert!(!rows[2].summary.contains("18:00"), "{}", rows[2].summary);
+        for row in &rows {
+            assert!(!row.summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        }
+    }
+
+    /// A pending event run whose prompt is empty fails on restart and writes
+    /// one failed line. A running run that is cancelled writes nothing new.
+    #[test]
+    fn a_restarted_event_run_with_no_prompt_writes_a_failed_line() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let automation = stored_automation("inbox", "Inbox watch", "PROMPT_SHOULD_NOT_LEAK");
+        let mut conn = store.lock_conn().unwrap();
+        write_automation(&conn, &automation).unwrap();
+
+        let mut pending = stored_run("run-empty", "inbox");
+        pending.trigger = "event".into();
+        pending.event_kind = Some("github".into());
+        pending.event = Some("issue_opened".into());
+        pending.event_key = Some("github:issue:acme/api:12".into());
+        pending.prompt = Some(String::new());
+        pending.created_at = 10;
+        write_run(&conn, &pending).unwrap();
+
+        let mut running = stored_run("run-cut", "inbox");
+        running.status = "running".into();
+        running.created_at = 11;
+        write_run(&conn, &running).unwrap();
+
+        let recovered = recover_stored_runs(&mut conn, 100, 1_700_000_000_000).unwrap();
+        assert!(recovered.due.is_empty());
+        recover_stored_runs(&mut conn, 100, 1_700_000_000_001).unwrap();
+
+        let raw: String = conn
+            .query_row(
+                "SELECT run_json FROM automation_runs WHERE id = ?1",
+                ["run-empty"],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let stored: AutomationRun = serde_json::from_str(&raw).unwrap();
+        assert_eq!(stored.status, "failed");
+
+        let rows = activity_rows(&conn);
+        assert_eq!(rows.len(), 1, "the restart writes one line and a repeat writes no second");
+        assert_eq!(rows[0].kind, "automation.failed");
+        assert!(rows[0]
+            .summary
+            .contains("The Inbox event prompt was not available after restart."));
+        assert!(!rows[0].summary.contains("PROMPT_SHOULD_NOT_LEAK"));
+        assert_eq!(rows[0].target, "inbox/run-empty");
+    }
+
+    #[test]
+    fn failure_line_stops_at_a_unicode_break_and_scrubs_a_whole_key() {
+        let line = failure_line(Some("disk full\u{2028}not a token but private"), None);
+        assert_eq!(line, "disk full");
+        assert!(!line.contains("private"));
+        assert_eq!(
+            failure_line(Some("disk full\u{2029}rest of it"), None),
+            "disk full"
+        );
+        assert_eq!(
+            failure_line(Some("disk full\u{0085}rest of it"), None),
+            "disk full"
+        );
+
+        let pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----";
+        let scrubbed = failure_line(Some(pem), None);
+        assert!(
+            !scrubbed.contains("BEGIN"),
+            "a private key must not leave its header: {scrubbed}"
+        );
+        assert!(!scrubbed.contains("OPENSSH"));
+        assert!(scrubbed.contains("[secret removed]"));
     }
 }

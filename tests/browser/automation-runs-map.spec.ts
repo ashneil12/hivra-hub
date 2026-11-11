@@ -42,11 +42,24 @@ test("shows seeded runs, a live run, and a filter", async ({ page, browserName }
 
 test("draws the seeded map and a node opens the editor", async ({ page, browserName }) => {
   await page.goto(pageUrl);
+  await page.getByRole("tab", { name: "Automations" }).focus();
+  await page.keyboard.press("ArrowRight");
+  const runsTab = page.getByRole("tab", { name: "Runs" });
+  await expect(runsTab).toHaveAttribute("aria-selected", "true");
+  const runsPanel = await runsTab.getAttribute("aria-controls");
+  expect(runsPanel).toBeTruthy();
+  await expect(page.locator(`#${runsPanel}`)).toHaveAttribute("role", "tabpanel");
+  await page.keyboard.press("ArrowRight");
+  await expect(page.getByRole("tab", { name: "Map" })).toHaveAttribute("aria-selected", "true");
   await page.getByRole("tab", { name: "Map" }).click();
   const map = page.locator("[data-automation-map]");
   await expect(map.locator('[data-to="Morning audit"]')).toHaveCount(2);
   await expect(map.locator('[data-from="A new issue in owner/repo"]')).toHaveCount(2);
   await expect(map.locator('[data-node="automation"][data-disabled="true"]')).toHaveCount(1);
+  await expect(map.getByRole("button", { name: "Inbox watch, off" })).toHaveAttribute(
+    "aria-disabled",
+    "true",
+  );
   await expect(map.getByText("PROMPT_SHOULD_NOT_LEAK")).toHaveCount(0);
 
   if (browserName === "chromium") {
