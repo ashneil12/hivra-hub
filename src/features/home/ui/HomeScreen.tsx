@@ -33,23 +33,8 @@ const ARRANGE_COLUMNS = { gridTemplateColumns: "minmax(0, 1fr) 2.25rem 4rem" };
 export const HOME_HEADER_BUTTON =
   "inline-flex h-7 shrink-0 items-center gap-2 rounded-md border border-content/10 px-2.5 text-[12px] leading-none text-content/70 hover:bg-content/10 hover:text-content";
 
-// The order the cards were dragged into, by key. Kept in this window's storage: it is how this screen is laid out, not data.
-const CARD_ORDER_KEY = "monocode:home-card-order";
-function loadCardOrder(): string[] {
-  try {
-    const value: unknown = JSON.parse(localStorage.getItem(CARD_ORDER_KEY) ?? "[]");
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
-  } catch {
-    return [];
-  }
-}
-function saveCardOrder(order: string[]): void {
-  try {
-    localStorage.setItem(CARD_ORDER_KEY, JSON.stringify(order));
-  } catch {
-    // The order still holds for this visit.
-  }
-}
+// The order the cards were dragged into, by key, is part of Home's saved arrangement (G5: `arrangement.cards`, kept in
+// the local hub store), so every window and a restore agree.
 /** Cards in the dragged order; one that was never dragged keeps its own place after them. */
 export function orderCards<T extends { key: string }>(cards: readonly T[], order: readonly string[]): T[] {
   const rank = (card: T, index: number) => (order.includes(card.key) ? order.indexOf(card.key) : order.length + index);
@@ -500,6 +485,7 @@ export function HomeScreen({
   onPin,
   onUnpin,
   onAsk,
+  onReorder,
   renderPanel,
   title = "Home",
   headerExtra,
@@ -531,11 +517,17 @@ export function HomeScreen({
   onPin: (plugin: string, panelId: string) => void;
   onUnpin: (key: string) => void;
   onAsk: (text: string) => void;
+  /** A card was dropped: the new order of every card, to keep in the arrangement. */
+  onReorder?: (keys: string[]) => void;
   renderPanel?: (panel: CatalogPanel) => ReactNode;
 }) {
   const [custom, setCustom] = useState(false);
   // Dropwave (Ash, 11 Nov): the cards are dragged into place on the page itself; Customize only turns them on and off.
-  const [cardOrder, setCardOrder] = useState(loadCardOrder);
+  // The saved order; a drop shows at once and holds until the saved arrangement says otherwise.
+  const savedOrder = arrangement.cards ?? [];
+  const savedKey = savedOrder.join("\n");
+  const [dropped, setDropped] = useState<{ order: string[]; over: string } | null>(null);
+  const cardOrder = dropped && dropped.over === savedKey ? dropped.order : savedOrder;
   const [dragging, setDragging] = useState<string | null>(null);
   const [dropOn, setDropOn] = useState<string | null>(null);
   const [askSeed, setAskSeed] = useState<{ text: string; n: number } | undefined>();
@@ -597,8 +589,8 @@ export function HomeScreen({
       if (!dragging) return;
       event.preventDefault();
       const next = dropCard(cardKeys, dragging, key);
-      setCardOrder(next);
-      saveCardOrder(next);
+      setDropped({ order: next, over: savedKey });
+      onReorder?.(next);
       setDragging(null);
       setDropOn(null);
     },

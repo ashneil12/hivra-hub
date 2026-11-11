@@ -174,6 +174,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode.autosave",
   "monocode.claudeHooks",
   "monocode.idleAgentLimit",
+  // G6: Show code tools (Settings > Advanced > Worktrees).
+  "monocode.showCodeTools",
   // How long a quiet worker may sit before it reads stalled (workerStall.ts).
   "monocode:stall-minutes",
   "monocode.keybindingOverrides",
