@@ -116,11 +116,13 @@ pub struct RevertOutcome {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<(bool, Vec<u8>), String> {
-    let out = crate::git_cmd::git()
-        .arg("-C")
-        .arg(dir)
-        .args(["-c", "core.quotepath=off"])
-        .args(args)
+    // A checkout whose git dir was pointed somewhere else is refused before git runs, so a filter in that config
+    // never starts. Read-only calls also ignore the checkout's attributes and textconv.
+    crate::git_cmd::ensure_contained(dir)?;
+    let mut cmd = crate::git_cmd::git();
+    cmd.arg("-C").arg(dir).args(["-c", "core.quotepath=off"]);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
+    let out = cmd
         .output()
         .map_err(|e| format!("git could not run: {e}"))?;
     Ok((out.status.success(), out.stdout))

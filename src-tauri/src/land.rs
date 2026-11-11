@@ -29,6 +29,22 @@ pub struct Landing {
     pub why: String,
 }
 
+fn git_command(
+    dir: &Path,
+    args: &[&str],
+    index: Option<&Path>,
+) -> Result<std::process::Command, String> {
+    // Repo hooks, including post-merge, stay off. This is the app's own merge, not Ash's pull. Ash's commit, push
+    // and pull go through fs::git_cmd, which leaves the repo's hooks on.
+    crate::git_cmd::ensure_contained(dir)?;
+    let mut cmd = crate::git_cmd::git();
+    cmd.arg("-C").arg(dir).args(args);
+    if let Some(index) = index {
+        cmd.env("GIT_INDEX_FILE", index);
+    }
+    Ok(cmd)
+}
+
 fn git(
     dir: &Path,
     args: &[&str],
@@ -36,11 +52,7 @@ fn git(
     stdin: Option<&[u8]>,
 ) -> Result<(bool, Vec<u8>, String), String> {
     use std::io::Write;
-    let mut cmd = crate::git_cmd::git();
-    cmd.arg("-C").arg(dir).args(args);
-    if let Some(index) = index {
-        cmd.env("GIT_INDEX_FILE", index);
-    }
+    let mut cmd = git_command(dir, args, index)?;
     cmd.stdin(if stdin.is_some() {
         std::process::Stdio::piped()
     } else {
@@ -478,6 +490,25 @@ mod tests {
             .status
             .success();
         assert!(ok, "git {args:?}");
+    }
+
+    #[test]
+    fn the_apps_own_merge_leaves_repo_hooks_off() {
+        // The arguments only. Running `git config` here would open the real ~/.gitconfig.
+        let dir = std::env::temp_dir().join(format!("monocode-land-hooks-{}", std::process::id()));
+        let cmd = git_command(&dir, &["merge", "HEAD"], None).unwrap();
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|arg| arg == "core.hooksPath=/dev/null"),
+            "{args:?}"
+        );
+        assert!(
+            args.iter().any(|arg| arg == "core.fsmonitor=false"),
+            "{args:?}"
+        );
     }
 
     fn repo(name: &str) -> (PathBuf, PathBuf) {

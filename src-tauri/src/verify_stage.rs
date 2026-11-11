@@ -329,7 +329,8 @@ fn run_command(
     let started = std::time::Instant::now();
     // WP-178 (review r2 HIGH-2): a verify run is an agent's own command, so it runs under the sandbox while it is on.
     let data = project_file::data_dir(app)?;
-    let wrap = crate::agent_sandbox::action_wrap(Some(&data))?;
+    let named = checkout.to_path_buf();
+    let wrap = crate::agent_sandbox::action_wrap(Some(&data), std::slice::from_ref(&named))?;
     let record = project_actions::start_command(
         &runs,
         main,

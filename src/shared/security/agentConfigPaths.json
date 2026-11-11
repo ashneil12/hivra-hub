@@ -138,8 +138,11 @@
       ".zlogin",
       ".bashrc",
       ".bash_profile",
+      ".bash_login",
       ".profile",
-      ".config/fish/config.fish"
+      ".zlogout",
+      ".config/fish/config.fish",
+      ".config/fish/conf.d/**"
     ],
     "cliLoginFiles": [
       ".claude.json",

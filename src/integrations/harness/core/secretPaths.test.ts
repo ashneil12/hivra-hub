@@ -82,6 +82,13 @@ describe("the shared secret list keeps every place it held (WP-178 item 3)", () 
     expect(matchProtected(`~/${file}`)).not.toBeNull();
   });
 
+  it.each([".zlogout", ".bash_login", ".config/fish/conf.d/extra.fish"])(
+    "protects the added shell profile %s",
+    (file) => {
+      expect(matchProtected(`~/${file}`)).not.toBeNull();
+    },
+  );
+
   it.each(PREVIOUSLY_LISTED_CLI_LOGIN_FILES)("still reports the CLI login file %s", (file) => {
     const report = checkTurnForProtectedPaths({ [`~/${file}`]: "1:10" }, { [`~/${file}`]: "1:20" });
     expect(report.touched).toEqual([expect.objectContaining({ path: `~/${file}`, kind: "secret" })]);

@@ -2292,12 +2292,11 @@ mod tests {
         let made = w.worktree.clone().expect("the made worktree is remembered");
         assert!(made.ends_with("clone-worktrees/mc-pr-7"), "{made}");
         assert!(wake.text.contains(&format!("Checkout: {made} is at the pull request's head {} (MonoCode made this checkout for it), ready to fix.", &head[..7])), "{}", wake.text);
-        let checked_out = crate::git_cmd::git()
-            .arg("-C")
-            .arg(&made)
-            .args(["rev-parse", "HEAD"])
-            .output()
-            .unwrap();
+        crate::git_cmd::ensure_contained(std::path::Path::new(&made)).unwrap();
+        let mut checked_out = crate::git_cmd::git();
+        checked_out.arg("-C").arg(&made);
+        crate::git_cmd::extend_readonly(&mut checked_out, &["rev-parse", "HEAD"]);
+        let checked_out = checked_out.output().unwrap();
         assert_eq!(String::from_utf8_lossy(&checked_out.stdout).trim(), head);
     }
 

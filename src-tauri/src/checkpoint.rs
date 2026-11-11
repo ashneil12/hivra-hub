@@ -945,12 +945,12 @@ fn path_contains_symlink(root: &Path, relative: &str) -> bool {
 }
 
 fn git_head(root: &Path) -> Result<Vec<u8>, String> {
+    crate::git_cmd::ensure_contained(root)?;
     let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
+    command.arg("-C").arg(root);
+    crate::git_cmd::extend_readonly(&mut command, &["rev-parse", "--verify", "HEAD"]);
     let output = command
-        .arg("-C")
-        .arg(root)
-        .args(["rev-parse", "--verify", "HEAD"])
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .output()
@@ -1143,7 +1143,14 @@ fn diff_numstat(before: &Path, after: &Path) -> Option<(i64, i64)> {
     let mut cmd = crate::git_cmd::git();
     crate::hide_window_console(&mut cmd);
     let output = cmd
-        .args(["diff", "--no-index", "--no-ext-diff", "--numstat", "--"])
+        .args([
+            "diff",
+            "--no-index",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--numstat",
+            "--",
+        ])
         .arg(before)
         .arg(after)
         .output()
@@ -1502,6 +1509,9 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> bool {
+        if crate::git_cmd::ensure_contained(dir).is_err() {
+            return false;
+        }
         crate::git_cmd::git()
             .args(args)
             .current_dir(dir)

@@ -23,6 +23,7 @@ import {
   asRecord,
   buildThreadStartParams,
   buildTurnStartParams,
+  codexSkipsOuterSandbox,
   buildTurnSteerParams,
   isRecoverableThreadResumeError,
   mapApprovalRequest,
@@ -694,6 +695,13 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     },
     "codex",
     codexStore,
+    undefined,
+    undefined,
+    undefined,
+    codexSkipsOuterSandbox({
+      runtimeMode: input.runtimeMode,
+      firstMate: input.firstMate,
+    }),
   );
 
   try {

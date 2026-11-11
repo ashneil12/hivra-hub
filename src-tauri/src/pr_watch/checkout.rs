@@ -75,12 +75,12 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 /// git in `dir`, stopped (with what it started) if it hasn't finished within `timeout`.
 fn git_within(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
+    crate::git_cmd::ensure_contained(dir)?;
     let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
+    command.arg("-C").arg(dir);
+    crate::git_cmd::extend_readonly(&mut command, args);
     command
-        .arg("-C")
-        .arg(dir)
-        .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("PATH", crate::harness::cached_gui_search_path());

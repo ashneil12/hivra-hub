@@ -9,10 +9,22 @@ import {
   mapApprovalRequest,
   mapCodexNotification,
   mapCodexSubagentSteps,
+  codexSkipsOuterSandbox,
   runtimeModeToCodexConfig,
   toCodexApprovalDecision,
 } from "./codexProtocol";
 import { parseCodexModelList } from "./codexCatalog";
+
+describe("codexSkipsOuterSandbox", () => {
+  it("skips when Codex already sandboxes the chat, and keeps the wrap for full access", () => {
+    expect(codexSkipsOuterSandbox({ firstMate: true, runtimeMode: "full-access" })).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "supervised" })).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "auto" })).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "auto-accept-edits" })).toBe(true);
+    expect(codexSkipsOuterSandbox({ runtimeMode: "full-access" })).toBe(false);
+    expect(codexSkipsOuterSandbox({})).toBe(false);
+  });
+});
 
 describe("runtimeModeToCodexConfig", () => {
   it("maps supervised to untrusted read-only", () => {

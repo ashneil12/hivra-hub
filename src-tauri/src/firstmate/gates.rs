@@ -1175,12 +1175,29 @@ impl Runners for AppRunners {
             Vec::new()
         };
         let started = Instant::now();
+        let data = self.app.path().app_data_dir().ok();
+        let wrap = match crate::agent_sandbox::action_wrap(
+            data.as_deref(),
+            std::slice::from_ref(&checkout),
+        ) {
+            Ok(wrap) => wrap,
+            Err(why) => {
+                return Some(CommandEvidence {
+                    command: name,
+                    outcome: Outcome::NotRun,
+                    exit_code: None,
+                    output: why,
+                    seconds: 0.0,
+                })
+            }
+        };
         let (ok, output) = crate::gates::run_script(
             &script,
             &checkout,
             &items,
             crate::harness::login_shell_path(),
             crate::gates::GATE_TIMEOUT,
+            wrap.as_deref(),
         );
         Some(CommandEvidence {
             command: name,

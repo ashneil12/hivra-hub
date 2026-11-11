@@ -70,6 +70,20 @@ const FIRST_MATE_CONFIG: CodexThreadConfig = {
   sandboxPolicy: { type: "readOnly" },
 };
 
+/**
+ * macOS refuses a sandbox inside a sandbox. Skip Hivra's outer wrap when Codex is already sandboxed: a first mate
+ * is always read-only, and every mode except full access runs Codex's own sandbox. A chat with no mode, and a full
+ * access chat, keep the outer wrap.
+ */
+export function codexSkipsOuterSandbox(input: {
+  runtimeMode?: RuntimeMode;
+  firstMate?: boolean;
+}): boolean {
+  if (input.firstMate === true) return true;
+  if (input.runtimeMode === undefined) return false;
+  return input.runtimeMode !== "full-access";
+}
+
 function baseCodexConfig(mode: RuntimeMode): CodexThreadConfig {
   switch (mode) {
     case "supervised":

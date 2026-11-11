@@ -979,6 +979,9 @@ pub fn harness_spawn(
     codex_store: Option<String>,
     devin_ask_edits: Option<bool>,
     custom_route: Option<crate::model_router::CustomRoute>,
+    // Codex chats that already run inside Codex's own sandbox. macOS refuses a sandbox inside a sandbox, so those
+    // skip this wrap. A full access Codex chat does not set it.
+    skip_outer_sandbox: Option<bool>,
 ) -> Result<u32, String> {
     let workdir = launch_preflight(
         &command,
@@ -1012,8 +1015,9 @@ pub fn harness_spawn(
     // a sandbox that cannot start refuses the start here, before anything is reserved or stopped, and never falls back
     // to a plain start (agent_sandbox::sandboxed_launch).
     let data_dir = app.path().app_data_dir().ok();
-    let (launch_program, launch_lead) = if crate::agent_sandbox::enabled(data_dir.as_deref()) {
-        let started = std::env::var_os("HOME")
+    let (launch_program, launch_lead) =
+        if skip_outer_sandbox != Some(true) && crate::agent_sandbox::enabled(data_dir.as_deref()) {
+            let started = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| {
                 "The agent did not start: HOME is not set, so the macOS sandbox cannot be built."
@@ -1024,22 +1028,23 @@ pub fn harness_spawn(
                     std::ffi::OsStr::new(&command),
                     &home,
                     data_dir.as_deref(),
+                    std::slice::from_ref(&workdir),
                     std::path::Path::new(crate::agent_sandbox::SANDBOX_EXEC),
                 )
             });
-        match started {
-            Ok(launch) => launch,
-            Err(error) => {
-                // WP-78: a refused start is one activity row, naming the chat. Nothing was started or reserved yet.
-                if let Some(data) = data_dir.as_deref() {
-                    crate::agent_sandbox::note_refusal(data, &session_id, &error);
+            match started {
+                Ok(launch) => launch,
+                Err(error) => {
+                    // WP-78: a refused start is one activity row, naming the chat. Nothing was started or reserved yet.
+                    if let Some(data) = data_dir.as_deref() {
+                        crate::agent_sandbox::note_refusal(data, &session_id, &error);
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
-        }
-    } else {
-        (std::ffi::OsString::from(&command), Vec::new())
-    };
+        } else {
+            (std::ffi::OsString::from(&command), Vec::new())
+        };
     let _reservation = crate::worktree_lifecycle::reserve_spawn(&workdir)?;
     let (epoch, kill_all, prev) = host.begin_spawn(&session_id);
     if let Some(prev) = prev {

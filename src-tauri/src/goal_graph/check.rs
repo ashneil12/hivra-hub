@@ -258,7 +258,7 @@ pub fn run(app: &AppHandle, cwd: &str, spec: &CheckSpec) -> Result<CheckRun, Str
     let runs = app.state::<crate::project_actions::ActionRuns>();
     // WP-178 (review r2 HIGH-2): a check command comes from a proposal, so it runs under the sandbox while it is on.
     let data = crate::project_file::data_dir(app)?;
-    let wrap = crate::agent_sandbox::action_wrap(Some(&data))?;
+    let wrap = crate::agent_sandbox::action_wrap(Some(&data), std::slice::from_ref(&checkout))?;
     let record = crate::project_actions::start_command(
         &runs,
         &main,

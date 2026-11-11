@@ -916,12 +916,15 @@ pub fn record_first_mate_note(
         return Err("Say who did this.".into());
     }
     let name = strip_controls(first_mate_name);
+    let summary = strip_controls(summary);
+    let project = strip_controls(project);
+    let target = strip_controls(target);
     record_actor_note(
         conn,
         kind,
-        summary,
-        project,
-        target,
+        &summary,
+        &project,
+        &target,
         &Who::first_mate(id, name),
         at,
     )

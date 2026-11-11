@@ -4591,7 +4591,9 @@ pub(crate) fn resolve_repo_path(root: &Path, relative: &str) -> Result<String, S
 /// cached search path finds it without waiting on the login shell.
 /// WP-104: the health list reads `git --version` through this same command.
 pub(crate) fn git_cmd() -> Command {
-    let mut cmd = crate::git_cmd::git();
+    // Ash's own commit, push and pull: fsmonitor stays off, and the repo's hooks run. Background git stays on
+    // git_cmd::git, which turns hooks off.
+    let mut cmd = crate::git_cmd::git_with_hooks();
     crate::background_work::configure_child(&mut cmd);
     crate::hide_window_console(&mut cmd);
     cmd.env("PATH", crate::harness::cached_gui_search_path());
@@ -7220,6 +7222,22 @@ pub async fn open_path_with_default_app(path: String) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_git_panel_keeps_repo_hooks_and_still_turns_fsmonitor_off() {
+        let args: Vec<String> = git_cmd()
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            args.iter().any(|arg| arg == "core.fsmonitor=false"),
+            "{args:?}"
+        );
+        assert!(
+            !args.iter().any(|arg| arg.contains("core.hooksPath")),
+            "the panel turns hooks off: {args:?}"
+        );
+    }
 
     #[test]
     fn only_video_containers_can_join_the_stream_scope() {

@@ -48,12 +48,12 @@ fn git(root: &Path, args: &[&str]) -> Result<String, String> {
     if crate::chat_folder::is_blank(root) {
         return Err(crate::chat_folder::NEEDS_FOLDER.into());
     }
+    crate::git_cmd::ensure_contained(root)?;
     let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
+    command.arg("-C").arg(root);
+    crate::git_cmd::extend_readonly(&mut command, args);
     let output = command
-        .arg("-C")
-        .arg(root)
-        .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         // `status` runs git-lfs on LFS files; see `fs::git_cmd`.

@@ -598,8 +598,13 @@ pub(crate) fn run_action(
     })?;
     // WP-87: only a long-running action with a declared stack prepares ports and Compose.
     // Check and ship pass an empty env and do not start Docker.
-    // WP-178 (review r2 HIGH-2): while the sandbox is on, an action an agent or Setup starts runs under the profile.
-    let wrap = crate::agent_sandbox::action_wrap(Some(&data))?;
+    // WP-178: while the sandbox is on, an action an agent or Setup starts runs under the profile. Ship and Run dev
+    // slot are Ash's own actions and are not wrapped (Ship runs launchctl).
+    let wrap = if crate::agent_sandbox::skips_agent_sandbox(&action.id, &action.name) {
+        None
+    } else {
+        crate::agent_sandbox::action_wrap(Some(&data), std::slice::from_ref(&checkout))?
+    };
     let stack_env = if action.long_running && file.stack.is_some() {
         let started = crate::stacks::maybe_start(
             &crate::stacks::env_from_app(app)?,

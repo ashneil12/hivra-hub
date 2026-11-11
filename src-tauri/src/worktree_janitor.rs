@@ -460,12 +460,12 @@ fn capitalize(text: &str) -> String {
 
 /// Read-only git: no optional locks (status never rewrites the index), no prompts, plain English.
 pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Result<(String, bool), String> {
+    crate::git_cmd::ensure_contained(dir)?;
     let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
+    command.arg("-C").arg(dir);
+    crate::git_cmd::extend_readonly(&mut command, args);
     let output = command
-        .arg("-C")
-        .arg(dir)
-        .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")

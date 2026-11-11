@@ -107,8 +107,11 @@ fn run_once(cmd: &mut Command, timeout: Duration) -> Result<String, Miss> {
 }
 
 fn git(repo: &Path, args: &[&str], timeout: Duration) -> Result<String, GitFail> {
-    let mut cmd = crate::git_cmd::child_keep_hooks();
-    cmd.arg("--no-pager").arg("-C").arg(repo).args(args);
+    // A git dir outside the checkout is unavailable, not an empty history: recent_shas treats Rejected as no commits.
+    crate::git_cmd::ensure_contained(repo).map_err(|_| GitFail::Unavailable)?;
+    let mut cmd = crate::git_cmd::child();
+    cmd.arg("--no-pager").arg("-C").arg(repo);
+    crate::git_cmd::extend_readonly(&mut cmd, args);
     cmd.env("GIT_OPTIONAL_LOCKS", "0");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd.env("GIT_CONFIG_NOSYSTEM", "1");

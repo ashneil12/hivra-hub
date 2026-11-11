@@ -369,6 +369,8 @@ export async function spawnChild(
   },
   /** The provider's default CLI, not a configured override. */
   defaultBinary?: boolean,
+  /** Codex only: its own sandbox is already on, and macOS refuses a sandbox inside a sandbox. */
+  skipOuterSandbox?: boolean,
 ): Promise<void> {
   // Every provider process starts here: none for a chat with no folder (the home folder is not a stand-in).
   requireChatFolder(cwd);
@@ -389,6 +391,7 @@ export async function spawnChild(
     ...(codexStore ? { codexStore } : {}),
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(customRoute ? { customRoute } : {}),
+    ...(skipOuterSandbox ? { skipOuterSandbox: true } : {}),
   });
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
