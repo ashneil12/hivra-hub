@@ -17,7 +17,7 @@ import { boardFromStores, mateStatus, type StoreCheck } from "../model/fromStore
 import { liveBoardSessions } from "../model/liveSessions";
 import { stopBoardRow } from "../model/sessionStop";
 import { flattenBoard } from "../model/tree";
-import { taskWords } from "../model/words";
+import { taskWords, workerBrief } from "../model/words";
 import { AgentsBoard } from "./AgentsBoard";
 
 const emptySubscribe = () => () => undefined;
@@ -74,7 +74,7 @@ export function AgentsBoardScreen() {
         createdAt: row.createdAt,
         startedAt: row.createdAt,
         settledAt: row.settledAt,
-        brief: row.brief ?? row.statusNotice,
+        brief: workerBrief(row.brief, row.statusNotice),
       })),
       checks: checksFor(delegations),
       costs: sessions.map((session) => ({ id: session.id, blocks: session.blocks })),
