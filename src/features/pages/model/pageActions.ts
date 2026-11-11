@@ -10,7 +10,7 @@
 // page sends into a chat ends with "(sent from the <page> page)", and every action is logged for the page to show.
 import { useSyncExternalStore } from "react";
 import { fromPrompt, pickMessage, pickReply, wordsReply } from "../../hub/model/chatQuestions";
-import { isPersonOnlyDecisionKey } from "../../hub/model/decisionKey";
+import { isPersonOnlyDecisionKey, isSecretDecisionKey } from "../../hub/model/decisionKey";
 import { hubData } from "../../hub/model/hubData";
 import { needKeyOf } from "../../hub/model/localHub/decisions";
 import type { HubAnswer } from "../../hub/model/types";
@@ -171,15 +171,21 @@ function chatName(chatId: string, d: PageActionDeps): string {
 }
 // A Page answers as itself, never as the person (review 220-r6, HIGH-1). A key only the person answers (a security
 // review, a delivery check, an irreversible step, a fresh-eyes review, a fan-out restart, a secret) is refused here
-// with a plain reason. decisions.rs `person_only` refuses a `page:<id>` answer on those keys except a secret, which
-// this check refuses on its own.
+// with a plain reason, and that reason is the one a Page hears. A need that only looks like a secret after decoding
+// is still refused, by the secret check, which does not replace this one.
 const ONLY_YOU = "Only you can answer that one. Open Needs you to answer it.";
 const ONLY_YOU_CHAT = "Only you can answer that one. Open the chat to answer it.";
 function refusePersonOnly(needId: string, ctx: ActionContext): void {
   // A Page with no id has no name to answer under, and it is never the person (decisions.ts refuses it too).
   if (!ctx.pageId.trim()) throw new Error("This page has no id, so it can't answer. Open Needs you to answer it.");
   const key = needKeyOf(needId);
-  if (key !== undefined && isPersonOnlyDecisionKey(key)) throw new Error(ONLY_YOU);
+  if (key !== undefined && isPersonOnlyDecisionKey(key)) {
+    // A secret is person-only, and it is also named as a secret: the card is where it is approved.
+    if (isSecretDecisionKey(key)) {
+      throw new Error(`${ONLY_YOU} A secret run is approved on its card in the Inbox. A page can't answer it.`);
+    }
+    throw new Error(ONLY_YOU);
+  }
 }
 type RedLineAsk = Pick<WaitingChat, "redLine" | "provide"> & { rows?: ReadonlyArray<{ redLine?: boolean }> };
 /** A red-line ask, or one asking for a key, waits for the person: a Page answers neither, in words or by its pick. */
@@ -215,8 +221,8 @@ async function answer(args: Record<string, unknown>, ctx: ActionContext, d: Page
   if (!text) throw new Error("Type an answer first.");
   const needId = str(args.needId);
   if (needId) {
-    refuseSecretNeed(needId);
     refusePersonOnly(needId, ctx);
+    refuseSecretNeed(needId);
     d.answerNeed(needId, { text, from: ctx.pageId });
     return `Answered ${quoteOf(text)}`;
   }
@@ -242,8 +248,8 @@ async function answer(args: Record<string, unknown>, ctx: ActionContext, d: Page
 async function pick(args: Record<string, unknown>, ctx: ActionContext, d: PageActionDeps): Promise<string> {
   const needId = str(args.needId);
   if (needId) {
-    refuseSecretNeed(needId);
     refusePersonOnly(needId, ctx);
+    refuseSecretNeed(needId);
     d.answerNeed(needId, { quick: "agree", from: ctx.pageId });
     return "Took the suggested answer";
   }
