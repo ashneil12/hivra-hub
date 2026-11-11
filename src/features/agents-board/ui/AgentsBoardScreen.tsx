@@ -4,6 +4,7 @@ import { useContext, useEffect, useMemo, useState, useSyncExternalStore } from "
 import { pickChief } from "../../home/model/chief";
 import { codingTeamChatProject, useCodingTeamVersion } from "../../hub/model/codingTeam";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
+import { useProjectPrefsVersion } from "../../hub/model/projectPrefs";
 import { isGlobalProject } from "../../hub/model/hubProjects";
 import { leadMono, leadSpecFor } from "../../hub/model/hubLeads";
 import { useDelegationRows } from "../../monos/model/delegationStore";
@@ -24,9 +25,10 @@ const emptySubscribe = () => () => undefined;
 const noSessions = (): Session[] => [];
 
 export function AgentsBoardScreen() {
-  useHubDataVersion();
-  useCodingTeamVersion();
-  usePrWatchesVersion();
+  const hubSnap = useHubDataVersion();
+  const prefsVersion = useProjectPrefsVersion();
+  const codingVersion = useCodingTeamVersion();
+  const watchVersion = usePrWatchesVersion();
   const delegations = useDelegationRows();
   const monos = useSyncExternalStore(subscribeMonos, monosSnapshot);
   const store = useContext(SessionStateContext);
@@ -79,7 +81,7 @@ export function AgentsBoardScreen() {
       checks: checksFor(delegations),
       costs: sessions.map((session) => ({ id: session.id, blocks: session.blocks })),
     });
-  }, [delegations, monos, now, sessions]);
+  }, [codingVersion, delegations, hubSnap, monos, now, prefsVersion, sessions, watchVersion]);
 
   const lines = useMemo(() => transcriptLines(sessions, delegations), [sessions, delegations]);
 
