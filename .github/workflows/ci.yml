@@ -8,6 +8,8 @@ on:
     # tier runs 20 jobs (5 on macOS) at once, so drafts kept the PRs that are ready waiting in the
     # queue. Marking a PR ready for review runs everything.
     types: [opened, synchronize, reopened, ready_for_review]
+  # Hivra: run every job on a branch on request (`gh workflow run CI --ref <branch>`), the browser tests included.
+  workflow_dispatch:
   schedule:
     # Hivra: nightly, on main, 03:47 UTC. The RPM jobs only; every other job skips a scheduled run. A pull request
     # that touches no packaging file builds one RPM image, so this run is what builds the second image and the
@@ -66,7 +68,11 @@ jobs:
       - run: npx vitest run --config mobile/vitest.config.ts
 
   browser:
-    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    # 11 Nov 2026 (Ash): the browser tests no longer run on pull requests. They were the slowest and flakiest jobs and
+    # most of the wait on every PR, so a PR merges on the fast checks (Rust and the web unit tests). They run on every
+    # push to main, so a break shows up right after the merge and is fixed forward, and on request for a branch
+    # (workflow_dispatch). A ship to the daily app waits for main's browser run to be green.
+    if: github.event_name != 'schedule' && github.event_name != 'pull_request'
     # Hivra: the suite runs one test at a time (workers: 1) and took about 22 minutes as one job, the longest wait
     # on every PR. Four shards (whole spec files each) run side by side on separate runners, so nothing is shared.
     # The install step is capped at 15 minutes and its retry at 8, so the job limit is 35 minutes: one full attempt
@@ -540,7 +546,7 @@ jobs:
   # WP-105: one required check that adds up the rest, so branch protection names one job instead of
   # every job. A new job stays out of this needs list until it has been green for a week. `if: always()`
   # means a failed or cancelled dependency still runs this job, so the failure is reported here too.
-  # Skipped counts as fine: a draft PR runs no jobs, the AppImage check and the RPM full set skip when packaging
+  # Skipped counts as fine: a draft PR runs no jobs, a PR runs no browser tests, the AppImage check and the RPM full set skip when packaging
   # files did not change, and a nightly run starts only the RPM jobs. scripts/ci-ok.mjs prints one line naming
   # every job and its result.
   ci-ok:

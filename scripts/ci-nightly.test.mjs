@@ -185,9 +185,23 @@ test("a nightly run builds both images and then the clean install", () => {
 test("a push to main and a ready pull request that changes packaging start every job and both images", () => {
   for (const name of ["push to main", "ready pull request that changes packaging"]) {
     const { results, images } = simulate(RUNS[name]);
-    for (const job of jobNames(ci)) assert.equal(results[job], "success", `${name}: ${job}`);
+    for (const job of jobNames(ci)) {
+      // The browser tests run on main and on request, never on a pull request (see the next test).
+      const expected = job === "browser" && RUNS[name].eventName === "pull_request" ? "skipped" : "success";
+      assert.equal(results[job], expected, `${name}: ${job}`);
+    }
     assert.deepEqual(images, IMAGES_ALL, name);
   }
+});
+
+test("the browser tests run on a push to main and on request, never on a pull request or a schedule", () => {
+  const ran = (run) => simulate(run).results.browser;
+  assert.equal(ran(RUNS["push to main"]), "success");
+  assert.equal(ran({ eventName: "workflow_dispatch", draft: null, full: "true", images: IMAGES_ALL }), "success");
+  for (const name of ["ready pull request that changes packaging", "ready pull request that does not", "draft pull request", "nightly run"]) {
+    assert.equal(ran(RUNS[name]), "skipped", name);
+  }
+  assert.match(onBlock(ci), /\n {2}workflow_dispatch:\n/);
 });
 
 test("a ready pull request that does not touch packaging still builds the production image, and nothing more", () => {
@@ -195,7 +209,10 @@ test("a ready pull request that does not touch packaging still builds the produc
   assert.equal(results.rpm, "success", "the production build runs on every pull request");
   assert.deepEqual(images, IMAGES_ONE);
   assert.equal(results["rpm-clean-install"], "skipped");
-  for (const job of [...OTHER_JOBS, "rpm-changes", "ci-ok"]) assert.equal(results[job], "success", job);
+  for (const job of [...OTHER_JOBS.filter((job) => job !== "browser"), "rpm-changes", "ci-ok"]) {
+    assert.equal(results[job], "success", job);
+  }
+  assert.equal(results.browser, "skipped", "the browser tests never run on a pull request");
 });
 
 test("a draft pull request starts nothing but ci-ok", () => {
