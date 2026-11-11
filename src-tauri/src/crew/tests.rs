@@ -3677,3 +3677,65 @@ fn a_project_saved_before_its_folder_existed_still_owns_it() {
         "{err}"
     );
 }
+
+/// WP-141 round 10: a linked worktree whose own `.git` file is garbage must not lose its project's Never use.
+/// The files cannot name a common directory, so the judgment asks git and refuses when that read fails too.
+/// An unrelated project's unreadable entry still refuses nothing (the round 9 MED-A tests).
+#[test]
+fn a_worktree_with_a_garbage_git_file_refuses_a_banned_cli() {
+    use super::gate::judge_spawn;
+    let root = std::env::temp_dir().join(format!("r10-garbage-wt-{}", uuid::Uuid::new_v4()));
+    let repo = root.join("repo");
+    let worktree = root.join("worktree");
+    std::fs::create_dir_all(&repo).unwrap();
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args([
+                "-c",
+                "user.name=r10",
+                "-c",
+                "user.email=r10@example.invalid",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?} failed");
+    };
+    git(&repo, &["init", "-q"]);
+    git(&repo, &["commit", "-q", "--allow-empty", "-m", "init"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "r10-wt",
+            worktree.to_str().unwrap(),
+        ],
+    );
+    let store = memory();
+    let mut conn = store.lock_conn().unwrap();
+    store::set_policy(
+        &mut conn,
+        "project",
+        repo.to_str().unwrap(),
+        &json!({ "lockDefault": false, "neverUse": ["codex"], "fallback": [] }),
+        0,
+    )
+    .unwrap();
+    std::fs::write(worktree.join(".git"), "garbage\n").unwrap();
+    let judged = judge_spawn(
+        &conn,
+        "7d3e5c2a-lead-chat",
+        "codex",
+        worktree.to_str().unwrap(),
+        None,
+    );
+    let _ = std::fs::remove_dir_all(&root);
+    let err = judged.expect_err(
+        "a worktree whose own git file cannot be read must not drop its project's Never use",
+    );
+    assert!(err.contains("could not be read"), "{err}");
+}

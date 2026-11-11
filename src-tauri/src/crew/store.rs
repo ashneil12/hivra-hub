@@ -856,9 +856,9 @@ fn checkout_of(folder: &std::path::Path) -> Result<Option<Checkout>, String> {
 
 /// Every hub project that owns a folder. A project owns a folder when the folder is inside the project's folder, or
 /// when both are in one checkout (a worktree included) and `owns_within_checkout` says so. A project is a candidate for
-/// the git read only when its `.git` entry and the folder's name the same common directory, read from the files; the
-/// read itself (git, failing closed) runs only for such a candidate. A project whose entry is unreadable or elsewhere
-/// refuses nothing.
+/// the git read only when its `.git` entry and the folder's name the same common directory, read from the files. When
+/// the folder's own entry exists but those files do not name one, git reads it and a failure refuses the judgment. A
+/// project whose entry is unreadable or elsewhere refuses nothing.
 pub(crate) fn projects_owning(conn: &Connection, folder: &str) -> Result<Vec<String>, String> {
     let folder = folder.trim();
     if folder.is_empty() {
@@ -889,8 +889,21 @@ pub(crate) fn projects_owning(conn: &Connection, folder: &str) -> Result<Vec<Str
         else {
             continue;
         };
-        let Some(mine_common) = common_from_entry(entry) else {
-            continue;
+        // The folder's own `.git` is present, but its files do not name a common directory (garbage written into a
+        // linked worktree's `.git` file, or a gitdir that is gone). Git must say which checkout this is. If git cannot
+        // read it either, refuse: skipping the candidate would drop the project's Never use and lock. An unrelated
+        // project's unreadable entry never reaches here.
+        let mine_common = match common_from_entry(entry) {
+            Some(common) => common,
+            None => match checkout_of(std::path::Path::new(&here))? {
+                Some(checkout) => checkout.common,
+                None => {
+                    return Err(
+                        "The crew policy could not be read, so nothing was started (a folder's place in its git checkout could not be decided)."
+                            .to_string(),
+                    );
+                }
+            },
         };
         if mine_common != theirs_common {
             continue;
