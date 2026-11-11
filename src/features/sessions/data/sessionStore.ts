@@ -439,21 +439,35 @@ export function sanitizeLinkedWorkItem(
   };
 }
 
+// WP-177: a moved chat keeps no transcript, so a project list that only counts rows with a user message would drop
+// it. The stored row carries an empty mark for that count. Loading the chat removes the mark, so no message is shown.
+const MOVED_LISTING_MARK = "teleport-listed";
+
+function withMovedListingMark(blocks: Block[]): Block[] {
+  const carriesMove = blocks.some(
+    (block) => typeof block.notice === "string" && block.notice.startsWith("teleport"),
+  );
+  if (!carriesMove || blocks.some((block) => block.role === "user")) return blocks;
+  return [...blocks, { id: MOVED_LISTING_MARK, role: "user", text: "" }];
+}
+
 export function sanitizeSessionForPersist(
   session: Session,
 ): SessionUpsertPayload {
   const firstUser = session.blocks.findIndex((block) => block.role === "user");
   return {
     ...persistableMeta(session),
-    blocks: session.blocks
-      .map((block, index) =>
-        sanitizeBlock(
-          index === firstUser && session.orchestrationLeadId
-            ? { ...block, orchestrationLeadId: session.orchestrationLeadId }
-            : block,
-        ),
-      )
-      .filter((block): block is Block => block != null),
+    blocks: withMovedListingMark(
+      session.blocks
+        .map((block, index) =>
+          sanitizeBlock(
+            index === firstUser && session.orchestrationLeadId
+              ? { ...block, orchestrationLeadId: session.orchestrationLeadId }
+              : block,
+          ),
+        )
+        .filter((block): block is Block => block != null),
+    ),
   };
 }
 
@@ -1200,6 +1214,8 @@ function sanitizeBlock(
 ): Block | null {
   // r63: a CLI notice saved before the filter (cliNotices.ts) is left out when the chat loads.
   if (options?.hydrate && block.role === "system" && !block.notice && isCliNotice(block.text)) return null;
+  // WP-177: the empty mark that keeps a moved row in a project list is not a message.
+  if (options?.hydrate && block.id === MOVED_LISTING_MARK) return null;
   const next: Block = {
     id: block.id,
     role: block.role,

@@ -31,7 +31,7 @@ const session = {
   title: "Deploy with sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWX",
   cwd: "/projects/fixture",
   busy,
-  // A chat that moved to the host is shown from its marker here. The row also keeps the person's own messages.
+  // A chat that moved to the host keeps only its marker here, as the app's own row does (teleportLocal.release).
   blocks: back ? movedBlocks("Studio box", "2026-11-11T09:00:00.000Z", "host-a") : copyBlocks,
   providerSessionId: back ? undefined : "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
   queuedMessages: back ? [] : [{ id: "q1", text: "then tell the team", attachments: [] }],
