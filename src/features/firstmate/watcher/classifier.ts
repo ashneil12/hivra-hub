@@ -151,7 +151,7 @@ export function classifyRow(before: RowFacts | null | undefined, row: RowFacts):
     const status = row.status;
     if (row.state === "cancelled") return [record("stopped by someone who already knows")];
     if (status === "working") return [record("finished; its checks are still running")];
-    if (status === "paused") return [record("waiting for a usage limit to reset")];
+    if (status === "paused") return [record("Waiting for a usage limit to reset")];
     if (row.state === "completed" && (status === undefined || status === "done"))
       return [wake({ ...base, kind: "worker-done", route: "report", key: `report:${row.id}:${row.generation}`, text: `"${titleOf(row)}" is done.` })];
     return [
