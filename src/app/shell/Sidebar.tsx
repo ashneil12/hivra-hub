@@ -941,11 +941,12 @@ function SidebarComponent({
       monoOf: (id) => (importedOwner && isImportedChatId(id) ? importedOwner : monoForSession(id)?.id),
       startedBy: (id) => startedBy.get(id),
     });
-  const listableSessions = mergeFolderSessionSummaries(
+  const folderSessions = mergeFolderSessionSummaries(
     projectSessions,
     remoteProject ? [] : openSessions,
     sessionFolders,
-  ).filter(
+  );
+  const listableSessions = folderSessions.filter(
     (session) =>
       // A first mate's main chat is its pinned row. Its further chats (Dropwave: "New chat" beside it) are listed.
       (!isMonoSession(session.id) || isMonoSideChat(session.id)) &&
@@ -964,7 +965,18 @@ function SidebarComponent({
       .map((session) => session.id),
   );
   // The coding team's Lead is listed (pinned at the top), so the chats it started are too, under it.
-  const teamLead = codingTeam?.lead;
+  // Its row takes its chat's real times (Ash, 12 Nov: a brief landed in the Hivra lead's chat while the row sat at the
+  // bottom of the list with no time, so nothing looked new). The wide list places it by when it last moved.
+  const teamLeadChat = codingTeam?.lead
+    ? folderSessions.find((session) => session.id === codingTeam.lead?.session.id)
+    : undefined;
+  const teamLead =
+    codingTeam?.lead && teamLeadChat
+      ? {
+          ...codingTeam.lead,
+          session: { ...codingTeam.lead.session, createdAt: teamLeadChat.createdAt, updatedAt: teamLeadChat.updatedAt },
+        }
+      : codingTeam?.lead;
   if (teamLead) shownSessionIds.add(teamLead.session.id);
   const listedSessions = listableSessions.filter(
     (session) =>
@@ -2246,7 +2258,8 @@ function SidebarComponent({
           isActive={lead.active}
           isSelected={false}
           busy={lead.busy}
-          done={false}
+          // A brief that landed and finished while Ash was elsewhere marks it, as any other chat's reply does.
+          done={unseenFinishedIds.has(lead.session.id)}
           linkedUpdate={false}
           needsApproval={false}
           dense={inset}

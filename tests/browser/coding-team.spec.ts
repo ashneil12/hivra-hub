@@ -196,3 +196,42 @@ test("the coding team opens on its Lead, nests every chat's sub-chats, and opens
   await expect(leadRow(page).locator('[aria-current="true"]')).toBeVisible();
   await expect(page.locator('[data-hub-item="leadership-team"]')).toHaveAttribute("title", "The leadership team's group chat");
 });
+
+// Ash (12 Nov): a brief landed in the Hivra lead's chat while its row sat at the bottom of the list with no time, so
+// nothing there looked new. The Lead's chat now takes its place by when it last moved, like every other chat.
+test("the Lead's chat sits by when it last moved, so a brief landing in it lifts it to the top", async ({ page }) => {
+  const now = Date.now();
+  const LEAD_CHAT = "5d2c8f0e-1a7b-4c3e-9f21-7b6a0d4e8c13";
+  await page.addInitScript(
+    ({ list, leadChat, folder }) => {
+      if (sessionStorage.getItem("seeded")) return;
+      sessionStorage.setItem("seeded", "1");
+      // A brief just landed in the Lead's chat: it moved last, after every other chat in the project.
+      const brief = {
+        id: leadChat, cwd: folder, harness: "claude", model: "claude:sonnet-5", runtimeMode: "supervised",
+        title: "Fix the waitlist typo", createdAt: Date.now() - 86_400_000, updatedAt: Date.now(),
+      };
+      localStorage.setItem("monocode:dev-sessions", JSON.stringify([...list, brief]));
+      // The page starts from this saved roster (browserTauriMock.ts): the Lead's chat is the one the brief went into.
+      localStorage.setItem(
+        "monocode:dev-roster-seed",
+        JSON.stringify([{ id: "vg-game-lead", sessionId: leadChat, name: "EXO lead", mascot: "invader", projects: [folder] }]),
+      );
+    },
+    { list: chats(now), leadChat: LEAD_CHAT, folder: FOLDER },
+  );
+  await openLocalHub(page);
+  await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
+  await openProjectLead(page);
+  await expect(leadRow(page)).toBeVisible({ timeout: 15_000 });
+  await expect(card(page, OTHER_CHAT)).toBeVisible();
+  const order = () =>
+    page.evaluate(() =>
+      [...document.querySelectorAll("[data-session-list] [data-coding-team-lead], [data-session-list] [data-session-card]")]
+        .map((el) => (el.hasAttribute("data-coding-team-lead") ? "lead" : el.getAttribute("data-session-card")))
+        .filter((chat, i, all) => all.indexOf(chat) === i),
+    );
+  await expect
+    .poll(async () => (await order()).filter((chat) => chat === "lead" || chat === TEAM_CHAT || chat === OTHER_CHAT))
+    .toEqual(["lead", TEAM_CHAT, OTHER_CHAT]);
+});
