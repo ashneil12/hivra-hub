@@ -16,7 +16,9 @@ export type HomeChiefSession = {
 
 export type HomeChiefHost = {
   /** `projectId`: the Mono's own chat for that project (Dropwave), else its chat on Home. */
-  ensure: (monoId: string, projectId?: string) => Promise<{ id: string } | undefined>;
+  ensure: (monoId: string, projectId?: string, options?: { fresh?: boolean }) => Promise<{ id: string } | undefined>;
+  /** Show one of the Mono's chats (a fresh one Home's box started). */
+  open?: (sessionId: string) => void;
   submit: (sessionId: string, text: string) => boolean | Promise<boolean>;
   answer: (sessionId: string, requestId: number, reply: UserQuestionReply) => void;
   read: (sessionId: string) => HomeChiefSession | undefined;
@@ -69,14 +71,23 @@ export async function ensureHomeChief(monoId: string): Promise<string | undefine
   }
 }
 
-export async function sendHomeTurn(monoId: string, text: string, projectId?: string): Promise<{ ok: true; sessionId: string } | { ok: false }> {
+/**
+ * `fresh`: a new chat with the Mono instead of its running one (Ash, 12 Nov: a message from Home starts a new chat).
+ * The earlier chats stay in its chat list.
+ */
+export async function sendHomeTurn(
+  monoId: string,
+  text: string,
+  projectId?: string,
+  options?: { fresh?: boolean },
+): Promise<{ ok: true; sessionId: string } | { ok: false }> {
   const words = text.trim();
   const current = host;
   if (!words || !monoId.trim() || !current) return { ok: false };
   const mine = ++token;
   let session: { id: string } | undefined;
   try {
-    session = await current.ensure(monoId, projectId);
+    session = await current.ensure(monoId, projectId, options?.fresh ? { fresh: true } : undefined);
   } catch {
     return { ok: false };
   }
@@ -89,6 +100,11 @@ export async function sendHomeTurn(monoId: string, text: string, projectId?: str
   }
   if (!accepted || mine !== token) return { ok: false };
   return { ok: true, sessionId: session.id };
+}
+
+/** Show a chat Home's box started. */
+export function openHomeChiefChat(sessionId: string): void {
+  if (sessionId) host?.open?.(sessionId);
 }
 
 export function answerHomeQuestion(sessionId: string, requestId: number, reply: UserQuestionReply): void {
