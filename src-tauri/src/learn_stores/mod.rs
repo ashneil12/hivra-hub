@@ -20,7 +20,7 @@ use tauri::{AppHandle, Manager};
 pub use apply::{profile_load, profile_save, state_cas, state_load, LoadedProfiles, LoadedState};
 pub use gate::{Limits, Listing, StandIn, StoreLocate};
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn learn_stores_list(
     stand_ins: Option<Vec<StandIn>>,
     include_cursor_ide: Option<bool>,
@@ -42,7 +42,7 @@ pub fn learn_stores_list(
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn learn_stores_read(
     source: String,
     root: String,

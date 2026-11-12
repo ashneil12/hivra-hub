@@ -42,6 +42,10 @@ export type LearnRunInput = {
   fromMs?: number;
   /** Only chats from these project folders. */
   projects?: string[];
+  /** Only these chat files (store folder joined to the path in it). */
+  files?: string[];
+  /** Only chats from these stores. */
+  sources?: string[];
   /** About how many chats to read. */
   budget?: number;
 };
@@ -51,7 +55,7 @@ export type LearnRunResult = { proposals: ShownProposal[]; chats: number };
 export type LearnPorts = {
   cost: () => Promise<number>;
   /** Chats, tokens and model, before a run. A screen without it falls back to `cost`. */
-  estimate?: (input?: Pick<LearnRunInput, "fromMs" | "projects" | "budget">) => Promise<LearnEstimate>;
+  estimate?: (input?: Pick<LearnRunInput, "fromMs" | "projects" | "files" | "sources" | "budget">) => Promise<LearnEstimate>;
   /** A bare list is a run that did not say how many chats it read. */
   run: (input: LearnRunInput) => Promise<ShownProposal[] | LearnRunResult>;
   /** A finished run's suggestions nobody has decided yet (one started from onboarding, say). */

@@ -83,7 +83,7 @@ function Rules({ rules, rulesFrom, accept, onRulesDone, onClose }: ImportSetupCa
     const refused = chosen.length - done.length;
     if (refused === 0) return onRulesDone();
     setLeft(rest);
-    setNote(`${refused === 1 ? "One rule" : `${refused} rules`} couldn't be saved and ${refused === 1 ? "is" : "are"} still here. You can try again, or find ${refused === 1 ? "it" : "them"} later in Settings, Memory.`);
+    setNote(`${refused === 1 ? "One rule" : `${refused} rules`} couldn't be saved and ${refused === 1 ? "is" : "are"} still here. You can try again, or find ${refused === 1 ? "it" : "them"} in Settings, Memory, until the app closes.`);
   };
   return (
     <>
@@ -91,7 +91,7 @@ function Rules({ rules, rulesFrom, accept, onRulesDone, onClose }: ImportSetupCa
         <h1 className="text-[18px] text-content">How you work</h1>
         <p className="text-[13px] leading-5 text-content/75" data-import-setup-rules-summary>
           {left.length} suggested {left.length === 1 ? "rule" : "rules"}
-          {rulesFrom ? ` from ${rulesFrom.toLocaleString("en-GB")} of your chats` : ""}. Each one quotes the chats it came from. Only ticked ones are saved; the rest wait in Settings, Memory.
+          {rulesFrom ? ` from ${rulesFrom.toLocaleString("en-GB")} of your chats` : ""}. Each one quotes the chats it came from. Only ticked ones are saved; the rest wait in Settings, Memory, until the app closes.
         </p>
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-1" data-import-setup-rules>

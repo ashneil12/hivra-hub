@@ -82,7 +82,12 @@ describe("the setup driver", () => {
     await run.bringIn();
     await settle();
     expect(startLearn).toHaveBeenCalledTimes(1);
-    expect(startLearn).toHaveBeenCalledWith({ includeUserFile: true });
+    // Only the files that came in, and only Claude Code and Codex: nothing else may be read.
+    expect(startLearn).toHaveBeenCalledWith({
+      files: ["/h/.claude/projects/c0.jsonl", "/h/.claude/projects/c1.jsonl", "/h/.claude/projects/c2.jsonl"],
+      sources: ["claude", "codex"],
+      includeUserFile: true,
+    });
     expect(setupState().stage).toBe("rules");
     stop();
   });
@@ -97,6 +102,42 @@ describe("the setup driver", () => {
     await settle();
     expect(setupState().stage).toBe("off");
     expect(startLearn).not.toHaveBeenCalled();
+    stop();
+  });
+
+  it("a folder the person left out never reaches the reading", async () => {
+    const base = ports(4);
+    const run = new ChatImportRun({
+      ...base,
+      index: async (root, source, offset, limit) => {
+        const page = await base.index(root, source, offset, limit);
+        // The last two chats ran in another folder.
+        return { ...page, chats: page.chats.map((chat, i) => (offset + i >= 2 ? { ...chat, cwd: "/p/private" } : chat)) };
+      },
+    });
+    const startLearn = vi.fn(async (_options: { files: string[]; sources: string[] }) => undefined);
+    setSetupState({ stage: "sweep", learn: true });
+    const stop = startSetupDriver({ run, learnStatus: () => ({ phase: "idle", proposals: [] }), subscribeLearn: () => () => undefined, startLearn });
+    await settle();
+    const choices = run.get().choices!;
+    run.choose({ ...choices, groups: { ...choices.groups, "/p/private": { take: false } } });
+    await run.bringIn();
+    await settle();
+    expect(startLearn).toHaveBeenCalledTimes(1);
+    expect(startLearn.mock.calls[0][0].files).toEqual(["/h/.claude/projects/c0.jsonl", "/h/.claude/projects/c1.jsonl"]);
+    stop();
+  });
+
+  it("with nothing brought in there is nothing to read, and no run starts", async () => {
+    const run = new ChatImportRun({ ...ports(2), save: async () => { throw new Error("no"); } });
+    const startLearn = vi.fn(async () => undefined);
+    setSetupState({ stage: "sweep", learn: true });
+    const stop = startSetupDriver({ run, learnStatus: () => ({ phase: "idle", proposals: [] }), subscribeLearn: () => () => undefined, startLearn });
+    await settle();
+    await run.bringIn();
+    await settle();
+    expect(startLearn).not.toHaveBeenCalled();
+    expect(setupState().stage).toBe("off");
     stop();
   });
 

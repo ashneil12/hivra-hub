@@ -39,6 +39,10 @@ export type SampleOptions = {
   fromMs?: number;
   /** Only chats from these project folders (a folder holds the chats of its sub-folders too). */
   projects?: readonly string[];
+  /** Only these chat files, each the store folder joined to the chat's path in it. Nothing else is taken. */
+  files?: readonly string[];
+  /** Only chats from these stores ("claude", "codex"). */
+  sources?: readonly string[];
   budget?: number;
   minUserMessages?: number;
 };
@@ -88,6 +92,11 @@ function inProjects(chat: SampleChat, projects: readonly string[]): boolean {
   return false;
 }
 
+/** One spelling for a chat file's path: the store folder and the path in it, forward slashes. */
+export function chatFileKey(root: string, rel: string): string {
+  return `${slashes(root)}/${rel.replace(/\\/g, "/").replace(/^\/+/, "")}`;
+}
+
 function worthReading(chat: SampleChat, minUser: number): boolean {
   if (typeof chat.userMessages === "number") return chat.userMessages >= minUser;
   if (FILE_SOURCES.has(chat.source) && chat.bytes > 0 && chat.bytes < MIN_CHAT_BYTES) return false;
@@ -112,6 +121,8 @@ export function sampleOrder(chats: readonly SampleChat[], options: SampleOptions
   const minUser = options.minUserMessages ?? MIN_USER_MESSAGES;
   const from = typeof options.fromMs === "number" && Number.isFinite(options.fromMs) ? options.fromMs : null;
   const projects = options.projects?.filter((path) => typeof path === "string" && path.trim()) ?? [];
+  const files = options.files ? new Set(options.files.map((file) => slashes(file))) : null;
+  const sources = options.sources ? new Set(options.sources) : null;
   let tooBig = 0;
   const groups = new Map<string, SampleChat[]>();
   const seen = new Set<string>();
@@ -119,6 +130,8 @@ export function sampleOrder(chats: readonly SampleChat[], options: SampleOptions
     if (!chat || typeof chat.id !== "string" || typeof chat.root !== "string" || typeof chat.rel !== "string") continue;
     const mtime = Number.isFinite(chat.mtimeMs) ? chat.mtimeMs : 0;
     if (from !== null && mtime < from) continue;
+    if (sources && !sources.has(chat.source)) continue;
+    if (files && !files.has(chatFileKey(chat.root, chat.rel))) continue;
     if (projects.length > 0 && !inProjects(chat, projects)) continue;
     if (!worthReading(chat, minUser)) continue;
     // Rows that share one database (OpenCode) are told apart by id, files by their path.

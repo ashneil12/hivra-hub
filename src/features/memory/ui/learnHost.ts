@@ -114,12 +114,14 @@ async function listedChats(): Promise<Listing> {
 
 type RunPlan = { picked: Listed[]; order: Listed[]; budget: number; leftOut: number; tooBig: number };
 
-async function planRun(input: Pick<LearnRunInput, "fromMs" | "projects" | "budget">): Promise<RunPlan> {
+async function planRun(input: Pick<LearnRunInput, "fromMs" | "projects" | "files" | "sources" | "budget">): Promise<RunPlan> {
   const listing = await listedChats();
   const budget = Math.max(1, Math.floor(input.budget ?? DEFAULT_BUDGET));
   const plan = sampleOrder(listing.chats, {
     fromMs: input.fromMs,
     projects: input.projects,
+    files: input.files,
+    sources: input.sources,
     budget,
   });
   const order = plan.order as Listed[];
@@ -133,7 +135,7 @@ async function planRun(input: Pick<LearnRunInput, "fromMs" | "projects" | "budge
 }
 
 /** Before a run: how many chats, about how many tokens, and which model answers. */
-async function estimateFor(input: Pick<LearnRunInput, "fromMs" | "projects" | "budget">): Promise<LearnEstimate> {
+async function estimateFor(input: Pick<LearnRunInput, "fromMs" | "projects" | "files" | "sources" | "budget">): Promise<LearnEstimate> {
   const plan = await planRun(input);
   const run = estimateRun(plan.picked);
   let model: string | null = null;
@@ -194,11 +196,11 @@ export function learnPorts(now: () => string = () => new Date().toISOString()): 
   let ticket = 0;
 
   const runLearn = async (
-    { includeUserFile, fromMs, projects, budget: asked }: LearnRunInput,
+    { includeUserFile, fromMs, projects, files, sources, budget: asked }: LearnRunInput,
     alive: () => boolean,
   ): Promise<LearnRunResult> => {
     setLearnRunStatus({ phase: "listing", read: 0, target: 0, chats: 0, proposals: [], leftOut: 0, tooBig: 0, note: "" });
-    const plan = await planRun({ fromMs, projects, budget: asked });
+    const plan = await planRun({ fromMs, projects, files, sources, budget: asked });
     if (!alive()) return EMPTY;
     const target = Math.min(plan.budget, plan.order.length);
     const perChat = charsPerChat(target);
@@ -436,11 +438,11 @@ export function sharedLearnPorts(): LearnPorts {
  * `sharedLearnPorts().accept(id)` and `.reject(id)`, as the Settings screen does.
  */
 export function startLearnRun(
-  options: { fromMs?: number; projects?: string[]; budget?: number; includeUserFile?: boolean } = {},
+  options: { fromMs?: number; projects?: string[]; files?: string[]; sources?: string[]; budget?: number; includeUserFile?: boolean } = {},
 ): Promise<LearnRunStatus> {
   if (learnRunBusy()) return currentRun ?? Promise.resolve(learnRunStatus());
   const run = sharedLearnPorts()
-    .run({ includeUserFile: options.includeUserFile ?? false, fromMs: options.fromMs, projects: options.projects, budget: options.budget })
+    .run({ includeUserFile: options.includeUserFile ?? false, fromMs: options.fromMs, projects: options.projects, files: options.files, sources: options.sources, budget: options.budget })
     .then(
       () => learnRunStatus(),
       () => learnRunStatus(),

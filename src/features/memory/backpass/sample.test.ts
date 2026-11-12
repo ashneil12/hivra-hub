@@ -128,3 +128,18 @@ describe("the size of a run", () => {
     expect(estimateRun([])).toEqual({ chats: 0, tokens: 0 });
   });
 });
+
+describe("a run kept to the chats the person brought in", () => {
+  it("takes only the named files and only Claude Code and Codex, whatever else the stores hold", () => {
+    const taken = chat("app", 300);
+    const leftOut = chat("private", 400);
+    const grok = chat("app", 500, { source: "grok", root: "/grok", rel: "g1.jsonl" });
+    const codex = chat("app", 200, { source: "codex", root: "/codex/", rel: "2026\\01\\r1.jsonl", cwd: null });
+    const all = [taken, leftOut, grok, codex];
+    const files = [`/store/${taken.rel}`, "/codex/2026/01/r1.jsonl", "/grok/g1.jsonl"];
+    const order = sampleOrder(all, { files, sources: ["claude", "codex"] }).order;
+    expect(order.map((c) => c.id).sort()).toEqual([taken.id, codex.id].sort());
+    // An empty list of files takes nothing; it never means "everything".
+    expect(sampleOrder(all, { files: [], sources: ["claude", "codex"] }).order).toEqual([]);
+  });
+});

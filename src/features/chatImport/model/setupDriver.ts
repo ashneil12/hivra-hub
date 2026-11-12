@@ -10,7 +10,7 @@ export type SetupDriverPorts = {
   run: ChatImportRun;
   learnStatus: () => LearnStatus;
   subscribeLearn: (listener: () => void) => () => void;
-  startLearn: (options: { fromMs?: number; includeUserFile?: boolean }) => Promise<unknown>;
+  startLearn: (options: { fromMs?: number; files: string[]; sources: string[]; includeUserFile?: boolean }) => Promise<unknown>;
 };
 
 const learnBusy = (phase: string) => phase === "listing" || phase === "reading" || phase === "asking";
@@ -57,10 +57,16 @@ export function startSetupDriver(ports: SetupDriverPorts): () => void {
     }
     const after = nextStage(before, run.phase, run.imported, ports.learnStatus());
     if (after.stage === "reading" && !reading && !learnBusy(ports.learnStatus().phase) && before.stage !== "reading") {
+      // Only the chats the person brought in are read: never a folder they left out, never another tool's store.
+      const files = run.importedFiles;
+      if (files.length === 0) {
+        setSetupState({ ...before, stage: "off" });
+        return;
+      }
       reading = true;
       const fromMs = run.choices?.fromMs ?? undefined;
       setSetupState(after);
-      void ports.startLearn({ ...(fromMs != null ? { fromMs } : {}), includeUserFile: true }).finally(() => {
+      void ports.startLearn({ ...(fromMs != null ? { fromMs } : {}), files, sources: ["claude", "codex"], includeUserFile: true }).finally(() => {
         reading = false;
         tick();
       });
