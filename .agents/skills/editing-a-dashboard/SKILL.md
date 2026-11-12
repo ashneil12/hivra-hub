@@ -46,6 +46,24 @@ page he is using until he chooses it.
 - The response is `{status, type, body, url}`; `body` is text. Check `status` before drawing, and say what failed.
 
 ## 5. Look like the hub
+- Build a bespoke page from the hub kit, which every page already has: its styles load before the page's CSS and a
+  `kit` global of builders is ready before its script. Lay it out like the ready-made hubs: up to four numbers on top
+  (`k-stats`), then titled sections with a count (`k-section`, `k-section-head`, `k-count`), rows on a card (`k-card`
+  of `k-item` > `k-row`: a picture, a name and a line under it, a state, its buttons), the work under a row in a
+  `k-nest`, quiet things as tiles (`k-grid` of `k-tile`), and one sentence when there is nothing (`kit.empty`).
+- The parts: `k-page`, `k-head`/`k-lede`, `k-stats`/`k-stat`, `k-section`, `k-card` (`k-pad`), `k-row`, `k-main`,
+  `k-title`, `k-sub`, `k-text`, `k-aside`, `k-actions`, `k-nest`, `k-grid`/`k-tile`, `k-avatar` (`k-sm`), `k-pill`
+  (`data-live` pulses), `k-dot`, `k-tags`/`k-tag`, `k-btn` (`k-primary` once per surface, `k-quiet`, `k-icon-only`),
+  `k-callout` (a question under a row), `k-field`/`k-input`, `k-meter`, `k-empty`, `k-note`, `k-sr`. A tone is
+  `data-tone` = `ok` (working), `warn` (asking, waiting), `bad` (the Needs you red, only when Ash must act), `idle`.
+- The builders, each returning a node with text set as text: `kit.el(tag, cls, text)`, `kit.add(parent, kids)`,
+  `kit.icon(name)`, `kit.avatar(name, {tone, icon, small})`, `kit.pill(tone, text, {live})`,
+  `kit.stat({label, value, tone, onClick})`, `kit.button(label, onClick, {primary, quiet, icon, iconOnly, name, hook})`,
+  `kit.row({lead, title, sub, aside, actions, onClick})`, `kit.tile({lead, title, sub, aside, body, actions})`,
+  `kit.section(title, {count, tone, actions, body})`, `kit.callout(text, {hint, tone, body})`,
+  `kit.empty(text, icon)`, `kit.meter(value, max, tone)`, `kit.tag(text)`, `kit.ago(ms)`, `kit.tone(state, needsYou)`.
+- Icons (`kit.ICONS`): open, stop, message, reply, check, alert, clock, chevron, down, folder, users, bot, spark,
+  build, inbox, refresh, plus, search, calendar, chart, doc, link, play, pause, hand, moon.
 - Style every colour, surface, border and shadow with the theme tokens (`--color-content`, `--color-surface`,
   `--color-surface-raised`, `--color-surface-ring`, `--color-stroke`, `--color-theme-accent`). No hex, no `rgb()`,
   and no red, amber or green outside a real status.
