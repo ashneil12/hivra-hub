@@ -4,6 +4,8 @@
 //
 //   npm run hub:check-all && npm run hub:build && npm run hub:ship [-- --json]
 //   npm run hub:ship -- --drill-rollback      # the whole path, then put the old build back as if it had failed
+//   npm run hub:build && npm run hub:ship -- --skip-tests   # Ash's fast loop (12 Nov 2026): no hub:check-all record
+//                                             # needed; every other check, the backup and the rollback still apply
 //   npm run hub:install                       # = --legacy: the one-time install of the first build that can ship
 //
 // `npm run hub:ship`, the `app.ship` action and (later) a button all run this file.
@@ -180,7 +182,7 @@ export function shipInProgress(paths) {
 }
 
 /** The checks before anything changes. Every refusal is collected, not just the first. */
-export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowSameVersion = false, fromApp = false }) {
+export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowSameVersion = false, fromApp = false, skipTests = false }) {
   const refusals = [];
   const warnings = [];
   const facts = {};
@@ -213,8 +215,14 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
         `The build is from ${verified.stamp.sha.slice(0, 7)} but the checkout is at ${facts.head.slice(0, 7)}. Run npm run hub:build.`,
       );
   }
-  // hub:check-all passed for exactly this commit.
-  if (facts.head) {
+  // hub:check-all passed for exactly this commit, unless the ship says it skips the tests (Ash's fast loop: the tests
+  // run once he is satisfied). Only the test gate goes: identity, signature, healthcheck, backup and rollback stay.
+  if (skipTests) {
+    facts.checks = { skipped: true };
+    warnings.push(
+      `Shipping ${facts.head ? facts.head.slice(0, 7) : "this build"} without npm run hub:check-all (--skip-tests). The trial and rollback still protect the data.`,
+    );
+  } else if (facts.head) {
     const record = readJson(path.join(repo, "target/hub-checks", `${facts.head}.json`));
     if (!record || record.ok !== true || record.sha !== facts.head)
       refusals.push(`No passing npm run hub:check-all for ${facts.head.slice(0, 7)}. Run it, then ship.`);
@@ -704,6 +712,7 @@ function parseArgs(argv) {
     else if (arg === "--drill-rollback") options.drill = "rollback";
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--allow-same-version") options.allowSameVersion = true;
+    else if (arg === "--skip-tests") options.skipTests = true;
     else if (arg === "--repo") options.repo = value();
     else if (arg === "--bundle") options.bundle = value();
     else if (arg === "--requested-by") options.requestedBy = value();
@@ -782,6 +791,7 @@ export async function main(argv = process.argv.slice(2)) {
     bundle,
     paths,
     allowSameVersion: Boolean(options.allowSameVersion),
+    skipTests: Boolean(options.skipTests),
     fromApp: Boolean(options.requestedBy) || process.env.MONOCODE_SHIP_FROM_APP === "1",
   });
   // Loud, on stderr, whatever happens next (the JSON result carries them too).
