@@ -185,7 +185,7 @@ export function WorkerDefaultControl({
     <div className="flex flex-col gap-2" data-worker-default={scope}>
       {title ? <h3 className="text-[13px] font-medium text-content">{title}</h3> : null}
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[13px] text-content/80">{scope === "project" ? "Its workers run on" : "Workers run on"}</span>
+        {scope === "mono" ? <span /> : <span className="text-[13px] text-content/80">{scope === "project" ? "Its workers run on" : "Workers run on"}</span>}
         <div className="flex items-center gap-1">
           <ModelPicker
             harness={pickerHarness}
@@ -220,9 +220,11 @@ export function WorkerDefaultControl({
           ) : null}
         </div>
       </div>
-      <p className="text-[12px] leading-4 text-content/60" data-worker-default-line>
-        {line}
-      </p>
+      {scope !== "mono" || pick?.model ? (
+        <p className="text-[12px] leading-4 text-content/60" data-worker-default-line>
+          {line}
+        </p>
+      ) : null}
       {problem ? (
         <p className="text-[12px] leading-4 text-content/70" role="alert" data-worker-default-problem>
           {problem}
