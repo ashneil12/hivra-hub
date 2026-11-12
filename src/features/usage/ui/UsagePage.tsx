@@ -255,6 +255,7 @@ function Summary({ title, totals }: { title: string; totals: UsageTotals }) {
         </p>
       ) : null}
       <p className="mt-1 text-sm text-content">{costLine(totals)}</p>
+      {estimateLine(totals) ? <p className="text-xs text-content/50">{estimateLine(totals)}</p> : null}
     </section>
   );
 }
@@ -264,6 +265,23 @@ function costLine(totals: UsageTotals): string {
   if (totals.costTurns === 0) return costNote(totals);
   if (totals.costTurns < totals.turns) return `${formatUsd(totals.costUsd)}. ${costNote(totals)}`;
   return formatUsd(totals.costUsd);
+}
+
+/**
+ * WP-253: turns with no reported price, at API list prices, and what cache reads saved. Shown muted and apart from the
+ * reported cost, so an estimate never reads as one.
+ */
+export function estimateLine(totals: UsageTotals): string {
+  const parts: string[] = [];
+  if (totals.estimatedTurns > 0) {
+    const turns = `${formatTokenCount(totals.estimatedTurns)} ${totals.estimatedTurns === 1 ? "turn" : "turns"}`;
+    parts.push(`About ${formatUsd(totals.estimatedUsd)} at list prices for ${turns} with no reported cost`);
+  }
+  if (totals.cacheSavedUsd >= 0.01) parts.push(`cache saved about ${formatUsd(totals.cacheSavedUsd)}`);
+  if (parts.length === 0) return "";
+  // The page note already says these figures are not the bill; it is said once (UsagePage.test.ts).
+  const line = parts.join("; ");
+  return `${line.charAt(0).toUpperCase()}${line.slice(1)}.`;
 }
 
 function DayBars({ history }: { history: UsageHistory }) {
@@ -305,6 +323,7 @@ function DayBars({ history }: { history: UsageHistory }) {
 }
 
 function costCell(totals: UsageTotals): string {
+  if (totals.costTurns === 0 && totals.estimatedTurns > 0) return `About ${formatUsd(totals.estimatedUsd)} at list prices`;
   if (totals.costTurns === 0) return "Cost not reported by this engine";
   if (totals.costTurns < totals.turns) return `${formatUsd(totals.costUsd)} (${costNote(totals)})`;
   return formatUsd(totals.costUsd);
