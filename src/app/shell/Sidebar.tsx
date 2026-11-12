@@ -1097,6 +1097,15 @@ function SidebarComponent({
   const firstLooseSessionIndex = sessionListEntries.findIndex(
     (entry) => entry.kind === "session",
   );
+  // Ash (12 Nov): "the newest chat should be at the top unless pinned". The first mate's own chat is no longer held on
+  // top: in the wide list it sits among its other chats by when it last moved. The narrow list keeps it on top.
+  const leadInline =
+    !inset && !!teamLead && !filtersActive && !searchNarrowed && visibleSessions.length > 0;
+  const leadInsertIndex = teamLead
+    ? sessionListEntries.findIndex(
+        (entry) => entry.kind === "session" && (entry.session.updatedAt ?? 0) < (teamLead.session.updatedAt ?? 0),
+      )
+    : -1;
   // Reminders, folders and Pinned come first, under one label.
   const firstGroupIndex = sessionListEntries.findIndex(
     (entry) => entry.kind !== "session",
@@ -2231,9 +2240,9 @@ function SidebarComponent({
           />
         ) : (
         <SessionCard
-          // Dressed like the first mate's other chats (Ash, 11 Nov): its mascot and name on the top line, and this
-          // one is its main chat. The narrow list has one line, so there the name stays.
-          session={inset ? lead.session : { ...lead.session, title: "Main chat" }}
+          // Dressed like the first mate's other chats: its mascot and name on the top line, the chat's own title under
+          // it. Ash (12 Nov): there is no "main chat", only the first mate, so it is one chat among its others.
+          session={inset ? lead.session : { ...lead.session, title: lead.chatTitle?.trim() || lead.session.title }}
           isActive={lead.active}
           isSelected={false}
           busy={lead.busy}
@@ -2365,6 +2374,10 @@ function SidebarComponent({
         badge={badge ?? (session.terminal ? <TerminalMark /> : undefined)}
         // Dropwave: a first mate's further chat wears its mascot and name, so the list says who each chat is with.
         {...sideChatMark(session.id)}
+        // Ash (12 Nov): on a first mate's own list every chat is that first mate's, so each says so, not its model.
+        {...(!nested && scopeOwner && chatScope === "own" && !isMonoSideChat(session.id)
+          ? { mark: scopeOwner.mark, markLabel: scopeOwner.session.title }
+          : {})}
         // WP-85: a terminal session shows its state and folder instead of the clock.
         {...(session.terminal ? { statusLabel: terminalStatusText(session.terminal) } : {})}
         subChatsBelow={subChatsBelow}
@@ -3169,6 +3182,7 @@ function SidebarComponent({
                 </div>
               ) : null}
               {teamLead &&
+              (!leadInline || (scopeOwner && chatScope === "all" && codingTeam?.other)) &&
               !filtersActive &&
               (!searchNarrowed ||
                 filterSessionsByQuery([teamLead.session], searchQuery).length > 0) ? (
@@ -3178,7 +3192,7 @@ function SidebarComponent({
                   className={`flex flex-col ${inset ? "gap-px px-2 pt-1" : "gap-0.5 p-1.5 pb-0"}`}
                 >
                   {/* Keyed by its chat: another team's owner is another row, not this one's title changing. */}
-                  <li key={teamLead.session.id}>{renderLeadCard(teamLead)}</li>
+                  {leadInline ? null : <li key={teamLead.session.id}>{renderLeadCard(teamLead)}</li>}
                   {/* Everyone: the other first mate who shares this project's chats. Opening it puts it on top. */}
                   {scopeOwner && chatScope === "all" && codingTeam?.other ? (
                     <li key={codingTeam.other.session.id} data-coding-team-other={codingTeam.other.monoId}>
@@ -3531,7 +3545,7 @@ function SidebarComponent({
                         folderItem
                       );
                     }
-                    const item = (
+                    const sessionItem = (
                       <SessionListItem
                         key={entry.session.id}
                         session={entry.session}
@@ -3541,6 +3555,18 @@ function SidebarComponent({
                         {renderSessionCard(entry.session)}
                       </SessionListItem>
                     );
+                    // The first mate's own chat takes its place by time among the others (newest first).
+                    const item =
+                      leadInline && teamLead && index === leadInsertIndex ? (
+                        <Fragment key={entry.session.id}>
+                          <li key={teamLead.session.id} data-coding-team-lead={teamLead.session.id} data-team-kind={codingTeam?.kind}>
+                            {renderLeadCard(teamLead)}
+                          </li>
+                          {sessionItem}
+                        </Fragment>
+                      ) : (
+                        sessionItem
+                      );
                     const ageLabel = looseSessionLabels.get(index);
                     return ageLabel ? (
                       <Fragment key={entry.session.id}>
@@ -3563,6 +3589,11 @@ function SidebarComponent({
                   })}
                   {sessionsLabel && firstLooseSessionIndex < 0 ? (
                     <li className="list-none">{sessionsLabel}</li>
+                  ) : null}
+                  {leadInline && teamLead && leadInsertIndex < 0 ? (
+                    <li key={teamLead.session.id} data-coding-team-lead={teamLead.session.id} data-team-kind={codingTeam?.kind}>
+                      {renderLeadCard(teamLead)}
+                    </li>
                   ) : null}
                   {hasMoreSessions ? (
                     <li

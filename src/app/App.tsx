@@ -18997,6 +18997,11 @@ function Workspace({
                     {/* WP-92: a project chat's key is saved for that project, where secrets_run looks first (agentAppSecrets where()). */}
                     <SecretKeyAsk
                       chat={activeChat}
+                      asker={(() => {
+                        if (!activeChat) return undefined;
+                        const owner = monoForSession(activeChat.id) ?? findMono(chatMonoOwner(activeChat.id) ?? "");
+                        return owner ? monoLook(owner).name : undefined;
+                      })()}
                       project={
                         activeChat && !(monoForSession(activeChat.id) ?? findMono(habitRunMono(activeChat.id) ?? "") ?? chatMonoOwner(activeChat.id))
                           ? (hubData().listProjects().find((entry) => entry.id === codingTeamChatProject(activeChat.id))?.folder ??
