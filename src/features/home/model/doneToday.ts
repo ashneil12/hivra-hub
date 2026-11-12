@@ -104,12 +104,15 @@ export function doneToday(input: {
     });
   }
 
-  const outcomes = input.work.filter((row) => row.kind === "outcome" && row.day === day);
+  // Ash 12 Nov: one job showed three times, each row a raw report. One row per job (its latest outcome), one plain line.
+  const outcomes = latestPerTask(input.work.filter((row) => row.kind === "outcome" && row.day === day));
   outcomes.forEach((row, index) => {
     const projectId = row.project.trim();
+    const text = plainOutcome(row.line);
+    if (ranked.some((line) => sameJob(line.text, text))) return;
     push({
       key: `work:${projectId}:${row.taskId}:${index}`,
-      text: row.line.trim(),
+      text,
       time: "",
       projectId,
       // Later lines in the log were written later. No clock, so they stay behind anything timed.
@@ -128,4 +131,43 @@ export function doneToday(input: {
     projectId: line.projectId,
     open: line.open,
   }));
+}
+
+/** The last outcome line for each task (a later line is a later word on the same job); untasked lines stay. */
+function latestPerTask<T extends { taskId?: string | null }>(rows: readonly T[]): T[] {
+  const last = new Map<string, number>();
+  rows.forEach((row, index) => {
+    if (row.taskId) last.set(row.taskId, index);
+  });
+  return rows.filter((row, index) => !row.taskId || last.get(row.taskId) === index);
+}
+
+/**
+ * A work-log outcome as one plain line: its own first clause ("Done: Refactor the Hivra homepage, local only"), no
+ * markdown, no "Delivered:" report, no brief text after it; the row opens the rest.
+ */
+export function plainOutcome(line: string): string {
+  const flat = line
+    .replace(/\*\*|__|`|^#+\s*/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const head = flat.split(/\s(?:Delivered|It failed|Changes|What's there):/i)[0]!.trim();
+  const sentence = /^(.{12,}?[.!?])(\s|$)/.exec(head)?.[1] ?? head;
+  const cut = sentence.length > 110 ? `${sentence.slice(0, 109).trimEnd()}…` : sentence;
+  return cut.replace(/[.]$/, "");
+}
+
+/** Two lines about the same job: the same first words once status words and punctuation are gone. */
+function sameJob(a: string, b: string): boolean {
+  const words = (text: string) =>
+    text
+      .toLowerCase()
+      .replace(/^(done|failed|finished|stopped)\s*:\s*/, "")
+      .replace(/[^a-z0-9 ]+/g, " ")
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 5)
+      .join(" ");
+  const left = words(a);
+  return left.length > 8 && left === words(b);
 }

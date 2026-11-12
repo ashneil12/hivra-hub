@@ -1,3 +1,4 @@
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { cleanStoredDefault } from "../../crew/model/workerDefault";
@@ -339,7 +340,13 @@ function parseMono(value: unknown): Mono | undefined {
       ? { showStartedSessionsInSidebar: entry.showStartedSessionsInSidebar }
       : {}),
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
-    ...(entry.longChat === true ? { longChat: true } : {}),
+    // Ash 12 Nov: one chat should go on for good without losing the plot, so in Hivra every Mono keeps its long chat
+    // (UniiChat's summary tree, monoTreeStore.ts) unless it was switched off (stored as false).
+    ...(entry.longChat === true || (IS_HUB_BUNDLE && entry.longChat !== false)
+      ? { longChat: true }
+      : entry.longChat === false
+        ? { longChat: false }
+        : {}),
     ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
     // WP-21: only a real true counts. A string or 1 from a hand-edited roster is not pinned or muted.
     ...(entry.pinned === true ? { pinned: true } : {}),
