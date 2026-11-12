@@ -149,6 +149,7 @@ mod panels;
 mod plain_file;
 mod portable;
 pub(crate) mod pr_watch;
+mod agent_install;
 mod project_actions;
 mod project_file;
 mod project_logo;
@@ -478,6 +479,7 @@ pub fn run() {
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
         .manage(project_actions::ActionRuns::new())
+        .manage(agent_install::AgentInstalls::new())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
         .manage(live_turns::LiveTurns::default())
@@ -1011,6 +1013,8 @@ pub fn run() {
             project_file::project_file_status,
             project_file::project_file_import,
             project_file::project_file_forget,
+            agent_install::agent_cli_install,
+            agent_install::agent_cli_install_cancel,
             project_actions::project_actions_list,
             project_actions::project_action_run,
             project_actions::project_action_stop,
@@ -1504,6 +1508,8 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(runs) = handle.try_state::<project_actions::ActionRuns>() {
         runs.stop_all();
+    }    if let Some(installs) = handle.try_state::<agent_install::AgentInstalls>() {
+        installs.stop_all();
     }
 }
 
