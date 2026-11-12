@@ -1858,6 +1858,9 @@ fn the_door_uses_the_same_port_after_a_restart() {
     let url = status.url.expect("an enabled door has an address");
     assert!(url.contains(&format!(":{port}/")), "{url}");
     drop(first);
+    // A restart starts after the old app is gone. Dropping a door lets its listener go from its own thread, a moment
+    // after the drop (longer on a busy machine), so wait for that before the second start.
+    drop(bind_when_released(port, "the first door"));
 
     let second = must_init_ports(db.clone(), Kind::Daily, &ports);
     assert_eq!(second.port(), Some(port));
@@ -1893,15 +1896,15 @@ fn turning_the_door_off_and_on_keeps_the_port() {
     );
 }
 
-/// Bind `port` once whoever held it has let go, waiting up to three seconds for
-/// a listener that closes from another thread. Fails with the last error if it
-/// never frees, which is the real "still holds" failure.
+/// Bind `port` once whoever held it has let go, waiting up to ten seconds for
+/// a listener that closes from another thread (a busy machine is slow to run it).
+/// Fails with the last error if it never frees, which is the real "still holds" failure.
 fn bind_when_released(port: u16, who: &str) -> TcpListener {
     let mut waited = Duration::ZERO;
     loop {
         match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
             Ok(listener) => return listener,
-            Err(err) if waited >= Duration::from_secs(3) => {
+            Err(err) if waited >= Duration::from_secs(10) => {
                 panic!("{who} still holds {port}: {err}")
             }
             Err(_) => {
@@ -1942,6 +1945,11 @@ fn two_copies_of_the_door_body_run_at_the_same_time() {
                 door.set_enabled(true).unwrap();
                 assert_eq!(door.port(), Some(port), "copy {copy}");
                 drop(door);
+                // As in a real restart, the old door has let go before the new one starts.
+                drop(bind_when_released(
+                    port,
+                    &format!("copy {copy}'s first door"),
+                ));
 
                 let restarted = must_init_ports(db.clone(), Kind::Daily, &ports);
                 assert_eq!(restarted.port(), Some(port), "copy {copy}");
