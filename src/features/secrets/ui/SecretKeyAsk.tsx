@@ -8,6 +8,13 @@ import { useRef, useState } from "react";
 
 import { keyAskFor, type ChatLike } from "../../hub/model/chatQuestions";
 import { projectScope, saveNew, scopeLabel, slugIsValid, slugOf } from "../model/secrets";
+import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+
+/** The ask as part of a sentence: no trailing comma or full stop, no leading capital ("a new Resend key, ..."). */
+export function plainAsk(ask: string): string {
+  const text = ask.replace(/\s+/g, " ").trim().replace(/[\s,;:.]+$/, "");
+  return text || "a key";
+}
 
 const FAILED = "That key wasn't saved. Try again on a fresh card.";
 const NAME_RULE = "A key's name is lower-case letters, digits and dashes, 1 to 64 characters.";
@@ -19,7 +26,16 @@ type KeyAskChat = ChatLike & { id: string };
  * the project the chat works in (what `secrets_run` looks in first); the key is saved for that project unless the person
  * picks everywhere, and the form says which before anything is saved. A chat with no project saves for everywhere.
  */
-export function SecretKeyAsk({ chat, project }: { chat?: KeyAskChat | null; project?: string | null }) {
+export function SecretKeyAsk({
+  chat,
+  project,
+  asker,
+}: {
+  chat?: KeyAskChat | null;
+  project?: string | null;
+  /** Who is asking, by the name Ash knows ("Hivra lead"). */
+  asker?: string | null;
+}) {
   const asked = chat ? keyAskFor(chat) : null;
   const key = asked && chat ? `${chat.id}\u0000${asked.ask}` : "";
   const [gone, setGone] = useState<string | null>(null);
@@ -30,6 +46,7 @@ export function SecretKeyAsk({ chat, project }: { chat?: KeyAskChat | null; proj
       ask={asked.ask}
       suggested={asked.name}
       project={project?.trim() || null}
+      asker={asker?.trim() || null}
       onClose={() => setGone(key)}
     />
   );
@@ -39,11 +56,13 @@ function KeyAskForm({
   ask,
   suggested,
   project,
+  asker,
   onClose,
 }: {
   ask: string;
   suggested: string;
   project: string | null;
+  asker: string | null;
   onClose: () => void;
 }) {
   const [name, setName] = useState(suggested);
@@ -53,11 +72,13 @@ function KeyAskForm({
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [options, setOptions] = useState(false);
   const value = useRef<HTMLInputElement>(null);
 
   const save = async () => {
     if (busy || !value.current) return;
     if (!slugIsValid(name)) {
+      setOptions(true);
       setError(NAME_RULE);
       return;
     }
@@ -77,87 +98,97 @@ function KeyAskForm({
     }
   };
 
+  // Ash (12 Nov): the old card was "so confusing idk what it is". One line says who asks and what for, one field takes
+  // the key, and the vault name and scope wait behind "Options".
+  const what = plainAsk(ask);
+  const where = scopeLabel(scope);
   return (
-    <section aria-label="A key is needed" className="rounded-lg border border-content/10 bg-content/[0.03] p-3">
-      <p className="text-[12px] text-content/50">This chat needs a key from you</p>
-      <p className="mt-1 text-[13px] text-content">{ask}</p>
+    <section aria-label="A key is needed" data-secret-key-ask className="rounded-lg border border-content/10 bg-content/[0.03] px-3 py-2.5">
       {saved ? (
-        <div className="mt-3 flex items-center gap-3">
-          <p className="text-[12px] text-content/60">Saved for {scopeLabel(scope)}. Saved in your Mac's keychain.</p>
-          <button type="button" className="text-[12px] text-content/60 hover:text-content" onClick={onClose}>
-            Done
-          </button>
+        <div className="flex items-center gap-3">
+          <p className="min-w-0 flex-1 text-[13px] text-content/80">
+            Saved in your Mac's keychain. {asker ?? "The agent"} can use it now; it never shows in the chat.
+          </p>
+          <SecondaryButton onClick={onClose}>Done</SecondaryButton>
         </div>
       ) : (
         <>
-          <label className="mt-3 block text-[12px] text-content/60" htmlFor="secret-key-ask-name">
-            Name (agents ask by this)
-          </label>
-          <input
-            id="secret-key-ask-name"
-            className="mt-1 w-full rounded border border-content/15 bg-transparent px-2 py-1 text-[13px]"
-            value={name}
-            onChange={(event) => setName(event.target.value)}
-          />
-          {name && !slugIsValid(name) ? (
-            <p role="alert" className="mt-1 text-[12px] text-red-400">
-              {NAME_RULE}
-            </p>
-          ) : (
-            <p className="mt-1 text-[12px] text-content/40">Stored as {slugOf(name) || "…"}</p>
-          )}
-          {project ? (
-            <>
-              <label className="mt-2 block text-[12px] text-content/60" htmlFor="secret-key-ask-scope">
-                Who can use it
-              </label>
-              <select
-                id="secret-key-ask-scope"
-                className="mt-1 w-full rounded border border-content/15 bg-transparent px-2 py-1 text-[13px]"
-                value={scope}
-                onChange={(event) => setScope(event.target.value)}
-              >
-                <option value={projectScope(project)}>{scopeLabel(projectScope(project))}</option>
-                <option value="global">{scopeLabel("global")}</option>
-              </select>
-            </>
-          ) : null}
-          <p className="mt-2 text-[12px] text-content/60">It will be saved for: {scopeLabel(scope)}</p>
-          <label className="mt-2 block text-[12px] text-content/60" htmlFor="secret-key-ask-value">
-            The key
-          </label>
-          <div className="mt-1 flex items-center gap-2">
+          <p className="text-[13px] text-content">
+            <span className="font-medium">{asker ?? "This chat"}</span> needs {what} to carry on.
+          </p>
+          <p className="mt-0.5 text-[12px] text-content/50">
+            Paste it here, not in the chat. It goes into your Mac's keychain and the agent uses it without seeing it.
+          </p>
+          <div className="mt-2 flex items-center gap-2">
             <input
               id="secret-key-ask-value"
               ref={value}
               type={show ? "text" : "password"}
               autoComplete="off"
               spellCheck={false}
-              className="w-full rounded border border-content/15 bg-transparent px-2 py-1 text-[13px]"
+              placeholder="Paste the key"
+              aria-label="The key"
+              onKeyDown={(event) => {
+                if (event.key === "Enter") void save();
+              }}
+              className="h-7 min-w-0 flex-1 rounded-md border border-content/15 bg-transparent px-2 text-[13px] outline-none focus:border-accent/60"
             />
-            <button type="button" className="text-[12px] text-content/60 hover:text-content" onClick={() => setShow((shown) => !shown)}>
+            <button type="button" className="text-[12px] text-content/50 hover:text-content" onClick={() => setShow((shown) => !shown)}>
               {show ? "Hide" : "Show"}
             </button>
+            <button
+              type="button"
+              disabled={busy}
+              className="rounded-md bg-accent px-2.5 py-1 text-[12px] font-medium text-white disabled:opacity-40"
+              onClick={() => void save()}
+            >
+              Save
+            </button>
+            <SecondaryButton onClick={onClose}>Not now</SecondaryButton>
           </div>
           {error ? (
             <p role="alert" className="mt-2 text-[12px] text-red-400">
               {error}
             </p>
           ) : null}
-          <div className="mt-3 flex items-center gap-3">
-            <button
-              type="button"
-              disabled={busy}
-              className="rounded bg-content/15 px-3 py-1 text-[12px] text-content disabled:opacity-50"
-              onClick={() => void save()}
-            >
-              Save
+          <div className="mt-1.5 flex items-center gap-2 text-[12px] text-content/45">
+            <span>
+              Saved as “{slugOf(name) || "…"}” for {where}.
+            </span>
+            <button type="button" className="hover:text-content" aria-expanded={options} onClick={() => setOptions((open) => !open)}>
+              {options ? "Hide options" : "Options"}
             </button>
-            <button type="button" className="text-[12px] text-content/60 hover:text-content" onClick={onClose}>
-              Not now
-            </button>
-            <span className="text-[11px] text-content/40">Saved in your Mac's keychain once saved</span>
           </div>
+          {options ? (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <label className="text-[12px] text-content/60" htmlFor="secret-key-ask-name">
+                Name agents ask for
+              </label>
+              <input
+                id="secret-key-ask-name"
+                className="h-7 w-56 rounded-md border border-content/15 bg-transparent px-2 text-[13px] outline-none focus:border-accent/60"
+                value={name}
+                onChange={(event) => setName(event.target.value)}
+              />
+              {project ? (
+                <select
+                  id="secret-key-ask-scope"
+                  aria-label="Who can use it"
+                  className="h-7 rounded-md border border-content/15 bg-transparent px-2 text-[13px]"
+                  value={scope}
+                  onChange={(event) => setScope(event.target.value)}
+                >
+                  <option value={projectScope(project)}>{scopeLabel(projectScope(project))}</option>
+                  <option value="global">{scopeLabel("global")}</option>
+                </select>
+              ) : null}
+              {name && !slugIsValid(name) ? (
+                <p role="alert" className="w-full text-[12px] text-red-400">
+                  {NAME_RULE}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
         </>
       )}
     </section>
