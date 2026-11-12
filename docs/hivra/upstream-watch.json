@@ -1,0 +1,801 @@
+{
+ "about": "Every upstream and borrowed-idea repo Hivra tracks. scripts/upstream-watch.mjs reads this daily and reports new commits and releases worth taking. Add a repo here when Ash shares one.",
+ "repos": [
+  {
+   "name": "MonoCode",
+   "repo": "hardbeat920/monocode",
+   "group": "upstream",
+   "licence": "MIT",
+   "why": "The app Hivra is a fork of; merged into the Hub as a PR"
+  },
+  {
+   "name": "Hermes Agent",
+   "repo": "NousResearch/hermes-agent",
+   "group": "harness",
+   "licence": "MIT",
+   "why": "A CLI Hivra runs as a harness (harness.rs); plugin hackathon target"
+  },
+  {
+   "name": "Oh My Pi (omp)",
+   "repo": "can1357/oh-my-pi",
+   "group": "harness",
+   "why": "A CLI Hivra runs as a harness (harness.rs, pi_routes.rs)"
+  },
+  {
+   "name": "Pi coding agent",
+   "repo": "earendil-works/pi",
+   "group": "harness",
+   "why": "Pi CLI and @earendil-works/pi-ai, which Hivra runs and the claude-code-pi bridge imports"
+  },
+  {
+   "name": "claude-code-pi",
+   "repo": "luongnv89/pi-extensions",
+   "group": "vendored",
+   "licence": "MIT",
+   "why": "Vendored as src-tauri/src/vendor/claude_code_pi.js (1.2.1); re-vendor on fixes"
+  },
+  {
+   "name": "open-computer-use",
+   "repo": "iFurySt/open-computer-use",
+   "group": "harness",
+   "licence": "MIT",
+   "why": "Computer use backend behind `monocode computer-use` (WP-255)"
+  },
+  {
+   "name": "firstmate",
+   "repo": "kunchenguid/firstmate",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "the first mate role, briefs with a definition of done, the status protocol and crew dispatch. The Pi watcher arm is not part of Hivra"
+  },
+  {
+   "name": "tstack (babysit-pr)",
+   "repo": "t3dotgg/tstack",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "the logic of the PR watch's base checks: main moving under a pull request, BEHIND and DIRTY, and the rate-limit fallback (WP-202, written fresh in Rust)"
+  },
+  {
+   "name": "pstack",
+   "repo": "cursor/plugins",
+   "group": "inspiration",
+   "path": "pstack",
+   "licence": "MIT",
+   "why": "Lauren Tan's (poteto) skills for rigour and verification, shipped as the default plugin"
+  },
+  {
+   "name": "DeepSeek super-agent prototype",
+   "repo": "deepseek-ai/dsh-superagent-prototype",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "a router that never does the work itself, workers that follow threads, a watchdog"
+  },
+  {
+   "name": "DeepSeek Harness",
+   "repo": "deepseek-ai/deepseek-harness",
+   "group": "inspiration",
+   "licence": "MIT (name is a trademark)",
+   "why": "safe plugin installs, a static plugin index, Discover and Creator mode (ideas only)"
+  },
+  {
+   "name": "council-of-high-intelligence",
+   "repo": "0xnyk/council-of-high-intelligence",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "the council protocol (blind round, cross-exam, dissent quota and a chairman)"
+  },
+  {
+   "name": "OpenMausBot",
+   "repo": "milind-soni/OpenMausBot",
+   "group": "inspiration",
+   "licence": "Apache-2.0 core (`enterprise/` excluded)",
+   "why": "rooms with responder modes, goal mode, teams and playbooks as one file"
+  },
+  {
+   "name": "OpenBot",
+   "repo": "CopilotKit/openbot",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "approval gates that stop at an unapproved action, an audit trail, typed handoffs and quiet digests, and deleted facts that are never learned again"
+  },
+  {
+   "name": "Nod",
+   "repo": "n8n-io/nod",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "memory that only keeps what the owner said in their own words, learns in batches behind a watermark, keeps a let-go list and repairs itself without a model, and learned skills cleaned of personal details, patched one passage at a time and capped at 40 (ideas only)"
+  },
+  {
+   "name": "Rerun",
+   "repo": "rerun-build/rerun",
+   "group": "inspiration",
+   "licence": "AGPL-3.0 + CLA",
+   "why": "remote engine pairing, a memory curator and approval cards (ideas only)"
+  },
+  {
+   "name": "Puppetmaster",
+   "repo": "professorpalmer/Puppetmaster",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "completion gates, typed artifacts with evidence, failure reroutes, session leases and idempotent launch keys"
+  },
+  {
+   "name": "Raven",
+   "repo": "EverMind-AI/Raven",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "\"finished\" is not \"succeeded\", status from the registry, provenance-required memory"
+  },
+  {
+   "name": "PandaCode",
+   "repo": "aicodeking/pandacode",
+   "group": "inspiration",
+   "licence": "MIT + fork-notice clause",
+   "why": "native protocol per CLI, warm processes, steering and a silence watchdog (ideas only)"
+  },
+  {
+   "name": "ROMA",
+   "repo": "sentient-agi/ROMA",
+   "group": "inspiration",
+   "licence": "no licence file",
+   "why": "a fast path for small tasks and planner rules (ideas only)"
+  },
+  {
+   "name": "AgentOS",
+   "repo": "akua-dev/agentos",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "assignments as the unit of accountability, decision gates and native-session custody"
+  },
+  {
+   "name": "UniiChat",
+   "repo": "VictorTaelin/uniichat",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "the long-chat summary tree behind monoTree"
+  },
+  {
+   "name": "OptMem",
+   "repo": "VictorTaelin/OptMem",
+   "group": "inspiration",
+   "licence": "no licence",
+   "why": "lessons on a distilled fact layer (ideas only)"
+  },
+  {
+   "name": "Mercury",
+   "repo": "cosmicstack-labs/mercury-agent",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "soul files upgrades never overwrite and owner approval"
+  },
+  {
+   "name": "Agent Zero",
+   "repo": "agent0ai/agent-zero",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "a memory screen with curation and chat importers"
+  },
+  {
+   "name": "Buzz",
+   "repo": "block/buzz",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "the persona file format and room framing"
+  },
+  {
+   "name": "e2e",
+   "repo": "tester-army/e2e",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "end-to-end testing as an optional Verify plugin"
+  },
+  {
+   "name": "agent-desktop",
+   "repo": "vercel-labs/agent-desktop",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "desktop control for workers, headless first"
+  },
+  {
+   "name": "Crest",
+   "repo": "pauljoda/Crest",
+   "group": "inspiration",
+   "licence": "MPL-2.0 (name not licensed)",
+   "why": "per-agent browser profiles and browsing safety defaults (ideas only)"
+  },
+  {
+   "name": "CARL",
+   "repo": "ChristopherKahler/carl",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "rule staging behind approval and a four-state worker status"
+  },
+  {
+   "name": "PAUL",
+   "repo": "ChristopherKahler/paul",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "rule staging behind approval and a four-state worker status"
+  },
+  {
+   "name": "Orbit",
+   "repo": "coollabsio/orbit",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "tasks and boards, docs, a search palette (the finder, WP-74), checked backups, trash, GitHub issue sync and a safe MCP door. The home column and entrance landed in WP-73"
+  },
+  {
+   "name": "no-mistakes",
+   "repo": "kunchenguid/no-mistakes",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "the local gate that checks a crew's branch before it reaches GitHub, used as a pinned tool, planned for Wave F"
+  },
+  {
+   "name": "treehouse",
+   "repo": "kunchenguid/treehouse",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "a pool of ready worktrees that keep their installs and build cache, used as a pinned tool, planned for Wave F"
+  },
+  {
+   "name": "backpass",
+   "repo": "kunchenguid/backpass",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "evidence-gated edits to agent instructions learned from past chats, landed in WP-83"
+  },
+  {
+   "name": "kun",
+   "repo": "kunchenguid/kun",
+   "group": "inspiration",
+   "licence": "no licence",
+   "why": "a person's opinions and voice kept as files agents read (ideas only)"
+  },
+  {
+   "name": "Kun Chen's dotfiles",
+   "repo": "kunchenguid/dotfiles",
+   "group": "inspiration",
+   "licence": "MIT-0",
+   "why": "one AGENTS.md shared by every agent CLI"
+  },
+  {
+   "name": "HumanLayer",
+   "repo": "humanlayer/humanlayer",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "research and plan before building. The skills were copied from apps/riptide-rpi-claude-plugin at f9bd73534a9fb7099a274f951b698b1297122fd9. Terminal sessions mirrored into the app, commit attribution and a local stack per worktree are still planned for Wave G"
+  },
+  {
+   "name": "Matt Pocock's skills",
+   "repo": "mattpocock/skills",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "diagnosing-bugs, tdd, grill-me and grilling, copied from mattpocock/skills at 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d and called by name only"
+  },
+  {
+   "name": "portless",
+   "repo": "vercel-labs/portless",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "a stable name per worktree for its app and services, a local proxy that routes by name, and a route registry only its owner can remove (WP-90). The 0.17 parallel loopback dial and Windows route-lock retry are included (WP-139)"
+  },
+  {
+   "name": "emulate",
+   "repo": "vercel-labs/emulate",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "14 stateful stand-ins for outside services, so a crew's tests use fake accounts instead of real ones (WP-90)"
+  },
+  {
+   "name": "oh-my-hermes",
+   "repo": "rlaope/oh-my-hermes",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "the dag-ulw goal graph: a finish line first, write scopes, repair cycles, a verify node and a run verdict, and a finished run's close that counts the usage its children recorded (WP-91, WP-148)"
+  },
+  {
+   "name": "T3 Code",
+   "repo": "pingdotgg/t3code",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "the PR watch rules, honest Claude results, delegation delivery and stop rules, limit auto-resume guards, worktree cleanup cases, 18 recorded Claude transcripts for the test bench, a lead that can start work on any funded CLI (WP-120), a portable mid-thread handoff that says when a harness cannot resume, native subagent lineage with a child's approval answered on the parent thread (WP-122, ideas from the v0.1.0 and v0.1.7 release notes at e85e0094dd4617a1eada1ad7961f2132a79e67b2), forking a chat from a message (WP-123), copying the files named in .worktreeinclude into a new worktree (WP-138), and one prompt sent to several models from the thread sidebar (docs/user/thread-sidebar.md at e85e0094dd4617a1eada1ad7961f2132a79e67b2), and a cheap text-generation model for titles, commit messages, pull request text and branch names (WP-129), and the open request for vendor cloud sessions (idea only, WP-136). WP-133 takes the remote, phone and web idea only (commit e85e0094) and does not copy T3 Connect"
+  },
+  {
+   "name": "Row-Bot",
+   "repo": "siddsachar/row-bot",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "the automatic recall policy: skip gates, a query builder, a weighted score, rejection reasons, a broad-query margin, a cap on lines and a trace (WP-99); the correction rule behind the rules tier (WP-103); the MCP tool effect classifier, the reviewer rules for approvals, the plugin install scanner and a guard on proposed instruction edits (WP-101); and a scan that refuses text which looks like instructions aimed at the model (WP-111)"
+  },
+  {
+   "name": "Mnemos",
+   "repo": "Riley-Coyote/mnemos-mcp",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "ideas for the recall rules (four content words, two distinctive shared words, at most three lines, each memory once per conversation; WP-99), and memory that fades over the days it was used rather than the calendar, with a lived-day clock and one question to the person before a fact goes stale (WP-100)"
+  },
+  {
+   "name": "ccdeck",
+   "repo": "BarganConstantin/ccdeck",
+   "group": "inspiration",
+   "licence": "AGPL-3.0",
+   "why": "ideas only: a live session tree (main agent at the root, subagents as nodes, inspectable tool calls) and a waiting-on-you list ordered questions first and longest wait first"
+  },
+  {
+   "name": "agentmon-live",
+   "repo": "codenotary/agentmon-live",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "fact gaps that stop a worker's done when a check failed, went stale after a later edit, never reached the edit, or was only claimed (WP-145)"
+  },
+  {
+   "name": "precedent-log",
+   "repo": "quotumorg/precedent-log",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "standing answers: show past answers before a new question, match a reworded question to an old answer, and list who relied on an answer when it is retired (ideas only)"
+  },
+  {
+   "name": "tasklane",
+   "repo": "kunci115/tasklane",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "a protected-path floor so CI, migrations, key files and git internals still need a person's word before a merge, even when merge without asking is on (WP-158)"
+  },
+  {
+   "name": "mcode-stack",
+   "repo": "MiniMax-AI/mcode-stack",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "team skills a first mate calls by name: whether work should go to a subagent, a review that sees only the diff, the requirement and the test results, and turning a repeated correction into a check (WP-117)"
+  },
+  {
+   "name": "Pierre",
+   "repo": "pierrecomputer/pierre",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "an optional split (side-by-side) diff, pinned as an npm package, with unified staying the default (WP-116)"
+  },
+  {
+   "name": "models.dev",
+   "repo": "anomalyco/models.dev",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "a catalogue of each model's context window and whether it can call tools, bundled so a custom route can read it offline (WP-104)"
+  },
+  {
+   "name": "Elephant-Goldfish",
+   "repo": "google/elephant-goldfish-model",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "a zero-context review of a plan before a crew starts (WP-144)"
+  },
+  {
+   "name": "Memorilla",
+   "repo": "snap-stanford/memorilla",
+   "group": "inspiration",
+   "licence": "Apache-2.0; its PersonalizationV4 data is CC BY 4.0",
+   "why": "an external test set for chat-derived memory, the arm ladder its evaluation reports, and rules for writing a memory question that cannot be guessed (WP-106, ideas and data only)"
+  },
+  {
+   "name": "numbrone",
+   "repo": "stevenmichaelthomas/numbrone",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "ideas only: a typed daily work log and retros that propose instruction edits only after the person agrees"
+  },
+  {
+   "name": "Reason Network",
+   "repo": "reason-machines/reason-network",
+   "group": "inspiration",
+   "licence": "MIT OR Apache-2.0",
+   "why": "the rule that an agent saying someone approved is not that person's approval, and the one-task-per-session and point-first messaging rules (ideas only)"
+  },
+  {
+   "name": "Orchestrator.inc",
+   "repo": "OrchestratorInc/agent-orchestrator",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "ideas only: durable facts with status derived at read time, the rule that automation never types into a blocked session, and the chat hibernation boundary table (a new WP, not yet numbered)"
+  },
+  {
+   "name": "Paseo",
+   "repo": "getpaseo/paseo",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "the lifecycle idea: a closed agent keeps its identity and resumes its saved session on the next prompt, and an idle runtime is reclaimed after an hour behind a daemon check and a provider veto (ideas only)"
+  },
+  {
+   "name": "Happy",
+   "repo": "slopus/happy",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "one permission-mode resolution order, one mapping per CLI and one rule for a refused mode change, written as Hivra's own matrix (ideas only; no Happy text or code copied)"
+  },
+  {
+   "name": "Paradev",
+   "repo": "ParadevAI/Paradev",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "two handoff verbs (a native fork that does not read a transcript, and a handoff from the harness store first), an omitted-context marker and trust checks on a reported transcript path (ideas only)"
+  },
+  {
+   "name": "Cloudroom",
+   "repo": "davidondrej/cloudroom",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "ideas only: teleport a running session between the Mac and a host (freeze, move history, resume with the same chat, model and effort), and the split of harness from core"
+  },
+  {
+   "name": "Emdash",
+   "repo": "generalaction/emdash",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "ideas only: the host's inventory is authoritative, a deletion intent may outlive an unreachable host, and host calls fail fast"
+  },
+  {
+   "name": "Jean",
+   "repo": "coollabsio/jean",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "ideas only: a plan that waits for approval before a GitHub issue is built, and one sidebar for local and remote machines"
+  },
+  {
+   "name": "Paperclip",
+   "repo": "paperclipai/paperclip",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "ideas only: a spend limit that warns once and stops new builders at the limit, and goal ancestry on a run's briefs"
+  },
+  {
+   "name": "bb",
+   "repo": "get-bb/bb",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "the principle that the person and the agent are both first-class operators of the same surfaces, with the CLI and API as first-class surfaces rather than sidecars (ideas only)"
+  },
+  {
+   "name": "HarnessRouter",
+   "repo": "HarnessRouter/harnessrouter",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "a closed error code set with a retry rule for each code, and the rule that a client who gave up must not assume the task stopped (ideas only)"
+  },
+  {
+   "name": "Omnigent",
+   "repo": "omnigent-ai/omnigent",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "a spend ceiling with a soft ask before a hard stop, and policies that stack from server to session (ideas only)"
+  },
+  {
+   "name": "Ghostex",
+   "repo": "maddada/Ghostex",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "automatic account switch at a usage limit, and a card that says when every account is full (Hivra already has the switch; ideas only)"
+  },
+  {
+   "name": "Nimbalyst",
+   "repo": "nimbalyst/nimbalyst",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "red and green accept or reject of an agent's change in the rendered document (ideas only)"
+  },
+  {
+   "name": "Traycer",
+   "repo": "traycerai/traycer",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "switching model inside one chat with context kept, and a capability table per agent (ideas only)"
+  },
+  {
+   "name": "Sidecar",
+   "repo": "marcus/sidecar",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "an agent opening a file at a line or a diff beside its terminal (ideas only)"
+  },
+  {
+   "name": "CC Switch",
+   "repo": "farion1231/cc-switch",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "a failover queue with a circuit breaker across providers, and resuming a local session in its own folder (ideas only)"
+  },
+  {
+   "name": "OpenCodex",
+   "repo": "lidge-jun/opencodex",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "a local gateway that lets Claude Code and Codex use other providers (ideas only)"
+  },
+  {
+   "name": "TanStack AI",
+   "repo": "TanStack/ai",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "tool approval that rebuilds a paused call from the message history on resume (ideas only)"
+  },
+  {
+   "name": "OpenClaw",
+   "repo": "openclaw/openclaw",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "a competitive reference for chat channels: unknown senders paired first, inbound messages untrusted (ideas only)"
+  },
+  {
+   "name": "activeloopai/hivemind",
+   "repo": "activeloopai/hivemind",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "repeated patterns in agent traces codified into SKILL.md files (ideas only; cloud-backed)"
+  },
+  {
+   "name": "Agentlas",
+   "repo": "agentlas-ai/agentlas-desktop",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "ideas only: an operating-system boundary around each agent's terminal, with secret paths and protected config paths (design first)"
+  },
+  {
+   "name": "Atomic Agent",
+   "repo": "AtomicBot-ai/atomic-agent",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "contracts for a multi-part fan-out (what each part owns, provides and requires, and the checks it must pass), dependency waves, the person's own request quoted in every worker brief, and a few prompt lines (WP-171)"
+  },
+  {
+   "name": "Cloudflare security-audit-skill",
+   "repo": "cloudflare/security-audit-skill",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "the structured security review: a coverage ledger, isolated hunters, a fresh verifier for each candidate, findings.json with two zero-dependency validators, and the reference notes for desktop IPC, supply chain and AI agents (WP-203)"
+  },
+  {
+   "name": "react-day-picker",
+   "repo": "gpbl/react-day-picker",
+   "group": "component",
+   "licence": "MIT",
+   "why": ""
+  },
+  {
+   "name": "Tremor BarList",
+   "repo": "tremorlabs/tremor",
+   "group": "component",
+   "licence": "Apache-2.0",
+   "why": ""
+  },
+  {
+   "name": "Pierre Diffs",
+   "repo": "pierrecomputer/pierre",
+   "group": "component",
+   "path": "packages/diffs",
+   "licence": "Apache-2.0",
+   "why": ""
+  },
+  {
+   "name": "fable-method's fake-work fixture",
+   "repo": "Sahir619/fable-method",
+   "group": "component",
+   "licence": "MIT",
+   "why": ""
+  },
+  {
+   "name": "Up.computer",
+   "repo": "krl-gr/upcomputer",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "Wave P WP-250..255: task pickup, handoff, triage, usage, visual replies, computer use guard"
+  },
+  {
+   "name": "nightly-labs OpenBot",
+   "repo": "nightly-labs/openbot",
+   "group": "idea-only",
+   "licence": "PolyForm-NC",
+   "why": "Memory and run-loop ideas (PolyForm Noncommercial: ideas only, no code)"
+  },
+  {
+   "name": "verification-skill-example",
+   "repo": "poteto/verification-skill-example",
+   "group": "inspiration",
+   "why": "pstack author's verification skill example"
+  },
+  {
+   "name": "mermaid-rs-renderer",
+   "repo": "1jehuang/mermaid-rs-renderer",
+   "group": "component",
+   "why": "Mermaid renderer candidate (research reports)"
+  },
+  {
+   "name": "Hugeicons",
+   "repo": "hugeicons/hugeicons",
+   "group": "component",
+   "why": "Icon set referenced by the Dropwave UI work"
+  },
+  {
+   "name": "gion",
+   "repo": "baz-scm/gion",
+   "group": "inspiration",
+   "why": "WP-118"
+  },
+  {
+   "name": "starsling skills",
+   "repo": "starslingdev/skills",
+   "group": "inspiration",
+   "why": "WP-201 pin GitHub Actions to SHAs"
+  },
+  {
+   "name": "nextest",
+   "repo": "nextest-rs/nextest",
+   "group": "component",
+   "why": "WP-173 Rust tests on nextest"
+  },
+  {
+   "name": "Nuphos",
+   "repo": "nuphos/nuphos",
+   "group": "idea-only",
+   "licence": "Apache-2.0",
+   "why": "11 Nov dump: moving a chat between machines (WP-177 addendum)"
+  },
+  {
+   "name": "omux",
+   "repo": "onurozcan/omux",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "11 Nov dump: Claude Code status codes in terminal tabs for Needs you"
+  },
+  {
+   "name": "Sheprd",
+   "repo": "sheprd-labs/sheprd",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "11 Nov dump: laptop + cloud boxes, transcript teleport"
+  },
+  {
+   "name": "context-handoff",
+   "repo": "kevintheo-ai/context-handoff",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "11 Nov dump: hand over at ~85% context"
+  },
+  {
+   "name": "rightcommit",
+   "repo": "rightcommit/rightcommit",
+   "group": "inspiration",
+   "licence": "Apache-2.0",
+   "why": "WP-249 blind done-check: proof bound to a tree"
+  },
+  {
+   "name": "Gauge",
+   "repo": "gauge-sh/gauge-cli",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "Eval loop for Hivra's skills and briefs (later)"
+  },
+  {
+   "name": "Plannotator",
+   "repo": "backnotprop/plannotator",
+   "group": "inspiration",
+   "licence": "MIT OR Apache-2.0",
+   "why": "Plan annotation feedback format, :::question blocks"
+  },
+  {
+   "name": "Dynotator",
+   "repo": "mattzcarey/dynotator",
+   "group": "inspiration",
+   "licence": "MIT OR Apache-2.0",
+   "why": "Four-call review contract and event log"
+  },
+  {
+   "name": "Toucan",
+   "repo": "lavallee/toucan",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "Dashed proposals and version history for Pages"
+  },
+  {
+   "name": "herdr-snap",
+   "repo": "mondayrunner/herdr-snap",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "Screenshot, scribble and send routed by port"
+  },
+  {
+   "name": "devvm",
+   "repo": "devvmhq/devvm",
+   "group": "inspiration",
+   "why": "Egress proxy model for Cloud boxes (WP-61, WP-178)"
+  },
+  {
+   "name": "browse",
+   "repo": "anomalyco/browse",
+   "group": "inspiration",
+   "licence": "MIT",
+   "why": "Browser handback at login/2FA/payment, captcha detection (MIT, copy)"
+  },
+  {
+   "name": "agent-autoloop",
+   "repo": "KKKKhazix/agent-autoloop",
+   "group": "inspiration",
+   "why": "Park-instead-of-hold for unattended runs"
+  },
+  {
+   "name": "Yabanin Core",
+   "repo": "yabaninai/yabanin-core",
+   "group": "inspiration",
+   "why": "Reserve-then-settle spend caps"
+  },
+  {
+   "name": "AWS Emulator",
+   "repo": "aws/aws-emulator",
+   "group": "finds-2026-11-12",
+   "licence": "CC0",
+   "why": "Three agent teams with a merge gate before main: model for Lead, workers, review"
+  },
+  {
+   "name": "Intent",
+   "repo": "intent-hq/intent",
+   "group": "finds-2026-11-12",
+   "licence": "Apache-2.0",
+   "why": "Specialist agents with a spec kept up to date as they work"
+  },
+  {
+   "name": "Brigade",
+   "repo": "gmpetrov/brigade",
+   "group": "finds-2026-11-12",
+   "licence": "MIT",
+   "why": "AI teammates on Claude Code and Codex working in their own repo"
+  },
+  {
+   "name": "shadcn/improve",
+   "repo": "shadcn/improve",
+   "group": "finds-2026-11-12",
+   "licence": "MIT",
+   "why": "Plans written so the weakest model can follow them"
+  },
+  {
+   "name": "Motion Debugger",
+   "repo": "ShadowKingYT444/motion-debugger",
+   "group": "finds-2026-11-12",
+   "licence": "MIT",
+   "why": "A critic checks agent-built UI in a real browser"
+  },
+  {
+   "name": "MAMUBench",
+   "repo": "safety-research/MAMUBench",
+   "group": "finds-2026-11-12",
+   "licence": "MIT",
+   "why": "An agent can't finish while it has unread messages (Mono guard)"
+  },
+  {
+   "name": "Signet",
+   "repo": "Signet-AI/signetai",
+   "group": "finds-2026-11-12",
+   "licence": "Apache-2.0",
+   "why": "Shared memory for several agents"
+  },
+  {
+   "name": "AgentRun",
+   "repo": "Parcha-ai/agentrun",
+   "group": "finds-2026-11-12",
+   "licence": "Apache-2.0",
+   "why": "Agents keep what they learned after every run"
+  },
+  {
+   "name": "AgentDetox",
+   "repo": "chriswu727/agentdetox",
+   "group": "finds-2026-11-12",
+   "licence": "Apache-2.0",
+   "why": "Guards writes to agent memory, rules and skills"
+  },
+  {
+   "name": "SITREP",
+   "repo": "IluvatarLabs/sitrep",
+   "group": "finds-2026-11-12",
+   "licence": "MIT",
+   "why": "One live dashboard of every Claude Code/Codex session, one waiting queue"
+  }
+ ]
+}
