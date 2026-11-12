@@ -168,6 +168,10 @@ jq '.productName="MonoCode Hub" | .identifier="com.ash.monocode-hub"
 npm run hub:build && npm run hub:verify
 ```
 
+A daily scheduled check watches upstream MonoCode and every borrowed-idea repo (`docs/hivra/upstream-watch.json`,
+`node scripts/upstream-watch.mjs --state <file> --write`; it reads git only, never changes the checkout). When upstream
+has commits main lacks, it opens the merge as a PR. Add a repo to that list whenever Ash shares one.
+
 Hivra has one layout (WP-03, `src/features/hub/model/hivraLayout.ts`): Classic, fixed wherever the Hub flag is on.
 Upstream's `tests/browser/layout-opt-in.spec.ts` tests the Classic/Focused switch Hivra doesn't have and was deleted
 on purpose: when a merge brings it back (a modify/delete conflict), keep it deleted. Keep upstream's Focused code
