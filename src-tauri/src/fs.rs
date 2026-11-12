@@ -5374,6 +5374,16 @@ fn git_output(root: &Path, args: &[&str]) -> Option<Vec<u8>> {
 /// case, and `stop` explains why that one is left detached.
 const GIT_OUTPUT_QUEUE_CHUNKS: usize = 16;
 
+/// Kill a git started by `git_output_capped` and everything still in its process group. The group is git's own pid,
+/// and git has not been waited on yet, so that id cannot belong to anyone else.
+fn kill_git_group(child: &mut std::process::Child) {
+    #[cfg(unix)]
+    if let Ok(group) = libc::pid_t::try_from(child.id()) {
+        unsafe { libc::killpg(group, libc::SIGKILL) };
+    }
+    let _ = child.kill();
+}
+
 pub(crate) fn git_output_capped(
     root: &Path,
     args: &[&str],
@@ -5384,6 +5394,13 @@ pub(crate) fn git_output_capped(
     let mut cmd = git_cmd();
     cmd.arg("--no-pager").arg("-C").arg(root);
     crate::git_cmd::extend_readonly(&mut cmd, args);
+    // Its own process group, so a stop reaches what git started too: a filter, a shell alias, or on a Mac the real
+    // git behind the `/usr/bin/git` shim, which outlived a killed shim for days.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
     let mut child = cmd
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -5393,7 +5410,7 @@ pub(crate) fn git_output_capped(
         .spawn()
         .ok()?;
     let Some(mut stdout) = child.stdout.take() else {
-        let _ = child.kill();
+        kill_git_group(&mut child);
         let _ = child.wait();
         return None;
     };
@@ -5423,17 +5440,17 @@ pub(crate) fn git_output_capped(
     let mut reader = match reader {
         Ok(reader) => Some(reader),
         Err(_) => {
-            let _ = child.kill();
+            kill_git_group(&mut child);
             let _ = child.wait();
             return None;
         }
     };
     let stop = |child: &mut std::process::Child, reader: &mut Option<thread::JoinHandle<()>>| {
-        let _ = child.kill();
+        kill_git_group(child);
         let _ = child.wait();
-        // Dropping the handle detaches the reader. A killed git process can leave
-        // a shell descendant holding the pipe, so joining here would re-block the
-        // cancelled search until that unrelated descendant exits.
+        // Dropping the handle detaches the reader. A descendant that left git's
+        // process group can still hold the pipe, so joining here would re-block
+        // the cancelled search until that unrelated process exits.
         reader.take();
     };
 
@@ -12892,6 +12909,73 @@ mod tests {
             }
         });
         assert!(gone, "a git process was left running after the limit");
+    }
+
+    /// A process git starts (a shell alias here; on a Mac `/usr/bin/git` itself starts the real git) dies with it.
+    /// Killing only the git it spawned left the rest running for days.
+    #[cfg(unix)]
+    #[test]
+    fn git_output_capped_kills_what_git_started_when_cancelled() {
+        let dir = tmp("git-capped-tree");
+        if !init_git_commit(&dir.0, &[("a.txt", "alpha\n")]) {
+            return;
+        }
+        let pid_file = dir.0.join("hang.pid");
+        let alias = format!(
+            "alias.hang=!echo $$ > '{}'; exec sleep 300",
+            pid_file.display()
+        );
+        let read_pid = |path: &Path| -> Option<i32> {
+            std::fs::read_to_string(path).ok()?.trim().parse().ok()
+        };
+        // Whatever the assertions say, the sleep never outlives the test.
+        struct Reap(Option<i32>);
+        impl Drop for Reap {
+            fn drop(&mut self) {
+                if let Some(pid) = self.0 {
+                    unsafe { libc::kill(pid, libc::SIGKILL) };
+                }
+            }
+        }
+        let cancel = Arc::new(AtomicBool::new(false));
+        let flag = Arc::clone(&cancel);
+        let watched = pid_file.clone();
+        // Cancel once the shell git started has written its pid, or after 10 s if it never does.
+        thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while Instant::now() < deadline && read_pid(&watched).is_none() {
+                thread::sleep(Duration::from_millis(20));
+            }
+            flag.store(true, Ordering::Release);
+        });
+        let out = git_output_capped(&dir.0, &["-c", &alias, "hang"], 1024, Some(&cancel));
+        let mut reap = Reap(read_pid(&pid_file));
+        assert!(out.is_none());
+        let pid = reap.0.expect("the alias never wrote its pid");
+        // Gone, or a zombie waiting for init to reap it.
+        let alive = || {
+            let state = Command::new("ps")
+                .args(["-o", "stat=", "-p", &pid.to_string()])
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
+                .unwrap_or_default();
+            !state.is_empty() && !state.starts_with('Z')
+        };
+        let gone = (0..100).any(|_| {
+            if alive() {
+                thread::sleep(Duration::from_millis(50));
+                false
+            } else {
+                true
+            }
+        });
+        if gone {
+            reap.0 = None;
+        }
+        assert!(
+            gone,
+            "a process git started was left running after the cancel"
+        );
     }
 
     #[cfg(unix)]
