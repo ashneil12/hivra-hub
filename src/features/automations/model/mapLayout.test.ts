@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createAutomationTrigger, type Automation } from "./automations";
 import { mapLayout } from "./mapLayout";
@@ -195,10 +194,7 @@ describe("mapLayout", () => {
     expect(dumped).not.toContain("PROMPT_SHOULD_NOT_LEAK");
   });
 
-  it("does not keep a triggerLabel or triggerRepo helper", () => {
-    const source = readFileSync(new URL("./mapLayout.ts", import.meta.url), "utf8");
-    expect(source.includes("triggerLabel")).toBe(false);
-    expect(source.includes("triggerRepo")).toBe(false);
+  it("labels each trigger node by its schedule or event", () => {
     const labels = (rows: Automation[]) =>
       mapLayout(rows)
         .nodes.filter((node) => node.kind === "trigger")

@@ -61,9 +61,8 @@ it("pastes copied message text at the selection together with its attachment", a
     });
     await act(async () => {
       textarea.dispatchEvent(event);
-      await new Promise((resolve) => setTimeout(resolve, 30));
     });
-    expect(textarea.value).toBe("Before See image after");
+    await act(async () => vi.waitFor(() => expect(textarea.value).toBe("Before See image after")));
     await act(async () =>
       container
         .querySelector<HTMLButtonElement>('button[aria-label="Send"]')!

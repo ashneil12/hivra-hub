@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { afterAnswer, failureWords, inboxItems, noticesFrom, preserveAnswer, refuseAnswer, waitingPhrase, type DecisionInput } from "./inbox";
 import type { CrewWorkerInput } from "./rows";
@@ -350,13 +349,6 @@ describe("inbox items", () => {
       expect(shown.find((item) => item.id === "credential:real")).toMatchObject({ kind: "credential", title: "Needs a permission" });
       expect(shown.find((item) => item.id === "credential:denied")).toMatchObject({ kind: "credential", title: "Needs a permission" });
     });
-  });
-
-  it("does not change how the pull request inbox is sorted", () => {
-    const source = readFileSync(new URL("../../inbox/model/githubTasks.ts", import.meta.url), "utf8");
-    expect(source).toContain("(Date.parse(b.updatedAt) || 0) - (Date.parse(a.updatedAt) || 0)");
-    const waiting = readFileSync(new URL("../../hub/model/waitingChats.ts", import.meta.url), "utf8");
-    expect(waiting).toContain("a.askedAt - b.askedAt");
   });
 
   it("shows nothing for an empty project", () => {

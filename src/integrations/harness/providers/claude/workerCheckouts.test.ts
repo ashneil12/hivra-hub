@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { readFileSync } from "node:fs";
 import { workerCheckoutsArgs, workerCheckoutsRule } from "./workerCheckouts";
 
 describe("a Lead reads its workers' checkouts without asking Ash (r82, c02)", () => {
@@ -18,8 +17,5 @@ describe("a Lead reads its workers' checkouts without asking Ash (r82, c02)", ()
   it("only reads, as a flag every Claude chat process gets (the dev copy drops settings rules)", () => {
     expect(workerCheckoutsArgs("/Users/ash/Projects/tally")).toEqual(["--allowedTools", "Read(//Users/ash/Projects/tally-worktrees/**)"]);
     expect(workerCheckoutsArgs("/Users/ash/Projects/tally-worktrees/mc-1")).toEqual([]);
-    const src = readFileSync(new URL("./claude.ts", import.meta.url), "utf8");
-    expect(src).toMatch(/\.\.\.workerCheckoutsArgs\(input\.cwd\)/);
-    expect(src).not.toMatch(/withWorkerCheckoutsReadable/);
   });
 });

@@ -230,8 +230,7 @@ it("a read that throws tells the page why (onError) instead of leaving it blank,
   expect(sent.filter((m) => m.type === "hub:watch-error")).toEqual([{ type: "hub:watch-error", watch: "w1", error: "Couldn't read that just now: bad row" }]);
   fail = false;
   src.set({ agents: [] });
-  await new Promise((r) => setTimeout(r, 80));
-  expect(data().map((m) => m.watch)).toEqual(["w1"]);
+  await vi.waitFor(() => expect(data().map((m) => m.watch)).toEqual(["w1"]));
 });
 
 it("a page's chats are behind its agents read: refused without it, answered with it", async () => {

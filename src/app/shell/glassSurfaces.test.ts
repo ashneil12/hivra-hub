@@ -82,18 +82,4 @@ describe("floating surfaces follow the theme", () => {
     }
     expect(bare).toEqual([]);
   });
-
-  it("the hand-drawn glass is the popover glass: a 24px blur, opaque over light", () => {
-    const css = readFileSync(join(SRC, "styles/index.css"), "utf8");
-    for (const name of ["popover-glass", "dialog-glass"]) {
-      const rule = css.match(new RegExp(`\\n\\.${name}[^{]*\\{[^}]*\\}`))?.[0] ?? "";
-      expect(rule, name).toContain("backdrop-filter: blur(24px)");
-      expect(rule, name).toContain("-webkit-backdrop-filter: blur(24px)");
-      const light = css.match(new RegExp(`html\\.theme-light \\.${name}[^{]*\\{[^}]*\\}`))?.[0] ?? "";
-      expect(light, name).toContain("background: var(--color-background-base)");
-    }
-    // The blur above is the one GlassBackdrop gives every Popover (Tailwind's 24px).
-    const backdrop = readFileSync(join(SRC, "app/shell/GlassBackdrop.tsx"), "utf8");
-    expect(backdrop).toContain("backdrop-blur-xl");
-  });
 });

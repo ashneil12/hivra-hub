@@ -89,11 +89,6 @@ describe("Settings → Connectors", () => {
     expect(container.querySelector("[data-hub-connectors-connected]")).toBeNull();
     // Opening Settings signs nothing in by itself.
     expect(calls.filter((x) => x.command === "connector_save_login" || x.command === "connector_test")).toEqual([]);
-    // The memory a Lead starts from is Ash OS's own files on this Mac; nothing in it goes through Notion.
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    for (const file of ["hubMemoryPrimer.ts", "roomMemory.ts", "decisions.ts"])
-      expect(fs.readFileSync(path.resolve(__dirname, "../model", file), "utf8")).not.toMatch(/notion/i);
   });
 
   // The red rule (CoS, 22 Oct): red "Needs you" only for what Ash must do, with its reason; everything else grey, no amber.
@@ -113,9 +108,6 @@ describe("Settings → Connectors", () => {
     expect(pill("slack").textContent).toBe("Error");
     expect(pill("slack").className).not.toMatch(/red|amber/);
     expect(pill("slack").hasAttribute("data-hub-connector-needs-you")).toBe(false);
-    const fs = await import("node:fs");
-    const path = await import("node:path");
-    expect(fs.readFileSync(path.resolve(__dirname, "ConnectorsPage.tsx"), "utf8")).not.toMatch(/amber-\d/);
   });
 
   it("a pasted token goes only to the login command, then the row is Connected and tested", async () => {

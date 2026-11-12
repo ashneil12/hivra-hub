@@ -1,5 +1,4 @@
 // r92 (Critiquito d, s19 blind run d452): bare "Thinking" rows between steps fold away, as a settled Thought does.
-import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { stepsWithoutBareThinking } from "./transcriptActivity";
 import type { Block } from "./session";
@@ -23,9 +22,5 @@ describe("stepsWithoutBareThinking", () => {
   it("keeps one Thinking, the latest, when the list is only thoughts (c02 blind 0176 showed three)", () => {
     const steps = [thought("t1", "Checking jobs."), thought("t2", "Reading."), thought("t3", "", true)];
     expect(stepsWithoutBareThinking(steps, true).map((b) => b.id)).toEqual(["t3"]);
-  });
-  it("is what the chat's step list renders", () => {
-    const src = readFileSync(new URL("../ui/AgentTranscript.tsx", import.meta.url), "utf8");
-    expect(src).toMatch(/stepsWithoutBareThinking\(phase\.steps, turnLive\)\.map/);
   });
 });

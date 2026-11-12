@@ -75,14 +75,13 @@ it("on screen: the explanation and Send to MonoCode Hub lead instead of a flat n
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await act(async () => { host.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); });
-  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  await act(async () => vi.waitFor(() => expect(host.querySelector("[data-hub-change-app-change]")).not.toBeNull()));
   const card = host.querySelector("[data-hub-change-app-change]")!;
   expect(card.textContent).toContain("This changes the app itself");
   expect(card.textContent).toContain("that's how a screen looks.");
   const send = card.querySelector("[data-hub-change-send-lead]") as HTMLButtonElement;
   expect(send.textContent).toBe("Send to MonoCode Hub lead");
   await act(async () => send.click());
-  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-  expect(sent).toEqual(["s-hub"]);
+  await act(async () => vi.waitFor(() => expect(sent).toEqual(["s-hub"])));
   expect(host.querySelector("[data-hub-change-sent-lead]")!.textContent).toContain("Sent to Hub lead");
 });

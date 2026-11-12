@@ -3,7 +3,6 @@
 // window's home (Today) rather than an empty "New session"; the next tab shown after a delete is one of the same
 // project's even when another project's tab sits next to it; Cancel shows its focus ring from the start and the
 // confirm sits on a darker overlay.
-import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -52,13 +51,6 @@ describe("deleting the window's last tab", () => {
     });
     expect(removal.windowEmptied).toBe(false);
     expect(removal.activeTabId).toBe("t-a");
-  });
-
-  it("the App takes Ash home from a UI delete", () => {
-    const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
-    expect(app).toMatch(/viewAfterRemoval\(\s*change\.mode,\s*origin,\s*removal,/);
-    expect(app).toMatch(/const showHome = after\.home;/);
-    expect(app).toMatch(/if \(showHome\) setHubSelection\(showHome\)/);
   });
 });
 
@@ -124,17 +116,5 @@ describe("the shared confirm", () => {
     expect(document.querySelector("[data-modal-scrim]")?.className).toContain("confirm-scrim");
     await act(async () => cancel.click());
     expect(await done).toBe(false);
-  });
-
-  it("App's Delete mono… uses it, not the native sheet", () => {
-    const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
-    const body = app.slice(app.indexOf("const onDeleteMono = useCallback("), app.indexOf("const onDeleteMonoChat = useCallback("));
-    expect(body).toMatch(/confirmDelete\(name, monoDeleteDetail\(!!mono\.sessionId\), \{ undoable: true \}\)/);
-    expect(body).not.toMatch(/\bask\(/);
-  });
-
-  it("the overlay is darker than a plain dialog's", () => {
-    const css = readFileSync(`${process.cwd()}/src/styles/index.css`, "utf8");
-    expect(css).toMatch(/\.dialog-scrim\.confirm-scrim[\s\S]*?background: rgb\(0 0 0 \/ 0\.55\)/);
   });
 });

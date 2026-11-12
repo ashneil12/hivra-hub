@@ -25,7 +25,7 @@
 // from the merge base with origin/main, plus staged, unstaged and untracked files.
 
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import fs, { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -251,6 +251,17 @@ function planFor(repo, mode, base) {
 
 const SCRIPT_GLOBS = ["scripts/*.test.cjs", "scripts/*.test.mjs", "scripts/memory-eval/*.test.mjs"];
 
+/** `dir/*.suffix` patterns only, sorted, relative to the repo. */
+export function expandGlobs(globs, repo) {
+  return globs.flatMap((glob) => {
+    const dir = path.dirname(glob);
+    const suffix = path.basename(glob).replace(/^\*/, "");
+    const abs = path.join(repo, dir);
+    if (!fs.existsSync(abs)) return [];
+    return fs.readdirSync(abs).filter((name) => name.endsWith(suffix)).sort().map((name) => path.posix.join(dir, name));
+  });
+}
+
 function run(command, args, repo) {
   process.stderr.write(`$ ${command} ${args.length > 12 ? `${args.slice(0, 12).join(" ")} … (${args.length} args)` : args.join(" ")}\n`);
   const result = spawnSync(command, args, { cwd: repo, stdio: "inherit", shell: process.platform === "win32" });
@@ -267,7 +278,8 @@ function runWeb(plan, repo, shard) {
 function runScripts(plan, repo) {
   process.stderr.write(`script tests: ${plan.reason}\n`);
   if (plan.mode === "none") return 0;
-  const files = plan.mode === "some" ? plan.tests : SCRIPT_GLOBS;
+  // Spelled out here: Node 20's `--test` (CI's check job) takes a glob as a file name and finds nothing.
+  const files = plan.mode === "some" ? plan.tests : expandGlobs(SCRIPT_GLOBS, repo);
   return run(process.execPath, ["--disable-warning=ExperimentalWarning", "--test", ...files], repo);
 }
 

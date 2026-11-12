@@ -1399,6 +1399,8 @@ test("SH-5: hub:install --legacy refuses an unsigned bundle, and a copy that fai
   assert.ok(answer.refusals.some((refusal) => /isn't signed/.test(refusal)), JSON.stringify(answer.refusals));
   assert.equal(stampOf(unsigned.app).sha, SHA_A);
 
+  // root reads a chmod 0 file anyway, so the unreadable-file half can't be set up as root (a cloud box, a container).
+  if (process.platform !== "win32" && process.getuid?.() === 0) return;
   // ditto stops on a file it can't read, after copying part of the bundle.
   // chmod 0 does not deny read on Windows; an icacls deny does, and is taken off again so the temp tree can go.
   const w = world();
