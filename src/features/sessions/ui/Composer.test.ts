@@ -1345,6 +1345,12 @@ describe("Composer question focus", () => {
     await act(async () =>
       vi.waitFor(() => expect(container.querySelector('[aria-label="Remove borrowed.png"]')).not.toBeNull()),
     );
+    // The pasted file is read in the background: send only once it is attached too. Each poll lets React render
+    // outside act's batch, which a waitFor inside act never sees.
+    await vi.waitFor(async () => {
+      await act(async () => {});
+      expect(container.querySelector('[aria-label="Remove owned.png"]')).not.toBeNull();
+    });
 
     await act(async () =>
       container
