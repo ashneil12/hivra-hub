@@ -537,6 +537,65 @@ fn cargo_building(_root: &Path, _folders: &[String]) -> bool {
     false
 }
 
+/// Ash, 12 Nov 2026: "aggressive memory management to delete old build caches". Every worktree builds into one shared
+/// cargo cache (`~/Library/Caches/monocode-hub/cargo-build`, see `npm run hub:build`). Its `incremental` folders are
+/// only a speed-up and grow by gigabytes, so each sweep removes them, one profile at a time, unless a build holds that
+/// profile's `.cargo-lock`. Nothing else in the cache goes: the dependencies stay built.
+pub fn trim_shared_cargo_cache(cache: &Path) -> usize {
+    // Where the build dir keeps its lock differs between cargo versions, so a running cargo or rustc anywhere skips
+    // the whole trim, as well as a held profile lock.
+    if compiler_running() {
+        return 0;
+    }
+    let Ok(entries) = std::fs::read_dir(cache) else {
+        return 0;
+    };
+    let mut removed = 0;
+    for profile in entries.flatten().map(|entry| entry.path()) {
+        let incremental = profile.join("incremental");
+        if !real_dir(&profile) || !real_dir(&incremental) || profile_locked(&profile) {
+            continue;
+        }
+        if std::fs::remove_dir_all(&incremental).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
+}
+
+#[cfg(unix)]
+fn profile_locked(profile: &Path) -> bool {
+    use std::os::unix::io::AsRawFd;
+    let Ok(file) = std::fs::File::open(profile.join(".cargo-lock")) else {
+        return false;
+    };
+    // SAFETY: a plain flock on a descriptor this function owns; released when `file` drops.
+    let got = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) };
+    got != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
+}
+
+#[cfg(not(unix))]
+fn profile_locked(_profile: &Path) -> bool {
+    // Can't tell, so never trim.
+    true
+}
+
+/// True when a cargo or rustc process runs, or when that can't be read.
+fn compiler_running() -> bool {
+    ["cargo", "rustc"].iter().any(|name| {
+        std::process::Command::new("pgrep")
+            .args(["-x", name])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .map_or(true, |status| status.success())
+    })
+}
+
+fn shared_cargo_cache() -> Option<PathBuf> {
+    dirs::home_dir().map(|home| home.join("Library/Caches/monocode-hub/cargo-build"))
+}
+
 // ---- what else runs in a worktree -----------------------------------------------------------------------------------
 
 /// The working folders of this user's processes, each a real path. The app's own agents, terminals and actions are in
@@ -931,6 +990,14 @@ fn run_loop(app: AppHandle, data_dir: PathBuf) {
         let shared = shared();
         shared.running.store(true, Ordering::SeqCst);
         let result = sweep(&app, &mut checks);
+        if let Some(cache) = shared_cargo_cache() {
+            let trimmed = trim_shared_cargo_cache(&cache);
+            if trimmed > 0 {
+                eprintln!(
+                    "Cleared the shared cargo cache's incremental state ({trimmed} profiles)."
+                );
+            }
+        }
         shared.running.store(false, Ordering::SeqCst);
         match result {
             Ok(run) => {
