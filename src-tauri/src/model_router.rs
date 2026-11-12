@@ -333,35 +333,44 @@ pub(crate) fn save_key_with(
 
 /// Model-key reads, kept for the app's run (12 Nov 2026: opening the model picker read every saved key's address, and
 /// every Pi, Oh My Pi, Codex and OpenCode start read every key, so macOS asked for the Keychain again and again). An
-/// item read once is kept in memory, where the router already holds the key; saving or deleting that key drops it.
-/// A failed read (the Keychain prompt denied or left open) is kept for a few minutes so it isn't asked again at
-/// every click, then tried again.
+/// item read once is kept in memory for the run, key included; saving or deleting that key drops it, and so does a
+/// restart (an item changed in Keychain Access is seen then). A failed read (a denied prompt, a locked keychain) is
+/// kept only briefly, so a denied prompt isn't asked again at every click but a retry soon after works.
 type CachedItem = (Result<Option<String>, String>, std::time::Instant);
+/// One account's slot: its own lock, so a Keychain prompt left open for one model never holds up another's read, a
+/// save or a delete.
+type Slot = Arc<Mutex<Option<CachedItem>>>;
 /// Reads one Keychain item by service and account (production: hub_keychain::read).
 type ItemRead<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
-static KEY_ITEMS: LazyLock<Mutex<HashMap<(String, String), CachedItem>>> =
+static KEY_ITEMS: LazyLock<Mutex<HashMap<(String, String), Slot>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
-const FAILED_READ_KEPT: std::time::Duration = std::time::Duration::from_secs(300);
+const FAILED_READ_KEPT: std::time::Duration = std::time::Duration::from_secs(30);
 
 fn read_cached(
     service: &str,
     custom_model_id: &str,
     read: ItemRead,
 ) -> Result<Option<String>, String> {
-    let at = (service.to_string(), custom_model_id.to_string());
-    let mut items = KEY_ITEMS.lock().unwrap_or_else(|e| e.into_inner());
-    if let Some((result, when)) = items.get(&at) {
+    let slot = KEY_ITEMS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry((service.to_string(), custom_model_id.to_string()))
+        .or_default()
+        .clone();
+    // Held across the read: two starts of the same model ask the Keychain once, not twice.
+    let mut item = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((result, when)) = item.as_ref() {
         if result.is_ok() || when.elapsed() < FAILED_READ_KEPT {
             return result.clone();
         }
     }
-    // Held across the read: two starts at once ask the Keychain once, not twice.
     let result = read(service, custom_model_id);
-    items.insert(at, (result.clone(), std::time::Instant::now()));
+    *item = Some((result.clone(), std::time::Instant::now()));
     result
 }
 
-/// Drop what was kept for one account: its key was saved or deleted.
+/// Drop what was kept for one account: its key was saved or deleted. A read already under way finishes into the
+/// dropped slot, so the next read asks the Keychain again.
 fn forget_cached(service: &str, custom_model_id: &str) {
     KEY_ITEMS
         .lock()
@@ -422,6 +431,7 @@ pub(crate) fn delete_key_with(
 ) -> Result<bool, String> {
     check_model_id(custom_model_id)?;
     // The address is inside the item, so deleting the item deletes it too.
+    forget_cached(service, custom_model_id);
     let result = delete_outcome(delete(service, custom_model_id));
     forget_cached(service, custom_model_id);
     if result.is_ok() {
@@ -3084,6 +3094,35 @@ mod tests {
         assert!(read_cached(service, &other, &refused).is_err());
         assert!(read_cached(service, &other, &refused).is_err());
         assert_eq!(reads.get(), 4);
+    }
+
+    #[test]
+    fn a_keychain_prompt_left_open_for_one_model_never_holds_up_another() {
+        let service = "monocode-hub-test:cache-slots";
+        let slow = format!("slow-{}", std::process::id());
+        let fast = format!("fast-{}", std::process::id());
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let wait = Mutex::new(wait);
+        std::thread::scope(|scope| {
+            let slow_id = slow.clone();
+            let wait = &wait;
+            let stuck = scope.spawn(move || {
+                read_cached(service, &slow_id, &|_, _| {
+                    let _ = wait.lock().unwrap().recv();
+                    Ok(Some("slow".into()))
+                })
+            });
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            // Another model reads, saves and deletes while the first prompt is still open.
+            assert_eq!(
+                read_cached(service, &fast, &|_, _| Ok(Some("fast".into()))),
+                Ok(Some("fast".into()))
+            );
+            save_key_with(service, &fast, "k", None, &|_, _, _| Ok(())).unwrap();
+            delete_key_with(service, &fast, &|_, _| Ok(true)).unwrap();
+            release.send(()).unwrap();
+            assert_eq!(stuck.join().unwrap(), Ok(Some("slow".into())));
+        });
     }
 
     #[test]
