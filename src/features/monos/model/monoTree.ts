@@ -620,6 +620,27 @@ export function zoom(t: Tree, id: number, n: number, at = 0): string {
   return halves(p).map((h) => line(h, node(t, h) ?? WAIT)).join("\n");
 }
 
+/**
+ * Every stored message that has all the query's words, newest first, each as "id+0|kind: …snippet…  (date)", so the
+ * Mono can zoom(id, 1) the one it needs. Exact search over the raw messages, never only the summaries (hermes-lcm's
+ * lcm_grep, Ash 12 Nov: one chat that goes on for good without losing the plot).
+ */
+export function grep(t: Tree, query: string, max = 20): string {
+  const words = query.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+  if (!words.length) return "Give a few words to look for.";
+  const hits: string[] = [];
+  for (let i = t.count + t.open - 1; i >= 0 && hits.length < max; i--) {
+    const r = t.msgs[i];
+    if (!r) continue;
+    const lower = r.text.toLowerCase();
+    if (!words.every((w) => lower.includes(w))) continue;
+    const at = Math.max(0, lower.indexOf(words[0]!) - 60);
+    const snippet = flat(r.text.slice(at, at + 200));
+    hits.push(`${r.i}+0|${r.kind}: ${at > 0 ? "…" : ""}${snippet}${at + 200 < r.text.length ? "…" : ""}  (${new Date(r.date).toLocaleString("sv-SE")})`);
+  }
+  return hits.length ? hits.join("\n") : `Nothing in the long chat has all of: ${words.join(", ")}.`;
+}
+
 export function date(t: Tree, id: number): string {
   const r = message(t, id);
   return r === null ? "No message " + id + "." : new Date(r.date).toLocaleString("sv-SE");
