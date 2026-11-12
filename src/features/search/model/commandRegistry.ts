@@ -45,7 +45,8 @@ export type PaletteAppAction =
   | "archive-chat"
   | "stop-chat"
   | "next-chat-worktree"
-  | "fork-from-here";
+  | "fork-from-here"
+  | "report-problem";
 
 export type PaletteRun =
   | { kind: "tab"; command: TabCommand }
@@ -250,6 +251,16 @@ const EXTRAS: PaletteCommand[] = [
     binding: null,
     run: { kind: "app", action: "fork-from-here" },
     needs: "chat",
+  },
+  {
+    // WP-252: the person's own agent reads the logs and this build's source, and drafts an issue.
+    id: "app.report-problem",
+    label: "Report a problem",
+    group: "App",
+    keys: "",
+    binding: null,
+    run: { kind: "app", action: "report-problem" },
+    needs: "none",
   },
 ];
 

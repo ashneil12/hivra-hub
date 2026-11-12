@@ -538,6 +538,40 @@ pub fn diagnostics_folder(app: tauri::AppHandle) -> Result<String, String> {
     path_text(&logs)
 }
 
+/// WP-252: a fresh, empty folder for a "Report a problem" chat, inside the app's data folder. A chat needs a folder
+/// (`chat_folder.rs`), and triage must not run in a project or the home folder.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TriageFolder {
+    pub folder: String,
+    pub logs: String,
+}
+
+pub(crate) fn make_triage_folder(data_dir: &Path, stamp: &str) -> io::Result<(PathBuf, PathBuf)> {
+    let logs = ensure_logs(data_dir)?;
+    let base = data_dir.join("triage");
+    std::fs::create_dir_all(&base)?;
+    let mut folder = base.join(stamp);
+    let mut n = 1;
+    while folder.exists() {
+        n += 1;
+        folder = base.join(format!("{stamp}-{n}"));
+    }
+    std::fs::create_dir(&folder)?;
+    Ok((folder, logs))
+}
+
+#[tauri::command]
+pub fn diagnostics_triage_folder(app: tauri::AppHandle) -> Result<TriageFolder, String> {
+    let data = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    let stamp = OffsetDateTime::now_utc().unix_timestamp().to_string();
+    let (folder, logs) = make_triage_folder(&data, &stamp).map_err(|err| err.to_string())?;
+    Ok(TriageFolder {
+        folder: path_text(&folder)?,
+        logs: path_text(&logs)?,
+    })
+}
+
 #[tauri::command]
 pub fn diagnostics_sources(app: tauri::AppHandle) -> Result<Sources, String> {
     let data = app.path().app_data_dir().map_err(|err| err.to_string())?;
@@ -591,6 +625,18 @@ mod tests {
         fn drop(&mut self) {
             let _ = remove_scratch(&self.0);
         }
+    }
+
+    #[test]
+    fn triage_folders_are_fresh_and_inside_the_data_folder() {
+        let dir = Scratch(scratch());
+        let (first, logs) = make_triage_folder(&dir.0, "100").unwrap();
+        let (second, _) = make_triage_folder(&dir.0, "100").unwrap();
+        assert_ne!(first, second);
+        assert!(first.starts_with(dir.0.join("triage")));
+        assert!(second.starts_with(dir.0.join("triage")));
+        assert_eq!(fs::read_dir(&first).unwrap().count(), 0);
+        assert_eq!(logs, dir.0.join("logs"));
     }
 
     #[test]

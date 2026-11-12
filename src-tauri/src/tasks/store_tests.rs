@@ -909,3 +909,179 @@ fn a_project_does_not_see_another_projects_statuses() {
         .all(|row| row.project_id == "C:\\Code\\Other"));
     assert!(windows.iter().all(|row| row.name != "Blocked"));
 }
+
+// WP-250: pickup rules.
+
+fn rule(
+    owner: &str,
+    statuses: &[&str],
+    labels: &[&str],
+    at: i64,
+) -> super::super::pickup::PickupRule {
+    super::super::pickup::PickupRule {
+        owner_session: owner.into(),
+        project: Some("app".into()),
+        statuses: statuses.iter().map(|s| s.to_string()).collect(),
+        labels: labels.iter().map(|s| s.to_string()).collect(),
+        enabled: true,
+        created_at: at,
+    }
+}
+
+fn wakes_for(conn: &rusqlite::Connection, owner: &str) -> i64 {
+    conn.query_row(
+        "SELECT COUNT(*) FROM firstmate_wakes WHERE owner_session = ?1",
+        [owner],
+        |row| row.get(0),
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_matching_task_goes_to_the_rule_owner_once() {
+    let store = mem();
+    let who = person("app");
+    let mut conn = store.lock_conn().unwrap();
+    super::super::pickup::put(&conn, &rule("mate-1", &[], &["bug"], 1), 1).unwrap();
+    let task = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Fix the crash".into(),
+            labels: vec!["bug".into()],
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap()
+    .task;
+    let stored = get(&conn, &who, &task.id).unwrap();
+    assert_eq!(stored.assignee.as_deref(), Some("mate-1"));
+    assert_eq!(wakes_for(&conn, "mate-1"), 1);
+    // A later edit of a picked-up task neither moves it nor wakes again.
+    update(
+        &mut conn,
+        &who,
+        &UpdateInput {
+            id: task.id.clone(),
+            version: Some(stored.version),
+            title: Some("Fix the crash on launch".into()),
+            ..Default::default()
+        },
+        3,
+    )
+    .unwrap();
+    assert_eq!(wakes_for(&conn, "mate-1"), 1);
+}
+
+#[test]
+fn a_task_that_starts_matching_later_is_picked_up_then() {
+    let store = mem();
+    let who = person("app");
+    let mut conn = store.lock_conn().unwrap();
+    super::super::pickup::put(&conn, &rule("mate-1", &["Todo"], &[], 1), 1).unwrap();
+    let task = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Later".into(),
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap()
+    .task;
+    assert_eq!(task.assignee, None);
+    assert_eq!(wakes_for(&conn, "mate-1"), 0);
+    update(
+        &mut conn,
+        &who,
+        &UpdateInput {
+            id: task.id.clone(),
+            version: Some(task.version),
+            status: Some("Todo".into()),
+            ..Default::default()
+        },
+        3,
+    )
+    .unwrap();
+    assert_eq!(
+        get(&conn, &who, &task.id).unwrap().assignee.as_deref(),
+        Some("mate-1")
+    );
+    assert_eq!(wakes_for(&conn, "mate-1"), 1);
+}
+
+#[test]
+fn a_rule_never_takes_a_persons_task_or_undoes_an_unassign() {
+    let store = mem();
+    let who = person("app");
+    let mut conn = store.lock_conn().unwrap();
+    super::super::pickup::put(&conn, &rule("mate-1", &["Backlog"], &[], 1), 1).unwrap();
+    let mine = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Mine".into(),
+            assignee: Some("person".into()),
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap()
+    .task;
+    assert_eq!(mine.assignee.as_deref(), Some("person"));
+    let taken = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Taken".into(),
+            ..Default::default()
+        },
+        3,
+    )
+    .unwrap()
+    .task;
+    let taken = get(&conn, &who, &taken.id).unwrap();
+    assert_eq!(taken.assignee.as_deref(), Some("mate-1"));
+    update(
+        &mut conn,
+        &who,
+        &UpdateInput {
+            id: taken.id.clone(),
+            version: Some(taken.version),
+            assignee: Set::Clear,
+            ..Default::default()
+        },
+        4,
+    )
+    .unwrap();
+    assert_eq!(get(&conn, &who, &taken.id).unwrap().assignee, None);
+}
+
+#[test]
+fn the_oldest_rule_wins_and_a_catch_all_rule_is_refused() {
+    let store = mem();
+    let who = person("app");
+    let mut conn = store.lock_conn().unwrap();
+    assert!(super::super::pickup::put(&conn, &rule("mate-0", &[], &[], 1), 1).is_err());
+    super::super::pickup::put(&conn, &rule("mate-2", &["Backlog"], &[], 5), 5).unwrap();
+    super::super::pickup::put(&conn, &rule("mate-1", &["Backlog"], &[], 9), 9).unwrap();
+    // Editing a rule keeps its place.
+    super::super::pickup::put(&conn, &rule("mate-2", &["Backlog", "Todo"], &[], 20), 20).unwrap();
+    let task = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Who".into(),
+            ..Default::default()
+        },
+        21,
+    )
+    .unwrap()
+    .task;
+    assert_eq!(
+        get(&conn, &who, &task.id).unwrap().assignee.as_deref(),
+        Some("mate-2")
+    );
+}

@@ -87,6 +87,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     crate::watcher::ensure_tables(conn)?;
     // WP-71: saved views live in the same database as the tasks they show.
     super::views::ensure_tables(conn)?;
+    // WP-250: which tasks each first mate takes by itself.
+    super::pickup::ensure_tables(conn)?;
     Ok(())
 }
 
@@ -944,6 +946,65 @@ fn wake(conn: &Connection, owner: &str, key: &str, text: &str, now: i64) -> Resu
     Ok(())
 }
 
+/// WP-250: an unassigned task that a first mate's pickup rule matches is given to that first mate, noted in the task's
+/// activity, and wakes it once (the same wake key as a person's assignment, so it is never heard twice).
+fn pick_up_by_rule(
+    conn: &Connection,
+    id: &str,
+    now: i64,
+    changed: &mut Vec<String>,
+) -> Result<(), String> {
+    let Some(row) = load(conn, id)? else {
+        return Ok(());
+    };
+    if row.assignee.is_some() || row.delegation_id.is_some() {
+        return Ok(());
+    }
+    let status = status_name(conn, &row.status_id)?;
+    let labels = parse_labels(&row.labels);
+    let candidate = super::pickup::Candidate {
+        project: &row.project_id,
+        status: &status,
+        labels: &labels,
+        assignee: row.assignee.as_deref(),
+        trashed: row.trashed_at.is_some(),
+        needs_you: row.needs_you != 0,
+    };
+    let Some(owner) = super::pickup::taker(conn, &candidate)? else {
+        return Ok(());
+    };
+    let updated = conn
+        .execute(
+            "UPDATE tasks SET assignee = ?1, version = version + 1, updated_at = ?2
+             WHERE id = ?3 AND assignee IS NULL",
+            params![owner, now, row.id],
+        )
+        .map_err(|e| e.to_string())?;
+    if updated == 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO task_activity (id, task_id, at, kind, text, delegation_id) VALUES (?1, ?2, ?3, 'pickup', ?4, NULL)",
+        params![new_id("act"), row.id, now, "Picked up by rule"],
+    )
+    .map_err(|e| e.to_string())?;
+    if !changed.iter().any(|c| c == &row.id) {
+        changed.push(row.id.clone());
+    }
+    wake(
+        conn,
+        &owner,
+        &format!("task-pickup:{}", row.id),
+        &pickup_text(
+            &source_read(&row.source),
+            row.number,
+            &row.title,
+            &row.description,
+        ),
+        now,
+    )
+}
+
 fn delegation_parties(conn: &Connection, id: &str) -> Result<Option<(String, String)>, String> {
     match conn.query_row(
         "SELECT owner_session, child_session FROM delegations WHERE id = ?1",
@@ -1240,6 +1301,7 @@ pub(crate) fn create_in(
             )?;
         }
     }
+    pick_up_by_rule(conn, &row.id, now, &mut changed)?;
     let stored = load(conn, &row.id)?.ok_or_else(|| "No task with that id.".to_string())?;
     Ok(Written {
         stale: false,
@@ -1464,6 +1526,10 @@ pub(crate) fn update_in(
                 now,
             )?;
         }
+    }
+    // A write that sets or clears the assignee is the person's own choice; a rule never undoes it.
+    if !input.trash && matches!(input.assignee, Set::Keep) {
+        pick_up_by_rule(conn, &row.id, now, &mut changed)?;
     }
     let stored = load(conn, &row.id)?.ok_or_else(|| "No task with that id.".to_string())?;
     Ok(Written {

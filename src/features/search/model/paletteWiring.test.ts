@@ -82,6 +82,7 @@ function sideEffects(
     zoom: (action) => calls.push(`zoom:${action}`),
     editor: (action) => calls.push(`editor:${action}`),
     forkChat: () => calls.push("fork"),
+    reportProblem: () => calls.push("report-problem"),
     ...overrides,
   };
 }
@@ -197,6 +198,14 @@ describe("the palette wiring", () => {
     const blocked = row("session.fork-from-here", nowhere);
     expect(runPaletteCommand(blocked, actions(calls), sideEffects(calls))).toBe(false);
     expect(calls).toEqual(["fork"]);
+  });
+
+  it("opens a Report a problem chat from anywhere (WP-252)", () => {
+    const calls: string[] = [];
+    const problem = row("app.report-problem", nowhere);
+    expect(problem.label).toBe("Report a problem");
+    expect(runPaletteCommand(problem, actions(calls), sideEffects(calls))).toBe(true);
+    expect(calls).toEqual(["report-problem"]);
   });
 
   it("sends zoom and editor rows to their own helpers", () => {

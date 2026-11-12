@@ -47,8 +47,26 @@ src.listProjects = () => [
 ];
 setHubDataSource(src);
 
+// WP-250: the pickup rules the Tasks pane lists and saves.
+type Rule = { ownerSession: string; project: string | null; statuses: string[]; labels: string[]; enabled: boolean; createdAt: number };
+let rules: Rule[] = [];
+
 installFakeTauri("tasks", (command, args) => {
   const actor = args.actor as { project?: string } | undefined;
+  if (command === "tasks_pickup_rules") return rules;
+  if (command === "tasks_pickup_rule_put") {
+    const rule = args.rule as Rule;
+    if (rule.statuses.length === 0 && rule.labels.length === 0) {
+      throw new Error("Pick at least one status or label, or this first mate would take every task.");
+    }
+    const kept = rules.find((item) => item.ownerSession === rule.ownerSession);
+    rules = [...rules.filter((item) => item.ownerSession !== rule.ownerSession), { ...rule, createdAt: kept?.createdAt ?? rules.length + 1 }];
+    return rule;
+  }
+  if (command === "tasks_pickup_rule_remove") {
+    rules = rules.filter((item) => item.ownerSession !== args.ownerSession);
+    return null;
+  }
   if (command === "tasks_list") {
     return tasks.filter((task) => task.projectId === actor?.project);
   }

@@ -31,6 +31,7 @@ import { createAutosaver } from "../vendor/views/autosave";
 import type { GroupContext } from "../vendor/views/grouping";
 import { defaultViewState, isGroup, type FilterGroup, type GroupBy, type OrderBy, type ViewState } from "../vendor/views/viewState";
 import { BulkBar } from "./BulkBar";
+import { PickupRules } from "./PickupRules";
 import { TaskBoard } from "./TaskBoard";
 import { TaskDetail } from "./TaskDetail";
 // WP-84: phase documents and the review decision live on the open task.
@@ -794,6 +795,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
           Add task
         </button>
       )}
+      <PickupRules project={writeRef.current} />
     </section>
   );
 }

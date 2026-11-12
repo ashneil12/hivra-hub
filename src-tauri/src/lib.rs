@@ -796,6 +796,9 @@ pub fn run() {
             delegations::delegations_bind_chat,
             // WP-70: tasks shared by the person and their agents.
             tasks::commands::tasks_list,
+            tasks::commands::tasks_pickup_rules,
+            tasks::commands::tasks_pickup_rule_put,
+            tasks::commands::tasks_pickup_rule_remove,
             tasks::commands::tasks_get,
             tasks::commands::tasks_create,
             tasks::commands::tasks_update,
@@ -1407,6 +1410,7 @@ pub fn run() {
             // WP-104: the logs folder, and the lines the copy action masks.
             diagnostics::diagnostics_folder,
             diagnostics::diagnostics_sources,
+            diagnostics::diagnostics_triage_folder,
             // WP-104: machine facts for the health list.
             health::health_facts,
         ])
