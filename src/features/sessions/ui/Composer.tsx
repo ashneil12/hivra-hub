@@ -146,6 +146,7 @@ import { HandoffMiniCard } from "./HandoffMiniCard";
 import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
 import { ModelControlPills, ModelPicker } from "./ModelPicker";
 import { FanOutPicker } from "./FanOutPicker";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import { QuestionForm } from "./QuestionForm";
 import { MessageQueue } from "./MessageQueue";
 import { appNoteText } from "../model/appNote";
@@ -547,6 +548,8 @@ export function Composer({
   const [pasteNotice, setPasteNotice] = useState<string | null>(null);
   const [sideNotice, setSideNotice] = useState<string | null>(null);
   const [plusOpen, setPlusOpen] = useState(false);
+  // Ash 12 Nov: Compare is a niche tool, so in Hivra it is a mode in the + menu, not a button on every message.
+  const [compareShown, setCompareShown] = useState(!IS_HUB_BUNDLE);
   const [planSelected, setPlanSelected] = useState(false);
   const [operatorSelected, setOperatorSelected] = useState(false);
   const [orchestrationSelected, setOrchestrationSelected] = useState(false);
@@ -2128,7 +2131,7 @@ export function Composer({
         </>
       )}
       <div className="ml-auto flex shrink-0 items-center">
-        {promptCopy}
+        {IS_HUB_BUNDLE ? null : promptCopy}
         <ContextMeter
           usage={context}
           onCompact={
@@ -2164,7 +2167,7 @@ export function Composer({
         />
       ) : null}
       {children}
-      {hideTopBar ? (
+      {hideTopBar && !IS_HUB_BUNDLE ? (
         <div className="flex justify-end px-3 pt-2">{promptCopy}</div>
       ) : null}
       {usageLimit ? (
@@ -2723,6 +2726,29 @@ export function Composer({
                       </span>
                     </span>
                   </button>
+                  {IS_HUB_BUNDLE && onCompareModels && !remoteSession ? (
+                    <button
+                      type="button"
+                      aria-pressed={compareShown}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => {
+                        setCompareShown((on) => !on);
+                        setPlusOpen(false);
+                        ref.current?.focus();
+                      }}
+                      className="flex w-full items-start gap-2.5 rounded-lg px-2 py-2 text-left text-content hover:bg-content/10"
+                    >
+                      <AiIdea className="mt-0.5 size-4 shrink-0 text-content/60" />
+                      <span className="min-w-0 flex-1">
+                        <span className="block text-[13px]">Compare mode</span>
+                        <span className="block truncate whitespace-nowrap text-[11px] leading-4 text-content/45">
+                          Send one message to several models
+                        </span>
+                      </span>
+                      {compareShown ? <Check className="mt-0.5 size-3.5 shrink-0 text-content/70" /> : null}
+                    </button>
+                  ) : null}
+                  {IS_HUB_BUNDLE ? <div className="px-1 py-1">{promptCopy}</div> : null}
                   {dictation.supported && !disabled && !worktreeRemoved ? (
                     <DictationMenuRow
                       onAsk={() => {
@@ -2864,7 +2890,7 @@ export function Composer({
                 <TurnStopButton onClick={() => onStop?.()} />
               ) : (
                 <>
-                  {onCompareModels && !compact && !remoteSession ? (
+                  {onCompareModels && compareShown && !compact && !remoteSession ? (
                     <FanOutPicker
                       prompt={draft}
                       disabled={disabled || worktreeRemoved}

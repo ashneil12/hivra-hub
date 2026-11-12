@@ -16109,6 +16109,7 @@ function Workspace({
   );
   const {
     unseen: inboxUnseen,
+    markAllSeen: markInboxSeen,
     linkedSessionUpdateIds,
     linkedSessionUpdates,
   } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
@@ -18960,6 +18961,12 @@ function Workspace({
     />
   );
 
+  const inboxOnScreen = hubDefaultsOn()
+    ? inboxViewOpen
+    : hubShown && hubSel.project !== NO_PROJECT && hubSel.item === "inbox";
+  useEffect(() => {
+    if (inboxOnScreen && inboxUnseen) markInboxSeen();
+  }, [inboxOnScreen, inboxUnseen, markInboxSeen]);
   const usageFooter =
     (chromeSurfaceOpen && !(insetLayout && activeAppView)) ||
     (monoCovers && !insetLayout && !ONE_CHAT_LOOK) ? null : (
@@ -18974,11 +18981,12 @@ function Workspace({
         terminals={monoCovers ? undefined : runningTerminals}
         terminalOpen={!monoCovers && runningTerminalOpen}
         onToggleTerminal={onToggleRunningTerminal}
+        // Ash 12 Nov: in Hivra the footer's Terminal button lit up and opened nothing; it is gone there.
         onNewTerminal={
-          !monoCovers && isLocalProject(projectCwd) ? onNewTerminal : undefined
+          !IS_HUB_BUNDLE && !monoCovers && isLocalProject(projectCwd) ? onNewTerminal : undefined
         }
         onToggleProjectTerminal={
-          !monoCovers && isLocalProject(projectCwd)
+          !IS_HUB_BUNDLE && !monoCovers && isLocalProject(projectCwd)
             ? onToggleProjectTerminal
             : undefined
         }
