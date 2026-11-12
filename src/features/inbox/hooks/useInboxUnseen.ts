@@ -96,6 +96,8 @@ function mergeSnapshots(
 
 export type InboxActivity = {
   unseen: boolean;
+  /** Opening the Inbox counts as seeing what's in it (Ash 12 Nov: the dot never went away). */
+  markAllSeen: () => void;
   linkedSessionUpdateIds: ReadonlySet<string>;
   linkedSessionUpdates: ReadonlyMap<string, LinkedSessionUpdate>;
 };
@@ -350,8 +352,13 @@ export function useInboxActivity(
         .map(([id]) => id),
     );
   }, [updates, notificationRevision]);
+  const markAllSeen = useCallback(() => {
+    const entries = entriesRef.current.filter((entry) => inProjectScope(entry.projectPath, scopeRef.current));
+    if (entries.length && markInboxItemsSeen(entries)) applyUnseen();
+  }, [applyUnseen]);
   return {
     unseen,
+    markAllSeen,
     linkedSessionUpdates: updates,
     linkedSessionUpdateIds: linkedIndicators,
   };

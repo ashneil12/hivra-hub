@@ -52,6 +52,8 @@ export function ResourcePressureNotice({
   insetChip = false,
 }: Props) {
   const [pressure, setPressure] = useState<PressureState>(emptyPressure);
+  // The last reading, so the chip and the window give real numbers (Ash 12 Nov: "Mac busy: memory" said nothing).
+  const [reading, setReading] = useState<ResourceSample>();
   const [open, setOpen] = useState(false);
   const [processes, setProcesses] = useState<OwnedProcess[]>([]);
   const [loading, setLoading] = useState(false);
@@ -93,6 +95,7 @@ export function ResourcePressureNotice({
             .then((usage) => {
               if (!alive) return;
               const sample = { ...usage, stallShare };
+              setReading(sample);
               state = samplePressure(state, sample, now);
               setPressure((previous) =>
                 previous.active === state.active &&
@@ -200,9 +203,14 @@ export function ResourcePressureNotice({
         ? "Low available memory"
         : "Slow response",
   );
+  const cpu = reading?.cpuPercent;
+  const cpuText = typeof cpu === "number" ? `CPU ${Math.round(cpu)}%` : "CPU";
+  const memoryWord = memoryLevel(reading?.memoryPressure);
   const busyParts = pressure.reasons.map((reason) =>
-    reason === "CPU saturation" ? "CPU" : reason === "Memory pressure" ? "memory" : "slow to respond",
+    reason === "CPU saturation" ? cpuText : reason === "Memory pressure" ? `memory ${memoryWord}` : "slow to respond",
   );
+  const ownMemory = processes.reduce((sum, row) => sum + row.memoryBytes, 0);
+  const ownCpu = processes.reduce((sum, row) => sum + row.cpuPercent, 0);
   return (
     <>
       {pressure.active && chipHost
@@ -246,12 +254,24 @@ export function ResourcePressureNotice({
               ) : (
                 <Check className="mt-0.5 size-4 shrink-0 text-emerald-500" />
               )}
-              <div className="min-w-0">
+              <div className="min-w-0 flex-1">
                 <p className="text-[12px] font-medium">
                   {pressure.active
                     ? reasons.join(" · ")
                     : "Usage is back to normal"}
                 </p>
+                <dl data-mac-stats className="mt-1.5 grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 text-[12px] text-content/70">
+                  <dt className="text-content/45">Whole Mac CPU</dt>
+                  <dd>{typeof cpu === "number" ? `${Math.round(cpu)}% in use` : "Not read yet"}</dd>
+                  <dt className="text-content/45">Whole Mac memory</dt>
+                  <dd>{memoryWord === "unknown" ? "Not read yet" : memoryWord}</dd>
+                  <dt className="text-content/45">This app's work</dt>
+                  <dd>
+                    {processes.length
+                      ? `${groups.size} ${groups.size === 1 ? "chat" : "chats"} · ${formatMemory(ownMemory)} memory · ${Math.round(ownCpu)}% CPU`
+                      : "Nothing running"}
+                  </dd>
+                </dl>
                 <p className="mt-0.5 text-[12px] leading-relaxed text-content/55">
                   {pressure.active
                     ? "Things may feel slower. Stop work you no longer need."
@@ -441,3 +461,10 @@ function formatMemory(bytes: number): string {
       ? "<1 MB"
       : `${Math.round(mb)} MB`;
 }
+
+/** macOS memory pressure level (1 normal, 2 warning, 4 critical) in a word. */
+function memoryLevel(level: number | null | undefined): string {
+  if (typeof level !== "number" || level <= 0) return "unknown";
+  return level >= 4 ? "nearly full" : level >= 2 ? "tight" : "fine";
+}
+
