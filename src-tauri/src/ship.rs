@@ -418,8 +418,10 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
         return Boot::Normal;
     };
     // restore and reopen run outside the sandbox and used to trust state.json with no mac. A missing or wrong mac
-    // is not a record this app signed, so it is left alone. A final phase already returned above.
-    if !mac_matches(&ship) {
+    // is not a record this app signed, so it is left alone, with one exception below: a live runner's trial. A final
+    // phase already returned above.
+    let signed = mac_matches(&ship);
+    if !signed && !runner_alive {
         log(
             &dir,
             "startup: record.mac does not match, so this record is not restored",
@@ -455,6 +457,17 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
     };
     let decision = plan(&facts);
     log(&dir, &format!("startup: {facts:?} -> {decision:?}"));
+    // `npm run hub:ship` run from a terminal stages a record the app never signs (only `app.ship` signs one, and a build
+    // from before the mac can't), so the build it opens must still be able to commit its own trial. That is all an
+    // unsigned record gets: hold until committed, with the runner alive and watching. Restore, reopen, cancel, finish
+    // and leave stay with signed records. 0.16.17 was rolled back on 12 Nov because this refused even the trial.
+    if !signed && decision != Plan::Trial {
+        log(
+            &dir,
+            "startup: record.mac does not match, so this record is not restored",
+        );
+        return Boot::Normal;
+    }
     match decision {
         Plan::Normal => Boot::Normal,
         Plan::Leave => {
@@ -3351,6 +3364,130 @@ mod review_r5_repro {
                 b"Test Using Larger Than Block-Size Key - Hash Key First"
             )),
             "60e431591ee0b67f0d8a26aacbf5b77f8e0bc6213728c5140546040f0ee37f54"
+        );
+    }
+}
+
+/// 12 Nov 2026: 0.16.17 was rolled back twice. The second time it didn't crash; it never committed. `npm run hub:ship`
+/// run from a terminal stages a record the app never signs (only `app.ship` signs it, and 0.16.16 can't sign at all),
+/// so the new build refused its own trial at startup ("record.mac does not match"), booted as Normal, and `ship_ready`
+/// had no trial to commit. The runner rolled it back after 120 s. An unsigned record is now followed into a live
+/// runner's trial and nowhere else.
+#[cfg(all(test, unix))]
+mod terminal_ship_trial {
+    use super::*;
+
+    struct Folder(PathBuf);
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn daily() -> Identity {
+        Identity {
+            kind: Kind::Daily,
+            identifier: instance::DAILY_IDENTIFIER.into(),
+            slot: None,
+        }
+    }
+
+    /// A ship folder with an unsigned record, the way hub-ship.mjs run from a terminal leaves it.
+    fn unsigned(label: &str, record: Value) -> (Folder, PathBuf, PathBuf) {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let root =
+            std::env::temp_dir().join(format!("ship-{label}-{}-{nanos}", std::process::id()));
+        let data = root.join("data");
+        let id = "20261112-143949-b78fcf5";
+        let dir = data.join(SHIP_DIR).join(id);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut record = record;
+        record
+            .as_object_mut()
+            .unwrap()
+            .insert("id".into(), json!(id));
+        write_json(&dir.join(STATE), &record).unwrap();
+        write_json(&data.join(SHIP_DIR).join(CURRENT), &json!({ "id": id })).unwrap();
+        assert!(
+            !mac_matches(&Ship::load(&dir).unwrap()),
+            "the record is unsigned"
+        );
+        (Folder(root), data, dir)
+    }
+
+    fn own_sha() -> String {
+        let own = instance::stamp().sha.clone();
+        // An empty stamp can make the plan Leave, which exits the test process: refuse to run instead.
+        assert!(!own.is_empty(), "this test needs a build stamp");
+        own
+    }
+
+    #[test]
+    fn a_live_runners_trial_goes_on_with_a_record_the_app_did_not_sign() {
+        let own = own_sha();
+        let (_root, data, dir) = unsigned(
+            "terminal-trial",
+            json!({ "phase": "trial", "to": { "sha": own }, "from": { "sha": "0000000" } }),
+        );
+        // The runner holds its lock for the whole trial.
+        let runner = InstanceLock::acquire_file(&dir.join(RUNNER_LOCK), Duration::ZERO).unwrap();
+        let boot = startup(&daily(), &data);
+        drop(runner);
+        assert!(
+            matches!(boot, Boot::Trial { .. }),
+            "the build a terminal ship opened did not recognise its own trial, so it could never commit"
+        );
+    }
+
+    #[test]
+    fn with_no_runner_an_unsigned_trial_is_still_left_alone() {
+        let own = own_sha();
+        let (_root, data, dir) = unsigned(
+            "terminal-no-runner",
+            json!({ "phase": "trial", "to": { "sha": own }, "from": { "sha": "0000000" } }),
+        );
+        assert!(matches!(startup(&daily(), &data), Boot::Normal));
+        let after = Ship::load(&dir).unwrap();
+        assert_eq!(
+            after.trial_starts(),
+            0,
+            "startup wrote to a record it did not sign"
+        );
+    }
+
+    #[test]
+    fn a_live_runner_does_not_make_an_unsigned_record_restore_or_leave() {
+        let own = own_sha();
+        let target_root = std::env::temp_dir().join(format!(
+            "ship-terminal-restore-target-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&target_root).unwrap();
+        let target = target_root.join("com.agent.plist");
+        let (_root, data, dir) = unsigned(
+            "terminal-restore",
+            json!({
+                "phase": "rolling-back",
+                "to": { "sha": "0000000" },
+                "from": { "sha": own },
+                "appPath": target.to_string_lossy(),
+            }),
+        );
+        std::fs::write(dir.join(PREVIOUS_APP), "<plist>agent job</plist>\n").unwrap();
+        let runner = InstanceLock::acquire_file(&dir.join(RUNNER_LOCK), Duration::ZERO).unwrap();
+        // With a live runner this phase plans Leave, which would exit this process; an unsigned record must not.
+        let boot = startup(&daily(), &data);
+        drop(runner);
+        let moved = target.exists();
+        let _ = std::fs::remove_dir_all(&target_root);
+        assert!(matches!(boot, Boot::Normal));
+        assert!(
+            !moved,
+            "an unsigned record moved a file outside the ship folder"
         );
     }
 }
