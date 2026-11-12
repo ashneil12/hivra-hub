@@ -5,7 +5,7 @@
 
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { execFileSync, spawn } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -151,7 +151,10 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
   // Out of WAL: one file, which a read-only tool can open without creating anything beside it.
   const header = fs.readFileSync(path.join(to, "monocode.db")).subarray(18, 20);
   assert.deepEqual([...header], [1, 1], "rollback-journal mode in the file header");
-  execFileSync("sqlite3", [`file:${path.join(to, "monocode.db")}?mode=ro`, "SELECT count(*) FROM sessions"]);
+  const readOnly = new DatabaseSync(path.join(to, "monocode.db"), { readOnly: true });
+  readOnly.prepare("SELECT count(*) FROM sessions").get();
+  readOnly.close();
+  assert.deepEqual(fs.readdirSync(to).sort(), ["instance-owner.sqlite", "monocode.db", "seeded.json"], "a read-only open made nothing beside it");
   assert.deepEqual(report.cleared, {
     inFlightTurns: 1,
     workspaceSnapshot: 1,

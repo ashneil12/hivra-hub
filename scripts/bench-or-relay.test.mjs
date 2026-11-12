@@ -665,7 +665,9 @@ test("the bench closes the relay when it throws", async () => {
         { openrouterSub: true, slot: "or-relay-test", only: [], grade: false, keep: false, maxTurns: 1, maxMinutes: 1, maxRequests: 1, claudeConfigs: [] },
         { spec, evidenceDir: evidence, label: "relay-runner-test", startRelay: async () => fake, bridges: { openrouter: () => launcher } },
       ),
-    /not a git repo/,
+    // On the Mac it gets as far as the copy (not a git repo); a machine with no dev copy's Claude login stops a step
+    // earlier. Either way the relay was already up, and the throw must close it.
+    /not a git repo|claude-config is missing/,
   );
   assert.deepEqual(closed, ["closed"]);
   fs.rmSync(dir, { recursive: true, force: true });

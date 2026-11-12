@@ -305,12 +305,10 @@ jobs:
         if: matrix.part == 'web'
         env:
           AFFECTED_EVENT: ${{ github.event_name }}
-      # Script tests (scripts/*.test.*) never ran on a pull request before. They now run when the change reaches them.
-      # Not blocking yet: four of them lean on the Mac's own setup (a dev copy's Claude login, codesign) and fail on
-      # Linux, so a red step here is read, not merged against.
+      # Script tests (scripts/*.test.*) the change reaches. Blocking: the parts that need the Mac's own setup (the
+      # macOS sandbox, a dev copy's Claude login) check what they can here and leave the rest to the Mac.
       - name: Script tests the change reaches
         if: matrix.part == 'web' && (!matrix.shard || startsWith(matrix.shard, '1/'))
-        continue-on-error: true
         run: node scripts/affected-tests.mjs scripts
         env:
           AFFECTED_EVENT: ${{ github.event_name }}
