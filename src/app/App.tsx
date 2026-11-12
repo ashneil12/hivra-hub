@@ -2772,8 +2772,9 @@ function Workspace({
 
   // The footer's usage follows what is in view: under the inset layout a
   // Mono's tab keeps the footer, which then reads the Mono's model.
-  const usageSource =
-    insetLayout && monoViewSession ? monoViewSession : active;
+  // Ash (12 Nov): with a first mate's chat open over the workspace, the footer read the workspace's own tab (a Claude
+  // chat) and said "not connected" under an Oh My Pi chat. It reads the chat in view, in every layout.
+  const usageSource = monoViewSession ?? active;
   const usageProviders = useMemo(() => {
     if (usageSource?.registryAgentId) return [];
     if (
