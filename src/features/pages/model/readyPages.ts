@@ -18,15 +18,10 @@ export const READY_BY = "Ready-made";
 // (.row, .worker, .name, .doing, .status, .acts, .question, .pick) so tests and a Rebuild still find them.
 const BASE_CSS = `
 .problem{font-size:12px;color:color-mix(in srgb,var(--color-content) 80%,transparent)}
-.row .doing{flex:1.2 1 180px}
-.row .status,.worker .status{flex:none}
-.worker .name{font-weight:400}
-.worker .doing{font-size:12px;flex:1.2 1 160px}
-@media (max-width:659px){
-.row .doing,.worker .doing{order:3;flex-basis:100%;padding-left:44px}
-.worker .doing{padding-left:0}
-.row > .acts,.worker > .acts{order:4}
-}
+.k-lead{flex:none;display:grid;place-items:center;width:14px;height:14px;color:color-mix(in srgb,var(--color-content) 62%,transparent)}
+.k-chev{transition:rotate .15s ease-out}
+.k-item[data-open] .k-chev{rotate:90deg}
+.k-card .k-item + .k-item{border-top:1px solid var(--color-stroke)}
 `;
 
 // Plain DOM, no libraries: a page re-draws on every push and keeps what Ash is typing (and where) across a redraw.
@@ -36,7 +31,10 @@ const el = kit.el;
 // r67 (Critiquito): a hub still waiting for Allow says what to tap, not "Can't read …: This hub is waiting for you…".
 const problemLine = (what, err) => /waiting for you to allow/i.test(String((err && err.message) || "")) ? "Tap Allow to show " + what : "Can't read " + what + ": " + ((err && err.message) || err);
 const WORD = { asking: "Asking", stuck: "With its lead", working: "Working", paused: "Paused", idle: "Idle", failed: "Failed", done: "Done", stopped: "Stopped" };
-const ICON = { "Open": "open", "Stop": "stop", "Message": "message", "Take it": "check", "Tasks": "down" };
+// Which glyph a state word draws (hub-taste section 5); a red one only when Ash must act.
+const GLYPH = { working: "working", checking: "working", building: "working", asking: "asking", waiting: "asking", paused: "paused", stuck: "paused",
+  done: "done", failed: "stopped", stopped: "stopped", idle: "idle", later: "later", gave_up: "needs" };
+const glyph = (state, red) => kit.glyph(red ? "needs" : GLYPH[state] || "idle");
 const open = {};      // which answer or message box is open, and what is typed in it
 const notes = {};     // what a tap said, by row
 let focusNext = null; // a box just opened takes the focus
@@ -44,9 +42,8 @@ const ago = kit.ago;
 
 // The red rule (r30c): red "Needs you" only when Ash must act; a stall or failure its lead or a retry has is grey.
 function status(state, since, word, red) {
-  const s = kit.pill(kit.tone(state, red), (word || WORD[state]) + (since && state !== "idle" ? " · " + ago(since) : ""), { live: state === "working" && !red });
-  s.classList.add("status");
-  if (red) s.classList.add("red");
+  const s = el("span", red ? "status red k-state" : "status k-state", (word || WORD[state]) + (since && state !== "idle" ? " · " + ago(since) : ""));
+  if (red) s.dataset.tone = "bad";
   return s;
 }
 async function tap(key, button, call, args) {
@@ -61,8 +58,11 @@ async function tap(key, button, call, args) {
   }
   draw();
 }
-function btn(label, onClick, primary, name) {
-  return kit.button(label, onClick, { primary, name, icon: primary ? null : ICON[label] });
+// Quiet text buttons; all but the one that answers the row show on hover and keyboard focus (hub-taste section 6).
+function btn(label, onClick, primary, name, keep) {
+  const b = kit.button(label, onClick, { primary, name });
+  if (!primary && !keep) b.classList.add("k-reveal");
+  return b;
 }
 function acts(buttons) {
   const a = el("div", "acts k-actions");
@@ -89,10 +89,12 @@ function line(o) {
   if (o.key) r.dataset.row = o.key;
   if (o.lead) r.appendChild(o.lead);
   const main = el("div", "k-main");
-  main.appendChild(el("div", "name k-title", o.name));
+  const top = el("div", "k-line");
+  top.appendChild(el("div", "name k-title", o.name));
+  if (o.doing) top.appendChild(el("div", "doing k-text", o.doing));
+  main.appendChild(top);
   if (o.under) main.appendChild(el("div", "under k-sub", o.under));
   r.appendChild(main);
-  if (o.doing) r.appendChild(el("div", "doing k-text", o.doing));
   if (o.status) r.appendChild(o.status);
   r.appendChild(acts(o.buttons || []));
   return r;
@@ -100,7 +102,6 @@ function line(o) {
 // What sits under a row: the question it asks (with its suggestion), a box, what a tap said.
 function callout(key, text, hint, tone, extra) {
   const c = el("div", "more k-callout");
-  if (tone) c.dataset.tone = tone;
   if (text) c.appendChild(el("div", "question k-callout-text", text));
   if (hint) c.appendChild(el("div", "pick k-callout-hint", hint));
   for (const x of extra || []) if (x) c.appendChild(x);
@@ -115,19 +116,11 @@ function fill(name, items, build) {
   $('[data-section="' + name + '"]').hidden = !items.length;
   const count = $('[data-count="' + name + '"]');
   if (count) count.textContent = items.length;
-  for (const sel of [".row > .acts", ".worker > .acts"]) {
-    const all = [...list.querySelectorAll(sel)];
-    all.forEach((a) => { a.style.minWidth = ""; });
-    const w = Math.max(0, ...all.map((a) => a.getBoundingClientRect().width));
-    if (w && innerWidth >= 660) all.forEach((a) => { a.style.minWidth = Math.ceil(w) + "px"; });
-  }
-}
-// The numbers on top: each one scrolls to its list.
-function stats(tiles) {
-  const box = $("[data-stats]");
-  box.textContent = "";
-  for (const t of tiles) box.appendChild(kit.stat({ ...t, onClick: t.section ? () => { const s = $('[data-section="' + t.section + '"]'); if (s && !s.hidden) s.scrollIntoView({ behavior: "smooth", block: "start" }); } : null }));
-  box.hidden = !tiles.length;
+  // One width for every row's buttons in the list, its nested rows' too, so the states line up in one column.
+  const all = [...list.querySelectorAll(".row > .acts, .worker > .acts")];
+  all.forEach((a) => { a.style.minWidth = ""; });
+  const w = Math.max(0, ...all.map((a) => a.getBoundingClientRect().width));
+  if (w && innerWidth >= 660) all.forEach((a) => { a.style.minWidth = Math.ceil(w) + "px"; });
 }
 function summary(text, quiet) {
   const s = $("[data-summary]");
@@ -150,22 +143,21 @@ function restoreFocus(key) {
 
 const head = (summaryText: string, extra = "") =>
   `<div class="k-head"><div class="k-lede" data-summary>${summaryText}</div>${extra}</div>
-<div class="problem" data-problem hidden></div>
-<div class="k-stats" data-stats hidden></div>`;
-const section = (name: string, title: string, list = `<div class="k-card" data-list="${name}"></div>`) =>
+<div class="problem" data-problem hidden></div>`;
+const section = (name: string, title: string, list = `<div class="k-list" data-list="${name}"></div>`) =>
   `<section class="k-section" data-section="${name}" hidden><div class="k-section-head">${title}<span class="k-count" data-count="${name}"></span></div>${list}</section>`;
 
 const AGENTS_CSS =
   BASE_CSS +
   `
-.k-card[data-list=attention]{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-status-bad) 30%,var(--color-surface-ring))}
+
 `;
 
 const AGENTS_HTML = `<div class="k-page">
 ${head("Reading your agents…")}
-${section("attention", "Needs you")}
+${section("attention", "Needs you", `<div class="k-card" data-list="attention"></div>`)}
 ${section("working", "Working")}
-${section("idle", "Idle", `<div class="k-grid" data-list="idle"></div>`)}
+${section("idle", "Idle")}
 <div data-empty hidden></div>
 </div>`;
 
@@ -184,7 +176,7 @@ function row(item) {
   const o = open[item.key];
   wrap.appendChild(line({
     key: item.key, name: item.name, under: item.under, doing: item.doing,
-    lead: kit.avatar(item.name, { tone: kit.tone(item.state, item.needsYou), icon: item.key.startsWith("w:") ? "build" : null }),
+    lead: glyph(item.state, item.needsYou),
     status: status(item.state, item.since, item.word, item.needsYou),
     buttons: [
       q && q.canAnswer && q.pick ? btn("Take it", (b) => tap(item.key, b, "agents.pick", { chatId: q.chatId }), false, item.name) : null,
@@ -209,7 +201,7 @@ function workerLine(w) {
   const doing = w.state === "working" ? w.doing : w.reason || "";
   const r = line({
     cls: "worker k-row", name: w.title, doing,
-    lead: kit.avatar(w.title, { small: true, icon: "build", tone: kit.tone(w.state, w.needsYou) }),
+    lead: glyph(w.state, w.needsYou),
     status: status(w.state, w.state === "done" || w.state === "failed" || w.state === "stopped" ? 0 : w.since, w.word, w.needsYou),
     buttons: [
       btn("Open", (b) => tap("w:" + w.id, b, "chats.open", { workerId: w.id })),
@@ -219,23 +211,24 @@ function workerLine(w) {
   r.dataset.worker = w.id;
   return r;
 }
-// An idle agent: a small card with its name, its role and the last thing it handed out.
-function idleTile(item) {
+// An idle agent: one quiet row, with the last thing it handed out after its name.
+function idleRow(item) {
   const last = item.workers && item.workers.length ? item.workers[item.workers.length - 1] : null;
-  const t = kit.tile({
-    lead: kit.avatar(item.name, { tone: "idle" }), title: item.name,
-    sub: [ROLE[item.role] || "", last ? "Last: " + last.title : "Free for work"].filter(Boolean).join(" · "),
-    actions: [
+  const wrap = el("div", "item k-item");
+  wrap.dataset.item = item.key;
+  wrap.appendChild(line({
+    key: item.key, name: item.name, doing: last ? "Last: " + last.title : "",
+    lead: glyph("idle"), status: status("idle", 0, ROLE[item.role] ? ROLE[item.role] + " · idle" : "Idle", false),
+    buttons: [
       item.canMessage ? btn("Message", () => { open[item.key] = { kind: "message", text: "" }; focusNext = item.key; draw(); }, false, item.name) : null,
       btn("Open", (b) => tap(item.key, b, "chats.open", item.openArgs), false, item.name),
-    ].filter(Boolean),
-  });
-  t.classList.add("item");
-  t.dataset.item = item.key;
+    ],
+  }));
   const o = open[item.key];
-  if (o && o.kind === "message") t.appendChild(box(item.key, "Message " + item.name + "…", (b, text) => tap(item.key, b, "agents.message", { agentId: item.agentId, text })));
-  if (notes[item.key]) t.appendChild(el("div", "note k-note", notes[item.key]));
-  return t;
+  const boxNode = o && o.kind === "message" ? box(item.key, "Message " + item.name + "…", (b, text) => tap(item.key, b, "agents.message", { agentId: item.agentId, text })) : null;
+  const c = callout(item.key, "", "", null, [boxNode]);
+  if (c) wrap.appendChild(c);
+  return wrap;
 }
 
 // Everything that needs Ash, from the agents and from the work they handed out (at any depth).
@@ -271,20 +264,14 @@ function draw() {
   fill("working", busy.map((a) => ({ key: "a:" + a.id, name: a.name, under: ROLE[a.role], doing: a.doing, state: a.state, since: a.since, reason: a.reason, word: a.word, agentId: a.id, canMessage: !!a.chatId,
     openArgs: { agentId: a.id }, stopArgs: a.chatId ? { agentId: a.id } : null, workers: recent(a.workers || []) })), row);
   fill("idle", idle.map((a) => ({ key: "a:" + a.id, name: a.name, role: a.role, state: "idle", agentId: a.id, canMessage: !!a.chatId,
-    openArgs: { agentId: a.id }, workers: recent(a.workers || []) })), idleTile);
+    openArgs: { agentId: a.id }, workers: recent(a.workers || []) })), idleRow);
   const parts = [];
   if (need.length) parts.push(need.length + (need.length === 1 ? " needs you" : " need you"));
   const working = agents.filter((a) => a.state === "working").length;
   if (working) parts.push(working + " working");
   if (idle.length) parts.push(idle.length + " idle");
   const none = "No agents yet. Your first mates show here once they're on the team.";
-  summary(agents.length ? parts.join(" · ") : none, true);
-  stats(agents.length ? [
-    { label: "Needs you", value: need.length, tone: need.length ? "bad" : null, section: "attention" },
-    { label: "Working", value: working, tone: working ? "ok" : null, section: "working" },
-    { label: "Work handed out", value: handedOut(agents), section: "working" },
-    { label: "Idle", value: idle.length, section: "idle" },
-  ] : []);
+  summary(agents.length ? parts.join(" · ") : none, !agents.length);
   const empty = $("[data-empty]");
   empty.textContent = "";
   if (!agents.length) empty.appendChild(kit.empty(none, "users"));
@@ -319,7 +306,7 @@ function showEmpty(text, iconName, on) {
 
 const NEEDS_HTML = `<div class="k-page">
 ${head("Reading what's waiting on you…")}
-${section("waiting", "Asking you")}
+${section("waiting", "Asking you", `<div class="k-card" data-list="waiting"></div>`)}
 ${section("needs", "Waiting on you")}
 <div data-empty hidden></div>
 </div>`;
@@ -337,7 +324,7 @@ function chatRow(c) {
   wrap.dataset.item = key;
   wrap.appendChild(line({
     key, name: c.chatName, under: c.projectName || "A chat",
-    lead: kit.avatar(c.chatName, { tone: c.redLine ? "bad" : "warn" }),
+    lead: glyph("asking", !!c.redLine),
     status: status("asking", c.askedAt, c.redLine ? "Red line" : "Asked", !!c.redLine),
     buttons: [
       c.pick ? btn("Take it", (b) => tap(key, b, "agents.pick", { chatId: c.chatId })) : null,
@@ -359,7 +346,7 @@ function needRow(n) {
   wrap.dataset.item = key;
   wrap.appendChild(line({
     key, name: n.title, under: n.projectName || "Every project", doing: n.why,
-    lead: kit.avatar(n.title, { icon: n.isQuestion ? "message" : "inbox", tone: "warn" }),
+    lead: glyph("asking"),
     status: status("asking", n.since, "Waiting", false),
     buttons: n.isQuestion ? [
       btn("Take it", (b) => tap(key, b, "agents.pick", { needId: n.id })),
@@ -383,12 +370,8 @@ function draw() {
   const parts = [];
   if (waiting.length) parts.push(waiting.length === 1 ? "1 chat is asking you" : waiting.length + " chats are asking you");
   if (needs.length) parts.push(needs.length === 1 ? "1 thing to do next" : needs.length + " things to do next");
-  summary(parts.length ? parts.join(" · ") : "Nothing is waiting on you.", true);
+  summary(parts.length ? parts.join(" · ") : "Nothing is waiting on you.", !parts.length);
   const red = waiting.filter((c) => c.redLine).length;
-  stats(parts.length ? [
-    { label: "Asking you", value: waiting.length, tone: red ? "bad" : waiting.length ? "warn" : null, section: "waiting" },
-    { label: "To do next", value: needs.length, tone: needs.length ? "warn" : null, section: "needs" },
-  ] : []);
   showEmpty("Nothing is waiting on you.", "check", !parts.length);
   restoreFocus(focused);
 }
@@ -429,9 +412,9 @@ function jobRow(j) {
   wrap.dataset.item = key;
   wrap.appendChild(line({
     key, name: j.title, under: [j.projectName, j.agentName].filter(Boolean).join(" · ") || "A job",
-    lead: kit.avatar(j.title, { icon: "build", tone: kit.tone(j.state, j.state === "gave_up") }),
+    lead: glyph(j.state, j.state === "gave_up"),
     status: status(j.state, j.lastActiveAt || j.startedAt, JOB_WORD[j.state] || "Working", j.state === "gave_up"),
-    buttons: [j.agentId ? btn("Open", (b) => tap(key, b, "chats.open", { agentId: j.agentId })) : null],
+    buttons: [j.agentId ? btn("Open", (b) => tap(key, b, "chats.open", { agentId: j.agentId }), false, j.title) : null],
   }));
   const more = callout(key, j.reason, "", j.state === "gave_up" ? "bad" : null);
   if (more) wrap.appendChild(more);
@@ -448,15 +431,9 @@ function draw() {
   if (jobs.length) parts.push(jobs.length === 1 ? "1 job being built" : jobs.length + " jobs being built");
   const stuck = jobs.filter((j) => j.state === "gave_up").length;
   if (stuck) parts.push(stuck === 1 ? "1 needs you" : stuck + " need you");
-  summary(parts.length ? parts.join(" · ") : "Nothing is being built right now.", true);
+  summary(parts.length ? parts.join(" · ") : "Nothing is being built right now.", !parts.length);
   const working = jobs.filter((j) => j.state === "working").length;
   const checking = jobs.filter((j) => j.state === "checking").length;
-  stats(jobs.length ? [
-    { label: "Needs you", value: stuck, tone: stuck ? "bad" : null, section: "jobs" },
-    { label: "Working", value: working, tone: working ? "ok" : null, section: "jobs" },
-    { label: "Checking", value: checking, section: "jobs" },
-    { label: "Waiting or with its lead", value: jobs.length - stuck - working - checking, section: "jobs" },
-  ] : []);
   showEmpty("Nothing is being built right now.", "build", !jobs.length);
   restoreFocus(focused);
 }
@@ -477,7 +454,7 @@ export const BUILT_PAGE: BespokeSpec = {
 
 const PROJECTS_HTML = `<div class="k-page">
 ${head("Reading your projects…")}
-<section class="k-section" data-section="projects" hidden><div class="k-section-head">All projects<span class="k-count" data-count="projects"></span><span class="k-spacer"></span><button class="k-btn" data-refresh type="button">Refresh</button></div><div class="k-card" data-list="projects"></div></section>
+<section class="k-section" data-section="projects" hidden><div class="k-section-head">All projects<span class="k-count" data-count="projects"></span><span class="k-spacer"></span><button class="k-btn" data-refresh type="button">Refresh</button></div><div class="k-list" data-list="projects"></div></section>
 <div data-empty hidden></div>
 </div>`;
 
@@ -491,10 +468,12 @@ const tasks = {}; // a project's tasks once read; null while reading
 const TASK_WORD = { stuck: "Held up", waiting: "Waiting on you", building: "Being built", later: "Later" };
 const TASK_STATE = { stuck: "paused", waiting: "asking", building: "working", later: "idle" };
 
+function lead(name) { const x = el("span", "k-lead"); const i = kit.icon(name); if (name === "chevron") i.classList.add("k-chev"); x.appendChild(i); return x; }
+
 function taskLine(t) {
   const r = line({
     cls: "worker k-row", name: t.title, doing: t.why,
-    lead: kit.avatar(t.title, { small: true, icon: "doc", tone: kit.tone(TASK_STATE[t.state] || "idle") }),
+    lead: glyph(t.state === "stuck" ? "paused" : TASK_STATE[t.state] || "idle"),
     status: status(TASK_STATE[t.state] || "idle", t.since, TASK_WORD[t.state] || "Later", false),
   });
   r.dataset.task = t.id;
@@ -513,9 +492,9 @@ function projectRow(p) {
   const word = c.waiting ? c.waiting + " waiting on you" : c.stuck ? c.stuck + " held up" : c.building ? c.building + " being built" : "All clear";
   const r = line({
     key, name: p.name, under: p.parked ? "Parked · " + mates : mates,
-    lead: kit.avatar(p.name, { icon: "folder" }),
+    lead: lead("chevron"),
     status: status(c.waiting ? "asking" : c.stuck ? "paused" : c.building ? "working" : "idle", 0, word, false),
-    buttons: [btn(shown ? "Hide tasks" : "Tasks", () => toggle(p.id), false, p.name)],
+    buttons: [btn(shown ? "Hide tasks" : "Tasks", () => toggle(p.id), false, p.name, true)],
   });
   r.classList.add("toggle", "k-click");
   r.addEventListener("click", () => toggle(p.id));
@@ -563,13 +542,8 @@ function draw() {
   if (data.length) parts.push(data.length === 1 ? "1 project" : data.length + " projects");
   if (waiting + stuck) parts.push(waiting + stuck + " waiting");
   if (building) parts.push(building + " being built");
-  summary(parts.length ? parts.join(" · ") : "No projects yet.", data.length > 0);
-  stats(data.length ? [
-    { label: "Projects", value: data.length, section: "projects" },
-    { label: "Waiting on you", value: waiting, tone: waiting ? "warn" : null, section: "projects" },
-    { label: "Held up", value: stuck, section: "projects" },
-    { label: "Being built", value: building, tone: building ? "ok" : null, section: "projects" },
-  ] : []);
+  // "3 projects" alone only repeats the count beside the list's heading.
+  summary(parts.length ? parts.join(" · ") : "No projects yet.", !data.length || parts.length === 1);
   showEmpty("No projects yet.", "folder", !data.length);
 }
 
