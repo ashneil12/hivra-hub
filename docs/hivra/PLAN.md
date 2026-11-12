@@ -306,6 +306,21 @@ are the rest, plus two from Ash's 11 Nov dump (248, 249). 243 and 248 are securi
 | [248](work/WP-248-settings-local-leak.md) | Keep Claude Code's saved approvals (and passwords) out of commits | S | 200, 227 | no |
 | [249](work/WP-249-blind-done-check.md) | Check a "done" claim against the diff, not the worker's story | M | 40 | yes |
 
+## Wave P: picks from Up.computer (12 Nov)
+
+From github.com/krl-gr/upcomputer (MIT, a T3 Code fork). Hivra already took T3's handoff, visual replies and usage
+(the T3 parity packages), so these are only what Up.computer adds. Ash asked for all of them on 12 Nov. 254 and 255
+are security packages and get the full review.
+
+| WP | Title | Size | Depends on | Grok OK |
+| --- | --- | --- | --- | --- |
+| [250](work/WP-250-task-pickup-rules.md) | First mates pick up tasks by rule, and tasks can be made on a schedule | M | 70, 180a | yes |
+| [251](work/WP-251-handoff-pointers.md) | A model switch keeps the first ask and points at what it left out | S | 121 | yes |
+| [252](work/WP-252-triage-an-issue.md) | "Report a problem": the person's own agent finds out what went wrong | M | none | yes |
+| [253](work/WP-253-usage-estimates.md) | Usage shows an API-equivalent estimate and cache savings, labelled as estimates | S | 108, 176 | yes |
+| [254](work/WP-254-visual-reply-check-and-mcp-apps.md) | Visual replies check themselves, and MCP Apps show in the chat | M | 130 | no |
+| [255](work/WP-255-computer-use.md) | Computer use, off by default, with a block list for password apps | L | none | no |
+
 ## Running it
 
 - Each wave runs as one agent per package, in parallel (up to about ten at once). Wave A can start the moment this
