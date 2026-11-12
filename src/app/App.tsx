@@ -298,6 +298,8 @@ import {
   setCodingTeamOpener,
   setHubSelection,
   setMonoChatOpener,
+  setMonoSettingsOpener,
+  openMonoChat,
   setMonoTeamOpener,
   showAppItem,
   showProjectToday,
@@ -7782,6 +7784,16 @@ function Workspace({
         void ensureMonoTeam(monoId).catch(() => undefined).then(open);
       }),
     [onOpenMono],
+  );
+  // Ash (12 Nov): a first mate's settings from a right-click or from Settings: its chat opens with them over it.
+  useEffect(
+    () =>
+      setMonoSettingsOpener((monoId) => {
+        setSettingsOpen(false);
+        setMonoSettingsFor(monoId);
+        openMonoChat(monoId);
+      }),
+    [],
   );
   // WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
   useEffect(() => setCreatorSessionHost({

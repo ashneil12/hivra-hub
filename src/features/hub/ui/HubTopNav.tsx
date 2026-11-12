@@ -7,7 +7,7 @@ import { RailAction } from "../../../app/shell/RailAction";
 import { listMonos, monosSnapshot, subscribeMonos } from "../../monos/model/mono";
 import { openChiefChat, pickChief } from "../../home/model/chief";
 import { hubData, useHubDataVersion } from "../model/hubData";
-import { PROJECT_HOME_ITEM, monoTeamInView, openMonoChat, showAppItem, showProjectHome, useHubSelection } from "../model/hubNav";
+import { PROJECT_HOME_ITEM, monoTeamInView, openMonoChat, openMonoSettings, showAppItem, showProjectHome, useHubSelection } from "../model/hubNav";
 
 /** Opens the Chief of Staff's own chat for a project (made on first use). False when there is no Chief of Staff yet. */
 export function openProjectChief(projectId: string): boolean {
@@ -66,6 +66,11 @@ export function HubTopNav({
           icon={Sparkles}
           active={chiefOpen && !covered}
           ariaLabel={project ? `Chief of Staff for ${project.name}` : "Chief of Staff"}
+          // Ash (12 Nov): right-click opens its settings, where its model is chosen.
+          onOpenContextMenu={() => {
+            onLeaveCovers?.();
+            openMonoSettings(chief.id);
+          }}
           onClick={() => {
             if (project) openProjectChief(project.id);
             else {

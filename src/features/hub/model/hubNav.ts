@@ -226,6 +226,23 @@ export function setMonoChatOpener(open: (monoId: string, target?: MonoChatTarget
   };
 }
 
+/** Ash (12 Nov): a first mate's settings (its model, name, permissions) from a right-click or from Settings. */
+let monoSettingsOpener: ((monoId: string) => void) | undefined;
+
+export function setMonoSettingsOpener(open: (monoId: string) => void): () => void {
+  monoSettingsOpener = open;
+  return () => {
+    if (monoSettingsOpener === open) monoSettingsOpener = undefined;
+  };
+}
+
+/** Opens the first mate's chat with its settings over it. False when the app can't (no window ready). */
+export function openMonoSettings(monoId: string): boolean {
+  if (!monoSettingsOpener || !monoId.trim()) return false;
+  monoSettingsOpener(monoId);
+  return true;
+}
+
 export function openMonoChat(monoId: string, target?: MonoChatTarget): void {
   if (monoChatOpener) monoChatOpener(monoId, target);
   else openMonoTeam(monoId, { owner: true });

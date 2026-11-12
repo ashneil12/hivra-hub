@@ -429,6 +429,8 @@ import {
   type Mono,
 } from "../../monos/model/mono";
 import { resetMonoDefaults } from "../../monos/model/monoFiles";
+import { pickChief } from "../../home/model/chief";
+import { openMonoSettings } from "../../hub/model/hubNav";
 import { ConfirmReset } from "../../monos/ui/ConfirmReset";
 import {
   filterKeybindings,
@@ -1050,6 +1052,20 @@ function SettingsSearch({
   );
 }
 
+function ChiefModelSetting() {
+  useSyncExternalStore(subscribeMonos, monosSnapshot, monosSnapshot);
+  const chief = pickChief(listMonos());
+  if (!chief) return <span className="text-[12px] text-content/45">No Chief of Staff yet</span>;
+  const engine = chief.engine && Object.prototype.hasOwnProperty.call(HARNESS_TITLE, chief.engine) ? (chief.engine as HarnessId) : undefined;
+  const shown = engine ? resolveModel(engine, chief.engineModel).name : "Default";
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[12px] text-content/60" data-chief-model>{shown}</span>
+      <SecondaryButton onClick={() => void openMonoSettings(chief.id)}>Change</SecondaryButton>
+    </div>
+  );
+}
+
 function GeneralPage({
   onOpenWhatsNew,
 }: {
@@ -1150,6 +1166,14 @@ function GeneralPage({
       </Group>
       {/* WP-88: the morning note under the chat on Home. */}
       <Group title="Home" description="The morning note under the chat.">
+        {/* Ash (12 Nov): "I don't see any way to change the default model". */}
+        <Row
+          id="chief-model"
+          label="Chief of Staff's model"
+          description="What its new chats run on. Right-click Chief of Staff in the sidebar for the same."
+        >
+          <ChiefModelSetting />
+        </Row>
         <Row
           id="morning-summary"
           label="Morning summary"

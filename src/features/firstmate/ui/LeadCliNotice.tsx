@@ -53,7 +53,7 @@ export function LeadCliNotice({
       <p data-lead-cli-reason="">
         {offer.reason}
         {choices.length > 0
-          ? ` Switch this chat to one that can. ${hasCrew ? "Its workers and history stay." : "Its history stays."}`
+          ? ` To let it, switch this chat (${hasCrew ? "its helpers and history stay" : "its history stays"}):`
           : null}
       </p>
       {choices.length > 0 ? (

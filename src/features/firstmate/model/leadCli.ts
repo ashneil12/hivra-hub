@@ -21,9 +21,11 @@ export type LeadCapability = {
 };
 
 // What a person reads in the lead strip, so no plumbing words: no MCP, host, secret or session request.
-const NO_HOST = "The app has no way to give it the tools a lead uses to hand out jobs.";
-const SECRET_IN_REQUEST =
-  "The app could only give it the tools a lead uses by passing it a private key, and it does not do that yet.";
+// Ash (12 Nov): "I have no idea what this means". Say what it can and can't do, not why.
+const NO_HOST = "can chat here, but it can't hand jobs to helpers yet.";
+const SECRET_IN_REQUEST = NO_HOST;
+/** Names a person knows, where the CLI's own short name is unclear. */
+const PLAIN_NAME: Partial<Record<HarnessId, string>> = { omp: "Oh My Pi" };
 
 export const LEAD_CAPABILITY: Record<HarnessId, LeadCapability> = {
   claude: { leads: true, attach: "claude-args", reason: "" },
@@ -56,12 +58,12 @@ export function canLead(harness: string): boolean {
 export function leadBlockReason(harness: string): string | null {
   if (canLead(harness)) return null;
   const known = (HARNESSES as readonly string[]).includes(harness);
-  const name = known ? HARNESS_TITLE[harness as HarnessId] : harness.trim() || "This CLI";
+  const name = known ? PLAIN_NAME[harness as HarnessId] ?? HARNESS_TITLE[harness as HarnessId] : harness.trim() || "This CLI";
   const reason =
     known && harness in LEAD_CAPABILITY
       ? LEAD_CAPABILITY[harness as HarnessId].reason
       : "The app does not know this CLI.";
-  return `${name} cannot lead yet. ${reason}`;
+  return known && harness in LEAD_CAPABILITY ? `${name} ${reason}` : `${name} cannot lead yet. ${reason}`;
 }
 
 export type LeadCliPresence = {
