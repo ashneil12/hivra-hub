@@ -28,6 +28,7 @@ import { resolveModel } from "../../../features/sessions/model/models";
 import type { HarnessEvent } from "./types";
 import { childApprovalFrom } from "../../../features/sessions/model/childApproval";
 import { usageLimitFromError } from "../../../features/sessions/model/usageLimit";
+import { plainErrorText } from "../../../features/sessions/model/plainError";
 import { providerRetryText } from "./providerFailure";
 
 /** One retry line per turn, counting up in place. */
@@ -206,7 +207,7 @@ export function applyHarnessEvent(
         {
           id: crypto.randomUUID(),
           role: "system",
-          text: event.message,
+          text: plainErrorText(event.message),
           notice: "error",
           // Why it failed, so the failure is a state the rail, Today and Being built show (turnFailure.ts).
           failure: {
