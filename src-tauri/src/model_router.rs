@@ -337,6 +337,8 @@ pub(crate) fn save_key_with(
 /// A failed read (the Keychain prompt denied or left open) is kept for a few minutes so it isn't asked again at
 /// every click, then tried again.
 type CachedItem = (Result<Option<String>, String>, std::time::Instant);
+/// Reads one Keychain item by service and account (production: hub_keychain::read).
+type ItemRead<'a> = &'a dyn Fn(&str, &str) -> Result<Option<String>, String>;
 static KEY_ITEMS: LazyLock<Mutex<HashMap<(String, String), CachedItem>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 const FAILED_READ_KEPT: std::time::Duration = std::time::Duration::from_secs(300);
@@ -344,7 +346,7 @@ const FAILED_READ_KEPT: std::time::Duration = std::time::Duration::from_secs(300
 fn read_cached(
     service: &str,
     custom_model_id: &str,
-    read: &dyn Fn(&str, &str) -> Result<Option<String>, String>,
+    read: ItemRead,
 ) -> Result<Option<String>, String> {
     let at = (service.to_string(), custom_model_id.to_string());
     let mut items = KEY_ITEMS.lock().unwrap_or_else(|e| e.into_inner());
