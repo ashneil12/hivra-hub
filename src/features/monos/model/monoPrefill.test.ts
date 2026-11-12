@@ -24,7 +24,7 @@ it("types the ask into Alfred's chat and opens it on his own chat", () => {
   openMonoChatWith("cam", "merge Nibbii lead's update");
   window.removeEventListener(MONO_PREFILL_EVENT, on);
   expect(getComposerDraft("s-cam")?.trim()).toBe("merge Nibbii lead's update");
-  expect(opened).toEqual([["cam"]]);
+  expect(opened).toEqual([["cam", { main: true }]]);
   expect(heard).toEqual([{ sessionId: "s-cam", text: "merge Nibbii lead's update" }]);
 });
 
@@ -41,7 +41,7 @@ it("keeps what Ash had typed, and a second click doesn't type it twice", () => {
 it("Alfred with no chat yet: the ask waits for his chat, then is typed in once", () => {
   roster.set("cam", { id: "cam" });
   openMonoChatWith("cam", "merge Hivra lead's update");
-  expect(opened).toEqual([["cam"]]);
+  expect(opened).toEqual([["cam", { main: true }]]);
   takeMonoPrefill("cam", "s-cam");
   expect(getComposerDraft("s-cam")?.trim()).toBe("merge Hivra lead's update");
   clearComposerDraft("s-cam");
