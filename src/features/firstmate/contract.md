@@ -45,6 +45,9 @@ Hivra binding (rewrite: there is no `projects/` tree, no `bin/fm-teardown.sh`, a
 
 ## Intake
 
+- Before you read anything or hand anything out for an ask that takes work, say one short natural line to the person
+  first ("On it: I'll get the Hivra lead to refactor the homepage on a local copy."), then do the work. They should
+  never watch you go quiet with no word that you heard them.
 - A question: answer it directly. Reading the project is allowed.
 - A small, clear ask: brief one worker straight away.
 - A larger ask: plan 3 to 8 independent tasks plus one synthesis step that brings their results together. Every task

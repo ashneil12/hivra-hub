@@ -236,7 +236,16 @@ async function message(
   if (typeof input.to !== "string" || !input.to.trim()) throw new Error("to must be a Mono's id or name");
   const want = lower(input.to);
   const roster = listMonos();
-  const to = roster.find((m) => m.id === input.to) ?? roster.find((m) => lower(monoLook(m).name) === want || lower(m.name ?? "") === want);
+  const byId = roster.find((m) => m.id === input.to);
+  const named = byId ? [] : roster.filter((m) => lower(monoLook(m).name) === want || lower(m.name ?? "") === want);
+  // Ash 12 Nov: two Monos can share a name (a "Hivra lead" in two projects): a name alone never picks one at random.
+  if (named.length > 1)
+    throw new Error(
+      `More than one Mono is called "${input.to}": ${named
+        .map((m) => `${m.id} (${monoLook(m).projects?.join(", ") || "no project"})`)
+        .join("; ")}. Send it again with the id of the one for the right project.`,
+    );
+  const to = byId ?? named[0];
   if (!to) throw new Error(`No Mono "${input.to}". Monos: ${roster.map((m) => monoLook(m).name).join(", ")}.`);
   if (to.id === mono.id) throw new Error("That's you.");
   if (to.id === CHECKER_MONO_ID) throw new Error("The checker takes no messages; it only reads.");

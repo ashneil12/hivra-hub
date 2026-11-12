@@ -1205,6 +1205,7 @@ import {
   inboxComposerCard,
   type InboxItem,
 } from "../features/inbox/model/githubTasks";
+import { inboxItemRef } from "../features/inbox/model/githubTasks";
 import {
   linkedWorkItemFromAutomationEvent,
   linkedWorkItemFromInboxItem,
@@ -5844,6 +5845,22 @@ function Workspace({
     [sidebarCwd],
   );
 
+  const onOpenMonoRef = useRef<((monoId: string) => Promise<unknown>) | undefined>(undefined);
+  // Ash 12 Nov: an Inbox item taken to one of his first mates: its own chat opens with the item ready in the box.
+  const onAskMonoAboutInboxItem = useCallback(
+    (item: InboxItem, monoId: string) => {
+      const ref = inboxItemRef(item);
+      const draft = `About ${ref}${item.title ? ` "${item.title}"` : ""}${item.url ? ` (${item.url})` : ""}: `;
+      const sessionId = findMono(monoId)?.sessionId;
+      if (sessionId) setComposerDraft(sessionId, draft);
+      void onOpenMonoRef.current?.(monoId).then(() => {
+        const opened = findMono(monoId)?.sessionId;
+        if (opened && opened !== sessionId) setComposerDraft(opened, draft);
+      });
+    },
+    [],
+  );
+
   const onRestartInboxAsk = useCallback(
     async (item: InboxItem): Promise<string> => {
       const id = await onAskInboxItem(item);
@@ -6023,6 +6040,7 @@ function Workspace({
     },
     [ensureOpenSession, workspaceNavigation.cancel],
   );
+  onOpenMonoRef.current = onOpenMono;
 
   // A Mono open when the app last closed opens again; a moved window keeps
   // what it carried.
@@ -19471,6 +19489,7 @@ function Workspace({
                         onStart={onStartInboxItem}
                         onAsk={onAskInboxItem}
                         onAskRestart={onRestartInboxAsk}
+                        onAskMono={onAskMonoAboutInboxItem}
                         onAskMount={setInboxAskPortal}
                         sessions={inboxRelatedSessions}
                         repairSessions={repairSessions}

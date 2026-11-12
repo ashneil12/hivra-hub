@@ -93,9 +93,19 @@ export function SubChatList({
   onDelete?: (chat: ChildChat) => void;
 }) {
   const [all, setAll] = useState(false);
+  const [showFinished, setShowFinished] = useState(false);
   const open = subChatsOpen(foldKey, attention.key);
   const { shown, more } = shownSubChats(children, attention.stuck, all);
-  const count = `${children.length} ${children.length === 1 ? "sub-chat" : "sub-chats"}`;
+  // Ash 12 Nov: sub-chats piled up forever. What is still going stays on top; finished ones go under "N finished",
+  // folded, so the list says what is live and the rest is resolved out of the way.
+  const isLive = (chat: ChildChat) => chat.state === "running" || chat.state === "question" || attention.stuck.has(chat.sessionId);
+  const liveCount = children.filter(isLive).length;
+  const finishedCount = children.length - liveCount;
+  const count = liveCount
+    ? `${liveCount} going${finishedCount ? ` · ${finishedCount} finished` : ""}`
+    : `${finishedCount} finished ${finishedCount === 1 ? "sub-chat" : "sub-chats"}`;
+  const liveShown = shown.filter(isLive);
+  const finishedShown = shown.filter((chat) => !isLive(chat));
   // Folded, it says what needs a look: stuck (stalled or failed) and, apart, what only waits on its Lead's answer.
   // r30b, the red rule: never "stuck". A stopped one is a retry's or its Lead's (grey), or Ash's (red) only when its
   // provider refused it for billing or sign-in.
@@ -138,7 +148,7 @@ export function SubChatList({
       </button>
       {open ? (
         <div {...{ [attrs.list]: owner }} className="flex flex-col gap-px">
-          {shown.map((chat) => {
+          {[...liveShown, ...(showFinished || !liveShown.length ? finishedShown : [])].map((chat) => {
             const stalled = chat.state === "running" && !!chat.row?.stallKind;
             const line = childLine(chat, now);
             // How long it has run: muted, after its title, never a second status.
@@ -186,6 +196,18 @@ export function SubChatList({
               </div>
             );
           })}
+          {liveShown.length && finishedShown.length ? (
+            <button
+              type="button"
+              data-sub-chats-finished={owner}
+              aria-expanded={showFinished}
+              onClick={() => setShowFinished((on) => !on)}
+              className="flex h-6 min-w-0 cursor-default items-center gap-1 rounded-md px-1.5 text-left text-[12px] text-content/40 hover:bg-content/6 hover:text-content"
+            >
+              <ChevronDown aria-hidden className={`size-3 shrink-0 ${showFinished ? "" : "-rotate-90"}`} />
+              {finishedShown.length} finished
+            </button>
+          ) : null}
           {more ? (
             <button
               type="button"
