@@ -5,11 +5,11 @@ import {
 } from "../../../../features/sessions/model/models";
 import {
   killChild,
-  spawnChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
 import { PiRpc } from "./piClient";
+import { spawnPiChild } from "./piRoutes";
 import { OMP_FLAVOR, PI_FLAVOR, type PiFlavor } from "./piFlavor";
 import { buildPiSpawnArgs, modelsFromRpcData } from "./piProtocol";
 
@@ -88,14 +88,13 @@ async function discoverModels(flavor: PiFlavor, workingDirectory?: string) {
   let timeout: ReturnType<typeof setTimeout> | undefined;
   const timeoutError = new Error(`${flavor.label} model discovery timed out`);
   try {
-    await spawnChild(
+    await spawnPiChild(
       probeId,
       path,
       buildPiSpawnArgs(flavor, {
         noSession: true,
       }),
       cwd,
-      undefined,
       flavor.id,
     );
     if (exitError) throw exitError;

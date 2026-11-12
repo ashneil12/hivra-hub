@@ -373,6 +373,14 @@ export async function spawnChild(
   skipOuterSandbox?: boolean,
   /** Round 7: the folder the crew gate judges the process against, when it is not the folder the process runs in. */
   crewFolder?: string,
+  /** Pi and Oh My Pi: the saved Other models, offered through the app's router (src-tauri/src/pi_routes.rs). Only
+   * the route goes; the key stays in the app. */
+  piRoutes?: readonly {
+    provider: string;
+    baseUrl: string;
+    modelId: string;
+    customModelId: string;
+  }[],
 ): Promise<void> {
   // Every provider process starts here: none for a chat with no folder (the home folder is not a stand-in).
   requireChatFolder(cwd);
@@ -405,6 +413,16 @@ export async function spawnChild(
     ...(skipOuterSandbox ? { skipOuterSandbox: true } : {}),
     ...(crewTicket ? { crewTicket } : {}),
     ...(crewFolder ? { crewFolder } : {}),
+    ...(piRoutes && piRoutes.length > 0
+      ? {
+          piRoutes: piRoutes.map(({ provider, baseUrl, modelId, customModelId }) => ({
+            provider,
+            baseUrl,
+            modelId,
+            customModelId,
+          })),
+        }
+      : {}),
   });
   notePid(sessionId, pid);
 }

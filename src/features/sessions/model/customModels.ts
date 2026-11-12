@@ -395,6 +395,14 @@ export function setCustomModelEfforts(id: string, levels: ReasoningEffort[]): vo
 /** The four fields CoS's router reads off a session's modelSettings when its model is a custom one. */
 export type CustomModelRoute = { provider: CustomProvider; baseUrl: string; modelId: string; customModelId: string; reasoningEffort?: ReasoningEffort };
 
+/**
+ * Every saved model as a route for Pi and Oh My Pi ("Connect any model to any harness"). The app starts its own
+ * router for each and hands the agent a per-session token (src-tauri/src/pi_routes.rs); the key never goes.
+ */
+export function piModelRoutes(): CustomModelRoute[] {
+  return listCustomModels().map((m) => ({ provider: m.provider, baseUrl: m.baseUrl, modelId: m.modelId, customModelId: m.id }));
+}
+
 export function customModelSettings(model: CustomModel): Record<string, string> {
   return { provider: model.provider, baseUrl: model.baseUrl, modelId: model.modelId, customModelId: model.id };
 }

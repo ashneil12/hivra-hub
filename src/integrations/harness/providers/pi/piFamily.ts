@@ -1,5 +1,6 @@
 import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
+import { spawnPiChild } from "./piRoutes";
 import { taskListFromToolInput } from "../../../../features/sessions/model/taskList";
 import { normalizeProjectPath } from "../../../../features/projects/model/recents";
 import type { UserQuestionReply } from "../../../../features/sessions/model/userQuestion";
@@ -12,7 +13,6 @@ import { discoverOmpCommands, ompCommandsFromRpcData } from "./piSkills";
 import { OMP_FLAVOR } from "./piFlavor";
 import {
   killChild,
-  spawnChild,
   unwatchChild,
   watchChild,
   writeChild,
@@ -581,7 +581,7 @@ async function startLive(
     },
   );
 
-  await spawnChild(
+  await spawnPiChild(
     input.sessionId,
     path,
     buildPiSpawnArgs(flavor, {
@@ -590,7 +590,6 @@ async function startLive(
       plan: input.intent === "plan",
     }),
     input.cwd,
-    undefined,
     flavor.id,
   );
 
