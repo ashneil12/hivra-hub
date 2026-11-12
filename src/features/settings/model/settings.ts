@@ -725,6 +725,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords: "pacman snake arcade grid fun",
   },
   {
+    id: "model-connections",
+    section: "providers",
+    label: "Connections",
+    keywords: "connect subscription login sign in grok claude chatgpt oh my pi extra connection router",
+  },
+  {
     id: "text-generation",
     section: "providers",
     label: "Short text",
