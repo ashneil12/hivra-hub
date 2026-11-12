@@ -438,7 +438,7 @@ export function movedChatPrompt(session: Session, text: string, request: string 
     const last = index === session.blocks.length - 1;
     return !(last && block.role === "user" && block.text.trim() === request.trim());
   });
-  const transcript = buildPortableTranscript(prior);
+  const transcript = buildPortableTranscript(prior, undefined, undefined, session.id);
   const lead = `You are continuing this chat, moved from ${movedFromName(session)}. This is not a new task. The messages below are the chat so far. Continue from them and do not say you have no prior context.`;
   if (!transcript.trim()) return `${lead}\n\n${text}`;
   return `${lead}\n\n<chat_so_far>\n${transcript}\n</chat_so_far>\n\n${text}`;

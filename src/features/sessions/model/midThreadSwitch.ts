@@ -131,37 +131,88 @@ function selectedMessages(
 /** The hand-over is capped so a long chat cannot overflow the target's context. */
 export const PORTABLE_TRANSCRIPT_LIMIT = 24_000;
 
+/** At most this many left-out messages are named one by one; the rest are counted. */
+export const LEFT_OUT_POINTER_LIMIT = 40;
+const POINTER_PREVIEW_CHARS = 80;
+
 /**
- * Build the hand-over at send time from the thread as it is then. Keeps the newest
- * messages that fit and says how many older ones were left out.
+ * Build the hand-over at send time from the thread as it is then.
+ *
+ * WP-251, after Up.computer's portable handoff (docs/user/portable-handoffs.md, MIT, github.com/krl-gr/upcomputer):
+ * when the thread does not fit, the person's first message is kept (cut to a quarter of the budget at most), then the
+ * newest messages that fit, in their order. The messages in between are named by role, id and their first words, and
+ * when the chat id is known the agent is told how to read them with `app sessions.read`. Short threads are unchanged.
  */
 export function buildPortableTranscript(
   blocks: readonly Block[],
   messageIds?: readonly string[] | null,
   maxChars: number = PORTABLE_TRANSCRIPT_LIMIT,
+  chatId?: string,
 ): string {
   const messages = selectedMessages(blocks, messageIds);
   const rendered = messages.map((message) => renderTranscript([message]));
-  const kept: string[] = [];
+  if (joinedLength(rendered) <= maxChars) return rendered.join("\n\n");
+
+  const firstUser = messages.findIndex((message) => message.role === "user");
+  const head = firstUser >= 0 ? limitSection(rendered[firstUser]!, Math.floor(maxChars / 4)) : "";
+  const pointerReserve = Math.min(Math.floor(maxChars / 4), 120 * LEFT_OUT_POINTER_LIMIT + 400);
+  const budget = Math.max(0, maxChars - head.length - (head ? 2 : 0) - pointerReserve);
+
+  const kept: number[] = [];
   let size = 0;
-  for (let index = rendered.length - 1; index >= 0; index -= 1) {
-    const separator = kept.length > 0 ? 2 : 0;
+  for (let index = rendered.length - 1; index > firstUser; index -= 1) {
     const entry = rendered[index]!;
-    if (size + separator + entry.length > maxChars) {
-      if (kept.length === 0) {
-        kept.unshift(limitSection(entry, maxChars));
-        size = maxChars;
-        index -= 1;
-      }
-      break;
-    }
-    kept.unshift(entry);
+    const separator = kept.length > 0 ? 2 : 0;
+    if (size + separator + entry.length > budget) break;
+    kept.unshift(index);
     size += separator + entry.length;
   }
-  const left = rendered.length - kept.length;
-  const body = kept.join("\n\n");
-  if (left <= 0) return body;
-  return `[${left} earlier message${left === 1 ? "" : "s"} left out to fit]\n\n${body}`;
+
+  // Nothing new fits beside the first ask: keep today's rule, the newest message cut to the budget.
+  if (kept.length === 0 && firstUser < rendered.length - 1) {
+    const last = rendered.length - 1;
+    const tail = limitSection(rendered[last]!, Math.max(200, budget));
+    const leftOut = messages.filter((_, index) => index !== firstUser && index !== last);
+    return joinParts(head, leftOutMarker(leftOut, messages[last]!, chatId), tail);
+  }
+
+  const keptStart = kept.length > 0 ? kept[0]! : rendered.length;
+  const leftOut = messages.filter((_, index) => index !== firstUser && index < keptStart);
+  const body = kept.map((index) => rendered[index]!).join("\n\n");
+  const firstKept = kept.length > 0 ? messages[kept[0]!] : undefined;
+  if (leftOut.length === 0) return joinParts(head, "", body);
+  return joinParts(head, leftOutMarker(leftOut, firstKept, chatId), body);
+}
+
+function joinedLength(parts: readonly string[]): number {
+  return parts.reduce((sum, part, index) => sum + part.length + (index > 0 ? 2 : 0), 0);
+}
+
+function joinParts(...parts: string[]): string {
+  return parts.filter((part) => part.length > 0).join("\n\n");
+}
+
+function leftOutMarker(
+  leftOut: readonly PortableMessage[],
+  firstKept: PortableMessage | undefined,
+  chatId: string | undefined,
+): string {
+  const count = leftOut.length;
+  const lines = [`[${count} earlier message${count === 1 ? "" : "s"} left out to fit]`];
+  const named = leftOut.slice(-LEFT_OUT_POINTER_LIMIT);
+  if (named.length < count) lines.push(`(the ${count - named.length} oldest are not listed)`);
+  for (const message of named) {
+    const preview = message.text.replace(/\s+/g, " ").trim();
+    const short = preview.length > POINTER_PREVIEW_CHARS ? `${preview.slice(0, POINTER_PREVIEW_CHARS - 3)}...` : preview;
+    lines.push(`- ${message.role === "user" ? "User" : "Assistant"} ${message.id}: ${short}`);
+  }
+  if (chatId) {
+    const before = firstKept?.role === "user" ? `, before: "${firstKept.id}"` : "";
+    lines.push(
+      `To read left-out messages in full, call the app tool sessions.read with sessionId: "${chatId}"${before} (three exchanges per call; pass the oldest turnId you got as before to go further back).`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function renderTranscript(messages: readonly PortableMessage[]): string {
