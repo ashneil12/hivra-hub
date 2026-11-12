@@ -99,10 +99,11 @@ describe("app identity", () => {
 
   it("writes the Settings footer line", () => {
     const daily = buildLine(readAppIdentity(injected("daily"))!);
-    // r65: the daily app shows only its version, no branch, hash or "daily app".
+    // r65: the daily app shows no branch, hash or "daily app"; since 12 Nov it shows when it was built.
     // The injected product stays the bundle name. The footer does not repeat it.
     expect(readAppIdentity(injected("daily"))?.product).toBe("MonoCode Hub");
-    expect(daily).toBe("Hivra 0.16.0");
+    expect(daily).toMatch(/^Hivra 0\.16\.0 · built .*2026/);
+    expect(daily).not.toContain(" @ ");
     expect(daily).not.toContain("MonoCode");
     const dev = buildLine(readAppIdentity(injected("dev"))!);
     expect(dev.startsWith("Hivra 0.16.0")).toBe(true);
@@ -110,8 +111,8 @@ describe("app identity", () => {
     expect(dev).toContain(" @ ");
     expect(dev).toContain("2026");
     expect(dev).toContain("dev copy hub-1b-identity");
-    expect(buildLine(readAppIdentity(injected("daily", { version: "" }))!)).toBe("Hivra");
-    expect(buildLine(readAppIdentity(injected("daily", { version: "  " }))!)).toBe("Hivra");
+    expect(buildLine(readAppIdentity(injected("daily", { version: "" }))!)).toMatch(/^Hivra · built /);
+    expect(buildLine(readAppIdentity(injected("daily", { version: "  " }))!)).toMatch(/^Hivra · built /);
     expect(buildLine(readAppIdentity(injected("dev", { slot: "  " }))!)).toContain("dev copy");
     expect(buildLine(readAppIdentity(injected("dev", { slot: "  " }))!)).not.toContain("dev copy  ");
   });
