@@ -15,7 +15,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::time::Duration;
 
 pub const KEY_SERVICE: &str = "monocode-hub:model-key";
@@ -323,15 +323,54 @@ pub(crate) fn save_key_with(
         );
     }
     let item = crate::key_binding::item_for_save(key, route, custom_model_id);
-    store(service, custom_model_id, &item)?;
+    forget_cached(service, custom_model_id);
+    let stored = store(service, custom_model_id, &item);
+    forget_cached(service, custom_model_id);
+    stored?;
     stop_routers_for(custom_model_id);
     Ok(())
+}
+
+/// Model-key reads, kept for the app's run (12 Nov 2026: opening the model picker read every saved key's address, and
+/// every Pi, Oh My Pi, Codex and OpenCode start read every key, so macOS asked for the Keychain again and again). An
+/// item read once is kept in memory, where the router already holds the key; saving or deleting that key drops it.
+/// A failed read (the Keychain prompt denied or left open) is kept for a few minutes so it isn't asked again at
+/// every click, then tried again.
+type CachedItem = (Result<Option<String>, String>, std::time::Instant);
+static KEY_ITEMS: LazyLock<Mutex<HashMap<(String, String), CachedItem>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+const FAILED_READ_KEPT: std::time::Duration = std::time::Duration::from_secs(300);
+
+fn read_cached(
+    service: &str,
+    custom_model_id: &str,
+    read: &dyn Fn(&str, &str) -> Result<Option<String>, String>,
+) -> Result<Option<String>, String> {
+    let at = (service.to_string(), custom_model_id.to_string());
+    let mut items = KEY_ITEMS.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((result, when)) = items.get(&at) {
+        if result.is_ok() || when.elapsed() < FAILED_READ_KEPT {
+            return result.clone();
+        }
+    }
+    // Held across the read: two starts at once ask the Keychain once, not twice.
+    let result = read(service, custom_model_id);
+    items.insert(at, (result.clone(), std::time::Instant::now()));
+    result
+}
+
+/// Drop what was kept for one account: its key was saved or deleted.
+fn forget_cached(service: &str, custom_model_id: &str) {
+    KEY_ITEMS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(service.to_string(), custom_model_id.to_string()));
 }
 
 /// The raw Keychain item for an account. Only `key_binding` reads it, and only through `bound_key`.
 pub(crate) fn read_key_in(service: &str, custom_model_id: &str) -> Result<Option<String>, String> {
     check_model_id(custom_model_id)?;
-    crate::hub_keychain::read(service, custom_model_id)
+    read_cached(service, custom_model_id, &crate::hub_keychain::read)
 }
 
 #[tauri::command]
@@ -382,6 +421,7 @@ pub(crate) fn delete_key_with(
     check_model_id(custom_model_id)?;
     // The address is inside the item, so deleting the item deletes it too.
     let result = delete_outcome(delete(service, custom_model_id));
+    forget_cached(service, custom_model_id);
     if result.is_ok() {
         stop_routers_for(custom_model_id);
     }
@@ -3011,6 +3051,37 @@ mod tests {
         );
         assert!(delete_outcome(Err("The Keychain didn't remove the login.".into())).is_err());
         assert!(delete_key_in(TEST_KEY_SERVICE, "bad id/..").is_err());
+    }
+
+    #[test]
+    fn a_model_key_is_read_from_the_keychain_once_until_it_is_saved_again() {
+        let service = "monocode-hub-test:cache-proof";
+        let id = format!("cache-{}", std::process::id());
+        let reads = std::cell::Cell::new(0);
+        let reader = |_: &str, _: &str| {
+            reads.set(reads.get() + 1);
+            Ok(Some("item".to_string()))
+        };
+        for _ in 0..5 {
+            assert_eq!(read_cached(service, &id, &reader), Ok(Some("item".into())));
+        }
+        assert_eq!(reads.get(), 1, "the picker and every start share one read");
+        // A save drops it, so the next start reads the new item.
+        save_key_with(service, &id, "new-key", None, &|_, _, _| Ok(())).unwrap();
+        read_cached(service, &id, &reader).unwrap();
+        assert_eq!(reads.get(), 2);
+        delete_key_with(service, &id, &|_, _| Ok(true)).unwrap();
+        read_cached(service, &id, &reader).unwrap();
+        assert_eq!(reads.get(), 3);
+        // A refused read is kept too, so a denied prompt isn't asked again at every click.
+        let other = format!("{id}-denied");
+        let refused = |_: &str, _: &str| {
+            reads.set(reads.get() + 1);
+            Err("denied".to_string())
+        };
+        assert!(read_cached(service, &other, &refused).is_err());
+        assert!(read_cached(service, &other, &refused).is_err());
+        assert_eq!(reads.get(), 4);
     }
 
     #[test]
