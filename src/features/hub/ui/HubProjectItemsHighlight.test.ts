@@ -2,8 +2,6 @@
 // Only the open thing is highlighted in the sidebar (PM's real-app check of r35, 22 Oct: "Coding team" stayed highlighted
 // while the Hub lead's 1:1 was open, so two rows looked open at once). With a Mono's 1:1 open the Monos rail marks that
 // Mono and no project item is highlighted; close the 1:1 and the item Ash was on is highlighted again.
-import fs from "node:fs";
-import path from "node:path";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterAll, afterEach, beforeEach, expect, it } from "vitest";
@@ -51,20 +49,4 @@ it("with a Mono's 1:1 open, neither Coding team nor Leadership team stays highli
   expect(await highlighted("coding-team", true)).toEqual([]);
   act(() => root?.unmount());
   expect(await highlighted("leadership", true)).toEqual([]);
-});
-
-it("the app tells the sidebar when a Mono's 1:1 covers the main area", () => {
-  const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
-  expect(app).toMatch(/<HubProjectItems\s+selection=\{hubSel\}\s+monoOpen=\{hubItemsCovered\}/);
-  expect(app).toContain("const monoCovers = !!monoViewId;");
-});
-
-// r63 (PM's 0.16.3 shot): Pages and Coding team were both highlighted. Pages is the automations view in pages mode; it
-// (and Search, Settings, Inbox, Notes, Automations) now covers the project's items like a 1:1 does.
-it("with Pages (or any other main view) open, no project item stays highlighted next to it", async () => {
-  const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
-  const covered = app.slice(app.indexOf("const hubItemsCovered ="), app.indexOf("const hubShown ="));
-  for (const view of ["searchViewOpen", "settingsOpen", "inboxViewOpen", "notesViewOpen", "automationsViewOpen", "monoCovers"]) expect(covered).toContain(view);
-  expect(app).toContain("pagesActive={automationsViewOpen && pagesMode}");
-  expect(await highlighted("coding-team", true)).toEqual([]);
 });

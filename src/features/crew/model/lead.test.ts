@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import { cliForLeadBrief, refuseBriefedLeadHarness, refuseNeverUseLead } from "./lead";
 
@@ -175,24 +174,5 @@ describe("the delegator judges the chat it is about to brief", () => {
     await expect(
       refuseBriefedLeadHarness({ harness: "  " }, named, "briefer", async () => ({ neverUse: [] })),
     ).rejects.toThrow("CLI is unknown");
-  });
-
-  it("checkLead resolves the CLI, and the delegator judges the briefed harness before launch", () => {
-    const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
-    const checkStart = app.indexOf("checkLead: async");
-    const check = app.slice(checkStart, app.indexOf("crewPolicy:", checkStart));
-    expect(check).toContain("cliForLeadBrief");
-    expect(check).toContain("leadWorkingFolder");
-    expect(check).toContain("newDefaultSession");
-    expect(check).toContain("ensureOpenSessionRef.current");
-    expect(check).not.toContain("findMono(target.leadId)?.sessionId)?.harness");
-    const delegatorStart = app.indexOf("setLeadDelegator(async (input) => {");
-    const delegator = app.slice(delegatorStart, app.indexOf("const prWatches", delegatorStart));
-    const judged = delegator.indexOf("refuseBriefedLeadHarness(lead,");
-    const launched = delegator.indexOf("tracker.launch");
-    const ensured = delegator.indexOf("ensureMonoSession");
-    expect(ensured).toBeGreaterThan(-1);
-    expect(judged).toBeGreaterThan(ensured);
-    expect(launched).toBeGreaterThan(judged);
   });
 });

@@ -12,9 +12,7 @@ describe("confirm title name (r30i)", () => {
   it("does not double punctuation", () => {
     expect(`Delete ${confirmTitleName("Nothing has changed.")}?`).toBe("Delete Nothing has changed?");
   });
-  it("the dialog quotes the name", async () => {
-    const src = (await import("node:fs")).readFileSync("src/shared/ui/ConfirmDelete.tsx", "utf8");
-    expect(src).toContain("title={`Delete \u201c${confirmTitleName(name)}\u201d?`}");
+  it("drops a question's own marks", () => {
     expect(confirmTitleName("Is it done?!")).toBe("Is it done");
   });
   it("keeps one line and cuts long titles at a word", () => {

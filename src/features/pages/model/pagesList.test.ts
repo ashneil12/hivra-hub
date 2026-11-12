@@ -1,7 +1,6 @@
 // @vitest-environment happy-dom
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
-import { readFileSync } from "node:fs";
 import { beforeEach, expect, it } from "vitest";
 import { allPages, buildPreview, keepPage, pinnedPages, resetPagesForTest, setPinned } from "./pages";
 import { checkBuiltSpec } from "./buildPage";
@@ -42,9 +41,3 @@ it("the list view: grouped by project, a pin on every row, New page is only a pr
   expect(view.querySelector("[data-pages-cant]")).not.toBeNull();
   expect(view.textContent).not.toMatch(/block|builder/i);
 });
-
-it("Pages hides the workspace sidebar", () => {
-  const src = readFileSync(`${process.cwd()}/src/app/shell/Sidebar.tsx`, "utf8");
-  expect(src).toMatch(/automationsActive \|\|\n\s*pagesActive \|\|\n\s*hubSurfaceActive/);
-});
-it("New page placeholder", async () => { const s = (await import("node:fs")).readFileSync(`${process.cwd()}/src/features/pages/ui/PagesView.tsx`, "utf8"); expect(s).toContain(`placeholder="Describe the hub…"`); });

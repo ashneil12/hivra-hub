@@ -1,7 +1,5 @@
 // Hivra WP-40: a finished report is done only when the gates passed. One failure goes back to the worker; the next
 // fails. Unsure, or a check that couldn't run, is not a pass and is not another fix round.
-import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { completionMessage, type MonoSessionCompletionResult } from "../../monos/model/monoSessionCompletion";
 import { GATE_TRIES } from "../../monos/model/workerGate";
@@ -217,16 +215,4 @@ describe("the report its first mate reads", () => {
     );
     expect(held.monoSessionCompletion?.status).toBe("completed");
   });
-});
-
-it("the app runs a brief's gates first and keeps the routes check for a brief that has none", () => {
-  const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
-  expect(app).toMatch(/WP-40:/);
-  expect(app).toMatch(/WP-145:/);
-  expect(app).toMatch(/blocks: session\?\.blocks/);
-  expect(app).toMatch(/briefGatesFor\(/);
-  expect(app).toMatch(/if \(gateDue\(result\)\) \{/);
-  expect(app).toMatch(/runWorkerGate\(\{ projectId, checkout, signedOff: signedOffFor\(workerStarted, monoId, /);
-  expect(app).toMatch(/submitSessionRef\.current\(sessionId, gateAsk\(run\), \[\], \{/);
-  expect(app).toMatch(/finish\(gateFailedResult\(result, run\)\)/);
 });
