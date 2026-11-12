@@ -70,7 +70,8 @@ export class MonoFileConflict extends Error {
  * rules in his words; ed's Mono answered "what are Ash's rules" without the 21 Oct "DeepSeek on high" line because
  * the note was only listed and it never read it.
  */
-export const STANDING_NOTES: readonly string[] = ["ash-asks"];
+// finished-work: its workers' finished jobs (finishedWork.ts), so a new chat knows what was done (Ash 12 Nov).
+export const STANDING_NOTES: readonly string[] = ["ash-asks", "finished-work"];
 export const STANDING_MAX_BYTES = 12 * 1024;
 
 /**
