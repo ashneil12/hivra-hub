@@ -144,6 +144,9 @@ export function scrub(db) {
     // in a dev copy would start those tasks again in his project folders, so the plans and their leases go.
     wipe("fanoutCheckpoints", "fanout_checkpoints");
     wipe("fanoutLeases", "fanout_leases");
+    // WP-250 (src-tauri/src/tasks/pickup.rs): a pickup rule hands tasks to a first mate and wakes it, so in a copy it
+    // would start Ash's first mates in his real project folders.
+    wipe("pickupRules", "task_pickup_rules");
     // Hivra WP-14 (src-tauri/src/steering.rs, decisions.rs): pending messages would be delivered into the copy's chats,
     // and decisions answered there would release them. Both belong to the daily app's work.
     wipe("steerMessages", "steer_messages");

@@ -3,6 +3,7 @@
 pub(crate) mod commands;
 mod mapping;
 pub(crate) mod mcp;
+pub(crate) mod pickup;
 pub(crate) mod store;
 pub(crate) mod sync;
 mod views;

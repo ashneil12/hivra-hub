@@ -57,6 +57,8 @@ export type PaletteSideEffects = {
   editor: (action: "find" | "replace") => void;
   /** WP-123: fork the chat in focus from its latest message. */
   forkChat: () => void;
+  /** WP-252: open a new chat that helps the person find out what went wrong. */
+  reportProblem: () => void;
 };
 
 function tabHandlers(
@@ -136,6 +138,7 @@ function appHandlers(
       saveNewChatWorktree(flippedNewChatWorktree(loadNewChatWorktree())),
     // WP-123: fork the chat in focus. The palette has no message, so the latest one is used.
     "fork-from-here": () => side.forkChat(),
+    "report-problem": () => side.reportProblem(),
   };
 }
 

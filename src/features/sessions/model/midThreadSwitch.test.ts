@@ -3,6 +3,7 @@ import { buildDeterministicHandoff, sessionChildHarnesses } from "./handoff";
 import {
   applyMidThreadSwitch,
   buildPortableTranscript,
+  LEFT_OUT_POINTER_LIMIT,
   PORTABLE_TRANSCRIPT_LIMIT,
   commitMidThreadSwitch,
   continueThisChatLine,
@@ -432,8 +433,81 @@ describe("portable switch of a busy chat (WP-121 review)", () => {
     expect(text.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT + 100);
     expect(text).toContain("answer 199");
     expect(text).not.toContain("answer 0 ");
-    expect(text).toMatch(/^\[\d+ earlier messages left out to fit\]/);
+    expect(text).toMatch(/\[\d+ earlier messages left out to fit\]/);
     const one = buildPortableTranscript([assistant("a", "y".repeat(100_000))]);
     expect(one.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT + 50);
+  });
+
+  describe("WP-251: the first ask and pointers to what was left out", () => {
+    function longChat(turns: number): Block[] {
+      const blocks: Block[] = [];
+      for (let i = 0; i < turns; i += 1) {
+        blocks.push(user(`u${i}`, `question ${i}`), assistant(`a${i}`, `answer ${i} ${"x".repeat(500)}`));
+      }
+      return blocks;
+    }
+
+    it("keeps the first ask first, then the marker, then the newest messages in order", () => {
+      const text = buildPortableTranscript(longChat(200), null, PORTABLE_TRANSCRIPT_LIMIT, "chat-1");
+      expect(text.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT);
+      expect(text.startsWith("User:\nquestion 0")).toBe(true);
+      const marker = text.indexOf("earlier messages left out to fit");
+      expect(marker).toBeGreaterThan(text.indexOf("question 0"));
+      expect(text.indexOf("answer 198")).toBeLessThan(text.indexOf("answer 199"));
+      expect(text.indexOf("answer 199")).toBeGreaterThan(marker);
+      expect(text).not.toContain("answer 0 ");
+    });
+
+    it("names the left-out messages by id, capped, and says how to read them", () => {
+      const text = buildPortableTranscript(longChat(200), null, PORTABLE_TRANSCRIPT_LIMIT, "chat-1");
+      const pointers = text.split("\n").filter((line) => /^- (User|Assistant) [ua]\d+: /.test(line));
+      expect(pointers).toHaveLength(LEFT_OUT_POINTER_LIMIT);
+      expect(text).toMatch(/\(the \d+ oldest are not listed\)/);
+      expect(text).toContain('sessions.read with sessionId: "chat-1"');
+      const firstKept = /before: "(u\d+)"/.exec(text)?.[1];
+      expect(firstKept).toBeDefined();
+      expect(text).toContain(`User:\nquestion ${firstKept!.slice(1)}`);
+    });
+
+    it("stays under the cap with real ids, and leaves out only what it must", () => {
+      const uuid = (n: number) => `${String(n).padStart(8, "0")}-1111-4222-8333-444455556666`;
+      const blocks: Block[] = [];
+      for (let i = 0; i < 200; i += 1) {
+        blocks.push(user(uuid(2 * i), `question ${i}`), assistant(uuid(2 * i + 1), `answer ${i} ${"x".repeat(500)}`));
+      }
+      const text = buildPortableTranscript(blocks, null, PORTABLE_TRANSCRIPT_LIMIT, uuid(9999));
+      expect(text.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT);
+      // A chat just over the cap leaves out a few messages, not a whole pointer reserve's worth.
+      const near = longChat(46);
+      const nearText = buildPortableTranscript(near, null, PORTABLE_TRANSCRIPT_LIMIT, "chat-1");
+      expect(nearText.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT);
+      const left = Number(/\[(\d+) earlier messages? left out/.exec(nearText)?.[1]);
+      expect(left).toBeGreaterThan(0);
+      expect(left).toBeLessThanOrEqual(6);
+    });
+
+    it("never points before at a message the app wrote", () => {
+      const blocks = longChat(200);
+      const firstKeptIndex = blocks.length - 2;
+      blocks[firstKeptIndex] = { ...blocks[firstKeptIndex]!, internal: true } as Block;
+      const text = buildPortableTranscript(blocks, null, 1_500, "chat-1");
+      const before = /before: "([^"]+)"/.exec(text)?.[1];
+      if (before) expect(before).not.toBe(blocks[firstKeptIndex]!.id);
+    });
+
+    it("cuts a huge first ask to a quarter of the budget", () => {
+      const blocks = [user("u0", "q".repeat(50_000)), ...longChat(100).slice(1)];
+      const text = buildPortableTranscript(blocks, null, PORTABLE_TRANSCRIPT_LIMIT, "chat-1");
+      expect(text.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT);
+      expect(text.indexOf("[truncated]")).toBeLessThan(text.indexOf("left out to fit"));
+      expect(text).toContain("answer 99");
+    });
+
+    it("leaves a short chat exactly as before, and omits the read line without a chat id", () => {
+      const blocks = longChat(3);
+      expect(buildPortableTranscript(blocks, null, PORTABLE_TRANSCRIPT_LIMIT, "chat-1")).toBe(buildPortableTranscript(blocks));
+      expect(buildPortableTranscript(blocks)).not.toContain("left out");
+      expect(buildPortableTranscript(longChat(200))).not.toContain("sessions.read");
+    });
   });
 });

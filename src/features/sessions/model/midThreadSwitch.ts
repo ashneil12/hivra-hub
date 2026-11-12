@@ -30,6 +30,8 @@ export type PortableMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** An app-written user message; `sessions.read` does not count it as a turn. */
+  internal?: true;
 };
 
 export type PortableHandoff =
@@ -123,7 +125,7 @@ function selectedMessages(
     if (wanted && !wanted.has(block.id)) continue;
     if (seen.has(block.id)) continue;
     seen.add(block.id);
-    messages.push({ id: block.id, role: block.role, text: block.text });
+    messages.push({ id: block.id, role: block.role, text: block.text, ...(block.internal ? { internal: true as const } : {}) });
   }
   return messages;
 }
@@ -131,37 +133,102 @@ function selectedMessages(
 /** The hand-over is capped so a long chat cannot overflow the target's context. */
 export const PORTABLE_TRANSCRIPT_LIMIT = 24_000;
 
+/** At most this many left-out messages are named one by one; the rest are counted. */
+export const LEFT_OUT_POINTER_LIMIT = 40;
+const POINTER_PREVIEW_CHARS = 80;
+const TRUNCATED_SUFFIX = "\n\n[truncated]";
+
 /**
- * Build the hand-over at send time from the thread as it is then. Keeps the newest
- * messages that fit and says how many older ones were left out.
+ * Build the hand-over at send time from the thread as it is then.
+ *
+ * WP-251, after Up.computer's portable handoff (docs/user/portable-handoffs.md, MIT, github.com/krl-gr/upcomputer):
+ * when the thread does not fit, the person's first message is kept (cut to a quarter of the budget at most), then the
+ * newest messages that fit, in their order. The messages in between are named by role, id and their first words, and
+ * when the chat id is known the agent is told how to read them with `app sessions.read`. Short threads are unchanged.
  */
 export function buildPortableTranscript(
   blocks: readonly Block[],
   messageIds?: readonly string[] | null,
   maxChars: number = PORTABLE_TRANSCRIPT_LIMIT,
+  chatId?: string,
 ): string {
   const messages = selectedMessages(blocks, messageIds);
   const rendered = messages.map((message) => renderTranscript([message]));
-  const kept: string[] = [];
+  if (joinedLength(rendered) <= maxChars) return rendered.join("\n\n");
+
+  const firstUser = messages.findIndex((message) => message.role === "user");
+  const head = firstUser >= 0 ? limitSection(rendered[firstUser]!, Math.floor(maxChars / 4)) : "";
+  const room = Math.max(0, maxChars - head.length - (head ? 2 : 0));
+
+  // Take the newest messages that fit beside the first ask, then drop the oldest kept one until the marker naming
+  // what was left out (its real length, ids and all) fits too.
+  const kept: number[] = [];
   let size = 0;
-  for (let index = rendered.length - 1; index >= 0; index -= 1) {
-    const separator = kept.length > 0 ? 2 : 0;
+  for (let index = rendered.length - 1; index > firstUser; index -= 1) {
     const entry = rendered[index]!;
-    if (size + separator + entry.length > maxChars) {
-      if (kept.length === 0) {
-        kept.unshift(limitSection(entry, maxChars));
-        size = maxChars;
-        index -= 1;
-      }
-      break;
-    }
-    kept.unshift(entry);
+    const separator = kept.length > 0 ? 2 : 0;
+    if (size + separator + entry.length > room) break;
+    kept.unshift(index);
     size += separator + entry.length;
   }
-  const left = rendered.length - kept.length;
-  const body = kept.join("\n\n");
-  if (left <= 0) return body;
-  return `[${left} earlier message${left === 1 ? "" : "s"} left out to fit]\n\n${body}`;
+  const assemble = () => {
+    const keptStart = kept.length > 0 ? kept[0]! : rendered.length;
+    const leftOut = messages.filter((_, index) => index !== firstUser && index < keptStart);
+    const body = kept.map((index) => rendered[index]!).join("\n\n");
+    if (leftOut.length === 0) return joinParts(head, "", body);
+    const keptMessages = kept.map((index) => messages[index]!);
+    return joinParts(head, leftOutMarker(leftOut, keptMessages, chatId), body);
+  };
+  let text = assemble();
+  while (text.length > maxChars && kept.length > 0) {
+    kept.shift();
+    text = assemble();
+  }
+  if (kept.length > 0) return text;
+
+  // Nothing new fits beside the first ask: keep today's rule, the newest message cut to what is left.
+  if (firstUser < rendered.length - 1) {
+    const last = rendered.length - 1;
+    const leftOut = messages.filter((_, index) => index !== firstUser && index !== last);
+    const marker = leftOutMarker(leftOut, [messages[last]!], chatId);
+    // limitSection adds "\n\n[truncated]" beyond the length it is given.
+    const tail = limitSection(rendered[last]!, Math.max(200, room - marker.length - 2 - TRUNCATED_SUFFIX.length));
+    return joinParts(head, marker, tail);
+  }
+  return text;
+}
+
+function joinedLength(parts: readonly string[]): number {
+  return parts.reduce((sum, part, index) => sum + part.length + (index > 0 ? 2 : 0), 0);
+}
+
+function joinParts(...parts: string[]): string {
+  return parts.filter((part) => part.length > 0).join("\n\n");
+}
+
+function leftOutMarker(
+  leftOut: readonly PortableMessage[],
+  kept: readonly PortableMessage[],
+  chatId: string | undefined,
+): string {
+  const count = leftOut.length;
+  const lines = [`[${count} earlier message${count === 1 ? "" : "s"} left out to fit]`];
+  const named = leftOut.slice(-LEFT_OUT_POINTER_LIMIT);
+  if (named.length < count) lines.push(`(the ${count - named.length} oldest are not listed)`);
+  for (const message of named) {
+    const preview = message.text.replace(/\s+/g, " ").trim();
+    const short = preview.length > POINTER_PREVIEW_CHARS ? `${preview.slice(0, POINTER_PREVIEW_CHARS - 3)}...` : preview;
+    lines.push(`- ${message.role === "user" ? "User" : "Assistant"} ${message.id}: ${short}`);
+  }
+  if (chatId) {
+    // `before` must be a turn sessions.read knows: a user message the app did not write.
+    const turn = kept.find((message) => message.role === "user" && !message.internal);
+    const before = turn ? `, before: "${turn.id}"` : "";
+    lines.push(
+      `To look further back, call the app tool sessions.read with sessionId: "${chatId}"${before}. Each call gives three exchanges, each the user's message and the last reply, cut short; pass the oldest turnId you got as before to go further back.`,
+    );
+  }
+  return lines.join("\n");
 }
 
 function renderTranscript(messages: readonly PortableMessage[]): string {

@@ -1006,7 +1006,9 @@ import { withFirstMateContract } from "../features/firstmate/model/contract";
 import { monoTurnNote } from "../features/monos/model/monoMate";
 import { plainEnglishEndings } from "../features/firstmate/model/plainEnglish";
 import { useMonoHabits } from "./hooks/useMonoHabits";
-import { appPolicy } from "./model/appIdentity";
+import { appIdentity, appPolicy } from "./model/appIdentity";
+import { buildTriageDraft } from "../features/diagnostics/model/triage";
+import { setComposerDraft } from "../features/sessions/model/draftCache";
 import {
   claimVerifyKickoff,
   pendingVerifyKickoff,
@@ -7822,6 +7824,35 @@ function Workspace({
     [openCodingTeam, sessionDefaults?.runtimeMode, appendTab, setActiveTabId],
   );
 
+  // WP-252: "Report a problem" opens a new chat in a fresh folder inside the app's data folder, with the triage
+  // playbook in the composer. The person picks the engine, says what went wrong and sends it.
+  const startTriageChat = useCallback(async () => {
+    let place: { folder: string; logs: string };
+    try {
+      place = await invoke<{ folder: string; logs: string }>("diagnostics_triage_folder");
+    } catch (error) {
+      console.error(error);
+      return;
+    }
+    const identity = appIdentity();
+    const session = newWorkspaceSession(place.folder, sessionDefaults?.runtimeMode);
+    sessionsRef.current = [...sessionsRef.current, session];
+    setSessions(sessionsRef.current);
+    setComposerDraft(
+      session.id,
+      buildTriageDraft({
+        build: identity
+          ? { version: identity.version, sha: identity.stamp.sha, branch: identity.stamp.branch, dirty: identity.stamp.dirty }
+          : null,
+        logs: place.logs,
+      }),
+    );
+    const tab = newTab(session.id);
+    appendTab(tab, place.folder);
+    setActiveTabId(tab.id);
+    setComposerFocused(true);
+  }, [sessionDefaults?.runtimeMode, appendTab, setActiveTabId]);
+
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
     // the last one selected ends up focused.
@@ -9730,6 +9761,8 @@ function Workspace({
             text: buildPortableTranscript(
               current.blocks,
               portableResume.messageIds,
+              undefined,
+              sessionId,
             ),
             portable: true,
           };
@@ -17059,8 +17092,9 @@ function Workspace({
           if (!id) return;
           forkFocusedChat(sessionsRef.current.find((session) => session.id === id));
         },
+        reportProblem: () => void startTriageChat(),
       }),
-    [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession],
+    [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession, startTriageChat],
   );
 
   useEffect(() => {
