@@ -60,9 +60,16 @@ describe("modelConnections", () => {
     }
   });
 
-  it("only Claude Code, Pi and Oh My Pi have app-made connections today", () => {
+  it("Codex gets the saved models that speak OpenAI Responses", () => {
+    for (const source of ["xai", "openrouter", "ollama", "custom"] as const) {
+      expect(isExtraConnection("codex", source), source).toBe(true);
+    }
+    expect(modelConnection("codex", "deepseek").status).toBe("no");
+  });
+
+  it("only Claude Code, Pi, Oh My Pi and Codex have app-made connections today", () => {
     for (const harness of HARNESSES) {
-      if (harness === "claude" || harness === "pi" || harness === "omp") continue;
+      if (harness === "claude" || harness === "pi" || harness === "omp" || harness === "codex") continue;
       for (const { id } of MODEL_SOURCES) expect(isExtraConnection(harness, id), `${harness} x ${id}`).toBe(false);
     }
   });

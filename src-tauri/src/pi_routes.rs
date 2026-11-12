@@ -34,15 +34,63 @@ pub const CLAUDE_BIN_ENV: &str = "CLAUDE_CODE_PI_BIN";
 /// Pi's default when the provider never said how big the window is.
 const DEFAULT_WINDOW: u64 = 200_000;
 
-/// The harnesses that take these routes.
-pub fn takes_routes(binary_provider: Option<&str>) -> bool {
+/// Pi and its fork Oh My Pi: they take the routes through an extension, and the Claude Code bridge.
+pub fn is_pi_family(binary_provider: Option<&str>) -> bool {
     matches!(binary_provider, Some("pi") | Some("omp"))
+}
+
+/// The harnesses that take these routes: the Pi family, and Codex (config overrides, OpenAI Responses through the
+/// router's passthrough).
+pub fn takes_routes(binary_provider: Option<&str>) -> bool {
+    is_pi_family(binary_provider) || binary_provider == Some("codex")
+}
+
+/// One model as offered to a child: its provider name, the router's loopback address, the model and the env var
+/// that holds the token. No secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub provider: String,
+    pub base_url: String,
+    pub model_id: String,
+    pub token_env: String,
 }
 
 /// What a child is given: env vars to set and the router tokens to hold for the child's life.
 pub struct PiRoutes {
     pub env: Vec<(String, String)>,
     pub sessions: Vec<SessionToken>,
+    pub listed: Vec<Listed>,
+}
+
+/// A TOML basic string: Codex reads `-c` values as TOML.
+fn toml_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Codex config overrides that add one provider per saved model, speaking OpenAI Responses to the router. They go
+/// before the subcommand (`-c` is a global option). The token is named by its env var, never written here.
+pub fn codex_config_args(routes: &PiRoutes) -> Vec<String> {
+    let mut args = Vec::new();
+    for listed in &routes.listed {
+        args.push("-c".to_string());
+        args.push(format!(
+            "model_providers.{}={{ name = \"Dropwave\", base_url = {}, env_key = {}, wire_api = \"responses\" }}",
+            listed.provider,
+            toml_string(&format!("{}/v1", listed.base_url)),
+            toml_string(&listed.token_env),
+        ));
+    }
+    args
 }
 
 /// A provider name Pi accepts: lowercase letters, digits and dashes, unique per saved model.
@@ -75,6 +123,7 @@ pub fn build_with(routes: &[CustomRoute], prepare: Prepare) -> (PiRoutes, Vec<St
     let mut env = Vec::new();
     let mut sessions = Vec::new();
     let mut listed = Vec::new();
+    let mut offered = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for route in routes.iter().take(MAX_ROUTES) {
@@ -107,6 +156,12 @@ pub fn build_with(routes: &[CustomRoute], prepare: Prepare) -> (PiRoutes, Vec<St
             "tokenEnv": token_env,
             "contextWindow": window,
         }));
+        offered.push(Listed {
+            provider: provider_name(&route.custom_model_id),
+            base_url: base.to_string(),
+            model_id: route.model_id.trim().to_string(),
+            token_env: token_env.clone(),
+        });
         env.push((token_env, token.to_string()));
         sessions.push(session);
     }
@@ -116,7 +171,14 @@ pub fn build_with(routes: &[CustomRoute], prepare: Prepare) -> (PiRoutes, Vec<St
             serde_json::Value::Array(listed).to_string(),
         ));
     }
-    (PiRoutes { env, sessions }, skipped)
+    (
+        PiRoutes {
+            env,
+            sessions,
+            listed: offered,
+        },
+        skipped,
+    )
 }
 
 /// The routes for a Pi or Oh My Pi start, with the real router and Keychain.
@@ -280,6 +342,21 @@ mod tests {
     }
 
     #[test]
+    fn codex_gets_one_provider_per_model_on_the_router() {
+        let routes = vec![route("grok-1", "grok-4.7")];
+        let (ready, _) = build_with(&routes, &|r| prepared(r, "secret-token", None));
+        let args = codex_config_args(&ready);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "-c");
+        assert_eq!(
+            args[1],
+            r#"model_providers.dropwave-grok-1={ name = "Dropwave", base_url = "http://127.0.0.1:4321/v1", env_key = "DROPWAVE_PI_TOKEN_0", wire_api = "responses" }"#
+        );
+        assert!(!args.concat().contains("secret-token"));
+        assert_eq!(toml_string("a\"b\\c\n"), r#""a\"b\\c""#);
+    }
+
+    #[test]
     fn provider_names_are_safe_for_pi() {
         assert_eq!(provider_name("Grok_4.7"), "dropwave-grok-4-7");
     }
@@ -288,6 +365,8 @@ mod tests {
     fn only_pi_and_omp_take_routes() {
         assert!(takes_routes(Some("pi")));
         assert!(takes_routes(Some("omp")));
+        assert!(takes_routes(Some("codex")));
+        assert!(!is_pi_family(Some("codex")));
         assert!(!takes_routes(Some("claude")));
         assert!(!takes_routes(None));
     }

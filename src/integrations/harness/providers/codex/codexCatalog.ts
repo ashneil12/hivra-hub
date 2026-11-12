@@ -5,6 +5,7 @@ import {
   type ModelSetting,
   type ModelSettingChoice,
 } from "../../../../features/sessions/model/models";
+import { codexRoutedModels } from "./codexRoutes";
 import {
   killChild,
   resolveCodexBinary,
@@ -36,7 +37,7 @@ export function refreshCodexCatalog(): Promise<void> {
   if (inflight) return inflight;
   inflight = discoverCodexModels()
     .then((models) => {
-      if (models.length > 0) setHarnessModels("codex", models);
+      if (models.length > 0) setHarnessModels("codex", [...models, ...codexRoutedModels()]);
     })
     .catch((error: unknown) => {
       console.debug("[monocode] codex catalog", error);

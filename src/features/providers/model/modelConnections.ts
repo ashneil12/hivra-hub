@@ -84,6 +84,8 @@ function multiProvider(chatgpt: ModelConnection): Record<ModelSource, ModelConne
   };
 }
 
+const ROUTED_CODEX =
+  "Your saved model shows up in Codex's model list through this app's router (OpenAI Responses); the key stays in the app.";
 const ROUTED_PI =
   "Your saved model shows up in the agent's model list through this app's router; the key stays in the app.";
 
@@ -123,11 +125,11 @@ const TABLE: Record<HarnessId, Record<ModelSource, ModelConnection>> = {
     claudeLogin: CLAUDE_LOGIN_NO_BRIDGE,
     chatgptLogin: own("Codex's own ChatGPT sign-in."),
     anthropicKey: no("Codex talks to OpenAI-style providers only."),
-    xai: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
-    openrouter: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
-    deepseek: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
-    ollama: agentSetup("Codex can use Ollama from its own config; the app doesn't set it up yet."),
-    custom: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
+    xai: app(ROUTED_CODEX),
+    openrouter: app(ROUTED_CODEX),
+    deepseek: no("DeepSeek has no OpenAI Responses API, which Codex needs."),
+    ollama: app(ROUTED_CODEX),
+    custom: app(ROUTED_CODEX),
   },
   pi: viaAppRouter(multiProvider(CHATGPT_IN_AGENT)),
   omp: viaAppRouter(multiProvider(CHATGPT_IN_AGENT)),

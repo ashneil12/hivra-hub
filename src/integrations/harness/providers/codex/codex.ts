@@ -2,6 +2,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { loadAgentSandbox } from "../../../../features/settings/model/agentSandbox";
 import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
+import { codexModelRoutes, splitRoutedModel } from "./codexRoutes";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import {
   exhaustedWindowResetAt,
@@ -693,26 +694,48 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   );
 
   const hivraSandbox = await readHivraSandbox();
-  await spawnChild(
-    input.sessionId,
-    path,
-    ["app-server"],
-    input.cwd,
-    {
-      provider: "codex",
-      id: input.providerAccountId ?? "default",
-    },
-    "codex",
-    codexStore,
-    undefined,
-    undefined,
-    undefined,
-    codexSkipsOuterSandbox({
-      runtimeMode: input.runtimeMode,
-      firstMate: input.firstMate,
-      hivraSandbox,
-    }),
-  );
+  const skipOuter = codexSkipsOuterSandbox({
+    runtimeMode: input.runtimeMode,
+    firstMate: input.firstMate,
+    hivraSandbox,
+  });
+  const account = {
+    provider: "codex" as const,
+    id: input.providerAccountId ?? "default",
+  };
+  // The saved models go only when there are some, so a start without them is exactly what it was.
+  const routes = codexModelRoutes();
+  if (routes.length > 0) {
+    await spawnChild(
+      input.sessionId,
+      path,
+      ["app-server"],
+      input.cwd,
+      account,
+      "codex",
+      codexStore,
+      undefined,
+      undefined,
+      undefined,
+      skipOuter,
+      undefined,
+      routes,
+    );
+  } else {
+    await spawnChild(
+      input.sessionId,
+      path,
+      ["app-server"],
+      input.cwd,
+      account,
+      "codex",
+      codexStore,
+      undefined,
+      undefined,
+      undefined,
+      skipOuter,
+    );
+  }
 
   try {
     await rpc.request("initialize", {
@@ -735,7 +758,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       );
     }
 
-    const model = nativeModelId(input.model);
+    // A saved model runs on its own Codex provider (codexRoutes.ts); Codex's own models pass as they are.
+    const routed = splitRoutedModel(nativeModelId(input.model));
+    const model = routed.model;
+    const routedConfig = routed.provider ? { model_provider: routed.provider } : undefined;
     const serviceTier = input.modelSettings?.serviceTier;
     const effort = input.modelSettings?.reasoningEffort;
 
@@ -759,7 +785,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           {
             threadId: resume.threadId,
             ...params,
-            ...withConfig(storeConfig, extraConfig, params.config),
+            ...withConfig(storeConfig, { ...extraConfig, ...routedConfig }, params.config),
           },
         );
         threadId = opened.thread?.id ?? resume.threadId;
@@ -789,7 +815,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         "thread/start",
         {
           ...params,
-          ...withConfig(storeConfig, extraConfig, params.config),
+          ...withConfig(storeConfig, { ...extraConfig, ...routedConfig }, params.config),
           ...(ephemeral ? { ephemeral: true } : {}),
         },
       );
@@ -863,7 +889,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 }
 
 async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
-  const model = nativeModelId(input.model);
+  const model = splitRoutedModel(nativeModelId(input.model)).model;
   const effort = input.modelSettings?.reasoningEffort;
   const serviceTier = input.modelSettings?.serviceTier;
 

@@ -1254,14 +1254,24 @@ pub fn harness_spawn(
     let pi_routes = match pi_routes {
         None => None,
         Some(_) if !crate::pi_routes::takes_routes(binary_provider.as_deref()) => {
-            return Err("Saved models are offered to Pi and Oh My Pi only".into())
+            return Err("Saved models are offered to Pi, Oh My Pi and Codex only".into())
         }
         Some(routes) if routes.is_empty() || pi_isolated => None,
         Some(routes) => Some(crate::pi_routes::build(&routes)),
     };
+    let pi_family = crate::pi_routes::is_pi_family(binary_provider.as_deref());
     let pi_extension = match pi_routes.as_ref() {
-        Some(ready) if !ready.env.is_empty() => Some(crate::pi_routes::write_extension()?),
+        Some(ready) if pi_family && !ready.env.is_empty() => {
+            Some(crate::pi_routes::write_extension()?)
+        }
         _ => None,
+    };
+    // Codex: one provider per saved model through config overrides, before the subcommand.
+    let codex_route_args = match pi_routes.as_ref() {
+        Some(ready) if binary_provider.as_deref() == Some("codex") => {
+            crate::pi_routes::codex_config_args(ready)
+        }
+        _ => Vec::new(),
     };
     // Pi and Oh My Pi also get the person's Claude subscription, through their own Claude Code (`claude -p`), when
     // Claude Code is installed. Not in a dev copy, whose Claude must never see the daily login or config. A failure
@@ -1279,7 +1289,7 @@ pub fn harness_spawn(
     };
     let pi_claude = if more_agent.is_none()
         && !pi_isolated
-        && crate::pi_routes::takes_routes(binary_provider.as_deref())
+        && pi_family
         && crate::instance::policy().daily_claude
         && claude_allowed()?
     {
@@ -1357,7 +1367,11 @@ pub fn harness_spawn(
         args
     };
     let args = {
-        let mut args = args;
+        let mut args = if codex_route_args.is_empty() {
+            args
+        } else {
+            codex_route_args.into_iter().chain(args).collect()
+        };
         for path in pi_extension
             .iter()
             .chain(pi_claude.as_ref().map(|(_, extension)| extension))
