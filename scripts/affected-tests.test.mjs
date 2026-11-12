@@ -2,7 +2,7 @@
 // (imports, a file it reads, a glob), what runs everything, and that CI and npm run check:affected use it.
 
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -179,4 +179,12 @@ test("anything that isn't a pull request runs every test", async () => {
 test("npm run check:affected is the local entry point", () => {
   const pkg = JSON.parse(readFileSync(path.join(repo, "package.json"), "utf8"));
   assert.equal(pkg.scripts["check:affected"], "node scripts/affected-tests.mjs local");
+});
+
+test("the all-scripts run names real files, not globs (Node 20's --test can't expand one)", async () => {
+  const { expandGlobs } = await import("./affected-tests.mjs");
+  const files = expandGlobs(["scripts/*.test.mjs", "scripts/*.test.cjs"], repo);
+  assert.ok(files.includes("scripts/affected-tests.test.mjs"), files.join(" "));
+  assert.ok(files.every((file) => !file.includes("*") && existsSync(path.join(repo, file))));
+  assert.deepEqual(expandGlobs(["nope/*.test.mjs"], repo), []);
 });

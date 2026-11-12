@@ -260,7 +260,8 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22, like the ship job: the script tests use node:sqlite, which Node 20 doesn't have.
+          node-version: 22
           cache: npm
 
       # Hivra (11 Nov 2026): a pull request that changes only web files skips the Rust half, about 15 minutes on the
