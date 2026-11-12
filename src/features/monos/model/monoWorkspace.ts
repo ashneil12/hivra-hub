@@ -200,7 +200,9 @@ export async function startMonoSideChat(
   const engine = mono.engine && Object.prototype.hasOwnProperty.call(HARNESS_LABEL, mono.engine) ? (mono.engine as HarnessId) : undefined;
   const created = !engine && like ? newSession(like.harness, cwd, like.model, "auto", like.modelSettings) : host.create(cwd);
   const own = engine && (engine !== created.harness || (mono.engineModel && mono.engineModel !== created.model));
-  const session: Session = stampFirstMate({ ...withEngineFast(own ? newSession(engine, cwd, mono.engineModel) : created, mono.engineFast), runtimeMode: "auto" });
+  const base = withEngineFast(own ? newSession(engine, cwd, mono.engineModel) : created, mono.engineFast);
+  const withEffort = engine && mono.engineEffort ? { ...base, modelSettings: { ...base.modelSettings, effort: mono.engineEffort } } : base;
+  const session: Session = stampFirstMate({ ...withEffort, runtimeMode: "auto" });
   if (!saveMonoSideChat(monoId, session.id)) return undefined;
   host.add(session);
   return session;

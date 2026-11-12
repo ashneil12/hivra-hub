@@ -1,4 +1,5 @@
 import { plainCommandRow } from "../../../shared/lib/plainCommand";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import {
   ArrowUp,
   Check,
@@ -1273,6 +1274,8 @@ function AgentTranscriptComponent({
         {lineage ? <LineageList lineage={lineage} /> : null}
         {visibleTurns.map((turn, turnIndex) => {
           // A checker's note and the answer to it: one quiet line (an approval it waits on still shows as usual).
+          // Ash 12 Nov: the checker's note is between the two AIs; in Hivra it doesn't show in his chat at all.
+          if (isMonoCheckPrompt(turn[0]) && !turn.some(needsApproval) && IS_HUB_BUNDLE) return null;
           if (isMonoCheckPrompt(turn[0]) && !turn.some(needsApproval))
             return (
               <CheckTurnCard

@@ -23,7 +23,10 @@ export function SetMonoDefault({
   const mono = monoForSession(sessionId) ?? findMono(chatMonoOwner(sessionId) ?? "");
   if (!mono) return null;
   const chosen = resolveModel(harness, model);
-  const same = mono.engine === harness && (mono.engineModel ? resolveModel(harness, mono.engineModel).id === chosen.id : false);
+  const same =
+    mono.engine === harness &&
+    (mono.engineModel ? resolveModel(harness, mono.engineModel).id === chosen.id : false) &&
+    (!values.effort || values.effort === mono.engineEffort);
   if (same) return null;
   const name = mono.name?.trim() || "this first mate";
   return (
@@ -37,6 +40,8 @@ export function SetMonoDefault({
           const next = { ...current, engine: harness, engineModel: chosen.id };
           if (modelOffersFast(chosen) && values.fast !== undefined) next.engineFast = values.fast === "true";
           else delete next.engineFast;
+          if (values.effort) next.engineEffort = values.effort;
+          else delete next.engineEffort;
           return next;
         })
       }
