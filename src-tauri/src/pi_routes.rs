@@ -23,6 +23,14 @@ pub const ROUTES_ENV: &str = "DROPWAVE_PI_ROUTES";
 const TOKEN_ENV_PREFIX: &str = "DROPWAVE_PI_TOKEN_";
 const EXTENSION_NAME: &str = "dropwave-routes.js";
 const EXTENSION_SOURCE: &str = include_str!("pi_routes_extension.js");
+/// The Claude subscription for Pi and Oh My Pi: claude-code-pi (MIT, vendored unchanged) registers a
+/// `claude-code-cli` provider that hands every call to the local Claude Code with `claude -p`. Anthropic's help
+/// centre (Agent SDK with your Claude plan, Jun and Oct 2026) says `claude -p` signed in with a plan draws from the
+/// subscription. The login stays inside Claude Code: nothing here reads or copies it.
+const CLAUDE_EXTENSION_NAME: &str = "claude-code-pi.js";
+const CLAUDE_EXTENSION_SOURCE: &str = include_str!("vendor/claude_code_pi.js");
+/// The env var claude-code-pi reads for the Claude Code binary.
+pub const CLAUDE_BIN_ENV: &str = "CLAUDE_CODE_PI_BIN";
 /// Pi's default when the provider never said how big the window is.
 const DEFAULT_WINDOW: u64 = 200_000;
 
@@ -126,6 +134,20 @@ pub fn build(routes: &[CustomRoute]) -> PiRoutes {
 /// Write the extension into a private folder under `root` and return its path. The file holds no secret; it is
 /// rewritten on every start so a changed file can't stick.
 pub fn write_extension_in(root: &Path) -> Result<PathBuf, String> {
+    write_file_in(root, EXTENSION_NAME, EXTENSION_SOURCE)
+}
+
+/// Write the Claude subscription extension (claude-code-pi) beside it.
+pub fn write_claude_extension_in(root: &Path) -> Result<PathBuf, String> {
+    write_file_in(root, CLAUDE_EXTENSION_NAME, CLAUDE_EXTENSION_SOURCE)
+}
+
+/// Where the Claude extension lives: the same temp folder as the routes extension.
+pub fn write_claude_extension() -> Result<PathBuf, String> {
+    write_claude_extension_in(&std::env::temp_dir())
+}
+
+fn write_file_in(root: &Path, name: &str, source: &str) -> Result<PathBuf, String> {
     let dir = root.join("dropwave-pi");
     std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't prepare Pi's model list: {e}"))?;
     #[cfg(unix)]
@@ -133,9 +155,9 @@ pub fn write_extension_in(root: &Path) -> Result<PathBuf, String> {
         use std::os::unix::fs::PermissionsExt;
         let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
     }
-    let path = dir.join(EXTENSION_NAME);
-    let tmp = dir.join(format!("{EXTENSION_NAME}.{}.tmp", std::process::id()));
-    std::fs::write(&tmp, EXTENSION_SOURCE)
+    let path = dir.join(name);
+    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, source)
         .and_then(|_| std::fs::rename(&tmp, &path))
         .map_err(|e| format!("Couldn't prepare Pi's model list: {e}"))?;
     Ok(path)
@@ -264,6 +286,22 @@ mod tests {
         std::fs::write(&path, "tampered").unwrap();
         let again = write_extension_in(&dir).unwrap();
         assert_eq!(std::fs::read_to_string(again).unwrap(), EXTENSION_SOURCE);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn writes_the_claude_extension_that_only_runs_claude_p() {
+        let dir = std::env::temp_dir().join(format!("pi-claude-test-{}", uuid::Uuid::new_v4()));
+        let path = write_claude_extension_in(&dir).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("// Vendored from claude-code-pi"));
+        assert!(text.contains("MIT License"));
+        assert!(text.contains("registerProvider(PROVIDER_ID"));
+        assert!(text.contains(CLAUDE_BIN_ENV));
+        // A CLI bridge only: no direct HTTP calls to Anthropic and no reading of Claude's credentials.
+        assert!(!text.contains("fetch("));
+        assert!(!text.contains("api.anthropic.com"));
+        assert!(!text.contains(".credentials"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

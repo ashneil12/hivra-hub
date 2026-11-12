@@ -10,9 +10,11 @@
 //   one the screen marks as an extra connection.
 // * "agentSetup": the agent supports it, but it is set up in the agent's own settings for now; the app doesn't hand
 //   it a key yet.
-// * "blocked": the provider's terms forbid it, so the app never offers it, whatever the agent could do. A Claude
-//   Pro/Max login works only in Claude Code and claude.ai (Anthropic's terms, Feb 2026; enforced from Apr 2026):
-//   using it in Pi, Oh My Pi, OpenCode or any other agent would put the person's account at risk.
+// * "blocked": the provider's terms forbid it, so the app never offers it. Nothing is blocked today.
+//
+// A Claude subscription reaches another agent only through the person's own Claude Code (`claude -p`), which
+// Anthropic's help centre says draws from the plan (Agent SDK with your Claude plan, Jun and Oct 2026). The app never
+// copies the Claude login into another tool. Pi and Oh My Pi get that bridge from the app (src-tauri/src/pi_routes.rs).
 // * "no": the agent can't use that source at all.
 //
 // Pure data and functions: no keys, no settings, no Tauri.
@@ -49,9 +51,14 @@ export type ModelConnection = {
   note: string;
 };
 
-const CLAUDE_LOGIN_BLOCKED: ModelConnection = {
-  status: "blocked",
-  note: "Anthropic allows a Claude subscription only in Claude Code and claude.ai. Use an Anthropic API key here instead.",
+const CLAUDE_LOGIN_NO_BRIDGE: ModelConnection = {
+  status: "no",
+  note: "No Claude Code bridge for this agent yet. Use an Anthropic API key here, or run Claude Code itself.",
+};
+const CLAUDE_LOGIN_VIA_CLAUDE_CODE: ModelConnection = {
+  status: "works",
+  via: "app",
+  note: "Runs through your own Claude Code (claude -p) on your subscription; your login never leaves Claude Code.",
 };
 const OWN_ACCOUNT_ONLY: ModelConnection = { status: "no", note: "This agent runs only on its own account." };
 const own = (note: string): ModelConnection => ({ status: "works", via: "own", note });
@@ -65,7 +72,7 @@ const MULTI = "Set up in the agent's own settings for now; the app doesn't hand 
 /** Agents that pick models from many providers themselves (Pi and its fork Oh My Pi, OpenCode, Hermes). */
 function multiProvider(chatgpt: ModelConnection): Record<ModelSource, ModelConnection> {
   return {
-    claudeLogin: CLAUDE_LOGIN_BLOCKED,
+    claudeLogin: CLAUDE_LOGIN_NO_BRIDGE,
     chatgptLogin: chatgpt,
     anthropicKey: agentSetup(MULTI),
     xai: agentSetup(MULTI),
@@ -79,14 +86,15 @@ function multiProvider(chatgpt: ModelConnection): Record<ModelSource, ModelConne
 const ROUTED_PI =
   "Your saved model shows up in the agent's model list through this app's router; the key stays in the app.";
 
-/** Pi and Oh My Pi also get every saved Other model through the app's router (src-tauri/src/pi_routes.rs). */
+/** Pi and Oh My Pi also get the Claude subscription through Claude Code and every saved Other model through the
+ * app's router (src-tauri/src/pi_routes.rs). */
 function viaAppRouter(rules: Record<ModelSource, ModelConnection>): Record<ModelSource, ModelConnection> {
-  return { ...rules, xai: app(ROUTED_PI), openrouter: app(ROUTED_PI), deepseek: app(ROUTED_PI), ollama: app(ROUTED_PI), custom: app(ROUTED_PI) };
+  return { ...rules, claudeLogin: CLAUDE_LOGIN_VIA_CLAUDE_CODE, xai: app(ROUTED_PI), openrouter: app(ROUTED_PI), deepseek: app(ROUTED_PI), ollama: app(ROUTED_PI), custom: app(ROUTED_PI) };
 }
 
 function ownAccountOnly(): Record<ModelSource, ModelConnection> {
   return {
-    claudeLogin: CLAUDE_LOGIN_BLOCKED,
+    claudeLogin: CLAUDE_LOGIN_NO_BRIDGE,
     chatgptLogin: OWN_ACCOUNT_ONLY,
     anthropicKey: OWN_ACCOUNT_ONLY,
     xai: OWN_ACCOUNT_ONLY,
@@ -111,7 +119,7 @@ const TABLE: Record<HarnessId, Record<ModelSource, ModelConnection>> = {
     custom: app(ROUTED),
   },
   codex: {
-    claudeLogin: CLAUDE_LOGIN_BLOCKED,
+    claudeLogin: CLAUDE_LOGIN_NO_BRIDGE,
     chatgptLogin: own("Codex's own ChatGPT sign-in."),
     anthropicKey: no("Codex talks to OpenAI-style providers only."),
     xai: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
@@ -122,7 +130,10 @@ const TABLE: Record<HarnessId, Record<ModelSource, ModelConnection>> = {
   },
   pi: viaAppRouter(multiProvider(CHATGPT_IN_AGENT)),
   omp: viaAppRouter(multiProvider(CHATGPT_IN_AGENT)),
-  opencode: multiProvider(CHATGPT_IN_AGENT),
+  opencode: {
+    ...multiProvider(CHATGPT_IN_AGENT),
+    claudeLogin: agentSetup("OpenCode's own Claude Agent provider runs your Claude Code; set it up in OpenCode for now."),
+  },
   hermes: multiProvider(agentSetup("Set up in Hermes's own settings for now.")),
   grok: {
     ...ownAccountOnly(),

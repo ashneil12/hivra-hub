@@ -19,18 +19,25 @@ describe("modelConnections", () => {
     }
   });
 
-  it("never offers a Claude subscription outside Claude Code (Anthropic's terms)", () => {
-    for (const harness of HARNESSES) {
-      if (harness === "claude") continue;
-      expect(modelConnection(harness, "claudeLogin").status, harness).toBe("blocked");
-      expect(mayOffer(harness, "claudeLogin"), harness).toBe(false);
-    }
+  it("never offers a Claude subscription except through Claude Code itself", () => {
     expect(modelConnection("claude", "claudeLogin")).toMatchObject({ status: "works", via: "own" });
+    for (const harness of ["pi", "omp"] as const) {
+      expect(modelConnection(harness, "claudeLogin")).toMatchObject({ status: "works", via: "app" });
+      expect(modelConnection(harness, "claudeLogin").note).toMatch(/claude -p/);
+    }
+    expect(modelConnection("opencode", "claudeLogin").status).toBe("agentSetup");
+    for (const harness of ["codex", "hermes", "grok", "cursor", "fx", "antigravity", "devin"] as const) {
+      expect(modelConnection(harness, "claudeLogin").status, harness).toBe("no");
+    }
   });
 
-  it("Oh My Pi with a Claude login is blocked, with an Anthropic key it is set up in the agent", () => {
-    expect(modelConnection("omp", "claudeLogin").status).toBe("blocked");
-    expect(modelConnection("omp", "claudeLogin").note).toMatch(/Anthropic API key/);
+  it("nothing is blocked today", () => {
+    for (const harness of HARNESSES) {
+      for (const { id } of MODEL_SOURCES) expect(modelConnection(harness, id).status).not.toBe("blocked");
+    }
+  });
+
+  it("Oh My Pi can also use an Anthropic key set up in the agent", () => {
     expect(modelConnection("omp", "anthropicKey").status).toBe("agentSetup");
     expect(mayOffer("omp", "anthropicKey")).toBe(true);
   });
@@ -49,6 +56,7 @@ describe("modelConnections", () => {
         expect(isExtraConnection(harness, source), `${harness} x ${source}`).toBe(true);
       }
       expect(isExtraConnection(harness, "anthropicKey")).toBe(false);
+      expect(workingSources(harness)).toEqual(["claudeLogin", "xai", "openrouter", "deepseek", "ollama", "custom"]);
     }
   });
 

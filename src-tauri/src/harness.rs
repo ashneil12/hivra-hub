@@ -1261,6 +1261,22 @@ pub fn harness_spawn(
         Some(ready) if !ready.env.is_empty() => Some(crate::pi_routes::write_extension()?),
         _ => None,
     };
+    // Pi and Oh My Pi also get the person's Claude subscription, through their own Claude Code (`claude -p`), when
+    // Claude Code is installed. Not in a dev copy, whose Claude must never see the daily login or config. A failure
+    // here only leaves the provider out; it never stops the start.
+    let pi_claude = if more_agent.is_none()
+        && crate::pi_routes::takes_routes(binary_provider.as_deref())
+        && crate::instance::policy().daily_claude
+    {
+        let claude = resolve_claude();
+        let extension = claude
+            .is_some()
+            .then(crate::pi_routes::write_claude_extension)
+            .and_then(Result::ok);
+        claude.zip(extension)
+    } else {
+        None
+    };
     // WP-178 item 3.1: with the agent sandbox setting on, the CLI starts under the macOS sandbox profile. Fail closed:
     // a sandbox that cannot start refuses the start here, before anything is reserved or stopped, and never falls back
     // to a plain start (agent_sandbox::sandboxed_launch). A More agents child is not wrapped here. Its run folder does
@@ -1325,14 +1341,16 @@ pub fn harness_spawn(
     } else {
         args
     };
-    let args = match pi_extension.as_ref() {
-        Some(path) => {
-            let mut args = args;
+    let args = {
+        let mut args = args;
+        for path in pi_extension
+            .iter()
+            .chain(pi_claude.as_ref().map(|(_, extension)| extension))
+        {
             args.push("--extension".to_string());
             args.push(path.to_string_lossy().into_owned());
-            args
         }
-        None => args,
+        args
     };
     // A Mono's connectors start only with the app's signature on their arguments (src/connectors/signing.rs).
     let args = if binary_provider.as_deref() == Some("claude") {
@@ -1403,6 +1421,9 @@ pub fn harness_spawn(
             cmd.env(key, value);
         }
         pi_sessions = ready.sessions;
+    }
+    if let Some((claude, _)) = pi_claude.as_ref() {
+        cmd.env(crate::pi_routes::CLAUDE_BIN_ENV, claude);
     }
     if let Some(((set, remove), session)) = routed {
         routed_session = Some(session);
