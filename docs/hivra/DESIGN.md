@@ -106,6 +106,10 @@ name. Opening the Chief of Staff from Home keeps Home selected.
     mates, the coding tools, a look, done; each step has one heading and one choice, nothing is required, and the
     last step says back what was chosen before anything opens. A list a person chooses from says what each choice
     does in full under its name, never cut short.
+16. **Taste: a task screen, not a landing page.** Group with space, not boxes: no card inside a card, no grid of
+    same-size cards as the page, no big numbers over a list, no coloured side borders. One glyph per state, the same
+    everywhere. Secondary row buttons show on hover and focus. The `hub-taste` skill has the list; the design skills it
+    names (`.agents/skills/CREDITS.md`) have the depth.
 
 ## 5. Where things are
 

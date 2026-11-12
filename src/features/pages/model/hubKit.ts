@@ -41,10 +41,25 @@ export const HUB_ICONS: Record<string, string> = {
   moon: '<path d="M18.5 14.5A7 7 0 0 1 9.5 5.5a7 7 0 1 0 9 9z"/>',
 };
 
+/**
+ * A row's state as a 14px glyph (hub-taste section 5): one shape per state on every hub, coloured by its tone.
+ * Drawn on a 16-unit box; the working arc turns (state, not decoration), and stops under reduced motion.
+ */
+export const HUB_GLYPHS: Record<string, string> = {
+  idle: '<circle cx="8" cy="8" r="5.6" stroke-dasharray="2.4 2.1"/>',
+  working: '<circle cx="8" cy="8" r="5.6" opacity=".28"/><path class="k-spin" d="M8 2.4a5.6 5.6 0 0 1 5.6 5.6"/>',
+  asking: '<circle cx="8" cy="8" r="5.6"/><circle cx="8" cy="8" r="2.4" fill="currentColor" stroke="none"/>',
+  needs: '<circle cx="8" cy="8" r="6.4" fill="currentColor" stroke="none"/><path d="M8 4.9v3.6" style="stroke:var(--color-background-base)"/><path d="M8 10.9v.2" style="stroke:var(--color-background-base)"/>',
+  paused: '<circle cx="8" cy="8" r="5.6"/><path d="M6.6 6v4"/><path d="M9.4 6v4"/>',
+  done: '<circle cx="8" cy="8" r="5.6"/><path d="m5.6 8.2 1.7 1.7 3.1-3.4"/>',
+  stopped: '<circle cx="8" cy="8" r="5.6"/><rect x="6.1" y="6.1" width="3.8" height="3.8" rx=".6" fill="currentColor" stroke="none"/>',
+  later: '<circle cx="8" cy="8" r="5.6"/><path d="M8 5.2V8l1.8 1.2"/>',
+};
+
 export const HUB_KIT_CSS = `
 :root{--k-soft:color-mix(in srgb,var(--color-content) 78%,transparent);--k-faint:color-mix(in srgb,var(--color-content) 62%,transparent);--k-wash:color-mix(in srgb,var(--color-content) 7%,transparent);--k-hover:color-mix(in srgb,var(--color-content) 4%,transparent);--k-line:var(--color-stroke);--k-radius:12px}
 [hidden]{display:none!important}
-.k-page{display:flex;flex-direction:column;gap:22px;padding:2px 2px 12px}
+.k-page{display:flex;flex-direction:column;gap:28px;padding:2px 2px 12px}
 .k-head{display:flex;align-items:center;justify-content:flex-end;gap:10px;min-height:28px}
 .k-head > .k-lede{flex:1;min-width:0}
 .k-lede{font-size:13px;color:var(--k-soft)}
@@ -59,7 +74,7 @@ export const HUB_KIT_CSS = `
 .k-stat-value{font-size:22px;font-weight:600;line-height:1.15;letter-spacing:-.01em;color:var(--color-content);font-variant-numeric:tabular-nums}
 .k-stat[data-tone=bad] .k-stat-value{color:var(--color-status-bad)}
 .k-stat[data-zero] .k-stat-value{color:var(--k-faint)}
-.k-section{display:flex;flex-direction:column;gap:8px;min-width:0}
+.k-section{display:flex;flex-direction:column;gap:6px;min-width:0}
 .k-section-head{display:flex;align-items:center;gap:8px;padding:0 4px;font-size:12px;font-weight:500;color:var(--k-faint)}
 .k-section-head .k-spacer{flex:1}
 .k-count{display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 6px;border-radius:9px;font-size:11px;font-weight:500;background:var(--k-wash);color:var(--k-soft);font-variant-numeric:tabular-nums}
@@ -69,11 +84,31 @@ export const HUB_KIT_CSS = `
 .k-card[data-tone=bad]{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-status-bad) 40%,var(--color-surface-ring))}
 .k-card[data-tone=warn]{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-status-warn) 35%,var(--color-surface-ring))}
 .k-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:10px}
+.k-list{display:flex;flex-direction:column;min-width:0}
+.k-list > .k-item + .k-item{border-top:1px solid var(--k-line)}
+.k-line{display:flex;align-items:baseline;gap:10px;min-width:0}
+.k-line > .k-title{flex:0 1 auto;max-width:60%}
+.k-line > .k-text{flex:1 1 0;font-size:12px;color:var(--k-faint)}
+.k-glyph{flex:none;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;color:color-mix(in srgb,var(--color-content) 45%,transparent)}
+.k-glyph[data-tone=ok]{color:var(--color-status-ok)}
+.k-glyph[data-tone=warn]{color:var(--color-status-warn)}
+.k-glyph[data-tone=bad]{color:var(--color-status-bad)}
+@media (prefers-reduced-motion:no-preference){.k-glyph .k-spin{transform-origin:8px 8px;animation:k-turn 1.4s linear infinite}}
+@keyframes k-turn{to{transform:rotate(360deg)}}
+.k-state{flex:none;font-size:12px;color:var(--k-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+.k-state[data-tone=bad]{color:var(--color-status-bad);font-weight:500}
+.k-time{font-size:12px;color:var(--k-faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+@media (hover:hover){
+.k-row .k-reveal{opacity:0;transition:opacity .15s ease-out}
+.k-row:hover .k-reveal,.k-row:focus-within .k-reveal,.k-item:focus-within > .k-row .k-reveal{opacity:1}
+}
+:focus-visible{outline:2px solid color-mix(in srgb,var(--color-content) 45%,transparent);outline-offset:2px;border-radius:6px}
+::selection{background:color-mix(in srgb,var(--color-theme-accent) 35%,transparent)}
 .k-item{border-radius:8px;min-width:0}
 .k-item + .k-item{border-top:1px solid var(--k-line);border-top-left-radius:0;border-top-right-radius:0}
-.k-row{display:flex;align-items:center;gap:12px;padding:10px;border-radius:8px;min-width:0}
+.k-row{display:flex;align-items:center;gap:12px;min-height:40px;padding:6px 10px;border-radius:8px;min-width:0}
 .k-row.k-click{cursor:pointer}
-.k-row.k-click:hover,.k-tile.k-click:hover{background:var(--k-hover)}
+@media (hover:hover){.k-row:hover,.k-tile.k-click:hover{background:var(--k-hover)}}
 .k-main{flex:1 1 160px;min-width:0;display:flex;flex-direction:column;gap:1px}
 .k-title{font-size:13px;font-weight:500;color:var(--color-content);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .k-sub{font-size:12px;color:var(--k-faint);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -102,19 +137,21 @@ export const HUB_KIT_CSS = `
 @media (prefers-reduced-motion:reduce){.k-pill[data-live]::before{animation:none}}
 .k-tag{display:inline-flex;align-items:center;gap:4px;height:20px;padding:0 7px;border-radius:6px;font-size:11px;white-space:nowrap;background:var(--k-wash);color:var(--k-soft)}
 .k-tags{display:flex;flex-wrap:wrap;gap:4px}
-.k-btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:0;border-radius:7px;font:inherit;font-size:12px;white-space:nowrap;cursor:pointer;background:transparent;color:var(--k-soft);transition:background .15s,color .15s}
-.k-btn:hover{background:var(--color-surface-raised);color:var(--color-content)}
+.k-btn{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 10px;border:0;border-radius:7px;font:inherit;font-size:12px;white-space:nowrap;cursor:pointer;background:transparent;color:var(--k-soft);transition-property:background-color,color,scale;transition-duration:.15s;transition-timing-function:ease-out}
+.k-btn:not(:disabled):active{scale:.96}
+@media (hover:hover){.k-btn:not(:disabled):hover{background:var(--k-wash);color:var(--color-content)}}
 .k-btn.k-quiet{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-content) 18%,transparent)}
 .k-btn.k-primary{background:var(--color-content);color:var(--color-background-base);font-weight:500}
-.k-btn.k-primary:hover{background:color-mix(in srgb,var(--color-content) 88%,transparent);color:var(--color-background-base)}
+@media (hover:hover){.k-btn.k-primary:not(:disabled):hover{background:color-mix(in srgb,var(--color-content) 88%,transparent);color:var(--color-background-base)}}
 .k-btn:disabled{opacity:.45;cursor:default}
 .k-btn.k-icon-only{width:28px;padding:0;justify-content:center}
 .k-icon{flex:none;width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.75;stroke-linecap:round;stroke-linejoin:round}
-.k-callout{display:flex;flex-direction:column;gap:8px;margin:0 10px 10px 54px;padding:10px 12px;border-radius:10px;background:var(--color-surface-raised);box-shadow:inset 2px 0 0 var(--k-tone,var(--k-line))}
+.k-callout{display:flex;flex-direction:column;gap:6px;margin:-2px 10px 10px 36px;padding:10px 12px;border-radius:8px;background:var(--k-wash)}
 .k-callout-text{font-size:13px;line-height:1.45;color:var(--color-content)}
 .k-callout-hint{font-size:12px;color:var(--k-faint)}
-.k-nest{display:flex;flex-direction:column;margin:-4px 10px 8px 25px;padding-left:16px;border-left:1px solid var(--k-line)}
-.k-nest .k-row{gap:10px;padding:5px 8px}
+.k-nest{display:flex;flex-direction:column;margin:-4px 10px 6px 16px;padding-left:10px;border-left:1px solid var(--k-line)}
+.k-nest .k-row{gap:10px;min-height:32px;padding:3px 8px}
+.k-nest .k-title{font-weight:400;font-size:12.5px}
 .k-field{display:flex;align-items:center;gap:6px}
 .k-input{flex:1;min-width:0;height:30px;padding:0 10px;border:0;border-radius:7px;outline:none;font:inherit;font-size:13px;color:var(--color-content);background:var(--color-surface);box-shadow:inset 0 0 0 1px var(--color-surface-ring)}
 .k-input:focus{box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--color-content) 35%,transparent)}
@@ -127,9 +164,11 @@ export const HUB_KIT_CSS = `
 .k-note{font-size:12px;color:var(--k-soft)}
 @media (max-width:659px){
 .k-row{flex-wrap:wrap;row-gap:6px}
-.k-row > .k-actions{flex-basis:100%;justify-content:flex-start;padding-left:38px}
+.k-row > .k-actions{flex-basis:100%;justify-content:flex-start;padding-left:20px}
 .k-nest .k-row > .k-actions{padding-left:0}
 .k-callout{margin-left:10px}
+.k-line{flex-wrap:wrap;row-gap:0}
+.k-line > .k-title{max-width:100%}
 }
 `;
 
@@ -155,6 +194,18 @@ export const HUB_KIT_JS = `window.kit = (() => {
     const words = String(name || "?").replace(/[^\\p{L}\\p{N} ]/gu, " ").trim().split(/\\s+/).filter(Boolean);
     if (!words.length) return "?";
     return (words.length === 1 ? words[0].slice(0, 2) : words[0][0] + words[words.length - 1][0]).toUpperCase();
+  }
+  const GLYPHS = ${JSON.stringify(HUB_GLYPHS)};
+  // A state's glyph: kit.glyph("working"), kit.glyph("asking"), kit.glyph("needs") (the red one), ...
+  const GLYPH_TONE = { working: "ok", asking: "warn", needs: "bad" };
+  function glyph(state, label) {
+    const svg = document.createElementNS(SVG, "svg");
+    svg.setAttribute("viewBox", "0 0 16 16"); svg.setAttribute("class", "k-glyph");
+    const g = GLYPHS[state] ? state : "idle";
+    svg.innerHTML = GLYPHS[g];
+    if (GLYPH_TONE[g]) svg.dataset.tone = GLYPH_TONE[g];
+    if (label) { svg.setAttribute("role", "img"); svg.setAttribute("aria-label", label); } else svg.setAttribute("aria-hidden", "true");
+    return svg;
   }
   function avatar(name, opts) {
     const o = opts || {};
@@ -209,7 +260,9 @@ export const HUB_KIT_JS = `window.kit = (() => {
     if (o.onClick) { r.addEventListener("click", o.onClick); r.tabIndex = 0; r.addEventListener("keydown", (e) => { if (e.key === "Enter" && e.target === r) o.onClick(e); }); }
     if (o.lead) r.appendChild(o.lead);
     const main = el("div", "k-main");
-    main.appendChild(el("div", "k-title", o.title));
+    // The name, and what it is doing on the same line after it (quieter); what sits under it on the next.
+    if (o.text) { const l = el("div", "k-line"); l.appendChild(el("div", "k-title", o.title)); l.appendChild(el("div", "k-text", o.text)); main.appendChild(l); }
+    else main.appendChild(el("div", "k-title", o.title));
     if (o.sub) main.appendChild(el("div", "k-sub", o.sub));
     r.appendChild(main);
     if (o.aside && [].concat(o.aside).length) r.appendChild(add(el("div", "k-aside"), o.aside));
@@ -263,5 +316,5 @@ export const HUB_KIT_JS = `window.kit = (() => {
     return m;
   }
   const tag = (text) => el("span", "k-tag", text);
-  return { el, add, icon, ICONS: Object.keys(ICONS), initials, avatar, pill, tone, ago, button, stat, row, tile, section, callout, empty, meter, tag };
+  return { el, add, icon, ICONS: Object.keys(ICONS), glyph, GLYPHS: Object.keys(GLYPHS), initials, avatar, pill, tone, ago, button, stat, row, tile, section, callout, empty, meter, tag };
 })();`;

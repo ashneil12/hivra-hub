@@ -6,7 +6,8 @@ description: Change one of the app's own screens (sidebar, Home, a chat, Hubs, S
 # Changing the app's own screens
 
 The rules are in [docs/hivra/DESIGN.md](../../../docs/hivra/DESIGN.md). Read sections 2 (words), 3 (layout) and 4
-(rules) before you write anything. This skill is the order to work in.
+(rules) before you write anything. This skill is the order to work in. For how a screen should look and feel, read
+the `hub-taste` skill too; it points to the borrowed design skills (`better-*`, `emil-design-eng`) for the deep rules.
 
 ## 0. Is it a screen change at all?
 If the ask is "show me X" or "I want a board for Y", it is a hub, not an app change: use the `make-a-hub` skill. Only

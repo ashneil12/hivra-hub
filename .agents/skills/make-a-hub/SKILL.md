@@ -34,8 +34,9 @@ A bespoke hub already has the kit: its styles (`k-page`, `k-stats`, `k-section`,
 `k-avatar`, `k-pill`, `k-btn`, `k-callout`, `k-empty` and the rest) and a `kit` global of builders (`kit.row`,
 `kit.avatar`, `kit.pill`, `kit.stat`, `kit.button`, `kit.empty`, `kit.icon`, ...). Read docs/hivra/HUB-KIT.md and
 build from those parts; the ready-made Agents hub (`src/features/pages/model/readyPages.ts`) is the worked example.
-- Lay it out the same way: up to four numbers on top, then titled sections with a count, rows on a card (a picture,
-  a name, a line under it, a state, its buttons), the work under a row nested under it, quiet things as tiles.
+- Read the `hub-taste` skill first and follow it: one quiet line of counts, titled sections of rows on the page (a
+  state glyph, the name with what it is doing, the state word and time, buttons that show on hover), the work under a
+  row nested under it, and a card only for the group that must stand apart.
 - Write your own CSS only for what the kit has no part for, with the theme tokens only (`--color-content`,
   `--color-surface`, `--color-surface-raised`, `--color-stroke`, `--color-theme-accent`, the three status colours).
 - Small text at 60% or more, one primary button, no title repeated as an `h1` (the frame draws it), no colour outside a
