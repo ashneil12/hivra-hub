@@ -5,7 +5,8 @@
 //   npm run hub:check-all && npm run hub:build && npm run hub:ship [-- --json]
 //   npm run hub:ship -- --drill-rollback      # the whole path, then put the old build back as if it had failed
 //   npm run hub:build && npm run hub:ship -- --skip-tests   # Ash's fast loop (12 Nov 2026): no hub:check-all record
-//                                             # needed; every other check, the backup and the rollback still apply
+//                                             # needed and no version bump (a same version only warns, as app.ship
+//                                             # does); every other check, the backup and the rollback still apply
 //   npm run hub:install                       # = --legacy: the one-time install of the first build that can ship
 //
 // `npm run hub:ship`, the `app.ship` action and (later) a button all run this file.
@@ -255,7 +256,8 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
       );
   }
   // A newer version than the installed app. Refused from the command line; a ship the app itself asked for (app.ship)
-  // only warns, so its Ship button never stops on it; --allow-same-version turns the refusal into the warning.
+  // only warns, so its Ship button never stops on it; --allow-same-version turns the refusal into the warning, and so
+  // does --skip-tests: the fast loop ships every merged batch, and the runner and the app tell builds apart by sha.
   facts.version = { bundle: exists(bundle) ? readVersion(bundle) : null, installed: exists(paths.app) ? readVersion(paths.app) : null };
   const notBumped = versionProblem({
     bundleVersion: facts.version.bundle,
@@ -263,7 +265,7 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
     bundleSha: facts.stamp?.sha,
     installedSha: facts.installed?.sha,
   });
-  if (notBumped) (allowSameVersion || fromApp ? warnings : refusals).push(notBumped);
+  if (notBumped) (allowSameVersion || fromApp || skipTests ? warnings : refusals).push(notBumped);
   // Room for the staged copy and the database backup, and a margin.
   if (exists(bundle)) {
     const dbBytes = ["monocode.db", "monocode.db-wal", "monocode.db-shm"].reduce(
