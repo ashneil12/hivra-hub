@@ -96,6 +96,8 @@ mod inbox_media;
 pub mod instance;
 // WP-07: the name a person reads. Not the bundle name.
 pub mod commit_guard;
+/// WP-255: computer use, off by default, with a block list for password apps.
+pub mod computer_use;
 mod display_name;
 mod jira;
 mod jsonc;
@@ -1414,6 +1416,11 @@ pub fn run() {
             diagnostics::diagnostics_folder,
             diagnostics::diagnostics_sources,
             diagnostics::diagnostics_triage_folder,
+            computer_use::computer_use_get,
+            computer_use::computer_use_put,
+            computer_use::computer_use_set_chat,
+            computer_use::computer_use_activity,
+            computer_use::computer_use_check,
             // WP-104: machine facts for the health list.
             health::health_facts,
         ])

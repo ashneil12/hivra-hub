@@ -337,6 +337,7 @@ import { ResourcePressureNotice } from "../features/notifications/ui/ResourcePre
 import { HarnessUpdateNotice } from "../features/providers/ui/HarnessUpdateNotice";
 import { NewLayoutNotice } from "./shell/NewLayoutNotice";
 import { toastStackTop } from "./shell/toastStack";
+import { setChatComputerUse } from "../features/computerUse/model/computerUse";
 import { WhatsNewDialog } from "./shell/WhatsNewDialog";
 import { ProviderSignInDialog } from "../features/sessions/ui/ProviderSignInDialog";
 import {
@@ -17093,6 +17094,14 @@ function Workspace({
           forkFocusedChat(sessionsRef.current.find((session) => session.id === id));
         },
         reportProblem: () => void startTriageChat(),
+        // WP-255: a chat with no say of its own follows Settings, so "allow" removes its entry.
+        computerUseChat: (mode) => {
+          const id = paletteForkTargetRef.current;
+          if (!id) return;
+          void setChatComputerUse(id, mode === "allow" ? null : mode).catch((error: unknown) => {
+            console.error("Couldn't change computer use for this chat", error);
+          });
+        },
       }),
     [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession, startTriageChat],
   );

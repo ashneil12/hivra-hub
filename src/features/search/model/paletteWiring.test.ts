@@ -83,6 +83,7 @@ function sideEffects(
     editor: (action) => calls.push(`editor:${action}`),
     forkChat: () => calls.push("fork"),
     reportProblem: () => calls.push("report-problem"),
+    computerUseChat: (mode) => calls.push(`computer-use:${mode}`),
     ...overrides,
   };
 }
@@ -206,6 +207,17 @@ describe("the palette wiring", () => {
     expect(problem.label).toBe("Report a problem");
     expect(runPaletteCommand(problem, actions(calls), sideEffects(calls))).toBe(true);
     expect(calls).toEqual(["report-problem"]);
+  });
+
+  it("gives the chat in view its own say on computer use (WP-255)", () => {
+    const calls: string[] = [];
+    for (const id of ["session.computer-use-observe", "session.computer-use-off", "session.computer-use-follow"])
+      expect(runPaletteCommand(row(id), actions(calls), sideEffects(calls))).toBe(true);
+    expect(calls).toEqual(["computer-use:observe-only", "computer-use:deny", "computer-use:allow"]);
+    // No chat in view, nothing to change.
+    const none: string[] = [];
+    runPaletteCommand(row("session.computer-use-off", nowhere), actions(none), sideEffects(none));
+    expect(none).toEqual([]);
   });
 
   it("sends zoom and editor rows to their own helpers", () => {

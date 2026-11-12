@@ -491,6 +491,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
           label: "Run agents in the macOS sandbox",
           keywords: "sandbox security isolate protect ssh keys keychain git hooks agents confine",
         },
+        {
+          id: "computer-use",
+          section: "general" as const,
+          label: "Computer use",
+          keywords: "desktop apps screen click type control accessibility screenshot open-computer-use",
+        },
       ]
     : []),
   {

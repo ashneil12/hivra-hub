@@ -59,6 +59,8 @@ export type PaletteSideEffects = {
   forkChat: () => void;
   /** WP-252: open a new chat that helps the person find out what went wrong. */
   reportProblem: () => void;
+  /** WP-255: the chat in focus's own say on computer use; "allow" hands it back to Settings. */
+  computerUseChat: (mode: "allow" | "observe-only" | "deny") => void;
 };
 
 function tabHandlers(
@@ -139,6 +141,9 @@ function appHandlers(
     // WP-123: fork the chat in focus. The palette has no message, so the latest one is used.
     "fork-from-here": () => side.forkChat(),
     "report-problem": () => side.reportProblem(),
+    "computer-use-observe": () => side.computerUseChat("observe-only"),
+    "computer-use-off": () => side.computerUseChat("deny"),
+    "computer-use-follow": () => side.computerUseChat("allow"),
   };
 }
 
