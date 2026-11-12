@@ -235,6 +235,19 @@ test("a seed clears the fan-out checkpoints and leases of the daily app, so a re
   db.close();
 });
 
+test("a seed clears the pickup rules, so a task in a dev copy never wakes Ash's first mates", async () => {
+  const { scrub } = await load();
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE task_pickup_rules (owner_session TEXT PRIMARY KEY, project_id TEXT, statuses TEXT NOT NULL DEFAULT '[]', labels TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+    INSERT INTO task_pickup_rules (owner_session, project_id, labels, created_at) VALUES ('mate-1', 'app', '["bug"]', 1);
+  `);
+  const cleared = scrub(db);
+  assert.equal(cleared.pickupRules, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM task_pickup_rules").get().n, 0);
+  db.close();
+});
+
 test("refuses the daily data folder, a link to it, and anything that isn't a dev slot's folder", async (t) => {
   const { seedDev, SeedRefusal } = await load();
   const root = home(t);

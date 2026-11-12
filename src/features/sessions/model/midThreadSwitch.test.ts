@@ -469,6 +469,32 @@ describe("portable switch of a busy chat (WP-121 review)", () => {
       expect(text).toContain(`User:\nquestion ${firstKept!.slice(1)}`);
     });
 
+    it("stays under the cap with real ids, and leaves out only what it must", () => {
+      const uuid = (n: number) => `${String(n).padStart(8, "0")}-1111-4222-8333-444455556666`;
+      const blocks: Block[] = [];
+      for (let i = 0; i < 200; i += 1) {
+        blocks.push(user(uuid(2 * i), `question ${i}`), assistant(uuid(2 * i + 1), `answer ${i} ${"x".repeat(500)}`));
+      }
+      const text = buildPortableTranscript(blocks, null, PORTABLE_TRANSCRIPT_LIMIT, uuid(9999));
+      expect(text.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT);
+      // A chat just over the cap leaves out a few messages, not a whole pointer reserve's worth.
+      const near = longChat(46);
+      const nearText = buildPortableTranscript(near, null, PORTABLE_TRANSCRIPT_LIMIT, "chat-1");
+      expect(nearText.length).toBeLessThanOrEqual(PORTABLE_TRANSCRIPT_LIMIT);
+      const left = Number(/\[(\d+) earlier messages? left out/.exec(nearText)?.[1]);
+      expect(left).toBeGreaterThan(0);
+      expect(left).toBeLessThanOrEqual(6);
+    });
+
+    it("never points before at a message the app wrote", () => {
+      const blocks = longChat(200);
+      const firstKeptIndex = blocks.length - 2;
+      blocks[firstKeptIndex] = { ...blocks[firstKeptIndex]!, internal: true } as Block;
+      const text = buildPortableTranscript(blocks, null, 1_500, "chat-1");
+      const before = /before: "([^"]+)"/.exec(text)?.[1];
+      if (before) expect(before).not.toBe(blocks[firstKeptIndex]!.id);
+    });
+
     it("cuts a huge first ask to a quarter of the budget", () => {
       const blocks = [user("u0", "q".repeat(50_000)), ...longChat(100).slice(1)];
       const text = buildPortableTranscript(blocks, null, PORTABLE_TRANSCRIPT_LIMIT, "chat-1");

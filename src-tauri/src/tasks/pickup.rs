@@ -5,7 +5,8 @@
 //! project matches (or the rule names none), the task is not trashed, its status is one of the rule's statuses (none
 //! listed means any) and it carries every one of the rule's labels (none listed means none required). Hivra adds:
 //! - only a task with no assignee is taken, so a person's own task or one already given out never moves;
-//! - a task waiting on the person (`needs_you`) is not a brief yet;
+//! - a task waiting on the person (`needs_you`) is not a brief yet, and a closed one (done or cancelled) is not work;
+//! - every rule names one project and a chat that exists; a rule whose chat is gone takes nothing;
 //! - a rule with neither statuses nor labels is refused, because it would take every task;
 //! - when two rules match, the oldest rule wins (ties by owner), so the answer never depends on row order.
 
@@ -20,7 +21,7 @@ pub(crate) const MAX_LABELS: usize = 20;
 pub struct PickupRule {
     /// The first mate's chat id.
     pub owner_session: String,
-    /// The project the rule is limited to; `None` takes from every project.
+    /// The project the rule is limited to. A rule always names one; `None` (an older row) takes nothing.
     #[serde(default)]
     pub project: Option<String>,
     #[serde(default)]
@@ -45,6 +46,8 @@ pub(crate) struct Candidate<'a> {
     pub assignee: Option<&'a str>,
     pub trashed: bool,
     pub needs_you: bool,
+    /// Done or cancelled.
+    pub closed: bool,
 }
 
 pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
@@ -66,7 +69,7 @@ fn same(a: &str, b: &str) -> bool {
 
 /// The trigger itself. Pure, so the ported cases test it without a database.
 pub(crate) fn matches(rule: &PickupRule, task: &Candidate<'_>) -> bool {
-    if !rule.enabled || task.trashed || task.needs_you {
+    if !rule.enabled || task.trashed || task.needs_you || task.closed {
         return false;
     }
     if task.assignee.map(str::trim).is_some_and(|a| !a.is_empty()) {
@@ -75,15 +78,16 @@ pub(crate) fn matches(rule: &PickupRule, task: &Candidate<'_>) -> bool {
     if rule.statuses.is_empty() && rule.labels.is_empty() {
         return false;
     }
-    if let Some(project) = rule
+    let Some(project) = rule
         .project
         .as_deref()
         .map(str::trim)
         .filter(|p| !p.is_empty())
-    {
-        if project != task.project.trim() {
-            return false;
-        }
+    else {
+        return false;
+    };
+    if project != task.project.trim() {
+        return false;
     }
     if !rule.statuses.is_empty() && !rule.statuses.iter().any(|s| same(s, task.status)) {
         return false;
@@ -115,8 +119,8 @@ fn clean_list(values: &[String], max: usize, what: &str) -> Result<Vec<String>, 
 pub(crate) fn put(conn: &Connection, rule: &PickupRule, now: i64) -> Result<PickupRule, String> {
     ensure_tables(conn).map_err(|e| e.to_string())?;
     let owner = rule.owner_session.trim();
-    if !crate::watcher::queue::session_ok(owner) {
-        return Err("That isn't a first mate's chat.".into());
+    if owner == "person" || !crate::watcher::queue::session_ok(owner) || !chat_exists(conn, owner) {
+        return Err("Pick a first mate from the list.".into());
     }
     let statuses = clean_list(&rule.statuses, MAX_STATUSES, "status")?;
     let labels = clean_list(&rule.labels, MAX_LABELS, "label")?;
@@ -125,12 +129,15 @@ pub(crate) fn put(conn: &Connection, rule: &PickupRule, now: i64) -> Result<Pick
             "Pick at least one status or label, or this first mate would take every task.".into(),
         );
     }
-    let project = rule
+    let Some(project) = rule
         .project
         .as_deref()
         .map(str::trim)
         .filter(|p| !p.is_empty())
-        .map(str::to_string);
+        .map(str::to_string)
+    else {
+        return Err("A rule works in one project.".into());
+    };
     // A rule keeps the time it was first made, so editing it never moves it behind a newer rule.
     let created_at: i64 = conn
         .query_row(
@@ -156,7 +163,7 @@ pub(crate) fn put(conn: &Connection, rule: &PickupRule, now: i64) -> Result<Pick
     .map_err(|e| e.to_string())?;
     Ok(PickupRule {
         owner_session: owner.to_string(),
-        project,
+        project: Some(project),
         statuses,
         labels,
         enabled: rule.enabled,
@@ -202,11 +209,17 @@ pub(crate) fn all(conn: &Connection) -> Result<Vec<PickupRule>, String> {
     rows
 }
 
+/// Whether a chat with this id is in the app's store. A deleted chat's rule takes nothing.
+fn chat_exists(conn: &Connection, id: &str) -> bool {
+    conn.query_row("SELECT 1 FROM sessions WHERE id = ?1", [id], |_| Ok(()))
+        .is_ok()
+}
+
 /// The first mate that takes this task, if any.
 pub(crate) fn taker(conn: &Connection, task: &Candidate<'_>) -> Result<Option<String>, String> {
     Ok(all(conn)?
         .into_iter()
-        .find(|rule| matches(rule, task))
+        .find(|rule| matches(rule, task) && chat_exists(conn, &rule.owner_session))
         .map(|rule| rule.owner_session))
 }
 
@@ -233,6 +246,7 @@ mod tests {
             assignee: None,
             trashed: false,
             needs_you: false,
+            closed: false,
         }
     }
 
@@ -275,19 +289,25 @@ mod tests {
         let mut t = task("Todo", &one);
         t.needs_you = true;
         assert!(!matches(&r, &t));
+        // A labels-only rule never takes a done or cancelled task.
+        let mut t = task("Cancelled", &one);
+        t.closed = true;
+        assert!(!matches(&rule(&[], &["bug"]), &t));
         let mut off = r.clone();
         off.enabled = false;
         assert!(!matches(&off, &task("Todo", &one)));
     }
 
     #[test]
-    fn project_must_match_unless_the_rule_names_none() {
+    fn a_rule_takes_only_from_its_own_project() {
         let one = labels(&["bug"]);
         let mut t = task("Todo", &one);
         t.project = "other";
         assert!(!matches(&rule(&["Todo"], &[]), &t));
+        // An older row that names no project takes from none.
         let mut any = rule(&["Todo"], &[]);
         any.project = None;
-        assert!(matches(&any, &t));
+        assert!(!matches(&any, &t));
+        assert!(!matches(&any, &task("Todo", &one)));
     }
 }

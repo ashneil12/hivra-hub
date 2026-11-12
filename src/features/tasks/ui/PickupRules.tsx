@@ -1,8 +1,10 @@
 // WP-250: a first mate picks up unassigned tasks that match its rule, without being assigned each one.
 
 import { useEffect, useState } from "react";
+import { listMonos, monoLook } from "../../monos/model/mono";
 import {
   describeRule,
+  firstMatesFor,
   loadPickupRules,
   removePickupRule,
   savePickupRule,
@@ -12,7 +14,7 @@ import {
 
 const field = "rounded-md border border-stroke bg-transparent px-2 py-1 text-[12px] text-content";
 
-export function PickupRules({ project }: { project: string }) {
+export function PickupRules({ project, folder }: { project: string; folder: string }) {
   const [open, setOpen] = useState(false);
   const [rules, setRules] = useState<PickupRule[] | null>(null);
   const [note, setNote] = useState("");
@@ -34,6 +36,14 @@ export function PickupRules({ project }: { project: string }) {
     );
   }
 
+  let mates: { session: string; name: string }[] = [];
+  try {
+    mates = firstMatesFor(listMonos(), project, folder, (mono) => monoLook(mono).name);
+  } catch {
+    mates = [];
+  }
+  const nameOf = (session: string) => mates.find((mate) => mate.session === session)?.name;
+
   return (
     <section aria-label="Pickup rules" className="mt-3 rounded-md border border-stroke p-2">
       <div className="flex items-center justify-between">
@@ -50,7 +60,8 @@ export function PickupRules({ project }: { project: string }) {
         {(rules ?? []).map((rule) => (
           <li key={rule.ownerSession} className="flex items-center gap-2 text-[12px] text-content/80">
             <span className="min-w-0 flex-1">
-              <span className="text-content">{rule.ownerSession}</span>: {describeRule(rule, project)}
+              <span className="text-content">{nameOf(rule.ownerSession) ?? "A chat not in this project"}</span>:{" "}
+              {describeRule(rule, project)}
             </span>
             <button
               type="button"
@@ -78,7 +89,9 @@ export function PickupRules({ project }: { project: string }) {
         ))}
         {rules && rules.length === 0 ? <li className="text-[12px] text-content/50">No rules yet.</li> : null}
       </ul>
+      {mates.length === 0 ? <p className="mt-2 text-[12px] text-content/60">No first mates work on this project yet.</p> : null}
       <form
+        hidden={mates.length === 0 || !project}
         aria-label="New pickup rule"
         className="mt-2 flex flex-wrap gap-1.5"
         onSubmit={(event) => {
@@ -91,7 +104,7 @@ export function PickupRules({ project }: { project: string }) {
           const labels = splitNames(String(data.get("labels") ?? ""));
           void savePickupRule({
             ownerSession: owner,
-            project: data.get("thisProject") ? project : null,
+            project,
             statuses,
             labels,
             enabled: true,
@@ -104,14 +117,18 @@ export function PickupRules({ project }: { project: string }) {
             .catch((error) => setNote(String(error)));
         }}
       >
-        <input name="owner" aria-label="First mate" placeholder="First mate" className={`w-28 ${field}`} />
+        <select name="owner" aria-label="First mate" className={`w-36 ${field}`} defaultValue="">
+          <option value="" disabled>
+            First mate
+          </option>
+          {mates.map((mate) => (
+            <option key={mate.session} value={mate.session}>
+              {mate.name}
+            </option>
+          ))}
+        </select>
         <input name="statuses" aria-label="Statuses" placeholder="Statuses, e.g. Todo" className={`w-36 ${field}`} />
         <input name="labels" aria-label="Labels" placeholder="Labels, e.g. bug" className={`w-32 ${field}`} />
-        {project ? (
-          <label className="flex items-center gap-1 text-[12px] text-content/70">
-            <input type="checkbox" name="thisProject" defaultChecked /> This project only
-          </label>
-        ) : null}
         <button type="submit" className="text-[12px] text-content/70">
           Save rule
         </button>

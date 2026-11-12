@@ -908,12 +908,16 @@ fn trash_subtree(
     Ok(())
 }
 
-/// WP-77: a GitHub task's brief keeps the issue text in a data frame. Any other task is the short line.
-fn pickup_text(source: &str, number: i64, title: &str, description: &str) -> String {
+/// WP-77: a GitHub task's brief keeps the issue text in a data frame. Any other task is the short line. Both name the
+/// task's id, because a task's number is only unique within its project.
+fn pickup_text(id: &str, source: &str, number: i64, title: &str, description: &str) -> String {
     if source == "github" {
-        crate::github_issues::brief::pickup(number, title, description)
+        format!(
+            "{}\n\nTask id: {id}",
+            crate::github_issues::brief::pickup(number, title, description)
+        )
     } else {
-        format!("pick up task #{number}")
+        format!("pick up task #{number} (id {id})")
     }
 }
 
@@ -960,6 +964,17 @@ fn pick_up_by_rule(
     if row.assignee.is_some() || row.delegation_id.is_some() {
         return Ok(());
     }
+    // A task a rule took once is never taken again: if it is unassigned now, the person let it go on purpose.
+    let taken_before: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_activity WHERE task_id = ?1 AND kind = 'pickup'",
+            [&row.id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if taken_before > 0 {
+        return Ok(());
+    }
     let status = status_name(conn, &row.status_id)?;
     let labels = parse_labels(&row.labels);
     let candidate = super::pickup::Candidate {
@@ -969,6 +984,7 @@ fn pick_up_by_rule(
         assignee: row.assignee.as_deref(),
         trashed: row.trashed_at.is_some(),
         needs_you: row.needs_you != 0,
+        closed: closed(&category_of(conn, &row.status_id)?),
     };
     let Some(owner) = super::pickup::taker(conn, &candidate)? else {
         return Ok(());
@@ -996,6 +1012,7 @@ fn pick_up_by_rule(
         &owner,
         &format!("task-pickup:{}", row.id),
         &pickup_text(
+            &row.id,
             &source_read(&row.source),
             row.number,
             &row.title,
@@ -1296,7 +1313,7 @@ pub(crate) fn create_in(
                 conn,
                 assignee,
                 &format!("task-pickup:{id}"),
-                &pickup_text(&row.source, number, &row.title, &row.description),
+                &pickup_text(&row.id, &row.source, number, &row.title, &row.description),
                 now,
             )?;
         }
@@ -1518,6 +1535,7 @@ pub(crate) fn update_in(
                 assignee,
                 &format!("task-pickup:{id}"),
                 &pickup_text(
+                    &row.id,
                     &source_read(&row.source),
                     number,
                     &next_title,
@@ -1527,8 +1545,14 @@ pub(crate) fn update_in(
             )?;
         }
     }
-    // A write that sets or clears the assignee is the person's own choice; a rule never undoes it.
-    if !input.trash && matches!(input.assignee, Set::Keep) {
+    // A write that sets or clears the assignee is the person's own choice; a rule never undoes it. Only a write to a
+    // field a rule looks at (WP-250 step 2) can start a match, so a reorder, priority or comment never does.
+    let trigger_field = input.title.is_some()
+        || input.description.is_some()
+        || input.status.is_some()
+        || input.labels.is_some()
+        || !matches!(input.due, Set::Keep);
+    if !input.trash && matches!(input.assignee, Set::Keep) && trigger_field {
         pick_up_by_rule(conn, &row.id, now, &mut changed)?;
     }
     let stored = load(conn, &row.id)?.ok_or_else(|| "No task with that id.".to_string())?;

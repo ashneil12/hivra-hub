@@ -33,14 +33,16 @@ test("a person sets which tasks a first mate picks up", async ({ page }, testInf
   const rules = page.getByRole("region", { name: "Pickup rules" });
   await expect(rules.getByText("No rules yet.")).toBeVisible();
 
-  await rules.getByLabel("First mate").fill("mate-1");
+  const mate = rules.getByLabel("First mate");
+  await expect(mate.locator("option")).toHaveText(["First mate", "Scout"]);
+  await mate.selectOption({ label: "Scout" });
   await rules.getByRole("button", { name: "Save rule" }).click();
   await expect(rules).toContainText("would take every task");
 
   await rules.getByLabel("Statuses").fill("Todo");
   await rules.getByLabel("Labels").fill("bug, ui");
   await rules.getByRole("button", { name: "Save rule" }).click();
-  await expect(rules).toContainText("mate-1: Takes unassigned tasks in this project with status Todo, labelled bug and ui");
+  await expect(rules).toContainText("Scout: Takes unassigned tasks in this project with status Todo, labelled bug and ui");
   await page.screenshot({ path: testInfo.outputPath("pickup-rules.png") });
 
   await rules.getByRole("button", { name: "Turn off" }).click();

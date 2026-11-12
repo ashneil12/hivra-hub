@@ -30,6 +30,8 @@ export type PortableMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  /** An app-written user message; `sessions.read` does not count it as a turn. */
+  internal?: true;
 };
 
 export type PortableHandoff =
@@ -123,7 +125,7 @@ function selectedMessages(
     if (wanted && !wanted.has(block.id)) continue;
     if (seen.has(block.id)) continue;
     seen.add(block.id);
-    messages.push({ id: block.id, role: block.role, text: block.text });
+    messages.push({ id: block.id, role: block.role, text: block.text, ...(block.internal ? { internal: true as const } : {}) });
   }
   return messages;
 }
@@ -155,33 +157,43 @@ export function buildPortableTranscript(
 
   const firstUser = messages.findIndex((message) => message.role === "user");
   const head = firstUser >= 0 ? limitSection(rendered[firstUser]!, Math.floor(maxChars / 4)) : "";
-  const pointerReserve = Math.min(Math.floor(maxChars / 4), 120 * LEFT_OUT_POINTER_LIMIT + 400);
-  const budget = Math.max(0, maxChars - head.length - (head ? 2 : 0) - pointerReserve);
+  const room = Math.max(0, maxChars - head.length - (head ? 2 : 0));
 
+  // Take the newest messages that fit beside the first ask, then drop the oldest kept one until the marker naming
+  // what was left out (its real length, ids and all) fits too.
   const kept: number[] = [];
   let size = 0;
   for (let index = rendered.length - 1; index > firstUser; index -= 1) {
     const entry = rendered[index]!;
     const separator = kept.length > 0 ? 2 : 0;
-    if (size + separator + entry.length > budget) break;
+    if (size + separator + entry.length > room) break;
     kept.unshift(index);
     size += separator + entry.length;
   }
-
-  // Nothing new fits beside the first ask: keep today's rule, the newest message cut to the budget.
-  if (kept.length === 0 && firstUser < rendered.length - 1) {
-    const last = rendered.length - 1;
-    const tail = limitSection(rendered[last]!, Math.max(200, budget));
-    const leftOut = messages.filter((_, index) => index !== firstUser && index !== last);
-    return joinParts(head, leftOutMarker(leftOut, messages[last]!, chatId), tail);
+  const assemble = () => {
+    const keptStart = kept.length > 0 ? kept[0]! : rendered.length;
+    const leftOut = messages.filter((_, index) => index !== firstUser && index < keptStart);
+    const body = kept.map((index) => rendered[index]!).join("\n\n");
+    if (leftOut.length === 0) return joinParts(head, "", body);
+    const keptMessages = kept.map((index) => messages[index]!);
+    return joinParts(head, leftOutMarker(leftOut, keptMessages, chatId), body);
+  };
+  let text = assemble();
+  while (text.length > maxChars && kept.length > 0) {
+    kept.shift();
+    text = assemble();
   }
+  if (kept.length > 0) return text;
 
-  const keptStart = kept.length > 0 ? kept[0]! : rendered.length;
-  const leftOut = messages.filter((_, index) => index !== firstUser && index < keptStart);
-  const body = kept.map((index) => rendered[index]!).join("\n\n");
-  const firstKept = kept.length > 0 ? messages[kept[0]!] : undefined;
-  if (leftOut.length === 0) return joinParts(head, "", body);
-  return joinParts(head, leftOutMarker(leftOut, firstKept, chatId), body);
+  // Nothing new fits beside the first ask: keep today's rule, the newest message cut to what is left.
+  if (firstUser < rendered.length - 1) {
+    const last = rendered.length - 1;
+    const leftOut = messages.filter((_, index) => index !== firstUser && index !== last);
+    const marker = leftOutMarker(leftOut, [messages[last]!], chatId);
+    const tail = limitSection(rendered[last]!, Math.max(200, room - marker.length - 2));
+    return joinParts(head, marker, tail);
+  }
+  return text;
 }
 
 function joinedLength(parts: readonly string[]): number {
@@ -194,7 +206,7 @@ function joinParts(...parts: string[]): string {
 
 function leftOutMarker(
   leftOut: readonly PortableMessage[],
-  firstKept: PortableMessage | undefined,
+  kept: readonly PortableMessage[],
   chatId: string | undefined,
 ): string {
   const count = leftOut.length;
@@ -207,9 +219,11 @@ function leftOutMarker(
     lines.push(`- ${message.role === "user" ? "User" : "Assistant"} ${message.id}: ${short}`);
   }
   if (chatId) {
-    const before = firstKept?.role === "user" ? `, before: "${firstKept.id}"` : "";
+    // `before` must be a turn sessions.read knows: a user message the app did not write.
+    const turn = kept.find((message) => message.role === "user" && !message.internal);
+    const before = turn ? `, before: "${turn.id}"` : "";
     lines.push(
-      `To read left-out messages in full, call the app tool sessions.read with sessionId: "${chatId}"${before} (three exchanges per call; pass the oldest turnId you got as before to go further back).`,
+      `To look further back, call the app tool sessions.read with sessionId: "${chatId}"${before}. Each call gives three exchanges, each the user's message and the last reply, cut short; pass the oldest turnId you got as before to go further back.`,
     );
   }
   return lines.join("\n");

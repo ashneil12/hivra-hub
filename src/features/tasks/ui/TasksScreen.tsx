@@ -795,7 +795,7 @@ export function TasksScreen({ cwd, scope = "project", rail = false }: { cwd: str
           Add task
         </button>
       )}
-      <PickupRules project={writeRef.current} />
+      <PickupRules project={writeRef.current} folder={cwd} />
     </section>
   );
 }

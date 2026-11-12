@@ -2,6 +2,7 @@
 // this file only reads, writes and words it.
 
 import { invoke } from "@tauri-apps/api/core";
+import type { Mono } from "../../monos/model/mono";
 
 export type PickupRule = {
   ownerSession: string;
@@ -47,6 +48,37 @@ export function splitNames(text: string): string[] {
     if (!name || seen.has(key)) continue;
     seen.add(key);
     out.push(name);
+  }
+  return out;
+}
+
+export type FirstMateChoice = { session: string; name: string };
+
+const CHECKER_ID = "checker";
+
+function folderKey(path: string): string {
+  return path.trim().replace(/[\\/]+$/, "").toLowerCase();
+}
+
+/**
+ * The first mates a rule in this project may name: the Monos that work on it (its folder, or `hub-project:<id>` for a
+ * project with none), never the checker. Each is offered by the chat it works this project in, so the id Ash never
+ * sees is the one saved. The store refuses a chat that isn't there.
+ */
+export function firstMatesFor(
+  monos: readonly Mono[],
+  project: string,
+  folder: string,
+  nameOf: (mono: Mono) => string,
+): FirstMateChoice[] {
+  const keys = new Set([folder, `hub-project:${project}`, project].filter(Boolean).map(folderKey));
+  const out: FirstMateChoice[] = [];
+  for (const mono of monos) {
+    if (mono.id === CHECKER_ID) continue;
+    if (!mono.projects.some((p) => keys.has(folderKey(p)))) continue;
+    const session = mono.projectSessions?.[project] ?? mono.sessionId;
+    if (!session || out.some((m) => m.session === session)) continue;
+    out.push({ session, name: nameOf(mono) });
   }
   return out;
 }

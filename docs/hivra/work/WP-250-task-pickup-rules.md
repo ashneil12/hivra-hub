@@ -43,3 +43,13 @@ once `notBefore` has passed. Today a Hivra task wakes only the first mate it is 
       tasks never match, trashed tasks never match, earliest rule wins.
 - [ ] The automation action creates a task that a matching rule picks up (integration test).
 - [ ] Browser spec for the settings row; before/after screenshots.
+
+## Review fixes (12 Nov, PR #307)
+
+- A rule names one project and a chat that is in the store; the person picks the first mate from the project's own
+  first mates (no typed ids). A rule whose chat was deleted takes nothing.
+- A task a rule took once is never taken again, so unassigning stops it for good. Only a write to a trigger field
+  (title, description, status, labels, due date) can start a match; a reorder, priority change or comment never does.
+- Done and cancelled tasks are never taken.
+- Every pickup wake names the task's id as well as its number, which is only unique within its project.
+- `hub:seed-dev` clears the rules in a dev copy.

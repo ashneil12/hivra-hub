@@ -597,7 +597,7 @@ fn assigning_wakes_the_first_mate_once_and_not_the_person() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(text, "pick up task #1");
+    assert_eq!(text, format!("pick up task #1 (id {})", task.id));
     update(
         &mut conn,
         &who,
@@ -618,7 +618,7 @@ fn assigning_wakes_the_first_mate_once_and_not_the_person() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(mate_two, "pick up task #1");
+    assert_eq!(mate_two, format!("pick up task #1 (id {})", task.id));
     let wakes: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM firstmate_wakes WHERE key = ?1",
@@ -928,6 +928,21 @@ fn rule(
     }
 }
 
+/// A chat in the store, so a rule may name it.
+fn chat(conn: &rusqlite::Connection, id: &str) {
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (id, cwd, harness, model, runtime_mode, title, created_at, updated_at)
+         VALUES (?1, '/work/app', 'claude', 'opus', 'chat', 'Mate', 1, 1)",
+        [id],
+    )
+    .unwrap();
+}
+
+fn put_rule(conn: &rusqlite::Connection, rule: &super::super::pickup::PickupRule, now: i64) {
+    chat(conn, &rule.owner_session);
+    super::super::pickup::put(conn, rule, now).unwrap();
+}
+
 fn wakes_for(conn: &rusqlite::Connection, owner: &str) -> i64 {
     conn.query_row(
         "SELECT COUNT(*) FROM firstmate_wakes WHERE owner_session = ?1",
@@ -942,7 +957,7 @@ fn a_matching_task_goes_to_the_rule_owner_once() {
     let store = mem();
     let who = person("app");
     let mut conn = store.lock_conn().unwrap();
-    super::super::pickup::put(&conn, &rule("mate-1", &[], &["bug"], 1), 1).unwrap();
+    put_rule(&conn, &rule("mate-1", &[], &["bug"], 1), 1);
     let task = create(
         &mut conn,
         &who,
@@ -979,7 +994,7 @@ fn a_task_that_starts_matching_later_is_picked_up_then() {
     let store = mem();
     let who = person("app");
     let mut conn = store.lock_conn().unwrap();
-    super::super::pickup::put(&conn, &rule("mate-1", &["Todo"], &[], 1), 1).unwrap();
+    put_rule(&conn, &rule("mate-1", &["Todo"], &[], 1), 1);
     let task = create(
         &mut conn,
         &who,
@@ -1017,7 +1032,7 @@ fn a_rule_never_takes_a_persons_task_or_undoes_an_unassign() {
     let store = mem();
     let who = person("app");
     let mut conn = store.lock_conn().unwrap();
-    super::super::pickup::put(&conn, &rule("mate-1", &["Backlog"], &[], 1), 1).unwrap();
+    put_rule(&conn, &rule("mate-1", &["Backlog"], &[], 1), 1);
     let mine = create(
         &mut conn,
         &who,
@@ -1064,11 +1079,12 @@ fn the_oldest_rule_wins_and_a_catch_all_rule_is_refused() {
     let store = mem();
     let who = person("app");
     let mut conn = store.lock_conn().unwrap();
+    chat(&conn, "mate-0");
     assert!(super::super::pickup::put(&conn, &rule("mate-0", &[], &[], 1), 1).is_err());
-    super::super::pickup::put(&conn, &rule("mate-2", &["Backlog"], &[], 5), 5).unwrap();
-    super::super::pickup::put(&conn, &rule("mate-1", &["Backlog"], &[], 9), 9).unwrap();
+    put_rule(&conn, &rule("mate-2", &["Backlog"], &[], 5), 5);
+    put_rule(&conn, &rule("mate-1", &["Backlog"], &[], 9), 9);
     // Editing a rule keeps its place.
-    super::super::pickup::put(&conn, &rule("mate-2", &["Backlog", "Todo"], &[], 20), 20).unwrap();
+    put_rule(&conn, &rule("mate-2", &["Backlog", "Todo"], &[], 20), 20);
     let task = create(
         &mut conn,
         &who,
@@ -1084,4 +1100,249 @@ fn the_oldest_rule_wins_and_a_catch_all_rule_is_refused() {
         get(&conn, &who, &task.id).unwrap().assignee.as_deref(),
         Some("mate-2")
     );
+}
+
+fn unassign(conn: &mut rusqlite::Connection, who: &Actor, id: &str, now: i64) {
+    let task = get(conn, who, id).unwrap();
+    update(
+        conn,
+        who,
+        &UpdateInput {
+            id: id.to_string(),
+            version: Some(task.version),
+            assignee: Set::Clear,
+            ..Default::default()
+        },
+        now,
+    )
+    .unwrap();
+}
+
+#[test]
+fn a_rule_must_name_a_real_chat_and_one_project() {
+    let store = mem();
+    let conn = store.lock_conn().unwrap();
+    // A first mate's name, the person, or a chat that isn't in the store is refused.
+    for owner in ["Scout", "person", "mate-gone"] {
+        assert!(
+            super::super::pickup::put(&conn, &rule(owner, &["Todo"], &[], 1), 1).is_err(),
+            "{owner}"
+        );
+    }
+    chat(&conn, "mate-1");
+    let mut everywhere = rule("mate-1", &["Todo"], &[], 1);
+    everywhere.project = None;
+    assert!(super::super::pickup::put(&conn, &everywhere, 1).is_err());
+    assert!(super::super::pickup::put(&conn, &rule("mate-1", &["Todo"], &[], 1), 1).is_ok());
+}
+
+#[test]
+fn a_rule_whose_chat_was_deleted_takes_nothing() {
+    let store = mem();
+    let who = person("app");
+    let mut conn = store.lock_conn().unwrap();
+    put_rule(&conn, &rule("mate-1", &[], &["bug"], 1), 1);
+    conn.execute("DELETE FROM sessions WHERE id = 'mate-1'", [])
+        .unwrap();
+    let task = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Orphan".into(),
+            labels: vec!["bug".into()],
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap()
+    .task;
+    assert_eq!(get(&conn, &who, &task.id).unwrap().assignee, None);
+    assert_eq!(wakes_for(&conn, "mate-1"), 0);
+}
+
+#[test]
+fn an_unassigned_task_stays_unassigned_through_later_edits() {
+    let store = mem();
+    let who = person("app");
+    let mut conn = store.lock_conn().unwrap();
+    put_rule(&conn, &rule("mate-1", &["Backlog", "Todo"], &[], 1), 1);
+    let task = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Stop this".into(),
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap()
+    .task;
+    assert_eq!(
+        get(&conn, &who, &task.id).unwrap().assignee.as_deref(),
+        Some("mate-1")
+    );
+    unassign(&mut conn, &who, &task.id, 3);
+    // Move it on the board, retitle it and drag it to another matching status: the rule leaves it alone.
+    let edits = [
+        UpdateInput {
+            sort_key: Some("b".into()),
+            ..Default::default()
+        },
+        UpdateInput {
+            title: Some("Stop this, really".into()),
+            ..Default::default()
+        },
+        UpdateInput {
+            status: Some("Todo".into()),
+            ..Default::default()
+        },
+        UpdateInput {
+            comment: Some("leave it".into()),
+            ..Default::default()
+        },
+    ];
+    for (at, edit) in edits.into_iter().enumerate() {
+        let now = get(&conn, &who, &task.id).unwrap();
+        update(
+            &mut conn,
+            &who,
+            &UpdateInput {
+                id: task.id.clone(),
+                version: Some(now.version),
+                ..edit
+            },
+            4 + at as i64,
+        )
+        .unwrap();
+        assert_eq!(
+            get(&conn, &who, &task.id).unwrap().assignee,
+            None,
+            "edit {at}"
+        );
+    }
+    // Even once the old wake is gone, nothing wakes the first mate again.
+    conn.execute("DELETE FROM firstmate_wakes", []).unwrap();
+    let now = get(&conn, &who, &task.id).unwrap();
+    update(
+        &mut conn,
+        &who,
+        &UpdateInput {
+            id: task.id.clone(),
+            version: Some(now.version),
+            title: Some("Again".into()),
+            ..Default::default()
+        },
+        20,
+    )
+    .unwrap();
+    assert_eq!(get(&conn, &who, &task.id).unwrap().assignee, None);
+    assert_eq!(wakes_for(&conn, "mate-1"), 0);
+}
+
+#[test]
+fn a_rule_never_takes_from_another_project_and_the_wake_names_the_task_id() {
+    let store = mem();
+    let mut conn = store.lock_conn().unwrap();
+    put_rule(&conn, &rule("mate-1", &[], &["bug"], 1), 1);
+    let other = person("other");
+    let theirs = create(
+        &mut conn,
+        &other,
+        &CreateInput {
+            title: "Not yours".into(),
+            labels: vec!["bug".into()],
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap()
+    .task;
+    assert_eq!(get(&conn, &other, &theirs.id).unwrap().assignee, None);
+    assert_eq!(wakes_for(&conn, "mate-1"), 0);
+    let who = person("app");
+    let ours = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Yours".into(),
+            labels: vec!["bug".into()],
+            ..Default::default()
+        },
+        3,
+    )
+    .unwrap()
+    .task;
+    let text: String = conn
+        .query_row(
+            "SELECT text FROM firstmate_wakes WHERE owner_session = 'mate-1'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(text, format!("pick up task #1 (id {})", ours.id));
+}
+
+#[test]
+fn a_rule_never_takes_a_done_or_cancelled_task() {
+    let store = mem();
+    let who = person("app");
+    let mut conn = store.lock_conn().unwrap();
+    put_rule(&conn, &rule("mate-1", &[], &["bug"], 1), 1);
+    let done = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Already done".into(),
+            status: Some("Done".into()),
+            labels: vec!["bug".into()],
+            ..Default::default()
+        },
+        2,
+    )
+    .unwrap()
+    .task;
+    assert_eq!(get(&conn, &who, &done.id).unwrap().assignee, None);
+    // A person's own task, unassigned and then cancelled, is not handed out either.
+    let mine = create(
+        &mut conn,
+        &who,
+        &CreateInput {
+            title: "Mine".into(),
+            labels: vec!["bug".into()],
+            assignee: Some("person".into()),
+            ..Default::default()
+        },
+        3,
+    )
+    .unwrap()
+    .task;
+    let now = get(&conn, &who, &mine.id).unwrap();
+    update(
+        &mut conn,
+        &who,
+        &UpdateInput {
+            id: mine.id.clone(),
+            version: Some(now.version),
+            assignee: Set::Clear,
+            status: Some("Cancelled".into()),
+            ..Default::default()
+        },
+        4,
+    )
+    .unwrap();
+    let now = get(&conn, &who, &mine.id).unwrap();
+    update(
+        &mut conn,
+        &who,
+        &UpdateInput {
+            id: mine.id.clone(),
+            version: Some(now.version),
+            title: Some("Mine, cancelled".into()),
+            ..Default::default()
+        },
+        5,
+    )
+    .unwrap();
+    assert_eq!(get(&conn, &who, &mine.id).unwrap().assignee, None);
+    assert_eq!(wakes_for(&conn, "mate-1"), 0);
 }

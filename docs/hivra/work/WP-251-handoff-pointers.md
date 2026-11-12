@@ -29,3 +29,9 @@ the newest messages and says how many older ones were dropped, so a long chat lo
 
 - [ ] Tests: the first ask survives a long chat; the order holds; the pointer list is capped; a short chat is unchanged.
 - [ ] Tool test: own chat answers, another chat is refused.
+
+## As built (12 Nov, PR #307 review)
+
+`chat.message` (Build step 3) is not built. The marker points at the existing `sessions.read` instead and says what it
+gives: three exchanges per call, each the user's message and the last reply, cut short. Its `before` is always a turn
+`sessions.read` knows (never an app-written message). The marker's real length is counted against the cap.

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { describeRule, readPickupRules, splitNames } from "./pickupRules";
+import type { Mono } from "../../monos/model/mono";
+import { describeRule, firstMatesFor, readPickupRules, splitNames } from "./pickupRules";
 
 describe("pickup rules (WP-250)", () => {
   it("reads the store's rows and drops ones without an owner", () => {
@@ -27,5 +28,20 @@ describe("pickup rules (WP-250)", () => {
     expect(describeRule({ project: null, statuses: [], labels: ["ui"], enabled: false })).toBe(
       "Takes unassigned tasks in any project with any status, labelled ui (off)",
     );
+  });
+
+  it("offers only the first mates that work on this project, by the chat they work it in", () => {
+    const mono = (id: string, extra: Partial<Mono>): Mono => ({ id, mascot: "cat", color: "blue", projects: [], ...extra });
+    const monos = [
+      mono("scout", { name: "Scout", sessionId: "s-1", projects: ["/work/app/"] }),
+      mono("cos", { name: "Chief", sessionId: "s-home", projectSessions: { app: "s-app" }, projects: ["hub-project:app"] }),
+      mono("checker", { sessionId: "s-check", projects: ["/work/app"] }),
+      mono("away", { sessionId: "s-9", projects: ["/work/other"] }),
+      mono("new", { projects: ["/work/app"] }),
+    ];
+    expect(firstMatesFor(monos, "app", "/work/app", (m) => m.name ?? m.id)).toEqual([
+      { session: "s-1", name: "Scout" },
+      { session: "s-app", name: "Chief" },
+    ]);
   });
 });
