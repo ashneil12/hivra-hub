@@ -240,11 +240,17 @@ mod tests {
                 other => break other.unwrap(),
             }
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !marker.exists() && std::time::Instant::now() < deadline {
+        // The shell makes the file (`>`) before printf writes into it, so waiting for the file alone can read it
+        // empty on a busy machine. Wait for what it should say; the deadline only bounds a real failure.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        let mut text = String::new();
+        while std::time::Instant::now() < deadline {
+            text = std::fs::read_to_string(&marker).unwrap_or_default();
+            if text == "kept" {
+                break;
+            }
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
-        let text = std::fs::read_to_string(&marker).unwrap_or_default();
         let _ = std::fs::remove_dir_all(&root);
         assert_eq!(text, "kept");
     }

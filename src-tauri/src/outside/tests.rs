@@ -1853,13 +1853,22 @@ fn the_door_uses_the_same_port_after_a_restart() {
     let scratch = Scratch::new();
     let db = scratch.db();
     let first = Outside::open(db.clone(), Kind::Daily, &ports).unwrap();
-    let status = first.set_enabled(true).unwrap();
+    turn_on_at(&first, port, "the first door");
     assert_eq!(first.port(), Some(port));
-    let url = status.url.expect("an enabled door has an address");
+    let url = problem_of(&first)
+        .url
+        .expect("an enabled door has an address");
     assert!(url.contains(&format!(":{port}/")), "{url}");
     drop(first);
+    // A restart starts after the old app is gone. Dropping a door lets its listener go from its own thread, a moment
+    // after the drop (longer on a busy machine), so wait for that before the second start.
+    drop(bind_when_released(port, "the first door"));
 
     let second = must_init_ports(db.clone(), Kind::Daily, &ports);
+    // Startup must have tried the saved port: only a port another test held for a moment is tried again.
+    if second.port() != Some(port) && problem_of(&second).port_taken {
+        turn_on_at(&second, port, "the restarted door");
+    }
     assert_eq!(second.port(), Some(port));
     let again = problem_of(&second);
     assert_eq!(again.url.as_deref(), Some(url.as_str()));
@@ -1880,12 +1889,12 @@ fn turning_the_door_off_and_on_keeps_the_port() {
     held.release();
     let scratch = Scratch::new();
     let door = Outside::open(scratch.db(), Kind::Daily, &ports).unwrap();
-    door.set_enabled(true).unwrap();
+    turn_on_at(&door, port, "the door");
     assert_eq!(door.port(), Some(port));
     door.set_enabled(false).unwrap();
     assert!(door.port().is_none());
     assert!(problem_of(&door).url.is_none());
-    door.set_enabled(true).unwrap();
+    turn_on_at(&door, port, "the door, on again");
     assert_eq!(door.port(), Some(port));
     assert_eq!(
         saved_port(&scratch.db()).as_deref(),
@@ -1893,15 +1902,32 @@ fn turning_the_door_off_and_on_keeps_the_port() {
     );
 }
 
-/// Bind `port` once whoever held it has let go, waiting up to three seconds for
-/// a listener that closes from another thread. Fails with the last error if it
-/// never frees, which is the real "still holds" failure.
+/// Switch `door` on at `port`, its only port. The port came from the OS's shared
+/// range (see `HeldPort`), so in the moment between a release and the door's bind,
+/// a socket of another test running at the same time can hold it. The door must
+/// still end up on this same port and never another (it is the only one it may
+/// use): a held port is waited for, up to ten seconds, and the switch tried again.
+fn turn_on_at(door: &Outside, port: u16, who: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let status = door.set_enabled(true).unwrap();
+        if door.port() == Some(port) || !status.port_taken || std::time::Instant::now() >= deadline
+        {
+            return;
+        }
+        drop(bind_when_released(port, who));
+    }
+}
+
+/// Bind `port` once whoever held it has let go, waiting up to ten seconds for
+/// a listener that closes from another thread (a busy machine is slow to run it).
+/// Fails with the last error if it never frees, which is the real "still holds" failure.
 fn bind_when_released(port: u16, who: &str) -> TcpListener {
     let mut waited = Duration::ZERO;
     loop {
         match TcpListener::bind((Ipv4Addr::LOCALHOST, port)) {
             Ok(listener) => return listener,
-            Err(err) if waited >= Duration::from_secs(3) => {
+            Err(err) if waited >= Duration::from_secs(10) => {
                 panic!("{who} still holds {port}: {err}")
             }
             Err(_) => {
@@ -1935,15 +1961,23 @@ fn two_copies_of_the_door_body_run_at_the_same_time() {
                 moment.wait();
 
                 let door = Outside::open(db.clone(), Kind::Daily, &ports).unwrap();
-                door.set_enabled(true).unwrap();
+                turn_on_at(&door, port, &format!("copy {copy}"));
                 assert_eq!(door.port(), Some(port), "copy {copy}");
                 door.set_enabled(false).unwrap();
                 assert!(door.port().is_none(), "copy {copy}");
-                door.set_enabled(true).unwrap();
+                turn_on_at(&door, port, &format!("copy {copy}, on again"));
                 assert_eq!(door.port(), Some(port), "copy {copy}");
                 drop(door);
+                // As in a real restart, the old door has let go before the new one starts.
+                drop(bind_when_released(
+                    port,
+                    &format!("copy {copy}'s first door"),
+                ));
 
                 let restarted = must_init_ports(db.clone(), Kind::Daily, &ports);
+                if restarted.port() != Some(port) && problem_of(&restarted).port_taken {
+                    turn_on_at(&restarted, port, &format!("copy {copy}, restarted"));
+                }
                 assert_eq!(restarted.port(), Some(port), "copy {copy}");
                 assert!(problem_of(&restarted).problem.is_none(), "copy {copy}");
                 drop(restarted);
