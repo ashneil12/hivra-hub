@@ -15,7 +15,6 @@ import {
   freeHarnessPort,
   killChild,
   resolveOpenCodeBinary,
-  spawnChild,
   unwatchChild,
   watchChild,
 } from "../../core/child";
@@ -53,6 +52,7 @@ import {
   type OpenCodePart,
 } from "./opencodeProtocol";
 import { resolveOpenCodeV2Service } from "./opencodeService";
+import { spawnOpenCodeServer } from "./opencodeRoutes";
 import { judgeV2Session } from "../../../../features/crew/model/host";
 import {
   OpenCodeV2InboxTracker,
@@ -476,13 +476,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     );
 
     const port = await freeHarnessPort();
-    await spawnChild(
+    await spawnOpenCodeServer(
       input.sessionId,
       path,
       ["serve", `--hostname=127.0.0.1`, `--port=${port}`],
       input.cwd,
-      undefined,
-      "opencode",
     );
   }
 

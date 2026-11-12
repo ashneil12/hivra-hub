@@ -8,6 +8,7 @@ import {
 import { execChild, resolveOpenCodeBinary } from "../../core/child";
 import { OpenCodeClient } from "./opencodeClient";
 import { resolveOpenCodeV2Service } from "./opencodeService";
+import { opencodeRoutedModels } from "./opencodeRoutes";
 import {
   asRecord,
   assertSupportedOpenCodeVersion,
@@ -87,7 +88,8 @@ export async function discoverOpenCodeModels(
   } catch (error) {
     console.debug("[monocode] opencode agents", error);
   }
-  return flattenOpenCodeModels(parsed, agents);
+  // OpenCode 1.x also gets the saved models through the app's router (opencodeRoutes.ts).
+  return [...flattenOpenCodeModels(parsed, agents), ...opencodeRoutedModels()];
 }
 
 async function discoverOpenCodeV2Models(

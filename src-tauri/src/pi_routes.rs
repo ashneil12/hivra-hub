@@ -34,15 +34,110 @@ pub const CLAUDE_BIN_ENV: &str = "CLAUDE_CODE_PI_BIN";
 /// Pi's default when the provider never said how big the window is.
 const DEFAULT_WINDOW: u64 = 200_000;
 
-/// The harnesses that take these routes.
-pub fn takes_routes(binary_provider: Option<&str>) -> bool {
+/// Pi and its fork Oh My Pi: they take the routes through an extension, and the Claude Code bridge.
+pub fn is_pi_family(binary_provider: Option<&str>) -> bool {
     matches!(binary_provider, Some("pi") | Some("omp"))
+}
+
+/// The harnesses that take these routes: the Pi family, Codex (config overrides, OpenAI Responses through the
+/// router's passthrough) and OpenCode 1.x (`OPENCODE_CONFIG_CONTENT`, Anthropic Messages to the router).
+pub fn takes_routes(binary_provider: Option<&str>) -> bool {
+    is_pi_family(binary_provider) || matches!(binary_provider, Some("codex") | Some("opencode"))
+}
+
+/// The env var OpenCode merges over its own config files.
+pub const OPENCODE_CONFIG_ENV: &str = "OPENCODE_CONFIG_CONTENT";
+
+/// OpenCode's config with one provider per saved model, merged over `existing` (the person's own
+/// `OPENCODE_CONFIG_CONTENT`, kept when it is a JSON object). Each provider uses OpenCode's built-in Anthropic SDK
+/// against the router, so every saved model works the way it does for Claude Code. The value is the per-session
+/// router token, which only opens the loopback router for this child's life, never the model's key.
+pub fn opencode_config_content(routes: &PiRoutes, existing: Option<&str>) -> Option<String> {
+    if routes.listed.is_empty() {
+        return None;
+    }
+    // The person's own value is JSONC, as OpenCode reads it. One that can't be read is never replaced: the saved
+    // models are left out instead, so its rules (permissions, say) can't be dropped.
+    let mut config = match existing.map(str::trim).filter(|text| !text.is_empty()) {
+        None => json!({}),
+        Some(text) => {
+            crate::rate_limits::parse_opencode_config(text).filter(serde_json::Value::is_object)?
+        }
+    };
+    let root = config.as_object_mut()?;
+    let providers = root.entry("provider").or_insert_with(|| json!({}));
+    if !providers.is_object() {
+        *providers = json!({});
+    }
+    let providers = providers.as_object_mut()?;
+    for listed in &routes.listed {
+        let token = routes
+            .env
+            .iter()
+            .find(|(key, _)| *key == listed.token_env)
+            .map(|(_, value)| value.as_str())?;
+        let name = format!("{} (your key)", listed.model_id);
+        let mut models = serde_json::Map::new();
+        models.insert(listed.model_id.clone(), json!({ "name": name }));
+        providers.insert(
+            listed.provider.clone(),
+            json!({
+                "npm": "@ai-sdk/anthropic",
+                "name": "Your saved models",
+                "options": { "baseURL": format!("{}/v1", listed.base_url), "apiKey": token },
+                "models": models,
+            }),
+        );
+    }
+    serde_json::to_string(&config).ok()
+}
+
+/// One model as offered to a child: its provider name, the router's loopback address, the model and the env var
+/// that holds the token. No secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Listed {
+    pub provider: String,
+    pub base_url: String,
+    pub model_id: String,
+    pub token_env: String,
 }
 
 /// What a child is given: env vars to set and the router tokens to hold for the child's life.
 pub struct PiRoutes {
     pub env: Vec<(String, String)>,
     pub sessions: Vec<SessionToken>,
+    pub listed: Vec<Listed>,
+}
+
+/// A TOML basic string: Codex reads `-c` values as TOML.
+fn toml_string(value: &str) -> String {
+    let mut out = String::from("\"");
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Codex config overrides that add one provider per saved model, speaking OpenAI Responses to the router. They go
+/// before the subcommand (`-c` is a global option). The token is named by its env var, never written here.
+pub fn codex_config_args(routes: &PiRoutes) -> Vec<String> {
+    let mut args = Vec::new();
+    for listed in &routes.listed {
+        args.push("-c".to_string());
+        args.push(format!(
+            "model_providers.{}={{ name = \"Dropwave\", base_url = {}, env_key = {}, wire_api = \"responses\" }}",
+            listed.provider,
+            toml_string(&format!("{}/v1", listed.base_url)),
+            toml_string(&listed.token_env),
+        ));
+    }
+    args
 }
 
 /// A provider name Pi accepts: lowercase letters, digits and dashes, unique per saved model.
@@ -75,11 +170,17 @@ pub fn build_with(routes: &[CustomRoute], prepare: Prepare) -> (PiRoutes, Vec<St
     let mut env = Vec::new();
     let mut sessions = Vec::new();
     let mut listed = Vec::new();
+    let mut offered = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for route in routes.iter().take(MAX_ROUTES) {
-        if !seen.insert(route.custom_model_id.clone()) {
+    // The first MAX_ROUTES distinct provider names, the same rule the picker uses (codexRoutes.ts offeredRoutes).
+    for route in routes {
+        // One provider per name: two ids that slug the same (`a.b`, `a_b`) never share one, the first is kept.
+        if !seen.insert(provider_name(&route.custom_model_id)) {
             continue;
+        }
+        if seen.len() > MAX_ROUTES {
+            break;
         }
         let ((set, _remove), session) = match prepare(route) {
             Ok(ready) => ready,
@@ -107,6 +208,12 @@ pub fn build_with(routes: &[CustomRoute], prepare: Prepare) -> (PiRoutes, Vec<St
             "tokenEnv": token_env,
             "contextWindow": window,
         }));
+        offered.push(Listed {
+            provider: provider_name(&route.custom_model_id),
+            base_url: base.to_string(),
+            model_id: route.model_id.trim().to_string(),
+            token_env: token_env.clone(),
+        });
         env.push((token_env, token.to_string()));
         sessions.push(session);
     }
@@ -116,7 +223,14 @@ pub fn build_with(routes: &[CustomRoute], prepare: Prepare) -> (PiRoutes, Vec<St
             serde_json::Value::Array(listed).to_string(),
         ));
     }
-    (PiRoutes { env, sessions }, skipped)
+    (
+        PiRoutes {
+            env,
+            sessions,
+            listed: offered,
+        },
+        skipped,
+    )
 }
 
 /// The routes for a Pi or Oh My Pi start, with the real router and Keychain.
@@ -245,6 +359,49 @@ mod tests {
     }
 
     #[test]
+    fn opencode_gets_one_anthropic_provider_per_model_over_the_persons_own_config() {
+        let routes = vec![route("grok-1", "grok-4.7"), route("or", "x-ai/grok-4")];
+        let (ready, _) = build_with(&routes, &|r| {
+            prepared(r, &format!("tok-{}", r.custom_model_id), None)
+        });
+        let own = r#"{"theme":"dark","provider":{"anthropic":{"options":{"timeout":5}}}}"#;
+        let text = opencode_config_content(&ready, Some(own)).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(config["theme"], "dark");
+        assert_eq!(config["provider"]["anthropic"]["options"]["timeout"], 5);
+        let grok = &config["provider"]["dropwave-grok-1"];
+        assert_eq!(grok["npm"], "@ai-sdk/anthropic");
+        assert_eq!(grok["options"]["baseURL"], "http://127.0.0.1:4321/v1");
+        assert_eq!(grok["options"]["apiKey"], "tok-grok-1");
+        assert_eq!(grok["models"]["grok-4.7"]["name"], "grok-4.7 (your key)");
+        // A model id with a slash stays one model under its provider.
+        assert!(config["provider"]["dropwave-or"]["models"]["x-ai/grok-4"].is_object());
+        // The person's own JSONC is read as OpenCode reads it.
+        let jsonc =
+            opencode_config_content(&ready, Some("{\n  // mine\n  \"theme\": \"dark\",\n}"))
+                .unwrap();
+        assert!(jsonc.contains("\"theme\":\"dark\""));
+        // One that can't be read is left alone: no saved models rather than losing the person's settings.
+        assert_eq!(opencode_config_content(&ready, Some("not json")), None);
+        assert_eq!(opencode_config_content(&ready, Some("[1]")), None);
+        // Nothing set: a fresh config.
+        assert!(opencode_config_content(&ready, None)
+            .unwrap()
+            .contains("dropwave-grok-1"));
+        assert!(opencode_config_content(&ready, Some("  "))
+            .unwrap()
+            .contains("dropwave-grok-1"));
+    }
+
+    #[test]
+    fn opencode_gets_no_config_when_no_model_is_ready() {
+        let (ready, _) = build_with(&[], &|r| prepared(r, "t", None));
+        assert_eq!(opencode_config_content(&ready, Some("{}")), None);
+        assert!(takes_routes(Some("opencode")));
+        assert!(!takes_routes(Some("hermes")));
+    }
+
+    #[test]
     fn skips_a_model_whose_key_is_missing_and_keeps_the_rest() {
         let routes = vec![route("stale", "grok-3"), route("ok", "grok-4.7")];
         let (ready, skipped) = build_with(&routes, &|r| {
@@ -273,10 +430,37 @@ mod tests {
     }
 
     #[test]
+    fn two_ids_with_the_same_provider_name_keep_the_first() {
+        let routes = vec![
+            route("a.b", "first"),
+            route("a_b", "second"),
+            route("c", "third"),
+        ];
+        let (ready, _) = build_with(&routes, &|r| prepared(r, "t", None));
+        let models: Vec<_> = ready.listed.iter().map(|l| l.model_id.as_str()).collect();
+        assert_eq!(models, ["first", "third"]);
+    }
+
+    #[test]
     fn caps_the_number_of_models() {
         let routes: Vec<_> = (0..40).map(|i| route(&format!("m{i}"), "grok")).collect();
         let (ready, _) = build_with(&routes, &|r| prepared(r, "t", None));
         assert_eq!(ready.sessions.len(), MAX_ROUTES);
+    }
+
+    #[test]
+    fn codex_gets_one_provider_per_model_on_the_router() {
+        let routes = vec![route("grok-1", "grok-4.7")];
+        let (ready, _) = build_with(&routes, &|r| prepared(r, "secret-token", None));
+        let args = codex_config_args(&ready);
+        assert_eq!(args.len(), 2);
+        assert_eq!(args[0], "-c");
+        assert_eq!(
+            args[1],
+            r#"model_providers.dropwave-grok-1={ name = "Dropwave", base_url = "http://127.0.0.1:4321/v1", env_key = "DROPWAVE_PI_TOKEN_0", wire_api = "responses" }"#
+        );
+        assert!(!args.concat().contains("secret-token"));
+        assert_eq!(toml_string("a\"b\\c\n"), r#""a\"b\\c""#);
     }
 
     #[test]
@@ -288,6 +472,8 @@ mod tests {
     fn only_pi_and_omp_take_routes() {
         assert!(takes_routes(Some("pi")));
         assert!(takes_routes(Some("omp")));
+        assert!(takes_routes(Some("codex")));
+        assert!(!is_pi_family(Some("codex")));
         assert!(!takes_routes(Some("claude")));
         assert!(!takes_routes(None));
     }
