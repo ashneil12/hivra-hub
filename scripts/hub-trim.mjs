@@ -9,6 +9,8 @@
 // It removes only:
 //   - the shared cargo cache's incremental folders (~/Library/Caches/monocode-hub/cargo-build/<profile>/incremental)
 //   - this checkout's target/debug (test binaries; the next test run rebuilds them)
+//   - this checkout's built "MonoCode Hub.app" once that exact build is the installed daily app: Spotlight showed it as
+//     a second "MonoCode Hub" (Ash, 12 Nov) and it refuses to start outside ~/Applications anyway
 //   - verify-live runs in this checkout's evidence/, except the newest 3
 //   - test and tool leftovers in the temp folder (monocode-*, hub-*, ship-*, local-hub-*) untouched for a day
 // The cargo steps are skipped while any cargo or rustc runs: every worktree shares that cache. Never the daily app, its
@@ -18,6 +20,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { readStamp } from "./hub-bundle.mjs";
 
 const yes = process.argv.includes("--yes");
 const home = process.env.HOME || os.homedir();
@@ -56,6 +59,20 @@ else {
       if (realDir(incremental)) targets.push(incremental);
     }
   if (realDir(debug)) targets.push(debug);
+  // The build output of a ship that already happened: same commit and same dirty flag as the installed daily app.
+  const built = path.join(repo, "target/release/bundle/macos/MonoCode Hub.app");
+  const installed = path.join(home, "Applications/MonoCode Hub.app");
+  if (realDir(built) && realDir(installed)) {
+    let ours = null;
+    let theirs = null;
+    try {
+      ours = readStamp(built);
+      theirs = readStamp(installed);
+    } catch {
+      // can't read one: keep the build
+    }
+    if (ours?.sha && ours.sha === theirs?.sha && Boolean(ours.dirty) === Boolean(theirs.dirty)) targets.push(built);
+  }
 }
 
 const evidence = path.join(repo, "evidence");
