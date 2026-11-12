@@ -53,6 +53,7 @@ button:disabled{opacity:.45;cursor:default}
 .worker .name{padding-left:16px;font-size:12px;color:color-mix(in srgb,var(--color-content) 85%,transparent)}
 .worker .doing{font-size:12px;color:color-mix(in srgb,var(--color-content) 70%,transparent)}
 .more .worker{margin:0 -8px}
+.row.toggle{cursor:pointer}
 .empty{font-size:13px;color:color-mix(in srgb,var(--color-content) 70%,transparent);padding:8px}
 @media (max-width:659px){
 .row,.worker{grid-template-columns:minmax(0,1fr) auto;row-gap:6px}
@@ -431,7 +432,7 @@ export const BUILT_PAGE: BespokeSpec = {
 const PROJECTS_HTML = `<div class="wrap">
 <div class="bar"><div class="summary" data-summary>Reading your projects…</div><button data-refresh type="button">Refresh</button></div>
 <div class="problem" data-problem hidden></div>
-<section data-section="projects" hidden><div class="section-title">Your projects</div><div class="card" data-list="projects"></div></section>
+<section data-section="projects" hidden><div class="card" data-list="projects"></div></section>
 </div>`;
 
 const PROJECTS_JS =
@@ -440,14 +441,14 @@ const PROJECTS_JS =
 let data = null;
 const tasks = {}; // a project's tasks once read; null while reading
 
-const TASK_WORD = { stuck: "Stuck", waiting: "Waiting", building: "Building", later: "Later" };
+const TASK_WORD = { stuck: "Held up", waiting: "Waiting on you", building: "Being built", later: "Later" };
 const TASK_STATE = { stuck: "stuck", waiting: "asking", building: "working", later: "idle" };
 
 function counts(p) {
   const c = p.counts || {};
   const parts = [];
-  if (c.stuck) parts.push(c.stuck + " stuck");
-  if (c.waiting) parts.push(c.waiting + " waiting");
+  if (c.stuck) parts.push(c.stuck + " held up");
+  if (c.waiting) parts.push(c.waiting + " waiting on you");
   if (c.building) parts.push(c.building + " building");
   if (c.later) parts.push(c.later + " later");
   return parts;
@@ -470,15 +471,18 @@ function projectRow(p) {
   wrap.dataset.item = key;
   const r = el("div", "row");
   r.dataset.row = key;
-  const under = p.parked ? "Parked" : p.folder || "No folder";
-  r.appendChild(who(p.name, under, (p.monos && p.monos.length ? p.monos.join(", ") : "No agents yet")));
+  const mates = p.monos && p.monos.length ? p.monos.join(", ") : "No first mates yet";
+  r.appendChild(who(p.name, p.parked ? "Parked · " + mates : mates, ""));
   const c = p.counts || {};
-  const word = c.stuck ? c.stuck + " stuck" : c.waiting ? c.waiting + " waiting" : c.building ? c.building + " building" : "All clear";
-  r.appendChild(status(c.stuck ? "stuck" : c.waiting ? "asking" : c.building ? "working" : "idle", 0, word, false));
+  const word = c.waiting ? c.waiting + " waiting on you" : c.stuck ? c.stuck + " held up" : c.building ? c.building + " being built" : "All clear";
+  r.appendChild(status(c.waiting ? "asking" : c.stuck ? "paused" : c.building ? "working" : "idle", 0, word, false));
   const acts = el("div", "acts");
   const shown = tasks[p.id] !== undefined;
-  acts.appendChild(btn(shown ? "Hide" : "Show", () => toggle(p.id), false));
+  acts.appendChild(btn(shown ? "Hide tasks" : "Tasks", () => toggle(p.id), false, p.name));
   r.appendChild(acts);
+  // The whole row opens and closes its tasks, like a list row anywhere else in the app.
+  r.classList.add("toggle");
+  r.addEventListener("click", () => toggle(p.id));
   wrap.appendChild(r);
   const more = el("div", "more");
   const all = counts(p);
@@ -542,7 +546,7 @@ export const READY_PAGES: readonly ReadyPage[] = [
   { id: "agents", title: "Agents", what: "Every agent and what it's doing, with the ones that need you on top: answer, open or stop them from one place.", request: AGENTS_READY, spec: AGENTS_PAGE },
   { id: "needs-you", title: "Needs you", what: "Everything waiting on you in one place: the chats asking you something, then what your projects want you to look at. Answer or take it from here.", request: NEEDS_READY, spec: NEEDS_PAGE },
   { id: "being-built", title: "Being built", what: "What is being built right now across every project, with anything that needs you on top, and a way into the agent doing it.", request: BUILT_READY, spec: BUILT_PAGE },
-  { id: "projects", title: "Projects", what: "Your projects with what each one holds and what in it is waiting on you, opened in place without leaving the hub.", request: PROJECTS_READY, spec: PROJECTS_PAGE },
+  { id: "projects", title: "Projects", what: "Every project, who works on it and what in it is waiting on you.", request: PROJECTS_READY, spec: PROJECTS_PAGE },
 ];
 
 /** The one line a ready-made page explains itself with (C8), by the request it was kept with; undefined for any other. */

@@ -9,7 +9,7 @@ import { leadFor } from "../../hub/model/hubLeads";
 import { listMonos, monoWorksOn } from "../../monos/model/mono";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { recordPageSource, undoBotChange } from "../../hub/model/botChanges";
-import { allPages, noteShownPage, shownPageId, pagesListRequests, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
+import { requestPagesList, allPages, noteShownPage, shownPageId, pagesListRequests, clearPagesProblem, pagesProblem, pendingOpenPage, setPinned, takeOpenRequest, allowPage, approvedPermissions, needsAllow, stockReadyPage, keepPage, pageBlocks, pageFromSpec, usePagesVersion, newAsks, useNewVersion, dropNewVersion, type Page, type PageBlock } from "../model/pages";
 import { buildPage, rebuildPage, type BuildPageResult } from "../model/buildPage";
 import type { PageSpec } from "../model/pageSpec";
 import { READY_BY, READY_PAGES, readyWhat, withReadySpec, type ReadyPage } from "../model/readyPages";
@@ -49,6 +49,8 @@ const quietBtn = `${btn} text-content/70 hover:bg-surface-raised hover:text-cont
 const primaryBtn = `${btn} bg-content/12 text-content hover:bg-content/18`;
 const STATE_DOT = { ok: "bg-status-ok", warn: "bg-status-warn", bad: "bg-status-bad" } as const;
 export const NOT_TIED = "Not tied to a project";
+/** The Hubs list's group for the hubs that come with the app. */
+const READY_GROUP = "ready-made";
 /** The project's lead if one is seated, else the first seated Mono. */
 export function defaultBuilder(projectId: string, seated: { id: string }[]): string {
   const folder = hubData().listProjects().find((p) => p.id === projectId)?.folder;
@@ -449,8 +451,7 @@ function PageConnections({ page }: { page: Page }) {
         <span data-page-sources-count>{grants.length ? `${grants.length} connected` : "None connected"}</span>
       </div>
       <p className="mt-1 text-[12px] leading-5 text-content/60">
-        A hub has no internet of its own. It reads the things in the app you allowed above, and only the web sources you connect
-        here, through the app. If a source needs a token, the app keeps it and the hub never sees it.
+        Hubs have no internet. Add a web address and the app fetches it for this hub; any token stays in the app.
       </p>
       {grants.length ? (
         <div className="mt-2 flex flex-col" data-page-sources>
@@ -484,10 +485,11 @@ function PageConnections({ page }: { page: Page }) {
 function AllowAgain({ page, asks }: { page: Page; asks: Capability[] }) {
   return (
     <div className="mb-4 flex flex-col gap-2" data-pages-allow-again>
-      <div className="text-[12px] text-content/70" data-pages-allow-note>{page.by === READY_BY ? "This hub comes with the app." : "This hub came from a setup file."} It can't do anything until you allow what it asks for. The hub below is greyed out until then.</div>
-      <Permissions asks={asks} />
-      <div className="flex justify-end">
-        <button type="button" data-pages-allow className={`${primaryBtn} disabled:opacity-40`} onClick={() => allowPage(page.id)}>Allow</button>
+      <div className={`${card} flex items-center gap-3 px-4 py-3`} data-pages-allow-note>
+        <span className="min-w-0 flex-1 text-[13px] text-content/90">
+          {page.by === READY_BY ? "Allow this hub" : "This hub came from a setup file. Allow it"} to read {asks.map(describeCapability).map((a) => a.charAt(0).toLowerCase() + a.slice(1).replace(/^read /i, "")).join(" and ")}.
+        </span>
+        <button type="button" data-pages-allow className={`${primaryBtn} shrink-0 disabled:opacity-40`} onClick={() => allowPage(page.id)}>Allow</button>
       </div>
     </div>
   );
@@ -752,7 +754,7 @@ export function PagesContent() {
           </div>
           {readyWhat(shown.request) ? <p className="mt-1 text-[13px] leading-5 text-content/70" data-pages-what>{readyWhat(shown.request)}</p> : null}
           {/* "Kept" says itself once, with Undo, in the bar below; this line is just where it lives and who built it. */}
-          <div className="mt-1 text-[12px] text-content/60" data-pages-meta>{nameOf(shown.projectId ?? "today")} · by {shown.by}{request ? <> · “{request}”</> : null}{shown.permissions.length ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
+          <div className="mt-1 text-[12px] text-content/60" data-pages-meta>{shown.by === READY_BY ? "Comes with the app" : <>{nameOf(shown.projectId ?? "today")} · by {shown.by}</>}{request && shown.by !== READY_BY ? <> · “{request}”</> : null}{shown.permissions.length && !stockReadyPage(shown) ? <> · <AllowedLine key={shown.id} asks={shown.permissions} /></> : null}</div>
           <div className="mb-4" />
           {kept === shown.title ? (
             <div className={`${card} mb-4 flex items-center gap-2 px-3 py-2 text-[12px] text-content/80`} role="status">
@@ -776,7 +778,7 @@ export function PagesContent() {
               <PageBody page={withReadySpec(shown)} live />
             )}
             <PageActivity pageId={shown.id} title={shown.title} />
-            {shown.spec.kind === "bespoke" ? <PageConnections page={shown} /> : null}
+            {shown.spec.kind === "bespoke" && !stockReadyPage(shown) ? <PageConnections page={shown} /> : null}
           </PageRebuild>
         </div>
       </div>
@@ -798,8 +800,11 @@ export function PagesContent() {
     );
   }
 
-  const groups = (filter === "all" ? [...new Set(pages.map((p) => p.projectId ?? "today"))] : [filter])
-    .map((id) => [id, pages.filter((p) => (p.projectId ?? "today") === id)] as const)
+  // The hubs that come with the app cover every project, so they lead the list under any filter.
+  const groupOf = (p: Page) => (p.by === READY_BY ? READY_GROUP : (p.projectId ?? "today"));
+  const ownGroups = filter === "all" ? [...new Set(pages.map(groupOf))].filter((id) => id !== READY_GROUP) : [filter];
+  const groups = [READY_GROUP, ...ownGroups]
+    .map((id) => [id, pages.filter((p) => groupOf(p) === id)] as const)
     .filter(([, list]) => list.length);
   // Every project gets a tab, pages or not; "Not tied to a project" for pages that belong to none.
   const withPages = [...projects.map((p) => p.id), "today"];
@@ -841,7 +846,7 @@ export function PagesContent() {
         <div className="mt-6 flex flex-col gap-6">
           {groups.map(([id, list]) => (
             <section key={id} data-pages-group={id}>
-              <h2 className="pb-2 text-[12px] font-medium text-content/50">{nameOf(id)}</h2>
+              <h2 className="pb-2 text-[12px] font-medium text-content/50">{id === READY_GROUP ? "Comes with the app" : nameOf(id)}</h2>
               <div className="grid grid-cols-1 gap-3 min-[780px]:grid-cols-2">
                 {list.map((p) => (
                   <div key={p.id} className="group relative flex rounded-xl border border-content/10 hover:border-content/16 hover:bg-content/5" data-pages-row={p.id}>
@@ -852,7 +857,7 @@ export function PagesContent() {
                       <span className="flex min-w-0 flex-col">
                         <span className="truncate text-[13px] font-medium text-content">{p.title}</span>
                         {readyWhat(p.request) ? <span className="mt-1 line-clamp-2 text-[12px] leading-snug text-content/50" data-pages-what>{readyWhat(p.request)}</span> : null}
-                        <span className="mt-1.5 truncate text-[12px] text-content/40">by {p.by}{p.pinned ? ` · pinned by ${p.pinnedBy ?? "you"}` : ""}</span>
+                        <span className="mt-1.5 truncate text-[12px] text-content/40">{p.by === READY_BY ? "Comes with the app" : `by ${p.by}`}{p.pinned ? ` · pinned by ${p.pinnedBy ?? "you"}` : ""}</span>
                       </span>
                     </button>
                     <span className="absolute right-2 top-2"><PinToggle page={p} /></span>
@@ -1047,7 +1052,10 @@ export function PagesView({ onClose, onToggleSidebar, besideRail = true, compact
         {IS_MAC && !besideRail ? <div className="w-[78px] shrink-0" /> : null}
         {besideRail || !onToggleSidebar ? null : <OverlayNav onBack={onClose} onToggleSidebar={onToggleSidebar} />}
         <div className="flex min-w-0 flex-1 items-center gap-2 px-3 text-[13px]">
-          {pageShown ? null : tab === "pages" ? (
+          {pageShown ? (
+            // A hub that is open says where it lives and goes back to the list from here, so the bar is never empty.
+            <button type="button" data-pages-back className="rounded-md px-2 py-0.5 text-[12px] text-content/70 hover:bg-selection-hover hover:text-content" onClick={() => requestPagesList()}>← Hubs</button>
+          ) : tab === "pages" ? (
             <>
               <DashboardSquare className="size-3.5 shrink-0 text-content/60" strokeWidth={1.75} />
               <span className="min-w-0 flex-1 truncate text-content">Hubs</span>

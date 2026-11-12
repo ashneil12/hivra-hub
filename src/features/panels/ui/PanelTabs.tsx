@@ -82,7 +82,9 @@ export function PanelTabs({
     setBoard((prev) => applyCatalog(prev, rev, catalog.map((panel) => ({ plugin: panel.plugin, panelId: panel.panelId }))));
   }, [catalog, rev]);
 
-  const plugins = [...new Set(catalog.map((panel) => panel.plugin))];
+  // Kept hubs are already listed on the Hubs screen; showing them again here as "My panels" only confused (Ash, 12 Nov).
+  // Only other plugins' panels get the strip.
+  const plugins = [...new Set(catalog.map((panel) => panel.plugin))].filter((plugin) => plugin !== MY_PANELS_ID);
   if (!plugins.length && !board.tabs.length) return null;
   const byKey = new Map(catalog.map((panel) => [`${panel.plugin}\0${panel.panelId}`, panel]));
 
@@ -99,7 +101,11 @@ export function PanelTabs({
             ) : null}
           </div>
           <div className="flex flex-wrap gap-2">
-            {catalog.filter((panel) => panel.plugin === plugin).map((panel) => (
+            {catalog
+              .filter((panel) => panel.plugin === plugin)
+              // The same hub kept twice (a ready-made one and a copy) shows one Open button, not two with the same name.
+              .filter((panel, at, list) => list.findIndex((other) => other.title === panel.title) === at)
+              .map((panel) => (
               <button
                 key={panel.panelId}
                 type="button"
