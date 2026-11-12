@@ -21,6 +21,7 @@ import { PortablePage } from "../../portable/ui/PortablePage";
 import { BackupsPage } from "../../backups/ui/BackupsPage";
 import { TrashPage } from "../../trash/ui/TrashPage";
 import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen";
+import { ChatImportSettings } from "../../chatImport/ui/ChatImportSettings";
 import { MemorySettingsScreen } from "../../memory/ui/MemorySettingsScreen";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
@@ -793,8 +794,11 @@ export function SettingsView({
               {/* WP-75: checked backups, one item or everything. */}
               {section === "backups" ? <BackupsPage /> : null}
               {section === "history" ? (
-                // WP-50: past chats, only with a person's OK, drafted for review.
-                <HistoryImportScreen />
+                // WP-50: past chats, only with a person's OK, drafted for review. Above it, bringing them in as chats.
+                <div className="flex flex-col gap-10">
+                  <ChatImportSettings />
+                  <HistoryImportScreen />
+                </div>
               ) : null}
               {section === "memory" ? (
                 // WP-51: what a first mate remembers, for the person to review.

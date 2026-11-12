@@ -85,6 +85,7 @@ import { ProjectMascot } from "../../features/projects/ui/ProjectMascot";
 import { RailAction, RailSearch } from "./RailAction";
 import { DevModeSlot, TabVisitNav } from "./TitleBar";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
+import { ImportRailCard } from "../../features/chatImport/ui/ImportRailCard";
 import type { InstalledUpdate } from "../model/updateNotice";
 import { SettingsNav } from "./SettingsRail";
 import { Shimmer } from "../../shared/ui/Shimmer";
@@ -617,6 +618,10 @@ export function ProjectRail({
             groupCustomColors={groupCustomColors}
             groupMascots={groupMascots}
           />
+          {/* Past chats coming in, and the rules read from them, while the app stays usable. */}
+          <div className="shrink-0 px-2 pt-2 empty:hidden">
+            <ImportRailCard />
+          </div>
           <SidebarUpdateFooter
             update={updateNotice}
             onOpenWhatsNew={onOpenWhatsNew}

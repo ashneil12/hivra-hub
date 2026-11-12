@@ -70,6 +70,7 @@ mod harness;
 mod harness_runs;
 mod harness_updates;
 // WP-50: read past chats, with a person's OK, into a proposal.
+mod chat_import;
 mod history_import;
 mod hub_keychain;
 // Hivra WP-92: the secret vault. A value exists in the keychain and one place the person chose.
@@ -1367,6 +1368,12 @@ pub fn run() {
             agent_sandbox::agent_sandbox_status,
             agent_sandbox::agent_sandbox_set,
             // WP-50: past chats, only with a person's OK, drafted for review.
+            chat_import::chat_import_roots,
+            chat_import::chat_import_index,
+            chat_import::chat_import_read,
+            chat_import::chat_import_folders,
+            session_store::session_import_new,
+            session_store::session_provider_ids,
             history_import::history_import_roots,
             history_import::history_import_list,
             history_import::history_import_read,

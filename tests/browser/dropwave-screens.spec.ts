@@ -350,3 +350,69 @@ test("first run: one thing a step (project, first mates, tools), the Chief of St
   await expect(page.locator("[data-hub-onboarding-tour]")).not.toContainText("You didn't add one");
   await expect(page.locator("[data-hub-onboarding-done]")).toHaveText("Open Field notes");
 });
+
+// Ash, 12 Nov: a new person brings their Claude Code and Codex chats over, in parts. First run only starts the sweep
+// and lets them in; the sidebar calls them back to choose what comes in and, later, for the suggested rules.
+test("first run: bring my chats over is one step that starts the sweep and lets the person in", async ({ page }) => {
+  const shot = (name: string) =>
+    process.env.CHAT_IMPORT_SHOTS ? path.resolve("docs/hivra/work/shots/onboarding-chat-import", name) : test.info().outputPath(name);
+  await page.goto(`${base}/mockup.html?reset&onboarding`);
+  const card = page.locator("[data-hub-onboarding]");
+  await expect(card).toBeVisible({ timeout: 60_000 });
+  const notNow = page.locator("[data-hub-onboarding-not-now]");
+  if (await notNow.isVisible().catch(() => false)) {
+    await page.reload();
+    await expect(card).toBeVisible({ timeout: 60_000 });
+  }
+  if ((await card.getAttribute("data-step")) === "setup") test.skip(true, "this build shows the setup checks first, which need the native app");
+  await page.locator("[data-hub-onboarding-next]").click();
+  await expect(card).toHaveAttribute("data-step", "start");
+  const count = page.locator("[data-hub-onboarding-count]");
+  const before = await count.textContent();
+  await card.getByRole("button", { name: /Bring my chats over/ }).click();
+  // Choosing it adds its own step; the other starts never see it.
+  await expect(count).not.toHaveText(before ?? "");
+  await expect(page.locator("[data-hub-onboarding-project]")).toHaveCount(0);
+  await page.screenshot({ path: shot("after-1-start.png") });
+  await page.locator("[data-hub-onboarding-next]").click();
+
+  await expect(card).toHaveAttribute("data-step", "chats");
+  await expect(card.getByRole("heading", { name: "Bring your chats over" })).toBeVisible();
+  await expect(card).toContainText("A card in the sidebar calls you back to choose what comes in");
+  await expect(page.locator("[data-hub-onboarding-chats-finding]")).toContainText("Found 426 chats so far.");
+  const learn = page.locator("[data-hub-onboarding-learn]");
+  await expect(learn).toHaveAttribute("aria-checked", "true");
+  await expect(learn).toContainText("nothing changes until you save a rule");
+  await page.screenshot({ path: shot("after-2-chats-step.png") });
+  await page.locator("[data-hub-onboarding-next]").click();
+
+  await expect(card).toHaveAttribute("data-step", "team");
+  await page.locator("[data-hub-onboarding-next]").click();
+  await page.locator("[data-hub-onboarding-next]").click();
+  await page.locator("[data-hub-onboarding-next]").click();
+  await expect(card).toHaveAttribute("data-step", "done");
+  await expect(page.locator("[data-hub-onboarding-chats-finding]")).toHaveCount(0);
+  await expect(page.locator("[data-hub-onboarding-summary]")).toContainText("Chats: being found now; you choose what comes in next");
+  await expect(page.locator("[data-hub-onboarding-done]")).toContainText("Start using");
+  await page.screenshot({ path: shot("after-3-done.png") });
+  await page.locator("[data-hub-onboarding-done]").click();
+  // Straight into the app: nothing waits on the chats.
+  await expect(card).toHaveCount(0);
+
+  // Part two: the sidebar calls the person back once the chats are found.
+  const rail = page.locator("[data-import-rail-card]");
+  await expect(rail).toContainText("Your chats are found", { timeout: 15_000 });
+  await expect(rail).toContainText("426 chats. Choose what comes in");
+  await page.screenshot({ path: shot("after-4-called-back.png") });
+  await rail.locator("[data-import-rail-open]").click();
+  const setup = page.locator('[data-import-setup][data-part="choose"]');
+  await expect(setup.getByRole("heading", { name: "Choose what comes in" })).toBeVisible();
+  await expect(setup.locator("[data-chat-import-found]")).toContainText("Found 426 chats in 4 folders.");
+  // A folder that is gone goes into its look-alike that is still here.
+  await expect(setup.locator('[data-chat-import-group="/Users/example/Old/shop-app-old"] [data-chat-import-into]')).toHaveValue("/Users/example/Projects/shop-app");
+  await page.screenshot({ path: shot("after-5-choose.png") });
+  await setup.locator("[data-chat-import-go]").click();
+  await expect(setup).toHaveCount(0);
+  // The chats come in behind the app, and the card goes when the setup is over.
+  await expect(rail).toHaveCount(0, { timeout: 30_000 });
+});

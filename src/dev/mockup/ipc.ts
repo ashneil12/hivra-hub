@@ -144,7 +144,57 @@ export function mockupIpc(cmd: string, args: Row | undefined): unknown {
     case "session_checkpoint_undo":
     case "session_checkpoint_keep":
       return { files: [] };
+    // Bringing chats over: example chats in three example folders, so the setup can be walked end to end.
+    case "chat_import_roots":
+      return { claudeCode: ["/Users/example/.claude/projects"], codex: ["/Users/example/.codex/sessions"] };
+    case "chat_import_index": {
+      const all = args?.source === "claude_code" ? exampleChats() : [];
+      const offset = Number(args?.offset ?? 0);
+      const page = all.slice(offset, offset + Number(args?.limit ?? 1000));
+      return { missing: all.length === 0, total: all.length, offset, chats: page, active: 0, links: 0, side: 0, done: offset + page.length >= all.length };
+    }
+    case "chat_import_folders":
+      return ((args?.paths as string[] | undefined) ?? []).map((path) => ({ path, exists: !path.includes("/Old/") }));
+    case "chat_import_read": {
+      const chat = exampleChats().find((item) => item.path === args?.path);
+      const text = ["Example: first message", "Example: second message"]
+        .map((said, index) =>
+          JSON.stringify({
+            type: "user",
+            sessionId: chat?.sessionId,
+            cwd: chat?.cwd,
+            timestamp: new Date((chat?.mtimeMs ?? 0) + index * 60_000).toISOString(),
+            message: { role: "user", content: said },
+          }),
+        )
+        .join("\n");
+      return { text, cut: false, longLines: 0 };
+    }
+    case "session_provider_ids":
+      return [];
+    case "session_import_new":
+      return true;
     default:
       return undefined;
   }
+}
+
+/** Example chat files for the import walk: no real names, no real folders. */
+function exampleChats(): { path: string; bytes: number; mtimeMs: number; cwd: string; sessionId: string }[] {
+  const day = 86_400_000;
+  const now = Date.UTC(2026, 10, 12, 9);
+  const folders: [string, number, number][] = [
+    ["/Users/example/Projects/shop-app", 240, 1],
+    ["/Users/example/Projects/shop-app-v2", 95, 20],
+    ["/Users/example/Projects/recipes", 61, 45],
+    ["/Users/example/Old/shop-app-old", 30, 300],
+  ];
+  const out = [];
+  for (const [cwd, count, age] of folders) {
+    for (let i = 0; i < count; i += 1) {
+      const sessionId = `${cwd.split("/").pop()}-${i}`;
+      out.push({ path: `${sessionId}.jsonl`, bytes: 4096, mtimeMs: now - (age + i / 4) * day, cwd, sessionId });
+    }
+  }
+  return out;
 }

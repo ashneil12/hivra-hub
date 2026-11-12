@@ -141,13 +141,13 @@ fn id_re() -> &'static Regex {
     ID.get_or_init(|| Regex::new(r"^[a-z0-9-]{1,80}$").expect("id pattern"))
 }
 
-fn is_jsonl(path: &Path) -> bool {
+pub(crate) fn is_jsonl(path: &Path) -> bool {
     path.extension()
         .and_then(|ext| ext.to_str())
         .is_some_and(|ext| ext.eq_ignore_ascii_case("jsonl"))
 }
 
-fn mtime_ms(meta: &fs::Metadata) -> u64 {
+pub(crate) fn mtime_ms(meta: &fs::Metadata) -> u64 {
     meta.modified()
         .ok()
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
@@ -155,7 +155,7 @@ fn mtime_ms(meta: &fs::Metadata) -> u64 {
         .unwrap_or(0)
 }
 
-fn is_active(meta: &fs::Metadata, now: SystemTime, window: Duration) -> bool {
+pub(crate) fn is_active(meta: &fs::Metadata, now: SystemTime, window: Duration) -> bool {
     let Ok(modified) = meta.modified() else {
         return false;
     };
@@ -483,7 +483,7 @@ fn source_dirs(
     }
 }
 
-fn confirm_root(
+pub(crate) fn confirm_root(
     home: &Path,
     hermes_env: Option<&str>,
     windows: bool,

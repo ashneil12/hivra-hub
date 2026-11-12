@@ -15,12 +15,15 @@ import { applyThemePreset, finishOnboarding, needsOnboarding, THEME_PRESETS, typ
 import { setupProved, snoozeSetupCard } from "../model/setupProof";
 import { DISPLAY_NAME } from "../../../app/model/displayName";
 import { HubOnboardingSetup } from "./HubOnboardingSetup";
+import { chatImportRun } from "../../chatImport/model/live";
+import { setSetupState } from "../../chatImport/model/setupStage";
+import { useImportState } from "../../chatImport/ui/ChatImportPanel";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90";
 const QUIET = "rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content";
 
-type Step = "setup" | "welcome" | "start" | "team" | "tools" | "theme" | "done";
-const CHOICES: Step[] = ["welcome", "start", "team", "tools", "theme", "done"];
+type Step = "setup" | "welcome" | "start" | "chats" | "team" | "tools" | "theme" | "done";
+const CHOICES: Step[] = ["welcome", "start", "chats", "team", "tools", "theme", "done"];
 
 /**
  * First launch: the four setup checks (when they are not proved yet), then one thing a step (Ash, 11 Nov: it "doesn't
@@ -37,9 +40,16 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   });
   const [kind, setKind] = useState<Step>(() => steps[0]);
   const [setupOk, setSetupOk] = useState(false);
-  const [start, setStart] = useState<"fresh" | "restore">("fresh");
-  // An export brings its own first mates and tools, so a restore skips those two steps.
-  const flow = steps.filter((item) => start === "fresh" || (item !== "team" && item !== "tools"));
+  const [start, setStart] = useState<"fresh" | "chats" | "restore">("fresh");
+  // An export brings its own first mates and tools, so a restore skips those two steps. Bringing chats over has its
+  // own step (which chats come in); the other two starts skip it.
+  const flow = steps.filter(
+    (item) => (item !== "chats" || start === "chats") && (start !== "restore" || (item !== "team" && item !== "tools")),
+  );
+  const importRun = chatImportRun();
+  const importState = useImportState(importRun);
+  // Read the chats that came in and suggest rules (one batch, nothing changes before each is accepted).
+  const [learnStyle, setLearnStyle] = useState(true);
   const step = Math.max(0, flow.indexOf(kind));
   const go = (by: number) => setKind(flow[Math.min(flow.length - 1, Math.max(0, step + by))]);
   const [restored, setRestored] = useState<string | null>(null);
@@ -94,6 +104,19 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
         addStarterMono(id, firstProject && !everyProject ? [firstProject] : []);
       }
     };
+    // Bringing chats over comes in parts. This first part only starts the sweep and lets the person in. The sidebar's
+    // card calls them back to choose what comes in once the chats are found, and again for the suggested rules
+    // (ImportSetupHost). Nothing comes in before they choose.
+    if (start === "chats") {
+      saveChosenClis(choice.clis);
+      finishOnboarding();
+      if (name.trim()) setUserName(name);
+      if (sawTeam.current) addTicked();
+      setSetupState({ stage: "sweep", learn: learnStyle });
+      showProjectToday();
+      onClose();
+      return;
+    }
     // WP-20: a chosen project opens on its coding team. Onboarding finishes only after that project exists.
     // A failed create stays on this card, with the name, CLIs and group still filled in.
     if (choice.projectName && start === "fresh") {
@@ -194,6 +217,16 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <h1 className="text-[18px] text-content">How would you like to start?</h1>
             <Group label="Start">
               <Toggle on={start === "fresh"} onClick={() => setStart("fresh")} title="Start a new project" sub="Name it below" />
+              <Toggle
+                on={start === "chats"}
+                onClick={() => {
+                  setStart("chats");
+                  // Finding starts now, so the count is there on the next step.
+                  if (importRun.get().phase === "idle") void importRun.find();
+                }}
+                title="Bring my chats over"
+                sub="From Claude Code and Codex"
+              />
               <Toggle on={start === "restore"} onClick={() => { setStart("restore"); void pick(); }} title="Restore from an export" sub="Your setup comes back" />
             </Group>
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-onboarding-file
@@ -213,6 +246,30 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <p className="whitespace-nowrap text-[13px] leading-5 text-content/60" data-hub-onboarding-dashboards>
               Comes with ready-made hubs: Game studio, Product / SaaS, Org / ops.
             </p>
+          </div>
+        ) : null}
+
+        {kind === "chats" ? (
+          <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto" data-hub-onboarding-chats>
+            <h1 className="text-[18px] text-content">Bring your chats over</h1>
+            <p className="text-[13px] leading-5 text-content/75">
+              Your past Claude Code and Codex chats come in as projects and chats, grouped by the folder they ran in. Nothing in those tools' own folders changes.
+            </p>
+            <p className="text-[13px] text-content/75" data-hub-onboarding-chats-finding>
+              {importState.phase === "failed"
+                ? "Your chats couldn't be read just now. You can bring them over later in Settings, Chat history."
+                : importState.phase === "ready"
+                ? `Found ${importState.groups.reduce((sum, group) => sum + group.chats, 0).toLocaleString("en-GB")} chats so far.`
+                : `Looking through your chats${importState.seen ? `: ${importState.seen.toLocaleString("en-GB")} found so far` : ""}. This keeps going while you finish setting up.`}
+            </p>
+            <ol className="flex list-decimal flex-col gap-1 pl-5 text-[13px] leading-5 text-content/75">
+              <li>The app finds your chats while you get started.</li>
+              <li>A card in the sidebar calls you back to choose what comes in: which dates, which projects, and which look-alikes to merge.</li>
+              <li>The chats come in behind you, and you can use each project as soon as it lands.</li>
+            </ol>
+            <Check2 id="learn" dataAttr="data-hub-onboarding-learn" stacked on={learnStyle} onClick={() => setLearnStyle((on) => !on)}
+              title="Then learn how I work"
+              sub="After your chats are in, a low-cost model reads a spread of them and suggests rules for how your first mates work with you. You're called back to go through them, and nothing changes until you save a rule." />
           </div>
         ) : null}
 
@@ -272,12 +329,21 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <h1 className="text-[18px] text-content">You're set</h1>
             <p className="text-[13px] leading-5 text-content/75">
               The {THEME_PRESETS.find((t) => t.id === theme)?.label} look.{" "}
-              {start === "fresh"
+              {start === "chats"
+                ? "Next, Home. The sidebar will call you back when your chats are found."
+                : start === "fresh"
                 ? projectName.trim()
                   ? `Next, ${projectName.trim()} opens with its lead ready to talk.`
                   : "Next, your first project."
                 : restored ? "Next, a look at what your export brings." : "That is everything. Your projects are on the left."}
             </p>
+            {start === "chats" ? (
+              <ul className="mt-1 flex flex-col gap-1 text-[13px] leading-5 text-content/75" data-hub-onboarding-summary>
+                <li><span className="text-content/60">Chats:</span> being found now; you choose what comes in next</li>
+                <li><span className="text-content/60">How you work:</span> {learnStyle ? "read once your chats are in, with rules for you to go through" : "not read"}</li>
+                <li><span className="text-content/60">First mates:</span> {pickedMates.length ? pickedMates.map((offer) => offer.name).join(", ") : "none yet"}</li>
+              </ul>
+            ) : null}
             {start === "fresh" ? (
               // What the steps set up, said back before anything opens.
               <ul className="mt-1 flex flex-col gap-1 text-[13px] leading-5 text-content/75" data-hub-onboarding-summary>
@@ -325,7 +391,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             </>
           ) : last ? (
             <button type="button" data-hub-onboarding-done onClick={() => done(start === "fresh" ? "new-project" : restored ? "restore" : "today")} className={PRIMARY}>
-              {start === "fresh" ? (projectName.trim() ? `Open ${projectName.trim()}` : "Create your first project") : restored ? "Review the export" : `Start using ${DISPLAY_NAME}`}
+              {start === "chats" ? `Start using ${DISPLAY_NAME}` : start === "fresh" ? (projectName.trim() ? `Open ${projectName.trim()}` : "Create your first project") : restored ? "Review the export" : `Start using ${DISPLAY_NAME}`}
             </button>
           ) : (
             <button type="button" data-hub-onboarding-next onClick={() => go(1)} className={PRIMARY}>

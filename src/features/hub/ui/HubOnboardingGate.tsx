@@ -7,6 +7,7 @@ import { hubData } from "../model/hubData";
 import { HubOnboarding } from "./HubOnboarding";
 import { ensureBuiltInMonos } from "../model/builtInMonos";
 import { isDevCopy } from "../../../app/model/appIdentity";
+import { ImportSetupHost } from "../../chatImport/ui/ImportSetupHost";
 
 /** What the gate does at launch: show the card, check setup quietly first, or stay away. */
 export type OnboardingGate = "show" | "check" | "hide";
@@ -75,5 +76,11 @@ export function HubOnboardingGate() {
   useEffect(() => {
     void seedReadyPages();
   }, [pagesVersion]);
-  return open ? <HubOnboarding onClose={() => setOpen(false)} /> : null;
+  return (
+    <>
+      {open ? <HubOnboarding onClose={() => setOpen(false)} /> : null}
+      {/* Bringing chats over carries on after first run closes, and calls the person back for its later parts. */}
+      {open ? null : <ImportSetupHost />}
+    </>
+  );
 }
