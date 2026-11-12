@@ -43,9 +43,18 @@ describe("modelConnections", () => {
     expect(workingSources("claude")).toEqual(["claudeLogin", "xai", "openrouter", "deepseek", "ollama", "custom"]);
   });
 
-  it("only Claude Code has app-made connections today", () => {
+  it("Pi and Oh My Pi get the saved models through the app's router", () => {
+    for (const harness of ["pi", "omp"] as const) {
+      for (const source of ["xai", "openrouter", "deepseek", "ollama", "custom"] as const) {
+        expect(isExtraConnection(harness, source), `${harness} x ${source}`).toBe(true);
+      }
+      expect(isExtraConnection(harness, "anthropicKey")).toBe(false);
+    }
+  });
+
+  it("only Claude Code, Pi and Oh My Pi have app-made connections today", () => {
     for (const harness of HARNESSES) {
-      if (harness === "claude") continue;
+      if (harness === "claude" || harness === "pi" || harness === "omp") continue;
       for (const { id } of MODEL_SOURCES) expect(isExtraConnection(harness, id), `${harness} x ${id}`).toBe(false);
     }
   });

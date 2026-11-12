@@ -1165,6 +1165,9 @@ pub fn harness_spawn(
     // WP-134: a More agents entry. Its command and arguments come from the saved list, and only once the person has
     // approved that command (src-tauri/src/more_agents.rs). The webview sends no command for it.
     more_agent: Option<String>,
+    // "Connect any model to any harness": the saved Other models, offered to Pi and Oh My Pi through the app's own
+    // router (src/pi_routes.rs). The child gets a loopback address and a per-session token, never a key.
+    pi_routes: Option<Vec<crate::model_router::CustomRoute>>,
 ) -> Result<u32, String> {
     // WP-141: an agent session's process needs the one-time ticket its crew gate issued for this session, CLI and folder.
     // Ash's own chats (no `app-` id) pass without one. The default CLI of a spawn with no provider is Claude Code.
@@ -1190,6 +1193,7 @@ pub fn harness_spawn(
                 || binary_path.is_some()
                 || account.is_some()
                 || custom_route.is_some()
+                || pi_routes.is_some()
                 || codex_store.is_some()
                 || devin_ask_edits.is_some();
             let data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -1244,6 +1248,18 @@ pub fn harness_spawn(
             crate::model_router::announce_refusals_to(&app);
             Some(crate::model_router::prepare_routed_session(route)?)
         }
+    };
+    let pi_routes = match pi_routes {
+        None => None,
+        Some(_) if !crate::pi_routes::takes_routes(binary_provider.as_deref()) => {
+            return Err("Saved models are offered to Pi and Oh My Pi only".into())
+        }
+        Some(routes) if routes.is_empty() => None,
+        Some(routes) => Some(crate::pi_routes::build(&routes)),
+    };
+    let pi_extension = match pi_routes.as_ref() {
+        Some(ready) if !ready.env.is_empty() => Some(crate::pi_routes::write_extension()?),
+        _ => None,
     };
     // WP-178 item 3.1: with the agent sandbox setting on, the CLI starts under the macOS sandbox profile. Fail closed:
     // a sandbox that cannot start refuses the start here, before anything is reserved or stopped, and never falls back
@@ -1309,6 +1325,15 @@ pub fn harness_spawn(
     } else {
         args
     };
+    let args = match pi_extension.as_ref() {
+        Some(path) => {
+            let mut args = args;
+            args.push("--extension".to_string());
+            args.push(path.to_string_lossy().into_owned());
+            args
+        }
+        None => args,
+    };
     // A Mono's connectors start only with the app's signature on their arguments (src/connectors/signing.rs).
     let args = if binary_provider.as_deref() == Some("claude") {
         crate::connectors::signing::sign_session_args(args)
@@ -1372,6 +1397,13 @@ pub fn harness_spawn(
     // model's own key. Claude models (and Ash's subscription login) are never routed: may_route refuses them.
     // The routed session's router token (WP-129 L2) is held by the stdout reader below, so it ends with the session.
     let mut routed_session = None;
+    let mut pi_sessions = Vec::new();
+    if let Some(ready) = pi_routes {
+        for (key, value) in ready.env {
+            cmd.env(key, value);
+        }
+        pi_sessions = ready.sessions;
+    }
     if let Some(((set, remove), session)) = routed {
         routed_session = Some(session);
         for key in remove {
@@ -1604,6 +1636,7 @@ pub fn harness_spawn(
     let status_id = session_id.clone();
     thread::spawn(move || {
         let _routed_session = routed_session;
+        let _pi_sessions = pi_sessions;
         let _dropped = read_stdout_lines(
             BufReader::new(stdout),
             stdout_cap,

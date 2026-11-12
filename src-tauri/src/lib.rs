@@ -121,6 +121,7 @@ mod mono;
 mod mono_chat;
 mod mono_home;
 mod mono_transcript;
+mod pi_routes;
 // WP-134: the More agents list, its approvals and the environment its child gets.
 mod more_agents;
 mod notes;

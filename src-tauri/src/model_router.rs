@@ -1154,6 +1154,15 @@ impl Drop for SessionToken {
     }
 }
 
+/// Test helper: a session token tied to no router.
+#[cfg(test)]
+pub(crate) fn test_session_token(token: &str) -> SessionToken {
+    SessionToken {
+        token: token.to_string(),
+        tokens: Arc::new(Mutex::new(HashSet::new())),
+    }
+}
+
 /// A random token for one router (256 bits from the OS). Useless anywhere but that router.
 fn new_child_token() -> String {
     format!(

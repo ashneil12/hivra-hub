@@ -5,7 +5,8 @@
 //
 // * "works": it runs in this app today. `via: "own"` means the agent does it itself (its own login or its own model
 //   list); `via: "app"` means this app makes an extra connection for it (today: the router in
-//   src-tauri/src/model_router.rs that lets Claude Code run a non-Claude model on its own key). An "app" pair is the
+//   src-tauri/src/model_router.rs that lets Claude Code run a non-Claude model on its own key, and the same router
+//   offered to Pi and Oh My Pi by src-tauri/src/pi_routes.rs). An "app" pair is the
 //   one the screen marks as an extra connection.
 // * "agentSetup": the agent supports it, but it is set up in the agent's own settings for now; the app doesn't hand
 //   it a key yet.
@@ -75,6 +76,14 @@ function multiProvider(chatgpt: ModelConnection): Record<ModelSource, ModelConne
   };
 }
 
+const ROUTED_PI =
+  "Your saved model shows up in the agent's model list through this app's router; the key stays in the app.";
+
+/** Pi and Oh My Pi also get every saved Other model through the app's router (src-tauri/src/pi_routes.rs). */
+function viaAppRouter(rules: Record<ModelSource, ModelConnection>): Record<ModelSource, ModelConnection> {
+  return { ...rules, xai: app(ROUTED_PI), openrouter: app(ROUTED_PI), deepseek: app(ROUTED_PI), ollama: app(ROUTED_PI), custom: app(ROUTED_PI) };
+}
+
 function ownAccountOnly(): Record<ModelSource, ModelConnection> {
   return {
     claudeLogin: CLAUDE_LOGIN_BLOCKED,
@@ -111,8 +120,8 @@ const TABLE: Record<HarnessId, Record<ModelSource, ModelConnection>> = {
     ollama: agentSetup("Codex can use Ollama from its own config; the app doesn't set it up yet."),
     custom: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
   },
-  pi: multiProvider(CHATGPT_IN_AGENT),
-  omp: multiProvider(CHATGPT_IN_AGENT),
+  pi: viaAppRouter(multiProvider(CHATGPT_IN_AGENT)),
+  omp: viaAppRouter(multiProvider(CHATGPT_IN_AGENT)),
   opencode: multiProvider(CHATGPT_IN_AGENT),
   hermes: multiProvider(agentSetup("Set up in Hermes's own settings for now.")),
   grok: {
