@@ -371,6 +371,12 @@ export type SessionGoal = {
   providerSessionId?: string;
 };
 
+/**
+ * The queue's state, set only while something is queued. `active`: the head goes in when the chat can take it.
+ * `paused`: it waits for Ash (he stopped the turn, a delivery failed, the chat lost its worktree or is being reset).
+ * `resuming`: Ash resumed a paused queue in a busy chat; it waits for his Continue turn to end, then is `active`.
+ * Moves: `queueStatusOnEnqueue`, `pausedQueueStatus`, `dequeueQueuedMessage` (messageQueue.ts).
+ */
 export type MessageQueueStatus = "active" | "paused" | "resuming";
 
 /** The provider stopped the last turn at a usage limit. */

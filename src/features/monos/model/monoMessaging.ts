@@ -6,6 +6,7 @@ import { displayAttachments } from "../../sessions/model/attachments";
 import {
   canDispatchQueuedHead,
   dequeueQueuedMessage,
+  queueStatusOnEnqueue,
   withQueued,
 } from "../../sessions/model/messageQueue";
 import { queueWaitReasons } from "../../sessions/model/queueWaitReason";
@@ -47,7 +48,7 @@ export function enqueueMonoMessage(
       ...message,
       blockId: bubble.id,
     }),
-    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
+    queueStatus: queueStatusOnEnqueue(session),
   };
 }
 
@@ -82,7 +83,7 @@ export function queueMonoNote(
         ...(message.waitForIdle ? { waitForIdle: true } : {}),
       },
     ],
-    queueStatus: session.queueStatus === "paused" ? "paused" : "active",
+    queueStatus: queueStatusOnEnqueue(session),
   };
 }
 

@@ -30,6 +30,7 @@ import {
 } from "./orchestrationGoal";
 import { sumChildUsage, usageFromSession } from "./closingUsage";
 import {
+  illegalTaskMoves,
   normalizeOrchestrationRun,
   orchestrationCheckoutCwd,
   orchestrationProjectCwd,
@@ -605,6 +606,14 @@ export class Orchestrator {
   }
   private async commit(run: OrchestrationRun) {
     run = normalizeOrchestrationRun(run);
+    // Every task move goes through here, so this is where the move table (TASK_MOVES) is held to. A test fails on a
+    // move the table doesn't name; a running app keeps the move and says so, rather than strand a worker.
+    const illegal = illegalTaskMoves(this.run(run.leadId)?.tasks ?? [], run.tasks);
+    if (illegal.length) {
+      const message = `Orchestration task moved outside TASK_MOVES: ${illegal.join(", ")}`;
+      if (import.meta.env.MODE === "test") throw new Error(message);
+      console.error(message);
+    }
     this.runs = [
       ...this.runs.filter((entry) => entry.leadId !== run.leadId),
       run,

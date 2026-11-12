@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { appendReadyHandoff, buildDeterministicHandoff } from "../../sessions/model/handoff";
+import { pausedQueueStatus } from "../../sessions/model/messageQueue";
 import {
   invokeWorkspace,
   notifyGitChanged,
@@ -219,7 +220,7 @@ export function worktreeSessionIds(
 export const NO_BRANCH_LABEL = "No branch selected";
 
 /** Keep the transcript and project identity while requiring a new working copy. */
-export function detachSessionWorktree<T extends { cwd: string; worktreeCwd?: string }>(
+export function detachSessionWorktree<T extends { cwd: string; worktreeCwd?: string; queuedMessages?: readonly unknown[] }>(
   session: T,
   projectCwd: string,
   path: string,
@@ -235,7 +236,7 @@ export function detachSessionWorktree<T extends { cwd: string; worktreeCwd?: str
     pendingSwitch: undefined,
     pendingQuestion: undefined,
     busy: false,
-    queueStatus: "paused" as const,
+    queueStatus: pausedQueueStatus(session),
   };
 }
 

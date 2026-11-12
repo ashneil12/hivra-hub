@@ -1,5 +1,4 @@
-import { parksForApproval } from "./approvalCarry";
-import { isPreparingHandoff } from "./handoff";
+import { heldFor } from "./chatHold";
 import { resumeStopped, wasTurnInterrupted } from "./inFlight";
 import type { Block, MessageQueueStatus, QueuedMessage, Session, TurnIntent } from "./session";
 import { freeTextReply, type UserQuestionReply } from "./userQuestion";
@@ -78,6 +77,26 @@ export function restoredQueue(
   return { queuedMessages: left, queueStatus: keepsGoing ? "active" : "paused" };
 }
 
+/**
+ * The queue's moves (its states are `MessageQueueStatus`, see session.ts):
+ * - adding a message keeps `paused` (it waits for Ash, or holds a chat being reset or removed) and `resuming` (it waits
+ *   for his Continue turn to end, then the queue effect makes it `active`); anything else becomes `active`. Every
+ *   enqueue goes through here: before, each wrote `paused ? paused : active` itself, so a report queued while Ash's
+ *   Continue ran undid his resume;
+ * - emptying the queue leaves no status (`dequeueQueuedMessage`).
+ */
+export function queueStatusOnEnqueue(before: Pick<Session, "queueStatus">): MessageQueueStatus {
+  return before.queueStatus === "paused" || before.queueStatus === "resuming" ? before.queueStatus : "active";
+}
+
+/**
+ * A pause for a chat that lives on (it lost its worktree): `paused` while the queue holds anything, else no status, so
+ * a pause with nothing to hold doesn't outlive the worktree choice and catch the next message Ash queues.
+ */
+export function pausedQueueStatus(session: { queuedMessages?: readonly unknown[] }): MessageQueueStatus | undefined {
+  return session.queuedMessages?.length ? "paused" : undefined;
+}
+
 /** Hold auto-dispatch only while the item about to send is being edited. */
 export function isEditingQueuedHead(session: Session): boolean {
   const head = queuedHead(session);
@@ -103,26 +122,21 @@ export function dequeueQueuedMessage(
 }
 
 /**
- * True when the idle session can send its queued head as a new turn.
- * Busy / paused / resuming / usage-limited / preparing-handoff /
- * editing-the-head all wait.
+ * True when the idle session can send its queued head as a new turn. The holds it waits on are `WAITS_ON.dispatch`
+ * (chatHold.ts); an app delivery also waits behind a cut turn.
  */
 export function canDispatchQueuedHead(session: Session): boolean {
-  if (session.busy) return false;
-  if (session.worktreePreparing || session.worktreeRemoved) return false;
-  if (session.usageLimit) return false;
-  if (session.queueStatus === "paused" || session.queueStatus === "resuming") {
-    return false;
-  }
   const head = queuedHead(session);
   if (!head) return false;
-  if (isEditingQueuedHead(session)) return false;
-  if (isPreparingHandoff(session)) return false;
+  if (heldFor(session, "dispatch")) return false;
   if (waitsOnCutTurn(session)) return false;
   return true;
 }
 
-/** Monos deliver one waiting follow-up at a time after the provider is ready. */
+/**
+ * Monos deliver one waiting follow-up at a time after the provider is ready: a running turn that took its prompt, none
+ * of `WAITS_ON.steer` (chatHold.ts), and a head that may go into running work.
+ */
 export function canSteerQueuedHead(session: Session): boolean {
   const head = queuedHead(session);
   return (
@@ -132,20 +146,9 @@ export function canSteerQueuedHead(session: Session): boolean {
     (!head.waitForIdle || !!head.steerWhenBusy) &&
     !!session.busy &&
     !!session.turnReady &&
-    !session.worktreePreparing &&
-    !session.worktreeRemoved &&
-    !session.pendingSwitch &&
-    !session.usageLimit &&
-    !(
-      session.pendingQuestion && session.pendingQuestion.autoResolveAt == null
-    ) &&
-    session.queueStatus !== "paused" &&
-    session.queueStatus !== "resuming" &&
-    !isEditingQueuedHead(session) &&
-    !isPreparingHandoff(session) &&
-    // WP-146: a queued follow-up does not enter a turn that is still waiting on approval, unless the agent
-    // has yielded with only background work left (the send path hands it over then too).
-    !parksForApproval(session) &&
+    // WP-146 is `approval-parks`: a queued follow-up does not enter a turn that is still waiting on approval, unless
+    // the agent has yielded with only background work left (the send path hands it over then too).
+    !heldFor(session, "steer") &&
     head.intent !== "plan" &&
     head.intent !== "orchestrate"
   );
