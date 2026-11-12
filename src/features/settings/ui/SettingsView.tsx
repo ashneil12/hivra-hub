@@ -429,8 +429,8 @@ import {
   type Mono,
 } from "../../monos/model/mono";
 import { resetMonoDefaults } from "../../monos/model/monoFiles";
+import { ModelPicker } from "../../sessions/ui/ModelPicker";
 import { pickChief } from "../../home/model/chief";
-import { openMonoSettings } from "../../hub/model/hubNav";
 import { ConfirmReset } from "../../monos/ui/ConfirmReset";
 import {
   filterKeybindings,
@@ -1057,12 +1057,46 @@ function ChiefModelSetting() {
   const chief = pickChief(listMonos());
   if (!chief) return <span className="text-[12px] text-content/45">No Chief of Staff yet</span>;
   const engine = chief.engine && Object.prototype.hasOwnProperty.call(HARNESS_TITLE, chief.engine) ? (chief.engine as HarnessId) : undefined;
-  const shown = engine ? resolveModel(engine, chief.engineModel).name : "Default";
+  const last = loadLastModelChoice();
+  const harness = engine ?? last?.harness ?? "claude";
+  const model = resolveModel(harness, engine ? chief.engineModel : last?.model).id;
   return (
-    <div className="flex items-center gap-2">
-      <span className="text-[12px] text-content/60" data-chief-model>{shown}</span>
-      <SecondaryButton onClick={() => void openMonoSettings(chief.id)}>Change</SecondaryButton>
+    <div className="flex items-center gap-2" data-chief-model>
+      <ModelPicker
+        harness={harness}
+        model={model}
+        values={{}}
+        hideSettings
+        hotkeys={false}
+        side="bottom"
+        onChange={(nextHarness, nextModel) =>
+          updateMono(chief.id, (current) => ({ ...current, engine: nextHarness, engineModel: resolveModel(nextHarness, nextModel).id }))
+        }
+        onSettingsChange={() => undefined}
+      />
     </div>
+  );
+}
+
+/** What a new plain chat starts on: the same default the Providers page sets, here where Ash looks for it. */
+function NewChatModelSetting() {
+  const [choice, setChoice] = useState(loadLastModelChoice);
+  const harness = choice?.harness ?? "claude";
+  const model = resolveModel(harness, choice?.model).id;
+  return (
+    <ModelPicker
+      harness={harness}
+      model={model}
+      values={{}}
+      hideSettings
+      hotkeys={false}
+      side="bottom"
+      onChange={(nextHarness, nextModel) => {
+        saveLastModelChoice(nextHarness, nextModel);
+        setChoice(loadLastModelChoice());
+      }}
+      onSettingsChange={() => undefined}
+    />
   );
 }
 
@@ -1155,6 +1189,15 @@ function GeneralPage({
 
   return (
     <>
+      {/* Ash (12 Nov): "There's no way to change the default runtime". First on the page. */}
+      <Group title="Models" description="What new chats start on. In a first mate's chat, Make default beside its model does the same for it.">
+        <Row id="chief-model" label="Chief of Staff" description="What its new chats run on.">
+          <ChiefModelSetting />
+        </Row>
+        <Row id="new-chat-model" label="New chats" description="What a new chat starts on.">
+          <NewChatModelSetting />
+        </Row>
+      </Group>
       <Group title="You" description="How your team of Monos addresses you.">
         <Row
           id="user-name"
@@ -1166,14 +1209,6 @@ function GeneralPage({
       </Group>
       {/* WP-88: the morning note under the chat on Home. */}
       <Group title="Home" description="The morning note under the chat.">
-        {/* Ash (12 Nov): "I don't see any way to change the default model". */}
-        <Row
-          id="chief-model"
-          label="Chief of Staff's model"
-          description="What its new chats run on. Right-click Chief of Staff in the sidebar for the same."
-        >
-          <ChiefModelSetting />
-        </Row>
         <Row
           id="morning-summary"
           label="Morning summary"

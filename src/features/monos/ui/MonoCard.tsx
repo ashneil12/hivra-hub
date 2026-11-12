@@ -231,7 +231,16 @@ export function MonoCard({
           />
         </div>
       </Section>
-      <Section id="workers" title="Its workers" summary="What its workers run on">
+      <Section
+        id="workers"
+        title="Its workers run on"
+        summary={(() => {
+          const wd = mono?.workerDefault;
+          if (!wd?.model) return "The usual model";
+          const cli = wd.cli && Object.prototype.hasOwnProperty.call(HARNESS_TITLE, wd.cli) ? (wd.cli as HarnessId) : "claude";
+          return [resolveModel(cli, wd.model).name.replace(/\s*[(\[]?\balias\b[)\]]?/gi, ""), wd.effort ? `${wd.effort} effort` : undefined].filter(Boolean).join(", ");
+        })()}
+      >
         <div data-mono-card-workers>
           <WorkerDefaultControl scope="mono" monoId={monoId} />
         </div>
