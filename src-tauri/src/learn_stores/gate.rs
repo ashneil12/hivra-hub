@@ -75,6 +75,24 @@ pub struct ListedChat {
     pub bytes: u64,
 }
 
+/// What a listing left out, so a person is told rather than shown a quiet bias.
+#[derive(Debug, Default, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ListStats {
+    /// Chats older than the newest `max_files`, not listed.
+    pub left_out: usize,
+    /// Chats whose file is over the read cap. One of them never fails the listing.
+    pub too_big: usize,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct Listing {
+    pub chats: Vec<ListedChat>,
+    pub left_out: usize,
+    pub too_big: usize,
+}
+
 #[cfg(test)]
 pub fn list_stores(
     home: &Path,
@@ -93,6 +111,7 @@ pub fn list_stores(
     )
 }
 
+#[cfg(test)]
 pub fn list_located(
     home: &Path,
     stand_ins: Option<&[StandIn]>,
@@ -100,6 +119,56 @@ pub fn list_located(
     dev: bool,
     limits: Limits,
     locate: &StoreLocate<'_>,
+) -> Result<Vec<ListedChat>, String> {
+    list_report(home, stand_ins, include_cursor_ide, dev, limits, locate).map(|found| found.chats)
+}
+
+/// The newest `max_files` chats across every store, newest first, with a count of what
+/// was left out. Each store is read whole and sorted by modified time before any cap, so
+/// the cap never keeps the first names in the folder and drops the recent work.
+pub fn list_report(
+    home: &Path,
+    stand_ins: Option<&[StandIn]>,
+    include_cursor_ide: bool,
+    dev: bool,
+    limits: Limits,
+    locate: &StoreLocate<'_>,
+) -> Result<Listing, String> {
+    let mut stats = ListStats::default();
+    let mut chats = list_all(
+        home,
+        stand_ins,
+        include_cursor_ide,
+        dev,
+        limits,
+        locate,
+        &mut stats,
+    )?;
+    chats.sort_by(|a, b| {
+        b.mtime_ms
+            .cmp(&a.mtime_ms)
+            .then_with(|| a.root.cmp(&b.root))
+            .then_with(|| a.rel.cmp(&b.rel))
+    });
+    if chats.len() > limits.max_files {
+        stats.left_out += chats.len() - limits.max_files;
+        chats.truncate(limits.max_files);
+    }
+    Ok(Listing {
+        chats,
+        left_out: stats.left_out,
+        too_big: stats.too_big,
+    })
+}
+
+fn list_all(
+    home: &Path,
+    stand_ins: Option<&[StandIn]>,
+    include_cursor_ide: bool,
+    dev: bool,
+    limits: Limits,
+    locate: &StoreLocate<'_>,
+    stats: &mut ListStats,
 ) -> Result<Vec<ListedChat>, String> {
     if dev {
         let Some(stand_ins) = stand_ins.filter(|items| !items.is_empty()) else {
@@ -126,6 +195,7 @@ pub fn list_located(
                 include_cursor_ide || stand_in.source == "cursor-ide",
                 limits,
                 &mut out,
+                stats,
             )?;
         }
         return Ok(out);
@@ -135,7 +205,7 @@ pub fn list_located(
         if is_symlink(&root) || !root.exists() {
             continue;
         }
-        list_one(&source, &root, include_cursor_ide, limits, &mut out)?;
+        list_one(&source, &root, include_cursor_ide, limits, &mut out, stats)?;
     }
     Ok(out)
 }
@@ -224,10 +294,8 @@ fn list_one(
     include_cursor_ide: bool,
     limits: Limits,
     out: &mut Vec<ListedChat>,
+    stats: &mut ListStats,
 ) -> Result<(), String> {
-    if out.len() >= limits.max_files {
-        return Ok(());
-    }
     match source {
         "opencode" => {
             let db = if root.is_file() {
@@ -241,13 +309,12 @@ fn list_one(
             let meta =
                 fs::symlink_metadata(&db).map_err(|_| "Couldn't read this store.".to_string())?;
             if meta.len() > limits.max_read {
-                return Err("That chat is too big to read in one go.".into());
+                // One database too big to read must not fail the whole listing.
+                stats.too_big += 1;
+                return Ok(());
             }
             let bytes = meta.len();
             for session in opencode::discover(&db, None)? {
-                if out.len() >= limits.max_files {
-                    break;
-                }
                 out.push(ListedChat {
                     source: "opencode".into(),
                     id: session.id.clone(),
@@ -271,13 +338,14 @@ fn list_one(
                 Ok(meta) if meta.file_type().is_symlink() => {
                     return Err("That file isn't in the folder.".into());
                 }
-                Ok(meta) if !meta.is_file() || meta.len() > limits.max_read => return Ok(()),
+                Ok(meta) if !meta.is_file() => return Ok(()),
+                Ok(meta) if meta.len() > limits.max_read => {
+                    stats.too_big += 1;
+                    return Ok(());
+                }
                 Ok(_) => {}
             }
             for session in cursor::discover_ide(root, None)? {
-                if out.len() >= limits.max_files {
-                    break;
-                }
                 out.push(ListedChat {
                     source: "cursor-ide".into(),
                     id: session.id.clone(),
@@ -291,7 +359,7 @@ fn list_one(
             }
         }
         "grok" => {
-            for file in walk_named(root, "chat_history.jsonl", limits.max_files) {
+            for file in walk_named(root, "chat_history.jsonl", limits, true, stats) {
                 let dir = file.parent().unwrap_or(root);
                 let descriptor = grok::classify_dir(dir);
                 push_file(
@@ -306,7 +374,7 @@ fn list_one(
             }
         }
         "cursor" => {
-            for file in walk_named(root, "meta.json", limits.max_files) {
+            for file in walk_named(root, "meta.json", limits, false, stats) {
                 let dir = file.parent().unwrap_or(root);
                 let Some(descriptor) = cursor::classify_dir(dir) else {
                     continue;
@@ -339,7 +407,7 @@ fn list_one(
             }
         }
         "pi" | "claude" | "codex" | "hermes" => {
-            for file in walk_suffix(root, ".jsonl", limits.max_files) {
+            for file in walk_suffix(root, ".jsonl", limits, true, stats) {
                 let id = file
                     .file_stem()
                     .map(|stem| stem.to_string_lossy().into_owned())
@@ -391,35 +459,75 @@ fn push_file(
     });
 }
 
-fn walk_suffix(root: &Path, suffix: &str, max_files: usize) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    walk(root, max_files, &mut out, &|path| {
+struct Found {
+    path: PathBuf,
+    mtime_ms: i64,
+    len: u64,
+}
+
+/// Newest first, then the cap. A file over the read cap is counted and left out when
+/// `skip_big` is set (the file itself is what gets read), so it can't fail a run later.
+fn newest_files(
+    mut found: Vec<Found>,
+    limits: Limits,
+    skip_big: bool,
+    stats: &mut ListStats,
+) -> Vec<PathBuf> {
+    if skip_big {
+        let before = found.len();
+        found.retain(|item| item.len <= limits.max_read);
+        stats.too_big += before - found.len();
+    }
+    found.sort_by(|a, b| {
+        b.mtime_ms
+            .cmp(&a.mtime_ms)
+            .then_with(|| a.path.cmp(&b.path))
+    });
+    if found.len() > limits.max_files {
+        stats.left_out += found.len() - limits.max_files;
+        found.truncate(limits.max_files);
+    }
+    found.into_iter().map(|item| item.path).collect()
+}
+
+fn walk_suffix(
+    root: &Path,
+    suffix: &str,
+    limits: Limits,
+    skip_big: bool,
+    stats: &mut ListStats,
+) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    walk(root, &mut found, &|path| {
         path.file_name()
             .and_then(|name| name.to_str())
             .is_some_and(|name| name.ends_with(suffix))
     });
-    out
+    newest_files(found, limits, skip_big, stats)
 }
 
-fn walk_named(root: &Path, name: &str, max_files: usize) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    walk(root, max_files, &mut out, &|path| {
+fn walk_named(
+    root: &Path,
+    name: &str,
+    limits: Limits,
+    skip_big: bool,
+    stats: &mut ListStats,
+) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    walk(root, &mut found, &|path| {
         path.file_name().and_then(|file| file.to_str()) == Some(name)
     });
-    out
+    newest_files(found, limits, skip_big, stats)
 }
 
-fn walk(dir: &Path, max_files: usize, out: &mut Vec<PathBuf>, keep: &dyn Fn(&Path) -> bool) {
-    if out.len() >= max_files || is_symlink(dir) {
+fn walk(dir: &Path, out: &mut Vec<Found>, keep: &dyn Fn(&Path) -> bool) {
+    if is_symlink(dir) {
         return;
     }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
-        if out.len() >= max_files {
-            return;
-        }
         let Ok(kind) = entry.file_type() else {
             continue;
         };
@@ -428,9 +536,19 @@ fn walk(dir: &Path, max_files: usize, out: &mut Vec<PathBuf>, keep: &dyn Fn(&Pat
         }
         let path = entry.path();
         if kind.is_dir() {
-            walk(&path, max_files, out, keep);
+            walk(&path, out, keep);
         } else if kind.is_file() && keep(&path) {
-            out.push(path);
+            let meta = entry.metadata().ok();
+            out.push(Found {
+                path,
+                mtime_ms: meta
+                    .as_ref()
+                    .and_then(|item| item.modified().ok())
+                    .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_millis() as i64)
+                    .unwrap_or(0),
+                len: meta.map(|item| item.len()).unwrap_or(0),
+            });
         }
     }
 }

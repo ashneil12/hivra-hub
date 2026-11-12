@@ -18,17 +18,17 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
 pub use apply::{profile_load, profile_save, state_cas, state_load, LoadedProfiles, LoadedState};
-pub use gate::{Limits, ListedChat, StandIn, StoreLocate};
+pub use gate::{Limits, Listing, StandIn, StoreLocate};
 
 #[tauri::command]
 pub fn learn_stores_list(
     stand_ins: Option<Vec<StandIn>>,
     include_cursor_ide: Option<bool>,
-) -> Result<Vec<ListedChat>, String> {
+) -> Result<Listing, String> {
     let home = crate::dirs_home().ok_or_else(|| "This Mac has no home folder.".to_string())?;
     let dev = crate::instance::kind() == crate::instance::Kind::Dev;
     let (env_home, local) = store_locate();
-    gate::list_located(
+    gate::list_report(
         Path::new(&home),
         stand_ins.as_deref(),
         include_cursor_ide.unwrap_or(false),
