@@ -16026,7 +16026,9 @@ function Workspace({
             ...(projectBranches?.current
               ? { branch: projectBranches.current }
               : {}),
-            ...(sidebarCwd && sidebarCwd !== "~"
+            // A first mate's own team folder (the Chief of Staff's) is the app's, not a repo: its chats carry no
+            // folder tag such as "chief-of-staff".
+            ...(sidebarCwd && sidebarCwd !== "~" && !isMonoTeamFolder(sidebarCwd)
               ? { repo: projectName(sidebarCwd) }
               : {}),
           },
@@ -16105,7 +16107,7 @@ function Workspace({
             ...(projectBranches?.current
               ? { branch: projectBranches.current }
               : {}),
-            ...(sidebarCwd && sidebarCwd !== "~"
+            ...(sidebarCwd && sidebarCwd !== "~" && !isMonoTeamFolder(sidebarCwd)
               ? { repo: projectName(sidebarCwd) }
               : {}),
           }),
