@@ -13653,10 +13653,14 @@ function Workspace({
       const project = projectId ? hubData().listProjects().find((entry) => entry.id === projectId) : undefined;
       if (project) return ensureMonoProjectSession(monoId, project, sessionHost);
       // Home's box (Ash, 12 Nov): each ask is a new chat with the Chief of Staff, in the folder its main chat works in.
+      // It starts in the Chief of Staff's team folder, the one its chat list shows, as "New chat" there does.
       if (options?.fresh) {
-        const mainId = findMono(monoId)?.sessionId;
-        const main = mainId ? sessionsRef.current.find((item) => item.id === mainId) : undefined;
-        return startMonoSideChat(monoId, sessionHost, main?.cwd);
+        return (async () => {
+          const team = monoTeam(monoId) ?? (codingTeamsOn() ? await ensureMonoTeam(monoId).catch(() => undefined) : undefined);
+          const mainId = findMono(monoId)?.sessionId;
+          const main = mainId ? sessionsRef.current.find((item) => item.id === mainId) : undefined;
+          return startMonoSideChat(monoId, sessionHost, team?.folder ?? main?.cwd);
+        })();
       }
       return ensureMonoSession(monoId, sessionHost);
     },
