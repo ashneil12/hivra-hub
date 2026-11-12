@@ -100,6 +100,15 @@ import {
 } from "../../../shared/ui/ColorPickerPopover";
 import { Popover } from "../../../shared/ui/Popover";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import {
+  agentInstallPage,
+  agentSignIn,
+  canInstallAgent,
+  cancelAgentInstall,
+  installAgent,
+  useAgentInstall,
+  type AgentInstallState,
+} from "../../providers/model/agentInstall";
 import { JiraSettings } from "./JiraSettings";
 import { AgentSandboxSetting } from "./AgentSandboxSetting";
 import { ComputerUseSetting } from "../../computerUse/ui/ComputerUseSetting";
@@ -4792,6 +4801,9 @@ function ProviderRow({
   const available = isHarnessAvailable(harness);
   const current =
     models.length > 0 ? resolveModel(harness, selectedModel) : null;
+  const install = useAgentInstall(harness);
+  const installing = install?.status === "running";
+  const installPage = agentInstallPage(harness);
 
   useEffect(() => {
     if (!available || hasLiveCatalog(harness)) return;
@@ -4817,7 +4829,35 @@ function ProviderRow({
           ? `${models.length} ${models.length === 1 ? "model" : "models"} available.`
           : harnessUnavailableHint(harness)
       }
+      below={install ? <AgentInstallLog harness={harness} state={install} /> : undefined}
     >
+      {!available && canInstallAgent(harness) ? (
+        installing ? (
+          <SecondaryButton
+            data-agent-install-cancel={harness}
+            onClick={() => cancelAgentInstall(harness)}
+          >
+            Cancel
+          </SecondaryButton>
+        ) : (
+          <SecondaryButton
+            data-agent-install={harness}
+            onClick={() => void installAgent(harness)}
+          >
+            {install?.status === "failed" || install?.status === "cancelled"
+              ? "Try again"
+              : "Install"}
+          </SecondaryButton>
+        )
+      ) : null}
+      {!available && installPage ? (
+        <SecondaryButton
+          data-agent-install-page={harness}
+          onClick={() => void openUrl(installPage).catch(() => undefined)}
+        >
+          Open install page
+        </SecondaryButton>
+      ) : null}
       {current ? (
         <Select
           label={`${HARNESS_TITLE[harness]} model`}
@@ -4857,6 +4897,61 @@ function ProviderRow({
         </div>
       ) : null}
     </Row>
+  );
+}
+
+/** An install's last lines while it runs, then how it ended and how to sign in. */
+function AgentInstallLog({
+  harness,
+  state,
+}: {
+  harness: HarnessId;
+  state: AgentInstallState;
+}) {
+  const signIn = agentSignIn(harness);
+  const [copied, setCopied] = useState(false);
+  const showLines = state.status !== "installed" && state.lines.length > 0;
+  return (
+    <div data-agent-install-log={harness} className="space-y-2">
+      {showLines ? (
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-content/[0.04] px-3 py-2 font-mono text-[11px] leading-4 text-content/70 ring-1 ring-inset ring-content/[0.06]">
+          {state.lines.join("\n")}
+        </pre>
+      ) : null}
+      {state.status === "running" ? (
+        <p className="text-[12px] text-content/60">Installing…</p>
+      ) : state.status === "installed" ? (
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-content/60">
+          <span className="text-content">Installed.</span>
+          {signIn ? (
+            <>
+              <span>To sign in, run</span>
+              <code className="rounded bg-content/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-content/80">
+                {signIn.command}
+              </code>
+              <span>in a terminal{signIn.then ? `, ${signIn.then}` : ""}.</span>
+              <SecondaryButton
+                data-agent-signin-copy={harness}
+                onClick={() => {
+                  void navigator.clipboard
+                    .writeText(signIn.command)
+                    .then(() => setCopied(true))
+                    .catch(() => undefined);
+                }}
+              >
+                {copied ? "Copied" : "Copy"}
+              </SecondaryButton>
+            </>
+          ) : null}
+        </div>
+      ) : state.status === "cancelled" ? (
+        <p className="text-[12px] text-content/60">Install cancelled.</p>
+      ) : (
+        <p className="text-[12px] text-content/60">
+          {state.error ?? "The install didn't finish."}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -5285,23 +5380,26 @@ function Row({
   label,
   description,
   children,
+  below,
 }: {
   /** Matches a `SETTINGS_INDEX` id so search can scroll here. */
   id?: string;
   label: ReactNode;
   description?: string;
   children?: ReactNode;
+  /** Full-width content under the row (an install's log). */
+  below?: ReactNode;
 }) {
   const revealed = useContext(RevealedSetting);
   const flash = id != null && revealed === id;
 
-  return (
+  const row = (
     <div
       id={id ? settingDomId(id) : undefined}
       data-setting-id={id}
-      className={`settings-row flex items-start gap-6 border-b border-content/5 px-4 py-3.5 transition-colors last:border-b-0 ${
-        flash ? "bg-accent/10" : ""
-      }`}
+      className={`settings-row flex items-start gap-6 px-4 py-3.5 transition-colors ${
+        below ? "" : "border-b border-content/5 last:border-b-0"
+      } ${flash ? "bg-accent/10" : ""}`}
     >
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-content">{label}</div>
@@ -5314,6 +5412,13 @@ function Row({
       <div className="settings-row-control flex min-w-0 max-w-[60%] shrink-0 flex-wrap items-center justify-end gap-2">
         {children}
       </div>
+    </div>
+  );
+  if (!below) return row;
+  return (
+    <div className="border-b border-content/5 last:border-b-0">
+      {row}
+      <div className="px-4 pb-3.5">{below}</div>
     </div>
   );
 }
