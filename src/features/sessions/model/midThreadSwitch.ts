@@ -136,6 +136,7 @@ export const PORTABLE_TRANSCRIPT_LIMIT = 24_000;
 /** At most this many left-out messages are named one by one; the rest are counted. */
 export const LEFT_OUT_POINTER_LIMIT = 40;
 const POINTER_PREVIEW_CHARS = 80;
+const TRUNCATED_SUFFIX = "\n\n[truncated]";
 
 /**
  * Build the hand-over at send time from the thread as it is then.
@@ -190,7 +191,8 @@ export function buildPortableTranscript(
     const last = rendered.length - 1;
     const leftOut = messages.filter((_, index) => index !== firstUser && index !== last);
     const marker = leftOutMarker(leftOut, [messages[last]!], chatId);
-    const tail = limitSection(rendered[last]!, Math.max(200, room - marker.length - 2));
+    // limitSection adds "\n\n[truncated]" beyond the length it is given.
+    const tail = limitSection(rendered[last]!, Math.max(200, room - marker.length - 2 - TRUNCATED_SUFFIX.length));
     return joinParts(head, marker, tail);
   }
   return text;

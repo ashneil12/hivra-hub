@@ -964,10 +964,10 @@ fn pick_up_by_rule(
     if row.assignee.is_some() || row.delegation_id.is_some() {
         return Ok(());
     }
-    // A task a rule took once is never taken again: if it is unassigned now, the person let it go on purpose.
+    // A task a rule took once, or one the person unassigned, is never taken again: the person let it go on purpose.
     let taken_before: i64 = conn
         .query_row(
-            "SELECT COUNT(*) FROM task_activity WHERE task_id = ?1 AND kind = 'pickup'",
+            "SELECT COUNT(*) FROM task_activity WHERE task_id = ?1 AND kind IN ('pickup', 'unassigned')",
             [&row.id],
             |r| r.get(0),
         )
@@ -1517,6 +1517,18 @@ pub(crate) fn update_in(
         if !changed.iter().any(|id| id == &row.id) {
             changed.push(row.id.clone());
         }
+    }
+    // WP-250: the person taking a task away from someone is an opt-out no pickup rule overrides later.
+    if actor.kind == "person"
+        && assignee_changed
+        && next_assignee.is_none()
+        && row.assignee.is_some()
+    {
+        conn.execute(
+            "INSERT INTO task_activity (id, task_id, at, kind, text, delegation_id) VALUES (?1, ?2, ?3, 'unassigned', ?4, NULL)",
+            params![new_id("act"), row.id, now, "Unassigned"],
+        )
+        .map_err(|e| e.to_string())?;
     }
     if actor.kind == "person" && assignee_changed {
         if let Some(assignee) = &next_assignee {

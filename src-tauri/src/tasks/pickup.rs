@@ -209,10 +209,14 @@ pub(crate) fn all(conn: &Connection) -> Result<Vec<PickupRule>, String> {
     rows
 }
 
-/// Whether a chat with this id is in the app's store. A deleted chat's rule takes nothing.
+/// Whether a live chat with this id is in the app's store. A deleted chat sits in the trash ledger (its row stays until
+/// the purge), and its rule takes nothing from the moment it is deleted.
 fn chat_exists(conn: &Connection, id: &str) -> bool {
-    conn.query_row("SELECT 1 FROM sessions WHERE id = ?1", [id], |_| Ok(()))
-        .is_ok()
+    let present = conn
+        .query_row("SELECT 1 FROM sessions WHERE id = ?1", [id], |_| Ok(()))
+        .is_ok();
+    // A database with no ledger yet has nothing in the trash.
+    present && !crate::trash::is_trashed(conn, "chat", id).unwrap_or(false)
 }
 
 /// The first mate that takes this task, if any.

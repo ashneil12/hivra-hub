@@ -26,7 +26,7 @@ describe("pickup rules (WP-250)", () => {
       "Takes unassigned tasks in this project with status Todo",
     );
     expect(describeRule({ project: null, statuses: [], labels: ["ui"], enabled: false })).toBe(
-      "Takes unassigned tasks in any project with any status, labelled ui (off)",
+      "Takes nothing until it names a project (remove it and add it again)",
     );
   });
 

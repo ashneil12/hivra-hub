@@ -65,6 +65,7 @@ export function PickupRules({ project, folder }: { project: string; folder: stri
             </span>
             <button
               type="button"
+              hidden={!rule.project}
               className="text-content/60"
               onClick={() =>
                 void savePickupRule({ ...rule, enabled: !rule.enabled })

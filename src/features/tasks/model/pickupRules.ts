@@ -91,7 +91,9 @@ export function describeRule(
   const parts: string[] = [];
   parts.push(rule.statuses.length ? `status ${rule.statuses.join(" or ")}` : "any status");
   if (rule.labels.length) parts.push(`labelled ${rule.labels.join(" and ")}`);
-  const where = !rule.project ? " in any project" : rule.project === here ? " in this project" : ` in ${rule.project}`;
+  // A rule from before every rule named a project takes nothing; it can only be removed.
+  if (!rule.project) return `Takes nothing until it names a project (remove it and add it again)`;
+  const where = rule.project === here ? " in this project" : ` in ${rule.project}`;
   const line = `Takes unassigned tasks${where} with ${parts.join(", ")}`;
   return rule.enabled ? line : `${line} (off)`;
 }
