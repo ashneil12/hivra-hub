@@ -208,6 +208,11 @@ export function SubChatList({
               {finishedShown.length} finished
             </button>
           ) : null}
+          {finishedCount && (showFinished || !liveShown.length) ? (
+            <p data-sub-chats-resolved className="px-1.5 pl-6 text-[11px] leading-5 text-content/35">
+              Finished work leaves this list after a day. {leadName === "its Lead" ? "Its Lead" : leadName} keeps a line on each in its memory.
+            </p>
+          ) : null}
           {more ? (
             <button
               type="button"

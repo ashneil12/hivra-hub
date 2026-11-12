@@ -22,6 +22,8 @@ import { mismatchFixNudge } from "../model/mismatchFixNudge";
 import { staleTestClaimNudge } from "../model/staleTestClaim";
 import { hubTestNote, hubTestRunDue, projectTestNote, runProjectTests } from "../model/projectTestRun";
 import { promiseNudge } from "../model/promiseNudge";
+import { finishedWorkDue, logFinishedWork } from "../model/finishedWork";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import { joinNudges, notStartedNote, standingRuleNudge, workerStartNudge } from "../model/workerStartNudge";
 import { newAgentNoteBlocks } from "../model/agentNotes";
 import { completionReceipt } from "../model/monoSessionCompletion";
@@ -107,6 +109,8 @@ export function useFollowedBriefs(options: {
   const fixNudged = useRef(new Set<string>());
   const ruleNudged = useRef(new Set<string>());
   const promiseNudged = useRef(new Set<string>());
+  // Finished jobs already written to their Mono's memory in this run (finishedWork.ts writes each once anyway).
+  const loggedWork = useRef(new Set<string>());
   // Agent-to-agent notes (model/agentNotes.ts): moves from this run on, each once; which worker chats exist, once each.
   const notesSince = useRef<number | undefined>(undefined);
   const chatThere = useRef(new Map<string, boolean>());
@@ -255,6 +259,13 @@ export function useFollowedBriefs(options: {
         }
       }
     }
+    // A finished job whose report reached its Mono goes into the Mono's memory (finishedWork.ts, Ash 12 Nov).
+    if (IS_HUB_BUNDLE)
+      for (const row of tracker.known()) {
+        if (loggedWork.current.has(row.id) || !finishedWorkDue(row, Date.now())) continue;
+        loggedWork.current.add(row.id);
+        void logFinishedWork(row).catch(() => false);
+      }
     const onLeadReport = latest.current.onLeadReport;
     if (!onLeadReport) return;
     await postAnsweredLeadReports(tracker.known(), sessionsRef.current, reported.current, onLeadReport, (row) =>
