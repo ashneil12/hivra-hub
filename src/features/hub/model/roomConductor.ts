@@ -16,8 +16,10 @@ import type { LiveActivity } from "../../sessions/model/liveActivity";
 import { listMonos } from "../../monos/model/mono";
 import { examplesOn } from "./examples";
 import {
+  addMember,
   appendMessage,
   getChat,
+  leadershipChatId,
   newMessageId,
   notify,
   react,
@@ -27,7 +29,7 @@ import {
   unanswered,
 } from "./hubChats";
 import { hubData } from "./hubData";
-import { leadFor } from "./hubLeads";
+import { leadFor, leadMono, projectLeadOf } from "./hubLeads";
 import {
   addressedIn,
   answerPick,
@@ -1338,20 +1340,31 @@ export function retryNotice(chatId: string, noticeId: string): Promise<void> {
 // ---- After a post ------------------------------------------------------------------------------------------------
 
 /** A Mono posted: count it against the loop brake, then wake the seats it names (and, after an answer, the lanes). */
-function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: Wake): void {
+function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: Wake): string[] {
   const r = roomOf(chatId);
   const t = threadOf(r, convId);
   const chat = getChat(chatId);
   const conv = chat?.conversations.find((c) => c.id === convId);
-  if (!chat || !conv || !isMonoPost(message)) return;
-  const seats = seatsOf(chat);
+  if (!chat || !conv || !isMonoPost(message)) return [];
+  let seats = seatsOf(chat);
+  // A project's Leadership room: naming the project's lead brings it in (Ash 12 Nov: the Chief of Staff asked the
+  // Hivra lead to say hi there and nobody was woken, because the lead had no seat).
+  const lead = chat.id === leadershipChatId(chat.projectId) ? projectLeadOf(chat.projectId) : undefined;
+  const leadMonoNow = lead ? leadMono(lead) : undefined;
+  if (leadMonoNow && !chat.memberIds.includes(leadMonoNow.id) && message.from !== leadMonoNow.id) {
+    const withLead = seatsOf({ ...chat, memberIds: [...chat.memberIds, leadMonoNow.id] });
+    if (addressedIn(message.text, withLead, message.from).includes(leadMonoNow.id)) {
+      addMember(chat.id, leadMonoNow.id);
+      seats = withLead;
+    }
+  }
   t.posts++;
   // The seat the strip said hadn't answered just did.
   if (t.note?.mono === message.from) t.note = undefined;
   // WP-22: during a goal run the lead says who speaks next; naming a seat doesn't wake it.
   if (t.paused || t.goal?.state === "running") {
     pump(chatId);
-    return;
+    return [];
   }
   const speaker = nameOf(message.from);
   const named = addressedIn(message.text, seats, message.from);
@@ -1371,10 +1384,11 @@ function afterPost(chatId: string, convId: string, message: ChatMessage, wake?: 
   if (t.posts >= MONO_POSTS_CEILING) {
     pause(chatId, convId, "ceiling");
     pump(chatId);
-    return;
+    return [];
   }
   if (wake?.kind === "answer") roomTurn(chatId, wake, seats, speaker, named);
   pump(chatId);
+  return named;
 }
 
 /**
@@ -1552,8 +1566,16 @@ export function postFromMono(
     }
     notify();
   }
-  afterPost(chatId, posted.convId, posted.message, wake);
-  return { posted: posted.message, convId: posted.convId, note: "Posted. The Monos you named are woken; carry on with your work." };
+  const woken = afterPost(chatId, posted.convId, posted.message, wake);
+  return { posted: posted.message, convId: posted.convId, note: postedNote(chatId, monoId, woken) };
+}
+
+/** What room_post tells the poster: who it really woke, or that it woke nobody and how to reach someone outside. */
+function postedNote(chatId: string, monoId: string, woken: readonly string[]): string {
+  if (woken.length) return `Posted. Woke ${woken.map(nameOf).join(", ")}; carry on with your work.`;
+  const others = (getChat(chatId)?.memberIds ?? []).filter((id) => id !== monoId).map(nameOf);
+  const seats = others.length ? `This room's other seats are ${others.join(", ")}. ` : "";
+  return `Posted. Nobody was woken: you didn't name anyone in this room. ${seats}Name a seat to wake it, or reach a Mono outside the room with mono_message.`;
 }
 
 /**
