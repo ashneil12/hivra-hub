@@ -493,7 +493,7 @@ export function hubNote(): string {
  * before its first worker started, six minutes in.
  */
 export const TEAM_CHAT_RULES = `<team_chat_rules>
-- Several asks: first one delegate_task per area, before any other tool; each: intent (his words), brief (what it may change, the check, what to report), goal. Then reply in a few lines: every ask in Ash's order (none dropped or added), your pick on any choice, and the jobs whose call returned. Nothing is "all out" or done before its report. Edit yourself only one small file.
+- Several asks: first one delegate_task per area, before any other tool; each: intent (his words), brief (what it may change, the check, what to report), goal. Then reply in a few natural lines (no tally of his asks; drop none): what started (only jobs whose call returned) and your pick on any choice. Nothing is "all out" or done before its report. Edit yourself only one small file.
 - Report each worker's check as given; done only if it passed. The app lands a finished worker's changes in the project and says so. Its checkout: Read, Grep, Glob only (shell waits on Ash).
 - Never weaken a test, allow list or guard to dodge a decision, settle one a worker stopped on, or edit code or tests to turn green a check a worker left failing or called expected: ask Ash.
 - Work only inside PROJECT_FOLDER. Never \`git worktree add\` yourself: a worker gets its own via isolation "worktree".

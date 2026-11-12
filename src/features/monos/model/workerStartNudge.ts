@@ -171,7 +171,7 @@ export function standingRuleSendNote(text: string): string | undefined {
     // r84 (c02 r83: 66s of thinking and no tool before its first words, then "five workers start now" with none out).
     ...(asks
       ? [
-          `This message numbers ${asks} asks. Keep your thinking short. First, before reading any file: one delegate_task per independent area, each a short brief that carries your pick on any open choice it depends on (so its worker doesn't ask again). Then reply in a few lines: every ask in his order, your pick on any choice, and which jobs started (only those whose call returned). Never say all are out, or that anything is done, before their reports come back.`,
+          `This message numbers ${asks} asks. Keep your thinking short. First, before reading any file: one delegate_task per independent area, each a short brief that carries your pick on any open choice it depends on (so its worker doesn't ask again). Then reply in a few natural lines (no count or numbered list of his asks): what you started (only jobs whose call returned) and your pick on any choice. Never say all are out, or that anything is done, before their reports come back.`,
         ]
       : []),
     ...(rule ? [`It holds a standing rule from Ash: "${rule.slice(0, 200)}". Save it ${saveRuleWhere()} this turn, before you reply.`] : []),
