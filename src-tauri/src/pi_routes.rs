@@ -39,10 +39,53 @@ pub fn is_pi_family(binary_provider: Option<&str>) -> bool {
     matches!(binary_provider, Some("pi") | Some("omp"))
 }
 
-/// The harnesses that take these routes: the Pi family, and Codex (config overrides, OpenAI Responses through the
-/// router's passthrough).
+/// The harnesses that take these routes: the Pi family, Codex (config overrides, OpenAI Responses through the
+/// router's passthrough) and OpenCode 1.x (`OPENCODE_CONFIG_CONTENT`, Anthropic Messages to the router).
 pub fn takes_routes(binary_provider: Option<&str>) -> bool {
-    is_pi_family(binary_provider) || binary_provider == Some("codex")
+    is_pi_family(binary_provider) || matches!(binary_provider, Some("codex") | Some("opencode"))
+}
+
+/// The env var OpenCode merges over its own config files.
+pub const OPENCODE_CONFIG_ENV: &str = "OPENCODE_CONFIG_CONTENT";
+
+/// OpenCode's config with one provider per saved model, merged over `existing` (the person's own
+/// `OPENCODE_CONFIG_CONTENT`, kept when it is a JSON object). Each provider uses OpenCode's built-in Anthropic SDK
+/// against the router, so every saved model works the way it does for Claude Code. The value is the per-session
+/// router token, which only opens the loopback router for this child's life, never the model's key.
+pub fn opencode_config_content(routes: &PiRoutes, existing: Option<&str>) -> Option<String> {
+    if routes.listed.is_empty() {
+        return None;
+    }
+    let mut config = existing
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
+        .filter(serde_json::Value::is_object)
+        .unwrap_or_else(|| json!({}));
+    let root = config.as_object_mut()?;
+    let providers = root.entry("provider").or_insert_with(|| json!({}));
+    if !providers.is_object() {
+        *providers = json!({});
+    }
+    let providers = providers.as_object_mut()?;
+    for listed in &routes.listed {
+        let token = routes
+            .env
+            .iter()
+            .find(|(key, _)| *key == listed.token_env)
+            .map(|(_, value)| value.as_str())?;
+        let name = format!("{} (your key)", listed.model_id);
+        let mut models = serde_json::Map::new();
+        models.insert(listed.model_id.clone(), json!({ "name": name }));
+        providers.insert(
+            listed.provider.clone(),
+            json!({
+                "npm": "@ai-sdk/anthropic",
+                "name": "Your saved models",
+                "options": { "baseURL": format!("{}/v1", listed.base_url), "apiKey": token },
+                "models": models,
+            }),
+        );
+    }
+    serde_json::to_string(&config).ok()
 }
 
 /// One model as offered to a child: its provider name, the router's loopback address, the model and the env var
@@ -304,6 +347,40 @@ mod tests {
         // Nothing Claude Code reads leaks into Pi's env.
         assert!(get("ANTHROPIC_AUTH_TOKEN").is_none());
         assert!(get("ANTHROPIC_BASE_URL").is_none());
+    }
+
+    #[test]
+    fn opencode_gets_one_anthropic_provider_per_model_over_the_persons_own_config() {
+        let routes = vec![route("grok-1", "grok-4.7"), route("or", "x-ai/grok-4")];
+        let (ready, _) = build_with(&routes, &|r| {
+            prepared(r, &format!("tok-{}", r.custom_model_id), None)
+        });
+        let own = r#"{"theme":"dark","provider":{"anthropic":{"options":{"timeout":5}}}}"#;
+        let text = opencode_config_content(&ready, Some(own)).unwrap();
+        let config: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(config["theme"], "dark");
+        assert_eq!(config["provider"]["anthropic"]["options"]["timeout"], 5);
+        let grok = &config["provider"]["dropwave-grok-1"];
+        assert_eq!(grok["npm"], "@ai-sdk/anthropic");
+        assert_eq!(grok["options"]["baseURL"], "http://127.0.0.1:4321/v1");
+        assert_eq!(grok["options"]["apiKey"], "tok-grok-1");
+        assert_eq!(grok["models"]["grok-4.7"]["name"], "grok-4.7 (your key)");
+        // A model id with a slash stays one model under its provider.
+        assert!(config["provider"]["dropwave-or"]["models"]["x-ai/grok-4"].is_object());
+        // Not a JSON object, or nothing set: a fresh config.
+        let fresh = opencode_config_content(&ready, Some("not json")).unwrap();
+        assert!(!fresh.contains("not json"));
+        assert!(opencode_config_content(&ready, None)
+            .unwrap()
+            .contains("dropwave-grok-1"));
+    }
+
+    #[test]
+    fn opencode_gets_no_config_when_no_model_is_ready() {
+        let (ready, _) = build_with(&[], &|r| prepared(r, "t", None));
+        assert_eq!(opencode_config_content(&ready, Some("{}")), None);
+        assert!(takes_routes(Some("opencode")));
+        assert!(!takes_routes(Some("hermes")));
     }
 
     #[test]

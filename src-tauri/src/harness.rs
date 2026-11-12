@@ -1254,7 +1254,7 @@ pub fn harness_spawn(
     let pi_routes = match pi_routes {
         None => None,
         Some(_) if !crate::pi_routes::takes_routes(binary_provider.as_deref()) => {
-            return Err("Saved models are offered to Pi, Oh My Pi and Codex only".into())
+            return Err("Saved models are offered to Pi, Oh My Pi, Codex and OpenCode only".into())
         }
         Some(routes) if routes.is_empty() || pi_isolated => None,
         Some(routes) => Some(crate::pi_routes::build(&routes)),
@@ -1446,6 +1446,15 @@ pub fn harness_spawn(
     let mut routed_session = None;
     let mut pi_sessions = Vec::new();
     if let Some(ready) = pi_routes {
+        // OpenCode 1.x: the providers go in its config override, merged over any the person set themselves.
+        if binary_provider.as_deref() == Some("opencode") {
+            let existing = std::env::var(crate::pi_routes::OPENCODE_CONFIG_ENV).ok();
+            if let Some(config) =
+                crate::pi_routes::opencode_config_content(&ready, existing.as_deref())
+            {
+                cmd.env(crate::pi_routes::OPENCODE_CONFIG_ENV, config);
+            }
+        }
         for (key, value) in ready.env {
             cmd.env(key, value);
         }
