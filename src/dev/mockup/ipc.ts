@@ -157,7 +157,9 @@ export function mockupIpc(cmd: string, args: Row | undefined): unknown {
       return ((args?.paths as string[] | undefined) ?? []).map((path) => ({ path, exists: !path.includes("/Old/") }));
     case "chat_import_read": {
       const chat = exampleChats().find((item) => item.path === args?.path);
-      const text = ["Example: first message", "Example: second message"]
+      const topics = ["Fix the checkout total", "Add a search box", "Why is the build slow?", "Tidy the settings page", "Write tests for sign-in", "Rename the cart module", "Plan the next release", "Speed up the first load"];
+      const topic = topics[exampleChats().findIndex((item) => item.path === args?.path) % topics.length] ?? topics[0];
+      const text = [`Example: ${topic}`, "Example: second message"]
         .map((said, index) =>
           JSON.stringify({
             type: "user",
@@ -172,8 +174,19 @@ export function mockupIpc(cmd: string, args: Row | undefined): unknown {
     }
     case "session_provider_ids":
       return [];
-    case "session_import_new":
+    case "session_import_new": {
+      // Kept with the example chats, so a brought-in chat shows in its project's list and opens.
+      const { session, createdAt, updatedAt } = args as unknown as { session: { id: string }; createdAt: number; updatedAt: number };
+      try {
+        const kept = JSON.parse(localStorage.getItem("monocode:dev-sessions") ?? "[]") as { id: string }[];
+        if (kept.some((entry) => entry.id === session.id)) return false;
+        kept.push({ ...session, createdAt, updatedAt } as { id: string });
+        localStorage.setItem("monocode:dev-sessions", JSON.stringify(kept));
+      } catch {
+        // Not kept: the walk still runs.
+      }
       return true;
+    }
     default:
       return undefined;
   }

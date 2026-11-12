@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { parseClaude } from "../../historyImport/model/claude";
 import { parseCodex } from "../../historyImport/model/codex";
-import { chatTitle, importedChatId, toImportedChat } from "./convert";
+import { chatTitle, importedChatId, isImportedChatId, toImportedChat } from "./convert";
+import { inChatListScope } from "../../hub/model/chatListScope";
 import type { IndexedChat } from "./plan";
 
 const CLAUDE = [
@@ -70,5 +71,21 @@ describe("an imported chat", () => {
     const only = JSON.stringify({ type: "assistant", sessionId: "s", timestamp: "2026-01-03T10:01:00Z", message: { role: "assistant", content: "Hi" } });
     expect(toImportedChat(parseClaude("s.jsonl", only, true)!, indexed({}), "/p/app")).toBeNull();
     expect(chatTitle({ ...parseClaude("x.jsonl", CLAUDE, true)!, title: "Saved" }, {})).toBe("Saved");
+  });
+});
+
+describe("where a brought-in chat is filed", () => {
+  it("is the Chief of Staff's in its project, never the Lead's, and other chats are not touched", () => {
+    const imported = [importedChatId("claude_code", { sessionId: "abc-123", path: "a.jsonl" }), importedChatId("codex", { path: "2026/01/r1.jsonl" })];
+    expect(imported.every(isImportedChatId)).toBe(true);
+    expect(["s1", "imp", "imp-other-1", "chief-chat"].some(isImportedChatId)).toBe(false);
+    // As the chat list asks: a brought-in chat's first mate is the Chief of Staff.
+    const facts = { monoOf: (id: string) => (isImportedChatId(id) ? "chief" : undefined), startedBy: () => undefined };
+    for (const id of imported) {
+      expect(inChatListScope("own", { monoId: "chief", plainChats: false }, id, facts)).toBe(true);
+      expect(inChatListScope("own", { monoId: "lead", plainChats: true }, id, facts)).toBe(false);
+      expect(inChatListScope("all", { monoId: "lead", plainChats: true }, id, facts)).toBe(true);
+    }
+    expect(inChatListScope("own", { monoId: "lead", plainChats: true }, "s1", facts)).toBe(true);
   });
 });
