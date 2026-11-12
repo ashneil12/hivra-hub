@@ -194,7 +194,8 @@ impl AgentControl for SystemAgent {
 }
 
 /// Calls SMAppService. The result is ignored: unregistering a job that is not there reports an error, and that is
-/// not a failure. Nothing is logged.
+/// not a failure. Nothing is logged. The error belongs to the autorelease pool (`with_out_error`): releasing it by
+/// hand crashed 0.16.17 at launch, when this thread ended.
 fn app_service(plist_name: &str, register: bool) -> bool {
     let Some(class) = AnyClass::get(c"SMAppService") else {
         return false;
@@ -205,14 +206,12 @@ fn app_service(plist_name: &str, register: bool) -> bool {
     let Some(service) = service else {
         return false;
     };
-    let mut error: *mut AnyObject = ptr::null_mut();
-    let ok: Bool = if register {
-        unsafe { msg_send![&*service, registerAndReturnError: &mut error] }
-    } else {
-        unsafe { msg_send![&*service, unregisterAndReturnError: &mut error] }
-    };
-    if !error.is_null() {
-        drop(unsafe { Retained::<AnyObject>::from_raw(error) });
-    }
+    let (ok, _) = crate::cocoa_out_error::with_out_error(|error| -> Bool {
+        if register {
+            unsafe { msg_send![&*service, registerAndReturnError: error] }
+        } else {
+            unsafe { msg_send![&*service, unregisterAndReturnError: error] }
+        }
+    });
     ok.as_bool()
 }

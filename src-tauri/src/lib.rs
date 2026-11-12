@@ -26,6 +26,9 @@ mod chat_background;
 mod chat_folder;
 mod chat_media;
 mod checkpoint;
+// Cocoa calls with an `NSError **` out-parameter: the error belongs to the autorelease pool.
+#[cfg(target_os = "macos")]
+mod cocoa_out_error;
 mod codex_mono_store;
 pub mod connectors;
 mod control;
