@@ -25,7 +25,7 @@ export function openMonoChatWith(monoId: string, text: string): void {
   if (sessionId) typeInto(sessionId, text);
   else pending.set(monoId, text);
   // Straight to the chat, out of Settings (where Ask Alfred sits), with the text in its composer, not sent.
-  openMonoChat(monoId);
+  openMonoChat(monoId, { main: true });
 }
 
 /** A Mono's chat was just made: what was waiting for it is typed in. */

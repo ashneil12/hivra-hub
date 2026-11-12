@@ -1088,6 +1088,7 @@ import {
   ensureMonoSession,
   resetMonoSession,
 } from "../features/monos/model/monoWorkspace";
+import { noteMonoChat, pickMonoChat, type MonoChatScope } from "../features/monos/model/monoLastChat";
 import { projectFront, setProjectFront, useProjectFrontVersion } from "../features/hub/model/projectFront";
 import { pickChief as pickCaptain } from "../features/home/model/chief";
 import { isImportedChatId } from "../features/chatImport/model/convert";
@@ -1751,6 +1752,11 @@ function Workspace({
   );
   const monoViewIdRef = useRef(monoViewId);
   monoViewIdRef.current = monoViewId;
+  // Ash (12 Nov): the chat on screen is the one a first mate's row opens next time (monoLastChat.ts).
+  const monoScopeRef = useRef<MonoChatScope | undefined>(undefined);
+  useEffect(() => {
+    if (monoViewId) noteMonoChat(monoViewId, monoScopeRef.current);
+  }, [monoViewId]);
   const monoViewRequest = useRef(0);
   // WP-06: opening the coding team reveals the project's own pane, and that pane taking focus would cancel the
   // Lead's open (onFocusPane). Held until the focus from this open has passed; a real chat pick still closes it.
@@ -5898,7 +5904,7 @@ function Workspace({
 
   /** A Mono's conversation is a view over the existing workspace tabs. */
   const onOpenMono = useCallback(
-    async (monoId: string, options: { inTeam?: boolean; leaveSettings?: boolean; project?: string } = {}) => {
+    async (monoId: string, options: { inTeam?: boolean; leaveSettings?: boolean; project?: string; main?: boolean } = {}) => {
       // WP-06: held until the focus from uncovering the project pane has passed (onFocusPane).
       const opening = ++openingMonoGen.current;
       openingMono.current = true;
@@ -5956,9 +5962,21 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       };
-      const opened = ownProject
-        ? await ensureMonoProjectSession(monoId, ownProject, sessionHost)
-        : await ensureMonoSession(monoId, sessionHost);
+      // Ash (12 Nov): back to the chat he was last on with this first mate, else its newest; `main` asks for its own.
+      const monoNow = findMono(monoId);
+      const mainChat = ownProject ? monoNow?.projectSessions?.[ownProject.id] : monoNow?.sessionId;
+      const lastChat =
+        options.main || !monoNow
+          ? undefined
+          : pickMonoChat(monoNow, ownProject?.id, sessionsRef.current, team?.folder ?? own?.folder);
+      const resumed = lastChat && lastChat !== mainChat ? await ensureOpenSession(lastChat) : undefined;
+      if (request !== monoViewRequest.current) return;
+      monoScopeRef.current = { monoId, project: ownProject?.id };
+      const opened =
+        resumed ??
+        (ownProject
+          ? await ensureMonoProjectSession(monoId, ownProject, sessionHost)
+          : await ensureMonoSession(monoId, sessionHost));
       // WP-34: a build that started before this window's sessions existed lands its brief here.
       const session = opened && monoId === CREATOR_MONO_ID ? landCreatorBrief(opened) : opened;
       if (session && session !== opened) {
@@ -7783,8 +7801,8 @@ function Workspace({
   useEffect(
     () =>
       setMonoChatOpener((monoId, target) => {
-        if (target?.project) return void onOpenMono(monoId, { project: target.project, leaveSettings: true });
-        const open = () => void onOpenMono(monoId, { inTeam: true, leaveSettings: true });
+        if (target?.project) return void onOpenMono(monoId, { project: target.project, leaveSettings: true, main: target.main });
+        const open = () => void onOpenMono(monoId, { inTeam: true, leaveSettings: true, main: target?.main });
         if (!codingTeamsOn() || leadFor(monoId) || monoTeam(monoId)) return open();
         void ensureMonoTeam(monoId).catch(() => undefined).then(open);
       }),
@@ -18603,10 +18621,11 @@ function Workspace({
                     statusLabel: teamCaptain || teamLeadMono.id === pickCaptain(listMonos())?.id ? "Captain" : teamProject ? "Lead" : "First mate",
                     // Its chat's own title, which renames as any chat's does (Sidebar.tsx renderLeadCard).
                     ...(teamLeadSession ? { chatTitle: teamLeadSession.title } : {}),
+                    // This row is the first mate's own chat in the list, so it opens that chat, not the last one.
                     onOpen: () =>
                       void onOpenMono(
                         teamLeadMono.id,
-                        teamCaptain && teamProject ? { project: teamProject.id } : { inTeam: true },
+                        teamCaptain && teamProject ? { project: teamProject.id, main: true } : { inTeam: true, main: true },
                       ),
                   },
                 }

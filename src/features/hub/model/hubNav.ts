@@ -216,7 +216,8 @@ export function openMonoTeam(monoId: string, target?: MonoTeamTarget): void {
  * opened behind Settings and only showed after Back. Without the app's opener it falls back to openMonoTeam.
  */
 /** Dropwave: `project` opens the Mono's own chat for that project (the Chief of Staff's, geared to it). */
-export type MonoChatTarget = { project?: string };
+/** `main`: its own chat (the one text was typed into), not the chat Ash was last on with it. */
+export type MonoChatTarget = { project?: string; main?: boolean };
 let monoChatOpener: ((monoId: string, target?: MonoChatTarget) => void) | undefined;
 
 export function setMonoChatOpener(open: (monoId: string, target?: MonoChatTarget) => void): () => void {
