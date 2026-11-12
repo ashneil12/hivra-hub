@@ -62,11 +62,13 @@ export type ChatImportPanelProps = {
   projects: ProjectRef[];
   /** Fixed in tests. */
   now?: number;
-  /** First run shows a shorter heading. */
+  /** The setup card has its own heading. */
   compact?: boolean;
+  /** Called as the bringing in starts (the setup card closes and lets the person back into the app). */
+  onBringIn?: () => void;
 };
 
-export function ChatImportPanel({ run, projects, now = Date.now(), compact }: ChatImportPanelProps) {
+export function ChatImportPanel({ run, projects, now = Date.now(), compact, onBringIn }: ChatImportPanelProps) {
   const state = useImportState(run);
   return (
     <section className="flex max-w-2xl flex-col gap-4" data-chat-import data-phase={state.phase}>
@@ -75,7 +77,8 @@ export function ChatImportPanel({ run, projects, now = Date.now(), compact }: Ch
           <h2 className="text-[15px] font-medium text-content">Bring your chats over</h2>
           <p className="mt-1 text-[13px] leading-5 text-content/60">
             Your past Claude Code and Codex chats come in as projects and chats here. You choose what comes in and where.
-            Nothing in those tools' own folders is changed.
+            Nothing in those tools' own folders is changed by bringing them in. When you carry on a Claude Code chat here, Claude
+            Code adds the new messages to its own record of that chat, as it always does.
           </p>
         </div>
       )}
@@ -90,7 +93,7 @@ export function ChatImportPanel({ run, projects, now = Date.now(), compact }: Ch
         <Working line={`Looking through your chats: ${n(state.seen)}${state.total ? ` of ${n(state.total)}` : ""} found.`} onCancel={() => run.cancel()} />
       ) : null}
       {state.phase === "ready" && state.choices ? (
-        <Picker state={state} choices={state.choices} projects={projects} now={now} run={run} />
+        <Picker state={state} choices={state.choices} projects={projects} now={now} run={run} onBringIn={onBringIn} />
       ) : null}
       {state.phase === "importing" ? (
         <Working
@@ -147,12 +150,14 @@ function Picker({
   projects,
   now,
   run,
+  onBringIn,
 }: {
   state: ImportState;
   choices: Choices;
   projects: ProjectRef[];
   now: number;
   run: ChatImportRun;
+  onBringIn?: () => void;
 }) {
   const groups = state.groups;
   const total = groups.reduce((sum, group) => sum + group.chats, 0);
@@ -212,7 +217,10 @@ function Picker({
           className={PRIMARY}
           data-chat-import-go
           disabled={summary.chats === 0}
-          onClick={() => void run.bringIn()}
+          onClick={() => {
+            void run.bringIn();
+            onBringIn?.();
+          }}
         >
           Bring in {plural(summary.chats, "chat")}
         </button>
