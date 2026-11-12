@@ -86,26 +86,30 @@ describe("key hold fails closed", () => {
     }
   });
 
-  it("a 1 MB adversarial scan stays within a generous bound of a 50 line run", () => {
+  it("a 1 MB adversarial scan grows about linearly from a 64 KB one", () => {
+    // The guard is against a scan that blows up with size (backtracking, a decode per offset). The baseline is the
+    // same adversarial text at 1/16 of the size, not a tiny run: a tiny run is mostly fixed cost, so on a busy
+    // machine its ratio to the 1 MB run swung past the bound without the scan changing (12 Nov, load 17-26).
     const line = "LS0tLS1CRUdJTiX";
-    const small = `${line}\n`.repeat(50);
-    const adversarial = line.repeat(Math.ceil((1024 * 1024) / line.length));
+    const big = line.repeat(Math.ceil((1024 * 1024) / line.length));
+    const part = line.repeat(Math.ceil((64 * 1024) / line.length));
+    const median = (text: string) => {
+      const samples: number[] = [];
+      for (let i = 0; i < 3; i += 1) {
+        const started = performance.now();
+        redactChat(chatWith(text));
+        samples.push(performance.now() - started);
+      }
+      samples.sort((a, b) => a - b);
+      return samples[1] ?? samples[0] ?? 0;
+    };
     // One pass of each size pays for the first compilation. The measured runs are the steady cost.
-    redactChat(chatWith(small));
-    redactChat(chatWith(adversarial));
-    const rounds = 20;
-    const smallStarted = performance.now();
-    for (let i = 0; i < rounds; i += 1) redactChat(chatWith(small));
-    const baseline = Math.max(0.05, (performance.now() - smallStarted) / rounds);
-    const samples: number[] = [];
-    for (let i = 0; i < 3; i += 1) {
-      const started = performance.now();
-      redactChat(chatWith(adversarial));
-      samples.push(performance.now() - started);
-    }
-    samples.sort((a, b) => a - b);
-    const elapsed = samples[1] ?? samples[0] ?? 0;
-    expect(elapsed, `${Math.round(elapsed)} ms vs ${baseline.toFixed(2)} ms baseline`).toBeLessThan(baseline * 80);
+    redactChat(chatWith(part));
+    redactChat(chatWith(big));
+    const baseline = Math.max(0.5, median(part));
+    const elapsed = median(big);
+    // 16 times the text: linear is about 16 times the time, quadratic about 256. Allow 4 times linear for noise.
+    expect(elapsed, `${Math.round(elapsed)} ms vs ${baseline.toFixed(2)} ms for 64 KB`).toBeLessThan(baseline * 16 * 4);
     expect(elapsed).toBeLessThan(10_000);
   });
 });
