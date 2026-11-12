@@ -28,6 +28,8 @@ export type Conversation = {
   sourceKey: string;
   source: SourceId;
   project: string;
+  /** The folder the chat ran in, when the transcript says. */
+  cwd?: string;
   title: string;
   messages: TranscriptMessage[];
   /** Lines that were not valid JSON. */

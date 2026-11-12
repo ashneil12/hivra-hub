@@ -464,7 +464,7 @@ fn stored_registry_agent(value: Option<&str>) -> Option<String> {
 /// What a saved chat must look like. A blank folder is allowed: it is a chat that came in from an export with no folder
 /// that is a project here (docs/PORTABLE.md), and it has to keep saving (title, pin, a new folder) until one is chosen.
 /// Nothing runs in it: every launcher refuses a blank folder (`chat_folder.rs`).
-fn check_upsert(session: &SessionUpsert) -> Result<(), String> {
+pub(crate) fn check_upsert(session: &SessionUpsert) -> Result<(), String> {
     validate_id(&session.id, "session")?;
     if let Some(provider_session_id) = &session.provider_session_id {
         if !provider_session_id.is_empty() {
@@ -506,6 +506,66 @@ pub fn session_upsert(
         let _ = app.emit("teleport-row-changed", serde_json::json!({ "id": id }));
     }
     Ok(summary)
+}
+
+/// Onboarding import (`chat_import.rs`): saves a chat brought in from Claude Code or Codex with the times it really
+/// had, so a thousand old chats don't all land on top as "just now". A chat already here is left exactly as it is and
+/// `false` comes back: importing twice never doubles a chat or overwrites anything said since.
+pub(crate) fn insert_imported_session(
+    conn: &Connection,
+    session: &SessionUpsert,
+    created_at: i64,
+    updated_at: i64,
+) -> Result<bool, String> {
+    check_upsert(session)?;
+    let exists = conn
+        .query_row(
+            "SELECT 1 FROM sessions WHERE id = ?1",
+            params![session.id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|e| e.to_string())?
+        .is_some();
+    if exists {
+        return Ok(false);
+    }
+    upsert_session(conn, session).map_err(|e| e.to_string())?;
+    let created_at = created_at.max(0);
+    let updated_at = updated_at.max(created_at);
+    conn.execute(
+        "UPDATE sessions SET created_at = ?2, updated_at = ?3 WHERE id = ?1",
+        params![session.id, created_at, updated_at],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(true)
+}
+
+/// Onboarding import: the provider conversations the app's own chats already hold, so an import skips them.
+#[tauri::command(async)]
+pub fn session_provider_ids(store: State<'_, SessionStore>) -> Result<Vec<String>, String> {
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    let mut stmt = conn
+        .prepare("SELECT DISTINCT provider_session_id FROM sessions WHERE provider_session_id IS NOT NULL AND provider_session_id != ''")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+    Ok(rows.filter_map(Result::ok).collect())
+}
+
+#[tauri::command(async)]
+pub fn session_import_new(
+    store: State<'_, SessionStore>,
+    session: SessionUpsert,
+    created_at: i64,
+    updated_at: i64,
+) -> Result<bool, String> {
+    if session.teleport.is_some() {
+        return Err("An imported chat can't carry a move.".into());
+    }
+    let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
+    insert_imported_session(&conn, &session, created_at, updated_at)
 }
 
 fn generated_image_paths(blocks: &Value) -> Vec<String> {
@@ -3799,6 +3859,33 @@ mod tests {
         assert_eq!(transcript_reads.load(Ordering::Relaxed), 0);
         drop(managed);
         let _ = std::fs::remove_dir_all(data_dir);
+    }
+
+    #[test]
+    fn an_imported_chat_keeps_its_own_times_and_a_second_import_changes_nothing() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        let mut chat = sample("imp-claude-s1", "/work/app", "Fix the login");
+        chat.blocks = json!([{ "id": "u1", "role": "user", "text": "Please fix the login" }]);
+        assert!(insert_imported_session(&conn, &chat, 1_000, 2_000).unwrap());
+        let (created, updated): (i64, i64) = conn
+            .query_row(
+                "SELECT created_at, updated_at FROM sessions WHERE id = 'imp-claude-s1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((created, updated), (1_000, 2_000));
+        chat.title = "Changed".into();
+        assert!(!insert_imported_session(&conn, &chat, 5, 6).unwrap());
+        let title: String = conn
+            .query_row(
+                "SELECT title FROM sessions WHERE id = 'imp-claude-s1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(title, "Fix the login");
     }
 
     #[test]
