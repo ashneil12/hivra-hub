@@ -2,6 +2,7 @@ import { isTauri } from "@tauri-apps/api/core";
 import { loadAgentSandbox } from "../../../../features/settings/model/agentSandbox";
 import { TurnNotReadyError } from "../../core/types";
 import { nativeModelId } from "../../../../features/sessions/model/models";
+import { codexModelRoutes, splitRoutedModel } from "./codexRoutes";
 import { sameProviderAccountId } from "../../../../features/providers/model/providerAccounts";
 import {
   exhaustedWindowResetAt,
@@ -109,6 +110,8 @@ type Live = {
   codexStore?: "mono";
   /** WP-41: the developer instructions this process started or resumed with. */
   instructionKey: string;
+  /** The app's router provider a saved model runs on, fixed when the thread opens; unset on Codex's own models. */
+  modelProvider?: string;
   runtimeMode: RuntimeMode;
   /** Snapshot of Hivra's agent sandbox when this thread started. Off outside the app. */
   hivraSandbox: boolean;
@@ -546,6 +549,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   // WP-182: pass the session so a Mono's own skill list can be applied.
   const developerInstructions = await codexDeveloperInstructions(input.cwd, input.sessionId);
   const instructionKey = developerInstructions?.trim() ?? "";
+  // The provider is fixed per thread, so a switch between Codex's own models and a saved one opens it again.
+  const modelProvider = splitRoutedModel(nativeModelId(input.model)).provider;
   if (
     existing &&
     existing.cwd === input.cwd &&
@@ -556,7 +561,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.controlsAgents === controlsAgents &&
     existing.ephemeral === ephemeral &&
     existing.codexStore === codexStore &&
-    existing.instructionKey === instructionKey
+    existing.instructionKey === instructionKey &&
+    existing.modelProvider === modelProvider
   ) {
     existing.onEvent = input.onEvent;
     return existing;
@@ -693,26 +699,48 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   );
 
   const hivraSandbox = await readHivraSandbox();
-  await spawnChild(
-    input.sessionId,
-    path,
-    ["app-server"],
-    input.cwd,
-    {
-      provider: "codex",
-      id: input.providerAccountId ?? "default",
-    },
-    "codex",
-    codexStore,
-    undefined,
-    undefined,
-    undefined,
-    codexSkipsOuterSandbox({
-      runtimeMode: input.runtimeMode,
-      firstMate: input.firstMate,
-      hivraSandbox,
-    }),
-  );
+  const skipOuter = codexSkipsOuterSandbox({
+    runtimeMode: input.runtimeMode,
+    firstMate: input.firstMate,
+    hivraSandbox,
+  });
+  const account = {
+    provider: "codex" as const,
+    id: input.providerAccountId ?? "default",
+  };
+  // The saved models go only when there are some, so a start without them is exactly what it was.
+  const routes = codexModelRoutes();
+  if (routes.length > 0) {
+    await spawnChild(
+      input.sessionId,
+      path,
+      ["app-server"],
+      input.cwd,
+      account,
+      "codex",
+      codexStore,
+      undefined,
+      undefined,
+      undefined,
+      skipOuter,
+      undefined,
+      routes,
+    );
+  } else {
+    await spawnChild(
+      input.sessionId,
+      path,
+      ["app-server"],
+      input.cwd,
+      account,
+      "codex",
+      codexStore,
+      undefined,
+      undefined,
+      undefined,
+      skipOuter,
+    );
+  }
 
   try {
     await rpc.request("initialize", {
@@ -735,7 +763,10 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       );
     }
 
-    const model = nativeModelId(input.model);
+    // A saved model runs on its own Codex provider (codexRoutes.ts); Codex's own models pass as they are.
+    const routed = splitRoutedModel(nativeModelId(input.model));
+    const model = routed.model;
+    const routedConfig = routed.provider ? { model_provider: routed.provider } : undefined;
     const serviceTier = input.modelSettings?.serviceTier;
     const effort = input.modelSettings?.reasoningEffort;
 
@@ -759,7 +790,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
           {
             threadId: resume.threadId,
             ...params,
-            ...withConfig(storeConfig, extraConfig, params.config),
+            ...withConfig(storeConfig, { ...extraConfig, ...routedConfig }, params.config),
           },
         );
         threadId = opened.thread?.id ?? resume.threadId;
@@ -789,7 +820,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
         "thread/start",
         {
           ...params,
-          ...withConfig(storeConfig, extraConfig, params.config),
+          ...withConfig(storeConfig, { ...extraConfig, ...routedConfig }, params.config),
           ...(ephemeral ? { ephemeral: true } : {}),
         },
       );
@@ -810,6 +841,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       ephemeral,
       codexStore,
       instructionKey,
+      modelProvider,
       runtimeMode: input.runtimeMode,
       hivraSandbox,
       planning: input.intent === "plan",
@@ -863,7 +895,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
 }
 
 async function runTurn(live: Live, input: SendTurnInput): Promise<void> {
-  const model = nativeModelId(input.model);
+  const model = splitRoutedModel(nativeModelId(input.model)).model;
   const effort = input.modelSettings?.reasoningEffort;
   const serviceTier = input.modelSettings?.serviceTier;
 

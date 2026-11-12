@@ -1473,6 +1473,12 @@ fn handle(
             respond(&mut stream, 200, &json!({"input_tokens": n}))
         }
         "/v1/messages" => forward(&mut stream, route, upstream, &body),
+        // "Connect any model to any harness": agents that speak the OpenAI API themselves (Codex, OpenCode, Hermes)
+        // use the same router. Nothing is translated: the body goes to the provider as it came, on the saved model,
+        // with the session token swapped for the key.
+        "/v1/chat/completions" | "/v1/responses" => {
+            passthrough(&mut stream, route, upstream, path, &body)
+        }
         _ => respond(
             &mut stream,
             404,
@@ -1648,6 +1654,103 @@ fn forward(
     forward_answer(stream, resp, model, streaming)
 }
 
+/// The provider address for an OpenAI-style path the router passes through.
+fn passthrough_url(provider: &str, base: &str, path: &str) -> String {
+    match path {
+        "/v1/responses" => {
+            let base = base.trim().trim_end_matches('/');
+            if provider == "ollama" && !base.ends_with("/v1") {
+                format!("{base}/v1/responses")
+            } else {
+                format!("{base}/responses")
+            }
+        }
+        _ => chat_url(provider, base),
+    }
+}
+
+/// Fields a provider reads to run another model than `model` (OpenRouter's fallback list and routing). Dropped, so the
+/// saved key only ever runs the saved model.
+const OTHER_MODEL_FIELDS: [&str; 4] = ["models", "route", "provider", "plugins"];
+
+/// The body sent on: the caller's own, always on the saved model (the key is saved for that route alone).
+pub fn passthrough_body(body: &Value, model_id: &str) -> Value {
+    let mut out = body.clone();
+    if let Some(fields) = out.as_object_mut() {
+        for field in OTHER_MODEL_FIELDS {
+            fields.remove(field);
+        }
+        fields.insert("model".into(), json!(model_id.trim()));
+    }
+    out
+}
+
+fn passthrough(
+    stream: &mut TcpStream,
+    route: &CustomRoute,
+    key: &str,
+    path: &str,
+    body: &Value,
+) -> std::io::Result<()> {
+    let payload = passthrough_body(body, &route.model_id);
+    let mut request = agent(600)
+        .post(&passthrough_url(&route.provider, &route.base_url, path))
+        .set("Content-Type", "application/json");
+    if route.provider != "ollama" {
+        request = request.set("Authorization", &format!("Bearer {key}"));
+    }
+    let resp = match request.send_string(&payload.to_string()) {
+        Ok(resp) => {
+            record_receipt(route, None, false, resp.status());
+            resp
+        }
+        Err(ureq::Error::Status(code, r)) => {
+            record_receipt(route, None, false, code);
+            let text = scrub(&r.into_string().unwrap_or_default(), key);
+            return respond(
+                stream,
+                code,
+                &json!({"error": {"message": format!("{} said: {text}", host_of(&route.base_url)), "code": code}}),
+            );
+        }
+        Err(ureq::Error::Transport(_)) => {
+            record_receipt(route, None, false, 0);
+            return respond(
+                stream,
+                502,
+                &json!({"error": {"message": format!("Couldn't reach {}", host_of(&route.base_url))}}),
+            );
+        }
+    };
+    // Redirects are never followed (the key stays on the saved address), and one is not passed on as a success.
+    if !(200..300).contains(&resp.status()) {
+        return respond(
+            stream,
+            502,
+            &json!({"error": {"message": format!("{} answered with a redirect", host_of(&route.base_url))}}),
+        );
+    }
+    let content_type = resp
+        .header("content-type")
+        .unwrap_or("application/json")
+        .replace(['\r', '\n'], "");
+    write!(
+        stream,
+        "HTTP/1.1 200 OK\r\nContent-Type: {content_type}\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
+    )?;
+    let mut reader = resp.into_reader();
+    let mut buf = [0u8; 8192];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        stream.write_all(&buf[..n])?;
+        stream.flush()?;
+    }
+    Ok(())
+}
+
 /// Where each routed request leaves a one-line receipt (E1, 22 Oct: show that the chosen effort reaches the
 /// provider). Only what was asked of whom and the answer's status: never the key, a header or any message text.
 const RECEIPTS_MAX_BYTES: u64 = 256 * 1024;
@@ -1767,8 +1870,6 @@ pub fn prepare_routed_session(route: &CustomRoute) -> Result<(RoutedEnv, Session
     prepare_routed_session_in(route, &crate::key_binding::keychain_item)
 }
 
-/// The routed session for `route`, with the key read through `read_key`. The key is read only for the provider and
-/// address stored with it (WP-129), and the router is started at that stored address, never the caller's.
 /// `prepare_routed_session` without asking the provider for the model's window: no network call at start. For Pi
 /// and Oh My Pi, which get every saved model at each start (src/pi_routes.rs) and assume a window themselves.
 pub fn prepare_routed_session_quick(
@@ -1777,6 +1878,8 @@ pub fn prepare_routed_session_quick(
     prepare_routed_session_with(route, &crate::key_binding::keychain_item, false)
 }
 
+/// The routed session for `route`, with the key read through `read_key`. The key is read only for the provider and
+/// address stored with it (WP-129), and the router is started at that stored address, never the caller's.
 pub(crate) fn prepare_routed_session_in(
     route: &CustomRoute,
     read_item: crate::key_binding::ItemReader,
@@ -2608,6 +2711,88 @@ mod tests {
             .set("Authorization", "Bearer sk-ant-oat01-nope")
             .send_string("{}");
         assert!(matches!(refused, Err(ureq::Error::Status(403, _))));
+    }
+
+    /// "Connect any model to any harness": an OpenAI-style agent goes through the router untranslated, on the saved
+    /// model and the saved key, and gets the provider's own bytes back.
+    #[test]
+    fn the_passthrough_only_runs_the_saved_model() {
+        let body = json!({
+            "model": "anthropic/claude-x",
+            "models": ["anthropic/claude-x"],
+            "route": "fallback",
+            "provider": {"order": ["anthropic"]},
+            "plugins": [],
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        let out = passthrough_body(&body, " x-ai/grok-4 ");
+        assert_eq!(out["model"], "x-ai/grok-4");
+        for field in ["models", "route", "provider", "plugins"] {
+            assert!(out.get(field).is_none(), "{field}");
+        }
+        assert_eq!(out["messages"][0]["content"], "hi");
+    }
+
+    #[test]
+    fn the_router_passes_openai_requests_through_on_the_saved_model() {
+        for path in ["/v1/responses", "/v1/chat/completions"] {
+            let upstream = TcpListener::bind("127.0.0.1:0").unwrap();
+            let up_port = upstream.local_addr().unwrap().port();
+            let seen = std::sync::Arc::new(Mutex::new(String::new()));
+            let seen2 = seen.clone();
+            std::thread::spawn(move || {
+                let (mut s, _) = upstream.accept().unwrap();
+                let req = read_request(&mut s).unwrap();
+                *seen2.lock().unwrap() = format!(
+                    "{}|{}|{}",
+                    req.path,
+                    req.headers
+                        .get("authorization")
+                        .cloned()
+                        .unwrap_or_default(),
+                    String::from_utf8_lossy(&req.body)
+                );
+                let body = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"pong\"}\n\n";
+                write!(s, "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+            });
+            let r = route(
+                "custom",
+                &format!("http://127.0.0.1:{up_port}/v1"),
+                "saved-model",
+            );
+            let port = start_router(r, "fake-key-456".into(), "child-token-456".into()).unwrap();
+            let resp = agent(10)
+                .post(&format!("http://127.0.0.1:{port}{path}"))
+                .set("Authorization", "Bearer child-token-456")
+                .send_string(
+                    &json!({"model": "something-else", "stream": true, "input": "ping"})
+                        .to_string(),
+                )
+                .unwrap();
+            assert_eq!(resp.header("content-type"), Some("text/event-stream"));
+            let text = resp.into_string().unwrap();
+            assert!(text.contains("\"delta\":\"pong\""), "{text}");
+            let seen = seen.lock().unwrap().clone();
+            let expected_path = path.trim_start_matches("/v1");
+            assert!(
+                seen.starts_with(&format!("/v1{expected_path}|Bearer fake-key-456|")),
+                "{seen}"
+            );
+            assert!(
+                seen.contains("\"model\":\"saved-model\"") && seen.contains("\"input\":\"ping\""),
+                "{seen}"
+            );
+            assert!(!seen.contains("child-token"));
+            // A wrong token never reaches the provider.
+            let refused = agent(5)
+                .post(&format!("http://127.0.0.1:{port}{path}"))
+                .set("Authorization", "Bearer not-the-token")
+                .send_string("{}");
+            assert!(matches!(
+                refused,
+                Err(ureq::Error::Status(401, _)) | Err(ureq::Error::Status(403, _))
+            ));
+        }
     }
 
     /// A fake provider that refuses `reasoning_effort` the way xAI does for a model without reasoning control, and

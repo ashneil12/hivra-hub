@@ -794,6 +794,14 @@ describe("settings search", () => {
     });
   });
 
+  it("finds the connections card on the providers page", () => {
+    expect(searchSettings("extra connection")[0]).toMatchObject({
+      section: "providers",
+      settingId: "model-connections",
+      label: "Connections",
+    });
+  });
+
   it("finds the short text setting on the providers page", () => {
     expect(searchSettings("short text")[0]).toMatchObject({
       section: "providers",

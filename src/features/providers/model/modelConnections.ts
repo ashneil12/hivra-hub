@@ -6,7 +6,7 @@
 // * "works": it runs in this app today. `via: "own"` means the agent does it itself (its own login or its own model
 //   list); `via: "app"` means this app makes an extra connection for it (today: the router in
 //   src-tauri/src/model_router.rs that lets Claude Code run a non-Claude model on its own key, and the same router
-//   offered to Pi and Oh My Pi by src-tauri/src/pi_routes.rs). An "app" pair is the
+//   offered to Pi, Oh My Pi, Codex and OpenCode 1.x by src-tauri/src/pi_routes.rs). An "app" pair is the
 //   one the screen marks as an extra connection.
 // * "agentSetup": the agent supports it, but it is set up in the agent's own settings for now; the app doesn't hand
 //   it a key yet.
@@ -84,6 +84,10 @@ function multiProvider(chatgpt: ModelConnection): Record<ModelSource, ModelConne
   };
 }
 
+const ROUTED_CODEX =
+  "Your saved model shows up in Codex's model list through this app's router (OpenAI Responses); the key stays in the app.";
+const ROUTED_OPENCODE =
+  "Your saved model shows up in OpenCode's model list through this app's router; the key stays in the app. OpenCode 2 sets it up in its own settings for now.";
 const ROUTED_PI =
   "Your saved model shows up in the agent's model list through this app's router; the key stays in the app.";
 
@@ -123,17 +127,22 @@ const TABLE: Record<HarnessId, Record<ModelSource, ModelConnection>> = {
     claudeLogin: CLAUDE_LOGIN_NO_BRIDGE,
     chatgptLogin: own("Codex's own ChatGPT sign-in."),
     anthropicKey: no("Codex talks to OpenAI-style providers only."),
-    xai: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
-    openrouter: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
-    deepseek: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
-    ollama: agentSetup("Codex can use Ollama from its own config; the app doesn't set it up yet."),
-    custom: agentSetup("Codex takes OpenAI-style providers in its own config; the app doesn't hand it your key yet."),
+    xai: app(ROUTED_CODEX),
+    openrouter: app(ROUTED_CODEX),
+    deepseek: no("DeepSeek has no OpenAI Responses API, which Codex needs."),
+    ollama: app(ROUTED_CODEX),
+    custom: app(ROUTED_CODEX),
   },
   pi: viaAppRouter(multiProvider(CHATGPT_IN_AGENT)),
   omp: viaAppRouter(multiProvider(CHATGPT_IN_AGENT)),
   opencode: {
     ...multiProvider(CHATGPT_IN_AGENT),
     claudeLogin: agentSetup("OpenCode's own Claude Agent provider runs your Claude Code; set it up in OpenCode for now."),
+    xai: app(ROUTED_OPENCODE),
+    openrouter: app(ROUTED_OPENCODE),
+    deepseek: app(ROUTED_OPENCODE),
+    ollama: app(ROUTED_OPENCODE),
+    custom: app(ROUTED_OPENCODE),
   },
   hermes: multiProvider(agentSetup("Set up in Hermes's own settings for now.")),
   grok: {

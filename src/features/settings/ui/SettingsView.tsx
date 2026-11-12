@@ -516,6 +516,7 @@ import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
 // WP-129: who writes titles, commits, pull request text and branch names.
 import { TeamWorkspaceSetting } from "./TeamWorkspaceSetting";
 import { TextGenerationSetting } from "./TextGenerationSetting";
+import { ModelConnectionsSetting } from "./ModelConnectionsSetting";
 import {
   removeWorktree,
   type RemoveWorktree,
@@ -835,6 +836,8 @@ export function SettingsView({
               ) : null}
               {section === "providers" ? (
                 <>
+                  {/* Which coding tool runs on which sign-in or saved model, extra connections marked. */}
+                  <ModelConnectionsSetting />
                   {/* WP-129: who writes titles, commits, pull request text and branch names. */}
                   <TextGenerationSetting />
                   <ProvidersPage cwd={cwd} recents={recents} />

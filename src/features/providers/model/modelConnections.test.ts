@@ -60,9 +60,24 @@ describe("modelConnections", () => {
     }
   });
 
-  it("only Claude Code, Pi and Oh My Pi have app-made connections today", () => {
+  it("Codex gets the saved models that speak OpenAI Responses", () => {
+    for (const source of ["xai", "openrouter", "ollama", "custom"] as const) {
+      expect(isExtraConnection("codex", source), source).toBe(true);
+    }
+    expect(modelConnection("codex", "deepseek").status).toBe("no");
+  });
+
+  it("OpenCode gets the saved models through the app's router and keeps its own Claude Agent route", () => {
+    for (const source of ["xai", "openrouter", "deepseek", "ollama", "custom"] as const) {
+      expect(isExtraConnection("opencode", source), source).toBe(true);
+    }
+    expect(modelConnection("opencode", "claudeLogin").status).toBe("agentSetup");
+  });
+
+  it("only Claude Code, Pi, Oh My Pi, Codex and OpenCode have app-made connections today", () => {
+    const routed = new Set(["claude", "pi", "omp", "codex", "opencode"]);
     for (const harness of HARNESSES) {
-      if (harness === "claude" || harness === "pi" || harness === "omp") continue;
+      if (routed.has(harness)) continue;
       for (const { id } of MODEL_SOURCES) expect(isExtraConnection(harness, id), `${harness} x ${id}`).toBe(false);
     }
   });
