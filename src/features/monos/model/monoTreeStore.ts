@@ -210,7 +210,7 @@ export async function treeContext(
     .map((block) => block.text)
     .join("");
   return `<long_chat>
-You keep one long chat with Ash. Below is all of it so far, oldest first, as one-line summaries: "id+n|text" covers the n messages from id on; recent lines are single messages, word for word. Each item names who said it (user: is Ash; mono: is you; seat: another Mono or a room). A line you need in full: \`${cli} tree.zoom {"id":12,"n":4}\` opens it into the two lines it was made from, \`{"id":12,"n":1}\` gives message 12 whole, and \`${cli} tree.date {"id":12}\` its date. Its latest word on a thing is the truth; a question in it is still a question. Workers you start don't get this.
+You keep one long chat with Ash. Below is all of it so far, oldest first, as one-line summaries: "id+n|text" covers the n messages from id on; recent lines are single messages, word for word. Each item names who said it (user: is Ash; mono: is you; seat: another Mono or a room). A line you need in full: \`${cli} tree.zoom {"id":12,"n":4}\` opens it into the two lines it was made from, \`{"id":12,"n":1}\` gives message 12 whole, \`${cli} tree.date {"id":12}\` its date, and \`${cli} tree.grep {"query":"homepage refactor"}\` finds every message that has those words, word for word, when a summary leaves out what you need. Its latest word on a thing is the truth; a question in it is still a question. Workers you start don't get this.
 ${view}</long_chat>`;
 }
 
@@ -218,6 +218,11 @@ ${view}</long_chat>`;
 export async function treeZoom(monoId: string, id: number, n: number, at = 0): Promise<string> {
   const { tree } = await openTree(monoId);
   return T.zoom(tree, id, n, at);
+}
+
+export async function treeGrep(monoId: string, query: string): Promise<string> {
+  const { tree } = await openTree(monoId);
+  return T.grep(tree, query);
 }
 
 export async function treeDate(monoId: string, id: number): Promise<string> {

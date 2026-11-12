@@ -347,6 +347,7 @@ export type AgentAppHost = {
     on(monoId: string): boolean;
     zoom(monoId: string, id: number, n: number, at: number): Promise<string>;
     date(monoId: string, id: number): Promise<string>;
+    grep?(monoId: string, query: string): Promise<string>;
   };
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
   postCard?(sourceSessionId: string, card: MonoCard): void;
@@ -523,6 +524,7 @@ const FIELDS = new Map<string, readonly string[]>([
   ["skills.write", ["name", "text", "expectedHash"]],
   ["tree.zoom", ["id", "n", "at"]],
   ["tree.date", ["id"]],
+  ["tree.grep", ["query"]],
   ["habits.list", []],
   ["habits.add", ["name", "instructions", "schedule", "watch"]],
   ["habits.update", ["id", "name", "instructions", "schedule", "enabled", "watch"]],
@@ -1210,6 +1212,11 @@ async function handleTree(
   if (!monoId) throw new Error("The long chat can only be read from a Mono's own chat");
   if (!host.tree?.on(monoId))
     throw new Error("This Mono doesn't keep one long chat (its settings: Keep one long chat)");
+  if (action === "tree.grep") {
+    if (typeof input.query !== "string" || !input.query.trim()) throw new Error("query must be a few words to look for");
+    if (!host.tree.grep) throw new Error("Searching the long chat isn't available in this build");
+    return { lines: await host.tree.grep(monoId, input.query.slice(0, 200)) };
+  }
   const id = treeNumber(input.id, "id");
   if (action === "tree.date") return { date: await host.tree.date(monoId, id) };
   return { lines: await host.tree.zoom(monoId, id, treeNumber(input.n, "n", 1), treeNumber(input.at, "at", 0)) };

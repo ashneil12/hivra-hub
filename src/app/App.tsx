@@ -122,7 +122,7 @@ import {
 } from "../features/hub/model/monoTeams";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock, leadStandingBlock } from "../features/hub/model/hubMemoryPrimer";
-import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/model/monoTreeStore";
+import { longChatOn, treeContext, treeDate, treeGrep, treeZoom } from "../features/monos/model/monoTreeStore";
 import { useMonoTrees } from "./hooks/useMonoTrees";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
@@ -15558,6 +15558,7 @@ function Workspace({
               on: (monoId) => longChatOn(monoId),
               zoom: (monoId, id, n, at) => treeZoom(monoId, id, n, at),
               date: (monoId, id) => treeDate(monoId, id),
+              grep: (monoId, query) => treeGrep(monoId, query),
             },
             // A chat in a hub project's coding team delegates and watches pull requests like the Lead (codingTeam.ts).
             codingTeamOf: (id) => {

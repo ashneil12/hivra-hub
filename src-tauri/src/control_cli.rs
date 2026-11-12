@@ -138,6 +138,7 @@ pub(crate) const APP_ACTIONS: [&str; 87] = [
     "memory.remove",
     "tree.zoom",
     "tree.date",
+    "tree.grep",
     "habits.list",
     "habits.add",
     "habits.update",
@@ -384,6 +385,8 @@ Actions:
                   into the two lines it was made from; n 1 gives message 12
                   whole, as it was said ("at" pages a long one).
   tree.date      {"id":12}  The date and time of message 12 of its long chat.
+  tree.grep      {"query":"homepage refactor"}  Every message of its long
+                  chat with all those words, newest first, word for word.
   habits.list    {}  Mono only. Your habits: what each does, when it runs
                   next, and how its last run went.
   habits.add     {"name":"Morning CI check","instructions":"...",
