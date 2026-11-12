@@ -37,7 +37,7 @@ use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::instance::{self, Identity, InstanceLock, Kind};
+use crate::instance::{self, Identity, InstanceLock, Kind, LockError};
 
 pub const SHIP_DIR: &str = "ship";
 pub const CURRENT: &str = "current.json";
@@ -395,6 +395,24 @@ impl Boot {
     }
 }
 
+const UNSIGNED_LEFT_ALONE: &str =
+    "startup: record.mac does not match, and an unsigned record is only followed into a live runner's trial, so it is left alone";
+
+/// All an unsigned record (`npm run hub:ship` from a terminal) may do at startup: follow a runner that is really
+/// holding its lock into this build's own trial, for this data folder. Its trial notes go to `dataDir`, which the mac
+/// would otherwise protect, so the record must name this app's own folder.
+fn unsigned_may_follow(runner_holds_it: bool, names_this_folder: bool, decision: &Plan) -> bool {
+    runner_holds_it && names_this_folder && *decision == Plan::Trial
+}
+
+/// The same folder on disk (links resolved). A folder that can't be resolved is not the same.
+fn same_folder(a: &Path, b: &Path) -> bool {
+    match (std::fs::canonicalize(a), std::fs::canonicalize(b)) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => false,
+    }
+}
+
 /// Right after the instance lock, before the database opens. The daily app finishes whatever a dead runner left
 /// (see [`plan`]); a dev copy is never shipped. May exit: after putting the old build back from inside the new one
 /// (it reopens the old app), or to leave a runner's work alone.
@@ -412,7 +430,11 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
         Err(_) => return Boot::Normal,
     }
     // Whoever holds this writes state.json. Held to the end of this function when the runner is gone.
-    let lock = InstanceLock::acquire_file(&dir.join(RUNNER_LOCK), Duration::ZERO).ok();
+    let attempt = InstanceLock::acquire_file(&dir.join(RUNNER_LOCK), Duration::ZERO);
+    // Only Busy shows that another process holds it. Any other failure (a folder, or a file that isn't SQLite, where
+    // the lock should be) proves nothing: a signed record keeps the cautious reading (alive), an unsigned one doesn't.
+    let runner_holds_it = matches!(attempt, Err(LockError::Busy));
+    let lock = attempt.ok();
     let runner_alive = lock.is_none();
     let Ok(mut ship) = Ship::load(&dir) else {
         return Boot::Normal;
@@ -421,11 +443,8 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
     // is not a record this app signed, so it is left alone, with one exception below: a live runner's trial. A final
     // phase already returned above.
     let signed = mac_matches(&ship);
-    if !signed && !runner_alive {
-        log(
-            &dir,
-            "startup: record.mac does not match, so this record is not restored",
-        );
+    if !signed && !runner_holds_it {
+        log(&dir, UNSIGNED_LEFT_ALONE);
         return Boot::Normal;
     }
     // The folder name comes from current.json. A signed record whose own id is some other folder is not this ship.
@@ -461,12 +480,19 @@ pub fn startup(identity: &Identity, data: &Path) -> Boot {
     // from before the mac can't), so the build it opens must still be able to commit its own trial. That is all an
     // unsigned record gets: hold until committed, with the runner alive and watching. Restore, reopen, cancel, finish
     // and leave stay with signed records. 0.16.17 was rolled back on 12 Nov because this refused even the trial.
-    if !signed && decision != Plan::Trial {
+    if !signed {
+        if !unsigned_may_follow(
+            runner_holds_it,
+            same_folder(&ship.data_dir(), data),
+            &decision,
+        ) {
+            log(&dir, UNSIGNED_LEFT_ALONE);
+            return Boot::Normal;
+        }
         log(
             &dir,
-            "startup: record.mac does not match, so this record is not restored",
+            "startup: an unsigned record (a terminal ship) is followed into its live runner's trial",
         );
-        return Boot::Normal;
     }
     match decision {
         Plan::Normal => Boot::Normal,
@@ -3406,10 +3432,12 @@ mod terminal_ship_trial {
         let dir = data.join(SHIP_DIR).join(id);
         std::fs::create_dir_all(&dir).unwrap();
         let mut record = record;
-        record
-            .as_object_mut()
-            .unwrap()
-            .insert("id".into(), json!(id));
+        let fields = record.as_object_mut().unwrap();
+        fields.insert("id".into(), json!(id));
+        // hub-ship.mjs names the data folder it shipped into; a test that wants another one says so.
+        fields
+            .entry("dataDir")
+            .or_insert_with(|| json!(data.to_string_lossy()));
         write_json(&dir.join(STATE), &record).unwrap();
         write_json(&data.join(SHIP_DIR).join(CURRENT), &json!({ "id": id })).unwrap();
         assert!(
@@ -3489,5 +3517,79 @@ mod terminal_ship_trial {
             !moved,
             "an unsigned record moved a file outside the ship folder"
         );
+    }
+
+    /// Review of #310: a folder where `runner.lock` should be fails to open, which used to read as a live runner. Planted
+    /// with an unsigned trial record, every launch would boot on a trial nobody watches and hold automations for good.
+    #[test]
+    fn a_lock_that_cannot_open_is_not_a_live_runner_for_an_unsigned_record() {
+        let own = own_sha();
+        let (_root, data, dir) = unsigned(
+            "terminal-fake-runner",
+            json!({ "phase": "trial", "to": { "sha": own }, "from": { "sha": "0000000" } }),
+        );
+        std::fs::create_dir_all(dir.join(RUNNER_LOCK)).unwrap();
+        assert!(
+            matches!(
+                InstanceLock::acquire_file(&dir.join(RUNNER_LOCK), Duration::ZERO),
+                Err(LockError::Failed(_))
+            ),
+            "the planted lock should fail to open, not be busy"
+        );
+        assert!(
+            matches!(startup(&daily(), &data), Boot::Normal),
+            "a lock that could not be opened was taken for a live runner"
+        );
+    }
+
+    /// The trial's activity note goes to the record's `dataDir`, which an unsigned record can't be trusted to name.
+    #[test]
+    fn an_unsigned_record_naming_another_data_folder_is_left_alone() {
+        let own = own_sha();
+        let elsewhere =
+            std::env::temp_dir().join(format!("ship-terminal-other-data-{}", std::process::id()));
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        let (_root, data, dir) = unsigned(
+            "terminal-other-data",
+            json!({
+                "phase": "trial",
+                "to": { "sha": own },
+                "from": { "sha": "0000000" },
+                "dataDir": elsewhere.to_string_lossy(),
+            }),
+        );
+        let runner = InstanceLock::acquire_file(&dir.join(RUNNER_LOCK), Duration::ZERO).unwrap();
+        let boot = startup(&daily(), &data);
+        drop(runner);
+        let _ = std::fs::remove_dir_all(&elsewhere);
+        assert!(
+            matches!(boot, Boot::Normal),
+            "an unsigned record that names another data folder was followed into a trial"
+        );
+    }
+
+    /// The gate itself, for every plan: only a trial, with the runner really holding its lock, in this folder. (Driving
+    /// startup into Leave would exit the test process, so the other plans are checked here.)
+    #[test]
+    fn an_unsigned_record_follows_only_a_real_runners_trial() {
+        let plans = [
+            Plan::Normal,
+            Plan::Trial,
+            Plan::FinishCommit,
+            Plan::Cancel(String::new()),
+            Plan::Restore(String::new()),
+            Plan::Leave,
+        ];
+        for plan in &plans {
+            for holds in [false, true] {
+                for ours in [false, true] {
+                    assert_eq!(
+                        unsigned_may_follow(holds, ours, plan),
+                        holds && ours && *plan == Plan::Trial,
+                        "{plan:?}, runner holds the lock: {holds}, names this folder: {ours}"
+                    );
+                }
+            }
+        }
     }
 }
