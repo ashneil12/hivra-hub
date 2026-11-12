@@ -13635,9 +13635,11 @@ function Workspace({
     [],
   );
 
+  // Home's box opens the fresh chat it started (openMonoSideChat is declared further down).
+  const openMonoSideChatRef = useRef<(sessionId: string) => unknown>(() => undefined);
   // WP-212: Home's box uses the Chief of Staff's own chat, the same session the sidebar opens.
   useEffect(() => setHomeChiefHost({
-    ensure: (monoId, projectId) => {
+    ensure: (monoId, projectId, options) => {
       const sessionHost = {
         home: homeDir,
         load: ensureOpenSession,
@@ -13649,8 +13651,16 @@ function Workspace({
       };
       // Dropwave: a project home's box starts in the Chief of Staff's own chat for that project.
       const project = projectId ? hubData().listProjects().find((entry) => entry.id === projectId) : undefined;
-      return project ? ensureMonoProjectSession(monoId, project, sessionHost) : ensureMonoSession(monoId, sessionHost);
+      if (project) return ensureMonoProjectSession(monoId, project, sessionHost);
+      // Home's box (Ash, 12 Nov): each ask is a new chat with the Chief of Staff, in the folder its main chat works in.
+      if (options?.fresh) {
+        const mainId = findMono(monoId)?.sessionId;
+        const main = mainId ? sessionsRef.current.find((item) => item.id === mainId) : undefined;
+        return startMonoSideChat(monoId, sessionHost, main?.cwd);
+      }
+      return ensureMonoSession(monoId, sessionHost);
     },
+    open: (sessionId) => void openMonoSideChatRef.current(sessionId),
     submit: (sessionId, text) => submitSession(sessionId, text),
     answer: (sessionId, requestId, reply) => onQuestionReply(sessionId, requestId, reply),
     read: (sessionId) => {
@@ -18651,6 +18661,7 @@ function Workspace({
     },
     [ensureOpenSession],
   );
+  openMonoSideChatRef.current = openMonoSideChat;
   // Ash, 12 Nov: a chat brought in from Claude Code or Codex becomes the Chief of Staff's own when it is opened.
   const takeOverImportedChat = useCallback(
     async (sessionId: string, monoId: string) => {

@@ -29,6 +29,7 @@ import { homeDateLabel } from "../model/dateLabel";
 import { doneToday, projectTag } from "../model/doneToday";
 import {
   answerHomeQuestion,
+  openHomeChiefChat,
   ensureHomeChief,
   homeChiefVersion,
   readHomeChiefSession,
@@ -445,11 +446,14 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
         if (!chiefMono) return;
         // The box is a starting point: the conversation carries on in the Chief of Staff's own chat. In a project that is
         // the project's own Chief of Staff chat, geared to it; on Home, its chat with everything in view.
-        void sendHomeTurn(chiefMono.id, text, scoped?.id).then((result) => {
-          if (result.ok && !scoped) setSessionId(result.sessionId);
-        });
+        // On Home each ask is a new chat with the Chief of Staff (Ash, 12 Nov); the earlier ones stay in its chat list.
         if (scoped) openProjectChief(scoped.id);
         else openChiefChat(chiefMono.id);
+        void sendHomeTurn(chiefMono.id, text, scoped?.id, scoped ? undefined : { fresh: true }).then((result) => {
+          if (!result.ok || scoped) return;
+          setSessionId(result.sessionId);
+          openHomeChiefChat(result.sessionId);
+        });
       }}
       title={scoped ? scoped.name : "Home"}
       headerExtra={<AutopilotSwitch projectId={scoped?.id} name={scoped ? scoped.name : "everything"} />}
