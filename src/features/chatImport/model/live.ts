@@ -3,6 +3,7 @@
 
 import { invoke } from "@tauri-apps/api/core";
 import { liveHubStore } from "../../hub/model/hubData";
+import { addMockProject } from "../../hub/model/mockData";
 import { createProject, projectSlug } from "../../hub/model/projectActions";
 import { sanitizeSessionForPersist } from "../../sessions/data/sessionStore";
 import { ChatImportRun, type ChatImportPorts } from "./runner";
@@ -35,6 +36,12 @@ export const livePorts: ChatImportPorts = {
   read: (root, source, path) => invoke("chat_import_read", { root, source, path }),
   projects: hubProjects,
   createProject: async (name, folder, sources) => {
+    // The design mockup and the example data have no store: the project is added to the example list, as first run does.
+    if (!liveHubStore()) {
+      const id = projectSlug(name);
+      addMockProject({ id, name, shortName: name.split(/\s+/)[0]?.slice(0, 16) || id, iconShape: "folder", folder });
+      return { id, name, folder };
+    }
     const from = sources.map((source) => SOURCE_TITLE[source]).join(" and ") || "past chats";
     const made = await createProject({
       name: freeName(name),

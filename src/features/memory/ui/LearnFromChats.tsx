@@ -25,9 +25,41 @@ export type LearnProfiles = {
   voiceSha256: string;
 };
 
+/** What a run would read, shown before it starts. */
+export type LearnEstimate = {
+  chats: number;
+  tokens: number;
+  /** The signed-in model that would answer, or null when none is set up yet. */
+  model: string | null;
+  /** Older chats the list left out, and chats too big to read. */
+  leftOut: number;
+  tooBig: number;
+};
+
+export type LearnRunInput = {
+  includeUserFile: boolean;
+  /** Only chats changed at or after this time (unix milliseconds). */
+  fromMs?: number;
+  /** Only chats from these project folders. */
+  projects?: string[];
+  /** Only these chat files (store folder joined to the path in it). */
+  files?: string[];
+  /** Only chats from these stores. */
+  sources?: string[];
+  /** About how many chats to read. */
+  budget?: number;
+};
+
+export type LearnRunResult = { proposals: ShownProposal[]; chats: number };
+
 export type LearnPorts = {
   cost: () => Promise<number>;
-  run: (input: { includeUserFile: boolean }) => Promise<ShownProposal[]>;
+  /** Chats, tokens and model, before a run. A screen without it falls back to `cost`. */
+  estimate?: (input?: Pick<LearnRunInput, "fromMs" | "projects" | "files" | "sources" | "budget">) => Promise<LearnEstimate>;
+  /** A bare list is a run that did not say how many chats it read. */
+  run: (input: LearnRunInput) => Promise<ShownProposal[] | LearnRunResult>;
+  /** A finished run's suggestions nobody has decided yet (one started from onboarding, say). */
+  batch?: () => LearnRunResult | null;
   accept: (id: string) => Promise<boolean>;
   reject: (id: string) => Promise<boolean>;
   loadProfiles: () => Promise<LearnProfiles>;
@@ -50,6 +82,8 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
   const [cost, setCost] = useState<number | null>(null);
   const [costFailed, setCostFailed] = useState(false);
   const [proposals, setProposals] = useState<ShownProposal[] | null>(null);
+  const [estimate, setEstimate] = useState<LearnEstimate | null>(null);
+  const [batchChats, setBatchChats] = useState(0);
   const [waiting, setWaiting] = useState<ShownProposal[]>([]);
   const [profiles, setProfiles] = useState<LearnProfiles | null>(null);
   const [opinions, setOpinions] = useState("");
@@ -73,8 +107,10 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
 
   async function loadCost() {
     try {
-      const value = await portsRef.current.cost();
+      const found = portsRef.current.estimate ? await portsRef.current.estimate() : null;
+      const value = found ? found.tokens : await portsRef.current.cost();
       if (!Number.isFinite(value) || value < 0) throw new Error("The cost could not be counted. Try again.");
+      setEstimate(found);
       setCost(value);
       setCostFailed(false);
     } catch (error) {
@@ -113,6 +149,12 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
     void loadCost();
     void loadRest();
     void loadWaiting();
+    // A run started somewhere else (onboarding) leaves its suggestions waiting here.
+    const kept = portsRef.current.batch?.();
+    if (kept && kept.proposals.length > 0) {
+      setProposals(kept.proposals);
+      setBatchChats(kept.chats);
+    }
   }, []);
 
   useEffect(() => {
@@ -156,9 +198,11 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
     setBusy(true);
     setNote("");
     try {
-      const rows = await portsRef.current.run({ includeUserFile: includeUser });
+      const result = await portsRef.current.run({ includeUserFile: includeUser });
       if (ticket !== generation.current) return;
+      const rows = Array.isArray(result) ? result : result.proposals;
       setProposals(rows);
+      setBatchChats(Array.isArray(result) ? 0 : result.chats);
       if (rows.length === 0) setNote("No edits from these chats.");
     } catch (error) {
       if (ticket !== generation.current) return;
@@ -189,6 +233,45 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
       if (fromLog && kind === "accept") void loadRest();
     } catch (error) {
       setNote(message(error, "That could not be saved. Try again."));
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }
+
+  /**
+   * Accept all or Reject all: each suggestion goes through the same accept or reject as a tap on
+   * it, one after another, so every guard, size cap and rejection memory applies. One that is
+   * refused stays in the list; the rest go on.
+   */
+  async function decideAll(kind: "accept" | "reject") {
+    if (busyRef.current || !proposals || proposals.length === 0) return;
+    busyRef.current = true;
+    setBusy(true);
+    setNote("");
+    const done: string[] = [];
+    let refused = 0;
+    let lastError = "";
+    try {
+      for (const proposal of proposals) {
+        try {
+          const ok =
+            kind === "accept" ? await portsRef.current.accept(proposal.id) : await portsRef.current.reject(proposal.id);
+          if (ok) done.push(proposal.id);
+          else refused += 1;
+        } catch (error) {
+          refused += 1;
+          lastError = message(error, "");
+        }
+      }
+      setProposals((current) => (current ? current.filter((row) => !done.includes(row.id)) : current));
+      const verb = kind === "accept" ? "Accepted" : "Rejected";
+      if (refused === 0) setNote(`${verb} ${done.length}.`);
+      else {
+        const tail = lastError ? ` ${lastError}` : "";
+        setNote(`${verb} ${done.length}. ${refused} could not be saved and ${refused === 1 ? "is" : "are"} still listed.${tail}`);
+      }
+      if (kind === "accept" && done.length > 0) void loadRest();
     } finally {
       busyRef.current = false;
       setBusy(false);
@@ -281,7 +364,24 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
   return (
     <section className="flex flex-col gap-4" aria-label="Learn from chats">
       <p className="text-sm">Instruction files stay under 2,000 tokens. Each profile file stays under 1,500.</p>
-      {cost !== null ? (
+      {cost !== null && estimate ? (
+        <div className="flex flex-col gap-1 text-sm">
+          <p>
+            {estimate.chats === 0
+              ? "No chats to read yet."
+              : `This reads ${estimate.chats} ${estimate.chats === 1 ? "chat" : "chats"}, about ${formatTokens(cost)} tokens${estimate.model ? `, with ${estimate.model}` : ""}.`}{" "}
+            Nothing is saved until you accept an edit.
+          </p>
+          {estimate.leftOut > 0 || estimate.tooBig > 0 ? (
+            <p>
+              {estimate.leftOut > 0 ? `${formatTokens(estimate.leftOut)} older chats were left out. ` : ""}
+              {estimate.tooBig > 0
+                ? `${formatTokens(estimate.tooBig)} ${estimate.tooBig === 1 ? "chat was" : "chats were"} too big to read.`
+                : ""}
+            </p>
+          ) : null}
+        </div>
+      ) : cost !== null ? (
         <p className="text-sm">
           This sends about {formatTokens(cost)} tokens. Nothing is saved until you accept an edit.
         </p>
@@ -315,7 +415,24 @@ export function LearnFromChats({ ports, now = Date.now }: { ports: LearnPorts; n
           {waiting.map((proposal) => renderProposal(proposal))}
         </section>
       ) : null}
-      {proposals?.map((proposal) => renderProposal(proposal))}
+      {proposals && proposals.length > 0 ? (
+        <section aria-label="Suggested rules" className="flex flex-col gap-2">
+          <p className="text-sm" data-testid="learn-batch-summary">
+            {batchChats > 0
+              ? `${proposals.length} suggested ${proposals.length === 1 ? "rule" : "rules"} from ${batchChats} ${batchChats === 1 ? "chat" : "chats"}`
+              : `${proposals.length} suggested ${proposals.length === 1 ? "rule" : "rules"}`}
+          </p>
+          <div className="flex gap-2">
+            <button type="button" className={BTN} disabled={busy} onClick={() => void decideAll("accept")}>
+              Accept all
+            </button>
+            <button type="button" className={BTN} disabled={busy} onClick={() => void decideAll("reject")}>
+              Reject all
+            </button>
+          </div>
+          {proposals.map((proposal) => renderProposal(proposal))}
+        </section>
+      ) : null}
       <label className="flex flex-col gap-1 text-sm">
         Opinions
         <textarea

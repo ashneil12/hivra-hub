@@ -255,6 +255,7 @@ import {
 } from "../../features/sessions/ui/ChatListInbox";
 import { SessionsEmpty } from "../../features/sessions/ui/SessionsEmpty";
 import { SidebarUpdateFooter } from "./SidebarUpdate";
+import { ImportRailCard } from "../../features/chatImport/ui/ImportRailCard";
 import { SourceControl } from "../../features/source-control/ui/SourceControl";
 import { GitHistoryGraph } from "../../features/source-control/ui/GitHistoryGraph";
 import { GithubStarPrompt } from "./GithubStarPrompt";
@@ -3607,6 +3608,10 @@ function SidebarComponent({
               onSelect={onSelectAgent}
               bottomSpacing={compactRailVisible}
             />
+            {/* Past chats coming in, and the rules read from them, while the app stays usable. */}
+            <div className="shrink-0 px-2 pt-2 empty:hidden">
+              <ImportRailCard />
+            </div>
             <SidebarUpdateFooter
               update={updateNotice}
               onOpenWhatsNew={onOpenWhatsNew}

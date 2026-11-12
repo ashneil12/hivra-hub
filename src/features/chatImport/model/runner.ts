@@ -79,6 +79,8 @@ export type ImportState = {
   importedIds: string[];
   /** The folders those chats are in. */
   importedFolders: string[];
+  /** The chat files that came in (or were already here), store folder and path: the only ones a style reading may open. */
+  importedFiles: string[];
   error?: string;
   startedAt?: number;
   finishedAt?: number;
@@ -109,6 +111,7 @@ function empty(): ImportState {
     projectsMade: 0,
     importedIds: [],
     importedFolders: [],
+    importedFiles: [],
   };
 }
 
@@ -290,6 +293,7 @@ export class ChatImportRun {
     }
     const ids: string[] = [];
     const folders = new Set<string>();
+    const files: string[] = [];
     let next = 0;
     const reader = async () => {
       while (!this.stop) {
@@ -318,6 +322,7 @@ export class ChatImportRun {
             continue;
           }
           const saved = await this.ports.save(chat.session, chat.createdAt, chat.updatedAt);
+          files.push(`${item.chat.root.replace(/\\/g, "/").replace(/\/+$/, "")}/${item.chat.path}`);
           if (saved) {
             ids.push(chat.session.id);
             folders.add(folder);
@@ -340,6 +345,7 @@ export class ChatImportRun {
         phase: this.stop ? "cancelled" : "done",
         importedIds: ids,
         importedFolders: [...folders],
+        importedFiles: files,
         finishedAt: Date.now(),
       },
       true,
