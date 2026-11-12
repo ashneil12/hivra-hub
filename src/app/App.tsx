@@ -8808,6 +8808,17 @@ function Workspace({
         return false;
       }
       const submittedText = intent === "build" ? "Build approved plan" : text;
+      // Ash 12 Nov: "/login" typed into a chat failed every time. A chat runs the CLI without a screen to sign in on,
+      // so signing in happens in a terminal; say so instead of sending it.
+      if (/^\/(?:login|logout)\b/i.test(submittedText.trim())) {
+        const cli = current.harness === "claude" ? "claude" : current.harness;
+        enqueueHarnessEvent(sessionId, {
+          type: "status",
+          text: `Signing in doesn't work from inside a chat. Open Terminal, run ${cli}, then type /login there. This chat picks up the new sign-in on its next message.`,
+        });
+        flushHarnessEvents();
+        return false;
+      }
       const operatorCommand = consumeOperatorCommand(submittedText);
       if (
         operatorCommand.matched &&
