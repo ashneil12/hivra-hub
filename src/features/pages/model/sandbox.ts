@@ -1,4 +1,5 @@
 import type { BespokeSpec } from "./pageSpec";
+import { HUB_KIT_CSS, HUB_KIT_JS } from "./hubKit";
 
 /**
  * How a bespoke page is framed: an iframe with sandbox="allow-scripts" only (no same-origin, so no storage, cookies,
@@ -134,6 +135,6 @@ export function newFrameNonce(): string {
 export function bespokeSrcdoc(spec: Pick<BespokeSpec, "html" | "css" | "js">, tokens: Record<string, string>, scheme: "dark" | "light" = "dark", nonce = ""): string {
   const vars = Object.entries(tokens).filter(([, v]) => v && !/[;{}<>]/.test(v)).map(([k, v]) => `${k}:${v}`).join(";");
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CSP}">
-<meta name="color-scheme" content="${scheme}"><style>:root{${vars};color-scheme:${scheme}}${BASE_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style><style>${KIT_CSS}</style>
-<script>${HELPER.replace("__NONCE__", () => nonce.replace(/[^A-Za-z0-9-]/g, ""))}</script></head><body>${spec.html}<script>${escapeClose(spec.js ?? "", "script")}</script></body></html>`;
+<meta name="color-scheme" content="${scheme}"><style>:root{${vars};color-scheme:${scheme}}${BASE_CSS}${HUB_KIT_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style><style>${KIT_CSS}</style>
+<script>${HELPER.replace("__NONCE__", () => nonce.replace(/[^A-Za-z0-9-]/g, ""))}</script><script>${HUB_KIT_JS}</script></head><body>${spec.html}<script>${escapeClose(spec.js ?? "", "script")}</script></body></html>`;
 }

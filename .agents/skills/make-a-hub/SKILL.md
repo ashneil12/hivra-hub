@@ -29,11 +29,18 @@ page shows real rows or an honest empty line ("Nothing here yet"). A page with m
   in `editing-a-dashboard` sections 3 and 4.
 - Need a calendar, table or chart the blocks do not have? Use the `find-components` skill before writing one.
 
-## 4. Make it look like the app
-Theme tokens only (`--color-content`, `--color-surface`, `--color-surface-raised`, `--color-stroke`,
-`--color-theme-accent`), small text at 60% or more, no title repeated as an `h1` (the frame draws it), no colour
-outside a real status. The words are the app's words: first mate, Needs you, Working, Stopped, Done
-(docs/hivra/DESIGN.md section 2).
+## 4. Make it look like the app: build it from the hub kit
+A bespoke hub already has the kit: its styles (`k-page`, `k-stats`, `k-section`, `k-card`, `k-row`, `k-tile`,
+`k-avatar`, `k-pill`, `k-btn`, `k-callout`, `k-empty` and the rest) and a `kit` global of builders (`kit.row`,
+`kit.avatar`, `kit.pill`, `kit.stat`, `kit.button`, `kit.empty`, `kit.icon`, ...). Read docs/hivra/HUB-KIT.md and
+build from those parts; the ready-made Agents hub (`src/features/pages/model/readyPages.ts`) is the worked example.
+- Lay it out the same way: up to four numbers on top, then titled sections with a count, rows on a card (a picture,
+  a name, a line under it, a state, its buttons), the work under a row nested under it, quiet things as tiles.
+- Write your own CSS only for what the kit has no part for, with the theme tokens only (`--color-content`,
+  `--color-surface`, `--color-surface-raised`, `--color-stroke`, `--color-theme-accent`, the three status colours).
+- Small text at 60% or more, one primary button, no title repeated as an `h1` (the frame draws it), no colour outside a
+  real status, and one sentence (`kit.empty`) when there is nothing.
+- The words are the app's words: first mate, Needs you, Working, Stopped, Done (docs/hivra/DESIGN.md section 2).
 
 ## 5. Hand it back
 One line: what the page shows and where it is. Offer to pin it only if they will open it every day. Do not ask for
