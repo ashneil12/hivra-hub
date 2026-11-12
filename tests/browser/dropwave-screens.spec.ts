@@ -429,6 +429,13 @@ test("first run: bring my chats over is one step that starts the sweep and lets 
   const list = page.getByRole("complementary").first();
   await expect(list.getByText("Example: Fix the checkout total").first()).toBeVisible();
   await page.screenshot({ path: shot("after-7-chief-of-staff.png") });
+  // Opening one makes it the Chief of Staff's own chat: it is kept as one of its chats, and stays in its list.
+  await list.getByText("Example: Fix the checkout total").first().click();
+  await expect(page.getByText("Example: second message").first()).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("monocode:mono-roster") ?? ""))
+    .toContain("imp-claude-");
+  await page.screenshot({ path: shot("after-8-taken-over.png") });
   await page.getByRole("button", { name: /^recipes lead/ }).first().click();
   await expect(list.getByText("Main chat")).toBeVisible();
   await expect(list.getByText(/^Example: /)).toHaveCount(0);

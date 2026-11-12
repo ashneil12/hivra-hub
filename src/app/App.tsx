@@ -972,6 +972,7 @@ import {
   isMonoSideChat,
   monoOwnChats,
   forgetMonoSideChat,
+  saveMonoSideChat,
   isProjectLeadId,
   listMonos,
   loadOpenMono,
@@ -1083,6 +1084,9 @@ import {
 } from "../features/monos/model/monoWorkspace";
 import { projectFront, setProjectFront, useProjectFrontVersion } from "../features/hub/model/projectFront";
 import { pickChief as pickCaptain } from "../features/home/model/chief";
+import { isImportedChatId } from "../features/chatImport/model/convert";
+import { importedChatTaker } from "../features/chatImport/model/takeover";
+import { stampFirstMate } from "../features/monos/model/monoMate";
 // WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
 import { CREATOR_MONO_ID, landCreatorBrief, setCreatorSessionHost } from "../features/creator/model/creatorChat";
 import {
@@ -18602,12 +18606,28 @@ function Workspace({
     },
     [ensureOpenSession],
   );
+  // Ash, 12 Nov: a chat brought in from Claude Code or Codex becomes the Chief of Staff's own when it is opened.
+  const takeOverImportedChat = useCallback(
+    async (sessionId: string, monoId: string) => {
+      const session = await ensureOpenSession(sessionId);
+      if (!session) return;
+      if (!saveMonoSideChat(monoId, sessionId)) return void selectPlainSessionFromList(sessionId);
+      persistSession(stampFirstMate(session));
+      return openMonoSideChat(sessionId);
+    },
+    [ensureOpenSession, openMonoSideChat, persistSession, selectPlainSessionFromList],
+  );
   const onSelectSessionFromList = useCallback(
     (sessionId: string) => {
       if (isMonoSideChat(sessionId)) return void openMonoSideChat(sessionId);
+      const taker = importedChatTaker(sessionId, {
+        owner: isImportedChatId(sessionId) ? monoForSession(sessionId)?.id : undefined,
+        chief: isImportedChatId(sessionId) ? pickCaptain(listMonos())?.id : undefined,
+      });
+      if (taker) return void takeOverImportedChat(sessionId, taker);
       return selectPlainSessionFromList(sessionId);
     },
-    [openMonoSideChat, selectPlainSessionFromList],
+    [openMonoSideChat, selectPlainSessionFromList, takeOverImportedChat],
   );
   const onNewFromList = useCallback(() => {
     // "New chat" beside a first mate's chat is a new chat with that first mate, not a plain one (Ash: "it's not clear
