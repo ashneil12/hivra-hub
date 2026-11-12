@@ -86,19 +86,11 @@ export function parseWorkerReview(reply: string): ReviewRuling {
     how: found.how!,
     unsure: found.unsure!,
   };
-  for (const name of ["checked", "how", "unsure"] as FieldName[]) {
-    if (review[name].length > REVIEW_FIELD_MAX)
-      return {
-        kind: "refused",
-        reason: `The self-review's "${FIELD_NAME[name]}:" line is longer than ${REVIEW_FIELD_MAX} characters; keep it to a sentence or two.`,
-      };
-  }
-  const total = review.checked.length + review.how.length + review.unsure.length;
-  if (total > REVIEW_TOTAL_MAX)
-    return {
-      kind: "refused",
-      reason: `The self-review is too long (${total} characters); keep it to a sentence or two per line.`,
-    };
+  // Ash 12 Nov: a long "How:" line failed a homepage refactor that worked. Length is a format matter, never the work's
+  // verdict: an over-long line is cut to fit (the full text stays in the worker's report and chat), not refused.
+  const cap = Math.min(REVIEW_FIELD_MAX, Math.floor(REVIEW_TOTAL_MAX / 3));
+  for (const name of ["checked", "how", "unsure"] as FieldName[])
+    if (review[name].length > cap) review[name] = `${review[name].slice(0, cap - 1).trimEnd()}…`;
   return { kind: "ok", review };
 }
 

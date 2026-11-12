@@ -265,7 +265,7 @@ function GeneralSection({
           on={longChat}
           onChange={(on) => {
             updateMono(monoId, ({ longChat: _, ...mono }) =>
-              on ? { ...mono, longChat: true } : mono,
+              ({ ...mono, longChat: on }),
             );
             if (on) void openTree(monoId).catch(() => undefined);
             else closeTree(monoId);
