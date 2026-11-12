@@ -357,6 +357,17 @@ pub async fn fetch_claude_usage(
 
 fn fetch_claude_usage_sync(config_dir: Option<PathBuf>) -> Result<ClaudeUsageFetch, String> {
     let Some(creds) = read_claude_credentials(config_dir.as_deref()) else {
+        // Ash 12 Nov: the footer said "not connected" while Claude Code was signed in, because the app couldn't read
+        // the sign-in from the Keychain. Claude Code's own config names the signed-in account: then the usage just
+        // can't be read here, which is not a sign-out.
+        if claude_account_signed_in(config_dir.as_deref()) {
+            return Ok(usage_result(
+                "error",
+                None,
+                None,
+                Some("Claude is signed in; its usage can't be read from here".into()),
+            ));
+        }
         return Ok(usage_result(
             "unavailable",
             None,
@@ -452,6 +463,24 @@ fn read_claude_credentials(config_dir: Option<&std::path::Path>) -> Option<Claud
         }
     }
     read_credentials_file(config_dir)
+}
+
+/** Claude Code keeps the signed-in account in its config (`oauthAccount` in `.claude.json`); no secret is read. */
+fn claude_account_signed_in(config_dir: Option<&std::path::Path>) -> bool {
+    let path = match config_dir {
+        Some(dir) => dir.join(".claude.json"),
+        None => match dirs_home() {
+            Some(home) => PathBuf::from(home).join(".claude.json"),
+            None => return false,
+        },
+    };
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    serde_json::from_str::<Value>(&raw)
+        .ok()
+        .and_then(|value| value.get("oauthAccount").cloned())
+        .is_some_and(|account| account.is_object())
 }
 
 fn read_credentials_file(config_dir: Option<&std::path::Path>) -> Option<ClaudeCredentials> {
