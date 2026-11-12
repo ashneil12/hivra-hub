@@ -19,6 +19,10 @@ test("the sandbox switch is off by default and writes the app's setting when tur
   await sw.click();
   await expect(sw).toHaveAttribute("aria-checked", "false");
 
+  await expect(row).not.toContainText("not a full cage");
+  await row.getByRole("button", { name: "More" }).click();
+  await expect(row).toContainText("not a full cage");
+
   const text = await page.locator("body").innerText();
   expect(text).not.toMatch(/[—–]/);
   expect(text).not.toContain("/Users/");

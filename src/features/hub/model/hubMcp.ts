@@ -16,6 +16,7 @@
 import { setClaudeGuardArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
 import { GIT_HOOK_DENY_RULES, GUARD_STORE_DENY_RULES, HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
 import { canLead, codexLeadServer } from "../../firstmate/model/leadCli";
+import { chatGetsComputerUse, computerUseServer, knownComputerUse } from "../../computerUse/model/computerUse";
 
 /** The checker's Mono id (the studio's tests and lanes use it; hubChecker.ts makes the Mono). */
 export const CHECKER_MONO_ID = "checker";
@@ -291,6 +292,16 @@ export function getsDelegateTool(identity: HubChatIdentity): boolean {
   return (identity.kind === "mono" && identity.role !== "checker") || identity.kind === "team";
 }
 
+/**
+ * WP-255: whether this chat may get computer use at all: the chats Ash talks to (a Mono's own chat, a coding-team chat,
+ * a plain chat). Never a worker or a habit run, which run with nobody watching, and never the checker, which only reads.
+ * Settings > Computer use and the chat's own say decide the rest (computerUse.ts).
+ */
+export function getsComputerUse(identity: HubChatIdentity): boolean {
+  if (identity.kind === "mono") return identity.role !== "checker";
+  return identity.kind === "team" || identity.kind === "chat";
+}
+
 /** The `monocode` entry. `cli` is this app's own executable (`app_cli_path`). */
 export function monocodeServer(cli: string): Record<string, unknown> {
   return {
@@ -337,6 +348,10 @@ export function hubMcpArgs(
   if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
     Object.assign(mcpServers, servers.connectors(identity.monoId));
   if (delegate) mcpServers.monocode = monocodeServer(servers.cli!);
+  // Not pre-approved: Claude Code asks before each computer-use call unless the chat runs with full access.
+  const computerUse = knownComputerUse();
+  if (servers.cli && getsComputerUse(identity) && computerUse && chatGetsComputerUse(computerUse, sessionId))
+    mcpServers.computer = computerUseServer(servers.cli, sessionId, computerUse.settingsPath);
   if (!Object.keys(mcpServers).length) return [...restrict, ...fence];
   return [
     ...restrict,

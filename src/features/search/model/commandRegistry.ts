@@ -46,7 +46,10 @@ export type PaletteAppAction =
   | "stop-chat"
   | "next-chat-worktree"
   | "fork-from-here"
-  | "report-problem";
+  | "report-problem"
+  | "computer-use-observe"
+  | "computer-use-off"
+  | "computer-use-follow";
 
 export type PaletteRun =
   | { kind: "tab"; command: TabCommand }
@@ -261,6 +264,34 @@ const EXTRAS: PaletteCommand[] = [
     binding: null,
     run: { kind: "app", action: "report-problem" },
     needs: "none",
+  },
+  // WP-255: the chat in view's own say on computer use (Settings > Computer use lists them).
+  {
+    id: "session.computer-use-observe",
+    label: "Computer use: look only in this chat",
+    group: "Session",
+    keys: "",
+    binding: null,
+    run: { kind: "app", action: "computer-use-observe" },
+    needs: "chat",
+  },
+  {
+    id: "session.computer-use-off",
+    label: "Computer use: off in this chat",
+    group: "Session",
+    keys: "",
+    binding: null,
+    run: { kind: "app", action: "computer-use-off" },
+    needs: "chat",
+  },
+  {
+    id: "session.computer-use-follow",
+    label: "Computer use: follow Settings in this chat",
+    group: "Session",
+    keys: "",
+    binding: null,
+    run: { kind: "app", action: "computer-use-follow" },
+    needs: "chat",
   },
 ];
 

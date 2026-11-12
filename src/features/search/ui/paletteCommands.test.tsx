@@ -99,6 +99,7 @@ function Host({ onStop }: { onStop: (id: string) => void }) {
       editor: () => undefined,
       forkChat: () => undefined,
       reportProblem: () => undefined,
+      computerUseChat: () => undefined,
     });
   return createElement(
     "div",

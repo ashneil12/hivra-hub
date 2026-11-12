@@ -38,6 +38,7 @@ import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
 import { IS_HUB_BUNDLE, seedHubBundleDefaults } from "./hubBundle";
 import { connectorServersForMono, loadConnectors } from "./hubConnectors";
+import { loadComputerUse } from "../../computerUse/model/computerUse";
 import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "./projectPrefs";
 
 // Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
@@ -71,8 +72,13 @@ function startHubMcp(): void {
   setHubMcpServers({ cli: null }, lookups);
   const cli = invoke<string>("app_cli_path").catch(() => null);
   const connectors = loadConnectors();
-  window.addEventListener("focus", () => void loadConnectors());
-  const read = Promise.all([cli, connectors]).then(([cli]): HubMcpServers => ({ cli, connectors: connectorServersForMono }));
+  // WP-255: Settings > Computer use, so a chat started after a change gets (or loses) the computer entry.
+  const computerUse = loadComputerUse();
+  window.addEventListener("focus", () => {
+    void loadConnectors();
+    void loadComputerUse();
+  });
+  const read = Promise.all([cli, connectors, computerUse]).then(([cli]): HubMcpServers => ({ cli, connectors: connectorServersForMono }));
   const ready = Promise.race([
     read.then((servers) => {
       setHubMcpServers(servers, lookups);

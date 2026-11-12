@@ -1685,3 +1685,31 @@ describe("agent app commands", () => {
     ).rejects.toThrow("body is required");
   });
 });
+
+describe("visual.preview (WP-254)", () => {
+  it("draws the locked page with the error collector and hands back the screenshot and errors", async () => {
+    const { source, host } = fixture();
+    const drawn: string[] = [];
+    host.visualPreview = vi.fn(async (page: string) => {
+      drawn.push(page);
+      return { screenshot: "/data/visual-previews/1.png", errors: ["missing is not defined (line 1)", 7] };
+    });
+    const result = await handleAgentApp(source, "p1", "visual.preview", { html: "<h1>Hi</h1><script>missing()</script>" }, host);
+    expect(result).toMatchObject({ screenshot: "/data/visual-previews/1.png", errors: ["missing is not defined (line 1)"] });
+    expect((result as { note: string }).note).toMatch(/^Fix these errors/);
+    expect(drawn[0]).toContain("connect-src 'none'");
+    expect(drawn[0]).toContain("data-hivra-preview-errors");
+    expect(drawn[0]).toContain("<h1>Hi</h1>");
+  });
+
+  it("refuses an empty or oversized page, and says so when this build can't preview", async () => {
+    const { source, host } = fixture();
+    await expect(handleAgentApp(source, "p2", "visual.preview", { html: " " }, host)).rejects.toThrow("needs html");
+    await expect(handleAgentApp(source, "p3", "visual.preview", { html: "x".repeat(600 * 1024) }, host)).rejects.toThrow(
+      "size limit",
+    );
+    await expect(handleAgentApp(source, "p4", "visual.preview", { html: "<p>ok</p>" }, host)).rejects.toThrow(
+      "can't preview",
+    );
+  });
+});

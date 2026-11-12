@@ -96,11 +96,15 @@ mod inbox_media;
 pub mod instance;
 // WP-07: the name a person reads. Not the bundle name.
 pub mod commit_guard;
+/// WP-255: computer use, off by default, with a block list for password apps.
+pub mod computer_use;
 mod display_name;
 mod jira;
 mod jsonc;
 mod land;
 mod launch_guard;
+/// WP-254: an agent looks at its visual reply before the person does.
+mod visual_preview;
 // WP-104: daily log and crash records.
 mod diagnostics;
 // WP-104: machine facts for the health list.
@@ -1414,6 +1418,12 @@ pub fn run() {
             diagnostics::diagnostics_folder,
             diagnostics::diagnostics_sources,
             diagnostics::diagnostics_triage_folder,
+            computer_use::computer_use_get,
+            computer_use::computer_use_put,
+            computer_use::computer_use_set_chat,
+            computer_use::computer_use_activity,
+            computer_use::computer_use_check,
+            visual_preview::visual_preview,
             // WP-104: machine facts for the health list.
             health::health_facts,
         ])

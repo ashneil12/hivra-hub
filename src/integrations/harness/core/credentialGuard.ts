@@ -175,6 +175,15 @@ export const GUARD_STORE_DENY_RULES: readonly string[] = [
   "Write(~/Library/Application Support/com.ash.monocode-hub*/commit-guard-allows*)",
   "Edit(~/Library/Application Support/com.ash.monocode-hub*/attribution/**)",
   "Write(~/Library/Application Support/com.ash.monocode-hub*/attribution/**)",
+  // WP-255: Settings > Computer use and its activity log. Only Ash's Settings change the one; only the app writes the other.
+  "Edit(~/Library/Application Support/com.ash.monocode-hub*/computer-use*)",
+  "Write(~/Library/Application Support/com.ash.monocode-hub*/computer-use*)",
+  "Bash(*computer-use.json*)",
+  "Bash(*computer-use-activity*)",
+  // ...and a chat never starts the computer-use helper or Hivra's own entry for it by hand, past the policy.
+  "Bash(*open-computer-use*)",
+  "Bash(ocu:*)",
+  "Bash(* computer-use*)",
   "Bash(*commit-guard-allows*)",
   "Bash(*Application Support/com.ash.monocode-hub*attribution/*)",
 ];

@@ -257,6 +257,7 @@ export function delegateToolsSummary(
 
 const ACTION_LABELS: Record<string, string> = {
   "app.version": "Check the app version",
+  "visual.preview": "Preview a visual reply",
   "models.list": "List models",
   "sessions.list": "List sessions",
   "sessions.read": "Read a session",
