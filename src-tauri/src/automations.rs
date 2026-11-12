@@ -607,10 +607,7 @@ fn trim_history(conn: &Connection, automation_id: &str) -> Result<(), String> {
             continue;
         }
         let run: AutomationRun = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
-        if matches!(
-            run.status.as_str(),
-            "succeeded" | "failed" | "skipped" | "cancelled"
-        ) {
+        if is_final_status(&run.status) {
             delete_ids.push(id);
         }
     }
@@ -1012,6 +1009,60 @@ pub fn automations_claim_event(
     Ok(Some(DueAutomationRun { automation, run }))
 }
 
+/// An automation run's status, and the only moves between them. A run starts `pending`, goes `running` when its session
+/// takes the prompt, and ends `succeeded`, `failed`, `cancelled` or `skipped`. An ended run stays as it ended: a late or
+/// repeated update from the webview (a settle that lands after the run was cancelled, a launch error caught after the
+/// turn already settled) changes nothing. Before this, `automation_run_update` wrote whatever status it was given, so a
+/// cancelled run could become succeeded and a succeeded one failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RunStatus {
+    Pending,
+    Running,
+    Succeeded,
+    Failed,
+    Skipped,
+    Cancelled,
+}
+
+impl RunStatus {
+    fn parse(status: &str) -> Option<Self> {
+        Some(match status {
+            "pending" => Self::Pending,
+            "running" => Self::Running,
+            "succeeded" => Self::Succeeded,
+            "failed" => Self::Failed,
+            "skipped" => Self::Skipped,
+            "cancelled" => Self::Cancelled,
+            _ => return None,
+        })
+    }
+
+    fn is_final(self) -> bool {
+        matches!(
+            self,
+            Self::Succeeded | Self::Failed | Self::Skipped | Self::Cancelled
+        )
+    }
+
+    /// Repeating the same status is allowed (it refreshes the session and error); a run never goes back to pending and
+    /// never leaves an end.
+    fn can_move_to(self, next: Self) -> bool {
+        if self == next {
+            return true;
+        }
+        match self {
+            Self::Pending => true,
+            Self::Running => next != Self::Pending,
+            _ => false,
+        }
+    }
+}
+
+/// True for a status a run ends in. An unknown status (a record from a newer build) is not one.
+fn is_final_status(status: &str) -> bool {
+    RunStatus::parse(status).is_some_and(RunStatus::is_final)
+}
+
 struct StoredRunUpdate {
     run: AutomationRun,
     /// WP-180a: true once a new activity line was written for this update.
@@ -1345,15 +1396,19 @@ fn update_stored_run(
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "Automation run not found.".to_string())?;
     let mut run: AutomationRun = serde_json::from_str(&raw).map_err(|error| error.to_string())?;
+    let next =
+        RunStatus::parse(status).ok_or_else(|| "Invalid automation run status.".to_string())?;
+    // A stored status this build doesn't know is left alone, as an ended one is.
+    let movable = RunStatus::parse(&run.status).is_some_and(|current| current.can_move_to(next));
+    if !movable {
+        return Ok(StoredRunUpdate { run, noted: false });
+    }
     let previous_status = run.status.clone();
     run.status = status.to_string();
-    if run.status == "running" && run.started_at.is_none() {
+    if next == RunStatus::Running && run.started_at.is_none() {
         run.started_at = Some(now);
     }
-    if matches!(
-        run.status.as_str(),
-        "succeeded" | "failed" | "skipped" | "cancelled"
-    ) {
+    if next.is_final() {
         run.completed_at = Some(now);
     }
     if session_id.is_some() {
@@ -1388,10 +1443,7 @@ pub fn automation_run_update(
     if let Some(session_id) = session_id.as_deref() {
         validate_id(session_id, "session")?;
     }
-    if !matches!(
-        status.as_str(),
-        "pending" | "running" | "succeeded" | "failed" | "skipped" | "cancelled"
-    ) {
+    if RunStatus::parse(&status).is_none() {
         return Err("Invalid automation run status.".into());
     }
     let mut conn = store.lock_conn()?;
@@ -1767,6 +1819,73 @@ mod tests {
             .unwrap()
             .map(|row| row.unwrap())
             .collect()
+    }
+
+    fn stored_status(conn: &Connection, run_id: &str) -> String {
+        let raw: String = conn
+            .query_row(
+                "SELECT run_json FROM automation_runs WHERE id = ?1",
+                [run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        serde_json::from_str::<AutomationRun>(&raw).unwrap().status
+    }
+
+    /// An ended run stays as it ended, and a run never goes back to pending. Before the status moves were explicit, a
+    /// late settle overwrote a cancelled run with succeeded, and a launch error caught after the turn settled turned a
+    /// succeeded run into failed.
+    #[test]
+    fn an_ended_run_keeps_its_end() {
+        let store = crate::session_store::SessionStore::open_in_memory().unwrap();
+        let mut conn = store.lock_conn().unwrap();
+        let automation = stored_automation("nightly", "Nightly", "prompt");
+        write_automation(&conn, &automation).unwrap();
+        let update = |conn: &mut Connection, id: &str, status: &str| {
+            update_stored_run(conn, id, status, None, None, None, 1_700_000_000_000).unwrap()
+        };
+
+        write_run(&conn, &stored_run("run-cancelled", "nightly")).unwrap();
+        update(&mut conn, "run-cancelled", "running");
+        update(&mut conn, "run-cancelled", "cancelled");
+        let late = update(&mut conn, "run-cancelled", "succeeded");
+        assert_eq!(late.run.status, "cancelled");
+        assert!(!late.noted);
+        assert_eq!(stored_status(&conn, "run-cancelled"), "cancelled");
+
+        write_run(&conn, &stored_run("run-succeeded", "nightly")).unwrap();
+        update(&mut conn, "run-succeeded", "running");
+        update(&mut conn, "run-succeeded", "succeeded");
+        update(&mut conn, "run-succeeded", "failed");
+        assert_eq!(stored_status(&conn, "run-succeeded"), "succeeded");
+
+        write_run(&conn, &stored_run("run-back", "nightly")).unwrap();
+        update(&mut conn, "run-back", "running");
+        update(&mut conn, "run-back", "pending");
+        assert_eq!(stored_status(&conn, "run-back"), "running");
+
+        // A run may end straight from pending (a launch that failed before its turn), and a repeat is still allowed.
+        write_run(&conn, &stored_run("run-early", "nightly")).unwrap();
+        update(&mut conn, "run-early", "failed");
+        update(&mut conn, "run-early", "failed");
+        assert_eq!(stored_status(&conn, "run-early"), "failed");
+
+        assert!(update_stored_run(&mut conn, "run-early", "done", None, None, None, 1).is_err());
+    }
+
+    #[test]
+    fn run_status_moves() {
+        use RunStatus::*;
+        let all = [Pending, Running, Succeeded, Failed, Skipped, Cancelled];
+        for from in all {
+            for to in all {
+                let expected = from == to || from == Pending || (from == Running && to != Pending);
+                assert_eq!(from.can_move_to(to), expected, "{from:?} -> {to:?}");
+            }
+        }
+        assert!(!is_final_status("running"));
+        assert!(is_final_status("skipped"));
+        assert!(!is_final_status("from-a-newer-build"));
     }
 
     /// A finished run and a failed run each write one activity line. Repeating
