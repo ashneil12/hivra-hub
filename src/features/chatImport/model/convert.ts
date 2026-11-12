@@ -18,6 +18,15 @@ export function importedChatId(source: ChatSource, chat: Pick<IndexedChat, "sess
   return `imp-${source === "codex" ? "codex" : "claude"}-${token || hash(raw)}`;
 }
 
+/**
+ * A chat this import brought in. Such a chat is filed under the Chief of Staff of the project it landed in (Ash,
+ * 12 Nov), so each project keeps its own history and none of it mixes with another's. Told by its id alone, so a
+ * list of thousands is sorted without a lookup per chat.
+ */
+export function isImportedChatId(id: string): boolean {
+  return id.startsWith("imp-claude-") || id.startsWith("imp-codex-");
+}
+
 function hash(text: string): string {
   let h = 2166136261;
   for (let i = 0; i < text.length; i += 1) {

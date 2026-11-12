@@ -9,6 +9,7 @@ import type { ProjectRef } from "../model/plan";
 import { startSetupDriver } from "../model/setupDriver";
 import { setSetupState, setupState } from "../model/setupStage";
 import { ImportSetupCard } from "./ImportSetupCard";
+import { inMockup, mockupLearn } from "./mockupLearn";
 import { OPEN_IMPORT_SETUP_EVENT, type SetupPart } from "./importRail";
 
 function projectRefs(): ProjectRef[] {
@@ -24,7 +25,7 @@ export function ImportSetupHost() {
         run: chatImportRun(),
         learnStatus: learnRunStatus,
         subscribeLearn: subscribeLearnRun,
-        startLearn: startLearnRun,
+        startLearn: inMockup() ? mockupLearn : startLearnRun,
       }),
     [],
   );
@@ -44,7 +45,7 @@ export function ImportSetupHost() {
       projects={projectRefs()}
       rules={learn.proposals}
       rulesFrom={learn.chats}
-      accept={(id) => sharedLearnPorts().accept(id)}
+      accept={(id) => (inMockup() ? Promise.resolve(true) : sharedLearnPorts().accept(id))}
       onBringIn={() => setPart(null)}
       onRulesDone={() => {
         setSetupState({ ...setupState(), stage: "off" });

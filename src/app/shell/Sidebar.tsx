@@ -30,6 +30,8 @@ import { terminalStatusText } from "../../features/terminalMirror/model/list";
 import { confirmDelete } from "../../shared/ui/ConfirmDelete";
 import { leadRenameRow, subChatsByParent } from "../../features/hub/model/codingTeamList";
 import { inChatListScope, setChatListScope, useChatListScope } from "../../features/hub/model/chatListScope";
+import { isImportedChatId } from "../../features/chatImport/model/convert";
+import { pickChief } from "../../features/home/model/chief";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
   Archive,
@@ -931,10 +933,12 @@ function SidebarComponent({
       startedBy.set(row.childSession, row.ownerSession);
     }
   }
+  const importedOwner = scopeOwner && chatScope === "own" ? pickChief(listMonos())?.id : undefined;
   const inScope = (sessionId: string) =>
     !scopeOwner ||
     inChatListScope(chatScope, scopeOwner, sessionId, {
-      monoOf: (id) => monoForSession(id)?.id,
+      // A chat brought in from Claude Code or Codex is the Chief of Staff's, in the project it landed in.
+      monoOf: (id) => (importedOwner && isImportedChatId(id) ? importedOwner : monoForSession(id)?.id),
       startedBy: (id) => startedBy.get(id),
     });
   const listableSessions = mergeFolderSessionSummaries(

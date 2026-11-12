@@ -413,6 +413,34 @@ test("first run: bring my chats over is one step that starts the sweep and lets 
   await page.screenshot({ path: shot("after-5-choose.png") });
   await setup.locator("[data-chat-import-go]").click();
   await expect(setup).toHaveCount(0);
-  // The chats come in behind the app, and the card goes when the setup is over.
-  await expect(rail).toHaveCount(0, { timeout: 30_000 });
+  // The chats come in behind the app; then the card calls the person back for the suggested rules (examples here).
+  await expect(rail).toContainText("5 suggested rules are ready", { timeout: 60_000 });
+  await rail.locator("[data-import-rail-open]").click();
+  const rules = page.locator('[data-import-setup][data-part="rules"]');
+  await expect(rules.locator("[data-import-setup-rule]")).toHaveCount(5);
+  await page.screenshot({ path: shot("after-6-rules.png") });
+  await rules.getByRole("button", { name: "Save 5 rules" }).click();
+  await expect(rail).toHaveCount(0);
+
+  // Ash, 12 Nov: the chats are filed under the Chief of Staff of the project they landed in, not under its Lead,
+  // and one project's chats never show in another's.
+  await page.getByRole("navigation", { name: "Projects" }).first().getByRole("button", { name: "recipes", exact: true }).click();
+  await page.getByRole("button", { name: "Chief of Staff for recipes" }).click();
+  const list = page.getByRole("complementary").first();
+  await expect(list.getByText("Example: Fix the checkout total").first()).toBeVisible();
+  await page.screenshot({ path: shot("after-7-chief-of-staff.png") });
+  // Opening one makes it the Chief of Staff's own chat: it is kept as one of its chats, and stays in its list.
+  await list.getByText("Example: Fix the checkout total").first().click();
+  await expect(page.getByText("Example: second message").first()).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("monocode:mono-roster") ?? ""))
+    .toContain("imp-claude-");
+  await page.screenshot({ path: shot("after-8-taken-over.png") });
+  await page.getByRole("button", { name: /^recipes lead/ }).first().click();
+  await expect(list.getByText("Main chat")).toBeVisible();
+  await expect(list.getByText(/^Example: /)).toHaveCount(0);
+  await page.getByRole("navigation", { name: "Projects" }).first().getByRole("button", { name: /^EXO/ }).first().click();
+  await page.getByRole("button", { name: "Chief of Staff for EXO" }).click();
+  await expect(list.getByText("Main chat")).toBeVisible();
+  await expect(list.getByText("Example: Fix the checkout total")).toHaveCount(0);
 });
