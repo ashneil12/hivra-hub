@@ -208,18 +208,19 @@ export function builtAtLabel(builtAt: string): string {
 }
 
 /**
- * The Settings footer. r65 (Critiquito): the daily app shows only its version ("Hivra 0.16.7"); a dev copy keeps
- * "hub/next @ 09141d8 · built 19 Oct 2026, 21:04 · dev copy <slot>" so a test run can tell builds apart.
+ * The Settings footer. r65 (Critiquito): the daily app shows no branch or hash. Ash (12 Nov) couldn't tell whether an
+ * update had landed, since fast-loop updates keep one version, so it shows when it was built: "Hivra 0.16.7 · built
+ * 12 Nov 2026, 19:01". A dev copy keeps "hub/next @ 09141d8 · built 19 Oct 2026, 21:04 · dev copy <slot>".
  * The name is the display name, never `identity.product` (that is the bundle name the binary was built with).
  */
 export function buildLine(identity: AppIdentity): string {
   const named = displayVersion(identity.version);
-  if (identity.kind !== "dev") return named;
+  const built = builtAtLabel(identity.stamp.builtAt);
+  if (identity.kind !== "dev") return built ? `${named} · built ${built}` : named;
   const parts = [
     named,
     stampLabel(identity.stamp),
   ];
-  const built = builtAtLabel(identity.stamp.builtAt);
   if (built) parts.push(`built ${built}`);
   parts.push(`dev copy ${identity.slot?.trim() ?? ""}`.trim());
   return parts.join(" · ");
