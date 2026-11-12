@@ -15378,6 +15378,8 @@ function Workspace({
             worktrees: (cwd) => listWorktrees(cwd),
             ship: (input) => startShip(input),
             shipStatus: () => shipStatus().current,
+            // WP-254: a visual reply drawn off screen, for the agent's own look.
+            visualPreview: (document) => invoke("visual_preview", { document }),
             createWorktree: (cwd, branch, base, existing, options) =>
               createWorktree(cwd, branch, base, existing, options),
             projectActions: (cwd) => listProjectActions(cwd),

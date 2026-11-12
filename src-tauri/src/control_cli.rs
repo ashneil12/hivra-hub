@@ -100,7 +100,7 @@ const ACTIONS: [&str; 14] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer", "repair", "approve",
 ];
-pub(crate) const APP_ACTIONS: [&str; 86] = [
+pub(crate) const APP_ACTIONS: [&str; 87] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -196,6 +196,8 @@ pub(crate) const APP_ACTIONS: [&str; 86] = [
     // WP-215: the captain files a task and hands it on. A first mate notes a call it settled.
     "captain.handoff",
     "decisions.note",
+    // WP-254: draw a visual reply off screen first.
+    "visual.preview",
 ];
 const APP_USAGE: &str = r#"MonoCode app access — use in a thread enabled by /operator.
 
@@ -476,6 +478,9 @@ Actions:
                   both ids. A project this chief cannot read is refused.
   decisions.note {"project":"...","what":"...","reason":"..."}
                   A first mate notes a call it settled. The chat is the caller's.
+  visual.preview {"html":"<!doctype html>..."}  Draw a visual reply off
+                  screen, with no network, before you send it. Returns a
+                  screenshot path and the page's errors.
   tasks.get      {"id":"..."}  One task, with its comments and activity.
   tasks.create   {"title":"..."}  File a follow-up in this chat's project.
   tasks.update   {"id":"...","version":1,"comment":"..."}  Comment, or change

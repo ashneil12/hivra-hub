@@ -1,3 +1,4 @@
+import { visualPreviewDocument } from "../../sessions/model/visualReply";
 import {
   hasProbedHarnessAvailability,
   isHarnessAvailable,
@@ -392,6 +393,11 @@ export type AgentAppHost = {
     requestedBy: string;
     whenBusy?: "wait" | "restart";
   }): Promise<unknown>;
+  /**
+   * WP-254: draws a page off screen in a headless browser (src-tauri/src/visual_preview.rs) and returns the screenshot's
+   * path and the errors the page noted. Absent: this build can't preview.
+   */
+  visualPreview?(document: string): Promise<unknown>;
   /** The newest ship and its receipt, reported by app.version. */
   shipStatus?(): unknown;
   /**
@@ -544,6 +550,8 @@ const FIELDS = new Map<string, readonly string[]>([
   // WP-215: file a task, then hand it to the project's first mate. A first mate notes a call it settled.
   ["captain.handoff", ["project", "department", "title", "brief"]],
   ["decisions.note", ["project", "what", "reason"]],
+  // WP-254: draw a visual reply off screen before sending it.
+  ["visual.preview", ["html"]],
 ]);
 
 /**
@@ -1873,6 +1881,23 @@ export async function handleAgentApp(
   if (action === "monos.propose")
     // One way to make a Mono (Board 22 Oct): with Ash in the Mono's chat. Proposals on Settings > Teams are gone.
     throw new Error(forUser(MONO_ONE_WAY));
+  if (action === "visual.preview") {
+    // WP-254: the same locked page a visual reply gets, drawn where nobody sees it. Never a window, never the network.
+    const html = input.html;
+    if (typeof html !== "string" || !html.trim()) throw new Error("visual.preview needs html: the page you would put in the visual fence");
+    const page = visualPreviewDocument(html);
+    if (!page) throw new Error("That page is over the visual reply size limit");
+    if (!host.visualPreview) throw new Error("This build can't preview a visual reply; send it without a preview");
+    const drawn = (await host.visualPreview(page)) as { screenshot?: unknown; errors?: unknown };
+    const errors = Array.isArray(drawn?.errors) ? drawn.errors.filter((e): e is string => typeof e === "string") : [];
+    return {
+      screenshot: drawn?.screenshot,
+      errors,
+      note: errors.length
+        ? "Fix these errors, then preview once more. Open the screenshot with your file reader to look at it."
+        : "No errors. Open the screenshot with your file reader to check it looks right before you send it.",
+    };
+  }
   switch (action) {
     case "app.version": {
       // Which app this is and the build it runs (src-tauri/src/instance.rs).

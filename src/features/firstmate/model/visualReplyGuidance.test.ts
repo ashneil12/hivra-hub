@@ -8,5 +8,7 @@ describe("agent guidance for visual replies", () => {
     expect(FIRST_MATE_CONTRACT).toMatch(/sandbox/);
     expect(FIRST_MATE_CONTRACT).toMatch(/person[^\n]*runs it with a click/);
     expect(FIRST_MATE_CONTRACT).not.toMatch(/[–—]/);
+    // WP-254: preview once before sending.
+    expect(FIRST_MATE_CONTRACT).toContain("visual.preview");
   });
 });

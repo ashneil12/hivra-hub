@@ -312,3 +312,16 @@ describe("visual reply review hardening", () => {
     expect(stub).toBeLessThan(guest.indexOf("chart"));
   });
 });
+
+describe("visualPreviewDocument (WP-254)", () => {
+  it("is always locked, collects errors first, and drops link tags", async () => {
+    const { visualPreviewDocument, visualCsp } = await import("./visualReply");
+    const page = visualPreviewDocument('<link rel="prefetch" href="https://x.test"><p>ok</p>')!;
+    expect(page).toContain(visualCsp(false));
+    expect(page).not.toContain("connect-src https:");
+    expect(page).not.toContain("<link");
+    expect(page.indexOf("data-hivra-preview-errors")).toBeLessThan(page.indexOf("<p>ok</p>"));
+    expect(page).not.toMatch(/<\/script>[\s\S]*<\/script>[\s\S]*<\/script>[\s\S]*<\/script>/);
+    expect(visualPreviewDocument("x".repeat(600 * 1024))).toBeNull();
+  });
+});

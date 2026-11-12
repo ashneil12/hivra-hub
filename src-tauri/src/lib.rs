@@ -103,6 +103,8 @@ mod jira;
 mod jsonc;
 mod land;
 mod launch_guard;
+/// WP-254: an agent looks at its visual reply before the person does.
+mod visual_preview;
 // WP-104: daily log and crash records.
 mod diagnostics;
 // WP-104: machine facts for the health list.
@@ -1421,6 +1423,7 @@ pub fn run() {
             computer_use::computer_use_set_chat,
             computer_use::computer_use_activity,
             computer_use::computer_use_check,
+            visual_preview::visual_preview,
             // WP-104: machine facts for the health list.
             health::health_facts,
         ])

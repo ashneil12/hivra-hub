@@ -272,3 +272,46 @@ export function visualHeightFromMessage(data: unknown): number | null {
     Math.max(VISUAL_FRAME_MIN_HEIGHT, Math.ceil(height)),
   );
 }
+
+/**
+ * WP-254: notes every script error, failed load and blocked request into an attribute the preview reads back
+ * (src-tauri/src/visual_preview.rs). Preview only: a reply shown to the person never carries it.
+ * The string must not contain a closing script tag.
+ */
+const PREVIEW_COLLECTOR = `(function () {
+  var list = [];
+  function note(text) {
+    var line = String(text).slice(0, 500);
+    if (list.length >= 20 || list.indexOf(line) >= 0) return;
+    list.push(line);
+    try { document.documentElement.setAttribute("data-hivra-preview-errors", btoa(unescape(encodeURIComponent(JSON.stringify(list))))); } catch (e) {}
+  }
+  window.addEventListener("error", function (event) {
+    if (event.target && event.target !== window && event.target.tagName) { note("Couldn't load a " + String(event.target.tagName).toLowerCase()); return; }
+    note((event.message || "Script error") + (event.lineno ? " (line " + event.lineno + ")" : ""));
+  }, true);
+  window.addEventListener("unhandledrejection", function (event) {
+    var reason = event.reason;
+    note("Unhandled promise rejection: " + (reason && reason.message ? reason.message : String(reason)));
+  });
+  document.addEventListener("securitypolicyviolation", function (event) {
+    note("Blocked by the sandbox: " + event.violatedDirective + (event.blockedURI ? " " + event.blockedURI : ""));
+  });
+  var original = console.error;
+  console.error = function () {
+    note("console.error: " + Array.prototype.map.call(arguments, String).join(" "));
+    return original.apply(console, arguments);
+  };
+})();`;
+
+/**
+ * WP-254: the page `visual.preview` draws. The guest document a visual reply gets, always with the network locked
+ * (a preview never asks the person), plus the error collector ahead of everything else. Null when it isn't text or is
+ * over the reply cap.
+ */
+export function visualPreviewDocument(source: string, theme?: Partial<VisualTheme> | null): string | null {
+  if (typeof source !== "string" || visualTooBig(source)) return null;
+  const body = source.replace(/\u0000/g, "").replace(/<link\b[^>]*>/gi, "");
+  const page = guestDocument(body, safeTheme(theme), false);
+  return page.replace("<head>", `<head><meta http-equiv="Content-Security-Policy" content="${visualCsp(false)}"><script>${PREVIEW_COLLECTOR}</script>`);
+}
