@@ -785,6 +785,7 @@ import {
   cantRedirectTurn,
   cantTakeFollowUp,
   followUpWhenBusy,
+  midTurnAsk,
 } from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
 import { useFanoutHost } from "../features/firstmate/hooks/useFanoutHost";
@@ -8981,7 +8982,9 @@ function Workspace({
               modelSettings: current.modelSettings,
               text: inboxAskPrompt(
                 rawCommand ? undefined : current.inboxAsk,
-                prepared.text,
+                rawCommand || message.monoNote || message.appRequestId
+                  ? prepared.text
+                  : midTurnAsk(prepared.text),
               ),
               attachments: prepared.attachments,
             }),
@@ -9173,7 +9176,9 @@ function Workspace({
               modelSettings: current.modelSettings,
               text: inboxAskPrompt(
                 rawCommand ? undefined : current.inboxAsk,
-                prompt,
+                rawCommand || options?.appRequestId || options?.origin === "automated"
+                  ? prompt
+                  : midTurnAsk(prompt),
               ),
               attachments: prepared,
             });
@@ -9511,7 +9516,7 @@ function Workspace({
           !shouldGenerateSessionTitle(
             isFirstTurn,
             placeholderTitle,
-            options?.refreshTitle,
+            options?.refreshTitle || !!current.titleAwaitsTask,
           )
         ) {
           return;
@@ -9526,10 +9531,15 @@ function Workspace({
         })
           .then(async (generated) => {
             if (
-              options?.refreshTitle &&
+              (options?.refreshTitle || current.titleAwaitsTask) &&
               !isFirstTurn &&
               turnGen.current.get(sessionId) !== gen
             ) {
+              return;
+            }
+            // A greeting asks for nothing yet: keep the title and let the next message name the chat.
+            if (generated?.noTask) {
+              setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, titleAwaitsTask: true } : s)));
               return;
             }
             const linkedWorkItem = await resolveLinkedWorkItem(
@@ -9543,12 +9553,14 @@ function Workspace({
                 if (s.id !== sessionId) return s;
                 let next = s;
                 if (
-                  generated &&
+                  generated?.title &&
                   (options?.refreshTitle ||
+                    s.titleAwaitsTask ||
                     canReplaceSessionTitle(s.title, s.harness, titleSeed))
                 ) {
+                  const { titleAwaitsTask: _named, ...rest } = next;
                   next = {
-                    ...next,
+                    ...rest,
                     title: formatSessionTitle(s.harness, generated.title),
                   };
                 }

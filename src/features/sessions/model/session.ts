@@ -705,6 +705,8 @@ export type Session = {
   modelSettings: Record<string, string>;
   runtimeMode: RuntimeMode;
   title: string;
+  /** The first message asked for nothing yet (a greeting): the next message names the chat. */
+  titleAwaitsTask?: boolean;
   /** Project / working directory for this session. */
   cwd: string;
   blocks: Block[];

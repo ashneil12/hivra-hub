@@ -67,7 +67,16 @@ export function followUpWhenBusy(input: BusyFollowUpInput): BusyFollowUp {
           : "queue"
         : input.setting;
   if (input.alreadyQueued) return asked === "steer" ? "steer" : "stay";
-  return input.cannotRedirect || input.compacting ? "queue" : asked;
+  // Ash 12 Nov: a message is never refused while a chat works. One that can't go into the turn waits for it instead.
+  return input.cannotRedirect || input.compacting || (asked === "steer" && !input.steerable) ? "queue" : asked;
+}
+
+/**
+ * Ash's message written into a running turn. Without a word, an agent deep in its work tends to carry on and never
+ * answer (Ash 12 Nov: "Wat r u doing" went unanswered), so the turn hears that he is waiting on a short answer.
+ */
+export function midTurnAsk(text: string): string {
+  return `${text}\n\n(Sent while you were working. Answer it in a line or two in your next message, then carry on.)`;
 }
 
 /** Said when a queued message is told to wait: its Steer button was pressed, or the queue offered it. */
