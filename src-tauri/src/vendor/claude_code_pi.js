@@ -1,5 +1,6 @@
 // Vendored from claude-code-pi 1.2.1 (npm `claude-code-pi`, https://github.com/luongnv89/pi-extensions),
-// MIT License, Copyright (c) pi-extensions contributors. Unchanged apart from this header.
+// MIT License, Copyright (c) pi-extensions contributors. Unchanged apart from this header and the parts marked
+// "Hivra change".
 // It registers a `claude-code-cli` provider in Pi and Oh My Pi and hands every model call to the local Claude
 // Code CLI with `claude -p`, so the person's Claude login never leaves Claude Code (src-tauri/src/pi_routes.rs).
 //
@@ -300,7 +301,21 @@ export function resolveTurnSystemPrompt(context) {
     const messages = bridgeMessages(context?.messages);
     if (messages.some(isSystemMessage))
         return transcriptSystemPrompt(messages);
-    return context?.systemPrompt ?? "";
+    return systemPromptText(context?.systemPrompt);
+}
+/**
+ * Hivra change: Pi passes `systemPrompt` as a string, Oh My Pi 18.4 as an array (of strings or text blocks).
+ * Read both as one string; anything else is no prompt.
+ */
+export function systemPromptText(value) {
+    if (typeof value === "string")
+        return value;
+    if (!Array.isArray(value))
+        return "";
+    return value
+        .map((part) => (typeof part === "string" ? part : typeof part?.text === "string" ? part.text : ""))
+        .filter((part) => part.trim().length > 0)
+        .join("\n\n");
 }
 function contentToText(content, imageLabel) {
     return normalizeContent(content)
