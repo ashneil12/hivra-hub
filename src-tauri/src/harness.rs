@@ -1249,12 +1249,14 @@ pub fn harness_spawn(
             Some(crate::model_router::prepare_routed_session(route)?)
         }
     };
+    // An isolated job (titles, short text) runs with no extensions; it gets neither the routes nor the Claude bridge.
+    let pi_isolated = args.iter().any(|arg| arg == "--no-extensions");
     let pi_routes = match pi_routes {
         None => None,
         Some(_) if !crate::pi_routes::takes_routes(binary_provider.as_deref()) => {
             return Err("Saved models are offered to Pi and Oh My Pi only".into())
         }
-        Some(routes) if routes.is_empty() => None,
+        Some(routes) if routes.is_empty() || pi_isolated => None,
         Some(routes) => Some(crate::pi_routes::build(&routes)),
     };
     let pi_extension = match pi_routes.as_ref() {
@@ -1264,9 +1266,22 @@ pub fn harness_spawn(
     // Pi and Oh My Pi also get the person's Claude subscription, through their own Claude Code (`claude -p`), when
     // Claude Code is installed. Not in a dev copy, whose Claude must never see the daily login or config. A failure
     // here only leaves the provider out; it never stops the start.
+    // The bridge starts Claude Code, so Claude Code must pass the same crew judgement for this chat and folder
+    // (Never use, the lock): a chat where Claude Code may not run gets no bridge.
+    let claude_allowed = || -> Result<bool, String> {
+        let conn = store.lock_conn()?;
+        let crew = crew_folder.as_deref().unwrap_or(&cwd);
+        Ok(
+            crate::crew::gate::judge_start(&conn, &session_id, "claude", crew).is_ok()
+                && (crew == cwd
+                    || crate::crew::gate::judge_start(&conn, &session_id, "claude", &cwd).is_ok()),
+        )
+    };
     let pi_claude = if more_agent.is_none()
+        && !pi_isolated
         && crate::pi_routes::takes_routes(binary_provider.as_deref())
         && crate::instance::policy().daily_claude
+        && claude_allowed()?
     {
         let claude = resolve_claude();
         let extension = claude

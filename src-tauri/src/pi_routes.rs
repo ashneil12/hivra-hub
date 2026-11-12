@@ -121,7 +121,7 @@ pub fn build_with(routes: &[CustomRoute], prepare: Prepare) -> (PiRoutes, Vec<St
 
 /// The routes for a Pi or Oh My Pi start, with the real router and Keychain.
 pub fn build(routes: &[CustomRoute]) -> PiRoutes {
-    let (ready, skipped) = build_with(routes, &crate::model_router::prepare_routed_session);
+    let (ready, skipped) = build_with(routes, &crate::model_router::prepare_routed_session_quick);
     if !skipped.is_empty() {
         eprintln!(
             "[monocode] {} saved model(s) not offered to Pi: key missing or saved for another address",
@@ -148,18 +148,35 @@ pub fn write_claude_extension() -> Result<PathBuf, String> {
 }
 
 fn write_file_in(root: &Path, name: &str, source: &str) -> Result<PathBuf, String> {
+    let fail = |e: &dyn std::fmt::Display| format!("Couldn't prepare Pi's model list: {e}");
+    std::fs::create_dir_all(root).map_err(|e| fail(&e))?;
     let dir = root.join("dropwave-pi");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("Couldn't prepare Pi's model list: {e}"))?;
+    match std::fs::create_dir(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(fail(&e)),
+    }
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // Never follow a link or use a folder someone else made: Pi runs whatever file is here.
+        let meta = std::fs::symlink_metadata(&dir).map_err(|e| fail(&e))?;
+        let uid = unsafe { libc::getuid() };
+        if !meta.file_type().is_dir() || meta.uid() != uid {
+            return Err(fail(&"its folder is not this user's own"));
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+            .map_err(|e| fail(&e))?;
     }
     let path = dir.join(name);
-    let tmp = dir.join(format!("{name}.{}.tmp", std::process::id()));
+    // A unique name per write, so two starts at once never share a half-written file.
+    let tmp = dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4().simple()));
     std::fs::write(&tmp, source)
         .and_then(|_| std::fs::rename(&tmp, &path))
-        .map_err(|e| format!("Couldn't prepare Pi's model list: {e}"))?;
+        .map_err(|e| {
+            let _ = std::fs::remove_file(&tmp);
+            fail(&e)
+        })?;
     Ok(path)
 }
 
@@ -287,6 +304,18 @@ mod tests {
         let again = write_extension_in(&dir).unwrap();
         assert_eq!(std::fs::read_to_string(again).unwrap(), EXTENSION_SOURCE);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_a_linked_folder() {
+        let root = std::env::temp_dir().join(format!("pi-routes-link-{}", uuid::Uuid::new_v4()));
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&elsewhere).unwrap();
+        std::os::unix::fs::symlink(&elsewhere, root.join("dropwave-pi")).unwrap();
+        assert!(write_extension_in(&root).is_err());
+        assert!(std::fs::read_dir(&elsewhere).unwrap().next().is_none());
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

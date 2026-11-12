@@ -1769,9 +1769,25 @@ pub fn prepare_routed_session(route: &CustomRoute) -> Result<(RoutedEnv, Session
 
 /// The routed session for `route`, with the key read through `read_key`. The key is read only for the provider and
 /// address stored with it (WP-129), and the router is started at that stored address, never the caller's.
+/// `prepare_routed_session` without asking the provider for the model's window: no network call at start. For Pi
+/// and Oh My Pi, which get every saved model at each start (src/pi_routes.rs) and assume a window themselves.
+pub fn prepare_routed_session_quick(
+    route: &CustomRoute,
+) -> Result<(RoutedEnv, SessionToken), String> {
+    prepare_routed_session_with(route, &crate::key_binding::keychain_item, false)
+}
+
 pub(crate) fn prepare_routed_session_in(
     route: &CustomRoute,
     read_item: crate::key_binding::ItemReader,
+) -> Result<(RoutedEnv, SessionToken), String> {
+    prepare_routed_session_with(route, read_item, true)
+}
+
+fn prepare_routed_session_with(
+    route: &CustomRoute,
+    read_item: crate::key_binding::ItemReader,
+    ask_window: bool,
 ) -> Result<(RoutedEnv, SessionToken), String> {
     if !may_route(route) {
         return Err("This model isn't routed: Claude models always use your Claude login.".into());
@@ -1787,7 +1803,11 @@ pub(crate) fn prepare_routed_session_in(
     let (port, session) = ensure_router(&route, &upstream)?;
     // The provider's own window for this model, asked once per route. Nothing here may fail the spawn: a session on
     // an assumed-200K window is still a working session.
-    let window = remembered_window(&route, key.as_deref());
+    let window = if ask_window {
+        remembered_window(&route, key.as_deref())
+    } else {
+        None
+    };
     Ok((routed_env(&route, session.value(), port, window), session))
 }
 

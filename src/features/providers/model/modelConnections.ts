@@ -58,7 +58,8 @@ const CLAUDE_LOGIN_NO_BRIDGE: ModelConnection = {
 const CLAUDE_LOGIN_VIA_CLAUDE_CODE: ModelConnection = {
   status: "works",
   via: "app",
-  note: "Runs through your own Claude Code (claude -p) on your subscription; your login never leaves Claude Code.",
+  note:
+    "Runs through your own Claude Code (claude -p) on your subscription; your login never leaves Claude Code. Needs Claude Code installed and allowed for that chat.",
 };
 const OWN_ACCOUNT_ONLY: ModelConnection = { status: "no", note: "This agent runs only on its own account." };
 const own = (note: string): ModelConnection => ({ status: "works", via: "own", note });
