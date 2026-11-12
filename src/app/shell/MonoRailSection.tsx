@@ -11,7 +11,7 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { BellOff, ChevronDown, CircleAlert, Clock, Copy, ImagePlus, Loader, MoreHorizontal, Pencil, Pin, PinOff, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
+import { BellOff, ChevronDown, CircleAlert, Clock, Copy, ImagePlus, Loader, MoreHorizontal, Pencil, Pin, PinOff, Plus, RotateCcw, Settings, Trash2, UserGroup } from "../../shared/ui/icons";
 import { duplicateContactWithFiles, editContactProfile, setContactMuted, setContactPinned } from "../../features/monos/model/contacts";
 import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
 import { childChatsByMono } from "../../features/monos/model/delegationView";
@@ -21,7 +21,7 @@ import { useNeedsYou } from "../../features/needs/model/needsLive";
 import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
-import { monoTeamInView, openCodingTeam, openMonoChat, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
+import { monoTeamInView, openCodingTeam, openMonoChat, openMonoSettings, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
 import { teamFor, useMonoTeamsVersion, type TeamTarget } from "../../features/hub/model/monoTeams";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { failedMonoName, retryMonoFailure } from "../../features/monos/model/monoFailures";
@@ -1162,6 +1162,20 @@ function MonoMenu({
       >
         <Pencil className="size-3.5 shrink-0" strokeWidth={1.75} />
         Edit profile
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        data-mono-menu-settings
+        onClick={() => {
+          commitName();
+          onClose();
+          openMonoSettings(monoId);
+        }}
+        className={itemClass}
+      >
+        <Settings className="size-3.5 shrink-0" strokeWidth={1.75} />
+        Settings and model
       </button>
       {team ? (
         <button
