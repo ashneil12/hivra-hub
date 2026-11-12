@@ -9,6 +9,7 @@ import { validatePageSpec } from "./pageSpec";
 import { stubPageSpec } from "./stubPages";
 import { forUser } from "../../hub/model/userName";
 import { hasOwnCode, setOwnCode } from "./ownCode";
+import { READY_BY, READY_PAGES } from "./readyPages";
 
 export type { BlockKind, PageBlock } from "./pageSpec";
 
@@ -285,14 +286,34 @@ export function keptPages(projectId: string): Page[] {
 export function findPage(id: string): Page | undefined {
   return pages().find((p) => p.id === id);
 }
+/**
+ * A hub that comes with the app and still runs the app's own code (not one an agent rebuilt) only reads the app's own
+ * data, so it needs no Allow: it works as soon as it is there, and never asks through the Inbox. Only while it asks for
+ * no more than the ready-made one does.
+ */
+export function stockReadyPage(page: Page): boolean {
+  if (page.by !== READY_BY || page.spec.kind !== "bespoke" || hasOwnCode(page.id)) return false;
+  const ready = READY_PAGES.find((r) => r.request === page.request);
+  if (!ready) return false;
+  const allowed = new Set<string>(ready.spec.permissions);
+  return page.spec.permissions.every((cap) => allowed.has(cap));
+}
 /** What a kept page may do right now (nothing once undone). */
 export function approvedPermissions(id: string): Capability[] {
   const p = pages().find((x) => x.id === id);
-  return p && !p.removed ? p.permissions : [];
+  if (!p || p.removed) return [];
+  if (p.permissions.length === 0 && p.spec.kind === "bespoke" && stockReadyPage(p)) return p.spec.permissions;
+  return p.permissions;
 }
-/** A kept bespoke page whose asks aren't approved yet (it came from a setup file). */
+/** A kept bespoke page whose asks aren't approved yet (it came from a setup file). A stock ready-made hub never asks. */
 export function needsAllow(page: Page): boolean {
-  return !page.removed && page.spec.kind === "bespoke" && page.spec.permissions.length > 0 && page.permissions.length === 0;
+  return (
+    !page.removed &&
+    page.spec.kind === "bespoke" &&
+    page.spec.permissions.length > 0 &&
+    page.permissions.length === 0 &&
+    !stockReadyPage(page)
+  );
 }
 /** Every kept page, for the setup file. */
 export function allKeptPages(): Page[] {

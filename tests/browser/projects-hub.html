@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Projects hub fixture</title>
+    <style>
+      :root {
+        --theme-hue: 240;
+        --theme-saturation: 0%;
+        --theme-dark-lightness: 9%;
+        --background-lightness: var(--theme-dark-lightness);
+        --color-background-base: hsl(var(--theme-hue) var(--theme-saturation) var(--background-lightness));
+      }
+      html, body { margin: 0; background: var(--color-background-base); }
+    </style>
+  </head>
+  <body>
+    <div id="root" style="height: 900px; width: 1100px; display: flex; flex-direction: column"></div>
+    <script type="module" src="./projects-hub.tsx"></script>
+  </body>
+</html>
