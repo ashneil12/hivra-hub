@@ -1341,8 +1341,10 @@ describe("Composer question focus", () => {
     });
     await act(async () => {
       container.querySelector("textarea")!.dispatchEvent(paste);
-      await new Promise((resolve) => setTimeout(resolve, 20));
     });
+    await act(async () =>
+      vi.waitFor(() => expect(container.querySelector('[aria-label="Remove borrowed.png"]')).not.toBeNull()),
+    );
 
     await act(async () =>
       container

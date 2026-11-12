@@ -95,10 +95,7 @@ describe("round 5 repro: the version sent is the version of the card on screen",
     expect(container.textContent).not.toContain(SWAPPED);
     // The person taps Once on the command they read.
     button?.click();
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    });
-    expect(sent.length).toBeGreaterThan(0);
+    await act(async () => vi.waitFor(() => expect(sent.length).toBeGreaterThan(0)));
     // Every answer for that tap must name the card on screen (version 1), so the newer command is never approved by it.
     expect(sent, `answers sent: ${JSON.stringify(sent)}; server state: ${server.state}`).toEqual(
       sent.map(() => 1),

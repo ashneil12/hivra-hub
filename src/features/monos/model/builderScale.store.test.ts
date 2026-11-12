@@ -50,8 +50,7 @@ describe("builder scale in the worker store", () => {
     const second = await window();
     await second.setWorkerQueueBackend(store);
     first.setBuilderScale({ ...DEFAULT_BUILDER_SCALE, maxBuilders: 20, load: { kind: "off" } });
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(second.builderScale().maxBuilders).toBe(20);
+    await vi.waitFor(() => expect(second.builderScale().maxBuilders).toBe(20));
     expect(second.builderScale().load).toEqual({ kind: "off" });
   });
 
