@@ -56,10 +56,14 @@ pub fn opencode_config_content(routes: &PiRoutes, existing: Option<&str>) -> Opt
     if routes.listed.is_empty() {
         return None;
     }
-    let mut config = existing
-        .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok())
-        .filter(serde_json::Value::is_object)
-        .unwrap_or_else(|| json!({}));
+    // The person's own value is JSONC, as OpenCode reads it. One that can't be read is never replaced: the saved
+    // models are left out instead, so its rules (permissions, say) can't be dropped.
+    let mut config = match existing.map(str::trim).filter(|text| !text.is_empty()) {
+        None => json!({}),
+        Some(text) => {
+            crate::rate_limits::parse_opencode_config(text).filter(serde_json::Value::is_object)?
+        }
+    };
     let root = config.as_object_mut()?;
     let providers = root.entry("provider").or_insert_with(|| json!({}));
     if !providers.is_object() {
@@ -169,9 +173,14 @@ pub fn build_with(routes: &[CustomRoute], prepare: Prepare) -> (PiRoutes, Vec<St
     let mut offered = Vec::new();
     let mut skipped = Vec::new();
     let mut seen = std::collections::HashSet::new();
-    for route in routes.iter().take(MAX_ROUTES) {
-        if !seen.insert(route.custom_model_id.clone()) {
+    // The first MAX_ROUTES distinct provider names, the same rule the picker uses (codexRoutes.ts offeredRoutes).
+    for route in routes {
+        // One provider per name: two ids that slug the same (`a.b`, `a_b`) never share one, the first is kept.
+        if !seen.insert(provider_name(&route.custom_model_id)) {
             continue;
+        }
+        if seen.len() > MAX_ROUTES {
+            break;
         }
         let ((set, _remove), session) = match prepare(route) {
             Ok(ready) => ready,
@@ -367,10 +376,19 @@ mod tests {
         assert_eq!(grok["models"]["grok-4.7"]["name"], "grok-4.7 (your key)");
         // A model id with a slash stays one model under its provider.
         assert!(config["provider"]["dropwave-or"]["models"]["x-ai/grok-4"].is_object());
-        // Not a JSON object, or nothing set: a fresh config.
-        let fresh = opencode_config_content(&ready, Some("not json")).unwrap();
-        assert!(!fresh.contains("not json"));
+        // The person's own JSONC is read as OpenCode reads it.
+        let jsonc =
+            opencode_config_content(&ready, Some("{\n  // mine\n  \"theme\": \"dark\",\n}"))
+                .unwrap();
+        assert!(jsonc.contains("\"theme\":\"dark\""));
+        // One that can't be read is left alone: no saved models rather than losing the person's settings.
+        assert_eq!(opencode_config_content(&ready, Some("not json")), None);
+        assert_eq!(opencode_config_content(&ready, Some("[1]")), None);
+        // Nothing set: a fresh config.
         assert!(opencode_config_content(&ready, None)
+            .unwrap()
+            .contains("dropwave-grok-1"));
+        assert!(opencode_config_content(&ready, Some("  "))
             .unwrap()
             .contains("dropwave-grok-1"));
     }
@@ -409,6 +427,18 @@ mod tests {
         let routes = vec![route("a", "m"), route("a", "m")];
         let (ready, _) = build_with(&routes, &|r| prepared(r, "t", None));
         assert_eq!(ready.sessions.len(), 1);
+    }
+
+    #[test]
+    fn two_ids_with_the_same_provider_name_keep_the_first() {
+        let routes = vec![
+            route("a.b", "first"),
+            route("a_b", "second"),
+            route("c", "third"),
+        ];
+        let (ready, _) = build_with(&routes, &|r| prepared(r, "t", None));
+        let models: Vec<_> = ready.listed.iter().map(|l| l.model_id.as_str()).collect();
+        assert_eq!(models, ["first", "third"]);
     }
 
     #[test]

@@ -1366,6 +1366,8 @@ pub fn harness_spawn(
     } else {
         args
     };
+    // Read before the saved-model routes go in front: `-c` pairs come before Codex's subcommand.
+    let codex_app_server = args.first().is_some_and(|a| a == "app-server");
     let args = {
         let mut args = if codex_route_args.is_empty() {
             args
@@ -1477,7 +1479,7 @@ pub fn harness_spawn(
         Some("mono")
             if binary_provider.as_deref() == Some("codex")
                 && account.as_ref().is_some_and(|a| a.provider == "codex")
-                && args.first().is_some_and(|a| a == "app-server") =>
+                && codex_app_server =>
         {
             let store =
                 crate::codex_mono_store::prepare(&app, account.as_ref().map(|a| a.id.as_str()))?;

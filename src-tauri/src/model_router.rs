@@ -1669,10 +1669,17 @@ fn passthrough_url(provider: &str, base: &str, path: &str) -> String {
     }
 }
 
+/// Fields a provider reads to run another model than `model` (OpenRouter's fallback list and routing). Dropped, so the
+/// saved key only ever runs the saved model.
+const OTHER_MODEL_FIELDS: [&str; 4] = ["models", "route", "provider", "plugins"];
+
 /// The body sent on: the caller's own, always on the saved model (the key is saved for that route alone).
 pub fn passthrough_body(body: &Value, model_id: &str) -> Value {
     let mut out = body.clone();
     if let Some(fields) = out.as_object_mut() {
+        for field in OTHER_MODEL_FIELDS {
+            fields.remove(field);
+        }
         fields.insert("model".into(), json!(model_id.trim()));
     }
     out
@@ -1715,6 +1722,14 @@ fn passthrough(
             );
         }
     };
+    // Redirects are never followed (the key stays on the saved address), and one is not passed on as a success.
+    if !(200..300).contains(&resp.status()) {
+        return respond(
+            stream,
+            502,
+            &json!({"error": {"message": format!("{} answered with a redirect", host_of(&route.base_url))}}),
+        );
+    }
     let content_type = resp
         .header("content-type")
         .unwrap_or("application/json")
@@ -2700,6 +2715,24 @@ mod tests {
 
     /// "Connect any model to any harness": an OpenAI-style agent goes through the router untranslated, on the saved
     /// model and the saved key, and gets the provider's own bytes back.
+    #[test]
+    fn the_passthrough_only_runs_the_saved_model() {
+        let body = json!({
+            "model": "anthropic/claude-x",
+            "models": ["anthropic/claude-x"],
+            "route": "fallback",
+            "provider": {"order": ["anthropic"]},
+            "plugins": [],
+            "messages": [{"role": "user", "content": "hi"}],
+        });
+        let out = passthrough_body(&body, " x-ai/grok-4 ");
+        assert_eq!(out["model"], "x-ai/grok-4");
+        for field in ["models", "route", "provider", "plugins"] {
+            assert!(out.get(field).is_none(), "{field}");
+        }
+        assert_eq!(out["messages"][0]["content"], "hi");
+    }
+
     #[test]
     fn the_router_passes_openai_requests_through_on_the_saved_model() {
         for path in ["/v1/responses", "/v1/chat/completions"] {

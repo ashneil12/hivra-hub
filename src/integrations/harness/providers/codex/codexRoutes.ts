@@ -13,7 +13,24 @@ const RESPONSES_PROVIDERS = new Set(["xai", "openrouter", "ollama", "custom"]);
 
 /** The provider name Rust gives a saved model (pi_routes.rs `provider_name`). */
 export function routedProviderName(customModelId: string): string {
-  return `dropwave-${customModelId.replace(/[^A-Za-z0-9]/g, "-").toLowerCase()}`;
+  // Per character, as Rust's `chars()` counts them, so a character outside the BMP is one dash, not two.
+  const slug = Array.from(customModelId, (c) => (/^[A-Za-z0-9]$/.test(c) ? c.toLowerCase() : "-")).join("");
+  return `dropwave-${slug}`;
+}
+
+/** The most saved models Rust hands one child (pi_routes.rs MAX_ROUTES), one per provider name, first kept. */
+export const MAX_ROUTES = 16;
+export function offeredRoutes<T extends { customModelId: string }>(routes: T[]): T[] {
+  const seen = new Set<string>();
+  const out: T[] = [];
+  for (const route of routes) {
+    if (out.length >= MAX_ROUTES) break;
+    const name = routedProviderName(route.customModelId);
+    if (seen.has(name)) continue;
+    seen.add(name);
+    out.push(route);
+  }
+  return out;
 }
 
 /** The saved models Codex is started with. */
@@ -23,7 +40,7 @@ export function codexModelRoutes(): CustomModelRoute[] {
 
 /** The saved models as entries in Codex's model list. */
 export function codexRoutedModels(): AgentModel[] {
-  return codexModelRoutes().map((route) => {
+  return offeredRoutes(codexModelRoutes()).map((route) => {
     const nativeId = `${routedProviderName(route.customModelId)}/${route.modelId}`;
     return {
       id: `codex:${nativeId}`,

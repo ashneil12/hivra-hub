@@ -110,6 +110,8 @@ type Live = {
   codexStore?: "mono";
   /** WP-41: the developer instructions this process started or resumed with. */
   instructionKey: string;
+  /** The app's router provider a saved model runs on, fixed when the thread opens; unset on Codex's own models. */
+  modelProvider?: string;
   runtimeMode: RuntimeMode;
   /** Snapshot of Hivra's agent sandbox when this thread started. Off outside the app. */
   hivraSandbox: boolean;
@@ -547,6 +549,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
   // WP-182: pass the session so a Mono's own skill list can be applied.
   const developerInstructions = await codexDeveloperInstructions(input.cwd, input.sessionId);
   const instructionKey = developerInstructions?.trim() ?? "";
+  // The provider is fixed per thread, so a switch between Codex's own models and a saved one opens it again.
+  const modelProvider = splitRoutedModel(nativeModelId(input.model)).provider;
   if (
     existing &&
     existing.cwd === input.cwd &&
@@ -557,7 +561,8 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
     existing.controlsAgents === controlsAgents &&
     existing.ephemeral === ephemeral &&
     existing.codexStore === codexStore &&
-    existing.instructionKey === instructionKey
+    existing.instructionKey === instructionKey &&
+    existing.modelProvider === modelProvider
   ) {
     existing.onEvent = input.onEvent;
     return existing;
@@ -836,6 +841,7 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       ephemeral,
       codexStore,
       instructionKey,
+      modelProvider,
       runtimeMode: input.runtimeMode,
       hivraSandbox,
       planning: input.intent === "plan",

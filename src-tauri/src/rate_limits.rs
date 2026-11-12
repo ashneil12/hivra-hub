@@ -233,7 +233,7 @@ fn opencode_config_paths() -> Vec<PathBuf> {
 
 /// Parse OpenCode configuration using JSONC semantics: comments and trailing
 /// commas are accepted, while ordinary JSON stays on serde_json's fast path.
-fn parse_opencode_config(raw: &str) -> Option<Value> {
+pub(crate) fn parse_opencode_config(raw: &str) -> Option<Value> {
     serde_json::from_str(raw.trim()).ok().or_else(|| {
         let without_comments = strip_jsonc_comments(raw)?;
         let normalized = strip_jsonc_trailing_commas(&without_comments);

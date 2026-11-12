@@ -5,7 +5,7 @@ vi.mock("../../../../features/sessions/model/customModels", () => ({
   piModelRoutes: () => saved.list,
 }));
 
-import { codexModelRoutes, codexRoutedModels, routedProviderName, splitRoutedModel } from "./codexRoutes";
+import { codexModelRoutes, codexRoutedModels, offeredRoutes, routedProviderName, splitRoutedModel } from "./codexRoutes";
 
 describe("codexRoutes", () => {
   afterEach(() => {
@@ -37,5 +37,19 @@ describe("codexRoutes", () => {
     expect(splitRoutedModel("dropwave-grok/grok-4.7")).toEqual({ provider: "dropwave-grok", model: "grok-4.7" });
     expect(splitRoutedModel("gpt-5.5")).toEqual({ model: "gpt-5.5" });
     expect(splitRoutedModel(undefined)).toEqual({ model: undefined });
+  });
+});
+
+describe("offeredRoutes", () => {
+  it("keeps the first of two ids with the same provider name and at most 16, as Rust does", () => {
+    const routes = [{ customModelId: "a.b" }, { customModelId: "a_b" }, ...Array.from({ length: 20 }, (_, i) => ({ customModelId: `m${i}` }))];
+    const out = offeredRoutes(routes);
+    expect(out[0]).toEqual({ customModelId: "a.b" });
+    expect(out.some((r) => r.customModelId === "a_b")).toBe(false);
+    expect(out).toHaveLength(16);
+  });
+
+  it("names a character outside the BMP with one dash, like Rust", () => {
+    expect(routedProviderName("x😀y")).toBe("dropwave-x-y");
   });
 });

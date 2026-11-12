@@ -5,11 +5,11 @@
 import { piModelRoutes } from "../../../../features/sessions/model/customModels";
 import type { AgentModel } from "../../../../features/sessions/model/models";
 import { spawnChild } from "../../core/child";
-import { routedProviderName } from "../codex/codexRoutes";
+import { offeredRoutes, routedProviderName } from "../codex/codexRoutes";
 
 /** The saved models as entries in OpenCode's model list (its `provider/model` ids). */
 export function opencodeRoutedModels(): AgentModel[] {
-  return piModelRoutes().map((route) => {
+  return offeredRoutes(piModelRoutes()).map((route) => {
     const provider = routedProviderName(route.customModelId);
     const nativeId = `${provider}/${route.modelId}`;
     return {
