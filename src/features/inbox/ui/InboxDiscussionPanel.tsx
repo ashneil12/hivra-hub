@@ -4,6 +4,7 @@ import { IconButton } from "../../../app/shell/TitleBar";
 import { useDragResize } from "../../../shared/hooks/useDragResize";
 import { inboxItemRef, type InboxItem } from "../model/githubTasks";
 import { inboxAskKey } from "../model/inboxAsk";
+import { listMonos, monoLook } from "../../monos/model/mono";
 
 export type InboxSessionPortal = { sessionId: string; host: HTMLElement };
 let rememberedWidth = 440;
@@ -15,8 +16,11 @@ export function InboxDiscussionPanel({
   onOpen,
   onRestart,
   onMount,
+  onAskMono,
 }: {
   item: InboxItem;
+  /** Ash 12 Nov: say who is asked, and let him take it to one of his first mates instead of a fresh chat. */
+  onAskMono?: (item: InboxItem, monoId: string) => void;
   onClose: () => void;
   onOpen: (item: InboxItem) => Promise<string>;
   onRestart: (item: InboxItem) => Promise<string>;
@@ -96,6 +100,26 @@ export function InboxDiscussionPanel({
           <PanelLeft className="size-3.5" />
         </IconButton>
       </header>
+      <div data-inbox-ask-who className="flex shrink-0 items-center gap-2 border-b border-stroke px-3 py-1.5 text-[12px] text-content/55">
+        <span className="min-w-0 flex-1 truncate">Asking a fresh chat, without a first mate's memory</span>
+        {onAskMono ? (
+          <select
+            aria-label="Ask a first mate instead"
+            value=""
+            onChange={(event) => {
+              if (event.target.value) onAskMono(item, event.target.value);
+            }}
+            className="max-w-[12rem] shrink-0 rounded-md border border-stroke bg-transparent px-1.5 py-0.5 text-[12px] text-content/70"
+          >
+            <option value="">Ask a first mate instead…</option>
+            {listMonos().map((mono) => (
+              <option key={mono.id} value={mono.id}>
+                {monoLook(mono).name}
+              </option>
+            ))}
+          </select>
+        ) : null}
+      </div>
       {error ? (
         <p role="alert" className="p-3 text-xs text-red-400">
           {error}

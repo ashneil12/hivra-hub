@@ -46,8 +46,13 @@ function nudgesInARow(blocks: readonly Block[]): number {
  * a note), that reply's last words promise work this turn, and it hasn't been nudged on that reply or twice in a row.
  * `nudged` holds the replies already nudged on (their block ids).
  */
-export function promiseNudge(chat: Session, nudged: ReadonlySet<string>): QueuedMessage | undefined {
-  if (chat.busy || chat.queuedMessages?.length) return undefined;
+export function promiseNudge(
+  chat: Session,
+  nudged: ReadonlySet<string>,
+  /** Its own workers are still out: "I'll report when it's done" is a real wait, not a stopped run (Ash 12 Nov 21:01). */
+  waitingOnWorkers = false,
+): QueuedMessage | undefined {
+  if (chat.busy || chat.queuedMessages?.length || waitingOnWorkers) return undefined;
   const last = lastWord(chat.blocks);
   if (!last || last.block.role !== "assistant" || last.block.tool || !last.block.text.trim()) return undefined;
   if (nudged.has(last.block.id)) return undefined;

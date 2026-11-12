@@ -408,6 +408,7 @@ type Props = {
   active?: boolean;
   onAsk: (item: InboxItem) => Promise<string>;
   onAskRestart: (item: InboxItem) => Promise<string>;
+  onAskMono?: (item: InboxItem, monoId: string) => void;
   onAskMount: (portal: InboxSessionPortal | null) => void;
   cwd: string;
   /** Shows only this project's items, plus ones not tied to any project. */
@@ -433,6 +434,7 @@ export function InboxView({
   active = true,
   onAsk,
   onAskRestart,
+  onAskMono,
   onAskMount,
   cwd,
   scopeProject,
@@ -1311,6 +1313,7 @@ export function InboxView({
             <InboxDiscussionPanel
               onOpen={onAsk}
               onRestart={onAskRestart}
+              onAskMono={onAskMono}
               onMount={onAskMount}
               key={inboxAskKey(selected)}
               item={selected}

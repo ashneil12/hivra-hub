@@ -247,7 +247,8 @@ export function useFollowedBriefs(options: {
           continue;
         }
         // A turn that ended on "I'll do X now" with nothing after it: one app message to do it, at most twice in a row.
-        const keep = promiseNudge(chat, promiseNudged.current);
+        const waiting = known.some((row) => row.ownerSession === chat.id && isOpenDelegation(row));
+        const keep = promiseNudge(chat, promiseNudged.current, waiting);
         if (keep) {
           promiseNudged.current.add(keep.id.replace(/^keep-promise-/, ""));
           await Promise.resolve(ask(chat.id, keep)).catch(() => undefined);

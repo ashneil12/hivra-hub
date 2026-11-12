@@ -14,7 +14,7 @@ import {
 import { BellOff, ChevronDown, CircleAlert, Clock, Copy, ImagePlus, Loader, MoreHorizontal, Pencil, Pin, PinOff, Plus, RotateCcw, Settings, Trash2, UserGroup } from "../../shared/ui/icons";
 import { duplicateContactWithFiles, editContactProfile, setContactMuted, setContactPinned } from "../../features/monos/model/contacts";
 import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
-import { childChatsByMono } from "../../features/monos/model/delegationView";
+import { childChatsByMono, type ChildChat } from "../../features/monos/model/delegationView";
 import { needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
 import { useNeedsYouRows } from "../../features/hub/model/useNeedsYouRows";
 import { useNeedsYou } from "../../features/needs/model/needsLive";
@@ -252,6 +252,7 @@ export function MonoRailSection({
   const collapsed = useSyncExternalStore(subscribeMonoRailCollapsed, loadMonoRailCollapsed, loadMonoRailCollapsed);
   const toggleCollapsed = () => saveMonoRailCollapsed(!collapsed);
   // "1 stuck" opens its workers beside the rail, answerable there (B6): one Mono's, or every Mono's from the folded header.
+  const [workingPick, setWorkingPick] = useState<{ anchor: HTMLElement; chats: ChildChat[] }>();
   const [stuckPanel, setStuckPanel] = useState<{ monoId?: string; anchor: HTMLElement }>();
   const toggleStuckPanel = (anchor: HTMLElement, monoId?: string) =>
     setStuckPanel((open) => (open && open.anchor === anchor ? undefined : { monoId, anchor }));
@@ -616,7 +617,15 @@ export function MonoRailSection({
                 team={team}
                 // The work lives in its team; a Mono with none (it only briefed coding teams) opens its chat, where
                 // each brief has its line.
-                onOpen={() => (team ? openTeam(team) : onOpen(mono.id))}
+                // Ash 12 Nov: "1 working" opens that worker's chat; with several, a short list to pick from.
+                onOpen={(anchor) => {
+                  const running = (childChats.get(mono.id) ?? []).filter((chat) => chat.state === "running");
+                  if (running.length === 1)
+                    return void delegationActions()?.openChild(running[0].ownerSession, running[0].sessionId);
+                  if (running.length > 1) return setWorkingPick({ anchor, chats: running });
+                  if (team) openTeam(team);
+                  else onOpen(mono.id);
+                }}
                 onOpenStuck={(anchor) => toggleStuckPanel(anchor, mono.id)}
               />
             ) : null}
@@ -640,6 +649,33 @@ export function MonoRailSection({
           );
         })}
       </div>
+      {workingPick ? (
+        <Popover
+          anchor={{ current: workingPick.anchor }}
+          side="bottom"
+          align="start"
+          width={260}
+          onDismiss={() => setWorkingPick(undefined)}
+          className="p-1"
+          data-working-pick
+        >
+          <p className="px-2 pb-1 pt-0.5 text-[11px] text-content/45">Open a worker's chat</p>
+          {workingPick.chats.map((chat) => (
+            <button
+              key={chat.sessionId}
+              type="button"
+              onClick={() => {
+                setWorkingPick(undefined);
+                delegationActions()?.openChild(chat.ownerSession, chat.sessionId);
+              }}
+              className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-content hover:bg-content/10"
+            >
+              <Loader aria-hidden className="size-3.5 shrink-0 animate-spin text-content/45 motion-reduce:animate-none" strokeWidth={1.75} />
+              <span className="min-w-0 truncate">{chat.title || "Worker"}</span>
+            </button>
+          ))}
+        </Popover>
+      ) : null}
       {stuckPanel ? (
         <StuckPanel
           anchor={stuckPanel.anchor}
@@ -830,7 +866,7 @@ function MonoWorkLine({
   counts: WorkCounts;
   stuck: readonly StuckWorker[];
   team?: TeamTarget;
-  onOpen: () => void;
+  onOpen: (anchor: HTMLElement) => void;
   /** "1 stuck" opens its stuck workers beside the rail, each answerable there (B6). */
   onOpenStuck: (anchor: HTMLElement) => void;
 }) {
@@ -854,7 +890,7 @@ function MonoWorkLine({
           type="button"
           title={[railSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
           aria-label={`${railSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
-          onClick={onOpen}
+          onClick={(event) => onOpen(event.currentTarget)}
           className={`flex min-w-0 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-content/6 hover:text-content${
             short.stuck ? " shrink" : " flex-1"
           }`}
