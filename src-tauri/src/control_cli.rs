@@ -100,7 +100,7 @@ const ACTIONS: [&str; 14] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer", "repair", "approve",
 ];
-pub(crate) const APP_ACTIONS: [&str; 87] = [
+pub(crate) const APP_ACTIONS: [&str; 88] = [
     "app.version",
     "app.ship",
     "models.list",
