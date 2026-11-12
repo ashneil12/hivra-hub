@@ -2,12 +2,14 @@ import { useEffect, useState } from "react";
 import {
   AGENT_SANDBOX_DEFAULT,
   AGENT_SANDBOX_DESCRIPTION,
+  AGENT_SANDBOX_DETAILS,
   AGENT_SANDBOX_ENVIRONMENT_NOTE,
   AGENT_SANDBOX_LABEL,
   loadAgentSandbox,
   saveAgentSandbox,
   type AgentSandboxStatus,
 } from "../model/agentSandbox";
+import { SettingRow, SettingSwitch } from "./SettingRow";
 
 /**
  * Settings > General: the switch for the macOS agent sandbox. It writes the file the app reads, so a change applies to
@@ -54,36 +56,25 @@ export function AgentSandboxSetting() {
   };
 
   return (
-    <div
-      id="setting-agent-sandbox"
-      data-setting-id="agent-sandbox"
-      className="settings-row flex items-start gap-6 border-b border-content/5 px-4 py-3.5 last:border-b-0"
+    <SettingRow
+      id="agent-sandbox"
+      label={AGENT_SANDBOX_LABEL}
+      description={AGENT_SANDBOX_DESCRIPTION}
+      details={AGENT_SANDBOX_DETAILS.map((paragraph, at) => (
+        <p key={at} className={at ? "mt-1.5" : undefined}>
+          {paragraph}
+        </p>
+      ))}
+      below={
+        <>
+          {status?.setByEnvironment && (
+            <p className="mt-1 text-[12px] leading-relaxed text-content/65">{AGENT_SANDBOX_ENVIRONMENT_NOTE}</p>
+          )}
+          {error && <p className="mt-1 break-words text-[12px] text-red-400">{error}</p>}
+        </>
+      }
     >
-      <div className="min-w-0 flex-1">
-        <div className="text-[13px] font-medium text-content">{AGENT_SANDBOX_LABEL}</div>
-        <p className="mt-1 text-[12px] leading-relaxed text-content/45">{AGENT_SANDBOX_DESCRIPTION}</p>
-        {status?.setByEnvironment && (
-          <p className="mt-1 text-[12px] leading-relaxed text-content/65">{AGENT_SANDBOX_ENVIRONMENT_NOTE}</p>
-        )}
-        {error && <p className="mt-1 break-words text-[12px] text-red-400">{error}</p>}
-      </div>
-      <button
-        type="button"
-        role="switch"
-        aria-label={AGENT_SANDBOX_LABEL}
-        aria-checked={enabled}
-        disabled={locked}
-        onClick={() => void change(!enabled)}
-        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-40 ${
-          enabled ? "bg-accent" : "bg-content/20"
-        }`}
-      >
-        <span
-          className={`absolute top-0.5 size-4 rounded-full bg-white transition-[left] ${
-            enabled ? "left-4.5" : "left-0.5"
-          }`}
-        />
-      </button>
-    </div>
+      <SettingSwitch label={AGENT_SANDBOX_LABEL} on={enabled} disabled={locked} onChange={(next) => void change(next)} />
+    </SettingRow>
   );
 }

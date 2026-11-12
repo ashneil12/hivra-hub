@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { COMPUTER_USE_LABEL, ComputerUseSetting } from "./ComputerUseSetting";
+import { COMPUTER_USE_DESCRIPTION, COMPUTER_USE_LABEL, ComputerUseSetting } from "./ComputerUseSetting";
 import { rememberComputerUse, type ComputerUseView } from "../model/computerUse";
 
 let root: Root;
@@ -55,6 +55,10 @@ describe("ComputerUseSetting (WP-255)", () => {
     expect(host.querySelector("#setting-computer-use")?.getAttribute("data-setting-id")).toBe("computer-use");
     expect(main().getAttribute("aria-checked")).toBe("false");
     expect(host.textContent).toContain("npm i -g open-computer-use");
+    expect(COMPUTER_USE_DESCRIPTION.length).toBeLessThan(100);
+    expect(host.textContent).not.toContain("always refused");
+    const more = [...host.querySelectorAll("button")].find((b) => b.textContent === "More")!;
+    await act(async () => more.click());
     expect(host.textContent).toContain("always refused");
     expect(host.textContent).not.toMatch(/[—–]/);
     expect(host.querySelector('[role="radiogroup"]')).toBeNull();
@@ -95,7 +99,7 @@ describe("ComputerUseSetting (WP-255)", () => {
     const follow = [...host.querySelectorAll("button")].find((b) => b.textContent === "Follow Settings")!;
     await act(async () => follow.click());
     expect(invoke).toHaveBeenCalledWith("computer_use_set_chat", { chat: "chat-1", mode: null });
-    expect(host.textContent).not.toContain("Chats with their own say");
+    expect(host.textContent).not.toContain("Look only in this chat");
   });
 
   it("shows nothing off a Mac", async () => {

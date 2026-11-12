@@ -10,11 +10,14 @@ test("computer use is off by default and says how to install its helper", async 
   await expect(sw).toHaveAttribute("aria-checked", "false");
   await expect(page.locator("[data-setting-id='computer-use']")).toContainText("npm i -g open-computer-use");
   await expect(page.getByRole("radiogroup", { name: "What chats may do" })).toHaveCount(0);
+  await expect(page.locator("body")).not.toContainText("always refused");
+  await page.locator("[data-setting-id='computer-use']").getByRole("button", { name: "More" }).click();
+  await expect(page.locator("body")).toContainText("always refused");
 });
 
 test("turning it on shows look only first, then look and use, the chats with their own say and the activity", async ({ page }) => {
   await page.goto("/tests/browser/wp255-computer-use.html?installed");
-  const row = page.locator("[data-setting-id='computer-use']");
+  const row = page.locator("body");
   await page.getByRole("switch", { name: "Computer use" }).click();
   await expect(page.getByRole("radio", { name: "Look only" })).toHaveAttribute("aria-checked", "true");
   expect(await calls(page)).toContainEqual({

@@ -7,7 +7,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { AgentSandboxSetting } from "./AgentSandboxSetting";
-import { AGENT_SANDBOX_DESCRIPTION, AGENT_SANDBOX_ENVIRONMENT_NOTE, AGENT_SANDBOX_LABEL } from "../model/agentSandbox";
+import { AGENT_SANDBOX_DESCRIPTION, AGENT_SANDBOX_DETAILS, AGENT_SANDBOX_ENVIRONMENT_NOTE, AGENT_SANDBOX_LABEL } from "../model/agentSandbox";
 
 let root: Root;
 let host: HTMLDivElement;
@@ -89,12 +89,20 @@ describe("AgentSandboxSetting", () => {
     expect(host.querySelector("#setting-agent-sandbox")).toBeNull();
   });
 
-  it("describes the limit honestly: a known list, not a full cage, with what is likely to break", () => {
+  it("keeps the row to one line and the honest limits under More", async () => {
     expect(AGENT_SANDBOX_DESCRIPTION).toContain("Off by default");
-    expect(AGENT_SANDBOX_DESCRIPTION).toContain("does not cover other files");
-    expect(AGENT_SANDBOX_DESCRIPTION).toContain("not a full cage");
-    expect(AGENT_SANDBOX_DESCRIPTION).toContain("security");
-    expect(AGENT_SANDBOX_DESCRIPTION).toContain("git push -u");
-    expect(AGENT_SANDBOX_DESCRIPTION).not.toMatch(/[—–]/);
+    expect(AGENT_SANDBOX_DESCRIPTION.length).toBeLessThan(100);
+    const details = AGENT_SANDBOX_DETAILS.join(" ");
+    expect(details).toContain("does not cover other files");
+    expect(details).toContain("not a full cage");
+    expect(details).toContain("security");
+    expect(details).toContain("git push -u");
+    expect(`${AGENT_SANDBOX_DESCRIPTION} ${details}`).not.toMatch(/[—–]/);
+    vi.mocked(invoke).mockResolvedValue({ supported: true, enabled: false, setByEnvironment: false });
+    await render();
+    expect(host.textContent).not.toContain("not a full cage");
+    const more = [...host.querySelectorAll("button")].find((b) => b.textContent === "More")!;
+    await act(async () => more.click());
+    expect(host.textContent).toContain("not a full cage");
   });
 });
