@@ -287,6 +287,8 @@ type Props = {
   turnStop?: boolean;
   /** The model as text above the box (MonoModelLine), in place of the picker in the toolbar. */
   modelLine?: ReactNode;
+  /** Beside the model picker (a first mate's "Make default"). */
+  modelExtra?: ReactNode;
   editLastTurnSupported?: boolean;
   lastTurnRecall?: LastTurnRecall | null;
   queuedMessages?: QueuedMessage[];
@@ -428,6 +430,7 @@ export function Composer({
   allowBusySubmit = true,
   turnStop = false,
   modelLine,
+  modelExtra,
   editLastTurnSupported = false,
   lastTurnRecall = null,
   queuedMessages = [],
@@ -2804,6 +2807,7 @@ export function Composer({
                   }
                   onClose={() => ref.current?.focus()}
                 />
+                {modelExtra}
                 {controlsBeside ? (
                   <ModelControlPills
                     harness={harness}

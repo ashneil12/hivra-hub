@@ -3,7 +3,7 @@
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { projectKey } from "../../../shared/lib/paths";
-import { CLI_ORDER, cliLabel, isCli, isEffort } from "../model/clis";
+import { CLI_ORDER, isEffort } from "../model/clis";
 import { launchCatalog } from "../model/launchCatalog";
 import type { Pick } from "../model/resolve";
 import { lineRulesFor } from "../model/lineRules";
@@ -30,11 +30,9 @@ import {
   resolveModel,
 } from "../../sessions/model/models";
 import { HARNESSES, type HarnessId } from "../../sessions/model/session";
+import { ModelPicker } from "../../sessions/ui/ModelPicker";
 
 export type WorkerDefaultScope = "mono" | "project" | "system";
-
-const SELECT =
-  "max-w-[60%] rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-[13px] text-content outline-none focus:border-content/30";
 
 function isHarness(cli: string): cli is HarnessId {
   return (HARNESSES as readonly string[]).includes(cli);
@@ -153,67 +151,6 @@ export function WorkerDefaultControl({
     else if (result === "missing") setProblem("That Mono isn't on this Mac.");
   };
 
-  const onCli = (next: string) => {
-    const cli = next && isCli(next) ? next : "";
-    const target = cli || "claude";
-    const offered = modelOptions(target).some((model) => model.id === pick?.model);
-    if (scope === "project") {
-      // Picking a CLI does not clear the saved default. It stays until a model is chosen.
-      if (offered && pick?.model) {
-        setPendingCli(null);
-        write({
-          cli: target,
-          model: pick.model,
-          ...(fits(target, pick.model, pick.effort) ? { effort: pick.effort } : {}),
-        });
-        return;
-      }
-      setPendingCli(cli);
-      return;
-    }
-    setPendingCli(null);
-    if (!cli) {
-      if (offered && pick?.model) {
-        write(
-          cleanStoredDefault({
-            cli: "claude",
-            model: pick.model,
-            ...(fits("claude", pick.model, pick.effort) ? { effort: pick.effort } : {}),
-          }),
-        );
-      } else write(undefined);
-      return;
-    }
-    if (offered && pick?.model) {
-      write(
-        cleanStoredDefault({
-          cli,
-          model: pick.model,
-          ...(fits(cli, pick.model, pick.effort) ? { effort: pick.effort } : {}),
-        }),
-      );
-      return;
-    }
-    write(cleanStoredDefault({ cli }));
-  };
-
-  const onModel = (modelId: string) => {
-    if (!modelId) {
-      setPendingCli(null);
-      write(undefined);
-      return;
-    }
-    const cli = listCli;
-    const id = cli === "claude" ? resolveModel("claude", modelId).id : modelId;
-    const effort = defaultEffort(cli, id);
-    setPendingCli(null);
-    if (scope === "project" && cli === "claude") {
-      write({ model: id, ...(effort ? { effort } : {}) });
-      return;
-    }
-    write(cleanStoredDefault({ cli, model: id, ...(effort ? { effort } : {}) }));
-  };
-
   const onEffort = (value: string) => {
     if (!pick?.model || !isEffort(value)) return;
     const cli = pick.cli && pick.cli !== "claude" ? pick.cli : "claude";
@@ -235,71 +172,59 @@ export function WorkerDefaultControl({
   const modelLabel = scope === "project" ? "Model for its workers" : "Model";
   const effortLabel = scope === "project" ? "Effort for its workers" : "Effort";
 
+  // Ash 12 Nov: the three plain lists were hidden, ugly and said "Opus alias". One model picker in the house style,
+  // the line that says what is in force, and a way back to the default.
+  const pickerHarness: HarnessId = isHarness(listCli) ? listCli : "claude";
+  const chosenModel = pick?.model && modelsFor(pickerHarness).some((model) => model.id === pick.model) ? pick.model : undefined;
+  void otherClis;
+  void models;
+  void efforts;
+  void modelLabel;
+  void effortLabel;
   return (
     <div className="flex flex-col gap-2" data-worker-default={scope}>
       {title ? <h3 className="text-[13px] font-medium text-content">{title}</h3> : null}
-      <label className="flex items-center justify-between gap-2 text-[13px] text-content">
-        CLI
-        <select
-          aria-label="CLI"
-          className={SELECT}
-          value={shownCli}
-          onChange={(event) => onCli(event.target.value)}
-        >
-          <option value="">Claude Code</option>
-          {otherClis.map((cli) => (
-            <option key={cli} value={cli}>
-              {cliLabel(cli)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <label className="flex items-center justify-between gap-2 text-[13px] text-content">
-        {modelLabel}
-        <select
-          aria-label={modelLabel}
-          className={SELECT}
-          value={models.some((model) => model.id === pick?.model) ? pick?.model : ""}
-          data-project-worker-model={scope === "project" ? "" : undefined}
-          onChange={(event) => onModel(event.target.value)}
-        >
-          <option value="">Use the default</option>
-          {models.map((model) => (
-            <option key={model.id} value={model.id}>
-              {model.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      {pick?.model && efforts.length > 0 ? (
-        <label className="flex items-center justify-between gap-2 text-[13px] text-content">
-          Effort
-          <select
-            aria-label={effortLabel}
-            className={SELECT}
-            value={pick.effort && efforts.some((option) => option.value === pick.effort) ? pick.effort : efforts.find((option) => !option.unsupported)?.value}
-            data-project-worker-effort={scope === "project" ? "" : undefined}
-            onChange={(event) => onEffort(event.target.value)}
-          >
-            {efforts.map((option) => (
-              <option key={option.value} value={option.value} disabled={option.unsupported}>
-                {option.label}
-              </option>
-            ))}
-          </select>
-        </label>
+      <div className="flex items-center justify-between gap-3">
+        {scope === "mono" ? <span /> : <span className="text-[13px] text-content/80">{scope === "project" ? "Its workers run on" : "Workers run on"}</span>}
+        <div className="flex items-center gap-1">
+          <ModelPicker
+            harness={pickerHarness}
+            model={chosenModel ?? resolveModel(pickerHarness, undefined).id}
+            values={pick?.effort ? { effort: pick.effort } : {}}
+            hotkeys={false}
+            side="bottom"
+            triggerLabel={chosenModel ? undefined : "Same as usual"}
+            onChange={(nextHarness, nextModel) => {
+              setPendingCli(null);
+              const id = resolveModel(nextHarness, nextModel).id;
+              const effort = defaultEffort(nextHarness, id);
+              if (scope === "project" && nextHarness === "claude") {
+                write({ model: id, ...(effort ? { effort } : {}) });
+                return;
+              }
+              write(cleanStoredDefault({ cli: nextHarness, model: id, ...(effort ? { effort } : {}) }));
+            }}
+            onSettingsChange={(values) => {
+              if (values.effort) onEffort(values.effort);
+            }}
+          />
+          {pick?.model ? (
+            <button
+              type="button"
+              className="rounded-md px-1.5 py-0.5 text-[12px] text-content/50 hover:bg-content/10 hover:text-content"
+              data-worker-default-clear=""
+              onClick={clear}
+            >
+              Reset
+            </button>
+          ) : null}
+        </div>
+      </div>
+      {scope !== "mono" || pick?.model ? (
+        <p className="text-[12px] leading-4 text-content/60" data-worker-default-line>
+          {line}
+        </p>
       ) : null}
-      <button
-        type="button"
-        className="self-start text-[12px] text-content/55 hover:text-content"
-        data-worker-default-clear=""
-        onClick={clear}
-      >
-        Use the default
-      </button>
-      <p className="text-[12px] leading-4 text-content/60" data-worker-default-line>
-        {line}
-      </p>
       {problem ? (
         <p className="text-[12px] leading-4 text-content/70" role="alert" data-worker-default-problem>
           {problem}
@@ -311,7 +236,7 @@ export function WorkerDefaultControl({
 
 function modelOptions(cli: string): { id: string; name: string }[] {
   if (!isHarness(cli)) return [];
-  return modelsFor(cli).map((model) => ({ id: model.id, name: model.name || model.id }));
+  return modelsFor(cli).map((model) => ({ id: model.id, name: (model.name || model.id).replace(/\s*[(\[]?\balias\b[)\]]?/gi, "").trim() || model.id }));
 }
 
 function effortOptions(cli: string, modelId: string | undefined): EffortOption[] {
@@ -333,8 +258,4 @@ function defaultEffort(cli: string, modelId: string): string | undefined {
       return setting.value;
   }
   return options[0]?.value;
-}
-
-function fits(cli: string, modelId: string, effort: string | undefined): boolean {
-  return !!effort && effortOptions(cli, modelId).some((option) => option.value === effort && !option.unsupported);
 }

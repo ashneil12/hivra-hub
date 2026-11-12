@@ -44,7 +44,8 @@ function norm(value: string): string {
 
 /** A catalog name, without a leading "Claude " so the line says "Sonnet". */
 export function modelDisplay(model: CatalogModel): string {
-  return (model.name || model.id).replace(/^Claude\s+/i, "");
+  // Ash 12 Nov: "Opus alias" says nothing; the name alone does.
+  return (model.name || model.id).replace(/^Claude\s+/i, "").replace(/\s*[(\[]?\balias\b[)\]]?/gi, "").trim() || model.id;
 }
 
 function joinAnd(items: readonly string[]): string {

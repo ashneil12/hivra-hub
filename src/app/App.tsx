@@ -1593,6 +1593,9 @@ function leadCodingTeam(monoId: string): HubProject | undefined {
 // WP-176: the spend gate reads the hub ids and the Mono and habit registries. Wired once, at module load.
 wireSpendGate();
 
+/** Set once the first window of this launch has opened Home. */
+let openedHomeAtLaunch = false;
+
 export default function App(props: AppProps) {
   return (
     <Suspense fallback={null}>
@@ -1666,8 +1669,8 @@ function Workspace({
     () => windowTransfer?.activeTabId ?? resumed?.activeTabId ?? seed.tab.id,
   );
   const [monoViewId, setMonoViewId] = useState<string | null>(null);
-  // A Mono opens with its overview beside the chat until it is hidden.
-  const [monoOverviewOpen, setMonoOverviewOpen] = useState(true);
+  // Ash 12 Nov: a first mate's chat opens without its overview; he opens it when he wants it.
+  const [monoOverviewOpen, setMonoOverviewOpen] = useState(false);
   const [monoOverviewTab, setMonoOverviewTab] =
     useState<MonoOverviewTab>("sessions");
   const monoOverviewOpenRef = useRef(monoOverviewOpen);
@@ -8805,6 +8808,17 @@ function Workspace({
         return false;
       }
       const submittedText = intent === "build" ? "Build approved plan" : text;
+      // Ash 12 Nov: "/login" typed into a chat failed every time. A chat runs the CLI without a screen to sign in on,
+      // so signing in happens in a terminal; say so instead of sending it.
+      if (/^\/(?:login|logout)\b/i.test(submittedText.trim())) {
+        const cli = current.harness === "claude" ? "claude" : current.harness;
+        enqueueHarnessEvent(sessionId, {
+          type: "status",
+          text: `Signing in doesn't work from inside a chat. Open Terminal, run ${cli}, then type /login there. This chat picks up the new sign-in on its next message.`,
+        });
+        flushHarnessEvents();
+        return false;
+      }
       const operatorCommand = consumeOperatorCommand(submittedText);
       if (
         operatorCommand.matched &&
@@ -13684,7 +13698,7 @@ function Workspace({
           const team = monoTeam(monoId) ?? (codingTeamsOn() ? await ensureMonoTeam(monoId).catch(() => undefined) : undefined);
           const mainId = findMono(monoId)?.sessionId;
           const main = mainId ? sessionsRef.current.find((item) => item.id === mainId) : undefined;
-          return startMonoSideChat(monoId, sessionHost, team?.folder ?? main?.cwd);
+          return startMonoSideChat(monoId, sessionHost, team?.folder ?? main?.cwd, main);
         })();
       }
       return ensureMonoSession(monoId, sessionHost);
@@ -18256,6 +18270,12 @@ function Workspace({
     automationsViewOpen ||
     monoCovers;
   const hubShown = hubSurfaceOpen(hubSel) && !hubItemsCovered;
+  // Ash 12 Nov: a fresh launch opens Home, not the chat (the Chief of Staff's) he was last in.
+  useLayoutEffect(() => {
+    if (!IS_HUB_BUNDLE || openedHomeAtLaunch) return;
+    openedHomeAtLaunch = true;
+    if (currentHubSelection().item !== "home") showAppItem("home");
+  }, []);
   // WP-06: a stored Today, Being built, Decisions or Builds item opens the project's coding team. A stored
   // coding-team item on a project with no folder is the no-code page, not the previous workspace. The folder
   // string is the dependency: the project object is a new one whenever the list is read.
@@ -18734,6 +18754,7 @@ function Workspace({
           },
         },
         folder && folder !== "~" ? folder : undefined,
+        sessionsRef.current.find((item) => item.id === monoViewIdRef.current),
       ).then((session) => {
         if (session) void openMonoSideChat(session.id);
       });

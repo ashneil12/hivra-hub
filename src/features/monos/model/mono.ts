@@ -108,6 +108,8 @@ export type Mono = {
   workerDefault?: WorkerPick;
   /** WP-182: fast mode for its own chat, when the chosen model offers it. Only a real boolean counts. */
   engineFast?: boolean;
+  /** The effort its new chats start at ("Make default" keeps the chat's effort with its model; Ash 12 Nov). */
+  engineEffort?: string;
   /** WP-182: skill names it is offered. Absent or empty means everything installed. */
   skills?: string[];
   /** WP-182: slash command names it is offered. Absent or empty means everything installed. */
@@ -358,6 +360,7 @@ function parseMono(value: unknown): Mono | undefined {
     ...(role !== undefined ? { role: role.slice(0, 40) } : {}),
     // WP-182: a string or 1 is not fast mode. Empty name lists mean today's offer.
     ...(typeof entry.engineFast === "boolean" ? { engineFast: entry.engineFast } : {}),
+    ...(engine && typeof entry.engineEffort === "string" && /^[a-z]{2,12}$/.test(entry.engineEffort) ? { engineEffort: entry.engineEffort } : {}),
     ...(skills ? { skills } : {}),
     ...(commands ? { commands } : {}),
   };

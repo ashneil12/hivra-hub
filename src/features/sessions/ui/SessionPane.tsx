@@ -97,6 +97,7 @@ import { readTeamReport } from "../../monos/model/teamReport";
 import { useDelegationRows } from "../../monos/model/delegationStore";
 import { ownsWork } from "../../monos/model/delegationView";
 import { MonoModelLine } from "../../monos/ui/MonoModelLine";
+import { SetMonoDefault } from "../../monos/ui/SetMonoDefault";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
 import { isCodingTeamChat, useCodingTeamVersion } from "../../hub/model/codingTeam";
 import {
@@ -891,6 +892,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       // A coding team's chat: Stop is its own turn; "Stop all" on the delegation line stops what it handed out.
       onStop={() => (teamChat ? (onStopTurn ?? onStop) : onStop)(session.id)}
       turnStop={teamChat}
+      modelExtra={<SetMonoDefault sessionId={session.id} harness={session.harness} model={session.model} values={session.modelSettings} />}
       modelLine={
         teamChat ? (
           <MonoModelLine
@@ -1502,21 +1504,24 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     }
                     // The model as small text above the box (port map idea 2), in place of the picker under it.
                     modelLine={
-                      <MonoModelLine
-                        harness={session.harness}
-                        model={session.model}
-                        values={session.modelSettings}
-                        allowedHarnesses={allowedModelHarnesses}
-                        project={workCwd}
-                        hotkeys={focused && !btw.open}
-                        labelClassName="@max-sm:hidden"
-                        onChange={(harness, model) =>
-                          onModelChange(session.id, harness, model)
-                        }
-                        onSettingsChange={(settings) =>
-                          onModelSettingsChange(session.id, settings)
-                        }
-                      />
+                      <>
+                        <MonoModelLine
+                          harness={session.harness}
+                          model={session.model}
+                          values={session.modelSettings}
+                          allowedHarnesses={allowedModelHarnesses}
+                          project={workCwd}
+                          hotkeys={focused && !btw.open}
+                          labelClassName="@max-sm:hidden"
+                          onChange={(harness, model) =>
+                            onModelChange(session.id, harness, model)
+                          }
+                          onSettingsChange={(settings) =>
+                            onModelSettingsChange(session.id, settings)
+                          }
+                        />
+                        <SetMonoDefault sessionId={session.id} harness={session.harness} model={session.model} values={session.modelSettings} />
+                      </>
                     }
                     busy={!!session.busy}
                     // Stop is this chat's own turn; "Stop all" on the delegation line stops what it handed out.
