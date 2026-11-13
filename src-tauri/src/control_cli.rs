@@ -100,7 +100,7 @@ const ACTIONS: [&str; 14] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer", "repair", "approve",
 ];
-pub(crate) const APP_ACTIONS: [&str; 90] = [
+pub(crate) const APP_ACTIONS: [&str; 91] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -142,6 +142,7 @@ pub(crate) const APP_ACTIONS: [&str; 90] = [
     // The ask ledger: what the person asked a first mate for, kept outside the chat (src/features/asks/).
     "asks.list",
     "asks.update",
+    "chat.search",
     "habits.list",
     "habits.add",
     "habits.update",
@@ -400,6 +401,11 @@ Actions:
                   note: what you need from the person); done (needs proof: a
                   link, a file, or "answered in this chat"). Only the person
                   can drop an ask.
+  chat.search    {"query":"invoice export"}  First mate only. Find something
+                  said earlier in your own chats with the person. Optional:
+                  "from" and "to" (dates), "who" ("ash" or "you"), "limit",
+                  "offset". Returns short passages; read a whole message with
+                  sessions.read.
   habits.list    {}  Mono only. Your habits: what each does, when it runs
                   next, and how its last run went.
   habits.add     {"name":"Morning CI check","instructions":"...",

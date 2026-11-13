@@ -359,6 +359,11 @@ export type AgentAppHost = {
       change: { status?: string; note?: string; proof?: string },
     ): Promise<unknown>;
   };
+  /** chat.search: the caller's own chats with Ash, searched by words. Absent in a build without it. */
+  chatSearch?(
+    mateId: string,
+    query: { query: string; from?: number; to?: number; who?: "ash" | "you"; limit?: number; offset?: number },
+  ): unknown;
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
   postCard?(sourceSessionId: string, card: MonoCard): void;
   /** WP-89: one line in the activity log. Absent in a build that has no log. */
@@ -538,6 +543,8 @@ const FIELDS = new Map<string, readonly string[]>([
   // The ask ledger (asks/model/asks.ts): what Ash asked this first mate for, kept outside the chat.
   ["asks.list", ["all"]],
   ["asks.update", ["ask", "status", "note", "proof"]],
+  // A first mate looks through its own chats with Ash (monos/model/chatSearch.ts).
+  ["chat.search", ["query", "from", "to", "who", "limit", "offset"]],
   ["habits.list", []],
   ["habits.add", ["name", "instructions", "schedule", "watch"]],
   ["habits.update", ["id", "name", "instructions", "schedule", "enabled", "watch"]],
@@ -1261,6 +1268,47 @@ async function handleAsks(
   return host.asks.update(mateId, ask, change);
 }
 
+function searchDate(value: unknown, name: string): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  const at = typeof value === "number" ? value : Date.parse(String(value));
+  if (!Number.isFinite(at)) throw new Error(`${name} must be a date, as in "2026-11-01"`);
+  return at;
+}
+
+/**
+ * chat.search: a first mate finds something said earlier in its own chats with Ash. Never another first mate's
+ * chats, a worker's or a private chat (monos/model/chatSearch.ts). A search that can't run says so and nothing else.
+ */
+function handleChatSearch(source: Session, input: Record<string, unknown>, host: AgentAppHost): unknown {
+  const mateId = host.asks?.mateOf(source.id);
+  if (!host.chatSearch || !mateId) throw new Error("Chat search is only for a first mate's own chats with Ash");
+  const who = input.who === undefined ? undefined : requiredString(input.who, "who", 10).toLowerCase();
+  if (who !== undefined && who !== "ash" && who !== "you") throw new Error('who is "ash" or "you"');
+  const count = (value: unknown, name: string): number | undefined => {
+    if (value === undefined) return undefined;
+    const n = Number(value);
+    if (!Number.isInteger(n) || n < 0) throw new Error(`${name} must be a whole number`);
+    return n;
+  };
+  const from = searchDate(input.from, "from");
+  const to = searchDate(input.to, "to");
+  const limit = count(input.limit, "limit");
+  const offset = count(input.offset, "offset");
+  try {
+    return host.chatSearch(mateId, {
+      query: requiredString(input.query, "query", 300),
+      ...(from !== undefined ? { from } : {}),
+      ...(to !== undefined ? { to } : {}),
+      ...(who ? { who } : {}),
+      ...(limit !== undefined ? { limit } : {}),
+      ...(offset !== undefined ? { offset } : {}),
+    });
+  } catch (error) {
+    if (error instanceof Error && /must be/.test(error.message)) throw error;
+    throw new Error("Search is not available right now. Carry on without it, or read the chat with sessions.read.");
+  }
+}
+
 async function handleMemory(
   source: Session,
   action: string,
@@ -1911,6 +1959,7 @@ export async function handleAgentApp(
     return handleHabits(source, action, input, host);
   if (action.startsWith("autopilot."))
     return handleAutopilotApp(source, requestId, action, input, host);
+  if (action === "chat.search") return handleChatSearch(source, input, host);
   if (action === "chat.card") {
     if (
       !host.postCard ||
