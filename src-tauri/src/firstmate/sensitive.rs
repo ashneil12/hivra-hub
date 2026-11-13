@@ -19,8 +19,10 @@
 //! - `**` as a whole part matches any number of folders, `*` any run of characters inside one part, `?` one character;
 //! - a pattern with a `/` in it starts at the project root; one without (`.env*`) matches a name at any depth;
 //! - a pattern that matches a folder matches everything under it;
-//! - a pattern with nothing literal in it (`*`, `**`), with a `..` part, or with a control character matches nothing, so a typo in a
-//!   list can never make every file sensitive.
+//! - a pattern made only of wildcards (`*`, `**`, `?`), or with a `..` part, or with a control character, matches nothing, so the
+//!   commonest typo cannot make every file sensitive. (A pattern with a literal in it, `*.*`, is taken at its word.)
+//! - a name git printed in quotes (one with a `"` or a backslash in it) is read as the name it quotes;
+//! - only a plain `..` is a parent step; a look-alike (`．．`, `.. `) is a folder name like any other.
 
 use std::path::Path;
 use std::sync::OnceLock;
@@ -198,25 +200,81 @@ fn fold_name(name: &str) -> String {
     }
 }
 
+/// A name git printed in quotes (it quotes one with a `"`, a backslash or a control character in it): the C-style escapes undone, the
+/// quotes gone. A string that is not wrapped in quotes is returned as it is.
+fn unquote_git(raw: &str) -> std::borrow::Cow<'_, str> {
+    let Some(inner) = raw
+        .strip_prefix('"')
+        .and_then(|rest| rest.strip_suffix('"'))
+    else {
+        return std::borrow::Cow::Borrowed(raw);
+    };
+    let mut bytes: Vec<u8> = Vec::with_capacity(inner.len());
+    let mut chars = inner.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            let mut buf = [0u8; 4];
+            bytes.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            continue;
+        }
+        match chars.next() {
+            Some('t') => bytes.push(b'\t'),
+            Some('n') => bytes.push(b'\n'),
+            Some('r') => bytes.push(b'\r'),
+            Some('a') => bytes.push(7),
+            Some('b') => bytes.push(8),
+            Some('f') => bytes.push(12),
+            Some('v') => bytes.push(11),
+            Some(digit @ '0'..='7') => {
+                // `\303\251`: one to three octal digits, one byte.
+                let mut value = digit.to_digit(8).unwrap_or(0);
+                for _ in 0..2 {
+                    match chars.peek().and_then(|d| d.to_digit(8)) {
+                        Some(next) => {
+                            value = value * 8 + next;
+                            chars.next();
+                        }
+                        None => break,
+                    }
+                }
+                bytes.push((value & 0xff) as u8);
+            }
+            // `\"` and `\\`, and any other escaped character, is that character.
+            Some(other) => {
+                let mut buf = [0u8; 4];
+                bytes.extend_from_slice(other.encode_utf8(&mut buf).as_bytes());
+            }
+            None => bytes.push(b'\\'),
+        }
+    }
+    std::borrow::Cow::Owned(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Whether `text` (slashes only) starts with a drive letter and a colon that is then a separator or the end: `C:/x`, `C:`. A folder
+/// named `a:secret` is a relative name, not a drive.
+fn is_drive_path(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    bytes.len() >= 2
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && (bytes.len() == 2 || bytes[2] == b'/')
+}
+
 /// A repo path as folded names, `..` resolved. `None` when it is not a path inside the project: absolute, a drive path, with a NUL, or
-/// stepping above the project. Nothing left is not a path either.
+/// stepping above the project. Nothing left is not a path either. Only a plain `..` is a parent step: git never reports one, and a
+/// look-alike (`．．`, `.. `) is a real folder name, so it stays a name and the folders around it still count.
 fn path_segments(raw: &str) -> Option<Vec<String>> {
     if raw.contains('\0') {
         return None;
     }
-    let slashed = raw.replace('\\', "/");
-    let bytes = slashed.as_bytes();
-    if slashed.starts_with('/')
-        || (bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':')
-    {
+    let unquoted = unquote_git(raw);
+    let slashed = unquoted.replace('\\', "/");
+    if slashed.starts_with('/') || is_drive_path(&slashed) {
         return None;
     }
     let mut out: Vec<String> = Vec::new();
     for part in slashed.split('/') {
-        // NFKC first: a fullwidth `．．` is a parent step too.
-        let nfkc: String = part.nfkc().collect();
-        let bare = nfkc.trim_end_matches(' ');
-        match bare {
+        match part {
             "" | "." => continue,
             ".." => {
                 out.pop()?;
@@ -278,13 +336,14 @@ fn glob_name(pattern: &[char], name: &[char]) -> bool {
     let mut star: Option<usize> = None;
     let mut mark = 0;
     while s < name.len() {
-        if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[s]) {
-            p += 1;
-            s += 1;
-        } else if p < pattern.len() && pattern[p] == '*' {
+        // A `*` in the pattern is always the wildcard, even where the name has a literal `*`.
+        if p < pattern.len() && pattern[p] == '*' {
             star = Some(p);
             mark = s;
             p += 1;
+        } else if p < pattern.len() && (pattern[p] == '?' || pattern[p] == name[s]) {
+            p += 1;
+            s += 1;
         } else if let Some(at) = star {
             p = at + 1;
             mark += 1;
@@ -508,7 +567,6 @@ mod tests {
             "../.github/workflows/ci.yml",
             "a/../../b/billing/x.ts",
             "..\\auth\\x.ts",
-            "\u{ff0e}\u{ff0e}/auth/x.ts",
         ] {
             assert!(!hit(path), "{path}");
             assert!(
@@ -531,6 +589,65 @@ mod tests {
         assert!(!hit("c:/billing/x.ts"));
         assert!(!hit("\\\\server\\share\\auth\\x.ts"));
         assert!(!hit("src/auth/x\0.ts"));
+        // A folder whose name has a colon after one letter is a relative name, not a drive.
+        assert!(hit("a:secret/x.ts"));
+        assert!(
+            !hit("c:billing/x.ts"),
+            "the folder is `c:billing`, not `billing`"
+        );
+        assert!(!hit("c:/x/billing/y.ts"), "a drive path");
+        assert!(!hit("pkg/a:auth/x.ts"));
+        assert!(hit("pkg/a:/auth/x.ts"));
+    }
+
+    #[test]
+    fn a_look_alike_of_dot_dot_is_a_folder_name_not_a_parent_step() {
+        // A real parent step would take `auth` away and let these through; a folder named like one does not.
+        for path in [
+            "src/auth/\u{ff0e}\u{ff0e}/x.ts",
+            "src/auth/.. /x.ts",
+            "src/auth/\u{ff0e}\u{ff0e} /x.ts",
+            "\u{ff0e}\u{ff0e}/auth/x.ts",
+        ] {
+            assert!(hit(path), "{path}");
+        }
+        // ...and a plain one still is.
+        assert!(!hit("src/auth/../ok.ts"));
+    }
+
+    #[test]
+    fn a_name_git_printed_in_quotes_is_read_as_the_name_it_quotes() {
+        for quoted in [
+            // a quote in the name
+            "\"my\\\"secret.pem\"",
+            // a backslash in the name
+            "\"keys\\\\id.pem\"",
+            // two octal bytes for \u{e9}, then a folder
+            "\"caf\\303\\251/auth/x.ts\"",
+            // a tab and a newline
+            "\"a\\tb/auth/c\\nd.ts\"",
+        ] {
+            assert!(hit(quoted), "{quoted}");
+        }
+        assert!(!hit("\"plain/ok.ts\""));
+        assert!(!hit("\"caf\\303\\251/ok.ts\""));
+        // Not wrapped in quotes: as it is. A lone quote stays a character of the name (`"auth` is not `auth`).
+        assert!(!hit("\"auth/x.ts"));
+        assert!(hit("\"auth/auth/x.ts"));
+        assert!(!hit("\""));
+        assert!(!hit("\"\""));
+        assert_eq!(unquote_git("\"a\\\"b\"").as_ref(), "a\"b");
+        assert_eq!(unquote_git("\"caf\\303\\251\"").as_ref(), "caf\u{e9}");
+        assert_eq!(unquote_git("plain").as_ref(), "plain");
+    }
+
+    #[test]
+    fn a_star_in_a_file_name_does_not_hide_it_from_a_wildcard() {
+        assert!(hit("a/*x.pem"));
+        assert!(hit("a/*secret*.txt"));
+        assert!(hit("*.pem"));
+        assert!(hit_with("a/*b", &["a/*b"]));
+        assert!(!hit("a/*x.txt"));
     }
 
     #[test]

@@ -243,7 +243,10 @@ pub fn gates_for_with(
         // PT-5: a sensitive change in `at-ship` is tested like these, and gets the proof tools like `full` does.
         TestingMode::AtShip | TestingMode::Light | TestingMode::Full => {
             let mut gates = vec![GateKind::Diff, GateKind::Committed];
-            if code_changed {
+            // PT-5: a sensitive change gets the project's checks and the ratchet even when it is only documents (a markdown file in a
+            // billing folder, the project's own sensitive list): "always the full checks" does not wait for a code diff. The proof tools
+            // below do: they have nothing to read in a document.
+            if code_changed || sensitive {
                 gates.extend([GateKind::Checks, GateKind::Ratchet]);
             }
             let named = plan.map(|plan| plan.checks.clone()).unwrap_or_default();
@@ -1244,19 +1247,27 @@ mod tests {
     }
 
     #[test]
-    fn a_sensitive_change_that_is_only_documents_gets_the_checker_but_no_code_checks() {
+    fn a_sensitive_change_that_is_only_documents_still_gets_the_project_checks_and_the_checker_but_no_proof_tools(
+    ) {
         for mode in [TestingMode::AtShip, TestingMode::Light, TestingMode::Full] {
-            let chosen = sens_pick(
-                mode,
-                None,
-                &["docs/billing/pricing.md"],
-                true,
-                WhenRule::FollowMode,
-            );
-            assert_eq!(chosen.gates, vec![Diff, Committed], "{mode:?}");
-            assert_eq!(chosen.checker, Checker::Running, "{mode:?}");
-            assert!(chosen.sensitive, "{mode:?}");
+            for path in ["docs/billing/pricing.md", "docs/hivra/sensitive-paths.json"] {
+                let chosen = sens_pick(mode, None, &[path], true, WhenRule::FollowMode);
+                assert!(
+                    !code_changed(&paths(&[path])),
+                    "{path} is a document to the gates"
+                );
+                assert_eq!(
+                    chosen.gates,
+                    vec![Diff, Checks, Committed, Ratchet],
+                    "{mode:?} {path}: the proof tools have nothing to read in a document"
+                );
+                assert_eq!(chosen.checker, Checker::Running, "{mode:?} {path}");
+                assert!(chosen.sensitive, "{mode:?} {path}");
+            }
         }
+        // An ordinary document is still just a document.
+        let plain = pick(TestingMode::Light, None, &["docs/guide.md"]);
+        assert_eq!(plain.gates, vec![Diff, Committed]);
     }
 
     #[test]
