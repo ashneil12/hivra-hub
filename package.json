@@ -43,6 +43,7 @@
     "hub:verify": "node scripts/verify-hub-bundle.mjs \"target/release/bundle/macos/MonoCode Hub.app\"",
     "hub:install": "node --disable-warning=ExperimentalWarning scripts/hub-ship.mjs --legacy",
     "hub:check-all": "node scripts/hub-check-all.mjs",
+    "hub:launch-check": "node scripts/hub-launch-check.mjs",
     "hub:ship": "node --disable-warning=ExperimentalWarning scripts/hub-ship.mjs",
     "hub:rollback": "node --disable-warning=ExperimentalWarning scripts/hub-rollback.mjs",
     "hub:verify-live": "node --disable-warning=ExperimentalWarning scripts/hub-verify-live.mjs",
