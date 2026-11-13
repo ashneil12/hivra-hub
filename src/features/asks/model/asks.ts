@@ -29,6 +29,13 @@ export type AskStep = { at: number; status: AskStatus; by: AskBy; note?: string 
  */
 export type AskCheck = { gap?: string; held?: { claim: string; at: number }; settled?: string; reopen?: string };
 
+/**
+ * How many daily checks found an ask open with nothing moved, so a quiet ask reaches the person (askQuiet.ts, gap A7).
+ * `at` is the ask's `updatedAt` when this was written: any change to the ask moves that on and the chase stops counting.
+ * `raisedAt`: it became a Needs you row then, once. `remindAt`: the person asked for a reminder that is not sent yet.
+ */
+export type Chase = { at: number; checks: number; raisedAt?: number; remindAt?: number };
+
 /** The owner of an ask heard in a chat that is no first mate's (a plain chat, a room): not a Mono, so no first mate is told of it. */
 export const HUB_MATE = "hub.chats";
 
@@ -68,6 +75,8 @@ export type Ask = {
   /** The jobs (delegation ids) that took it on (askJobs.ts). */
   jobs?: string[];
   check?: AskCheck;
+  /** The daily checks that found it open with nothing moved (askQuiet.ts). */
+  chase?: Chase;
 };
 
 /** How a message was heard, so it is heard once: by the model, by the rules alone (the model may still be tried), or it held nothing. */
@@ -168,6 +177,7 @@ function readAsk(raw: unknown): Ask | undefined {
   const said = typeof value.said === "number" && Number.isInteger(value.said) && value.said > 1 ? Math.min(SAID_MAX, value.said) : undefined;
   const jobs = [...new Set((Array.isArray(value.jobs) ? value.jobs : []).filter((job): job is string => typeof job === "string" && ID.test(job)))].slice(-JOBS_PER_ASK);
   const check = readCheck(value.check);
+  const chase = readChase(value.chase);
   return {
     id,
     n,
@@ -189,7 +199,18 @@ function readAsk(raw: unknown): Ask | undefined {
     ...(value.moved === true ? { moved: true } : {}),
     ...(jobs.length ? { jobs } : {}),
     ...(check ? { check } : {}),
+    ...(chase ? { chase } : {}),
   };
+}
+
+/** The count of quiet checks of a row read from disk: a time and a whole number, else none. */
+function readChase(raw: unknown): Chase | undefined {
+  const value = record(raw);
+  const at = time(value.at);
+  if (at === undefined || typeof value.checks !== "number" || !Number.isInteger(value.checks) || value.checks < 0) return undefined;
+  const raisedAt = time(value.raisedAt);
+  const remindAt = time(value.remindAt);
+  return { at, checks: Math.min(9, value.checks), ...(raisedAt !== undefined ? { raisedAt } : {}), ...(remindAt !== undefined ? { remindAt } : {}) };
 }
 
 /** The settle bookkeeping of a row read from disk: only text and times that read as such. Undefined when none is left. */

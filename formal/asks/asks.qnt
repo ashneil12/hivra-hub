@@ -29,9 +29,10 @@ module asks {
   // more than the three slots, so it never binds; 1 brings the old cap back (two asks are enough to pass it), and an ask
   // past it is gone.
   pure val MAYBE_CAP = 9
-  // false: no path takes a stuck ask to the person. true: the app surfaces an ask (a Needs you entry) once it has sat
-  // open and unseen for ESC_AFTER days, the promise of the spec's turn-end check ("in red, in Needs you").
-  pure val ESCALATE = false
+  // false: no path takes a stuck ask to the person (the code before sc-20-quiet-ask, gap A7). true: the app surfaces an
+  // ask (a Needs you entry) once it has sat open and unseen for ESC_AFTER days, the promise of the spec's turn-end check
+  // ("in red, in Needs you"); the code since sc-20-quiet-ask (asks/model/askQuiet.ts), which counts daily checks, not days.
+  pure val ESCALATE = true
   // Deliberately broken variants, off in the real code (asks.ts changeProblem; askStore load):
   pure val MATE_CAN_DROP = false
   pure val RESTART_LOSES_WAITING = false
@@ -342,7 +343,7 @@ module asks {
     nudges' = nudges
   }
 
-  // Only when ESCALATE: the app puts a quiet ask in front of Ash (a Needs you entry). Not in the code today.
+  // Only when ESCALATE: the app puts a quiet ask in front of Ash (a Needs you entry): askQuiet.ts raisedAsks.
   action escalate(i: int): bool = {
     val r = rows.get(i)
     all {

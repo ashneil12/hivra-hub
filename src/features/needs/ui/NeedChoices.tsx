@@ -15,7 +15,7 @@ export function choiceLetter(index: number): string {
   return String.fromCharCode(97 + index);
 }
 
-export function NeedChoices({ item }: { item: Pick<NeedsItem, "key" | "who" | "sentence" | "choices" | "suggested" | "answer"> }) {
+export function NeedChoices({ item }: { item: Pick<NeedsItem, "key" | "who" | "sentence" | "choices" | "suggested" | "answer" | "outcomes"> }) {
   const [state, setState] = useState<ChoiceState>({ phase: "idle" });
   const choices = item.choices ?? [];
   const answer = item.answer;
@@ -29,8 +29,14 @@ export function NeedChoices({ item }: { item: Pick<NeedsItem, "key" | "who" | "s
       setState({ phase: "refused", chosen: label, reason });
       return;
     }
+    // An answer that only takes the person somewhere (a quiet ask's "Answer it") leaves the card as it was.
+    const outcome = item.outcomes?.[label];
+    if (outcome === null) {
+      setState({ phase: "idle" });
+      return;
+    }
     setState({ phase: "answered", chosen: label });
-    noteAnswered({ key: item.key, words: label, who: item.who, sentence: item.sentence });
+    noteAnswered({ key: item.key, words: label, who: item.who, sentence: item.sentence, ...(outcome ? { line: outcome } : {}) });
   };
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     if (event.metaKey || event.ctrlKey || event.altKey || event.key.length !== 1) return;
@@ -81,7 +87,7 @@ export function NeedChoices({ item }: { item: Pick<NeedsItem, "key" | "who" | "s
       })}
       {state.phase === "answered" ? (
         <p role="status" data-need-choice-state="answered" className="text-[12px] leading-4 text-content/60">
-          Sent. {item.who} has it.
+          {item.outcomes?.[state.chosen] ?? `Sent. ${item.who} has it.`}
         </p>
       ) : state.phase === "refused" ? (
         <p role="alert" data-need-choice-state="refused" className="text-[12px] leading-4 text-red-400">

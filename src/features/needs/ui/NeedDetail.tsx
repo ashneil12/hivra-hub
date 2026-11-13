@@ -90,6 +90,11 @@ export function NeedDetail({ item, now = Date.now(), compact = false }: { item: 
           <h2 data-need-sentence className="whitespace-pre-wrap break-words text-[20px] font-semibold leading-tight text-content">
             {item.sentence}
           </h2>
+          {item.detail ? (
+            <p data-need-line className="text-[13px] leading-5 text-content/70">
+              {item.detail}
+            </p>
+          ) : null}
           {actions.length || open ? (
             <div className="flex flex-wrap items-center gap-2 pt-0.5">
               {actions.map((action, index) => (

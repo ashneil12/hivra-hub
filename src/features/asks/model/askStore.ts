@@ -7,6 +7,7 @@ import { tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
 import type { LedgerAsk } from "../../hub/model/askLedger";
 import { withHubMoved } from "./askMove";
 import { withJobs, type JobRow } from "./askJobs";
+import { withAnswered, withDailyCheck, withLetGo, withReminderSent, withRemind, type QuietChange } from "./askQuiet";
 import {
   ASK_DOC_KEY,
   askDocForDisk,
@@ -15,7 +16,6 @@ import {
   withAdded,
   withChange,
   withCheck,
-  withDigestMark,
   withHandled,
   withHeard,
   type Ask,
@@ -38,8 +38,17 @@ export type AskStore = {
   hear(input: HearInput): Promise<void>;
   change(id: string | number, change: AskChange, by: AskBy): Promise<{ ask: Ask } | { problem: string }>;
   add(input: { mateId: string; sessionId: string; blockId: string; text: string }): Promise<void>;
-  /** Records the daily check for a first mate, so it is sent once a day from whichever window sends it. */
+  /**
+   * Records the daily check for a first mate, so it is sent once a day from whichever window sends it, and counts it
+   * against every ask it names that nothing moved (askQuiet.ts): the second raises the ask as a Needs you row.
+   */
   markDigest(mateId: string): Promise<void>;
+  /** A quiet ask's card (askQuiet.ts). Each resolves to why it was refused, or undefined when it was done. `raisedAt` is the row the card was drawn for. */
+  remind(id: string, raisedAt: number): Promise<string | undefined>;
+  letGo(id: string, raisedAt: number): Promise<string | undefined>;
+  answered(id: string, raisedAt: number): Promise<string | undefined>;
+  /** The reminder queued at `remindAt` was sent. */
+  reminderSent(id: string, remindAt: number): Promise<void>;
   /**
    * The delegation rows' effect on the asks they carry (askJobs.ts): started while a job works, done with its proof when it
    * passed, back to heard with a note when it failed or was cancelled. Safe to call with the same rows again.
@@ -53,6 +62,17 @@ export type AskStore = {
   moveFromHub(legacy: readonly LedgerAsk[], mateOf: (chatId: string) => string | undefined): Promise<boolean>;
   subscribe(fn: () => void): () => void;
 };
+
+/** A quiet ask's change as one revision-checked write: a refusal writes nothing and comes back as its words. */
+function quiet(
+  write: <R>(fn: (base: AskDoc) => { doc: AskDoc; result: R }) => Promise<R>,
+  change: (base: AskDoc) => QuietChange,
+): Promise<string | undefined> {
+  return write<string | undefined>((base) => {
+    const out = change(base);
+    return "problem" in out ? { doc: base, result: out.problem } : { doc: out.doc, result: undefined };
+  });
+}
 
 export function createAskStore(disk: LocalHubDisk, now: () => number = Date.now): AskStore {
   let file: AskDoc = emptyAskDoc(now());
@@ -129,7 +149,11 @@ export function createAskStore(disk: LocalHubDisk, now: () => number = Date.now)
         return "problem" in out ? { doc: base, result: out } : { doc: out.doc, result: { ask: out.ask } };
       }),
     add: (input) => write((base) => ({ doc: withAdded(base, { ...input, now: now() }), result: undefined })),
-    markDigest: (mateId) => write((base) => ({ doc: withDigestMark(base, mateId, now()), result: undefined })),
+    markDigest: (mateId) => write((base) => ({ doc: withDailyCheck(base, mateId, now()), result: undefined })),
+    remind: (id, raisedAt) => quiet(write, (base) => withRemind(base, id, raisedAt, now())),
+    letGo: (id, raisedAt) => quiet(write, (base) => withLetGo(base, id, raisedAt, now())),
+    answered: (id, raisedAt) => quiet(write, (base) => withAnswered(base, id, raisedAt)),
+    reminderSent: (id, remindAt) => write((base) => ({ doc: withReminderSent(base, id, remindAt), result: undefined })),
     jobs: (rows) => write((base) => ({ doc: withJobs(base, rows, now()), result: undefined })),
     handle: (id, proof) => write((base) => ({ doc: withHandled(base, id, proof, now()), result: undefined })),
     check: (id, patch) => write((base) => ({ doc: withCheck(base, id, patch), result: undefined })),

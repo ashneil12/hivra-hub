@@ -6,7 +6,7 @@ import { useSyncExternalStore } from "react";
 /** How long an answer is remembered for the line that replaces its card. */
 export const ANSWERED_SHOWN_MS = 8_000;
 
-export type AnsweredNeed = { key: string; words: string; who: string; sentence: string; at: number };
+export type AnsweredNeed = { key: string; words: string; who: string; sentence: string; at: number; /** What the card says in place of "Answered: <words>. <who> has it." (a quiet ask's own answers). */ line?: string };
 
 let last: AnsweredNeed | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
@@ -52,7 +52,8 @@ export function useLastAnswered(key?: string): AnsweredNeed | undefined {
 }
 
 /** "Answered: Take A. EXO lead has it." */
-export function answeredLine(entry: Pick<AnsweredNeed, "words" | "who">): string {
+export function answeredLine(entry: Pick<AnsweredNeed, "words" | "who"> & { line?: string }): string {
+  if (entry.line) return entry.line;
   const words = entry.words.replace(/\s+/g, " ").trim();
   const short = words.length > 80 ? `${words.slice(0, 79).trimEnd()}…` : words;
   return `Answered: ${short}${/[.!?…]$/.test(short) ? "" : "."} ${entry.who} has it.`;

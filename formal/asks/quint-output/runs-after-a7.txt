@@ -1,0 +1,6 @@
+# Quint runs with ESCALATE on by default (the quiet-ask row, A7), 13 Nov 2026
+default inv_known: No violation found (seed=0xd30eb97f74210847)
+default inv_touchedNeverGone: No violation found (seed=0x12a951e90cc97a31)
+default inv_dropIsPersons: No violation found (seed=0x72a3e8990d18e7a)
+default inv_neverGone: No violation found (seed=0xe897efe8a677a42f)
+default inv_noStarvation: No violation found (seed=0xb59f9b83fada5379)
