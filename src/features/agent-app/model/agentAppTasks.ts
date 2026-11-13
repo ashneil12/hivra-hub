@@ -95,6 +95,16 @@ import { bindPhaseLauncher, unbindPhaseLauncher } from "../../phases/model/phase
 import { bindCrew, commentId } from "../../phases/model/store";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+// SC-4: a brief's own check lines, do-not-touch list and commit stamp (firstmate/model/briefChecks.ts).
+import {
+  checksRefusal,
+  isCodeBrief,
+  leaveList,
+  splitChecks,
+  validStamp,
+  type CheckLine,
+} from "../../firstmate/model/briefChecks";
+import type { TestingMode } from "../../delivery/model/testingMode";
 import { parseFanout } from "../../firstmate/model/fanoutContract";
 import {
   createCheckpoint,
@@ -184,6 +194,8 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "gates",
       "checks",
       "code",
+      // SC-4: paths the worker must not change. (`checks` takes the brief's own lines too.)
+      "leave",
       // WP-92: the keys a worker's environment holds (at most 3).
       "secrets",
       // WP-144: a short reading list the fresh-eyes reviewers see with the plan.
@@ -232,7 +244,9 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
  * An agent's call cannot carry the mark, so it cannot set these. delegate_tasks writes them itself
  * and calls delegate() directly, which does not go through the field list.
  */
-export const APP_DELEGATE_FIELDS = ["fanout", "originalRequest", "originalRequestChars"] as const;
+// SC-4: `briefStamp` (the commit the brief was written against, carried with a queued or reviewed call) is the app's too: a
+// caller can't choose its own stamp.
+export const APP_DELEGATE_FIELDS = ["fanout", "originalRequest", "originalRequestChars", "briefStamp"] as const;
 
 /** Set on a tasks.delegate input by the app itself. Not enumerable, so a copy or JSON drops it. */
 export const appDelegateMark: unique symbol = Symbol("hivra.appDelegate");
@@ -336,6 +350,18 @@ export type AgentAppTasksHost = {
    * look like the worker failed to start.
    */
   saveGates?(id: string, request: GateRequest, folder?: string): Promise<unknown>;
+  /**
+   * SC-4: how hard this project's tasks are tested (delivery_settings_get). Asked only when a code brief carries no check
+   * line. Absent or undefined: the app couldn't say, and the brief is not refused for it.
+   */
+  testingMode?(project: string): Promise<TestingMode | undefined>;
+  /** SC-4: the HEAD of the project's main checkout, to stamp a brief with (firstmate_brief_stamp). Undefined: none. */
+  briefStamp?(folder: string): Promise<string | undefined>;
+  /**
+   * SC-4: keep a started task's check lines, stamp and do-not-touch list on its row (firstmate_brief_keep). The first keep
+   * wins, so a retry changes nothing. A miss is not a failed start: the same call again saves them.
+   */
+  keepBrief?(id: string, brief: KeptBrief): Promise<unknown>;
   /** Hivra WP-40: the first mate accepts or refuses an unsure verdict (firstmate_gates_decide). */
   decideGates?(owner: string, id: string, accept: boolean, reason?: string): Promise<unknown>;
   /** The running task working in this chat itself, newest first: what `tasks.cannot` with no taskId declares on. */
@@ -1058,6 +1084,10 @@ async function delegate(
   // left as a placeholder is refused before anything starts (firstmate/model/brief.ts).
   const unfit = checkBrief({ intent: input.intent, spec: input.brief, done: input.goal });
   if (unfit) throw new Error(unfit);
+  // SC-4: the brief's own check lines and do-not-touch list are read before anything starts; a bad one is refused in
+  // plain words. A plain name in `checks` is still the id of one of the project's own checks.
+  const own = splitChecks(input.checks);
+  const leave = leaveList(input.leave);
   // WP-171: a task of a fan-out carries its link: the contract its brief shows, and what it waits for.
   const link = input.fanout === undefined ? undefined : parseFanoutLink(input.fanout);
   if (link && input.lead !== undefined) throw new Error("A fan-out's tasks are workers: leave out lead.");
@@ -1108,6 +1138,11 @@ async function delegate(
     const [row] = await tasks.owned(source.id, { requestIds: [`app-${source.id}-${requestId}`] }).catch(() => [] as Delegation[]);
     return !!row && row.state !== "cancelled";
   };
+  // SC-4: the commit this brief was written against, read once and carried with the call, so a worker that waits for a
+  // free worker (or for a review) opens with the commit the first mate saw, not the one at its start.
+  let briefStamp: string | undefined;
+  /** What a held or queued call carries to its start: the stamp, when there is one. */
+  const briefCarried = (): Record<string, unknown> => (briefStamp ? { briefStamp } : {});
   // WP-144: fresh-eyes review, off unless this project turned it on. It comes after every check that can refuse the call
   // cheaply (so a brief that would fail is never reviewed) and before anything starts. The review keeps the call as a
   // waiting task; Approve (or Skip once) asks tasks.delegate again under the same request ID, with the call that was
@@ -1118,7 +1153,11 @@ async function delegate(
     // worker that was cancelled is not started again on the strength of an earlier approval.
     if (await startedAlready()) return undefined;
     // The reading list is capped here, so what is kept, reviewed and started is the same short list.
-    const held = { ...input, ...(input.reading !== undefined ? { reading: readingEntries(input.reading) } : {}) };
+    const held = {
+      ...input,
+      ...(input.reading !== undefined ? { reading: readingEntries(input.reading) } : {}),
+      ...briefCarried(),
+    };
     const eyes = await tasks.freshEyes({
       project: source.cwd,
       requestId,
@@ -1141,7 +1180,13 @@ async function delegate(
     };
   };
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
-  const gates = gateRequest(input);
+  // SC-4: the project's own check ids go to the gates as they always did; a task with lines of its own is a code task.
+  const gates = gateRequest({
+    ...input,
+    checks: own.ids,
+    // (Even a `code: false` that came with lines: lines are checks to run, and the checks gate comes with them.)
+    ...(own.lines.length && (input.code === undefined || input.code === false) ? { code: true } : {}),
+  });
   // Hivra WP-10: never deeper than first mate, first mate, workers.
   if (tasks.checkDepth) await tasks.checkDepth(source.id);
   // WP-92: the keys a worker's environment holds. Checked before anything starts.
@@ -1150,6 +1195,12 @@ async function delegate(
   const redoes =
     input.redoes === undefined ? undefined : (await ownRows(source, tasks, [text(input.redoes, "redoes", 128)]))[0];
   if (input.lead !== undefined) {
+    // SC-4: check lines and a do-not-touch list belong to a worker's brief. A Lead writes its own workers' briefs, so
+    // these would be dropped; say so now rather than let them look accepted.
+    if (own.lines.length || leave.length)
+      throw new Error(
+        "A brief to a Lead can't carry check lines or a do-not-touch list: the Lead writes its own workers' briefs. Say in the brief what the workers must check and leave alone, and the Lead puts it in theirs.",
+      );
     if (redoes) throw new Error("redoes is for your own workers' tasks; leave it out when you brief a Lead.");
     if (secretList.length)
       throw new Error(
@@ -1244,6 +1295,27 @@ async function delegate(
     const open = (await tasks.owned(source.id, {}).catch(() => [] as Delegation[])).filter(isOpenDelegation);
     const refusal = answeredJobRefusal(open, { requestId, title, ...(redoes ? { redoes } : {}) });
     if (refusal) throw new Error(refusal);
+  }
+  // SC-4: a code brief in a project that runs full checks on each task needs a check line, refused before a review or a
+  // start. The app's own call (marked: a queued worker starting, a reviewed brief approved, a retry) is a brief already
+  // accepted as sent, so a mode that changed meanwhile doesn't drop it. A Mono's own team folder is no project, so none
+  // of this applies there.
+  const briefFolder = briefFolderOf(source, owner, named, tasks);
+  if (!makesOwnTeam) {
+    if (!isAppDelegate(input)) {
+      const refusal = await fullModeRefusal(
+        tasks,
+        briefFolder,
+        isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope }),
+        own.lines,
+      );
+      if (refusal) throw new Error(refusal);
+    }
+    // A redo works in the copy its first worker left, with that work in it: it has nothing to drift from.
+    if (!redoes) {
+      briefStamp =
+        validStamp(input.briefStamp) ?? validStamp(await tasks.briefStamp?.(briefFolder).catch(() => undefined));
+    }
   }
   const held = await heldForReview();
   if (held) return held;
@@ -1368,6 +1440,8 @@ async function delegate(
       sessionId: `app-${source.id}-${requestId}`,
       parentSession: source.id,
     });
+  // SC-4: what a worker's brief adds to the shared parts: the stamp, its in-scope paths, its check lines and its list.
+  const workerExtras = { ...extras, ...(briefStamp ? { stamp: briefStamp } : {}), scope, checks: own.lines, leave };
   const remoteBrief = await briefOnRemoteHost({
     paths: [folder, source.cwd],
     launchKey: `app-${source.id}-${requestId}`,
@@ -1384,7 +1458,7 @@ async function delegate(
           { intent, spec: brief },
           { kind: "shared", folder: hostCwd },
           classifyBriefTask(`${intent}\n${brief}`),
-          extras,
+          workerExtras,
         ),
         goal,
       ),
@@ -1412,12 +1486,15 @@ async function delegate(
     tasks.pool?.started({ id, heavy, files });
     // A retry after a save that didn't land keeps the same plan. A save that fails still returns the task.
     await keepGates(tasks, already.id, gates, folder);
+    // SC-4: the first keep wins, so this never overwrites a result the gates already wrote.
+    const keptAgain = await keepBrief(tasks, already.id, { stamp: briefStamp, checks: own.lines, leave });
     return {
       taskId: already.id,
       childSessionId: id,
       status: already.state,
       title: already.title ?? title,
       alreadyStarted: true,
+      ...(keptAgain ? {} : { briefNote: BRIEF_NOT_KEPT }),
       ...(cliFallback ? { cliFallback } : {}),
       note: `${cliFallback ? `${cliFallback} ` : ""}This task had already started; it was not started again. Its report comes back to you as its own turn.`,
     };
@@ -1450,7 +1527,7 @@ async function delegate(
             isolationOf(workspaceMode, worktreeCwd),
             // WP-41: the brief names the pstack skills for this kind of work.
             classifyBriefTask(`${intent}\n${brief}`),
-            extras,
+            workerExtras,
           ),
           goal,
           memory,
@@ -1548,13 +1625,17 @@ async function delegate(
           requestId,
           title,
           queuedAt: (tasks.now ?? Date.now)(),
-          input: originalRequest
-            ? {
-                ...input,
-                originalRequest,
-                ...(originalRequestChars !== undefined ? { originalRequestChars } : {}),
-              }
-            : input,
+          input: {
+            ...input,
+            ...(originalRequest
+              ? {
+                  originalRequest,
+                  ...(originalRequestChars !== undefined ? { originalRequestChars } : {}),
+                }
+              : {}),
+            // SC-4: the stamp and the acceptance travel with the call, so its start writes the brief it was sent with.
+            ...briefCarried(),
+          },
         },
         launch,
       );
@@ -1614,6 +1695,8 @@ async function delegate(
   if (sharedTask && row?.id) bindCrew(row.id, sharedTask);
   // WP-40: the plan is kept once the row exists. A waiting worker stores `input` and this runs when it starts.
   await keepGates(tasks, row?.id, gates, folder);
+  // SC-4: its check lines, do-not-touch list and the stamp its brief opens with, once the row exists.
+  const kept = await keepBrief(tasks, row?.id, { stamp: briefStamp, checks: own.lines, leave });
   // What the Lead did about its stuck task shows on that task's card (and survives a restart: it's in its row's log).
   if (redoes && row) await tasks.redo?.(source.id, redoes, row.id).catch(() => undefined);
   return {
@@ -1621,6 +1704,8 @@ async function delegate(
     childSessionId: id,
     status: row?.state ?? "running",
     title,
+    // SC-4: lines or a list that could not be saved are not run or enforced; the first mate is told, and can send it again.
+    ...(kept ? {} : { briefNote: BRIEF_NOT_KEPT }),
     cwd: launch.cwd,
     harness: launch.harness,
     model: launch.model,
@@ -1989,10 +2074,19 @@ async function sendFanout(
   host: AgentAppHost,
   helpers: TaskHelpers,
 ) {
-  const { tasks } = taskOwner(source, host);
+  const { owner, tasks } = taskOwner(source, host);
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
     throw new Error("request ID must use letters, digits, underscores or hyphens (up to 100)");
   const parsed = parseFanout(input);
+  // SC-4: a code task of a project that runs full checks needs a check line. Refused for the whole plan, before any task
+  // starts, naming the task. A Mono's own team folder is no project (as in `delegate`).
+  for (const task of parsed.tasks) {
+    const named = typeof task.passthrough.project === "string" ? task.passthrough.project : undefined;
+    const ownTeamWork = !!owner.mono && !!tasks.monoWork && !tasks.monoWork.isLead(owner.mono.id) && named === undefined;
+    if (ownTeamWork) continue;
+    const refusal = await fullModeRefusal(tasks, briefFolderOf(source, owner, named, tasks), task.codeBrief, task.checkLines);
+    if (refusal) throw new Error(`Task ${task.name}: ${refusal}`);
+  }
   const planned = planFanout(parsed, source.id, requestId, (tasks.now ?? Date.now)());
   if (planned.links.some((link) => link.after.length) && !tasks.pool?.waitsOnProviders)
     throw new Error(
@@ -2016,6 +2110,9 @@ async function sendFanout(
       ...(task.title ? { title: task.title } : {}),
       ...(task.files.length ? { files: task.files } : {}),
       ...(task.gates ?? {}),
+      // SC-4: the task's own check lines go beside the project's check ids, and its do-not-touch list with them.
+      ...(task.checkLines.length ? { checks: [...(task.gates?.checks ?? []), ...task.checkLines] } : {}),
+      ...(task.leave.length ? { leave: task.leave } : {}),
       ...task.passthrough,
       fanout: link,
     };
@@ -2694,6 +2791,59 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
     },
     spend,
   };
+}
+
+/** SC-4: what a started task keeps of its brief. */
+export type KeptBrief = { stamp?: string; checks: readonly CheckLine[]; leave: readonly string[] };
+
+/** How many times a brief's lines are asked to be kept before the first mate is told they weren't. */
+const KEEP_TRIES = 3;
+
+/** What the first mate reads when a task's check lines or do-not-touch list could not be saved. */
+const BRIEF_NOT_KEPT =
+  "Its check lines or do-not-touch list could not be saved on the task, so the app will not run or enforce them. Send the same call again, with the same clientRequestId, to save them.";
+
+/**
+ * SC-4: keep a task's brief lines, stamp and list, trying a few times. Nothing to keep keeps nothing. A miss is not a
+ * failed start, but a task whose lines were not saved would pass with none run: false says so, and the first mate is told.
+ */
+async function keepBrief(tasks: AgentAppTasksHost, id: string | null | undefined, brief: KeptBrief): Promise<boolean> {
+  if (!id || !tasks.keepBrief) return true;
+  if (!brief.stamp && !brief.checks.length && !brief.leave.length) return true;
+  for (let attempt = 0; attempt < KEEP_TRIES; attempt += 1) {
+    try {
+      await tasks.keepBrief(id, brief);
+      return true;
+    } catch {
+      // Try again: the store may only have been busy.
+    }
+  }
+  // A stamp alone is not enforced by anything the first mate relies on; lines and a list are.
+  return !(brief.checks.length || brief.leave.length);
+}
+
+/**
+ * SC-4: the project folder a brief's work belongs to, as `delegate` resolves it before anything starts: the project the
+ * call names (a coding-team chat's own when it names none), else the chat's own folder.
+ */
+function briefFolderOf(source: Session, owner: ReturnType<typeof taskOwner>["owner"], named: string | undefined, tasks: AgentAppTasksHost) {
+  return named !== undefined && !owner.team ? (tasks.hubProjectFolder?.(named) ?? named) : source.cwd;
+}
+
+/**
+ * SC-4: whether this project's testing mode refuses a code brief with no check line. Asked only then: a brief that carries
+ * a line, or isn't code, never reads the mode. A mode the app can't read never refuses (it would be stricter than told).
+ */
+async function fullModeRefusal(
+  tasks: AgentAppTasksHost,
+  folder: string,
+  codeBrief: boolean,
+  lines: readonly CheckLine[],
+): Promise<string | undefined> {
+  if (!codeBrief || lines.length > 0 || !tasks.testingMode) return undefined;
+  const project = tasks.hubProjectId?.(folder) ?? folder;
+  const mode = await tasks.testingMode(project).catch(() => undefined);
+  return checksRefusal(mode, codeBrief, lines);
 }
 
 /** Keep a task's gates. A miss is not a failed start: the same call again saves them. */

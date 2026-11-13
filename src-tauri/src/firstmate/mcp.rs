@@ -39,14 +39,16 @@ fn task_schema() -> Value {
             "owns": names("Paths (or a folder, or folder/**) only this task writes, inside the project. No two tasks own the same path.", 30),
             "provides": { "type": "array", "items": provide, "maxItems": 64, "description": "What this task must produce for the others, under exactly these names. A name that is not a file needs somewhere to look: in, a file it owns, or a file it declares in files." },
             "requires": names("Names (as another task provides them) this task relies on. It waits until the task that provides each is done, its checks passed, and what it provided is on disk. A name nothing provides is refused.", 64),
-            "checks": names("Ids of the project's own checks this task must pass; each runs on its work before it counts as done, and one that did not run is not a pass.", 20),
+            // SC-4: a plain name is a project check (as before); a line {what, command, expect} is the brief's own.
+            "checks": { "type": "array", "items": crate::mcp_server::check_item(), "maxItems": 32, "description": "The checks this task must pass. A line {what, command, expect} says what must be true, the command that shows it, and the text its output must contain or exit N (default exit 0); give one to three, at most 12. A plain name is the id of one of the project's own checks. Each runs on its work before it counts as done, and one that did not run is not a pass." },
+            "leave": names("Do-not-touch paths: files or folders this task must not change, from the project's root. A change to one fails the task.", 50),
             "files": names("Other project files or folders this task changes, beyond what it owns.", 30),
             "project": text("The hub project id, folder path or name. Omit when you have one project."),
             "model": text("Usually omit it."),
             "effort": text("The model's effort setting, when it has one."),
             "heavy": { "type": "boolean", "description": "True when the task runs heavy tests (full suites, e2e, builds)." },
             "hard": { "type": "boolean", "description": "True when the task is hard (subtle, high-risk, or wide)." },
-            "scope": names("The files or areas this task covers, as you see them.", 50),
+            "scope": names("In-scope paths: the files or folders this task may change.", 50),
             "asks": names("The Ash OS ask ids (a_...) this task covers.", 50),
             "gates": { "type": "array", "items": { "type": "string", "enum": ["diff", "checks", "committed", "ratchet", "routes"] }, "description": "Which checks must pass before this task is done, as for delegate_task." },
             "code": { "type": "boolean", "description": "True when the task changes code: it always gets the diff and checks gates." }
@@ -84,6 +86,20 @@ pub fn call(app: &dyn App, name: &str, args: &Value) -> Result<Value, String> {
             let mut allowed = FIELDS.to_vec();
             allowed.push("clientRequestId");
             let object = arguments(args, &allowed)?;
+            // SC-4: each task's check lines and do-not-touch list are checked before the app hears of the plan.
+            if let Some(Value::Array(tasks)) = object.get("tasks") {
+                for (index, task) in tasks.iter().enumerate() {
+                    let named = task.get("name").and_then(Value::as_str).map_or_else(
+                        || format!("Task {}", index + 1),
+                        |name| format!("Task {name}"),
+                    );
+                    crate::firstmate::brief_checks::refuse_bad_brief(
+                        task.get("checks"),
+                        task.get("leave"),
+                    )
+                    .map_err(|why| format!("{named}: {why}"))?;
+                }
+            }
             let request_id =
                 match object.get("clientRequestId") {
                     None => new_request_id(),
@@ -167,6 +183,56 @@ mod tests {
         assert_eq!(calls[0].2, "resume-1");
     }
 
+    /// SC-4: a part's check lines and do-not-touch list go to the app inside their task, a plain project check's name
+    /// beside them; a part that names `passes` or a path outside the project is refused before the app is called.
+    #[test]
+    fn a_parts_check_lines_and_leave_reach_the_app_and_bad_ones_never_do() {
+        let app = Recorder(Mutex::new(Vec::new()));
+        let mut args = plan();
+        args["tasks"][0]["checks"] = json!([
+            "lint",
+            { "what": "the route answers", "command": "curl -s localhost:3000/api/score", "expect": "ok" }
+        ]);
+        args["tasks"][0]["leave"] = json!(["src/api/legacy"]);
+        args["tasks"][0]["scope"] = json!(["src/api/score.ts"]);
+        call(&app, "delegate_tasks", &args).unwrap();
+        assert_eq!(app.0.lock().unwrap()[0].1, args);
+        app.0.lock().unwrap().clear();
+        for (field, value, says) in [
+            (
+                "checks",
+                json!([{ "what": "w", "command": "true", "passes": true }]),
+                "passes",
+            ),
+            (
+                "checks",
+                json!([{ "what": "w", "command": "a\r\nb" }]),
+                "command is one line",
+            ),
+            (
+                "checks",
+                json!([{ "what": "w" }]),
+                "the command that shows it",
+            ),
+            ("leave", json!(["/etc"]), "isn't inside the project"),
+            ("leave", json!(["C:\\Windows"]), "isn't inside the project"),
+        ] {
+            let mut bad = plan();
+            bad["tasks"][0][field] = value;
+            let error = call(&app, "delegate_tasks", &bad).unwrap_err();
+            assert!(error.starts_with("Task api: "), "{error}");
+            assert!(error.contains(says), "{error}");
+        }
+        // A second part with no name is named by its place.
+        let mut unnamed = plan();
+        unnamed["tasks"][1]["leave"] = json!(["../x"]);
+        unnamed["tasks"][1].as_object_mut().unwrap().remove("name");
+        assert!(call(&app, "delegate_tasks", &unnamed)
+            .unwrap_err()
+            .starts_with("Task 2: "));
+        assert!(app.0.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn a_call_with_no_request_id_gets_a_fresh_one() {
         let app = Recorder(Mutex::new(Vec::new()));
@@ -208,9 +274,26 @@ mod tests {
         let task = &schema["properties"]["tasks"]["items"];
         assert_eq!(task["additionalProperties"], false);
         assert_eq!(task["required"], json!(["name", "brief", "goal"]));
-        for field in ["owns", "provides", "requires", "checks", "files"] {
+        for field in ["owns", "provides", "requires", "checks", "files", "leave"] {
             assert!(task["properties"][field].is_object(), "{field}");
         }
+        // SC-4: `checks` takes a project check's name or a line {what, command, expect}, closed to those three keys: no
+        // way to say a line passed. `leave` is a list of paths.
+        let entry = &task["properties"]["checks"]["items"]["anyOf"];
+        assert_eq!(entry[0]["type"], "string");
+        assert_eq!(entry[1]["type"], "object");
+        assert_eq!(entry[1]["additionalProperties"], false);
+        assert_eq!(entry[1]["required"], json!(["what", "command"]));
+        let mut keys: Vec<&String> = entry[1]["properties"].as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["command", "expect", "what"]);
+        assert!(!task.to_string().contains("passes"));
+        assert_eq!(task["properties"]["leave"]["maxItems"], 50);
+        assert_eq!(task["properties"]["leave"]["items"]["type"], "string");
+        assert!(task["properties"]["scope"]["description"]
+            .as_str()
+            .unwrap()
+            .starts_with("In-scope paths"));
         assert_eq!(
             task["properties"]["provides"]["items"]["properties"]["kind"]["enum"],
             json!(["file", "symbol", "id", "endpoint", "env", "flag", "other"])

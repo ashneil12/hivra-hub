@@ -11,7 +11,7 @@
 //! | `at-ship` (default) | `diff`, `committed` | yes | a failed check, an open to-do | no | done, "Built, not tested yet" |
 //! | `light`, code changed | `diff`, `checks`, `committed`, `ratchet`, and the brief's plan | yes | all | yes | done |
 //! | `light`, docs only | `diff`, `committed`, and the brief's plan | yes | all | yes | done |
-//! | `full` | as `light` (SC-4, SC-5 and SC-7 add the rest) | yes | all | yes | done |
+//! | `full` | as `light`, plus the brief's own check lines (SC-4; SC-5 and SC-7 add the rest) | yes | all | yes | done |
 //!
 //! A task whose copy changed nothing and that stored no plan (a research or answer task) is unaffected in every mode:
 //! `as_today`, and it settles as it did before. The person's mode wins over the brief's own plan in `at-ship` and
@@ -129,8 +129,9 @@ pub fn gates_for(
             false,
             Some(NOTE_AT_SHIP),
         ),
-        // SC-4/SC-5/SC-7: `full` adds the brief's own checks, the real-app recipe and the running checker here. Until
-        // those land it is `light`.
+        // SC-4: the brief's own check lines run inside the `checks` gate this adds for a code diff (`gates::with_brief_lines`),
+        // in `light` and in `full`. SC-5/SC-7: `full` adds the real-app recipe and the running checker here; until those
+        // land it is `light` plus the lines.
         TestingMode::Light | TestingMode::Full => {
             let mut gates = vec![GateKind::Diff, GateKind::Committed];
             if code_changed {

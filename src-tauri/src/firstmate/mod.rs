@@ -16,6 +16,7 @@
 //! The brief scaffold and the per-CLI read-only launch live in the webview (src/features/firstmate/), where briefs are
 //! written and sessions launched. The role rules are src/features/firstmate/contract.md.
 
+pub mod brief_checks; // SC-4: a brief's runnable check lines, its commit stamp and its do-not-touch list
 pub mod checkout_guard;
 pub mod done_check;
 pub mod fact_gaps;

@@ -186,6 +186,18 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             "ALTER TABLE delegations ADD COLUMN imported INTEGER NOT NULL DEFAULT 0;",
         )?;
     }
+    // SC-4 (firstmate/brief_checks.rs): the commit the brief was written against, its own runnable check lines (JSON,
+    // each with `passes` that only the gates set) and its do-not-touch list (JSON). All null on a row from before.
+    let has_brief = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'brief_checks'")?
+        .exists([])?;
+    if !has_brief {
+        conn.execute_batch(
+            "ALTER TABLE delegations ADD COLUMN brief_stamp TEXT;
+             ALTER TABLE delegations ADD COLUMN brief_checks TEXT;
+             ALTER TABLE delegations ADD COLUMN brief_leave TEXT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -3450,6 +3462,38 @@ mod tests {
             get(&conn, &row.id).unwrap().unwrap().follow.as_deref(),
             Some("lead")
         );
+    }
+
+    #[test]
+    fn an_older_store_gets_the_brief_columns_once_and_keeps_its_rows() {
+        // SC-4: brief_stamp, brief_checks and brief_leave are added to a store from before, and a second pass adds nothing.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE delegations (id TEXT PRIMARY KEY, owner_session TEXT NOT NULL, owner_mono TEXT, batch_id TEXT,
+               parent_id TEXT, root_id TEXT NOT NULL, child_session TEXT NOT NULL, request_id TEXT NOT NULL,
+               generation INTEGER NOT NULL DEFAULT 1, project TEXT, title TEXT, brief TEXT, goal TEXT,
+               ask_ids TEXT NOT NULL DEFAULT '[]', state TEXT NOT NULL, error_class TEXT, error TEXT, retryable INTEGER,
+               resets_at INTEGER, result TEXT, pending_question TEXT, delivery TEXT NOT NULL, delivery_message TEXT,
+               created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, settled_at INTEGER,
+               log TEXT NOT NULL DEFAULT '[]', version INTEGER NOT NULL DEFAULT 1,
+               mirrored_version INTEGER NOT NULL DEFAULT 0, mirror_error TEXT, UNIQUE (owner_session, request_id));
+             INSERT INTO delegations (id, owner_session, root_id, child_session, request_id, state, delivery, created_at, updated_at)
+               VALUES ('d-old', 'lead', 'd-old', 'w', 'r', 'running', 'pending', 1, 1);",
+        )
+        .unwrap();
+        ensure_tables(&conn).unwrap();
+        ensure_tables(&conn).unwrap();
+        let (stamp, checks, leave): (Option<String>, Option<String>, Option<String>) = conn
+            .query_row(
+                "SELECT brief_stamp, brief_checks, brief_leave FROM delegations WHERE id = 'd-old'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!((stamp, checks, leave), (None, None, None));
+        // A row from before reads as a brief with no lines, no list and no stamp.
+        let state = crate::firstmate::brief_checks::state_of(&conn, "d-old").unwrap();
+        assert_eq!(state, crate::firstmate::brief_checks::BriefState::default());
     }
 
     #[test]

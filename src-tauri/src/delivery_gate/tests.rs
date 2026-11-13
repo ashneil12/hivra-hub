@@ -337,6 +337,7 @@ fn a_code_briefs_delivery_runs_the_checks_exactly_once_and_records_the_layer() {
             gate_owns_checks: owns,
             facts: None,
             mode: None,
+            brief_round: None,
         },
         &counter,
     );

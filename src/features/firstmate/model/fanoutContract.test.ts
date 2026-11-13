@@ -79,6 +79,70 @@ describe("a fan-out's contract (WP-171)", () => {
     expect(parsed.tasks[1].gates).toBeUndefined();
   });
 
+  describe("a task's own check lines and do-not-touch list (SC-4)", () => {
+    const line = { what: "the route answers", command: "curl -s localhost:3000/api/score", expect: "ok" };
+    const withTask = (patch: Record<string, unknown>) => {
+      const input = plan();
+      input.tasks[0] = { ...input.tasks[0], ...patch } as FanoutInput["tasks"][number];
+      return input;
+    };
+
+    it("keeps the project's check ids and the task's own lines apart, and the lines make it a code task", () => {
+      const parsed = parseFanout(withTask({ checks: ["api-tests", line], leave: ["src/legacy", "./docs/"] }));
+      const api = parsed.tasks[0];
+      expect(api.checkLines).toEqual([line]);
+      expect(api.leave).toEqual(["src/legacy", "docs"]);
+      expect(api.gates).toEqual({ gates: ["checks"], checks: ["api-tests"], code: true });
+      // The contract's own CHECKS list is the project's ids; a line is the task's and is not shown to the others.
+      expect(parsed.contract.checks).toEqual([{ task: "api", id: "api-tests" }]);
+      // A line alone: the checks gate comes with it (a code task), and no project id is named.
+      const alone = parseFanout(withTask({ checks: [line] })).tasks[0];
+      expect(alone.checkLines).toEqual([line]);
+      expect(alone.gates).toEqual({ code: true });
+      expect(alone.codeBrief).toBe(true);
+      // A task with neither is as it was.
+      const board = parsed.tasks[1];
+      expect(board.checkLines).toEqual([]);
+      expect(board.leave).toEqual([]);
+      expect(board.codeBrief).toBe(false);
+    });
+
+    it("a task whose lines are plain names reads exactly as it did", () => {
+      const parsed = parseFanout(plan());
+      expect(parsed.tasks[0].checkLines).toEqual([]);
+      expect(parsed.tasks[0].gates).toEqual({ gates: ["checks"], checks: ["api-tests"] });
+    });
+
+    it("is a code task by the full-mode rule when it says so, names gates or in-scope paths", () => {
+      expect(parseFanout(withTask({ checks: undefined, code: true })).tasks[0].codeBrief).toBe(true);
+      expect(parseFanout(withTask({ checks: undefined, gates: ["diff"] })).tasks[0].codeBrief).toBe(true);
+      expect(parseFanout(withTask({ checks: undefined, scope: ["src/api"] })).tasks[0].codeBrief).toBe(true);
+      expect(parseFanout(withTask({ checks: undefined })).tasks[0].codeBrief).toBe(false);
+      // A project check's id asks for the checks gate, so it is code too (the gates `delegate` will be handed).
+      expect(parseFanout(withTask({ checks: ["api-tests"] })).tasks[0].codeBrief).toBe(true);
+    });
+
+    it("refuses a bad line or list naming the task, and a line that names passes", () => {
+      for (const [patch, says] of [
+        [{ checks: [{ what: "w", command: "true", passes: true }] }, "passes"],
+        [{ checks: [{ what: "w", command: "a\nb" }] }, "command is one line"],
+        [{ checks: [{ what: "w" }] }, "the command that shows it"],
+        [{ checks: [7] }, "{what, command, expect}"],
+        [{ leave: ["../x"] }, "leaves the project"],
+        [{ leave: "src" }, "list of paths"],
+      ] as const) {
+        const said = refusal(withTask(patch));
+        expect(said.startsWith("Task api: "), said).toBe(true);
+        expect(said, said).toContain(says);
+      }
+    });
+
+    it("holds the project check ids to their own limit beside the lines", () => {
+      const ids = Array.from({ length: 21 }, (_, i) => `c${i}`);
+      expect(refusal(withTask({ checks: [...ids, line] }))).toContain("checks must be a list of at most 20");
+    });
+  });
+
   it("refuses a requirement nothing provides, before anything starts, and names who and what", () => {
     const input = plan();
     input.tasks[1] = { ...input.tasks[1], requires: ["/api/scores"] };

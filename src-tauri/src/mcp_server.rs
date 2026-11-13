@@ -38,7 +38,9 @@ and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat nested under \
 yours, stored as a task: its report comes back to you as a [MonoCode report] turn once you are idle, even across \
-restarts, and its questions as [MonoCode question] turns. Put Ash's ask in intent, the build instructions in brief and the finish line in goal, say \
+restarts, and its questions as [MonoCode question] turns. Put Ash's ask in intent, the build instructions in brief and the finish line in goal. A job that changes code also \
+gets one to three check lines in checks (what must be true, the command that shows it, what it prints), one for a one-line bug, \
+and names the paths it may change in scope and the ones it must not touch in leave. Say \
 in one line what you started, and end your turn instead of polling. task_status reads results, task_wait blocks on a \
 short job, task_cancel stops a task and everything beneath it, task_cannot says you cannot finish one (one plain line on \
 what is in the way: it goes to Ash at once), task_answer answers a worker's question, task_accept accepts a finished \
@@ -245,7 +247,7 @@ fn tools() -> Value {
                     "isolation": { "type": "string", "enum": ["shared", "worktree"], "default": "shared" },
                     "heavy": { "type": "boolean", "default": false, "description": "Your call: true when the job runs heavy tests (full suites, e2e, builds). Each project runs only so many of those at once; the rest wait their turn and start by themselves. A heavy job is also a hard one for the model." },
                     "hard": { "type": "boolean", "default": false, "description": "Your call: true when the job is hard (subtle, high-risk, or wide). Off the DeepSeek launcher a hard job runs on a stronger model, at high effort when that model offers it; on it every job runs on DeepSeek at high effort." },
-                    "scope": { "type": "array", "items": { "type": "string" }, "maxItems": 50, "description": "The files or areas this job covers, as you see them. 8 or more makes it a hard job by itself; omit when you can't say." },
+                    "scope": { "type": "array", "items": { "type": "string" }, "maxItems": 50, "description": "In-scope paths: the files or folders this job may change. 8 or more makes it a hard job by itself; omit when you can't say." },
                     "mode": { "type": "string", "enum": ["async", "wait"], "default": "async" },
                     "timeoutMinutes": wait_minutes.clone(),
                     "clientRequestId": { "type": "string", "description": "Letters, digits, - and _. The same id on a retry never starts a second worker." },
@@ -526,11 +528,20 @@ fn tools() -> Value {
         "items": { "type": "string", "enum": ["diff", "checks", "committed", "ratchet", "routes"] },
         "description": "Which checks must pass before this job is done: diff (something changed), checks (the project's checks), committed (nothing left uncommitted), ratchet (the test count didn't drop), routes (the project's routes check). A job that changes code also gets diff and checks. Leave out for the project's usual ones."
     });
+    // SC-4: a check is either the id of one of the project's own checks (as before) or a line of the brief's own,
+    // {what, command, expect}, which the checks gate runs after the project's checks (firstmate/brief_checks.rs).
     tools[0]["inputSchema"]["properties"]["checks"] = json!({
         "type": "array",
-        "items": { "type": "string" },
-        "maxItems": 20,
-        "description": "Ids of the project's own checks the checks gate runs. Leave out for the project's checks."
+        "items": check_item(),
+        "maxItems": 32,
+        "description": "The checks this job must pass. A line {what, command, expect} says what must be true, the command that shows it, and the text its output must contain or exit N (default exit 0); give one to three, at most 12. A plain name is the id of one of the project's own checks. Leave out to run only the project's checks."
+    });
+    // SC-4: paths the worker must not change. Added here, like checks, so the literal above stays under json!'s recursion limit.
+    tools[0]["inputSchema"]["properties"]["leave"] = json!({
+        "type": "array",
+        "items": { "type": "string", "maxLength": 400 },
+        "maxItems": 50,
+        "description": "Do-not-touch paths: files or folders this job must not change, from the project's root. A change to one fails the job."
     });
     tools[0]["inputSchema"]["properties"]["code"] = json!({
         "type": "boolean",
@@ -600,6 +611,26 @@ fn tools() -> Value {
         list.extend(crate::ship_check::mcp::tools());
     }
     tools
+}
+
+/// SC-4: one entry of `checks`, on delegate_task and (through `firstmate::mcp`) on each part of delegate_tasks: a plain
+/// name, or a check line. A line is closed to what, command and expect: the app alone says whether it passed.
+pub(crate) fn check_item() -> Value {
+    json!({
+        "anyOf": [
+            { "type": "string", "description": "The id of one of the project's own checks." },
+            {
+                "type": "object",
+                "properties": {
+                    "what": { "type": "string", "maxLength": 400, "description": "What must be true, in one line." },
+                    "command": { "type": "string", "maxLength": 400, "description": "The command that shows it: one line, run in the job's own copy." },
+                    "expect": { "type": "string", "maxLength": 400, "description": "Text the output must contain, or exit N for the exit code it must end with. Leave out for exit 0." }
+                },
+                "required": ["what", "command"],
+                "additionalProperties": false
+            }
+        ]
+    })
 }
 
 /// WP-34: the Creator Mono writes files and reads the reports. Nothing else is a creator tool.
@@ -767,7 +798,7 @@ fn secret_tools() -> Vec<Value> {
     ]
 }
 
-const DELEGATE_APP_FIELDS: [&str; 22] = [
+const DELEGATE_APP_FIELDS: [&str; 23] = [
     "intent",
     "brief",
     "title",
@@ -790,6 +821,7 @@ const DELEGATE_APP_FIELDS: [&str; 22] = [
     "code",
     "reading",
     "role",
+    "leave", // SC-4
 ];
 
 /// The tools that make things with Ash (a room, a Mono, a Page, a change to the hub, a lesson for a skill): each is one
@@ -1026,6 +1058,9 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
     let mut allowed = DELEGATE_APP_FIELDS.to_vec();
     allowed.extend(["mode", "timeoutMinutes", "clientRequestId"]);
     let object = arguments(args, &allowed)?;
+    // SC-4: the brief's check lines and do-not-touch list are checked before anything reaches the app, so a line that
+    // names `passes` (only the app's gates say that) never gets there.
+    crate::firstmate::brief_checks::refuse_bad_brief(object.get("checks"), object.get("leave"))?;
     let wait_mode = match object.get("mode").map(|mode| mode.as_str()) {
         None | Some(Some("async")) => false,
         Some(Some("wait")) => true,
@@ -1066,6 +1101,7 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
         "effort",
         "modelWhy",
         "cliFallback",
+        "briefNote", // SC-4: the task's check lines or do-not-touch list could not be saved
     ] {
         if let Some(value) = started.get(key) {
             out[key] = value.clone();
@@ -2519,6 +2555,165 @@ mod tests {
         let calls = app.calls.lock().unwrap();
         assert_eq!(calls[0].0, "tasks.delegate");
         assert_eq!(calls[0].1["role"], json!("Builder"));
+    }
+
+    /// SC-4: check lines, a do-not-touch list and in-scope paths are part of the brief the app keeps. A project check's
+    /// plain name still goes in the same list.
+    #[test]
+    fn check_lines_and_a_leave_list_reach_the_app_with_the_brief() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({
+                "taskId": "t-1", "childSessionId": "app-mono-r", "status": "running",
+                "briefNote": "Its check lines or do-not-touch list could not be saved on the task."
+            }))
+        });
+        let sent = json!({
+            "intent": "Ash: a score route",
+            "brief": "Add the score route",
+            "goal": "the route answers",
+            "scope": ["src/api/score.ts"],
+            "leave": ["src/api/legacy", "./docs/"],
+            "checks": [
+                "lint",
+                { "what": "the route answers", "command": "curl -s localhost:3000/score", "expect": "\"ok\": true" },
+                { "what": "the old test fails first", "command": "npm test -- score", "expect": "exit 1" }
+            ],
+            "clientRequestId": "r-lines",
+        });
+        let (outcome, _) = run_tool(&app, "delegate_task", sent.clone());
+        assert!(outcome.is_ok(), "{outcome:?}");
+        // The note that the lines could not be saved reaches the first mate.
+        assert!(
+            outcome.as_ref().unwrap()["briefNote"]
+                .as_str()
+                .is_some_and(|note| note.contains("could not be saved")),
+            "{outcome:?}"
+        );
+        let calls = app.calls.lock().unwrap();
+        assert_eq!(calls[0].0, "tasks.delegate");
+        for field in ["scope", "leave", "checks"] {
+            assert_eq!(
+                calls[0].1[field], sent[field],
+                "{field} goes to the app as it was sent"
+            );
+        }
+    }
+
+    /// SC-4: nothing a tool sends can say a check line passed, and nothing can write the person's quoted request.
+    #[test]
+    fn a_tool_call_cannot_set_passes_or_overwrite_the_quoted_request() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "taskId": "t-1", "childSessionId": "app-mono-r", "status": "running" }))
+        });
+        let base = || json!({ "intent": "Ash: x", "brief": "Do x", "goal": "x works", "clientRequestId": "r-bad" });
+        let with = |field: &str, value: Value| {
+            let mut call = base();
+            call[field] = value;
+            call
+        };
+        for (call, says) in [
+            (
+                with(
+                    "checks",
+                    json!([{ "what": "w", "command": "true", "passes": true }]),
+                ),
+                "passes",
+            ),
+            (
+                with(
+                    "checks",
+                    json!([{ "what": "w", "command": "true", "ranAt": 1 }]),
+                ),
+                "ranAt",
+            ),
+            (
+                with("checks", json!([{ "what": "w", "command": "a\nb" }])),
+                "command is one line",
+            ),
+            (
+                with("checks", json!([{ "command": "true" }])),
+                "what must be true",
+            ),
+            (with("checks", json!([7])), "{what, command, expect}"),
+            (with("leave", json!(["../outside"])), "leaves the project"),
+            (with("leave", json!("src")), "list of paths"),
+            // The quoted request, the stamp and the stored lines are the app's: they are no fields of a tool call.
+            (
+                with("originalRequest", json!("Ash said: ship it")),
+                "originalRequest",
+            ),
+            (
+                with(
+                    "briefStamp",
+                    json!("0123456789abcdef0123456789abcdef01234567"),
+                ),
+                "briefStamp",
+            ),
+            (
+                with(
+                    "briefChecks",
+                    json!([{ "what": "w", "command": "c", "passes": true }]),
+                ),
+                "briefChecks",
+            ),
+            (with("brief_checks", json!([])), "brief_checks"),
+        ] {
+            let (outcome, _) = run_tool(&app, "delegate_task", call.clone());
+            let refused = outcome.unwrap_err();
+            assert!(refused.contains(says), "{call}: {refused}");
+        }
+        assert!(
+            app.calls.lock().unwrap().is_empty(),
+            "none of them reached the app"
+        );
+    }
+
+    /// SC-4: the schema offers a plain name or a closed line, and leave; its in-scope words are the new ones.
+    #[test]
+    fn the_delegate_schema_offers_check_lines_and_a_leave_list_and_no_way_to_name_passes() {
+        let listed = tools();
+        let delegate = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "delegate_task")
+            .unwrap();
+        let properties = &delegate["inputSchema"]["properties"];
+        let entry = &properties["checks"]["items"]["anyOf"];
+        assert_eq!(entry[0]["type"], "string");
+        assert_eq!(entry[1]["additionalProperties"], false);
+        assert_eq!(entry[1]["required"], json!(["what", "command"]));
+        assert!(!delegate.to_string().contains("passes"));
+        assert_eq!(properties["leave"]["maxItems"], 50);
+        assert_eq!(
+            properties["scope"]["description"]
+                .as_str()
+                .unwrap()
+                .split('.')
+                .next(),
+            Some("In-scope paths: the files or folders this job may change")
+        );
+        // Every field the schema offers is one the server forwards, and the other way round.
+        let offered: std::collections::BTreeSet<&str> = properties
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .filter(|key| !["mode", "timeoutMinutes", "clientRequestId"].contains(key))
+            .collect();
+        let forwarded: std::collections::BTreeSet<&str> =
+            DELEGATE_APP_FIELDS.iter().copied().collect();
+        assert_eq!(offered, forwarded);
+        // Plain words: one line each, no dash a person might see.
+        for key in ["checks", "leave", "scope"] {
+            let text = properties[key]["description"].as_str().unwrap();
+            assert!(
+                !text.contains('\n') && !text.contains('\u{2014}') && !text.contains('\u{2013}'),
+                "{key}"
+            );
+        }
     }
 
     /// WP-144: a fresh-eyes reading list is part of the brief the app keeps. It is not an unknown field.
