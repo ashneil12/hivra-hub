@@ -486,6 +486,10 @@ pub struct RoundInput<'a> {
     /// SC-5: what the task's earlier rounds found (the numbered findings a `Dismiss <n>:` line names) and the rule a rewrite
     /// named. Absent is a task's first round.
     pub history: Option<&'a RoundHistory>,
+    /// PT-5: in `at-ship` only, what the task's failing tests mean for its round: the failed-check gaps for tests that are not its
+    /// own are dropped (they went on the project's test debt list), and a red `run_checks` run on its own tests is a gap. Absent
+    /// is a round with every failed check counting, as in `light` and `full`.
+    pub test_debt: Option<&'a crate::test_debt::divert::Plan>,
 }
 
 pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
@@ -578,6 +582,23 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     gaps.extend(input.fix.and_then(super::fact_gaps::no_red_before_fix));
     let gaps = match input.mode {
         Some(mode) => mode.fact_gap_filter.keep(gaps),
+        None => gaps,
+    };
+    // PT-5: a failed check that failed only on tests that are not this task's own no longer sends it back (they are on the test
+    // debt list); a red `run_checks` run on its own tests does. Only in `at-ship`: the plan is absent everywhere else.
+    let gaps = match input.test_debt {
+        Some(plan) => {
+            let mut kept: Vec<String> = gaps
+                .into_iter()
+                .filter(|gap| !plan.clear_gaps.contains(gap))
+                .collect();
+            for added in &plan.add_gaps {
+                if !kept.contains(added) {
+                    kept.push(added.clone());
+                }
+            }
+            kept
+        }
         None => gaps,
     };
     // WP-249: the report's claims against the diff, in code, before any model.
@@ -1515,12 +1536,8 @@ fn checks_gate(
 /// SC-4: whether this round runs the brief's own check lines at all: there is a brief to read, and the project's testing
 /// mode tests each task (`light`, `full`, or no mode). `at-ship` and `off` don't, whatever the brief carries.
 fn brief_lines_wanted(input: &RoundInput) -> bool {
-    use crate::delivery::settings::TestingMode;
-    input.brief_round.is_some()
-        && !matches!(
-            input.mode.map(|chosen| chosen.mode),
-            Some(TestingMode::Off | TestingMode::AtShip)
-        )
+    // PT-5: and a sensitive change in any mode that tests (`ModePlan::tests_each_task`).
+    input.brief_round.is_some() && input.mode.is_none_or(|chosen| chosen.tests_each_task())
 }
 
 /// SC-4: the brief's own check lines, run after the project's checks and added to the checks gate: their commands are on
@@ -2680,6 +2697,119 @@ fn fix_evidence(
     Some(evidence)
 }
 
+/// PT-5: the project's data folder and its main checkout's name for the test debt list, from a task's own copy. `None` when either
+/// can't be found: the round is then as it was before the list existed.
+fn debt_project(app: &AppHandle, checkout: &Path) -> Option<(std::path::PathBuf, String)> {
+    let data = crate::project_file::data_dir(app).ok()?;
+    let main = crate::project_file::main_checkout(checkout).ok()?;
+    Some((data, crate::fs::path_to_js(&main)))
+}
+
+/// PT-5: in `at-ship`, reads the failing tests the task's runs show, puts the ones that are not its own on the project's test debt
+/// list, takes off it what the task's runs show green, and returns the plan that drops or adds the failed-check gaps. A list that
+/// can't be read or written returns `None`: the round is then as it was, and the task fails for what it fails for today.
+fn at_ship_debt(
+    app: &AppHandle,
+    row: &delegations::Delegation,
+    checkout: &Path,
+    changed: &[String],
+    raw_facts: Option<&serde_json::Value>,
+) -> Option<crate::test_debt::gate::Outcome> {
+    let (data, project) = debt_project(app, checkout)?;
+    let (runs, _) = raw_facts
+        .map(super::fact_gaps::runs_from_value)
+        .unwrap_or_default();
+    let outcome = crate::test_debt::gate::at_ship(&crate::test_debt::gate::Input {
+        data_dir: &data,
+        project: &project,
+        delegation_id: &row.id,
+        task_title: row.title.as_deref().unwrap_or(""),
+        checkout,
+        changed,
+        runs: &runs,
+        now: now_millis().max(0) as u64,
+    })
+    .ok()?;
+    if outcome.listed > 0 || outcome.cleared > 0 {
+        let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
+    }
+    Some(outcome)
+}
+
+/// PT-5: in `light` and `full`, the project's quarantine as it reaches a task: a test already quarantined
+/// no longer fails its round, and a `Quarantine: <test> | <why>` line in its report is decided and, if accepted, kept for 14 days. A
+/// refused request comes back as a gap. `changed` is `None` when what the task changed could not be read. A list that can't be read or
+/// written leaves the round as it was, and a worker that asked for a quarantine is told nothing was done (`gate::unapplied`).
+fn quarantine_read(
+    app: &AppHandle,
+    row: &delegations::Delegation,
+    checkout: &Path,
+    changed: Option<&[String]>,
+    raw_facts: Option<&serde_json::Value>,
+    report: &str,
+    protected_extra: &[String],
+) -> Option<crate::test_debt::gate::Outcome> {
+    use crate::test_debt::gate;
+    let Some((data, project)) = debt_project(app, checkout) else {
+        return gate::unapplied(
+            report,
+            "the project's test notes are not available here, so nothing was quarantined.",
+        );
+    };
+    let (runs, _) = raw_facts
+        .map(super::fact_gaps::runs_from_value)
+        .unwrap_or_default();
+    let known = changed.is_some();
+    let outcome = match gate::quarantine(
+        &gate::Input {
+            data_dir: &data,
+            project: &project,
+            delegation_id: &row.id,
+            task_title: row.title.as_deref().unwrap_or(""),
+            checkout,
+            changed: changed.unwrap_or(&[]),
+            runs: &runs,
+            now: now_millis().max(0) as u64,
+        },
+        report,
+        protected_extra,
+        known,
+    ) {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            return gate::unapplied(
+                report,
+                "the project's test notes could not be read, so nothing was quarantined.",
+            )
+        }
+    };
+    if outcome.quarantined > 0 {
+        let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
+    }
+    Some(outcome)
+}
+
+/// PT-5: the test fixer's report, when this task is the fixer: its decisions are applied to the list and its slot is freed.
+fn fixer_report_read(
+    app: &AppHandle,
+    row: &delegations::Delegation,
+    checkout: &Path,
+    report: &str,
+) {
+    let Some((data, project)) = debt_project(app, checkout) else {
+        return;
+    };
+    if let Ok(Some(_)) = crate::test_debt::gate::fixer_report(
+        &data,
+        &project,
+        &row.child_session,
+        report,
+        now_millis().max(0) as u64,
+    ) {
+        let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
+    }
+}
+
 /// Runs a finished worker's gates and verdict check. `None`: its brief has no gates and the turn's facts show no
 /// gap (the routes check alone runs as before, through `run_worker_gate`).
 #[tauri::command]
@@ -2745,24 +2875,37 @@ pub async fn firstmate_run_gates(
         // changed, so the gates run and say they couldn't rather than skip.
         // SC-5: and whether it touches a protected or security path (a diff that couldn't be read is risky: the stricter check
         // runs and says it couldn't rather than skip).
-        let (changed, code_changed, risky) = {
+        // PT-5: and whether it touches a sensitive path (keys, permissions, the sandbox, billing, migrations, CI, installers), which is
+        // always checked in full. An unreadable diff is treated as sensitive, as it is as risky: a change that can't be judged is
+        // checked harder, not skipped.
+        // `changed_known` is false when the list of changed files is not a reading (no checkout, or git would not say): then nothing can
+        // be told to be the task's own, so the quarantine path leaves the round as it was.
+        let (changed, code_changed, risky, sensitive, changed_known) = {
             let repo = Repo::open(&checkout);
             if repo.why_not.is_some() {
-                (Vec::new(), false, false)
+                (Vec::new(), false, false, false, false)
             } else {
                 match repo.changed() {
                     Ok(files) => {
                         let code = testing_mode::code_changed(&files);
                         let risky = testing_mode::touches_risky_path(&files, &protected_extra);
-                        (files, code, risky)
+                        // "No testing" tests nothing whatever the diff touches: no need to read the project's list for it.
+                        let sensitive = mode != crate::delivery::settings::TestingMode::Off
+                            && super::sensitive::touches_sensitive_path(
+                                &files,
+                                &checkout,
+                                &protected_extra,
+                            );
+                        (files, code, risky, sensitive, true)
                     }
-                    Err(_) => (Vec::new(), true, true),
+                    Err(_) => (Vec::new(), true, true, true, false),
                 }
             }
         };
-        // PT-1: only in `full`, for a code diff, does it matter whether the project already has a proof tool that fits it.
+        // PT-1: only in `full` (PT-5: and for a sensitive change), for a code diff, does it matter whether the project already has a
+        // proof tool that fits it.
         // PT-2: a tool the person switched off for the project doesn't count, so a project whose tools are all off gets no gate.
-        let proof = testing_mode::proof_gate_wanted(mode, code_changed, || {
+        let proof = testing_mode::proof_gate_wanted_for(mode, sensitive, code_changed, || {
             crate::proof_tools::detect_folder_in_use(&app, &checkout)
         });
         let moded = testing_mode::gates_for_with(
@@ -2771,6 +2914,7 @@ pub async fn firstmate_run_gates(
             &changed,
             code_changed,
             risky,
+            sensitive,
             proof,
             when,
         );
@@ -2780,6 +2924,11 @@ pub async fn firstmate_run_gates(
         if moded.as_today {
             match planless_facts(facts.as_ref(), Some(checkout.as_path())) {
                 PlanlessFacts::Clear => {
+                    // PT-5: a test fixer whose report only decides ("code is wrong", "flaky") changes nothing, so it is a task that
+                    // settles as it always did; its decisions are still read.
+                    if crate::test_debt::reads_fixer_report(moded.mode) {
+                        fixer_report_read(&app, &row, &checkout, &input.report);
+                    }
                     if row.gate_verdict.as_deref() == Some(GateVerdict::FAILED)
                         && super::status::sent_back_on(&row)
                     {
@@ -2845,6 +2994,25 @@ pub async fn firstmate_run_gates(
         };
         // SC-5: what the task's earlier rounds found, for the worker's `Dismiss <n>:` lines and the checker's prompt.
         let history = rounds::Ledger::carried(&prior).history(&prior);
+        // PT-5: in `at-ship` only, a failing test that is not this task's own goes on the project's test debt list instead of
+        // sending the task back. A sensitive change in `at-ship` is checked in full but keeps the list: its worker was told so.
+        // PT-5: `light` and `full` test each task, so they read the project's quarantine instead: a test already quarantined no
+        // longer fails the task, and a `Quarantine:` line in its report is decided (refused for a critical test).
+        let debt_plan = if crate::test_debt::applies(moded.mode, moded.as_today) {
+            at_ship_debt(&app, &row, &checkout, &changed, input.facts.as_ref())
+        } else if crate::test_debt::reads_quarantine(&moded) {
+            quarantine_read(
+                &app,
+                &row,
+                &checkout,
+                changed_known.then_some(changed.as_slice()),
+                input.facts.as_ref(),
+                &input.report,
+                &protected_extra,
+            )
+        } else {
+            None
+        };
         let mut record = if !moded.as_today {
             run_round(
                 &RoundInput {
@@ -2862,6 +3030,7 @@ pub async fn firstmate_run_gates(
                     brief_round: Some(&brief_round),
                     fix: fix_evidence.as_ref(),
                     history: Some(&history),
+                    test_debt: debt_plan.as_ref().map(|outcome| &outcome.plan),
                 },
                 &runners,
             )
@@ -2878,6 +3047,12 @@ pub async fn firstmate_run_gates(
             };
             record
         };
+        // PT-5: a passed round of the test fixer's task: its `Decision <n>` lines are applied to the list.
+        if crate::test_debt::applies(moded.mode, moded.as_today)
+            && record.verdict == Verdict::Passed
+        {
+            fixer_report_read(&app, &row, &checkout, &input.report);
+        }
         // SC-5: the task's ledger of rounds, and what happens after a failed one: the numbered findings go back, or a stronger
         // model rethinks the brief (this is where its call runs, with no lock held), or the person is asked. The rounds are
         // read again here, so a round another window recorded while the checker ran is counted once, not twice.

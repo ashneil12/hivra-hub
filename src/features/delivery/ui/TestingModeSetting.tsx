@@ -10,6 +10,7 @@ import { homeInView } from "../../hub/model/homeScope";
 import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import { useHubSelection } from "../../hub/model/hubNav";
 import { looksLikeProject, type RecentProject } from "../../projects/model/recents";
+import { SettingRow } from "../../settings/ui/SettingRow";
 import {
   DEFAULT_TESTING_MODE,
   TESTING_MODES,
@@ -19,6 +20,11 @@ import {
   type TestingMode,
   type TestingModeRead,
 } from "../model/testingMode";
+import {
+  SENSITIVE_PATH_GROUPS,
+  SENSITIVE_PATHS_ADD_MORE,
+  SENSITIVE_PATHS_LINE,
+} from "../model/sensitivePaths";
 
 /** The projects a person can pick from Home: the open one first, then the recent ones, each once. */
 export function projectChoices(
@@ -39,6 +45,26 @@ export function projectChoices(
 
 function lineOf(error: unknown): string {
   return error instanceof Error && error.message.trim() ? error.message : "That didn't go through. Try again.";
+}
+
+/** The More text: each built-in group with its patterns in monospace, then where to add more. */
+function ProtectedPathsDetails() {
+  return (
+    <div className="flex flex-col gap-1 break-words">
+      {SENSITIVE_PATH_GROUPS.map((group) => (
+        <p key={group.id}>
+          {group.label}:{" "}
+          {group.patterns.map((pattern, i) => (
+            <span key={pattern}>
+              {i > 0 ? ", " : null}
+              <code className="font-mono text-[11px]">{pattern}</code>
+            </span>
+          ))}
+        </p>
+      ))}
+      <p>{SENSITIVE_PATHS_ADD_MORE}</p>
+    </div>
+  );
 }
 
 export function TestingModeSetting({
@@ -184,6 +210,15 @@ export function TestingModeSetting({
               </label>
             );
           })}
+        </div>
+      ) : null}
+      {folder && read && read.mode !== "off" ? (
+        <div data-testing-mode-protected>
+          <SettingRow
+            label="Protected changes"
+            description={<span className="text-content/60">{SENSITIVE_PATHS_LINE}</span>}
+            details={<ProtectedPathsDetails />}
+          />
         </div>
       ) : null}
       {note ? (

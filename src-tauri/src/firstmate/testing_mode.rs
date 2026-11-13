@@ -13,6 +13,16 @@
 //! | `light`, docs only | `diff`, `committed`, and the brief's plan | yes | all | yes | done |
 //! | `full` | as `light`, plus the brief's own check lines (SC-4; SC-7 adds the real-app recipe) and, for a code diff, the proof tools the project already has (PT-1: `proof-tools`) | yes | all | yes | done |
 //!
+//! PT-5: in `at-ship` the "a check failed" gap is for the task's own tests only. A failing test the task did not write and does not
+//! cover goes on the project's test debt list (`crate::test_debt`) and the task is not sent back for it; the list is sorted once, at
+//! the ship check. The weakened, deleted and skipped test findings stay in force in every mode that runs findings. `light` and `full`
+//! test each task, so a failed check there is always the task's to fix.
+//!
+//! PT-5: a change to a sensitive path (`firstmate::sensitive`: keys, permissions, the sandbox, billing, migrations, CI, installers, the
+//! project's protected paths and its `docs/hivra/sensitive-paths.json`) is always checked in full: in `at-ship`, `light` and `full` it
+//! gets the `light`/`full` gates, the brief's own lines, the proof tools and the running checker (`ModePlan::sensitive`), whatever the
+//! "When the checker runs" rule says. "No testing" stays no testing.
+//!
 //! SC-5: the verdict model is either the cheap one-turn read-only check or the running checker (a model from another
 //! family that re-runs the brief's check lines in a read-only copy: `Checker`). PT-4: which tasks get the running checker is
 //! the app's "When the checker runs" setting (`checker_when`). By default (it follows the mode) it reads a finished task's
@@ -97,6 +107,9 @@ pub struct ModePlan {
     pub checker: Checker,
     /// What a pass says, on the task's row: "Built, not tested yet", "Not tested".
     pub note: Option<&'static str>,
+    /// PT-5: the diff touches a sensitive path (`firstmate::sensitive`) in a mode that tests at all. The task is tested as a `full` one
+    /// is, whatever the mode: every check, the brief's own lines, the proof tools, and the running checker. Never true in `off`.
+    pub sensitive: bool,
 }
 
 impl ModePlan {
@@ -108,10 +121,22 @@ impl ModePlan {
         }
     }
 
-    /// SC-7: whether a bug-fix brief must show a failing run of its test before the fix. Only the modes that test each
-    /// task ask it: `at-ship` and `off` assume the worker tested, and test at the ship check or not at all.
+    /// Whether this task is tested when it finishes (`light` and `full`, and any task of a mode that tests that touches a sensitive
+    /// path), rather than at the ship check or not at all. The brief's own check lines run only for these.
+    pub fn tests_each_task(&self) -> bool {
+        matches!(self.mode, TestingMode::Light | TestingMode::Full) || self.sensitive
+    }
+
+    /// Whether the proof tools are part of this task's checks: `full`, and a sensitive change in any mode that tests.
+    pub fn full_proof(&self) -> bool {
+        self.mode == TestingMode::Full || self.sensitive
+    }
+
+    /// SC-7: whether a bug-fix brief must show a failing run of its test before the fix. Only the tasks that are tested when they
+    /// finish ask it: `at-ship` and `off` assume the worker tested, and test at the ship check or not at all (a sensitive change is
+    /// tested like a `full` one).
     pub fn needs_red_before_fix(&self) -> bool {
-        matches!(self.mode, TestingMode::Light | TestingMode::Full)
+        self.tests_each_task()
     }
 }
 
@@ -152,12 +177,15 @@ pub fn touches_risky_path(changed: &[String], protected_extra: &[String]) -> boo
 ///
 /// PT-4: `when` is the app's "When the checker runs" rule (`checker_when`), read with the mode. It decides which tasks get the
 /// running checker (`checker_when::task_checker`); `FollowMode`, the default, is what this did before it existed.
+// PT-5: `sensitive` sits beside `risky`, as asked, which makes eight; folding them into a struct would touch every caller for no gain.
+#[allow(clippy::too_many_arguments)]
 pub fn gates_for_with(
     mode: TestingMode,
     plan: Option<&GatePlan>,
     changed: &[String],
     code_changed: bool,
     risky: bool,
+    sensitive: bool,
     proof_tools: bool,
     when: WhenRule,
 ) -> ModePlan {
@@ -173,13 +201,21 @@ pub fn gates_for_with(
             run_verdict: false,
             checker: Checker::None,
             note: None,
+            sensitive: false,
         };
     }
+    // PT-5: a sensitive change (keys, permissions, the sandbox, billing, migrations, CI, installers) is always checked in full, in
+    // every mode that tests at all, even `at-ship`. "No testing" is the person's own choice not to test, and it stands.
+    let sensitive = sensitive && mode != TestingMode::Off;
     // The brief's plan joins the floor in `light` and `full`. In `at-ship` and `off` the person's mode wins and the
     // plan is ignored: the person chose not to test each task, and a brief must not turn that back on.
     // PT-4: which model reads the claims comes from the rule and the mode in one place (`checker_when::task_checker`); "No
-    // testing" is never a checker.
-    let checker = checker_when::task_checker(when, mode, code_changed, risky);
+    // testing" is never a checker. PT-5: a sensitive change always gets the running checker, whatever the rule says.
+    let checker = if sensitive {
+        Checker::Running
+    } else {
+        checker_when::task_checker(when, mode, code_changed, risky)
+    };
     let (mut gates, checks, run_findings, fact_gap_filter, note) = match mode {
         TestingMode::Off => (
             vec![GateKind::Diff, GateKind::Committed],
@@ -190,7 +226,7 @@ pub fn gates_for_with(
         ),
         // SC-5: a change the running checker reads is tested as far as it could be, so a pass no longer says "Built, not
         // tested yet". Any other task in this mode only has to build.
-        TestingMode::AtShip => (
+        TestingMode::AtShip if !sensitive => (
             vec![GateKind::Diff, GateKind::Committed],
             Vec::new(),
             true,
@@ -204,15 +240,19 @@ pub fn gates_for_with(
         // SC-4: the brief's own check lines run inside the `checks` gate this adds for a code diff (`gates::with_brief_lines`),
         // in `light` and in `full`. SC-5: the running checker reads a risky diff in `light`, and any code diff in `full`;
         // the cheap read-only check stays for the rest. SC-7 adds the real-app recipe to `full`.
-        TestingMode::Light | TestingMode::Full => {
+        // PT-5: a sensitive change in `at-ship` is tested like these, and gets the proof tools like `full` does.
+        TestingMode::AtShip | TestingMode::Light | TestingMode::Full => {
             let mut gates = vec![GateKind::Diff, GateKind::Committed];
-            if code_changed {
+            // PT-5: a sensitive change gets the project's checks and the ratchet even when it is only documents (a markdown file in a
+            // billing folder, the project's own sensitive list): "always the full checks" does not wait for a code diff. The proof tools
+            // below do: they have nothing to read in a document.
+            if code_changed || sensitive {
                 gates.extend([GateKind::Checks, GateKind::Ratchet]);
             }
             let named = plan.map(|plan| plan.checks.clone()).unwrap_or_default();
             gates.extend(plan.map(|plan| plan.gates.clone()).unwrap_or_default());
-            // PT-1: the tools the project already has, in `full` only, for a code diff.
-            if mode == TestingMode::Full && code_changed && proof_tools {
+            // PT-1: the tools the project already has, in `full` (and for a sensitive change) only, for a code diff.
+            if (mode == TestingMode::Full || sensitive) && code_changed && proof_tools {
                 gates.push(GateKind::ProofTools);
             }
             (gates, named, true, FactGapFilter::All, None)
@@ -232,23 +272,37 @@ pub fn gates_for_with(
         run_verdict: checker != Checker::None,
         checker,
         note,
+        sensitive,
     }
 }
 
-/// Whether the `proof-tools` gate is wanted for this task (`gates_for_with`'s `proof_tools`): `full`, a code diff, and a proof tool the
-/// project has that is not switched off. `detect` is asked only then, so a task in any other mode never probes a program. PT-2:
-/// it must be a detection that already leaves out the tools the person switched off (`proof_tools::detect_folder_in_use`), so a
-/// project whose every tool is off gets no gate at all, the same as one that has none.
+/// Whether the `proof-tools` gate is wanted for this task (`gates_for_with`'s `proof_tools`): `full` (or, PT-5, a sensitive change in
+/// a mode that tests), a code diff, and a proof tool the project has that is not switched off. `detect` is asked only then, so a task
+/// in any other mode never probes a program. PT-2: it must be a detection that already leaves out the tools the person switched off
+/// (`proof_tools::detect_folder_in_use`), so a project whose every tool is off gets no gate at all, the same as one that has none.
+pub fn proof_gate_wanted_for(
+    mode: TestingMode,
+    sensitive: bool,
+    code_changed: bool,
+    detect: impl FnOnce() -> crate::proof_tools::detect::Detection,
+) -> bool {
+    (mode == TestingMode::Full || (sensitive && mode != TestingMode::Off))
+        && code_changed
+        && detect().has_installed()
+}
+
+/// `proof_gate_wanted_for` for a change that is not sensitive. What the tests that pre-date PT-5 call.
+#[cfg(test)]
 pub fn proof_gate_wanted(
     mode: TestingMode,
     code_changed: bool,
     detect: impl FnOnce() -> crate::proof_tools::detect::Detection,
 ) -> bool {
-    mode == TestingMode::Full && code_changed && detect().has_installed()
+    proof_gate_wanted_for(mode, false, code_changed, detect)
 }
 
 /// The gates, findings, fact gaps and verdict a finished task gets, for a project with no proof tool and the default checker
-/// rule (`gates_for_with`). What the tests that pre-date proof tools and the rule call.
+/// rule (`gates_for_with`), for a change that is not sensitive. What the tests that pre-date proof tools and the rule call.
 #[cfg(test)]
 pub fn gates_for(
     mode: TestingMode,
@@ -263,6 +317,7 @@ pub fn gates_for(
         changed,
         code_changed,
         risky,
+        false,
         false,
         WhenRule::FollowMode,
     )
@@ -741,6 +796,7 @@ mod tests {
             &changed,
             code_changed(&changed),
             false,
+            false,
             proof,
             WhenRule::FollowMode,
         )
@@ -756,6 +812,7 @@ mod tests {
             &changed,
             code_changed(&changed),
             risky,
+            false,
             false,
             when,
         )
@@ -1068,6 +1125,255 @@ mod tests {
             serde_json::to_string(&GateKind::ProofTools).unwrap(),
             "\"proof-tools\""
         );
+    }
+
+    // ---- PT-5: a sensitive change is always checked in full -----------------------------------------------------------
+
+    fn sens_pick(
+        mode: TestingMode,
+        stored: Option<&GatePlan>,
+        changed: &[&str],
+        proof: bool,
+        when: WhenRule,
+    ) -> ModePlan {
+        let changed = paths(changed);
+        gates_for_with(
+            mode,
+            stored,
+            &changed,
+            code_changed(&changed),
+            false,
+            true,
+            proof,
+            when,
+        )
+    }
+
+    #[test]
+    fn a_sensitive_change_gets_the_full_checks_and_the_running_checker_in_every_mode_that_tests() {
+        let stored = plan(&[Routes], &["unit"]);
+        for mode in [TestingMode::AtShip, TestingMode::Light, TestingMode::Full] {
+            let chosen = sens_pick(
+                mode,
+                Some(&stored),
+                &["src/features/auth/login.ts"],
+                true,
+                WhenRule::FollowMode,
+            );
+            assert!(chosen.sensitive, "{mode:?}");
+            assert_eq!(
+                chosen.gates,
+                vec![
+                    Diff,
+                    Checks,
+                    Committed,
+                    Ratchet,
+                    Routes,
+                    GateKind::ProofTools
+                ],
+                "{mode:?}: the project's checks, the ratchet, the brief's plan and the proof tools"
+            );
+            assert_eq!(chosen.checks, vec!["unit".to_string()], "{mode:?}");
+            assert!(chosen.run_findings, "{mode:?}");
+            assert_eq!(chosen.fact_gap_filter, FactGapFilter::All, "{mode:?}");
+            assert_eq!(chosen.checker, Checker::Running, "{mode:?}");
+            assert!(chosen.run_verdict, "{mode:?}");
+            assert_eq!(
+                chosen.note, None,
+                "{mode:?}: it was tested, so no 'not tested yet'"
+            );
+            assert!(chosen.tests_each_task(), "{mode:?}");
+            assert!(chosen.full_proof(), "{mode:?}");
+            assert!(chosen.needs_red_before_fix(), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn test_at_ship_without_a_sensitive_change_stays_exactly_what_it_was() {
+        let plain = gates_for_with(
+            TestingMode::AtShip,
+            None,
+            &paths(&["src/app.ts"]),
+            true,
+            false,
+            false,
+            true,
+            WhenRule::FollowMode,
+        );
+        assert!(!plain.sensitive);
+        assert_eq!(plain.gates, vec![Diff, Committed]);
+        assert_eq!(plain.checker, Checker::None);
+        assert_eq!(plain.note, Some(NOTE_AT_SHIP));
+        assert_eq!(plain.fact_gap_filter, FactGapFilter::FailedCheckAndOpenTodo);
+        assert!(!plain.tests_each_task());
+        assert!(!plain.full_proof());
+        assert!(!plain.needs_red_before_fix());
+        // The same change, sensitive, is a different plan: that is the whole feature.
+        let sensitive = sens_pick(
+            TestingMode::AtShip,
+            None,
+            &["src/app.ts"],
+            true,
+            WhenRule::FollowMode,
+        );
+        assert_ne!(sensitive, plain);
+    }
+
+    #[test]
+    fn no_testing_stays_no_testing_whatever_the_diff_touches() {
+        for when in WhenRule::ALL {
+            let chosen = sens_pick(TestingMode::Off, None, &["src/auth/login.ts"], true, when);
+            assert!(!chosen.sensitive, "{when:?}");
+            assert_eq!(chosen.gates, vec![Diff, Committed], "{when:?}");
+            assert_eq!(chosen.checker, Checker::None, "{when:?}");
+            assert!(!chosen.run_verdict, "{when:?}");
+            assert!(!chosen.run_findings, "{when:?}");
+            assert_eq!(chosen.note, Some(NOTE_OFF), "{when:?}");
+            assert!(
+                !chosen.tests_each_task() && !chosen.full_proof(),
+                "{when:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_checker_rule_cannot_switch_off_the_checker_for_a_sensitive_change() {
+        for mode in [TestingMode::AtShip, TestingMode::Light, TestingMode::Full] {
+            for when in WhenRule::ALL {
+                let chosen = sens_pick(mode, None, &["src/billing/plan.ts"], false, when);
+                assert_eq!(chosen.checker, Checker::Running, "{mode:?} {when:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_sensitive_change_that_is_only_documents_still_gets_the_project_checks_and_the_checker_but_no_proof_tools(
+    ) {
+        for mode in [TestingMode::AtShip, TestingMode::Light, TestingMode::Full] {
+            for path in ["docs/billing/pricing.md", "docs/hivra/sensitive-paths.json"] {
+                let chosen = sens_pick(mode, None, &[path], true, WhenRule::FollowMode);
+                assert!(
+                    !code_changed(&paths(&[path])),
+                    "{path} is a document to the gates"
+                );
+                assert_eq!(
+                    chosen.gates,
+                    vec![Diff, Checks, Committed, Ratchet],
+                    "{mode:?} {path}: the proof tools have nothing to read in a document"
+                );
+                assert_eq!(chosen.checker, Checker::Running, "{mode:?} {path}");
+                assert!(chosen.sensitive, "{mode:?} {path}");
+            }
+        }
+        // An ordinary document is still just a document.
+        let plain = pick(TestingMode::Light, None, &["docs/guide.md"]);
+        assert_eq!(plain.gates, vec![Diff, Committed]);
+    }
+
+    #[test]
+    fn a_sensitive_change_with_no_installed_proof_tool_gets_no_proof_gate() {
+        for mode in [TestingMode::AtShip, TestingMode::Light, TestingMode::Full] {
+            let chosen = sens_pick(
+                mode,
+                None,
+                &["src/auth/login.ts"],
+                false,
+                WhenRule::FollowMode,
+            );
+            assert!(!chosen.gates.contains(&GateKind::ProofTools), "{mode:?}");
+            assert_eq!(
+                chosen.gates,
+                vec![Diff, Checks, Committed, Ratchet],
+                "{mode:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_diff_that_could_not_be_read_and_is_treated_as_sensitive_is_checked_in_full_in_test_at_ship(
+    ) {
+        // The caller passes code_changed = true, risky = true, sensitive = true and no paths.
+        let chosen = gates_for_with(
+            TestingMode::AtShip,
+            None,
+            &[],
+            true,
+            true,
+            true,
+            false,
+            WhenRule::FollowMode,
+        );
+        assert!(!chosen.as_today);
+        assert_eq!(chosen.gates, vec![Diff, Checks, Committed, Ratchet]);
+        assert_eq!(chosen.checker, Checker::Running);
+    }
+
+    #[test]
+    fn a_task_that_changed_nothing_is_left_alone_even_if_called_sensitive() {
+        let chosen = gates_for_with(
+            TestingMode::AtShip,
+            None,
+            &[],
+            false,
+            false,
+            true,
+            true,
+            WhenRule::FollowMode,
+        );
+        assert!(chosen.as_today);
+        assert!(!chosen.sensitive);
+        assert!(chosen.gates.is_empty());
+    }
+
+    #[test]
+    fn the_proof_gate_is_wanted_for_a_sensitive_change_in_a_mode_that_tests_and_never_in_no_testing(
+    ) {
+        use crate::proof_tools::{run, switch::test_env::OffEnv};
+        let project = Project::new();
+        let wanted = |mode: TestingMode, sensitive: bool, code: bool| {
+            let env = OffEnv::new(&[], project.0.join("scratch"));
+            proof_gate_wanted_for(mode, sensitive, code, || {
+                run::detect_in(&project.0.join("proj"), &env)
+            })
+        };
+        // Full always; the others only when the change is sensitive.
+        assert!(wanted(TestingMode::Full, false, true));
+        assert!(wanted(TestingMode::Full, true, true));
+        for mode in [TestingMode::AtShip, TestingMode::Light] {
+            assert!(!wanted(mode, false, true), "{mode:?}");
+            assert!(wanted(mode, true, true), "{mode:?}");
+            assert!(!wanted(mode, true, false), "{mode:?}: docs only");
+        }
+        assert!(!wanted(TestingMode::Off, true, true));
+        // A program is probed only when the answer can matter.
+        let asked = std::cell::Cell::new(0);
+        let ask = || {
+            asked.set(asked.get() + 1);
+            crate::proof_tools::detect::Detection {
+                stacks: Vec::new(),
+                fitting: Vec::new(),
+                off: Vec::new(),
+            }
+        };
+        assert!(!proof_gate_wanted_for(TestingMode::Off, true, true, ask));
+        assert!(!proof_gate_wanted_for(
+            TestingMode::AtShip,
+            false,
+            true,
+            ask
+        ));
+        assert!(!proof_gate_wanted_for(TestingMode::Light, true, false, ask));
+        assert_eq!(asked.get(), 0);
+    }
+
+    #[test]
+    fn the_briefs_own_lines_run_for_a_sensitive_change_in_every_mode_that_tests() {
+        for mode in TestingMode::ALL {
+            let chosen = sens_pick(mode, None, &["src/auth/x.ts"], false, WhenRule::FollowMode);
+            let want = mode != TestingMode::Off;
+            assert_eq!(chosen.tests_each_task(), want, "{mode:?}");
+            assert_eq!(chosen.sensitive, want, "{mode:?}");
+        }
     }
 
     #[test]

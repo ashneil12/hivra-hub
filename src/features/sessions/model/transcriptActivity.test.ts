@@ -699,6 +699,19 @@ describe("groupTurns", () => {
     expect(groupTurnItems([card], { settled: true })).toEqual([{ type: "block", block: card }]);
   });
 
+  it("gives a line for a message sent beside the one chat a turn of its own, out of the work trail", () => {
+    const besideMessage = { chatId: "exo-lead", to: "EXO lead", text: "Example: checkpoint first", at: 2_000 };
+    const line: Block = { id: "beside-2000", role: "system", text: 'You messaged EXO lead: "Example: checkpoint first"', besideMessage };
+    const turns = groupTurns([
+      { id: "user", role: "user", text: "Review" },
+      { id: "answer", role: "assistant", text: "Reviewed." },
+      line,
+      { id: "next-user", role: "user", text: "And the music?" },
+    ]);
+    expect(turns.map((turn) => turn.map((block) => block.id))).toEqual([["user", "answer"], ["beside-2000"], ["next-user"]]);
+    expect(groupTurnItems([line], { settled: true })).toEqual([{ type: "block", block: line }]);
+  });
+
   it("folds an orchestration turn the app wrote into the turn above", () => {
     const turns = groupTurns([
       { id: "u1", role: "user", text: "Review the changes" },

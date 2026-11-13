@@ -132,6 +132,23 @@ describe("the ship check card", () => {
     expect(container.querySelector("[data-ship-check-list='tested']")?.textContent).toContain("Nothing ran.");
   });
 
+  // PT-5: a named test finding (a real bug a test caught, a flaky test that is quarantined) passes the check and stays in view.
+  it("lists the record's named findings under their own heading, and no heading when there are none", async () => {
+    const findings = [
+      { kind: "code-wrong" as const, test: "adds up", file: "a.test.ts", line: "adds up fails because the code is wrong: tax is ignored" },
+      { kind: "quarantined" as const, test: "flaky one", file: "b.test.ts", line: "flaky one is flaky and quarantined until 2026-11-27: passed on a re-run" },
+    ];
+    await show({ project: folder(), backend: api({ latest: vi.fn(async () => record({ findings })) }) });
+    expect(lines("findings")).toEqual(findings.map((finding) => finding.line));
+    expect(container.textContent).toContain("Findings");
+    expect(container.querySelector("[data-ship-check-outcome]")?.textContent).toBe("Passed");
+    act(() => root.unmount());
+    root = createRoot(container);
+    await show({ project: folder(), backend: api({ latest: vi.fn(async () => record()) }) });
+    expect(container.querySelector("[data-ship-check-list='findings']")).toBeNull();
+    expect(container.textContent).not.toContain("Findings");
+  });
+
   it("shows the record's note when it has one", async () => {
     await show({
       project: folder(),

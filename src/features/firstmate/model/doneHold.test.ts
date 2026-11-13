@@ -8,6 +8,7 @@ import {
   HOLD_PREFIX,
   HOLD_RULES,
   OPEN_WORK_NOTE,
+  SORTING_NOTE,
   doneClaim,
   doneHold,
   holdDeps,
@@ -772,5 +773,71 @@ describe("holdDeps: the app's own answers", () => {
     expect(await api.work?.("chat-1")).toEqual({ tasks: [{ id: "t1", title: "Fix the save bug", status: "working" }], unanswered: [] });
     expect(api.waiting?.("chat-1")).toEqual([{ id: "w1", title: "Add the export" }]);
     expect(api.waiting?.("chat-3")).toEqual([]);
+  });
+});
+
+// PT-5: failing tests still being sorted at ship mean the version is not ready, whatever a ship check record says.
+describe("the hold and tests still being sorted", () => {
+  it("holds a ready-to-ship claim while failing tests are waiting to be sorted, even over a pass", async () => {
+    const held = await doneHold(
+      claiming(),
+      deps({ passed: vi.fn(async () => true), sorting: vi.fn(async () => ({ toSort: 3, sorting: true })) }),
+      new Set(),
+    );
+    expect(held?.message.text).toContain("Not ready to ship yet: 3 failing tests are still being sorted by the test fixer.");
+    expect(held?.message.text).toContain("run ship_check again");
+    expect(held?.note.text).toBe(SORTING_NOTE);
+    expect(SORTING_NOTE).toBe("Held: tests still being sorted.");
+  });
+
+  it("says one test in the singular, and when no fixer is working says to run the ship check, which starts one, not to wait", async () => {
+    const held = await doneHold(claiming(), deps({ sorting: vi.fn(async () => ({ toSort: 1, sorting: false })) }), new Set());
+    expect(held?.message.text).toContain("Not ready to ship yet: 1 failing test is waiting to be sorted and no test fixer is working on them.");
+    expect(held?.message.text).toContain("Run ship_check: it starts one, then wait for its report.");
+    expect(held?.message.text).not.toContain("Wait for its report, then run ship_check again");
+  });
+
+  it("holds once for the same list and again when the count changes", async () => {
+    const memo = new Set<string>();
+    const count = vi.fn(async () => ({ toSort: 2, sorting: true }));
+    const api = deps({ sorting: count });
+    expect(await doneHold(claiming(), api, memo)).toBeDefined();
+    expect(await doneHold(claiming(), api, memo)).toBeUndefined();
+    count.mockResolvedValue({ toSort: 1, sorting: true });
+    expect(await doneHold(claiming(), api, memo)).toBeDefined();
+  });
+
+  it("holds nothing for an empty list, an answer it can't read, or an app that can't say", async () => {
+    for (const sorting of [
+      vi.fn(async () => ({ toSort: 0, sorting: false })),
+      vi.fn(async () => undefined),
+      vi.fn(async () => ({ toSort: -2, sorting: true })),
+      vi.fn(async () => ({ toSort: Number.NaN, sorting: true })),
+      vi.fn(async () => {
+        throw new Error("the app is busy");
+      }),
+    ]) {
+      const held = await doneHold(claiming(), deps({ passed: vi.fn(async () => true), sorting: sorting as never }), new Set());
+      expect(held).toBeUndefined();
+    }
+    // Without the dependency at all, the hold is exactly what it was.
+    expect(await doneHold(claiming(), deps({ passed: vi.fn(async () => true) }), new Set())).toBeUndefined();
+  });
+
+  it("is only for a project that tests at ship", async () => {
+    const sorting = vi.fn(async () => ({ toSort: 3, sorting: true }));
+    expect(await doneHold(claiming(), deps({ mode: vi.fn(async () => "light" as const), sorting }), new Set())).toBeUndefined();
+    expect(sorting).not.toHaveBeenCalled();
+  });
+
+  it("reads the app's own list through holdDeps, and a failed read is no answer", async () => {
+    const backend = { head: vi.fn(async () => HEAD), passed: vi.fn(async () => true), latest: vi.fn(async () => null) };
+    const read = vi.fn(async () => ({ count: 2, sorting: true }));
+    const api = holdDeps(backend as never, vi.fn(async () => ({ mode: "at-ship" as const })), vi.fn(async () => undefined), () => [], read);
+    expect(await api.sorting?.("/work/app")).toEqual({ toSort: 2, sorting: true });
+    expect(await doneHold(claiming(), api, new Set())).toBeDefined();
+    const nothing = holdDeps(backend as never, vi.fn(async () => ({ mode: "at-ship" as const })), vi.fn(async () => undefined), () => [], vi.fn(async () => null));
+    expect(await nothing.sorting?.("/work/app")).toBeUndefined();
+    expect(await doneHold(claiming(), nothing, new Set())).toBeUndefined();
   });
 });

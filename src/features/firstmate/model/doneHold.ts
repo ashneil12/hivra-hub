@@ -13,6 +13,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { loadTestingMode, type TestingMode } from "../../delivery/model/testingMode";
 import { endToEndDidNotPass, latestShipCheck, shortSha, tauriShipCheck, type ShipCheckBackend } from "../../hub/model/shipCheck";
+import { loadTestDebt } from "../../hub/model/testDebt"; // PT-5
 import { forUser } from "../../hub/model/userName";
 import { queuedWorkers } from "../../monos/model/workerPool";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
@@ -23,6 +24,8 @@ export const HOLD_PREFIX = "[MonoCode hold]";
 export const HOLD_NOTE = "Held: no ship check for this version yet.";
 /** SC-7: the grey line for a done that came while work was open. */
 export const OPEN_WORK_NOTE = "Held: tasks still open.";
+/** PT-5: the one grey line when failing tests are still being sorted. */
+export const SORTING_NOTE = "Held: tests still being sorted.";
 
 // ---- is this a ship claim? --------------------------------------------------------------------------------------------
 
@@ -215,6 +218,11 @@ export type HoldDeps = {
   work?(chatId: string): Promise<OpenWork | undefined>;
   /** SC-7: this first mate's workers waiting for a free seat. They have no delegation row until they start. */
   waiting?(chatId: string): { id: string; title: string }[];
+  /**
+   * PT-5: how many failing tests wait to be sorted at ship, and whether the test fixer is on them. Absent, or an answer that can't be
+   * read, is not a reason to hold: nothing is held on a guess.
+   */
+  sorting?(cwd: string): Promise<{ toSort: number; sorting: boolean } | undefined>;
 };
 
 export type HoldContext = { chat: Session; reply: Block; deps: HoldDeps };
@@ -357,6 +365,23 @@ const shipCheckRule: HoldRule = {
     // An unknown version is not a verdict: nothing is held on a guess.
     const head = (await deps.head(chat.cwd))?.trim();
     if (!head) return undefined;
+    // PT-5: failing tests still waiting to be sorted (or being sorted by the test fixer) mean this version is not ready, even over a
+    // ship check record that says passed. The count is in the key, so the same list holds once and a changed one holds again.
+    const debt = await deps.sorting?.(chat.cwd).catch(() => undefined);
+    const toSort = debt && Number.isInteger(debt.toSort) && debt.toSort > 0 ? debt.toSort : 0;
+    if (toSort > 0) {
+      const tests = toSort === 1 ? "1 failing test is" : `${toSort} failing tests are`;
+      // While the test fixer works, wait for its report. When none is working (its start failed, or it ended without deciding
+      // them all) nothing will report: running the ship check is what starts one.
+      const next = debt?.sorting
+        ? `${tests} still being sorted by the test fixer. Wait for its report, then run ship_check again.`
+        : `${tests} waiting to be sorted and no test fixer is working on them. Run ship_check: it starts one, then wait for its report.`;
+      return {
+        key: `${head}:sorting:${toSort}`,
+        message: `Not ready to ship yet: ${next}`,
+        note: SORTING_NOTE,
+      };
+    }
     if (await deps.passed(chat.cwd, head)) return undefined;
     return {
       key: head,
@@ -454,6 +479,7 @@ export function holdDeps(
   loadMode: (cwd: string) => Promise<{ mode: TestingMode }> = loadTestingMode,
   openWork: (chatId: string) => Promise<unknown> = tauriOpenWork,
   queued: () => readonly { id: string; ownerSession: string; title: string }[] = queuedWorkers,
+  readDebt: (cwd: string) => Promise<{ count: number; sorting: boolean } | null> = loadTestDebt,
 ): HoldDeps {
   return {
     mode: async (cwd) => (await loadMode(cwd)).mode,
@@ -469,5 +495,10 @@ export function holdDeps(
     },
     work: async (chatId) => readOpenWork(await openWork(chatId)),
     waiting: (chatId) => queued().filter((job) => job.ownerSession === chatId).map((job) => ({ id: job.id, title: job.title })),
+    // PT-5: read from the app's own list; a read that fails is no answer, never a hold.
+    sorting: async (cwd) => {
+      const summary = await readDebt(cwd);
+      return summary ? { toSort: summary.count, sorting: summary.sorting } : undefined;
+    },
   };
 }

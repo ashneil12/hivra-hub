@@ -19,6 +19,17 @@ The engine is Rust (`src-tauri/src/delivery/`); this folder holds the webview's 
   says done, `firstmate::testing_mode::gates_for` picks the gates from the diff and the mode; a task that changed
   nothing and stored no plan is left as it was. A write goes on top of the `updatedAt` it read, so a stale window is
   refused.
+  - **Sensitive paths** (PT-5): a change to keys, permissions, the sandbox, billing, migrations, CI or installers always
+    gets the full checks and the running checker, in every mode but `off`, `at-ship` included
+    (`firstmate/sensitive.rs`, `ModePlan::sensitive`). The built-in patterns are `model/sensitivePaths.json`, read by
+    Rust (`include_str!`) and by the Settings line, so they cannot drift. A project adds to them with its protected
+    paths ("Also protect these paths") and an optional `docs/hivra/sensitive-paths.json` (a JSON list of globs, read
+    from the main checkout, never from a task's copy).
+  - **Red tests** (PT-5): in every mode but `off` a worker's brief says what to do when a test goes red
+    (`redTestRules` in `agent-app/model/agentAppTasks.ts`). In `light` and `full` a worker asks for a 14 day
+    quarantine with one report line, `Quarantine: <test> | <why>` (`test_debt/quarantine.rs`); the app refuses it for
+    a test the task's change covers and for a critical one (under a sensitive path, `@critical` in its title, or a
+    `// @critical`, `# @critical` or `#[doc = "critical"]` marker directly above it).
 - **One merge path** (`delivery::merge`): refuses red or pending checks, refuses while a decision on that work is
   open, asks the person unless the switch is on, and logs every merge with who allowed it (`delivery_merges`). The
   Inbox's merge button and the `pr_merge` tool both go through it.

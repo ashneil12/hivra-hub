@@ -24,6 +24,7 @@
 //! through a temp file and a rename, and read defensively: bad JSON, a head that isn't a commit id or a record for another
 //! project is no record. One check runs at a time per project: a second asks to wait instead of overwriting the first.
 
+pub mod debt; // PT-5: the "Test debt" step, its findings, and the fixer task the list calls for
 mod end_to_end; // PT-4: the "End-to-end" step: the project's own end-to-end check, for a project with a screen
 pub mod mcp;
 mod proof; // PT-1: the "Proof tools" step: the open-source tools the project already has, over the range
@@ -155,6 +156,9 @@ pub struct ShipCheckRecord {
     pub tested: Vec<String>,
     /// Plain lines of what did not, and why.
     pub not_tested: Vec<String>,
+    /// PT-5: named findings that do not block: a real bug a test caught, a quarantined flaky test, a quarantine that ran out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<debt::Finding>,
 }
 
 /// What one stage of the check returns: its steps, and the things it could not cover (plain lines).
@@ -231,6 +235,11 @@ pub trait Steps {
     /// `clean` says the checkout is what HEAD is. A stand-in that has none adds no step.
     fn end_to_end(&self, _main: &Path, _range: &Range, _changes: &[Change], _clean: bool) -> Stage {
         Stage::default()
+    }
+    /// PT-5: the "Test debt" step and its findings: what is still waiting to be sorted, and what was named. Last, so it reads the
+    /// list after the checks have put their failures on it. A stand-in that has none adds no step.
+    fn test_debt(&self, _main: &Path, _range: &Range) -> debt::DebtStage {
+        debt::DebtStage::default()
     }
 }
 
@@ -400,6 +409,13 @@ fn sane(mut record: ShipCheckRecord) -> Option<ShipCheckRecord> {
         for line in list.iter_mut() {
             *line = one_line(line, LINE_MAX);
         }
+    }
+    record.findings.truncate(LIST_MAX);
+    for finding in &mut record.findings {
+        finding.kind = one_line(&finding.kind, 40);
+        finding.test = one_line(&finding.test, LINE_MAX);
+        finding.file = one_line(&finding.file, LINE_MAX);
+        finding.line = one_line(&finding.line, LINE_MAX);
     }
     Some(record)
 }
@@ -1198,6 +1214,12 @@ pub fn run_in(dir: &Path, main: &Path, steps: &dyn Steps) -> Result<ShipCheckRec
         all.extend(review.steps);
         not_tested.extend(review.not_tested);
     }
+    // PT-5: whatever landed, a list of failing tests that is not sorted yet means the version is not ready: the step reads the list
+    // after the checks have added theirs, and the findings it names (a real bug, a quarantine) go on the record.
+    let debt = steps.test_debt(main, &range);
+    all.extend(debt.stage.steps);
+    not_tested.extend(debt.stage.not_tested);
+    let findings = debt.findings;
 
     // The checkout may have moved while the steps ran: the record says what it covered, and that it moved.
     if let Ok(now) = head_commit(main) {
@@ -1221,6 +1243,7 @@ pub fn run_in(dir: &Path, main: &Path, steps: &dyn Steps) -> Result<ShipCheckRec
         tested: tested_lines(&all),
         not_tested: not_tested_lines(&all, not_tested),
         steps: all,
+        findings,
     };
     if let Err(error) = save_in(dir, &record) {
         // A pass that could not be kept is not one the hold can see: say so on the record the person reads.
@@ -1382,8 +1405,53 @@ impl Steps for AppSteps {
         // "./" first: a path git names that starts with "~/" must not be read as the home folder.
         let paths: Vec<String> = changed.iter().map(|p| format!("./{p}")).collect();
         match crate::verify_stage::run_unrecorded(&self.app, main, paths) {
-            Ok(record) => steps_of_verify(&record),
+            Ok(record) => {
+                let mut stage = steps_of_verify(&record);
+                // PT-5: a check that failed only on tests now on the test debt list (or quarantined, or named real bugs) is not a plain
+                // failure; a green check takes its tests off the list. A list that can't be written leaves the step as it was.
+                if debt::is_at_ship(&self.app, main) {
+                    if let Ok(dir) = project_file::data_dir(&self.app) {
+                        let project = path_to_js(main);
+                        let head = head_commit(main).unwrap_or_default();
+                        let tracked = debt::tracked_files(main);
+                        let rust: Vec<String> = tracked
+                            .iter()
+                            .filter(|p| p.ends_with(".rs"))
+                            .cloned()
+                            .collect();
+                        let ctx = debt::ChecksCtx {
+                            head: &head,
+                            now: now_ms(),
+                            read_log: &debt::read_log,
+                            rust_files: &rust,
+                            tracked: &tracked,
+                        };
+                        let _ = crate::test_debt::store::update(&dir, &project, |doc| {
+                            debt::classify_checks(doc, &mut stage, &record, &ctx)
+                        });
+                    }
+                }
+                stage
+            }
             Err(why) => Stage::one(Step::new("Project checks", Outcome::CouldNotRun, why)),
+        }
+    }
+
+    fn test_debt(&self, main: &Path, _range: &Range) -> debt::DebtStage {
+        // The list is for `at-ship` only: in `light` and `full` every task is tested, and the ship check is what it always was.
+        if !debt::is_at_ship(&self.app, main) {
+            return debt::DebtStage::default();
+        }
+        match project_file::data_dir(&self.app) {
+            Ok(dir) => debt::stage_in(&dir, &path_to_js(main), now_ms()),
+            Err(why) => debt::DebtStage {
+                stage: Stage::one(Step::new(
+                    debt::STEP,
+                    Outcome::CouldNotRun,
+                    format!("the list of failing tests could not be found: {why}"),
+                )),
+                findings: Vec::new(),
+            },
         }
     }
 
@@ -1610,6 +1678,10 @@ pub struct RunResult {
     pub record: ShipCheckRecord,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub proposals: Vec<proposals::Candidate>,
+    /// PT-5: the one test fixer task to start and the Needs-you items to put to the person (a real bug a test caught, a test that
+    /// broke five times and caught nothing). Decided afresh each run, under the list's lock: the webview starts and files them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_debt: Option<debt::Follow>,
 }
 
 /// PT-4: the proof tools this project has a use for and lacks, to put to the person (`proposals::candidates`). Nothing in a project
@@ -1642,20 +1714,56 @@ pub fn run(app: &AppHandle, cwd: &Path) -> Result<RunResult, String> {
     let main = project_file::main_checkout(cwd)?;
     let dir = records_dir(app)?;
     let steps = AppSteps { app: app.clone() };
-    let record = run_in(&dir, &main, &steps)?;
+    let mut record = run_in(&dir, &main, &steps)?;
     let proposals = proposals_for(app, &steps, &main);
-    Ok(RunResult { record, proposals })
+    // PT-5: what follows from the list: the one fixer task, and what to put to the person. A project's data folder that can't be
+    // found follows with nothing.
+    let mut test_debt = None;
+    if !debt::is_at_ship(app, &main) {
+        return Ok(RunResult {
+            record,
+            proposals,
+            test_debt,
+        });
+    }
+    if let Ok(data) = project_file::data_dir(app) {
+        let project = path_to_js(&main);
+        let follow = debt::follow_up_in(&data, &project);
+        // A record that nothing new landed for is the earlier one as it was: it must not read as passed over a list that now
+        // has tests waiting to be sorted.
+        debt::hold_if_waiting(&mut record, &data, &project);
+        use tauri::Emitter;
+        let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
+        test_debt = (!follow.is_empty()).then_some(follow);
+    }
+    Ok(RunResult {
+        record,
+        proposals,
+        test_debt,
+    })
 }
 
 /// The newest ship check record for the project `cwd` belongs to.
 pub fn latest(app: &AppHandle, cwd: &Path) -> Result<Option<ShipCheckRecord>, String> {
     let main = project_file::main_checkout(cwd)?;
-    Ok(latest_in(&records_dir(app)?, &path_to_js(&main)))
+    let mut record = latest_in(&records_dir(app)?, &path_to_js(&main));
+    // PT-5: a saved pass over a list that has tests waiting to be sorted now reads as the hold does, not as passed.
+    if let (Some(record), true, Ok(data)) = (
+        record.as_mut(),
+        debt::is_at_ship(app, &main),
+        project_file::data_dir(app),
+    ) {
+        debt::hold_if_waiting(record, &data, &path_to_js(&main));
+    }
+    Ok(record)
 }
 
 /// Whether a ship check passed for exactly `head` of this project.
 pub fn passed_for(app: &AppHandle, project_root: &str, head: &str) -> bool {
     records_dir(app).is_ok_and(|dir| passed_for_in(&dir, project_root, head))
+        // PT-5: and, in `at-ship`, no failing test is waiting to be sorted now: a list that grew after the check is not a pass.
+        && (!debt::is_at_ship(app, Path::new(project_root))
+            || project_file::data_dir(app).is_ok_and(|data| debt::quiet_in(&data, project_root)))
 }
 
 /// The main checkout's HEAD for the project `cwd` belongs to.

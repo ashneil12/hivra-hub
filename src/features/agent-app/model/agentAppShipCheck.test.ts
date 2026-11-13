@@ -289,4 +289,127 @@ describe("ship_check.run", () => {
     const [x, y] = await Promise.all([first, second]);
     expect(x).toEqual(y);
   });
+
+  // PT-5: a list of failing tests that are not any task's own is sorted once, by ONE test fixer task.
+  describe("the test debt list", () => {
+    const FIXER = {
+      token: "test-fixer-0123456-1700000000000",
+      title: "Sort failing tests (1)",
+      brief: "This project sorts failing tests at ship.\n\n## Tests to sort (1)\n### 1. adds up",
+      goal: "Every test on the brief has a decision in your report.",
+      count: 1,
+    };
+    const bugClaim = {
+      claimed: true,
+      key: "test-debt-bug-0123456789abcdef",
+      question: "adds up fails because the code is wrong: tax is ignored",
+      options: ["Fix it", "Not now"],
+      recommended: "Fix it",
+      note: "Asked the person. If they answer Fix it, brief a worker to fix the code, never the test.",
+    };
+
+    function withFollow(testDebt: unknown, over: Partial<ShipCheckRecord> = {}) {
+      const f = fixture("mono", vi.fn(async (_cwd: string): Promise<unknown> => ({ ...record(over), testDebt })));
+      const testDebtBackend = {
+        fixerClaim: vi.fn(async () => FIXER),
+        fixerStarted: vi.fn(async () => true),
+        fixerRelease: vi.fn(async () => true),
+        claim: vi.fn(async () => bugClaim),
+        release: vi.fn(async () => true),
+        answer: vi.fn(async () => true),
+      };
+      (f.host as unknown as { testDebt: unknown }).testDebt = testDebtBackend;
+      return { ...f, testDebtBackend };
+    }
+
+    const call = (
+      f: { source: Session; host: AgentAppHost },
+      extra: {
+        ask?: (input: Record<string, unknown>) => Promise<unknown>;
+        delegate?: (token: string, input: Record<string, unknown>) => Promise<unknown>;
+      },
+      input: Record<string, unknown> = {},
+    ) => handleShipCheck(f.source, "ship_check.run", input, f.host, () => "/code/hivra", extra.ask, extra.delegate);
+
+    it("claims the one fixer slot, starts the task through the delegation path, and tells the first mate to carry on", async () => {
+      const f = withFollow({ fixerDue: true });
+      const delegate = vi.fn(async (_token: string, _input: Record<string, unknown>) => ({
+        taskId: "task-1",
+        childSessionId: `app-chat-mono-${FIXER.token}`,
+      }));
+      const answer = await call(f, { delegate });
+      expect(f.testDebtBackend.fixerClaim).toHaveBeenCalledWith("/code/hivra");
+      expect(delegate).toHaveBeenCalledTimes(1);
+      expect(delegate.mock.calls[0][0]).toBe(FIXER.token);
+      expect(delegate.mock.calls[0][1]).toMatchObject({ title: FIXER.title, brief: FIXER.brief, goal: FIXER.goal });
+      expect(delegate.mock.calls[0][1].code).toBeUndefined();
+      expect(f.testDebtBackend.fixerStarted).toHaveBeenCalledWith("/code/hivra", FIXER.token, `app-chat-mono-${FIXER.token}`);
+      expect(answer.testDebt?.fixer).toMatchObject({ started: true, title: FIXER.title });
+      expect(answer.testDebt?.note).toContain("carry on with the feature work");
+    });
+
+    it("claims and starts nothing when the app asked for nothing, or when there is no delegation path (a card's run claims nothing)", async () => {
+      const none = withFollow(undefined);
+      const delegate = vi.fn();
+      const plain = await call(none, { delegate });
+      expect(delegate).not.toHaveBeenCalled();
+      expect(none.testDebtBackend.fixerClaim).not.toHaveBeenCalled();
+      expect("testDebt" in plain).toBe(false);
+      const without = withFollow({ fixerDue: true });
+      const answer = await call(without, {});
+      expect(without.testDebtBackend.fixerClaim).not.toHaveBeenCalled();
+      expect(without.testDebtBackend.fixerStarted).not.toHaveBeenCalled();
+      expect("testDebt" in answer).toBe(false);
+    });
+
+    it("tells the first mate not to start another when the app says a fixer already holds the project", async () => {
+      const f = withFollow({ fixerDue: true });
+      f.testDebtBackend.fixerClaim.mockResolvedValue(null as never);
+      const delegate = vi.fn();
+      const answer = await call(f, { delegate });
+      expect(delegate).not.toHaveBeenCalled();
+      expect(answer.testDebt?.fixer).toMatchObject({ started: false });
+      expect(answer.testDebt?.note).toContain("already sorting");
+    });
+
+    it("says a fixer that couldn't start did not, gives its slot back, and still answers with the ship check", async () => {
+      const f = withFollow({ fixerDue: true });
+      const delegate = vi.fn(async () => {
+        throw new Error("claude is not available");
+      });
+      const answer = await call(f, { delegate });
+      expect(answer.outcome).toBe("passed");
+      expect(f.testDebtBackend.fixerRelease).toHaveBeenCalledWith("/code/hivra", FIXER.token);
+      expect(answer.testDebt?.fixer).toMatchObject({ started: false });
+      expect(answer.testDebt?.note).toContain("claude is not available");
+    });
+
+    it("files a real bug as one Needs-you item through the ask path", async () => {
+      const f = withFollow({ bugs: [{ key: "code-wrong:a:1", test: "adds up", file: "a.test.ts", line: "tax is ignored" }] });
+      const ask = vi.fn(async (_input: Record<string, unknown>) => ({ state: "open" }));
+      const answer = await call(f, { ask });
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask.mock.calls[0][0]).toMatchObject({
+        key: bugClaim.key,
+        question: "adds up fails because the code is wrong: tax is ignored",
+        options: ["Fix it", "Not now"],
+      });
+      expect(answer.testDebt?.asked?.[0]).toMatchObject({ kind: "bug", asked: true, test: "adds up" });
+    });
+
+    it("hands the first mate the named findings the record carries", async () => {
+      const finding = { kind: "code-wrong", test: "adds up", file: "a.test.ts", line: "adds up fails because the code is wrong: tax is ignored" };
+      const f = withFollow(undefined, { findings: [finding] } as Partial<ShipCheckRecord>);
+      const answer = await call(f, {});
+      expect(answer.findings).toEqual([finding]);
+      expect(answer.outcome).toBe("passed");
+    });
+
+    it("names the project the first mate named when it starts the fixer", async () => {
+      const f = withFollow({ fixerDue: true });
+      const delegate = vi.fn(async (_token: string, _input: Record<string, unknown>) => ({ childSessionId: "app-c-1" }));
+      await call(f, { delegate }, { project: "/code/hivra" });
+      expect(delegate.mock.calls[0][1].project).toBe("/code/hivra");
+    });
+  });
 });
