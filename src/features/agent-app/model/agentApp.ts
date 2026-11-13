@@ -140,6 +140,7 @@ import { handleWorkLog, WORK_LOG_FIELDS, type WorkLogBackend } from "./agentAppW
 import { handleShipCheck, SHIP_CHECK_FIELDS } from "./agentAppShipCheck"; // SC-3b
 import { handleRunChecks, RUN_CHECKS_FIELDS, type RunChecksBackend } from "./agentAppRunChecks"; // SC-7
 import { handleProofTools, PROOF_TOOLS_FIELDS, type ProofToolsBackend } from "./agentAppProofTools"; // PT-1
+import type { TestDebtBackend } from "./agentAppTestDebt"; // PT-5
 import type { ShipCheckBackend } from "../../hub/model/shipCheck"; // SC-3b
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
@@ -469,6 +470,8 @@ export type AgentAppHost = {
   runChecks?: RunChecksBackend;
   /** PT-1: the proof tools a project has and a once-per-project proposal (agentAppProofTools.ts). The app's own commands when absent. */
   proofTools?: ProofToolsBackend;
+  /** PT-5: the test debt list's fixer slot and Needs-you claims (agentAppTestDebt.ts). The app's own commands when absent. */
+  testDebt?: TestDebtBackend;
   /**
    * WP-92: a delegated worker's keys (`delegate_task`'s `secrets`). Rust checks each name, asks the person where
    * needed, and arms the handles for the child session; no value crosses to this side.
@@ -1851,6 +1854,11 @@ export async function handleAgentApp(
       host,
       (session, fields) => requireProject(session, fields, host),
       (askInput) => handleTasks(source, `${requestId}-ask-${++proposalAsk}`, "tasks.ask", askInput, host, { startLaunch, fileStarted }),
+      // PT-5: the test fixer the ship check's list calls for starts as any delegated worker does, owned by this first mate's chat.
+      async (token, delegateInput) => {
+        await harnessesProbed();
+        return handleTasks(source, token, "tasks.delegate", delegateInput, host, { startLaunch, fileStarted });
+      },
     );
   }
   // SC-7: the project's tests for what changed. A worker in its own copy, or a first mate in its project.

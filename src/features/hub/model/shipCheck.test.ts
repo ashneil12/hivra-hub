@@ -8,6 +8,7 @@ import {
   latestShipCheck,
   outcomeWord,
   readShipCheckRecord,
+  readShipFindings,
   readShipProposals,
   runShipCheck,
   shipCheckError,
@@ -193,6 +194,57 @@ describe("a record read from the app", () => {
       expect("proposals" in (readShipCheckRecord({ ...record(), proposals: none }) ?? {}), String(none)).toBe(false);
     }
     expect(readShipProposals(undefined)).toEqual([]);
+  });
+
+  // ---- PT-5: the named findings a record carries --------------------------------------------------------------------------
+
+  it("reads the named findings of a record: a bad one is dropped, text is cut, at most a hundred", () => {
+    const good = { kind: "code-wrong", test: "adds up", file: "a.test.ts", line: "adds up fails because the code is wrong: tax is ignored" };
+    const got = readShipCheckRecord({
+      ...record(),
+      findings: [
+        good,
+        { kind: "quarantined", test: "flaky one", file: "", line: "flaky one is flaky and quarantined until 2026-11-27: passed on a re-run" },
+        { kind: "something else", line: "unknown kind" },
+        { kind: "code-wrong", line: "   " },
+        { kind: "code-wrong" },
+        null,
+        "text",
+        { kind: "quarantine-expired", test: "x".repeat(900), line: "y".repeat(900) },
+      ],
+    });
+    expect(got?.findings).toHaveLength(3);
+    expect(got?.findings?.[0]).toEqual(good);
+    expect(got?.findings?.[2].test).toHaveLength(300);
+    expect(got?.findings?.[2].line).toHaveLength(300);
+    const many = Array.from({ length: 150 }, (_, n) => ({ kind: "code-wrong", test: `t${n}`, line: `line ${n}` }));
+    expect(readShipCheckRecord({ ...record(), findings: many })?.findings).toHaveLength(100);
+    for (const none of [undefined, null, [], "x", {}, [{}]]) {
+      expect("findings" in (readShipCheckRecord({ ...record(), findings: none }) ?? {}), String(none)).toBe(false);
+    }
+    expect(readShipFindings(undefined)).toEqual([]);
+  });
+
+  it("keeps a record with named findings a pass, and a record with tests still being sorted not one", () => {
+    const named = readShipCheckRecord({
+      ...record(),
+      steps: [...record().steps, { name: "Test debt", outcome: "passed", detail: "nothing is waiting to be sorted; 1 test named as a real bug (listed as findings)" }],
+      findings: [{ kind: "code-wrong", test: "adds up", line: "adds up fails because the code is wrong: tax is ignored" }],
+    });
+    expect(named?.outcome).toBe("passed");
+    const sorting = readShipCheckRecord({
+      ...record(),
+      steps: [...record().steps, { name: "Test debt", outcome: "couldNotRun", detail: "Sorting 2 tests" }],
+    });
+    expect(sorting?.outcome).toBe("couldNotRun");
+  });
+
+  it("hands on what a run says follows from the list, as it came, for the first mate's tool to read", () => {
+    const got = readShipCheckRecord({ ...record(), testDebt: { fixer: { token: "t" } } });
+    expect(got?.testDebt).toEqual({ fixer: { token: "t" } });
+    for (const none of [undefined, null, "x", 5]) {
+      expect("testDebt" in (readShipCheckRecord({ ...record(), testDebt: none }) ?? {}), String(none)).toBe(false);
+    }
   });
 
   it("falls back safely on missing or odd fields", () => {

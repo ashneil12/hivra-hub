@@ -24,6 +24,7 @@ import { PROOF_SKILLS_SECTION, renderBrief, type BriefIsolation } from "../../fi
 import { FULL_MODE_NEEDS_CHECKS } from "../../firstmate/model/briefChecks";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import {
+  AT_SHIP_TESTS_RULE,
   briefPrompt,
   fanoutAgainKey,
   markAppDelegate,
@@ -411,6 +412,66 @@ describe("tasks.delegate carries the brief's check lines, stamp and do-not-touch
       await handleAgentApp(f.source, `q${(n += 1)}`, "tasks.delegate", { brief: "Add the score route.", code: true }, f.host);
       expect(promptOf(f.started[n - 1]), String(mode)).not.toContain("## Proof skills");
     }
+  });
+
+  // PT-5: in a project that tests at ship, a worker is told in one sentence what to do about a failing test that isn't its own.
+  it("a code worker of an at-ship project is told how failing tests it didn't write are sorted, and no other worker is", async () => {
+    const f = fixture([]);
+    f.api.testingMode = vi.fn(async () => "at-ship" as const);
+    await handleAgentApp(f.source, "s1", "tasks.delegate", { brief: "Add the score route.", code: true }, f.host);
+    await handleAgentApp(f.source, "s1b", "tasks.delegate", { brief: "Add the route.", scope: ["src/api/score.ts"] }, f.host);
+    for (const call of f.started) {
+      expect(promptOf(call)).toContain(AT_SHIP_TESTS_RULE);
+      // One sentence, inside the worker's own rules.
+      expect(promptOf(call).split(AT_SHIP_TESTS_RULE)).toHaveLength(2);
+      expect(promptOf(call).indexOf(AT_SHIP_TESTS_RULE)).toBeGreaterThan(promptOf(call).indexOf("<worker_rules>"));
+    }
+    // A task that changes no code writes no test, and reads no mode (SC-4: a brief that isn't code never does).
+    f.api.testingMode = vi.fn(async () => "at-ship" as const);
+    await handleAgentApp(f.source, "s2", "tasks.delegate", { brief: "Look at the CI failure and report." }, f.host);
+    expect(promptOf(f.started[2])).not.toContain(AT_SHIP_TESTS_RULE);
+    expect(f.api.testingMode).not.toHaveBeenCalled();
+    f.api.testingMode = vi.fn(async () => "at-ship" as const);
+    let n = 3;
+    for (const mode of ["light", "full", "off", undefined] as const) {
+      f.api.testingMode = vi.fn(async () => mode);
+      await handleAgentApp(
+        f.source,
+        `s${(n += 1)}`,
+        "tasks.delegate",
+        { brief: "Add the score route.", code: true, ...(mode === "full" ? { checks: [line] } : {}) },
+        f.host,
+      );
+      expect(promptOf(f.started[n - 1]), String(mode)).not.toContain(AT_SHIP_TESTS_RULE);
+    }
+    // A mode the app can't read is not taken for at-ship.
+    f.api.testingMode = vi.fn(async () => {
+      throw new Error("the settings store did not answer");
+    });
+    await handleAgentApp(f.source, `s${(n += 1)}`, "tasks.delegate", { brief: "Add it.", code: true }, f.host);
+    expect(promptOf(f.started[n - 1])).not.toContain(AT_SHIP_TESTS_RULE);
+  });
+
+  // PT-5: the test fixer is the app's own task and rewrites tests where its brief says it may, so the worker sentence is not its rule.
+  it("the app's own test fixer task is not told to carry on past a failing test, and no agent can mark a task as the fixer", async () => {
+    const f = fixture([]);
+    f.api.testingMode = vi.fn(async () => "at-ship" as const);
+    // Handed to the delegation path as the app does (agentApp.ts binds it to the first mate's chat).
+    await handleRaw(
+      f.source,
+      "fx1",
+      "tasks.delegate",
+      markAppDelegate({ intent: TEST_INTENT, brief: "Sort the failing tests.", goal: TEST_GOAL, testFixer: true, code: true }),
+      f.host,
+    );
+    expect(promptOf(f.started[0])).not.toContain(AT_SHIP_TESTS_RULE);
+    // Any other task in the same project still is.
+    await handleAgentApp(f.source, "fx2", "tasks.delegate", { brief: "Add the score route.", code: true }, f.host);
+    expect(promptOf(f.started[1])).toContain(AT_SHIP_TESTS_RULE);
+    // An agent that sets the field itself is refused: only the app's own call may.
+    await expect(
+      handleAgentApp(f.source, "fx3", "tasks.delegate", { brief: "Add the score route.", testFixer: true }, f.host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: testFixer/);
   });
 
   describe("PT-1: the proof tools the project already has", () => {

@@ -25,7 +25,7 @@ import { stageAge } from "../model/verifyStage";
 
 const READ_PROBLEM = "Couldn't read the last ship check.";
 
-function List({ name, kind, lines, none }: { name: string; kind: "tested" | "not-tested"; lines: readonly string[]; none: string }) {
+function List({ name, kind, lines, none }: { name: string; kind: "tested" | "not-tested" | "findings"; lines: readonly string[]; none: string }) {
   return (
     <div className="min-w-0" data-ship-check-list={kind}>
       <h4 className="text-[12px] font-medium text-content/80">{name}</h4>
@@ -205,6 +205,10 @@ export function ShipCheckCard({
           ) : null}
           <List name="Tested" kind="tested" lines={record.tested} none="Nothing ran." />
           <List name="Not tested" kind="not-tested" lines={record.notTested} none="Nothing was left out." />
+          {/* PT-5: named test findings (a real bug, a quarantined flaky test) never hide: they pass the check and stay in view. */}
+          {record.findings?.length ? (
+            <List name="Findings" kind="findings" lines={record.findings.map((finding) => finding.line)} none="" />
+          ) : null}
         </div>
       ) : null}
     </section>
