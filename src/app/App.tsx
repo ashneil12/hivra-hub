@@ -132,6 +132,7 @@ import { askForMate, isOpen as isOpenAsk, mateAskStatus } from "../features/asks
 import { MEMORY_BATCH_NOW_EVENT, useMemoryCurator } from "./hooks/useMemoryCurator";
 import { latestRotation, segmentStore } from "../features/monos/model/chatSegments";
 import { stateCard } from "../features/monos/model/stateCard";
+import { searchChats } from "../features/monos/model/chatSearch";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recordUse } from "../features/memory/model/memoryUse";
 import { memoryUsePorts } from "../features/memory/ui/memoryUseForApp";
@@ -15637,6 +15638,13 @@ function Workspace({
               zoom: (monoId, id, n, at) => treeZoom(monoId, id, n, at),
               date: (monoId, id) => treeDate(monoId, id),
               grep: (monoId, query) => treeGrep(monoId, query),
+            },
+            chatSearch: (mateId, query) => {
+              const out = searchChats(
+                sessionsRef.current.filter((session) => askMateFor(session.id) === mateId),
+                query,
+              );
+              return { ...out, note: 'Passages only. Read a whole message with sessions.read {"sessionId":"..."}; pass offset for more.' };
             },
             asks: {
               mateOf: (id) => askMateFor(id),
