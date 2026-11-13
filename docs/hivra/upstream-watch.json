@@ -1173,6 +1173,13 @@
    "group": "idea-only",
    "licence": "AGPL-3.0",
    "why": "Personal agent with memory, routines, own browser, orchestrator plus different-model reviewer; AGPL, ideas only, never vendor"
+  },
+  {
+   "name": "Vercel UI SDK",
+   "repo": "vercel-labs/ui",
+   "group": "component",
+   "licence": "Apache-2.0",
+   "why": "@ui-sdk/react and @ui-sdk/core installed (0.1.0-beta.2, pinned) and its ui-sdk skill copied into .agents/skills; watch for new versions (Ash, 13 Nov)"
   }
  ]
 }
