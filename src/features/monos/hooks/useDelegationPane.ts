@@ -4,6 +4,7 @@
 // failed; workerStuck.ts), which the line names too ("1 stuck: Tests").
 import {
   delegationActions,
+  handBack,
   hasJumpedIn,
   jumpIn,
   noteStopFailures,
@@ -67,6 +68,8 @@ export function reportTeamOf(sessionId: string): string | undefined {
 }
 
 export type DelegationPane =
+  // MOCK-UP BRANCH: the owner took this worker's chat over; its first mate waits for it back.
+  | { kind: "driving"; ownerName: string; onHandBack: () => void }
   | {
       kind: "worker";
       ownerName: string;
@@ -163,7 +166,11 @@ export function useDelegationPane(
         : {}),
     };
   }
-  if (hasJumpedIn(sessionId)) return undefined;
+  if (hasJumpedIn(sessionId)) {
+    const mine = delegationOf(sessionId, rows);
+    const lead = mine?.ownerMono ? findMono(mine.ownerMono) : undefined;
+    return lead ? { kind: "driving", ownerName: monoLook(lead).name, onHandBack: () => handBack(sessionId) } : undefined;
+  }
   const row = delegationOf(sessionId, rows);
   const owner = row
     ? ((row.ownerMono ? findMono(row.ownerMono) : undefined) ??

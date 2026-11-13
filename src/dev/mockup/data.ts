@@ -72,8 +72,18 @@ function chat(id: string, title: string, cwd: string, lines: Line[], now: number
   };
 }
 
+function workerChats(now: number) {
+  return WORKER_ROWS.map((r) =>
+    chat(`mockup-worker-${r.id}`, r.title, folderOf(r.project), [
+      ["user", `Example brief from the lead: ${r.title.toLowerCase()}. Tell me when it's done or if anything is in your way.`],
+      ["assistant", r.state === "completed" ? `Example: done. ${r.result ?? ""}` : r.state === "failed" ? `Example: I had to stop. ${r.notice ?? "Something is in the way"}.` : `Example: on it. ${r.notice ?? "About half way; nothing in the way so far"}.`],
+    ], now, r.minutesAgo),
+  );
+}
+
 function sessions(now: number) {
   return [
+    ...workerChats(now),
     chat(CHAT.chief, "Chief of Staff", ROOT, [
       ["user", "Morning. What needs me today?"],
       [
@@ -180,19 +190,20 @@ function delegation(r: Row, now: number) {
   };
 }
 
+const WORKER_ROWS: Row[] = [
+  { id: "exo-arena", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Light the Area 3 boss arena", state: "running", status: "working", minutesAgo: 40 },
+  { id: "exo-pad", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Move dodge to the right bumper", state: "running", status: "working", minutesAgo: 25 },
+  { id: "exo-upload", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Upload the playtest build", state: "failed", status: "needs-you", minutesAgo: 8, error: "Example: out of credits on the build service", errorClass: "billing", notice: "Out of credits on the build service" },
+  { id: "hv-layout", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Waitlist page layout and copy slots", state: "running", status: "working", minutesAgo: 18 },
+  { id: "hv-email", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Email capture and thank-you note", state: "running", status: "working", minutesAgo: 16 },
+  { id: "hv-speed", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Speed check on phones", state: "running", status: "paused", minutesAgo: 15, notice: "Waits for the page layout" },
+  { id: "nb-copy", owner: CHAT.nibbii, mono: "nibbii-lead", project: "nibbii", title: "First-run onboarding copy", state: "completed", status: "done", minutesAgo: 150, result: "Merged: four onboarding screens." },
+  { id: "nb-icons", owner: CHAT.nibbii, mono: "nibbii-lead", project: "nibbii", title: "Redraw the tab bar icons", state: "completed", status: "done", minutesAgo: 95, result: "Merged: five icons, light and dark." },
+  { id: "st-email", owner: CHAT.safetube, mono: "safetube-lead", project: "safetube", title: "Draft the parents' launch email", state: "running", status: "working", minutesAgo: 60 },
+];
+
 function delegations(now: number) {
-  const rows: Row[] = [
-    { id: "exo-arena", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Light the Area 3 boss arena", state: "running", status: "working", minutesAgo: 40 },
-    { id: "exo-pad", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Move dodge to the right bumper", state: "running", status: "working", minutesAgo: 25 },
-    { id: "exo-upload", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Upload the playtest build", state: "failed", status: "needs-you", minutesAgo: 8, error: "Example: out of credits on the build service", errorClass: "billing", notice: "Out of credits on the build service" },
-    { id: "hv-layout", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Waitlist page layout and copy slots", state: "running", status: "working", minutesAgo: 18 },
-    { id: "hv-email", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Email capture and thank-you note", state: "running", status: "working", minutesAgo: 16 },
-    { id: "hv-speed", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Speed check on phones", state: "running", status: "paused", minutesAgo: 15, notice: "Waits for the page layout" },
-    { id: "nb-copy", owner: CHAT.nibbii, mono: "nibbii-lead", project: "nibbii", title: "First-run onboarding copy", state: "completed", status: "done", minutesAgo: 150, result: "Merged: four onboarding screens." },
-    { id: "nb-icons", owner: CHAT.nibbii, mono: "nibbii-lead", project: "nibbii", title: "Redraw the tab bar icons", state: "completed", status: "done", minutesAgo: 95, result: "Merged: five icons, light and dark." },
-    { id: "st-email", owner: CHAT.safetube, mono: "safetube-lead", project: "safetube", title: "Draft the parents' launch email", state: "running", status: "working", minutesAgo: 60 },
-  ];
-  return rows.map((r) => delegation(r, now));
+  return WORKER_ROWS.map((r) => delegation(r, now));
 }
 
 function decisions(now: number) {

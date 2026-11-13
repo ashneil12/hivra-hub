@@ -164,7 +164,7 @@ export function DelegatedChatNotice({
           onClick={onJumpIn}
           className="ml-auto shrink-0 rounded-lg px-2 py-1 text-[12px] text-content/55 hover:bg-content/6 hover:text-content"
         >
-          Jump in
+          Take over
         </button>
       </div>
     </>

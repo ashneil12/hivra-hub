@@ -1,10 +1,13 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { IconButton } from "../../../app/shell/TitleBar";
 import {
+  CheckCheck,
   Clock,
   File,
   FileDiff,
+  Inbox,
   ListBullet,
+  UserGroup,
   ListFilter,
   MessageMultiple,
   Plus,
@@ -40,9 +43,11 @@ import { HARNESSES, type HarnessId } from "../../sessions/model/session";
 import { MonoSidebar, MonoSidebarHeader } from "./MonoSidebar";
 import type { SessionChangeTotals } from "../../sessions/ui/SessionReview";
 import { MonoChangesView, type MonoChangesRequest } from "./MonoChangesView";
+import { ChiefAsked, ChiefNeeds, ChiefWorking, useChiefCounts } from "../../asks/ui/ChiefGlance";
+import { useDirection } from "../../asks/model/askLedger";
 
 export type MonoOverviewTab =
-  "activity" | "sessions" | "habits" | "documents" | "changes";
+  "activity" | "needs" | "asked" | "working" | "sessions" | "habits" | "documents" | "changes";
 
 // Activity sits apart, beside the panel toggle, since it follows the chat.
 const TABS: {
@@ -54,6 +59,13 @@ const TABS: {
   { id: "documents", label: "Documents", icon: File },
   { id: "habits", label: "Habits", icon: Clock },
   { id: "changes", label: "Changes", icon: FileDiff },
+];
+
+// MOCK-UP BRANCH: the Chief of Staff's chat leads with what needs the owner, what he asked for and every job.
+const CHIEF_TABS: typeof TABS = [
+  { id: "needs", label: "Needs you", icon: Inbox },
+  { id: "asked", label: "You asked", icon: CheckCheck },
+  { id: "working", label: "Working", icon: UserGroup },
 ];
 
 /** The conversation's recorded changes, reviewed and committed on their tab. */
@@ -100,6 +112,8 @@ type Props = {
   onOpenDocument: (id: string) => void;
   onClose: () => void;
   windowControls?: ReactNode;
+  /** MOCK-UP BRANCH: this is the Chief of Staff's chat. */
+  chief?: boolean;
 };
 
 /**
@@ -130,7 +144,20 @@ export function MonoOverview({
   onOpenDocument,
   onClose,
   windowControls,
+  chief = false,
 }: Props) {
+  const direction = useDirection();
+  const chiefCounts = useChiefCounts();
+  // Directions B and C put the three lists beside the chat; A keeps them in the title bar; D is today's app.
+  const chiefTabs = chief && (direction === "b" || direction === "c");
+  const tabs = TABS;
+  const chiefRow = chiefTabs ? (direction === "b" ? [...CHIEF_TABS].reverse() : CHIEF_TABS) : [];
+  useEffect(() => {
+    if (chiefTabs) onTabChange(direction === "b" ? "working" : "needs");
+    else if (tab === "needs" || tab === "asked" || tab === "working") onTabChange("sessions");
+    // Only when the direction or the first mate changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chiefTabs, direction]);
   const lock = useLockOverscroll<HTMLDivElement>();
   const habits = useHabits(monoId, state.status);
   const actions = habitActions(monoId);
@@ -240,6 +267,9 @@ export function MonoOverview({
     habits: habits?.length,
     documents: documents.length,
     changes: changes?.totals?.files,
+    needs: chiefCounts.needs,
+    asked: chiefCounts.asked,
+    working: chiefCounts.working,
   };
 
   return (
@@ -255,7 +285,7 @@ export function MonoOverview({
         <MonoSidebarHeader
           title="Overview"
           heading={
-            <OverviewTabs tab={tab} counts={counts} onChange={onTabChange} />
+            <OverviewTabs tabs={tabs} tab={tab} counts={counts} onChange={onTabChange} />
           }
           onClose={onClose}
           actions={
@@ -288,6 +318,32 @@ export function MonoOverview({
             </>
           }
         />
+        {chiefRow.length ? (
+          <div role="tablist" aria-label="Chief of Staff" data-chief-tabs className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
+            {chiefRow.map((entry) => {
+              const selected = entry.id === tab;
+              const count = counts[entry.id] ?? 0;
+              return (
+                <button
+                  key={entry.id}
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  data-chief-tab={entry.id}
+                  onClick={() => onTabChange(entry.id)}
+                  className={`flex h-6 items-center gap-1.5 rounded-md px-2 text-[12px] ${selected ? "bg-selection text-content" : "text-content/60 hover:bg-content/5 hover:text-content"}`}
+                >
+                  {entry.label}
+                  {entry.id === "needs" && count ? (
+                    <span className="min-w-4 rounded-full bg-[#ef4444] px-1 text-center text-[10px] font-medium leading-4 tabular-nums text-white">{count}</span>
+                  ) : (
+                    <span className="tabular-nums text-content/60">{count}</span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
         {tab === "sessions" && launches.length ? (
           <SessionSearchBar
             query={query}
@@ -323,7 +379,7 @@ export function MonoOverview({
           aria-label={
             tab === "activity"
               ? "Activity"
-              : TABS.find((entry) => entry.id === tab)?.label
+              : [...CHIEF_TABS, ...tabs].find((entry) => entry.id === tab)?.label
           }
           hidden={tab === "changes"}
           className="min-h-0 flex-1 overflow-y-auto overscroll-none px-2 py-2"
@@ -336,6 +392,12 @@ export function MonoOverview({
                 see each step it took.
               </EmptyState>
             ))
+          ) : tab === "needs" ? (
+            <ChiefNeeds />
+          ) : tab === "asked" ? (
+            <ChiefAsked />
+          ) : tab === "working" ? (
+            <ChiefWorking />
           ) : tab === "sessions" ? (
             launches.length ? (
               // Cards carry their own inset; this lines their icons up with
@@ -468,10 +530,12 @@ function SessionSearchBar({
  * others are just their icons.
  */
 function OverviewTabs({
+  tabs,
   tab,
   counts,
   onChange,
 }: {
+  tabs: typeof TABS;
   tab: MonoOverviewTab;
   counts: Record<(typeof TABS)[number]["id"], number | undefined>;
   onChange: (tab: MonoOverviewTab) => void;
@@ -482,7 +546,7 @@ function OverviewTabs({
       aria-label="Overview"
       className="-ml-2 flex items-center gap-0.5"
     >
-      {TABS.map(({ id, label, icon }) => {
+      {tabs.map(({ id, label, icon }) => {
         const selected = id === tab;
         return (
           <TabButton

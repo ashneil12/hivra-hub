@@ -89,6 +89,12 @@ export function jumpIn(sessionId: string): void {
   changed();
 }
 
+/** MOCK-UP BRANCH: the worker's first mate takes the chat back. */
+export function handBack(sessionId: string): void {
+  if (!jumpedIn.delete(sessionId)) return;
+  changed();
+}
+
 export function hasJumpedIn(sessionId: string): boolean {
   return jumpedIn.has(sessionId);
 }

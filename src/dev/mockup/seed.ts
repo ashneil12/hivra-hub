@@ -7,8 +7,40 @@
 
 import { EXAMPLE } from "./data";
 import { mockupIpc, seedMockupIpc } from "./ipc";
+import { addAsked, setDirection, type Asked, type Direction } from "../../features/asks/model/askLedger";
 
-const SEED_VERSION = "mockup-v4";
+// One main Chief of Staff chat (13 Nov): an example long message with seven asks in it, and the receipt for it.
+const RANT =
+  "Example: ok so the more I look at this the more I want the main chat back, like the pinned one with Chief of Staff, we had that and it was good so bring it back. and if I want to start a side chat I can, and jump into one when I need to take over. but before anyone builds anything I want to see a mock-up of one chat running like ten projects, because I honestly don't know how it should look yet. also all those memory and design repos I sent, actually copy each one and read it properly, not a glance, you never know what gems are in there. use the strongest model for those. oh and the Nibbii onboarding copy still sounds robotic, fix that. and that storage thing on the Mac again, sort it.";
+const RECEIPT: Asked[] = [
+  { id: "rant-1", text: "Bring back the pinned main chat with the Chief of Staff", where: "Hivra lead", state: "working" },
+  { id: "rant-2", text: "Side chats I can start, and jump into to take over", where: "Hivra lead, same job as 1", state: "working" },
+  { id: "rant-3", text: "A mock-up of one chat running ten projects, before anyone builds", where: "Iris, design review", state: "working" },
+  { id: "rant-4", text: "Copy and properly read every memory and design repo", where: "Hivra lead", state: "working" },
+  { id: "rant-5", text: "Use the strongest model for those jobs", where: "Set for jobs 3 and 4", state: "done" },
+  { id: "rant-6", text: "Nibbii onboarding copy sounds robotic, fix it", where: "Nibbii lead", state: "working" },
+  { id: "rant-7", text: "That storage thing on the Mac again", where: "Chief of Staff", state: "unclear" },
+];
+const EARLIER: Asked[] = [
+  { id: "old-1", text: "Ship the new build once everything is merged", where: "Hivra lead", state: "done" },
+  { id: "old-2", text: "Rename the app, but last", where: "Hivra lead", state: "waiting" },
+  { id: "old-3", text: "Move the EXO upload to the spare account", where: "EXO lead", state: "working" },
+];
+function receiptReply(): string {
+  addAsked(RECEIPT);
+  const word = { working: "working", done: "done", waiting: "waiting on purpose", unclear: "**unclear, I need to ask you**" };
+  return [
+    "Got it. I heard seven things. Five are with the right first mates, one is already done, and one I need you to clear up. I do none of the work myself, so keep talking.",
+    "",
+    ...RECEIPT.map((item, index) => `${index + 1}. **${item.text}.** ${item.where}, ${word[item.state]}.`),
+    "",
+    "Which storage thing did you mean in 7: clearing old build files again, or the backup disk filling up?",
+    "",
+    "All seven are in *You asked*, and each one is checked against your words before it's marked done.",
+  ].join("\n");
+}
+
+const SEED_VERSION = "mockup-v6-one-chat";
 const SEEDED_KEY = "monocode:mockup-seeded";
 
 const url = new URL(location.href);
@@ -40,6 +72,7 @@ function seed(): void {
   set("monocode:dev-automations", EXAMPLE.automations(now));
   set("monocode:hub-chats", EXAMPLE.rooms(now));
   seedMockupIpc(now);
+  set("monocode:mockup-asked", EARLIER);
   // The Inbox on Home reads every project the app has opened: the example projects' folders, so it has items to show.
   set("monocode.recentProjects", EXAMPLE.projects.flatMap((project) => (project.folder ? [{ path: project.folder, openedAt: now }] : [])));
   localStorage.setItem("monocode:hub-nav", JSON.stringify({ project: "", item: "home" }));
@@ -105,6 +138,8 @@ Object.assign(window, {
       .filter((part) => part && !part.startsWith("[MonoCode ") && !part.startsWith("Note: MonoCode"))
       .join(" ");
     const me = /^- (.+?) \(you\)/m.exec(prompt)?.[1];
+    // A long message with several asks in it gets a receipt: the asks it heard, numbered, each one tracked.
+    if (typed.includes("the more I want the main chat back") || typed.length > 400) return receiptReply();
     if (typed && me)
       return `Example reply from ${me}: got it. I'll take it from here and tell you in this chat when it's done. (This is the mockup, so nothing really runs.)`;
     if (/From the app, not Ash|\[MonoCode /.test(prompt)) return "\n\nRight: nothing new since your last message.";
@@ -128,3 +163,57 @@ const openHome = () => {
   setTimeout(openHome, 300);
 };
 setTimeout(openHome, 500);
+
+// The mock-up's own bar (not part of the app): which direction is on, the example long message, and a fresh start.
+const DIRECTIONS: [Direction, string, string][] = [
+  ["a", "A", "One chat: the three lists are chips at the top of the chat"],
+  ["b", "B", "Board: every job beside the chat"],
+  ["c", "C", "Mix: Needs you beside the chat"],
+  ["d", "D", "Projects: today's app, a chat per project"],
+];
+function mockupBar(): void {
+  const bar = document.createElement("div");
+  bar.setAttribute("data-mockup-bar", "");
+  bar.className = "solid-panel-glass fixed bottom-12 left-[76px] z-[9999] flex w-[184px] flex-wrap items-center gap-0.5 rounded-xl p-1 font-sans text-[12px] text-content";
+  const button = (label: string, title: string, run: () => void) => {
+    const node = document.createElement("button");
+    node.type = "button";
+    node.textContent = label;
+    node.title = title;
+    node.className = "h-7 rounded-lg px-2 text-content/70 hover:bg-content/8 hover:text-content";
+    node.addEventListener("click", run);
+    bar.appendChild(node);
+    return node;
+  };
+  const label = document.createElement("span");
+  label.textContent = "Mock-up";
+  label.className = "px-1.5 text-content/60";
+  bar.appendChild(label);
+  const picks = DIRECTIONS.map(([id, name, title]) => {
+    const node = button(name, title, () => {
+      setDirection(id);
+      paint();
+    });
+    node.dataset.mockupDirection = id;
+    return node;
+  });
+  const paint = () => {
+    const on = localStorage.getItem("monocode:mockup-direction") ?? "c";
+    for (const node of picks) node.className = `h-7 rounded-lg px-2 ${node.dataset.mockupDirection === on ? "bg-content text-background-base" : "text-content/70 hover:bg-content/8 hover:text-content"}`;
+  };
+  paint();
+  button("Paste example rant", "Puts an example long message with seven asks into the open chat's box", () => {
+    const boxes = Array.from(document.querySelectorAll<HTMLTextAreaElement>("textarea.composer-field")).filter((box) => box.offsetParent !== null);
+    const box = boxes[boxes.length - 1];
+    if (!box) return;
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(box, RANT);
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+    box.focus();
+  }).dataset.mockupRant = "";
+  button("Start over", "Puts the example data back", () => {
+    location.search = "?reset";
+  });
+  document.body.appendChild(bar);
+}
+if (document.body) mockupBar();
+else addEventListener("DOMContentLoaded", mockupBar);

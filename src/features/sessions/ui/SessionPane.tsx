@@ -1546,6 +1546,22 @@ const LocalSessionPane = memo(function LocalSessionPane({
               ) : (
                 <>
                   {session.goal ? <GoalRow goal={session.goal} /> : null}
+                  {/* MOCK-UP BRANCH: the owner is driving this worker's chat until he hands it back. */}
+                  {delegationPane?.kind === "driving" ? (
+                    <div data-driving-chat className="glass-bar mb-1.5 flex w-full items-center gap-2 rounded-2xl border border-content/10 px-4 py-2 font-sans text-[13px] text-content/60">
+                      <span className="min-w-0 truncate">
+                        You&apos;re driving this one. {delegationPane.ownerName} waits and carries on from your last message.
+                      </span>
+                      <button
+                        type="button"
+                        data-hand-back
+                        onClick={delegationPane.onHandBack}
+                        className="ml-auto shrink-0 rounded-lg border border-content/20 px-2 py-1 text-[12px] text-content hover:bg-content/8"
+                      >
+                        Hand back to {delegationPane.ownerName}
+                      </button>
+                    </div>
+                  ) : null}
                   {/* A coding-team chat is an orchestrator like the Lead: its stuck workers and what is out. */}
                   {delegationPane?.kind === "lead" ? (
                     <DelegationWaitingLine

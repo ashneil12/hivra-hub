@@ -1,3 +1,7 @@
+import { ChiefChips } from "../../features/asks/ui/ChiefGlance";
+import { useDirection } from "../../features/asks/model/askLedger";
+import { pickChief } from "../../features/home/model/chief";
+import { listMonos } from "../../features/monos/model/mono";
 import {
   CheckCircle,
   ChevronLeft,
@@ -687,6 +691,12 @@ export function TabVisitNav({
   );
 }
 
+function ChiefChipsFor({ name }: { name: string }) {
+  const direction = useDirection();
+  if (direction !== "a" || pickChief(listMonos())?.name !== name) return null;
+  return <ChiefChips />;
+}
+
 /** A Mono's team, overview toggle and settings, beside its conversation. */
 export function MonoViewActions({
   name,
@@ -709,6 +719,8 @@ export function MonoViewActions({
 }) {
   return (
     <div className={`flex items-center gap-1 ${className}`}>
+      {/* MOCK-UP BRANCH, direction A: the Chief of Staff's three lists as chips. */}
+      <ChiefChipsFor name={name} />
       {team ? (
         <button
           type="button"

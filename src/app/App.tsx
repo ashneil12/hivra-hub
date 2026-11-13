@@ -1091,6 +1091,7 @@ import {
 import { noteMonoChat, pickMonoChat, type MonoChatScope } from "../features/monos/model/monoLastChat";
 import { projectFront, setProjectFront, useProjectFrontVersion } from "../features/hub/model/projectFront";
 import { pickChief as pickCaptain } from "../features/home/model/chief";
+import { useDirection } from "../features/asks/model/askLedger";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
 import { stampFirstMate } from "../features/monos/model/monoMate";
@@ -1675,6 +1676,11 @@ function Workspace({
   const [monoOverviewOpen, setMonoOverviewOpen] = useState(false);
   const [monoOverviewTab, setMonoOverviewTab] =
     useState<MonoOverviewTab>("sessions");
+  // MOCK-UP BRANCH: directions B and C open the panel beside the chat; A and D keep the chat on its own.
+  const mockDirection = useDirection();
+  useEffect(() => {
+    setMonoOverviewOpen(mockDirection === "b" || mockDirection === "c");
+  }, [mockDirection]);
   const monoOverviewOpenRef = useRef(monoOverviewOpen);
   monoOverviewOpenRef.current = monoOverviewOpen;
   const monoOverviewTabRef = useRef(monoOverviewTab);
@@ -18086,6 +18092,7 @@ function Workspace({
           textHarness: monoViewSession.harness,
           projects: monoViewMono.projects,
         }}
+        chief={pickCaptain(listMonos())?.id === monoViewMono.id}
         tab={monoOverviewTab}
         onTabChange={setMonoOverviewTab}
         onOpenSession={(sessionId) =>
