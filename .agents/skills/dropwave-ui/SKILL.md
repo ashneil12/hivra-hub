@@ -22,6 +22,10 @@ change the app's code when the thing must be part of every install.
 ## 2. Change as little as possible
 - Reuse: `Popover`, `Modal`, `ConfirmDelete`, `RailAction`, `SecondaryButton`, the icons in `src/shared/ui/icons.tsx`.
   If the screen you need already exists somewhere in another shape, copy that shape.
+- A control the app does not have yet that needs real keyboard, focus or popup behaviour (a combobox, a tree, a
+  command list, a splitter, tabs you can arrow through): build it on `@ui-sdk/react` (installed) with the `ui-sdk`
+  skill, and style it with our tokens; it ships no look of its own. Do not swap an existing component for one of its:
+  reuse comes first, and a rewrite of upstream's files makes every upstream merge harder.
 - Use the words in DESIGN.md section 2. Never put "Mono", an id or a code name in text a person reads.
 - Tokens only for colour. One primary button per surface. A tick box on every row of a pick-several list.
 - Keep every `data-…` hook and `aria-label`; when a control moves, move its hook with it and update the tests that

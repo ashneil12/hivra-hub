@@ -63,4 +63,5 @@ no hero numbers, no card soup, no coloured side borders. Put before and after sc
 `better-layout` (grouping, alignment), `better-typography`, `better-colors` (contrast, one colour one meaning),
 `better-ui` (radius, shadows, press, icons), `better-accessibility`, `better-writing`, `emil-design-eng` (motion and
 polish), `frontend-design` (for a page with its own look, not an app screen). `better-interface` runs all of them as
-one review.
+one review. `ui-sdk` is for behaviour, not looks: read it when an app screen needs a new control with keyboard, focus
+or popup behaviour (a hub's sandbox cannot load it yet, so a hub keeps to the hub kit).
