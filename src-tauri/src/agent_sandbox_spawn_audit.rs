@@ -780,6 +780,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "Spawns git_cmd::git() (the container profile while the sandbox is on, no hooks) for rev-parse --verify -q HEAD in the project's main checkout, to stamp a brief. A fixed read.",
     ),
     (
+        "visual_preview.rs",
+        "run",
+        "Headless Chrome, Chromium, Edge or Brave drawing an agent's page. Not wrapped: Chrome cannot start its own renderer sandbox inside sandbox-exec (it exits 133), and --no-sandbox is never passed, so the page stays in Chrome's renderer sandbox, with no network and a throwaway profile. On macOS the binary is only an app bundle under /Applications or ~/Applications (find_browser), which App Management keeps agents from replacing. Other platforms still look on PATH; the app ships for macOS only today.",
+    ),
+    (
         "worktree_autoclean.rs",
         "compiler_running",
         "pgrep -x cargo and pgrep -x rustc, fixed arguments, to see whether a build is running before build output is cleared. It writes nothing.",
