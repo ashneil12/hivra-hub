@@ -637,24 +637,46 @@ export async function upsertSession(
         // A failed read leaves the step as the caller built it.
       }
     }
-    return invoke<SessionSummary>("session_upsert", {
-      session: {
-        ...payload,
-        blocks: (payload as SessionUpsertPayload).blocks.map((block) =>
-          block.orchestrationLeadId &&
-          deletedSessionIds.has(block.orchestrationLeadId)
-            ? { ...block, orchestrationLeadId: undefined }
-            : block,
-        ),
-        ...(teleport ? { teleport: { moveId: teleport.moveId, op: teleport.op } } : {}),
-      },
+    // Queueing, editing or steering a message, a rename or a model switch changes only the chat's header. When this
+    // window last saved exactly these blocks, the transcript is not sent again: on a long chat that copy was megabytes
+    // through the bridge and a parse, merge and rewrite in the store for every queue edit (taken from T3 Code #29521).
+    const leadKey = session.orchestrationLeadId ?? "";
+    const keep = !teleport && sameSavedBlocks(savedBlocks.get(session.id), session.blocks, leadKey);
+    const send = (keepBlocks: boolean) =>
+      invoke<SessionSummary>("session_upsert", {
+        session: {
+          ...payload,
+          blocks: keepBlocks
+            ? []
+            : (payload as SessionUpsertPayload).blocks.map((block) =>
+                block.orchestrationLeadId &&
+                deletedSessionIds.has(block.orchestrationLeadId)
+                  ? { ...block, orchestrationLeadId: undefined }
+                  : block,
+              ),
+          ...(teleport ? { teleport: { moveId: teleport.moveId, op: teleport.op } } : {}),
+        },
+        ...(keepBlocks ? { blocksUnchanged: true } : {}),
+      });
+    const saved = await send(keep).catch((error: unknown) => {
+      const message = errorText(error);
+      // The store has no copy to keep (the row went away): send the whole chat once.
+      if (keep && message.startsWith("blocks-missing")) {
+        savedBlocks.delete(session.id);
+        return send(false);
+      }
+      throw error;
     }).catch((error: unknown) => {
+      savedBlocks.delete(session.id);
       // The store's own guard (WP-177): a conflict is the move's answer; a refused ordinary save is dropped, not an error.
       const message = errorText(error);
       if (message.startsWith("teleport-conflict")) throw new TeleportConflict(message);
       if (message.startsWith("teleport-refused")) return null;
       throw error;
     });
+    if (saved && !teleport) savedBlocks.set(session.id, { blocks: session.blocks.slice(), leadKey });
+    else savedBlocks.delete(session.id);
+    return saved;
   });
   return summary ? normalizeSummary(summary) : null;
 }
@@ -772,6 +794,20 @@ export function cancelSessionSearch(searchOwner: string): Promise<void> {
 }
 
 const monoSavedBlocks = new Map<string, Block[]>();
+
+/** The blocks this window last saved for an ordinary chat, and the lead id the first one carried then. */
+const savedBlocks = new Map<string, { blocks: Block[]; leadKey: string }>();
+
+/** Blocks are replaced, never mutated, so the same objects in the same order are the same transcript. */
+function sameSavedBlocks(
+  saved: { blocks: Block[]; leadKey: string } | undefined,
+  blocks: Block[],
+  leadKey: string,
+): boolean {
+  if (!saved || saved.leadKey !== leadKey || saved.blocks.length !== blocks.length) return false;
+  for (let i = 0; i < blocks.length; i++) if (saved.blocks[i] !== blocks[i]) return false;
+  return true;
+}
 const monoBlockPayloads = new WeakMap<Block, Block | null>();
 function monoPersistedBlock(block: Block): Block | null {
   if (monoBlockPayloads.has(block)) return monoBlockPayloads.get(block)!;
@@ -1076,6 +1112,7 @@ export async function deleteSession(
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
     monoSavedBlocks.delete(sessionId);
+    savedBlocks.delete(sessionId);
     // A deleted session is no longer a Mono's running or Done work (the Sessions badge counts those marks).
     forgetWorkSession(sessionId);
     // What the harness kept for this chat past forgetting it (a goal for a rotation) has nothing left to serve.
@@ -1099,6 +1136,7 @@ export async function discardDraftSessionRecord(
     invoke<void>("session_delete", { sessionId, imagePaths: [] }),
   );
   monoSavedBlocks.delete(sessionId);
+  savedBlocks.delete(sessionId);
 }
 
 export async function setSessionArchived(
