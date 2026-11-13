@@ -430,7 +430,8 @@ pub async fn git_worktree_create(
     .map_err(|error| error.to_string())?
 }
 
-fn copy_checkout_state(source: &Path, target: &Path) -> Result<(), String> {
+// SC-5: pub(crate), so the checker's read-only copy carries the worker's uncommitted files the same way.
+pub(crate) fn copy_checkout_state(source: &Path, target: &Path) -> Result<(), String> {
     for file in git_diff_files_for(source).files {
         let relative = resolve_repo_path(source, &file.relative)?;
         let from = source.join(&relative);

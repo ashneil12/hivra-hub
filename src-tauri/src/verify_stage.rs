@@ -338,12 +338,27 @@ fn run_command_with(
     env: Vec<(String, String)>,
     env_clear: bool,
 ) -> Result<(crate::project_actions::RunRecord, f64), String> {
-    let runs = app.state::<ActionRuns>();
-    let started = std::time::Instant::now();
     // WP-178 (review r2 HIGH-2): a verify run is an agent's own command, so it runs under the sandbox while it is on.
     let data = project_file::data_dir(app)?;
     let named = checkout.to_path_buf();
     let wrap = crate::agent_sandbox::action_wrap(Some(&data), std::slice::from_ref(&named))?;
+    run_command_wrapped(app, main, checkout, action, env, env_clear, wrap)
+}
+
+/// `run_command_with`, started under the sandbox prefix the caller chose (SC-5: the checker's read-only copy runs under a
+/// profile that denies every write outside its scratch folder, which `action_wrap` is not).
+fn run_command_wrapped(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    action: &ProjectAction,
+    env: Vec<(String, String)>,
+    env_clear: bool,
+    wrap: Option<Vec<std::ffi::OsString>>,
+) -> Result<(crate::project_actions::RunRecord, f64), String> {
+    let runs = app.state::<ActionRuns>();
+    let started = std::time::Instant::now();
+    let data = project_file::data_dir(app)?;
     let record = project_actions::start_command(
         &runs,
         main,
@@ -474,8 +489,6 @@ pub(crate) fn run_brief_line(
     name: &str,
     command: &str,
 ) -> crate::firstmate::brief_checks::RawRun {
-    use crate::firstmate::brief_checks::{read_log, Ended, RawRun};
-    use crate::project_actions::RunStatus;
     let action = action_for(
         "brief check",
         &format!("verify-brief-{index}"),
@@ -483,7 +496,23 @@ pub(crate) fn run_brief_line(
         command,
         crate::firstmate::brief_checks::LINE_TIMEOUT_SECONDS,
     );
-    match run_command_with(app, main, checkout, &action, Vec::new(), true) {
+    raw_run(run_command_with(
+        app,
+        main,
+        checkout,
+        &action,
+        Vec::new(),
+        true,
+    ))
+}
+
+/// How a finished run of a command an agent wrote reads: how it ended and what it printed.
+fn raw_run(
+    ran: Result<(crate::project_actions::RunRecord, f64), String>,
+) -> crate::firstmate::brief_checks::RawRun {
+    use crate::firstmate::brief_checks::{read_log, Ended, RawRun};
+    use crate::project_actions::RunStatus;
+    match ran {
         Ok((run, seconds)) => RawRun {
             ended: match run.status {
                 RunStatus::Succeeded => Ended::Exited(Some(run.exit_code.unwrap_or(0))),
@@ -497,6 +526,42 @@ pub(crate) fn run_brief_line(
         },
         Err(error) => RawRun::not_started(truncate(&error)),
     }
+}
+
+/// SC-5: run one command in the checker's read-only copy through the same runner (its process group, its timeout, its
+/// credential scrub), under the copy's own sandbox prefix and with the environment cleared down to the allow-list and
+/// `TMPDIR` set to the copy's scratch folder, the one place it may write. `main` is the project's main checkout, which the
+/// runner keys the run by; the copy is not a checkout the project knows, so the caller has already proved the worker's.
+/// `id` names the run (`verify-checker-<id>`) and `timeout` is in seconds.
+pub(crate) fn run_copy_line(
+    app: &AppHandle,
+    main: &Path,
+    copy: &crate::firstmate::checker_copy::ReadOnlyCopy,
+    id: &str,
+    name: &str,
+    command: &str,
+    timeout: u64,
+) -> crate::firstmate::brief_checks::RawRun {
+    let action = action_for(
+        "checker",
+        &format!("verify-checker-{id}"),
+        name,
+        command,
+        timeout,
+    );
+    let env = vec![(
+        "TMPDIR".to_string(),
+        copy.scratch().to_string_lossy().into_owned(),
+    )];
+    raw_run(run_command_wrapped(
+        app,
+        main,
+        copy.copy(),
+        &action,
+        env,
+        true,
+        copy.wrap.clone(),
+    ))
 }
 
 pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<VerifyRecord, String> {
