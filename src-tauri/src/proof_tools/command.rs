@@ -304,6 +304,22 @@ fn pin_npx(argv: &mut Vec<String>, words: &mut Vec<String>) {
     }
 }
 
+/// A relative path as an operand no tool can take for an option: `./` in front. An absolute path, and one that already
+/// starts with `./` or `../`, is kept as it is.
+fn as_operand(path: &str) -> String {
+    if path.is_empty() {
+        // Nothing to name: left empty, so the value check refuses it as before.
+        return String::new();
+    }
+    let absolute =
+        path.starts_with('/') || path.starts_with('\\') || path.as_bytes().get(1) == Some(&b':');
+    if absolute || path.starts_with("./") || path.starts_with("../") || path.starts_with(".\\") {
+        path.to_string()
+    } else {
+        format!("./{path}")
+    }
+}
+
 /// `template` with its placeholders filled for `shell`. `Err` is one plain sentence on what the run is missing.
 pub fn prepare_with(template: &str, fill: &Fill, shell: Shell) -> Result<Prepared, String> {
     let words = parse(template)?;
@@ -330,8 +346,11 @@ pub fn prepare_with(template: &str, fill: &Fill, shell: Shell) -> Result<Prepare
                 ));
             }
             for file in &fill.files {
-                line.push(put(file.clone(), &mut env)?);
-                argv.push(file.clone());
+                // A changed file named like an option (`-rf.ts`, `--config=x.py`) must reach the tool as a path: the
+                // shell quoting keeps it one word, and `./` keeps the tool from reading it as a flag.
+                let operand = as_operand(file);
+                line.push(put(operand.clone(), &mut env)?);
+                argv.push(operand);
             }
             continue;
         }
@@ -414,6 +433,50 @@ mod tests {
             config: Some(".semgrep.yml".into()),
             out: Some("/tmp/proof/out".into()),
         }
+    }
+
+    /// A changed file named like an option reaches the tool as a path: `./` in front, after `--` where the tool takes
+    /// one (ast-grep). Stryker's ranges ride on `--mutate=`, so a range starting with `-` stays that flag's value.
+    #[test]
+    fn a_file_named_like_an_option_reaches_the_tool_as_a_path() {
+        let mut odd = fill();
+        odd.files = vec![
+            "-rf.ts".into(),
+            "--config=x.py".into(),
+            "src/a b.ts".into(),
+            "./kept.ts".into(),
+            "/abs/x.ts".into(),
+        ];
+        odd.ranges = vec!["-rf.ts:1-2".into()];
+        let ast = catalogue::find("ast-grep").unwrap();
+        let ready = prepare_with(ast.run.as_deref().unwrap(), &odd, Shell::Sh).unwrap();
+        let dashes = ready
+            .argv
+            .iter()
+            .position(|word| word == "--")
+            .expect("a -- before the files");
+        assert_eq!(
+            ready.argv[dashes + 1..],
+            [
+                "./-rf.ts",
+                "./--config=x.py",
+                "./src/a b.ts",
+                "./kept.ts",
+                "/abs/x.ts"
+            ]
+        );
+        assert!(ready
+            .argv
+            .iter()
+            .all(|word| word != "-rf.ts" && word != "--config=x.py"));
+        let stryker = catalogue::find("stryker").unwrap();
+        let ready = prepare_with(stryker.run.as_deref().unwrap(), &odd, Shell::Sh).unwrap();
+        assert!(
+            ready.argv.iter().any(|word| word == "--mutate=-rf.ts:1-2"),
+            "{:?}",
+            ready.argv
+        );
+        assert!(ready.argv.iter().all(|word| word != "-rf.ts:1-2"));
     }
 
     // ---- the template language -------------------------------------------------------------------------------------------
@@ -573,9 +636,11 @@ mod tests {
             };
             let ready = prepare_with("ast-grep scan {files}", &fill, shell).unwrap();
             assert_eq!(&ready.argv[..2], ["ast-grep", "scan"]);
-            assert_eq!(ready.argv[2..], fill.files[..]);
+            // Each name is one argument, as a path (`./` in front of a relative one).
+            let operands: Vec<String> = fill.files.iter().map(|name| as_operand(name)).collect();
+            assert_eq!(ready.argv[2..], operands[..]);
             assert_eq!(ready.env.len(), fill.files.len());
-            for name in &fill.files {
+            for name in &operands {
                 assert!(
                     !ready.command.contains(name.as_str()),
                     "{name} must not be in {}",
@@ -732,7 +797,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             ready.shown(),
-            "ast-grep scan \"a b.ts\" \"say \\\"hi\\\".ts\" plain.ts"
+            "ast-grep scan \"./a b.ts\" \"./say \\\"hi\\\".ts\" ./plain.ts"
         );
         let long = Prepared {
             argv: vec!["x".repeat(200)],
@@ -787,8 +852,7 @@ mod tests {
                 "--no-install",
                 "stryker",
                 "run",
-                "--mutate",
-                "a.ts:1-2,b.ts:7-7"
+                "--mutate=a.ts:1-2,b.ts:7-7"
             ]
         );
         assert_eq!(
@@ -832,7 +896,14 @@ mod tests {
         );
         assert_eq!(
             argv("ast-grep"),
-            ["ast-grep", "scan", "--json=stream", "a.ts", "b.ts"]
+            [
+                "ast-grep",
+                "scan",
+                "--json=stream",
+                "--",
+                "./a.ts",
+                "./b.ts"
+            ]
         );
         assert_eq!(
             argv("playwright"),
@@ -942,7 +1013,10 @@ mod tests {
         };
         let ready = prepare_with("./args.sh {files}", &fill, Shell::Sh).unwrap();
         let got = run_in(&scratch.0, &ready);
-        let want: Vec<String> = names.iter().map(|name| format!("<{name}>")).collect();
+        let want: Vec<String> = names
+            .iter()
+            .map(|name| format!("<{}>", as_operand(name)))
+            .collect();
         assert_eq!(got, want);
         assert!(!scratch.0.join("pwned").exists() && !scratch.0.join("pwned2").exists());
     }

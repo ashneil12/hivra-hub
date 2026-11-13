@@ -4,7 +4,7 @@
 //! Two places a tool runs: a task's own checkout (the gates, the ship check) and the running checker's read-only copy, where
 //! every write is denied outside the copy's scratch folder, so a tool's cache and output go there.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -123,5 +123,11 @@ impl Env for AppEnv<'_> {
             Where::Checkout { .. } => Some(std::env::temp_dir().join("monocode-proof-tools")),
             Where::Copy { copy, .. } => Some(copy.scratch().to_path_buf()),
         }
+    }
+
+    /// PT-2: what the person switched off for the project whose main checkout this run belongs to (Settings > Proof tools).
+    fn switched_off(&self) -> BTreeSet<String> {
+        let (Where::Checkout { main, .. } | Where::Copy { main, .. }) = &self.at;
+        super::switch::off_for_project(self.app, main)
     }
 }

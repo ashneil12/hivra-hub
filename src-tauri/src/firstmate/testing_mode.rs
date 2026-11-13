@@ -232,6 +232,18 @@ pub fn gates_for_with(
     }
 }
 
+/// Whether the `proof-tools` gate is wanted for this task (`gates_for_with`'s `proof_tools`): `full`, a code diff, and a proof tool the
+/// project has that is not switched off. `detect` is asked only then, so a task in any other mode never probes a program. PT-2:
+/// it must be a detection that already leaves out the tools the person switched off (`proof_tools::detect_folder_in_use`), so a
+/// project whose every tool is off gets no gate at all, the same as one that has none.
+pub fn proof_gate_wanted(
+    mode: TestingMode,
+    code_changed: bool,
+    detect: impl FnOnce() -> crate::proof_tools::detect::Detection,
+) -> bool {
+    mode == TestingMode::Full && code_changed && detect().has_installed()
+}
+
 /// The gates, findings, fact gaps and verdict a finished task gets, for a project with no proof tool (`gates_for_with`).
 /// What the tests that pre-date proof tools call.
 #[cfg(test)]
@@ -755,6 +767,82 @@ mod tests {
             nothing.as_today && nothing.gates.is_empty(),
             "a research task is left as it is"
         );
+    }
+
+    // ---- PT-2: a tool the person switched off is not a tool the gate has -----------------------------------------------
+
+    /// A project with fast-check and StrykerJS in it, removed when it goes.
+    struct Project(std::path::PathBuf);
+
+    impl Project {
+        fn new() -> Project {
+            let base =
+                std::env::temp_dir().join(format!("hivra pt2 gate {}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(base.join("scratch")).unwrap();
+            std::fs::create_dir_all(base.join("proj")).unwrap();
+            std::fs::write(
+                base.join("proj/package.json"),
+                r#"{"devDependencies":{"fast-check":"4","@stryker-mutator/core":"10.1.1"}}"#,
+            )
+            .unwrap();
+            Project(base)
+        }
+    }
+
+    impl Drop for Project {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Whether the Full gate wants proof tools for a code diff, deciding by the app's own `detect_in` with these tools off.
+    fn wanted_with_off(project: &Project, mode: TestingMode, off: &[&str]) -> bool {
+        use crate::proof_tools::{run, switch::test_env::OffEnv};
+        let env = OffEnv::new(off, project.0.join("scratch"));
+        proof_gate_wanted(mode, true, || run::detect_in(&project.0.join("proj"), &env))
+    }
+
+    #[test]
+    fn the_gate_is_wanted_while_one_installed_tool_is_on_and_not_when_every_one_is_switched_off() {
+        let project = Project::new();
+        assert!(wanted_with_off(&project, TestingMode::Full, &[]));
+        assert!(wanted_with_off(&project, TestingMode::Full, &["stryker"]));
+        assert!(!wanted_with_off(
+            &project,
+            TestingMode::Full,
+            &["stryker", "fast-check"]
+        ));
+        // The gates that follow: all off is exactly the gates a project with no tool gets.
+        let all_off = wanted_with_off(&project, TestingMode::Full, &["stryker", "fast-check"]);
+        let chosen = with_proof(TestingMode::Full, None, &["src/app.ts"], all_off);
+        assert!(!chosen.gates.contains(&GateKind::ProofTools));
+        assert_eq!(chosen, pick(TestingMode::Full, None, &["src/app.ts"]));
+        let some_on = wanted_with_off(&project, TestingMode::Full, &["stryker"]);
+        assert!(
+            with_proof(TestingMode::Full, None, &["src/app.ts"], some_on)
+                .gates
+                .contains(&GateKind::ProofTools)
+        );
+    }
+
+    #[test]
+    fn only_full_for_a_code_diff_asks_what_the_project_has() {
+        let asked = std::cell::Cell::new(0);
+        let ask = || {
+            asked.set(asked.get() + 1);
+            crate::proof_tools::detect::Detection {
+                stacks: Vec::new(),
+                fitting: Vec::new(),
+                off: Vec::new(),
+            }
+        };
+        for mode in [TestingMode::Off, TestingMode::AtShip, TestingMode::Light] {
+            assert!(!proof_gate_wanted(mode, true, ask));
+        }
+        assert!(!proof_gate_wanted(TestingMode::Full, false, ask));
+        assert_eq!(asked.get(), 0, "no program is probed for those");
+        assert!(!proof_gate_wanted(TestingMode::Full, true, ask));
+        assert_eq!(asked.get(), 1);
     }
 
     #[test]

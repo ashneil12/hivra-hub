@@ -16,6 +16,8 @@
 //! - `run`: runs the installed, fitting tools over a change through the SAME sandboxed runner the checks use (`app_env` is
 //!   that runner's door: `verify_stage::run_proof_line`, or `run_copy_line_with` in the running checker's read-only copy).
 //! - `offers`: the per-project proposal record, kept in the Verify plugin's `verify-offers.json` under its lock.
+//! - `switch` (PT-2): the per-project off switch for a tool, beside it in the same file. `run::detect_in` leaves a switched-off
+//!   tool out, so it never runs and is never proposed.
 //! - `mcp`: the first mate's `proof_tools` tool.
 //!
 //! Honest by construction, as the ship check and the gates are: a tool that could not run is "could not run", never a
@@ -29,6 +31,7 @@ pub mod diff;
 pub mod mcp;
 pub mod offers;
 pub mod run;
+pub mod switch;
 pub mod trim;
 
 use std::collections::BTreeMap;
@@ -111,6 +114,8 @@ pub struct ToolView {
     pub external: bool,
     pub installed: bool,
     pub status: offers::Status,
+    /// PT-2: the person switched it off for this project (Settings). It is never run or proposed while it is.
+    pub off: bool,
 }
 
 /// The tools that fit a project and which of them it has.
@@ -118,15 +123,20 @@ pub struct ToolView {
 pub struct ListView {
     pub stacks: Vec<Stack>,
     pub tools: Vec<ToolView>,
+    /// PT-2: the project's switch revision. A switch write names it, and is refused if it has moved (`switch::set`).
+    pub revision: u64,
 }
 
-/// `detection` as the list the webview reads. Only tools that fit appear, in catalogue order. A tool with no record is `open`.
+/// `detection` as the list the webview reads. Only tools that fit appear, in catalogue order. A tool with no record is `open`
+/// and on. `detection` is the whole one (`run::detect_all_in`): the list shows a switched-off tool as off, it doesn't hide it.
 pub fn list_view(
     detection: &detect::Detection,
     statuses: &BTreeMap<String, offers::Status>,
+    switches: &switch::Switches,
 ) -> ListView {
     ListView {
         stacks: detection.stacks.clone(),
+        revision: switches.revision,
         tools: detection
             .fitting
             .iter()
@@ -142,19 +152,38 @@ pub fn list_view(
                     .get(&found.tool.id)
                     .copied()
                     .unwrap_or(offers::Status::Open),
+                off: switches.off.contains(&found.tool.id),
             })
             .collect(),
     }
 }
 
-/// Which tools fit `folder` and which it has. In a checkout of a project the app knows, a program rule (`cargo mutants
-/// --version`) is asked through the sandboxed runner; anywhere else only the files are read.
+/// Which tools fit `folder` and which it has, switched-off ones included (the Settings list shows them as off). In a checkout of a
+/// project the app knows, a program rule (`cargo mutants --version`) is asked through the sandboxed runner; anywhere else only the
+/// files are read.
 pub fn detect_folder(app: &tauri::AppHandle, folder: &Path) -> detect::Detection {
+    match crate::project_actions::checkout_of_project(folder) {
+        Ok((main, checkout)) => {
+            run::detect_all_in(&checkout, &app_env::AppEnv::checkout(app, &main, &checkout))
+        }
+        Err(_) => detect::detect(folder, &detect::NoProbe),
+    }
+}
+
+/// PT-2: `detect_folder` for deciding what to run: the tools the person switched off for the project are left out.
+pub fn detect_folder_in_use(app: &tauri::AppHandle, folder: &Path) -> detect::Detection {
     match crate::project_actions::checkout_of_project(folder) {
         Ok((main, checkout)) => {
             run::detect_in(&checkout, &app_env::AppEnv::checkout(app, &main, &checkout))
         }
-        Err(_) => detect::detect(folder, &detect::NoProbe),
+        Err(_) => {
+            let off = crate::plugins::host(app)
+                .ok()
+                .zip(switch::key_of_path(folder))
+                .map(|(host, key)| switch::state(&host, &key).off)
+                .unwrap_or_default();
+            detect::detect(folder, &detect::NoProbe).without_off(&off)
+        }
     }
 }
 
@@ -171,11 +200,19 @@ pub fn proof_tools_list(app: tauri::AppHandle, folder: String) -> Result<ListVie
         return Err("That folder isn't on this computer.".into());
     }
     let detection = detect_folder(&app, &root);
-    // A record that can't be read changes nothing here: a proposal can't be filed against it either (`offers::claim`).
-    let statuses = crate::plugins::host(&app)
-        .and_then(|host| offers::statuses(&host, folder))
+    // A record that can't be read changes nothing here: a proposal can't be filed against it either (`offers::claim`), and no tool
+    // reads as switched off (`switch::state`).
+    let host = crate::plugins::host(&app).ok();
+    let statuses = host
+        .as_ref()
+        .and_then(|host| offers::statuses(host, folder).ok())
         .unwrap_or_default();
-    Ok(list_view(&detection, &statuses))
+    let switches = host
+        .as_ref()
+        .zip(switch::project_key(folder).ok())
+        .map(|(host, key)| switch::state(host, &key))
+        .unwrap_or_default();
+    Ok(list_view(&detection, &statuses, &switches))
 }
 
 #[cfg(test)]
@@ -198,11 +235,12 @@ mod tests {
                 found("stryker", false),
                 found("playwright", false),
             ],
+            off: Vec::new(),
         };
         let mut statuses = BTreeMap::new();
         statuses.insert("stryker".to_string(), offers::Status::Declined);
         statuses.insert("playwright".to_string(), offers::Status::Proposed);
-        let list = list_view(&detection, &statuses);
+        let list = list_view(&detection, &statuses, &switch::Switches::default());
         assert_eq!(list.stacks, vec![Stack::Node, Stack::Web]);
         let seen: Vec<(&str, bool, offers::Status)> = list
             .tools
@@ -224,15 +262,67 @@ mod tests {
         let detection = detect::Detection {
             stacks: vec![Stack::Rust],
             fitting: vec![found("proptest", false)],
+            off: Vec::new(),
         };
-        let json = serde_json::to_value(list_view(&detection, &BTreeMap::new())).unwrap();
+        let json = serde_json::to_value(list_view(
+            &detection,
+            &BTreeMap::new(),
+            &switch::Switches::default(),
+        ))
+        .unwrap();
         assert_eq!(json["stacks"], serde_json::json!(["rust"]));
+        assert_eq!(json["revision"], 0);
         let tool = &json["tools"][0];
         assert_eq!(tool["id"], "proptest");
         assert_eq!(tool["kind"], "property");
         assert_eq!(tool["status"], "open");
         assert_eq!(tool["installed"], false);
         assert_eq!(tool["external"], false);
+        assert_eq!(tool["off"], false);
         assert!(tool["howToUse"].as_str().unwrap().contains("proptest"));
+    }
+
+    #[test]
+    fn the_list_shows_a_switched_off_tool_as_off_and_carries_the_revision_a_write_must_name() {
+        let detection = detect::Detection {
+            stacks: vec![Stack::Node, Stack::Web],
+            fitting: vec![
+                found("fast-check", true),
+                found("stryker", true),
+                found("playwright", false),
+            ],
+            off: Vec::new(),
+        };
+        let switches = switch::Switches {
+            off: ["stryker".to_string(), "playwright".to_string()]
+                .into_iter()
+                .collect(),
+            revision: 7,
+        };
+        let list = list_view(&detection, &BTreeMap::new(), &switches);
+        assert_eq!(list.revision, 7);
+        let seen: Vec<(&str, bool, bool)> = list
+            .tools
+            .iter()
+            .map(|tool| (tool.id.as_str(), tool.installed, tool.off))
+            .collect();
+        // An installed tool that is off stays in the list (that is where it is switched back on); an id the record names
+        // that fits nothing here is simply not a row.
+        assert_eq!(
+            seen,
+            [
+                ("fast-check", true, false),
+                ("stryker", true, true),
+                ("playwright", false, true)
+            ]
+        );
+        let none = switch::Switches {
+            off: std::iter::once("not-in-this-list".to_string()).collect(),
+            revision: 0,
+        };
+        assert!(list_view(&detection, &BTreeMap::new(), &none)
+            .tools
+            .iter()
+            .all(|tool| !tool.off));
     }
 }

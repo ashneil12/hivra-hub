@@ -885,6 +885,14 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords:
       "testing tests review checks quality each task ship at ship light full off no testing done gate bulk pass",
   },
+  // PT-2: the open-source proof tools that fit a project, and a per-project switch for each one it has.
+  {
+    id: "proof-tools",
+    section: "crew",
+    label: "Proof tools",
+    keywords:
+      "proof tools testing tests property mutation end to end api scanner fast-check stryker playwright proptest hypothesis mutmut schemathesis semgrep ast-grep cargo-mutants e2e open source switch off on use project",
+  },
   // SC-5: which model family checks a finished task.
   {
     id: "checker-family",

@@ -446,6 +446,26 @@ describe("tasks.delegate carries the brief's check lines, stamp and do-not-touch
       expect(f.api.proofTools).toHaveBeenCalledWith(PROJECT);
     });
 
+    it("PT-2: never names a tool the person switched off in the project", async () => {
+      const f = fixture([]);
+      f.api.testingMode = vi.fn(async () => "full" as const);
+      f.api.proofTools = vi.fn(async () => ({
+        stacks: ["node"],
+        revision: 3,
+        tools: [{ ...view("fast-check", "property", true), off: true }, view("stryker", "mutation", true)],
+      }));
+      await delegate(f, "p2-off");
+      const prompt = promptOf(f.started[0]);
+      expect(prompt).toContain("- StrykerJS: ");
+      expect(prompt).not.toContain("- fast-check: ");
+      // Every installed tool off: no section.
+      const g = fixture([]);
+      g.api.testingMode = vi.fn(async () => "full" as const);
+      g.api.proofTools = vi.fn(async () => ({ stacks: ["node"], tools: [{ ...view("stryker", "mutation", true), off: true }] }));
+      await delegate(g, "p2-all-off");
+      expect(promptOf(g.started[0])).not.toContain("Proof tools here");
+    });
+
     it("names only the tools the project has", async () => {
       const f = fixture([]);
       f.api.testingMode = vi.fn(async () => "full" as const);

@@ -1498,6 +1498,7 @@ mod proof_step {
                                     .map(|id| found(id, false)),
                             )
                             .collect(),
+                        off: Vec::new(),
                     }
                 },
                 |_| {

@@ -2758,9 +2758,10 @@ pub async fn firstmate_run_gates(
             }
         };
         // PT-1: only in `full`, for a code diff, does it matter whether the project already has a proof tool that fits it.
-        let proof = mode == crate::delivery::settings::TestingMode::Full
-            && code_changed
-            && crate::proof_tools::detect_folder(&app, &checkout).has_installed();
+        // PT-2: a tool the person switched off for the project doesn't count, so a project whose tools are all off gets no gate.
+        let proof = testing_mode::proof_gate_wanted(mode, code_changed, || {
+            crate::proof_tools::detect_folder_in_use(&app, &checkout)
+        });
         let moded =
             testing_mode::gates_for_with(mode, plan.as_ref(), &changed, code_changed, risky, proof);
         // Nothing changed and no plan was stored (a research or answer task): the task settles as it always did.

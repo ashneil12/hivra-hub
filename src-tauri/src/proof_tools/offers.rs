@@ -47,6 +47,8 @@ pub enum Claim {
     Claimed { revision: u64 },
     /// Not this call's to propose: it already was, or the person said not now.
     Already(Status),
+    /// PT-2: the person switched this tool off for the project in Settings. A switched-off tool is never proposed.
+    SwitchedOff,
 }
 
 // ---- the folder and its decision key -------------------------------------------------------------------------------------
@@ -82,7 +84,7 @@ fn folder_display(folder: &str) -> Result<String, String> {
     Ok(verify::folder_key(folder)?.to_string_lossy().into_owned())
 }
 
-fn tool_of(tool_id: &str) -> Result<&'static Tool, String> {
+pub(super) fn tool_of(tool_id: &str) -> Result<&'static Tool, String> {
     catalogue::find(tool_id).ok_or_else(|| UNKNOWN_TOOL.to_string())
 }
 
@@ -140,8 +142,17 @@ pub fn statuses(host: &Host, folder: &str) -> Result<BTreeMap<String, Status>, S
 pub fn claim(host: &Host, folder: &str, tool_id: &str) -> Result<Claim, String> {
     tool_of(tool_id)?;
     let key = folder_display(folder)?;
+    let off_key = super::switch::project_key(folder)?;
     let _lock = verify::exclusive(host)?;
     let mut offers = verify::read_offers(host)?;
+    // PT-2: read under the lock, so a switch made in another window a moment ago is honoured.
+    if offers
+        .off
+        .get(&off_key)
+        .is_some_and(|record| record.tools.contains(tool_id))
+    {
+        return Ok(Claim::SwitchedOff);
+    }
     match status_in(&offers, &key, tool_id) {
         Status::Open => {}
         other => return Ok(Claim::Already(other)),
@@ -401,6 +412,20 @@ pub fn propose_claim_in(host: &Host, folder: &str, tool_id: &str) -> Result<Clai
                 status,
                 revision,
                 already_note(status),
+            ))
+        }
+        Claim::SwitchedOff => {
+            let offers = verify::read_offers(host)?;
+            Ok(view(
+                tool,
+                &display,
+                false,
+                status_in(&offers, &display, tool_id),
+                offers.revision,
+                format!(
+                    "{} is switched off for this project. Don't propose it.",
+                    tool.name
+                ),
             ))
         }
     }
@@ -1044,5 +1069,45 @@ mod tests {
             tool,
             ["external", "id", "install", "licence", "name", "pinned", "proves", "repo"]
         );
+    }
+
+    // ---- PT-2: a switched-off tool is never proposed -------------------------------------------------------------------
+
+    #[test]
+    fn a_tool_switched_off_for_the_project_is_never_claimed_or_proposed() {
+        let tmp = Tmp::new("off-claim");
+        let host = host(&tmp);
+        let folder = tmp.project("proj one", NODE_PROJECT);
+        let key = super::super::switch::project_key(&folder).unwrap();
+        super::super::switch::set(&host, &key, "stryker", false, 0).unwrap();
+        // The claim itself says so, and records nothing.
+        assert_eq!(
+            claim(&host, &folder, "stryker").unwrap(),
+            Claim::SwitchedOff
+        );
+        assert_eq!(status(&host, &folder, "stryker").unwrap(), Status::Open);
+        assert!(saved(&host).get("tools").is_none());
+        // A first mate's proposal gets a plain refusal and files nothing.
+        let view = propose_claim_in(&host, &folder, "stryker").unwrap();
+        assert!(!view.claimed);
+        assert!(
+            view.note
+                .contains("StrykerJS is switched off for this project"),
+            "{}",
+            view.note
+        );
+        assert_eq!(view.status, Status::Open);
+        // Another tool in the same project is still proposed as before.
+        assert!(
+            propose_claim_in(&host, &folder, "fast-check")
+                .unwrap()
+                .claimed
+        );
+        // Another project is untouched.
+        let other = tmp.project("proj two", NODE_PROJECT);
+        assert!(propose_claim_in(&host, &other, "stryker").unwrap().claimed);
+        // Switched back on, it can be proposed again.
+        super::super::switch::set(&host, &key, "stryker", true, 1).unwrap();
+        assert!(propose_claim_in(&host, &folder, "stryker").unwrap().claimed);
     }
 }

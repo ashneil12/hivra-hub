@@ -2,6 +2,7 @@
 // sources, Notes, and the changes card. Example data only, kept in this page's storage; nothing reaches a disk, GitHub or
 // any service. `undefined` means "not mine" and the stand-in answers as before.
 
+import { findProofTool } from "../../features/proofTools/model/proofTools"; // PT-2
 import { EXAMPLE } from "./data";
 
 const NOTES_KEY = "monocode:mockup-notes";
@@ -56,6 +57,72 @@ function testingRow(project: string): Row {
     testingDefaulted: mode === null,
     updatedAt: typeof stored.updatedAt === "number" ? stored.updatedAt : null,
   };
+}
+
+// PT-2: the proof tools of a project (proof_tools/mod.rs). Example data for any project: a node project that has fast-check and
+// Playwright, where StrykerJS fits but isn't installed and was proposed. The per-project switches and their revision are kept in
+// this page's storage, so a switch can be tried, and a write on an old revision is refused as the app refuses it.
+const PROOF_TOOLS_KEY = "monocode:mockup-proof-tools";
+const PROOF_TOOLS_STALE = "That changed in another window. Look again, then set it.";
+const PROOF_TOOLS_EXAMPLE: { id: string; installed: boolean; status: "open" | "proposed" | "declined" }[] = [
+  { id: "fast-check", installed: true, status: "open" },
+  { id: "stryker", installed: false, status: "proposed" },
+  { id: "playwright", installed: true, status: "open" },
+];
+
+type ProofSwitches = { off: string[]; revision: number };
+
+function proofToolsStore(): Record<string, ProofSwitches> {
+  try {
+    const value = JSON.parse(localStorage.getItem(PROOF_TOOLS_KEY) ?? "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function proofSwitches(project: string): ProofSwitches {
+  const stored = proofToolsStore()[project];
+  return {
+    off: Array.isArray(stored?.off) ? stored.off.filter((id): id is string => typeof id === "string") : [],
+    revision: typeof stored?.revision === "number" ? stored.revision : 0,
+  };
+}
+
+function proofToolsList(project: string): Row {
+  const { off, revision } = proofSwitches(project);
+  return {
+    stacks: ["node", "web"],
+    revision,
+    tools: PROOF_TOOLS_EXAMPLE.map((example) => {
+      const known = findProofTool(example.id);
+      return {
+        id: example.id,
+        name: known?.name ?? example.id,
+        proves: known?.proves ?? "",
+        howToUse: known?.howToUse ?? "",
+        kind: known?.kind ?? "property",
+        external: known?.external ?? false,
+        installed: example.installed,
+        status: example.status,
+        off: example.installed && off.includes(example.id),
+      };
+    }),
+  };
+}
+
+function proofToolSet(args: Row | undefined): ProofSwitches {
+  const project = String(args?.folder ?? "");
+  const id = String(args?.toolId ?? "");
+  const current = proofSwitches(project);
+  if (args?.expectedRevision !== current.revision) throw PROOF_TOOLS_STALE;
+  if (!PROOF_TOOLS_EXAMPLE.some((example) => example.id === id)) throw "That isn't a proof tool I know.";
+  const off = new Set(current.off);
+  if (args?.on === true) off.delete(id);
+  else off.add(id);
+  const next = { off: [...off], revision: current.revision + 1 };
+  localStorage.setItem(PROOF_TOOLS_KEY, JSON.stringify({ ...proofToolsStore(), [project]: next }));
+  return next;
 }
 
 // SC-3b: the ship check (ship_check.rs). Example answers; the last result is kept per project in this page's storage.
@@ -118,6 +185,10 @@ export function mockupIpc(cmd: string, args: Row | undefined): unknown {
       localStorage.setItem(TESTING_KEY, JSON.stringify(all));
       return { project, testingMode: args?.mode, updatedAt };
     }
+    case "proof_tools_list":
+      return proofToolsList(String(args?.folder ?? ""));
+    case "proof_tools_set":
+      return proofToolSet(args);
     // The Inbox: GitHub is connected with example items, the other sources wait under "Add connection".
     case "git_github_status":
       return { connected: true, installed: true, authenticated: true };

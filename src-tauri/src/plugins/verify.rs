@@ -134,6 +134,57 @@ pub(crate) struct Offers {
         deserialize_with = "lenient_tools"
     )]
     pub(crate) tools: BTreeMap<String, BTreeMap<String, ToolOffer>>,
+    /// PT-2: the proof tools a person switched off per project folder (Settings > Proof tools), each folder with its own
+    /// revision for compare-and-swap (src-tauri/src/proof_tools/switch.rs). Same file, same lock. A file written before
+    /// this existed has none, and every tool reads as on.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "lenient_off"
+    )]
+    pub(crate) off: BTreeMap<String, OffRecord>,
+}
+
+/// PT-2: one folder's switched-off proof tools. `revision` is the store's `revision` right after this folder's last switch
+/// write, so it only ever grows; a write based on an older one is refused. A folder keeps its record when its last tool is
+/// switched back on, so an older window can never write on top of a revision that came back round.
+#[derive(Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct OffRecord {
+    #[serde(default)]
+    pub(crate) tools: BTreeSet<String>,
+    #[serde(default)]
+    pub(crate) revision: u64,
+}
+
+/// PT-2: the `off` record is read entry by entry, like `tools`. A folder that isn't an object is left out, a tool id that isn't a
+/// string is dropped, and a revision that isn't a whole number reads as none: a hand edit can only switch tools back on, never
+/// make the offer list unreadable.
+fn lenient_off<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, OffRecord>, D::Error> {
+    let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
+    let mut out = BTreeMap::new();
+    let Some(folders) = value.as_object() else {
+        return Ok(out);
+    };
+    for (folder, record) in folders {
+        let Some(record) = record.as_object() else {
+            continue;
+        };
+        let tools = record
+            .get("tools")
+            .and_then(Value::as_array)
+            .map(|list| {
+                list.iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let revision = record.get("revision").and_then(Value::as_u64).unwrap_or(0);
+        out.insert(folder.clone(), OffRecord { tools, revision });
+    }
+    Ok(out)
 }
 
 /// PT-1: the `tools` record is read entry by entry. An entry that isn't one (a state this build doesn't know, a hand edit)
