@@ -54,8 +54,7 @@ impl FactGapFilter {
                 .into_iter()
                 .filter(|gap| {
                     !fact_gaps::is_no_red_gap(gap)
-                        && (fact_gaps::is_failed_check_gap(gap)
-                            || fact_gaps::is_open_todo_gap(gap))
+                        && (fact_gaps::is_failed_check_gap(gap) || fact_gaps::is_open_todo_gap(gap))
                 })
                 .collect(),
             FactGapFilter::Nothing => Vec::new(),

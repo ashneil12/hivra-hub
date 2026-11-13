@@ -335,7 +335,7 @@ mod tests {
         }
         let found = find_browser(Some(&home), dir.to_str());
         assert!(
-            found.as_deref().map_or(true, |p| !p.starts_with(&dir)),
+            found.as_deref().is_none_or(|p| !p.starts_with(&dir)),
             "a browser on PATH was picked: {found:?}"
         );
         // A bundle under ~/Applications is.

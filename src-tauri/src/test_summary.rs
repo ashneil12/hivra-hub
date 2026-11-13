@@ -1080,7 +1080,7 @@ fn vitest_files_failed(lines: &[&str]) -> u64 {
         .iter()
         .filter_map(|line| line_re.captures(line))
         .filter_map(|caps| failed_re.captures(&caps[1]).map(|n| number(&n[1])))
-        .last()
+        .next_back()
         .unwrap_or(0)
 }
 

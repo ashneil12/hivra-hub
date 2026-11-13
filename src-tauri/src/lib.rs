@@ -150,10 +150,10 @@ pub mod browser;
 // WP-33: plugin panels, the catalog and the My panels migration.
 mod panels;
 // Reads of files this app didn't make: never through a link, a pipe, or past the size expected.
+mod agent_install;
 mod plain_file;
 mod portable;
 pub(crate) mod pr_watch;
-mod agent_install;
 mod project_actions;
 mod project_file;
 mod project_logo;
@@ -1540,7 +1540,8 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(runs) = handle.try_state::<project_actions::ActionRuns>() {
         runs.stop_all();
-    }    if let Some(installs) = handle.try_state::<agent_install::AgentInstalls>() {
+    }
+    if let Some(installs) = handle.try_state::<agent_install::AgentInstalls>() {
         installs.stop_all();
     }
 }

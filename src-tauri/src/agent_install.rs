@@ -37,10 +37,13 @@ pub fn install_command(harness: &str) -> Option<&'static str> {
     })
 }
 
+/// A running install: its process group id, and whether Cancel was pressed.
+type Running = (i32, Arc<Mutex<bool>>);
+
 #[derive(Default)]
 pub struct AgentInstalls {
-    /// harness id -> (process group id, cancelled)
-    running: Mutex<HashMap<String, (i32, Arc<Mutex<bool>>)>>,
+    /// harness id -> the running install
+    running: Mutex<HashMap<String, Running>>,
 }
 
 impl AgentInstalls {
@@ -132,7 +135,11 @@ fn clean_line(raw: &str) -> String {
     out.chars().take(MAX_LINE_CHARS).collect()
 }
 
-fn pump(app: AppHandle, harness: String, stream: impl Read + Send + 'static) -> std::thread::JoinHandle<()> {
+fn pump(
+    app: AppHandle,
+    harness: String,
+    stream: impl Read + Send + 'static,
+) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         let mut reader = BufReader::new(stream);
         let mut buf = Vec::new();
@@ -145,7 +152,13 @@ fn pump(app: AppHandle, harness: String, stream: impl Read + Send + 'static) -> 
                     if line.trim().is_empty() {
                         continue;
                     }
-                    let _ = app.emit(EVENT, InstallLine { harness: &harness, line: &line });
+                    let _ = app.emit(
+                        EVENT,
+                        InstallLine {
+                            harness: &harness,
+                            line: &line,
+                        },
+                    );
                 }
             }
         }
@@ -167,11 +180,18 @@ fn shell_command(script: &str) -> Command {
     command
 }
 
-fn run_install(app: &AppHandle, installs: &AgentInstalls, harness: &str) -> Result<InstallResult, String> {
+fn run_install(
+    app: &AppHandle,
+    installs: &AgentInstalls,
+    harness: &str,
+) -> Result<InstallResult, String> {
     if cfg!(windows) {
-        return Err("Installing from the app isn't available on Windows yet. Use the install page.".into());
+        return Err(
+            "Installing from the app isn't available on Windows yet. Use the install page.".into(),
+        );
     }
-    let script = install_command(harness).ok_or_else(|| format!("No installer is known for {harness}."))?;
+    let script =
+        install_command(harness).ok_or_else(|| format!("No installer is known for {harness}."))?;
 
     // Reserve the slot before anything starts, so a second press can't start a second installer.
     let cancelled = Arc::new(Mutex::new(false));
@@ -194,10 +214,9 @@ fn run_install(app: &AppHandle, installs: &AgentInstalls, harness: &str) -> Resu
         .env("CI", "1");
     // An installer is not an agent: none of the app's control endpoints go to it.
     for (name, _) in std::env::vars_os() {
-        if name
-            .to_str()
-            .is_some_and(|name| name.starts_with("MONOCODE_APP_") || name.starts_with("MONOCODE_CONTROL_"))
-        {
+        if name.to_str().is_some_and(|name| {
+            name.starts_with("MONOCODE_APP_") || name.starts_with("MONOCODE_CONTROL_")
+        }) {
             command.env_remove(&name);
         }
     }
@@ -230,10 +249,19 @@ fn run_install(app: &AppHandle, installs: &AgentInstalls, harness: &str) -> Resu
 
     let _ = app.emit(
         EVENT,
-        InstallLine { harness, line: &format!("$ {script}") },
+        InstallLine {
+            harness,
+            line: &format!("$ {script}"),
+        },
     );
-    let out = child.stdout.take().map(|s| pump(app.clone(), harness.to_string(), s));
-    let err = child.stderr.take().map(|s| pump(app.clone(), harness.to_string(), s));
+    let out = child
+        .stdout
+        .take()
+        .map(|s| pump(app.clone(), harness.to_string(), s));
+    let err = child
+        .stderr
+        .take()
+        .map(|s| pump(app.clone(), harness.to_string(), s));
     let status = child.wait();
     // The group may keep a pipe open after the shell exits; end it so the readers finish.
     signal_group(pgid, true);
@@ -274,12 +302,20 @@ pub fn agent_cli_install_cancel(installs: State<'_, AgentInstalls>, harness: Str
 mod sc8c_tests {
     #[test]
     fn every_installer_curl_starts_with_q() {
-        for harness in ["claude", "codex", "cursor", "grok", "opencode", "pi", "omp", "devin"] {
+        for harness in [
+            "claude", "codex", "cursor", "grok", "opencode", "pi", "omp", "devin",
+        ] {
             let command = super::install_command(harness).expect(harness);
             for (at, _) in command.match_indices("curl ") {
-                assert!(command[at..].starts_with("curl -q "), "{harness}: {command}");
+                assert!(
+                    command[at..].starts_with("curl -q "),
+                    "{harness}: {command}"
+                );
             }
-            assert!(!command.contains("wget"), "{harness}: a wget would need --no-config: {command}");
+            assert!(
+                !command.contains("wget"),
+                "{harness}: a wget would need --no-config: {command}"
+            );
         }
     }
 }

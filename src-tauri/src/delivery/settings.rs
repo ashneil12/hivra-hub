@@ -60,7 +60,8 @@ pub enum TestingMode {
 }
 
 impl TestingMode {
-    /// The four modes, in the order a person is shown them.
+    /// The four modes, in the order a person is shown them. Only tests walk them; the app reads one mode at a time.
+    #[cfg(test)]
     pub const ALL: [TestingMode; 4] = [
         TestingMode::AtShip,
         TestingMode::Light,
@@ -84,32 +85,6 @@ impl TestingMode {
             "full" => Some(TestingMode::Full),
             "off" => Some(TestingMode::Off),
             _ => None,
-        }
-    }
-
-    /// The name a person reads. The webview shows the same words (`TestingModeSetting`).
-    pub fn label(self) -> &'static str {
-        match self {
-            TestingMode::AtShip => "Test at ship",
-            TestingMode::Light => "Light tests each task",
-            TestingMode::Full => "Full checks each task",
-            TestingMode::Off => "No testing",
-        }
-    }
-
-    /// One line under the name.
-    pub fn description(self) -> &'static str {
-        match self {
-            TestingMode::AtShip => {
-                "Tasks are checked for obvious slips only; tests and review run once, when you ship."
-            }
-            TestingMode::Light => {
-                "Every task that changes code runs the project's tests and gets a quick review."
-            }
-            TestingMode::Full => {
-                "Light, plus the task's own checks, the real-app check and a second reviewer."
-            }
-            TestingMode::Off => "Tasks are not tested or reviewed.",
         }
     }
 }
@@ -776,8 +751,8 @@ mod tests {
         for (mode, word, label, description) in rows {
             assert_eq!(mode.as_str(), word);
             assert_eq!(TestingMode::parse(word), Some(mode));
-            assert_eq!(mode.label(), label);
-            assert_eq!(mode.description(), description);
+            // The words a person reads are the webview's (TestingModeSetting); they are listed here for the reader.
+            let _ = (label, description);
             assert_eq!(serde_json::to_string(&mode).unwrap(), format!("\"{word}\""));
             assert_eq!(
                 serde_json::from_str::<TestingMode>(&format!("\"{word}\"")).unwrap(),
