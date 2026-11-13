@@ -355,6 +355,8 @@ type Props = {
   workspaceSwitchPending?: boolean;
   workspaceSwitchError?: string;
   open: boolean;
+  /** Closes this panel. The title bar's own toggle goes away while the panel is open, so its header needs one. */
+  onToggleOpen?: () => void;
   sessions: SessionSummary[];
   busySessionIds: Set<string>;
   approvalSessionIds: Set<string>;
@@ -557,6 +559,7 @@ function SidebarComponent({
   workspaceSwitchPending,
   workspaceSwitchError,
   open,
+  onToggleOpen,
   sessions,
   busySessionIds,
   approvalSessionIds,
@@ -2995,7 +2998,19 @@ function SidebarComponent({
             workspaceHeader
           ) : !inset && onNew ? (
             // With the code tools off there is still a way to start a new chat here.
-            <div className="flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pl-3 pr-1.5" data-sidebar-chats-header>
+            <div
+              className={`flex h-10 shrink-0 select-none items-center gap-1 border-b border-stroke pr-1.5 ${onToggleOpen ? "pl-1.5" : "pl-3"}`}
+              data-sidebar-chats-header
+            >
+              {/* The title bar's toggle is hidden while this panel is open: without this there was no way to close it
+                  again except the shortcut (Ash, 13 Nov). Same icon, same place, so it reads as the same switch. */}
+              {onToggleOpen ? (
+                <span data-sidebar-chats-close className="flex">
+                  <IconButton label={`Hide chats (${MOD}${SHIFT}B)`} onClick={onToggleOpen}>
+                    <DashboardSquare className="size-3.5" strokeWidth={1.75} />
+                  </IconButton>
+                </span>
+              ) : null}
               <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">Chats</span>
               <button
                 type="button"
