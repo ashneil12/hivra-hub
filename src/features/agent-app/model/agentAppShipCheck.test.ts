@@ -6,6 +6,7 @@ import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import type { ShipCheckRecord } from "../../hub/model/shipCheck";
 import { newSession, type Session } from "../../sessions/model/session";
 import { appActions, handleAgentApp, type AgentAppHost } from "./agentApp";
+import { handleShipCheck } from "./agentAppShipCheck";
 
 vi.mock("../../../integrations/harness/core/availability", () => ({ isHarnessAvailable: () => true }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => null) }));
@@ -167,6 +168,111 @@ describe("ship_check.run", () => {
   it("refuses an answer that isn't a record instead of reporting a result", async () => {
     const { source, host } = fixture("mono", vi.fn(async () => ({ outcome: "passed", tested: ["everything"] })));
     await expect(handleAgentApp(source, "r1", "ship_check.run", {}, host)).rejects.toThrow(/couldn't be read/);
+  });
+
+  // ---- PT-4: the proof tools a ship check puts forward ---------------------------------------------------------------------
+
+  describe("the proof tools it puts forward", () => {
+    function claimFor(toolId: string, claimed = true, status = "proposed") {
+      return {
+        claimed,
+        status: claimed ? "proposed" : status,
+        revision: 4,
+        key: `proof-tools/${toolId}/0123456789ab`,
+        question: `Add ${toolId} to this project?`,
+        options: ["Add it", "Not now"],
+        recommended: "Add it",
+        tool: { install: `npm install --save-dev ${toolId}` },
+        note: claimed ? "Not proposed before for this project. File the question now." : "Already proposed.",
+      };
+    }
+
+    function withBackend(proposals: { toolId: string; name: string }[], claims: Record<string, ReturnType<typeof claimFor>>) {
+      const run = vi.fn(async (_cwd: string): Promise<unknown> => ({ ...record(), proposals }));
+      const base = fixture("mono", run);
+      const claim = vi.fn(async (_folder: string, toolId: string) => claims[toolId]);
+      const release = vi.fn(async () => true);
+      const host = { ...base.host, proofTools: { list: vi.fn(), claim, release } } as unknown as AgentAppHost;
+      return { ...base, host, claim, release };
+    }
+
+    const call = (f: { source: Session; host: AgentAppHost }, ask?: (input: Record<string, unknown>) => Promise<unknown>) =>
+      handleShipCheck(f.source, "ship_check.run", {}, f.host, () => "/code/hivra", ask);
+
+    it("files each one through the claim and the ask, in the order the app gave, and tells the first mate to say so", async () => {
+      const f = withBackend(
+        [
+          { toolId: "e2e", name: "e2e" },
+          { toolId: "playwright", name: "Playwright" },
+        ],
+        { e2e: claimFor("e2e"), playwright: claimFor("playwright") },
+      );
+      const ask = vi.fn(async (_input: Record<string, unknown>) => ({ state: "open" }));
+      const answer = await call(f, ask);
+      expect(f.claim.mock.calls.map((c) => [c[0], c[1]])).toEqual([
+        ["/code/hivra", "e2e"],
+        ["/code/hivra", "playwright"],
+      ]);
+      expect(ask.mock.calls.map((c) => c[0].key)).toEqual([
+        "proof-tools/e2e/0123456789ab",
+        "proof-tools/playwright/0123456789ab",
+      ]);
+      expect(ask.mock.calls[0][0]).toMatchObject({ options: ["Add it", "Not now"], recommended: "Add it" });
+      expect(answer.proposals).toHaveLength(2);
+      expect(answer.proposals?.[0]).toMatchObject({ proposed: true, toolId: "e2e", install: "npm install --save-dev e2e" });
+      expect(answer.proposalsNote).toContain("The app installs nothing");
+      // Adding anything still needs the person's tap: nothing was released, nothing was installed here.
+      expect(f.release).not.toHaveBeenCalled();
+    });
+
+    it("asks nothing for a tool already proposed or declined, so a Not now is never asked again", async () => {
+      const f = withBackend(
+        [
+          { toolId: "stryker", name: "StrykerJS" },
+          { toolId: "fast-check", name: "fast-check" },
+        ],
+        { stryker: claimFor("stryker", false, "declined"), "fast-check": claimFor("fast-check") },
+      );
+      const ask = vi.fn(async (_input: Record<string, unknown>) => ({ state: "open" }));
+      const answer = await call(f, ask);
+      expect(ask).toHaveBeenCalledTimes(1);
+      expect(ask.mock.calls[0][0].key).toBe("proof-tools/fast-check/0123456789ab");
+      expect(answer.proposals?.[0]).toMatchObject({ proposed: false, toolId: "stryker", status: "declined" });
+      expect(answer.proposals?.[1]).toMatchObject({ proposed: true, toolId: "fast-check" });
+    });
+
+    it("gives a claim back when the question could not be filed, says so, and still files the others", async () => {
+      const f = withBackend(
+        [
+          { toolId: "e2e", name: "e2e" },
+          { toolId: "playwright", name: "Playwright" },
+        ],
+        { e2e: claimFor("e2e"), playwright: claimFor("playwright") },
+      );
+      const ask = vi
+        .fn(async (_input: Record<string, unknown>) => ({ state: "open" }))
+        .mockRejectedValueOnce(new Error("The decision store timed out."));
+      const answer = await call(f, ask);
+      // A timeout is not a final no: the claim is undone so the next ship check may put it forward again.
+      expect(f.release).toHaveBeenCalledWith("/code/hivra", "e2e", 4);
+      expect(answer.proposals?.[0]).toMatchObject({ proposed: false, toolId: "e2e" });
+      expect(String(answer.proposals?.[0].note)).toContain("The next ship check will put it forward again.");
+      expect(answer.proposals?.[1]).toMatchObject({ proposed: true, toolId: "playwright" });
+      expect(answer.outcome).toBe("passed");
+    });
+
+    it("claims and files nothing without an ask path, and says nothing of proposals when there are none", async () => {
+      const f = withBackend([{ toolId: "e2e", name: "e2e" }], { e2e: claimFor("e2e") });
+      const plain = await call(f);
+      expect(f.claim).not.toHaveBeenCalled();
+      expect(plain.proposals).toBeUndefined();
+      const none = withBackend([], {});
+      const ask = vi.fn();
+      const answer = await call(none, ask);
+      expect(ask).not.toHaveBeenCalled();
+      expect("proposals" in answer).toBe(false);
+      expect("proposalsNote" in answer).toBe(false);
+    });
   });
 
   it("starts one run when two asks arrive for the same project together", async () => {

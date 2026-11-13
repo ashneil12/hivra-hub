@@ -5,6 +5,7 @@
 import { runShipCheck, shortSha, type ShipCheckBackend } from "../../hub/model/shipCheck";
 import type { Session } from "../../sessions/model/session";
 import type { AgentAppHost } from "./agentApp";
+import { proofToolsBackendOf, proposeProofTool } from "./agentAppProofTools"; // PT-4
 
 /** The FIELDS entry of the ship check action (agentApp.ts). `project` names one of a first mate's projects. */
 export const SHIP_CHECK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = [["ship_check.run", ["project"]]];
@@ -18,7 +19,18 @@ export type ShipCheckAnswer = {
   tested: string[];
   notTested: string[];
   steps: { name: string; outcome: string; detail: string }[];
+  /**
+   * PT-4: the proof tools this ship check put to the person because the project could use them and lacks them (at most three,
+   * once per project per tool). Each is what `proof_tools propose` answers. Absent when none was put forward.
+   */
+  proposals?: Record<string, unknown>[];
+  /** PT-4: what to tell the person about them. Present with `proposals`. */
+  proposalsNote?: string;
 };
+
+/** The note that goes with the proposals: the person decides, and the app installs nothing. */
+export const PROPOSALS_NOTE =
+  "The ship check found proof tools this project could use and doesn't have. Each one that says proposed is now a question for the person under Needs you: tell them in one line that it is waiting. The app installs nothing: only if they answer Add it, brief a worker to run the install command it gives.";
 
 /** Only a first mate's own chat (a Mono's, or a coding team's) may run it. A Mono's habit run is a Mono session, but not that chat. */
 function firstMate(source: Session, host: AgentAppHost): void {
@@ -43,12 +55,32 @@ export async function handleShipCheck(
   input: Record<string, unknown>,
   host: AgentAppHost,
   projectOf: (source: Session, input: Record<string, unknown>) => string,
+  /** PT-4: the existing ask-the-person action (`tasks.ask`), which a proposal is filed through. Absent: none is filed. */
+  ask?: (input: Record<string, unknown>) => Promise<unknown>,
 ): Promise<ShipCheckAnswer> {
   if (action !== "ship_check.run") throw new Error(`Unknown app action: ${action}`);
   firstMate(source, host);
   const cwd = projectOf(source, input);
   const backend: Pick<ShipCheckBackend, "run"> | undefined = host.shipCheck;
   const record = await (backend ? runShipCheck(cwd, backend) : runShipCheck(cwd));
+  // PT-4: each tool the ship check put forward goes through PT-1's claim and ask, one after the other: the claim is what makes a
+  // proposal once per project per tool, so a second window or a retry asks nothing twice. One that can't be filed (a timeout, the
+  // decision store unreachable) is released by `proposeProofTool` so the next ship check may put it forward again, and says why.
+  const proposals: Record<string, unknown>[] = [];
+  if (ask) {
+    const proofTools = proofToolsBackendOf(host);
+    for (const proposal of record.proposals ?? []) {
+      try {
+        proposals.push(await proposeProofTool(cwd, proposal.toolId, proofTools, ask));
+      } catch (error) {
+        proposals.push({
+          proposed: false,
+          toolId: proposal.toolId,
+          note: `Couldn't ask about ${proposal.name} this time (${error instanceof Error ? error.message : String(error)}). The next ship check will put it forward again.`,
+        });
+      }
+    }
+  }
   return {
     outcome: record.outcome,
     head: record.head,
@@ -58,5 +90,6 @@ export async function handleShipCheck(
     tested: record.tested,
     notTested: record.notTested,
     steps: record.steps.map(({ name, outcome, detail }) => ({ name, outcome, detail })),
+    ...(proposals.length ? { proposals, proposalsNote: PROPOSALS_NOTE } : {}),
   };
 }

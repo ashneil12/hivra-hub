@@ -125,7 +125,21 @@ export async function handleProofTools(
     };
   }
 
-  const toolId = toolIdOf(input);
+  return proposeProofTool(folder, toolIdOf(input), backend, ask);
+}
+
+/**
+ * PT-4: put ONE tool the project lacks to the person: claim it (once per project per tool, under the app's lock), then file it as a
+ * Needs-you decision through `ask`. `handleProofTools` does this for a first mate's `proof_tools.propose`, and the ship check
+ * does it for each tool it puts forward (`agentAppShipCheck.ts`). A tool already proposed, declined, installed, switched off or
+ * that doesn't fit asks nothing. The app never installs: the answer carries the command a worker would run after "Add it".
+ */
+export async function proposeProofTool(
+  folder: string,
+  toolId: string,
+  backend: ProofToolsBackend,
+  ask: (input: Record<string, unknown>) => Promise<unknown>,
+): Promise<Record<string, unknown>> {
   const claim = readClaim(await backend.claim(folder, toolId));
   if (!claim) throw new Error("The app's answer about that proof tool couldn't be read. Nothing was proposed.");
   // Once per project per tool: a tool already proposed, declined, installed or that doesn't fit asks nothing.
@@ -161,4 +175,9 @@ export async function handleProofTools(
     ...(answer === null ? {} : { answer }),
     note,
   };
+}
+
+/** The proof tools backend a host gives, else the app's own. */
+export function proofToolsBackendOf(host: AgentAppHost): ProofToolsBackend {
+  return host.proofTools ?? liveBackend;
 }

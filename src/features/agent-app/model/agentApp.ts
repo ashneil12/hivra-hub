@@ -1841,7 +1841,18 @@ export async function handleAgentApp(
   // WP-157: the work log.
   if (action.startsWith("work_log.")) return handleWorkLog(source, action, input, host);
   // SC-3b: the ship check. Only a first mate's own chat; the project is chosen as every other action chooses it.
-  if (action.startsWith("ship_check.")) return handleShipCheck(source, action, input, host, (session, fields) => requireProject(session, fields, host));
+  // PT-4: it also files the proof tools it puts forward, through the same ask path as `proof_tools.propose` (tasks.ask).
+  if (action.startsWith("ship_check.")) {
+    let proposalAsk = 0;
+    return handleShipCheck(
+      source,
+      action,
+      input,
+      host,
+      (session, fields) => requireProject(session, fields, host),
+      (askInput) => handleTasks(source, `${requestId}-ask-${++proposalAsk}`, "tasks.ask", askInput, host, { startLaunch, fileStarted }),
+    );
+  }
   // SC-7: the project's tests for what changed. A worker in its own copy, or a first mate in its project.
   if (action.startsWith("run_checks.")) return handleRunChecks(source, action, input, host, (session, fields) => requireProject(session, fields, host));
   // PT-1: the proof tools that fit the project, and one proposal to the person through the existing ask path (tasks.ask).
