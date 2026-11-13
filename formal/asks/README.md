@@ -1,12 +1,14 @@
 # Asks: can "a long rant never loses an ask" be checked?
 
-A research spike. It changes no product behaviour: everything here is under `formal/asks/` plus new test files. Bugs
-found are documented with a minimal trace and pinned by a test; none is fixed.
+A research spike. It changed no product behaviour: everything here is under `formal/asks/` plus new test files. Bugs
+found are documented with a minimal trace and pinned by a test. **Four were then fixed by `sc-17-ask-fixes`: A1, A2, A5
+and H1** (marked **Fixed** in B.3; their pinning tests were flipped to assert the correct behaviour). The rest are not fixed.
 
 **Status, up front**
 
 | Part | State |
 | --- | --- |
+| Fixes (`sc-17-ask-fixes`) | A1, A2, A5 and H1 fixed, each with its pinned test flipped. Asks.qnt's two A1/A2 knobs follow the fixed code. A3, A4, A6 to A10, H2 to H6, D and N gaps are as they were. |
 | Step 0, the map (below) | Done. Each claim is tagged: **[T]** pinned by a test in this PR, **[E]** measured by the eval run, **[R]** read by me in the code, **[M]** reported by a read-only mapper and not re-checked by me. |
 | A. Extraction eval (`eval/`) | Done and run (`node formal/asks/eval/run.mjs`). The "recorded" model replies are **simulated**, not captured from the app's engine (see A.3). |
 | B.2 fast-check model-based test | Done and run against the real store. Passes; bites on two deliberately broken reducers (B.2). |
@@ -129,7 +131,7 @@ transaction), `retire`, a standing-answer flag. No expiry or supersede. "Set asi
 | **Retry** | Two model tries; a failed try is counted and the rules' reading stands; a repeat of one message replaces untouched rows (A1-A4). **[R][T]** | A repeat lands on the same row; a failed look is **not** retried (H3). **[T]** | Auto-resume of a cut turn: 3 times, then a "resume stopped" note (`inFlight.ts:26`). **[M]** | Steering delivery: 5 tries, every 30 s. **[M]** |
 | **History compaction** | The ledger is untouched. A fresh session always gets the `<open_asks>` note; the state card (`stateCard.ts`) lists rules, decisions and finished asks, not open ones. **[R]** | Not involved. | The tidy brief keeps exchanges only: no open-job content. Queued reports go into the fresh session. **[M]** | — |
 | **Cancellation** | Only the person can drop. A retraction in the same message ("scratch that") is not detected by either extractor (A.2: withdrawn asks stay open). **[T]** | `dropAsk`/`parkAsk` never called. | Owner Stop, `task_cancel`, trashing a mate cancel and dispose the row. **Resetting** a first mate orphans its running rows (D1). **[R][M]** | Nothing cancels a decision. |
-| **Worker crashes** | Nothing is written. The ask stays `started` until the first mate acts; the daily check names it after 3 quiet days but only into the right open chat (A5). **[T]** | `askSettle` compares the chat's build with the ask, so a crash leaves it open. | The turn settles `failed` and a failed report is queued to the owner. A failed row leaves every list after 6 h (D6). **[M]** | A stuck worker becomes a Need only if it needs Ash; otherwise grey and gone after 6 h. **[M]** |
+| **Worker crashes** | Nothing is written. The ask stays `started` until the first mate acts; the daily check names it after 3 quiet days, into the oldest quiet ask's chat or, if that can't take it, the next quiet ask's (A5, fixed). **[T]** | `askSettle` compares the chat's build with the ask, so a crash leaves it open. | The turn settles `failed` and a failed report is queued to the owner. A failed row leaves every list after 6 h (D6). **[M]** | A stuck worker becomes a Need only if it needs Ash; otherwise grey and gone after 6 h. **[M]** |
 | **First mate's turn is cut** | Auto-resume (≤ 3); the resumed turn gets the `<open_asks>` note again if the list changed. **[R]** | — | Its rows are untouched; queued reports survive in the session queue. **[M]** | — |
 
 ### 0.7 What the spec promises, and what the code does
@@ -138,9 +140,9 @@ transaction), `retire`, a standing-answer flag. No expiry or supersede. "Set asi
 
 | Promise | Code |
 | --- | --- |
-| "Rows are never deleted" (`history` row) | **No.** Untouched rows are replaced on a re-hearing (A1, A2); closed rows past 2000 are evicted. |
+| "Rows are never deleted" (`history` row) | **No.** Untouched rows a hearing wrote are replaced on a re-hearing (by the list that replaces them; A1 and A2 are fixed, so a hand-added ask and an ask the model left out are kept); closed rows past 2000 are evicted. |
 | "Quotes are checked, not trusted" | Yes (`parseHeard` → `quoteIn`). |
-| No-model backstop adds uncovered sentences as `unclear` | Partly: at most 6, and "covered" is a 60% word-overlap guess. |
+| No-model backstop adds uncovered sentences as `unclear` | Yes, all of them (the cap of 6 went with A2's fix); "covered" is a 60% word-overlap guess. |
 | "Short messages skip the model. One sentence is one ask" | The ask is taken whole, then **not written** unless the message is long or holds 2+ asks (A6). |
 | "A repeat joins, not doubles… attached as a second quote" | It bumps `updatedAt`; no second quote is kept. |
 | Turn-end check "at most twice. After that the asks stay open, in red, in **Needs you**" | The nudge and its cap are enforced. **The Needs part is not**: nothing under `needs/`, `home/`, `inbox/`, `chief/` or `orchestration/` imports Ledger A (grep) (A7). |
@@ -209,7 +211,9 @@ What it says:
 Three actors (person, first mate with its crew, app) on one message with three asks (slot 3 is one both extractors miss). It
 follows 0.5: rows `heard maybe started waiting done dropped`, replacement on a re-hearing, the maybe cap, the turn-end nudge,
 `open_asks` injection, delegation and its report, a worker finishing, a reset that orphans a job, an app restart, a compaction,
-time passing, and the person's taps. Knobs at the top say "as the code is today" or "as the spec promises".
+time passing, and the person's taps. Knobs at the top say "as the code is today" or "as the spec promises". **Since sc-17-ask-fixes**
+`HAND_ASK_REPLACED` defaults to `false` and `MAYBE_CAP` to `9` (never binds with three slots): the code no longer has gaps A1 and A2.
+The table and the variants below were run on the old defaults (13 Nov, `quint-output/`); that PR only re-typechecked the file.
 
 ```bash
 npx @informalsystems/quint typecheck formal/asks/asks.qnt
@@ -228,7 +232,7 @@ npx @informalsystems/quint verify --invariant inv_neverGone formal/asks/asks.qnt
 | `inv_known` (exactly one known state) | holds | |
 | `inv_touchedNeverGone` (an acted-on ask is never lost) | holds | |
 | `inv_dropIsPersons` (only the person drops) | holds | |
-| `inv_neverGone` (an extracted ask never disappears) | **fails** | `extract(1), extract(2), rehear(1,omit), rehear(2,omit)`: the second maybe is over the cap (A2). Or `extract(1), handAdd(3), rehear(3,omit)` (A1). |
+| `inv_neverGone` (an extracted ask never disappears) | **fails** (old defaults) | `extract(1), extract(2), rehear(1,omit), rehear(2,omit)`: the second maybe is over the cap (A2). Or `extract(1), handAdd(3), rehear(3,omit)` (A1). Both fixed by sc-17-ask-fixes; with the new defaults it is **expected to hold** (`gone` is only reachable through `rehear`), not re-run. |
 | `inv_noStarvation` (bounded liveness) | **fails** | `extract(1), tick ×4`: an open ask is shown to the person nowhere but the receipt. |
 
 Liveness, "every ask eventually reaches resolved or surfaced", is checked in its bounded form (`inv_noStarvation`): no heard or
@@ -240,8 +244,9 @@ code today surfaces a stuck ask (the daily check goes to the first mate only), w
 Variants (copy to a temp folder with the same file name, then run the invariants above):
 
 ```bash
-mkdir -p /tmp/asks-design && sed -e 's/HAND_ASK_REPLACED = true/HAND_ASK_REPLACED = false/' -e 's/MAYBE_CAP = 1/MAYBE_CAP = 9/' \
-  -e 's/ESCALATE = false/ESCALATE = true/' formal/asks/asks.qnt > /tmp/asks-design/asks.qnt         # the design: expect all five to hold
+mkdir -p /tmp/asks-design && sed -e 's/ESCALATE = false/ESCALATE = true/' formal/asks/asks.qnt > /tmp/asks-design/asks.qnt   # the design: expect all five to hold (A1 and A2 are in the defaults now)
+mkdir -p /tmp/asks-old && sed -e 's/HAND_ASK_REPLACED = false/HAND_ASK_REPLACED = true/' -e 's/MAYBE_CAP = 9/MAYBE_CAP = 1/' \
+  formal/asks/asks.qnt > /tmp/asks-old/asks.qnt                                                  # the code before sc-17-ask-fixes: expect inv_neverGone to fail (A1, A2)
 mkdir -p /tmp/asks-bad1 && sed 's/MATE_CAN_DROP = false/MATE_CAN_DROP = true/' formal/asks/asks.qnt > /tmp/asks-bad1/asks.qnt            # expect inv_dropIsPersons to fail
 mkdir -p /tmp/asks-bad2 && sed 's/RESTART_LOSES_WAITING = false/RESTART_LOSES_WAITING = true/' formal/asks/asks.qnt > /tmp/asks-bad2/asks.qnt  # expect inv_touchedNeverGone to fail
 ```
@@ -260,7 +265,7 @@ the store equals the model; every ask is in one known state; ids, numbers and qu
 gone; the heard marks match; after a restart the doc is identical; after a crash the daily check names the ask. Two more
 properties: two windows hearing one message at once end with one copy of each ask, and two windows changing different asks both land.
 
-Result: `npx vitest run src/features/asks/model/askStore.property.test.ts` passes (4 tests).
+Result: `npx vitest run src/features/asks/model/askStore.property.test.ts` passes (5 tests since sc-17-ask-fixes; it was 4).
 
 **It bites.** I broke the real reducers twice, ran the test, then restored them (`git status` shows `asks.ts` clean):
 
@@ -269,9 +274,9 @@ Result: `npx vitest run src/features/asks/model/askStore.property.test.ts` passe
 | `withHeard`: `untouched = (ask) => ask.blockId === input.blockId` (replace touched rows too) | `Property failed after 25 tests`, seed 929980264. Counterexample `[extract(blk-a, asks=[1], maybes=[], by=rules), delegate(slot 1), duplicate delivery of the last extract]`, shrunk 6 times. |
 | `parseAskDoc`: drop `waiting` rows when reading the document | `Property failed after 17 tests`, seed -494838782. Counterexample `[extract(blk-b, asks=[], maybes=[0], by=rules), fail(slot 3)]`, shrunk 3 times. |
 
-A third test pins gap A1: the same machinery with an "add by hand" step. The property that should hold, a hand-added ask survives
-every hearing, **fails today**, and the test asserts that it fails and shrinks to `extract, add by hand, extract` (seed 20261113).
-When A1 is fixed that test fails: turn it into the plain property.
+A third test covers gap A1: the same machinery with an "add by hand" step. The property, a hand-added ask survives every hearing,
+**failed** until A1 was fixed: the test used to assert that it fails and shrinks to `extract, add by hand, extract` (seed 20261113).
+`sc-17-ask-fixes` fixed A1 and turned it into the plain property (two tests: random runs, and that same seed, which now passes).
 
 ### B.3 Gaps found, each with its trace and one line on what to do
 
