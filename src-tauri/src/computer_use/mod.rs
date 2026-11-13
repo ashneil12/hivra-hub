@@ -188,6 +188,9 @@ pub async fn computer_use_check(app: tauri::AppHandle) -> Result<Check, String> 
                     .into(),
         });
     };
+    // SC-8: the sidecar is a program an agent could otherwise replace (an npm global or a home bin folder). Name it to
+    // the agent sandbox so its file and package are write-denied in every agent profile built from now on.
+    crate::agent_sandbox::note_configured_cli(&program);
     tauri::async_runtime::spawn_blocking(move || run_doctor(&program, Duration::from_secs(60)))
         .await
         .map_err(|e| e.to_string())
@@ -206,6 +209,22 @@ fn run_doctor(program: &Path, limit: Duration) -> Check {
         dirs.extend(std::env::split_paths(&path));
         if let Ok(joined) = std::env::join_paths(dirs) {
             command.env("PATH", joined);
+        }
+    }
+    // SC-8: the check runs under the agent sandbox when it is on, like the verdict gate's Claude Code: the program is one
+    // an agent could have replaced, and the app runs it. The sandbox only denies writes to protected places, so the
+    // check's own permission prompts and setup window still work. Tests do not wrap: it would read the daily data folder.
+    #[cfg(not(test))]
+    {
+        let data = crate::instance::data_dir(&crate::instance::current().identifier);
+        match crate::agent_sandbox::action_wrap(data.as_deref(), &[]) {
+            Ok(prefix) => command = crate::agent_sandbox::under_wrap(command, prefix.as_deref()),
+            Err(error) => {
+                return Check {
+                    ok: false,
+                    output: error,
+                }
+            }
         }
     }
     let mut child = match command.spawn() {
