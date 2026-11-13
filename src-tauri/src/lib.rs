@@ -191,6 +191,7 @@ mod stacks;
 mod run_checks; // SC-7: the run_checks tool: the project's tests for what changed, only the failures back
 mod ship_check; // SC-3b: the bulk check "Test at ship" needs before a first mate says ready to ship
 mod steering;
+mod test_debt; // PT-5: failing tests that are not a task's own wait on a list and are sorted once, at ship
 mod test_summary; // SC-3a: the summary line a test runner prints (zero tests is not a pass)
 mod tool_detail;
 #[cfg(target_os = "macos")]
@@ -1056,6 +1057,14 @@ pub fn run() {
             ship_check::ship_check_latest,
             ship_check::ship_check_passed,
             ship_check::ship_check_head,
+            // PT-5: the test debt list, its fixer task and its Needs-you items
+            test_debt::commands::test_debt_summary,
+            test_debt::commands::test_debt_fixer_claim,
+            test_debt::commands::test_debt_fixer_started,
+            test_debt::commands::test_debt_fixer_release,
+            test_debt::commands::test_debt_claim,
+            test_debt::commands::test_debt_release,
+            test_debt::commands::test_debt_answer,
             // SC-7
             run_checks::run_checks_run,
             worktree_autoclean::worktree_autoclean_status,

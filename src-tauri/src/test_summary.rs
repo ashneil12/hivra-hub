@@ -1048,6 +1048,13 @@ fn build_error(line: &str) -> bool {
     re.is_match(line)
 }
 
+/// PT-5: whether any line of the output is one that stops a run before its tests (a compile error, a type error, a module that is not
+/// there). A run that printed one beside a red test summary did not fail on its tests alone.
+pub(crate) fn has_build_error(output: &str) -> bool {
+    let text = clean(output);
+    text.lines().map(str::trim).any(build_error)
+}
+
 /// The runner's summary line for a summary found at `at`.
 fn summary_line(summary: &Summary, lines: &[&str], at: usize) -> String {
     match summary.runner {

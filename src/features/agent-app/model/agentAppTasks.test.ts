@@ -24,6 +24,8 @@ import { PROOF_SKILLS_SECTION, renderBrief, type BriefIsolation } from "../../fi
 import { FULL_MODE_NEEDS_CHECKS } from "../../firstmate/model/briefChecks";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import {
+  AT_SHIP_TESTS_RULE,
+  redTestRules,
   briefPrompt,
   fanoutAgainKey,
   markAppDelegate,
@@ -411,6 +413,119 @@ describe("tasks.delegate carries the brief's check lines, stamp and do-not-touch
       await handleAgentApp(f.source, `q${(n += 1)}`, "tasks.delegate", { brief: "Add the score route.", code: true }, f.host);
       expect(promptOf(f.started[n - 1]), String(mode)).not.toContain("## Proof skills");
     }
+  });
+
+  // PT-5: in a project that tests at ship, a worker is told in one sentence what to do about a failing test that isn't its own.
+  it("a code worker of an at-ship project is told how failing tests it didn't write are sorted, and no other worker is", async () => {
+    const f = fixture([]);
+    f.api.testingMode = vi.fn(async () => "at-ship" as const);
+    await handleAgentApp(f.source, "s1", "tasks.delegate", { brief: "Add the score route.", code: true }, f.host);
+    await handleAgentApp(f.source, "s1b", "tasks.delegate", { brief: "Add the route.", scope: ["src/api/score.ts"] }, f.host);
+    for (const call of f.started) {
+      expect(promptOf(call)).toContain(AT_SHIP_TESTS_RULE);
+      // One sentence, inside the worker's own rules.
+      expect(promptOf(call).split(AT_SHIP_TESTS_RULE)).toHaveLength(2);
+      expect(promptOf(call).indexOf(AT_SHIP_TESTS_RULE)).toBeGreaterThan(promptOf(call).indexOf("<worker_rules>"));
+    }
+    // A task that changes no code writes no test, and reads no mode (SC-4: a brief that isn't code never does).
+    f.api.testingMode = vi.fn(async () => "at-ship" as const);
+    await handleAgentApp(f.source, "s2", "tasks.delegate", { brief: "Look at the CI failure and report." }, f.host);
+    expect(promptOf(f.started[2])).not.toContain(AT_SHIP_TESTS_RULE);
+    expect(f.api.testingMode).not.toHaveBeenCalled();
+    f.api.testingMode = vi.fn(async () => "at-ship" as const);
+    let n = 3;
+    for (const mode of ["light", "full", "off", undefined] as const) {
+      f.api.testingMode = vi.fn(async () => mode);
+      await handleAgentApp(
+        f.source,
+        `s${(n += 1)}`,
+        "tasks.delegate",
+        { brief: "Add the score route.", code: true, ...(mode === "full" ? { checks: [line] } : {}) },
+        f.host,
+      );
+      expect(promptOf(f.started[n - 1]), String(mode)).not.toContain(AT_SHIP_TESTS_RULE);
+    }
+    // A mode the app can't read is not taken for at-ship.
+    f.api.testingMode = vi.fn(async () => {
+      throw new Error("the settings store did not answer");
+    });
+    await handleAgentApp(f.source, `s${(n += 1)}`, "tasks.delegate", { brief: "Add it.", code: true }, f.host);
+    expect(promptOf(f.started[n - 1])).not.toContain(AT_SHIP_TESTS_RULE);
+  });
+
+  // PT-5: the test fixer is the app's own task and rewrites tests where its brief says it may, so the worker sentence is not its rule.
+  it("the app's own test fixer task is not told to carry on past a failing test, and no agent can mark a task as the fixer", async () => {
+    const f = fixture([]);
+    f.api.testingMode = vi.fn(async () => "at-ship" as const);
+    // Handed to the delegation path as the app does (agentApp.ts binds it to the first mate's chat).
+    await handleRaw(
+      f.source,
+      "fx1",
+      "tasks.delegate",
+      markAppDelegate({ intent: TEST_INTENT, brief: "Sort the failing tests.", goal: TEST_GOAL, testFixer: true, code: true }),
+      f.host,
+    );
+    expect(promptOf(f.started[0])).not.toContain(AT_SHIP_TESTS_RULE);
+    // Any other task in the same project still is.
+    await handleAgentApp(f.source, "fx2", "tasks.delegate", { brief: "Add the score route.", code: true }, f.host);
+    expect(promptOf(f.started[1])).toContain(AT_SHIP_TESTS_RULE);
+    // An agent that sets the field itself is refused: only the app's own call may.
+    await expect(
+      handleAgentApp(f.source, "fx3", "tasks.delegate", { brief: "Add the score route.", testFixer: true }, f.host),
+    ).rejects.toThrow(/Unknown tasks.delegate fields: testFixer/);
+  });
+
+  // PT-5: what a worker does when a test goes red, in every testing mode but "No testing".
+  it("a code worker carries the red-test rules in every mode but No testing, and the app's own test fixer and a read or an answer do not", async () => {
+    const f = fixture([]);
+    let n = 0;
+    for (const mode of ["at-ship", "light", "full"] as const) {
+      f.api.testingMode = vi.fn(async () => mode);
+      await handleAgentApp(
+        f.source,
+        `rt${(n += 1)}`,
+        "tasks.delegate",
+        { brief: "Add the score route.", code: true, ...(mode === "full" ? { checks: [line] } : {}) },
+        f.host,
+      );
+      const prompt = promptOf(f.started[n - 1]);
+      for (const rule of redTestRules(mode)) {
+        expect(prompt.split(`- ${rule}\n`), `${mode}: ${rule}`).toHaveLength(2);
+      }
+      // Inside the worker's own rules.
+      expect(prompt.indexOf("When a test goes red"), mode).toBeGreaterThan(prompt.indexOf("<worker_rules>"));
+      expect(prompt.indexOf("When a test goes red"), mode).toBeLessThan(prompt.indexOf("</worker_rules>"));
+      // The mode says where a red test goes: the list at ship, a 14 day quarantine in the others.
+      expect(prompt.includes("project's test list, to be sorted at ship"), mode).toBe(mode === "at-ship");
+      expect(prompt.includes("14 day quarantine"), mode).toBe(mode !== "at-ship");
+      expect(prompt.includes(AT_SHIP_TESTS_RULE), mode).toBe(mode === "at-ship");
+    }
+    // No testing, a mode the app can't read, and none given: no red-test rules, and nothing else about tests.
+    for (const mode of ["off", undefined] as const) {
+      f.api.testingMode = vi.fn(async () => mode);
+      await handleAgentApp(f.source, `rt${(n += 1)}`, "tasks.delegate", { brief: "Add the score route.", code: true }, f.host);
+      expect(promptOf(f.started[n - 1]), String(mode)).not.toContain("When a test goes red");
+    }
+    f.api.testingMode = vi.fn(async () => {
+      throw new Error("the settings store did not answer");
+    });
+    await handleAgentApp(f.source, `rt${(n += 1)}`, "tasks.delegate", { brief: "Add it.", code: true }, f.host);
+    expect(promptOf(f.started[n - 1])).not.toContain("When a test goes red");
+    // A read or an answer writes no test and reads no mode.
+    f.api.testingMode = vi.fn(async () => "full" as const);
+    await handleAgentApp(f.source, `rt${(n += 1)}`, "tasks.delegate", { brief: "Look at the CI failure and report." }, f.host);
+    expect(promptOf(f.started[n - 1])).not.toContain("When a test goes red");
+    expect(f.api.testingMode).not.toHaveBeenCalled();
+    // The app's own test fixer has its own brief: it is told what it may change, not these rules.
+    f.api.testingMode = vi.fn(async () => "light" as const);
+    await handleRaw(
+      f.source,
+      `rt${(n += 1)}`,
+      "tasks.delegate",
+      markAppDelegate({ intent: TEST_INTENT, brief: "Sort the failing tests.", goal: TEST_GOAL, testFixer: true, code: true }),
+      f.host,
+    );
+    expect(promptOf(f.started[n - 1])).not.toContain("When a test goes red");
   });
 
   describe("PT-1: the proof tools the project already has", () => {

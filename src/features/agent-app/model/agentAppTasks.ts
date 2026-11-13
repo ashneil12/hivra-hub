@@ -251,7 +251,9 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
  */
 // SC-4: `briefStamp` (the commit the brief was written against, carried with a queued or reviewed call) is the app's too: a
 // caller can't choose its own stamp.
-export const APP_DELEGATE_FIELDS = ["fanout", "originalRequest", "originalRequestChars", "briefStamp"] as const;
+// PT-5: `testFixer` marks the one task the app itself starts to sort the test debt list: it rewrites tests where its brief says it may,
+// so it is not told the at-ship worker sentence ("carry on, never delete, skip or weaken").
+export const APP_DELEGATE_FIELDS = ["fanout", "originalRequest", "originalRequestChars", "briefStamp", "testFixer"] as const;
 
 /** Set on a tasks.delegate input by the app itself. Not enumerable, so a copy or JSON drops it. */
 export const appDelegateMark: unique symbol = Symbol("hivra.appDelegate");
@@ -579,14 +581,49 @@ export function portOfBrief(brief: string | null | undefined): number | undefine
 }
 
 /**
+ * PT-5: the one sentence a worker of an "at ship" project is told about tests it didn't write. The app puts a failing test that is not
+ * the task's own on the project's test debt list and sorts the list once, at the ship check; the task is not sent back for it.
+ * Never in another mode: `light` and `full` test each task, and a failing test there is the task's to fix.
+ */
+export const AT_SHIP_TESTS_RULE =
+  "This project sorts failing tests at ship: if a test you did not write and that does not cover your change fails, note it in your report and carry on; never delete, skip or weaken it. Your own tests must pass.";
+
+/** PT-5: the testing modes whose workers carry the red-test rules. "No testing" has none, and a mode the app can't read is not guessed. */
+export type RedTestMode = "at-ship" | "light" | "full";
+
+/** How long a quarantine lasts. The same 14 days as the test debt list's own (`QUARANTINE_MS`, src-tauri/src/test_debt/doc.rs). */
+export const QUARANTINE_DAYS = 14;
+
+/**
+ * PT-5: what a worker does when a test goes red, in every testing mode but "No testing". Short and plain. The app enforces what it can
+ * (a quarantine asked for a critical test is refused, a weakened, deleted or skipped test is a finding, the gates stop sending a change
+ * back after the third round); the rest is said here. In "Test at ship" a red test that is not the worker's own goes on the project's
+ * test list; in "Light" and "Full" the worker asks for a quarantine with one line of its report (`Quarantine: <test> | <why>`).
+ */
+export function redTestRules(mode: RedTestMode): string[] {
+  const then =
+    mode === "at-ship"
+      ? "Then stop and name it in your report: the app puts it on the project's test list, to be sorted at ship."
+      : `Then, if it is not a critical test, ask for a ${QUARANTINE_DAYS} day quarantine with a line "Quarantine: <test> | <why>" in your report, carry on, and name it in your report. You never quarantine a critical test: ask your first mate.`;
+  return [
+    "When a test goes red, first say in one line which it is: a real bug, a test that is out of date because the behaviour changed on purpose, or flaky (it passes when run again on the same commit).",
+    `Spend at most 10 minutes or 2 attempts on a red test that is not one of yours. ${then}`,
+    "Never make a test pass by weakening it: no removed assertions, loosened expected values, skips, retries or sleeps. To delete a test, your report must say what behaviour it guarded and what covers it now.",
+    "Tests marked critical (`@critical` in the title or in a comment directly above it, or under a path for keys, permissions, the sandbox, billing, migrations, CI or installers), golden files and formal specs are read-only for you: changing one needs your first mate.",
+    "The change you land owns the red it causes: a test your change turns red is yours to fix, even if you did not write it.",
+    "Your change gets at most 3 review rounds, and the checks stop sending it back after the third. If the third fails, stop and rethink the approach with your first mate instead of patching again.",
+  ];
+}
+
+/**
  * What every worker works by, in its brief (baseline, 20 Oct: two workers shared a port and one killed the other's dev
  * server): its own port, never another's process, its own checkout, and the self-review its report has to end with
  * (A7: the app refuses a report without one, so "I checked it" is a recorded fact, not a claim). r95 (c02 BLIND 0774):
  * a worker whose brief said "Do not add the health route" found a sibling's landed route in its copy and removed it, and
  * its landing took the sibling's test out of the project; workers leave code they didn't write alone.
  */
-export function workerRules(port: number): string {
-  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Your checkout may already hold other workers' finished work. Never remove or rewrite code you didn't write unless your brief names it, even where your brief says not to add it: leave it, and say what looks wrong at the top of your report.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- Ash may write in your chat himself. His words decide: they outrank your brief and any pick from your Lead. A choice of his your brief already carries is settled: never ask it again; if a check disagrees with it, say that mismatch in one line.\n- You have no memory of the chat that sent you. Everything you may assume is in this brief, including the person's own request quoted in it. If something your task depends on isn't there, say so in your report instead of guessing at the chat.\n- Never ask the person a question. Where your brief leaves a point open, take the most reasonable reading and say in your report what you assumed. A choice that is Ash's is not yours, as below.\n- If a tool call is refused because nobody can approve it for you (a path or command outside what your task allows), stop retrying it and say in your report exactly what was blocked and where, so your first mate can send the task again with that named.\n- Updates and reports in a few short lines: what changed, and each check as one line (\"npm test: 14 passed\"); never paste test or command output.\n- Test what your change can reach, not the whole suite: the project's own affected-tests command if it has one (npm run check:affected, nx affected, turbo run test --filter=...[origin/main]), else the runner's related mode on your changed files (vitest related, jest --findRelatedTests, cargo test -p <crate>, go test on the changed packages, pytest on the matching test files), plus the type check. Run the full suite only when your brief asks, when you changed what every test stands on (the package manifest, the lockfile, a test, build or TypeScript config, the test setup, CI files), or when the project's rules say so; your report says which you ran.\n- Run your tests with the run_checks tool instead of running the test command yourself: it runs the project's own tests for what you changed and returns the summary line, each failing test with its message, and the path of the full log, so there is nothing to paste. When you are fixing a bug, write the test that fails first and run it with run_checks before you change the code; a build error or zero tests is not a failing run. If the tool says the project declares no test command, run its tests yourself and say so in your report.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End with your report in exactly this shape. Checks with their results, links, files and commits are evidence; your opinion of your own work is not:\n\n${WORKER_REPORT_SHAPE}\n- Then a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${monoHomeFence()}\n</worker_rules>`;
+export function workerRules(port: number, options: { atShip?: boolean; redTests?: RedTestMode } = {}): string {
+  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Your checkout may already hold other workers' finished work. Never remove or rewrite code you didn't write unless your brief names it, even where your brief says not to add it: leave it, and say what looks wrong at the top of your report.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- Ash may write in your chat himself. His words decide: they outrank your brief and any pick from your Lead. A choice of his your brief already carries is settled: never ask it again; if a check disagrees with it, say that mismatch in one line.\n- You have no memory of the chat that sent you. Everything you may assume is in this brief, including the person's own request quoted in it. If something your task depends on isn't there, say so in your report instead of guessing at the chat.\n- Never ask the person a question. Where your brief leaves a point open, take the most reasonable reading and say in your report what you assumed. A choice that is Ash's is not yours, as below.\n- If a tool call is refused because nobody can approve it for you (a path or command outside what your task allows), stop retrying it and say in your report exactly what was blocked and where, so your first mate can send the task again with that named.\n- Updates and reports in a few short lines: what changed, and each check as one line (\"npm test: 14 passed\"); never paste test or command output.\n- Test what your change can reach, not the whole suite: the project's own affected-tests command if it has one (npm run check:affected, nx affected, turbo run test --filter=...[origin/main]), else the runner's related mode on your changed files (vitest related, jest --findRelatedTests, cargo test -p <crate>, go test on the changed packages, pytest on the matching test files), plus the type check. Run the full suite only when your brief asks, when you changed what every test stands on (the package manifest, the lockfile, a test, build or TypeScript config, the test setup, CI files), or when the project's rules say so; your report says which you ran.\n- Run your tests with the run_checks tool instead of running the test command yourself: it runs the project's own tests for what you changed and returns the summary line, each failing test with its message, and the path of the full log, so there is nothing to paste. When you are fixing a bug, write the test that fails first and run it with run_checks before you change the code; a build error or zero tests is not a failing run. If the tool says the project declares no test command, run its tests yourself and say so in your report.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End with your report in exactly this shape. Checks with their results, links, files and commits are evidence; your opinion of your own work is not:\n\n${WORKER_REPORT_SHAPE}\n- Then a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${monoHomeFence()}\n${options.atShip ? `- ${AT_SHIP_TESTS_RULE}\n` : ""}${options.redTests ? redTestRules(options.redTests).map((rule) => `- ${rule}\n`).join("") : ""}</worker_rules>`;
 }
 
 /**
@@ -1475,6 +1512,17 @@ async function delegate(
     (await fullModeOf(tasks, briefFolderOf(source, owner, named, tasks)));
   // PT-1: and it names the proof tools the project already has. Asked only then; a miss adds nothing.
   const proofTools = proofSkills ? await proofToolLinesOf(tasks, briefFolderOf(source, owner, named, tasks)) : [];
+  // PT-5: in a project that tests at ship, its workers are told in one sentence what to do about a failing test that isn't theirs.
+  // Not the test fixer (the app's own task, marked by the app and by no agent): its brief says what it may change.
+  const testFixer = isAppDelegate(input) && input.testFixer === true;
+  // Only a code brief reads the mode (a task that changes no code, a read or an answer, never does: SC-4), and a task that changes
+  // no code writes no test.
+  // PT-5: and the same mode says which red-test rules it carries: every mode but "No testing" has them; "at ship" adds its sentence.
+  const redTests =
+    !testFixer && isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope })
+      ? await redTestModeOf(tasks, briefFolderOf(source, owner, named, tasks))
+      : undefined;
+  const atShip = redTests === "at-ship";
   const workerExtras = {
     ...extras,
     ...(briefStamp ? { stamp: briefStamp } : {}),
@@ -1575,7 +1623,7 @@ async function delegate(
           ),
           goal,
           memory,
-          [workerRules(port), crewRules].filter(Boolean).join("\n\n"),
+          [workerRules(port, { atShip, ...(redTests ? { redTests } : {}) }), crewRules].filter(Boolean).join("\n\n"),
         ),
         // PM's r63 run: a worker tab was named from the brief's first line ("Ash's words, verbatim: …"); it is the job.
         title,
@@ -2897,6 +2945,17 @@ async function fullModeOf(tasks: AgentAppTasksHost, folder: string): Promise<boo
   if (!tasks.testingMode) return false;
   const project = tasks.hubProjectId?.(folder) ?? folder;
   return (await tasks.testingMode(project).catch(() => undefined)) === "full";
+}
+
+/**
+ * PT-5: this project's testing mode, for the rules a worker carries about red tests: "at-ship", "light" or "full". "No testing" and a mode
+ * the app can't read give nothing: the sentences are only for a project known to test, and the at-ship one for a project known to sort at ship.
+ */
+async function redTestModeOf(tasks: AgentAppTasksHost, folder: string): Promise<RedTestMode | undefined> {
+  if (!tasks.testingMode) return undefined;
+  const project = tasks.hubProjectId?.(folder) ?? folder;
+  const mode = await tasks.testingMode(project).catch(() => undefined);
+  return mode === "at-ship" || mode === "light" || mode === "full" ? mode : undefined;
 }
 
 /** PT-1: how long a brief waits to hear which proof tools the project has (the app may run a program to find out). */

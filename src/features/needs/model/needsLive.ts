@@ -20,6 +20,7 @@ import { allKeptPages, needsAllow, requestOpenPage, usePagesVersion, type Page }
 import { PR_WATCHES_CHANGED, tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import {
+  answerInWords,
   answerRow,
   openRows,
   openWaitingChat,
@@ -182,6 +183,19 @@ function decisionReason(out: unknown): string | undefined {
   return decision == null ? GONE : CHANGED;
 }
 
+/**
+ * The card's own answer (a choice or the person's words): resolves to why it was refused, or undefined once it went.
+ * Unlike a one tap it shows no notice; the card says it beside the answer.
+ */
+function cardAnswer(result: () => Promise<unknown>, reasonOf: (out: unknown) => string | undefined): Promise<string | undefined> {
+  return Promise.resolve()
+    .then(result)
+    .then(reasonOf, (error: unknown) => {
+      const raw = typeof error === "string" ? error : error instanceof Error ? error.message : "";
+      return personSentence(raw) ? raw.trim() : MISSED;
+    });
+}
+
 function noteTake(result: Promise<TakeResult>): void {
   settleTap(result, takeReason);
 }
@@ -209,16 +223,23 @@ function rowFact(chat: WaitingChat, row: AskRow, id: string): QuestionFact | App
   if (isErrand(chat)) return base;
   if (accessAsk(row.question)) return { ...base, reviewOnly: true };
   if (row.redLine) return { ...base, risky: true };
+  // Every answer the row offered, and the person's own words, answer this row only (answerRow).
+  const card = {
+    ...base,
+    choices: row.options ?? [],
+    ...(row.pick?.trim() ? { suggested: row.pick.trim() } : {}),
+    answer: (words: string) => cardAnswer(() => answerRow(chat.sessionId, row, words, "words"), takeReason),
+  };
   const pick = row.pick?.trim() ?? "";
   const tap = oneTapButton({
     recommended: pick,
     options: pick ? [pick] : undefined,
     sentence: row.question,
   });
-  if (!tap) return base;
+  if (!tap) return card;
   const seen = { requestId: chat.requestId, question: row.question, pick: row.pick ?? null };
   return {
-    ...base,
+    ...card,
     answerLabel: tap.label,
     answerTitle: tap.title,
     onAnswer: () => { noteTake(answerRow(chat.sessionId, row, tap.answer, "pick", seen)); },
@@ -243,6 +264,16 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
   if (chat.redLine) return { ...base, risky: true };
   // A permission ask has no recommended option, so the row is Open only.
   if (chat.source === "permission") return base;
+  // An approval the gate let through keeps its Open; its card has no choices to pick from here.
+  const card =
+    chat.gate?.kind === "approval"
+      ? base
+      : {
+          ...base,
+          choices: chat.options ?? [],
+          ...(chat.pick?.trim() ? { suggested: chat.pick.trim() } : {}),
+          answer: (words: string) => cardAnswer(() => answerInWords(chat.sessionId, words), takeReason),
+        };
   const pick = chat.pick?.trim() ?? "";
   const tap = oneTapButton({
     recommended: pick,
@@ -250,9 +281,9 @@ function rowFacts(chat: WaitingChat, question: string, id: string): QuestionFact
     sentence: question,
     risky: chat.gate?.kind === "approval",
   });
-  if (!tap) return base;
+  if (!tap) return card;
   return {
-    ...base,
+    ...card,
     answerLabel: tap.label,
     answerTitle: tap.title,
     onAnswer: () => {
@@ -363,6 +394,11 @@ function decisionFacts(
       ...base,
       fromDecision: true,
       askedBy,
+      // Every option and the person's own words, answered for the version on screen, as the person (Ash, 13 Nov).
+      choices: decision.options,
+      ...(decision.recommended ? { suggested: decision.recommended } : {}),
+      answer: (words: string) =>
+        cardAnswer(() => tauriFirstMate.answer(decision.project, decision.decisionKey, words, "user", decision.version), decisionReason),
       ...(MERGE_PHRASE.test(decision.question) ? { asMerge: true } : {}),
       ...(tap ? { answerLabel: tap.label, answerTitle: tap.title, onAnswer: sendOption(decision, tap.answer) } : {}),
       onOpen: open,

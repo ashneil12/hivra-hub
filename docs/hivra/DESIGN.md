@@ -104,12 +104,22 @@ project.
 13. **Every control keeps a test hook.** A `data-…` attribute on anything a test or a first mate would click, and an
     `aria-label` on every icon-only button. When a control moves, its hook moves with it.
 14. **A row that needs you opens its own card, where it is.** In the Inbox a Needs you row opens beside the list
-    (`src/features/needs/ui/NeedDetail.tsx`): what was asked, who asked and when, the row's own answers (the one-tap
-    answer filled, the rest quiet), the way to the chat or page it came from, and a box that sends a few words to that
-    chat. A row never throws the person onto another screen without saying where. Open chat opens the chat that
+    (`src/features/needs/ui/NeedDetail.tsx`), laid out like the Inbox's pull request card: the kind, project, who and
+    when on one quiet line, the ask as the title, a hairline, then **every answer it offers** (`NeedChoices.tsx`: one
+    bordered row each, lettered a, b, c so a key press picks one, the asker's pick marked Suggested), the way to the
+    chat or page it came from, and a box shaped like the Inbox's comment box whose words answer the question itself
+    when the row can (`item.answer`), else go to that chat. A row reads like the Inbox's own rows (kind · project and
+    the time, the ask in bold, who asked · "2 answers · Suggested: …", an arrow), so it is plainly something to open.
+    In the Chief of Staff's lists and a catch-up the card slides open under its row (`Reveal.tsx`) and an answer is
+    seen to land: the chosen row lights with a tick, then "Answered: Take A. EXO lead has it." takes the card's place
+    (`needs/model/answeredNeeds.ts`). Home keeps its one tap. A row never throws the person onto another screen without saying where. Open chat opens the chat that
     asked, on the message that asked, with its words lit (`openNeed` in `needContext.ts`, the jump in
     `src/features/sessions/model/transcriptJump.ts`), never just the chat's latest message. The Inbox's tabs read All,
     Asks, then each source: asks and work items stay apart (`src/features/needs/model/inboxShow.ts`).
+    A first mate's chat opened from the Chief of Staff's one chat (Working's "Message EXO lead", a job's Open, a
+    catch-up's Open) opens **beside** it, in the panel next to the chat, never in its place (`asks/model/besideChat.ts`).
+    What the person sends there leaves one quiet line in the one chat ("You messaged EXO lead: … · the Chief of Staff
+    knows.", `asks/ui/BesideMessageLine.tsx`): the app's line, with no agent name over it and no turn row under it.
 15. **A flow asks one thing a step.** First run (`HubOnboarding.tsx`) goes welcome, the first project, its first
     mates, the coding tools, a look, done; each step has one heading and one choice, nothing is required, and the
     last step says back what was chosen before anything opens. A list a person chooses from says what each choice

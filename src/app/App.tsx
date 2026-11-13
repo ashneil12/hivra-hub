@@ -1108,6 +1108,7 @@ import { ONE_CHAT, earlierChatIds, isOneChat, isOneChatMono, setCatchUpHost } fr
 import { currentNeedsYou } from "../features/needs/model/needsLive";
 import { tauriFirstMate } from "../features/firstmate/model/steering";
 import { buildCatchUp, catchUpBlock, catchUpNote, catchUpSince } from "../features/asks/model/catchUp";
+import { besideBlock, besideNote, setBesideChatHost } from "../features/asks/model/besideChat";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
 import { stampFirstMate } from "../features/monos/model/monoMate";
@@ -10368,6 +10369,12 @@ function Workspace({
             const shown = catchUpNote(current.blocks);
             if (shown) appContext.push(shown);
           }
+          // What Ash wrote to a first mate from the panel beside the Chief of Staff's chat since its last reply, so it
+          // knows he did (Ash, 13 Nov; asks/model/besideChat.ts).
+          if (!rawCommand) {
+            const beside = besideNote(current.blocks);
+            if (beside) appContext.push(beside);
+          }
           if (monoRotation && IS_HUB_BUNDLE) {
             const after = monoRotation.rotation.afterBlockId;
             const now = sessionsRef.current.find((session) => session.id === sessionId)?.blocks ?? [];
@@ -10850,8 +10857,34 @@ function Workspace({
 
   // The composer's own send is the person's turn for the spend gate. Other callers of onSubmit are automated.
   const onComposerSubmit = useCallback(
-    (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean =>
-      onSubmit(sessionId, text, attachments, { ...options, origin: "person", byOwner: true }),
+    (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean => {
+      const sent = onSubmit(sessionId, text, attachments, { ...options, origin: "person", byOwner: true });
+      // Typed into a first mate's chat open beside the Chief of Staff's: the one chat keeps a line of it, and the Chief
+      // of Staff reads it beside his next message (Ash, 13 Nov: "making sure that the chief of staff knows").
+      const viewing = monoViewIdRef.current;
+      const chief = pickCaptain(listMonos());
+      if (
+        sent &&
+        text.trim() &&
+        viewing &&
+        sessionId !== viewing &&
+        sessionId === shownMonoSessionIdRef.current &&
+        chief &&
+        monoForSession(viewing)?.id === chief.id
+      ) {
+        const to = sessionsRef.current.find((session) => session.id === sessionId);
+        const name = monoForSession(sessionId)?.name ?? (to ? sessionDisplayTitle(to.title, to.harness) : "that chat");
+        const block = besideBlock({ chatId: sessionId, to: name, text, at: Date.now() });
+        setSessions((previous) =>
+          previous.map((session) =>
+            session.id === viewing && !session.blocks.some((entry) => entry.id === block.id)
+              ? { ...session, blocks: [...session.blocks, block] }
+              : session,
+          ),
+        );
+      }
+      return sent;
+    },
     [onSubmit],
   );
 
@@ -11393,6 +11426,19 @@ function Workspace({
         ),
       ),
   });
+  // Ash, 13 Nov: a job's or a first mate's chat opens beside the Chief of Staff's, in the panel a Mono's launched
+  // sessions open in, where he reads it and types to it without leaving the one chat (asks/model/besideChat.ts).
+  useEffect(
+    () =>
+      setBesideChatHost((chatId) => {
+        const viewing = monoViewIdRef.current;
+        const chief = pickCaptain(listMonos());
+        if (!viewing || !chief || monoForSession(viewing)?.id !== chief.id || chatId === viewing) return false;
+        void showMonoLaunchedSession(viewing, chatId);
+        return true;
+      }),
+    [showMonoLaunchedSession],
+  );
   // "Catch me up" in the one chat (asks/model/catchUp.ts): one app card from the app's own records. No model turn.
   useEffect(
     () =>

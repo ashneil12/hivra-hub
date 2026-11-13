@@ -24,6 +24,7 @@ import {
 } from "../model/rows";
 import { GateCards } from "../../delivery-gate/ui/GateCards";
 import { ShipCheckCard } from "../../hub/ui/ShipCheckCard"; // SC-3b
+import { TestDebtLine } from "../../hub/ui/TestDebtLine"; // PT-5
 import { FreshEyesPanel } from "../../fresh-eyes/ui/FreshEyesPanel";
 import { LeadTickPanel } from "../../leadTick/ui/LeadTickPanel";
 import { phaseDocLinks } from "../../phases/model/pr";
@@ -254,6 +255,8 @@ export function CrewPanel({
       <GateCards project={project} />
       {/* SC-3b: the ship check, for a project that tests at ship (or has a result). The one primary button on this tab. */}
       <ShipCheckCard project={project} />
+      {/* PT-5: tests waiting to be sorted at ship, one quiet line. */}
+      <TestDebtLine project={project} />
       {/* WP-144: one line before the crew starts, off until this project turns it on. */}
       <FreshEyesPanel project={project} />
       {/* WP-160: the Lead's timed pass over the programme, off until this project turns it on. */}
