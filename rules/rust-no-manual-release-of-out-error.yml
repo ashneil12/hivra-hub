@@ -1,0 +1,18 @@
+id: rust-no-manual-release-of-out-error
+language: rust
+severity: warning
+message: >-
+  An NSError written through an out pointer is autoreleased. Releasing it by hand frees it twice when the pool drains,
+  which is how 0.16.17 crashed two seconds after launch (PR #306).
+note: >-
+  Leave the error to its pool: call Cocoa through `with_out_error` in src-tauri/src/cocoa_out_error.rs and read only
+  whether an error was written.
+rule:
+  any:
+    - pattern: CFRelease($E)
+      # Only a name that says it is the error.
+    - kind: macro_invocation
+      regex: '^msg_send\w*!\s*\[\s*[&*\s]*\(?\w*[eE]rr\w*\)?\s*,\s*release\s*\]$'
+constraints:
+  E:
+    regex: '(?i)err'

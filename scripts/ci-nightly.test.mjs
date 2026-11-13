@@ -132,7 +132,7 @@ function simulate(run, vars = { HUB_CROSS_PLATFORM_CI: "true" }) {
 }
 
 const RPM_JOBS = ["rpm-changes", "rpm", "rpm-clean-install"];
-const OTHER_JOBS = ["release-channel", "mobile", "browser", "host", "rust-plan", "check", "ship", "appimage"];
+const OTHER_JOBS = ["release-channel", "mobile", "browser", "host", "rust-plan", "check", "ship", "guards", "appimage"];
 
 test("Native Preview has a nightly schedule, and a schedule cannot narrow it with a path filter", () => {
   const found = crons(native);

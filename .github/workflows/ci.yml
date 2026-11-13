@@ -365,6 +365,28 @@ jobs:
           USERPROFILE: ${{ runner.temp }}/monocode-hub-ship-home
         run: node --disable-warning=ExperimentalWarning --test scripts/hub-ship.test.mjs scripts/ship-platform.test.mjs
 
+  guards:
+    # Hivra: the shipping guards (docs/hivra/shipping-guards.md). Report only: they print findings to the job summary and
+    # `continue-on-error` means they can never block a merge. They need no packages, so there is no `npm ci`. On a push to
+    # main the diff against origin/main is empty, so the run is a few seconds.
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    name: Shipping guards (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The test guard diffs against origin/main, so it needs the history.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run check:guards
+
   appimage:
     # Linux packaging is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs it again.
     if: vars.HUB_CROSS_PLATFORM_CI == 'true' && github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
@@ -617,7 +639,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [release-channel, mobile, browser, host, rust-plan, check, ship, appimage, rpm-changes, rpm, rpm-clean-install]
+    needs: [release-channel, mobile, browser, host, rust-plan, check, ship, guards, appimage, rpm-changes, rpm, rpm-clean-install]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

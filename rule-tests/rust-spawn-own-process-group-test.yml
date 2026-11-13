@@ -1,0 +1,24 @@
+id: rust-spawn-own-process-group
+valid:
+  - |
+    mod tests {
+        use std::os::unix::process::CommandExt;
+        use std::process::Command;
+        fn runs_git() {
+            let mut command = Command::new("git");
+            command.process_group(0);
+            command.spawn().unwrap();
+        }
+    }
+  - |
+    fn production() {
+        Command::new("git").spawn().unwrap();
+    }
+invalid:
+  - |
+    mod tests {
+        use std::process::Command;
+        fn runs_git() {
+            Command::new("git").arg("status").spawn().unwrap();
+        }
+    }
