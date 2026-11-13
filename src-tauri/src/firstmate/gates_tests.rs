@@ -168,6 +168,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             brief_round: None,
             fix: None,
             history: None,
+            test_debt: None,
         },
         fake,
     )
@@ -605,6 +606,7 @@ fn a_brief_without_a_definition_of_done_is_unsure() {
             brief_round: None,
             fix: None,
             history: None,
+            test_debt: None,
         },
         &fake,
     );
@@ -649,6 +651,7 @@ fn fact_gaps_fail_the_claim_without_asking_the_model() {
             brief_round: None,
             fix: None,
             history: None,
+            test_debt: None,
         },
         &fake,
     );
@@ -1044,6 +1047,7 @@ fn r2_a_completed_settle_does_not_clear_a_failed_plan_gate_nothing_reran() {
             brief_round: None,
             fix: None,
             history: None,
+            test_debt: None,
         },
         &failing,
     );
@@ -1421,6 +1425,7 @@ fn moded_round_fixing(
             brief_round: None,
             fix,
             history: None,
+            test_debt: None,
         },
         fake,
     )
@@ -1595,6 +1600,196 @@ fn at_ship_counts_a_failed_check_and_an_open_todo_but_not_the_gaps_that_assume_t
     assert!(record.summary.contains("went stale"), "{}", record.summary);
 }
 
+// ---- PT-5: test debt, in at-ship only ---------------------------------------------------------------------------------------
+
+/// The same round with the test debt plan `firstmate_run_gates` hands it in `at-ship`.
+fn moded_round_debt(
+    dir: &Path,
+    chosen: &ModePlan,
+    facts: Option<&crate::firstmate::fact_gaps::FactTurn>,
+    plan: Option<&crate::test_debt::divert::Plan>,
+) -> GateRecord {
+    run_round(
+        &RoundInput {
+            delegation_id: "d-1",
+            round: 1,
+            checkout: dir,
+            plan: &chosen.gate_plan(),
+            brief: "Add a b export to app.ts.",
+            done_when: "app.ts exports b",
+            report: "## Report\nSummary: it was harder than it looked. I added b to app.ts.",
+            now: 1,
+            gate_owns_checks: false,
+            facts,
+            mode: Some(chosen),
+            brief_round: None,
+            fix: None,
+            history: None,
+            test_debt: plan,
+        },
+        &Fake::default(),
+    )
+}
+
+const VITEST_OTHER: &str = " FAIL  src/other.test.ts > suite > works\nAssertionError: expected 1 to be 2\n\u{23af}\u{23af}\u{23af}\u{23af}\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n";
+const VITEST_A: &str = " FAIL  src/a.test.ts > suite > works\nAssertionError: expected 1 to be 2\n\u{23af}\u{23af}\u{23af}\u{23af}\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n";
+
+/// What `firstmate_run_gates` does in `at-ship`: read the task's runs, sort its failing tests, hand `run_round` the plan.
+fn debt_plan(
+    data: &crate::test_debt::testing::Temp,
+    copy: &Path,
+    changed: &[&str],
+    output: &str,
+) -> crate::test_debt::gate::Outcome {
+    let changed: Vec<String> = changed.iter().map(|s| (*s).to_string()).collect();
+    crate::test_debt::gate::at_ship(&crate::test_debt::gate::Input {
+        data_dir: data.path(),
+        project: "/projects/tally",
+        delegation_id: "d-1",
+        task_title: "Add b",
+        checkout: copy,
+        changed: &changed,
+        runs: &[crate::firstmate::fact_gaps::FactRun {
+            command: "npm test".into(),
+            at: 3.0,
+            output: output.into(),
+        }],
+        now: 5,
+    })
+    .unwrap()
+}
+
+#[test]
+fn at_ship_does_not_send_a_task_back_for_a_failed_check_on_tests_that_are_not_its_own() {
+    let f = built();
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    let failed = failed_check_facts();
+    // Today (no plan): a failed check sends it back.
+    assert_eq!(
+        moded_round_debt(&f.copy, &chosen, Some(&failed), None).verdict,
+        Verdict::Failed
+    );
+    // The failing test is another task's: it goes on the list and the task passes.
+    let data = crate::test_debt::testing::Temp::new();
+    let outcome = debt_plan(&data, &f.copy, &["app.ts"], VITEST_OTHER);
+    assert_eq!(outcome.listed, 1);
+    let record = moded_round_debt(&f.copy, &chosen, Some(&failed), Some(&outcome.plan));
+    assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+    assert_eq!(record.note.as_deref(), Some("Built, not tested yet"));
+    let doc = crate::test_debt::store::read(data.path(), "/projects/tally");
+    assert_eq!(doc.items.len(), 1);
+    assert_eq!(doc.items[0].file, "src/other.test.ts");
+    // An open to-do still sends it back: only the failed check for other tasks' tests is let go.
+    let mut with_todo = failed_check_facts();
+    with_todo.todos = open_todo_facts().todos;
+    let record = moded_round_debt(&f.copy, &chosen, Some(&with_todo), Some(&outcome.plan));
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(record.summary.contains("open to-do"), "{}", record.summary);
+}
+
+#[test]
+fn a_task_that_changed_src_a_ts_is_failed_for_a_failing_a_test_ts_and_it_is_not_put_on_the_list() {
+    let f = built();
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    let failed = failed_check_facts();
+    let data = crate::test_debt::testing::Temp::new();
+    let outcome = debt_plan(&data, &f.copy, &["src/a.ts"], VITEST_A);
+    assert_eq!(outcome.plan.own.len(), 1);
+    assert_eq!(outcome.listed, 0);
+    let record = moded_round_debt(&f.copy, &chosen, Some(&failed), Some(&outcome.plan));
+    assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
+    assert!(
+        record
+            .summary
+            .starts_with("Sent back: a check failed this turn (npm test)."),
+        "{}",
+        record.summary
+    );
+    assert!(
+        crate::test_debt::store::read(data.path(), "/projects/tally")
+            .items
+            .is_empty(),
+        "its own failing test is never a debt"
+    );
+}
+
+#[test]
+fn a_red_run_checks_run_on_the_tasks_own_tests_sends_it_back_in_at_ship() {
+    let f = built();
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    let plan = crate::test_debt::divert::Plan {
+        add_gaps: vec![
+            "A check failed this turn (run_checks affected): src/a.test.ts > suite > works.".into(),
+        ],
+        ..Default::default()
+    };
+    // No transcript check failed at all: the app's own record is what fails the round, with or without a turn's facts.
+    let record = moded_round_debt(&f.copy, &chosen, None, Some(&plan));
+    let clean = crate::firstmate::fact_gaps::FactTurn::default();
+    let record_with_turn = moded_round_debt(&f.copy, &chosen, Some(&clean), Some(&plan));
+    for r in [&record, &record_with_turn] {
+        assert_eq!(r.verdict, Verdict::Failed, "{}", r.summary);
+        assert!(r.summary.contains("run_checks affected"), "{}", r.summary);
+    }
+}
+
+#[test]
+fn the_weakened_and_deleted_test_findings_stay_in_force_whatever_the_plan_says() {
+    let f = built();
+    // A task that skipped a test (the fixture's `app.test.ts` has three): the findings run in at-ship, and a plan that clears a failed
+    // check does not touch them. The list is not a way to get a skipped, weakened or deleted test past the guard.
+    std::fs::write(
+        f.copy.join("app.test.ts"),
+        "it.skip(\"one\", () => {});\nit(\"two\", () => {});\ntest(\"three\", () => {});\n",
+    )
+    .unwrap();
+    sh(&f.copy, &["add", "-A"]);
+    sh(&f.copy, &["commit", "-q", "-m", "skip a test"]);
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    assert!(chosen.run_findings, "findings run in at-ship");
+    let plan = crate::test_debt::divert::Plan {
+        clear_gaps: vec![crate::firstmate::fact_gaps::failed_check_gap_for(
+            "npm test",
+        )],
+        ..Default::default()
+    };
+    let record = moded_round_debt(&f.copy, &chosen, Some(&failed_check_facts()), Some(&plan));
+    assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
+    assert!(
+        record
+            .findings
+            .iter()
+            .any(|finding| finding.kind == done_check::FindingKind::WeakenedTest),
+        "{:?}",
+        record.findings
+    );
+    let without = moded_round_debt(&f.copy, &chosen, Some(&failed_check_facts()), None);
+    assert_eq!(record.findings.len(), without.findings.len());
+}
+
+#[test]
+fn light_and_full_never_use_the_list() {
+    let f = built();
+    let failed = failed_check_facts();
+    for mode in [TestingMode::Light, TestingMode::Full] {
+        let chosen = moded(&f.copy, mode, None);
+        assert!(
+            !crate::test_debt::applies(chosen.mode, chosen.as_today),
+            "{mode:?}"
+        );
+        // With no plan, as `firstmate_run_gates` leaves it there, the failed check is the task's to fix.
+        let record = moded_round_debt(&f.copy, &chosen, Some(&failed), None);
+        assert_eq!(
+            record.verdict,
+            Verdict::Failed,
+            "{mode:?}: {}",
+            record.summary
+        );
+    }
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    assert!(crate::test_debt::applies(chosen.mode, chosen.as_today));
+}
+
 #[test]
 fn light_runs_the_checks_the_ratchet_and_the_model_for_changed_code() {
     let f = built();
@@ -1708,6 +1903,7 @@ fn light_honours_the_briefs_named_checks_and_gates() {
             brief_round: None,
             fix: None,
             history: None,
+            test_debt: None,
         },
         &named,
     );
@@ -1905,6 +2101,7 @@ fn brief_round_in(
             brief_round: Some(brief),
             fix: None,
             history: None,
+            test_debt: None,
         },
         fake,
     )
@@ -2083,6 +2280,7 @@ fn a_docs_only_change_still_runs_the_briefs_lines_on_a_gate_that_says_the_projec
             brief_round: Some(&briefed(two_lines(), &[])),
             fix: None,
             history: None,
+            test_debt: None,
         },
         &said,
     );
@@ -2274,6 +2472,7 @@ fn a_missing_command_could_not_run_and_the_round_is_unsure_never_passed() {
             brief_round: Some(&briefed(two_lines(), &[])),
             fix: None,
             history: None,
+            test_debt: None,
         },
         &Blind,
     );

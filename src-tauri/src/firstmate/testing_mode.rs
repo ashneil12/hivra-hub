@@ -13,6 +13,11 @@
 //! | `light`, docs only | `diff`, `committed`, and the brief's plan | yes | all | yes | done |
 //! | `full` | as `light`, plus the brief's own check lines (SC-4; SC-7 adds the real-app recipe) and, for a code diff, the proof tools the project already has (PT-1: `proof-tools`) | yes | all | yes | done |
 //!
+//! PT-5: in `at-ship` the "a check failed" gap is for the task's own tests only. A failing test the task did not write and does not
+//! cover goes on the project's test debt list (`crate::test_debt`) and the task is not sent back for it; the list is sorted once, at
+//! the ship check. The weakened, deleted and skipped test findings stay in force in every mode that runs findings. `light` and `full`
+//! test each task, so a failed check there is always the task's to fix.
+//!
 //! SC-5: the verdict model is either the cheap one-turn read-only check or the running checker (a model from another
 //! family that re-runs the brief's check lines in a read-only copy: `Checker`). PT-4: which tasks get the running checker is
 //! the app's "When the checker runs" setting (`checker_when`). By default (it follows the mode) it reads a finished task's

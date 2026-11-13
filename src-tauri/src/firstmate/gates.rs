@@ -486,6 +486,10 @@ pub struct RoundInput<'a> {
     /// SC-5: what the task's earlier rounds found (the numbered findings a `Dismiss <n>:` line names) and the rule a rewrite
     /// named. Absent is a task's first round.
     pub history: Option<&'a RoundHistory>,
+    /// PT-5: in `at-ship` only, what the task's failing tests mean for its round: the failed-check gaps for tests that are not its
+    /// own are dropped (they went on the project's test debt list), and a red `run_checks` run on its own tests is a gap. Absent
+    /// is a round with every failed check counting, as in `light` and `full`.
+    pub test_debt: Option<&'a crate::test_debt::divert::Plan>,
 }
 
 pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
@@ -578,6 +582,23 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     gaps.extend(input.fix.and_then(super::fact_gaps::no_red_before_fix));
     let gaps = match input.mode {
         Some(mode) => mode.fact_gap_filter.keep(gaps),
+        None => gaps,
+    };
+    // PT-5: a failed check that failed only on tests that are not this task's own no longer sends it back (they are on the test
+    // debt list); a red `run_checks` run on its own tests does. Only in `at-ship`: the plan is absent everywhere else.
+    let gaps = match input.test_debt {
+        Some(plan) => {
+            let mut kept: Vec<String> = gaps
+                .into_iter()
+                .filter(|gap| !plan.clear_gaps.contains(gap))
+                .collect();
+            for added in &plan.add_gaps {
+                if !kept.contains(added) {
+                    kept.push(added.clone());
+                }
+            }
+            kept
+        }
         None => gaps,
     };
     // WP-249: the report's claims against the diff, in code, before any model.
@@ -2680,6 +2701,66 @@ fn fix_evidence(
     Some(evidence)
 }
 
+/// PT-5: the project's data folder and its main checkout's name for the test debt list, from a task's own copy. `None` when either
+/// can't be found: the round is then as it was before the list existed.
+fn debt_project(app: &AppHandle, checkout: &Path) -> Option<(std::path::PathBuf, String)> {
+    let data = crate::project_file::data_dir(app).ok()?;
+    let main = crate::project_file::main_checkout(checkout).ok()?;
+    Some((data, crate::fs::path_to_js(&main)))
+}
+
+/// PT-5: in `at-ship`, reads the failing tests the task's runs show, puts the ones that are not its own on the project's test debt
+/// list, takes off it what the task's runs show green, and returns the plan that drops or adds the failed-check gaps. A list that
+/// can't be read or written returns `None`: the round is then as it was, and the task fails for what it fails for today.
+fn at_ship_debt(
+    app: &AppHandle,
+    row: &delegations::Delegation,
+    checkout: &Path,
+    changed: &[String],
+    raw_facts: Option<&serde_json::Value>,
+) -> Option<crate::test_debt::gate::Outcome> {
+    let (data, project) = debt_project(app, checkout)?;
+    let (runs, _) = raw_facts
+        .map(super::fact_gaps::runs_from_value)
+        .unwrap_or_default();
+    let outcome = crate::test_debt::gate::at_ship(&crate::test_debt::gate::Input {
+        data_dir: &data,
+        project: &project,
+        delegation_id: &row.id,
+        task_title: row.title.as_deref().unwrap_or(""),
+        checkout,
+        changed,
+        runs: &runs,
+        now: now_millis().max(0) as u64,
+    })
+    .ok()?;
+    if outcome.listed > 0 || outcome.cleared > 0 {
+        let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
+    }
+    Some(outcome)
+}
+
+/// PT-5: the test fixer's report, when this task is the fixer: its decisions are applied to the list and its slot is freed.
+fn fixer_report_read(
+    app: &AppHandle,
+    row: &delegations::Delegation,
+    checkout: &Path,
+    report: &str,
+) {
+    let Some((data, project)) = debt_project(app, checkout) else {
+        return;
+    };
+    if let Ok(Some(_)) = crate::test_debt::gate::fixer_report(
+        &data,
+        &project,
+        &row.child_session,
+        report,
+        now_millis().max(0) as u64,
+    ) {
+        let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
+    }
+}
+
 /// Runs a finished worker's gates and verdict check. `None`: its brief has no gates and the turn's facts show no
 /// gap (the routes check alone runs as before, through `run_worker_gate`).
 #[tauri::command]
@@ -2780,6 +2861,11 @@ pub async fn firstmate_run_gates(
         if moded.as_today {
             match planless_facts(facts.as_ref(), Some(checkout.as_path())) {
                 PlanlessFacts::Clear => {
+                    // PT-5: a test fixer whose report only decides ("code is wrong", "flaky") changes nothing, so it is a task that
+                    // settles as it always did; its decisions are still read.
+                    if crate::test_debt::reads_fixer_report(moded.mode) {
+                        fixer_report_read(&app, &row, &checkout, &input.report);
+                    }
                     if row.gate_verdict.as_deref() == Some(GateVerdict::FAILED)
                         && super::status::sent_back_on(&row)
                     {
@@ -2845,6 +2931,13 @@ pub async fn firstmate_run_gates(
         };
         // SC-5: what the task's earlier rounds found, for the worker's `Dismiss <n>:` lines and the checker's prompt.
         let history = rounds::Ledger::carried(&prior).history(&prior);
+        // PT-5: in `at-ship` only, a failing test that is not this task's own goes on the project's test debt list instead of
+        // sending the task back. `light` and `full` test each task, so they never come here.
+        let debt_plan = if crate::test_debt::applies(moded.mode, moded.as_today) {
+            at_ship_debt(&app, &row, &checkout, &changed, input.facts.as_ref())
+        } else {
+            None
+        };
         let mut record = if !moded.as_today {
             run_round(
                 &RoundInput {
@@ -2862,6 +2955,7 @@ pub async fn firstmate_run_gates(
                     brief_round: Some(&brief_round),
                     fix: fix_evidence.as_ref(),
                     history: Some(&history),
+                    test_debt: debt_plan.as_ref().map(|outcome| &outcome.plan),
                 },
                 &runners,
             )
@@ -2878,6 +2972,12 @@ pub async fn firstmate_run_gates(
             };
             record
         };
+        // PT-5: a passed round of the test fixer's task: its `Decision <n>` lines are applied to the list.
+        if crate::test_debt::applies(moded.mode, moded.as_today)
+            && record.verdict == Verdict::Passed
+        {
+            fixer_report_read(&app, &row, &checkout, &input.report);
+        }
         // SC-5: the task's ledger of rounds, and what happens after a failed one: the numbered findings go back, or a stronger
         // model rethinks the brief (this is where its call runs, with no lock held), or the person is asked. The rounds are
         // read again here, so a round another window recorded while the checker ran is counted once, not twice.

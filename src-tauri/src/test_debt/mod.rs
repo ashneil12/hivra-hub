@@ -1,0 +1,86 @@
+//! PT-5: test debt, sorted once at ship.
+//!
+//! In a project that tests "at ship", a failing test that is not the task's own must not hold the task up: it goes on a list,
+//! and the list is sorted in one batch when the ship check runs, by one "test fixer" task.
+//!
+//! - `doc`: the per-project document (the list, the quarantine, the per-test score) and every rule that changes it.
+//! - `store`: that document on disk: atomic writes, one lock, read defensively.
+//! - `own`: whose failing test is it (the rule a task can't use to hide a failure in its own tests).
+//! - `divert`: what a finished task's failing tests mean for its round, in `at-ship` mode only.
+
+pub mod commands;
+pub mod divert;
+pub mod doc;
+pub mod fixer;
+pub mod gate;
+pub mod own;
+pub mod store;
+pub mod summary;
+
+/// The event the webview hears when a project's list changes (the crew tab's line reads again).
+pub const CHANGED: &str = "test-debt://changed";
+
+/// Whether a finished task's failing tests go through the test debt list: only in `at-ship`, and only for a task that changed something
+/// (a task that changed nothing keeps the round it always had). `light` and `full` test each task, so a failing test there is the
+/// task's to fix, and `off` tests nothing: none of the three ever comes here.
+pub fn applies(mode: crate::delivery::settings::TestingMode, as_today: bool) -> bool {
+    mode == crate::delivery::settings::TestingMode::AtShip && !as_today
+}
+
+/// Whether a passed task's report is read for the test fixer's decisions: in `at-ship`, whatever the task changed (a fixer that only
+/// reports "code is wrong" or "flaky" changes nothing at all).
+pub fn reads_fixer_report(mode: crate::delivery::settings::TestingMode) -> bool {
+    mode == crate::delivery::settings::TestingMode::AtShip
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{applies, reads_fixer_report};
+    use crate::delivery::settings::TestingMode;
+
+    #[test]
+    fn a_fixers_report_is_read_in_at_ship_whatever_it_changed() {
+        assert!(reads_fixer_report(TestingMode::AtShip));
+        for mode in [TestingMode::Light, TestingMode::Full, TestingMode::Off] {
+            assert!(!reads_fixer_report(mode), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn the_list_is_for_at_ship_only() {
+        assert!(applies(TestingMode::AtShip, false));
+        for mode in [TestingMode::Light, TestingMode::Full, TestingMode::Off] {
+            assert!(!applies(mode, false), "{mode:?}");
+        }
+        assert!(
+            !applies(TestingMode::AtShip, true),
+            "a task that changed nothing keeps its round"
+        );
+    }
+}
+
+/// A temporary folder for a test, removed when it goes out of scope.
+#[cfg(test)]
+pub(crate) mod testing {
+    use std::path::{Path, PathBuf};
+
+    pub struct Temp(PathBuf);
+
+    impl Temp {
+        pub fn new() -> Temp {
+            let path = std::env::temp_dir().join(format!("test-debt-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(&path).expect("a temp folder");
+            Temp(path)
+        }
+
+        pub fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+}

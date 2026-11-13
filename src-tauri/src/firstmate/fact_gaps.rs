@@ -196,6 +196,16 @@ pub(crate) fn is_failed_check_gap(gap: &str) -> bool {
     gap.starts_with("A check failed this turn (")
 }
 
+/// PT-5: the failed-check sentence for a command as the transcript names it, so the test debt rule can name a gap it drops
+/// without making the sentence a second way. `failure_gaps` makes the same one from the stored check's display.
+pub(crate) fn failed_check_gap_for(command: &str) -> String {
+    let command = command_text(command);
+    format!(
+        "A check failed this turn ({}).",
+        take_chars(&command, MAX_DISPLAY).trim_end()
+    )
+}
+
 /// SC-3a: an open to-do. `gaps_before_coverage` makes these sentences.
 pub(crate) fn is_open_todo_gap(gap: &str) -> bool {
     gap.starts_with("There is still an open to-do: ")

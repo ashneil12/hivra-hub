@@ -315,6 +315,7 @@ fn check(
         brief_round: Some(brief),
         fix: None,
         history,
+        test_debt: None,
     };
     let claims = done_check::claims_of(input.report);
     run(
@@ -698,6 +699,7 @@ fn no_checker_a_copy_that_cannot_be_made_and_a_brief_with_no_definition_of_done_
             brief_round: None,
             fix: None,
             history: None,
+            test_debt: None,
         },
         "",
         &[],
@@ -866,6 +868,7 @@ fn round_with(
             brief_round: Some(brief),
             fix: None,
             history,
+            test_debt: None,
         },
         lab,
     )
@@ -1189,6 +1192,7 @@ fn check_in(mode: Option<&ModePlan>, lab: &Lab) -> Checked {
         brief_round: Some(&brief),
         fix: None,
         history: None,
+        test_debt: None,
     };
     let claims = done_check::claims_of(input.report);
     run(

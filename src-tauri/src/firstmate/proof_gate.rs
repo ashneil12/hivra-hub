@@ -371,6 +371,7 @@ mod tests {
             brief_round: None,
             fix: None,
             history: None,
+            test_debt: None,
         }
     }
 
