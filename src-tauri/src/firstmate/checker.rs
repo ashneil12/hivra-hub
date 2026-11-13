@@ -449,9 +449,33 @@ pub fn parse_extras(said: &str) -> Extras {
     }
 }
 
-/// On a copy with none of the worker's installed dependencies or build output, a failure proves nothing about the work: it
-/// is "could not run", never a refutation.
+/// What a command prints when the read-only copy refused one of its writes (a build's `target/`, a lock file, a cache).
+const WRITE_REFUSALS: [&str; 5] = [
+    "operation not permitted",
+    "permission denied",
+    "read-only file system",
+    "eperm",
+    "eacces",
+];
+
+/// Whether a failed command's output shows the copy refused a write. Such a failure says nothing about the work.
+fn write_refused(output: &str) -> bool {
+    let lower = output.to_ascii_lowercase();
+    WRITE_REFUSALS.iter().any(|word| lower.contains(word))
+}
+
+/// A failure in the copy proves nothing about the work, and is "could not run", never a refutation, when it shows the copy
+/// refused a write (either kind of copy: the copy is read-only on purpose), or when the copy is a worktree with none of the
+/// worker's installed dependencies or build output. "Could not run" never counts as a pass.
 fn trusted_in(how: CopyHow, mut evidence: CommandEvidence) -> CommandEvidence {
+    if evidence.outcome == Outcome::Failed && write_refused(&evidence.output) {
+        evidence.outcome = Outcome::NotRun;
+        evidence.output = format!(
+            "It could not write inside the read-only copy, so it did not really run and this proves nothing about the work.\n{}",
+            evidence.output
+        );
+        return evidence;
+    }
     if how == CopyHow::Worktree && evidence.outcome == Outcome::Failed {
         evidence.outcome = Outcome::NotRun;
         evidence.output = format!(

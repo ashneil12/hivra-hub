@@ -48,10 +48,14 @@ impl FactGapFilter {
     pub fn keep(self, gaps: Vec<String>) -> Vec<String> {
         match self {
             FactGapFilter::All => gaps,
+            // SC-7: "no failing run before the fix" assumes the worker tested, so it is dropped here by name, not only by
+            // not being on the list.
             FactGapFilter::FailedCheckAndOpenTodo => gaps
                 .into_iter()
                 .filter(|gap| {
-                    fact_gaps::is_failed_check_gap(gap) || fact_gaps::is_open_todo_gap(gap)
+                    !fact_gaps::is_no_red_gap(gap)
+                        && (fact_gaps::is_failed_check_gap(gap)
+                            || fact_gaps::is_open_todo_gap(gap))
                 })
                 .collect(),
             FactGapFilter::Nothing => Vec::new(),
@@ -99,6 +103,12 @@ impl ModePlan {
             gates: self.gates.clone(),
             checks: self.checks.clone(),
         }
+    }
+
+    /// SC-7: whether a bug-fix brief must show a failing run of its test before the fix. Only the modes that test each
+    /// task ask it: `at-ship` and `off` assume the worker tested, and test at the ship check or not at all.
+    pub fn needs_red_before_fix(&self) -> bool {
+        matches!(self.mode, TestingMode::Light | TestingMode::Full)
     }
 }
 
@@ -636,6 +646,40 @@ mod tests {
         assert!(FactGapFilter::FailedCheckAndOpenTodo
             .keep(Vec::new())
             .is_empty());
+    }
+
+    // ---- SC-7: the red-before-the-fix gap -----------------------------------------------------------------------------
+
+    #[test]
+    fn at_ship_and_off_drop_the_no_red_gap_because_they_assume_the_worker_tested() {
+        let gaps = vec![
+            fact_gaps::NO_RED_BEFORE_FIX.to_string(),
+            "There is still an open to-do: x.".to_string(),
+        ];
+        assert_eq!(
+            FactGapFilter::FailedCheckAndOpenTodo.keep(gaps.clone()),
+            vec![gaps[1].clone()]
+        );
+        assert!(FactGapFilter::Nothing.keep(gaps.clone()).is_empty());
+        // Light and full keep every gap, this one too.
+        assert_eq!(FactGapFilter::All.keep(gaps.clone()), gaps);
+        assert!(fact_gaps::is_no_red_gap(&gaps[0]));
+        assert!(!fact_gaps::is_failed_check_gap(&gaps[0]));
+        assert!(!fact_gaps::is_open_todo_gap(&gaps[0]));
+    }
+
+    #[test]
+    fn only_light_and_full_ask_a_fix_for_its_red_run() {
+        for mode in TestingMode::ALL {
+            let chosen = pick(mode, None, &["src/app.ts"]);
+            let expected = matches!(mode, TestingMode::Light | TestingMode::Full);
+            assert_eq!(chosen.needs_red_before_fix(), expected, "{mode:?}");
+            assert_eq!(
+                chosen.fact_gap_filter == FactGapFilter::All,
+                expected,
+                "{mode:?}: the mode that asks for it is the one that keeps every gap"
+            );
+        }
     }
 
     #[test]

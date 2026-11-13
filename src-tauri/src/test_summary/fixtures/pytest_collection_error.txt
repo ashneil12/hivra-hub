@@ -1,0 +1,16 @@
+============================= test session starts ==============================
+platform darwin -- Python 3.12.1, pytest-8.0.0, pluggy-1.4.0
+collected 0 items / 1 error
+
+==================================== ERRORS ====================================
+______________________ ERROR collecting test_new.py ______________________
+ImportError while importing test module '/repo/test_new.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+test_new.py:1: in <module>
+    import newthing
+E   ModuleNotFoundError: No module named 'newthing'
+=========================== short test summary info ============================
+ERROR test_new.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+=============================== 1 error in 0.05s ===============================

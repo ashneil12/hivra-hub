@@ -721,3 +721,108 @@ describe("leftover: sed then a check", () => {
     }
   });
 });
+
+// SC-7: the facts also carry each test run with the end of its output, and the first edit to a source file, for the
+// "no red before the fix" gap in Rust (src-tauri/src/firstmate/fact_gaps.rs). The order against the edits is the turn's.
+describe("SC-7: test runs and the first source edit", () => {
+  const edit = (path: string, id = path): Block =>
+    block({
+      id,
+      role: "tool",
+      tool: { kind: "write", title: "Write", paths: [path], preview: { kind: "write", path } },
+    });
+  const run = (command: string, detail: string | undefined, status = "completed", id = command): Block =>
+    block({ id, role: "tool", tool: { command, status, ...(detail === undefined ? {} : { detail }) } });
+  const user = block({ role: "user", text: "fix the sort" });
+
+  it("sends every finished test run with its command, place in the turn and output", () => {
+    const facts = factsFromBlocks(
+      [
+        user,
+        edit("src/sort.test.ts"),
+        run("npx vitest run src/sort.test.ts", "Tests  1 failed (1)\n"),
+        edit("src/sort.ts"),
+        run("npx vitest run src/sort.test.ts", "Tests  1 passed (1)\n"),
+      ],
+      "",
+    );
+    expect(facts.runs).toEqual([
+      { command: "npx vitest run src/sort.test.ts", at: 1, output: "Tests  1 failed (1)\n" },
+      { command: "npx vitest run src/sort.test.ts", at: 3, output: "Tests  1 passed (1)\n" },
+    ]);
+    // The checks list keeps only the latest run of a command; the runs list keeps both, so the earlier red is not lost.
+    expect(facts.checks).toHaveLength(1);
+  });
+
+  it("keeps a run that failed, and skips a run still going, a lint, a type check and a piped test", () => {
+    const facts = factsFromBlocks(
+      [
+        user,
+        run("npm test", "Tests  1 failed (1)\n", "failed", "a"),
+        run("npm test", undefined, "pending", "b"),
+        run("npx tsc --noEmit", "ok", "completed", "c"),
+        run("npx eslint .", "ok", "completed", "d"),
+        run("npm test | tail -n 5", "Tests  1 passed (1)\n", "completed", "e"),
+      ],
+      "",
+    );
+    expect(facts.runs?.map((r) => r.command)).toEqual(["npm test"]);
+    expect(facts.runs?.[0]?.at).toBe(0);
+  });
+
+  it("keeps the end of a long output, where the summary is, and reads a block with no detail as empty", () => {
+    const long = `${"x".repeat(20_000)}\nTests  1 failed (1)\n`;
+    const facts = factsFromBlocks([user, run("npm test", long), run("cargo test", undefined, "completed", "b")], "");
+    const first = facts.runs?.[0]?.output ?? "";
+    expect(first.length).toBeLessThanOrEqual(8_000);
+    expect(first.endsWith("Tests  1 failed (1)\n")).toBe(true);
+    expect(facts.runs?.[1]).toEqual({ command: "cargo test", at: 1, output: "" });
+  });
+
+  it("falls back to the block's text when the tool left no detail", () => {
+    const facts = factsFromBlocks(
+      [user, block({ id: "t", role: "tool", text: "Tests  1 failed (1)\n", tool: { command: "npm test", status: "completed" } })],
+      "",
+    );
+    expect(facts.runs?.[0]?.output).toBe("Tests  1 failed (1)\n");
+  });
+
+  it("names the first edit to a file that is neither a test nor a document", () => {
+    const facts = factsFromBlocks(
+      [user, edit("docs/notes.md"), edit("src/sort.test.ts"), edit("tests/helpers.ts"), edit("src/sort.ts"), edit("src/other.ts")],
+      "",
+    );
+    // The user's message starts the turn and is not in it: the blocks after it are numbered from 0.
+    expect(facts.firstCodeEditAt).toBe(3);
+  });
+
+  it("has no first source edit when only tests and documents changed", () => {
+    const facts = factsFromBlocks([user, edit("src/sort.test.ts"), edit("README.md"), edit("src\\a.spec.ts")], "");
+    expect(facts.firstCodeEditAt).toBeUndefined();
+    expect("firstCodeEditAt" in facts).toBe(false);
+  });
+
+  it("finds the first source edit even when the list of edits was cut at its cap", () => {
+    const blocks: Block[] = [user, edit("src/first.ts")];
+    for (let n = 0; n < 100; n++) blocks.push(edit(`src/more${n}.test.ts`));
+    const facts = factsFromBlocks(blocks, "");
+    expect(facts.edits.length).toBeLessThan(100);
+    expect(facts.firstCodeEditAt).toBe(0);
+  });
+
+  it("counts a shell edit placed before its own test run", () => {
+    const facts = factsFromBlocks(
+      [user, run("sed -i 's/a/b/' src/sort.ts && npx vitest run src/sort.test.ts", "Tests  1 passed (1)\n")],
+      "",
+    );
+    expect(facts.firstCodeEditAt).toBe(-0.5);
+    expect(facts.runs?.[0]?.at).toBe(0);
+  });
+
+  it("keeps the facts the other gaps read exactly as they were", () => {
+    const facts = factsFromBlocks([user, run("npm test", "Tests  1 passed (1)\n")], "done");
+    expect(facts.checks).toEqual([{ command: "npm test", status: "passed", at: 0 }]);
+    expect(facts.edits).toEqual([]);
+    expect(facts.answer).toBe("done");
+  });
+});

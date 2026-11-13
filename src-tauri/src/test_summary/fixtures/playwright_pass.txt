@@ -1,0 +1,6 @@
+Running 2 tests using 1 worker
+
+  ✓  1 [chromium] › a.spec.ts:3:5 › works (120ms)
+  ✓  2 [chromium] › a.spec.ts:12:5 › also works (60ms)
+
+  2 passed (1.4s)

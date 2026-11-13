@@ -139,6 +139,21 @@ pub struct PlanInput {
     /// The brief changes code: it gets `diff` and `checks` whatever else is named.
     #[serde(default)]
     pub code: bool,
+    /// SC-7: `fix` when the brief fixes a bug. Kept beside the plan (`save_plan_with_kind`).
+    #[serde(default)]
+    pub kind: Option<String>,
+}
+
+/// SC-7: the kind a brief may name: `fix`, or nothing. Anything else is refused in plain words.
+pub fn check_kind(kind: Option<&str>) -> Result<Option<&'static str>, String> {
+    match kind.map(str::trim).filter(|kind| !kind.is_empty()) {
+        None => Ok(None),
+        Some(kind) if kind.eq_ignore_ascii_case("fix") => Ok(Some("fix")),
+        Some(other) => Err(format!(
+            "\"{}\" isn't a kind of brief. Use fix, or leave kind out.",
+            other.chars().take(40).collect::<String>()
+        )),
+    }
 }
 
 /// The brief's gates. Named ones are kept; a code brief (or one naming any gate but `routes`, which only code needs) gets
@@ -444,6 +459,8 @@ pub struct RoundInput<'a> {
     pub mode: Option<&'a ModePlan>,
     /// SC-4: the brief's own check lines and do-not-touch list. Absent is a round with neither.
     pub brief_round: Option<&'a BriefRound>,
+    /// SC-7: what the "no red before the fix" gap reads. Only a bug-fix brief in `light` or `full` has it.
+    pub fix: Option<&'a super::fact_gaps::FixEvidence>,
     /// SC-5: what the task's earlier rounds found (the numbered findings a `Dismiss <n>:` line names) and the rule a rewrite
     /// named. Absent is a task's first round.
     pub history: Option<&'a RoundHistory>,
@@ -524,10 +541,13 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     let run_findings = input.mode.is_none_or(|mode| mode.run_findings);
     let run_verdict = input.mode.is_none_or(|mode| mode.run_verdict);
     // WP-145: a fact gap fails the claim. The model is not asked, and a gap is not "unsure".
-    let gaps = input
+    let mut gaps = input
         .facts
         .map(|turn| super::fact_gaps::done_gaps_in(turn, Some(input.checkout)))
         .unwrap_or_default();
+    // SC-7: a bug fix needs a failing run of its test before the fix. The filter below drops it where the mode assumes
+    // the worker tested (`at-ship`, `off`).
+    gaps.extend(input.fix.and_then(super::fact_gaps::no_red_before_fix));
     let gaps = match input.mode {
         Some(mode) => mode.fact_gap_filter.keep(gaps),
         None => gaps,
@@ -1741,8 +1761,24 @@ pub fn ensure_table(conn: &Connection) -> Result<(), String> {
 }
 
 pub fn save_plan(conn: &Connection, id: &str, plan: &GatePlan, now: i64) -> Result<(), String> {
+    save_plan_with_kind(conn, id, plan, None, now)
+}
+
+/// SC-7: a plan with the brief's kind beside it (`fix`), in the same row and the same column. `plan_of` reads the plan
+/// and ignores the kind; `kind_of` reads the kind. A save without a kind clears one: the newest save is the brief's.
+pub fn save_plan_with_kind(
+    conn: &Connection,
+    id: &str,
+    plan: &GatePlan,
+    kind: Option<&str>,
+    now: i64,
+) -> Result<(), String> {
     ensure_table(conn)?;
-    let plan = serde_json::to_string(plan).map_err(|e| e.to_string())?;
+    let mut value = serde_json::to_value(plan).map_err(|e| e.to_string())?;
+    if let (Some(kind), Some(object)) = (kind, value.as_object_mut()) {
+        object.insert("kind".into(), serde_json::Value::String(kind.to_string()));
+    }
+    let plan = value.to_string();
     conn.execute(
         "INSERT INTO firstmate_gates (delegation_id, plan, records, updated_at) VALUES (?1, ?2, '[]', ?3)
          ON CONFLICT(delegation_id) DO UPDATE SET plan = excluded.plan, updated_at = excluded.updated_at",
@@ -1763,6 +1799,25 @@ pub fn plan_of(conn: &Connection, id: &str) -> Result<Option<GatePlan>, String> 
         .optional()
         .map_err(|e| e.to_string())?;
     Ok(text.and_then(|t| serde_json::from_str(&t).ok()))
+}
+
+/// SC-7: the kind kept with a delegation's plan: `fix`, or none. A row another build wrote, a kind this one doesn't know
+/// and a plan that isn't JSON all read as none.
+pub fn kind_of(conn: &Connection, id: &str) -> Option<String> {
+    ensure_table(conn).ok()?;
+    let text: String = conn
+        .query_row(
+            "SELECT plan FROM firstmate_gates WHERE delegation_id = ?1",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()??;
+    let value: serde_json::Value = serde_json::from_str(&text).ok()?;
+    match value.get("kind").and_then(serde_json::Value::as_str) {
+        Some("fix") => Some("fix".to_string()),
+        _ => None,
+    }
 }
 
 pub fn records_of(conn: &Connection, id: &str) -> Result<Vec<GateRecord>, String> {
@@ -2399,7 +2454,12 @@ pub fn firstmate_gates_plan(
     folder: Option<String>,
 ) -> Result<GatePlan, String> {
     let plan = resolve_plan(&input, &project_defaults(&app, folder.as_deref()))?;
-    if !plan.gates.is_empty() {
+    // SC-7: a bug fix keeps its kind, so the round asks for the failing run first; it keeps a plan to hold it in, even with
+    // no gates of its own.
+    let kind = check_kind(input.kind.as_deref())?;
+    if kind.is_some() {
+        save_plan_with_kind(&*store.lock_conn()?, &id, &plan, kind, now_millis())?;
+    } else if !plan.gates.is_empty() {
         save_plan(&*store.lock_conn()?, &id, &plan, now_millis())?;
     }
     Ok(plan)
@@ -2476,6 +2536,66 @@ fn fact_only_record(
         brief_lines: Vec::new(),
         extras: RoundExtras::default(),
     })
+}
+
+/// SC-7: what the "no red before the fix" gap reads for a bug-fix brief: the test files the diff adds or changes, the
+/// transcript's test runs and edits, the app's own record of the worker's `run_checks` runs, and whether an earlier round
+/// already showed the red. `None` when the brief is not a fix, or the diff can't be read (no verdict on a guess). A round
+/// that finds the red remembers it, because a sent-back worker's next turn starts a fresh transcript.
+fn fix_evidence(
+    app: &AppHandle,
+    row: &delegations::Delegation,
+    kind: Option<&str>,
+    checkout: &Path,
+    raw_facts: Option<&serde_json::Value>,
+    facts: Option<&super::fact_gaps::FactTurn>,
+) -> Option<super::fact_gaps::FixEvidence> {
+    use super::fact_gaps as gaps;
+    let title = row.title.as_deref().unwrap_or("");
+    let goal = row.goal.as_deref().unwrap_or("");
+    let brief = row.brief.as_deref().unwrap_or("");
+    if !gaps::is_fix_brief(kind, title, goal, brief) {
+        return None;
+    }
+    let repo = Repo::open(checkout);
+    if repo.why_not.is_some() {
+        return None;
+    }
+    let files: Vec<(String, Option<String>, Option<String>)> = repo
+        .changed_files()
+        .ok()?
+        .into_iter()
+        .map(|file| (file.path, file.before, file.after))
+        .collect();
+    let data = crate::project_file::data_dir(app).ok()?;
+    let (runs, first_code_edit_at) = raw_facts.map(gaps::runs_from_value).unwrap_or_default();
+    // The transcript names files by whatever path the tool used; the diff names them from the checkout.
+    let root = checkout.to_string_lossy().replace('\\', "/");
+    let prefix = format!("{}/", root.trim_end_matches('/'));
+    let edits = facts
+        .map(|turn| turn.edits.clone())
+        .unwrap_or_default()
+        .into_iter()
+        .map(|mut edit| {
+            let path = edit.path.replace('\\', "/");
+            if let Some(relative) = path.strip_prefix(&prefix) {
+                edit.path = relative.to_string();
+            }
+            edit
+        })
+        .collect();
+    let evidence = gaps::FixEvidence {
+        test_files: gaps::test_files_in_diff(&files),
+        runs,
+        edits,
+        first_code_edit_at,
+        records: crate::run_checks::records(&data, &row.id),
+        red_seen_before: crate::run_checks::red_seen(&data, &row.id),
+    };
+    if !evidence.red_seen_before && gaps::no_red_before_fix(&evidence).is_none() {
+        let _ = crate::run_checks::mark_red_seen(&data, &row.id);
+    }
+    Some(evidence)
 }
 
 /// Runs a finished worker's gates and verdict check. `None`: its brief has no gates and the turn's facts show no
@@ -2611,6 +2731,20 @@ pub async fn firstmate_run_gates(
                 .unwrap_or_else(|| "haiku".into()),
         };
         let now = now_millis();
+        // SC-7: in `light` and `full`, a bug fix is also held to showing a failing run of its test before the fix.
+        let fix_evidence = if !moded.as_today && moded.needs_red_before_fix() {
+            let kind = kind_of(&*store.lock_conn()?, &row.id);
+            fix_evidence(
+                &app,
+                &row,
+                kind.as_deref(),
+                &checkout,
+                input.facts.as_ref(),
+                facts.as_ref(),
+            )
+        } else {
+            None
+        };
         // SC-5: what the task's earlier rounds found, for the worker's `Dismiss <n>:` lines and the checker's prompt.
         let history = rounds::Ledger::carried(&prior).history(&prior);
         let mut record = if !moded.as_today {
@@ -2628,6 +2762,7 @@ pub async fn firstmate_run_gates(
                     facts: facts.as_ref(),
                     mode: Some(&moded),
                     brief_round: Some(&brief_round),
+                    fix: fix_evidence.as_ref(),
                     history: Some(&history),
                 },
                 &runners,

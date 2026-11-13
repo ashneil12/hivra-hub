@@ -16,6 +16,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use crate::test_summary::{classify, TestOutcome};
+
 const MAX_CHECKS: usize = 40;
 const MAX_EDITS: usize = 80;
 const MAX_TODOS: usize = 40;
@@ -1355,6 +1357,303 @@ pub fn done_gaps(turn: &FactTurn) -> Vec<String> {
     let (mut gaps, stale_pkgs) = gaps_before_coverage(turn, &packages);
     gaps.extend(without_stale_packages(coverage_gaps(turn), &stale_pkgs));
     gaps
+}
+
+// ---- SC-7: no red before the fix ----------------------------------------------------------------------------------------
+//
+// A bug-fix brief (the first mate said `kind: "fix"`, or its title, goal or first line says fix, bug, broken, regression
+// or crash) in a project that tests each task (`light` or `full`) must show a failing run of a new or changed test BEFORE
+// the worker's first edit to a file that is not a test. Red means the test runner's summary line shows more than zero
+// tests and more than zero failures (`test_summary::classify`): a build error, zero tests, a file that would not load
+// and a bare failing exit code are not red. Two sources count, and the worker writes neither: the app's own record of
+// each `run_checks` run (`run_checks::Record`, whose list of changed files says whether any source file had changed yet),
+// and the transcript's own test runs, whose order against the edits is the turn's. A red an earlier round already
+// showed is remembered (`run_checks::mark_red_seen`), because a sent-back worker's next turn starts a fresh transcript.
+
+/// The gap for a bug fix whose worker never showed a failing test first.
+pub const NO_RED_BEFORE_FIX: &str =
+    "No failing run of a new or changed test was seen before the fix.";
+
+/// A test run the worker's transcript shows, with the end of what it printed. `at` is the block's place in the turn,
+/// the same scale as an edit's.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FactRun {
+    #[serde(default)]
+    pub command: String,
+    #[serde(default)]
+    pub at: f64,
+    #[serde(default)]
+    pub output: String,
+}
+
+/// What the "no red before the fix" gap reads.
+#[derive(Debug, Clone, Default)]
+pub struct FixEvidence {
+    /// The test files the diff adds or changes.
+    pub test_files: Vec<String>,
+    /// The transcript's test runs, in order.
+    pub runs: Vec<FactRun>,
+    /// The transcript's edits.
+    pub edits: Vec<FactEdit>,
+    /// The first edit to a file that is neither a test nor a document, counted before the edit list was capped.
+    pub first_code_edit_at: Option<f64>,
+    /// The app's own record of each `run_checks` run.
+    pub records: Vec<crate::run_checks::Record>,
+    /// An earlier round of this task already showed the red.
+    pub red_seen_before: bool,
+}
+
+/// The most transcript test runs read, and the most of one run's output kept (its end: the summary is there).
+const MAX_RUNS: usize = 80;
+const MAX_RUN_OUTPUT: usize = 20_000;
+
+/// Whether `gap` is the "no red before the fix" sentence (`testing_mode` drops it in `at-ship` and `off`).
+pub fn is_no_red_gap(gap: &str) -> bool {
+    gap == NO_RED_BEFORE_FIX
+}
+
+fn fix_words_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(?:fix(?:es|ed|ing)?|bugfix(?:es)?|hotfix(?:es)?|bugs?|broken|regressions?|crash(?:es|ed|ing)?)\b",
+        )
+        .expect("fix words pattern")
+    })
+}
+
+/// Whether a brief is a bug fix: the first mate said so (`kind: "fix"`), or its title, goal or first line says fix, bug,
+/// broken, regression or crash. Whole words only: a "fixture", a "prefix" and "debug" are not.
+pub fn is_fix_brief(kind: Option<&str>, title: &str, goal: &str, brief: &str) -> bool {
+    if kind.is_some_and(|kind| kind.trim().eq_ignore_ascii_case("fix")) {
+        return true;
+    }
+    let first: String = brief
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("")
+        .chars()
+        .take(300)
+        .collect();
+    [title, goal, first.as_str()]
+        .iter()
+        .any(|text| fix_words_re().is_match(text))
+}
+
+fn slashes(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn base_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// A name too common to say which test a run touched: every Rust module has its `tests.rs`.
+fn common_name(base: &str) -> bool {
+    matches!(
+        base,
+        "tests.rs"
+            | "test.rs"
+            | "mod.rs"
+            | "lib.rs"
+            | "main.rs"
+            | "index.ts"
+            | "index.js"
+            | "index.tsx"
+    )
+}
+
+/// The flags that narrow a test run to some tests.
+const FILTER_FLAGS: [&str; 14] = [
+    "-t",
+    "-k",
+    "-g",
+    "-p",
+    "-run",
+    "--run",
+    "--grep",
+    "--lib",
+    "--test",
+    "--bin",
+    "--filter",
+    "--exact",
+    "--only",
+    "--testNamePattern",
+];
+
+/// Whether a command runs the project's whole suite: it names no file or folder and no filter. Nothing here can know
+/// what a bare word after `cargo test` filters, so that counts as the whole suite too.
+fn is_broad(command: &str) -> bool {
+    !slashes(command).split_whitespace().any(|token| {
+        let flag = token.split('=').next().unwrap_or(token);
+        FILTER_FLAGS.contains(&flag)
+            || (!token.starts_with('-')
+                && (token.contains('/')
+                    || [".ts", ".tsx", ".js", ".mjs", ".cjs", ".py", ".rs", ".go"]
+                        .iter()
+                        .any(|ext| token.ends_with(ext))))
+    })
+}
+
+/// Whether a transcript test run touched `test` (a test file the diff adds or changes): its command or its output names
+/// the file, or it ran the whole suite while the file already existed (the worker had written it before the run, or
+/// never wrote it this turn).
+fn run_touches(run: &FactRun, test: &str, edits: &[FactEdit]) -> bool {
+    let test = slashes(test);
+    let base = base_of(&test);
+    let command = slashes(&run.command);
+    let output = slashes(&run.output);
+    if command.contains(&test) || output.contains(&test) {
+        return true;
+    }
+    if !common_name(base) && (command.contains(base) || output.contains(base)) {
+        return true;
+    }
+    if !is_broad(&run.command) {
+        return false;
+    }
+    let written: Vec<f64> = edits
+        .iter()
+        .filter(|edit| slashes(&edit.path) == test)
+        .map(|edit| edit.at)
+        .collect();
+    written.is_empty() || written.iter().any(|at| *at < run.at)
+}
+
+/// The gap, or `None` when a bug fix showed a failing run of a new or changed test before its first source edit.
+pub fn no_red_before_fix(evidence: &FixEvidence) -> Option<String> {
+    let gap = || Some(NO_RED_BEFORE_FIX.to_string());
+    if evidence.test_files.is_empty() {
+        // Nothing the fix adds or changes is a test: there was nothing to be red.
+        return gap();
+    }
+    if evidence.red_seen_before {
+        return None;
+    }
+    let is_test = |path: &str| {
+        let path = slashes(path);
+        super::done_check::is_test_path(&path)
+            || evidence
+                .test_files
+                .iter()
+                .any(|known| slashes(known) == path)
+    };
+    let in_diff = |path: &str| {
+        let path = slashes(path);
+        evidence
+            .test_files
+            .iter()
+            .any(|known| slashes(known) == path)
+    };
+    let is_code = |path: &str| !is_test(path) && !is_docs_path(path);
+    // The first edit to a file that is neither a test nor a document.
+    let first_code = evidence
+        .edits
+        .iter()
+        .filter(|edit| edit.at.is_finite() && is_code(&edit.path))
+        .map(|edit| edit.at)
+        .chain(evidence.first_code_edit_at.filter(|at| at.is_finite()))
+        .min_by(f64::total_cmp);
+    // The app's own records: a red run made while only tests (and documents) had changed.
+    for record in &evidence.records {
+        if record.outcome != TestOutcome::Red {
+            continue;
+        }
+        // A list cut at its cap may have left a source file out: it proves no order.
+        if record.changed_files.len() >= crate::run_checks::MAX_PATHS {
+            continue;
+        }
+        let touched = record.changed_files.iter().any(|path| in_diff(path));
+        let source_changed = record.changed_files.iter().any(|path| is_code(path));
+        if touched && !source_changed {
+            return None;
+        }
+    }
+    // The transcript's own runs, against its own edits.
+    for run in &evidence.runs {
+        if first_code.is_some_and(|first| run.at >= first) || !run.at.is_finite() {
+            continue;
+        }
+        if classify(&run.output).outcome != TestOutcome::Red {
+            continue;
+        }
+        if evidence
+            .test_files
+            .iter()
+            .any(|test| run_touches(run, test, &evidence.edits))
+        {
+            return None;
+        }
+    }
+    gap()
+}
+
+fn tail_chars(value: &str, max: usize) -> String {
+    let count = value.chars().count();
+    if count <= max {
+        return value.to_string();
+    }
+    value.chars().skip(count - max).collect()
+}
+
+/// The transcript's test runs and the first source edit, from the facts the webview sent. A bad shape is no runs and no
+/// first edit, never an error.
+pub fn runs_from_value(value: &Value) -> (Vec<FactRun>, Option<f64>) {
+    let Some(obj) = value.as_object() else {
+        return (Vec::new(), None);
+    };
+    let runs = obj
+        .get("runs")
+        .and_then(Value::as_array)
+        .map(|rows| {
+            rows.iter()
+                .filter_map(|row| {
+                    let command = string_field(row, "command");
+                    let at = number_field(row, "at");
+                    if command.trim().is_empty() || !at.is_finite() {
+                        return None;
+                    }
+                    Some(FactRun {
+                        command: take_chars(&command, MAX_COMMAND),
+                        at,
+                        output: tail_chars(
+                            &clean_answer(&string_field(row, "output")),
+                            MAX_RUN_OUTPUT,
+                        ),
+                    })
+                })
+                .take(MAX_RUNS)
+                .collect()
+        })
+        .unwrap_or_default();
+    let first = obj
+        .get("firstCodeEditAt")
+        .and_then(Value::as_f64)
+        .filter(|at| at.is_finite());
+    (runs, first)
+}
+
+/// Rust tests live in the file they test: a `.rs` file that gained a `#[test]` is a test file for this purpose, and so is
+/// any file by a test's name. `files` are each changed file with its text before and after.
+pub fn test_files_in_diff(files: &[(String, Option<String>, Option<String>)]) -> Vec<String> {
+    fn rust_tests(text: Option<&String>) -> usize {
+        text.map_or(0, |text| {
+            text.matches("#[test]").count()
+                + text.matches("#[tokio::test").count()
+                + text.matches("#[rstest").count()
+        })
+    }
+    files
+        .iter()
+        .filter(|(path, before, after)| {
+            let path = slashes(path);
+            super::done_check::is_test_path(&path)
+                || (path.ends_with(".rs")
+                    && rust_tests(after.as_ref()) > rust_tests(before.as_ref()))
+        })
+        .map(|(path, _, _)| path.clone())
+        .collect()
 }
 
 fn lower_first(text: &str) -> String {

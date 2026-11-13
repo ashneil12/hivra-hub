@@ -1,0 +1,6 @@
+ RUN  v2.1.8 /repo
+
+include: **/*.{test,spec}.?(c|m)[jt]s?(x)
+exclude:  **/node_modules/**, **/dist/**
+
+No test files found, exiting with code 1

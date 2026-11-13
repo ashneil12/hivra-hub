@@ -300,6 +300,7 @@ fn check(
         facts: None,
         mode: None,
         brief_round: Some(brief),
+        fix: None,
         history,
     };
     let claims = done_check::claims_of(input.report);
@@ -682,6 +683,7 @@ fn no_checker_a_copy_that_cannot_be_made_and_a_brief_with_no_definition_of_done_
             facts: None,
             mode: None,
             brief_round: None,
+            fix: None,
             history: None,
         },
         "",
@@ -849,6 +851,7 @@ fn round_with(
             facts: None,
             mode: Some(mode),
             brief_round: Some(brief),
+            fix: None,
             history,
         },
         lab,
@@ -1089,4 +1092,46 @@ fn the_two_lists_and_the_dismissals_are_read_and_anything_else_is_left_out() {
     ));
     assert_eq!(big.exercised.len(), 10);
     assert_eq!(big.not_exercised[0].chars().count(), 240);
+}
+
+// ---- a write the read-only copy refused is not a refutation (lead's review, HIGH) ----------------------------------------
+
+fn exited(code: i32, output: &str) -> RawRun {
+    RawRun {
+        ended: Ended::Exited(Some(code)),
+        output: output.to_string(),
+        seconds: 1.0,
+    }
+}
+
+#[test]
+fn a_cargo_build_the_clone_refused_to_write_is_not_run_and_not_refuted() {
+    let raw = exited(
+        101,
+        "error: failed to open: /tmp/copy/target/debug/.cargo-lock\n\nCaused by:\n  Permission denied (os error 13)",
+    );
+    let evidence = evidence_of("the tests pass", "cargo test", &raw, CopyHow::Clone);
+    assert_eq!(evidence.outcome, Outcome::NotRun, "{}", evidence.output);
+    assert!(evidence
+        .output
+        .contains("could not write inside the read-only copy"));
+    for refusal in [
+        "Operation not permitted",
+        "Read-only file system",
+        "EACCES: permission denied, mkdir",
+        "EPERM",
+    ] {
+        let evidence = evidence_of("x", "npm test", &exited(1, refusal), CopyHow::Clone);
+        assert_eq!(evidence.outcome, Outcome::NotRun, "{refusal}");
+    }
+}
+
+#[test]
+fn a_plain_assertion_failure_in_the_clone_is_still_failed() {
+    let raw = exited(
+        101,
+        "test math::adds ... FAILED\nassertion `left == right` failed\n  left: 3\n right: 4\ntest result: FAILED. 0 passed; 1 failed",
+    );
+    let evidence = evidence_of("the tests pass", "cargo test", &raw, CopyHow::Clone);
+    assert_eq!(evidence.outcome, Outcome::Failed);
 }

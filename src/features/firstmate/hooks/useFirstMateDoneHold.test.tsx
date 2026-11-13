@@ -53,6 +53,49 @@ describe("holdOnTurnEnd", () => {
     expect(out.note).toHaveBeenCalledWith("chat-1", expect.objectContaining({ text: "Held: no ship check for this version yet." }));
   });
 
+  // SC-7: a first mate that says "done" with a task still open is held at the same edge, in any testing mode.
+  it("holds a plain done while a task is open, message first and note after, once per set of open work", async () => {
+    const out = send();
+    const memo = new Set<string>();
+    const sessions = [chat({}, "All done. The sort is fixed.")];
+    const open = {
+      tasks: [{ id: "t1", title: "Fix the save bug", status: "working" as const }],
+      unanswered: [],
+    };
+    const api = deps({ mode: vi.fn(async () => "off" as const), work: vi.fn(async () => open) });
+    expect(await holdOnTurnEnd("chat-1", () => sessions, out, api, memo)).toBe(true);
+    expect(out.order).toEqual(["ask", "note"]);
+    expect(out.ask).toHaveBeenCalledWith(
+      "chat-1",
+      expect.objectContaining({
+        text: expect.stringContaining("Not done yet: 1 task is still open (Fix the save bug: working). Finish or close it, then report."),
+      }),
+    );
+    expect(out.note).toHaveBeenCalledWith("chat-1", expect.objectContaining({ text: "Held: tasks still open." }));
+    // The same set of open work is not held again; a changed set is.
+    expect(await holdOnTurnEnd("chat-1", () => sessions, out, api, memo)).toBe(false);
+    const changed = deps({
+      work: vi.fn(async () => ({ tasks: [{ id: "t1", title: "Fix the save bug", status: "failed" as const }], unanswered: [] })),
+    });
+    expect(await holdOnTurnEnd("chat-1", () => sessions, out, changed, memo)).toBe(true);
+  });
+
+  it("gives the hold back when the message could not be queued, so the next turn that ends tries again", async () => {
+    const memo = new Set<string>();
+    const sessions = [chat({}, "All done.")];
+    const api = deps({ work: vi.fn(async () => ({ tasks: [{ id: "t1", title: "A", status: "working" as const }], unanswered: [] })) });
+    const failing = {
+      ask: vi.fn(async () => {
+        throw new Error("This chat does not take app messages.");
+      }),
+      note: vi.fn(),
+    };
+    expect(await holdOnTurnEnd("chat-1", () => sessions, failing, api, memo)).toBe(false);
+    expect(failing.note).not.toHaveBeenCalled();
+    expect(memo.size).toBe(0);
+    expect(await holdOnTurnEnd("chat-1", () => sessions, send(), api, memo)).toBe(true);
+  });
+
   it("holds once per version per chat, and again for a new version", async () => {
     const out = send();
     const memo = new Set<string>();

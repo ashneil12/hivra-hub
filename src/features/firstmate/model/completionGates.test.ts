@@ -57,6 +57,23 @@ describe("what a brief asks for", () => {
     expect(gateRequest({ checks: ["x".repeat(60)] })?.checks?.[0]).toHaveLength(60);
     expect(() => gateRequest({ code: "true" })).toThrow("code must be true or false");
   });
+
+  // SC-7: a first mate says a brief is a bug fix with kind "fix"; the app keeps it with the plan so the round asks for the
+  // failing run first (src-tauri/src/firstmate/gates.rs). It is a request of its own, even with no gates named.
+  it("keeps a bug fix's kind, alone or with the other words, and leaves a blank one out", () => {
+    expect(gateRequest({ kind: "fix" })).toEqual({ kind: "fix" });
+    expect(gateRequest({ kind: " Fix " })).toEqual({ kind: "fix" });
+    expect(gateRequest({ kind: "fix", code: true, checks: ["unit"] })).toEqual({ kind: "fix", code: true, checks: ["unit"] });
+    expect(gateRequest({ kind: "" })).toBeUndefined();
+    expect(gateRequest({ kind: undefined })).toBeUndefined();
+    expect(gateRequest({ kind: null })).toBeUndefined();
+  });
+
+  it("refuses a kind that isn't fix in the same words as Rust", () => {
+    expect(() => gateRequest({ kind: "feature" })).toThrow(`"feature" isn't a kind of brief. Use fix, or leave kind out.`);
+    expect(() => gateRequest({ kind: 1 })).toThrow("kind must be fix");
+    expect(() => gateRequest({ kind: ["fix"] })).toThrow("kind must be fix");
+  });
 });
 
 describe("one round", () => {

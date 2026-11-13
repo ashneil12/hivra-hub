@@ -26,6 +26,7 @@ pub mod done_check;
 pub mod fact_gaps;
 pub mod gates;
 pub mod mcp;
+pub mod open_work; // SC-7: what is still open under a first mate, for the hold on its "done"
 pub mod protected_paths;
 pub mod report;
 pub mod rounds; // SC-5: the round cap, the rethink after two failed rounds, and the person's decision after that
@@ -156,6 +157,9 @@ pub async fn firstmate_checkout_revert(
         .await
         .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod fact_gaps_red_tests; // SC-7: the "no red before the fix" gap
 
 #[cfg(test)]
 mod tests;

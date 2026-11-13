@@ -7,11 +7,17 @@ import {
   HOLD_NOTE,
   HOLD_PREFIX,
   HOLD_RULES,
+  OPEN_WORK_NOTE,
+  doneClaim,
   doneHold,
+  holdDeps,
   holdReplyOf,
+  openWorkMessage,
+  readOpenWork,
   shipClaim,
   type HoldDeps,
   type HoldRule,
+  type OpenWork,
 } from "./doneHold";
 
 const HEAD = "0123456789abcdef0123456789abcdef01234567";
@@ -297,10 +303,13 @@ describe("doneHold: a ready-to-ship claim in an at-ship project with no passed c
   });
 });
 
+/** The ship-check rule, wherever it sits in the list. */
+const SHIP_RULE = (): HoldRule => HOLD_RULES.find((rule) => rule.id === "ship-check")!;
+
 describe("the hold rules: one seam for what else holds a done", () => {
-  it("starts with the ship check and has room for more", () => {
-    expect(HOLD_RULES[0].id).toBe("ship-check");
-    expect(HOLD_RULES.length).toBeGreaterThanOrEqual(1);
+  it("has the open-work rule first (finish the work before a ship check) and the ship check after it", () => {
+    // SC-7 put the open-work rule ahead of the ship check: a ship check over work that is still going is wasted.
+    expect(HOLD_RULES.map((rule) => rule.id)).toEqual(["work-open", "ship-check"]);
     expect(new Set(HOLD_RULES.map((rule) => rule.id)).size).toBe(HOLD_RULES.length);
   });
 
@@ -316,7 +325,7 @@ describe("the hold rules: one seam for what else holds a done", () => {
 
   it("asks each rule in order and holds on the first that fires", async () => {
     const held = await doneHold(claiming(), deps({ passed: vi.fn(async () => true) }), new Set(), [
-      HOLD_RULES[0],
+      SHIP_RULE(),
       extra("tasks-open"),
       extra("second"),
     ]);
@@ -333,11 +342,361 @@ describe("the hold rules: one seam for what else holds a done", () => {
   });
 
   it("goes past a rule that throws to the next one", async () => {
-    const held = await doneHold(claiming(), deps(), new Set(), [extra("broken", { throws: true }), HOLD_RULES[0]]);
+    const held = await doneHold(claiming(), deps(), new Set(), [extra("broken", { throws: true }), SHIP_RULE()]);
     expect(held?.note.text).toBe(HOLD_NOTE);
   });
 
   it("holds nothing when no rule fires", async () => {
     expect(await doneHold(claiming(), deps(), new Set(), [extra("quiet", { fires: false })])).toBeUndefined();
+  });
+
+  it("asks a rule only about the claim it is for", async () => {
+    const asked = vi.fn(async () => undefined);
+    const looser: HoldRule = { id: "loose", claim: doneClaim, check: asked };
+    const stricter: HoldRule = { id: "strict", check: asked };
+    const calm = chatOf([user(), reply("It's done.")]);
+    await doneHold(calm, deps(), new Set(), [looser, stricter]);
+    // "It's done." is a done claim and not a ship claim: only the rule that reads done claims is asked.
+    expect(asked).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---- SC-7: a first mate is not done while its work is open -------------------------------------------------------------
+
+describe("doneClaim: the message tells the person the work is done", () => {
+  it.each([
+    "All done.",
+    "I'm done.",
+    "We're finished.",
+    "We are done with it.",
+    "Everything is complete.",
+    "Everything's done.",
+    "It's done.",
+    "That's done.",
+    "It's ready.",
+    "It is ready for your review.",
+    "You're all set.",
+    "It's all set.",
+    "It's shipped.",
+    "The work is done.",
+    "The fix is done and tested.",
+    "I've finished everything.",
+    "We've completed it.",
+    "Done.",
+    "Finished.",
+    "Complete!",
+    "All set.",
+    "Shipped.",
+    "It's ready to ship.",
+    "The sort is fixed. We're done.",
+    "**All done.**",
+  ])("is a claim: %s", (text) => {
+    expect(doneClaim(text), text).toBe(true);
+  });
+
+  it.each([
+    "Not done yet.",
+    "I'm not done.",
+    "It's not ready.",
+    "We're not finished, two jobs are still running.",
+    "Is it done?",
+    "Are we done?",
+    "Should I mark it done",
+    "Once it's done I'll tell you.",
+    "If it's done, ship it.",
+    "I'll be done soon.",
+    "Almost done.",
+    "The first task is done, the second is running.",
+    "The sort is done, the filter is still open.",
+    "I've finished the first task.",
+    "We're ready to start the next one.",
+    "Everything's done except the docs.",
+    "Let me know when you're done.",
+    "I'm all set up to begin.",
+    "Working on it.",
+    "I fixed the sort. The tests pass.",
+    // A report's own headings and list items are not the report saying it is finished.
+    "## Done\n- Fix the save bug\n## Remaining\n- the export",
+    "**Done:** the sort. **Remaining:** the filter.",
+    "Done so far:\n- one\n- two",
+    "- done",
+    "1. Done",
+    "",
+  ])("is not a claim: %s", (text) => {
+    expect(doneClaim(text), text).toBe(false);
+  });
+
+  it("ignores the words in code, a fence, a quote and quoted words", () => {
+    expect(doneClaim("Run `done` to see it.")).toBe(false);
+    expect(doneClaim("```\nall done\n```")).toBe(false);
+    expect(doneClaim("> It's done.")).toBe(false);
+    expect(doneClaim('The status line says "all done" for the other task.')).toBe(false);
+    expect(doneClaim("Here is the log:\n```\nDone.\n```\nStill two jobs to go.")).toBe(false);
+  });
+
+  it("reads each sentence on its own", () => {
+    expect(doneClaim("Is the sort done? I think so. It's done.")).toBe(true);
+    expect(doneClaim("It's done?")).toBe(false);
+    expect(doneClaim("Not yet. It's done, and the tests pass.")).toBe(true);
+  });
+
+  it("counts every ship claim as a done claim", () => {
+    for (const text of ["Ready to ship.", "We can go live.", "I've shipped it.", "The fix was released."]) {
+      expect(shipClaim(text), text).toBe(true);
+      expect(doneClaim(text), text).toBe(true);
+    }
+    expect(doneClaim("Please run the ship check.")).toBe(false);
+  });
+
+  it("leaves a ship claim exactly as it was", () => {
+    // A done claim is wider, and "it's done" says nothing about shipping.
+    expect(shipClaim("It's done.")).toBe(false);
+    expect(shipClaim("All done. It's ready to ship.")).toBe(true);
+  });
+});
+
+const task = (id: string, title: string, status: OpenWork["tasks"][number]["status"] = "working") => ({ id, title, status });
+
+function withWork(work: OpenWork | undefined, over: Partial<HoldDeps> = {}): HoldDeps {
+  return deps({ work: vi.fn(async () => work), ...over });
+}
+
+const finished = () => chatOf([user(), reply("All done. The sort is fixed.")]);
+
+describe("openWorkMessage: what the app tells the first mate", () => {
+  it("names the open tasks and the unanswered questions, as the brief words it", () => {
+    expect(
+      openWorkMessage({
+        tasks: [task("t1", "Fix the save bug", "working"), task("t2", "Add the export", "failed")],
+        unanswered: [{ taskId: "t1", title: "Fix the save bug" }],
+      }),
+    ).toBe(
+      "Not done yet: 2 tasks are still open (Fix the save bug: working; Add the export: failed) and 1 worker question is unanswered. Finish or close them, then report.",
+    );
+  });
+
+  it("reads as one task, tasks only, questions only", () => {
+    expect(openWorkMessage({ tasks: [task("t1", "Fix the save bug")], unanswered: [] })).toBe(
+      "Not done yet: 1 task is still open (Fix the save bug: working). Finish or close it, then report.",
+    );
+    expect(
+      openWorkMessage({ tasks: [task("t1", "A"), task("t2", "B", "needs-you")], unanswered: [] }),
+    ).toBe("Not done yet: 2 tasks are still open (A: working; B: needs you). Finish or close them, then report.");
+    expect(
+      openWorkMessage({ tasks: [], unanswered: [{ taskId: "t1", title: "A" }, { taskId: "t2", title: "B" }] }),
+    ).toBe("Not done yet: 2 worker questions are unanswered. Answer them, then report.");
+    expect(openWorkMessage({ tasks: [], unanswered: [{ taskId: "t1", title: "A" }] })).toBe(
+      "Not done yet: 1 worker question is unanswered. Answer it, then report.",
+    );
+  });
+
+  it("says each status in plain words", () => {
+    const text = openWorkMessage({
+      tasks: [task("a", "A", "waiting"), task("b", "B", "paused"), task("c", "C", "needs-you"), task("d", "D", "failed")],
+      unanswered: [],
+    });
+    expect(text).toContain("A: waiting; B: paused; C: needs you; D: failed");
+  });
+
+  it("names the first few and counts the rest", () => {
+    const tasks = Array.from({ length: 9 }, (_, n) => task(`t${n}`, `Job ${n}`));
+    const text = openWorkMessage({ tasks, unanswered: [] });
+    expect(text).toContain("9 tasks are still open (Job 0: working; Job 1: working; Job 2: working; Job 3: working; Job 4: working and 4 more)");
+  });
+
+  it("uses no long dash", () => {
+    const text = openWorkMessage({ tasks: [task("t1", "A")], unanswered: [{ taskId: "t1", title: "A" }] });
+    expect(text).not.toMatch(/[–—]/);
+    expect(OPEN_WORK_NOTE).toBe("Held: tasks still open.");
+  });
+});
+
+describe("readOpenWork: what the app answers is untrusted", () => {
+  it("keeps good entries and drops the rest, with plain one-line titles", () => {
+    const read = readOpenWork({
+      tasks: [
+        { id: "t1", title: "Fix\nthe\tsave bug", status: "working" },
+        { id: "t2", title: "x".repeat(300), status: "failed" },
+        { id: "t3", title: "No status", status: "done" },
+        { id: 4, title: "Bad id", status: "working" },
+        { id: "t5", status: "paused" },
+        "junk",
+        null,
+      ],
+      unanswered: [{ taskId: "t1", title: "Fix the save bug" }, { taskId: 2 }, "x"],
+    });
+    expect(read?.tasks.map((t) => t.id)).toEqual(["t1", "t2", "t5"]);
+    expect(read?.tasks[0].title).toBe("Fix the save bug");
+    expect(read?.tasks[1].title.length).toBeLessThanOrEqual(80);
+    expect(read?.tasks[2].title).toBe("Untitled task");
+    expect(read?.unanswered).toEqual([{ taskId: "t1", title: "Fix the save bug" }]);
+  });
+
+  it("is nothing for an answer that isn't a list of work, and caps a long one", () => {
+    for (const raw of [null, undefined, "x", 5, [], { tasks: "no" }]) expect(readOpenWork(raw), String(raw)).toBeUndefined();
+    const many = Array.from({ length: 200 }, (_, n) => ({ id: `t${n}`, title: `Job ${n}`, status: "working" }));
+    expect(readOpenWork({ tasks: many, unanswered: [] })?.tasks).toHaveLength(50);
+  });
+});
+
+describe("doneHold: a first mate's done is held while its work is open (every testing mode)", () => {
+  it("holds a done claim while a task is open, with the app's message and one grey note", async () => {
+    const memo = new Set<string>();
+    const open: OpenWork = {
+      tasks: [task("t1", "Fix the save bug", "working"), task("t2", "Add the export", "failed")],
+      unanswered: [{ taskId: "t1", title: "Fix the save bug" }],
+    };
+    const held = await doneHold(finished(), withWork(open), memo);
+    expect(held?.message.text.startsWith(HOLD_PREFIX)).toBe(true);
+    expect(held?.message.text).toContain(
+      "Not done yet: 2 tasks are still open (Fix the save bug: working; Add the export: failed) and 1 worker question is unanswered. Finish or close them, then report.",
+    );
+    expect(held?.message.text).toContain("This is an app notification, not a new message from");
+    expect(held?.message.waitForIdle).toBe(true);
+    expect(held?.note.role).toBe("system");
+    expect(held?.note.text).toBe("Held: tasks still open.");
+  });
+
+  it("asks the app about this chat's own tasks", async () => {
+    const api = withWork({ tasks: [task("t1", "A")], unanswered: [] });
+    await doneHold(finished(), api, new Set());
+    expect(api.work).toHaveBeenCalledWith("chat-1");
+  });
+
+  it.each(["at-ship", "light", "full", "off"] as const)("holds in %s mode too", async (mode) => {
+    const api = withWork({ tasks: [task("t1", "A")], unanswered: [] }, { mode: vi.fn(async () => mode) });
+    expect(await doneHold(finished(), api, new Set())).toBeDefined();
+  });
+
+  it("holds a failed task, and a worker's question with no other task open", async () => {
+    expect(await doneHold(finished(), withWork({ tasks: [task("t1", "A", "failed")], unanswered: [] }), new Set())).toBeDefined();
+    const asked = await doneHold(
+      finished(),
+      withWork({ tasks: [], unanswered: [{ taskId: "t1", title: "A" }] }),
+      new Set(),
+    );
+    expect(asked?.message.text).toContain("Not done yet: 1 worker question is unanswered. Answer it, then report.");
+  });
+
+  it("is not held when nothing is open: every task done or cancelled, no question waiting", async () => {
+    const memo = new Set<string>();
+    expect(await doneHold(finished(), withWork({ tasks: [], unanswered: [] }), memo)).toBeUndefined();
+    expect(memo.size).toBe(0);
+  });
+
+  it("counts a worker waiting for a seat as open work", async () => {
+    const api = withWork(
+      { tasks: [], unanswered: [] },
+      { waiting: vi.fn(() => [{ id: "app-chat-1-r1", title: "Add the export" }]) },
+    );
+    const held = await doneHold(finished(), api, new Set());
+    expect(held?.message.text).toContain("1 task is still open (Add the export: waiting)");
+    expect(api.waiting).toHaveBeenCalledWith("chat-1");
+  });
+
+  it("holds once per distinct set of open work per chat", async () => {
+    const memo = new Set<string>();
+    const one = { tasks: [task("t1", "A")], unanswered: [] };
+    expect(await doneHold(finished(), withWork(one), memo)).toBeDefined();
+    expect(await doneHold(finished(), withWork(one), memo)).toBeUndefined();
+    // Another chat with the same tasks is held on its own.
+    expect(await doneHold({ ...finished(), id: "chat-2" }, withWork(one), memo)).toBeDefined();
+    // The same task in another state is another set; so is one more task, or a question.
+    expect(await doneHold(finished(), withWork({ tasks: [task("t1", "A", "failed")], unanswered: [] }), memo)).toBeDefined();
+    expect(await doneHold(finished(), withWork({ tasks: [task("t1", "A", "failed"), task("t2", "B")], unanswered: [] }), memo)).toBeDefined();
+    expect(
+      await doneHold(
+        finished(),
+        withWork({ tasks: [task("t1", "A", "failed"), task("t2", "B")], unanswered: [{ taskId: "t2", title: "B" }] }),
+        memo,
+      ),
+    ).toBeDefined();
+    // Seen already, in any order: not held again.
+    expect(
+      await doneHold(
+        finished(),
+        withWork({ tasks: [task("t2", "B"), task("t1", "A", "failed")], unanswered: [{ taskId: "t2", title: "B" }] }),
+        memo,
+      ),
+    ).toBeUndefined();
+  });
+
+  it("takes the memo before anything is sent, so two turns ending together hold once", async () => {
+    const memo = new Set<string>();
+    const open = { tasks: [task("t1", "A")], unanswered: [] };
+    const [a, b] = await Promise.all([
+      doneHold(finished(), withWork(open), memo),
+      doneHold(finished(), withWork(open), memo),
+    ]);
+    expect([a, b].filter(Boolean)).toHaveLength(1);
+  });
+
+  it("is not a verdict when the app can't answer: no hold, no throw, nothing remembered", async () => {
+    for (const api of [
+      deps(),
+      withWork(undefined),
+      deps({ work: vi.fn(async () => Promise.reject(new Error("the store is busy"))) }),
+      deps({ work: vi.fn(async () => ({ tasks: "x" }) as unknown as OpenWork) }),
+    ]) {
+      const memo = new Set<string>();
+      await expect(doneHold(finished(), api, memo)).resolves.toBeUndefined();
+      expect(memo.size).toBe(0);
+    }
+  });
+
+  it("does not ask the app anything when the turn made no done claim", async () => {
+    const api = withWork({ tasks: [task("t1", "A")], unanswered: [] });
+    const calm = chatOf([user(), reply("Two jobs are still running. I'll report when they finish.")]);
+    expect(await doneHold(calm, api, new Set())).toBeUndefined();
+    expect(api.work).not.toHaveBeenCalled();
+    expect(api.mode).not.toHaveBeenCalled();
+  });
+
+  it("does not hold a done claim made as a question, in a code block or behind a not", async () => {
+    const api = withWork({ tasks: [task("t1", "A")], unanswered: [] });
+    for (const said of ["Is it done?", "```\nall done\n```", "It's not done yet.", "I'm not done."]) {
+      expect(await doneHold(chatOf([user(), reply(said)]), api, new Set()), said).toBeUndefined();
+    }
+  });
+
+  it("holds only a first mate's chat", async () => {
+    const api = withWork({ tasks: [task("t1", "A")], unanswered: [] });
+    expect(await doneHold({ ...finished(), firstMate: false }, api, new Set())).toBeUndefined();
+    expect(api.work).not.toHaveBeenCalled();
+  });
+
+  it("drops a hold the chat has moved past while the app was answering", async () => {
+    const memo = new Set<string>();
+    const open = { tasks: [task("t1", "A")], unanswered: [] };
+    expect(await doneHold(finished(), withWork(open, { fresh: () => ({ ...finished(), busy: true }) }), memo)).toBeUndefined();
+    expect(memo.size).toBe(0);
+  });
+
+  it("holds the open work before the ship check, then the ship check once the work is closed", async () => {
+    const memo = new Set<string>();
+    const claim = () => chatOf([user(), reply("All done. It's ready to ship.")]);
+    const open = { tasks: [task("t1", "A")], unanswered: [] };
+    const first = await doneHold(claim(), withWork(open), memo);
+    expect(first?.note.text).toBe("Held: tasks still open.");
+    // The work is closed; the same claim now meets the ship check, in a project that tests at ship.
+    const second = await doneHold(claim(), withWork({ tasks: [], unanswered: [] }), memo);
+    expect(second?.note.text).toBe(HOLD_NOTE);
+  });
+});
+
+describe("holdDeps: the app's own answers", () => {
+  it("reads the open work from the app and keeps a waiting worker of this chat only", async () => {
+    const api = holdDeps(
+      { head: vi.fn(), passed: vi.fn() } as never,
+      vi.fn(async () => ({ mode: "light" as const })),
+      vi.fn(async () => ({ tasks: [{ id: "t1", title: "Fix the save bug", status: "working" }], unanswered: [] })),
+      () => [
+        { id: "w1", ownerSession: "chat-1", title: "Add the export" },
+        { id: "w2", ownerSession: "chat-2", title: "Someone else's" },
+      ],
+    );
+    expect(await api.work?.("chat-1")).toEqual({ tasks: [{ id: "t1", title: "Fix the save bug", status: "working" }], unanswered: [] });
+    expect(api.waiting?.("chat-1")).toEqual([{ id: "w1", title: "Add the export" }]);
+    expect(api.waiting?.("chat-3")).toEqual([]);
   });
 });
