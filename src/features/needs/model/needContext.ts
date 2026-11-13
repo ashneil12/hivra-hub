@@ -12,6 +12,7 @@ export const NEED_KIND_LABEL: Readonly<Record<NeedsKind, string>> = {
   merge: "Ready to merge",
   review: "Review",
   check: "Check",
+  ask: "Ask",
 };
 
 /** A first mate as this needs: its main chat, its further chats and its own chat in each project. */

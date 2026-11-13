@@ -190,6 +190,11 @@ export function InboxNeeds({
                     ) : null}
                   </span>
                   <span className="line-clamp-2 text-[13px] font-semibold leading-snug text-content">{item.sentence}</span>
+                  {item.detail ? (
+                    <span data-need-line className="line-clamp-2 text-[12px] leading-4 text-content/70">
+                      {item.detail}
+                    </span>
+                  ) : null}
                   <span data-need-summary className="flex min-w-0 items-center gap-1.5 text-[11px] leading-4 text-content/55">
                     <span className="min-w-0 truncate">{[item.who, summary].filter(Boolean).join(" · ")}</span>
                     <ChevronRight

@@ -22,7 +22,7 @@ import { ALWAYS_ASK_REASON, questionVeto } from "../../autopilot/model/reviewerR
 import { foldDecisionKey, isPersonOnlyDecisionKey } from "../../hub/model/decisionKey";
 import { REPO_ALIAS } from "./repoAlias";
 
-export type NeedsKind = "stopped" | "question" | "approval" | "merge" | "review" | "check";
+export type NeedsKind = "stopped" | "question" | "approval" | "merge" | "review" | "check" | "ask";
 
 export type NeedsAction = { label: string; run: () => void; title?: string; ariaLabel?: string };
 
@@ -57,6 +57,13 @@ export type NeedsItem = {
   suggested?: string;
   /** Answer it with one of `choices` or the person's own words. Resolves to why it was refused, or undefined when sent. */
   answer?: (words: string) => Promise<string | undefined>;
+  /** One quiet line under the ask, on its row and its card (a quiet ask: "Still open since Tuesday. Mia hasn't moved it."). */
+  detail?: string;
+  /**
+   * For a row whose answers do different things: what each answer says once it is done. `null` marks an answer that only
+   * takes the person somewhere (Answer it): the card stays as it is. An answer not listed says "Sent. <who> has it."
+   */
+  outcomes?: Record<string, string | null>;
 };
 
 type FactBase = {
@@ -143,6 +150,14 @@ export type CheckFact = FactBase & {
   onFix?: () => void;
 };
 
+/** An ask of Ash's that went quiet (asks/model/askQuiet.ts, quietAsks.ts). Always answered from its card. */
+export type AskFact = FactBase & {
+  detail: string;
+  choices: string[];
+  outcomes: Record<string, string | null>;
+  answer: (words: string) => Promise<string | undefined>;
+};
+
 export type RunningFact = { id: string; projectId?: string };
 
 export type NeedsSources = {
@@ -152,6 +167,8 @@ export type NeedsSources = {
   merges?: readonly MergeFact[];
   reviews?: readonly ReviewFact[];
   checks?: readonly CheckFact[];
+  /** sc-20: asks of Ash's that two daily checks found with nothing moved. */
+  asks?: readonly AskFact[];
   running?: readonly RunningFact[];
   /** Repos that belong to one of Ash's projects. Used when ownRepoByProject is absent. */
   ownRepos?: ReadonlySet<string>;
@@ -172,6 +189,7 @@ const RANK: Record<NeedsKind, number> = {
   merge: 3,
   review: 4,
   stopped: 5,
+  ask: 6,
 };
 
 /** Display order only. Collapse still uses RANK, so a check still beats a question on the same key. */
@@ -543,6 +561,29 @@ function checkItem(fact: CheckFact, now: number): Draft | undefined {
   };
 }
 
+/** An ask that went quiet: its own words as the title, one line on how long, and the answers the fact carries. */
+function askItem(fact: AskFact, now: number): Draft | undefined {
+  const id = fact.id.trim();
+  const sentence = plainSentence(fact.sentence);
+  if (!id || !sentence) return undefined;
+  const who = personName(fact.who);
+  return {
+    key: `ask:${id}`,
+    kind: "ask",
+    projectId: fact.projectId || undefined,
+    monoId: fact.monoId || undefined,
+    who,
+    at: finite(fact.at, now),
+    sentence,
+    detail: plainSentence(fact.detail),
+    // Home's one tap is the way to the chat; the card lists every answer, so it shows no button of its own.
+    actions: openAction("Answer it", fact.onOpen),
+    open: fact.open,
+    ...choicesOf(fact),
+    outcomes: fact.outcomes,
+  };
+}
+
 function collapse(drafts: Draft[]): NeedsItem[] {
   const claimed = new Set(drafts.filter((row) => row.kind !== "stopped" && row.about).map((row) => row.about));
   let rows = drafts.filter((row) => !(row.kind === "stopped" && row.about && claimed.has(row.about)));
@@ -581,6 +622,8 @@ function collapse(drafts: Draft[]): NeedsItem[] {
       ...(row.answer ? { answer: row.answer } : {}),
       ...(row.answer && row.choices?.length ? { choices: row.choices } : {}),
       ...(row.answer && row.suggested ? { suggested: row.suggested } : {}),
+      ...(row.detail ? { detail: row.detail } : {}),
+      ...(row.outcomes ? { outcomes: row.outcomes } : {}),
     }))
     .sort((a, b) => urgency(a.kind) - urgency(b.kind) || a.at - b.at || a.key.localeCompare(b.key));
 }
@@ -593,6 +636,7 @@ function assemble(sources: NeedsSources, now: number): { items: NeedsItem[]; run
     ...(sources.merges ?? []).map((fact) => mergeItem(fact, now)),
     ...(sources.reviews ?? []).map((fact) => reviewItem(fact, sources, now)),
     ...(sources.checks ?? []).map((fact) => checkItem(fact, now)),
+    ...(sources.asks ?? []).map((fact) => askItem(fact, now)),
   ].filter((row): row is Draft => row != null);
   return { items: collapse(drafts), running: sources.running ?? [] };
 }

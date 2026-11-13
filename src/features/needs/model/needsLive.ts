@@ -4,7 +4,7 @@
 
 import { setAsideDoc, useSetAsideVersion, withoutSetAside } from "./setAside";
 import { requestTranscriptAsk } from "../../sessions/model/transcriptJump";
-import { useEffect, useState } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { listen } from "@tauri-apps/api/event";
 import { invoke } from "@tauri-apps/api/core";
 import { projectKey } from "../../../shared/lib/paths";
@@ -16,6 +16,11 @@ import { openFromHome } from "../../home/model/opener";
 import { parseTask, taskReadKeys, type HomeDecision, type HomeProject, type HomeTask } from "../../home/model/lines";
 import type { AskRow } from "../../hub/model/chatQuestions";
 import { commonGitDir, gitdirFromGitFile, joinRepoPath, originUrlFromGitConfig, repoFromOriginUrl } from "./projectRepos";
+import { raisedAsks } from "../../asks/model/askQuiet";
+import { askStore } from "../../asks/model/askStore";
+import type { Ask } from "../../asks/model/asks";
+import { openBesideChief } from "../../asks/model/besideChat";
+import { quietAskFacts, type QuietAskDeps } from "./quietAsks";
 import { allKeptPages, needsAllow, requestOpenPage, usePagesVersion, type Page } from "../../pages/model/pages";
 import { PR_WATCHES_CHANGED, tauriPrWatches, type PrWatch } from "../../pr-watch/model/prWatches";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
@@ -24,6 +29,7 @@ import {
   answerRow,
   openRows,
   openWaitingChat,
+  sendToChat,
   takePick,
   useWaitingChatsVersion,
   waitingChats,
@@ -487,6 +493,40 @@ function pageFacts(pages: readonly Page[], list: readonly ProjectRef[]): Approva
   }));
 }
 
+const SEND_MISSED = "That did not send. Open the chat and say it there.";
+const subscribeAsks = (fn: () => void): (() => void) => askStore().subscribe(fn);
+const askRevision = (): number => askStore().doc().revision;
+
+/**
+ * sc-20: what the answers on a quiet ask's row do (asks/model/askQuiet.ts, quietAsks.ts). Each one writes the ledger on the
+ * revision the card was drawn for, so a card for an ask that moved since refuses and changes nothing.
+ */
+function quietAskDeps(list: readonly ProjectRef[], now: number): QuietAskDeps {
+  const mateOf = (ask: Ask) => {
+    const mono = findMono(ask.mateId);
+    if (!mono) return undefined;
+    const projectId = Object.entries(mono.projectSessions ?? {}).find(([, session]) => session === ask.sessionId)?.[0];
+    return { name: mono.name, projectId: projectId && list.some((project) => project.id === projectId) ? projectId : undefined };
+  };
+  return {
+    now,
+    mate: mateOf,
+    jump: (ask) => {
+      requestTranscriptAsk(ask.sessionId, { text: ask.quote, at: ask.createdAt });
+      if (openBesideChief(ask.sessionId)) return;
+      openFromHome({ kind: "chat", id: ask.sessionId, projectId: mateOf(ask)?.projectId ?? "" });
+    },
+    letGo: (ask, raisedAt) => askStore().letGo(ask.id, raisedAt).catch(() => CHANGED),
+    remind: (ask, raisedAt) => askStore().remind(ask.id, raisedAt).catch(() => MISSED),
+    reply: async (ask, raisedAt, words) => {
+      if (!(await sendToChat(ask.sessionId, words))) return SEND_MISSED;
+      // The words went to the chat that asked: the ask is answered, and comes back only if the first mate still leaves it quiet.
+      await askStore().answered(ask.id, raisedAt).catch(() => undefined);
+      return undefined;
+    },
+  };
+}
+
 function runningFacts(rows: readonly NeedsDelegation[], list: readonly ProjectRef[]): RunningFact[] {
   return rows.filter((row) => row.state === "running" && row.id.trim()).map((row) => ({
     id: row.id,
@@ -592,6 +632,10 @@ export type NeedsParts = {
   delegations: readonly NeedsDelegation[];
   /** Absent means the tasks the live list is holding. */
   tasks?: readonly HomeTask[];
+  /** sc-20: the asks that are Needs you rows now (asks/model/askQuiet.ts raisedAsks). */
+  asks?: readonly Ask[];
+  /** The time the rows are worded against ("Still open since Tuesday"). Absent means now. */
+  now?: number;
 };
 
 function tasksFor(parts: NeedsParts): readonly HomeTask[] {
@@ -611,6 +655,7 @@ export function factsFromParts(parts: NeedsParts): NeedsSources {
     approvals: [...decisions.approvals, ...chats.approvals, ...pageFacts(parts.pages, list)],
     reviews: [...tasks.reviews, ...watchFacts(parts.remote.watches, list)],
     checks: cardFacts(parts.remote.cards, list, parts.remote.decisions),
+    asks: quietAskFacts(parts.asks ?? [], quietAskDeps(list, parts.now ?? Date.now())),
     running: runningFacts(parts.delegations, list),
     ownRepos: ownedRepos(list),
     ownRepoByProject: originsByProject(list),
@@ -962,6 +1007,8 @@ export function useNeedsYou(): NeedsItem[] {
   }, []);
   // Set aside by Ash for now (setAside.ts): gone from the list and every count until it changes or a day passes.
   useSetAsideVersion();
+  // sc-20: a quiet ask is raised, answered or moved by the ledger, which any window can write.
+  useSyncExternalStore(subscribeAsks, askRevision, askRevision);
   const now = Date.now();
   return withoutSetAside(needsFrom(rows, delegations, now), setAsideDoc(), now);
 }
@@ -975,6 +1022,8 @@ function needsFrom(rows: readonly NeedsYouRow[], delegations: readonly NeedsDele
     pages: safePages(),
     delegations,
     tasks: liveTasks,
+    asks: raisedAsks(askStore().doc()),
+    now,
   }), now);
 }
 
