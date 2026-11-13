@@ -181,6 +181,8 @@ export type DeliveryInput = {
   /** The report message a queued row now waits in. */
   queuedMessage?: string;
   by?: string;
+  /** SC-19: only rows this chat still owns move (the store compares the owner), so a stale window changes nothing. */
+  ownerSession?: string;
 };
 
 export type ChatBindInput = {
@@ -199,6 +201,23 @@ export type OwnedQuery = {
 };
 
 export type Change = { applied: boolean; row: Delegation | null };
+
+/** SC-19: a retired chat's open work moves to the chat that takes its place (delegations/reparent.rs). */
+export type ReparentInput = {
+  from: string;
+  to: string;
+  /** The Mono the new chat belongs to: the moved rows' `ownerMono` follows it. */
+  toMono?: string;
+  /** The old chat's title, for the row's log line ("Moved from <title> after a reset"). */
+  fromTitle?: string;
+  why?: "reset" | "archive" | "delete";
+};
+
+/** What moved: the rows (as they are now), and the jobs that were waiting for a free worker. */
+export type Reparented = {
+  rows: Delegation[];
+  waiting: { id: string; title: string | null }[];
+};
 
 /** The store's commands (delegations.rs); tests pass an in-memory one. */
 export type DelegationsBackend = {
@@ -236,6 +255,8 @@ export type DelegationsBackend = {
   checkDepth?(ownerSession: string, opts?: { fanout?: boolean }): Promise<number>;
   /** Hivra WP-10: the first mate passes its worker's open question on to the person, or takes it back. */
   setQuestionOwner?(id: string, generation: number, owner: "person" | "first-mate", by?: string): Promise<Change>;
+  /** SC-19: move every open or owed row, and every waiting job, of a retired chat to its successor, in one transaction. */
+  reparent?(input: ReparentInput): Promise<Reparented>;
 };
 
 export const tauriDelegations: DelegationsBackend = {
@@ -265,6 +286,7 @@ export const tauriDelegations: DelegationsBackend = {
     }),
   setQuestionOwner: (id, generation, owner, by) =>
     invoke("firstmate_set_question_owner", { id, generation, owner, by }),
+  reparent: (input) => invoke("delegations_reparent", { input }),
 };
 
 /** delegations.rs's event after any change to a row. */
@@ -529,6 +551,11 @@ export type DelegationHost = {
    * settled here; the row stays open and the app notes the pause on its own.
    */
   crewFailure?(row: Delegation, result: MonoSessionCompletionResult): Promise<CrewFailureNote | undefined>;
+  /**
+   * SC-19: this request's report is still on its way from the app's own batches (waiting for its turn's others, or
+   * being queued right now), so a move of its owner must not queue it a second time.
+   */
+  reportHeld?(requestId: string): boolean;
 };
 
 /** One monitored launch or follow-up. */
@@ -570,12 +597,42 @@ export class DelegationTracker {
   private requests = new Map<string, string>();
   private openChildren = new Map<string, string>();
   private binds = new Map<string, string>();
+  /**
+   * SC-19: a chat that is gone for good (reset, deleted) → the chat that took its work: everything still addressed to
+   * it, a straggling launch or a report already on its way, goes on to the new chat.
+   */
+  private forwards = new Map<string, string>();
+  /**
+   * SC-19: `key(old chat, request)` → the chat that took that one request's work. The only forward an archived chat
+   * gets: it can come back (and own new work again), so only what it had when it was archived is followed.
+   */
+  private movedRequests = new Map<string, string>();
+  /** SC-19: requests whose batch report is waiting in the line to be queued (deliverWave), and how many. */
+  private waves = new Map<string, number>();
   private loaded = false;
 
   constructor(
     private backend: DelegationsBackend,
     private host: DelegationHost,
   ) {}
+
+  /**
+   * SC-19: the chat that owns what `id` owned. A report or an app note addressed to a chat that was reset or deleted
+   * (it was already on its way when the work moved) goes to the chat that took the work; so does a report for one
+   * request of an archived chat's (`request`). Any other id is its own owner. Follows a chain of moves, and stops on
+   * a loop.
+   */
+  ownerNow(id: string, request?: string): string {
+    let current = (request ? this.movedRequests.get(key(id, request)) : undefined) ?? id;
+    const seen = new Set([id, current]);
+    for (let hop = 0; hop < 8; hop++) {
+      const next = this.forwards.get(current);
+      if (!next || seen.has(next)) break;
+      seen.add(next);
+      current = next;
+    }
+    return current;
+  }
 
   /** Store calls run one at a time, in the order they were asked for, so a settle never overtakes its record. */
   private serial<T>(work: () => Promise<T>): Promise<T> {
@@ -586,6 +643,12 @@ export class DelegationTracker {
 
   private remember(row: Delegation | null | undefined) {
     if (!row) return;
+    // SC-19: another window moved the row's owner: the old owner's key no longer finds it.
+    const before = this.rows.get(row.id);
+    if (before && before.ownerSession !== row.ownerSession) {
+      const stale = key(before.ownerSession, before.requestId);
+      if (this.requests.get(stale) === row.id) this.requests.delete(stale);
+    }
     if (retained(row)) {
       this.rows.set(row.id, row);
       this.requests.set(key(row.ownerSession, row.requestId), row.id);
@@ -660,6 +723,9 @@ export class DelegationTracker {
 
   /** Record a monitored launch or follow-up before its child starts. */
   launch(input: RecordInput): DelegationLaunch {
+    // SC-19: a launch that still names a chat that was reset or deleted (its last turn was cut) is owned by the chat that took over.
+    const owner = this.ownerNow(input.ownerSession);
+    if (owner !== input.ownerSession) input = { ...input, ownerSession: owner };
     // r63: the row's title is a job name, not the Lead's "I'll check…" (workerTitle.ts).
     if (input.title) input = { ...input, title: workerTitle(input.title, input.title) };
     const row = this.serial(async () => {
@@ -707,21 +773,62 @@ export class DelegationTracker {
     requestIds: string[],
     messageId: string,
   ): Promise<void> {
+    return this.serial(() => this.markQueued(ownerId, requestIds, messageId));
+  }
+
+  /** The store's side of `queued`; a failure is logged and never stops the report. Only inside a serial job. */
+  private async markQueued(ownerId: string, requestIds: string[], messageId: string): Promise<void> {
+    try {
+      // Each request under the owner it has now. The store marks a row only while that chat still owns it: a window
+      // that has not heard of a move never overwrites what the move's window recorded.
+      const byOwner = new Map<string, string[]>();
+      for (const request of requestIds) {
+        const owner = this.ownerNow(ownerId, request);
+        const id = this.requests.get(key(owner, request));
+        if (id) byOwner.set(owner, [...(byOwner.get(owner) ?? []), id]);
+      }
+      for (const [owner, ids] of byOwner)
+        for (const row of await this.backend.setDelivery({
+          ids,
+          delivery: "queued",
+          queuedMessage: messageId,
+          ownerSession: owner,
+        }))
+          this.remember(row);
+    } catch (error) {
+      console.error("Could not mark the report queued", error);
+    }
+  }
+
+  /**
+   * SC-19: the batch cache reports `requestIds` in one message to `ownerId`. Marking the rows queued and queueing the
+   * message to the owner as it is at that moment are ONE serial job, so a move of the owner (`reparent`, another job
+   * of the same line) falls before both or after both: before, the message goes to the chat that is gone and the move
+   * queues each report again; after, the rows and the message already name the new chat. `send` queues the message
+   * (queueMonoSessionCompletion) and gets the owner to queue it to.
+   */
+  deliverWave(
+    ownerId: string,
+    requestIds: string[],
+    messageId: string,
+    send: (owner: string) => Promise<void>,
+  ): Promise<void> {
+    // Registered now, in the order asked, so a move that runs first knows these reports are still to come.
+    for (const request of requestIds) this.waves.set(request, (this.waves.get(request) ?? 0) + 1);
     return this.serial(async () => {
-      const ids = requestIds.flatMap((request) => {
-        const id = this.requests.get(key(ownerId, request));
-        return id ? [id] : [];
-      });
-      if (!ids.length) return;
-      for (const row of await this.backend.setDelivery({
-        ids,
-        delivery: "queued",
-        queuedMessage: messageId,
-      }))
-        this.remember(row);
-    }).catch((error: unknown) =>
-      console.error("Could not mark the report queued", error),
-    );
+      try {
+        await this.markQueued(ownerId, requestIds, messageId);
+        // Started inside the line, so the owner it goes to is the one at this moment. The queueing itself (it may open
+        // the chat) is awaited by the caller, not by the line: a slow chat never holds up every other row's store calls.
+        return { sent: send(this.ownerNow(ownerId, requestIds[0])) };
+      } finally {
+        for (const request of requestIds) {
+          const left = (this.waves.get(request) ?? 1) - 1;
+          if (left > 0) this.waves.set(request, left);
+          else this.waves.delete(request);
+        }
+      }
+    }).then(({ sent }) => sent);
   }
 
   /** A report went to its owner as a turn. */
@@ -941,7 +1048,58 @@ export class DelegationTracker {
     });
     changed.forEach((entry) => this.remember(entry));
     if (!changed.length && !already) return;
+    // SC-19: the owner as the store has it now: a row moved after `row` was read still reports to its new chat.
     await this.host.queueReport(row.ownerSession, message);
+  }
+
+  /**
+   * SC-19 (never lose an ask, gap D1): `input.from` was reset, archived or deleted, so its open work moves to
+   * `input.to`. The store moves the rows and the waiting jobs in one transaction (compare-and-swap on the owner, so a
+   * second window or a retry moves nothing twice); this window follows: its row cache, its request keys, and a
+   * forward so a report still on its way to the old chat reaches the new one. `announce` runs once, first, so the new
+   * chat reads what moved before the reports arrive. A finished row still owed (its report may sit in the queue of the
+   * chat that is gone) is queued again under the same receipt, which dedupes it, unless the app's batches still hold
+   * it and will queue it themselves. Nothing is cancelled or restarted. A move that finds nothing returns an empty
+   * result and changes nothing here.
+   */
+  reparent(
+    input: ReparentInput,
+    announce?: (moved: Reparented) => Promise<void> | void,
+  ): Promise<Reparented> {
+    const move = this.backend.reparent?.bind(this.backend);
+    if (!move) return Promise.resolve({ rows: [], waiting: [] });
+    return this.serial(async () => {
+      const moved = await move(input);
+      if (!moved.rows.length && !moved.waiting.length) return moved;
+      // The new chat is a live owner again: a forward out of it (it was retired once before) no longer holds.
+      this.forwards.delete(input.to);
+      // A reset or deleted chat is gone for good: all that is still addressed to it goes on to the new chat. An
+      // archived one can come back and own new work again, so only the requests it had are followed.
+      if (input.why !== "archive") this.forwards.set(input.from, input.to);
+      for (const row of moved.rows) {
+        this.movedRequests.set(key(input.from, row.requestId), input.to);
+        const stale = key(input.from, row.requestId);
+        if (this.requests.get(stale) === row.id) this.requests.delete(stale);
+        this.remember(row);
+      }
+      try {
+        await announce?.(moved);
+      } catch (error) {
+        console.error("Could not tell the chat what moved", error);
+      }
+      for (const row of moved.rows) {
+        // A report the app's batches still hold, or one already waiting in the line behind this move, is queued by
+        // them to the new chat; queueing it here as well would send a batch's reports twice.
+        if (isOpenDelegation(row) || !isOwed(row) || this.waves.has(row.requestId) || this.host.reportHeld?.(row.requestId))
+          continue;
+        try {
+          await this.report(row, storedResult(row, await this.host.load(row.childSession)));
+        } catch (error) {
+          console.error("Could not queue a moved report", error);
+        }
+      }
+      return moved;
+    });
   }
 
   /**

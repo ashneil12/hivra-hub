@@ -41,6 +41,9 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::session_store::{now_millis, SessionStore};
 
+// SC-19: a retired chat's open work moves to the chat that takes its place (reparent.rs).
+pub mod reparent;
+
 /// Tauri event after any change: `{ids}`.
 pub const CHANGED: &str = "monocode:delegations-changed";
 
@@ -1458,6 +1461,10 @@ pub struct DeliveryInput {
     pub queued_message: Option<String>,
     #[serde(default)]
     pub by: Option<String>,
+    /// SC-19: only rows this chat still owns move (compare-and-swap on the owner). A window that has not heard its chat
+    /// was reset names the old one here, so its late "queued" mark never overwrites the move's own.
+    #[serde(default)]
+    pub owner_session: Option<String>,
 }
 
 /// Move the report's delivery. Returns the rows that changed; a repeated, backwards or post-dispose move is a no-op.
@@ -1475,6 +1482,7 @@ pub fn set_delivery(
         return Err("a queued report names the message it waits in".into());
     }
     let by = actor(input.by);
+    let owner = text(input.owner_session, 256);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1496,7 +1504,11 @@ pub fn set_delivery(
     }
     let mut changed = Vec::new();
     for mut row in rows {
-        if !delivery_move(&row, wanted, message.as_deref()) {
+        if owner
+            .as_deref()
+            .is_some_and(|owner| row.owner_session != owner)
+            || !delivery_move(&row, wanted, message.as_deref())
+        {
             continue;
         }
         let was = row.delivery.clone();

@@ -32,6 +32,36 @@ function result(
 }
 
 describe("Mono completion batches", () => {
+  // SC-19: a moved row's report that a batch still holds is the batch's to queue, not the move's.
+  it("holds a request's report from its launch until the batch has reported it, and no longer", () => {
+    const ready = vi.fn();
+    const batches = new MonoSessionCompletionBatches(ready);
+    expect(batches.holds("a")).toBe(false);
+    const a = batches.watch(origin, "a");
+    const b = batches.watch(origin, "b");
+    // Running, and finished but waiting for its turn to end: both are still the batch's to report.
+    expect(batches.holds("a")).toBe(true);
+    a(result("a"));
+    expect(batches.holds("a")).toBe(true);
+    batches.closeInactive(() => false);
+    expect(ready).not.toHaveBeenCalled();
+    expect(batches.holds("a")).toBe(true);
+    b(result("b"));
+    // The report went out: the batch holds nothing of it any more.
+    expect(ready).toHaveBeenCalledOnce();
+    expect(batches.holds("a")).toBe(false);
+    expect(batches.holds("b")).toBe(false);
+    expect(batches.holds("c")).toBe(false);
+  });
+
+  it("holds nothing for a launch that was discarded", () => {
+    const batches = new MonoSessionCompletionBatches(vi.fn());
+    const a = batches.watch(origin, "a", "a", { awaitAcceptance: true });
+    expect(batches.holds("a")).toBe(true);
+    a.discard();
+    expect(batches.holds("a")).toBe(false);
+  });
+
   it("waits for the launching turn, and children that finish together go as one report, even when a fast child finishes before the others launch", () => {
     const ready = vi.fn();
     const batches = new MonoSessionCompletionBatches(ready);

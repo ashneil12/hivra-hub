@@ -819,6 +819,8 @@ pub fn run() {
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
+            // SC-19: a retired chat's open work moves to the chat that takes its place.
+            delegations::reparent::delegations_reparent,
             // WP-70: tasks shared by the person and their agents.
             tasks::commands::tasks_list,
             tasks::commands::tasks_pickup_rules,

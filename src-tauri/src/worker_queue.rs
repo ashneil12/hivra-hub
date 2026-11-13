@@ -614,6 +614,52 @@ pub fn import_local_settings(
     Ok(true)
 }
 
+/// SC-19: the jobs a retired chat left waiting now wait for the chat that takes its place. The `owner_session` column and
+/// the job's own `ownerSession` change together, in the caller's transaction, and only while the owner still is `from`
+/// (compare-and-swap), so a job is never moved twice or taken from a chat that already moved it. Place, claim and lease
+/// stay as they were. A job whose stored JSON can't be read (it was never startable) is left alone. Returns each moved
+/// job's id and title, in the order they were asked.
+pub(crate) fn move_owner(
+    conn: &Connection,
+    from: &str,
+    to: &str,
+) -> Result<Vec<(String, Option<String>)>, String> {
+    let waiting = conn
+        .prepare("SELECT id, job_json FROM worker_queue WHERE owner_session = ?1 ORDER BY seq")
+        .map_err(|e| e.to_string())?
+        .query_map(params![from], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    let mut moved = Vec::new();
+    for (id, text) in waiting {
+        let Ok(mut job) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let Some(object) = job.as_object_mut() else {
+            continue;
+        };
+        let title = object
+            .get("title")
+            .and_then(Value::as_str)
+            .map(|t| t.chars().take(300).collect::<String>())
+            .filter(|t| !t.trim().is_empty());
+        object.insert("ownerSession".into(), json!(to));
+        let swapped = conn
+            .execute(
+                "UPDATE worker_queue SET owner_session = ?3, job_json = ?4 WHERE id = ?1 AND owner_session = ?2",
+                params![id, from, to, job.to_string()],
+            )
+            .map_err(|e| e.to_string())?;
+        if swapped > 0 {
+            moved.push((id, title));
+        }
+    }
+    Ok(moved)
+}
+
 /// Removes one job. True only for the call that removed it.
 pub fn take(conn: &Connection, id: &str) -> Result<bool, String> {
     let removed = conn

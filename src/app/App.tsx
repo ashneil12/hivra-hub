@@ -81,6 +81,8 @@ import {
   type Delegation,
   type DelegationTracker,
 } from "../features/monos/model/delegations";
+// SC-19: a retired chat's open work moves to the chat that takes its place.
+import { moveOwnedWork, ownerSuccessor, type RetireKind } from "../features/monos/model/ownerMove";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
 import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
@@ -6121,6 +6123,48 @@ function Workspace({
     void onOpenMono(monoId);
   }, [onOpenMono]);
 
+  /** SC-19: a retired chat's open work moves to the chat that takes its place (monos/model/ownerMove.ts). */
+  const moveRetiredWork = useCallback(
+    (kind: RetireKind, from: { id: string; title?: string }, to: { id: string; monoId?: string }): void => {
+      const tracker = delegationsRef.current;
+      if (!tracker) return;
+      void moveOwnedWork({
+        tracker,
+        kind,
+        from: { chatId: from.id, ...(from.title ? { title: from.title } : {}) },
+        to: { chatId: to.id, ...(to.monoId ? { monoId: to.monoId } : {}) },
+        post: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
+      }).catch((error: unknown) => console.error("Could not move a retired chat's tasks", error));
+    },
+    [],
+  );
+
+  /** SC-19: an archived or deleted chat's work goes to its first mate's main chat, or a deleted one's project Lead. */
+  const moveRemovedChatWork = useCallback(
+    (
+      sessionId: string,
+      kind: "archive" | "delete",
+      retired: { monoId?: string; title?: string; project?: string },
+    ): void => {
+      const successor = ownerSuccessor(
+        { chatId: sessionId, kind, ...(retired.monoId ? { monoId: retired.monoId } : {}), ...(retired.project ? { project: retired.project } : {}) },
+        {
+          monoExists: (id) => !!findMono(id),
+          mainChat: (id) => findMono(id)?.sessionId,
+          leadChat: (project) => {
+            for (const mono of listMonos()) {
+              const folder = leadFor(mono.id) ? leadWorkingFolder(mono.id) : undefined;
+              if (mono.sessionId && folder && sameProjectPath(folder, project)) return { monoId: mono.id, chatId: mono.sessionId };
+            }
+            return undefined;
+          },
+        },
+      );
+      if (successor) moveRetiredWork(kind, { id: sessionId, ...(retired.title ? { title: retired.title } : {}) }, { id: successor.chatId, monoId: successor.monoId });
+    },
+    [moveRetiredWork],
+  );
+
   const onResetMono = useCallback(
     async (sessionId: string): Promise<void> => {
       const current = sessionsRef.current.find(
@@ -6186,12 +6230,20 @@ function Workspace({
               setComposerFocusToken((token) => token + 1);
             }
           },
+          // SC-19: what the reset chat still owned (running, waiting, asked, or finished and not yet told) goes to the
+          // fresh chat. Started here and not waited for: the reset is done, a busy store is retried in the background.
+          moveWork: async (old, fresh) =>
+            moveRetiredWork(
+              "reset",
+              { id: old.id, title: sessionDisplayTitle(old.title, old.harness) },
+              { id: fresh.id, monoId: monoForSession(fresh.id)?.id },
+            ),
         });
       } finally {
         removingSessionIds.current.delete(sessionId);
       }
     },
-    [invalidateLoadedSession, stopSessionForRemoval],
+    [invalidateLoadedSession, moveRetiredWork, stopSessionForRemoval],
   );
 
   const onSelectHistorySession = useCallback(
@@ -6667,6 +6719,8 @@ function Workspace({
         (session) => session.id === sessionId,
       );
       const summary = history.find((entry) => entry.id === sessionId);
+      // SC-19: who it belonged to, read before it goes (its owner's open work moves after the removal).
+      const retiredOwner = isOrchestratorChat(sessionId) ? { mono: monoForSession(sessionId) } : undefined;
       removingSessionIds.current.add(sessionId);
       // r69 (g): a sub-chat of another project is neither open nor in the shown history; read its saved record so the
       // confirm names it and offers its worktree (never waiting past DELETE_LOOKUP_MS).
@@ -6871,6 +6925,13 @@ function Workspace({
         const removed = await remover.remove(sessionId);
         // An archived or deleted chat no longer waits on Ash (Today's "Waiting on you").
         if (removed) forgetWaitingChat(sessionId);
+        // SC-19: its open work goes to its first mate's main chat, or (deleted) its project's Lead.
+        if (removed && retiredOwner)
+          moveRemovedChatWork(sessionId, mode, {
+            ...(retiredOwner.mono ? { monoId: retiredOwner.mono.id } : {}),
+            title: label,
+            project: retiredOwner.mono?.projects[0] ?? seed?.cwd,
+          });
         // A deleted chat leaves its project's coding team (an archived one can come back, and stays in it).
         if (removed && mode === "delete") {
           forgetCodingTeamChat(sessionId);
@@ -6909,6 +6970,7 @@ function Workspace({
       stopSessionForRemoval,
       tabCloseScope,
       onRemoveWorktree,
+      moveRemovedChatWork,
     ],
   );
 
@@ -11279,10 +11341,12 @@ function Workspace({
 
   const queueMonoSessionCompletion = useCallback(
     async (
-      monoId: string,
+      requestedId: string,
       message: QueuedMessage,
       current: () => QueuedMessage | undefined = () => message,
     ) => {
+      // SC-19: a report still addressed to a chat that was reset, archived or deleted goes to the chat that took its work.
+      const monoId = delegationsRef.current?.ownerNow(requestedId) ?? requestedId;
       // A worker's report goes to the chat Ash talks to that started it: a Mono's, or a coding-team chat.
       if (!isOrchestratorChat(monoId) || removingSessionIds.current.has(monoId))
         return;
@@ -11335,9 +11399,11 @@ function Workspace({
   if (!monoCompletionBatches.current) {
     monoCompletionBatches.current = new MonoSessionCompletionBatches(
       async (monoId, message, current, requestIds) => {
-        // The rows learn which message carries their reports before it enters the queue.
-        await delegationsRef.current?.queued(monoId, requestIds, message.id);
-        return queueMonoSessionCompletionRef.current(monoId, message, current);
+        // The rows learn which message carries their reports before it enters the queue. SC-19: in the tracker's one
+        // line with a move of the owner (a reset), so the message never falls between the mark and the queue.
+        const send = (owner: string) => queueMonoSessionCompletionRef.current(owner, message, current);
+        const tracker = delegationsRef.current;
+        return tracker ? tracker.deliverWave(monoId, requestIds, message.id, send) : send(monoId);
       },
     );
   }
@@ -11347,6 +11413,8 @@ function Workspace({
     openSession: ensureOpenSession,
     queueReport: (monoId, message) =>
       queueMonoSessionCompletionRef.current(monoId, message),
+    // SC-19: a moved row's report the batches still hold is queued by them, not a second time.
+    reportHeld: (requestId) => monoCompletionBatches.current?.holds(requestId) ?? false,
     quitting: isAppQuitting,
     // r84 (s14): the worker Ash answered finishes in a resumed turn; its changes land like a first report's.
     land: async (result) => {
@@ -14651,13 +14719,14 @@ function Workspace({
       dependency: fanout.dependency,
       settle: fanout.settle,
       // A Lead's chat that isn't open in this window keeps its workers waiting until it is.
-      canStart: (job) => sessionsRef.current.some((session) => session.id === job.ownerSession),
+      // SC-19: a job this window already holds from before its owner was reset starts under the chat that took over.
+      canStart: (job) => sessionsRef.current.some((session) => session.id === (delegationsRef.current?.ownerNow(job.ownerSession) ?? job.ownerSession)),
       start: (job: QueuedWorker) => {
         // Its first ask answered "waiting"; this one starts it under the same request, so the same chat and card.
         appReceipts.current.delete(`${job.ownerSession}:${job.requestId}`);
         return controlRequestRef.current!({
           namespace: "app",
-          sessionId: job.ownerSession,
+          sessionId: delegationsRef.current?.ownerNow(job.ownerSession) ?? job.ownerSession,
           requestId: job.requestId,
           action: "tasks.delegate",
           // Hivra WP-10: a worker queued before briefs carried an intent and a goal still starts.
