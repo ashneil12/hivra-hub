@@ -495,12 +495,15 @@ pub fn session_upsert(
     app: AppHandle,
     store: State<'_, SessionStore>,
     session: SessionUpsert,
+    blocks_unchanged: Option<bool>,
 ) -> Result<SessionSummary, String> {
     check_upsert(&session)?;
     let conn = store.conn.lock().map_err(|_| "Session store is locked")?;
     let moved = session.teleport.is_some();
     let id = session.id.clone();
-    let summary = upsert_session(&conn, &session).map_err(|e| e.to_string())?;
+    let keep_blocks = blocks_unchanged.unwrap_or(false) && !moved;
+    let summary =
+        upsert_session_keeping(&conn, &session, keep_blocks).map_err(|e| e.to_string())?;
     if moved {
         // WP-177: every window replaces its copy of a chat a move just changed, and locks it if it is frozen or moved.
         let _ = app.emit("teleport-row-changed", serde_json::json!({ "id": id }));
@@ -2511,6 +2514,19 @@ pub(crate) fn upsert_session(
     conn: &Connection,
     session: &SessionUpsert,
 ) -> rusqlite::Result<SessionSummary> {
+    upsert_session_keeping(conn, session, false)
+}
+
+/// The message `session_upsert` answers when the webview kept the blocks but the store has no row to keep them from.
+const BLOCKS_MISSING: &str = "blocks-missing: the chat isn't stored yet, send its blocks";
+
+/// `keep_blocks`: the webview sent no blocks because the ones it last saved are unchanged (a queue edit, a rename, a
+/// model switch). The stored transcript is kept byte for byte: nothing is merged, restored or written again.
+fn upsert_session_keeping(
+    conn: &Connection,
+    session: &SessionUpsert,
+    keep_blocks: bool,
+) -> rusqlite::Result<SessionSummary> {
     let now = now_millis();
     let model_settings = serde_json::to_string(&session.model_settings)
         .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
@@ -2524,24 +2540,36 @@ pub(crate) fn upsert_session(
     let previous_blocks: Option<Value> = existing
         .as_ref()
         .and_then(|(_, _, raw, _, _, _)| serde_json::from_str(raw).ok());
-    let prepared_blocks = match &previous_blocks {
-        Some(previous) => {
-            prepare_teleport_blocks(previous, &session.blocks, session.teleport.as_ref())
-                .map_err(|message| rusqlite::Error::ToSqlConversionFailure(message.into()))?
-        }
-        None => session.blocks.clone(),
+    let keep_blocks = keep_blocks && session.teleport.is_none();
+    let prepared_blocks: Value;
+    let (blocks, blocks_json): (Cow<'_, Value>, String) = if keep_blocks {
+        let (Some((_, _, raw, _, _, _)), Some(previous)) = (&existing, &previous_blocks) else {
+            return Err(rusqlite::Error::ToSqlConversionFailure(
+                BLOCKS_MISSING.into(),
+            ));
+        };
+        (Cow::Borrowed(previous), raw.clone())
+    } else {
+        prepared_blocks = match &previous_blocks {
+            Some(previous) => {
+                prepare_teleport_blocks(previous, &session.blocks, session.teleport.as_ref())
+                    .map_err(|message| rusqlite::Error::ToSqlConversionFailure(message.into()))?
+            }
+            None => session.blocks.clone(),
+        };
+        let blocks = crate::artifacts::retain_existing_cards(conn, &prepared_blocks)?;
+        // Loaded transcripts omit large tool output; never let a save erase it.
+        let blocks = match &previous_blocks {
+            Some(previous) => match crate::tool_detail::restore_details(previous, &blocks) {
+                Cow::Owned(restored) => Cow::Owned(restored),
+                Cow::Borrowed(_) => blocks,
+            },
+            None => blocks,
+        };
+        let blocks_json = serde_json::to_string(blocks.as_ref())
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        (blocks, blocks_json)
     };
-    let blocks = crate::artifacts::retain_existing_cards(conn, &prepared_blocks)?;
-    // Loaded transcripts omit large tool output; never let a save erase it.
-    let blocks = match &previous_blocks {
-        Some(previous) => match crate::tool_detail::restore_details(previous, &blocks) {
-            Cow::Owned(restored) => Cow::Owned(restored),
-            Cow::Borrowed(_) => blocks,
-        },
-        None => blocks,
-    };
-    let blocks_json = serde_json::to_string(blocks.as_ref())
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
     // A chat that is away keeps the queue and the provider session the release left. The copy a quit still holds is older.
     let away_ordinary = session.teleport.is_none()
         && previous_blocks
@@ -4574,6 +4602,41 @@ mod tests {
         assert!(stored.queued_messages.is_empty());
         assert_eq!(stored.queue_status, None);
         assert_eq!(stored.blocks, row.blocks);
+    }
+
+    #[test]
+    fn a_queue_edit_without_blocks_keeps_the_stored_transcript_byte_for_byte() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.conn.lock().unwrap();
+        let mut row = sample("kept", "/tmp/a", "Conversation");
+        upsert_session(&conn, &row).unwrap();
+        let raw = |conn: &Connection| -> String {
+            conn.query_row(
+                "SELECT blocks_json FROM sessions WHERE id = 'kept'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap()
+        };
+        let before = raw(&conn);
+
+        let full = row.blocks.clone();
+        row.blocks = json!([]);
+        row.queued_messages = vec![json!({"id":"q", "text":"Next", "attachments":[]})];
+        upsert_session_keeping(&conn, &row, true).unwrap();
+        let stored = get_session(&conn, "kept").unwrap().unwrap();
+        assert_eq!(raw(&conn), before);
+        assert_eq!(stored.blocks, full);
+        assert_eq!(stored.queued_messages, row.queued_messages);
+
+        // Nothing stored to keep: the webview is told to send the blocks.
+        let mut fresh = sample("new", "/tmp/a", "New");
+        fresh.blocks = json!([]);
+        let error = upsert_session_keeping(&conn, &fresh, true)
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("blocks-missing"), "{error}");
+        assert!(get_session(&conn, "new").unwrap().is_none());
     }
 
     #[test]
