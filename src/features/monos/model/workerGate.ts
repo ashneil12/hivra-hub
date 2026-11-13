@@ -29,8 +29,18 @@ export async function workerGateWord(
   }
 }
 
-/** How many failed runs a worker gets before its Lead hears it failed. */
+/** How many failed runs a worker gets before its Lead hears it failed. The routes check's cap, and the cap for a brief's
+ * gates when a record carries no decision of its own (see `ROUNDS_BEFORE_RETHINK`). */
 export const GATE_TRIES = 2;
+
+/**
+ * SC-5: how many failed rounds one task has before the raw findings stop going back to the worker and one stronger-model
+ * step rewrites its brief or hands it up. The number is Rust's (firstmate/rounds.rs `FAILED_BEFORE_RETHINK`), which keeps
+ * the task's ledger of rounds on its gate records and tells the webview what to do (`briefGateAction` reads `next`); this
+ * copy is for a test that fails when the two drift apart. After that rethink, the next failure goes to the person as one
+ * decision in Needs you, never straight back to the worker.
+ */
+export const ROUNDS_BEFORE_RETHINK = 2;
 
 export type GateVerdict = "deliver" | "resend" | "deliver-failed";
 

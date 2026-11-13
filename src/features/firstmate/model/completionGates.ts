@@ -79,10 +79,23 @@ function checkList(value: unknown): string[] | undefined {
   return checks;
 }
 
+/**
+ * SC-5: what Rust decided to do after a failed round (firstmate/rounds.rs `NextStep`), from the task's ledger of rounds:
+ * `send-back` (the numbered findings go to the worker), `rewrite` (a stronger model rewrote the brief; `text` is the message
+ * that goes to the worker as the next round), `up` (a two-line summary goes to the first mate as a new turn) or `person`
+ * (one decision is open in Needs you; `text` tells the first mate to wait for it).
+ */
+export type NextStepView = {
+  kind: string;
+  text?: string;
+};
+
 /** The verdict Rust stored, as the webview needs it. Anything else is not a pass. */
 export type GateRecordView = {
   verdict: string;
   summary?: string;
+  /** SC-5: absent on a record from before the ledger, and on one with no failed round. */
+  next?: NextStepView;
 };
 
 export type BriefGateStep =
@@ -126,15 +139,60 @@ function sentBackFailure(result: MonoSessionCompletionResult, line: string): Mon
   return { ...result, status: "failed", error: `${line} Still failed after ${GATE_TRIES} tries.` };
 }
 
+const REWRITE_NOTE = {
+  kind: "message" as const,
+  from: "MonoCode",
+  line: "Checks failed twice; a stronger model rewrote the brief and it went to the worker",
+};
+
+/** What a hand-up or a decision tells the first mate when Rust gave no words. */
+const HANDED_UP = "The checks failed again and a decision is open; wait for it.";
+
 /**
- * One round. `failures` is how many failed rounds this worker already had, not counting this one. A pass lands. The
- * first failure goes back to the worker; the second is failed. Unsure never uses that fix round and never lands: the
- * row stays completed so its first mate can accept or refuse it.
+ * SC-5: what Rust decided for a failed round, or nothing when it said nothing readable. A stored record is untrusted: a
+ * kind this build doesn't know, or a rewrite with no brief to send, is read as no decision, so the old cap still applies.
+ */
+function nextOf(record: GateRecordView): { kind: "send-back" | "rewrite" | "up" | "person"; text: string } | undefined {
+  if (record.verdict !== "failed") return undefined;
+  const kind = record.next?.kind;
+  const text = typeof record.next?.text === "string" ? record.next.text.trim() : "";
+  if (kind === "send-back") return { kind, text };
+  if (kind === "rewrite") return text ? { kind, text } : undefined;
+  if (kind === "up" || kind === "person") return { kind, text: text || HANDED_UP };
+  return undefined;
+}
+
+/**
+ * One round. `failures` is how many failed rounds this worker already had, not counting this one. A pass lands. After a
+ * failure Rust's ledger of the task's rounds says what happens (`next`): the first failure's numbered findings go back to
+ * the worker; the second stops them and a stronger model rewrites the brief (the new brief goes to the worker as the next
+ * round) or hands the work up (the first mate hears it as a new turn); the failure after that waits for the person's
+ * decision, and the first mate is told to wait. A record with no `next` (from before the ledger) keeps the old cap: the
+ * first failure goes back, the second is failed. Unsure never uses a fix round and never lands: the row stays completed so
+ * its first mate can accept or refuse it.
  */
 export function briefGateAction(record: GateRecordView, failures: number): BriefGateStep {
   if (record.verdict === "passed") return { action: "pass" };
+  const next = nextOf(record);
+  if (next?.kind === "rewrite") {
+    const run = failedRun(record.summary);
+    return {
+      action: "resend",
+      ask: next.text,
+      note: REWRITE_NOTE,
+      failed: (result) => gateFailedResult(result, run),
+    };
+  }
+  if (next?.kind === "up" || next?.kind === "person") {
+    return {
+      action: "unsure",
+      apply: (result) => ({ ...result, status: "completed", gatesNote: next.text }),
+    };
+  }
   const sentBack = record.verdict === "failed" ? sentBackLine(record.summary) : undefined;
-  if (record.verdict === "failed" && failures + 1 < GATE_TRIES) {
+  // SC-5: a failure the ledger says to send back goes back whatever this window counted: the ledger is the task's, kept
+  // across restarts and windows; the count here starts again with each report loop.
+  if (record.verdict === "failed" && (next?.kind === "send-back" || failures + 1 < GATE_TRIES)) {
     const run = failedRun(record.summary);
     return {
       action: "resend",
