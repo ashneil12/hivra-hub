@@ -45,6 +45,7 @@ when the turn started; the person's own uncommitted edits and commits are never 
 | question (for the first mate, the default) | working |
 | question passed on to the person (`firstmate_set_question_owner`) | needs you |
 | completed, no gates or gates passed | done |
+| completed, gates passed on a project that tests at ship or not at all (SC-3a), or accepted by its first mate | done, with a notice: "Built, not tested yet", "Not tested", "Accepted without a pass: why" |
 | completed, gates pending / failed / unsure | working / failed / working (its first mate is deciding) |
 | failed on a usage limit | paused |
 | failed, cancelled, taken over | failed, with what happened |

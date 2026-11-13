@@ -211,7 +211,7 @@ describe("the report its first mate reads", () => {
     expect(plain.text).not.toContain("NOT DONE");
     const held = completionMessage("r2", [done({ gatesNote: unsure.summary })]);
     expect(held.text).toContain(
-      `NOT DONE: Add tally delete finished, but the checks couldn't say the brief was met (${unsure.summary}). Accept or refuse with task_accept; don't report it as done.`,
+      `NOT DONE: Add tally delete finished, but the checks couldn't say the brief was met (${unsure.summary}). Accept or refuse with task_accept, giving a reason either way; don't report it as done.`,
     );
     expect(held.monoSessionCompletion?.status).toBe("completed");
   });

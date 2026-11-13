@@ -352,11 +352,15 @@ export function inboxItems(input: {
       continue;
     }
     if (status === "done" && !landed(delivery)) {
+      // SC-3a: a done row says how far it was checked ("Built, not tested yet", "Accepted without a pass: why"), so
+      // ready for review never reads as tested when it wasn't.
+      const checked = shown(firstPlainLine(row.statusNotice, 200) ?? "");
+      const work = shown(firstLine(row.title, 160));
       items.push({
         id: `review:${row.id}`,
         kind: "review",
         title: "Ready for review",
-        body: shown(firstLine(row.title, 160)),
+        body: checked ? (work ? `${work} · ${checked}` : checked) : work,
         statusWord: word,
         chatId: row.childSession ?? null,
         workerIds: [row.id],

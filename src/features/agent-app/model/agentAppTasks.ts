@@ -913,7 +913,7 @@ function gateLine(verdict: string | null | undefined): string | undefined {
   if (!verdict) return undefined;
   switch (verdict) {
     case "unsure":
-      return "Its checks need you. Accept with task_accept, or refuse with a reason. It is not done until you do.";
+      return "Its checks need you. Accept with task_accept, or refuse, either way with a reason. It is not done until you do.";
     case "failed":
       return "Its checks failed.";
     case "pending":
@@ -2708,8 +2708,9 @@ async function keepGates(
 }
 
 /**
- * task_accept: the first mate's call on a finished task whose checks are unsure. Refusing needs a reason, in the same
- * words Rust uses. Another chat's task is refused before the command runs.
+ * task_accept: the first mate's call on a finished task whose checks are unsure. Accepting and refusing both need a
+ * reason (SC-3a: an accept without a pass is logged and shown on the task's row), in the same words Rust uses. Another
+ * chat's task is refused before the command runs.
  */
 async function accept(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
   const { tasks } = taskOwner(source, host);
@@ -2719,8 +2720,12 @@ async function accept(source: Session, input: Record<string, unknown>, host: Age
   const reason = typeof raw === "string" ? raw.trim() : undefined;
   if (raw !== undefined && (typeof raw !== "string" || !reason || reason.length > 500))
     throw new Error("reason must be a non-empty string under 500 characters");
-  if (!input.accept && !reason)
-    throw new Error("Say why it isn't done (reason), in one plain line.");
+  if (!reason)
+    throw new Error(
+      input.accept
+        ? "Say why you accept it without a pass (reason), in one plain line."
+        : "Say why it isn't done (reason), in one plain line.",
+    );
   const [row] = await ownRows(source, tasks, [id]);
   if (!tasks.decideGates) throw new Error("This build can't accept a task's checks.");
   await tasks.decideGates(source.id, row.id, input.accept, reason);

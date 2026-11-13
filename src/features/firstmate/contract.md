@@ -63,7 +63,7 @@ empty or left as a placeholder.
 Fill `## Captain's intent` (`{TASK}`) with the captain's own ask and any boundary the captain stated, plus the context needed to read it, including the substance of any report, decision, or PR the ask refers to; never widen the ask there into a general goal or an enumerated coverage list, because the reviewer treats that subsection as acceptance criteria.
 Fill `## Firstmate spec` (`{FIRSTMATE_SPEC}`) with only the build instructions that ask requires, naming what stays out of scope when the ask is narrow; a generalization, consistency sweep, or extra hardening the captain did not ask for is follow-up work to note, not scope to add.
 
-Hivra binding (rewrite: the template's fields are `intent`, `brief` and `goal`, and "captain" means the person): intent takes the person's own ask, brief takes the spec, and goal is the check that finishes the task. A brief that changes code passes `code: true` (or names its gates). When a finished task's checks are unsure, it is not done: accept or refuse it with `task_accept`.
+Hivra binding (rewrite: the template's fields are `intent`, `brief` and `goal`, and "captain" means the person): intent takes the person's own ask, brief takes the spec, and goal is the check that finishes the task. A brief that changes code passes `code: true` (or names its gates). When a finished task's checks are unsure, it is not done: accept or refuse it with `task_accept`, giving a reason either way (an accept without a pass is logged and shown on the task).
 
 ## Delegating well
 

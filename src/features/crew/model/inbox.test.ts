@@ -35,6 +35,36 @@ describe("failure words", () => {
   });
 });
 
+describe("inbox items: done work says how far it was checked (SC-3a)", () => {
+  const review = (patch: Partial<CrewWorkerInput>) =>
+    inboxItems({
+      project: PROJECT,
+      decisions: [],
+      rows: [worker({ id: "w", status: "done", title: "Add a b export", ...patch })],
+    })[0];
+
+  it("adds the note to a done row that wasn't tested, and says nothing on a plain pass", () => {
+    expect(review({ statusNotice: "Built, not tested yet" })).toMatchObject({
+      kind: "review",
+      title: "Ready for review",
+      body: "Add a b export · Built, not tested yet",
+    });
+    expect(review({ statusNotice: "Not tested" })?.body).toBe("Add a b export · Not tested");
+    expect(review({ statusNotice: "Accepted without a pass: the diff is right" })?.body).toBe(
+      "Add a b export · Accepted without a pass: the diff is right",
+    );
+    expect(review({})?.body).toBe("Add a b export");
+    expect(review({ statusNotice: null })?.body).toBe("Add a b export");
+    expect(review({ statusNotice: "  \n " })?.body).toBe("Add a b export");
+  });
+
+  it("drops a stack frame or a secret from the note, and still reads with no title", () => {
+    expect(review({ statusNotice: "at save (/tmp/a.ts:1)" })?.body).toBe("Add a b export");
+    expect(review({ statusNotice: "token sk-live-abc" })?.body).toBe("Add a b export");
+    expect(review({ title: "", statusNotice: "Built, not tested yet" })?.body).toBe("Built, not tested yet");
+  });
+});
+
 describe("inbox items", () => {
   const rows: CrewWorkerInput[] = [
     worker({ id: "w-needs", status: "needs-you", title: "The question", childSession: "chat-1" }),
