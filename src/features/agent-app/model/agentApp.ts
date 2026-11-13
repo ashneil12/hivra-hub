@@ -349,6 +349,16 @@ export type AgentAppHost = {
     date(monoId: string, id: number): Promise<string>;
     grep?(monoId: string, query: string): Promise<string>;
   };
+  /** The ask ledger: a first mate reads its own asks and says where each stands. Absent in a build without it. */
+  asks?: {
+    mateOf(sessionId: string): string | undefined;
+    list(mateId: string, all: boolean): Promise<unknown[]>;
+    update(
+      mateId: string,
+      ask: number,
+      change: { status?: string; note?: string; proof?: string },
+    ): Promise<unknown>;
+  };
   /** Puts a card in the Mono's chat, or holds it for a habit run's report. */
   postCard?(sourceSessionId: string, card: MonoCard): void;
   /** WP-89: one line in the activity log. Absent in a build that has no log. */
@@ -525,6 +535,9 @@ const FIELDS = new Map<string, readonly string[]>([
   ["tree.zoom", ["id", "n", "at"]],
   ["tree.date", ["id"]],
   ["tree.grep", ["query"]],
+  // The ask ledger (asks/model/asks.ts): what Ash asked this first mate for, kept outside the chat.
+  ["asks.list", ["all"]],
+  ["asks.update", ["ask", "status", "note", "proof"]],
   ["habits.list", []],
   ["habits.add", ["name", "instructions", "schedule", "watch"]],
   ["habits.update", ["id", "name", "instructions", "schedule", "enabled", "watch"]],
@@ -1222,6 +1235,32 @@ async function handleTree(
   return { lines: await host.tree.zoom(monoId, id, treeNumber(input.n, "n", 1), treeNumber(input.at, "at", 0)) };
 }
 
+/**
+ * asks.list / asks.update: a first mate reads the asks Ash gave it and says where each stands, from its own chats
+ * only. Never a worker, a habit run or another first mate's list. The rules (done needs proof, only Ash drops one)
+ * are the ledger's own (asks/model/asks.ts changeProblem).
+ */
+async function handleAsks(
+  source: Session,
+  action: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+): Promise<unknown> {
+  if (!host.asks) throw new Error("The ask list isn't available in this build");
+  const mateId = host.isHabitRun?.(source.id) ? undefined : host.asks.mateOf(source.id);
+  if (!mateId) throw new Error("The ask list can only be read from a first mate's own chat with Ash");
+  if (action === "asks.list") return { asks: await host.asks.list(mateId, input.all === true) };
+  const ask = typeof input.ask === "number" ? input.ask : Number(input.ask);
+  if (!Number.isInteger(ask) || ask <= 0) throw new Error('ask must be the ask\'s number, as in {"ask":3}');
+  const change: { status?: string; note?: string; proof?: string } = {};
+  if (input.status !== undefined) change.status = requiredString(input.status, "status", 20);
+  if (input.note !== undefined) change.note = requiredString(input.note, "note", 300);
+  if (input.proof !== undefined) change.proof = requiredString(input.proof, "proof", 300);
+  if (!change.status && change.note === undefined && change.proof === undefined)
+    throw new Error("Pass a status (started, waiting or done), a note, or proof");
+  return host.asks.update(mateId, ask, change);
+}
+
 async function handleMemory(
   source: Session,
   action: string,
@@ -1866,6 +1905,8 @@ export async function handleAgentApp(
     return handleSkills(source, action, input, host);
   if (action.startsWith("tree."))
     return handleTree(source, action, input, host);
+  if (action.startsWith("asks."))
+    return handleAsks(source, action, input, host);
   if (action.startsWith("habits."))
     return handleHabits(source, action, input, host);
   if (action.startsWith("autopilot."))

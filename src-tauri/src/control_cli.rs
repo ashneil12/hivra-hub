@@ -100,7 +100,7 @@ const ACTIONS: [&str; 14] = [
     "list", "delegate", "get", "steer", "message", "retry", "cancel", "wait", "review", "finish",
     "respond", "answer", "repair", "approve",
 ];
-pub(crate) const APP_ACTIONS: [&str; 88] = [
+pub(crate) const APP_ACTIONS: [&str; 90] = [
     "app.version",
     "app.ship",
     "models.list",
@@ -139,6 +139,9 @@ pub(crate) const APP_ACTIONS: [&str; 88] = [
     "tree.zoom",
     "tree.date",
     "tree.grep",
+    // The ask ledger: what the person asked a first mate for, kept outside the chat (src/features/asks/).
+    "asks.list",
+    "asks.update",
     "habits.list",
     "habits.add",
     "habits.update",
@@ -387,6 +390,16 @@ Actions:
   tree.date      {"id":12}  The date and time of message 12 of its long chat.
   tree.grep      {"query":"homepage refactor"}  Every message of its long
                   chat with all those words, newest first, word for word.
+  asks.list      {}  A first mate, in its own chat with the person. What they
+                  asked you for and is still open, in their own words, oldest
+                  first. The app keeps this list outside the chat, so it is
+                  still right after the chat is tidied. {"all":true} adds the
+                  closed ones.
+  asks.update    {"ask":3,"status":"started","note":"one line"}
+                  Say where an ask stands. status: started; waiting (needs
+                  note: what you need from the person); done (needs proof: a
+                  link, a file, or "answered in this chat"). Only the person
+                  can drop an ask.
   habits.list    {}  Mono only. Your habits: what each does, when it runs
                   next, and how its last run went.
   habits.add     {"name":"Morning CI check","instructions":"...",

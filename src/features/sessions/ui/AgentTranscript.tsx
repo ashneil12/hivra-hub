@@ -162,6 +162,7 @@ import { TranscriptSelectionMenu } from "./TranscriptSelectionMenu";
 import { parseUserMessageLink } from "../model/linkPreview";
 import { briefView, type BriefView } from "../model/briefView";
 import { UserLinkPreview } from "./UserLinkPreview";
+import { AskReceipt } from "../../asks/ui/AskReceipt";
 import {
   activityPhaseTitle,
   activityStillRunning,
@@ -3235,6 +3236,7 @@ function UserMessageBlock({
           )}
         </div>
         {deliveryControl}
+        {IS_HUB_BUNDLE && chat && !block.draft ? <AskReceipt blockId={block.id} /> : null}
         {!compactFollowUp &&
         (text || brief || block.attachments?.length || messageAt != null || onEdit) ? (
           <div className="user-message-actions flex items-center gap-1 px-3 pt-1">

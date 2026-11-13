@@ -123,7 +123,12 @@ import {
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
 import { leadMemoryBlock, leadStandingBlock } from "../features/hub/model/hubMemoryPrimer";
 import { longChatOn, treeContext, treeDate, treeGrep, treeZoom } from "../features/monos/model/monoTreeStore";
-import { useMonoTrees } from "./hooks/useMonoTrees";
+import { isolatedCompaction, useMonoTrees } from "./hooks/useMonoTrees";
+import { useAskLedger } from "../features/asks/hooks/useAskLedger";
+import { askMateFor } from "../features/asks/model/askMate";
+import { openAsksKey, openAsksNote } from "../features/asks/model/askNotes";
+import { askStore } from "../features/asks/model/askStore";
+import { askForMate, isOpen as isOpenAsk, mateAskStatus } from "../features/asks/model/asks";
 import { useMemoryCurator } from "./hooks/useMemoryCurator";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recordUse } from "../features/memory/model/memoryUse";
@@ -10224,6 +10229,18 @@ function Workspace({
             ).catch(() => undefined);
             if (treeNote) appContext.push(treeNote);
           }
+          // The ask ledger: what Ash asked this first mate for and is still open, in his words, kept outside the chat. It
+          // goes beside his message when the list changed since this chat last saw it, and always into a fresh session.
+          const askMate = IS_HUB_BUNDLE && !rawCommand ? askMateFor(sessionId) : undefined;
+          if (askMate && askStore().loaded()) {
+            const ledger = askStore().doc();
+            const key = openAsksKey(ledger, askMate);
+            if (key && (askNotesShown.current.get(sessionId) !== key || !current.providerSessionId)) {
+              const note = openAsksNote(ledger, askMate, appCliCommand(await invoke<string | null>("app_cli_path").catch(() => null)));
+              if (note) appContext.push(note);
+            }
+            askNotesShown.current.set(sessionId, key);
+          }
           // Habit posts land in the chat outside any turn, so the Mono's
           // session has not seen them; the next message carries them once.
           const habitPosts = mono ? unseenHabitPosts(current.blocks) : [];
@@ -11153,6 +11170,8 @@ function Workspace({
     [ensureOpenSession],
   );
   const queueMonoSessionCompletionRef = useRef(queueMonoSessionCompletion);
+  // The open-asks list each chat was last shown (asks/model/askNotes.ts openAsksKey), so the same list isn't sent twice.
+  const askNotesShown = useRef(new Map<string, string>());
   queueMonoSessionCompletionRef.current = queueMonoSessionCompletion;
   // WP-60: a remote project's result lands in the chat that started it, once.
   useEffect(
@@ -11356,6 +11375,15 @@ function Workspace({
   useMonoTrees(sessions, IS_HUB_BUNDLE);
   // WP-51: after a first mate's turn, one unreviewed fact or a skill proposal.
   useMemoryCurator(sessions, IS_HUB_BUNDLE);
+  // The ask ledger: every ask in a message of Ash's to a first mate is written down outside the chat (asks/model/asks.ts).
+  useAskLedger({
+    sessions,
+    enabled: IS_HUB_BUNDLE,
+    mateOf: askMateFor,
+    ask: isolatedCompaction,
+    send: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
+    cli: async () => appCliCommand(await invoke<string | null>("app_cli_path")),
+  });
   // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
   useHubChecks(
     {
@@ -15559,6 +15587,29 @@ function Workspace({
               zoom: (monoId, id, n, at) => treeZoom(monoId, id, n, at),
               date: (monoId, id) => treeDate(monoId, id),
               grep: (monoId, query) => treeGrep(monoId, query),
+            },
+            asks: {
+              mateOf: (id) => askMateFor(id),
+              list: async (mateId, all) => {
+                const ledger = await askStore().load();
+                return ledger.asks
+                  .filter((ask) => ask.mateId === mateId && (all || isOpenAsk(ask)))
+                  .sort((x, y) => x.n - y.n)
+                  .map(askForMate);
+              },
+              update: async (mateId, n, change) => {
+                const ledger = await askStore().load();
+                const target = ledger.asks.find((ask) => ask.n === n && ask.mateId === mateId);
+                if (!target) throw new Error(`You have no ask ${n}. asks.list shows yours.`);
+                const status = change.status === undefined ? undefined : mateAskStatus(change.status);
+                const out = await askStore().change(
+                  target.id,
+                  { ...(status ? { status } : {}), ...(change.note !== undefined ? { note: change.note } : {}), ...(change.proof !== undefined ? { proof: change.proof } : {}) },
+                  "mate",
+                );
+                if ("problem" in out) throw new Error(out.problem);
+                return { ask: askForMate(out.ask) };
+              },
             },
             // A chat in a hub project's coding team delegates and watches pull requests like the Lead (codingTeam.ts).
             codingTeamOf: (id) => {

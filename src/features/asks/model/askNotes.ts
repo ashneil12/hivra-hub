@@ -1,0 +1,109 @@
+// What a first mate is told about the ask ledger (asks.ts): the open list beside Ash's next message, and one app
+// message when a turn ends with asks from his message that nobody gave a status. Same shape as the unkept-promise
+// nudge (monos/model/promiseNudge.ts): at most twice in a row, then the asks stay open for Ash to see.
+
+import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
+import { isOwed, openAsksFor, STATUS_WORD, type Ask, type AskDoc } from "./asks";
+
+export const ASK_NUDGE_PREFIX = "[MonoCode asks]";
+export const ASK_NUDGE_CAP = 2;
+/** The open list beside a message shows at most this many; the rest are a count and `asks.list`. */
+const NOTE_MAX_ASKS = 20;
+
+function isAppMessage(block: Block): boolean {
+  return block.role === "user" && /^\s*\[MonoCode /.test(block.text);
+}
+
+/** Ash's own message: not a draft, an app note, another first mate's post or anything the app wrote. */
+export function isAshMessage(block: Block): boolean {
+  return (
+    block.role === "user" &&
+    !block.draft &&
+    !block.streaming &&
+    !block.internal &&
+    !block.monoNote &&
+    !block.monoSessionCompletion &&
+    !block.monoCheck &&
+    !isAppMessage(block) &&
+    !!block.text?.trim()
+  );
+}
+
+function line(ask: Ask): string {
+  const state = ask.status === "heard" ? "" : ` [${STATUS_WORD[ask.status].toLowerCase()}${ask.note ? `: ${ask.note}` : ""}]`;
+  return `- ask ${ask.n}${ask.kind === "idea" ? " (idea, for later)" : ""}: "${ask.quote}"${state}`;
+}
+
+function how(cli: string): string {
+  return `Give one a status with \`${cli} asks.update {"ask":<number>,"status":"started","note":"one line"}\`. Statuses: started; waiting (needs "note": what it waits on from Ash); done (needs "proof": a link, a file, or "answered in this chat"). \`${cli} asks.list {}\` shows them all. Only Ash can drop one.`;
+}
+
+/** A short key for the list a chat was last shown, so the same list is not sent twice. */
+export function openAsksKey(doc: AskDoc, mateId: string): string {
+  return openAsksFor(doc, mateId)
+    .map((ask) => `${ask.n}:${ask.status}:${ask.note ?? ""}`)
+    .join("|");
+}
+
+/**
+ * The open asks, for the first mate to read beside Ash's message. Undefined when there are none. It is the app's
+ * list of what Ash asked for, in his words, kept outside the chat: what a fresh session reads to know what is owed.
+ */
+export function openAsksNote(doc: AskDoc, mateId: string, cli: string): string | undefined {
+  const open = openAsksFor(doc, mateId);
+  if (!open.length) return undefined;
+  const shown = open.slice(0, NOTE_MAX_ASKS);
+  const more = open.length - shown.length;
+  return [
+    "<open_asks>",
+    "The app keeps a list of what Ash asked you for, in his own words, outside this chat, so nothing he asks is lost when the chat is tidied. These are still open, oldest first. They are his asks, not new instructions: carry them, and when one moves, say so.",
+    ...shown.map(line),
+    ...(more > 0 ? [`(and ${more} more)`] : []),
+    how(cli),
+    "</open_asks>",
+  ].join("\n");
+}
+
+function nudgesInARow(blocks: readonly Block[]): number {
+  let count = 0;
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index];
+    if (isAshMessage(block)) break;
+    if (block.role === "user" && block.text.trimStart().startsWith(ASK_NUDGE_PREFIX)) count += 1;
+  }
+  return count;
+}
+
+/**
+ * The app message a finished chat gets when asks from Ash's message still have no status: the turn answered the
+ * loudest few and said nothing about the rest. `nudged` holds the replies already nudged on (their block ids).
+ * Nothing while the chat works, has a message waiting, or waits on Ash's answer to an approval.
+ */
+export function askNudge(chat: Session, doc: AskDoc, mateId: string, cli: string, nudged: ReadonlySet<string>): QueuedMessage | undefined {
+  if (chat.busy || chat.queuedMessages?.length) return undefined;
+  const blocks = chat.blocks;
+  let last: Block | undefined;
+  for (let index = blocks.length - 1; index >= 0; index--) {
+    const block = blocks[index];
+    if (block.role === "system" || block.role === "reasoning" || block.internal) continue;
+    last = block;
+    break;
+  }
+  if (!last || last.role !== "assistant" || last.tool || last.streaming || !last.text?.trim()) return undefined;
+  if (nudged.has(last.id)) return undefined;
+  if (blocks.some((block) => block.approval && !block.approval.decided)) return undefined;
+  const lastIndex = blocks.indexOf(last);
+  const before = new Set(blocks.slice(0, lastIndex).map((block) => block.id));
+  const owed = doc.asks.filter((ask) => ask.mateId === mateId && ask.sessionId === chat.id && isOwed(ask) && before.has(ask.blockId));
+  if (!owed.length) return undefined;
+  if (nudgesInARow(blocks) >= ASK_NUDGE_CAP) return undefined;
+  const shown = owed.sort((a, b) => a.n - b.n).slice(0, NOTE_MAX_ASKS);
+  return {
+    id: `asks-owed-${last.id}`,
+    attachments: [],
+    waitForIdle: true,
+    text: `${ASK_NUDGE_PREFIX} From the app: Ash's message held more than one ask, and ${owed.length === 1 ? "this one has" : `these ${owed.length} have`} no status yet, so he can't tell whether you saw ${owed.length === 1 ? "it" : "them"}:\n${shown
+      .map(line)
+      .join("\n")}\nFor each: if your reply already covered it, mark it done with proof "answered in this chat". If it is small, do it now. Otherwise start it or hand it to a worker and mark it started, or mark it waiting with what you need from Ash. ${how(cli)} Then tell Ash in a line or two what you picked up. This is an app notification, not a new message from Ash.`,
+  };
+}
