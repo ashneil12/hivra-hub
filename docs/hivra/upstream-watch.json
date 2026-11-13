@@ -184,10 +184,10 @@
   },
   {
    "name": "e2e",
-   "repo": "tester-army/e2e",
+   "repo": "e2e-inc/e2e",
    "group": "inspiration",
    "licence": "Apache-2.0",
-   "why": "end-to-end testing as an optional Verify plugin"
+   "why": "end-to-end testing as an optional Verify plugin (repo renamed from tester-army/e2e); verified walks replay without a model, --strict-cache for gates"
   },
   {
    "name": "agent-desktop",
@@ -796,6 +796,286 @@
    "group": "finds-2026-11-12",
    "licence": "MIT",
    "why": "One live dashboard of every Claude Code/Codex session, one waiting queue"
+  },
+  {
+   "name": "GitHub spec-kit",
+   "repo": "github/spec-kit",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Spec, plan and tasks before code; requirement ids and needs-clarification markers for the acceptance contract"
+  },
+  {
+   "name": "OpenSpec",
+   "repo": "Fission-AI/OpenSpec",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Each change is a proposal with a spec delta; every task states how to verify it"
+  },
+  {
+   "name": "BMAD Method",
+   "repo": "bmad-code-org/BMAD-METHOD",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Owner intent frozen after approval; a test that exists but did not run counts as missing; review-loop cap"
+  },
+  {
+   "name": "Superpowers",
+   "repo": "obra/superpowers",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: test-driven-development and verification-before-completion skills"
+  },
+  {
+   "name": "TDD Guard",
+   "repo": "nizos/tdd-guard",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Hook that blocks code edits until a failing test exists"
+  },
+  {
+   "name": "windyroad agent plugins (TDD)",
+   "repo": "windyroad/agent-plugins",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Red, green and blocked states enforced by hooks (packages/tdd)"
+  },
+  {
+   "name": "claude-code-tdd-workflow",
+   "repo": "hugo-bluecorn/claude-code-tdd-workflow",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Shipping confidence: Read-only verifier in its own context; no exit while slices are pending"
+  },
+  {
+   "name": "Showboat",
+   "repo": "simonw/showboat",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Shipping confidence: Proof document of commands and real outputs that can be re-run"
+  },
+  {
+   "name": "StrykerJS",
+   "repo": "stryker-mutator/stryker-js",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Shipping confidence: Mutation testing for TypeScript on changed line ranges"
+  },
+  {
+   "name": "cargo-mutants",
+   "repo": "sourcefrog/cargo-mutants",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Mutation testing for Rust, --in-diff for a pull request"
+  },
+  {
+   "name": "mutmut",
+   "repo": "boxed/mutmut",
+   "group": "finds-2026-11-13",
+   "licence": "BSD-3-Clause",
+   "why": "Shipping confidence: Mutation testing for Python (for crews on Python projects)"
+  },
+  {
+   "name": "fast-check",
+   "repo": "dubzzz/fast-check",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Property and model-based tests for TypeScript"
+  },
+  {
+   "name": "proptest",
+   "repo": "proptest-rs/proptest",
+   "group": "finds-2026-11-13",
+   "licence": "MIT OR Apache-2.0",
+   "why": "Shipping confidence: Property and state-machine tests for Rust; regression seeds kept in git"
+  },
+  {
+   "name": "Hypothesis",
+   "repo": "HypothesisWorks/hypothesis",
+   "group": "finds-2026-11-13",
+   "licence": "MPL-2.0",
+   "why": "Shipping confidence: Property tests for Python (for crews on Python projects)"
+  },
+  {
+   "name": "Schemathesis",
+   "repo": "schemathesis/schemathesis",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Generated requests against an API schema"
+  },
+  {
+   "name": "OSS-Fuzz",
+   "repo": "google/oss-fuzz",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Shipping confidence: Continuous fuzzing; CIFuzz and ClusterFuzzLite for pull requests"
+  },
+  {
+   "name": "TLA+",
+   "repo": "tlaplus/tlaplus",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Model checker behind pstack's statechart skill"
+  },
+  {
+   "name": "Kani",
+   "repo": "model-checking/kani",
+   "group": "finds-2026-11-13",
+   "licence": "MIT OR Apache-2.0",
+   "why": "Shipping confidence: Proof checks for small Rust functions"
+  },
+  {
+   "name": "Verus",
+   "repo": "verus-lang/verus",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Verified Rust for a small core"
+  },
+  {
+   "name": "Dafny",
+   "repo": "dafny-lang/dafny",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Verifier-checked language; reviewer rule against weakened specs"
+  },
+  {
+   "name": "Lean 4",
+   "repo": "leanprover/lean4",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Shipping confidence: Theorem prover; research-grade for agents"
+  },
+  {
+   "name": "wp-orchestration",
+   "repo": "poipoi300/wp-orchestration",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Re-evaluation after failed rounds and a finding ledger with named veto grounds"
+  },
+  {
+   "name": "Playwright (test agents)",
+   "repo": "microsoft/playwright",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Shipping confidence: Planner, generator and healer test agents (packages/playwright/src/agents)"
+  },
+  {
+   "name": "Playwright MCP",
+   "repo": "microsoft/playwright-mcp",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Shipping confidence: A real browser for any agent"
+  },
+  {
+   "name": "Stagehand",
+   "repo": "browserbase/stagehand",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Plain-English browser actions mixed with code"
+  },
+  {
+   "name": "browser-use",
+   "repo": "browser-use/browser-use",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Browser-driving agents"
+  },
+  {
+   "name": "Shortest",
+   "repo": "antiwork/shortest",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Plain-English end-to-end tests (quiet since May 2026)"
+  },
+  {
+   "name": "lefthook",
+   "repo": "evilmartians/lefthook",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Fast local checks on every commit"
+  },
+  {
+   "name": "pre-commit",
+   "repo": "pre-commit/pre-commit",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Fast local checks on every commit"
+  },
+  {
+   "name": "Danger JS",
+   "repo": "danger/danger-js",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Pull request rules: a fix must change a test; no deleted or skipped tests"
+  },
+  {
+   "name": "ast-grep",
+   "repo": "ast-grep/ast-grep",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: A bug's code shape as a lint rule with its own tests"
+  },
+  {
+   "name": "Semgrep",
+   "repo": "semgrep/semgrep",
+   "group": "finds-2026-11-13",
+   "licence": "LGPL-2.1",
+   "why": "Shipping confidence: Pattern rules with a large library; run as a tool only"
+  },
+  {
+   "name": "PR-Agent",
+   "repo": "The-PR-Agent/pr-agent",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Self-hosted pull request reviewer on any model"
+  },
+  {
+   "name": "token-saver",
+   "repo": "AbdullahEminEsen/token-saver",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Only failing test output reaches the worker"
+  },
+  {
+   "name": "Inspect AI",
+   "repo": "UKGovernmentBEIS/inspect_ai",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Eval framework for scoring agent runs on fixed tasks"
+  },
+  {
+   "name": "promptfoo",
+   "repo": "promptfoo/promptfoo",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Regression tests for prompts and agents"
+  },
+  {
+   "name": "SWE-bench harness",
+   "repo": "SWE-bench/SWE-bench",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: Case shape for replaying past bugs (base commit, fail-to-pass, pass-to-pass)"
+  },
+  {
+   "name": "AFL++",
+   "repo": "AFLplusplus/AFLplusplus",
+   "group": "idea-only",
+   "licence": "AGPL-3.0-or-later",
+   "why": "Shipping confidence: Fuzzer; AGPL as a whole, ideas only"
+  },
+  {
+   "name": "HumanLayer: advanced context engineering",
+   "repo": "humanlayer/advanced-context-engineering-for-coding-agents",
+   "group": "idea-only",
+   "licence": "none",
+   "why": "Shipping confidence: Research, plan, implement with the human check on the plan; no licence, ideas only"
+  },
+  {
+   "name": "Probity",
+   "repo": "nizos/probity",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Shipping confidence: TDD Guard's successor; test-first rule for Claude Code, Codex and Copilot CLI"
   }
  ]
 }
