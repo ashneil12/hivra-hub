@@ -1188,7 +1188,37 @@ fn push_app_data(
         let app = format!("{}/{}", ci_regex(form), ci_regex(APP_DATA_UNDER_HOME));
         lines.push(format!(r#"(deny {WRITE_OPS} (regex #"^{app}[^/]*(/|$)"))"#));
     }
+    push_app_data_targets(lines, home)?;
     lock_relative(lines, home, APP_DATA_UNDER_HOME, true, seen)
+}
+
+/// The kernel checks the resolved path, so an app data folder that is a link (moved to another disk) or sits under one is
+/// written through its target's own name unless the target is denied too. The deny above covers every name that
+/// continues the segment (a dev copy's `.dev.<slot>`), so each folder beside the app's, in the case APFS would read it,
+/// is looked at, not only the daily name. A folder that is not there, or a list that is not there, has nothing to deny;
+/// a list that cannot be read is an error, since a link in it could not be seen.
+fn push_app_data_targets(lines: &mut Vec<String>, home: &Path) -> Result<(), String> {
+    let (parent, prefix) = APP_DATA_UNDER_HOME
+        .rsplit_once('/')
+        .unwrap_or(("", APP_DATA_UNDER_HOME));
+    let dir = home.join(parent);
+    if std::fs::symlink_metadata(&dir).is_err() {
+        return Ok(());
+    }
+    let unreadable = || {
+        "agent sandbox: the app's data folders could not be listed, so their links could not be denied"
+            .to_string()
+    };
+    let entries = std::fs::read_dir(&dir).map_err(|_| unreadable())?;
+    let prefix = prefix.to_ascii_lowercase();
+    for entry in entries {
+        let entry = entry.map_err(|_| unreadable())?;
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if name.starts_with(&prefix) {
+            push_real_path(lines, &entry.path(), true, WRITE_OPS)?;
+        }
+    }
+    Ok(())
 }
 
 /// WebKit, caches and preferences for this app, daily and dev (`com.ash.monocode-hub` plus anything after it in the

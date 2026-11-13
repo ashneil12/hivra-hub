@@ -71,6 +71,52 @@ fn profile(home: &Path, checkouts: &[PathBuf]) -> Result<String, String> {
     profile_with_checkouts(home, None, checkouts)
 }
 
+// ---- bug 1: the app data folder is a link ---------------------------------------------------------------------------
+
+/// A person who moved the app's data to another disk leaves a link in its place. The kernel checks the resolved path, so
+/// the profile has to name the target as well, for the daily folder and for a dev copy's (`.dev.<slot>`, which continues
+/// the same name), in any case. A link beside them that is not the app's stays open.
+#[test]
+fn a_linked_app_data_folder_is_denied_by_its_target_too() {
+    let scratch = Scratch::new();
+    let home = scratch.dir("home");
+    let support = scratch.dir("home/Library/Application Support");
+    let daily = scratch.dir("moved disk/daily data");
+    let dev = scratch.dir("moved disk/dev data");
+    let shouted = scratch.dir("moved disk/shouted");
+    let other = scratch.dir("moved disk/other app");
+    let name = Path::new(APP_DATA_UNDER_HOME).file_name().unwrap();
+    std::os::unix::fs::symlink(&daily, support.join(name)).unwrap();
+    std::os::unix::fs::symlink(
+        &dev,
+        support.join(format!("{}.dev.slot", name.to_string_lossy())),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(
+        &shouted,
+        support.join(format!("{}.DEV.B", name.to_string_lossy().to_uppercase())),
+    )
+    .unwrap();
+    std::os::unix::fs::symlink(&other, support.join("Some Other App")).unwrap();
+    let text = profile(&home, &[]).unwrap();
+    for target in [&daily, &dev, &shouted] {
+        for below in ["plan.json", "ship/state.json"] {
+            let path = target.join(below);
+            assert!(
+                write_denied(&text, &path),
+                "{} is writable through the app's data link",
+                path.display()
+            );
+        }
+    }
+    // The name the folder was given is still denied, and a link that is not the app's is not swept in.
+    assert!(write_denied(&text, &support.join(name).join("plan.json")));
+    assert!(
+        !write_denied(&text, &other.join("file")),
+        "a link to another app's folder was denied"
+    );
+}
+
 // ---- bug 3: a link target the profile cannot quote ------------------------------------------------------------------
 
 /// A link whose target has a quote, a backslash or a control character cannot be written into the profile, and leaving
