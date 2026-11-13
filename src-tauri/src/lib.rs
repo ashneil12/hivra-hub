@@ -188,6 +188,7 @@ mod stack_decl;
 mod stacks;
 // Hivra WP-14: steering messages to running workers.
 mod steering;
+mod test_summary; // SC-3a: the summary line a test runner prints (zero tests is not a pass)
 mod tool_detail;
 #[cfg(target_os = "macos")]
 mod trackpad_zoom;
