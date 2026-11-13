@@ -24,8 +24,11 @@
 //! through a temp file and a rename, and read defensively: bad JSON, a head that isn't a commit id or a record for another
 //! project is no record. One check runs at a time per project: a second asks to wait instead of overwriting the first.
 
+mod end_to_end; // PT-4: the "End-to-end" step: the project's own end-to-end check, for a project with a screen
 pub mod mcp;
 mod proof; // PT-1: the "Proof tools" step: the open-source tools the project already has, over the range
+pub mod proposals; // PT-4: which missing proof tools a ship check puts forward (cap 3, once per tool)
+mod running; // PT-4: the "Review" step as the running checker (another family, the briefs' check lines on a read-only copy)
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -35,6 +38,7 @@ use std::sync::{Mutex, OnceLock};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+use crate::firstmate::checker_when::{self, WhenRule};
 use crate::firstmate::done_check::{self, ChangedFile, FindingKind};
 use crate::firstmate::gates::{self, Answer, DoneLabel};
 use crate::fs::{expand_home, path_to_js};
@@ -220,6 +224,12 @@ pub trait Steps {
         _earlier: &[Step],
         _clean: bool,
     ) -> Stage {
+        Stage::default()
+    }
+    /// PT-4: the project's own end-to-end check over the range, for a project with a screen: the Verify plugin's replay, else its
+    /// Playwright suite. A project with a screen and neither is a finding and "could not run"; one with no screen is "not run".
+    /// `clean` says the checkout is what HEAD is. A stand-in that has none adds no step.
+    fn end_to_end(&self, _main: &Path, _range: &Range, _changes: &[Change], _clean: bool) -> Stage {
         Stage::default()
     }
 }
@@ -463,12 +473,17 @@ pub fn last_passed_in(dir: &Path, project: &str) -> Option<ShipCheckRecord> {
         })
 }
 
-/// Whether a ship check passed for exactly this commit of this project.
+/// Whether a ship check passed for exactly this commit of this project. PT-4: and, when it has an end-to-end step, that step
+/// passed or did not apply (no screen, or the person switched its tools off). A record that says "passed" over an end-to-end
+/// step that failed, could not run or did not run is not one the "ready to ship" hold may take as a pass: the record is read
+/// from disk, so it is not taken on its word. A record from before the step existed has none and reads as it always did.
 pub fn passed_for_in(dir: &Path, project: &str, head: &str) -> bool {
     let Some(head) = commit_id(head) else {
         return false;
     };
-    last_passed_in(dir, project).is_some_and(|record| record.head == head)
+    last_passed_in(dir, project).is_some_and(|record| {
+        record.head == head && record.steps.iter().all(end_to_end::step_holds)
+    })
 }
 
 /// Appends the record to the history, makes it the latest and, when it passed, the base of the next range.
@@ -1159,6 +1174,11 @@ pub fn run_in(dir: &Path, main: &Path, steps: &dyn Steps) -> Result<ShipCheckRec
         all.extend(proof.steps);
         not_tested.extend(proof.not_tested);
 
+        // PT-4: and, for a project with a screen, its own end-to-end check, read from the same checkout the same way.
+        let e2e = steps.end_to_end(main, &range, &changes, clean);
+        all.extend(e2e.steps);
+        not_tested.extend(e2e.not_tested);
+
         // The tasks that landed in the range: their briefs are the guard's excuse list and the review's definition of done.
         let briefs = steps.briefs(main, &range);
         let held: &[Brief] = briefs.as_deref().unwrap_or(&[]);
@@ -1218,6 +1238,27 @@ pub fn run_in(dir: &Path, main: &Path, steps: &dyn Steps) -> Result<ShipCheckRec
 /// The real steps: the verify stage's runner, the delegation rows, git, and the read-only verdict model.
 pub struct AppSteps {
     pub app: AppHandle,
+}
+
+impl AppSteps {
+    /// PT-4: the project's testing mode and the app's "When the checker runs" rule, read the way the task gates read them: a
+    /// project with no row, or a store that can't be read, gets the defaults.
+    fn settings_of(&self, main: &Path) -> (crate::delivery::settings::TestingMode, WhenRule) {
+        match self
+            .app
+            .state::<crate::session_store::SessionStore>()
+            .lock_conn()
+        {
+            Ok(conn) => (
+                crate::delivery::settings::testing_mode_for(&conn, &path_to_js(main)),
+                checker_when::rule_of(&conn),
+            ),
+            Err(_) => (
+                crate::delivery::settings::TestingMode::default(),
+                WhenRule::default(),
+            ),
+        }
+    }
 }
 
 /// The end of a run's log, for a step that failed or could not run.
@@ -1285,6 +1326,30 @@ pub fn steps_of_verify(record: &crate::verify_stage::VerifyRecord) -> Stage {
         ));
     }
     stage
+}
+
+/// PT-4: which review a ship check runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReviewKind {
+    /// The one-turn read-only verdict: the setting keeps it, or the project tests nothing.
+    OneTurn,
+    /// The running checker: another family, the briefs' check lines re-run on a read-only copy of HEAD.
+    Running,
+    /// The setting asks for the running checker but the checkout isn't what HEAD is, so a copy would be proof of something that
+    /// was never committed: the one-turn review, with a line under "Not tested" saying so.
+    OneTurnNotHead,
+}
+
+fn review_kind(
+    rule: WhenRule,
+    mode: crate::delivery::settings::TestingMode,
+    clean: bool,
+) -> ReviewKind {
+    match (checker_when::ship_review_runs(rule, mode), clean) {
+        (false, _) => ReviewKind::OneTurn,
+        (true, true) => ReviewKind::Running,
+        (true, false) => ReviewKind::OneTurnNotHead,
+    }
 }
 
 /// The combined diff of the range for the review: the file list with its sizes first (so a cut body still names every
@@ -1372,9 +1437,119 @@ impl Steps for AppSteps {
                 .filter(|m| !m.trim().is_empty())
                 .unwrap_or_else(|| "haiku".into()),
         };
-        review_step(range, briefs, &diff, &|prompt| {
-            gates::Runners::verdict(&runners, prompt)
-        })
+        let one_turn = || {
+            review_step(range, briefs, &diff, &|prompt| {
+                gates::Runners::verdict(&runners, prompt)
+            })
+        };
+        // PT-4: the review is the running checker unless the app's "When the checker runs" setting keeps the one-turn review
+        // (or the project tests nothing). It re-runs the briefs' check lines on a read-only copy of HEAD, so the checkout must be
+        // what HEAD is: a copy of anything else would be proof of something that was never committed.
+        let (mode, rule) = self.settings_of(main);
+        let dirty = tracked_changes(main);
+        match review_kind(rule, mode, matches!(&dirty, Ok(files) if files.is_empty())) {
+            ReviewKind::OneTurn => return one_turn(),
+            ReviewKind::OneTurnNotHead => {
+                let why = match dirty {
+                    Ok(files) => format!(
+                        "the checkout has {} uncommitted change{}",
+                        files.len(),
+                        if files.len() == 1 { "" } else { "s" }
+                    ),
+                    Err(_) => "the checkout's changes couldn't be read".to_string(),
+                };
+                let mut stage = one_turn();
+                stage.not_tested.push(format!(
+                    "The running checker did not run: {why}, so a copy would not be {}. The one-turn review read the diff instead.",
+                    short(&range.head)
+                ));
+                return stage;
+            }
+            ReviewKind::Running => {}
+        }
+        let (lines, unreadable) = match self
+            .app
+            .state::<crate::session_store::SessionStore>()
+            .lock_conn()
+        {
+            Ok(conn) => {
+                let mut lines = Vec::new();
+                let mut unreadable = Vec::new();
+                for brief in briefs {
+                    match crate::firstmate::brief_checks::state_of(&conn, &brief.id) {
+                        Ok(state) if state.checks_unreadable.is_none() => {
+                            lines.extend(state.checks)
+                        }
+                        // A task whose lines can't be read is never taken to have none.
+                        _ => unreadable.push(if brief.title.trim().is_empty() {
+                            "(no title)".to_string()
+                        } else {
+                            brief.title.trim().to_string()
+                        }),
+                    }
+                }
+                (lines, unreadable)
+            }
+            Err(why) => {
+                return Stage::one(Step::new(
+                    REVIEW,
+                    Outcome::CouldNotRun,
+                    format!(
+                    "the running checker could not run: the task briefs could not be read: {why}"
+                ),
+                ))
+            }
+        };
+        running::run(
+            &running::Input {
+                range,
+                briefs,
+                diff: &diff,
+                main,
+                lines,
+                unreadable,
+                now: now_ms() as i64,
+            },
+            &runners,
+        )
+    }
+
+    fn end_to_end(&self, main: &Path, range: &Range, changes: &[Change], clean: bool) -> Stage {
+        use crate::proof_tools::{app_env::AppEnv, run as proof_run, Pick};
+        let (mode, _) = self.settings_of(main);
+        let env = AppEnv::checkout(&self.app, main, main);
+        let clean = if clean {
+            Ok(())
+        } else {
+            Err(tracked_changes(main).ok().map(|files| files.len()))
+        };
+        end_to_end::step(
+            mode,
+            clean,
+            short(&range.head),
+            || end_to_end::routes_in(main, &proof_run::Env::switched_off(&env)),
+            |tool| {
+                let (from, to) = ends(range);
+                let scope = proof_run::scope_of_range(
+                    main,
+                    range.base.as_deref(),
+                    &from,
+                    &to,
+                    &changed_paths(changes),
+                );
+                // The shared runner, handed only the chosen tool: the same sandbox, time limit and environment as every proof tool.
+                proof_run::run_installed(
+                    &end_to_end::only(tool),
+                    main,
+                    &scope,
+                    &[],
+                    &env,
+                    Pick::All,
+                )
+                .into_iter()
+                .next()
+            },
+        )
     }
 
     fn proof_tools(
@@ -1425,11 +1600,51 @@ impl Steps for AppSteps {
 
 // ---- the app's entry points -----------------------------------------------------------------------------------------
 
+/// What a ship check run gives back: the record, as it was always sent, and (PT-4) the missing proof tools it puts forward. The
+/// proposals are not part of the saved record: they are decided afresh each run, and the webview files each through PT-1's claim
+/// and ask path, which records a proposal once per project per tool. A reader that knows only the record reads this unchanged.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunResult {
+    #[serde(flatten)]
+    pub record: ShipCheckRecord,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub proposals: Vec<proposals::Candidate>,
+}
+
+/// PT-4: the proof tools this project has a use for and lacks, to put to the person (`proposals::candidates`). Nothing in a project
+/// whose offer record can't be read: a proposal couldn't be recorded against it, so it is not made.
+fn proposals_for(app: &AppHandle, steps: &AppSteps, main: &Path) -> Vec<proposals::Candidate> {
+    use crate::proof_tools::{self, app_env::AppEnv, offers, run::Env};
+    let (mode, _) = steps.settings_of(main);
+    if mode == crate::delivery::settings::TestingMode::Off {
+        return Vec::new();
+    }
+    let Ok(host) = crate::plugins::host(app) else {
+        return Vec::new();
+    };
+    let Ok(statuses) = offers::statuses(&host, &path_to_js(main)) else {
+        return Vec::new();
+    };
+    let whole = proof_tools::detect_folder(app, main);
+    let off = AppEnv::checkout(app, main, main).switched_off();
+    proposals::candidates(
+        mode,
+        &crate::plugins::verify::surfaces_of(main),
+        &whole,
+        &off,
+        &statuses,
+    )
+}
+
 /// Runs the ship check for the project `cwd` belongs to, on its main checkout.
-pub fn run(app: &AppHandle, cwd: &Path) -> Result<ShipCheckRecord, String> {
+pub fn run(app: &AppHandle, cwd: &Path) -> Result<RunResult, String> {
     let main = project_file::main_checkout(cwd)?;
     let dir = records_dir(app)?;
-    run_in(&dir, &main, &AppSteps { app: app.clone() })
+    let steps = AppSteps { app: app.clone() };
+    let record = run_in(&dir, &main, &steps)?;
+    let proposals = proposals_for(app, &steps, &main);
+    Ok(RunResult { record, proposals })
 }
 
 /// The newest ship check record for the project `cwd` belongs to.
@@ -1450,7 +1665,7 @@ pub fn head_of_project(cwd: &Path) -> Result<Option<String>, String> {
 }
 
 #[tauri::command(async)]
-pub async fn ship_check_run(app: AppHandle, cwd: String) -> Result<ShipCheckRecord, String> {
+pub async fn ship_check_run(app: AppHandle, cwd: String) -> Result<RunResult, String> {
     tauri::async_runtime::spawn_blocking(move || run(&app, &expand_home(&cwd)))
         .await
         .map_err(|e| e.to_string())?

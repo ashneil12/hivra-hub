@@ -1526,7 +1526,7 @@ mod proof_step {
     }
 
     #[test]
-    fn only_at_ship_and_full_have_a_proof_tools_step_and_the_others_never_look_for_a_tool() {
+    fn every_mode_that_tests_has_a_proof_tools_step_and_no_testing_never_looks_for_a_tool() {
         for mode in [
             TestingMode::Off,
             TestingMode::Light,
@@ -1542,9 +1542,13 @@ mod proof_step {
             );
             let record = run_in(&dir, &root, &steps).unwrap();
             let has = step_named(&record, "Proof tools").is_some();
+            // PT-4: Light runs no tool per task, so its ship check runs them too.
             assert_eq!(
                 has,
-                matches!(mode, TestingMode::AtShip | TestingMode::Full),
+                matches!(
+                    mode,
+                    TestingMode::AtShip | TestingMode::Light | TestingMode::Full
+                ),
                 "{mode:?}"
             );
             if !has {
@@ -1662,5 +1666,303 @@ mod proof_step {
         assert!(proof.detail.contains("uncommitted"), "{}", proof.detail);
         assert_eq!(steps.started.get(), 0);
         assert_eq!(steps.detected.get(), 0);
+    }
+}
+
+// ---- PT-4: the "End-to-end" step, the hold, and which review runs ---------------------------------------------------------------
+
+mod end_to_end_step {
+    use super::*;
+    use crate::delivery::settings::TestingMode;
+    use crate::firstmate::checker_when::WhenRule;
+    use crate::proof_tools::{catalogue, Outcome as Ran, ToolRun};
+
+    use super::super::end_to_end::{self as e2e, Have, Routes};
+
+    /// The ship check's own steps from `Stub`, and the end-to-end step decided by the same function the app uses.
+    struct WithE2e {
+        inner: Stub,
+        mode: TestingMode,
+        routes: Routes,
+        ran: Option<ToolRun>,
+        started: Cell<u32>,
+        order: Mutex<Vec<&'static str>>,
+    }
+
+    impl WithE2e {
+        fn new(routes: Routes, ran: Option<ToolRun>) -> WithE2e {
+            WithE2e {
+                inner: Stub::all(Outcome::Passed),
+                mode: TestingMode::AtShip,
+                routes,
+                ran,
+                started: Cell::new(0),
+                order: Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl Steps for WithE2e {
+        fn checks(&self, main: &Path, changed: &[String]) -> Stage {
+            self.order.lock().unwrap().push("checks");
+            self.inner.checks(main, changed)
+        }
+        fn briefs(&self, main: &Path, range: &Range) -> Result<Vec<Brief>, String> {
+            self.inner.briefs(main, range)
+        }
+        fn guard(&self, main: &Path, range: &Range, changes: &[Change], briefs: &[Brief]) -> Stage {
+            self.order.lock().unwrap().push("guard");
+            self.inner.guard(main, range, changes, briefs)
+        }
+        fn review(&self, main: &Path, range: &Range, briefs: &[Brief]) -> Stage {
+            self.order.lock().unwrap().push("review");
+            self.inner.review(main, range, briefs)
+        }
+        fn end_to_end(
+            &self,
+            _main: &Path,
+            range: &Range,
+            _changes: &[Change],
+            clean: bool,
+        ) -> Stage {
+            self.order.lock().unwrap().push("end-to-end");
+            e2e::step(
+                self.mode,
+                if clean { Ok(()) } else { Err(Some(1)) },
+                short(&range.head),
+                || self.routes,
+                |_| {
+                    self.started.set(self.started.get() + 1);
+                    self.ran.clone()
+                },
+            )
+        }
+    }
+
+    fn run_of(id: &str, outcome: Ran, detail: &str) -> ToolRun {
+        ToolRun {
+            tool: catalogue::find(id).unwrap(),
+            outcome,
+            detail: detail.into(),
+            lines: Vec::new(),
+            command: catalogue::find(id).unwrap().run.clone(),
+            tail: None,
+            seconds: 0.0,
+        }
+    }
+
+    fn routes(screen: bool, verify: Have, playwright: Have) -> Routes {
+        Routes {
+            screen,
+            verify,
+            playwright,
+        }
+    }
+
+    fn step_named<'a>(record: &'a ShipCheckRecord, name: &str) -> Option<&'a Step> {
+        record.steps.iter().find(|step| step.name == name)
+    }
+
+    #[test]
+    fn the_step_sits_after_the_checks_and_before_the_guard_and_the_review() {
+        let (_tmp, root, dir) = fixture("ship-e2e-order");
+        land(&root, "a.txt", "one");
+        let steps = WithE2e::new(
+            routes(true, Have::Ready, Have::Missing),
+            Some(run_of("e2e", Ran::Passed, "replayed with no model call")),
+        );
+        let record = run_in(&dir, &root, &steps).unwrap();
+        assert_eq!(
+            *steps.order.lock().unwrap(),
+            ["checks", "end-to-end", "guard", "review"]
+        );
+        let names: Vec<&str> = record.steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Check: Web", "End-to-end", "Test guard", "Review"]);
+        assert_eq!(record.outcome, Outcome::Passed);
+        assert!(record
+            .tested
+            .iter()
+            .any(|line| line.starts_with("End-to-end: e2e: ")));
+    }
+
+    #[test]
+    fn a_project_with_a_screen_and_no_route_could_not_run_and_is_never_passed_or_ready_to_ship() {
+        let (_tmp, root, dir) = fixture("ship-e2e-noroute");
+        let head = land(&root, "a.txt", "one");
+        let steps = WithE2e::new(routes(true, Have::Missing, Have::Missing), None);
+        let record = run_in(&dir, &root, &steps).unwrap();
+        let step = step_named(&record, "End-to-end").unwrap();
+        assert_eq!(step.outcome, Outcome::CouldNotRun);
+        assert_eq!(
+            step.detail,
+            "No end-to-end check is available for this project."
+        );
+        assert_eq!(record.outcome, Outcome::CouldNotRun, "{:?}", record.steps);
+        assert!(
+            record.not_tested.iter().any(|line| line.contains(
+                "End-to-end could not run: No end-to-end check is available for this project."
+            )),
+            "{:?}",
+            record.not_tested
+        );
+        assert_eq!(steps.started.get(), 0);
+        // The hold reads this as not passed for HEAD.
+        assert!(!passed_for_in(&dir, &record.project, &head));
+        assert!(last_passed_in(&dir, &record.project).is_none());
+    }
+
+    #[test]
+    fn a_project_with_no_screen_did_not_run_that_step_and_the_check_still_passes() {
+        let (_tmp, root, dir) = fixture("ship-e2e-noscreen");
+        let head = land(&root, "a.txt", "one");
+        let steps = WithE2e::new(routes(false, Have::Missing, Have::Missing), None);
+        let record = run_in(&dir, &root, &steps).unwrap();
+        let step = step_named(&record, "End-to-end").unwrap();
+        assert_eq!(step.outcome, Outcome::NotRun);
+        assert_eq!(step.detail, "no screen to test");
+        assert!(step.output_tail.is_none(), "not a finding");
+        assert!(record
+            .not_tested
+            .iter()
+            .any(|line| line == "End-to-end did not run: no screen to test"));
+        assert_eq!(record.outcome, Outcome::Passed);
+        assert!(passed_for_in(&dir, &record.project, &head));
+    }
+
+    #[test]
+    fn a_failing_route_fails_the_check_and_a_dirty_checkout_starts_none() {
+        let (_tmp, root, dir) = fixture("ship-e2e-fail");
+        land(&root, "a.txt", "one");
+        let steps = WithE2e::new(
+            routes(true, Have::Missing, Have::Ready),
+            Some(run_of(
+                "playwright",
+                Ran::Failed,
+                "its tests failed (exit 1)",
+            )),
+        );
+        let record = run_in(&dir, &root, &steps).unwrap();
+        assert_eq!(record.outcome, Outcome::Failed);
+        assert_eq!(steps.started.get(), 1);
+
+        let (_tmp, root, dir) = fixture("ship-e2e-dirty");
+        land(&root, "a.txt", "one");
+        write(&root, "a.txt", "changed after the commit");
+        let steps = WithE2e::new(
+            routes(true, Have::Ready, Have::Ready),
+            Some(run_of("e2e", Ran::Passed, "ok")),
+        );
+        let record = run_in(&dir, &root, &steps).unwrap();
+        let step = step_named(&record, "End-to-end").unwrap();
+        assert_eq!(step.outcome, Outcome::CouldNotRun);
+        assert!(step.detail.contains("uncommitted"), "{}", step.detail);
+        assert_eq!(steps.started.get(), 0);
+    }
+
+    #[test]
+    fn a_saved_pass_over_an_end_to_end_step_that_did_not_pass_is_not_a_pass_for_the_hold() {
+        let tmp = temp("ship-e2e-hold");
+        let dir = tmp.0.join("ship-checks");
+        let project = "/work/app";
+        let sha = "a".repeat(40);
+        let with = |outcome: Outcome, detail: &str| {
+            let mut record = record_for(project, &sha, Outcome::Passed, 1);
+            record.steps.push(Step::new("End-to-end", outcome, detail));
+            record
+        };
+        // (the step, whether the hold takes the record as a pass)
+        let cases = [
+            (Outcome::Passed, "e2e: replayed", true),
+            (Outcome::NotRun, "no screen to test", true),
+            (Outcome::NotRun, "switched off for this project", true),
+            (Outcome::NotRun, "it did not run for another reason", false),
+            (Outcome::Failed, "e2e: its tests failed", false),
+            (
+                Outcome::CouldNotRun,
+                "No end-to-end check is available for this project.",
+                false,
+            ),
+        ];
+        for (outcome, detail, holds) in cases {
+            // A hand-edited or forged record: "passed" over the step, as a file on disk can say anything.
+            let _ = std::fs::remove_dir_all(&dir);
+            save_in(&dir, &with(outcome, detail)).unwrap();
+            assert_eq!(
+                passed_for_in(&dir, project, &sha),
+                holds,
+                "{outcome:?}: {detail}"
+            );
+        }
+        // A record from before the step existed has none and reads as it always did.
+        let _ = std::fs::remove_dir_all(&dir);
+        save_in(&dir, &record_for(project, &sha, Outcome::Passed, 1)).unwrap();
+        assert!(passed_for_in(&dir, project, &sha));
+    }
+
+    #[test]
+    fn the_review_is_the_running_checker_for_the_first_two_rules_and_not_in_no_testing() {
+        use super::super::{review_kind, ReviewKind};
+        for mode in [TestingMode::AtShip, TestingMode::Light, TestingMode::Full] {
+            for rule in [WhenRule::FollowMode, WhenRule::EveryCodeChange] {
+                assert_eq!(
+                    review_kind(rule, mode, true),
+                    ReviewKind::Running,
+                    "{rule:?} {mode:?}"
+                );
+                // A checkout that isn't HEAD never makes a copy that is: the one-turn review, and it says so.
+                assert_eq!(
+                    review_kind(rule, mode, false),
+                    ReviewKind::OneTurnNotHead,
+                    "{rule:?} {mode:?}"
+                );
+            }
+            for rule in [WhenRule::RiskyOnly, WhenRule::Off] {
+                assert_eq!(
+                    review_kind(rule, mode, true),
+                    ReviewKind::OneTurn,
+                    "{rule:?} {mode:?}"
+                );
+                assert_eq!(review_kind(rule, mode, false), ReviewKind::OneTurn);
+            }
+        }
+        for rule in [
+            WhenRule::FollowMode,
+            WhenRule::EveryCodeChange,
+            WhenRule::RiskyOnly,
+            WhenRule::Off,
+        ] {
+            assert_eq!(
+                review_kind(rule, TestingMode::Off, true),
+                ReviewKind::OneTurn
+            );
+        }
+        // Unset is the default rule: the running checker.
+        assert_eq!(
+            review_kind(WhenRule::default(), TestingMode::default(), true),
+            ReviewKind::Running
+        );
+    }
+
+    #[test]
+    fn the_run_result_is_the_record_as_it_was_sent_plus_the_proposals_when_there_are_any() {
+        use super::super::proposals::Candidate;
+        let record = record_for("/work/app", &"a".repeat(40), Outcome::Passed, 5);
+        let plain = serde_json::to_value(RunResult {
+            record: record.clone(),
+            proposals: Vec::new(),
+        })
+        .unwrap();
+        assert_eq!(plain, serde_json::to_value(&record).unwrap());
+        assert!(plain.get("proposals").is_none());
+        let with = serde_json::to_value(RunResult {
+            record,
+            proposals: vec![Candidate {
+                tool_id: "playwright".into(),
+                name: "Playwright".into(),
+            }],
+        })
+        .unwrap();
+        assert_eq!(with["head"], "a".repeat(40));
+        assert_eq!(with["proposals"][0]["toolId"], "playwright");
     }
 }
