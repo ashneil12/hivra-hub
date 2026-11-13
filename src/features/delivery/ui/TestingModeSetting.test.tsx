@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
 import { TESTING_MODES, TESTING_MODE_WORDS, type TestingMode } from "../model/testingMode";
+import { SENSITIVE_PATH_GROUPS, SENSITIVE_PATHS_ADD_MORE, SENSITIVE_PATHS_LINE } from "../model/sensitivePaths";
 import { TestingModeSetting, projectChoices } from "./TestingModeSetting";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -254,6 +255,52 @@ describe("how tasks are tested (Settings)", () => {
     // The project Home was last in is not read for it.
     expect(vi.mocked(invoke)).not.toHaveBeenCalled();
     expect(container.querySelector("[data-setting-id='testing-mode']")).not.toBeNull();
+  });
+
+  it("shows the protected-paths line under the list for Test at ship, Light and Full, and not for No testing", async () => {
+    await show({ project: "/work/app" });
+    await vi.waitFor(() => expect(option("at-ship")).not.toBeNull());
+    const line = () => container.querySelector("[data-testing-mode-protected]");
+    expect(line()?.textContent).toContain(SENSITIVE_PATHS_LINE);
+    for (const mode of ["light", "full"] as const) {
+      await pick(mode);
+      await vi.waitFor(() => expect(radio(mode)?.checked).toBe(true));
+      expect(line()?.textContent).toContain(SENSITIVE_PATHS_LINE);
+    }
+    await pick("off");
+    await vi.waitFor(() => expect(radio("off")?.checked).toBe(true));
+    expect(line()).toBeNull();
+    expect(container.textContent).not.toContain(SENSITIVE_PATHS_LINE);
+    await pick("light");
+    await vi.waitFor(() => expect(line()).not.toBeNull());
+  });
+
+  it("does not show the protected-paths line before the mode is read", async () => {
+    vi.mocked(invoke).mockImplementation(() => new Promise(() => {}));
+    await show({ project: "/work/app" });
+    expect(container.textContent).toContain("Reading what app uses.");
+    expect(container.querySelector("[data-testing-mode-protected]")).toBeNull();
+  });
+
+  it("keeps More closed, then opens to every built-in pattern and the add-more sentence", async () => {
+    await show({ project: "/work/app" });
+    await vi.waitFor(() => expect(option("at-ship")).not.toBeNull());
+    const more = () => container.querySelector<HTMLButtonElement>("[data-testing-mode-protected] button");
+    expect(more()?.textContent).toBe("More");
+    expect(more()?.getAttribute("aria-expanded")).toBe("false");
+    expect(container.textContent).not.toContain(SENSITIVE_PATHS_ADD_MORE);
+    await act(async () => {
+      more()?.click();
+    });
+    expect(more()?.getAttribute("aria-expanded")).toBe("true");
+    const details = container.querySelector("[data-testing-mode-protected]")?.textContent ?? "";
+    for (const group of SENSITIVE_PATH_GROUPS) {
+      expect(details).toContain(`${group.label}:`);
+      for (const pattern of group.patterns) expect(details).toContain(pattern);
+    }
+    expect(details).toContain(SENSITIVE_PATHS_ADD_MORE);
+    // The radio list is still there and still picks.
+    expect(container.querySelectorAll("input[type='radio']").length).toBe(4);
   });
 });
 
