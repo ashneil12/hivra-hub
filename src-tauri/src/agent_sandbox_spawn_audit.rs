@@ -782,7 +782,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     (
         "visual_preview.rs",
         "run",
-        "Headless Chrome, Chromium, Edge or Brave drawing an agent's page. Not wrapped: Chrome cannot start its own renderer sandbox inside sandbox-exec (it exits 133), and --no-sandbox is never passed, so the page stays in Chrome's renderer sandbox, with no network and a throwaway profile. On macOS the binary is only an app bundle under /Applications or ~/Applications (find_browser), which App Management keeps agents from replacing. Other platforms still look on PATH; the app ships for macOS only today.",
+        "Headless Chrome, Chromium, Edge or Brave drawing an agent's page. Not wrapped: Chrome cannot start its own renderer sandbox inside sandbox-exec (it exits 133), and --no-sandbox is never passed, so the page stays in Chrome's renderer sandbox, with no network and a throwaway profile. On macOS the binary is only one of visual_preview::BROWSER_BUNDLES under /Applications or ~/Applications (find_browser), and the agent profile write-denies exactly those bundle folders in both places, so an agent can neither change one nor create a missing one (SC-8c). Other platforms still look on PATH; the app ships for macOS only today.",
     ),
     (
         "worktree_autoclean.rs",
