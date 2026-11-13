@@ -44,7 +44,7 @@ import { MonoSidebar, MonoSidebarHeader } from "./MonoSidebar";
 import type { SessionChangeTotals } from "../../sessions/ui/SessionReview";
 import { MonoChangesView, type MonoChangesRequest } from "./MonoChangesView";
 import { ChiefAsked, ChiefNeeds, ChiefWorking, useChiefCounts } from "../../asks/ui/ChiefGlance";
-import { useChiefLists } from "../../asks/model/chiefLists";
+import { chiefListsTab, useChiefLists } from "../../asks/model/chiefLists";
 
 export type MonoOverviewTab =
   "activity" | "needs" | "asked" | "working" | "sessions" | "habits" | "documents" | "changes";
@@ -153,8 +153,8 @@ export function MonoOverview({
   const tabs = TABS;
   const chiefRow = chiefTabs ? CHIEF_TABS : [];
   useEffect(() => {
-    if (chiefTabs) onTabChange("needs");
-    else if (tab === "needs" || tab === "asked" || tab === "working") onTabChange("sessions");
+    const next = chiefListsTab(chiefTabs, tab);
+    if (next) onTabChange(next);
     // Only when the choice or the first mate changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chiefTabs]);

@@ -426,6 +426,12 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
       "janitor disk space size merged stale idle build output target node_modules remove free report",
   },
   {
+    id: "chief-lists",
+    section: "general",
+    label: "Show the three lists",
+    keywords: "chief of staff needs you asked working lists chips buttons top beside panel main chat hand back",
+  },
+  {
     id: "update",
     section: "general",
     label: "Version",

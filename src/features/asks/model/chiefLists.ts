@@ -34,3 +34,17 @@ function subscribe(listener: () => void): () => void {
 export function useChiefLists(): ChiefLists {
   return useSyncExternalStore(subscribe, chiefLists, () => "top" as const);
 }
+
+/**
+ * Whether arriving on a chat should open the panel beside it: only the Chief of Staff's main chat, and only with
+ * "beside the chat" picked. Every other first mate's chat opens without its panel (Ash, 12 Nov).
+ */
+export function chiefListsOpenPanel(place: ChiefLists, viewSessionId: string | null | undefined, chiefSessionId: string | null | undefined): boolean {
+  return place === "side" && !!viewSessionId && viewSessionId === chiefSessionId;
+}
+
+/** The tab the Chief of Staff's panel should move to when the lists arrive or leave; undefined leaves it where it is. */
+export function chiefListsTab<T extends string>(showing: boolean, tab: T): "needs" | "sessions" | undefined {
+  if (showing) return tab === "sessions" ? "needs" : undefined;
+  return tab === "needs" || tab === "asked" || tab === "working" ? "sessions" : undefined;
+}
