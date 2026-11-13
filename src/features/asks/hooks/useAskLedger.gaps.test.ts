@@ -41,7 +41,11 @@ const settle = async () => {
     });
 };
 
-async function mount(sessions: Session[], send: (chatId: string, message: QueuedMessage) => Promise<unknown> | void) {
+async function mount(
+  sessions: Session[],
+  send: (chatId: string, message: QueuedMessage) => Promise<unknown> | void,
+  cli: () => Promise<string> = async () => "app",
+) {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const old = Date.now() - 3 * DAY;
   const disk = memoryDisk({
@@ -59,7 +63,7 @@ async function mount(sessions: Session[], send: (chatId: string, message: Queued
   const store = createAskStore(disk);
   setAskStore(store);
   function Probe({ chats }: { chats: Session[] }) {
-    useAskLedger({ sessions: chats, enabled: true, mateOf: () => "mate", send, cli: async () => "app" });
+    useAskLedger({ sessions: chats, enabled: true, mateOf: () => "mate", send, cli });
     return null;
   }
   const container = document.createElement("div");
@@ -140,6 +144,33 @@ describe("A5 (fixed): the daily check does not wait on the chat of the oldest qu
     expect(send).toHaveBeenCalledTimes(1);
     expect((send.mock.calls[0] as [string])[0]).toBe("chat-live");
     expect(store.doc().nudged.mate).toBeGreaterThan(0);
+  });
+
+  // Found in review: the chat is chosen when the pass runs, the message is built after the app CLI's command is known. If an
+  // ask moves in between, the message must still go to the chat that was chosen; it must not be dropped after the mark.
+  it("an ask settles while the check is being prepared: the check still goes to the chat chosen, naming what is still quiet", async () => {
+    const send = vi.fn();
+    let release: (command: string) => void = () => undefined;
+    const slowCli = () => new Promise<string>((resolve) => (release = resolve));
+    const { store } = await mount([idle("chat-live")], send, slowCli);
+    // The mark is written and the check waits on the command.
+    expect(store.doc().nudged.mate).toBeGreaterThan(0);
+    expect(send).not.toHaveBeenCalled();
+    // Ask 2 (the one in chat-live, the only chat that could take it) is settled by the person meanwhile.
+    await act(async () => {
+      await store.change("ask-2-blk2", { status: "done", proof: "answered in chat-live" }, "ash");
+    });
+    await act(async () => {
+      release("app");
+    });
+    await settle();
+    expect(send).toHaveBeenCalledTimes(1);
+    const [chatId, message] = send.mock.calls[0] as [string, QueuedMessage];
+    expect(chatId).toBe("chat-live");
+    // One ask is still quiet (ask 1); ask 2 is now listed as finished, not as quiet.
+    expect(message.text).toContain("this ask of Ash's has gone quiet");
+    expect(message.text).toContain("- ask 1:");
+    expect(message.text).toContain("Finished since yesterday:\n- ask 2:");
   });
 
   it("the oldest quiet ask's chat opens again later: the check is not sent twice", async () => {

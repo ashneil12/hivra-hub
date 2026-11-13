@@ -192,8 +192,10 @@ export function useAskLedger(options: AskLedgerOptions): void {
           .markDigest(mateId)
           .then(() => cli())
           .then((command) => {
-            const again = askDigest({ ...store.doc(), nudged: { ...store.doc().nudged, [mateId]: 0 } }, mateId, command, Date.now(), takes);
-            if (again) return send(again.chatId, again.message);
+            // The chat was chosen above, with the chats as they stood. Only the text is made again (it needs the command and
+            // the asks as they stand now); asked about the chats a second time it could find none and drop a check already marked.
+            const again = askDigest({ ...store.doc(), nudged: { ...store.doc().nudged, [mateId]: 0 } }, mateId, command, Date.now());
+            if (again) return send(due.chatId, again.message);
           })
           .catch(() => undefined)
           .finally(() => digesting.current.delete(mateId));
