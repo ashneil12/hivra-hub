@@ -127,6 +127,12 @@ project.
     item stops waiting the card folds to one line ("Answered: … EXO lead has it." or "No longer needs you: …"). The
     chat store keeps these cards, the catch-up card and the "You messaged" line through a relaunch
     (`asks/model/keptCards.ts`).
+    The one chat has a **project filter** at its top (`asks/ui/ChiefLens.tsx`, the UI SDK's segmented control):
+    Everything, then the busy projects with their red Needs you count, quiet ones behind "+N quiet". Picking one hides
+    the turns that aren't about it (nothing is removed), hides other projects' question cards inside a reply about
+    several, and makes the next message about it ("About EXO." above the box, with Show everything). How a turn is told
+    apart is in `asks/model/chiefLens.ts`: his message sent while narrowed, the app's cards, linked questions and chats,
+    then project and first mate names in the words.
 15. **A flow asks one thing a step.** First run (`HubOnboarding.tsx`) goes welcome, the first project, its first
     mates, the coding tools, a look, done; each step has one heading and one choice, nothing is required, and the
     last step says back what was chosen before anything opens. A list a person chooses from says what each choice

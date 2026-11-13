@@ -38,8 +38,11 @@ describe("the one chat's cards kept by the chat store", () => {
     expect(keptBesideMessage({ chatId: "a", to: "", text: "x", at: 1 })).toBeUndefined();
   });
 
-  it("only on the app's own system blocks", () => {
+  it("only on the app's own system blocks, and the filter's mark only on his message", () => {
     expect(keptCards({ role: "assistant", catchUp } as Block)).toEqual({});
+    expect(keptCards({ role: "user", lensProject: "vg-game", catchUp } as Block)).toEqual({ lensProject: "vg-game" });
+    expect(keptCards({ role: "user", lensProject: "  " } as Block)).toEqual({});
+    expect(keptCards({ role: "assistant", lensProject: "vg-game" } as Block)).toEqual({});
     expect(keptCards({ role: "system", catchUp, needsRollup: rollup } as Block)).toEqual({ catchUp, needsRollup: rollup });
   });
 
@@ -54,7 +57,7 @@ describe("the one chat's cards kept by the chat store", () => {
       runtimeMode: "default",
       title: "Chief of Staff",
       blocks: [
-        { id: "u1", role: "user", text: "Example: hi" },
+        { id: "u1", role: "user", text: "Example: hi", lensProject: "vg-game" },
         { id: "catch-up-2000", role: "system", text: "Example: caught up", catchUp },
         beside,
         { id: "needs-rollup-9", role: "system", text: "Needs you now:\n- Example: which take?", needsRollup: rollup },
@@ -64,5 +67,6 @@ describe("the one chat's cards kept by the chat store", () => {
     expect(blocks.find((block) => block.id === "catch-up-2000")?.catchUp).toEqual(catchUp);
     expect(blocks.find((block) => block.id === beside.id)?.besideMessage).toEqual(beside.besideMessage);
     expect(blocks.find((block) => block.id === "needs-rollup-9")?.needsRollup).toEqual(rollup);
+    expect(blocks.find((block) => block.id === "u1")?.lensProject).toBe("vg-game");
   });
 });
