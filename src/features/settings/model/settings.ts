@@ -879,6 +879,13 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     keywords:
       "testing tests review checks quality each task ship at ship light full off no testing done gate bulk pass",
   },
+  // SC-5: which model family checks a finished task.
+  {
+    id: "checker-family",
+    section: "crew",
+    label: "Who checks the work",
+    keywords: "checker second model family different claude codex grok review verify re-run read only copy",
+  },
 ];
 
 export type SettingsSearchResult = {
