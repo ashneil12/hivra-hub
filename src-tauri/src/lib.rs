@@ -187,6 +187,7 @@ mod proxy; // WP-90: names per worktree, and the local proxy that routes by them
 mod stack_decl;
 mod stacks;
 // Hivra WP-14: steering messages to running workers.
+mod ship_check; // SC-3b: the bulk check "Test at ship" needs before a first mate says ready to ship
 mod steering;
 mod test_summary; // SC-3a: the summary line a test runner prints (zero tests is not a pass)
 mod tool_detail;
@@ -1031,6 +1032,11 @@ pub fn run() {
             verify_stage::verify_stage_status,
             verify_stage::verify_stage_run,
             verify_stage::verify_stage_latest,
+            // SC-3b
+            ship_check::ship_check_run,
+            ship_check::ship_check_latest,
+            ship_check::ship_check_passed,
+            ship_check::ship_check_head,
             worktree_autoclean::worktree_autoclean_status,
             worktree_autoclean::worktree_autoclean_set,
             worktree_janitor::worktree_janitor_report,
