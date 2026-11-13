@@ -857,6 +857,7 @@
    "name": "StrykerJS",
    "repo": "stryker-mutator/stryker-js",
    "group": "finds-2026-11-13",
+   "integrated": "stryker-js",
    "licence": "Apache-2.0",
    "why": "Shipping confidence: Mutation testing for TypeScript on changed line ranges"
   },
@@ -864,6 +865,7 @@
    "name": "cargo-mutants",
    "repo": "sourcefrog/cargo-mutants",
    "group": "finds-2026-11-13",
+   "integrated": "cargo-mutants",
    "licence": "MIT",
    "why": "Shipping confidence: Mutation testing for Rust, --in-diff for a pull request"
   },
@@ -878,6 +880,7 @@
    "name": "fast-check",
    "repo": "dubzzz/fast-check",
    "group": "finds-2026-11-13",
+   "integrated": "fast-check",
    "licence": "MIT",
    "why": "Shipping confidence: Property and model-based tests for TypeScript"
   },
@@ -885,6 +888,7 @@
    "name": "proptest",
    "repo": "proptest-rs/proptest",
    "group": "finds-2026-11-13",
+   "integrated": "proptest",
    "licence": "MIT OR Apache-2.0",
    "why": "Shipping confidence: Property and state-machine tests for Rust; regression seeds kept in git"
   },
@@ -955,6 +959,7 @@
    "name": "Playwright (test agents)",
    "repo": "microsoft/playwright",
    "group": "finds-2026-11-13",
+   "integrated": "playwright",
    "licence": "Apache-2.0",
    "why": "Shipping confidence: Planner, generator and healer test agents (packages/playwright/src/agents)"
   },
@@ -1011,6 +1016,7 @@
    "name": "ast-grep",
    "repo": "ast-grep/ast-grep",
    "group": "finds-2026-11-13",
+   "integrated": "ast-grep",
    "licence": "MIT",
    "why": "Shipping confidence: A bug's code shape as a lint rule with its own tests"
   },

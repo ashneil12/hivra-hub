@@ -19,8 +19,10 @@
     "test:host": "vitest run --config host/vitest.config.ts",
     "check": "npm run check:web && npm run check:scripts && npm run check:rust",
     "check:web": "vitest run && tsc --noEmit",
-    "check:guards": "node scripts/test-guard.mjs && node scripts/quarantine.mjs && node scripts/escapes.mjs",
-    "check:guards:strict": "node scripts/test-guard.mjs --strict && node scripts/quarantine.mjs --strict && node scripts/escapes.mjs --strict",
+    "check:guards": "node scripts/test-guard.mjs && node scripts/quarantine.mjs && node scripts/escapes.mjs && node scripts/ast-grep-guard.mjs",
+    "check:guards:strict": "node scripts/test-guard.mjs --strict && node scripts/quarantine.mjs --strict && node scripts/escapes.mjs --strict && node scripts/ast-grep-guard.mjs --strict",
+    "tools:check": "node scripts/proof-tools.mjs",
+    "tools:outdated": "node scripts/proof-tools.mjs --outdated",
     "check:affected": "node scripts/affected-tests.mjs local",
     "check:scripts": "node --disable-warning=ExperimentalWarning --test scripts/*.test.cjs scripts/*.test.mjs scripts/memory-eval/*.test.mjs",
     "memory:eval": "node scripts/memory-eval.mjs",
@@ -108,6 +110,7 @@
     "streamdown": "^2.5.0"
   },
   "devDependencies": {
+    "@ast-grep/cli": "0.51.1",
     "@fast-check/vitest": "^0.2.4",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/vite": "^4",

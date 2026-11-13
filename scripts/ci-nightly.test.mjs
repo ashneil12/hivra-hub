@@ -132,7 +132,7 @@ function simulate(run, vars = { HUB_CROSS_PLATFORM_CI: "true" }) {
 }
 
 const RPM_JOBS = ["rpm-changes", "rpm", "rpm-clean-install"];
-const OTHER_JOBS = ["release-channel", "mobile", "browser", "host", "rust-plan", "check", "ship", "guards", "appimage"];
+const OTHER_JOBS = ["release-channel", "mobile", "browser", "host", "rust-plan", "check", "ship", "guards", "mutants", "appimage"];
 
 test("Native Preview has a nightly schedule, and a schedule cannot narrow it with a path filter", () => {
   const found = crons(native);
@@ -186,8 +186,8 @@ test("a push to main and a ready pull request that changes packaging start every
   for (const name of ["push to main", "ready pull request that changes packaging"]) {
     const { results, images } = simulate(RUNS[name]);
     for (const job of jobNames(ci)) {
-      // The browser tests run only in the pre-ship run (see the next test).
-      const expected = job === "browser" ? "skipped" : "success";
+      // The browser tests and the mutants run only in the pre-ship run (see the next test).
+      const expected = job === "browser" || job === "mutants" ? "skipped" : "success";
       assert.equal(results[job], expected, `${name}: ${job}`);
     }
     assert.deepEqual(images, IMAGES_ALL, name);
@@ -208,10 +208,11 @@ test("a ready pull request that does not touch packaging still builds the produc
   assert.equal(results.rpm, "success", "the production build runs on every pull request");
   assert.deepEqual(images, IMAGES_ONE);
   assert.equal(results["rpm-clean-install"], "skipped");
-  for (const job of [...OTHER_JOBS.filter((job) => job !== "browser"), "rpm-changes", "ci-ok"]) {
+  for (const job of [...OTHER_JOBS.filter((job) => job !== "browser" && job !== "mutants"), "rpm-changes", "ci-ok"]) {
     assert.equal(results[job], "success", job);
   }
   assert.equal(results.browser, "skipped", "the browser tests never run on a pull request");
+  assert.equal(results.mutants, "skipped", "the mutants never run on a pull request");
 });
 
 test("a draft pull request starts nothing but ci-ok", () => {

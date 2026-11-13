@@ -1,0 +1,104 @@
+{
+  "about": "Open-source tools Hivra runs for real (not only borrowed ideas from). `version` is what this repo pins or resolves; scripts/proof-tools.mjs checks it against package-lock.json, Cargo.lock or the script or workflow that pins it. `check` says where that version is read, `registry` where the latest one is looked up. Weekly: npm run tools:outdated.",
+  "tools": [
+    {
+      "id": "fast-check",
+      "name": "fast-check (with @fast-check/vitest)",
+      "repo": "dubzzz/fast-check",
+      "licence": "MIT",
+      "use": "dependency",
+      "version": "4.10.2",
+      "check": "npm-lock:fast-check",
+      "registry": "npm:fast-check",
+      "where": [
+        "package.json",
+        "src/features/firstmate/model/fanoutWaves.property.test.ts",
+        "src/features/autopilot/model/safeApproval.property.test.ts"
+      ],
+      "since": "2026-11-13"
+    },
+    {
+      "id": "proptest",
+      "name": "proptest",
+      "repo": "proptest-rs/proptest",
+      "licence": "MIT OR Apache-2.0",
+      "use": "dependency",
+      "version": "1.12.0",
+      "check": "cargo-lock:proptest",
+      "registry": "crate:proptest",
+      "where": [
+        "src-tauri/Cargo.toml",
+        "src-tauri/src/agent_sandbox_prop_tests.rs",
+        "src-tauri/src/commit_guard/prop_tests.rs",
+        "src-tauri/src/delivery/merge_prop_tests.rs"
+      ],
+      "since": "2026-11-13"
+    },
+    {
+      "id": "ast-grep",
+      "name": "ast-grep",
+      "repo": "ast-grep/ast-grep",
+      "licence": "MIT",
+      "use": "cli",
+      "version": "0.51.1",
+      "check": "npm-lock:@ast-grep/cli",
+      "registry": "npm:@ast-grep/cli",
+      "where": [
+        "package.json",
+        "sgconfig.yml",
+        "rules/",
+        "rule-tests/",
+        "scripts/ast-grep-guard.mjs",
+        ".github/workflows/ci.yml"
+      ],
+      "since": "2026-11-13"
+    },
+    {
+      "id": "stryker-js",
+      "name": "StrykerJS",
+      "repo": "stryker-mutator/stryker-js",
+      "licence": "Apache-2.0",
+      "use": "cli",
+      "version": "10.1.1",
+      "check": "file:scripts/stryker-in-diff.mjs:STRYKER_VERSION = \"([0-9.]+)\"",
+      "registry": "npm:@stryker-mutator/core",
+      "where": [
+        "stryker.config.mjs",
+        "stryker.vitest.config.mjs",
+        "scripts/stryker-in-diff.mjs"
+      ],
+      "since": "2026-11-13"
+    },
+    {
+      "id": "cargo-mutants",
+      "name": "cargo-mutants",
+      "repo": "sourcefrog/cargo-mutants",
+      "licence": "MIT",
+      "use": "ci",
+      "version": "27.1.0",
+      "check": "file:.github/workflows/ci.yml:cargo-mutants@([0-9.]+)",
+      "registry": "crate:cargo-mutants",
+      "where": [
+        ".github/workflows/ci.yml",
+        "scripts/mutants-in-diff.mjs"
+      ],
+      "since": "2026-11-13"
+    },
+    {
+      "id": "playwright",
+      "name": "Playwright",
+      "repo": "microsoft/playwright",
+      "licence": "Apache-2.0",
+      "use": "dependency",
+      "version": "1.63.0",
+      "check": "npm-lock:@playwright/test",
+      "registry": "npm:@playwright/test",
+      "where": [
+        "package.json",
+        "playwright.config.ts",
+        "tests/browser/"
+      ],
+      "since": "2026-10-08"
+    }
+  ]
+}

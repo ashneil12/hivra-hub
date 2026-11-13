@@ -113,6 +113,7 @@ async function pool(items, n, fn) {
   return out;
 }
 
+/** The Markdown digest. A repo with an `integrated` field is a tool Hivra runs and is listed first. */
 export function digest(results) {
   const lines = [];
   const active = results.filter((r) => r.ok && (r.commits.length || r.newTags.length));
@@ -121,8 +122,16 @@ export function digest(results) {
   lines.push(`${results.length} repos checked: ${active.length} with news, ${results.length - active.length - failed.length} quiet, ${failed.length} unreachable.`, "");
   const order = ["upstream", "harness", "vendored"];
   active.sort((a, b) => ((order.indexOf(a.group) + 1 || 9) - (order.indexOf(b.group) + 1 || 9)) || b.commits.length - a.commits.length);
-  for (const r of active) {
-    lines.push(`## ${r.name} (${r.repo}${r.path ? "/" + r.path : ""}) [${r.group}]`);
+  // Tools we really run (an `integrated` id from docs/hivra/proof-tools.json) come first, under their own heading.
+  const ours = active.filter((r) => r.integrated);
+  const others = active.filter((r) => !r.integrated);
+  const quietTools = results.filter((r) => r.ok && r.integrated && !ours.includes(r));
+  if (ours.length || quietTools.length) {
+    lines.push("## Tools we run", "");
+    if (quietTools.length) lines.push(`Quiet: ${quietTools.map((r) => r.name).join(", ")}.`, "");
+  }
+  const section = (r, h) => {
+    lines.push(`${h} ${r.name} (${r.repo}${r.path ? "/" + r.path : ""}) [${r.group}]`);
     lines.push(`Why we watch: ${r.why}`);
     if (r.newTags.length) lines.push(`New tags/releases: ${r.newTags.slice(0, 10).join(", ")}${r.newTags.length > 10 ? ` (+${r.newTags.length - 10})` : ""}`);
     if (r.commits.length) {
@@ -131,7 +140,10 @@ export function digest(results) {
       if (r.commits.length > 25) lines.push(`- ... ${r.commits.length - 25} more`);
     }
     lines.push("");
-  }
+  };
+  for (const r of ours) section(r, "###");
+  if (ours.length && others.length) lines.push("## Other repos we watch", "");
+  for (const r of others) section(r, "##");
   if (failed.length) {
     lines.push("## Unreachable");
     for (const r of failed) lines.push(`- ${r.repo}: ${r.error}`);
