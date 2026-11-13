@@ -712,6 +712,7 @@ pub fn run() {
             // WP-158: the protected-path floor. Off until the project turns it on.
             delivery::delivery_protect_paths_set,
             delivery::delivery_protected_paths_add,
+            delivery::delivery_testing_mode_set, // SC-3a: how hard a project's tasks are tested
             delivery::delivery_list,
             delivery::delivery_deliver,
             delivery::delivery_fix_ask,
