@@ -2795,16 +2795,23 @@ fn fixer_report_read(
     row: &delegations::Delegation,
     checkout: &Path,
     report: &str,
+    protected_extra: &[String],
 ) {
     let Some((data, project)) = debt_project(app, checkout) else {
         return;
     };
+    // PT-5 follow-up: a "flaky" decision is checked against the fixer's own runs (this task's records) and its own copy.
     if let Ok(Some(_)) = crate::test_debt::gate::fixer_report(
         &data,
         &project,
         &row.child_session,
         report,
         now_millis().max(0) as u64,
+        &crate::test_debt::gate::FixerRun {
+            delegation_id: &row.id,
+            checkout,
+            protected_extra,
+        },
     ) {
         let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
     }
@@ -2938,7 +2945,7 @@ pub async fn firstmate_run_gates(
                     // PT-5: a test fixer whose report only decides ("code is wrong", "flaky") changes nothing, so it is a task that
                     // settles as it always did; its decisions are still read.
                     if crate::test_debt::reads_fixer_report(moded.mode) {
-                        fixer_report_read(&app, &row, &checkout, &input.report);
+                        fixer_report_read(&app, &row, &checkout, &input.report, &protected_extra);
                     }
                     if row.gate_verdict.as_deref() == Some(GateVerdict::FAILED)
                         && super::status::sent_back_on(&row)
@@ -3062,7 +3069,7 @@ pub async fn firstmate_run_gates(
         if crate::test_debt::applies(moded.mode, moded.as_today)
             && record.verdict == Verdict::Passed
         {
-            fixer_report_read(&app, &row, &checkout, &input.report);
+            fixer_report_read(&app, &row, &checkout, &input.report, &protected_extra);
         }
         // SC-5: the task's ledger of rounds, and what happens after a failed one: the numbered findings go back, or a stronger
         // model rethinks the brief (this is where its call runs, with no lock held), or the person is asked. The rounds are

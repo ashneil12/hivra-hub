@@ -85,13 +85,7 @@ pub fn claim_in(
             if !doc.claim_filed(key) {
                 return nothing("That real bug was already put to the person.");
             }
-            let line = item
-                .decision
-                .as_ref()
-                .map(|d| d.line.clone())
-                .filter(|line| !line.is_empty())
-                .unwrap_or_else(|| "see the fixer's report".to_string());
-            let question = format!("{} fails because the code is wrong: {line}", item.name);
+            let question = item.bug_words();
             ClaimView {
                 claimed: true,
                 key: format!("test-debt-bug-{}", short_id(key)),

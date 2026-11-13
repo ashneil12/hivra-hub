@@ -222,27 +222,11 @@ pub fn stage_of(doc: &Doc, expired: &[Quarantined], now: u64) -> DebtStage {
         doc.quarantine.iter().filter(|q| now < q.ends_at).collect();
     let mut findings: Vec<Finding> = Vec::new();
     for item in &bugs {
-        let line = item
-            .decision
-            .as_ref()
-            .map(|d| d.line.clone())
-            .unwrap_or_default();
         findings.push(Finding {
             kind: "code-wrong".into(),
             test: item.name.clone(),
             file: item.file.clone(),
-            line: one_line(
-                &format!(
-                    "{} fails because the code is wrong: {}",
-                    item.name,
-                    if line.is_empty() {
-                        "see the fixer's report"
-                    } else {
-                        line.as_str()
-                    }
-                ),
-                LINE_MAX,
-            ),
+            line: one_line(&item.bug_words(), LINE_MAX),
         });
     }
     for q in &quarantined {

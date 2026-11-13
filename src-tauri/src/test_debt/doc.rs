@@ -75,6 +75,34 @@ pub struct Item {
     /// The check that failed it (a `run_checks` step id), so a later green run of that check can clear it.
     pub command: String,
     pub decision: Option<Decision>,
+    /// One plain line the app left for the next fixer about a decision it did not accept (`NO_GREEN_NOTE`). Empty when there is none.
+    pub note: String,
+}
+
+/// What a test the fixer called flaky is told when it is critical: it is never quarantined, and it waits for the person.
+pub const CRITICAL_NOTE: &str = "A critical test can't be quarantined; it waits for you.";
+/// What a test the fixer called flaky is told when its own runs show no green run of it after it was listed.
+pub const NO_GREEN_NOTE: &str = "No green run seen; still to sort.";
+
+impl Item {
+    /// The one sentence a real bug is put as, on the ship check and to the person. A critical test the fixer called flaky is said as
+    /// what it is.
+    pub fn bug_words(&self) -> String {
+        let line = self
+            .decision
+            .as_ref()
+            .map(|d| d.line.as_str())
+            .filter(|line| !line.is_empty())
+            .unwrap_or("see the fixer's report");
+        if line == CRITICAL_NOTE {
+            format!(
+                "{} is a critical test that failed. {CRITICAL_NOTE}",
+                self.name
+            )
+        } else {
+            format!("{} fails because the code is wrong: {line}", self.name)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +320,7 @@ impl Doc {
                     item.task_title = tidy_line(&item.task_title, LINE_MAX);
                     item.failure = tidy_text(&item.failure, FAILURE_MAX);
                     item.command = tidy_line(&item.command, 200);
+                    item.note = tidy_line(&item.note, LINE_MAX);
                     item.seen_count = item.seen_count.max(1);
                     item.last_seen_at = item.last_seen_at.max(item.first_seen_at);
                     item.decision = item.decision.map(|mut d| {
@@ -435,6 +464,7 @@ impl Doc {
             seen_count: 1,
             command: tidy_line(&candidate.command, 200),
             decision: None,
+            note: String::new(),
         });
         let score = self.score_entry(&id, &candidate.name);
         score.broke = score.broke.saturating_add(1);
@@ -496,6 +526,18 @@ impl Doc {
                     line: tidy_line(line, LINE_MAX),
                     at: now,
                 });
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// A decision the app did not accept leaves its reason on the test, which stays undecided for the next fixer. False when the test is
+    /// not on the list.
+    pub fn note_unproven(&mut self, id: &str, note: &str) -> bool {
+        match self.items.iter_mut().find(|item| item.id == id) {
+            Some(item) => {
+                item.note = tidy_line(note, LINE_MAX);
                 true
             }
             None => false,
