@@ -32,6 +32,7 @@ import { withCountLineChecked } from "../../../shared/text/countLine";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
+import { CatchUpCard } from "../../asks/ui/CatchUpCard";
 import { WorkerDefaultUndo } from "../../crew/ui/WorkerDefaultUndo";
 import { noteRuns } from "../../monos/model/agentNoteView";
 import {
@@ -2741,6 +2742,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
     }
     // Agent-to-agent notes (monos/model/agentNotes.ts): a small line that opens that agent's chat when there is one.
     if (block.agentNote) return <AgentNoteRow note={block.agentNote} embedded={embedded} />;
+    // Dropwave: a "Catch me up" card in the one chat (asks/model/catchUp.ts).
+    if (block.catchUp) return <CatchUpCard doc={block.catchUp} embedded={embedded} />;
     if (block.notice === "still-running") {
       return (
         <div className={`${embedded ? "" : "px-4"} py-2`}>

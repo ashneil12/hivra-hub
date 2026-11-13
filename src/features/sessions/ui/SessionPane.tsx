@@ -90,7 +90,7 @@ import {
   monoSessionProject,
 } from "../../monos/model/mono";
 import { hubData } from "../../hub/model/hubData";
-import { ONE_CHAT_LOOK } from "../../hub/model/hubBundle";
+import { IS_HUB_BUNDLE, ONE_CHAT_LOOK } from "../../hub/model/hubBundle";
 import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { reportTeamOf, useDelegationPane } from "../../monos/hooks/useDelegationPane";
 import { readTeamReport } from "../../monos/model/teamReport";
@@ -136,6 +136,7 @@ import {
 import { COMPACTING_NOTE, cantRedirectTurn } from "../model/cantDo";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
 import { MONO_PREFILL_EVENT, type MonoPrefill } from "../../monos/model/monoPrefill";
+import { isOneChat, requestCatchUp } from "../../asks/model/oneChat";
 import { preferredModelId, resolveModel } from "../model/models";
 import { isAstraModel } from "../model/astraWelcome";
 import { isOpus55Model } from "../model/opusWelcome";
@@ -498,6 +499,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   useSyncExternalStore(subscribeMonos, monosSnapshot);
   const mono = monoForSession(session.id);
   const agent = mono ? monoLook(mono) : undefined;
+  // One chat (asks/model/oneChat.ts): the Chief of Staff's one chat for everything.
+  const oneChat = isOneChat(session.id);
   // A worker's chat runs on its own; a chat Ash talks to (a Mono, or a coding-team chat) with work out reads what is
   // out ("2 working: API · 1 stuck: Tests"), with a card for each stuck worker (H4).
   useCodingTeamVersion();
@@ -578,6 +581,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
       void orchestrator.hydrate(session.id).catch(console.error);
   }, [remote, session.id, session.inboxAsk, session.worktreeRemoved]);
   const [quoteRequest, setQuoteRequest] = useState<QuoteRequest>();
+  // Side questions are kept with the chat, on the message they were asked under (model/btw.ts).
+  const savedSideQuestions = useMemo(
+    () => session.blocks.reduce((count, block) => count + (block.btwThreads?.length ?? 0), 0),
+    [session.blocks],
+  );
   const btw = useBtwConversation({
     available:
       !remote &&
@@ -1579,16 +1587,36 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       crewLines={delegationPane.crewLines}
                     />
                   ) : null}
-                  {btw.canStartDraft && !btw.open ? (
-                    <div className="flex justify-end px-1.5 pb-1">
-                      <button
-                        type="button"
-                        data-side-question
-                        onClick={() => btw.openWith("")}
-                        className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/60 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                      >
-                        Side question
-                      </button>
+                  {(btw.canStartDraft && !btw.open) || oneChat ? (
+                    <div className="flex justify-end gap-1 px-1.5 pb-1">
+                      {/* One chat (Ash, 13 Nov): "Catch me up" is always there, beside Side question. */}
+                      {oneChat ? (
+                        <button
+                          type="button"
+                          data-catch-me-up
+                          title="What finished, what was decided for you and what needs you, since the last catch-up"
+                          onClick={() => requestCatchUp(session.id)}
+                          className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/60 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                        >
+                          Catch me up
+                        </button>
+                      ) : null}
+                      {btw.canStartDraft && !btw.open ? (
+                        <button
+                          type="button"
+                          data-side-question
+                          onClick={() => btw.openWith("")}
+                          className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/60 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                        >
+                          Side question
+                          {/* Saved ones come back as tabs when this opens; say so, or nobody knows they are kept. */}
+                          {IS_HUB_BUNDLE && savedSideQuestions ? (
+                            <span data-side-question-saved className="ml-1.5 tabular-nums text-content/60">
+                              {savedSideQuestions} saved
+                            </span>
+                          ) : null}
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
                   {fanOutCompare}
