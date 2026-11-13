@@ -8,6 +8,7 @@ import { CircleWord } from "../../hub/ui/StatusMark";
 import { openFromHome } from "../../home/model/opener";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import { NeedDetail } from "../../needs/ui/NeedDetail";
+import { Reveal } from "../../needs/ui/Reveal";
 import { CATCH_UP_FIRST_LOOKBACK_MS, catchUpSummary, type CatchUp } from "../model/catchUp";
 
 const QUIET = "shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-accent";
@@ -146,7 +147,11 @@ export function CatchUpCard({ doc, embedded = false }: { doc: CatchUp; embedded?
                         </button>
                       ) : null}
                     </div>
-                    {shown ? <NeedDetail item={now} /> : null}
+                    {shown ? (
+                      <Reveal>
+                        <NeedDetail item={now} compact />
+                      </Reveal>
+                    ) : null}
                   </li>
                 );
               })}

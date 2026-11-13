@@ -1,6 +1,7 @@
 import { ChiefChips } from "../../features/asks/ui/ChiefGlance";
 import { useChiefLists } from "../../features/asks/model/chiefLists";
 import { pickChief } from "../../features/home/model/chief";
+import { oneChatId } from "../../features/asks/model/oneChat";
 import { listMonos } from "../../features/monos/model/mono";
 import {
   CheckCircle,
@@ -694,8 +695,11 @@ export function TabVisitNav({
 /** The chips show only on the Chief of Staff's chat. */
 function ChiefChipsFor({ monoId }: { monoId?: string }) {
   const place = useChiefLists();
-  if (place !== "top" || !monoId || pickChief(listMonos())?.id !== monoId) return null;
-  return <ChiefChips />;
+  if (place !== "top" || !monoId) return null;
+  const chief = pickChief(listMonos());
+  if (chief?.id !== monoId) return null;
+  // A quoted row goes into the one chat (or, without it, the Chief of Staff's main chat).
+  return <ChiefChips quoteTo={oneChatId() ?? chief.sessionId} />;
 }
 
 /** A Mono's team, overview toggle and settings, beside its conversation. */

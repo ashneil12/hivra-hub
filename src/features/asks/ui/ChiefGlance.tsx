@@ -10,7 +10,9 @@ import { openFromHome } from "../../home/model/opener";
 import { findMono } from "../../monos/model/mono";
 import { handBack, hasJumpedIn, useDelegationRows, useDelegationsVersion } from "../../monos/model/delegationStore";
 import { InboxNeeds } from "../../needs/ui/InboxNeeds";
-import { NeedDetail, useShownNeed } from "../../needs/ui/NeedDetail";
+import { AnsweredLine, NeedDetail } from "../../needs/ui/NeedDetail";
+import { useLastAnswered } from "../../needs/model/answeredNeeds";
+import { quoteAsked, quoteInChat, quoteJob, quoteNeed } from "../model/quoteInChat";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import { readAskLedger, subscribeAskLedger, type LedgerAsk } from "../../hub/model/askLedger";
 import { JOB_WORD, jobGroups, jobStatus, openJobCount } from "../model/chiefJobs";
@@ -31,6 +33,7 @@ const ASKED_WORD: Record<LedgerAsk["status"], string> = { open: "Open", handled:
 
 const HINT = "px-2 py-2 text-[12px] leading-4 text-content/60";
 const QUIET = "shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content";
+const REVEAL = "opacity-0 focus-visible:opacity-100 group-hover:opacity-100";
 
 export function useChiefCounts(): { needs: number; asked: number; working: number } {
   const needs = useNeedsYou().length;
@@ -39,22 +42,32 @@ export function useChiefCounts(): { needs: number; asked: number; working: numbe
   return { needs, asked, working };
 }
 
-/** The one Needs you list, answered where it is: a row opens its card under the list. */
-export function ChiefNeeds() {
+/**
+ * The one Needs you list, answered where it is: a row slides its card open under itself (every answer, his own words),
+ * and the answer's line stays a moment after the row leaves, so the tap is seen to land.
+ */
+export function ChiefNeeds({ onQuote }: { onQuote?: (text: string) => void } = {}) {
   const [picked, setPicked] = useState<string | null>(null);
-  const shown = useShownNeed(picked, false);
   const count = useNeedsYou().length;
+  const answered = useLastAnswered();
   return (
     <div data-chief-needs className="-mx-2 -my-2 flex flex-col">
-      {count === 0 ? <p className={`${HINT} px-4 pt-3`}>Nothing needs you right now.</p> : null}
-      <InboxNeeds pick={{ picked, onPick: (item) => setPicked(item.key === picked ? null : item.key) }} />
-      {shown ? <NeedDetail item={shown} /> : count ? <p className={`${HINT} px-4`}>Tap a row to see what was asked and answer it here.</p> : null}
+      {answered ? <AnsweredLine entry={answered} className="px-4 pb-1 pt-3" /> : null}
+      {count === 0 && !answered ? <p className={`${HINT} px-4 pt-3`}>Nothing needs you right now.</p> : null}
+      <InboxNeeds
+        pick={{
+          picked,
+          onPick: (item) => setPicked(item.key === picked ? null : item.key),
+          renderOpen: (item) => <NeedDetail item={item} compact />,
+        }}
+        onQuote={onQuote ? (item, project) => onQuote(quoteNeed(item, project)) : undefined}
+      />
     </div>
   );
 }
 
 /** Everything the owner asked for, newest first: still open, done (with what closed it) or set aside. */
-export function ChiefAsked() {
+export function ChiefAsked({ onQuote }: { onQuote?: (text: string) => void } = {}) {
   const asked = useAsked();
   if (asked.length === 0) return <p className={HINT}>What you ask for shows here, so nothing gets lost in a long chat.</p>;
   return (
@@ -62,7 +75,7 @@ export function ChiefAsked() {
       {asked.map((item, index) => {
         const note = item.status === "handled" ? item.evidence : item.gap;
         return (
-          <li key={item.id} data-asked={item.status} className={`flex items-start gap-2 px-2 py-2${index ? " border-t border-stroke" : ""}`}>
+          <li key={item.id} data-asked={item.status} className={`group flex items-start gap-2 px-2 py-2${index ? " border-t border-stroke" : ""}`}>
             <span className="mt-0.5">
               <CircleWord circle={item.status === "open" && item.gap ? "red" : "grey"} word={ASKED_WORD[item.status]} ringOnly />
             </span>
@@ -74,6 +87,17 @@ export function ChiefAsked() {
                 {note ? ` · ${note}` : ""}
               </span>
             </span>
+            {onQuote ? (
+              <button
+                type="button"
+                data-quote-asked={item.id}
+                aria-label={`Quote in the chat: ${item.title}`}
+                className={`${QUIET} ${REVEAL}`}
+                onClick={() => onQuote(quoteAsked({ title: item.title, status: ASKED_WORD[item.status], note: note ?? undefined, said: item.said }))}
+              >
+                Quote
+              </button>
+            ) : null}
           </li>
         );
       })}
@@ -82,7 +106,7 @@ export function ChiefAsked() {
 }
 
 /** Every job in every project, grouped by project, with the way in to take one over. */
-export function ChiefWorking() {
+export function ChiefWorking({ onQuote }: { onQuote?: (text: string) => void } = {}) {
   useHubDataVersion();
   useDelegationsVersion();
   const rows = useDelegationRows();
@@ -120,6 +144,26 @@ export function ChiefWorking() {
                         {mine ? "You're driving this one" : (row.statusNotice ?? word)}
                       </span>
                     </span>
+                    {onQuote ? (
+                      <button
+                        type="button"
+                        data-quote-job={row.id}
+                        aria-label={`Quote in the chat: ${row.title ?? row.goal ?? "Untitled work"}`}
+                        className={`${QUIET} ${REVEAL}`}
+                        onClick={() =>
+                          onQuote(
+                            quoteJob({
+                              title: row.title ?? row.goal ?? "Untitled work",
+                              project: name,
+                              lead: owner,
+                              state: mine ? "You're driving this one" : (row.statusNotice ?? word),
+                            }),
+                          )
+                        }
+                      >
+                        Quote
+                      </button>
+                    ) : null}
                     {mine ? (
                       <button type="button" data-hand-back className={QUIET} aria-label={`Hand ${row.title ?? "this job"} back${owner ? ` to ${owner}` : ""}`} onClick={() => handBack(row.childSession)}>
                         Hand back{owner ? ` to ${owner}` : ""}
@@ -128,7 +172,7 @@ export function ChiefWorking() {
                       <button
                         type="button"
                         data-take-over
-                        className={`${QUIET} opacity-0 focus-visible:opacity-100 group-hover:opacity-100`}
+                        className={`${QUIET} ${REVEAL}`}
                         aria-label={`Open ${row.title ?? "this job"}`}
                         onClick={() => {
                           openFromHome({ kind: "chat", id: row.childSession, projectId: row.project ?? "" });
@@ -149,10 +193,16 @@ export function ChiefWorking() {
 }
 
 /** The three lists as chips beside the chat's own buttons, each opening over the chat. */
-export function ChiefChips() {
+export function ChiefChips({ quoteTo }: { quoteTo?: string } = {}) {
   const counts = useChiefCounts();
   const [open, setOpen] = useState<"needs" | "asked" | "working" | null>(null);
   const anchor = useRef<HTMLDivElement>(null);
+  // A quoted row lands in the chat's box, not sent, and the list closes so he can say what he wants about it.
+  const quote = quoteTo
+    ? (text: string) => {
+        if (quoteInChat(quoteTo, text)) setOpen(null);
+      }
+    : undefined;
   const chips = [
     { id: "needs" as const, label: "Needs you", count: counts.needs },
     { id: "asked" as const, label: "You asked", count: counts.asked },
@@ -179,7 +229,9 @@ export function ChiefChips() {
       ))}
       {open ? (
         <Popover anchor={anchor} side="bottom" align="end" width={440} maxHeight={620} onDismiss={() => setOpen(null)} role="dialog" aria-label={chips.find((chip) => chip.id === open)?.label} ignore="[data-chief-chips]" className="solid-panel-glass font-sans">
-          <div className="max-h-[600px] overflow-y-auto px-2 py-2">{open === "needs" ? <ChiefNeeds /> : open === "asked" ? <ChiefAsked /> : <ChiefWorking />}</div>
+          <div className="max-h-[600px] overflow-y-auto px-2 py-2">
+            {open === "needs" ? <ChiefNeeds onQuote={quote} /> : open === "asked" ? <ChiefAsked onQuote={quote} /> : <ChiefWorking onQuote={quote} />}
+          </div>
         </Popover>
       ) : null}
     </div>

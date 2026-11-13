@@ -106,7 +106,8 @@ never reads it, so "example data" is not a state any real screen is in.
 | Control | Calls or reads | State |
 |---|---|---|
 | All, Asks and each source's tab | `inboxShow.ts` (`useInboxShow`, `inboxParts`); kept in `localStorage`; a line from Home that leads to an ask switches a source's tab back to All (`opener.ts`) | Works |
-| Needs you section at the top | `InboxNeeds` → `useNeedsYou()`; button runs the row's action; a row's words open its card beside the list | Works; G10 |
+| Needs you section at the top | `InboxNeeds` → `useNeedsYou()`; a row opens its card beside the list (`NeedDetail`): every answer (`item.choices`, `item.suggested`) and his own words go through `item.answer` (a decision: `tauriFirstMate.answer` as `user` for the version on screen; a chat's row: `answerRow`; a chat's question: `answerInWords`) | Works; G10 |
+| Quote on a Needs you, You asked or Working row (Chief of Staff's chips) | `asks/model/quoteInChat.ts` → `typeIntoChat` (`monos/model/monoPrefill.ts`): the row as a quote in the chat's box, not sent | Works |
 | A row's card: the ask, who and when, its answers, Open chat, a reply box | `NeedDetail.tsx`; answers are the row's own `actions`; Open is `openNeed` (`needContext.ts`), or for a decision the chat `needChatId` names (the chat that asked it, `askedBy`, when it is one of that first mate's own); the reply is `sendToChat(needChatId(…))` (`waitingChats.ts`) | Works. Open chat lands on the message that asked: `requestTranscriptAsk` finds it by the ask's words, else by the turn that was running when it was asked, and hands it to the jump search uses (`transcriptJump.ts`). When neither can tell, the chat opens on its latest message. |
 | First-mate decisions, results, failures; digest line | `FirstMateInboxPanel` (`tauriFirstMate.decisions`, `.answer`, `delivery_list`) | Works |
 | Plugin installs waiting for a yes | `PluginApprovals` | Works |

@@ -122,9 +122,17 @@ export function FirstMateAnswerParts({
       {item.options.length ? (
         <div className="mt-2 flex flex-wrap gap-1.5">
           {item.options.map((option) => (
-            <button key={option} type="button" onClick={() => onAnswer?.(item, option)} className="text-[12px] text-content">
+            // The same answer rows the Needs you card uses (Ash, 13 Nov), small: bordered, the pick lit and marked.
+            <button
+              key={option}
+              type="button"
+              onClick={() => onAnswer?.(item, option)}
+              className={`inline-flex min-h-7 items-center gap-1.5 rounded-md border px-2 py-1 text-left text-[12px] text-content transition-[background-color,transform] duration-[120ms] ease-[var(--motion-ease-out)] active:scale-[0.98] motion-reduce:transition-none ${
+                item.recommended === option ? "border-content/20 bg-content/5 hover:bg-content/8" : "border-content/10 hover:border-content/20 hover:bg-content/5"
+              }`}
+            >
               {option}
-              {item.recommended === option ? <span data-recommended> Recommended</span> : null}
+              {item.recommended === option ? <span data-recommended className="text-[11px] text-content/60"> Recommended</span> : null}
             </button>
           ))}
         </div>
