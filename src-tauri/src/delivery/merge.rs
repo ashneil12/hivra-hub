@@ -1195,3 +1195,8 @@ pub fn by_person(
         MergeOutcome::NeedsYou { question, .. } => Err(question),
     }
 }
+
+// SC-6: property tests on the merge decision and on pinning the judged head (spec 4i).
+#[cfg(test)]
+#[path = "merge_prop_tests.rs"]
+mod prop_tests;
