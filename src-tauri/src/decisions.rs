@@ -2306,6 +2306,10 @@ pub fn decisions_answer(
     )?;
     if outcome.applied {
         announce(&app, outcome.decision.as_ref(), &outcome.released);
+        // PT-1: a "Not now" to a proof-tool proposal is remembered for that project, so it is never proposed again.
+        if let Some(decision) = outcome.decision.as_ref() {
+            crate::proof_tools::offers::on_answered(&app, decision);
+        }
     }
     Ok(outcome)
 }

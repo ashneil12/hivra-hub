@@ -719,6 +719,9 @@ pub(crate) fn reply_seconds(action: &str, input: &Value) -> u64 {
         "ship_check.run" => 3_660,
         // SC-7: run_checks runs the project's own check, which may take as long as a finish does.
         "run_checks.run" => 3_660,
+        // PT-1: listing the proof tools asks the machine which programs it has (each probe may take up to 20 seconds), so it
+        // waits longer than a plain call. A slow probe is a "no", never a hang.
+        "proof_tools.list" => 120,
         "secrets.run" => {
             let timeout = input
                 .get("timeoutSeconds")

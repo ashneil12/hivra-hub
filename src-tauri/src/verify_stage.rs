@@ -527,6 +527,30 @@ pub(crate) fn run_brief_line(
     ))
 }
 
+/// PT-1: run one proof tool's prepared command (`proof_tools::command::Prepared`: a fixed command line that names each file,
+/// range and URL as a quoted environment word, and the variables that hold them) in `checkout` through the same runner and
+/// the same allow-listed environment a brief's check line gets. `id` names the run (`verify-proof-<id>`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_proof_line(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    id: &str,
+    name: &str,
+    command: &str,
+    env: Vec<(String, String)>,
+    timeout: u64,
+) -> crate::firstmate::brief_checks::RawRun {
+    let action = action_for(
+        "proof tool",
+        &format!("verify-proof-{id}"),
+        name,
+        command,
+        timeout,
+    );
+    raw_run(run_command_with(app, main, checkout, &action, env, true))
+}
+
 /// How a finished run of a command an agent wrote reads: how it ended and what it printed.
 fn raw_run(
     ran: Result<(crate::project_actions::RunRecord, f64), String>,
@@ -563,6 +587,22 @@ pub(crate) fn run_copy_line(
     command: &str,
     timeout: u64,
 ) -> crate::firstmate::brief_checks::RawRun {
+    run_copy_line_with(app, main, copy, id, name, command, timeout, Vec::new())
+}
+
+/// PT-1: `run_copy_line`, with the caller's own variables set after the scratch ones (a proof tool's arguments travel here, so
+/// no file name is ever part of the command text).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_copy_line_with(
+    app: &AppHandle,
+    main: &Path,
+    copy: &crate::firstmate::checker_copy::ReadOnlyCopy,
+    id: &str,
+    name: &str,
+    command: &str,
+    timeout: u64,
+    extra_env: Vec<(String, String)>,
+) -> crate::firstmate::brief_checks::RawRun {
     let action = action_for(
         "checker",
         &format!("verify-checker-{id}"),
@@ -573,13 +613,14 @@ pub(crate) fn run_copy_line(
     // The copy is read-only. A build or a tool cache writes into the scratch folder instead, so a check that builds can run.
     let scratch = copy.scratch();
     let under = |name: &str| scratch.join(name).to_string_lossy().into_owned();
-    let env = vec![
+    let mut env = vec![
         ("TMPDIR".to_string(), scratch.to_string_lossy().into_owned()),
         ("CARGO_TARGET_DIR".to_string(), under("cargo-target")),
         ("CARGO_BUILD_BUILD_DIR".to_string(), under("cargo-build")),
         ("npm_config_cache".to_string(), under("npm-cache")),
         ("XDG_CACHE_HOME".to_string(), under("cache")),
     ];
+    env.extend(extra_env);
     raw_run(run_command_wrapped(
         app,
         main,
