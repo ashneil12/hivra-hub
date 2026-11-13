@@ -8,6 +8,7 @@ import type { FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpoin
 import { backendFrom, cancelHeld, heldWaiting, reviewBeforeCrew } from "../../fresh-eyes/model/gate";
 import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
 import { briefStampOf, keepBriefOnRow, testingModeOf } from "../../firstmate/host/briefChecksHost"; // SC-4
+import { specContextOf, specLandedOf } from "../../firstmate/host/specHost"; // PT-6
 import type { Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import type { QuestionRouter, TaskWaits } from "./delegationQuestions";
@@ -218,6 +219,9 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     testingMode: testingModeOf,
     briefStamp: briefStampOf,
     keepBrief: keepBriefOnRow,
+    // PT-6: the spec of record a brief changes: the project's current sections, and the landed tasks spec_start reads.
+    specContext: specContextOf,
+    specLanded: specLandedOf,
     ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
     ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
     ...(deps.hubProjectRoots ? { hubProjectRoots: deps.hubProjectRoots } : {}),

@@ -5389,3 +5389,262 @@ describe("tasks.delegate and tasks.fanout take the ledger's ask ids in `asks`", 
     expect(g.started).toEqual([]);
   });
 });
+
+describe("tasks.delegate carries the project's spec of record (PT-6)", () => {
+  const SHA = "0123456789abcdef0123456789abcdef01234567";
+  const promptOf = (call: unknown[]) => (call[0] as { prompt: string }).prompt;
+  const part = { file: "docs/spec/auth.md", section: "Login flow", text: "The person signs in with an email and a code." };
+  const context = (over: Record<string, unknown> = {}) => ({
+    home: { folder: "docs/spec", singleFile: false, exists: true, index: true },
+    refusal: null,
+    current: [{ file: part.file, section: part.section, fileFound: true, found: true, text: "The person signs in with a password.", cut: false }],
+    related: [],
+    ...over,
+  });
+
+  it("a worker's brief shows the current text, the new text and the rule, and the row keeps the parts", async () => {
+    const f = fixture([]);
+    f.api.briefStamp = vi.fn(async () => SHA);
+    f.api.keepBrief = vi.fn(async () => undefined);
+    f.api.saveGates = vi.fn(async () => undefined);
+    f.api.specContext = vi.fn(async () => context());
+    const out = (await handleAgentApp(f.source, "sp1", "tasks.delegate", { brief: "Sign in with a code.", spec: [part], scope: ["src/auth/login.ts"] }, f.host)) as {
+      taskId: string;
+    };
+    // It reads the project's own folder, with the parts and the brief's in-scope paths.
+    expect(f.api.specContext).toHaveBeenCalledWith(PROJECT, { parts: [part], scope: ["src/auth/login.ts"] });
+    const prompt = promptOf(f.started[0]);
+    expect(prompt).toContain("## Spec of record\nThis project keeps its spec of record in docs/spec/. Update the spec section first, in its own commit, then change the code to match it.");
+    expect(prompt).toContain(
+      "### docs/spec/auth.md, Login flow\nNow:\n    The person signs in with a password.\nMust read:\n    The person signs in with an email and a code.",
+    );
+    // After the spec's build instructions, before the status protocol.
+    expect(prompt.indexOf("## Spec of record")).toBeGreaterThan(prompt.indexOf("## Spec\n"));
+    expect(prompt.indexOf("## Spec of record")).toBeLessThan(prompt.indexOf("## Status protocol"));
+    // The row keeps the parts (the done check reads them back), and the task is a code task whose round always runs.
+    expect(f.api.keepBrief).toHaveBeenCalledWith(out.taskId, { stamp: SHA, checks: [], leave: [], spec: [part] });
+    expect(f.api.saveGates).toHaveBeenCalledWith(out.taskId, expect.objectContaining({ code: true }), PROJECT);
+  });
+
+  it("a brief with no spec part and no scope asks for nothing and reads as it always did", async () => {
+    const f = fixture([]);
+    f.api.keepBrief = vi.fn(async () => undefined);
+    f.api.specContext = vi.fn(async () => context());
+    await handleAgentApp(f.source, "sp2", "tasks.delegate", { brief: "Look at CI." }, f.host);
+    expect(f.api.specContext).not.toHaveBeenCalled();
+    expect(f.api.keepBrief).not.toHaveBeenCalled();
+    expect(promptOf(f.started[0])).not.toContain("Spec of record");
+  });
+
+  it("refuses a bad part, or one that names another place than the project keeps its spec, before anything starts", async () => {
+    const f = fixture([]);
+    f.api.keepBrief = vi.fn(async () => undefined);
+    f.api.specContext = vi.fn(async () => context({ refusal: 'This project keeps its spec in docs/specs/, so "docs/spec/auth.md" belongs there: use docs/specs/<area>.md.' }));
+    await expect(handleAgentApp(f.source, "sp3", "tasks.delegate", { brief: "x", spec: [part] }, f.host)).rejects.toThrow(
+      'This project keeps its spec in docs/specs/, so "docs/spec/auth.md" belongs there',
+    );
+    for (const [id, spec, says] of [
+      ["sp4", [{ ...part, file: "../x.md" }], /Spec part 1: .*leaves the project/],
+      ["sp5", [{ ...part, file: "src/app.md" }], /isn't a spec file/],
+      ["sp6", [part, { ...part, section: "login FLOW" }], /named twice/],
+      ["sp7", Array.from({ length: 4 }, (_, n) => ({ ...part, section: `S${n}` })), /at most 3 spec parts/],
+      ["sp8", [{ ...part, passes: true }], /isn't one/],
+      ["sp9", "docs/spec/auth.md", /must be a list/],
+    ] as const) {
+      await expect(handleAgentApp(f.source, id, "tasks.delegate", { brief: "x", spec }, f.host), id).rejects.toThrow(says);
+    }
+    expect(f.started).toEqual([]);
+    expect(f.api.keepBrief).not.toHaveBeenCalled();
+  });
+
+  it("refuses spec parts on a brief to a Lead, whose workers carry their own", async () => {
+    const f = fixture([]);
+    f.api.specContext = vi.fn(async () => context());
+    await expect(handleAgentApp(f.source, "sp10", "tasks.delegate", { brief: "x", spec: [part], lead: "vg-game" }, f.host)).rejects.toThrow(
+      /A brief to a Lead can't carry spec parts/,
+    );
+    expect(f.started).toEqual([]);
+  });
+
+  it("a context it could not read, or that took too long, never stops the brief: the worker is told to read the file first", async () => {
+    for (const [id, ask] of [
+      ["sp11", async () => {
+        throw new Error("no such folder");
+      }],
+      ["sp12", async () => ({ nonsense: true })],
+      ["sp13", async () => null],
+    ] as const) {
+      const f = fixture([]);
+      f.api.keepBrief = vi.fn(async () => undefined);
+      f.api.specContext = vi.fn(ask);
+      await handleAgentApp(f.source, id, "tasks.delegate", { brief: "Sign in with a code.", spec: [part] }, f.host);
+      expect(f.started, id).toHaveLength(1);
+      const prompt = promptOf(f.started[0]);
+      expect(prompt, id).toContain("Now:\n    (Not shown here: read the file first.)");
+      expect(prompt, id).toContain("Update the spec section first, in its own commit");
+      expect(f.api.keepBrief, id).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ spec: [part] }));
+    }
+    vi.useFakeTimers();
+    try {
+      const f = fixture([]);
+      f.api.specContext = vi.fn(() => new Promise<unknown>(() => {}));
+      const started = handleAgentApp(f.source, "sp14", "tasks.delegate", { brief: "Sign in with a code.", spec: [part] }, f.host);
+      await vi.advanceTimersByTimeAsync(8_001);
+      await started;
+      expect(f.started).toHaveLength(1);
+      expect(promptOf(f.started[0])).toContain("(Not shown here: read the file first.)");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a brief with no spec part whose scope the spec covers gets those files as context only, and keeps nothing", async () => {
+    const f = fixture([]);
+    f.api.keepBrief = vi.fn(async () => undefined);
+    f.api.specContext = vi.fn(async () =>
+      context({ current: [], related: [{ file: "docs/spec/auth.md", text: "# Auth\n## Login flow\nThe person signs in.", cut: false }] }),
+    );
+    await handleAgentApp(f.source, "sp15", "tasks.delegate", { brief: "Fix the login typo.", scope: ["src/auth/login.ts", "the login flow"] }, f.host);
+    // Only the in-scope paths are sent (the prose entry is an area, not a path).
+    expect(f.api.specContext).toHaveBeenCalledWith(PROJECT, { parts: [], scope: ["src/auth/login.ts"] });
+    const prompt = promptOf(f.started[0]);
+    expect(prompt).toContain("## Spec of record\nThe spec files below cover code this brief names. They are context only");
+    expect(prompt).toContain("### docs/spec/auth.md\n    # Auth\n    ## Login flow\n    The person signs in.");
+    expect(prompt).not.toContain("Update the spec section first");
+    expect(f.api.keepBrief).not.toHaveBeenCalled();
+  });
+
+  it("a spec part makes it a code brief: a project that checks every task fully asks for a check line, and one is enough", async () => {
+    const f = fixture([]);
+    f.api.testingMode = vi.fn(async () => "full" as const);
+    f.api.specContext = vi.fn(async () => context());
+    await expect(handleAgentApp(f.source, "sp16", "tasks.delegate", { brief: "Sign in with a code.", spec: [part] }, f.host)).rejects.toThrow(
+      FULL_MODE_NEEDS_CHECKS,
+    );
+    expect(f.started).toEqual([]);
+    await handleAgentApp(
+      f.source,
+      "sp17",
+      "tasks.delegate",
+      { brief: "Sign in with a code.", spec: [part], checks: [{ what: "the login works", command: "npm test -- login" }] },
+      f.host,
+    );
+    expect(f.started).toHaveLength(1);
+  });
+
+  it("a retry of the same call keeps the parts again, and a keep that never lands tells the first mate", async () => {
+    const f = fixture([]);
+    f.api.keepBrief = vi.fn(async () => undefined);
+    f.api.specContext = vi.fn(async () => context());
+    await handleAgentApp(f.source, "sp18", "tasks.delegate", { brief: "Sign in with a code.", spec: [part] }, f.host);
+    const again = (await handleAgentApp(f.source, "sp18", "tasks.delegate", { brief: "Sign in with a code.", spec: [part] }, f.host)) as { alreadyStarted?: boolean };
+    expect(again.alreadyStarted).toBe(true);
+    expect(f.started).toHaveLength(1);
+    expect(f.api.keepBrief).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(f.api.keepBrief!).mock.calls[1][1]).toMatchObject({ spec: [part] });
+    // A store that is never free: the task starts, the spec is not saved, and the first mate hears that it will not be enforced.
+    const g = fixture([]);
+    g.api.keepBrief = vi.fn(async () => {
+      throw new Error("the store is busy");
+    });
+    g.api.specContext = vi.fn(async () => context());
+    const out = (await handleAgentApp(g.source, "sp19", "tasks.delegate", { brief: "Sign in with a code.", spec: [part] }, g.host)) as { briefNote?: string };
+    expect(g.started).toHaveLength(1);
+    expect(out.briefNote).toMatch(/spec parts could not be saved/);
+    expect(out.briefNote).not.toMatch(/[–—]/);
+  });
+});
+
+describe("tasks.specStart: one worker drafts the project's spec of record, only when asked (PT-6)", () => {
+  const landed = [
+    { title: "Add login", goal: "login works", brief: "## Intent\nAsh asked for a login.\n\n## Spec\nBuild it.\n\nDone when: x", at: 20 },
+    { title: "Fix logout", goal: "logout works", brief: "## Intent\nAsh asked to fix the logout.\n", at: 10 },
+  ];
+  const home = (over: Record<string, unknown> = {}) => ({
+    home: { folder: "docs/spec", singleFile: false, exists: false, index: false, ...over },
+    refusal: null,
+    current: [],
+    related: [],
+  });
+  const promptOf = (call: unknown[]) => (call[0] as { prompt: string }).prompt;
+
+  it("starts nothing until it is called, then exactly one worker, whose brief lists the landed tasks", async () => {
+    const f = fixture([]);
+    f.api.specContext = vi.fn(async () => home());
+    f.api.specLanded = vi.fn(async () => landed);
+    // Building the host, the project and its rows start and read nothing.
+    expect(f.started).toEqual([]);
+    expect(f.api.specLanded).not.toHaveBeenCalled();
+    expect(f.api.specContext).not.toHaveBeenCalled();
+    const out = (await handleRaw(f.source, "ss1", "tasks.specStart", {}, f.host)) as { taskId: string; status: string };
+    expect(out.taskId).toBe("t-1");
+    expect(f.started).toHaveLength(1);
+    // Landed tasks are read by the hub project id (the rows' project), the spec's home from the project's folder.
+    expect(f.api.specLanded).toHaveBeenCalledWith("vg-game");
+    expect(f.api.specContext).toHaveBeenCalledWith(PROJECT, { parts: [], scope: [] });
+    const prompt = promptOf(f.started[0]);
+    expect(prompt).toContain("Write this project's spec of record from what the project already has.");
+    expect(prompt).toContain("Landed tasks (newest first):\n- Add login: Ash asked for a login.\n- Fix logout: Ash asked to fix the logout.");
+    expect(prompt).toContain("docs/spec/README.md");
+    // The brief carries no spec part (the draft is what it writes) and the usual template around it.
+    expect(prompt).not.toContain("## Spec of record");
+    expect(prompt).toContain("## Isolation check");
+    expect(prompt).toContain("Done when: docs/spec/README.md exists and lists every file in docs/spec/");
+    // The same call again, under the same request, never starts a second worker.
+    const again = (await handleRaw(f.source, "ss1", "tasks.specStart", {}, f.host)) as { alreadyStarted?: boolean };
+    expect(again.alreadyStarted).toBe(true);
+    expect(f.started).toHaveLength(1);
+  });
+
+  it("follows the project's own convention, and a project that already has its spec index is refused", async () => {
+    const plural = fixture([]);
+    plural.api.specContext = vi.fn(async () => home({ folder: "docs/specs", exists: true }));
+    plural.api.specLanded = vi.fn(async () => []);
+    await handleRaw(plural.source, "ss2", "tasks.specStart", {}, plural.host);
+    expect(promptOf(plural.started[0])).toContain("This project already keeps its specs in docs/specs/");
+    expect(promptOf(plural.started[0])).toContain("No task has landed in this project yet");
+    const done = fixture([]);
+    done.api.specContext = vi.fn(async () => home({ exists: true, index: true }));
+    done.api.specLanded = vi.fn(async () => landed);
+    await expect(handleRaw(done.source, "ss3", "tasks.specStart", {}, done.host)).rejects.toThrow(
+      /already has a spec of record \(docs\/spec\/README\.md\).*delegate_task's spec/,
+    );
+    expect(done.started).toEqual([]);
+  });
+
+  it("what it can't read stops nothing: no answer from the app is the default place and no landed task", async () => {
+    for (const [id, host] of [
+      ["ss4", { specContext: async () => { throw new Error("no folder"); }, specLanded: async () => { throw new Error("no rows"); } }],
+      ["ss5", { specContext: async () => ({ nonsense: 1 }), specLanded: async () => "nonsense" }],
+      ["ss6", {}],
+    ] as const) {
+      const f = fixture([]);
+      Object.assign(f.api, host);
+      await handleRaw(f.source, id, "tasks.specStart", {}, f.host);
+      expect(f.started, id).toHaveLength(1);
+      expect(promptOf(f.started[0]), id).toContain("docs/spec/README.md");
+      expect(promptOf(f.started[0]), id).toContain("No task has landed in this project yet");
+    }
+    vi.useFakeTimers();
+    try {
+      const f = fixture([]);
+      f.api.specContext = vi.fn(() => new Promise<unknown>(() => {}));
+      f.api.specLanded = vi.fn(() => new Promise<unknown>(() => {}));
+      const started = handleRaw(f.source, "ss7", "tasks.specStart", {}, f.host);
+      await vi.advanceTimersByTimeAsync(8_001);
+      await started;
+      expect(f.started).toHaveLength(1);
+      expect(promptOf(f.started[0])).toContain("No task has landed in this project yet");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("takes only a project, and a typo is refused before anything is read", async () => {
+    const f = fixture([]);
+    f.api.specLanded = vi.fn(async () => landed);
+    await expect(handleRaw(f.source, "ss8", "tasks.specStart", { folder: "/tmp/x" }, f.host)).rejects.toThrow();
+    expect(f.api.specLanded).not.toHaveBeenCalled();
+    expect(f.started).toEqual([]);
+  });
+});

@@ -1829,9 +1829,11 @@ export async function handleAgentApp(
   if (action.startsWith("tasks.")) {
     // A delegated worker starts like sessions.start, so it waits for the first probe the same way (found by the bench:
     // a Mono briefed right after a launch was told "claude is not available").
-    if ((action === "tasks.delegate" && input.lead === undefined) || action === "tasks.fanout") await harnessesProbed();
+    // PT-6: spec_start starts one worker too.
+    if ((action === "tasks.delegate" && input.lead === undefined) || action === "tasks.fanout" || action === "tasks.specStart")
+      await harnessesProbed();
     const result = await handleTasks(source, requestId, action, input, host, { startLaunch, fileStarted });
-    if (action === "tasks.delegate" && input.lead === undefined) host.rooms?.delegated?.(source, result);
+    if ((action === "tasks.delegate" && input.lead === undefined) || action === "tasks.specStart") host.rooms?.delegated?.(source, result);
     // WP-171: each task a fan-out handed out (started or waiting) is work that comes back to the room, as one delegate_task is.
     if (action === "tasks.fanout")
       for (const task of ((result as { tasks?: unknown }).tasks as unknown[] | undefined) ?? [])

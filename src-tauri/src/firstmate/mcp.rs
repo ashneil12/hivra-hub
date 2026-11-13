@@ -42,6 +42,8 @@ fn task_schema() -> Value {
             // SC-4: a plain name is a project check (as before); a line {what, command, expect} is the brief's own.
             "checks": { "type": "array", "items": crate::mcp_server::check_item(), "maxItems": 32, "description": "The checks this task must pass. A line {what, command, expect} says what must be true, the command that shows it, and the text its output must contain or exit N (default exit 0); give one to three, at most 12. A plain name is the id of one of the project's own checks. Each runs on its work before it counts as done, and one that did not run is not a pass." },
             "leave": names("Do-not-touch paths: files or folders this task must not change, from the project's root. A change to one fails the task.", 50),
+            // PT-6: the spec of record sections this task changes, as for delegate_task.
+            "spec": super::spec_record::schema(),
             "files": names("Other project files or folders this task changes, beyond what it owns.", 30),
             "project": text("The hub project id, folder path or name. Omit when you have one project."),
             "model": text("Usually omit it."),
@@ -98,6 +100,9 @@ pub fn call(app: &dyn App, name: &str, args: &Value) -> Result<Value, String> {
                         task.get("leave"),
                     )
                     .map_err(|why| format!("{named}: {why}"))?;
+                    // PT-6: and its spec parts.
+                    super::spec_record::refuse_bad_spec(task.get("spec"))
+                        .map_err(|why| format!("{named}: {why}"))?;
                 }
             }
             let request_id =
@@ -231,6 +236,67 @@ mod tests {
             .unwrap_err()
             .starts_with("Task 2: "));
         assert!(app.0.lock().unwrap().is_empty());
+    }
+
+    /// PT-6: a part's spec parts go to the app inside their task, and a bad one never does.
+    #[test]
+    fn a_parts_spec_reaches_the_app_and_a_bad_one_never_does() {
+        let app = Recorder(Mutex::new(Vec::new()));
+        let mut args = plan();
+        args["tasks"][0]["spec"] = json!([
+            { "file": "docs/spec/score.md", "section": "Score route", "text": "It answers 200 with the score." }
+        ]);
+        call(&app, "delegate_tasks", &args).unwrap();
+        assert_eq!(app.0.lock().unwrap()[0].1, args);
+        app.0.lock().unwrap().clear();
+        for (value, says) in [
+            (
+                json!([{ "file": "../x.md", "section": "A", "text": "x" }]),
+                "leaves the project",
+            ),
+            (
+                json!([{ "file": "docs/spec/a.md", "section": "A", "text": "x", "passes": true }]),
+                "isn't one",
+            ),
+            (json!("docs/spec/a.md"), "must be a list"),
+            (
+                json!((1..=4)
+                    .map(|n| json!({ "file": "docs/spec/a.md", "section": format!("S{n}"), "text": "x" }))
+                    .collect::<Vec<_>>()),
+                "at most 3 spec parts",
+            ),
+        ] {
+            let mut bad = plan();
+            bad["tasks"][0]["spec"] = value;
+            let error = call(&app, "delegate_tasks", &bad).unwrap_err();
+            assert!(error.starts_with("Task api: "), "{error}");
+            assert!(error.contains(says), "{error}");
+        }
+        // A second part with no name is named by its place.
+        let mut unnamed = plan();
+        unnamed["tasks"][1]["spec"] = json!([{ "file": "/etc/x.md", "section": "A", "text": "x" }]);
+        unnamed["tasks"][1].as_object_mut().unwrap().remove("name");
+        assert!(call(&app, "delegate_tasks", &unnamed)
+            .unwrap_err()
+            .starts_with("Task 2: "));
+        assert!(app.0.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn each_part_may_carry_up_to_three_spec_parts_closed_to_file_section_and_text() {
+        let listed = tools();
+        let spec = &listed[0]["inputSchema"]["properties"]["tasks"]["items"]["properties"]["spec"];
+        assert_eq!(spec["type"], "array");
+        assert_eq!(spec["maxItems"], 3);
+        assert_eq!(spec["items"]["additionalProperties"], false);
+        assert_eq!(
+            spec["items"]["required"],
+            json!(["file", "section", "text"])
+        );
+        assert!(spec["description"]
+            .as_str()
+            .unwrap()
+            .contains("you must send it"));
     }
 
     #[test]

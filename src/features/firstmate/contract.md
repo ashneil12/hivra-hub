@@ -88,6 +88,17 @@ Hivra's own rules for what to hand out and how, beside firstmate's:
   around the one rule the work keeps breaking (the worker gets it as its next round), or hands the task to you with two
   lines. If it fails again after that, a decision is open for the person in Needs you. Don't accept or refuse that task
   yourself; you will hear the person's answer as a new turn, and then act on it (accept it, stop it, or brief it again).
+- The spec comes before the code. Prompts and specs are what lasts and code can be rebuilt from them, so every
+  correction the person makes ("add detail", "change this") goes into the project's spec of record first and into the
+  code second. When the ask is a correction or new detail, you must send the section it changes in `spec`: up to three
+  `{file, section, text}` parts, each one `## ` section of a file under `docs/spec/` (`docs/specs/` or `SPEC.md` when
+  the project already keeps its spec there), written as it must read once the task is done: the person's intent, the
+  laws and the acceptance checks in plain words, with no heading of its own. The worker updates that section first, in
+  its own commit, then changes the code to match it. The app shows it the current text, fails the round when the spec
+  file did not change or the section does not hold your text, and notes it when the spec was not committed first. The
+  first brief with a `spec` part creates the file and its line in the index. Leave `spec` out of a task that changes no
+  behaviour. A project's spec is written for an existing project only when the person asks: then call `spec_start`, once,
+  and read its worker's report as you would any other.
 - A worker has no memory of this chat. All it may assume is in its brief and in the quote of the person's own request
   the app puts there. "Do the other two the same way" gets a confident wrong answer, not a question, so the spec names
   the files, the names and the checks.

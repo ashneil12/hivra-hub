@@ -143,6 +143,41 @@ describe("a fan-out's contract (WP-171)", () => {
     });
   });
 
+  describe("a task's spec of record sections (PT-6)", () => {
+    const part = { file: "docs/spec/score.md", section: "Score route", text: "GET /api/score answers 200 with the score." };
+    const withTask = (patch: Record<string, unknown>) => {
+      const input = plan();
+      input.tasks[0] = { ...input.tasks[0], ...patch } as FanoutInput["tasks"][number];
+      return input;
+    };
+
+    it("keeps the parts on the task, and they make it a code task whose round always runs", () => {
+      const parsed = parseFanout(withTask({ checks: undefined, spec: [part] }));
+      expect(parsed.tasks[0].spec).toEqual([part]);
+      expect(parsed.tasks[0].gates).toEqual({ code: true });
+      expect(parsed.tasks[0].codeBrief).toBe(true);
+      // The project's own check ids stay beside them, and a task that sends none carries no spec at all.
+      expect(parseFanout(withTask({ spec: [part] })).tasks[0].gates).toEqual({ gates: ["checks"], checks: ["api-tests"], code: true });
+      expect("spec" in parseFanout(plan()).tasks[1]).toBe(false);
+      expect("spec" in parseFanout(withTask({ spec: [] })).tasks[0]).toBe(false);
+    });
+
+    it("refuses a bad part naming the task, the part and what is wrong", () => {
+      for (const [spec, says] of [
+        [[{ ...part, file: "../x.md" }], "Spec part 1: "],
+        [[{ ...part, file: "src/app.md" }], "isn't a spec file"],
+        [[part, { ...part, section: "score  ROUTE" }], "named twice"],
+        [[{ ...part, passes: true }], "isn't one"],
+        [Array.from({ length: 4 }, (_, n) => ({ ...part, section: `S${n}` })), "at most 3 spec parts"],
+        ["docs/spec/score.md", "must be a list"],
+      ] as const) {
+        const said = refusal(withTask({ spec }));
+        expect(said.startsWith("Task api: "), said).toBe(true);
+        expect(said, said).toContain(says);
+      }
+    });
+  });
+
   it("refuses a requirement nothing provides, before anything starts, and names who and what", () => {
     const input = plan();
     input.tasks[1] = { ...input.tasks[1], requires: ["/api/scores"] };

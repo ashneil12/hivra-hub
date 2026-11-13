@@ -66,6 +66,7 @@ use super::checker_family::{self, Pick};
 use super::dismissals::{self, Dismissed, Standing};
 use super::done_check::{self, ChangedFile, ClaimRow, ClaimStatus, CodeFinding};
 use super::rounds::{self, RoundExtras, RoundHistory};
+use super::spec_record; // PT-6
 use super::status::GateVerdict;
 use super::testing_mode::{self, Checker, ModePlan};
 
@@ -643,6 +644,14 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
             if unread.is_none() {
                 unread = brief.leave_unreadable.clone();
             }
+            // PT-6: a spec part of the brief must be in the worker's copy: the spec file changed, and its section holds the
+            // brief's text. A copy that couldn't be compared proves neither way (the round is unsure, as for the list above).
+            if !brief.spec.is_empty() && repo.why_not.is_none() && unread.is_none() {
+                findings.extend(spec_record::findings(&brief.spec, input.checkout, &files));
+            }
+            if unread.is_none() {
+                unread = brief.spec_unreadable.clone();
+            }
         }
     }
     // A checks gate that only ran the brief's lines says nothing of the project's tests: a "tests pass" claim stays unverified.
@@ -748,6 +757,20 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     } else {
         None
     };
+    // PT-6: the spec asked for first, in its own commit. An order that isn't that is a caveat on the task, never a failure.
+    let spec_caveat = input
+        .brief_round
+        .filter(|brief| !brief.spec.is_empty() && run_findings && repo.why_not.is_none())
+        .and_then(|brief| {
+            spec_record::order_caveat(
+                &brief.spec,
+                &spec_record::commits_since(&repo.dir, repo.base.as_deref()),
+            )
+        });
+    let label = match (&spec_caveat, label) {
+        (Some(_), Some(DoneLabel::Verified)) => Some(DoneLabel::VerifiedWithCaveats),
+        (_, other) => other,
+    };
     let note = input
         .mode
         .and_then(|mode| mode.note)
@@ -768,6 +791,9 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         summary.push_str(&format!(
             "\nThe report's claims couldn't be checked against the diff: {why}."
         ));
+    }
+    if let Some(caveat) = &spec_caveat {
+        summary.push_str(&format!("\nCaveat: {caveat}"));
     }
     // SC-5: when the family rule couldn't be kept, the task's row says so ("Checked by the same family: only Claude is signed
     // in."), on the line after the verdict.
@@ -1677,8 +1703,15 @@ pub(crate) fn verdict_prompt_with(
             "\nThe no-mistakes layer runs the project's checks once before GitHub. That is expected, not a missing check.",
         );
     }
+    // PT-6: a brief with spec parts shows the model each section as it must read and as the worker's copy reads, and asks for
+    // one more claim row. A brief with none adds nothing.
+    let spec = input
+        .brief_round
+        .and_then(|brief| spec_record::prompt_section(&brief.spec, input.checkout))
+        .map(|section| format!("\n\n{section}"))
+        .unwrap_or_default();
     format!(
-        "{rules}\n\n## Brief\n{}\n\n## Definition of done\n{}\n\n## Checks the app ran\n{}\n\n## The worker's claims\n{}\n\n## What the app's code found in the diff\n{}\n\n## Diff\n{}",
+        "{rules}\n\n## Brief\n{}\n\n## Definition of done\n{}\n\n## Checks the app ran\n{}\n\n## The worker's claims\n{}\n\n## What the app's code found in the diff\n{}{spec}\n\n## Diff\n{}",
         head_of(input.brief.trim(), REPORT_MAX),
         input.done_when.trim(),
         checks_text,

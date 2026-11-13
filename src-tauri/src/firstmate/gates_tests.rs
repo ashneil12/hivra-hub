@@ -2244,6 +2244,7 @@ fn briefed(lines: Vec<BriefCheck>, leave: &[&str]) -> BriefRound {
         leave: leave.iter().map(|p| p.to_string()).collect(),
         checks_unreadable: None,
         leave_unreadable: None,
+        ..BriefRound::default()
     }
 }
 
@@ -2860,6 +2861,7 @@ fn each_lines_result_lands_on_the_delegation_row_with_passes_set_by_the_gates() 
                 { "what": "the route answers", "command": "curl localhost:3000/score", "expect": "ok" }
             ]),
             leave: serde_json::Value::Null,
+            ..Default::default()
         },
     )
     .unwrap();
@@ -3168,5 +3170,276 @@ mod sc7_fix {
             "{}",
             record.summary
         );
+    }
+}
+
+// ---- PT-6: a brief's spec parts ---------------------------------------------------------------------------------------------
+
+mod pt6_spec {
+    use super::*;
+    use crate::firstmate::spec_record::SpecDelta;
+
+    const AUTH: &str = "## Login flow\nThe person signs in with an email and a code.\n";
+    const WANTED: &str = "The person signs in with an email and a code.";
+    const VERIFIED: &str = r#"{"verdict":"verified","why":"the diff does what the brief asks","claims":[],"frauds":[]}"#;
+
+    fn spec_brief() -> BriefRound {
+        BriefRound {
+            spec: vec![SpecDelta {
+                file: "docs/spec/auth.md".into(),
+                section: "Login flow".into(),
+                text: WANTED.into(),
+            }],
+            ..BriefRound::default()
+        }
+    }
+
+    fn commit_code(f: &Fixture) {
+        std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+        sh(&f.copy, &["add", "-A"]);
+        sh(&f.copy, &["commit", "-q", "-m", "code"]);
+    }
+
+    fn commit_spec(f: &Fixture, text: &str) {
+        std::fs::create_dir_all(f.copy.join("docs/spec")).unwrap();
+        std::fs::write(f.copy.join("docs/spec/auth.md"), text).unwrap();
+        sh(&f.copy, &["add", "-A"]);
+        sh(&f.copy, &["commit", "-q", "-m", "spec"]);
+    }
+
+    /// A copy whose spec was committed first (or after the code), with `text` as the spec file.
+    fn copy(spec_first: bool, text: &str) -> Fixture {
+        let f = fixture("pt6");
+        if spec_first {
+            commit_spec(&f, text);
+            commit_code(&f);
+        } else {
+            commit_code(&f);
+            commit_spec(&f, text);
+        }
+        f
+    }
+
+    fn spec_findings(record: &GateRecord) -> Vec<&done_check::CodeFinding> {
+        record
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == done_check::FindingKind::SpecNotUpdated)
+            .collect()
+    }
+
+    #[test]
+    fn a_spec_file_the_worker_never_changed_fails_the_round_in_every_mode_but_off() {
+        let f = built();
+        for (mode, fails) in [
+            (TestingMode::AtShip, true),
+            (TestingMode::Light, true),
+            (TestingMode::Full, true),
+            (TestingMode::Off, false),
+        ] {
+            let record = brief_round(&f.copy, mode, &spec_brief(), &Fake::default());
+            let found = spec_findings(&record);
+            if fails {
+                assert_eq!(
+                    record.verdict,
+                    Verdict::Failed,
+                    "{mode:?}: {}",
+                    record.summary
+                );
+                assert_eq!(found.len(), 1, "{mode:?}");
+                assert!(
+                    found[0]
+                        .detail
+                        .starts_with("docs/spec/auth.md was not changed"),
+                    "{}",
+                    found[0].detail
+                );
+                assert!(
+                    record
+                        .summary
+                        .contains("Spec not updated: docs/spec/auth.md was not changed"),
+                    "{mode:?}: {}",
+                    record.summary
+                );
+            } else {
+                assert!(found.is_empty(), "{mode:?}");
+                assert_eq!(
+                    record.verdict,
+                    Verdict::Passed,
+                    "{mode:?}: {}",
+                    record.summary
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_section_without_the_briefs_text_fails_and_one_with_it_passes() {
+        let wrong = copy(
+            true,
+            "## Login flow\nThe person signs in with a password.\n",
+        );
+        let record = brief_round(
+            &wrong.copy,
+            TestingMode::Light,
+            &spec_brief(),
+            &Fake::default(),
+        );
+        assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
+        let found = spec_findings(&record);
+        assert_eq!(found.len(), 1);
+        assert!(
+            found[0]
+                .detail
+                .contains("doesn't contain the text the brief asked for"),
+            "{}",
+            found[0].detail
+        );
+        let right = copy(true, AUTH);
+        let record = brief_round(
+            &right.copy,
+            TestingMode::Light,
+            &spec_brief(),
+            &Fake::default(),
+        );
+        assert!(spec_findings(&record).is_empty(), "{:?}", record.findings);
+        assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+        // Rewrapped by the worker: whitespace is read as one space.
+        let wrapped = copy(
+            true,
+            "## Login flow\r\nThe person signs in\r\n  with an email   and a code.\r\n",
+        );
+        let record = brief_round(
+            &wrapped.copy,
+            TestingMode::Light,
+            &spec_brief(),
+            &Fake::default(),
+        );
+        assert!(spec_findings(&record).is_empty(), "{:?}", record.findings);
+    }
+
+    #[test]
+    fn the_verdict_model_is_shown_the_section_and_asked_for_one_more_claim_row() {
+        let f = copy(true, AUTH);
+        let fake = Fake::default();
+        brief_round(&f.copy, TestingMode::Light, &spec_brief(), &fake);
+        let prompts = fake.prompts.borrow();
+        assert_eq!(prompts.len(), 1, "the verdict model was asked once");
+        let prompt = &prompts[0];
+        assert!(prompt.contains("## Spec of record"), "{prompt}");
+        assert!(prompt.contains("Add one claim row for each"), "{prompt}");
+        assert!(
+            prompt.contains("### docs/spec/auth.md, Login flow"),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("The brief asked it to read:\n    {WANTED}")),
+            "{prompt}"
+        );
+        assert!(
+            prompt.contains(&format!("The worker's copy reads now:\n    {WANTED}")),
+            "{prompt}"
+        );
+        // It sits after what the app's code found and before the diff.
+        let at = |needle: &str| prompt.find(needle).unwrap();
+        assert!(at("## What the app's code found") < at("## Spec of record"));
+        assert!(at("## Spec of record") < at("## Diff"));
+    }
+
+    #[test]
+    fn a_brief_with_no_spec_part_gets_the_prompt_it_always_had() {
+        let f = built();
+        let fake = Fake::default();
+        brief_round(
+            &f.copy,
+            TestingMode::Light,
+            &briefed(Vec::new(), &[]),
+            &fake,
+        );
+        let prompts = fake.prompts.borrow();
+        assert_eq!(prompts.len(), 1);
+        assert!(!prompts[0].contains("Spec of record"), "{}", prompts[0]);
+    }
+
+    #[test]
+    fn a_spec_committed_after_the_code_is_a_caveat_never_a_failure() {
+        let late = copy(false, AUTH);
+        let fake = Fake {
+            replies: RefCell::new(vec![Ok(VERIFIED.into())]),
+            ..Default::default()
+        };
+        let record = brief_round(&late.copy, TestingMode::Light, &spec_brief(), &fake);
+        assert!(spec_findings(&record).is_empty(), "{:?}", record.findings);
+        assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+        assert_eq!(
+            record.label,
+            Some(DoneLabel::VerifiedWithCaveats),
+            "{}",
+            record.summary
+        );
+        assert!(
+            record
+                .summary
+                .contains("Caveat: The spec was changed after the code."),
+            "{}",
+            record.summary
+        );
+        // Spec first, in its own commit: verified, no caveat.
+        let first = copy(true, AUTH);
+        let fake = Fake {
+            replies: RefCell::new(vec![Ok(VERIFIED.into())]),
+            ..Default::default()
+        };
+        let record = brief_round(&first.copy, TestingMode::Light, &spec_brief(), &fake);
+        assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+        assert_eq!(
+            record.label,
+            Some(DoneLabel::Verified),
+            "{}",
+            record.summary
+        );
+        assert!(!record.summary.contains("Caveat"), "{}", record.summary);
+    }
+
+    #[test]
+    fn a_spec_and_code_in_one_commit_is_a_caveat() {
+        let f = fixture("pt6-together");
+        std::fs::create_dir_all(f.copy.join("docs/spec")).unwrap();
+        std::fs::write(f.copy.join("docs/spec/auth.md"), AUTH).unwrap();
+        std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+        sh(&f.copy, &["add", "-A"]);
+        sh(&f.copy, &["commit", "-q", "-m", "both"]);
+        let record = brief_round(
+            &f.copy,
+            TestingMode::AtShip,
+            &spec_brief(),
+            &Fake::default(),
+        );
+        assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+        assert!(
+            record
+                .summary
+                .contains("Caveat: The spec change shares a commit with code."),
+            "{}",
+            record.summary
+        );
+    }
+
+    #[test]
+    fn spec_parts_that_cannot_be_read_leave_the_round_unsure_and_off_does_not_look() {
+        let f = copy(true, AUTH);
+        let damaged = BriefRound {
+            spec_unreadable: Some("the brief's spec parts couldn't be read".into()),
+            ..BriefRound::default()
+        };
+        let record = brief_round(&f.copy, TestingMode::Light, &damaged, &Fake::default());
+        assert_eq!(record.verdict, Verdict::Unsure, "{}", record.summary);
+        assert!(
+            record.summary.contains("spec parts couldn't be read"),
+            "{}",
+            record.summary
+        );
+        let record = brief_round(&f.copy, TestingMode::Off, &damaged, &Fake::default());
+        assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
     }
 }

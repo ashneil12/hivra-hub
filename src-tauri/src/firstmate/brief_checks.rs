@@ -32,6 +32,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::gates::{CommandEvidence, Outcome, OUTPUT_MAX};
+use super::spec_record::{parse_deltas, SpecDelta}; // PT-6
 
 /// The most check lines on one brief.
 pub const LINES_MAX: usize = 12;
@@ -320,9 +321,19 @@ pub struct BriefState {
     /// Why the stored do-not-touch list couldn't be read: never read as an empty list.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub leave_unreadable: Option<String>,
+    /// PT-6: the spec parts the brief asked for (spec_record.rs). Empty for a brief with none.
+    pub spec: Vec<SpecDelta>,
+    /// PT-6: why the stored spec parts couldn't be read: never read as a brief with none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub spec_unreadable: Option<String>,
 }
 
-fn read_state(stamp: Option<String>, checks: Option<String>, leave: Option<String>) -> BriefState {
+fn read_state(
+    stamp: Option<String>,
+    checks: Option<String>,
+    leave: Option<String>,
+    spec: Option<String>,
+) -> BriefState {
     let mut state = BriefState {
         stamp: stamp.filter(|stamp| valid_stamp(stamp)),
         ..BriefState::default()
@@ -350,6 +361,19 @@ fn read_state(stamp: Option<String>, checks: Option<String>, leave: Option<Strin
             }
         }
     }
+    // PT-6: null is a brief with no spec part (`keep` writes null for none); a text that doesn't parse as spec parts, through
+    // the same validation a call goes through, is never read as none.
+    if let Some(text) = spec {
+        match serde_json::from_str::<Value>(&text)
+            .map_err(|e| e.to_string())
+            .and_then(|value| parse_deltas(&value))
+        {
+            Ok(list) => state.spec = list,
+            Err(_) => {
+                state.spec_unreadable = Some("the brief's spec parts couldn't be read".into())
+            }
+        }
+    }
     state
 }
 
@@ -368,17 +392,23 @@ pub fn valid_stamp(stamp: &str) -> bool {
 }
 
 pub fn state_of(conn: &Connection, id: &str) -> Result<BriefState, String> {
-    let row: Option<(Option<String>, Option<String>, Option<String>)> = conn
+    type Stored = (
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    );
+    let row: Option<Stored> = conn
         .query_row(
-            "SELECT brief_stamp, brief_checks, brief_leave FROM delegations WHERE id = ?1",
+            "SELECT brief_stamp, brief_checks, brief_leave, brief_spec FROM delegations WHERE id = ?1",
             params![id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()
         .map_err(|e| e.to_string())?;
     Ok(
-        row.map_or_else(BriefState::default, |(stamp, checks, leave)| {
-            read_state(stamp, checks, leave)
+        row.map_or_else(BriefState::default, |(stamp, checks, leave, spec)| {
+            read_state(stamp, checks, leave, spec)
         }),
     )
 }
@@ -393,6 +423,9 @@ pub struct KeepInput {
     pub checks: Value,
     #[serde(default)]
     pub leave: Value,
+    /// PT-6: the brief's spec parts. Validated by `parse_deltas`, like the rest.
+    #[serde(default)]
+    pub spec: Value,
 }
 
 /// Keeps a started task's brief lines, stamp and do-not-touch list. The first keep wins: a retry of the same delegation
@@ -405,6 +438,7 @@ pub fn keep(conn: &Connection, id: &str, input: &KeepInput) -> Result<bool, Stri
     };
     let lines = parse_lines(&input.checks)?;
     let leave = parse_leave(&input.leave)?;
+    let spec = parse_deltas(&input.spec)?;
     let exists: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM delegations WHERE id = ?1)",
@@ -417,13 +451,19 @@ pub fn keep(conn: &Connection, id: &str, input: &KeepInput) -> Result<bool, Stri
     }
     let changed = conn
         .execute(
-            "UPDATE delegations SET brief_stamp = ?2, brief_checks = ?3, brief_leave = ?4
+            "UPDATE delegations SET brief_stamp = ?2, brief_checks = ?3, brief_leave = ?4, brief_spec = ?5
              WHERE id = ?1 AND brief_checks IS NULL",
             params![
                 id,
                 stamp,
                 serde_json::to_string(&lines).map_err(|e| e.to_string())?,
                 serde_json::to_string(&leave).map_err(|e| e.to_string())?,
+                // PT-6: null for a brief with no spec part.
+                if spec.is_empty() {
+                    None
+                } else {
+                    Some(serde_json::to_string(&spec).map_err(|e| e.to_string())?)
+                },
             ],
         )
         .map_err(|e| e.to_string())?;
@@ -537,6 +577,9 @@ pub struct BriefRound {
     pub leave: Vec<String>,
     pub checks_unreadable: Option<String>,
     pub leave_unreadable: Option<String>,
+    /// PT-6: the spec parts the done check holds the worker's copy to.
+    pub spec: Vec<SpecDelta>,
+    pub spec_unreadable: Option<String>,
 }
 
 impl From<&BriefState> for BriefRound {
@@ -546,6 +589,8 @@ impl From<&BriefState> for BriefRound {
             leave: state.leave.clone(),
             checks_unreadable: state.checks_unreadable.clone(),
             leave_unreadable: state.leave_unreadable.clone(),
+            spec: state.spec.clone(),
+            spec_unreadable: state.spec_unreadable.clone(),
         }
     }
 }

@@ -590,6 +590,7 @@ fn kept(checks: Value, leave: Value, stamp: Option<&str>) -> KeepInput {
         stamp: stamp.map(str::to_string),
         checks,
         leave,
+        ..Default::default()
     }
 }
 

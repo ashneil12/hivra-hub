@@ -33,14 +33,15 @@ const PROTOCOLS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 const NO_CONNECTION: &str = "No MonoCode app connection. These tools work only in a Mono's own chat in MonoCode Hub, during its turn.";
 
 const USAGE: &str = "MonoCode delegate tool: a stdio MCP server (delegate_task, delegate_tasks, task_status, task_wait, task_cancel, \
-task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, work_log, secrets_request, secrets_run, secrets_list, ship_check, run_checks, proof_tools, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
+task_cannot, task_answer, task_accept, room_post, room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, skills_learn, work_log, secrets_request, secrets_run, secrets_list, ship_check, run_checks, proof_tools, spec_start, and pr_watch, pr_unwatch, pr_watches) for a Mono's chat. MonoCode Hub starts it through Claude Code's --mcp-config with MONOCODE_APP_ENDPOINT \
 and MONOCODE_APP_TOKEN in its environment. Usage: monocode mcp";
 
 const INSTRUCTIONS: &str = "MonoCode's delegate tool. delegate_task hands a job to a worker chat nested under \
 yours, stored as a task: its report comes back to you as a [MonoCode report] turn once you are idle, even across \
 restarts, and its questions as [MonoCode question] turns. Put Ash's ask in intent, the build instructions in brief and the finish line in goal. A job that changes code also \
 gets one to three check lines in checks (what must be true, the command that shows it, what it prints), one for a one-line bug, \
-and names the paths it may change in scope and the ones it must not touch in leave. Say \
+and names the paths it may change in scope and the ones it must not touch in leave. When Ash's ask corrects something or adds detail, \
+put the section of the project's spec it changes in spec, as it must read afterwards: the worker updates the spec first, then the code. Say \
 in one line what you started, and end your turn instead of polling. task_status reads results, task_wait blocks on a \
 short job, task_cancel stops a task and everything beneath it, task_cannot says you cannot finish one (one plain line on \
 what is in the way: it goes to Ash at once), task_answer answers a worker's question, task_accept accepts a finished \
@@ -122,7 +123,7 @@ impl App for LiveApp {
 
 /// The app actions the delegate tool sends (`App::call`). They are not in the CLI's list (`control_cli::APP_ACTIONS`), but
 /// the agent is allowed exactly these and that list. `control::serve` refuses any other action on an agent's token.
-pub(crate) const MCP_APP_ACTIONS: [&str; 20] = [
+pub(crate) const MCP_APP_ACTIONS: [&str; 21] = [
     "monos.message",
     "proof_tools.list",    // PT-1
     "proof_tools.propose", // PT-1
@@ -141,6 +142,7 @@ pub(crate) const MCP_APP_ACTIONS: [&str; 20] = [
     "tasks.delegate",
     "tasks.fanout",
     "tasks.message",
+    "tasks.specStart", // PT-6
     "tasks.status",
     "tasks.wait",
 ];
@@ -550,6 +552,9 @@ fn tools() -> Value {
         "type": "boolean",
         "description": "True when the job changes code: it always gets the diff and checks gates."
     });
+    // PT-6: the spec of record sections this job changes (firstmate/spec_record.rs). Kept out of the literal above (json!'s
+    // recursion limit), like checks.
+    tools[0]["inputSchema"]["properties"]["spec"] = crate::firstmate::spec_record::schema();
     // WP-92: the keys a worker's environment holds, added here like intent so the literal above stays under json!'s
     // recursion limit.
     tools[0]["inputSchema"]["properties"]["secrets"] = json!({
@@ -622,6 +627,8 @@ fn tools() -> Value {
         list.extend(crate::run_checks::mcp::tools());
         // PT-1: proof_tools, the tools that fit this project and a once-per-project proposal.
         list.extend(crate::proof_tools::mcp::tools());
+        // PT-6: spec_start, the project's spec of record, only when the person asks.
+        list.extend(crate::firstmate::spec_mcp::tools());
     }
     tools
 }
@@ -811,7 +818,7 @@ fn secret_tools() -> Vec<Value> {
     ]
 }
 
-const DELEGATE_APP_FIELDS: [&str; 24] = [
+const DELEGATE_APP_FIELDS: [&str; 25] = [
     "intent",
     "brief",
     "title",
@@ -836,6 +843,7 @@ const DELEGATE_APP_FIELDS: [&str; 24] = [
     "role",
     "leave", // SC-4
     "kind",  // SC-7
+    "spec",  // PT-6
 ];
 
 /// The tools that make things with Ash (a room, a Mono, a Page, a change to the hub, a lesson for a skill): each is one
@@ -1030,12 +1038,16 @@ pub(crate) fn call_tool(call: &mut Call, name: &str, args: &Value) -> Result<Val
         name if crate::proof_tools::mcp::NAMES.contains(&name) => {
             crate::proof_tools::mcp::call(call.app, args)
         }
+        // PT-6: spec_start, one worker that drafts the project's spec of record. Only when the person asks.
+        name if crate::firstmate::spec_mcp::NAMES.contains(&name) => {
+            crate::firstmate::spec_mcp::call(call.app, name, args)
+        }
         _ => Err(format!(
             "Unknown tool: {name}. Use delegate_task, delegate_tasks, task_status, task_wait, task_cancel, task_cannot, task_answer, task_accept, task_message, \
              ask_person, secrets_request, secrets_list, secrets_run, room_post, \
              room_read, mono_message, room_create, mono_create, mono_retire, team_create, page_build, hub_change, today_change, \
              skills_learn, work_log, pr_watch, pr_unwatch, pr_watches, task_list, task_get, task_create, task_update, \
-             programme_list, programme_enqueue, programme_set_status, programme_park, ship_check, run_checks or proof_tools."
+             programme_list, programme_enqueue, programme_set_status, programme_park, ship_check, run_checks, proof_tools or spec_start."
         )),
     }
 }
@@ -1083,6 +1095,8 @@ fn delegate(call: &mut Call, args: &Value) -> Result<Value, String> {
     // SC-4: the brief's check lines and do-not-touch list are checked before anything reaches the app, so a line that
     // names `passes` (only the app's gates say that) never gets there.
     crate::firstmate::brief_checks::refuse_bad_brief(object.get("checks"), object.get("leave"))?;
+    // PT-6: and its spec parts, so a part that leaves the spec folder never reaches the app.
+    crate::firstmate::spec_record::refuse_bad_spec(object.get("spec"))?;
     let wait_mode = match object.get("mode").map(|mode| mode.as_str()) {
         None | Some(Some("async")) => false,
         Some(Some("wait")) => true,
@@ -1713,7 +1727,9 @@ mod tests {
                 // SC-7
                 "run_checks",
                 // PT-1
-                "proof_tools"
+                "proof_tools",
+                // PT-6
+                "spec_start"
             ]
         );
         for tool in lines[1]["result"]["tools"].as_array().unwrap() {
@@ -2766,6 +2782,88 @@ mod tests {
         );
         assert!(outcome.is_ok(), "{outcome:?}");
         assert_eq!(app.calls.lock().unwrap()[0].1["kind"], json!("fix"));
+    }
+
+    /// PT-6: a first mate sends the spec sections a job changes in `spec`: they reach the app as sent, the schema offers up to
+    /// three closed to file, section and text, and a part that leaves the spec folder never reaches the app.
+    #[test]
+    fn delegate_task_forwards_spec_parts_and_refuses_a_bad_one_before_the_app() {
+        let clock = Arc::new(FakeClock::default());
+        let app = FakeApp::new(clock, |_, _, _| {
+            Ok(json!({ "taskId": "t-1", "childSessionId": "app-mono-r", "status": "running" }))
+        });
+        let part = |file: &str, section: &str| json!({ "file": file, "section": section, "text": "The person signs in with a code." });
+        let base = || json!({ "intent": "Ash: add detail", "brief": "Change the login", "goal": "the login works", "clientRequestId": "r-spec" });
+        let mut sent = base();
+        sent["spec"] = json!([part("docs/spec/auth.md", "Login flow")]);
+        let (outcome, _) = run_tool(&app, "delegate_task", sent.clone());
+        assert!(outcome.is_ok(), "{outcome:?}");
+        assert_eq!(
+            app.calls.lock().unwrap()[0].1["spec"],
+            sent["spec"],
+            "as it was sent"
+        );
+        app.calls.lock().unwrap().clear();
+        for (value, says) in [
+            (json!([part("../outside.md", "A")]), "leaves the project"),
+            (
+                json!([part("/etc/passwd", "A")]),
+                "isn't inside the project",
+            ),
+            (json!([part("src/app.md", "A")]), "isn't a spec file"),
+            (
+                json!([part("docs/spec/a.md", "A"), part("docs/spec/a.md", "a")]),
+                "named twice",
+            ),
+            (
+                json!([{ "file": "docs/spec/a.md", "section": "A", "text": "x", "passes": true }]),
+                "isn't one",
+            ),
+            (json!("docs/spec/a.md"), "must be a list"),
+            (
+                json!((1..=4)
+                    .map(|n| part("docs/spec/a.md", &format!("S{n}")))
+                    .collect::<Vec<_>>()),
+                "at most 3 spec parts",
+            ),
+        ] {
+            let mut call = base();
+            call["spec"] = value.clone();
+            let (outcome, _) = run_tool(&app, "delegate_task", call);
+            let refused = outcome.unwrap_err();
+            assert!(refused.contains(says), "{value}: {refused}");
+        }
+        assert!(
+            app.calls.lock().unwrap().is_empty(),
+            "none of them reached the app"
+        );
+        // The schema: a list of three at most, each closed to the three words, and the tool says a correction must carry one.
+        let listed = tools();
+        let delegate = listed
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tool| tool["name"] == "delegate_task")
+            .unwrap();
+        let spec = &delegate["inputSchema"]["properties"]["spec"];
+        assert_eq!(spec["maxItems"], 3);
+        assert_eq!(spec["items"]["additionalProperties"], false);
+        assert_eq!(
+            spec["items"]["required"],
+            json!(["file", "section", "text"])
+        );
+        assert_eq!(spec["items"]["properties"]["text"]["maxLength"], 4000);
+        let said = spec["description"].as_str().unwrap();
+        assert!(
+            said.contains("corrects something or adds detail") && said.contains("you must send it"),
+            "{said}"
+        );
+        assert!(
+            said.contains("updates that section first, in its own commit"),
+            "{said}"
+        );
+        assert!(!said.contains('\u{2014}') && !said.contains('\u{2013}'));
+        assert!(INSTRUCTIONS.contains("put the section of the project's spec it changes in spec"));
     }
 
     /// SC-7: run_checks is one app call that names only its own fields, and the app lets a worker's token make it.
