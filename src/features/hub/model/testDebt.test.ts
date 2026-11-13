@@ -8,6 +8,7 @@ import {
   readTestDebtSummary,
   tauriTestDebt,
   testDebtLine,
+  testDebtBugs,
   testDebtToSort,
   type TestDebtBackend,
 } from "./testDebt";
@@ -171,6 +172,24 @@ describe("the line's words", () => {
       }),
     )?.items ?? [];
     expect(testDebtToSort(items)).toBe(1);
+  });
+
+  // PT-5 follow-up: a real bug the person chose to ship with is listed apart from the ones still waiting on them.
+  it("reads a real bug shipped anyway and counts only the real bugs still waiting on the person", () => {
+    const read = readTestDebtSummary(
+      summary({
+        count: 0,
+        items: [
+          item({ id: "a", state: "real-bug" }),
+          item({ id: "b", state: "shipping-anyway" }),
+          item({ id: "c", state: "flaky" }),
+          item({ id: "d", state: "to-sort" }),
+        ],
+      }),
+    );
+    expect(read?.items.map((row) => row.state)).toEqual(["real-bug", "shipping-anyway", "flaky", "to-sort"]);
+    expect(testDebtBugs(read?.items ?? [])).toBe(1);
+    expect(testDebtBugs([])).toBe(0);
   });
 
   it("never says Stuck", () => {

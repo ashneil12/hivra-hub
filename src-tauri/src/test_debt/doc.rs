@@ -77,6 +77,9 @@ pub struct Item {
     pub decision: Option<Decision>,
     /// One plain line the app left for the next fixer about a decision it did not accept (`NO_GREEN_NOTE`). Empty when there is none.
     pub note: String,
+    /// When the person answered "Ship anyway" on this real bug's row: the ship check no longer waits on it. None until then, and it
+    /// goes with the item (a test that passes leaves the list; one that fails again later is a new item, asked afresh).
+    pub ship_anyway_at: Option<u64>,
 }
 
 /// What a test the fixer called flaky is told when it is critical: it is never quarantined, and it waits for the person.
@@ -327,6 +330,14 @@ impl Doc {
                         d.line = tidy_line(&d.line, LINE_MAX);
                         d
                     });
+                    // An override means something only on a named real bug.
+                    if !item
+                        .decision
+                        .as_ref()
+                        .is_some_and(|d| d.kind == DecisionKind::CodeWrong)
+                    {
+                        item.ship_anyway_at = None;
+                    }
                     item
                 })
                 .collect(),
@@ -465,6 +476,7 @@ impl Doc {
             command: tidy_line(&candidate.command, 200),
             decision: None,
             note: String::new(),
+            ship_anyway_at: None,
         });
         let score = self.score_entry(&id, &candidate.name);
         score.broke = score.broke.saturating_add(1);
@@ -515,6 +527,29 @@ impl Doc {
                 .as_ref()
                 .is_some_and(|d| d.kind == DecisionKind::CodeWrong)
         })
+    }
+
+    /// Real bugs still waiting on the person: named as one and not yet shipped anyway. They hold the ship check until the test passes.
+    pub fn waiting_bugs(&self) -> impl Iterator<Item = &Item> {
+        self.real_bugs()
+            .filter(|item| item.ship_anyway_at.is_none())
+    }
+
+    /// The person's "Ship anyway" on a real bug (`key` is `Doc::bug_key`). False when no such real bug is on the list (it went green, or
+    /// was never named one), or when it was already shipped anyway.
+    pub fn ship_bug_anyway(&mut self, key: &str, now: u64) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| {
+            item.ship_anyway_at.is_none()
+                && item
+                    .decision
+                    .as_ref()
+                    .is_some_and(|d| d.kind == DecisionKind::CodeWrong)
+                && Doc::bug_key(item) == key
+        }) else {
+            return false;
+        };
+        item.ship_anyway_at = Some(now);
+        true
     }
 
     /// Records the fixer's "code is wrong". False when the test is not on the list (it went green, or was never there).
@@ -1029,6 +1064,74 @@ mod tests {
             1,
             "a bug that comes back is asked about again"
         );
+    }
+
+    #[test]
+    fn a_real_bug_shipped_anyway_stops_waiting_and_the_override_goes_with_the_item() {
+        let mut doc = Doc::default();
+        doc.note_failure(&cand("a.test.ts", "a"), 10);
+        doc.note_failure(&cand("b.test.ts", "b"), 11);
+        doc.note_failure(&cand("c.test.ts", "c"), 12); // still to sort
+        let (a, b) = (doc.items[0].id.clone(), doc.items[1].id.clone());
+        doc.mark_code_wrong(&a, "x", 13);
+        doc.mark_code_wrong(&b, "y", 14);
+        let (key_a, key_b) = (Doc::bug_key(&doc.items[0]), Doc::bug_key(&doc.items[1]));
+        assert_eq!(doc.waiting_bugs().count(), 2);
+        // The person's answer lands on that bug only; saying it twice, or about a test that is not a named bug, changes nothing.
+        assert!(doc.ship_bug_anyway(&key_a, 20));
+        assert!(!doc.ship_bug_anyway(&key_a, 21));
+        assert!(!doc.ship_bug_anyway("code-wrong:nope:1", 22));
+        let key_c = Doc::bug_key(&doc.items[2]);
+        assert!(!doc.ship_bug_anyway(&key_c, 23), "not named a bug");
+        assert_eq!(doc.items[0].ship_anyway_at, Some(20));
+        assert_eq!(doc.items[2].ship_anyway_at, None);
+        assert_eq!(
+            doc.waiting_bugs().map(Doc::bug_key).collect::<Vec<_>>(),
+            vec![key_b.clone()]
+        );
+        assert_eq!(
+            doc.real_bugs().count(),
+            2,
+            "it is still a named bug, and still a finding"
+        );
+        assert_eq!(doc.undecided().count(), 1, "and not counted as one to sort");
+        // The test passes: the item and its override leave together. A return is a new item that waits.
+        doc.remove_green(|item| item.id == a);
+        doc.note_failure(&cand("a.test.ts", "a"), 500);
+        doc.mark_code_wrong(&a, "again", 501);
+        assert_eq!(
+            doc.waiting_bugs().count(),
+            2,
+            "the old override did not follow it back"
+        );
+        assert!(
+            !doc.ship_bug_anyway(&key_a, 502),
+            "the old row is not the new bug"
+        );
+    }
+
+    #[test]
+    fn an_override_read_from_disk_on_an_item_that_is_not_a_named_bug_means_nothing() {
+        let mut doc = Doc::default();
+        doc.note_failure(&cand("a.test.ts", "a"), 1);
+        doc.note_failure(&cand("b.test.ts", "b"), 2);
+        let b = doc.items[1].id.clone();
+        doc.mark_code_wrong(&b, "x", 3);
+        for item in &mut doc.items {
+            item.ship_anyway_at = Some(9);
+        }
+        let doc = doc.sane();
+        assert_eq!(
+            doc.items[0].ship_anyway_at, None,
+            "an undecided test has no override"
+        );
+        assert_eq!(doc.items[1].ship_anyway_at, Some(9));
+        // Older documents have no such field.
+        let old: Doc = serde_json::from_str(
+            r#"{"version":1,"items":[{"id":"x","decision":{"kind":"code-wrong","line":"l","at":1}}]}"#,
+        )
+        .unwrap();
+        assert_eq!(old.sane().waiting_bugs().count(), 1);
     }
 
     #[test]

@@ -2305,6 +2305,10 @@ pub fn decisions_answer(
         now_millis(),
     )?;
     if outcome.applied {
+        // PT-5 follow-up: the person's "Ship anyway" on a real bug's row is recorded on that bug, before anything hears of the answer.
+        if let Some(decision) = outcome.decision.as_ref() {
+            crate::test_debt::commands::on_answered(&app, decision);
+        }
         announce(&app, outcome.decision.as_ref(), &outcome.released);
         // PT-1: a "Not now" to a proof-tool proposal is remembered for that project, so it is never proposed again.
         if let Some(decision) = outcome.decision.as_ref() {

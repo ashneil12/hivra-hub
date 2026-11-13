@@ -59,6 +59,11 @@ fn nothing(note: &str) -> ClaimView {
 
 pub const FIX_IT: &str = "Fix it";
 pub const NOT_NOW: &str = "Not now";
+/// The answer that lets the version ship with a named real bug in it. Only the person's own tap on that bug's row counts
+/// (`ship_anyway_target`).
+pub const SHIP_ANYWAY: &str = "Ship anyway";
+/// What a real-bug Needs-you item's key starts with; the rest is `short_id` of the bug's key.
+pub const BUG_KEY_PREFIX: &str = "test-debt-bug-";
 pub const REWRITE_IT: &str = "Rewrite it";
 pub const DELETE_IT: &str = "Delete it";
 pub const KEEP_IT: &str = "Keep it";
@@ -88,12 +93,12 @@ pub fn claim_in(
             let question = item.bug_words();
             ClaimView {
                 claimed: true,
-                key: format!("test-debt-bug-{}", short_id(key)),
+                key: format!("{BUG_KEY_PREFIX}{}", short_id(key)),
                 question: question.chars().take(400).collect(),
-                options: vec![FIX_IT.into(), NOT_NOW.into()],
+                options: vec![FIX_IT.into(), NOT_NOW.into(), SHIP_ANYWAY.into()],
                 recommended: FIX_IT.into(),
                 note: format!(
-                    "Asked the person. If they answer {FIX_IT}, brief a worker to fix the code, never the test: the test is right. If they answer {NOT_NOW}, leave it; it stays a finding on the ship check."
+                    "Asked the person. If they answer {FIX_IT}, brief a worker to fix the code, never the test: the test is right. If they answer {NOT_NOW}, leave it: the ship check holds on this test (it waits on them) until it passes or they answer {SHIP_ANYWAY}. If they answer {SHIP_ANYWAY}, do nothing: the app records that answer itself, and only from the person, and the next ship check passes with the bug named on its record."
                 ),
             }
         }),
@@ -123,6 +128,74 @@ pub fn claim_in(
             })
         }
         other => Err(format!("Unknown test debt item kind: {other}")),
+    }
+}
+
+/// The answer on a decision, when it is the person's own: answered, and by the person's own path (the Needs sheet, the Inbox card).
+/// An answer a first mate, a worker, a page or the captain gave is not the person's, and a "Ship anyway" is only ever theirs to give.
+pub fn person_answer(decision: &crate::decisions::Decision) -> Option<&str> {
+    if decision.state != crate::decisions::ANSWERED
+        || !crate::decisions::answered_by_person(decision.answered_by.as_deref())
+    {
+        return None;
+    }
+    decision
+        .answer
+        .as_deref()
+        .map(str::trim)
+        .filter(|answer| !answer.is_empty())
+}
+
+/// Records the person's "Ship anyway" on the real bug whose row is `decision_key`. False when nothing was recorded: not a real bug's
+/// row, not that answer, no such bug on the list any more (it passed), or it was already shipped anyway. A project whose notes can't
+/// be read records nothing.
+pub fn ship_anyway_in(
+    dir: &Path,
+    project: &str,
+    decision_key: &str,
+    answer: &str,
+    now: u64,
+) -> bool {
+    if !answer.trim().eq_ignore_ascii_case(SHIP_ANYWAY) {
+        return false;
+    }
+    let Some(short) = decision_key
+        .trim()
+        .strip_prefix(BUG_KEY_PREFIX)
+        .filter(|short| !short.is_empty())
+    else {
+        return false;
+    };
+    // Under the list's lock, so two windows answering at once record one override and the second says nothing changed.
+    store::update(dir, project, |doc| {
+        let Some(key) = doc
+            .waiting_bugs()
+            .map(Doc::bug_key)
+            .find(|key| short_id(key).eq_ignore_ascii_case(short))
+        else {
+            return false;
+        };
+        doc.ship_bug_anyway(&key, now)
+    })
+    .unwrap_or(false)
+}
+
+/// After an answer to a decision landed (`decisions::decisions_answer`): the person's own "Ship anyway" on a real bug's row is
+/// recorded on that bug. Nothing else is touched. The first mate can't give it: it is the person's answer, read from the decision
+/// the app stored, never from what a chat says.
+pub fn on_answered(app: &AppHandle, decision: &crate::decisions::Decision) {
+    // Cheap first: nearly every decision is some other row.
+    if !decision.decision_key.trim().starts_with(BUG_KEY_PREFIX) {
+        return;
+    }
+    let Some(answer) = person_answer(decision) else {
+        return;
+    };
+    let (Ok(data), Ok(project)) = (data_dir(app), project_of(&decision.project)) else {
+        return;
+    };
+    if ship_anyway_in(&data, &project, &decision.decision_key, answer, now_ms()) {
+        changed(app);
     }
 }
 
@@ -329,14 +402,196 @@ mod tests {
             view.question,
             "totals add up fails because the code is wrong: the total ignores tax"
         );
-        assert_eq!(view.options, vec![FIX_IT, NOT_NOW]);
+        // PT-5 follow-up: the row has a third one-tap answer, "Ship anyway"; the one the app recommends is still to fix it.
+        assert_eq!(view.options, vec![FIX_IT, NOT_NOW, SHIP_ANYWAY]);
+        assert_eq!(view.recommended, FIX_IT);
         assert!(view.options.contains(&view.recommended));
         assert!(view.key.len() <= 120);
+        assert!(view.key.starts_with(BUG_KEY_PREFIX));
+        // It tells the first mate what each answer means: Not now holds, Ship anyway is the app's to record, never the first mate's.
+        assert!(view.note.contains(SHIP_ANYWAY), "{}", view.note);
+        assert!(view.note.contains("holds"), "{}", view.note);
         let again = claim_in(dir.path(), "/p", "bug", &key, 6).unwrap();
         assert!(!again.claimed, "once per bug");
         // A question that could not be filed is given back: a timeout is not a no.
         assert!(release_in(dir.path(), "/p", "bug", &key).unwrap());
         assert!(claim_in(dir.path(), "/p", "bug", &key, 7).unwrap().claimed);
+    }
+
+    /// A real bug on the list, its Needs-you key as `claim_in` words it, and the bug's own key.
+    fn named_bug(dir: &Temp, name: &str, at: u64) -> (String, String) {
+        store::update(dir.path(), "/p", |doc| {
+            doc.note_failure(&cand(name), at);
+            let item = doc.items.iter().find(|i| i.name == name).unwrap().clone();
+            doc.mark_code_wrong(&item.id, "the total ignores tax", at + 1);
+            let key = Doc::bug_key(doc.items.iter().find(|i| i.name == name).unwrap());
+            (format!("{BUG_KEY_PREFIX}{}", short_id(&key)), key)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn the_persons_ship_anyway_on_a_real_bugs_row_is_recorded_on_that_item_only() {
+        let dir = Temp::new();
+        let (row, key) = named_bug(&dir, "totals add up", 1);
+        let (other_row, other_key) = named_bug(&dir, "rounds", 3);
+        // Any other answer, or the answer on another kind of row, records nothing.
+        for (row, answer) in [
+            (row.as_str(), FIX_IT),
+            (row.as_str(), NOT_NOW),
+            (row.as_str(), ""),
+            (row.as_str(), "Ship anyway please do"),
+            ("test-debt-score-0123456789abcdef", SHIP_ANYWAY),
+            ("test-debt-bug-", SHIP_ANYWAY),
+            ("test-debt-bug-0000000000000000", SHIP_ANYWAY),
+            ("something-else", SHIP_ANYWAY),
+        ] {
+            assert!(
+                !ship_anyway_in(dir.path(), "/p", row, answer, 10),
+                "{row} {answer:?}"
+            );
+        }
+        assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 2);
+        // The answer, with the spacing and case a typed answer has, on the right row.
+        assert!(ship_anyway_in(dir.path(), "/p", &row, "  ship ANYWAY ", 11));
+        let doc = store::read(dir.path(), "/p");
+        let shipped = doc.items.iter().find(|i| Doc::bug_key(i) == key).unwrap();
+        assert_eq!(shipped.ship_anyway_at, Some(11));
+        let waiting: Vec<String> = doc.waiting_bugs().map(Doc::bug_key).collect();
+        assert_eq!(
+            waiting,
+            vec![other_key.clone()],
+            "the other bug still waits"
+        );
+        assert!(
+            shipped.decision.is_some(),
+            "it is still named, and still a finding"
+        );
+        // Said twice, or for the other bug later: once each.
+        assert!(!ship_anyway_in(dir.path(), "/p", &row, SHIP_ANYWAY, 12));
+        assert_eq!(
+            store::read(dir.path(), "/p").items[0].ship_anyway_at,
+            Some(11),
+            "the first answer's time stands"
+        );
+        assert!(ship_anyway_in(
+            dir.path(),
+            "/p",
+            &other_row,
+            SHIP_ANYWAY,
+            13
+        ));
+        assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 0);
+    }
+
+    #[test]
+    fn ship_anyway_for_a_bug_that_passed_since_or_in_another_project_records_nothing() {
+        let dir = Temp::new();
+        let (row, _) = named_bug(&dir, "totals add up", 1);
+        // Another project's notes have no such bug.
+        assert!(!ship_anyway_in(
+            dir.path(),
+            "/elsewhere",
+            &row,
+            SHIP_ANYWAY,
+            5
+        ));
+        assert!(
+            !store::path_of(dir.path(), "/elsewhere").exists(),
+            "nothing was written there"
+        );
+        // The test went green and left the list: there is nothing to ship anyway.
+        store::update(dir.path(), "/p", |doc| doc.remove_green(|_| true)).unwrap();
+        assert!(!ship_anyway_in(dir.path(), "/p", &row, SHIP_ANYWAY, 6));
+        // It fails again later: a new item, asked afresh, with no earlier override.
+        let (again_row, _) = named_bug(&dir, "totals add up", 100);
+        assert_ne!(
+            again_row, row,
+            "the bug's key carries when it entered the list"
+        );
+        assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 1);
+        assert!(
+            !ship_anyway_in(dir.path(), "/p", &row, SHIP_ANYWAY, 7),
+            "the old row is not the new bug"
+        );
+    }
+
+    #[test]
+    fn a_notes_file_that_cannot_be_read_records_no_ship_anyway() {
+        let dir = Temp::new();
+        let path = store::path_of(dir.path(), "/p");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(
+            &path,
+            format!("{{\"version\": {}}}", crate::test_debt::doc::VERSION + 1),
+        )
+        .unwrap();
+        assert!(!ship_anyway_in(
+            dir.path(),
+            "/p",
+            "test-debt-bug-0123456789abcdef",
+            SHIP_ANYWAY,
+            1
+        ));
+    }
+
+    fn decision(
+        key: &str,
+        state: &str,
+        answer: Option<&str>,
+        by: Option<&str>,
+    ) -> crate::decisions::Decision {
+        crate::decisions::Decision {
+            project: "/p".into(),
+            decision_key: key.into(),
+            question: "q".into(),
+            options: vec![FIX_IT.into(), NOT_NOW.into(), SHIP_ANYWAY.into()],
+            recommended: Some(FIX_IT.into()),
+            asked_by: "chat-1".into(),
+            asked_by_mono: None,
+            waiting: Vec::new(),
+            state: state.into(),
+            answer: answer.map(str::to_string),
+            answered_by: by.map(str::to_string),
+            answered_at: None,
+            created_at: 1,
+            updated_at: 1,
+            version: 1,
+            standing: false,
+            keys: Vec::new(),
+            retired_at: None,
+            retired_reason: None,
+            reuse_stopped: false,
+            force_reason: None,
+            answer_reason: None,
+            standing_id: String::new(),
+        }
+    }
+
+    #[test]
+    fn only_the_persons_own_answer_counts_not_a_first_mates_or_a_pages_or_an_open_row() {
+        let key = "test-debt-bug-0123456789abcdef";
+        let answered =
+            |by: Option<&str>| decision(key, crate::decisions::ANSWERED, Some(SHIP_ANYWAY), by);
+        // The Needs sheet names nobody (or `user`), the Inbox card names `person`.
+        for by in [None, Some("user"), Some("person"), Some(" person ")] {
+            assert_eq!(person_answer(&answered(by)), Some(SHIP_ANYWAY), "{by:?}");
+        }
+        // A first mate's chat, a page, the captain, autopilot or a worker answering is not the person.
+        for by in [
+            "chat:abc",
+            "page:home",
+            "captain",
+            "autopilot",
+            "worker:1",
+            "somebody",
+        ] {
+            assert_eq!(person_answer(&answered(Some(by))), None, "{by}");
+        }
+        let open = decision(key, crate::decisions::OPEN, Some(SHIP_ANYWAY), None);
+        assert_eq!(person_answer(&open), None, "a row nobody has answered");
+        let blank = decision(key, crate::decisions::ANSWERED, None, None);
+        assert_eq!(person_answer(&blank), None, "an answer with no words");
     }
 
     #[test]

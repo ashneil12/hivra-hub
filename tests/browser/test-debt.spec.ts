@@ -40,6 +40,16 @@ test("real bugs and flaky tests are listed with a label and not counted", async 
   await expect(popover.locator("[data-test-debt-item='flaky']")).toContainText("Flaky");
 });
 
+test("a real bug the person chose to ship with is labelled apart from one that still waits on them", async ({ page }) => {
+  await page.goto("/tests/browser/test-debt.html?state=shipping");
+  await expect(page.getByText("1 test to sort at ship", { exact: true })).toBeVisible();
+  await page.locator("[data-test-debt-more]").click();
+  const popover = page.locator("[data-test-debt-popover]");
+  await expect(popover.locator("[data-test-debt-item]")).toHaveCount(3);
+  await expect(popover.locator("[data-test-debt-item='real-bug'] [data-test-debt-state]")).toHaveText("Real bug");
+  await expect(popover.locator("[data-test-debt-item='shipping-anyway'] [data-test-debt-state]")).toHaveText("Real bug, shipping anyway");
+});
+
 test("while the app is sorting, the line reads Sorting with the number still to sort", async ({ page }) => {
   await page.goto("/tests/browser/test-debt.html?state=sorting");
   await expect(page.getByText("Sorting 2 tests", { exact: true })).toBeVisible();

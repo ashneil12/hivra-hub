@@ -13,7 +13,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { loadTestingMode, type TestingMode } from "../../delivery/model/testingMode";
 import { endToEndDidNotPass, latestShipCheck, shortSha, tauriShipCheck, type ShipCheckBackend } from "../../hub/model/shipCheck";
-import { loadTestDebt } from "../../hub/model/testDebt"; // PT-5
+import { loadTestDebt, testDebtBugs } from "../../hub/model/testDebt"; // PT-5
 import { forUser } from "../../hub/model/userName";
 import { queuedWorkers } from "../../monos/model/workerPool";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
@@ -26,6 +26,8 @@ export const HOLD_NOTE = "Held: no ship check for this version yet.";
 export const OPEN_WORK_NOTE = "Held: tasks still open.";
 /** PT-5: the one grey line when failing tests are still being sorted. */
 export const SORTING_NOTE = "Held: tests still being sorted.";
+/** PT-5 follow-up: the one grey line when a test the fixer named as a real bug waits on the person. */
+export const BUGS_NOTE = "Held: a real bug waits on you.";
 
 // ---- is this a ship claim? --------------------------------------------------------------------------------------------
 
@@ -222,7 +224,7 @@ export type HoldDeps = {
    * PT-5: how many failing tests wait to be sorted at ship, and whether the test fixer is on them. Absent, or an answer that can't be
    * read, is not a reason to hold: nothing is held on a guess.
    */
-  sorting?(cwd: string): Promise<{ toSort: number; sorting: boolean } | undefined>;
+  sorting?(cwd: string): Promise<{ toSort: number; sorting: boolean; bugs?: number } | undefined>;
 };
 
 export type HoldContext = { chat: Session; reply: Block; deps: HoldDeps };
@@ -382,6 +384,17 @@ const shipCheckRule: HoldRule = {
         note: SORTING_NOTE,
       };
     }
+    // PT-5 follow-up: a test the fixer named as a real bug holds the version until the test passes or the person answers Ship anyway
+    // on its row. Over a pass too: the fixer names it after the ship check ran. Not a whole number of one or more is no answer.
+    const bugs = debt && Number.isInteger(debt.bugs) && (debt.bugs ?? 0) > 0 ? (debt.bugs as number) : 0;
+    if (bugs > 0) {
+      const words = bugs === 1 ? "1 failing test names a real bug and waits on the person" : `${bugs} failing tests name real bugs and wait on the person`;
+      return {
+        key: `${head}:bugs:${bugs}`,
+        message: `Not ready to ship yet: ${words}. Each is a row on their Needs you list, where they answer Fix it, Not now or Ship anyway. Do not call this version ready until the test passes or they answer Ship anyway.`,
+        note: BUGS_NOTE,
+      };
+    }
     if (await deps.passed(chat.cwd, head)) return undefined;
     return {
       key: head,
@@ -479,7 +492,7 @@ export function holdDeps(
   loadMode: (cwd: string) => Promise<{ mode: TestingMode }> = loadTestingMode,
   openWork: (chatId: string) => Promise<unknown> = tauriOpenWork,
   queued: () => readonly { id: string; ownerSession: string; title: string }[] = queuedWorkers,
-  readDebt: (cwd: string) => Promise<{ count: number; sorting: boolean } | null> = loadTestDebt,
+  readDebt: (cwd: string) => Promise<{ count: number; sorting: boolean; items?: readonly { state: string }[] } | null> = loadTestDebt,
 ): HoldDeps {
   return {
     mode: async (cwd) => (await loadMode(cwd)).mode,
@@ -498,7 +511,10 @@ export function holdDeps(
     // PT-5: read from the app's own list; a read that fails is no answer, never a hold.
     sorting: async (cwd) => {
       const summary = await readDebt(cwd);
-      return summary ? { toSort: summary.count, sorting: summary.sorting } : undefined;
+      if (!summary) return undefined;
+      // The bugs still waiting on the person; absent when none (an app that doesn't say holds nothing for them).
+      const bugs = testDebtBugs(summary.items ?? []);
+      return { toSort: summary.count, sorting: summary.sorting, ...(bugs > 0 ? { bugs } : {}) };
     },
   };
 }

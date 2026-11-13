@@ -17,7 +17,11 @@ import {
   type TestDebtSummary,
 } from "../model/testDebt";
 
-const STATE_LABEL: Partial<Record<TestDebtState, string>> = { "real-bug": "Real bug", flaky: "Flaky" };
+const STATE_LABEL: Partial<Record<TestDebtState, string>> = {
+  "real-bug": "Real bug",
+  "shipping-anyway": "Real bug, shipping anyway",
+  flaky: "Flaky",
+};
 
 function ago(since: number): string {
   return formatRelativeTime(new Date(since).toISOString());
