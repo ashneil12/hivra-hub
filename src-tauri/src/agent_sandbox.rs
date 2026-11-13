@@ -706,6 +706,39 @@ fn push_foreign_real_home(lines: &mut Vec<String>, home: &Path) -> Result<(), St
     Ok(())
 }
 
+/// A glob under home (`.config/fish/conf.d/**`) whose fixed folder part is a link, or sits under one (`~/.config` into a
+/// dotfiles repository): the same glob under that folder's real place, so a write by the target's own name is refused.
+/// The deepest part of the folder that exists is resolved and the rest of the glob is appended, so a folder not made yet
+/// behind a link is covered too. A target the profile cannot quote is an error (`quote_target`).
+fn push_real_glob(
+    lines: &mut Vec<String>,
+    home: &Path,
+    glob: &str,
+    ops: &str,
+) -> Result<(), String> {
+    let parts: Vec<&str> = glob.split('/').collect();
+    let fixed = parts.iter().take_while(|part| !part.contains('*')).count();
+    for depth in (1..=fixed).rev() {
+        let prefix = home.join(parts[..depth].join("/"));
+        if std::fs::symlink_metadata(&prefix).is_err() {
+            continue;
+        }
+        let Ok(real) = std::fs::canonicalize(&prefix) else {
+            return Ok(());
+        };
+        if real == prefix {
+            return Ok(());
+        }
+        lines.push(format!(
+            r#"(deny {ops} (regex #"^{}/{}$"))"#,
+            ci_regex(quote_target(&real)?),
+            glob_regex(&parts[depth..].join("/"))
+        ));
+        return Ok(());
+    }
+    Ok(())
+}
+
 /// Keychains are write-only. Everything else in the secret list is read and write. A shell profile may be a glob
 /// (`.config/fish/conf.d/**`); that one is denied as a pattern, not as a literal file name.
 fn push_secret_places(
@@ -745,6 +778,8 @@ fn push_secret_places(
                     glob_regex(file)
                 ));
             }
+            // The folder part of the glob may be a link (a dotfiles repo): the same glob is denied under its target.
+            push_real_glob(lines, home, file, ops)?;
             lock_relative(lines, home, file, true, seen)?;
         } else {
             push_home_entry(lines, forms, file, false, ops);

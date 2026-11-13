@@ -117,6 +117,46 @@ fn a_linked_app_data_folder_is_denied_by_its_target_too() {
     );
 }
 
+// ---- bug 2: a shell profile folder is a link ------------------------------------------------------------------------
+
+/// `~/.config/fish/conf.d/**` is a pattern of its own, so it had no rule for where a link goes. Its target is denied
+/// when the folder is the link, when a folder above it is (`~/.config` into a dotfiles repository), and when the folder
+/// itself is not made yet behind that link. Nothing else in the target is swept in.
+#[test]
+fn a_linked_shell_profile_folder_is_denied_through_its_target() {
+    // The folder itself is the link.
+    let scratch = Scratch::new();
+    let home = scratch.dir("home");
+    let real = scratch.dir("dot files/conf d");
+    scratch.dir("home/.config/fish");
+    std::os::unix::fs::symlink(&real, home.join(".config/fish/conf.d")).unwrap();
+    let text = profile(&home, &[]).unwrap();
+    assert!(write_denied(&text, &real.join("evil.fish")));
+    assert!(write_denied(&text, &real.join("nested/evil.fish")));
+
+    // A folder above it is the link, with the folder made and not made.
+    for made in [true, false] {
+        let scratch = Scratch::new();
+        let home = scratch.dir("home");
+        let config = scratch.dir("dot files/config");
+        if made {
+            scratch.dir("dot files/config/fish/conf.d");
+        }
+        std::os::unix::fs::symlink(&config, home.join(".config")).unwrap();
+        let text = profile(&home, &[]).unwrap();
+        let hook = config.join("fish/conf.d/evil.fish");
+        assert!(
+            write_denied(&text, &hook),
+            "{} is writable behind a linked ~/.config (conf.d made: {made})",
+            hook.display()
+        );
+        assert!(
+            !write_denied(&text, &config.join("unrelated/file")),
+            "the whole linked folder was denied, not only the glob"
+        );
+    }
+}
+
 // ---- bug 3: a link target the profile cannot quote ------------------------------------------------------------------
 
 /// A link whose target has a quote, a backslash or a control character cannot be written into the profile, and leaving
