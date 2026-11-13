@@ -433,11 +433,13 @@ fn sibling_tests(path: &str) -> Vec<String> {
     }
 }
 
-/// Where a fixer's report is checked: the runs its own task recorded and the copy it worked in.
+/// Where a fixer's report is checked: the runs its own task recorded, and the project's main checkout.
 pub struct FixerRun<'a> {
     /// The fixer task's delegation id: whose `run_checks` records are its own.
     pub delegation_id: &'a str,
-    pub checkout: &'a Path,
+    /// The project's MAIN checkout, where the test files are read to tell whether a test is critical. Never the fixer's own copy: the
+    /// fixer can edit that (take the marker off a test, or put a blank line under it) and its report is its own word.
+    pub main: &'a Path,
     /// The project's own protected paths, which make a test critical like the built-in sensitive ones.
     pub protected_extra: &'a [String],
 }
@@ -475,17 +477,18 @@ pub fn fixer_report(
         return Ok(None);
     }
     let reported = fixer::parse_report(report);
-    // What the proof reads is read before the list is locked: git and the files are not read under it.
+    // The project's file list (git) and the fixer's run records are read before the list is locked. The test files themselves are read
+    // as each flaky test is judged, under it: at most two small files each, never a link or a pipe (`plain_file`).
     let flaky = reported.iter().any(|r| r.kind == fixer::Kind::Flaky);
     let tracked = if flaky {
-        tracked_files(run.checkout)
+        tracked_files(run.main)
     } else {
         Vec::new()
     };
     let patterns =
         crate::firstmate::sensitive::patterns_for(Some(Path::new(project)), run.protected_extra);
     let green = green_records(&run_checks::records(data_dir, run.delegation_id));
-    let read_file = |path: &str| read_with_siblings(run.checkout, &tracked, path);
+    let read_file = |path: &str| read_with_siblings(run.main, &tracked, path);
     let critical = |item: &Item| {
         super::quarantine::critical_reason(
             &repo_path(&tracked, &item.file),
@@ -1488,10 +1491,10 @@ mod tests {
     // ---- PT-5 follow-up: a flaky decision is checked, not taken on the fixer's word -------------------------------------------
 
     /// The fixer task's own runs are the delegation `fix-1`'s.
-    fn fixer_run(checkout: &Temp) -> FixerRun<'_> {
+    fn fixer_run(main: &Temp) -> FixerRun<'_> {
         FixerRun {
             delegation_id: "fix-1",
-            checkout: checkout.path(),
+            main: main.path(),
             protected_extra: &[],
         }
     }
@@ -1611,6 +1614,41 @@ mod tests {
         assert!(store::read(data.path(), "/projects/tally")
             .quarantine
             .is_empty());
+    }
+
+    #[test]
+    fn what_makes_a_test_critical_is_read_from_the_projects_main_checkout_not_the_fixers_copy() {
+        // The fixer's copy has the marker taken off (or a blank line put under it); the project's own file still says critical.
+        let main = repo_with(&[
+            ("src/feature.ts", "export {}\n"),
+            (
+                "src/other.test.ts",
+                "// @critical\nit(\"works\", () => {});\n",
+            ),
+        ]);
+        let tampered_copy = plain_repo();
+        let data = Temp::new();
+        listed_with_a_fixer(&data, &tampered_copy, "src/other.test.ts");
+        green_run(&data, "fix-1", "npx vitest run", 1_500, &[]);
+        let applied = flaky_report(&data, &main, 2_000);
+        assert_eq!(applied.critical.len(), 1, "{applied:?}");
+        assert!(store::read(data.path(), "/projects/tally")
+            .quarantine
+            .is_empty());
+        // And the other way round: a marker only in the fixer's copy decides nothing.
+        let main = plain_repo();
+        let copy = repo_with(&[
+            ("src/feature.ts", "export {}\n"),
+            (
+                "src/other.test.ts",
+                "// @critical\nit(\"works\", () => {});\n",
+            ),
+        ]);
+        let data = Temp::new();
+        listed_with_a_fixer(&data, &copy, "src/other.test.ts");
+        green_run(&data, "fix-1", "npx vitest run", 1_500, &[]);
+        let applied = flaky_report(&data, &main, 2_000);
+        assert_eq!(applied.flaky.len(), 1, "{applied:?}");
     }
 
     #[test]

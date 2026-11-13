@@ -187,12 +187,18 @@ pub fn apply_report(
     applied
 }
 
-/// The tests the next fixer is given: undecided, oldest first, at most `BRIEF_ITEMS_MAX`.
+/// The tests the next fixer is given: undecided, oldest first, at most `BRIEF_ITEMS_MAX`. A test the app sent back (a flaky decision
+/// with no green run to show, `NO_GREEN_NOTE`) waits behind the ones not yet tried: a test that can't be proven (it failed in a run no
+/// `run_checks` step can repeat) would otherwise come first at every ship check and crowd the newer ones out.
 pub fn pick(doc: &Doc) -> Vec<Item> {
     let mut items: Vec<Item> = doc.undecided().cloned().collect();
     items.sort_by(|a, b| {
-        a.first_seen_at
-            .cmp(&b.first_seen_at)
+        a.note
+            .trim()
+            .is_empty()
+            .cmp(&b.note.trim().is_empty())
+            .reverse()
+            .then_with(|| a.first_seen_at.cmp(&b.first_seen_at))
             .then_with(|| a.id.cmp(&b.id))
     });
     items.truncate(BRIEF_ITEMS_MAX);
@@ -633,6 +639,25 @@ mod tests {
         let request = build(&doc, &|_| Vec::new()).unwrap();
         assert!(request.brief.contains(NO_GREEN_NOTE), "{}", request.brief);
         assert_eq!(request.ids, vec![a]);
+    }
+
+    #[test]
+    fn a_test_sent_back_for_want_of_a_green_run_is_briefed_after_the_ones_not_yet_tried() {
+        let mut doc = Doc::default();
+        let oldest = listed(&mut doc, "src/a.test.ts", "a", 1);
+        let newer = listed(&mut doc, "src/b.test.ts", "b", 2);
+        let newest = listed(&mut doc, "src/c.test.ts", "c", 3);
+        doc.note_unproven(&oldest, NO_GREEN_NOTE);
+        let order: Vec<String> = pick(&doc).into_iter().map(|item| item.id).collect();
+        assert_eq!(order, vec![newer.clone(), newest.clone(), oldest.clone()]);
+        // With more than a brief holds, the ones that already came back wait their turn instead of crowding the new ones out.
+        for n in 0..BRIEF_ITEMS_MAX {
+            listed(&mut doc, "src/d.test.ts", &format!("d{n}"), 10 + n as u64);
+        }
+        let picked: Vec<String> = pick(&doc).into_iter().map(|item| item.id).collect();
+        assert_eq!(picked.len(), BRIEF_ITEMS_MAX);
+        assert!(!picked.contains(&oldest), "{picked:?}");
+        assert!(picked.contains(&newer) && picked.contains(&newest));
     }
 
     #[test]

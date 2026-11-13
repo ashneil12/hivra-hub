@@ -2608,6 +2608,15 @@ fn an_ordinary_move_and_an_unreadable_copy_read_as_they_did() {
 }
 
 #[test]
+fn a_fixers_report_is_checked_against_the_projects_main_checkout_never_its_own_copy() {
+    // `fixer_report_read` knows the fixer's copy (`/work/tally-worktrees/fixer-copy`) and the project's main checkout (the string the notes
+    // are kept under). The fixer can edit its copy, so what makes a test critical is read from the main checkout.
+    let run = fixer_run_of("fix-1", "/projects/tally", &[]);
+    assert_eq!(run.delegation_id, "fix-1");
+    assert_eq!(run.main, Path::new("/projects/tally"));
+}
+
+#[test]
 fn an_exit_that_is_not_the_one_asked_for_fails_the_round_without_asking_the_model() {
     let f = built();
     let fake = Fake {

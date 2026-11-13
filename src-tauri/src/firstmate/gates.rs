@@ -2789,6 +2789,20 @@ fn quarantine_read(
     Some(outcome)
 }
 
+/// PT-5 follow-up: where a fixer's report is checked: its own task's `run_checks` records, and the project's main checkout for what
+/// makes a test critical. Not its own copy: it can edit that (take a marker off a test) and its report is its own word.
+fn fixer_run_of<'a>(
+    delegation_id: &'a str,
+    project: &'a str,
+    protected_extra: &'a [String],
+) -> crate::test_debt::gate::FixerRun<'a> {
+    crate::test_debt::gate::FixerRun {
+        delegation_id,
+        main: Path::new(project),
+        protected_extra,
+    }
+}
+
 /// PT-5: the test fixer's report, when this task is the fixer: its decisions are applied to the list and its slot is freed.
 fn fixer_report_read(
     app: &AppHandle,
@@ -2807,11 +2821,7 @@ fn fixer_report_read(
         &row.child_session,
         report,
         now_millis().max(0) as u64,
-        &crate::test_debt::gate::FixerRun {
-            delegation_id: &row.id,
-            checkout,
-            protected_extra,
-        },
+        &fixer_run_of(&row.id, &project, protected_extra),
     ) {
         let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
     }
