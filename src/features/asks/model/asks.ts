@@ -69,8 +69,6 @@ export const NOTE_MAX = 300;
 export const PROOF_MAX = 300;
 /** The most asks one message can hold. A longer list is a model gone wrong. */
 export const ASKS_PER_MESSAGE = 24;
-/** The most "maybe" lines the safety net adds to one message, so a long think-aloud is not a wall of them. */
-export const MAYBE_PER_MESSAGE = 6;
 /** Closed asks are kept up to this many, oldest out first. Open ones are never dropped. */
 export const CLOSED_CAP = 2000;
 const HEARD_CAP = 4000;
@@ -327,12 +325,14 @@ export type HeardList = { asks: HeardAsk[]; maybes: HeardAsk[] };
 
 /**
  * The model's asks, plus the safety net: any sentence that reads like an ask and that none of them covers comes along
- * as a "maybe". With no model list, the rules' own reading stands as the asks.
+ * as a "maybe". With no model list, the rules' own reading stands as the asks. Every uncovered sentence comes along,
+ * with no cap: the quick reading already wrote each of them down, so a cap here would silently drop an ask the person
+ * had been shown. The receipt counts them ("7 to check") instead of hiding any.
  */
 export function hearMessage(message: string, model: readonly HeardAsk[] | undefined): HeardList {
   const rules = rulesAsks(message);
   if (!model) return { asks: rules.slice(0, ASKS_PER_MESSAGE), maybes: [] };
-  const maybes = rules.filter((ask) => !covers(model, ask.quote)).slice(0, MAYBE_PER_MESSAGE);
+  const maybes = rules.filter((ask) => !covers(model, ask.quote));
   return { asks: [...model], maybes };
 }
 
