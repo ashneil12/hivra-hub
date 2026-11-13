@@ -18,6 +18,8 @@
 // - A finished result read through tasks.status counts as received: the row is acknowledged and its report turn
 //   dropped.
 import { monoHomeFence } from "../../hub/model/hubMcp";
+import { isCaptainMono } from "../../chief/model/charter";
+import { readCrewRules } from "../../monos/model/crewRules";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import { modelEffortLabel, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
 import { isCustomModelId } from "../../sessions/model/customModels";
@@ -900,6 +902,21 @@ function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tas
   return { owner, tasks: host.tasks };
 }
 
+/**
+ * The Chief of Staff hands work on and never starts crew itself (chief/model/charter.ts). Its only road to a worker is
+ * a brief to a project's Lead (captain.handoff, or tasks.delegate with `lead`); a worker of its own is refused here.
+ */
+/** steering.rs TEXT_MAX: a message to a worker over this is refused. */
+const STEER_TEXT_MAX = 8_000;
+
+export const CAPTAIN_NO_CREW =
+  "The Chief of Staff hands work on and never starts workers itself. Use captain.handoff (or tasks.delegate with lead) so the project's first mate runs the work.";
+
+function refuseCaptainCrew(source: Session, host: AgentAppHost, toLead: boolean): void {
+  if (toLead || !host.isMono(source.id)) return;
+  if (isCaptainMono(host.monoOf?.(source.id) as Parameters<typeof isCaptainMono>[0])) throw new Error(CAPTAIN_NO_CREW);
+}
+
 /** The caller's rows by id, in the order asked; one that isn't the caller's reads exactly like one that doesn't exist. */
 async function ownRows(
   source: Session,
@@ -1078,6 +1095,7 @@ async function delegate(
   helpers: TaskHelpers,
 ) {
   const { owner, tasks } = taskOwner(source, host);
+  refuseCaptainCrew(source, host, input.lead !== undefined);
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
     throw new Error(
       "request ID must use letters, digits, underscores or hyphens (up to 100)",
@@ -1473,6 +1491,8 @@ async function delegate(
   ).catch(
     () => undefined,
   );
+  // The first mate's own crew rules (monos/model/crewRules.ts), read fresh for each brief.
+  const crewRules = owner.mono ? await readCrewRules(owner.mono.id, owner.name) : undefined;
   const id = `app-${source.id}-${requestId}`;
   // Idempotent (H8c): a task already recorded for this request is never started a second time, so a waiting worker
   // asked again after a window died mid-start (its claim ran out) or a retried call only reads it back.
@@ -1533,7 +1553,7 @@ async function delegate(
           ),
           goal,
           memory,
-          workerRules(port),
+          [workerRules(port), crewRules].filter(Boolean).join("\n\n"),
         ),
         // PM's r63 run: a worker tab was named from the brief's first line ("Ash's words, verbatim: …"); it is the job.
         title,
@@ -1940,6 +1960,8 @@ async function fanout(
   host: AgentAppHost,
   helpers: TaskHelpers,
 ) {
+  // A fan-out's tasks are all workers, so the Chief of Staff never sends one.
+  refuseCaptainCrew(source, host, false);
   if (input.resume !== undefined) {
     if (input.tasks !== undefined)
       throw new Error("A resume carries on a plan already sent: leave out tasks (name the stopped ones in confirm).");
@@ -2900,7 +2922,12 @@ async function firstMateTool(
   if (!tasks.firstMate) throw new Error("This build can't steer workers or ask the person yet.");
   if (action === "tasks.message") {
     const [row] = await ownRows(source, tasks, [text(input.taskId, "taskId", 128)]);
-    return taskMessage(source, requestId, input, row, tasks.firstMate);
+    // The first mate's crew rules ride with every message, so a rule added since the brief reaches the running worker.
+    // A message too long to carry them still goes; the worker keeps the copy in its brief.
+    const crew = owner.mono ? await readCrewRules(owner.mono.id, owner.name) : undefined;
+    const said = typeof input.text === "string" ? input.text.trim() : "";
+    const withCrew = crew && said && said.length + crew.length + 2 <= STEER_TEXT_MAX ? { ...input, text: `${said}\n\n${crew}` } : input;
+    return taskMessage(source, requestId, withCrew, row, tasks.firstMate);
   }
   // WP-172: the question that starts a stopped task again is the app's alone: an agent may not create it (not even
   // without an answer), since the card would carry the words the agent chose.

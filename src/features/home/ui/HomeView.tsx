@@ -15,6 +15,7 @@ import { useHubDataVersion, hubData } from "../../hub/model/hubData";
 import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { useNeedsYou } from "../../needs/model/needsLive";
+import { clearLastSetAside, lastSetAside, setAsideNeed, undoSetAside, useSetAsideVersion } from "../../needs/model/setAside";
 import { workingCount } from "../../needs/model/needsYou";
 import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workLog";
 import { hideSection, pinPanel, showSection, unpin, withCardOrder } from "../model/arrangement";
@@ -123,6 +124,7 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
   useWorkerPoolVersion();
   const delegations = useDelegationRows();
   const needs = useNeedsYou();
+  useSetAsideVersion();
   // WP-176: a spend limit change clears or shows the pause without waiting for the next queue tick.
   useSyncExternalStore(subscribeSpend, () => spendSnapshot().book.revision, () => 0);
   const projectKey = hubData().listProjects().map((project) => `${project.id}\0${project.name}\0${project.folder ?? ""}`).join("\n");
@@ -364,7 +366,9 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
     blocksShip: needsRank(item) === 1,
     actions: needActions(item),
     onOpen: () => openNeed(item),
+    onSetAside: () => setAsideNeed(item),
   }));
+  const justSetAside = lastSetAside();
   const workRows: HomeWork[] = lines.map((line) => ({
     key: line.key,
     project: label(line.projectId),
@@ -424,6 +428,7 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
       date={homeDateLabel(now)}
       chief={chief}
       needs={needRows}
+      setAside={justSetAside ? { sentence: justSetAside.sentence, onUndo: () => undoSetAside(justSetAside.key), onClose: clearLastSetAside } : null}
       needsTotal={totalNeeds}
       // WP-210: the count at a glance, the card's count and the rail's badges are the one Needs you list.
       needsGlance={totalNeeds}
