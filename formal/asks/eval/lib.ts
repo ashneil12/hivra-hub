@@ -16,8 +16,10 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { isLongMessage, worthKeeping } from "../../../src/features/asks/hooks/useAskLedger";
+import { routeHubDump } from "../../../src/features/asks/model/hubRoute";
 import { createAskStore, type AskStore } from "../../../src/features/asks/model/askStore";
 import { hearMessage, hearPrompt, nothingToHear, parseHeard, quoteIn, rulesAsks, type Ask, type AskKind } from "../../../src/features/asks/model/asks";
+import { wideAsks } from "../../../src/features/asks/model/wideReading";
 import { extractAsks } from "../../../src/features/hub/model/askLedger";
 import { memoryDisk } from "../../../src/features/hub/model/localHub/localHub";
 
@@ -68,9 +70,10 @@ export function replyItems(reply: string): number {
 
 /**
  * One message of Ash's through what the app does with it, in the order useAskLedger.ts does it:
- *  1. the quick reading at once (rulesAsks), kept only when worthKeeping says so (the hook's `if (!mark)` branch);
+ *  1. the quick reading at once (wideAsks: the rules, plus what the old hub ledger's regex found), every ask written, and
+ *     quiet (no receipt, no nudge) when worthKeeping says the chat should not show it (the hook's `if (!mark)` branch);
  *  2. for a long message with a model call available, up to MODEL_TRIES model readings, each checked word for word and
- *     joined with the rules' safety net (hearMessage), the second only once the chat is quiet (the `mark.tries` gate).
+ *     joined with the wide reading as the safety net (hearMessage), the second only once the chat is quiet (the `mark.tries` gate).
  * `busy` says the chat is working when the second try comes round, so it is held back (the second try then never runs
  * in this one-shot, which is what the hook does while the turn lasts).
  */
@@ -80,11 +83,11 @@ export async function hearLikeApp(
 ): Promise<Trace> {
   const { text, mateId, sessionId, blockId, ask, busy = false, now } = input;
   const base = { mateId, sessionId, blockId };
-  const quick = nothingToHear(text) ? [] : rulesAsks(text);
+  const quick = nothingToHear(text) ? [] : wideAsks(text);
   const long = isLongMessage(text) && !nothingToHear(text);
-  const keep = worthKeeping(text, quick, []);
-  await store.hear({ ...base, list: { asks: keep ? quick : [], maybes: [] }, by: long && ask ? "rules" : keep ? "rules" : "model", now: now() });
-  const trace: Trace = { quickRows: quick.length, keptInLedger: keep, attempts: [], heardBy: "", tries: 0 };
+  const keep = worthKeeping(text, rulesAsks(text), []);
+  await store.hear({ ...base, list: { asks: quick, maybes: [] }, by: long && ask ? "rules" : quick.length ? "rules" : "model", now: now(), ...(keep ? {} : { quiet: true }) });
+  const trace: Trace = { quickRows: quick.length, keptInLedger: quick.length > 0, attempts: [], heardBy: "", tries: 0 };
   for (let pass = 0; pass < 6; pass += 1) {
     const mark = store.doc().heard[blockId] ?? (await store.load()).heard[blockId];
     if (!mark || mark.by !== "rules" || !ask || !isLongMessage(text)) break;
@@ -102,11 +105,11 @@ export async function hearLikeApp(
     }
     if (!heard) {
       if (attempt.outcome === "ok") attempt.outcome = "no-list";
-      const again = rulesAsks(text);
-      await store.hear({ ...base, list: { asks: worthKeeping(text, again, []) ? again : [], maybes: [] }, by: "rules", now: now() });
+      const again = wideAsks(text);
+      await store.hear({ ...base, list: { asks: again, maybes: [] }, by: "rules", now: now(), ...(worthKeeping(text, rulesAsks(text), []) ? {} : { quiet: true }) });
     } else {
       attempt.kept = heard.length;
-      const list = hearMessage(text, heard);
+      const list = hearMessage(text, heard, wideAsks(text));
       // As the hook: the message is long here, so any row at all is kept (sc-17-ask-fixes).
       const kept = list.asks.length + list.maybes.length > 0;
       await store.hear({ ...base, list: kept ? list : { asks: [], maybes: [] }, by: "model", now: now() });
@@ -259,8 +262,13 @@ export function totals(results: readonly MessageResult[], corpus: Corpus): Total
 
 // ---- The model call: injected ---------------------------------------------------------------------------------------
 
-/** hub: the other extractor, hub/model/askLedger.ts extractAsks (regex only, no model), which feeds the "You asked" list. */
-export type Mode = "rules" | "oracle" | "recorded" | "live" | "hub";
+/**
+ * hub: a message in a hub chat that no first mate hears, as the app now writes it (hubRoute.ts routeHubDump: the wide
+ *   reading, no model), the path the "You asked" list is fed by since the two ledgers were made one.
+ * hub-old: what that list was fed by before: the old hub ledger's extractor alone (askLedger.ts extractAsks, regex only).
+ *   Kept as the baseline the combined path must not fall below.
+ */
+export type Mode = "rules" | "oracle" | "recorded" | "live" | "hub" | "hub-old";
 export type AskOptions = {
   mode: Mode;
   recording?: Recording;
@@ -279,7 +287,7 @@ export const sha = (text: string): string => createHash("sha256").update(text).d
 
 /** The model call for one message, or undefined when the mode has none (the rules' reading stands alone). */
 export function askFor(message: EvalMessage, options: AskOptions): Ask$ | undefined {
-  if (options.mode === "rules" || options.mode === "hub") return undefined;
+  if (options.mode === "rules" || options.mode === "hub" || options.mode === "hub-old") return undefined;
   let calls = 0;
   const shape = (reply: string): string => {
     if (options.lazy === undefined) return reply;
@@ -323,11 +331,21 @@ export function askFor(message: EvalMessage, options: AskOptions): Ask$ | undefi
 export async function evaluate(corpus: Corpus, options: AskOptions): Promise<{ results: MessageResult[]; totals: Totals }> {
   const results: MessageResult[] = [];
   for (const message of corpus.messages) {
-    if (options.mode === "hub") {
-      // The hub ledger's reading of the message (dumpCheck.noteDumps calls recordAskText, which is extractAsks plus a row
-      // per ask, deduped by askKey and capped at 400 rows overall: the per-message cap of 6 is inside extractAsks).
+    if (options.mode === "hub-old") {
+      // The old hub ledger's reading of the message (dumpCheck.noteDumps called recordAskText, which was extractAsks plus a
+      // row per ask, deduped by askKey: the per-message cap of 6 is inside extractAsks).
       const rows: Row[] = extractAsks(message.text).map((ask) => ({ quote: ask.words, status: "heard", kind: "do" }));
-      results.push(scoreMessage(message, rows, { quickRows: rows.length, keptInLedger: rows.length > 0, attempts: [], heardBy: "hub-rules", tries: 0 }));
+      results.push(scoreMessage(message, rows, { quickRows: rows.length, keptInLedger: rows.length > 0, attempts: [], heardBy: "hub-old-regex", tries: 0 }));
+      continue;
+    }
+    if (options.mode === "hub") {
+      // The path the app runs for a hub chat no first mate hears: the real routeHubDump on an in-memory ledger.
+      let clock = 1_800_000_000_000;
+      const store = createAskStore(memoryDisk(), () => (clock += 1000));
+      await store.load();
+      await routeHubDump({ chatId: `chat-${message.id}`, blockId: `blk-${message.id}`, text: message.text, at: (clock += 1000) }, () => undefined, store);
+      const written = store.doc().asks;
+      results.push(scoreMessage(message, written, { quickRows: written.length, keptInLedger: written.length > 0, attempts: [], heardBy: "hub-route", tries: 0 }));
       continue;
     }
     let clock = 1_800_000_000_000;
@@ -354,7 +372,9 @@ export function describeMode(options: AskOptions): string {
   const extra = [options.failFirst ? `first ${options.failFirst} call(s) per message time out` : "", options.lazy !== undefined ? `model answers only its first ${options.lazy} item(s)` : ""].filter(Boolean);
   const base =
     options.mode === "hub"
-      ? "hub ledger extractor (askLedger.ts extractAsks: regex only, at most 6 per message; feeds the Chief's 'You asked' list)"
+      ? "hub chat, as the app now writes it (hubRoute.ts: the wide reading, rules plus the old hub regex, no model; feeds the Chief's 'You asked' list)"
+      : options.mode === "hub-old"
+      ? "OLD hub ledger extractor alone (askLedger.ts extractAsks: regex only, at most 6 per message), the baseline the hub path must not fall below"
       : options.mode === "rules"
       ? "rules only (no model call: what the app keeps when no engine can answer)"
       : options.mode === "oracle"
@@ -373,7 +393,7 @@ export function report(run: { results: MessageResult[]; totals: Totals }, option
     `Recall: **${pct(t.recallStrict)}** of ${t.expected} asks are a row of their own (${t.separate}); ${t.merged} only inside a row that also holds another ask; ${t.maybeOnly} only as a "maybe" line (with those: ${pct(t.recallWithMaybes)}); ${t.missed} missed.`,
     `Implicit asks as their own row: ${t.implicit.separate}/${t.implicit.expected}. Buried asks: ${t.buried.separate}/${t.buried.expected}. Kind agrees with the label: ${t.kindAgrees}/${t.kindChecked}.`,
     `Noise: ${t.cancelledStillOpen}/${t.cancelledTotal} withdrawn asks still open; ${t.duplicateRows} duplicate rows; ${t.notAskRows} pasted sentences kept as asks; ${t.extraRows} other rows with no labelled ask behind them; ${t.extraMaybes} unlabelled "maybe" lines.`,
-    ...(options.mode === "rules" || options.mode === "hub"
+    ...(options.mode === "rules" || options.mode === "hub" || options.mode === "hub-old"
       ? []
       : [`Model: failed on every try for ${t.modelFailedBoth} of ${t.messages} messages (the rules' reading stands there).`]),
     "",

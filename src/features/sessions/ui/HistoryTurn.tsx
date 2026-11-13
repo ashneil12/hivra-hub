@@ -11,10 +11,13 @@ import { historyHosts } from "./useMeasuredHistory";
 export function HistoryTurn({
   id,
   className,
+  tags,
   children,
 }: {
   id: string;
   className: string;
+  /** Words a filter over the chat reads (sessions/model/turnTags.ts). */
+  tags?: string;
   children: ReactNode;
 }) {
   const server = useSyncExternalStore(
@@ -46,7 +49,7 @@ export function HistoryTurn({
     [host],
   );
   return (
-    <div ref={attach} data-transcript-turn={id} className={className}>
+    <div ref={attach} data-transcript-turn={id} data-turn-tags={tags} className={className}>
       {server || !host ? (
         <div data-history-content style={{ display: "contents" }}>
           {children}

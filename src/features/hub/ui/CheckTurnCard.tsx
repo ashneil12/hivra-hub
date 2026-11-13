@@ -1,10 +1,11 @@
 // A `[MonoCode check]` turn in the chat that owns one of Ash's messages (hub/model/hubChecks.ts): the checker's private
 // note and this chat's answer, as one quiet line that opens on a click. Never Ash's words, never on Today (Ash, 19 Oct:
 // "that shows private between the two AIs").
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import type { Block } from "../../sessions/model/session";
 import { ChevronDown, ChevronRight, Eye, Loader } from "../../../shared/ui/icons";
-import { openAskLine } from "../model/askLedger";
+import { askStore } from "../../asks/model/askStore";
+import { openAskLineFor } from "../../asks/model/askedView";
 import { lastReply } from "../model/claimEvidence";
 import { checkClaim, checkVerdict } from "../model/hubChecks";
 import { forYou } from "../model/userName";
@@ -17,6 +18,9 @@ import {
   verifyStageStatus,
   type VerifyStatus,
 } from "../model/verifyStage";
+
+const subscribeAsks = (fn: () => void): (() => void) => askStore().subscribe(fn);
+const asksNow = () => askStore().doc();
 
 export function CheckTurnCard({
   turn,
@@ -74,8 +78,9 @@ export function CheckTurnCard({
   };
   const readiness = stageReadiness(stage);
   const check = turn[0].monoCheck;
-  // The asks from that message the ledger still has open (askLedger.ts): one quiet line, empty for a check about chatter.
-  const stillOpen = check?.dumpId ? openAskLine(check.dumpId) : "";
+  // The asks from that message the ask ledger still has open (asks/model/askedView.ts): one quiet line, empty for a check about chatter.
+  const asks = useSyncExternalStore(subscribeAsks, asksNow, asksNow);
+  const stillOpen = check?.dumpId ? openAskLineFor(asks, check.dumpId) : "";
   const reply = lastReply(turn);
   const verdict = checkVerdict(turn);
   // A "fixed" carries its evidence (claimEvidence.ts): verified, or not yet confirmed with what is missing said in the

@@ -305,26 +305,8 @@ pub fn quarantine(
     }
     let owner_dir = run_checks::owner_dir(input.data_dir, input.delegation_id);
     let records = run_checks::records(input.data_dir, input.delegation_id);
-    // A Rust test lives in a sibling file of the module's source and the runner names the source file: a marker may be in either.
-    let read_file = |path: &str| -> Option<String> {
-        let tracked_path = own::resolve_tracked(path, &tracked)?;
-        let mut text = read_text(&input.checkout.join(tracked_path))?;
-        for sibling in sibling_tests(tracked_path) {
-            if let Some(found) = own::resolve_tracked(&sibling, &tracked) {
-                if let Some(more) = read_text(&input.checkout.join(found)) {
-                    text.push_str("\n\n");
-                    text.push_str(&more);
-                }
-            }
-        }
-        Some(text)
-    };
-    // A runner may print a path relative to its test folder (Playwright): the sensitive patterns are read against the repository path.
-    let resolve = |file: &str| -> String {
-        own::resolve_tracked(file, &tracked)
-            .cloned()
-            .unwrap_or_else(|| file.to_string())
-    };
+    let read_file = |path: &str| read_with_siblings(input.checkout, &tracked, path);
+    let resolve = |file: &str| repo_path(&tracked, file);
     let read_log_of = |log: &str| read_log(&owner_dir, log);
     let plan_for = |doc: &Doc| {
         let quarantined = |id: &str| doc.quarantined(id, now);
@@ -390,6 +372,29 @@ pub fn quarantine(
     })
 }
 
+/// A tracked file's text, read from a copy. A Rust test lives in a sibling file of the module's source and the runner names the source
+/// file: a marker may be in either.
+fn read_with_siblings(checkout: &Path, tracked: &[String], path: &str) -> Option<String> {
+    let tracked_path = own::resolve_tracked(path, tracked)?;
+    let mut text = read_text(&checkout.join(tracked_path))?;
+    for sibling in sibling_tests(tracked_path) {
+        if let Some(found) = own::resolve_tracked(&sibling, tracked) {
+            if let Some(more) = read_text(&checkout.join(found)) {
+                text.push_str("\n\n");
+                text.push_str(&more);
+            }
+        }
+    }
+    Some(text)
+}
+
+/// A runner may print a path relative to its test folder (Playwright): the sensitive patterns are read against the repository path.
+fn repo_path(tracked: &[String], file: &str) -> String {
+    own::resolve_tracked(file, tracked)
+        .cloned()
+        .unwrap_or_else(|| file.to_string())
+}
+
 /// What a worker's `Quarantine:` lines get when the app can't decide them now (the notes can't be read, the changed files are not
 /// known): the gap that tells it nothing was quarantined. `None` when the report asks for nothing.
 pub fn unapplied(report: &str, why: &str) -> Option<Outcome> {
@@ -428,14 +433,43 @@ fn sibling_tests(path: &str) -> Vec<String> {
     }
 }
 
+/// Where a fixer's report is checked: the runs its own task recorded, and the project's main checkout.
+pub struct FixerRun<'a> {
+    /// The fixer task's delegation id: whose `run_checks` records are its own.
+    pub delegation_id: &'a str,
+    /// The project's MAIN checkout, where the test files are read to tell whether a test is critical. Never the fixer's own copy: the
+    /// fixer can edit that (take the marker off a test, or put a blank line under it) and its report is its own word.
+    pub main: &'a Path,
+    /// The project's own protected paths, which make a test critical like the built-in sensitive ones.
+    pub protected_extra: &'a [String],
+}
+
+/// Every green `run_checks` record, not only the latest of each command: "it passed on a re-run" is shown by any green run of the
+/// test after it was listed.
+fn green_records(records: &[Record]) -> Vec<Green> {
+    records
+        .iter()
+        .filter(|record| record.outcome == TestOutcome::Green)
+        .map(|record| Green {
+            command: record.command.clone(),
+            record: Some((record.at, record.changed_files.clone())),
+        })
+        .collect()
+}
+
 /// The test fixer's report, once its task has passed its gate: its `Decision <n>` lines are applied to the list and the slot is
 /// freed. Nothing happens for any other task. Returns what was applied, or `None` when this task is not the fixer.
+///
+/// A "flaky" decision is the fixer's word, and a quarantine switches a test off for 14 days, so the app checks it against what it can
+/// see itself (`fixer::Proof`): a critical test is never quarantined, and a test with no green run of its own in the fixer's records
+/// is not sorted yet.
 pub fn fixer_report(
     data_dir: &Path,
     project: &str,
     child_session: &str,
     report: &str,
     now: u64,
+    run: &FixerRun,
 ) -> Result<Option<fixer::Applied>, String> {
     // Cheap first: most tasks are not the fixer, and nothing is written for them.
     let doc = store::read(data_dir, project);
@@ -443,9 +477,41 @@ pub fn fixer_report(
         return Ok(None);
     }
     let reported = fixer::parse_report(report);
+    // The project's file list (git) and the fixer's run records are read before the list is locked. The test files themselves are read
+    // as each flaky test is judged, under it: at most two small files each, never a link or a pipe (`plain_file`).
+    let flaky = reported.iter().any(|r| r.kind == fixer::Kind::Flaky);
+    let tracked = if flaky {
+        tracked_files(run.main)
+    } else {
+        Vec::new()
+    };
+    let patterns =
+        crate::firstmate::sensitive::patterns_for(Some(Path::new(project)), run.protected_extra);
+    let green = green_records(&run_checks::records(data_dir, run.delegation_id));
+    let read_file = |path: &str| read_with_siblings(run.main, &tracked, path);
+    let critical = |item: &Item| {
+        super::quarantine::critical_reason(
+            &repo_path(&tracked, &item.file),
+            &item.name,
+            &patterns,
+            &read_file,
+        )
+        .is_some()
+    };
+    let green_after_listed = |item: &Item| green.iter().any(|g| covers(g, item));
+    let proof = fixer::Proof {
+        critical: &critical,
+        green_after_listed: &green_after_listed,
+    };
     store::update(data_dir, project, |doc: &mut Doc| {
         let held = doc.fixer_done(child_session)?;
-        Some(fixer::apply_report(doc, &held.items, &reported, now))
+        Some(fixer::apply_report(
+            doc,
+            &held.items,
+            &reported,
+            now,
+            &proof,
+        ))
     })
 }
 
@@ -1387,6 +1453,7 @@ mod tests {
             "app-1-other",
             "Decision 1: flaky | x",
             1_200,
+            &fixer_run(&checkout),
         )
         .unwrap();
         assert!(other.is_none());
@@ -1397,6 +1464,7 @@ mod tests {
             "app-1-tok",
             "Decision 1: code is wrong | the total ignores tax: src/other.test.ts fails",
             1_300,
+            &fixer_run(&checkout),
         )
         .unwrap()
         .expect("the fixer's report");
@@ -1414,8 +1482,235 @@ mod tests {
             "app-1-tok",
             "Decision 1: flaky | x",
             1_400,
+            &fixer_run(&checkout),
         )
         .unwrap();
         assert!(again.is_none());
+    }
+
+    // ---- PT-5 follow-up: a flaky decision is checked, not taken on the fixer's word -------------------------------------------
+
+    /// The fixer task's own runs are the delegation `fix-1`'s.
+    fn fixer_run(main: &Temp) -> FixerRun<'_> {
+        FixerRun {
+            delegation_id: "fix-1",
+            main: main.path(),
+            protected_extra: &[],
+        }
+    }
+
+    /// A project whose only failing test is `file`'s `suite > works`, listed at 1,000, with a fixer holding it.
+    fn listed_with_a_fixer(data: &Temp, checkout: &Temp, file: &str) -> String {
+        go(
+            data,
+            checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", &failure_in(file, "suite > works"))],
+            "First",
+            1_000,
+        );
+        let id = store::read(data.path(), "/projects/tally").items[0]
+            .id
+            .clone();
+        store::update(data.path(), "/projects/tally", |doc| {
+            doc.claim_fixer(
+                "tok",
+                "h",
+                vec![id.clone()],
+                crate::test_debt::doc::Row::Missing,
+                1_100,
+            );
+            doc.fixer_started("tok", "app-1-tok");
+        })
+        .unwrap();
+        id
+    }
+
+    /// A green `run_checks` record in the fixer's own folder.
+    fn green_run(data: &Temp, owner: &str, command: &str, at: u64, files: &[&str]) {
+        let dir = run_checks::owner_dir(data.path(), owner);
+        std::fs::create_dir_all(&dir).unwrap();
+        let record = Record {
+            at,
+            command: command.into(),
+            outcome: TestOutcome::Green,
+            total: 3,
+            failed: 0,
+            changed_files_fingerprint: String::new(),
+            changed_files: files.iter().map(|f| (*f).to_string()).collect(),
+            failing: Vec::new(),
+            log: String::new(),
+        };
+        let mut text = std::fs::read_to_string(dir.join("records.jsonl")).unwrap_or_default();
+        text.push_str(&serde_json::to_string(&record).unwrap());
+        text.push('\n');
+        std::fs::write(dir.join("records.jsonl"), text).unwrap();
+    }
+
+    fn flaky_report(data: &Temp, checkout: &Temp, now: u64) -> fixer::Applied {
+        fixer_report(
+            data.path(),
+            "/projects/tally",
+            "app-1-tok",
+            "Decision 1: flaky | passed on a re-run",
+            now,
+            &fixer_run(checkout),
+        )
+        .unwrap()
+        .expect("the fixer's report")
+    }
+
+    #[test]
+    fn a_critical_test_the_fixer_calls_flaky_is_never_quarantined_and_waits_for_the_person() {
+        let data = Temp::new();
+        let checkout = repo_with(&[
+            ("src/feature.ts", "export {}\n"),
+            ("src/auth/login.test.ts", "it(\"works\", () => {});\n"),
+        ]);
+        let id = listed_with_a_fixer(&data, &checkout, "src/auth/login.test.ts");
+        // Even with a green run of its own to show: a critical test is read-only for the fixer.
+        green_run(&data, "fix-1", "npx vitest run", 1_500, &[]);
+        green_run(
+            &data,
+            "fix-1",
+            "affected",
+            1_500,
+            &["src/auth/login.test.ts"],
+        );
+        let applied = flaky_report(&data, &checkout, 2_000);
+        assert_eq!(applied.critical, vec![id.clone()]);
+        assert!(applied.flaky.is_empty());
+        let doc = store::read(data.path(), "/projects/tally");
+        assert!(doc.quarantine.is_empty(), "{:?}", doc.quarantine);
+        let item = &doc.items[0];
+        assert_eq!(item.id, id, "it stays on the list");
+        // Surfaced like a real bug: named, counted as one, and put to the person.
+        assert_eq!(
+            item.decision.as_ref().map(|d| (d.kind, d.line.as_str())),
+            Some((
+                DecisionKind::CodeWrong,
+                crate::test_debt::doc::CRITICAL_NOTE
+            ))
+        );
+        assert_eq!(doc.real_bugs().count(), 1);
+        assert_eq!(doc.bugs_to_file().len(), 1);
+        assert!(doc.fixer.is_none(), "the slot is free");
+    }
+
+    #[test]
+    fn a_test_marked_critical_in_its_own_file_is_not_quarantined_either() {
+        let data = Temp::new();
+        let checkout = repo_with(&[
+            ("src/feature.ts", "export {}\n"),
+            (
+                "src/other.test.ts",
+                "// @critical\nit(\"works\", () => {});\n",
+            ),
+        ]);
+        listed_with_a_fixer(&data, &checkout, "src/other.test.ts");
+        green_run(&data, "fix-1", "npx vitest run", 1_500, &[]);
+        let applied = flaky_report(&data, &checkout, 2_000);
+        assert_eq!(applied.critical.len(), 1, "{applied:?}");
+        assert!(store::read(data.path(), "/projects/tally")
+            .quarantine
+            .is_empty());
+    }
+
+    #[test]
+    fn what_makes_a_test_critical_is_read_from_the_projects_main_checkout_not_the_fixers_copy() {
+        // The fixer's copy has the marker taken off (or a blank line put under it); the project's own file still says critical.
+        let main = repo_with(&[
+            ("src/feature.ts", "export {}\n"),
+            (
+                "src/other.test.ts",
+                "// @critical\nit(\"works\", () => {});\n",
+            ),
+        ]);
+        let tampered_copy = plain_repo();
+        let data = Temp::new();
+        listed_with_a_fixer(&data, &tampered_copy, "src/other.test.ts");
+        green_run(&data, "fix-1", "npx vitest run", 1_500, &[]);
+        let applied = flaky_report(&data, &main, 2_000);
+        assert_eq!(applied.critical.len(), 1, "{applied:?}");
+        assert!(store::read(data.path(), "/projects/tally")
+            .quarantine
+            .is_empty());
+        // And the other way round: a marker only in the fixer's copy decides nothing.
+        let main = plain_repo();
+        let copy = repo_with(&[
+            ("src/feature.ts", "export {}\n"),
+            (
+                "src/other.test.ts",
+                "// @critical\nit(\"works\", () => {});\n",
+            ),
+        ]);
+        let data = Temp::new();
+        listed_with_a_fixer(&data, &copy, "src/other.test.ts");
+        green_run(&data, "fix-1", "npx vitest run", 1_500, &[]);
+        let applied = flaky_report(&data, &main, 2_000);
+        assert_eq!(applied.flaky.len(), 1, "{applied:?}");
+    }
+
+    #[test]
+    fn a_flaky_decision_with_no_green_run_after_the_test_was_listed_leaves_it_undecided() {
+        let (data, checkout) = (Temp::new(), plain_repo());
+        let id = listed_with_a_fixer(&data, &checkout, "src/other.test.ts");
+        // Not the fixer's own runs; before the test was listed; a different command; a run scoped to another test.
+        green_run(&data, "someone-else", "npx vitest run", 1_500, &[]);
+        green_run(&data, "fix-1", "npx vitest run", 900, &[]);
+        green_run(&data, "fix-1", "lint", 1_500, &[]);
+        green_run(&data, "fix-1", "affected", 1_500, &["src/a.test.ts"]);
+        let applied = flaky_report(&data, &checkout, 2_000);
+        assert_eq!(applied.unproven, vec![id.clone()]);
+        assert_eq!(applied.undecided, vec![id.clone()]);
+        assert!(applied.flaky.is_empty());
+        let doc = store::read(data.path(), "/projects/tally");
+        assert!(doc.quarantine.is_empty(), "nothing is quarantined");
+        let item = &doc.items[0];
+        assert!(item.decision.is_none(), "it stays to sort");
+        assert_eq!(item.note, crate::test_debt::doc::NO_GREEN_NOTE);
+        assert_eq!(doc.undecided().count(), 1);
+        assert!(doc.fixer.is_none(), "the slot is free for the next fixer");
+    }
+
+    #[test]
+    fn a_flaky_decision_is_accepted_when_the_fixers_own_run_of_the_tests_command_or_of_its_file_went_green_after_it_was_listed(
+    ) {
+        // The command that failed it, run green by the fixer after the test was listed.
+        let (data, checkout) = (Temp::new(), plain_repo());
+        let id = listed_with_a_fixer(&data, &checkout, "src/other.test.ts");
+        green_run(&data, "fix-1", "npx vitest run", 1_001, &[]);
+        let applied = flaky_report(&data, &checkout, 2_000);
+        assert_eq!(applied.flaky, vec![id.clone()], "{applied:?}");
+        let doc = store::read(data.path(), "/projects/tally");
+        assert!(doc.items.is_empty(), "it leaves the list");
+        assert!(doc.quarantined(&id, 2_001));
+        // The project's scoped run, scoped to the test's own file.
+        let (data, checkout) = (Temp::new(), plain_repo());
+        let id = listed_with_a_fixer(&data, &checkout, "src/other.test.ts");
+        green_run(&data, "fix-1", "affected", 1_700, &["src/other.test.ts"]);
+        let applied = flaky_report(&data, &checkout, 2_000);
+        assert_eq!(applied.flaky, vec![id.clone()], "{applied:?}");
+        // A green run is a green run even when a later one of the same command was red: it did pass on a re-run.
+        let (data, checkout) = (Temp::new(), plain_repo());
+        listed_with_a_fixer(&data, &checkout, "src/other.test.ts");
+        green_run(&data, "fix-1", "npx vitest run", 1_200, &[]);
+        let dir = run_checks::owner_dir(data.path(), "fix-1");
+        let red = Record {
+            at: 1_300,
+            command: "npx vitest run".into(),
+            outcome: TestOutcome::Red,
+            total: 3,
+            failed: 1,
+            changed_files_fingerprint: String::new(),
+            changed_files: Vec::new(),
+            failing: vec!["src/other.test.ts > suite > works".into()],
+            log: String::new(),
+        };
+        let mut text = std::fs::read_to_string(dir.join("records.jsonl")).unwrap();
+        text.push_str(&serde_json::to_string(&red).unwrap());
+        text.push('\n');
+        std::fs::write(dir.join("records.jsonl"), text).unwrap();
+        assert_eq!(flaky_report(&data, &checkout, 2_000).flaky.len(), 1);
     }
 }

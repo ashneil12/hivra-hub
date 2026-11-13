@@ -14,7 +14,7 @@ const SENTENCE_MAX = 140;
 
 /** What the roll-up named, kept on its block so each item is answered where it sits and reads the same later. */
 export type RollupCard = {
-  items: { key: string; sentence: string; where?: string; yours: boolean }[];
+  items: { key: string; sentence: string; where?: string; projectId?: string; yours: boolean }[];
   /** How many more are in Needs you than it names. */
   more: number;
 };
@@ -68,7 +68,10 @@ export function rollupLine(
   const head = fresh.length === 1 ? "Needs you now" : `Needs you now (${fresh.length} new)`;
   const text = [`${head}${yours.length ? ", Ash" : ""}:`, ...lines.map((line) => `- ${line}`), ...(more > 0 ? [`- and ${more} more in Needs you`] : [])].join("\n");
   const card: RollupCard = {
-    items: named.map((item) => ({ key: item.key, sentence: short(item.sentence), where: label(item), yours: isAshsCall(item) })),
+    items: named.map((item) => {
+      const where = label(item);
+      return { key: item.key, sentence: short(item.sentence), ...(where ? { where } : {}), ...(item.projectId ? { projectId: item.projectId } : {}), yours: isAshsCall(item) };
+    }),
     more: Math.max(0, more),
   };
   return {

@@ -41,6 +41,9 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::session_store::{now_millis, SessionStore};
 
+// SC-19: a retired chat's open work moves to the chat that takes its place (reparent.rs).
+pub mod reparent;
+
 /// Tauri event after any change: `{ids}`.
 pub const CHANGED: &str = "monocode:delegations-changed";
 
@@ -583,8 +586,30 @@ fn mono_id_ok(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
-/// The studio's ask id rule (ashos/hub.py ASK_ID): one bad id refuses the whole copy, so it is refused here first.
+/// An ask id a job may carry: a ledger id, or one of the retired Ash OS ids. One bad id refuses the whole copy, so it is
+/// refused here first.
 fn ask_id_ok(value: &str) -> bool {
+    ledger_ask_id_ok(value) || old_ask_id_ok(value)
+}
+
+/// The ask ledger's id (src/features/asks/model/asks.ts `askId`, `isLedgerAskId`): `ask-<number>-<up to 12 letters or
+/// digits of the message's id>`, as `asks.list` gives it. A job that carries one updates that ask when it ends.
+fn ledger_ask_id_ok(value: &str) -> bool {
+    let Some((number, block)) = value
+        .strip_prefix("ask-")
+        .and_then(|rest| rest.split_once('-'))
+    else {
+        return false;
+    };
+    (1..=9).contains(&number.len())
+        && number.bytes().all(|b| b.is_ascii_digit())
+        && block.len() <= 12
+        && block.bytes().all(|b| b.is_ascii_alphanumeric())
+}
+
+/// The retired studio's ask id rule (ashos/hub.py ASK_ID). Still accepted so an old row or habit that passes one keeps
+/// working; nothing new writes them.
+fn old_ask_id_ok(value: &str) -> bool {
     value.strip_prefix("a_").is_some_and(|rest| {
         !rest.is_empty() && rest.len() <= 40 && rest.bytes().all(|b| b.is_ascii_alphanumeric())
     })
@@ -734,7 +759,7 @@ pub fn record(conn: &mut Connection, input: RecordInput, now: i64) -> Result<Del
         .map(|a| a.trim().to_string())
         .collect::<Vec<_>>();
     if asks.len() > ASKS_MAX || !asks.iter().all(|a| ask_id_ok(a)) {
-        return Err("ask ids must be up to 50 ask ids (a_...)".into());
+        return Err("ask ids must be up to 50 ask ids (ask-5-abc123, an \"id\" from asks.list; an old a_... id is still accepted)".into());
     }
     let follow = input
         .follow
@@ -1444,6 +1469,10 @@ pub struct DeliveryInput {
     pub queued_message: Option<String>,
     #[serde(default)]
     pub by: Option<String>,
+    /// SC-19: only rows this chat still owns move (compare-and-swap on the owner). A window that has not heard its chat
+    /// was reset names the old one here, so its late "queued" mark never overwrites the move's own.
+    #[serde(default)]
+    pub owner_session: Option<String>,
 }
 
 /// Move the report's delivery. Returns the rows that changed; a repeated, backwards or post-dispose move is a no-op.
@@ -1461,6 +1490,7 @@ pub fn set_delivery(
         return Err("a queued report names the message it waits in".into());
     }
     let by = actor(input.by);
+    let owner = text(input.owner_session, 256);
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| e.to_string())?;
@@ -1482,7 +1512,11 @@ pub fn set_delivery(
     }
     let mut changed = Vec::new();
     for mut row in rows {
-        if !delivery_move(&row, wanted, message.as_deref()) {
+        if owner
+            .as_deref()
+            .is_some_and(|owner| row.owner_session != owner)
+            || !delivery_move(&row, wanted, message.as_deref())
+        {
             continue;
         }
         let was = row.delivery.clone();
@@ -2430,6 +2464,53 @@ mod tests {
         let mut ok = launch("mono", "r", "c");
         ok.ask_ids = vec!["a_good1".into()];
         assert_eq!(record(&mut conn, ok, 1).unwrap().ask_ids, vec!["a_good1"]);
+    }
+
+    #[test]
+    fn record_takes_ledger_ask_ids_and_still_takes_the_old_ones() {
+        let store = store();
+        let mut conn = store.lock_conn().unwrap();
+        // What the ask ledger's `asks.list` gives as `id` (src/features/asks/model/asks.ts askId), beside an old Ash OS id.
+        let mut both = launch("mono", "r1", "c1");
+        both.ask_ids = vec![
+            "ask-5-abc123def456".into(),
+            "ask-12-".into(),
+            "a_old1".into(),
+        ];
+        assert_eq!(
+            record(&mut conn, both, 1).unwrap().ask_ids,
+            vec!["ask-5-abc123def456", "ask-12-", "a_old1"],
+            "both shapes are stored as given, so a job's end can find its ask"
+        );
+        // Anything else is refused, and one bad id refuses the whole copy.
+        for bad in [
+            "ask-",
+            "ask-x-abc",
+            "ask--abc",
+            "ask-5",
+            "ask-5-abc-def",
+            "ask-5-abc def",
+            "ask-5-abcdefghijklm",
+            "ask-1234567890-abc",
+            "Ask-5-abc",
+            "ask-5-ünï",
+            "ask-5-../x",
+            "a_",
+            "",
+        ] {
+            let mut input = launch("mono", "r2", "c2");
+            input.ask_ids = vec!["ask-5-abc".into(), bad.into()];
+            assert!(
+                record(&mut conn, input, 1).is_err(),
+                "{bad:?} must be refused"
+            );
+        }
+        let mut too_many = launch("mono", "r3", "c3");
+        too_many.ask_ids = (0..=ASKS_MAX).map(|n| format!("ask-{n}-abc")).collect();
+        assert!(
+            record(&mut conn, too_many, 1).is_err(),
+            "more than 50 ask ids is refused"
+        );
     }
 
     #[test]

@@ -13,7 +13,9 @@
 //!   once per project) is claimed by the call that starts it, and each Needs-you item is claimed before it is filed, which is what
 //!   makes each once. A ship check run from a card claims nothing.
 //!
-//! The ship check passes only when the list is empty or every remaining test is a named finding.
+//! The ship check passes only when the list is empty or every remaining test is a named finding that does not wait on anyone: a
+//! quarantine, or a real bug the person chose to ship with (their "Ship anyway" on its row). A real bug they have not answered
+//! holds the version as Needs you until the test passes.
 
 use std::path::Path;
 
@@ -82,6 +84,15 @@ fn tests_word(n: usize) -> String {
     } else {
         format!("{n} tests")
     }
+}
+
+/// What a ship check says of real bugs that wait on the person: it is not a pass until they answer or the test passes.
+fn bugs_waiting_line(names_waiting: &[String]) -> String {
+    format!(
+        "{} named as a real bug, waiting on you: {}",
+        tests_word(names_waiting.len()),
+        names(names_waiting)
+    )
 }
 
 /// Reads each check the verify stage ran. `stage.steps[i]` is `record.steps[i]` (`steps_of_verify` keeps their order).
@@ -154,6 +165,7 @@ pub fn classify_checks(doc: &mut Doc, stage: &mut Stage, record: &VerifyRecord, 
                 let failing =
                     own::from_failures(Some(summary.runner), &step.id, &named, ctx.rust_files);
                 let mut sorting: Vec<String> = Vec::new();
+                let mut waiting_bugs: Vec<String> = Vec::new();
                 let mut not_blocking = 0usize;
                 let mut unlisted = false;
                 for f in failing {
@@ -162,10 +174,19 @@ pub fn classify_checks(doc: &mut Doc, stage: &mut Stage, record: &VerifyRecord, 
                         not_blocking += 1;
                         continue;
                     }
-                    let named_bug = doc
+                    let named = doc
                         .items
                         .iter()
-                        .any(|item| item.id == id && item.decision.is_some());
+                        .find(|item| item.id == id && item.decision.is_some());
+                    let named_bug = named.is_some();
+                    // Only a bug the fixer named with a row to answer waits on anyone, as `Doc::waiting_bugs` has it: the check, the
+                    // step and the hold agree.
+                    let waits = named.is_some_and(|item| {
+                        item.ship_anyway_at.is_none()
+                            && item.decision.as_ref().is_some_and(|d| {
+                                d.kind == crate::test_debt::doc::DecisionKind::CodeWrong
+                            })
+                    });
                     let noted = doc.note_failure(
                         &crate::test_debt::doc::Candidate {
                             runner: f.runner.clone(),
@@ -180,7 +201,12 @@ pub fn classify_checks(doc: &mut Doc, stage: &mut Stage, record: &VerifyRecord, 
                         ctx.now,
                     );
                     if named_bug {
-                        not_blocking += 1;
+                        // A real bug does not block only once the person chose to ship with it; until then it waits on them.
+                        if waits {
+                            waiting_bugs.push(f.name.clone());
+                        } else {
+                            not_blocking += 1;
+                        }
                     } else if noted == crate::test_debt::doc::Noted::Full {
                         unlisted = true;
                     } else {
@@ -191,19 +217,22 @@ pub fn classify_checks(doc: &mut Doc, stage: &mut Stage, record: &VerifyRecord, 
                     // The list is full: say what happened, as a plain failure.
                     continue;
                 }
-                if sorting.is_empty() {
-                    mapped.outcome = Outcome::Passed;
-                    mapped.detail = one_line(
-                        &format!(
-                            "{} failed, all of them quarantined or named real bugs, so they do not block",
-                            tests_word(not_blocking)
-                        ),
-                        LINE_MAX,
-                    );
-                } else {
+                if !sorting.is_empty() {
                     mapped.outcome = Outcome::CouldNotRun;
                     mapped.detail = one_line(
                         &format!("Sorting {}: {}", tests_word(sorting.len()), names(&sorting)),
+                        LINE_MAX,
+                    );
+                } else if !waiting_bugs.is_empty() {
+                    mapped.outcome = Outcome::CouldNotRun;
+                    mapped.detail = one_line(&bugs_waiting_line(&waiting_bugs), LINE_MAX);
+                } else {
+                    mapped.outcome = Outcome::Passed;
+                    mapped.detail = one_line(
+                        &format!(
+                            "{} failed, all of them quarantined or real bugs you chose to ship with, so they do not block",
+                            tests_word(not_blocking)
+                        ),
                         LINE_MAX,
                     );
                 }
@@ -218,31 +247,21 @@ pub fn classify_checks(doc: &mut Doc, stage: &mut Stage, record: &VerifyRecord, 
 pub fn stage_of(doc: &Doc, expired: &[Quarantined], now: u64) -> DebtStage {
     let waiting = doc.undecided().count();
     let bugs: Vec<_> = doc.real_bugs().collect();
+    let waiting_bugs: Vec<String> = doc.waiting_bugs().map(|item| item.name.clone()).collect();
     let quarantined: Vec<&Quarantined> =
         doc.quarantine.iter().filter(|q| now < q.ends_at).collect();
     let mut findings: Vec<Finding> = Vec::new();
     for item in &bugs {
-        let line = item
-            .decision
-            .as_ref()
-            .map(|d| d.line.clone())
-            .unwrap_or_default();
+        let words = if item.ship_anyway_at.is_some() {
+            format!("{} You chose to ship anyway.", item.bug_words())
+        } else {
+            item.bug_words()
+        };
         findings.push(Finding {
             kind: "code-wrong".into(),
             test: item.name.clone(),
             file: item.file.clone(),
-            line: one_line(
-                &format!(
-                    "{} fails because the code is wrong: {}",
-                    item.name,
-                    if line.is_empty() {
-                        "see the fixer's report"
-                    } else {
-                        line.as_str()
-                    }
-                ),
-                LINE_MAX,
-            ),
+            line: one_line(&words, LINE_MAX),
         });
     }
     for q in &quarantined {
@@ -282,6 +301,9 @@ pub fn stage_of(doc: &Doc, expired: &[Quarantined], now: u64) -> DebtStage {
             Outcome::CouldNotRun,
             format!("Sorting {}", tests_word(waiting)),
         )
+    } else if !waiting_bugs.is_empty() {
+        // A named real bug holds the version until the test passes or the person answers Ship anyway on its row.
+        Step::new(STEP, Outcome::CouldNotRun, bugs_waiting_line(&waiting_bugs))
     } else if bugs.is_empty() && quarantined.is_empty() {
         Step::new(
             STEP,
@@ -291,7 +313,10 @@ pub fn stage_of(doc: &Doc, expired: &[Quarantined], now: u64) -> DebtStage {
     } else {
         let mut parts: Vec<String> = Vec::new();
         if !bugs.is_empty() {
-            parts.push(format!("{} named as a real bug", tests_word(bugs.len())));
+            parts.push(format!(
+                "{} named as a real bug (shipped anyway)",
+                tests_word(bugs.len())
+            ));
         }
         if !quarantined.is_empty() {
             parts.push(format!("{} quarantined", tests_word(quarantined.len())));
@@ -544,10 +569,11 @@ pub fn row_of(rows: &[crate::delegations::Delegation], fixer: &Fixer) -> Row {
     }
 }
 
-/// Whether no failing test waits to be sorted for this project now. A list that can't be read is not quiet: never a pass on a guess.
+/// Whether no failing test waits to be sorted for this project now, and no named real bug waits on the person. A list that can't be
+/// read is not quiet: never a pass on a guess.
 pub fn quiet_in(data: &Path, project: &str) -> bool {
     match store::read_checked(data, project) {
-        Ok(doc) => doc.undecided().next().is_none(),
+        Ok(doc) => doc.undecided().next().is_none() && doc.waiting_bugs().next().is_none(),
         Err(_) => false,
     }
 }
@@ -561,10 +587,14 @@ pub fn hold_if_waiting(record: &mut super::ShipCheckRecord, data: &Path, project
     let line = match store::read_checked(data, project) {
         Ok(doc) => {
             let waiting = doc.undecided().count();
-            if waiting == 0 {
+            let bugs: Vec<String> = doc.waiting_bugs().map(|item| item.name.clone()).collect();
+            if waiting > 0 {
+                format!("Sorting {}", tests_word(waiting))
+            } else if !bugs.is_empty() {
+                bugs_waiting_line(&bugs)
+            } else {
                 return;
             }
-            format!("Sorting {}", tests_word(waiting))
         }
         Err(why) => why,
     };

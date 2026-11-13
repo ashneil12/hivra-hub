@@ -3,7 +3,7 @@
 
 use serde::Serialize;
 
-use super::doc::{DecisionKind, Doc};
+use super::doc::Doc;
 
 /// The most tests listed (the webview reads at most this many too).
 pub const ITEMS_MAX: usize = 100;
@@ -19,7 +19,7 @@ pub struct Item {
     pub since: u64,
     /// The task that was running when it first failed.
     pub task: String,
-    /// `to-sort`, `real-bug` or `flaky`.
+    /// `to-sort`, `real-bug` (waits on the person), `shipping-anyway` (a real bug they chose to ship with) or `flaky`.
     pub state: &'static str,
 }
 
@@ -51,12 +51,12 @@ pub fn summarize(doc: &Doc, sorting: bool, now: u64) -> Summary {
     for item in waiting {
         items.push(entry(item, "to-sort"));
     }
-    for item in doc.items.iter().filter(|item| {
-        item.decision
-            .as_ref()
-            .is_some_and(|d| d.kind == DecisionKind::CodeWrong)
-    }) {
+    // The real bugs that still wait on the person come first, so a long list never hides them behind the ones they shipped anyway.
+    for item in doc.waiting_bugs() {
         items.push(entry(item, "real-bug"));
+    }
+    for item in doc.real_bugs().filter(|item| item.ship_anyway_at.is_some()) {
+        items.push(entry(item, "shipping-anyway"));
     }
     for quarantined in doc.quarantine.iter().filter(|q| now < q.ends_at) {
         items.push(Item {
@@ -151,6 +151,32 @@ mod tests {
         assert_eq!(s.items[0].task, "Add totals");
         assert_eq!(s.items[0].since, 50);
         assert_eq!(s.items[0].file, "src/a.test.ts");
+    }
+
+    #[test]
+    fn a_real_bug_the_person_shipped_anyway_is_listed_apart_from_the_ones_still_waiting_on_them() {
+        let mut doc = Doc::default();
+        doc.note_failure(&cand("bug one"), 10);
+        doc.note_failure(&cand("bug two"), 20);
+        doc.note_failure(&cand("sort me"), 30);
+        let (one, two) = (doc.items[0].id.clone(), doc.items[1].id.clone());
+        doc.mark_code_wrong(&one, "x", 11);
+        doc.mark_code_wrong(&two, "y", 21);
+        let key = Doc::bug_key(&doc.items[0]);
+        assert!(doc.ship_bug_anyway(&key, 40));
+        let s = summarize(&doc, false, 50);
+        assert_eq!(s.count, 1, "a real bug is never counted as one to sort");
+        let states: Vec<(&str, &str)> =
+            s.items.iter().map(|i| (i.test.as_str(), i.state)).collect();
+        assert_eq!(
+            states,
+            vec![
+                ("sort me", "to-sort"),
+                ("bug two", "real-bug"),
+                ("bug one", "shipping-anyway")
+            ],
+            "the ones that still wait come first, so a long list never hides them"
+        );
     }
 
     #[test]

@@ -114,8 +114,8 @@ fn tests_still_to_sort_read_sorting_n_tests_and_are_not_a_pass() {
     );
 }
 
-#[test]
-fn a_remaining_list_of_only_named_findings_passes_and_each_is_visible() {
+/// A list with one real bug (`totals add up`, "tax is ignored") that the person chose to ship with, and one quarantined test.
+fn a_bug_shipped_anyway_and_a_quarantined_test() -> Doc {
     let mut doc = Doc::default();
     doc.note_failure(&cand("a.test.ts", "totals add up"), 1);
     doc.note_failure(&cand("b.test.ts", "flaky one"), 2);
@@ -123,6 +123,75 @@ fn a_remaining_list_of_only_named_findings_passes_and_each_is_visible() {
     let flaky = doc.items[1].id.clone();
     doc.mark_code_wrong(&bug, "tax is ignored", 3);
     doc.mark_flaky(&flaky, "passed on a re-run", 4);
+    let key = Doc::bug_key(&doc.items[0]);
+    assert!(doc.ship_bug_anyway(&key, 4));
+    doc
+}
+
+#[test]
+fn a_real_bug_waiting_on_the_person_is_not_a_pass_and_names_the_test() {
+    let mut doc = Doc::default();
+    doc.note_failure(&cand("a.test.ts", "totals add up"), 1);
+    let a = doc.items[0].id.clone();
+    doc.mark_code_wrong(&a, "tax is ignored", 3);
+    let out = stage_of(&doc, &[], 5);
+    let step = &out.stage.steps[0];
+    assert_eq!(step.outcome, Outcome::CouldNotRun);
+    assert_eq!(
+        step.detail,
+        "1 test named as a real bug, waiting on you: totals add up"
+    );
+    // Still a named finding, in the words it always had.
+    assert_eq!(out.findings.len(), 1);
+    assert_eq!(
+        out.findings[0].line,
+        "totals add up fails because the code is wrong: tax is ignored"
+    );
+    // Never a pass by aggregate, with every other step green.
+    assert_eq!(
+        super::super::aggregate(&[Step::new("Check: x", Outcome::Passed, "ok"), step.clone()]),
+        Outcome::CouldNotRun
+    );
+    // Two of them: counted, and the names are listed.
+    doc.note_failure(&cand("b.test.ts", "rounds"), 2);
+    let b = doc.items[1].id.clone();
+    doc.mark_code_wrong(&b, "rounding is off", 4);
+    let two = stage_of(&doc, &[], 5);
+    assert_eq!(
+        two.stage.steps[0].detail,
+        "2 tests named as a real bug, waiting on you: totals add up, rounds"
+    );
+    // The person's answer is the way through: the step passes and the finding says so.
+    let key = Doc::bug_key(&doc.items[0]);
+    doc.ship_bug_anyway(&key, 6);
+    let one_left = stage_of(&doc, &[], 7);
+    assert_eq!(one_left.stage.steps[0].outcome, Outcome::CouldNotRun);
+    assert!(one_left.stage.steps[0].detail.contains("rounds"));
+    let key = Doc::bug_key(&doc.items[1]);
+    doc.ship_bug_anyway(&key, 8);
+    let none_left = stage_of(&doc, &[], 9);
+    assert_eq!(none_left.stage.steps[0].outcome, Outcome::Passed);
+    assert_eq!(none_left.findings.len(), 2, "both are still findings");
+}
+
+#[test]
+fn tests_still_to_sort_are_said_before_a_bug_that_waits() {
+    let mut doc = Doc::default();
+    doc.note_failure(&cand("a.test.ts", "bug"), 1);
+    doc.note_failure(&cand("b.test.ts", "sort me"), 2);
+    let a = doc.items[0].id.clone();
+    doc.mark_code_wrong(&a, "x", 3);
+    let step = stage_of(&doc, &[], 5).stage.steps[0].clone();
+    assert_eq!(
+        (step.outcome, step.detail.as_str()),
+        (Outcome::CouldNotRun, "Sorting 1 test")
+    );
+}
+
+#[test]
+fn a_remaining_list_of_only_named_findings_passes_and_each_is_visible() {
+    // The real bug is one the person chose to ship with; the other test is quarantined.
+    let doc = a_bug_shipped_anyway_and_a_quarantined_test();
     let out = stage_of(&doc, &[], 5);
     assert_eq!(out.stage.steps[0].outcome, Outcome::Passed);
     assert!(
@@ -133,11 +202,16 @@ fn a_remaining_list_of_only_named_findings_passes_and_each_is_visible() {
         out.stage.steps[0].detail
     );
     assert!(out.stage.steps[0].detail.contains("1 test quarantined"));
+    assert!(
+        out.stage.steps[0].detail.contains("shipped anyway"),
+        "{}",
+        out.stage.steps[0].detail
+    );
     let kinds: Vec<&str> = out.findings.iter().map(|f| f.kind.as_str()).collect();
     assert_eq!(kinds, vec!["code-wrong", "quarantined"]);
     assert_eq!(
         out.findings[0].line,
-        "totals add up fails because the code is wrong: tax is ignored"
+        "totals add up fails because the code is wrong: tax is ignored You chose to ship anyway."
     );
     assert!(
         out.findings[1].line.contains("quarantined until"),
@@ -238,7 +312,26 @@ fn a_check_that_failed_only_on_quarantined_or_named_tests_does_not_block() {
         stage.steps[0].detail
     );
     assert!(doc.items.is_empty());
-    // A named real bug failing again does not block either.
+    // A named real bug the person chose to ship with, failing again, does not block either.
+    let mut doc = Doc::default();
+    doc.note_failure(
+        &cand("src/other.test.ts", "src/other.test.ts > suite > works"),
+        1,
+    );
+    let id = doc.items[0].id.clone();
+    assert!(doc.mark_code_wrong(&id, "real", 2));
+    let key = Doc::bug_key(&doc.items[0]);
+    assert!(doc.ship_bug_anyway(&key, 2));
+    let stage = classify(&mut doc, &record, 3);
+    assert_eq!(stage.steps[0].outcome, Outcome::Passed);
+    assert_eq!(doc.items[0].seen_count, 2);
+}
+
+#[test]
+fn a_check_that_failed_on_a_real_bug_still_waiting_on_the_person_is_not_a_pass() {
+    let dir = Temp::new();
+    let log = write_log(&dir, "unit.log", FAIL_OTHER);
+    let record = verify_record(vec![verify_step("unit", V::Failed, Some(&log))]);
     let mut doc = Doc::default();
     doc.note_failure(
         &cand("src/other.test.ts", "src/other.test.ts > suite > works"),
@@ -247,8 +340,50 @@ fn a_check_that_failed_only_on_quarantined_or_named_tests_does_not_block() {
     let id = doc.items[0].id.clone();
     assert!(doc.mark_code_wrong(&id, "real", 2));
     let stage = classify(&mut doc, &record, 3);
-    assert_eq!(stage.steps[0].outcome, Outcome::Passed);
-    assert_eq!(doc.items[0].seen_count, 2);
+    assert_eq!(stage.steps[0].outcome, Outcome::CouldNotRun);
+    assert!(
+        stage.steps[0]
+            .detail
+            .starts_with("1 test named as a real bug, waiting on you: "),
+        "{}",
+        stage.steps[0].detail
+    );
+    assert_eq!(doc.items[0].seen_count, 2, "it is still the same item");
+    assert_eq!(doc.items[0].ship_anyway_at, None);
+    // A bug the person shipped anyway, then a green run: the item and its override both leave.
+    let green = write_log(&dir, "green.log", GREEN);
+    let passed = verify_record(vec![verify_step("unit", V::Passed, Some(&green))]);
+    let key = Doc::bug_key(&doc.items[0]);
+    assert!(doc.ship_bug_anyway(&key, 4));
+    classify(&mut doc, &passed, 5);
+    assert!(doc.items.is_empty(), "a passing test leaves the list");
+}
+
+#[test]
+fn an_item_left_on_the_list_with_a_flaky_decision_is_not_a_bug_that_waits_on_anyone() {
+    // A document from disk can hold one (`mark_flaky` takes the test off the list, so this build never leaves one). The check, the step
+    // and the hold must agree: there is no bug here and no row to answer, so nothing waits.
+    let dir = Temp::new();
+    let log = write_log(&dir, "unit.log", FAIL_OTHER);
+    let record = verify_record(vec![verify_step("unit", V::Failed, Some(&log))]);
+    let mut doc = Doc::default();
+    doc.note_failure(
+        &cand("src/other.test.ts", "src/other.test.ts > suite > works"),
+        1,
+    );
+    doc.items[0].decision = Some(crate::test_debt::doc::Decision {
+        kind: DecisionKind::Flaky,
+        line: "x".into(),
+        at: 2,
+    });
+    let stage = classify(&mut doc, &record, 3);
+    assert_eq!(
+        stage.steps[0].outcome,
+        Outcome::Passed,
+        "{}",
+        stage.steps[0].detail
+    );
+    assert_eq!(doc.waiting_bugs().count(), 0);
 }
 
 #[test]
@@ -681,4 +816,73 @@ fn a_record_nothing_landed_for_does_not_read_as_passed_over_a_list_with_tests_to
     assert_eq!(record.outcome, Outcome::CouldNotRun);
     assert_eq!(record.steps.last().unwrap().detail, "Sorting 1 test");
     assert!(!quiet_in(dir.path(), "/p"));
+}
+
+fn a_passed_record() -> super::super::ShipCheckRecord {
+    super::super::ShipCheckRecord {
+        project: "/p".into(),
+        head: "a".repeat(40),
+        base: None,
+        commits_covered: 1,
+        at: 1,
+        outcome: Outcome::Passed,
+        note: None,
+        steps: vec![Step::new("Check: x", Outcome::Passed, "ok")],
+        tested: Vec::new(),
+        not_tested: Vec::new(),
+        findings: Vec::new(),
+    }
+}
+
+#[test]
+fn a_saved_pass_over_a_real_bug_that_waits_on_the_person_reads_as_held_until_they_answer() {
+    // The fixer names the bug after the ship check passed: the pass must not stand over it.
+    let dir = Temp::new();
+    list_one(&dir, "adds up");
+    store::update(dir.path(), "/p", |doc| {
+        let id = doc.items[0].id.clone();
+        doc.mark_code_wrong(&id, "tax is ignored", 2);
+    })
+    .unwrap();
+    assert!(!quiet_in(dir.path(), "/p"), "a bug that waits is not quiet");
+    let mut record = a_passed_record();
+    hold_if_waiting(&mut record, dir.path(), "/p");
+    assert_eq!(record.outcome, Outcome::CouldNotRun);
+    let step = record.steps.last().unwrap();
+    assert_eq!(step.name, STEP);
+    assert_eq!(
+        step.detail,
+        "1 test named as a real bug, waiting on you: adds up"
+    );
+    assert!(record
+        .not_tested
+        .iter()
+        .any(|line| line.contains("waiting on you")));
+    // Their answer lets it stand again: the pass is theirs to give.
+    store::update(dir.path(), "/p", |doc| {
+        let key = Doc::bug_key(&doc.items[0]);
+        assert!(doc.ship_bug_anyway(&key, 9));
+    })
+    .unwrap();
+    assert!(quiet_in(dir.path(), "/p"));
+    let mut again = a_passed_record();
+    hold_if_waiting(&mut again, dir.path(), "/p");
+    assert_eq!(again.outcome, Outcome::Passed);
+    assert_eq!(again.steps.len(), 1, "nothing was added");
+}
+
+#[test]
+fn a_list_that_cannot_be_read_is_still_not_quiet_with_a_bug_in_it() {
+    let dir = Temp::new();
+    let path = store::path_of(dir.path(), "/p");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(
+        &path,
+        format!("{{\"version\": {}}}", crate::test_debt::doc::VERSION + 1),
+    )
+    .unwrap();
+    assert!(!quiet_in(dir.path(), "/p"));
+    let mut record = a_passed_record();
+    hold_if_waiting(&mut record, dir.path(), "/p");
+    assert_eq!(record.outcome, Outcome::CouldNotRun);
 }

@@ -3,6 +3,7 @@
 //   ?state=one       one test to sort
 //   ?state=three     three tests to sort
 //   ?state=mixed     two to sort, plus a real bug and a flaky test (listed, not counted)
+//   ?state=shipping  one to sort, a real bug that waits on the person, and a real bug they chose to ship with
 //   ?state=sorting   the app is sorting two tests
 //   ?state=garbage   an answer that can't be read (no line)
 import { createRoot } from "react-dom/client";
@@ -37,6 +38,15 @@ const answers: Record<string, unknown> = {
       example("b"),
       example("c", { state: "real-bug", test: "Example: adds a row", file: "src/rows/add.test.ts" }),
       example("d", { state: "flaky", test: "Example: loads the list", file: "src/list/load.test.ts" }),
+    ],
+  },
+  shipping: {
+    count: 1,
+    sorting: false,
+    items: [
+      example("a"),
+      example("b", { state: "real-bug", test: "Example: adds a row", file: "src/rows/add.test.ts" }),
+      example("c", { state: "shipping-anyway", test: "Example: rounds the total", file: "src/total/round.test.ts" }),
     ],
   },
   sorting: { count: 2, sorting: true, items: [example("a"), example("b")] },

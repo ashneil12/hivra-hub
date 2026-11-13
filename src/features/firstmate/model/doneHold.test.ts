@@ -4,6 +4,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { newSession, type Block, type Session } from "../../sessions/model/session";
 import {
+  BUGS_NOTE,
   HOLD_NOTE,
   HOLD_PREFIX,
   HOLD_RULES,
@@ -773,6 +774,63 @@ describe("holdDeps: the app's own answers", () => {
     expect(await api.work?.("chat-1")).toEqual({ tasks: [{ id: "t1", title: "Fix the save bug", status: "working" }], unanswered: [] });
     expect(api.waiting?.("chat-1")).toEqual([{ id: "w1", title: "Add the export" }]);
     expect(api.waiting?.("chat-3")).toEqual([]);
+  });
+});
+
+// PT-5 follow-up: a test the fixer named as a real bug holds the version until the person answers Ship anyway or the test passes.
+describe("the hold and a real bug that waits on the person", () => {
+  const waiting = (bugs: number, toSort = 0) => vi.fn(async () => ({ toSort, sorting: false, bugs }));
+
+  it("holds a ready-to-ship claim while a named real bug waits on the person, even over a pass", async () => {
+    const held = await doneHold(claiming(), deps({ passed: vi.fn(async () => true), sorting: waiting(2) }), new Set());
+    expect(held?.message.text).toContain("Not ready to ship yet: 2 failing tests name real bugs and wait on the person.");
+    expect(held?.message.text).toContain("Needs you");
+    expect(held?.message.text).toContain("Ship anyway");
+    // An answer that leaves the test failing comes back at the next ship check, so the way to put it to them is to run one.
+    expect(held?.message.text).toContain("Run ship_check");
+    expect(held?.note.text).toBe(BUGS_NOTE);
+    expect(held?.key).toContain(`${HEAD}:bugs:2`);
+  });
+
+  it("says one bug in the singular", async () => {
+    const held = await doneHold(claiming(), deps({ sorting: waiting(1) }), new Set());
+    expect(held?.message.text).toContain("Not ready to ship yet: 1 failing test names a real bug and waits on the person.");
+  });
+
+  it("waits for the test fixer first: tests still to sort are the hold, not the bug", async () => {
+    const held = await doneHold(claiming(), deps({ sorting: waiting(1, 2) }), new Set());
+    expect(held?.message.text).toContain("2 failing tests");
+    expect(held?.message.text).not.toContain("real bug");
+  });
+
+  it("holds once for the same bugs and again when the count changes", async () => {
+    const memo = new Set<string>();
+    const count = waiting(2);
+    const api = deps({ sorting: count });
+    expect(await doneHold(claiming(), api, memo)).toBeDefined();
+    expect(await doneHold(claiming(), api, memo)).toBeUndefined();
+    count.mockResolvedValue({ toSort: 0, sorting: false, bugs: 1 });
+    expect(await doneHold(claiming(), api, memo)).toBeDefined();
+  });
+
+  it("holds nothing for no bugs, an answer it can't read, or an app that can't say", async () => {
+    for (const bugs of [0, -1, Number.NaN, 1.5, undefined, "2"]) {
+      const sorting = vi.fn(async () => ({ toSort: 0, sorting: false, bugs })) as never;
+      expect(await doneHold(claiming(), deps({ passed: vi.fn(async () => true), sorting }), new Set())).toBeUndefined();
+    }
+  });
+
+  it("reads the bugs from the app's own list: only the ones still waiting count, not the ones the person shipped anyway", async () => {
+    const backend = { head: vi.fn(async () => HEAD), passed: vi.fn(async () => true), latest: vi.fn(async () => null) };
+    const items = [{ state: "real-bug" }, { state: "shipping-anyway" }, { state: "flaky" }, { state: "to-sort" }, { state: "real-bug" }];
+    const read = vi.fn(async () => ({ count: 0, sorting: false, items }));
+    const api = holdDeps(backend as never, vi.fn(async () => ({ mode: "at-ship" as const })), vi.fn(async () => undefined), () => [], read);
+    expect(await api.sorting?.("/work/app")).toEqual({ toSort: 0, sorting: false, bugs: 2 });
+    expect(await doneHold(claiming(), api, new Set())).toBeDefined();
+    // Every bug shipped anyway: nothing is held for it.
+    const shipped = vi.fn(async () => ({ count: 0, sorting: false, items: [{ state: "shipping-anyway" }] }));
+    const none = holdDeps(backend as never, vi.fn(async () => ({ mode: "at-ship" as const })), vi.fn(async () => undefined), () => [], shipped);
+    expect(await doneHold(claiming(), none, new Set())).toBeUndefined();
   });
 });
 

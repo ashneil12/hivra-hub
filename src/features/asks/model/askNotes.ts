@@ -30,12 +30,14 @@ export function isAshMessage(block: Block): boolean {
 }
 
 function line(ask: Ask): string {
-  const state = ask.status === "heard" ? "" : ` [${STATUS_WORD[ask.status].toLowerCase()}${ask.note ? `: ${ask.note}` : ""}]`;
-  return `- ask ${ask.n}${ask.kind === "idea" ? " (idea, for later)" : ""}: "${ask.quote}"${state}`;
+  // A note on a not-started ask is why it is back on the list (its job failed or was cancelled): the first mate reads it.
+  const state = ask.status === "heard" && !ask.note ? "" : ` [${(ask.status === "heard" ? "not started" : STATUS_WORD[ask.status].toLowerCase())}${ask.note ? `: ${ask.note}` : ""}]`;
+  // The id is what delegate_task's `asks` takes, so a job's end updates this ask.
+  return `- ask ${ask.n}${ask.kind === "idea" ? " (idea, for later)" : ""}: "${ask.quote}"${state} (id ${ask.id})`;
 }
 
 function how(cli: string): string {
-  return `Give one a status with \`${cli} asks.update {"ask":<number>,"status":"started","note":"one line"}\`. Statuses: started; waiting (needs "note": what it waits on from Ash); done (needs "proof": a link, a file, or "answered in this chat"). \`${cli} asks.list {}\` shows them all. Only Ash can drop one.`;
+  return `Give one a status with \`${cli} asks.update {"ask":<number>,"status":"started","note":"one line"}\`. Statuses: started; waiting (needs "note": what it waits on from Ash); done (needs "proof": a link, a file, or "answered in this chat"). \`${cli} asks.list {}\` shows them all. Only Ash can drop one. When you hand one to a worker, pass its id in the job's \`asks\`: the ask is then marked started, and closed or sent back when the job ends.`;
 }
 
 /** A short key for the list a chat was last shown, so the same list is not sent twice. */

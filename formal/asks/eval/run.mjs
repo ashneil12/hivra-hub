@@ -2,7 +2,8 @@
 //
 //   node formal/asks/eval/run.mjs                      the standard suite, offline (rules, oracle, recorded, and three stress runs)
 //   node formal/asks/eval/run.mjs --mode rules         only what the app keeps with no model
-//   node formal/asks/eval/run.mjs --mode hub           the other extractor (hub/model/askLedger.ts), regex only
+//   node formal/asks/eval/run.mjs --mode hub           a hub chat no first mate hears, as the app writes it now (rules + the old hub regex)
+//   node formal/asks/eval/run.mjs --mode hub-old       the old hub ledger's extractor alone (hub/model/askLedger.ts): the baseline
 //   node formal/asks/eval/run.mjs --mode recorded --recorded formal/asks/eval/recorded/typical.json
 //   node formal/asks/eval/run.mjs --mode recorded --lazy 2        the model names only its first two asks per message
 //   node formal/asks/eval/run.mjs --mode recorded --fail-first 1  the first model call per message times out (retry)
@@ -64,6 +65,7 @@ try {
   const suite = mode
     ? [{ mode, ...(failFirst !== undefined ? { failFirst } : {}), ...(lazy !== undefined ? { lazy } : {}) }]
     : [
+        { mode: "hub-old" },
         { mode: "hub" },
         { mode: "rules" },
         { mode: "oracle" },

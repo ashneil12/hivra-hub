@@ -9,9 +9,11 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState } from "react";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { memoryReadableBlocks } from "../../memory/model/privateChat";
+import { readLegacyAskLedger } from "../../hub/model/askLedger";
 import { askDigest, askNudge, isAshMessage } from "../model/askNotes";
-import { hearMessage, hearPrompt, nothingToHear, parseHeard, rulesAsks, sentences, type HeardAsk } from "../model/asks";
+import { HUB_MATE, hearMessage, hearPrompt, nothingToHear, parseHeard, rulesAsks, sentences, type HeardAsk } from "../model/asks";
 import { askStore } from "../model/askStore";
+import { wideAsks } from "../model/wideReading";
 
 /** A message this long, or with this many sentences, gets the model's reading. A shorter one is read by the rules. */
 const LONG_CHARS = 200;
@@ -34,8 +36,10 @@ export function isLongMessage(text: string): boolean {
 }
 
 /**
- * Whether a message's asks go on the ledger at all. One short ask is just a message: the reply answers it and a
- * receipt under every line would be noise. Two or more asks, or anything asked in a long message, are written down.
+ * Whether a message's asks show in its chat. One short ask is just a message: the reply answers it and a receipt under
+ * every line would be noise (and the first mate is not nudged about it). Two or more asks, or anything asked in a long
+ * message, get the receipt. The others are still written down, quietly (Ask.quiet), so the Chief's "You asked" list has
+ * them: it held every ask the old hub ledger caught, a lone short one included.
  */
 export function worthKeeping(text: string, asks: readonly HeardAsk[], maybes: readonly HeardAsk[]): boolean {
   const total = asks.length + maybes.length;
@@ -76,6 +80,12 @@ export function useAskLedger(options: AskLedgerOptions): void {
     void store
       .load()
       .then(() => store.begin())
+      // The old hub ledger's open asks come in once (askMove.ts). A key that cannot be read leaves the move for the next
+      // start; the old key itself is never written or deleted here.
+      .then(() => {
+        const legacy = readLegacyAskLedger();
+        if (legacy.ok) return store.moveFromHub(legacy.rows, (chatId) => latest.current.mateOf(chatId));
+      })
       .catch(() => undefined);
     return store.subscribe(() => setTick((value) => value + 1));
   }, [on]);
@@ -118,11 +128,13 @@ export function useAskLedger(options: AskLedgerOptions): void {
         if (!mark) {
           // The quick reading, at once, so the receipt is there before the model answers.
           inFlight.current.add(block.id);
-          const quick = nothingToHear(text) ? [] : rulesAsks(text);
+          const quick = nothingToHear(text) ? [] : wideAsks(text);
           const long = isLongMessage(text) && !nothingToHear(text);
-          const keep = worthKeeping(text, quick, []);
+          // Every ask is written down. Whether the chat shows it is the rules' own call, as it always was: a short message
+          // (a lone ask, or two in two short sentences) is written quietly.
+          const keep = worthKeeping(text, rulesAsks(text), []);
           void store
-            .hear({ ...base, list: { asks: keep ? quick : [], maybes: [] }, by: long && ask ? "rules" : keep ? "rules" : "model", now: Date.now() })
+            .hear({ ...base, list: { asks: quick, maybes: [] }, by: long && ask ? "rules" : quick.length ? "rules" : "model", now: Date.now(), ...(keep ? {} : { quiet: true }) })
             .catch(() => undefined)
             .finally(() => inFlight.current.delete(block.id));
           continue;
@@ -141,11 +153,11 @@ export function useAskLedger(options: AskLedgerOptions): void {
           const now = Date.now();
           if (!heard) {
             // No list this time. Count the try; the rules' reading stays.
-            const quick = rulesAsks(text);
-            await store.hear({ ...base, list: { asks: worthKeeping(text, quick, []) ? quick : [], maybes: [] }, by: "rules", now });
+            const quick = wideAsks(text);
+            await store.hear({ ...base, list: { asks: quick, maybes: [] }, by: "rules", now, ...(worthKeeping(text, rulesAsks(text), []) ? {} : { quiet: true }) });
             return;
           }
-          const list = hearMessage(text, heard);
+          const list = hearMessage(text, heard, wideAsks(text));
           // The message is long here, so any row at all is worth keeping, as the quick reading kept a lone rules ask: an
           // empty list written over it would erase a row the person was shown.
           const keep = list.asks.length + list.maybes.length > 0;
@@ -179,7 +191,8 @@ export function useAskLedger(options: AskLedgerOptions): void {
       const now = Date.now();
       const mates = new Set(doc.asks.map((item) => item.mateId));
       for (const mateId of mates) {
-        if (digesting.current.has(mateId)) continue;
+        // Asks heard in a chat that is no first mate's have nobody to tell (hubRoute.ts).
+        if (mateId === HUB_MATE || digesting.current.has(mateId)) continue;
         // Only into a chat that is open, idle and still this first mate's; with none, nothing is marked sent and a later pass tries again.
         const takes = (chatId: string) => {
           const chat = options.sessions.find((session) => session.id === chatId);

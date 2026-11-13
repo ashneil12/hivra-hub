@@ -51,7 +51,7 @@ fn task_schema() -> Value {
             "heavy": { "type": "boolean", "description": "True when the task runs heavy tests (full suites, e2e, builds)." },
             "hard": { "type": "boolean", "description": "True when the task is hard (subtle, high-risk, or wide)." },
             "scope": names("In-scope paths: the files or folders this task may change.", 50),
-            "asks": names("The Ash OS ask ids (a_...) this task covers.", 50),
+            "asks": names("The ask ids this task covers: the \"id\" of each ask in asks.list (like ask-5-abc123).", 50),
             "gates": { "type": "array", "items": { "type": "string", "enum": ["diff", "checks", "committed", "ratchet", "routes"] }, "description": "Which checks must pass before this task is done, as for delegate_task." },
             "code": { "type": "boolean", "description": "True when the task changes code: it always gets the diff and checks gates." }
         },

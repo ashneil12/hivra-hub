@@ -91,6 +91,7 @@ import {
 } from "../../monos/model/workerPool";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
+import { delegationAskIds } from "../../asks/model/asks";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
 import { phaseBeforeCrew, phaseHint } from "../../phases/model/gate";
 import { bindPhaseLauncher, unbindPhaseLauncher } from "../../phases/model/phaseCrew";
@@ -668,18 +669,17 @@ function firstLine(brief: string): string {
   return brief.split("\n").find((line) => line.trim())!.trim().slice(0, 200);
 }
 
-/** The studio's ask id rule (ashos/hub.py ASK_ID; delegations.rs ask_id_ok): one bad id would refuse the whole copy. */
+/**
+ * The asks a job covers (delegations.rs ask_id_ok reads the same rule). A ledger id (`ask-<n>-<block>`, what `asks.list`
+ * gives as `id`) is what a job's end updates the ask by (asks/model/askJobs.ts). The retired Ash OS ids (`a_...`) are still
+ * accepted so an old row or a habit that passes one keeps working, but nothing writes them any more. One bad id would
+ * refuse the whole copy, so it is refused here first.
+ */
 function askIds(value: unknown): string[] {
   if (value === undefined) return [];
-  if (
-    !Array.isArray(value) ||
-    value.length > ASKS_MAX ||
-    !value.every((id) => typeof id === "string" && /^a_[A-Za-z0-9]{1,40}$/.test(id.trim()))
-  )
-    throw new Error(
-      forUser`asks must be up to ${ASKS_MAX} Ash OS ask ids (a_...), as ash_record returned them`,
-    );
-  return [...new Set(value.map((id: string) => id.trim()))];
+  const ids = delegationAskIds(value, ASKS_MAX);
+  if (!ids) throw new Error(forUser`asks must be up to ${ASKS_MAX} ask ids (ask-5-abc123, the "id" of each ask in asks.list)`);
+  return ids;
 }
 
 function taskIds(value: unknown): string[] | undefined {

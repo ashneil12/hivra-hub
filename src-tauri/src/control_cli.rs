@@ -433,13 +433,14 @@ Actions:
                   choices accepts 1–4 options. A habit card is a suggestion;
                   the user must start it before it is scheduled.
   tasks.delegate {"intent":"<Ash's own ask, in his words>","brief":"<the build instructions>",
-                  "goal":"<done when>","title":"Fix the save bug","asks":["a_..."],
+                  "goal":"<done when>","title":"Fix the save bug","asks":["ask-5-abc123"],
                   "isolation":"shared"}
                   intent, brief and goal are required; an empty or placeholder
                   one is refused before anything starts.
                   Mono only. Hand a job to a worker chat nested under yours, as a
                   stored task (taskId) that reports back as a new turn once you
-                  are idle. asks are the Ash OS ask ids it covers; isolation
+                  are idle. asks are the ask ids it covers (the "id" of each ask
+                  in asks.list); isolation
                   "worktree" gives it its own git worktree. Optional project,
                   model (an id or a family such as "sonnet") and effort.
                   "heavy":true marks a job that runs heavy tests; a project

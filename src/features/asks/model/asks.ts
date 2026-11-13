@@ -22,6 +22,16 @@ export type AskBy = "ash" | "mate" | "app";
 
 export type AskStep = { at: number; status: AskStatus; by: AskBy; note?: string };
 
+/**
+ * What the dump check keeps beside an ask it is settling (hub/model/askSettle.ts), so one answer settles an ask once and
+ * a check is sent once. It was a row's own fields in the old hub ledger. `gap` is why the ask is open again (a "Fixed"
+ * the build did not cover), `held` a done claim held back, `settled` and `reopen` the check turn already acted on.
+ */
+export type AskCheck = { gap?: string; held?: { claim: string; at: number }; settled?: string; reopen?: string };
+
+/** The owner of an ask heard in a chat that is no first mate's (a plain chat, a room): not a Mono, so no first mate is told of it. */
+export const HUB_MATE = "hub.chats";
+
 export type Ask = {
   id: string;
   /** The number a person and a first mate call it by: "ask 41". */
@@ -45,6 +55,19 @@ export type Ask = {
   createdAt: number;
   updatedAt: number;
   history: AskStep[];
+  /** How many times Ash has said it, when he said it again in the same chat: the first mention is 1. */
+  said?: number;
+  /**
+   * Kept for the Chief of Staff's "You asked" list only: no receipt under the message and no nudge to a first mate
+   * while nobody has touched it. A lone short ask, an ask heard in a chat that is no first mate's, an ask moved over
+   * from the old hub ledger.
+   */
+  quiet?: boolean;
+  /** Copied from the old hub ledger when it was retired (askMove.ts). A hearing never replaces it. */
+  moved?: boolean;
+  /** The jobs (delegation ids) that took it on (askJobs.ts). */
+  jobs?: string[];
+  check?: AskCheck;
 };
 
 /** How a message was heard, so it is heard once: by the model, by the rules alone (the model may still be tried), or it held nothing. */
@@ -60,10 +83,13 @@ export type AskDoc = {
   heard: Record<string, Heard>;
   /** When each first mate last got the daily check on its open asks (askNotes.ts askDigest), by first mate. */
   nudged: Record<string, number>;
+  /** When the old hub ledger's open asks were moved in (askMove.ts). Set once, in the same write that copies them. */
+  hubMoved?: number;
 };
 
 export const ASK_DOC_KEY = "asks";
-export const QUOTE_MAX = 400;
+/** The old hub ledger kept up to 500 characters of a sentence (askLedger.ts WORDS_MAX); a run-on dictated in one breath must not lose its tail here. */
+export const QUOTE_MAX = 500;
 export const SUMMARY_MAX = 160;
 export const NOTE_MAX = 300;
 export const PROOF_MAX = 300;
@@ -73,6 +99,9 @@ export const ASKS_PER_MESSAGE = 24;
 export const CLOSED_CAP = 2000;
 const HEARD_CAP = 4000;
 const HISTORY_CAP = 20;
+/** Jobs kept on one ask. */
+export const JOBS_PER_ASK = 10;
+const SAID_MAX = 999;
 const ID = /^[A-Za-z0-9._:-]{1,200}$/;
 
 export function emptyAskDoc(now: number): AskDoc {
@@ -83,9 +112,17 @@ export function isOpen(ask: Pick<Ask, "status">): boolean {
   return ask.status !== "done" && ask.status !== "dropped";
 }
 
-/** Open, and a real ask: not an idea for later and not a "maybe". These are the ones a first mate owes a status. */
-export function isOwed(ask: Pick<Ask, "status" | "kind">): boolean {
-  return ask.status === "heard" && ask.kind !== "idea";
+/** Kept for the Chief's list only and still untouched: the chat shows no receipt for it and no first mate is told of it. */
+export function isQuiet(ask: Pick<Ask, "quiet" | "history">): boolean {
+  return ask.quiet === true && ask.history.length <= 1;
+}
+
+/**
+ * Open, and a real ask: not an idea for later and not a "maybe". These are the ones a first mate owes a status. A quiet
+ * one is answered by the reply (a lone short ask), so it is not owed.
+ */
+export function isOwed(ask: Pick<Ask, "status" | "kind" | "quiet" | "history">): boolean {
+  return ask.status === "heard" && ask.kind !== "idea" && !isQuiet(ask);
 }
 
 function record(value: unknown): Record<string, unknown> {
@@ -128,6 +165,9 @@ function readAsk(raw: unknown): Ask | undefined {
   if (!id || !n || !mateId || !sessionId || !blockId || !quote || !status || !kind || createdAt === undefined) return undefined;
   const note = text(value.note, NOTE_MAX);
   const proof = text(value.proof, PROOF_MAX);
+  const said = typeof value.said === "number" && Number.isInteger(value.said) && value.said > 1 ? Math.min(SAID_MAX, value.said) : undefined;
+  const jobs = [...new Set((Array.isArray(value.jobs) ? value.jobs : []).filter((job): job is string => typeof job === "string" && ID.test(job)))].slice(-JOBS_PER_ASK);
+  const check = readCheck(value.check);
   return {
     id,
     n,
@@ -144,7 +184,30 @@ function readAsk(raw: unknown): Ask | undefined {
     createdAt,
     updatedAt: time(value.updatedAt) ?? createdAt,
     history: (Array.isArray(value.history) ? value.history : []).map(readStep).filter((s): s is AskStep => !!s).slice(-HISTORY_CAP),
+    ...(said ? { said } : {}),
+    ...(value.quiet === true ? { quiet: true } : {}),
+    ...(value.moved === true ? { moved: true } : {}),
+    ...(jobs.length ? { jobs } : {}),
+    ...(check ? { check } : {}),
   };
+}
+
+/** The settle bookkeeping of a row read from disk: only text and times that read as such. Undefined when none is left. */
+function readCheck(raw: unknown): AskCheck | undefined {
+  const value = record(raw);
+  const gap = text(value.gap, NOTE_MAX);
+  const settled = text(value.settled, 200);
+  const reopen = text(value.reopen, 200);
+  const held = record(value.held);
+  const claim = text(held.claim, NOTE_MAX);
+  const heldAt = time(held.at);
+  const check: AskCheck = {
+    ...(gap ? { gap } : {}),
+    ...(claim && heldAt !== undefined ? { held: { claim, at: heldAt } } : {}),
+    ...(settled ? { settled } : {}),
+    ...(reopen ? { reopen } : {}),
+  };
+  return Object.keys(check).length ? check : undefined;
 }
 
 /** Disk is untrusted: anything that does not read as an ask is left out, and a bad document is an empty ledger. */
@@ -163,7 +226,8 @@ export function parseAskDoc(raw: unknown, revision: number, now: number): AskDoc
   for (const [key, at] of Object.entries(record(value.nudged))) if (ID.test(key) && time(at) !== undefined) nudged[key] = at as number;
   const highest = asks.reduce((max, ask) => Math.max(max, ask.n), 0);
   const next = typeof value.next === "number" && Number.isInteger(value.next) && value.next > highest ? value.next : highest + 1;
-  return { revision, next, since: time(value.since) ?? now, asks, heard, nudged };
+  const hubMoved = time(value.hubMoved);
+  return { revision, next, since: time(value.since) ?? now, asks, heard, nudged, ...(hubMoved !== undefined ? { hubMoved } : {}) };
 }
 
 /** What goes to disk: closed asks past the cap and the oldest "heard" marks are let go; an open ask never is. */
@@ -178,7 +242,7 @@ export function askDocForDisk(doc: AskDoc): Omit<AskDoc, "revision"> {
   const marks = Object.entries(doc.heard);
   const heard =
     marks.length > HEARD_CAP ? Object.fromEntries(marks.sort((a, b) => b[1].at - a[1].at).slice(0, HEARD_CAP)) : doc.heard;
-  return { next: doc.next, since: doc.since, asks, heard, nudged: doc.nudged };
+  return { next: doc.next, since: doc.since, asks, heard, nudged: doc.nudged, ...(doc.hubMoved !== undefined ? { hubMoved: doc.hubMoved } : {}) };
 }
 
 // ---- Hearing a message ------------------------------------------------------------------------------------------
@@ -232,12 +296,12 @@ export function looksLikeAsk(sentence: string): boolean {
 
 export type HeardAsk = { quote: string; summary: string; kind: AskKind };
 
-function clipQuote(value: string): string {
+export function clipQuote(value: string): string {
   const line = oneLine(value);
   return line.length > QUOTE_MAX ? `${line.slice(0, QUOTE_MAX - 1).trimEnd()}…` : line;
 }
 
-function clipSummary(value: string): string {
+export function clipSummary(value: string): string {
   const line = oneLine(value).replace(/^[-*\d.)\s]+/, "");
   return line.length > SUMMARY_MAX ? `${line.slice(0, SUMMARY_MAX - 1).trimEnd()}…` : line;
 }
@@ -308,7 +372,7 @@ export function parseHeard(reply: string, message: string): HeardAsk[] | undefin
   return out;
 }
 
-function covers(heard: readonly HeardAsk[], sentence: string): boolean {
+export function covers(heard: readonly { quote: string }[], sentence: string): boolean {
   const s = evened(sentence);
   return heard.some((ask) => {
     const q = evened(ask.quote).replace(/[.!?,;:…]+$/, "");
@@ -328,9 +392,11 @@ export type HeardList = { asks: HeardAsk[]; maybes: HeardAsk[] };
  * as a "maybe". With no model list, the rules' own reading stands as the asks. Every uncovered sentence comes along,
  * with no cap: the quick reading already wrote each of them down, so a cap here would silently drop an ask the person
  * had been shown. The receipt counts them ("7 to check") instead of hiding any.
+ *
+ * `rules` is the no-model reading to use: the app passes the wide one (wideReading.ts), which also holds what the old hub
+ * ledger's regex found, so folding that ledger in loses nothing it used to catch.
  */
-export function hearMessage(message: string, model: readonly HeardAsk[] | undefined): HeardList {
-  const rules = rulesAsks(message);
+export function hearMessage(message: string, model: readonly HeardAsk[] | undefined, rules: readonly HeardAsk[] = rulesAsks(message)): HeardList {
   if (!model) return { asks: rules.slice(0, ASKS_PER_MESSAGE), maybes: [] };
   const maybes = rules.filter((ask) => !covers(model, ask.quote));
   return { asks: [...model], maybes };
@@ -338,13 +404,42 @@ export function hearMessage(message: string, model: readonly HeardAsk[] | undefi
 
 // ---- Changing the ledger ----------------------------------------------------------------------------------------
 
-function askId(blockId: string, n: number): string {
+export function askId(blockId: string, n: number): string {
   return `ask-${n}-${blockId.slice(-12).replace(/[^A-Za-z0-9]/g, "")}`;
 }
 
-function sameAsk(a: string, b: string): boolean {
-  const x = evened(a).replace(/[.!?,;:…]+$/, "");
-  const y = evened(b).replace(/[.!?,;:…]+$/, "");
+/** The shape of an ask's id, as a delegation carries it in `asks` (delegations.rs ask_id_ok reads the same rule). */
+const LEDGER_ASK_ID = /^ask-[0-9]{1,9}-[A-Za-z0-9]{0,12}$/;
+
+export function isLedgerAskId(value: string): boolean {
+  return LEDGER_ASK_ID.test(value);
+}
+
+/** The retired Ash OS ask id (`a_...`). Still accepted on a delegation so an old row or habit keeps working; nothing writes one. */
+const OLD_ASK_ID = /^a_[A-Za-z0-9]{1,40}$/;
+
+/**
+ * The ask ids a delegation may carry in `asks` (delegations.rs ask_id_ok reads the same rule): ledger ids, or old Ash OS
+ * ids, trimmed and without repeats; undefined when it is not a list of at most `max` of them, so one bad id refuses the
+ * whole call.
+ */
+export function delegationAskIds(value: unknown, max: number): string[] | undefined {
+  if (!Array.isArray(value) || value.length > max) return undefined;
+  if (!value.every((id) => typeof id === "string" && (isLedgerAskId(id.trim()) || OLD_ASK_ID.test(id.trim())))) return undefined;
+  return [...new Set(value.map((id: string) => id.trim()))];
+}
+
+/** An ask's words with the polite opening off ("please", "also", "can you"), so "Please fix the save bug!" is "fix the save bug". */
+function askKey(value: string): string {
+  return evened(value)
+    .replace(/[.!?,;:…]+$/, "")
+    .replace(/^(?:(?:please|also|and|so|ok|okay|just|then|now)\s+)+/, "")
+    .replace(/^(?:can|could|would|will) you\s+/, "");
+}
+
+export function sameAsk(a: string, b: string): boolean {
+  const x = askKey(a);
+  const y = askKey(b);
   return x === y || (x.length > 24 && y.length > 24 && (x.includes(y) || y.includes(x)));
 }
 
@@ -355,6 +450,8 @@ export type HearInput = {
   list: HeardList;
   by: "model" | "rules";
   now: number;
+  /** The rows are for the Chief's list only (see Ask.quiet). */
+  quiet?: boolean;
 };
 
 /**
@@ -367,8 +464,14 @@ export function withHeard(doc: AskDoc, input: HearInput): AskDoc {
   const previous = doc.heard[input.blockId];
   // A row a hearing wrote has one step, by the app. Ash's hand-added row has one step too, by him: not a hearing's row.
   const fromHearing = (ask: Ask) => ask.history.every((step) => step.by === "app");
+  // A row moved over from the old hub ledger, or one the dump check keeps a note on, is never a hearing's to replace.
   const untouched = (ask: Ask) =>
-    ask.blockId === input.blockId && (ask.status === "heard" || ask.status === "maybe") && ask.history.length <= 1 && fromHearing(ask);
+    ask.blockId === input.blockId &&
+    (ask.status === "heard" || ask.status === "maybe") &&
+    ask.history.length <= 1 &&
+    fromHearing(ask) &&
+    !ask.moved &&
+    !ask.check;
   const kept = doc.asks.filter((ask) => !untouched(ask));
   const mine = kept.filter((ask) => ask.blockId === input.blockId);
   let next = doc.next;
@@ -380,7 +483,14 @@ export function withHeard(doc: AskDoc, input: HearInput): AskDoc {
       (ask) => ask.sessionId === input.sessionId && ask.blockId !== input.blockId && isOpen(ask) && sameAsk(ask.quote, heard.quote),
     );
     if (twin) {
-      bumped.set(twin.id, { ...twin, updatedAt: input.now, ...(twin.status === "maybe" && status === "heard" ? { status: "heard" as const } : {}) });
+      // Said again: counted once per message (the model's list landing after the quick reading is the same saying).
+      const said = previous ? twin.said : Math.min(SAID_MAX, (twin.said ?? 1) + 1);
+      bumped.set(twin.id, {
+        ...twin,
+        updatedAt: input.now,
+        ...(said ? { said } : {}),
+        ...(twin.status === "maybe" && status === "heard" ? { status: "heard" as const } : {}),
+      });
       return;
     }
     const n = next++;
@@ -398,6 +508,7 @@ export function withHeard(doc: AskDoc, input: HearInput): AskDoc {
       createdAt: input.now,
       updatedAt: input.now,
       history: [{ at: input.now, status, by: "app" }],
+      ...(input.quiet ? { quiet: true } : {}),
     });
   };
   for (const heard of input.list.asks) add(heard, "heard");
@@ -470,6 +581,51 @@ export function withChange(
   return { doc: { ...doc, asks: doc.asks.map((item) => (item.id === ask.id ? changed : item)) }, ask: changed };
 }
 
+/**
+ * The settle bookkeeping of one ask changed (askSettle.ts): a key set to `null` is removed, a text or `held` is written.
+ * No history step and no new time: it is a note on the ask, not a move. A change that changes nothing writes nothing.
+ */
+export function withCheck(doc: AskDoc, id: string, patch: { gap?: string | null; held?: AskCheck["held"] | null; settled?: string; reopen?: string }): AskDoc {
+  const ask = doc.asks.find((item) => item.id === id);
+  if (!ask) return doc;
+  const next: AskCheck = { ...ask.check };
+  if (patch.gap !== undefined) {
+    const gap = patch.gap === null ? "" : oneLine(patch.gap).slice(0, NOTE_MAX);
+    if (gap) next.gap = gap;
+    else delete next.gap;
+  }
+  if (patch.held !== undefined) {
+    const claim = patch.held === null ? "" : oneLine(patch.held.claim).slice(0, NOTE_MAX);
+    if (claim && patch.held) next.held = { claim, at: patch.held.at };
+    else delete next.held;
+  }
+  if (patch.settled !== undefined) {
+    const settled = oneLine(patch.settled).slice(0, 200);
+    if (settled) next.settled = settled;
+  }
+  if (patch.reopen !== undefined) {
+    const reopen = oneLine(patch.reopen).slice(0, 200);
+    if (reopen) next.reopen = reopen;
+  }
+  const same = JSON.stringify(next) === JSON.stringify(ask.check ?? {});
+  if (same) return doc;
+  const { check: _old, ...rest } = ask;
+  const changed: Ask = Object.keys(next).length ? { ...rest, check: next } : rest;
+  return { ...doc, asks: doc.asks.map((item) => (item.id === id ? changed : item)) };
+}
+
+/**
+ * An open ask closed by what was built (askSettle.ts), with what closed it as the proof. A closed or dropped ask is left
+ * as it is: a settle never brings back an ask Ash dropped, and never rewrites one that is already done.
+ */
+export function withHandled(doc: AskDoc, id: string, proof: string, now: number): AskDoc {
+  const ask = doc.asks.find((item) => item.id === id);
+  if (!ask || !isOpen(ask)) return doc;
+  const out = withChange(doc, id, { status: "done", proof: oneLine(proof) || "the build covers it", note: "" }, "app", now);
+  if ("problem" in out) return doc;
+  return withCheck(out.doc, id, { gap: null, held: null });
+}
+
 /** An ask Ash adds by hand under a message, in his own words. */
 export function withAdded(doc: AskDoc, input: { mateId: string; sessionId: string; blockId: string; text: string; now: number }): AskDoc {
   const quote = clipQuote(input.text);
@@ -505,10 +661,13 @@ export function asksForBlock(doc: AskDoc, blockId: string): Ask[] {
   return doc.asks.filter((ask) => ask.blockId === blockId).sort((a, b) => a.n - b.n);
 }
 
-/** A first mate's open asks, oldest first: the real ones, then ideas. "Maybe" lines are the person's to settle. */
+/**
+ * A first mate's open asks, oldest first: the real ones, then ideas. "Maybe" lines are the person's to settle. A quiet
+ * ask (a lone short ask, answered by the reply) is on the Chief's list, not in front of the first mate, until it moves.
+ */
 export function openAsksFor(doc: AskDoc, mateId: string): Ask[] {
   return doc.asks
-    .filter((ask) => ask.mateId === mateId && isOpen(ask) && ask.status !== "maybe")
+    .filter((ask) => ask.mateId === mateId && isOpen(ask) && ask.status !== "maybe" && !isQuiet(ask))
     .sort((a, b) => Number(a.kind === "idea") - Number(b.kind === "idea") || a.n - b.n);
 }
 
@@ -544,6 +703,8 @@ export function receiptLine(asks: readonly Ask[]): string {
 export function askForMate(ask: Ask): Record<string, unknown> {
   return {
     ask: ask.n,
+    // What delegate_task's `asks` takes, so a job that finishes updates this ask.
+    id: ask.id,
     quote: ask.quote,
     summary: ask.summary,
     kind: ask.kind,

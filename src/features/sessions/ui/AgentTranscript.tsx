@@ -73,6 +73,7 @@ import {
   useToolDetail,
 } from "./useToolDetail";
 import { HistoryTurn } from "./HistoryTurn";
+import { turnTags } from "../model/turnTags";
 import { streamMeasurement } from "../model/streamingPerformance";
 import { useReplyReflowAnchor } from "./useReplyReflowAnchor";
 import { FilePreview } from "../../files/ui/FilePreview";
@@ -1766,6 +1767,7 @@ function AgentTranscriptComponent({
             <HistoryTurn
               key={turn[0].id}
               id={turnId}
+              tags={turnTags(sessionId, turn)}
               // A stacked message sits as close as one in the same turn, so
               // the gap between turns gives way.
               className={`transcript-turn flex min-w-0 flex-col${inlineWork && !reactedOnly ? " transcript-turn-mono" : ""}${stacksIntoNextTurn ? " -mb-1" : ""}${

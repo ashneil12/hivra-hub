@@ -7,14 +7,16 @@
 //! - "test is out of date": the behaviour changed on purpose. It rewrites the test and cites the brief or commit that changed it. A
 //!   rewrite that only loosens an assertion with no cited change is refused by the test guard like any other: the fixer is not
 //!   exempt, and the citation is how the brief names the test.
-//! - "flaky": it passes on a re-run. It records that and changes nothing. The app quarantines the test for 14 days.
+//! - "flaky": it passes on a re-run. It runs it again with `run_checks` and changes nothing. The app quarantines the test for 14 days, but
+//!   only when its own record of the fixer's runs shows that green run after the test was listed, and never a critical test: that stays
+//!   on the list as a finding that waits for the person.
 
 use std::path::Path;
 use std::sync::OnceLock;
 
 use regex::Regex;
 
-use super::doc::{Doc, Item};
+use super::doc::{Doc, Item, CRITICAL_NOTE, NO_GREEN_NOTE};
 use super::own;
 
 /// The most tests one fixer brief carries. A task brief is capped (30,000 characters), and a fixer that is given more than it can
@@ -94,11 +96,24 @@ pub fn parse_report(report: &str) -> Vec<Reported> {
     out
 }
 
+/// What the app knows about a listed test that the fixer's report can't say for itself. The report is the fixer's word; a quarantine is
+/// only for a test that is not critical and whose own runs show it passing.
+pub struct Proof<'a> {
+    /// Whether the test is critical: under a sensitive path, marked critical, or not able to be checked (`quarantine::critical_reason`).
+    pub critical: &'a dyn Fn(&Item) -> bool,
+    /// Whether the fixer's own `run_checks` records show the test's command green after the test was listed.
+    pub green_after_listed: &'a dyn Fn(&Item) -> bool,
+}
+
 /// What applying a report did, in test ids.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Applied {
     pub code_wrong: Vec<String>,
     pub flaky: Vec<String>,
+    /// Called flaky, but critical: kept on the list as a finding that waits for the person (never quarantined).
+    pub critical: Vec<String>,
+    /// Called flaky with no green run of its own to show for it: still on the list, undecided.
+    pub unproven: Vec<String>,
     pub out_of_date: Vec<String>,
     /// Decisions for a number the brief did not have, or for a test no longer on the list.
     pub ignored: usize,
@@ -107,7 +122,13 @@ pub struct Applied {
 }
 
 /// Applies the decisions to the list. `ids` are the test ids in the order the brief numbered them.
-pub fn apply_report(doc: &mut Doc, ids: &[String], reported: &[Reported], now: u64) -> Applied {
+pub fn apply_report(
+    doc: &mut Doc,
+    ids: &[String],
+    reported: &[Reported],
+    now: u64,
+    proof: &Proof,
+) -> Applied {
     let mut applied = Applied::default();
     let mut decided: Vec<&str> = Vec::new();
     for item in reported {
@@ -120,6 +141,26 @@ pub fn apply_report(doc: &mut Doc, ids: &[String], reported: &[Reported], now: u
         } else {
             item.line.as_str()
         };
+        if item.kind == Kind::Flaky {
+            // The fixer's word is not enough for a quarantine (it switches a test off for 14 days). A test that is not on the list any
+            // more is not looked at: it went green while the fixer worked.
+            if let Some(listed) = doc.items.iter().find(|listed| &listed.id == id).cloned() {
+                if (proof.critical)(&listed) {
+                    // A critical test is never quarantined: it stays on the list as a finding and waits for the person.
+                    if doc.mark_code_wrong(id, CRITICAL_NOTE, now) {
+                        decided.push(id.as_str());
+                        applied.critical.push(id.clone());
+                    }
+                    continue;
+                }
+                if !(proof.green_after_listed)(&listed) {
+                    // No green run of its own to show: it is not sorted, and the next fixer is told why it is back.
+                    doc.note_unproven(id, NO_GREEN_NOTE);
+                    applied.unproven.push(id.clone());
+                    continue;
+                }
+            }
+        }
         let landed = match item.kind {
             Kind::CodeWrong => doc.mark_code_wrong(id, line, now),
             Kind::Flaky => doc.mark_flaky(id, line, now),
@@ -146,12 +187,18 @@ pub fn apply_report(doc: &mut Doc, ids: &[String], reported: &[Reported], now: u
     applied
 }
 
-/// The tests the next fixer is given: undecided, oldest first, at most `BRIEF_ITEMS_MAX`.
+/// The tests the next fixer is given: undecided, oldest first, at most `BRIEF_ITEMS_MAX`. A test the app sent back (a flaky decision
+/// with no green run to show, `NO_GREEN_NOTE`) waits behind the ones not yet tried: a test that can't be proven (it failed in a run no
+/// `run_checks` step can repeat) would otherwise come first at every ship check and crowd the newer ones out.
 pub fn pick(doc: &Doc) -> Vec<Item> {
     let mut items: Vec<Item> = doc.undecided().cloned().collect();
     items.sort_by(|a, b| {
-        a.first_seen_at
-            .cmp(&b.first_seen_at)
+        a.note
+            .trim()
+            .is_empty()
+            .cmp(&b.note.trim().is_empty())
+            .reverse()
+            .then_with(|| a.first_seen_at.cmp(&b.first_seen_at))
             .then_with(|| a.id.cmp(&b.id))
     });
     items.truncate(BRIEF_ITEMS_MAX);
@@ -262,7 +309,7 @@ pub struct Request {
     pub ids: Vec<String>,
 }
 
-const RULES: &str = "This project sorts failing tests at ship. The tests below failed in earlier tasks and were not those tasks' own. You are the test fixer: decide each one with evidence, and change a test only where the rules below say you may.\n\nFor each test, decide one of three, and say which in your report:\n1. code is wrong: the test is right and the code has a real bug. Do not change the test. Report it as a finding with the failing test as proof.\n2. test is out of date: the behaviour changed on purpose. Rewrite the test to the current intended behaviour, and cite the brief or the commit that changed it in your report. A rewrite that only loosens an assertion with no cited behaviour change is refused by the test guard, so cite it.\n3. flaky: it passes on a re-run. Run it again, record that it passed, and do not change it. The app quarantines a flaky test for 14 days: it still runs and reports.\n\nNever delete, skip or weaken a test. Your own rewritten tests must pass: run them with run_checks before you report. Do not fix the code for a \"code is wrong\" test: report it, and your first mate decides.\n\nEnd your report with one line per test, in exactly this form (the number is the test's number below):\nDecision 1: code is wrong | <one line: why, naming the failing test>\nDecision 2: test is out of date | <one line: what changed on purpose, with the commit or brief>\nDecision 3: flaky | <one line: how you saw it pass on a re-run>\n";
+const RULES: &str = "This project sorts failing tests at ship. The tests below failed in earlier tasks and were not those tasks' own. You are the test fixer: decide each one with evidence, and change a test only where the rules below say you may.\n\nFor each test, decide one of three, and say which in your report:\n1. code is wrong: the test is right and the code has a real bug. Do not change the test. Report it as a finding with the failing test as proof.\n2. test is out of date: the behaviour changed on purpose. Rewrite the test to the current intended behaviour, and cite the brief or the commit that changed it in your report. A rewrite that only loosens an assertion with no cited behaviour change is refused by the test guard, so cite it.\n3. flaky: it passes on a re-run. Run it again with run_checks (the check that failed it, or the project's affected check with the test's file in paths) and see it pass, and do not change the test. The app quarantines a flaky test for 14 days, and it still runs and reports, but only when the app's own record shows that green run after the test was listed: with none, the test stays on the list for the next ship check. A critical test (under a sensitive path, or marked critical) is never quarantined: it goes to the person whatever you saw, so say what you saw.\n\nNever delete, skip or weaken a test. Your own rewritten tests must pass: run them with run_checks before you report. Do not fix the code for a \"code is wrong\" test: report it, and your first mate decides.\n\nEnd your report with one line per test, in exactly this form (the number is the test's number below):\nDecision 1: code is wrong | <one line: why, naming the failing test>\nDecision 2: test is out of date | <one line: what changed on purpose, with the commit or brief>\nDecision 3: flaky | <one line: how you saw it pass on a re-run>\n";
 
 /// The most characters of a brief. The delegation keeps a task's brief to 12,000 characters (`delegations.rs` `BRIEF_MAX`), and the
 /// test guard looks for a rewritten test's name in that kept copy: a test named past the cut would read as unnamed. So the brief is
@@ -294,6 +341,10 @@ fn block(number: usize, item: &Item, commits: &[String], failure_max: usize) -> 
         item.seen_count,
         if item.seen_count == 1 { "" } else { "s" }
     ));
+    if !item.note.trim().is_empty() {
+        // An earlier fixer's decision the app did not accept (`NO_GREEN_NOTE`): why this test is back.
+        text.push_str(&format!("Last time: {}\n", item.note.trim()));
+    }
     text.push_str("Failure:\n");
     let failure = item.failure.trim();
     if failure.chars().count() > failure_max {
@@ -389,6 +440,32 @@ mod tests {
         doc.items.last().unwrap().id.clone()
     }
 
+    /// `apply_report` with the two things the app knows said by closures: whether a test is critical, and whether it has a green run.
+    fn apply_with(
+        doc: &mut Doc,
+        ids: &[String],
+        reported: &[Reported],
+        now: u64,
+        critical: &dyn Fn(&Item) -> bool,
+        green: &dyn Fn(&Item) -> bool,
+    ) -> Applied {
+        apply_report(
+            doc,
+            ids,
+            reported,
+            now,
+            &Proof {
+                critical,
+                green_after_listed: green,
+            },
+        )
+    }
+
+    /// A test that is not critical and has a green run, as every test was before the app asked.
+    fn proven(doc: &mut Doc, ids: &[String], reported: &[Reported], now: u64) -> Applied {
+        apply_with(doc, ids, reported, now, &|_| false, &|_| true)
+    }
+
     #[test]
     fn the_three_decisions_are_read_from_a_report() {
         let report = "Done.\n\nDecision 1: code is wrong | totals ignore tax: src/a.test.ts fails on the real value\nDecision 2: test is out of date | the brief for totals changed the rounding (commit 9f3c2a1)\nDecision 3: flaky | passed on a re-run, twice\n";
@@ -447,7 +524,7 @@ mod tests {
         let c = listed(&mut doc, "c.test.ts", "c", 3);
         let ids = vec![a.clone(), b.clone(), c.clone()];
         let report = parse_report("Decision 1: code is wrong | bug\nDecision 2: flaky | re-run passed\nDecision 3: test is out of date | rounding, commit abc1234\n");
-        let applied = apply_report(&mut doc, &ids, &report, 100);
+        let applied = proven(&mut doc, &ids, &report, 100);
         assert_eq!(applied.code_wrong, vec![a.clone()]);
         assert_eq!(applied.flaky, vec![b.clone()]);
         assert_eq!(applied.out_of_date, vec![c.clone()]);
@@ -478,7 +555,7 @@ mod tests {
         let a = listed(&mut doc, "a.test.ts", "a", 1);
         let report = parse_report("Decision 1: flaky | x\nDecision 9: code is wrong | y\n");
         doc.items.clear(); // it went green while the fixer worked
-        let applied = apply_report(&mut doc, &[a], &report, 5);
+        let applied = proven(&mut doc, &[a], &report, 5);
         assert_eq!(applied.ignored, 2);
         assert!(applied.code_wrong.is_empty() && applied.flaky.is_empty());
         assert!(
@@ -493,8 +570,139 @@ mod tests {
         let a = listed(&mut doc, "a.test.ts", "a", 1);
         let b = listed(&mut doc, "b.test.ts", "b", 2);
         let report = parse_report("Decision 1: flaky | x\n");
-        let applied = apply_report(&mut doc, &[a, b.clone()], &report, 5);
+        let applied = proven(&mut doc, &[a, b.clone()], &report, 5);
         assert_eq!(applied.undecided, vec![b]);
+    }
+
+    #[test]
+    fn a_critical_test_called_flaky_stays_on_the_list_as_a_real_bug_with_a_note_and_is_never_quarantined(
+    ) {
+        let mut doc = Doc::default();
+        let a = listed(&mut doc, "src/auth/login.test.ts", "logs in", 1);
+        let b = listed(&mut doc, "src/b.test.ts", "adds", 2);
+        let ids = vec![a.clone(), b.clone()];
+        let report = parse_report("Decision 1: flaky | passed twice\nDecision 2: flaky | passed\n");
+        // `a` is critical and has a green run: critical wins. `b` is neither.
+        let applied = apply_with(
+            &mut doc,
+            &ids,
+            &report,
+            100,
+            &|item| item.file.contains("/auth/"),
+            &|_| true,
+        );
+        assert_eq!(applied.critical, vec![a.clone()]);
+        assert_eq!(applied.flaky, vec![b.clone()]);
+        assert!(applied.undecided.is_empty());
+        let item = doc.items.iter().find(|i| i.id == a).expect("it stays");
+        let decision = item.decision.as_ref().expect("named");
+        assert_eq!(decision.kind, DecisionKind::CodeWrong);
+        assert_eq!(decision.line, CRITICAL_NOTE);
+        assert_eq!(
+            item.bug_words(),
+            "logs in is a critical test that failed. A critical test can't be quarantined; it waits for you."
+        );
+        assert_eq!(doc.real_bugs().count(), 1, "surfaced like a real bug");
+        assert!(!doc.quarantined(&a, 101), "never quarantined");
+        assert!(doc.quarantined(&b, 101), "the other one is");
+        // A real bug's words are unchanged.
+        let mut bug = Doc::default();
+        let id = listed(&mut bug, "src/c.test.ts", "totals", 1);
+        bug.mark_code_wrong(&id, "the total ignores tax", 2);
+        assert_eq!(
+            bug.items[0].bug_words(),
+            "totals fails because the code is wrong: the total ignores tax"
+        );
+    }
+
+    #[test]
+    fn a_flaky_decision_with_no_green_run_leaves_the_test_undecided_with_a_note_for_the_next_fixer()
+    {
+        let mut doc = Doc::default();
+        let a = listed(&mut doc, "src/a.test.ts", "a", 1);
+        let b = listed(&mut doc, "src/b.test.ts", "b", 2);
+        let ids = vec![a.clone(), b.clone()];
+        let report =
+            parse_report("Decision 1: flaky | passed, I think\nDecision 2: flaky | passed twice\n");
+        let applied = apply_with(&mut doc, &ids, &report, 100, &|_| false, &|item| {
+            item.file == "src/b.test.ts"
+        });
+        assert_eq!(applied.unproven, vec![a.clone()]);
+        assert_eq!(applied.flaky, vec![b.clone()]);
+        assert_eq!(applied.undecided, vec![a.clone()]);
+        let item = doc.items.iter().find(|i| i.id == a).expect("it stays");
+        assert!(item.decision.is_none());
+        assert_eq!(item.note, NO_GREEN_NOTE);
+        assert!(!doc.quarantined(&a, 101));
+        assert!(doc.quarantined(&b, 101));
+        // The next fixer is told, in its brief, why it is back.
+        let request = build(&doc, &|_| Vec::new()).unwrap();
+        assert!(request.brief.contains(NO_GREEN_NOTE), "{}", request.brief);
+        assert_eq!(request.ids, vec![a]);
+    }
+
+    #[test]
+    fn a_test_sent_back_for_want_of_a_green_run_is_briefed_after_the_ones_not_yet_tried() {
+        let mut doc = Doc::default();
+        let oldest = listed(&mut doc, "src/a.test.ts", "a", 1);
+        let newer = listed(&mut doc, "src/b.test.ts", "b", 2);
+        let newest = listed(&mut doc, "src/c.test.ts", "c", 3);
+        doc.note_unproven(&oldest, NO_GREEN_NOTE);
+        let order: Vec<String> = pick(&doc).into_iter().map(|item| item.id).collect();
+        assert_eq!(order, vec![newer.clone(), newest.clone(), oldest.clone()]);
+        // With more than a brief holds, the ones that already came back wait their turn instead of crowding the new ones out.
+        for n in 0..BRIEF_ITEMS_MAX {
+            listed(&mut doc, "src/d.test.ts", &format!("d{n}"), 10 + n as u64);
+        }
+        let picked: Vec<String> = pick(&doc).into_iter().map(|item| item.id).collect();
+        assert_eq!(picked.len(), BRIEF_ITEMS_MAX);
+        assert!(!picked.contains(&oldest), "{picked:?}");
+        assert!(picked.contains(&newer) && picked.contains(&newest));
+    }
+
+    #[test]
+    fn the_proof_only_gates_a_flaky_decision_and_a_test_that_is_gone_is_not_looked_at() {
+        let mut doc = Doc::default();
+        let a = listed(&mut doc, "src/a.test.ts", "a", 1);
+        let b = listed(&mut doc, "src/b.test.ts", "b", 2);
+        let c = listed(&mut doc, "src/c.test.ts", "c", 3);
+        let ids = vec![a.clone(), b.clone(), c.clone()];
+        let report = parse_report(
+            "Decision 1: code is wrong | bug\nDecision 2: test is out of date | rounding, commit abc1234\nDecision 3: flaky | passed\n",
+        );
+        doc.items.retain(|item| item.id != c); // it went green while the fixer worked
+        let looked = std::cell::Cell::new(0);
+        let asked = |_: &Item| {
+            looked.set(looked.get() + 1);
+            true
+        };
+        let applied = apply_with(&mut doc, &ids, &report, 100, &asked, &asked);
+        assert_eq!(applied.code_wrong, vec![a]);
+        assert_eq!(applied.out_of_date, vec![b]);
+        assert_eq!(applied.ignored, 1);
+        assert!(applied.critical.is_empty() && applied.unproven.is_empty());
+        assert_eq!(
+            looked.get(),
+            0,
+            "nothing was asked about a test that is not on the list"
+        );
+    }
+
+    #[test]
+    fn the_brief_tells_the_fixer_a_flaky_test_needs_a_green_run_of_its_own_and_a_critical_one_is_never_quarantined(
+    ) {
+        let mut doc = Doc::default();
+        listed(&mut doc, "src/a.test.ts", "adds up", 1);
+        let brief = build(&doc, &|_| Vec::new()).unwrap().brief;
+        for needle in [
+            "Run it again with run_checks",
+            "only when the app's own record shows that green run after the test was listed",
+            "stays on the list for the next ship check",
+            "A critical test",
+            "never quarantined",
+        ] {
+            assert!(brief.contains(needle), "the brief lacks {needle:?}");
+        }
     }
 
     #[test]

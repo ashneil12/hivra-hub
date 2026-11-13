@@ -2513,6 +2513,110 @@ fn moving_a_file_out_of_a_do_not_touch_folder_is_still_a_change_to_it() {
         .all(|finding| finding.kind != done_check::FindingKind::DoNotTouch));
 }
 
+/// A copy that moved `from` to `to` (committed, with one line added so git sees a rename and not a delete and a new file), on top of a
+/// project that already had `from` with `lines` lines.
+fn moved_with_an_edit(name: &str, from: &str, to: &str, lines: usize) -> Fixture {
+    let f = fixture(name);
+    let body: String = (0..lines)
+        .map(|n| format!("pub fn item_{n}() {{}}\n"))
+        .collect();
+    let old = f.project.join(from);
+    std::fs::create_dir_all(old.parent().unwrap()).unwrap();
+    std::fs::write(&old, &body).unwrap();
+    sh(&f.project, &["add", "-A"]);
+    sh(&f.project, &["commit", "-q", "-m", "had it"]);
+    sh(&f.copy, &["merge", "-q", "main"]);
+    let new = f.copy.join(to);
+    std::fs::create_dir_all(new.parent().unwrap()).unwrap();
+    sh(&f.copy, &["mv", from, to]);
+    std::fs::write(&new, format!("{body}pub fn added() {{}}\n")).unwrap();
+    sh(&f.copy, &["add", "-A"]);
+    sh(&f.copy, &["commit", "-q", "-m", "move it and edit it"]);
+    f
+}
+
+#[test]
+fn a_sensitive_file_moved_to_a_plain_name_with_an_edit_is_still_a_sensitive_change() {
+    let f = moved_with_an_edit(
+        "move-sensitive",
+        "src-tauri/src/agent_sandbox.rs",
+        "src-tauri/src/agent_box.rs",
+        40,
+    );
+    // The premise: with rename detection the diff names only where the file went, and that name alone is not sensitive.
+    let new_only = vec!["src-tauri/src/agent_box.rs".to_string()];
+    assert_eq!(Repo::open(&f.copy).changed().unwrap(), new_only);
+    assert!(!crate::firstmate::sensitive::touches_sensitive_path(
+        &new_only,
+        &f.copy,
+        &[]
+    ));
+    let (files, _, _, sensitive, known) = read_change(&f.copy, TestingMode::AtShip, &[]);
+    assert!(known);
+    assert!(
+        sensitive,
+        "the sandbox file was moved out of its name and edited: that is a change to it"
+    );
+    // The list of changed files stays as it was (a rename lists the new name), and "No testing" still tests nothing.
+    assert_eq!(files, new_only);
+    let off = read_change(&f.copy, TestingMode::Off, &[]);
+    assert!(!off.3);
+}
+
+#[test]
+fn a_risky_file_moved_to_a_plain_name_with_an_edit_is_still_a_risky_change() {
+    let f = moved_with_an_edit(
+        "move-risky",
+        "src-tauri/src/delegations.rs",
+        "src-tauri/src/work_items.rs",
+        40,
+    );
+    let new_only = vec!["src-tauri/src/work_items.rs".to_string()];
+    assert_eq!(Repo::open(&f.copy).changed().unwrap(), new_only);
+    assert!(!testing_mode::touches_risky_path(&new_only, &[]));
+    let (_, _, risky, sensitive, known) = read_change(&f.copy, TestingMode::AtShip, &[]);
+    assert!(known);
+    assert!(
+        risky,
+        "a security path was moved out of its name and edited"
+    );
+    assert!(!sensitive, "only the risky read is the one under test here");
+    // The project's own protected list reads the old side too.
+    let f = moved_with_an_edit("move-extra", "billing/charge.rs", "payments/take.rs", 40);
+    let (_, _, risky, _, _) = read_change(&f.copy, TestingMode::AtShip, &[]);
+    assert!(!risky);
+    let (_, _, risky, _, _) = read_change(&f.copy, TestingMode::AtShip, &["billing/".to_string()]);
+    assert!(
+        risky,
+        "a path the project protects, moved out of its folder"
+    );
+}
+
+#[test]
+fn an_ordinary_move_and_an_unreadable_copy_read_as_they_did() {
+    let f = moved_with_an_edit("move-plain", "src/a.rs", "src/b.rs", 40);
+    let (files, code, risky, sensitive, known) = read_change(&f.copy, TestingMode::AtShip, &[]);
+    assert_eq!(files, vec!["src/b.rs".to_string()]);
+    assert!(code && known && !risky && !sensitive);
+    // A folder that is not a checkout has no diff to read: nothing changed, and nothing known.
+    let bare = std::env::temp_dir().join(format!("hivra-gates-bare-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(&bare).unwrap();
+    assert_eq!(
+        read_change(&bare, TestingMode::AtShip, &[]),
+        (Vec::new(), false, false, false, false)
+    );
+    let _ = std::fs::remove_dir_all(&bare);
+}
+
+#[test]
+fn a_fixers_report_is_checked_against_the_projects_main_checkout_never_its_own_copy() {
+    // `fixer_report_read` knows the fixer's copy (`/work/tally-worktrees/fixer-copy`) and the project's main checkout (the string the notes
+    // are kept under). The fixer can edit its copy, so what makes a test critical is read from the main checkout.
+    let run = fixer_run_of("fix-1", "/projects/tally", &[]);
+    assert_eq!(run.delegation_id, "fix-1");
+    assert_eq!(run.main, Path::new("/projects/tally"));
+}
+
 #[test]
 fn an_exit_that_is_not_the_one_asked_for_fails_the_round_without_asking_the_model() {
     let f = built();
