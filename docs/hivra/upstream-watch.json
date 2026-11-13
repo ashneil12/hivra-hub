@@ -1076,6 +1076,97 @@
    "group": "finds-2026-11-13",
    "licence": "MIT",
    "why": "Shipping confidence: TDD Guard's successor; test-first rule for Claude Code, Codex and Copilot CLI"
+  },
+  {
+   "name": "t3-pstack",
+   "repo": "chhoumann/t3-pstack",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "pstack rewritten for T3 Code's own MCP tools; how a skill pack ports to another harness's dispatch"
+  },
+  {
+   "name": "Sandcastle",
+   "repo": "mattpocock/sandcastle",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "sandcastle.run(): agents in OS, Docker or cloud sandboxes with a branch strategy, commits merged back; shape for sandboxed crew runs"
+  },
+  {
+   "name": "Coworkers",
+   "repo": "fayazara/coworkers",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Bots with their own computer and browser; ask-first rules per action, browser take-over for logins, routines that wake only on change, open items"
+  },
+  {
+   "name": "Nanobrowser",
+   "repo": "nanobrowser/nanobrowser",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Agent in the person's logged-in Chrome; Ask/Auto modes, per-site Allow/Ask/Block, pay/password steps handed to the person"
+  },
+  {
+   "name": "fast-jev-compaction",
+   "repo": "tamaratran/fast-jev-compaction",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Compaction that scores each tool call and result, drops stale ones and keeps all text verbatim; Claude Code session.compact hook"
+  },
+  {
+   "name": "0 (0sec-labs)",
+   "repo": "0sec-labs/0",
+   "group": "finds-2026-11-13",
+   "licence": "MIT OR Apache-2.0",
+   "why": "Open-source AI security harness: findings with evidence, sandboxed targeted tests"
+  },
+  {
+   "name": "Zeron",
+   "repo": "zeronsh/zeron",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Native Rust (GPUI) control plane for coding agents, local-first with optional sync; 2nd on ADEMark 12 Nov 2026"
+  },
+  {
+   "name": "Cezar",
+   "repo": "open-mercato/cezar",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Orchestrator for Claude Code, Codex, OpenCode, Pi on your own logins; VPS mode, workspace dashboard of what needs you"
+  },
+  {
+   "name": "Volt",
+   "repo": "leularia/volt",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "VS Code-based open-source ADE with orchestrator and run-group plans (VOLT-*.md); named in ADE v3 replies"
+  },
+  {
+   "name": "Herdr",
+   "repo": "herdrdev/herdr",
+   "group": "finds-2026-11-13",
+   "licence": "Apache-2.0",
+   "why": "Runtime agents live on: detach without killing work, several machines in one window"
+  },
+  {
+   "name": "agent-beacon",
+   "repo": "Asymptote-Labs/agent-beacon",
+   "group": "finds-2026-11-13",
+   "licence": "MIT",
+   "why": "Cross-harness memory that turns sessions into reusable skills (ideas only this wave)"
+  },
+  {
+   "name": "Agenta",
+   "repo": "Agenta-AI/agenta",
+   "group": "finds-2026-11-13",
+   "licence": "MIT (ee/ excluded)",
+   "why": "Build agents and talk to them in Slack, WhatsApp or Telegram; Slack-steer ideas"
+  },
+  {
+   "name": "Timon",
+   "repo": "ai-timon/timon",
+   "group": "idea-only",
+   "licence": "AGPL-3.0",
+   "why": "Personal agent with memory, routines, own browser, orchestrator plus different-model reviewer; AGPL, ideas only, never vendor"
   }
  ]
 }
