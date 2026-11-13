@@ -26,7 +26,7 @@ Sources inspected directly, not only from the summary:
 | --- | --- | --- |
 | Capy Captains docs (docs.capy.ai/captains) | page read 13 Nov | Confirmed: digest rewritten on crew state change, Needs you slice pasted into chat with a tag, AGENTS.md vs CREW.md ("every crew thread reads on every turn"), promote / demote / archive, one crew per thread, PR filter by Captain, `captain=<name>` from Slack with alias, automations wake a Captain. |
 | Capy 0.7.0 changelog | page read | Confirmed: "Loaded before the first message" context breakdown per part with share of window; "Waiting on you to merge capy#8426" requests stay open until answered, in thread, sidebar and tab. |
-| ADEMark (ademark.dev) | results table read | Confirmed the token numbers. New: **upstream MonoCode** (the app Dropwave forks) sits 7th with **9.0% idle CPU**, third worst after Traycer (15.8%) and Zeron (1.7% is next); its real-prompt tax is 122.4K vs 168.3K for the bare CLI. |
+| ADEMark (ademark.dev) | results table read | Confirmed the token numbers. New: **upstream MonoCode** (the app Dropwave forks) sits 7th with **9.0% idle CPU**, the second highest after Traycer (15.8%; Zeron 1.7%, super.engineering 0.18%); its real-prompt tax is 122.4K vs 168.3K for the bare CLI. |
 | firstmate (kunchenguid/firstmate) | cloned | `/bearings` = four fixed sections (Captain's Call, Recently Landed, Underway, Charted Next) from one deterministic snapshot command, read-only; `/ahoy` = recap since the captain's last real message plus walk through unanswered decisions. |
 | fast-jev-compaction | cloned, README and `src/` | Correction: it scores calls with **Jev, a paid TypeSafe model** (`TYPESAFE_API_KEY`), and plugs in through Claude Code's early-access `session.compact` function hook (2.1.274+, `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1`). The algorithm (pin first and recent messages, two keep questions per call, truncate or drop, never touch text) is MIT and portable to any cheap model. |
 | coworkers (fayazara) | cloned README | Adds two things the write-up did not name: **routines that "watch a URL, command or saved script and only wake when it changes"** (idea f), and **"Open items: tracks things it's waiting on until they're resolved"** (idea e). Rules per action: allow, ask first, block. |
@@ -176,8 +176,8 @@ Sources inspected directly, not only from the summary:
 
 - **What fails today.** First mates are event-driven, which is the hard part, done. But the rule against polling is a
   prompt line (`contract.md:175`), and the loop detector needs the same call with the same output
-  (`stall.ts:39`), so `sleep 60 && gh pr checks` with changing output is not caught. Workers have no timer tool of
-  their own, so a worker waiting on CI is the likely place this burns quota.
+  (`stall.ts:39`), so `sleep 60 && gh pr checks` with changing output is not caught. Workers are refused timers
+  (`src/features/agent-app/model/agentAppTimers.ts:27`: "Only a first mate's own chat ... sets timers"), so a worker waiting on CI is the likely place this burns quota.
 - **Smallest change.** Two pieces. (1) A plain-code check on each finished tool step: a Bash call that is `sleep N` (or
   ends in one) repeated 3 times in a turn becomes a stall with the words "Waiting by sleeping costs tokens; set a timer
   or end your turn". (2) Give workers `timers.set` and the PR watch, the same wake the first mate has, so "check CI
