@@ -216,3 +216,42 @@ fn a_link_target_the_profile_cannot_quote_refuses_the_profile() {
     let text = profile(&home, &[]).expect("an odd but quotable target makes a profile");
     assert!(write_denied(&text, &real));
 }
+
+// ---- bug 4: a checkout with no git directory yet --------------------------------------------------------------------
+
+/// An agent started in a folder with no `.git` can run `git init` and plant a hook, and the kernel then presents the real
+/// path. So the git directory is denied by the real name of the folder as well as the name it was started under: with a
+/// doubled slash, a `.` or `..` step, or a link in it. A checkout beside it that was not named stays open.
+#[test]
+fn a_checkout_with_no_git_dir_yet_is_locked_by_its_real_name_too() {
+    let scratch = Scratch::new();
+    let home = scratch.dir("home");
+    let work = scratch.dir("work");
+    let real = scratch.dir("work/proj (a)");
+    let unnamed = scratch.dir("work/unnamed");
+    scratch.dir("work/junk");
+    let link = scratch.0.join("link to proj");
+    std::os::unix::fs::symlink(&real, &link).unwrap();
+    let spellings = [
+        PathBuf::from(format!("{}//proj (a)", work.display())),
+        PathBuf::from(format!("{}/./proj (a)/", work.display())),
+        PathBuf::from(format!("{}/junk/../proj (a)", work.display())),
+        link,
+    ];
+    for named in spellings {
+        let text = profile(&home, std::slice::from_ref(&named)).unwrap();
+        for below in [".git/hooks/pre-commit", ".git/config", ".git/hooks"] {
+            let path = real.join(below);
+            assert!(
+                write_denied(&text, &path),
+                "{} can be written, with the checkout named as {}",
+                path.display(),
+                named.display()
+            );
+        }
+        assert!(
+            !write_denied(&text, &unnamed.join(".git/hooks/pre-commit")),
+            "a checkout that was not named was locked"
+        );
+    }
+}

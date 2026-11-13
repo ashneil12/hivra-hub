@@ -460,7 +460,6 @@ proptest! {
     /// folder behind it (a link, or `.` and `..` steps): an agent in it can run `git init` and plant a hook, and the
     /// kernel presents the real path.
     #[test]
-    #[ignore = "SC-6 found bug: a named checkout with no .git yet is locked only by the name it was given (a // or . or .. step, or a link, leaves the real .git/hooks writable)"]
     fn prop_a_checkout_with_no_git_dir_yet_is_locked_by_its_real_name_too(
         name in odd_name(),
         via_link in any::<bool>(),

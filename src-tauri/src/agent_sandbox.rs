@@ -1891,8 +1891,34 @@ fn repo_root(start: &Path) -> PathBuf {
     }
 }
 
+/// The spellings of a git directory the profile must match: `folder_forms` (the name as given, and the canonical path
+/// when the directory exists) and two more that hold whether or not `.git` exists yet. A checkout with no `.git` has no
+/// canonical form, but an agent in it can run `git init`, and the kernel then presents the real path, not a name with a
+/// `//`, `.` or `..` step or a link in it. So the lexically normalised name is added, and the real folder above the git
+/// directory (the checkout itself, which exists) with the git directory's own name appended.
+fn git_dir_forms(git: &Path) -> Result<Vec<String>, String> {
+    let mut forms = folder_forms(git)?;
+    let mut more = vec![normalize_lexical(git)];
+    if let (Some(above), Some(name)) = (git.parent(), git.file_name()) {
+        if let Ok(real) = std::fs::canonicalize(above) {
+            more.push(real.join(name));
+        }
+    }
+    for path in more {
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        for form in folder_forms(&path)? {
+            if !forms.contains(&form) {
+                forms.push(form);
+            }
+        }
+    }
+    Ok(forms)
+}
+
 fn deny_one_git(lines: &mut Vec<String>, git: &Path) -> Result<(), String> {
-    for form in folder_forms(git)? {
+    for form in git_dir_forms(git)? {
         let base = ci_regex(&form);
         lines.push(format!(r#"(deny {WRITE_OPS} (regex #"^{base}$"))"#));
         for suffix in [
