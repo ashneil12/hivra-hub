@@ -1,3 +1,7 @@
+import { ChiefChips } from "../../features/asks/ui/ChiefGlance";
+import { useChiefLists } from "../../features/asks/model/chiefLists";
+import { pickChief } from "../../features/home/model/chief";
+import { listMonos } from "../../features/monos/model/mono";
 import {
   CheckCircle,
   ChevronLeft,
@@ -687,6 +691,13 @@ export function TabVisitNav({
   );
 }
 
+/** The chips show only on the Chief of Staff's chat. */
+function ChiefChipsFor({ name }: { name: string }) {
+  const place = useChiefLists();
+  if (place !== "top" || pickChief(listMonos())?.name !== name) return null;
+  return <ChiefChips />;
+}
+
 /** A Mono's team, overview toggle and settings, beside its conversation. */
 export function MonoViewActions({
   name,
@@ -709,6 +720,8 @@ export function MonoViewActions({
 }) {
   return (
     <div className={`flex items-center gap-1 ${className}`}>
+      {/* One main chat: the Chief of Staff's Needs you, You asked and Working, as chips. */}
+      <ChiefChipsFor name={name} />
       {team ? (
         <button
           type="button"

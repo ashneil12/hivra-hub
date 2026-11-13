@@ -1,3 +1,4 @@
+import { setChiefLists, useChiefLists } from "../../asks/model/chiefLists";
 import { setShowCodeTools, useShowCodeTools } from "../model/codeTools";
 import { activeThemeOf, allSchemes, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, themesOf, type SchemeTheme, type ThemeScheme } from "../model/themeSchemes";
 import { activeThemeChoice, applyOffer, discardOffer, endPreview, offeredPreviewLook, pickTheme, previewOffer, scanMonoThemes, themeOffers, themePreview, themeRefusals, useThemesVersion } from "../model/themeFiles";
@@ -1058,6 +1059,22 @@ function SettingsSearch({
   );
 }
 
+function ChiefListsSetting() {
+  const place = useChiefLists();
+  return (
+    <Segmented
+      label="Show the three lists"
+      value={place}
+      options={[
+        { value: "top", label: "At the top" },
+        { value: "side", label: "Beside the chat" },
+        { value: "off", label: "Off" },
+      ]}
+      onChange={setChiefLists}
+    />
+  );
+}
+
 function ChiefModelSetting() {
   useSyncExternalStore(subscribeMonos, monosSnapshot, monosSnapshot);
   const chief = pickChief(listMonos());
@@ -1202,6 +1219,12 @@ function GeneralPage({
         </Row>
         <Row id="new-chat-model" label="New chats" description="What a new chat starts on.">
           <NewChatModelSetting />
+        </Row>
+      </Group>
+      {/* Ash (13 Nov): "both a and c with customisation". Where Needs you, You asked and Working show in its chat. */}
+      <Group title="Chief of Staff's chat" description="Needs you, You asked and Working, without leaving the chat.">
+        <Row id="chief-lists" label="Show the three lists" description="As buttons at the top of the chat, or in the panel beside it.">
+          <ChiefListsSetting />
         </Row>
       </Group>
       <Group title="You" description="How your team of Monos addresses you.">

@@ -159,12 +159,21 @@ export function readAskLedger(): LedgerAsk[] {
   });
 }
 
+const ledgerListeners = new Set<() => void>();
+
+/** Hears every write to the ledger in this window (the Chief of Staff's "You asked" list reads it live). */
+export function subscribeAskLedger(listener: () => void): () => void {
+  ledgerListeners.add(listener);
+  return () => ledgerListeners.delete(listener);
+}
+
 function writeLedger(rows: readonly LedgerAsk[]): void {
   try {
     localStorage.setItem(KEY, JSON.stringify(rows.slice(-LEDGER_MAX)));
   } catch {
     // Without storage the ledger lasts while this window lives; only a restart loses it.
   }
+  for (const listener of ledgerListeners) listener();
 }
 
 /**

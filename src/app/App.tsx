@@ -1100,6 +1100,7 @@ import {
 import { noteMonoChat, pickMonoChat, type MonoChatScope } from "../features/monos/model/monoLastChat";
 import { projectFront, setProjectFront, useProjectFrontVersion } from "../features/hub/model/projectFront";
 import { pickChief as pickCaptain } from "../features/home/model/chief";
+import { useChiefLists } from "../features/asks/model/chiefLists";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
 import { stampFirstMate } from "../features/monos/model/monoMate";
@@ -1684,6 +1685,11 @@ function Workspace({
   const [monoOverviewOpen, setMonoOverviewOpen] = useState(false);
   const [monoOverviewTab, setMonoOverviewTab] =
     useState<MonoOverviewTab>("sessions");
+  // Picking "beside the chat" for the Chief of Staff's lists opens the panel they live in.
+  const chiefListsPlace = useChiefLists();
+  useEffect(() => {
+    if (chiefListsPlace === "side") setMonoOverviewOpen(true);
+  }, [chiefListsPlace]);
   const monoOverviewOpenRef = useRef(monoOverviewOpen);
   monoOverviewOpenRef.current = monoOverviewOpen;
   const monoOverviewTabRef = useRef(monoOverviewTab);
@@ -18196,6 +18202,7 @@ function Workspace({
           textHarness: monoViewSession.harness,
           projects: monoViewMono.projects,
         }}
+        chief={pickCaptain(listMonos())?.id === monoViewMono.id}
         tab={monoOverviewTab}
         onTabChange={setMonoOverviewTab}
         onOpenSession={(sessionId) =>
