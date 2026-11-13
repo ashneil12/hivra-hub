@@ -43,10 +43,47 @@ export type ShipCheckRecord = {
    * Only a run's answer has them: a saved record never does. The first mate files each through PT-1's claim and ask.
    */
   proposals?: ShipProposal[];
+  /**
+   * PT-5: named findings that do not block: a real bug a test caught, a flaky test that is quarantined, a quarantine that ran
+   * out. They are on the saved record, so a card that reads the latest one shows them.
+   */
+  findings?: ShipFinding[];
+  /**
+   * PT-5: the one test fixer task to start and the Needs-you items to put to the person. Only a run's answer has it; the first
+   * mate's tool call acts on it (agentAppShipCheck.ts), a card never does.
+   */
+  testDebt?: unknown;
 };
 
 /** A proof tool a ship check puts forward: its catalogue id and the name a person reads. */
 export type ShipProposal = { toolId: string; name: string };
+
+/** PT-5: a named finding on a ship check record. `kind` is the app's word for it; `line` is the sentence a person reads. */
+export type ShipFinding = { kind: "code-wrong" | "quarantined" | "quarantine-expired"; test: string; file: string; line: string };
+
+const FINDING_KINDS: readonly string[] = ["code-wrong", "quarantined", "quarantine-expired"];
+const FINDINGS_MAX = 100;
+
+/** PT-5: the findings of a record, read defensively: a bad entry is dropped, text is trimmed and cut, at most a hundred. */
+export function readShipFindings(value: unknown): ShipFinding[] {
+  if (!Array.isArray(value)) return [];
+  const out: ShipFinding[] = [];
+  for (const entry of value) {
+    if (out.length >= FINDINGS_MAX) break;
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const kind = typeof row.kind === "string" && FINDING_KINDS.includes(row.kind) ? (row.kind as ShipFinding["kind"]) : undefined;
+    const line = text(row.line)?.trim().slice(0, 300);
+    if (!kind || !line) continue;
+    out.push({
+      kind,
+      test: text(row.test)?.trim().slice(0, 300) ?? "",
+      file: text(row.file)?.trim().slice(0, 300) ?? "",
+      line,
+    });
+  }
+  return out;
+}
 
 /** The app's side, as invokes. Answers are untrusted until `readShipCheckRecord` has read them. */
 export type ShipCheckBackend = {
@@ -183,6 +220,7 @@ export function readShipCheckRecord(value: unknown): ShipCheckRecord | null {
     outcome = "failed";
   }
   const proposals = readShipProposals(row.proposals);
+  const findings = readShipFindings(row.findings);
   const covered = typeof row.commitsCovered === "number" && Number.isInteger(row.commitsCovered) ? row.commitsCovered : 0;
   return {
     project: typeof row.project === "string" ? row.project : "",
@@ -196,6 +234,9 @@ export function readShipCheckRecord(value: unknown): ShipCheckRecord | null {
     tested: lines(row.tested),
     notTested: lines(row.notTested),
     ...(proposals.length ? { proposals } : {}),
+    ...(findings.length ? { findings } : {}),
+    // PT-5: handed on as it came; agentAppTestDebt.ts reads it (an answer it can't read starts and files nothing).
+    ...(row.testDebt && typeof row.testDebt === "object" ? { testDebt: row.testDebt } : {}),
   };
 }
 

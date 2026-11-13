@@ -323,6 +323,7 @@ fn a_passed_check_this_history_does_not_hold_is_not_a_base() {
         steps: vec![step(Outcome::Passed)],
         tested: Vec::new(),
         not_tested: Vec::new(),
+        findings: Vec::new(),
     };
     save_in(&dir, &strange).unwrap();
     let record = run_in(&dir, &root, &Stub::all(Outcome::Passed)).unwrap();
@@ -477,6 +478,7 @@ fn record_for(project: &str, head: &str, outcome: Outcome, at: u64) -> ShipCheck
         steps: vec![step(outcome)],
         tested: Vec::new(),
         not_tested: Vec::new(),
+        findings: Vec::new(),
     }
 }
 
@@ -1950,6 +1952,7 @@ mod end_to_end_step {
         let plain = serde_json::to_value(RunResult {
             record: record.clone(),
             proposals: Vec::new(),
+            test_debt: None,
         })
         .unwrap();
         assert_eq!(plain, serde_json::to_value(&record).unwrap());
@@ -1960,9 +1963,143 @@ mod end_to_end_step {
                 tool_id: "playwright".into(),
                 name: "Playwright".into(),
             }],
+            test_debt: None,
         })
         .unwrap();
         assert_eq!(with["head"], "a".repeat(40));
         assert_eq!(with["proposals"][0]["toolId"], "playwright");
+    }
+}
+
+// ---- PT-5: the "Test debt" step ----------------------------------------------------------------------------------------------
+
+mod test_debt_step {
+    use super::super::debt;
+    use super::*;
+    use crate::test_debt::doc::Candidate;
+    use crate::test_debt::store;
+    use crate::test_debt::testing::Temp;
+
+    /// The stand-in steps, and the folder the list lives in.
+    struct WithDebt {
+        inner: Stub,
+        data: Temp,
+    }
+
+    impl WithDebt {
+        fn new() -> WithDebt {
+            WithDebt {
+                inner: Stub::all(Outcome::Passed),
+                data: Temp::new(),
+            }
+        }
+    }
+
+    impl Steps for WithDebt {
+        fn checks(&self, main: &Path, changed: &[String]) -> Stage {
+            self.inner.checks(main, changed)
+        }
+        fn briefs(&self, main: &Path, range: &Range) -> Result<Vec<Brief>, String> {
+            self.inner.briefs(main, range)
+        }
+        fn guard(&self, main: &Path, range: &Range, changes: &[Change], briefs: &[Brief]) -> Stage {
+            self.inner.guard(main, range, changes, briefs)
+        }
+        fn review(&self, main: &Path, range: &Range, briefs: &[Brief]) -> Stage {
+            self.inner.review(main, range, briefs)
+        }
+        fn test_debt(&self, main: &Path, _range: &Range) -> debt::DebtStage {
+            debt::stage_in(self.data.path(), &path_to_js(main), 1_000)
+        }
+    }
+
+    fn list(steps: &WithDebt, root: &Path, names: &[&str]) {
+        store::update(steps.data.path(), &path_to_js(root), |doc| {
+            for name in names {
+                doc.note_failure(
+                    &Candidate {
+                        runner: "vitest".into(),
+                        file: "src/a.test.ts".into(),
+                        name: (*name).into(),
+                        failure: "boom".into(),
+                        ..Candidate::default()
+                    },
+                    1,
+                );
+            }
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn an_empty_list_passes_and_the_step_comes_last() {
+        let (_tmp, root, dir) = fixture("ship-debt-empty");
+        let landed = land(&root, "a.txt", "one");
+        let steps = WithDebt::new();
+        let record = run_in(&dir, &root, &steps).unwrap();
+        assert_eq!(record.outcome, Outcome::Passed);
+        let names: Vec<&str> = record.steps.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["Check: Web", "Test guard", "Review", "Test debt"]);
+        assert!(record.findings.is_empty());
+        assert!(serde_json::to_value(&record)
+            .unwrap()
+            .get("findings")
+            .is_none());
+        assert!(passed_for_in(&dir, &record.project, &landed));
+    }
+
+    #[test]
+    fn tests_waiting_to_be_sorted_read_sorting_and_the_version_is_not_passed() {
+        let (_tmp, root, dir) = fixture("ship-debt-sorting");
+        let landed = land(&root, "a.txt", "one");
+        let steps = WithDebt::new();
+        list(&steps, &root, &["adds up", "subtracts"]);
+        let record = run_in(&dir, &root, &steps).unwrap();
+        assert_eq!(record.outcome, Outcome::CouldNotRun);
+        let step = record.steps.iter().find(|s| s.name == "Test debt").unwrap();
+        assert_eq!(step.detail, "Sorting 2 tests");
+        assert!(record
+            .not_tested
+            .iter()
+            .any(|line| line.contains("Sorting 2 tests")));
+        assert!(
+            !passed_for_in(&dir, &record.project, &landed),
+            "the hold treats it as not passed"
+        );
+    }
+
+    #[test]
+    fn a_list_of_only_named_findings_passes_and_the_record_names_each() {
+        let (_tmp, root, dir) = fixture("ship-debt-named");
+        let landed = land(&root, "a.txt", "one");
+        let steps = WithDebt::new();
+        list(&steps, &root, &["totals add up", "flaky one"]);
+        store::update(steps.data.path(), &path_to_js(&root), |doc| {
+            let bug = doc.items[0].id.clone();
+            let flaky = doc.items[1].id.clone();
+            doc.mark_code_wrong(&bug, "tax is ignored", 2);
+            doc.mark_flaky(&flaky, "passed on a re-run", 3);
+        })
+        .unwrap();
+        let record = run_in(&dir, &root, &steps).unwrap();
+        assert_eq!(record.outcome, Outcome::Passed);
+        let kinds: Vec<&str> = record.findings.iter().map(|f| f.kind.as_str()).collect();
+        assert_eq!(kinds, ["code-wrong", "quarantined"]);
+        let value = serde_json::to_value(&record).unwrap();
+        assert_eq!(value["findings"][0]["kind"], "code-wrong");
+        assert_eq!(
+            value["findings"][0]["line"],
+            "totals add up fails because the code is wrong: tax is ignored"
+        );
+        assert!(passed_for_in(&dir, &record.project, &landed));
+        // Read back from disk: the findings survive.
+        assert_eq!(latest_in(&dir, &record.project).unwrap().findings.len(), 2);
+    }
+
+    #[test]
+    fn a_record_written_before_findings_existed_reads_with_none() {
+        let text = r#"{"project":"/p","head":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","base":null,"commitsCovered":1,"at":1,"outcome":"passed","note":null,"steps":[],"tested":[],"notTested":[]}"#;
+        let record: ShipCheckRecord = serde_json::from_str(text).unwrap();
+        assert!(record.findings.is_empty());
     }
 }

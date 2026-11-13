@@ -340,6 +340,7 @@ fn a_code_briefs_delivery_runs_the_checks_exactly_once_and_records_the_layer() {
             brief_round: None,
             fix: None,
             history: None,
+            test_debt: None,
         },
         &counter,
     );
