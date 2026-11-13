@@ -107,6 +107,8 @@ pub struct Tool {
     pub licence: String,
     /// One plain line a person reads: what it shows.
     pub proves: String,
+    /// What it catches, as the end of "Add <name> to catch ...?": a proposal's question.
+    pub catches: String,
     /// One sentence on how a worker uses it in a task.
     pub how_to_use: String,
     pub stacks: Vec<Stack>,
@@ -131,17 +133,13 @@ pub struct Tool {
 }
 
 impl Tool {
-    /// The question a first mate's proposal puts to the person: "Add <name> to catch <proves, lowercased>?". The first
-    /// letter is lowercased unless the word is an acronym (`API`), and the closing full stop goes.
+    /// The question a first mate's proposal puts to the person: "Add <name> to catch <catches>?".
     pub fn question(&self) -> String {
-        let proves = self.proves.trim().trim_end_matches('.');
-        let mut chars = proves.chars();
-        let lowered = match (chars.next(), chars.next()) {
-            (Some(_), Some(second)) if second.is_uppercase() => proves.to_string(),
-            (Some(first), _) => first.to_lowercase().chain(proves.chars().skip(1)).collect(),
-            (None, _) => String::new(),
-        };
-        format!("Add {} to catch {}?", self.name, lowered)
+        format!(
+            "Add {} to catch {}?",
+            self.name,
+            self.catches.trim().trim_end_matches(['.', '?'])
+        )
     }
 }
 
@@ -249,6 +247,7 @@ fn tool_ok(tool: &Tool) -> Result<(), String> {
     let at = |what: &str| format!("{id}: {what}");
     plain_text("name", &tool.name).map_err(|e| at(&e))?;
     plain_text("proves", &tool.proves).map_err(|e| at(&e))?;
+    plain_text("catches", &tool.catches).map_err(|e| at(&e))?;
     plain_text("howToUse", &tool.how_to_use).map_err(|e| at(&e))?;
     plain_text("install", &tool.install).map_err(|e| at(&e))?;
     plain_text("pinned", &tool.pinned).map_err(|e| at(&e))?;
@@ -522,21 +521,18 @@ mod tests {
         let fast = find("fast-check").unwrap();
         assert_eq!(
             fast.question(),
-            "Add fast-check to catch properties hold for generated inputs, not just the examples?"
+            "Add fast-check to catch inputs that break the code the examples missed?"
         );
-        // An acronym keeps its capitals.
         let api = find("schemathesis").unwrap();
-        assert!(
-            api.question()
-                .starts_with("Add Schemathesis to catch the API answers"),
-            "{}",
-            api.question()
-        );
-        let mut shouting = api.clone();
-        shouting.proves = "API answers match.".into();
         assert_eq!(
-            shouting.question(),
-            "Add Schemathesis to catch API answers match?"
+            api.question(),
+            "Add Schemathesis to catch API answers that don't match its OpenAPI file?"
+        );
+        let mut trailing = api.clone();
+        trailing.catches = "API answers that drift.".into();
+        assert_eq!(
+            trailing.question(),
+            "Add Schemathesis to catch API answers that drift?"
         );
     }
 

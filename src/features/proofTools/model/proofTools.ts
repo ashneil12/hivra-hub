@@ -33,6 +33,8 @@ export type ProofTool = {
   licence: string;
   /** One plain line a person reads. */
   proves: string;
+  /** What it catches, as the end of "Add <name> to catch ...?": a proposal's question. */
+  catches: string;
   /** One sentence on how a worker uses it in a task. */
   howToUse: string;
   stacks: ProofToolStack[];
@@ -206,6 +208,7 @@ function readTool(raw: unknown, index: number): ProofTool {
     repo,
     licence,
     proves: text(entry, "proves", at),
+    catches: text(entry, "catches", at),
     howToUse: text(entry, "howToUse", at),
     stacks: stacks as ProofToolStack[],
     detect: readRule(entry.detect, stacks as string[], at),
@@ -260,16 +263,9 @@ export function proposalKey(tool: Pick<ProofTool, "id">): string {
   return `${PROPOSAL_KEY_PREFIX}${tool.id}`;
 }
 
-/**
- * The question a first mate's proposal puts to the person: "Add <name> to catch <proves, lowercased>?". The first letter is
- * lowercased unless the word is an acronym (`API`), and the closing full stop goes. The same words as Rust's `Tool::question`.
- */
-export function proposalQuestion(tool: Pick<ProofTool, "name" | "proves">): string {
-  const proves = tool.proves.trim().replace(/\.+$/, "");
-  const chars = Array.from(proves);
-  const keep = chars.length >= 2 && /^\p{Uppercase}$/u.test(chars[1]);
-  const lowered = keep || chars.length === 0 ? proves : chars[0].toLowerCase() + chars.slice(1).join("");
-  return `Add ${tool.name} to catch ${lowered}?`;
+/** The question a first mate's proposal puts to the person: "Add <name> to catch <catches>?". The same words as Rust's `Tool::question`. */
+export function proposalQuestion(tool: Pick<ProofTool, "name" | "catches">): string {
+  return `Add ${tool.name} to catch ${tool.catches.trim().replace(/[.?]+$/, "")}?`;
 }
 
 // ---- what the app says a project has --------------------------------------------------------------------------------

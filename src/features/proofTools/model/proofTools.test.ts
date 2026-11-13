@@ -139,20 +139,18 @@ describe("the proof-tool catalogue", () => {
 });
 
 describe("a proposal", () => {
-  it("asks in the words the brief gave, and files under a stable key", () => {
+  it("asks in plain words, and files under a stable key", () => {
     const fastCheck = findProofTool("fast-check");
-    expect(fastCheck && proposalQuestion(fastCheck)).toBe("Add fast-check to catch properties hold for generated inputs, not just the examples?");
+    expect(fastCheck && proposalQuestion(fastCheck)).toBe("Add fast-check to catch inputs that break the code the examples missed?");
     expect(fastCheck && proposalKey(fastCheck)).toBe("proof-tools/fast-check");
-    expect(proposalQuestion(findProofTool("stryker")!)).toBe("Add StrykerJS to catch the tests fail when the code is changed on purpose, so they really check it?");
-    expect(proposalQuestion(findProofTool("schemathesis")!)).toBe("Add Schemathesis to catch the API answers the way its OpenAPI file says, for generated requests?");
-    expect(proposalQuestion(findProofTool("e2e")!)).toMatch(/^Add e2e to catch plain-English end-to-end tests pass,/);
+    expect(proposalQuestion(findProofTool("stryker")!)).toBe("Add StrykerJS to catch tests that pass whatever the code does?");
+    expect(proposalQuestion(findProofTool("schemathesis")!)).toBe("Add Schemathesis to catch API answers that don't match its OpenAPI file?");
+    expect(proposalQuestion(findProofTool("e2e")!)).toBe("Add e2e to catch user journeys that stop working?");
   });
 
-  it("keeps an acronym's capitals, takes the closing full stop off and has no question mark twice", () => {
-    expect(proposalQuestion({ name: "X", proves: "API answers match." })).toBe("Add X to catch API answers match?");
-    expect(proposalQuestion({ name: "X", proves: "A tool works..." })).toBe("Add X to catch a tool works?");
-    expect(proposalQuestion({ name: "X", proves: "Éclair checks hold." })).toBe("Add X to catch éclair checks hold?");
-    expect(proposalQuestion({ name: "X", proves: "" })).toBe("Add X to catch ?");
+  it("takes a closing full stop or question mark off and never asks twice", () => {
+    expect(proposalQuestion({ name: "X", catches: "API answers that drift." })).toBe("Add X to catch API answers that drift?");
+    expect(proposalQuestion({ name: "X", catches: "slips?" })).toBe("Add X to catch slips?");
     for (const entry of PROOF_TOOLS) {
       const question = proposalQuestion(entry);
       expect(question.startsWith(`Add ${entry.name} to catch `), entry.id).toBe(true);
