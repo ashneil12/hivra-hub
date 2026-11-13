@@ -9,6 +9,8 @@ import { deleteMemory } from "../model/deletion";
 import { healthOf } from "../model/health";
 import { importOrderRefusal } from "../model/orderScan";
 import { pausedNow } from "../model/memoryBudget";
+import { SENSITIVE_LABEL, sensitiveItems, sensitiveTopic, withoutSensitive } from "../model/sensitive";
+import { SensitiveBar } from "./SensitiveTopics";
 import { bringBack, forgetLetGo, LET_GO_LABEL, letGoItem, memoryStatus } from "../model/letGo";
 import { isEssential, markEssential } from "../model/essential";
 import { MemoryAsk } from "./MemoryAsk";
@@ -61,6 +63,9 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
   const [busy, setBusy] = useState(false);
   // WP-240: what is kept, or what was let go.
   const [tab, setTab] = useState<Tab>("kept");
+  // Sensitive topics (model/sensitive.ts): show only those, and the two-step "remove them all".
+  const [onlySensitive, setOnlySensitive] = useState(false);
+  const [removingSensitive, setRemovingSensitive] = useState(false);
   const busyRef = useRef(false);
   const portsRef = useRef(ports);
   portsRef.current = ports;
@@ -151,7 +156,9 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
   const items = doc ? searchMemory(doc.items, query) : [];
   // WP-111: a parked pair is its own card. The newer fact is not also listed on its own.
   const disputes = doc ? parkedDisputes(doc.items, query) : [];
-  const plain = items.filter((item) => !item.dispute);
+  const sensitive = doc ? sensitiveItems(doc) : [];
+  const sensitiveIds = new Set(sensitive.map((item) => item.id));
+  const plain = items.filter((item) => !item.dispute && (!onlySensitive || !sensitive.length || sensitiveIds.has(item.id)));
   // WP-100: one faded fact, asked about once. The question picked is held here until it is answered, and counted as
   // shown straight away, so the same question does not appear on every visit.
   const askingItem = doc && showing ? doc.items.find((item) => item.id === showing) : undefined;
@@ -268,6 +275,23 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
           );
         })}
       </ul>
+      {sensitive.length ? (
+        <SensitiveBar
+          count={sensitive.length}
+          only={onlySensitive}
+          confirming={removingSensitive}
+          busy={busy}
+          onOnly={setOnlySensitive}
+          onConfirming={setRemovingSensitive}
+          onRemove={() => {
+            setRemovingSensitive(false);
+            setOnlySensitive(false);
+            void change((current) => withoutSensitive(current)).then((saved) => {
+              if (saved) setNote("Removed. Your first mates won't learn those again unless you tell them to remember.");
+            });
+          }}
+        />
+      ) : null}
       <ul className="flex flex-col gap-3">
         {plain.map((item) => (
           <li key={item.id} data-id={item.id} data-kind={item.action} data-skill={item.skill?.name} className="flex flex-col gap-1">
@@ -276,6 +300,7 @@ export function MemoryReview({ ports }: { ports: MemoryPorts }) {
             <p data-source>{item.source.label}</p>
             {item.by ? <p data-by>{`Written by ${engineName(item.by)}`}</p> : null}
             {isEssential(item) ? <p data-essential>Sent in every chat</p> : null}
+            {sensitiveIds.has(item.id) ? <p data-sensitive className="text-content/60">{`Sensitive topic: ${SENSITIVE_LABEL[sensitiveTopic(item.text) ?? "health"]}`}</p> : null}
             <MemoryProvenance item={item} now={now} />
             {editing?.id === item.id ? (
               <div className="flex flex-col gap-1">

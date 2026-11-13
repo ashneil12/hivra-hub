@@ -9,6 +9,7 @@ import { sharedLearnPorts } from "./learnHost";
 import { MemoryReview, type ImportRow, type MemoryPorts } from "./MemoryReview";
 import { MemoryTierSetting } from "./MemoryTierChoice";
 import { SkillLearningSetting } from "./SkillLearningChoice";
+import { SensitiveTopicsSetting } from "./SensitiveTopics";
 
 type Loaded = { revision: number; doc: unknown };
 type Listed = { id: string; project: string; conversationId: string; source: string; status: string; markdown: string };
@@ -47,6 +48,10 @@ export function MemorySettingsScreen() {
       {/* WP-242: how skills are learned, one switch for both paths. */}
       <div className="mb-6">
         <SkillLearningSetting />
+      </div>
+      {/* Sensitive topics: remembered unless switched off (model/sensitive.ts). */}
+      <div className="mb-6">
+        <SensitiveTopicsSetting />
       </div>
       <MemoryReview ports={ports} />
       <LearnFromChats ports={learn} />

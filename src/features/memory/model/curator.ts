@@ -2,6 +2,7 @@
 // A timeout is not a decision. A secret is never stored and never sent on.
 
 import { isValidSkillName, slugSkillName } from "../../skills/model/skills";
+import { sensitiveTopic } from "./sensitive";
 import { bump, cleanEntities, emptyDoc, ENGINE_ID, FACT_KINDS, isDay, isForgotten, memoryId, mentionsSecret, normalizeFact, withoutForgotten, type FactKind, type MemoryDoc, type MemoryItem, type MemoryVia } from "./doc";
 import { touch } from "./fade";
 import { givesOrders } from "./orderScan";
@@ -41,6 +42,8 @@ export type CuratorContext = {
   via?: MemoryVia;
   /** WP-242: how skills are learned. Off drops a skill proposal and counts it; absent is the default (Automatic). */
   skills?: SkillMode;
+  /** The person switched sensitive topics off (sensitive.ts): a fact on one is not kept. Absent means they are kept. */
+  sensitiveOff?: true;
 };
 
 /** WP-240: the typed details a curator may give with a new fact. Each is optional and checked on the way in. */
@@ -353,6 +356,8 @@ export function applyProposal(
     if (!text || mentionsSecret(text)) return { doc, outcome: { status: "dropped", reason: "secret", ignored } };
     // WP-111: instructions aimed at the model are not stored. What is already kept stays.
     if (givesOrders(text)) return { doc, outcome: { status: "dropped", reason: "orders", ignored } };
+    // Sensitive topics are kept unless the person switched them off; then the fact is simply not written down.
+    if (ctx.sensitiveOff && sensitiveTopic(text)) return { doc, outcome: { status: "none", ignored } };
     const remembered = unforgotten(doc, ctx, text);
     if (!remembered) return { doc, outcome: { status: "dropped", reason: "forgotten", ignored } };
     doc = remembered;
