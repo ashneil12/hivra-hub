@@ -93,3 +93,8 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-window-state = "2.4.1"
+
+[dev-dependencies]
+# SC-6: property tests on the core rules (MIT OR Apache-2.0).
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
+proptest-state-machine = "0.3"
