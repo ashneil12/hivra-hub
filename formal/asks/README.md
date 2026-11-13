@@ -3,7 +3,7 @@
 A research spike. It changed no product behaviour: everything here is under `formal/asks/` plus new test files. Bugs
 found are documented with a minimal trace and pinned by a test. **Four were then fixed by `sc-17-ask-fixes`: A1, A2, A5
 and H1** (marked **Fixed** in B.3; their pinning tests were flipped to assert the correct behaviour). **D1 was then fixed
-by `sc-19-reset-reparent`** (marked **Fixed** in B.3 too). The rest are not fixed.
+by `sc-19-reset-reparent`** (marked **Fixed** in B.3 too), and **A7 by `sc-20-quiet-ask`** (the same). The rest are not fixed.
 
 **Status, up front**
 
@@ -11,6 +11,7 @@ by `sc-19-reset-reparent`** (marked **Fixed** in B.3 too). The rest are not fixe
 | --- | --- |
 | Fixes (`sc-17-ask-fixes`) | A1, A2, A5 and H1 fixed, each with its pinned test flipped. Asks.qnt's two A1/A2 knobs follow the fixed code. A3, A4, A6 to A10, H2 to H6, D and N gaps are as they were. |
 | One ledger (`sc-18-one-ask-ledger`) | **Ledger B is no longer a store.** Ledger A is the one source of asks; the Chief's "You asked" chip, the dump check and the check card read it through `asks/model/askedView.ts`, a hub chat no first mate hears is written into it (`hubRoute.ts`), the old key's open rows were moved in once (`askMove.ts`), and a delegation carries ledger ids so a job's end updates its ask (`askJobs.ts`). **Fixed: D5, H5 (the two-ledger finding), H6 (Ledger B is gone), A6 (a lone short ask is written, quietly), H2 (on the combined path), and H1 (re-run on the one ledger).** Section 0 below is the map **after** this change; where it says what was, it says so. |
+| A quiet ask reaches the person (`sc-20-quiet-ask`) | **A7 fixed in the code.** An open ask that two daily checks found with nothing moved becomes one Needs you row, once per quiet spell (`asks/model/askQuiet.ts`, `needs/model/quietAsks.ts`); its card offers Answer it, Let it go and Remind the first mate. `asks.qnt`'s `ESCALATE` knob is now on by default. **The Quint runs for it were not done: the command needs an approval this run could not get** (see B.1). |
 | Step 0, the map (below) | Done. Each claim is tagged: **[T]** pinned by a test in this PR, **[E]** measured by the eval run, **[R]** read by me in the code, **[M]** reported by a read-only mapper and not re-checked by me. |
 | A. Extraction eval (`eval/`) | Done and run (`node formal/asks/eval/run.mjs`). The "recorded" model replies are **simulated**, not captured from the app's engine (see A.3). |
 | B.2 fast-check model-based test | Done and run against the real store. Passes; bites on two deliberately broken reducers (B.2). |
@@ -45,7 +46,7 @@ Not asks: `src/features/inbox/model/inboxAsk.ts` is the prompt for asking a ques
 item **[R]**. The `asks: ["a_..."]` field on a **PR watch** still carries ids from the retired Ash OS; it was not changed.
 
 The spec for Ledger A is `docs/specs/mono-chat-memory.md` section 6 ("nothing Ash asks can be lost"). Ledger B predates it.
-**Before sc-18 nothing connected A, B, jobs and Needs.** Now A, B (folded in) and jobs are connected; **Needs is still not** (gap A7).
+**Before sc-18 nothing connected A, B, jobs and Needs.** Now A, B (folded in) and jobs are connected, and **since sc-20 an ask that went quiet reaches Needs** (gap A7, fixed): the Needs you list reads the ledger's raised asks.
 
 ### 0.2 Where an ask is born
 
@@ -133,7 +134,10 @@ not copied. An unreadable key leaves the move undone for the next start. The key
 | `done`/`dropped` → `heard` | "Reopen" | person (the first mate cannot revive `dropped`) |
 | closed → evicted | more than 2000 closed rows, oldest first (`askDocForDisk`) | app |
 | told | turn-end nudge: an app message naming still-`heard` asks, at most twice since Ash's last message, only into an idle chat whose last block is a reply (`askNotes.ts askNudge`) | app |
-| told | daily check: one app message naming asks `heard` for 24 h or `started` and quiet for 3 days, at most every 20 h, **addressed to the chat of the oldest such ask** (`askDigest`; hook `useAskLedger.ts:174-196`) | app |
+| told | daily check: one app message naming asks `heard` for 24 h or `started` and quiet for 3 days, at most every 20 h, **addressed to the chat of the oldest such ask** (`askDigest`; hook `useAskLedger.ts:174-196`) |
+| counted (sc-20) | the same daily check, when it is marked (`withDailyCheck`, askQuiet.ts), adds one to `Ask.chase.checks` on every ask it names, and on a `waiting` ask unmoved for 3 days (a check with nothing to tell the first mate is still made for those). A check marked again inside 20 h counts nothing. | app |
+| raised (sc-20) | the second counted check sets `chase.raisedAt`: the ask is a Needs you row (`raisedAsks`). Once: a raised ask is not counted again. The count is good only while `chase.at === ask.updatedAt`, so **any change to the ask** (status, note, reopen) ends it, the row goes, and a later quiet spell counts from nothing. A maybe, an idea, an untouched lone short ask and an ask heard in a chat that is no first mate's are never counted. | app |
+| row answered (sc-20) | **Let it go** → `dropped` by `ash` (the existing person-drop path, only for the row the card was drawn for); **Remind** → `chase = {checks: 0, remindAt}` (the row goes; `useAskLedger` sends one app message to the ask's chat, or another chat of that first mate that is idle, then clears `remindAt`; the same message id twice is a no-op); the card's box, or any message from Ash in that chat after it was raised → `chase = {checks: 0}`. **Answer it** opens the chat on the message and writes nothing. | person, app | app |
 
 **Ledger B** (retired; this is what it did, **[R]** before sc-18): new → `open`; `open` → `open` (said again: `said + 1`, words
 replaced); `handled` → `open` (said again); `open` → `handled` (a "Right" answer, a "Fixed" the build covers, or a done claim the
@@ -175,7 +179,7 @@ the one new fact is that a job that ends updates its ask, see 0.4.)
 | No-model backstop adds uncovered sentences as `unclear` | Yes, all of them (the cap of 6 went with A2's fix); "covered" is a 60% word-overlap guess. |
 | "Short messages skip the model. One sentence is one ask" | The ask is written (sc-18, A6 fixed), **quietly** unless the message is long or holds 2+ asks: the Chief's list has it, no receipt shows under the message. |
 | "A repeat joins, not doubles… attached as a second quote" | It bumps `updatedAt`; no second quote is kept. |
-| Turn-end check "at most twice. After that the asks stay open, in red, in **Needs you**" | The nudge and its cap are enforced. **The Needs part is not**: nothing under `needs/`, `home/`, `inbox/`, `chief/` or `orchestration/` imports Ledger A (grep) (A7). |
+| Turn-end check "at most twice. After that the asks stay open, in red, in **Needs you**" | The nudge and its cap are enforced. **The Needs part is now built (sc-20, A7)**, counted in daily checks (the spec's "after two nudges" is the turn-end nudge, which lives in the chat's own blocks and is capped per Ash message; the ledger counts the daily check, which it owns). |
 | "Done needs proof… a link the app can check exists" | A non-empty string. |
 | "Dropped is Ash's word" | Yes, stricter: the first mate can never drop. |
 | "Open asks are always in front of the Mono… at every session start" | Yes for first mates (`openAsksNote`). |
@@ -277,7 +281,7 @@ npx @informalsystems/quint verify --invariant inv_neverGone formal/asks/asks.qnt
 | `inv_touchedNeverGone` (an acted-on ask is never lost) | holds | |
 | `inv_dropIsPersons` (only the person drops) | holds | |
 | `inv_neverGone` (an extracted ask never disappears) | **fails** (old defaults) | `extract(1), extract(2), rehear(1,omit), rehear(2,omit)`: the second maybe is over the cap (A2). Or `extract(1), handAdd(3), rehear(3,omit)` (A1). Both fixed by sc-17-ask-fixes; with the new defaults it is **expected to hold** (`gone` is only reachable through `rehear`), not re-run. |
-| `inv_noStarvation` (bounded liveness) | **fails** | `extract(1), tick ×4`: an open ask is shown to the person nowhere but the receipt. |
+| `inv_noStarvation` (bounded liveness) | **fails** with `ESCALATE` off (the code before sc-20-quiet-ask); with it on, the default since sc-20, **expected to hold by hand, not re-run** (see below) | `extract(1), tick ×4`: an open ask is shown to the person nowhere but the receipt. |
 
 Liveness, "every ask eventually reaches resolved or surfaced", is checked in its bounded form (`inv_noStarvation`): no heard or
 started ask sits un-surfaced more than 3 days. The **fairness** is in `tick`: with `ESCALATE` on, a day cannot pass while an
@@ -288,7 +292,8 @@ code today surfaces a stuck ask (the daily check goes to the first mate only), w
 Variants (copy to a temp folder with the same file name, then run the invariants above):
 
 ```bash
-mkdir -p /tmp/asks-design && sed -e 's/ESCALATE = false/ESCALATE = true/' formal/asks/asks.qnt > /tmp/asks-design/asks.qnt   # the design: expect all five to hold (A1 and A2 are in the defaults now)
+mkdir -p /tmp/asks-noescalate && sed -e 's/ESCALATE = true/ESCALATE = false/' formal/asks/asks.qnt > /tmp/asks-noescalate/asks.qnt   # the code before sc-20-quiet-ask (A7): expect inv_noStarvation to fail
+# the design (all five hold) is the default file since sc-20-quiet-ask: ESCALATE is on, and A1 and A2 are fixed
 mkdir -p /tmp/asks-old && sed -e 's/HAND_ASK_REPLACED = false/HAND_ASK_REPLACED = true/' -e 's/MAYBE_CAP = 9/MAYBE_CAP = 1/' \
   formal/asks/asks.qnt > /tmp/asks-old/asks.qnt                                                  # the code before sc-17-ask-fixes: expect inv_neverGone to fail (A1, A2)
 mkdir -p /tmp/asks-bad1 && sed 's/MATE_CAN_DROP = false/MATE_CAN_DROP = true/' formal/asks/asks.qnt > /tmp/asks-bad1/asks.qnt            # expect inv_dropIsPersons to fail
@@ -296,6 +301,8 @@ mkdir -p /tmp/asks-bad2 && sed 's/RESTART_LOSES_WAITING = false/RESTART_LOSES_WA
 ```
 
 **After the A1/A2 fixes (sc-17), run on 13 Nov 2026 with the new defaults:** `inv_neverGone` now holds; `inv_known`, `inv_touchedNeverGone` and `inv_dropIsPersons` still hold; `inv_noStarvation` still fails, because nothing yet takes a quiet ask to the person (A7, a follow-up). Results and seeds: `quint-output/runs-after-fixes.txt`.
+
+**After A7 (sc-20-quiet-ask): `ESCALATE` is now `true` in the default file, and the Quint commands were NOT run.** `npx @informalsystems/quint` (and the copy of it in the npx cache) needs an approval the run that built this could not get, so there is no typecheck, no simulator output and no seeds for this change, and nothing below is a result. By hand: `tick` is blocked while a stuck row has `age >= ESC_AFTER`, so a stuck row never passes age 2 and `inv_noStarvation` (`age <= 3`) should hold; `escalate` only sets `told`, so the other four invariants should be as in `runs-after-fixes.txt`. The earlier `design` variant (`ESCALATE = true`, run on 13 Nov 2026, `quint-output/runs.txt`) held all five, but on the file as it was then. Run the five `quint run` commands above and paste their output here and in `quint-output/` before this counts as checked. **What the knob does not model of the code:** `stuck` is `heard` or `started`, so an ask waiting on the person (which the code also counts, after 3 days) is outside it; `told` is never cleared, so the second quiet spell after a status change (which the code raises again) is not explored; Remind (the count starts again) is not an action; time is days, where the code counts daily checks (an ask heard for a day, then two checks a day apart). Turning the knob on is the only change to the model's logic; its comments were updated to say when the code has it.
 
 Before the fixes, the variants were run too: the design holds all five; `bad1` fails `inv_dropIsPersons` and `bad2` fails `inv_touchedNeverGone` (each also fails the two the default already fails), so each invariant is known to bite. The TypeScript test in B.2 does show
 the same kind of bite on the real code.
@@ -344,7 +351,7 @@ Severity: *high* = an ask can silently disappear or stay stuck with the person n
 | **A4** [T] | low | Numbers change on a re-hearing: "ask 1" from the quick reading is "ask 4" after the model's list lands, and `asks.update {"ask":1}` returns "There is no ask 1." | Keep a row's number when its quote is unchanged. |
 | **A5** [T] | high | The daily check is addressed to the chat of the **oldest** quiet ask. If that chat is not open (closed, or reset and removed) the hook skips the whole check and tries again next pass, forever, and nothing is marked sent. Quiet asks in other, open, idle chats of the same first mate are never named either. Trace: asks 1 (chat-old) and 2 (chat-live) 3 days old, only chat-live open → no message (`useAskLedger.gaps.test.ts`, with a control that sends when both are open). | **Fixed (sc-17-ask-fixes).** `askDigest` takes a `canTake(chatId)` and addresses the check to the first quiet ask's chat that can (open, idle, still this first mate's); the hook passes it. The message still names every quiet ask, and goes to the chat chosen even if an ask settles while the app CLI's command is being fetched. When no quiet ask's chat can take it, nothing is sent or marked, so the next pass tries again. The trace test was flipped. Not covered: a first mate whose chats are all gone (reset removes the old one) still gets no check, which is D1/A7 territory. |
 | **A6** [T] | medium | A lone short ask is never written to Ledger A (`worthKeeping`). The reply is its only record. The spec says "nothing Ash asks can be lost". Ledger B does record it. | **Fixed (sc-18-one-ask-ledger).** Every ask the quick reading holds is written; `worthKeeping` (unchanged, on the rules' own reading) now decides only whether the chat shows it. When it says no, the row is `quiet`: on the Chief's list, no receipt under the message (`AskReceipt` returns nothing for an all-quiet message), not owed, not nudged, not in `<open_asks>`, not in the daily check, until someone moves it (its history then grows past one step). `askEval.test.ts` ("a short single ask is written down quietly, by both") was flipped from "not written at all". |
-| **A7** [R] | high | No path from a Ledger A ask to the person except the passive receipt (red "waiting on you"). Nothing in `needs/`, `home/`, `inbox/`, `chief/` or `orchestration/` imports it (grep). The spec's "after two nudges, in red, in Needs you" is not built. Both nudges and the daily check go to the **first mate only**, so a first mate that ignores them leaves the ask `heard` or `started` forever. | Make a quiet ask (after 2 nudges, or a daily check unanswered) a Need. |
+| **A7** [R] | high | No path from a Ledger A ask to the person except the passive receipt (red "waiting on you"). Nothing in `needs/`, `home/`, `inbox/`, `chief/` or `orchestration/` imports it (grep). The spec's "after two nudges, in red, in Needs you" is not built. Both nudges and the daily check go to the **first mate only**, so a first mate that ignores them leaves the ask `heard` or `started` forever. | **Fixed (sc-20-quiet-ask).** The daily check counts, per ask, how many times it found the ask open with nothing moved (`Ask.chase`, `askQuiet.ts withDailyCheck`); the second raises it as one Needs you row (`raisedAsks`, `needs/model/quietAsks.ts`, kind `ask`): "You asked: <its words>", "Still open since <weekday or date>. <first mate> hasn't moved it." (for an ask waiting on the person: "<first mate> is waiting on you."). Raised once per quiet spell: any change to the ask (`updatedAt` moves) ends the count and the row. The card's answers: Answer it (the chat, on the message), Let it go (the person's own drop, compare-and-swap on the row drawn), Remind <first mate> (one app message, queued in the ledger and sent by `useAskLedger`; the count starts again, so the ask returns after two more quiet checks). A message from Ash in the chat, or the card's box, answers it too. Tests: `askQuiet.test.ts`, `useAskLedger.quiet.test.ts`, `quietAsks.test.ts`, `needsLive.quietAsk.test.ts`, `NeedDetail.quietAsk.test.tsx`, `tests/browser/quiet-ask.spec.ts`. **Not covered:** waiting asks are counted by this rule but the model's `stuck` leaves them out; a raised ask whose first mate was removed has no Remind; the count moves when a check is marked, even if its message could not be sent; a Remind into a chat the app host drops silently (as the daily check can) is cleared as sent. |
 | **A8** [R] | low | Closed rows past 2000 and "heard" marks past 4000 are evicted oldest first. A message whose mark is evicted is re-heard and a `done` ask is created again as `heard`. Spec: "rows are never deleted". | Keep a tombstone, or do not re-hear a message older than the ledger's last eviction. |
 | **A9** [E] | medium | Two failed model tries are final. A provider outage during a rant leaves 33% of the asks (A.2); no timer, no third try. | Retry on a timer, and tell the person when only the rules read it. |
 | **A10** [R] | info | Asks in a worker, room or plain chat are never heard (`askMate.ts`, by design). | State it on the receipt. |
@@ -398,7 +405,7 @@ above, not by Quint.
 
 ### B.5 Ways this could be wrong
 
-- `asks.qnt` has not been through the Quint typechecker or simulator. Treat its "expected" results as hypotheses.
+- `asks.qnt` has not been through the Quint typechecker or simulator **since sc-20-quiet-ask turned `ESCALATE` on** (it was run on 13 Nov 2026 before that). Treat its "expected" results for the default file as hypotheses until the commands in B.1 are run.
 - Gaps tagged **[M]** come from read-only subagents and were not re-checked by me; each was asked to try to refute it before
   reporting, but a few are marked conditional by them. The Rust side was not built or run.
 - No app was started. The hook was rendered in happy-dom, not in the Tauri webview.

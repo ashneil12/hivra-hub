@@ -116,6 +116,11 @@ project.
     asked, on the message that asked, with its words lit (`openNeed` in `needContext.ts`, the jump in
     `src/features/sessions/model/transcriptJump.ts`), never just the chat's latest message. The Inbox's tabs read All,
     Asks, then each source: asks and work items stay apart (`src/features/needs/model/inboxShow.ts`).
+    An ask of the person's that two daily checks found with nothing moved is one such row too ("You asked: <the ask's
+    words>", "Still open since Tuesday. Mia hasn't moved it."), once per quiet spell. Its card's three answers do
+    different things and say so: **Answer it** opens the chat that asked, on the message, and leaves the card as it
+    is; **Let it go** is the person's own drop; **Remind Mia** sends the first mate one app message and the row goes
+    until it has been quiet through two more checks (`asks/model/askQuiet.ts`, `needs/model/quietAsks.ts`).
     A first mate's chat opened from the Chief of Staff's one chat (Working's "Message EXO lead", a job's Open, a
     catch-up's Open) opens **beside** it, in the panel next to the chat, never in its place (`asks/model/besideChat.ts`).
     What the person sends there leaves one quiet line in the one chat ("You messaged EXO lead: … · the Chief of Staff
