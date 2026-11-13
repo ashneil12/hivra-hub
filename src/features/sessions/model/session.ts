@@ -602,6 +602,8 @@ export type Block = {
   agentNote?: import("../../monos/model/agentNotes").AgentNote;
   /** Dropwave: a "Catch me up" card in the one chat (asks/model/catchUp.ts): what it showed, kept so it reads the same later. */
   catchUp?: import("../../asks/model/catchUp").CatchUp;
+  /** Dropwave: what Ash sent to a first mate from the panel beside the one chat (asks/model/besideChat.ts). */
+  besideMessage?: import("../../asks/model/besideChat").BesideMessage;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
   stillRunning?: { taskIds: string[]; briefId?: string };
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */

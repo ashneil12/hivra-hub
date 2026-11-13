@@ -208,3 +208,31 @@ test("one chat: any Needs you, You asked or Working row quotes into the chat's b
   await expect(box).toHaveValue(/\n\n> You asked: .+\n\n$/);
   await page.screenshot({ path: test.info().outputPath("quoted.png") });
 });
+
+// Ash, 13 Nov: "you could be able to message the first mate from that side thing ... making sure that the chief of
+// staff knows that you've messaged the first mate".
+test("one chat: a first mate's chat opens beside the one chat, and what you send there leaves a line in it", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  await page.locator('[data-chief-chip="working"]').click();
+  await page.locator("[data-message-lead]").filter({ hasText: "EXO lead" }).first().click();
+  await expect(page.locator("[data-chief-working]")).toHaveCount(0);
+  // The one chat stays where it was, with the first mate's own chat open beside it.
+  await expect(oneChat(page)).toBeVisible();
+  const beside = page.locator('[data-session-drop]:not([data-session-drop="mockup-chat-chief"])').filter({ has: page.locator("textarea:visible") });
+  await expect(beside).toHaveCount(1);
+  await beside.locator("textarea:visible").fill("Example: do the checkpoint pass before the music");
+  await beside.locator("textarea:visible").press("Enter");
+  await expect(beside).toContainText("Example: do the checkpoint pass before the music");
+  const line = oneChat(page).locator("[data-beside-message]");
+  await expect(line).toHaveCount(1);
+  await expect(line).toContainText("You messaged EXO lead");
+  await expect(line).toContainText("the Chief of Staff knows");
+  // The app's line, not the Chief of Staff's: no name over it and no "worked" row under it.
+  const turn = page.locator('[data-transcript-turn^="beside-"]');
+  await expect(turn).toHaveCount(1);
+  await expect(turn).not.toContainText("worked");
+  await expect(turn.locator("[data-turn-actions]")).toHaveCount(0);
+  expect((await turn.innerText()).trim().startsWith("You messaged EXO lead")).toBe(true);
+  await page.screenshot({ path: test.info().outputPath("beside.png") });
+});

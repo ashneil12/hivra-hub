@@ -32,6 +32,7 @@ import { withCountLineChecked } from "../../../shared/text/countLine";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
+import { BesideMessageLine } from "../../asks/ui/BesideMessageLine";
 import { CatchUpCard } from "../../asks/ui/CatchUpCard";
 import { WorkerDefaultUndo } from "../../crew/ui/WorkerDefaultUndo";
 import { noteRuns } from "../../monos/model/agentNoteView";
@@ -1480,8 +1481,11 @@ function AgentTranscriptComponent({
             items.some(
               (item) => item.type === "block" && !!item.block.monoReaction,
             );
+          // Dropwave: a catch-up card or a "You messaged …" line is the app's, not the agent's: no name over it.
+          const appOnly = turn.every((block) => !!(block.catchUp || block.besideMessage));
           const showFoldLine =
             !reactedOnly &&
+            !appOnly &&
             (!!habit ||
               standaloneReply ||
               live ||
@@ -1924,6 +1928,7 @@ function AgentTranscriptComponent({
                 : null}
               {settled &&
               !reactedOnly &&
+              !appOnly &&
               (durationMs != null ||
                 standaloneReply ||
                 (inlineWork && firstWork >= 0)) ? (
@@ -2744,6 +2749,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
     if (block.agentNote) return <AgentNoteRow note={block.agentNote} embedded={embedded} />;
     // Dropwave: a "Catch me up" card in the one chat (asks/model/catchUp.ts).
     if (block.catchUp) return <CatchUpCard doc={block.catchUp} embedded={embedded} />;
+    // Dropwave: what Ash sent to a first mate from the panel beside the one chat (asks/model/besideChat.ts).
+    if (block.besideMessage) return <BesideMessageLine message={block.besideMessage} embedded={embedded} />;
     if (block.notice === "still-running") {
       return (
         <div className={`${embedded ? "" : "px-4"} py-2`}>
