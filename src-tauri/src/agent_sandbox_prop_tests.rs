@@ -414,7 +414,6 @@ proptest! {
     /// that cannot name a protected place must not be used (fail closed): either no profile is made, or the target is
     /// denied.
     #[test]
-    #[ignore = "SC-6 found bug: a protected place that is a link to a name with a quote, backslash or newline is skipped, not denied and not refused"]
     fn prop_a_link_target_the_profile_cannot_quote_is_not_left_open(
         place_pick in any::<Index>(),
         name in odd_name(),
@@ -461,7 +460,6 @@ proptest! {
     /// folder behind it (a link, or `.` and `..` steps): an agent in it can run `git init` and plant a hook, and the
     /// kernel presents the real path.
     #[test]
-    #[ignore = "SC-6 found bug: a named checkout with no .git yet is locked only by the name it was given (a // or . or .. step, or a link, leaves the real .git/hooks writable)"]
     fn prop_a_checkout_with_no_git_dir_yet_is_locked_by_its_real_name_too(
         name in odd_name(),
         via_link in any::<bool>(),
@@ -489,10 +487,9 @@ proptest! {
     }
 
     /// A shell profile folder (`~/.config/fish/conf.d/**`, whose files a shell sources) that is a link is denied through its
-    /// target, like every other place. The profile writes it as a pattern of its own and gives it no rule for the target,
-    /// so a write by the target's own name is allowed.
+    /// target, like every other place. The profile writes it as a pattern of its own, so the same pattern is also written
+    /// under the target.
     #[test]
-    #[ignore = "SC-6 found bug: a shell profile folder that is a link (~/.config/fish/conf.d) is not denied through its target"]
     fn prop_a_shell_profile_folder_that_is_a_link_is_denied_by_the_name_it_points_to(
         target_name in odd_name(),
         segments in prop::collection::vec(segment(), 1..3),
@@ -608,10 +605,8 @@ proptest! {
     }
 
     /// The app's own data folder is denied by its place under home, and so by the name a link points to when a person has
-    /// moved the folder (to another disk, behind a link): a write by either name is refused. The profile names only the
-    /// place under home, so a write by the target's own name is allowed.
+    /// moved the folder (to another disk, behind a link): a write by either name is refused.
     #[test]
-    #[ignore = "SC-6 found bug: the app data folder, when it is a link, is denied by its own name only, not through its target"]
     fn prop_the_app_data_folder_is_write_denied_when_it_is_a_link(
         target_name in odd_name(),
         suffix in "[A-Za-z0-9.-]{0,10}",
