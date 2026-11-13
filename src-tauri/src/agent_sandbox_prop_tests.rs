@@ -248,7 +248,7 @@ fn assemble(base: &Path, rel: &str, extra: &[String], noise: &[u8]) -> String {
         });
         out.push_str(segment);
     }
-    if noise[0] % 2 == 0 {
+    if noise[0].is_multiple_of(2) {
         out.push('/');
     }
     out
@@ -478,7 +478,7 @@ proptest! {
         } else {
             PathBuf::from(assemble(&parent, &name, &[], &noise))
         };
-        let rules = profile_for(&home, None, &[named.clone()]);
+        let rules = profile_for(&home, None, std::slice::from_ref(&named));
         let spelled = assemble(&named, &format!(".git/hooks/{hook}"), &[], &[0]);
         let resolved = kernel_path(Path::new(&spelled));
         prop_assert!(rules.write_denied(&resolved), "a hook can be planted in {:?}", resolved);
@@ -536,7 +536,7 @@ proptest! {
         } else {
             PathBuf::from(assemble(&parent, &name, &[], &noise))
         };
-        let rules = profile_for(&home, None, &[named.clone()]);
+        let rules = profile_for(&home, None, std::slice::from_ref(&named));
         let protected = [
             ".git".to_string(),
             ".git/hooks".to_string(),

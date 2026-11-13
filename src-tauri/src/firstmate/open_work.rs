@@ -207,7 +207,7 @@ mod tests {
         let stopped = start(&mut conn, OWNER, "r-3", Some("Try the old way"), 30);
         delegations::cancel(
             &mut conn,
-            &[stopped.id.clone()],
+            std::slice::from_ref(&stopped.id),
             Some("not needed".into()),
             None,
             31,

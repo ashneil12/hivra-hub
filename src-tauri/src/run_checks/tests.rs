@@ -52,10 +52,13 @@ impl Drop for Scratch {
     }
 }
 
+/// One run the fake was asked for: the step and the environment it was given.
+type Asked = (Step, Vec<(String, String)>);
+
 /// Answers each run with the next canned output and remembers what it was asked.
 struct Fake {
     answers: RefCell<Vec<Finished>>,
-    asked: RefCell<Vec<(Step, Vec<(String, String)>)>>,
+    asked: RefCell<Vec<Asked>>,
 }
 
 impl Fake {

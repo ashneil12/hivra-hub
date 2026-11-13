@@ -40,6 +40,9 @@ fn brief(id: &str) -> Brief {
 }
 
 /// Steps that answer as told, and remember what they were asked.
+/// Something to do to the checkout while a step runs (a test that moves HEAD mid-check).
+type During = Box<dyn Fn(&Path)>;
+
 struct Stub {
     checks: Outcome,
     guard: Outcome,
@@ -47,7 +50,7 @@ struct Stub {
     briefs: Result<Vec<Brief>, String>,
     calls: Mutex<Vec<&'static str>>,
     changed: Mutex<Vec<Vec<String>>>,
-    during: Option<Box<dyn Fn(&Path)>>,
+    during: Option<During>,
 }
 
 impl Stub {
