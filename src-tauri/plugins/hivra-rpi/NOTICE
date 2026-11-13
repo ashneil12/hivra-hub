@@ -15,3 +15,9 @@ Matt Pocock's skills (diagnosing-bugs, rpi-tdd, grill-me and grilling) are MIT.
 Copyright (c) 2026 Matt Pocock
 Source: https://github.com/mattpocock/skills @ 4ae2317ddb22b046e26455e4f9c9b3aaaf62212d
 Each of those skill folders keeps his LICENSE.
+
+Jesse Vincent's superpowers skills (test-driven-development and verification-before-completion) are MIT.
+Copyright (c) 2025 Jesse Vincent
+Source: https://github.com/obra/superpowers @ 22f0b463e7a5e579904dd6211a520321035526f7
+Copied unchanged. Each of those skill folders keeps its LICENSE. A first mate names them in a code brief when the project
+checks every task fully; they are run by name only and are not part of the always-on skill index.

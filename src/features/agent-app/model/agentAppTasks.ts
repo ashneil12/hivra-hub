@@ -1461,7 +1461,19 @@ async function delegate(
       parentSession: source.id,
     });
   // SC-4: what a worker's brief adds to the shared parts: the stamp, its in-scope paths, its check lines and its list.
-  const workerExtras = { ...extras, ...(briefStamp ? { stamp: briefStamp } : {}), scope, checks: own.lines, leave };
+  // PT-3: in a project that checks every task fully, a code brief also names the proof skills. A mode the app can't read
+  // adds nothing.
+  const proofSkills =
+    isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope }) &&
+    (await fullModeOf(tasks, briefFolderOf(source, owner, named, tasks)));
+  const workerExtras = {
+    ...extras,
+    ...(briefStamp ? { stamp: briefStamp } : {}),
+    scope,
+    checks: own.lines,
+    leave,
+    ...(proofSkills ? { proofSkills: true } : {}),
+  };
   const remoteBrief = await briefOnRemoteHost({
     paths: [folder, source.cwd],
     launchKey: `app-${source.id}-${requestId}`,
@@ -2868,6 +2880,13 @@ async function fullModeRefusal(
   const project = tasks.hubProjectId?.(folder) ?? folder;
   const mode = await tasks.testingMode(project).catch(() => undefined);
   return checksRefusal(mode, codeBrief, lines);
+}
+
+/** PT-3: whether this project checks every task fully. A mode the app can't read is not full. */
+async function fullModeOf(tasks: AgentAppTasksHost, folder: string): Promise<boolean> {
+  if (!tasks.testingMode) return false;
+  const project = tasks.hubProjectId?.(folder) ?? folder;
+  return (await tasks.testingMode(project).catch(() => undefined)) === "full";
 }
 
 /** Keep a task's gates. A miss is not a failed start: the same call again saves them. */
