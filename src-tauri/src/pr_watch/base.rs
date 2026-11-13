@@ -1141,3 +1141,8 @@ mod tests {
         );
     }
 }
+
+// SC-6: property tests on the merge gate's base hold (spec 4i).
+#[cfg(test)]
+#[path = "base_prop_tests.rs"]
+mod prop_tests;
