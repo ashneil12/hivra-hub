@@ -13,6 +13,7 @@ import { InboxNeeds } from "../../needs/ui/InboxNeeds";
 import { NeedDetail, useShownNeed } from "../../needs/ui/NeedDetail";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import { readAskLedger, subscribeAskLedger, type LedgerAsk } from "../../hub/model/askLedger";
+import { JOB_WORD, jobGroups, jobStatus, openJobCount } from "../model/chiefJobs";
 
 let ledgerVersion = 0;
 subscribeAskLedger(() => {
@@ -34,7 +35,7 @@ const QUIET = "shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-content/70 hov
 export function useChiefCounts(): { needs: number; asked: number; working: number } {
   const needs = useNeedsYou().length;
   const asked = useAsked().filter((item) => item.status === "open").length;
-  const working = useDelegationRows().filter((row) => row.state === "running").length;
+  const working = openJobCount(useDelegationRows());
   return { needs, asked, working };
 }
 
@@ -85,19 +86,16 @@ export function ChiefWorking() {
   useHubDataVersion();
   useDelegationsVersion();
   const rows = useDelegationRows();
-  const projects = hubData().listProjects();
-  const groups = projects
-    .map((project) => ({ project, rows: rows.filter((row) => row.project === project.id) }))
-    .filter((group) => group.rows.length > 0);
+  const groups = jobGroups(rows, hubData().listProjects());
   if (groups.length === 0) return <p className={HINT}>Nothing running right now.</p>;
   return (
     <div data-chief-working className="flex flex-col gap-3">
-      {groups.map(({ project, rows: list }) => {
+      {groups.map(({ projectId, name, rows: list }) => {
         const lead = list.map((row) => (row.ownerMono ? findMono(row.ownerMono)?.name : undefined)).find(Boolean);
         return (
-          <section key={project.id} aria-label={project.name} className="flex flex-col">
+          <section key={projectId ?? "none"} aria-label={name} className="flex flex-col">
             <h3 className="flex items-baseline gap-1.5 px-2 pb-1 text-[12px] leading-5">
-              <span className="font-medium text-content">{project.name}</span>
+              <span className="font-medium text-content">{name}</span>
               <span className="text-content/60">
                 {lead ? `${lead} · ` : ""}
                 {list.length} {list.length === 1 ? "job" : "jobs"}
@@ -105,9 +103,12 @@ export function ChiefWorking() {
             </h3>
             <ul className="flex flex-col">
               {list.map((row) => {
-                const red = row.status === "needs-you" || row.state === "failed" || row.state === "question";
-                const word = red ? "Needs you" : row.state === "running" ? "Working" : row.state === "completed" ? "Done" : "Stopped";
+                const status = jobStatus(row) ?? "working";
+                const red = status === "needs-you";
+                const word = JOB_WORD[status];
                 const mine = hasJumpedIn(row.childSession);
+                // The job's own first mate, not the first one in the project.
+                const owner = row.ownerMono ? findMono(row.ownerMono)?.name : undefined;
                 return (
                   <li key={row.id} data-chief-job={row.id} className="group flex items-start gap-2 border-t border-stroke px-2 py-1.5">
                     <span className="mt-0.5">
@@ -120,8 +121,8 @@ export function ChiefWorking() {
                       </span>
                     </span>
                     {mine ? (
-                      <button type="button" data-hand-back className={QUIET} aria-label={`Hand ${row.title ?? "this job"} back${lead ? ` to ${lead}` : ""}`} onClick={() => handBack(row.childSession)}>
-                        Hand back{lead ? ` to ${lead}` : ""}
+                      <button type="button" data-hand-back className={QUIET} aria-label={`Hand ${row.title ?? "this job"} back${owner ? ` to ${owner}` : ""}`} onClick={() => handBack(row.childSession)}>
+                        Hand back{owner ? ` to ${owner}` : ""}
                       </button>
                     ) : (
                       <button

@@ -2,6 +2,7 @@
 // <Lead>" in place of the composer, until Ash jumps in), and a Mono with work out reads "2 working: API, UI" with one
 // Stop (leadFlow.ts), while it goes on talking with Ash, and a card for each worker that is stuck (asking, stalled or
 // failed; workerStuck.ts), which the line names too ("1 stuck: Tests").
+import { chiefLists } from "../../asks/model/chiefLists";
 import {
   delegationActions,
   handBack,
@@ -166,7 +167,8 @@ export function useDelegationPane(
         : {}),
     };
   }
-  if (hasJumpedIn(sessionId)) {
+  // The "you're driving" line and Hand back belong to the Chief of Staff's lists: with those off, nothing changes here.
+  if (chiefLists() !== "off" && hasJumpedIn(sessionId)) {
     const mine = delegationOf(sessionId, rows);
     const lead = mine?.ownerMono ? findMono(mine.ownerMono) : undefined;
     return lead ? { kind: "driving", ownerName: monoLook(lead).name, onHandBack: () => handBack(sessionId) } : undefined;

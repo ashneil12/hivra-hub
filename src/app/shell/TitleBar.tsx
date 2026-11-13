@@ -137,7 +137,7 @@ type Props = {
    * The Mono filling the main area. It takes the tabs' place, and nothing
    * project-scoped belongs beside it.
    */
-  mono?: { look: MonoLook; state: MonoState };
+  mono?: { id?: string; look: MonoLook; state: MonoState };
   /**
    * Takes the tabs' place, as the inset layout's Settings does with its
    * breadcrumb and actions.
@@ -692,14 +692,15 @@ export function TabVisitNav({
 }
 
 /** The chips show only on the Chief of Staff's chat. */
-function ChiefChipsFor({ name }: { name: string }) {
+function ChiefChipsFor({ monoId }: { monoId?: string }) {
   const place = useChiefLists();
-  if (place !== "top" || pickChief(listMonos())?.name !== name) return null;
+  if (place !== "top" || !monoId || pickChief(listMonos())?.id !== monoId) return null;
   return <ChiefChips />;
 }
 
 /** A Mono's team, overview toggle and settings, beside its conversation. */
 export function MonoViewActions({
+  monoId,
   name,
   overviewOpen,
   onToggleOverview,
@@ -707,6 +708,8 @@ export function MonoViewActions({
   team,
   className = "",
 }: {
+  /** The first mate whose chat this is, so the Chief of Staff is known by who it is and not by its name. */
+  monoId?: string;
   name: string;
   overviewOpen: boolean;
   onToggleOverview?: () => void;
@@ -721,7 +724,7 @@ export function MonoViewActions({
   return (
     <div className={`flex items-center gap-1 ${className}`}>
       {/* One main chat: the Chief of Staff's Needs you, You asked and Working, as chips. */}
-      <ChiefChipsFor name={name} />
+      <ChiefChipsFor monoId={monoId} />
       {team ? (
         <button
           type="button"
@@ -1139,6 +1142,7 @@ function TitleBarComponent({
         ) : null}
         {mono && (onToggleMonoOverview || onOpenMonoSettings) ? (
           <MonoViewActions
+            monoId={mono.id}
             name={mono.look.name}
             overviewOpen={monoOverviewOpen}
             onToggleOverview={onToggleMonoOverview}

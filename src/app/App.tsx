@@ -1101,7 +1101,7 @@ import {
 import { noteMonoChat, pickMonoChat, type MonoChatScope } from "../features/monos/model/monoLastChat";
 import { projectFront, setProjectFront, useProjectFrontVersion } from "../features/hub/model/projectFront";
 import { pickChief as pickCaptain } from "../features/home/model/chief";
-import { useChiefLists } from "../features/asks/model/chiefLists";
+import { chiefListsOpenPanel, useChiefLists } from "../features/asks/model/chiefLists";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
 import { stampFirstMate } from "../features/monos/model/monoMate";
@@ -1688,9 +1688,10 @@ function Workspace({
     useState<MonoOverviewTab>("sessions");
   // Picking "beside the chat" for the Chief of Staff's lists opens the panel they live in.
   const chiefListsPlace = useChiefLists();
+  // Only on the Chief of Staff's main chat: every other first mate's chat still opens without its panel.
   useEffect(() => {
-    if (chiefListsPlace === "side") setMonoOverviewOpen(true);
-  }, [chiefListsPlace]);
+    if (chiefListsOpenPanel(chiefListsPlace, monoViewId, pickCaptain(listMonos())?.sessionId)) setMonoOverviewOpen(true);
+  }, [chiefListsPlace, monoViewId]);
   const monoOverviewOpenRef = useRef(monoOverviewOpen);
   monoOverviewOpenRef.current = monoOverviewOpen;
   const monoOverviewTabRef = useRef(monoOverviewTab);
@@ -18631,7 +18632,7 @@ function Workspace({
       }
       mono={
         monoCovers && monoViewMono && monoViewSession
-          ? { look: monoLook(monoViewMono), state: monoState(monoViewSession) }
+          ? { id: monoViewMono.id, look: monoLook(monoViewMono), state: monoState(monoViewSession) }
           : undefined
       }
       // The inset layout keeps these in the Mono's pane, under its tab.
@@ -19475,6 +19476,7 @@ function Workspace({
                                         visible &&
                                         monoViewMono ? (
                                           <MonoViewActions
+                                            monoId={monoViewMono.id}
                                             name={monoLook(monoViewMono).name}
                                             overviewOpen={monoOverviewOpen}
                                             onToggleOverview={
