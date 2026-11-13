@@ -58,7 +58,7 @@ export type AskDoc = {
   since: number;
   asks: Ask[];
   heard: Record<string, Heard>;
-  /** Asks Ash closed or reopened since the first mate last saw the list, by first mate, so it hears of them once. */
+  /** When each first mate last got the daily check on its open asks (askNotes.ts askDigest), by first mate. */
   nudged: Record<string, number>;
 };
 
@@ -560,4 +560,9 @@ export function mateAskStatus(value: string): AskStatus {
   if (word === "done") return "done";
   if (word === "dropped") return "dropped";
   throw new Error("status must be one of: started, waiting, done");
+}
+
+/** Marks that a first mate got its daily check now. */
+export function withDigestMark(doc: AskDoc, mateId: string, now: number): AskDoc {
+  return { ...doc, nudged: { ...doc.nudged, [mateId]: now } };
 }

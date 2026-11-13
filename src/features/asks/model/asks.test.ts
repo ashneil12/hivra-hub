@@ -104,3 +104,52 @@ describe("the ledger", () => {
     expect(receiptLine(doc.asks)).toBe(`Heard ${doc.asks.length} asks`);
   });
 });
+
+import { askDigest, DIGEST_HEARD_MS, staleAsks } from "./askNotes";
+import { emptyAskDoc as emptyLedger, withDigestMark, type Ask as LedgerAsk } from "./asks";
+
+describe("the daily check on quiet asks", () => {
+  const NOW = 1_800_000_000_000;
+  const row = (over: Partial<LedgerAsk>): LedgerAsk => ({
+    id: `a${over.n}`,
+    n: 1,
+    mateId: "chief",
+    sessionId: "s1",
+    blockId: "b1",
+    quote: "Example: pin the main chat",
+    summary: "Example: pin the main chat",
+    kind: "do",
+    status: "heard",
+    heardBy: "rules",
+    createdAt: NOW - 2 * DIGEST_HEARD_MS,
+    updatedAt: NOW - 2 * DIGEST_HEARD_MS,
+    history: [],
+    ...over,
+  });
+
+  it("names asks with no status after a day and started ones quiet for three, and nothing else", () => {
+    const doc = {
+      ...emptyLedger(0),
+      asks: [
+        row({ n: 1 }),
+        row({ n: 2, createdAt: NOW - 1000, updatedAt: NOW - 1000 }),
+        row({ n: 3, status: "started", updatedAt: NOW - 4 * DIGEST_HEARD_MS }),
+        row({ n: 4, status: "waiting" }),
+        row({ n: 5, kind: "idea" }),
+        row({ n: 6, status: "done", proof: "answered in this chat", updatedAt: NOW - 1000 }),
+      ],
+    };
+    expect(staleAsks(doc, "chief", NOW).map((ask) => ask.n)).toEqual([1, 3]);
+    const due = askDigest(doc, "chief", "app", NOW);
+    expect(due?.chatId).toBe("s1");
+    expect(due?.message.text).toContain("- ask 1:");
+    expect(due?.message.text).toContain("Finished since yesterday:\n- ask 6:");
+    expect(due?.message.text).not.toContain("- ask 2:");
+  });
+
+  it("is sent once a day, and never when nothing went quiet", () => {
+    const doc = { ...emptyLedger(0), asks: [row({ n: 1 })] };
+    expect(askDigest(withDigestMark(doc, "chief", NOW - 1000), "chief", "app", NOW)).toBeUndefined();
+    expect(askDigest({ ...emptyLedger(0), asks: [row({ n: 1, status: "waiting" })] }, "chief", "app", NOW)).toBeUndefined();
+  });
+});

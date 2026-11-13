@@ -11,6 +11,7 @@ import {
   parseAskDoc,
   withAdded,
   withChange,
+  withDigestMark,
   withHeard,
   type Ask,
   type AskBy,
@@ -31,6 +32,8 @@ export type AskStore = {
   hear(input: HearInput): Promise<void>;
   change(id: string | number, change: AskChange, by: AskBy): Promise<{ ask: Ask } | { problem: string }>;
   add(input: { mateId: string; sessionId: string; blockId: string; text: string }): Promise<void>;
+  /** Records the daily check for a first mate, so it is sent once a day from whichever window sends it. */
+  markDigest(mateId: string): Promise<void>;
   subscribe(fn: () => void): () => void;
 };
 
@@ -109,6 +112,7 @@ export function createAskStore(disk: LocalHubDisk, now: () => number = Date.now)
         return "problem" in out ? { doc: base, result: out } : { doc: out.doc, result: { ask: out.ask } };
       }),
     add: (input) => write((base) => ({ doc: withAdded(base, { ...input, now: now() }), result: undefined })),
+    markDigest: (mateId) => write((base) => ({ doc: withDigestMark(base, mateId, now()), result: undefined })),
     subscribe(fn) {
       listeners.add(fn);
       void load().catch(() => undefined);

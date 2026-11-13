@@ -13,6 +13,13 @@ import { bump, type MemoryDoc, type MemoryItem } from "./doc";
 import { letGoCopy, withArchived } from "./letGo";
 
 export const STALE_DAYS = 60;
+/**
+ * One pass lets go of at most this share of the kept facts as stale or duplicate (and never fewer than TIDY_FLOOR may
+ * go), so a bad clock or a bad merge rule cannot empty memory in one go. The rest waits for the next pass. A fact
+ * past its own end date always goes: the person set that date.
+ */
+export const TIDY_SHARE = 0.2;
+export const TIDY_FLOOR = 5;
 const DAY = 86_400_000;
 
 /** The words of a fact with case, spacing and punctuation taken out, for the duplicate rule. */
@@ -36,7 +43,7 @@ function lastSaid(item: MemoryItem): number {
   return Math.max(item.createdAt, item.updatedAt, item.lastUsedAt ?? 0);
 }
 
-export type RepairResult = { doc: MemoryDoc; expired: number; stale: number; duplicates: number };
+export type RepairResult = { doc: MemoryDoc; expired: number; stale: number; duplicates: number; /** Left for the next pass by the limit. */ waiting?: number };
 
 export function repairDoc(doc: MemoryDoc, now: number): RepairResult {
   const today = new Date(now).toISOString().slice(0, 10);
@@ -44,6 +51,8 @@ export function repairDoc(doc: MemoryDoc, now: number): RepairResult {
   let expired = 0;
   let stale = 0;
   let duplicates = 0;
+  let waiting = 0;
+  let left = Math.max(TIDY_FLOOR, Math.ceil(doc.items.filter((item) => item.action === "add" && !item.dispute).length * TIDY_SHARE));
   let items = doc.items.filter((item) => {
     // A parked clash waits for the person's own three choices; a proposal about another fact is not a fact.
     if (item.dispute || item.action !== "add") return true;
@@ -59,6 +68,11 @@ export function repairDoc(doc: MemoryDoc, now: number): RepairResult {
       item.kind !== "possession" &&
       now - lastSaid(item) > STALE_DAYS * DAY
     ) {
+      if (left <= 0) {
+        waiting += 1;
+        return true;
+      }
+      left -= 1;
       out.push(letGoCopy(item, "stale", now));
       stale += 1;
       return false;
@@ -78,6 +92,11 @@ export function repairDoc(doc: MemoryDoc, now: number): RepairResult {
       groups.set(key, item);
       continue;
     }
+    if (left <= 0) {
+      waiting += 1;
+      continue;
+    }
+    left -= 1;
     const [keep, drop] = stronger(have, item) >= 0 ? [have, item] : [item, have];
     const kept: MemoryItem = { ...keep, support: keep.support + drop.support };
     groups.set(key, kept);
@@ -90,6 +109,7 @@ export function repairDoc(doc: MemoryDoc, now: number): RepairResult {
   if (dropped.size) {
     items = items.filter((item) => !dropped.has(item.id)).map((item) => merged.get(item.id) ?? item);
   }
-  if (!out.length) return { doc, expired, stale, duplicates };
-  return { doc: bump(withArchived({ ...doc, items }, out)), expired, stale, duplicates };
+  const more = waiting ? { waiting } : {};
+  if (!out.length) return { doc, expired, stale, duplicates, ...more };
+  return { doc: bump(withArchived({ ...doc, items }, out)), expired, stale, duplicates, ...more };
 }
