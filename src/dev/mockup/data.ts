@@ -12,11 +12,17 @@ const projects: ExampleProject[] = [
   { id: "safetube", name: "SafeTube", shortName: "SafeTube", iconShape: "play", folder: `${ROOT}/safetube` },
 ];
 
+const CHIEF_FOLDER = "/Users/ash/Library/Application Support/com.ash.monocode-hub.dev.browser/mono-teams/chief-of-staff";
+
 const folderOf = (id: string) => projects.find((p) => p.id === id)?.folder ?? ROOT;
 
 /** Each Mono's own chat, by a fixed id, so the workers below can name who sent them. */
 const CHAT = {
   chief: "mockup-chat-chief",
+  /** A side chat the Chief of Staff had before it became one chat: kept, and Search still finds it. */
+  chiefEarlier: "mockup-chat-chief-earlier",
+  /** And the chat it had of its own in Hivra: kept in that project's list, under Everyone. */
+  chiefHivraEarlier: "mockup-chat-chief-hivra-earlier",
   exo: "mockup-chat-exo-lead",
   hivra: "mockup-chat-hivra-lead",
   nibbii: "mockup-chat-nibbii-lead",
@@ -39,6 +45,8 @@ function roster() {
       captain: true,
       templateId: "coordinator",
       sessionId: CHAT.chief,
+      chats: [CHAT.chiefEarlier],
+      projectSessions: { hivra: CHAT.chiefHivraEarlier },
     },
     { id: "vg-game-lead", name: "EXO lead", mascot: "invader", mascotPicked: true, color: "hsl(211 92% 62%)", projects: [folderOf("vg-game")], engine: "claude", sessionId: CHAT.exo },
     { id: "hivra-lead", name: "Hivra lead", mascot: "ghost", mascotPicked: true, color: "hsl(12 80% 58%)", projects: [folderOf("hivra")], engine: "claude", sessionId: CHAT.hivra },
@@ -72,6 +80,24 @@ function chat(id: string, title: string, cwd: string, lines: Line[], now: number
   };
 }
 
+/** A side question kept with the chat, on the message it was asked under (sessions/model/btw.ts): it comes back as a tab. */
+function withSideQuestion<T extends { id: string; blocks: { id: string; role: string }[] }>(session: T, now: number): T {
+  const at = now - 30 * 60_000;
+  const thread = {
+    id: `${session.id}-side-1`,
+    sourceEndBlockId: session.blocks[1]?.id,
+    createdAt: at,
+    updatedAt: at + 20_000,
+    status: "ready",
+    harness: "claude",
+    messages: [
+      { id: `${session.id}-side-1-q`, role: "user", text: "Example: which rooms are in Area 3 again?", createdAt: at },
+      { id: `${session.id}-side-1-a`, role: "assistant", text: "Example: the gate room, the flooded hall and the lift, then the boss arena.", createdAt: at + 20_000 },
+    ],
+  };
+  return { ...session, blocks: session.blocks.map((block, index) => (index === 0 ? { ...block, btwThreads: [thread] } : block)) };
+}
+
 function sessions(now: number) {
   return [
     chat(CHAT.chief, "Chief of Staff", ROOT, [
@@ -86,7 +112,16 @@ function sessions(now: number) {
         "Done. The EXO lead is re-running the upload on the spare account now, and I'll remind you about the headline at 14:00.",
       ],
     ], now, 50),
-    chat(CHAT.exo, "EXO lead", folderOf("vg-game"), [
+    // In the folder the mock gives the Chief of Staff's own chats (browserTauriMock.ts mono_team_dir), where a side chat lives.
+    chat(CHAT.chiefEarlier, "Example: parents' newsletter wording", CHIEF_FOLDER, [
+      ["user", "Example: tighten the parents' newsletter opening line."],
+      ["assistant", "Example: \"One safe place for the videos your kids already love.\" Twelve words, and it says what it is."],
+    ], now, 60 * 26),
+    chat(CHAT.chiefHivraEarlier, "Example: waitlist plan", folderOf("hivra"), [
+      ["user", "Example: what is the plan for the Hivra waitlist?"],
+      ["assistant", "Example: page first, then the email. The Hivra lead has both."],
+    ], now, 60 * 30),
+    withSideQuestion(chat(CHAT.exo, "EXO lead", folderOf("vg-game"), [
       ["user", "Where are we on the Area 3 build?"],
       [
         "assistant",
@@ -104,7 +139,7 @@ function sessions(now: number) {
         "assistant",
         "Example: three things.\n\n1. The boss arena lighting, about half done.\n2. The boss music, waiting on your pick.\n3. One more pass on the checkpoint before the arena.\n\nI'll tell you when the build is up.",
       ],
-    ], now, 35),
+    ], now, 35), now),
     chat(CHAT.hivra, "Hivra lead", folderOf("hivra"), [
       ["user", "Can you get the waitlist page ready to ship?"],
       [

@@ -59,6 +59,18 @@ async function home(page: Page, query = "?reset") {
 const homeTile = (page: Page) => page.locator("[data-hub-home] button").first();
 const project = (page: Page, name: string) => page.locator(`[data-hub-strip] button[title^="${name}"]`).first();
 const firstMate = (page: Page, name: string) => page.locator("[data-mono-rail-list]").getByText(name, { exact: true }).first();
+/**
+ * The Chats panel beside a chat. It starts shut since 12 Nov (appearance.ts loadSessionSidebarOpen), so a test that
+ * reads the list or presses "New chat" opens it first, from the title bar's toggle.
+ */
+async function showChats(page: Page) {
+  const header = page.locator("[data-sidebar-chats-header]");
+  if ((await header.count()) === 0) await page.getByRole("button", { name: /^Toggle Session Sidebar/ }).click();
+  await expect(header).toBeVisible();
+}
+/** One chat (Ash, 13 Nov): the Chief of Staff's row, pinned first in every sidebar. */
+const chiefRow = (page: Page) => page.locator("[data-chief-pinned] button").first();
+const oneChat = (page: Page) => page.locator('[data-session-drop="mockup-chat-chief"]');
 
 test("Home is its own place: its Chief of Staff keeps Home lit and nothing from a project shows", async ({ page }) => {
   await home(page);
@@ -69,7 +81,7 @@ test("Home is its own place: its Chief of Staff keeps Home lit and nothing from 
   await expect(page.locator("[data-hub-items]")).toHaveCount(0);
   await expect(page.locator("[data-mono-rail-list]")).toHaveCount(0);
 
-  await page.locator("[data-hub-top-nav] button").nth(1).click();
+  await chiefRow(page).click();
   await expect(page.locator("[data-session-composer]:visible").first()).toBeVisible();
   await expect(homeTile(page)).toHaveAttribute("aria-current", /.+/);
   await expect(page.locator("[data-hub-items]")).toHaveCount(0);
@@ -90,6 +102,7 @@ test("New chat beside a first mate is another chat with that first mate", async 
   await home(page);
   await project(page, "Hivra").click();
   await firstMate(page, "Hivra lead").click();
+  await showChats(page);
   await page.getByRole("button", { name: "New chat" }).first().click();
 
   // The first mate stays the open one in the sidebar, and the new chat says who it is with.
@@ -109,10 +122,11 @@ test("a first mate's chat list is its own: no chats with anyone else until Every
   await home(page);
   await project(page, "Hivra").click();
   await firstMate(page, "Hivra lead").click();
+  await showChats(page);
   // The row on top is the first mate's main chat, dressed like its other chats: no pin, its name on the top line.
   const top = page.locator("[data-coding-team-lead]:visible").first();
   await expect(top).toContainText("Hivra lead");
-  await expect(top).toContainText("Main chat");
+  // (The "Main chat" label under it was dropped on 12 Nov: each chat shows whose it is instead.)
   await expect(top.locator("svg.lucide-pin")).toHaveCount(0);
 
   // A second chat with the Hivra lead.
@@ -125,27 +139,38 @@ test("a first mate's chat list is its own: no chats with anyone else until Every
   const leadRows = page.locator("[data-session-card]:visible").filter({ hasText: "Hivra lead" });
   await expect(leadRows).toHaveCount(2);
 
-  // The Chief of Staff's chat for this project: only the Chief of Staff's chats, none with the Hivra lead.
-  await page.locator("[data-hub-top-nav] button").nth(1).click();
-  await expect(top).toContainText("Chief of Staff");
+  // One chat (13 Nov): from inside a project the Chief of Staff's row opens its one chat, which has no chat list at
+  // all, so no chat with the Hivra lead shows beside it. (It used to open a chat of its own for the project, with a list.)
+  await chiefRow(page).click();
+  await expect(oneChat(page)).toBeVisible();
+  await expect(page.locator("[data-sidebar-chats-header]")).toHaveCount(0);
+  await expect(leadRows).toHaveCount(0);
+
+  // Back on the Hivra lead's side its own list is as it was: its two chats, on "own", and none of the Chief of Staff's.
+  await project(page, "Hivra").click();
+  await firstMate(page, "Hivra lead").click();
+  await showChats(page);
+  await expect(top).toContainText("Hivra lead");
   const scope = page.locator("[data-chat-scope]:visible").first();
   await expect(scope).toHaveAttribute("data-chat-scope", "own");
   await expect(scope.locator('[data-chat-scope-option="own"]')).toHaveAttribute("aria-pressed", "true");
-  await expect(leadRows).toHaveCount(0);
-
-  // Everyone: the Hivra lead's main chat and its second chat are listed too.
-  await scope.locator('[data-chat-scope-option="all"]').click();
-  await expect(scope).toHaveAttribute("data-chat-scope", "all");
-  await expect(leadRows).toHaveCount(2);
-  await expect(page.locator("[data-coding-team-other]:visible")).toContainText("Hivra lead");
-
-  // Back to the Chief of Staff's own chats, and the same holds on the Hivra lead's side.
-  await scope.locator('[data-chat-scope-option="own"]').click();
-  await expect(leadRows).toHaveCount(0);
-  await firstMate(page, "Hivra lead").click();
-  await expect(top).toContainText("Hivra lead");
   await expect(leadRows).toHaveCount(2);
   await expect(page.locator("[data-session-card]:visible").filter({ hasText: "Chief of Staff" })).toHaveCount(0);
+
+  // Everyone: the chat the Chief of Staff had of its own in this project before is still offered, as an earlier chat,
+  // and it opens that chat as it is (never the one chat, never a new one).
+  await scope.locator('[data-chat-scope-option="all"]').click();
+  await expect(scope).toHaveAttribute("data-chat-scope", "all");
+  const other = page.locator("[data-coding-team-other]:visible");
+  await expect(other).toContainText("Chief of Staff");
+  await expect(other).toContainText("Earlier chat");
+  await expect(leadRows).toHaveCount(2);
+  await scope.locator('[data-chat-scope-option="own"]').click();
+  await expect(other).toHaveCount(0);
+  await scope.locator('[data-chat-scope-option="all"]').click();
+  await other.click();
+  await expect(page.locator('[data-session-drop="mockup-chat-chief-hivra-earlier"]')).toBeVisible();
+  await expect(page.getByRole("button", { name: "New chat" })).toHaveCount(0);
 });
 
 test("the plus beside First mates makes a new one for this project, or adds one already made", async ({ page }) => {

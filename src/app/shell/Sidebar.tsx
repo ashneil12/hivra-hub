@@ -434,6 +434,10 @@ type Props = {
   onOpenProject?: () => void;
   onRemoveProject?: (path: string, options: { purgeData: boolean }) => void;
   onNew?: () => string | void;
+  /** Dropwave, one chat: the Chats panel's own title ("Earlier chats" beside the Chief of Staff's one chat). */
+  chatsTitle?: string;
+  /** Dropwave, one chat: no "New chat" here (there is no new chat with the Chief of Staff). */
+  noNewChat?: boolean;
   onNewTerminal?: () => void;
   onSearch?: () => void;
   onOpenInbox?: () => void;
@@ -617,6 +621,8 @@ function SidebarComponent({
   onOpenProject,
   onRemoveProject,
   onNew,
+  chatsTitle,
+  noNewChat = false,
   onSearch,
   onOpenInbox,
   onOpenInboxItem,
@@ -3011,16 +3017,18 @@ function SidebarComponent({
                   </IconButton>
                 </span>
               ) : null}
-              <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">Chats</span>
-              <button
-                type="button"
-                onClick={onNew}
-                aria-label="New chat"
-                className="flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-content/70 hover:bg-content/8 hover:text-content"
-              >
-                <Plus className="size-3.5" strokeWidth={1.75} />
-                New chat
-              </button>
+              <span className="min-w-0 flex-1 truncate text-sm font-medium leading-tight">{chatsTitle ?? "Chats"}</span>
+              {noNewChat ? null : (
+                <button
+                  type="button"
+                  onClick={onNew}
+                  aria-label="New chat"
+                  className="flex h-7 shrink-0 items-center gap-1 rounded-md px-2 text-[12px] font-medium text-content/70 hover:bg-content/8 hover:text-content"
+                >
+                  <Plus className="size-3.5" strokeWidth={1.75} />
+                  New chat
+                </button>
+              )}
             </div>
           ) : null}
           {/* The inset sidebar has no tabs: the project tools live in the
@@ -3514,7 +3522,7 @@ function SidebarComponent({
                                     </SessionListItem>
                                   ))}
                                 </ul>
-                                {onNew ? (
+                                {onNew && !noNewChat ? (
                                   <div
                                     className={
                                       inset
