@@ -125,9 +125,11 @@ export function InboxNeeds({ firstMate = null, pick }: { firstMate?: FirstMateFo
               data-need-key={item.key}
               data-selected={item.key === open ? "true" : undefined}
               aria-current={item.key === open ? "true" : undefined}
-              className={`flex items-start gap-2 rounded-lg px-1.5 py-1.5 hover:bg-content/5${item.key === open ? " bg-content/5" : ""}`}
+              // Ash 13 Nov: a long suggested answer beside the question squeezed it to one word a line. The answer sits
+              // under the question and is cut to the row's width; its full words are in its title and the card.
+              className={`flex min-w-0 flex-col items-start gap-1 rounded-lg px-1.5 py-1.5 hover:bg-content/5${item.key === open ? " bg-content/5" : ""}`}
             >
-              <button type="button" className="flex min-w-0 flex-1 flex-col gap-0.5 text-left" onClick={() => openRow(item)}>
+              <button type="button" className="flex w-full min-w-0 flex-col gap-0.5 text-left" onClick={() => openRow(item)}>
                 <span className="text-[13px] leading-[18px] text-content">{item.sentence}</span>
                 <span className="truncate text-[11px] leading-4 text-content/55">{[project, item.who].filter(Boolean).join(" · ")}</span>
               </button>
@@ -138,7 +140,7 @@ export function InboxNeeds({ firstMate = null, pick }: { firstMate?: FirstMateFo
                   aria-label={action.title ?? action.label}
                   data-needs-answer=""
                   onClick={action.onClick}
-                  className="mt-0.5 shrink-0 rounded-md border border-content/20 px-2 py-0.5 text-[12px] text-content hover:bg-content/8"
+                  className="block max-w-full truncate rounded-md border border-content/20 px-2 py-0.5 text-left text-[12px] text-content hover:bg-content/8"
                 >
                   {action.label}
                 </button>
