@@ -391,7 +391,7 @@ const shipCheckRule: HoldRule = {
       const words = bugs === 1 ? "1 failing test names a real bug and waits on the person" : `${bugs} failing tests name real bugs and wait on the person`;
       return {
         key: `${head}:bugs:${bugs}`,
-        message: `Not ready to ship yet: ${words}. Each is a row on their Needs you list, where they answer Fix it, Not now or Ship anyway. Do not call this version ready until the test passes or they answer Ship anyway.`,
+        message: `Not ready to ship yet: ${words}. Each is a row on their Needs you list, where they answer Fix it, Not now or Ship anyway. An answer that leaves the test failing comes back as a new row at the next ship check: Run ship_check to put it to them again. Do not call this version ready until the test passes or they answer Ship anyway.`,
         note: BUGS_NOTE,
       };
     }

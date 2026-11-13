@@ -179,7 +179,14 @@ pub fn classify_checks(doc: &mut Doc, stage: &mut Stage, record: &VerifyRecord, 
                         .iter()
                         .find(|item| item.id == id && item.decision.is_some());
                     let named_bug = named.is_some();
-                    let shipped_anyway = named.is_some_and(|item| item.ship_anyway_at.is_some());
+                    // Only a bug the fixer named with a row to answer waits on anyone, as `Doc::waiting_bugs` has it: the check, the
+                    // step and the hold agree.
+                    let waits = named.is_some_and(|item| {
+                        item.ship_anyway_at.is_none()
+                            && item.decision.as_ref().is_some_and(|d| {
+                                d.kind == crate::test_debt::doc::DecisionKind::CodeWrong
+                            })
+                    });
                     let noted = doc.note_failure(
                         &crate::test_debt::doc::Candidate {
                             runner: f.runner.clone(),
@@ -195,10 +202,10 @@ pub fn classify_checks(doc: &mut Doc, stage: &mut Stage, record: &VerifyRecord, 
                     );
                     if named_bug {
                         // A real bug does not block only once the person chose to ship with it; until then it waits on them.
-                        if shipped_anyway {
-                            not_blocking += 1;
-                        } else {
+                        if waits {
                             waiting_bugs.push(f.name.clone());
+                        } else {
+                            not_blocking += 1;
                         }
                     } else if noted == crate::test_debt::doc::Noted::Full {
                         unlisted = true;

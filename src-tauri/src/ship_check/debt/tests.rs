@@ -360,6 +360,33 @@ fn a_check_that_failed_on_a_real_bug_still_waiting_on_the_person_is_not_a_pass()
 }
 
 #[test]
+fn an_item_left_on_the_list_with_a_flaky_decision_is_not_a_bug_that_waits_on_anyone() {
+    // A document from disk can hold one (`mark_flaky` takes the test off the list, so this build never leaves one). The check, the step
+    // and the hold must agree: there is no bug here and no row to answer, so nothing waits.
+    let dir = Temp::new();
+    let log = write_log(&dir, "unit.log", FAIL_OTHER);
+    let record = verify_record(vec![verify_step("unit", V::Failed, Some(&log))]);
+    let mut doc = Doc::default();
+    doc.note_failure(
+        &cand("src/other.test.ts", "src/other.test.ts > suite > works"),
+        1,
+    );
+    doc.items[0].decision = Some(crate::test_debt::doc::Decision {
+        kind: DecisionKind::Flaky,
+        line: "x".into(),
+        at: 2,
+    });
+    let stage = classify(&mut doc, &record, 3);
+    assert_eq!(
+        stage.steps[0].outcome,
+        Outcome::Passed,
+        "{}",
+        stage.steps[0].detail
+    );
+    assert_eq!(doc.waiting_bugs().count(), 0);
+}
+
+#[test]
 fn a_check_whose_failures_are_not_all_named_stays_failed() {
     let dir = Temp::new();
     let cut = write_log(&dir, "cut.log", CUT);

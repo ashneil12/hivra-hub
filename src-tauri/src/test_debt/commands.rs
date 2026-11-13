@@ -60,10 +60,31 @@ fn nothing(note: &str) -> ClaimView {
 pub const FIX_IT: &str = "Fix it";
 pub const NOT_NOW: &str = "Not now";
 /// The answer that lets the version ship with a named real bug in it. Only the person's own tap on that bug's row counts
-/// (`ship_anyway_target`).
+/// (`person_answer`).
 pub const SHIP_ANYWAY: &str = "Ship anyway";
-/// What a real-bug Needs-you item's key starts with; the rest is `short_id` of the bug's key.
+/// What a real-bug Needs-you item's key starts with; then the project's notes (`store::key`) and the bug (`short_id` of its key).
 pub const BUG_KEY_PREFIX: &str = "test-debt-bug-";
+
+/// A real bug's Needs-you key. It names the project's notes as well as the bug: a hub project's decisions are filed under its id, which
+/// is no folder, so the decision's own project can't be relied on to find the notes when the person answers.
+fn row_key(project: &str, bug_key: &str) -> String {
+    format!(
+        "{BUG_KEY_PREFIX}{}-{}",
+        store::key(project),
+        short_id(bug_key)
+    )
+}
+
+/// The parts of a real bug's Needs-you key: the project's notes (none in a key an earlier build made) and the bug. Each is 16 hex digits.
+fn bug_row(decision_key: &str) -> Option<(Option<&str>, &str)> {
+    let rest = decision_key.trim().strip_prefix(BUG_KEY_PREFIX)?;
+    let hex16 = |text: &str| text.len() == 16 && text.bytes().all(|b| b.is_ascii_hexdigit());
+    match rest.split_once('-') {
+        Some((notes, bug)) if hex16(notes) && hex16(bug) => Some((Some(notes), bug)),
+        None if hex16(rest) => Some((None, rest)),
+        _ => None,
+    }
+}
 pub const REWRITE_IT: &str = "Rewrite it";
 pub const DELETE_IT: &str = "Delete it";
 pub const KEEP_IT: &str = "Keep it";
@@ -91,14 +112,22 @@ pub fn claim_in(
                 return nothing("That real bug was already put to the person.");
             }
             let question = item.bug_words();
+            // What "Fix it" asks of a worker: for a bug the fixer showed, the code; for a critical test it only called flaky, nobody has
+            // shown the code is wrong, so the worker finds out why it fails and leaves the test alone.
+            let fix = if item.critical_flaky() {
+                "brief a worker to find out why this critical test fails (the code, or something that comes and goes), never to change, skip or weaken the test".to_string()
+            } else {
+                "brief a worker to fix the code, never the test: the test is right".to_string()
+            };
             ClaimView {
                 claimed: true,
-                key: format!("{BUG_KEY_PREFIX}{}", short_id(key)),
+                // The project's notes and the bug: an answer finds them without knowing the project's folder.
+                key: row_key(project, key),
                 question: question.chars().take(400).collect(),
                 options: vec![FIX_IT.into(), NOT_NOW.into(), SHIP_ANYWAY.into()],
                 recommended: FIX_IT.into(),
                 note: format!(
-                    "Asked the person. If they answer {FIX_IT}, brief a worker to fix the code, never the test: the test is right. If they answer {NOT_NOW}, leave it: the ship check holds on this test (it waits on them) until it passes or they answer {SHIP_ANYWAY}. If they answer {SHIP_ANYWAY}, do nothing: the app records that answer itself, and only from the person, and the next ship check passes with the bug named on its record."
+                    "Asked the person. If they answer {FIX_IT}, {fix}. If they answer {NOT_NOW}, leave it: the ship check holds on this test (it waits on them) until it passes or they answer {SHIP_ANYWAY}, and an answer that leaves it failing is put to them again as a new row at the next ship check. If they answer {SHIP_ANYWAY}, do nothing: the app records that answer itself, and only from the person, and the next ship check no longer waits on this bug."
                 ),
             }
         }),
@@ -146,43 +175,48 @@ pub fn person_answer(decision: &crate::decisions::Decision) -> Option<&str> {
         .filter(|answer| !answer.is_empty())
 }
 
-/// Records the person's "Ship anyway" on the real bug whose row is `decision_key`. False when nothing was recorded: not a real bug's
-/// row, not that answer, no such bug on the list any more (it passed), or it was already shipped anyway. A project whose notes can't
-/// be read records nothing.
-pub fn ship_anyway_in(
+/// What the person's answer on a real bug's row (`decision_key`) does to that bug: "Ship anyway" lets the version ship with it; any other
+/// answer leaves the test failing, so the bug is put to them again as a new row at the next ship check (a "Not now" is never a dead
+/// end). The notes are the ones the row names; `project` is only for a row an earlier build made, which names none. False when nothing
+/// changed: not a real bug's row, no such bug waiting on the list any more (it passed, was shipped anyway, or was asked again), or notes
+/// this build can't read.
+pub fn bug_answer_in(
     dir: &Path,
     project: &str,
     decision_key: &str,
     answer: &str,
     now: u64,
 ) -> bool {
-    if !answer.trim().eq_ignore_ascii_case(SHIP_ANYWAY) {
-        return false;
-    }
-    let Some(short) = decision_key
-        .trim()
-        .strip_prefix(BUG_KEY_PREFIX)
-        .filter(|short| !short.is_empty())
-    else {
+    let Some((notes, bug)) = bug_row(decision_key) else {
         return false;
     };
-    // Under the list's lock, so two windows answering at once record one override and the second says nothing changed.
-    store::update(dir, project, |doc| {
+    let ship = answer.trim().eq_ignore_ascii_case(SHIP_ANYWAY);
+    // Under the list's lock, so two windows answering at once change it once and the second says nothing changed.
+    let change = |doc: &mut Doc| {
         let Some(key) = doc
             .waiting_bugs()
             .map(Doc::bug_key)
-            .find(|key| short_id(key).eq_ignore_ascii_case(short))
+            .find(|key| short_id(key).eq_ignore_ascii_case(bug))
         else {
             return false;
         };
-        doc.ship_bug_anyway(&key, now)
-    })
+        if ship {
+            doc.ship_bug_anyway(&key, now)
+        } else {
+            doc.ask_bug_again(&key)
+        }
+    };
+    match notes {
+        Some(notes) => store::update_by_key(dir, notes, change),
+        None if project.trim().is_empty() => return false,
+        None => store::update(dir, project, change),
+    }
     .unwrap_or(false)
 }
 
-/// After an answer to a decision landed (`decisions::decisions_answer`): the person's own "Ship anyway" on a real bug's row is
-/// recorded on that bug. Nothing else is touched. The first mate can't give it: it is the person's answer, read from the decision
-/// the app stored, never from what a chat says.
+/// After an answer to a decision landed (`decisions::decisions_answer`): the person's own answer on a real bug's row is applied to that
+/// bug (`bug_answer_in`). Nothing else is touched. The first mate can't give it: the key is the person's alone (`decisions::person_only`)
+/// and the answer is read from the decision the app stored, never from what a chat says.
 pub fn on_answered(app: &AppHandle, decision: &crate::decisions::Decision) {
     // Cheap first: nearly every decision is some other row.
     if !decision.decision_key.trim().starts_with(BUG_KEY_PREFIX) {
@@ -191,10 +225,13 @@ pub fn on_answered(app: &AppHandle, decision: &crate::decisions::Decision) {
     let Some(answer) = person_answer(decision) else {
         return;
     };
-    let (Ok(data), Ok(project)) = (data_dir(app), project_of(&decision.project)) else {
+    let Ok(data) = data_dir(app) else {
         return;
     };
-    if ship_anyway_in(&data, &project, &decision.decision_key, answer, now_ms()) {
+    // The decision's own project is only a way to the notes for a row an earlier build made, which names none: a hub project's
+    // decisions are filed under its id, which is no folder, and then there are no notes to find that way.
+    let project = project_of(&decision.project).unwrap_or_default();
+    if bug_answer_in(&data, &project, &decision.decision_key, answer, now_ms()) {
         changed(app);
     }
 }
@@ -407,10 +444,13 @@ mod tests {
         assert_eq!(view.recommended, FIX_IT);
         assert!(view.options.contains(&view.recommended));
         assert!(view.key.len() <= 120);
-        assert!(view.key.starts_with(BUG_KEY_PREFIX));
+        // The row names the project's notes as well as the bug: an answer finds them without knowing the project's folder (a hub
+        // project's decisions are filed under its id, not its folder).
+        assert_eq!(view.key, row_for("/p", &key));
         // It tells the first mate what each answer means: Not now holds, Ship anyway is the app's to record, never the first mate's.
         assert!(view.note.contains(SHIP_ANYWAY), "{}", view.note);
         assert!(view.note.contains("holds"), "{}", view.note);
+        assert!(view.note.contains("again"), "{}", view.note);
         let again = claim_in(dir.path(), "/p", "bug", &key, 6).unwrap();
         assert!(!again.claimed, "once per bug");
         // A question that could not be filed is given back: a timeout is not a no.
@@ -418,16 +458,50 @@ mod tests {
         assert!(claim_in(dir.path(), "/p", "bug", &key, 7).unwrap().claimed);
     }
 
+    /// The Needs-you key of a real bug's row, as `claim_in` words it: the project's notes, then the bug.
+    fn row_for(project: &str, bug_key: &str) -> String {
+        format!(
+            "{BUG_KEY_PREFIX}{}-{}",
+            store::key(project),
+            short_id(bug_key)
+        )
+    }
+
     /// A real bug on the list, its Needs-you key as `claim_in` words it, and the bug's own key.
     fn named_bug(dir: &Temp, name: &str, at: u64) -> (String, String) {
-        store::update(dir.path(), "/p", |doc| {
+        let key = store::update(dir.path(), "/p", |doc| {
             doc.note_failure(&cand(name), at);
             let item = doc.items.iter().find(|i| i.name == name).unwrap().clone();
             doc.mark_code_wrong(&item.id, "the total ignores tax", at + 1);
-            let key = Doc::bug_key(doc.items.iter().find(|i| i.name == name).unwrap());
-            (format!("{BUG_KEY_PREFIX}{}", short_id(&key)), key)
+            Doc::bug_key(doc.items.iter().find(|i| i.name == name).unwrap())
         })
-        .unwrap()
+        .unwrap();
+        (row_for("/p", &key), key)
+    }
+
+    #[test]
+    fn a_critical_test_the_fixer_called_flaky_is_not_put_as_a_test_that_is_right() {
+        let dir = Temp::new();
+        let key = store::update(dir.path(), "/p", |doc| {
+            doc.note_failure(&cand("logs in"), 1);
+            let id = doc.items[0].id.clone();
+            doc.mark_code_wrong(&id, crate::test_debt::doc::CRITICAL_NOTE, 2);
+            Doc::bug_key(&doc.items[0])
+        })
+        .unwrap();
+        let view = claim_in(dir.path(), "/p", "bug", &key, 5).unwrap();
+        assert!(view
+            .question
+            .starts_with("logs in is a critical test that failed."));
+        // "Fix it" is not "the test is right, fix the code": nobody has shown the code is wrong.
+        assert!(!view.note.contains("the test is right"), "{}", view.note);
+        assert!(
+            view.note
+                .contains("never to change, skip or weaken the test"),
+            "{}",
+            view.note
+        );
+        assert!(view.note.contains(SHIP_ANYWAY));
     }
 
     #[test]
@@ -435,25 +509,24 @@ mod tests {
         let dir = Temp::new();
         let (row, key) = named_bug(&dir, "totals add up", 1);
         let (other_row, other_key) = named_bug(&dir, "rounds", 3);
-        // Any other answer, or the answer on another kind of row, records nothing.
-        for (row, answer) in [
-            (row.as_str(), FIX_IT),
-            (row.as_str(), NOT_NOW),
-            (row.as_str(), ""),
-            (row.as_str(), "Ship anyway please do"),
-            ("test-debt-score-0123456789abcdef", SHIP_ANYWAY),
-            ("test-debt-bug-", SHIP_ANYWAY),
-            ("test-debt-bug-0000000000000000", SHIP_ANYWAY),
-            ("something-else", SHIP_ANYWAY),
+        // Another kind of row, or a key that is not this app's, changes nothing, whatever the answer.
+        for row in [
+            "test-debt-score-0123456789abcdef",
+            "test-debt-bug-",
+            "test-debt-bug-0000000000000000",
+            "test-debt-bug-0000000000000000-0000000000000000",
+            "something-else",
         ] {
-            assert!(
-                !ship_anyway_in(dir.path(), "/p", row, answer, 10),
-                "{row} {answer:?}"
-            );
+            for answer in [SHIP_ANYWAY, FIX_IT, NOT_NOW] {
+                assert!(
+                    !bug_answer_in(dir.path(), "/p", row, answer, 10),
+                    "{row} {answer:?}"
+                );
+            }
         }
         assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 2);
         // The answer, with the spacing and case a typed answer has, on the right row.
-        assert!(ship_anyway_in(dir.path(), "/p", &row, "  ship ANYWAY ", 11));
+        assert!(bug_answer_in(dir.path(), "/p", &row, "  ship ANYWAY ", 11));
         let doc = store::read(dir.path(), "/p");
         let shipped = doc.items.iter().find(|i| Doc::bug_key(i) == key).unwrap();
         assert_eq!(shipped.ship_anyway_at, Some(11));
@@ -468,41 +541,115 @@ mod tests {
             "it is still named, and still a finding"
         );
         // Said twice, or for the other bug later: once each.
-        assert!(!ship_anyway_in(dir.path(), "/p", &row, SHIP_ANYWAY, 12));
+        assert!(!bug_answer_in(dir.path(), "/p", &row, SHIP_ANYWAY, 12));
         assert_eq!(
             store::read(dir.path(), "/p").items[0].ship_anyway_at,
             Some(11),
             "the first answer's time stands"
         );
-        assert!(ship_anyway_in(
-            dir.path(),
-            "/p",
-            &other_row,
-            SHIP_ANYWAY,
-            13
-        ));
+        assert!(bug_answer_in(dir.path(), "/p", &other_row, SHIP_ANYWAY, 13));
         assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 0);
     }
 
     #[test]
-    fn ship_anyway_for_a_bug_that_passed_since_or_in_another_project_records_nothing() {
+    fn any_other_answer_on_a_real_bugs_row_puts_the_bug_to_the_person_again_at_the_next_ship_check()
+    {
+        for answer in [FIX_IT, NOT_NOW, "later, thanks", "Ship anyway please do"] {
+            let dir = Temp::new();
+            let (row, key) = named_bug(&dir, "totals add up", 1);
+            // The row was filed (claimed), and the person answered it.
+            store::update(dir.path(), "/p", |doc| assert!(doc.claim_filed(&key))).unwrap();
+            assert!(
+                bug_answer_in(dir.path(), "/p", &row, answer, 5),
+                "{answer:?}"
+            );
+            let doc = store::read(dir.path(), "/p");
+            assert_eq!(
+                doc.items[0].ship_anyway_at, None,
+                "{answer:?}: not a ship anyway"
+            );
+            assert_eq!(doc.waiting_bugs().count(), 1, "{answer:?}: it still holds");
+            // The next ship check puts it to them as a new row, with its own key; the answered row means nothing now.
+            let asks = doc.bugs_to_file();
+            assert_eq!(asks.len(), 1, "{answer:?}");
+            let new_key = Doc::bug_key(asks[0]);
+            assert_ne!(new_key, key);
+            assert_ne!(row_for("/p", &new_key), row);
+            let view = claim_in(dir.path(), "/p", "bug", &new_key, 6).unwrap();
+            assert!(view.claimed, "{answer:?}");
+            assert_eq!(view.key, row_for("/p", &new_key));
+            assert!(
+                !bug_answer_in(dir.path(), "/p", &row, SHIP_ANYWAY, 7),
+                "the old row is closed"
+            );
+            // And the new row is the one that ships it.
+            assert!(bug_answer_in(dir.path(), "/p", &view.key, SHIP_ANYWAY, 8));
+            assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 0);
+        }
+    }
+
+    #[test]
+    fn a_row_finds_its_projects_notes_by_its_own_key_whatever_project_the_decision_was_filed_under()
+    {
         let dir = Temp::new();
         let (row, _) = named_bug(&dir, "totals add up", 1);
-        // Another project's notes have no such bug.
-        assert!(!ship_anyway_in(
-            dir.path(),
-            "/elsewhere",
-            &row,
-            SHIP_ANYWAY,
-            5
-        ));
+        // A hub project's decisions are filed under its id ("hivra"), which is no folder: the row says which notes are meant.
+        assert!(bug_answer_in(dir.path(), "hivra", &row, SHIP_ANYWAY, 5));
+        assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 0);
+        // A row from before it carried the project's key still finds them through the project the decision names.
+        let (_, old_key) = named_bug(&dir, "rounds", 3);
+        let old_row = format!("{BUG_KEY_PREFIX}{}", short_id(&old_key));
+        assert!(
+            !bug_answer_in(dir.path(), "hivra", &old_row, SHIP_ANYWAY, 6),
+            "a slug is no folder"
+        );
+        assert!(bug_answer_in(dir.path(), "/p", &old_row, SHIP_ANYWAY, 7));
+        assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 0);
+    }
+
+    #[test]
+    fn a_row_key_that_is_not_two_hex_ids_names_no_notes_and_writes_nothing() {
+        let dir = Temp::new();
+        let (row, key) = named_bug(&dir, "totals add up", 1);
+        let short = short_id(&key);
+        let store_key = store::key("/p");
+        for bad in [
+            format!("{BUG_KEY_PREFIX}../../x-{short}"),
+            format!("{BUG_KEY_PREFIX}{}-{short}", store_key.to_uppercase()),
+            format!("{BUG_KEY_PREFIX}{}/{short}", store_key),
+            format!("{BUG_KEY_PREFIX}{store_key}-{short}-extra"),
+            format!("{BUG_KEY_PREFIX}{store_key}-{}", &short[..8]),
+            format!("{BUG_KEY_PREFIX}{store_key}-"),
+            format!("{BUG_KEY_PREFIX}-{short}"),
+            format!("{BUG_KEY_PREFIX}{store_key}{short}"),
+        ] {
+            assert!(
+                !bug_answer_in(dir.path(), "/q", &bad, SHIP_ANYWAY, 5),
+                "{bad}"
+            );
+        }
+        assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 1);
+        assert!(!store::path_of(dir.path(), "/q").exists());
+        // Only the row itself works.
+        assert!(bug_answer_in(dir.path(), "/q", &row, SHIP_ANYWAY, 6));
+    }
+
+    #[test]
+    fn ship_anyway_for_a_bug_that_passed_since_or_in_another_projects_notes_records_nothing() {
+        let dir = Temp::new();
+        let (_, key) = named_bug(&dir, "totals add up", 1);
+        // The same bug named in another project's notes: that project has no such bug, and nothing is written there.
+        let elsewhere = row_for("/elsewhere", &key);
+        assert!(!bug_answer_in(dir.path(), "/p", &elsewhere, SHIP_ANYWAY, 5));
         assert!(
             !store::path_of(dir.path(), "/elsewhere").exists(),
             "nothing was written there"
         );
+        assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 1);
         // The test went green and left the list: there is nothing to ship anyway.
+        let row = row_for("/p", &key);
         store::update(dir.path(), "/p", |doc| doc.remove_green(|_| true)).unwrap();
-        assert!(!ship_anyway_in(dir.path(), "/p", &row, SHIP_ANYWAY, 6));
+        assert!(!bug_answer_in(dir.path(), "/p", &row, SHIP_ANYWAY, 6));
         // It fails again later: a new item, asked afresh, with no earlier override.
         let (again_row, _) = named_bug(&dir, "totals add up", 100);
         assert_ne!(
@@ -511,7 +658,7 @@ mod tests {
         );
         assert_eq!(store::read(dir.path(), "/p").waiting_bugs().count(), 1);
         assert!(
-            !ship_anyway_in(dir.path(), "/p", &row, SHIP_ANYWAY, 7),
+            !bug_answer_in(dir.path(), "/p", &row, SHIP_ANYWAY, 7),
             "the old row is not the new bug"
         );
     }
@@ -526,13 +673,11 @@ mod tests {
             format!("{{\"version\": {}}}", crate::test_debt::doc::VERSION + 1),
         )
         .unwrap();
-        assert!(!ship_anyway_in(
-            dir.path(),
-            "/p",
-            "test-debt-bug-0123456789abcdef",
-            SHIP_ANYWAY,
-            1
-        ));
+        // Both the answer that ships it and the one that asks again leave a file this build can't read as it is.
+        let row = format!("{BUG_KEY_PREFIX}{}-0123456789abcdef", store::key("/p"));
+        for answer in [SHIP_ANYWAY, FIX_IT] {
+            assert!(!bug_answer_in(dir.path(), "/p", &row, answer, 1));
+        }
     }
 
     fn decision(

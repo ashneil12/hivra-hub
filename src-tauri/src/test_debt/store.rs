@@ -145,9 +145,31 @@ pub fn update<R>(
     project: &str,
     change: impl FnOnce(&mut Doc) -> R,
 ) -> Result<R, String> {
+    update_at(&path_of(dir, project), change)
+}
+
+/// Whether `key` is a project key as `key(project)` makes one: 16 lower-case hex digits, and so nothing that can name another folder.
+pub fn is_key(key: &str) -> bool {
+    key.len() == 16 && key.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// `update` for the document whose file is named by `key` (what `key(project)` gives). A Needs-you row carries it, so an answer finds
+/// the project's notes without knowing the project's folder (a hub project's decisions are filed under its id, not its folder). A key
+/// that is not a project key changes nothing and says so.
+pub fn update_by_key<R>(
+    dir: &Path,
+    key: &str,
+    change: impl FnOnce(&mut Doc) -> R,
+) -> Result<R, String> {
+    if !is_key(key) {
+        return Err("That is not a project's test notes.".to_string());
+    }
+    update_at(&dir.join(FOLDER).join(format!("{key}.json")), change)
+}
+
+fn update_at<R>(path: &Path, change: impl FnOnce(&mut Doc) -> R) -> Result<R, String> {
     let _held = lock().lock().unwrap_or_else(|e| e.into_inner());
-    let path = path_of(dir, project);
-    let loaded = load(&path);
+    let loaded = load(path);
     // A file the disk would not give is never replaced by an empty one: whatever was in it stays where it is.
     if let Some(why) = loaded.unreadable {
         return Err(format!(
@@ -168,9 +190,9 @@ pub fn update<R>(
         doc.rev = before.rev.saturating_add(1);
         let text = serde_json::to_string_pretty(&doc).map_err(|e| e.to_string())?;
         if loaded.corrupt {
-            set_aside(&path);
+            set_aside(path);
         }
-        write_atomic(&path, &text)?;
+        write_atomic(path, &text)?;
     }
     Ok(result)
 }

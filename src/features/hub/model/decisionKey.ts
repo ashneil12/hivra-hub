@@ -54,6 +54,8 @@ const PERSON_ONLY = [
   "fanout-again/",
   "security-review/",
   "secret/",
+  // PT-5 follow-up: a real bug's row on the test debt list. Its "Ship anyway" lets the version ship with a bug in it.
+  "test-debt-bug-",
 ];
 
 /**

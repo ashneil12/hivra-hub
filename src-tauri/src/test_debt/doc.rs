@@ -80,6 +80,9 @@ pub struct Item {
     /// When the person answered "Ship anyway" on this real bug's row: the ship check no longer waits on it. None until then, and it
     /// goes with the item (a test that passes leaves the list; one that fails again later is a new item, asked afresh).
     pub ship_anyway_at: Option<u64>,
+    /// How many times the person's answer on this real bug's row left it still failing and was put to them again (`ask_bug_again`).
+    /// It is part of the bug's key once above zero, so the next ship check files a fresh row.
+    pub reasked: u32,
 }
 
 /// What a test the fixer called flaky is told when it is critical: it is never quarantined, and it waits for the person.
@@ -88,6 +91,13 @@ pub const CRITICAL_NOTE: &str = "A critical test can't be quarantined; it waits 
 pub const NO_GREEN_NOTE: &str = "No green run seen; still to sort.";
 
 impl Item {
+    /// A critical test the fixer called flaky: kept on the list as a finding that waits for the person (`apply_report`).
+    pub fn critical_flaky(&self) -> bool {
+        self.decision
+            .as_ref()
+            .is_some_and(|d| d.kind == DecisionKind::CodeWrong && d.line == CRITICAL_NOTE)
+    }
+
     /// The one sentence a real bug is put as, on the ship check and to the person. A critical test the fixer called flaky is said as
     /// what it is.
     pub fn bug_words(&self) -> String {
@@ -97,7 +107,7 @@ impl Item {
             .map(|d| d.line.as_str())
             .filter(|line| !line.is_empty())
             .unwrap_or("see the fixer's report");
-        if line == CRITICAL_NOTE {
+        if self.critical_flaky() {
             format!(
                 "{} is a critical test that failed. {CRITICAL_NOTE}",
                 self.name
@@ -477,6 +487,7 @@ impl Doc {
             decision: None,
             note: String::new(),
             ship_anyway_at: None,
+            reasked: 0,
         });
         let score = self.score_entry(&id, &candidate.name);
         score.broke = score.broke.saturating_add(1);
@@ -501,6 +512,14 @@ impl Doc {
             .into_iter()
             .partition(|item| green(item));
         self.items = keep;
+        // A test that passed takes the filings of its real-bug rows with it (every key it was asked under): the list of filings is capped,
+        // and once it was full a new real bug could not be asked about at all.
+        for item in &gone {
+            let base = Doc::bug_key_base(item);
+            let asked_again = format!("{base}:");
+            self.filed
+                .retain(|key| key != &base && !key.starts_with(&asked_again));
+        }
         for item in &gone {
             if exists(item)
                 && item
@@ -708,8 +727,37 @@ impl Doc {
     }
 
     /// A real-bug Needs-you item's key: the test and when it entered the list, so a bug that comes back later is a new item.
+    /// A bug put to the person again (`ask_bug_again`) has a new key, so it is a new row; one never asked again keeps the key it always had.
     pub fn bug_key(item: &Item) -> String {
+        let base = Doc::bug_key_base(item);
+        if item.reasked == 0 {
+            base
+        } else {
+            format!("{base}:{}", item.reasked)
+        }
+    }
+
+    /// What every key a bug was ever filed under starts with.
+    fn bug_key_base(item: &Item) -> String {
         format!("code-wrong:{}:{}", item.id, item.first_seen_at)
+    }
+
+    /// The person's answer on a real bug's row (`key` is `Doc::bug_key`) left the test still failing and was not "Ship anyway": the bug is
+    /// put to them again at the next ship check, as a new row (its key changes), so a "Not now" is never a dead end. False when no such bug
+    /// still waits (the old row means nothing once it has been asked again).
+    pub fn ask_bug_again(&mut self, key: &str) -> bool {
+        let Some(item) = self.items.iter_mut().find(|item| {
+            item.ship_anyway_at.is_none()
+                && item
+                    .decision
+                    .as_ref()
+                    .is_some_and(|d| d.kind == DecisionKind::CodeWrong)
+                && Doc::bug_key(item) == key
+        }) else {
+            return false;
+        };
+        item.reasked = item.reasked.saturating_add(1);
+        true
     }
 
     /// Real bugs not yet put to the person.
@@ -1107,6 +1155,83 @@ mod tests {
         assert!(
             !doc.ship_bug_anyway(&key_a, 502),
             "the old row is not the new bug"
+        );
+    }
+
+    #[test]
+    fn a_bug_the_person_answered_without_shipping_it_is_asked_again_as_a_new_row() {
+        let mut doc = Doc::default();
+        doc.note_failure(&cand("a.test.ts", "a"), 10);
+        doc.note_failure(&cand("b.test.ts", "b"), 11);
+        let (a, b) = (doc.items[0].id.clone(), doc.items[1].id.clone());
+        doc.mark_code_wrong(&a, "x", 12);
+        let first = Doc::bug_key(&doc.items[0]);
+        // A bug never asked again keeps the key it always had, so rows filed by an earlier build still mean what they did.
+        assert_eq!(first, format!("code-wrong:{a}:10"));
+        assert!(doc.claim_filed(&first));
+        assert!(doc.bugs_to_file().is_empty(), "asked once");
+        assert!(doc.ask_bug_again(&first));
+        let second = Doc::bug_key(&doc.items[0]);
+        assert_ne!(second, first);
+        assert_eq!(
+            doc.bugs_to_file().len(),
+            1,
+            "put to them at the next ship check"
+        );
+        assert_eq!(doc.items[0].reasked, 1);
+        // The row it was asked on means nothing now; the new one is the bug's.
+        assert!(!doc.ask_bug_again(&first));
+        assert!(!doc.ship_bug_anyway(&first, 20));
+        assert!(doc.claim_filed(&second));
+        assert!(doc.ask_bug_again(&second));
+        let third = Doc::bug_key(&doc.items[0]);
+        assert!(third != first && third != second);
+        assert!(doc.ship_bug_anyway(&third, 30));
+        // A bug they shipped, a test that is not a named bug and one that is gone are not asked again.
+        assert!(!doc.ask_bug_again(&third));
+        let not_a_bug = Doc::bug_key(&doc.items[1]);
+        assert!(!doc.ask_bug_again(&not_a_bug), "{b} is not named a bug");
+        assert!(!doc.ask_bug_again("code-wrong:nope:1"));
+        assert_eq!(doc.waiting_bugs().count(), 0);
+    }
+
+    #[test]
+    fn a_real_bug_that_passes_takes_its_filings_with_it_so_the_list_of_filings_never_fills() {
+        let mut doc = Doc::default();
+        doc.note_failure(&cand("a.test.ts", "a"), 10);
+        doc.note_failure(&cand("b.test.ts", "b"), 11);
+        let (a, b) = (doc.items[0].id.clone(), doc.items[1].id.clone());
+        doc.mark_code_wrong(&a, "x", 12);
+        doc.mark_code_wrong(&b, "y", 13);
+        let first = Doc::bug_key(&doc.items[0]);
+        assert!(doc.claim_filed(&first));
+        assert!(doc.ask_bug_again(&first));
+        let second = Doc::bug_key(&doc.items[0]);
+        assert!(doc.claim_filed(&second));
+        let other = Doc::bug_key(&doc.items[1]);
+        assert!(doc.claim_filed(&other));
+        assert!(doc.claim_filed("test-debt-score:something"));
+        // `a` passes: every key it was filed under goes, and nothing else does (a test whose id merely starts the same way stays).
+        doc.filed.push(format!("code-wrong:{a}x:10"));
+        doc.remove_green(|item| item.id == a);
+        assert!(
+            !doc.filed.contains(&first) && !doc.filed.contains(&second),
+            "{:?}",
+            doc.filed
+        );
+        assert!(doc.filed.contains(&other));
+        assert!(doc.filed.contains(&"test-debt-score:something".to_string()));
+        assert!(doc.filed.contains(&format!("code-wrong:{a}x:10")));
+        // The slot a passed bug held is free: a full list of filings no longer stops the next bug being asked.
+        for n in 0..KEYS_MAX {
+            doc.filed.push(format!("old-{n}"));
+        }
+        doc.filed.truncate(KEYS_MAX);
+        assert!(!doc.claim_filed("one-more"), "full");
+        doc.remove_green(|item| item.id == b);
+        assert!(
+            doc.claim_filed("one-more"),
+            "the passed bug's filing made room"
         );
     }
 

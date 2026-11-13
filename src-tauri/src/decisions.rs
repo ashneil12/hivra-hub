@@ -1492,6 +1492,7 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
     let again = is_again_key(key);
     let gate = is_gate_key(key);
     let secret = is_secret_key(key);
+    let bug = is_test_debt_bug_key(key);
     let irreversible = fold_key(key).starts_with("irreversible/");
     // A budget, the charter, the captain's cap and a `security/` question are the person's too.
     // A security review keeps its own words below. A secret stays on its stricter rule.
@@ -1502,8 +1503,9 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
         && !security
         && !again
         && !gate
-        && !secret;
-    if !irreversible && !review && !security && !again && !gate && !secret && !owner_rest {
+        && !secret
+        && !bug;
+    if !irreversible && !review && !security && !again && !gate && !secret && !bug && !owner_rest {
         return None;
     }
     // A secret card is stricter than the other person-only keys: nobody named, and `user` (the Needs sheet), are not
@@ -1538,10 +1540,20 @@ pub fn person_only(key: &str, by: Option<&str>) -> Option<String> {
         Some(other) if gate => Some(format!(
             "Only the person answers the check; {other} cannot. It waits in Needs until they do."
         )),
+        Some(other) if bug => Some(format!(
+            "Only the person answers a real bug the tests found; {other} cannot. It waits in Needs until they do."
+        )),
         Some(other) => Some(format!(
             "Only the person answers an irreversible step; {other} cannot. It waits in Needs until they do."
         )),
     }
+}
+
+/// PT-5 follow-up: a real bug's row on the test debt list (`test-debt-bug-<project>-<bug>`). Its "Ship anyway" lets the version ship with a
+/// bug in it, and an answer from anyone else (a first mate, a page, the captain, a standing answer) would close the row and leave the
+/// person nothing to tap. Read through `fold_key`, like the other person-only prefixes.
+pub fn is_test_debt_bug_key(key: &str) -> bool {
+    fold_key(key).starts_with("test-debt-bug-")
 }
 
 /// WP-81: a delivery check parked under `gate/<run>`. Read through `fold_key`, like the other person-only prefixes.
@@ -2566,6 +2578,44 @@ mod person_only_fold_tests {
     #[test]
     fn an_ordinary_key_is_not_person_only() {
         assert!(person_only("ask/ordinary", Some("chat:x")).is_none());
+    }
+
+    /// PT-5 follow-up: a real bug's row (`test-debt-bug-<project>-<bug>`) is the person's to answer: "Ship anyway" lets the version
+    /// ship with a bug in it, and an answer from anyone else would close the row and leave them nothing to tap.
+    #[test]
+    fn a_real_bug_row_of_the_test_debt_list_is_person_only_in_any_spelling() {
+        for key in [
+            "test-debt-bug-0123456789abcdef-fedcba9876543210",
+            "Test-Debt-Bug-0123456789abcdef-fedcba9876543210",
+            "\u{FF34}est-debt-bug-0123456789abcdef-fedcba9876543210",
+            "test-debt\u{200B}-bug-0123456789abcdef-fedcba9876543210",
+            "  test-debt-bug-0123456789abcdef\u{FEFF}",
+        ] {
+            for by in [
+                "chat:lead",
+                "page:home",
+                "captain",
+                "autopilot",
+                "worker:1",
+                "app:fresh-eyes",
+                "chat:standing",
+            ] {
+                assert!(
+                    person_only(key, Some(by)).is_some(),
+                    "{key:?} was answerable by {by}"
+                );
+            }
+            for by in [None, Some("user"), Some("person")] {
+                assert!(
+                    person_only(key, by).is_none(),
+                    "{key:?} refused the person ({by:?})"
+                );
+            }
+            // So no old answer stands for it, and a reused answer never closes it.
+            assert!(!standing_eligible(key), "{key:?} was eligible to stand");
+        }
+        // The other test-debt question (rewrite or delete a test that keeps breaking) stays an ordinary question.
+        assert!(person_only("test-debt-score-0123456789abcdef", Some("chat:x")).is_none());
     }
 }
 

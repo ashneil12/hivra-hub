@@ -786,6 +786,8 @@ describe("the hold and a real bug that waits on the person", () => {
     expect(held?.message.text).toContain("Not ready to ship yet: 2 failing tests name real bugs and wait on the person.");
     expect(held?.message.text).toContain("Needs you");
     expect(held?.message.text).toContain("Ship anyway");
+    // An answer that leaves the test failing comes back at the next ship check, so the way to put it to them is to run one.
+    expect(held?.message.text).toContain("Run ship_check");
     expect(held?.note.text).toBe(BUGS_NOTE);
     expect(held?.key).toContain(`${HEAD}:bugs:2`);
   });
