@@ -166,6 +166,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             facts: None,
             mode: None,
             brief_round: None,
+            fix: None,
         },
         fake,
     )
@@ -601,6 +602,7 @@ fn a_brief_without_a_definition_of_done_is_unsure() {
             facts: None,
             mode: None,
             brief_round: None,
+            fix: None,
         },
         &fake,
     );
@@ -643,6 +645,7 @@ fn fact_gaps_fail_the_claim_without_asking_the_model() {
             facts: Some(&facts),
             mode: None,
             brief_round: None,
+            fix: None,
         },
         &fake,
     );
@@ -1036,6 +1039,7 @@ fn r2_a_completed_settle_does_not_clear_a_failed_plan_gate_nothing_reran() {
             facts: Some(&facts),
             mode: None,
             brief_round: None,
+            fix: None,
         },
         &failing,
     );
@@ -1380,6 +1384,17 @@ fn moded_round(
     fake: &Fake,
     facts: Option<&crate::firstmate::fact_gaps::FactTurn>,
 ) -> GateRecord {
+    moded_round_fixing(dir, chosen, fake, facts, None)
+}
+
+/// SC-7: the same round for a bug-fix brief, with what the "no red before the fix" gap reads.
+fn moded_round_fixing(
+    dir: &Path,
+    chosen: &ModePlan,
+    fake: &Fake,
+    facts: Option<&crate::firstmate::fact_gaps::FactTurn>,
+    fix: Option<&crate::firstmate::fact_gaps::FixEvidence>,
+) -> GateRecord {
     run_round(
         &RoundInput {
             delegation_id: "d-1",
@@ -1394,6 +1409,7 @@ fn moded_round(
             facts,
             mode: Some(chosen),
             brief_round: None,
+            fix,
         },
         fake,
     )
@@ -1668,6 +1684,7 @@ fn light_honours_the_briefs_named_checks_and_gates() {
             facts: None,
             mode: Some(&chosen),
             brief_round: None,
+            fix: None,
         },
         &named,
     );
@@ -1863,6 +1880,7 @@ fn brief_round_in(
             facts: None,
             mode: Some(&chosen),
             brief_round: Some(brief),
+            fix: None,
         },
         fake,
     )
@@ -2039,6 +2057,7 @@ fn a_docs_only_change_still_runs_the_briefs_lines_on_a_gate_that_says_the_projec
             facts: None,
             mode: Some(&moded(&f.copy, TestingMode::Light, None)),
             brief_round: Some(&briefed(two_lines(), &[])),
+            fix: None,
         },
         &said,
     );
@@ -2228,6 +2247,7 @@ fn a_missing_command_could_not_run_and_the_round_is_unsure_never_passed() {
             facts: None,
             mode: Some(&chosen),
             brief_round: Some(&briefed(two_lines(), &[])),
+            fix: None,
         },
         &Blind,
     );
@@ -2474,4 +2494,178 @@ fn a_do_not_touch_list_that_cannot_be_read_leaves_the_round_unsure() {
     // `off` runs no findings, so it does not look.
     let record = brief_round(&f.copy, TestingMode::Off, &damaged, &Fake::default());
     assert_eq!(record.verdict, Verdict::Passed);
+}
+
+// ---- SC-7: a bug fix needs a red run first ----------------------------------------------------------------------------
+
+mod sc7_fix {
+    use super::*;
+    use crate::firstmate::fact_gaps::{FactEdit, FactRun, FixEvidence, NO_RED_BEFORE_FIX};
+
+    const RED: &str = include_str!("../test_summary/fixtures/vitest_fail.txt");
+
+    /// A fix whose test file is `app.test.ts`: red first when `red_first`, else the red comes after the source edit.
+    fn evidence(red_first: bool) -> FixEvidence {
+        let (red_at, code_at) = if red_first { (3.0, 5.0) } else { (6.0, 2.0) };
+        FixEvidence {
+            test_files: vec!["app.test.ts".into()],
+            runs: vec![FactRun {
+                command: "npx vitest run app.test.ts".into(),
+                at: red_at,
+                output: RED.replace("src/math.test.ts", "app.test.ts"),
+            }],
+            edits: vec![
+                FactEdit {
+                    path: "app.test.ts".into(),
+                    at: 1.0,
+                },
+                FactEdit {
+                    path: "app.ts".into(),
+                    at: code_at,
+                },
+            ],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn in_light_a_fix_with_no_red_first_fails_the_round_and_the_model_is_not_asked() {
+        let f = built();
+        let fake = Fake::default();
+        let chosen = moded(&f.copy, TestingMode::Light, None);
+        let proof = evidence(false);
+        let record = moded_round_fixing(&f.copy, &chosen, &fake, None, Some(&proof));
+        assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
+        // One gap reads as the send-back line, which lowers the first letter of the sentence.
+        assert_eq!(
+            record.summary.lines().next(),
+            Some("Sent back: no failing run of a new or changed test was seen before the fix.")
+        );
+        assert!(
+            fake.prompts.borrow().is_empty(),
+            "a fact gap does not ask the model"
+        );
+    }
+
+    #[test]
+    fn in_full_the_same_fix_fails_the_same_way() {
+        let f = built();
+        let chosen = moded(&f.copy, TestingMode::Full, None);
+        let proof = evidence(false);
+        let record = moded_round_fixing(&f.copy, &chosen, &Fake::default(), None, Some(&proof));
+        assert_eq!(record.verdict, Verdict::Failed);
+        assert_eq!(
+            record.summary.lines().next(),
+            Some("Sent back: no failing run of a new or changed test was seen before the fix.")
+        );
+    }
+
+    #[test]
+    fn a_red_run_before_the_fix_passes_the_round() {
+        let f = built();
+        let chosen = moded(&f.copy, TestingMode::Light, None);
+        let proof = evidence(true);
+        let record = moded_round_fixing(&f.copy, &chosen, &Fake::default(), None, Some(&proof));
+        assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+        assert!(!record.summary.contains(NO_RED_BEFORE_FIX));
+    }
+
+    #[test]
+    fn at_ship_and_off_assume_the_worker_tested_so_the_gap_is_dropped() {
+        let f = built();
+        for mode in [TestingMode::AtShip, TestingMode::Off] {
+            let chosen = moded(&f.copy, mode, None);
+            let proof = evidence(false);
+            let record = moded_round_fixing(&f.copy, &chosen, &Fake::default(), None, Some(&proof));
+            assert_eq!(
+                record.verdict,
+                Verdict::Passed,
+                "{mode:?}: {}",
+                record.summary
+            );
+            assert!(!record.summary.contains(NO_RED_BEFORE_FIX), "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_brief_that_is_not_a_fix_carries_no_evidence_and_is_never_held_to_it() {
+        let f = built();
+        let chosen = moded(&f.copy, TestingMode::Light, None);
+        let record = moded_round_fixing(&f.copy, &chosen, &Fake::default(), None, None);
+        assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+    }
+
+    fn memory() -> rusqlite::Connection {
+        rusqlite::Connection::open_in_memory().unwrap()
+    }
+
+    #[test]
+    fn a_fix_kind_is_kept_beside_the_plan_and_a_later_save_without_one_clears_it() {
+        let conn = memory();
+        let stored = plan(&[GateKind::Diff, GateKind::Checks]);
+        save_plan_with_kind(&conn, "d-1", &stored, Some("fix"), 1).unwrap();
+        assert_eq!(plan_of(&conn, "d-1").unwrap(), Some(stored.clone()));
+        assert_eq!(kind_of(&conn, "d-1").as_deref(), Some("fix"));
+        assert_eq!(kind_of(&conn, "d-2"), None, "another task has none");
+        save_plan_with_kind(&conn, "d-1", &stored, None, 2).unwrap();
+        assert_eq!(kind_of(&conn, "d-1"), None);
+        assert_eq!(plan_of(&conn, "d-1").unwrap(), Some(stored));
+        // A plan saved the old way has no kind, and no table at all is no kind.
+        save_plan(&conn, "d-3", &plan(&[GateKind::Diff]), 3).unwrap();
+        assert_eq!(kind_of(&conn, "d-3"), None);
+        assert_eq!(kind_of(&memory(), "d-1"), None);
+    }
+
+    #[test]
+    fn a_fix_alone_is_a_plan_with_no_gates_and_the_kind_survives_a_bad_row() {
+        let conn = memory();
+        save_plan_with_kind(&conn, "d-1", &GatePlan::default(), Some("fix"), 1).unwrap();
+        assert_eq!(kind_of(&conn, "d-1").as_deref(), Some("fix"));
+        // A row another build wrote with a kind this one doesn't know reads as no kind, never an error.
+        ensure_table(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO firstmate_gates (delegation_id, plan, records, updated_at) VALUES ('d-2', '{\"gates\":[],\"kind\":\"feature\"}', '[]', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(kind_of(&conn, "d-2"), None);
+        conn.execute(
+            "INSERT INTO firstmate_gates (delegation_id, plan, records, updated_at) VALUES ('d-3', 'not json', '[]', 1)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(kind_of(&conn, "d-3"), None);
+    }
+
+    #[test]
+    fn the_kind_a_brief_may_name_is_fix_and_nothing_else() {
+        assert_eq!(check_kind(None), Ok(None));
+        assert_eq!(check_kind(Some("fix")), Ok(Some("fix")));
+        assert_eq!(check_kind(Some("  Fix ")), Ok(Some("fix")));
+        assert_eq!(check_kind(Some("")), Ok(None));
+        let refused = check_kind(Some("feature")).unwrap_err();
+        assert!(refused.contains("fix"), "{refused}");
+    }
+
+    #[test]
+    fn the_gap_sits_beside_the_other_fact_gaps_and_does_not_hide_them() {
+        let f = built();
+        let chosen = moded(&f.copy, TestingMode::Light, None);
+        let stale = stale_facts();
+        let proof = evidence(false);
+        let record = moded_round_fixing(
+            &f.copy,
+            &chosen,
+            &Fake::default(),
+            Some(&stale),
+            Some(&proof),
+        );
+        assert_eq!(record.verdict, Verdict::Failed);
+        assert!(record.summary.contains("went stale"), "{}", record.summary);
+        assert!(
+            record.summary.contains(NO_RED_BEFORE_FIX),
+            "{}",
+            record.summary
+        );
+    }
 }

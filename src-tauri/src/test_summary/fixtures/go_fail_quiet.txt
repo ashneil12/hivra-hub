@@ -1,0 +1,7 @@
+--- FAIL: TestSub (0.00s)
+    sub_test.go:9: Sub(3, 1) = 2, want 3
+    --- FAIL: TestSub/negative (0.00s)
+        sub_test.go:14: Sub(-1, 1) = 0, want -2
+FAIL
+FAIL	example.com/calc	0.004s
+FAIL

@@ -717,6 +717,8 @@ pub(crate) fn reply_seconds(action: &str, input: &Value) -> u64 {
         "finish" => 3_660,
         // SC-3b: a ship check runs every check the project has, so its reply waits as long as a finish does.
         "ship_check.run" => 3_660,
+        // SC-7: run_checks runs the project's own check, which may take as long as a finish does.
+        "run_checks.run" => 3_660,
         "secrets.run" => {
             let timeout = input
                 .get("timeoutSeconds")

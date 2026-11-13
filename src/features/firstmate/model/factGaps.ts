@@ -55,12 +55,27 @@ export type FactTodo = {
   open: boolean;
 };
 
+/**
+ * SC-7: a test run the turn shows, with the end of what it printed. The Rust side reads the runner's summary line from it
+ * (src-tauri/src/test_summary.rs) to tell a red run from a green one, a build error or zero tests, and the order of the
+ * runs against the edits is the turn's. Unlike `checks`, every finished run is here, not the latest of each command.
+ */
+export type FactRun = {
+  command: string;
+  at: number;
+  output: string;
+};
+
 /** One turn's facts. Values from a transcript or another agent are untrusted and capped. */
 export type FactTurn = {
   checks: FactCheck[];
   edits: FactEdit[];
   todos: FactTodo[];
   answer: string;
+  /** SC-7: every finished test run, in order. Absent on a turn built by hand. */
+  runs?: FactRun[];
+  /** SC-7: the first edit to a file that is neither a test nor a document, counted before the edit list was capped. */
+  firstCodeEditAt?: number;
 };
 
 /** Which pass claims the answer makes. Absent means it made none. */
@@ -881,6 +896,28 @@ function shellEdits(command: string): { path: string; beforeCheck: boolean }[] {
   return out;
 }
 
+const MAX_RUNS = 80;
+const MAX_RUN_OUTPUT = 8000;
+
+/** A test file by its name (the same rule as done_check.rs `is_test_path`): `test_x.py`, `x.test.ts`, a `tests/` folder. */
+function isTestPath(path: string): boolean {
+  const plain = path.replace(/\\/g, "/").toLowerCase();
+  const name = plain.slice(plain.lastIndexOf("/") + 1);
+  return (
+    name.startsWith("test_") ||
+    name.includes("_test.") ||
+    name.includes(".test.") ||
+    name.includes(".spec.") ||
+    name === "tests.rs" ||
+    name.endsWith("_tests.rs") ||
+    plain.startsWith("tests/") ||
+    plain.includes("/tests/") ||
+    plain.startsWith("test/") ||
+    plain.includes("/test/") ||
+    plain.includes("__tests__/")
+  );
+}
+
 function commandOf(block: Block): string {
   const tool = block.tool;
   if (!tool) return "";
@@ -919,12 +956,18 @@ export function factsFromBlocks(blocks: readonly Block[], answer: string): FactT
   const turn = currentTurn(blocks);
   const checks: FactCheck[] = [];
   const edits: FactEdit[] = [];
+  const runs: FactRun[] = [];
   let todos: FactTodo[] | undefined;
   turn.forEach((block, at) => {
     const command = commandOf(block);
     const status = statusOf(block.tool?.status);
     if (command && status && countsAsCheck(commandText(command), status)) {
       checks.push({ command, status, at });
+    }
+    // SC-7: each finished test run, in order, with the end of its output.
+    if (command && (status === "passed" || status === "failed") && isTestCommand(commandText(command))) {
+      const output = block.tool?.detail ?? block.text ?? "";
+      runs.push({ command, at, output: output.length > MAX_RUN_OUTPUT ? output.slice(-MAX_RUN_OUTPUT) : output });
     }
     for (const path of editPaths(block)) edits.push({ path, at });
     for (const { path, beforeCheck } of shellEdits(command)) {
@@ -941,6 +984,8 @@ export function factsFromBlocks(blocks: readonly Block[], answer: string): FactT
       });
     }
   });
+  // SC-7: the first source edit, from every edit, before the list below is capped.
+  const sourceEdits = edits.filter((edit) => !isDocsPath(edit.path) && !isTestPath(edit.path)).map((edit) => edit.at);
   const clean = sanitize({
     checks,
     edits,
@@ -952,5 +997,7 @@ export function factsFromBlocks(blocks: readonly Block[], answer: string): FactT
     edits: clean.edits,
     todos: clean.todos,
     answer: clean.answer,
+    runs: runs.slice(0, MAX_RUNS),
+    ...(sourceEdits.length ? { firstCodeEditAt: Math.min(...sourceEdits) } : {}),
   };
 }

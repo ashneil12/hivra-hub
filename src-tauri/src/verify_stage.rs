@@ -379,13 +379,31 @@ pub(crate) fn run_check(
     command: &str,
     timeout: u64,
 ) -> StepResult {
-    let (outcome, detail, run_id, log_path, seconds) = match run_command(
+    run_check_in(app, main, checkout, id, name, command, timeout, Vec::new()).0
+}
+
+/// SC-7 (the run_checks tool): the same run, with environment variables of the caller's, and how the run ended (`None`:
+/// it could not start). `run_check` is this with none.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_check_in(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    id: &str,
+    name: &str,
+    command: &str,
+    timeout: u64,
+    env: Vec<(String, String)>,
+) -> (StepResult, Option<crate::project_actions::RunStatus>) {
+    let ran = run_command(
         app,
         main,
         checkout,
         &action_for("check", &format!("verify-{id}"), name, command, timeout),
-        Vec::new(),
-    ) {
+        env,
+    );
+    let ended = ran.as_ref().ok().map(|(run, _)| run.status);
+    let (outcome, detail, run_id, log_path, seconds) = match ran {
         Ok((run, seconds)) => match run.status {
             crate::project_actions::RunStatus::Succeeded => (
                 Outcome::Passed,
@@ -428,16 +446,19 @@ pub(crate) fn run_check(
         },
         Err(error) => (Outcome::CouldNotExercise, truncate(&error), None, None, 0.0),
     };
-    StepResult {
-        kind: "check".into(),
-        id: id.to_string(),
-        name: name.to_string(),
-        outcome,
-        detail,
-        run_id,
-        log_path,
-        seconds,
-    }
+    (
+        StepResult {
+            kind: "check".into(),
+            id: id.to_string(),
+            name: name.to_string(),
+            outcome,
+            detail,
+            run_id,
+            log_path,
+            seconds,
+        },
+        ended,
+    )
 }
 
 /// SC-3b: a check that exited cleanly but whose log says its runner ran zero tests tested nothing: it could not be

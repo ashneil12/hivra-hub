@@ -1,0 +1,8 @@
+ RUN  v2.1.8 /repo
+
+ ✓ src/math.test.ts (3 tests) 4ms
+
+ Test Files  1 passed (1)
+      Tests  3 passed (3)
+   Start at  10:00:00
+   Duration  1.02s

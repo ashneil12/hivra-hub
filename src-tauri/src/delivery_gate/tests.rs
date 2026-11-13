@@ -338,6 +338,7 @@ fn a_code_briefs_delivery_runs_the_checks_exactly_once_and_records_the_layer() {
             facts: None,
             mode: None,
             brief_round: None,
+            fix: None,
         },
         &counter,
     );

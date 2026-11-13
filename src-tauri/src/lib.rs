@@ -187,6 +187,7 @@ mod proxy; // WP-90: names per worktree, and the local proxy that routes by them
 mod stack_decl;
 mod stacks;
 // Hivra WP-14: steering messages to running workers.
+mod run_checks; // SC-7: the run_checks tool: the project's tests for what changed, only the failures back
 mod ship_check; // SC-3b: the bulk check "Test at ship" needs before a first mate says ready to ship
 mod steering;
 mod test_summary; // SC-3a: the summary line a test runner prints (zero tests is not a pass)
@@ -696,6 +697,7 @@ pub fn run() {
             delegations::delegations_tree,
             // Hivra WP-10: the first mate contract.
             firstmate::firstmate_check_depth,
+            firstmate::open_work::firstmate_open_work, // SC-7
             firstmate::firstmate_set_question_owner,
             firstmate::firstmate_parse_report,
             firstmate::firstmate_checkout_snapshot,
@@ -1040,6 +1042,8 @@ pub fn run() {
             ship_check::ship_check_latest,
             ship_check::ship_check_passed,
             ship_check::ship_check_head,
+            // SC-7
+            run_checks::run_checks_run,
             worktree_autoclean::worktree_autoclean_status,
             worktree_autoclean::worktree_autoclean_set,
             worktree_janitor::worktree_janitor_report,
