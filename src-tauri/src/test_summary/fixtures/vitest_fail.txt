@@ -1,0 +1,31 @@
+ RUN  v2.1.8 /repo
+
+ ❯ src/math.test.ts (3 tests | 1 failed) 6ms
+   × math > adds 3ms
+     → expected 2 to be 3 // Object.is equality
+   ✓ math > subtracts 1ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 1 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/math.test.ts > math > adds
+AssertionError: expected 2 to be 3 // Object.is equality
+
+- Expected
++ Received
+
+- 3
++ 2
+
+ ❯ src/math.test.ts:5:20
+      3| describe("math", () => {
+      4|   it("adds", () => {
+      5|     expect(add(1, 1)).toBe(3);
+       |                       ^
+      6|   });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/1]⎯
+
+ Test Files  1 failed (1)
+      Tests  1 failed | 2 passed (3)
+   Start at  10:00:00
+   Duration  1.02s
