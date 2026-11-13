@@ -19007,6 +19007,7 @@ function Workspace({
       }
       explorerRootLabel={explorerRootLabel}
       open={sessionSidebarOpen}
+      onToggleOpen={onToggleSessionSidebar}
       tab={insetLayout ? "sessions" : sidebarTab}
       onTabChange={setSidebarTab}
       rightPanel={
