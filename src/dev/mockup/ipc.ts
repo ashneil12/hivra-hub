@@ -35,8 +35,41 @@ function inboxItem(args: Row | undefined): Row | undefined {
 const slugOf = (title: string, id: string) =>
   title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || `note-${id.slice(0, 6)}`;
 
+// SC-3a: how tasks are tested, per project (delivery/settings.rs). Example storage in this page only.
+const TESTING_KEY = "monocode:mockup-testing-mode";
+
+function testingStore(): Record<string, Row> {
+  try {
+    const value = JSON.parse(localStorage.getItem(TESTING_KEY) ?? "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function testingRow(project: string): Row {
+  const stored = testingStore()[project] ?? {};
+  const mode = typeof stored.testingMode === "string" ? stored.testingMode : null;
+  return {
+    project,
+    testingMode: mode ?? "at-ship",
+    testingDefaulted: mode === null,
+    updatedAt: typeof stored.updatedAt === "number" ? stored.updatedAt : null,
+  };
+}
+
 export function mockupIpc(cmd: string, args: Row | undefined): unknown {
   switch (cmd) {
+    case "delivery_settings_get":
+      return testingRow(String(args?.project ?? ""));
+    case "delivery_testing_mode_set": {
+      const project = String(args?.project ?? "");
+      const all = testingStore();
+      const updatedAt = (typeof all[project]?.updatedAt === "number" ? (all[project].updatedAt as number) : 0) + 1;
+      all[project] = { testingMode: args?.mode, updatedAt };
+      localStorage.setItem(TESTING_KEY, JSON.stringify(all));
+      return { project, testingMode: args?.mode, updatedAt };
+    }
     // The Inbox: GitHub is connected with example items, the other sources wait under "Add connection".
     case "git_github_status":
       return { connected: true, installed: true, authenticated: true };

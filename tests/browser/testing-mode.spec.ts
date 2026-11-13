@@ -61,7 +61,8 @@ test("how tasks are tested writes a pick on top of the row it last read", async 
 test("how tasks are tested says so in one grey line when another window changed it", async ({ page }) => {
   await page.goto("/tests/browser/testing-mode.html?stale=1");
   await expect(page.getByRole("radio", { name: "Test at ship", exact: true })).toBeChecked();
-  await page.getByRole("radio", { name: "No testing", exact: true }).check();
+  // A click, not check(): the refused write leaves the stored choice selected, which is the point.
+  await page.getByRole("radio", { name: "No testing", exact: true }).click();
   const note = page.locator("[data-testing-mode-note]");
   await expect(note).toHaveText("Those delivery settings changed in another window. Look again, then set them.");
   // What shows is what is stored now, not what was clicked.
