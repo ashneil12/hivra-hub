@@ -4,7 +4,7 @@ import path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { countByRule, findCommand, parseFindings, renderReport, run } from "./ast-grep-guard.mjs";
+import { countByRule, findCommand, findingsInChanged, parseFindings, renderReport, run } from "./ast-grep-guard.mjs";
 
 const repo = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const sample = JSON.stringify([
@@ -43,9 +43,20 @@ test("AST_GREP_CMD overrides the command; no binary means no command", () => {
 test("report mode exits 0 with findings; --strict exits 1", () => {
   const env = { ...quiet, AST_GREP_CMD: "fake-ast-grep" };
   const spawn = () => ({ status: 0, stdout: sample });
-  assert.equal(run([], env, spawn), 0);
-  assert.equal(run(["--strict"], env, spawn), 1);
-  assert.equal(run(["--strict"], env, () => ({ status: 0, stdout: "[]" })), 0);
+  const all = () => null; // git could not say what changed: every finding counts
+  assert.equal(run([], env, spawn, all), 0);
+  assert.equal(run(["--strict"], env, spawn, all), 1);
+  assert.equal(run(["--strict"], env, () => ({ status: 0, stdout: "[]" }), all), 0);
+});
+
+test("--strict fails only on findings in files changed since the base", () => {
+  const env = { ...quiet, AST_GREP_CMD: "fake-ast-grep" };
+  const spawn = () => ({ status: 0, stdout: sample });
+  const files = parseFindings(sample).map((item) => item.file);
+  assert.ok(files.length > 0);
+  assert.equal(run(["--strict"], env, spawn, () => new Set()), 0);
+  assert.equal(run(["--strict"], env, spawn, () => new Set([files[0]])), 1);
+  assert.equal(findingsInChanged(parseFindings(sample), new Set(["no/such/file.ts"])).length, 0);
 });
 
 test("a missing or failing binary is skipped, even under --strict", () => {

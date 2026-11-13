@@ -5,7 +5,8 @@
 //
 //   node scripts/ast-grep-guard.mjs [--strict] [--limit 40]
 //
-// Exit 0 always, unless --strict and there is at least one finding. With no ast-grep binary it prints one line and
+// Exit 0 always, unless --strict and a file changed since --base (default origin/main) has a finding. The rules
+// arrived after the code, so older findings are a backlog the report counts but strict does not fail on. With no ast-grep binary it prints one line and
 // exits 0 (also under --strict: a missing tool is not a finding). AST_GREP_CMD overrides the command, for example
 // AST_GREP_CMD="npx --yes @ast-grep/cli@0.51.1". vendor/ (third-party code) is left out of the scan.
 
@@ -14,7 +15,7 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
-import { emitReport, exitCodeFor, parseFlags, repoRoot } from "./guards-common.mjs";
+import { emitReport, exitCodeFor, git, mergeBase, parseFlags, repoRoot } from "./guards-common.mjs";
 
 export const SCAN_ARGS = ["scan", "--json=compact", "--globs", "!vendor/**"];
 
@@ -49,6 +50,19 @@ export function countByRule(findings) {
   return counts;
 }
 
+/** Files changed since the merge base with `base` (uncommitted edits included), or null when git cannot say. */
+export function changedFiles(base, cwd = repoRoot) {
+  const from = mergeBase(base, cwd);
+  if (!from) return null;
+  const out = git(["diff", "--name-only", from], cwd);
+  return out === null ? null : new Set(out.split("\n").filter(Boolean));
+}
+
+/** The findings strict fails on: those in changed files. With no file list (git could not say) every finding counts. */
+export function findingsInChanged(findings, changed) {
+  return changed ? findings.filter((item) => changed.has(item.file.replace(/^\.\//, ""))) : findings;
+}
+
 export function renderReport(findings, limit = 40) {
   const lines = ["## ast-grep rules", ""];
   if (findings.length === 0) {
@@ -63,8 +77,8 @@ export function renderReport(findings, limit = 40) {
 }
 
 /** `spawn` is injectable for tests: (program, args, cwd) => { status, stdout, error }. */
-export function run(argv, env = process.env, spawn = defaultSpawn) {
-  const flags = parseFlags(argv, ["limit"]);
+export function run(argv, env = process.env, spawn = defaultSpawn, changedOf = changedFiles) {
+  const flags = parseFlags(argv, ["limit", "base"]);
   const strict = Boolean(flags.strict);
   const command = findCommand(env);
   if (!command) {
@@ -77,8 +91,10 @@ export function run(argv, env = process.env, spawn = defaultSpawn) {
     emitReport("## ast-grep rules\n\nSkipped: ast-grep did not run here, so nothing was checked.", env);
     return 0;
   }
-  emitReport(renderReport(findings, Number(flags.limit) > 0 ? Number(flags.limit) : 40), env);
-  return exitCodeFor({ findings: findings.length, strict });
+  const inChanged = findingsInChanged(findings, changedOf(flags.base || "origin/main"));
+  const report = renderReport(findings, Number(flags.limit) > 0 ? Number(flags.limit) : 40);
+  emitReport(`${report}\n\nIn files changed since the base: ${inChanged.length} (only these fail --strict).`, env);
+  return exitCodeFor({ findings: inChanged.length, strict });
 }
 
 function defaultSpawn(program, args, cwd) {

@@ -23,7 +23,7 @@ cannot block a merge.
 `--strict` per script: test-guard fails on any finding or an unreadable diff; quarantine fails on a bad shape or an
 expired entry; escapes fails on an invalid line (and, with `--replay`, a missing test file); zero-tests-guard fails on
 zero tests or output it cannot read; stress-new-tests fails when a test failed at least once; mutants-in-diff fails on
-a missed or timed-out mutant; ast-grep-guard fails on any finding; stryker-in-diff fails on a surviving, uncovered or
+a missed or timed-out mutant; ast-grep-guard fails on a finding in a file changed since `--base` (older findings, 451 on 13 Nov 2026, are a backlog it only counts); stryker-in-diff fails on a surviving, uncovered or
 timed-out mutant. merge-train has no strict mode.
 
 ## Quarantine and the older flaky list
