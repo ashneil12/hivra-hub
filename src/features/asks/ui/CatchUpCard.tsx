@@ -6,6 +6,7 @@ import { useState } from "react";
 import { Check } from "../../../shared/ui/icons";
 import { CircleWord } from "../../hub/ui/StatusMark";
 import { openFromHome } from "../../home/model/opener";
+import { openBesideChief } from "../model/besideChat";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import { NeedDetail } from "../../needs/ui/NeedDetail";
 import { Reveal } from "../../needs/ui/Reveal";
@@ -92,7 +93,10 @@ export function CatchUpCard({ doc, embedded = false }: { doc: CatchUp; embedded?
                       type="button"
                       className={`${QUIET} ${REVEAL}`}
                       aria-label={`Open ${job.title}`}
-                      onClick={() => openFromHome({ kind: "chat", id: job.chat as string, projectId: job.projectId ?? "" })}
+                      onClick={() => {
+                        // Beside the one chat when it is on screen, so the catch-up stays where it is.
+                        if (!openBesideChief(job.chat)) openFromHome({ kind: "chat", id: job.chat as string, projectId: job.projectId ?? "" });
+                      }}
                     >
                       Open
                     </button>

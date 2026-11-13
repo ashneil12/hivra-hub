@@ -13,6 +13,7 @@ import { InboxNeeds } from "../../needs/ui/InboxNeeds";
 import { AnsweredLine, NeedDetail } from "../../needs/ui/NeedDetail";
 import { useLastAnswered } from "../../needs/model/answeredNeeds";
 import { quoteAsked, quoteInChat, quoteJob, quoteNeed } from "../model/quoteInChat";
+import { openBesideChief } from "../model/besideChat";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import { readAskLedger, subscribeAskLedger, type LedgerAsk } from "../../hub/model/askLedger";
 import { JOB_WORD, jobGroups, jobStatus, openJobCount } from "../model/chiefJobs";
@@ -106,7 +107,16 @@ export function ChiefAsked({ onQuote }: { onQuote?: (text: string) => void } = {
 }
 
 /** Every job in every project, grouped by project, with the way in to take one over. */
-export function ChiefWorking({ onQuote }: { onQuote?: (text: string) => void } = {}) {
+export function ChiefWorking({
+  onQuote,
+  besideOpen = false,
+  onBeside,
+}: {
+  onQuote?: (text: string) => void;
+  /** The Chief of Staff's chat is on screen, so a first mate's chat can open beside it. */
+  besideOpen?: boolean;
+  onBeside?: () => void;
+} = {}) {
   useHubDataVersion();
   useDelegationsVersion();
   const rows = useDelegationRows();
@@ -115,15 +125,31 @@ export function ChiefWorking({ onQuote }: { onQuote?: (text: string) => void } =
   return (
     <div data-chief-working className="flex flex-col gap-3">
       {groups.map(({ projectId, name, rows: list }) => {
-        const lead = list.map((row) => (row.ownerMono ? findMono(row.ownerMono)?.name : undefined)).find(Boolean);
+        const leadMono = list.map((row) => (row.ownerMono ? findMono(row.ownerMono) : undefined)).find(Boolean);
+        const lead = leadMono?.name;
+        // The project's first mate's own chat for it: where a message to "the EXO lead" goes.
+        const leadChat = leadMono ? ((projectId ? leadMono.projectSessions?.[projectId] : undefined) ?? leadMono.sessionId) : undefined;
         return (
           <section key={projectId ?? "none"} aria-label={name} className="flex flex-col">
-            <h3 className="flex items-baseline gap-1.5 px-2 pb-1 text-[12px] leading-5">
+            <h3 className="group flex items-baseline gap-1.5 px-2 pb-1 text-[12px] leading-5">
               <span className="font-medium text-content">{name}</span>
               <span className="text-content/60">
                 {lead ? `${lead} · ` : ""}
                 {list.length} {list.length === 1 ? "job" : "jobs"}
               </span>
+              {lead && leadChat && besideOpen ? (
+                <button
+                  type="button"
+                  data-message-lead={leadChat}
+                  aria-label={`Message ${lead} beside this chat`}
+                  className={`ml-auto ${QUIET}`}
+                  onClick={() => {
+                    if (openBesideChief(leadChat)) onBeside?.();
+                  }}
+                >
+                  Message {lead}
+                </button>
+              ) : null}
             </h3>
             <ul className="flex flex-col">
               {list.map((row) => {
@@ -175,7 +201,8 @@ export function ChiefWorking({ onQuote }: { onQuote?: (text: string) => void } =
                         className={`${QUIET} ${REVEAL}`}
                         aria-label={`Open ${row.title ?? "this job"}`}
                         onClick={() => {
-                          openFromHome({ kind: "chat", id: row.childSession, projectId: row.project ?? "" });
+                          // Beside the Chief of Staff's chat when it is on screen, so he reads it without leaving.
+                          if (!openBesideChief(row.childSession)) openFromHome({ kind: "chat", id: row.childSession, projectId: row.project ?? "" });
                         }}
                       >
                         Open
@@ -230,7 +257,7 @@ export function ChiefChips({ quoteTo }: { quoteTo?: string } = {}) {
       {open ? (
         <Popover anchor={anchor} side="bottom" align="end" width={440} maxHeight={620} onDismiss={() => setOpen(null)} role="dialog" aria-label={chips.find((chip) => chip.id === open)?.label} ignore="[data-chief-chips]" className="solid-panel-glass font-sans">
           <div className="max-h-[600px] overflow-y-auto px-2 py-2">
-            {open === "needs" ? <ChiefNeeds onQuote={quote} /> : open === "asked" ? <ChiefAsked onQuote={quote} /> : <ChiefWorking onQuote={quote} />}
+            {open === "needs" ? <ChiefNeeds onQuote={quote} /> : open === "asked" ? <ChiefAsked onQuote={quote} /> : <ChiefWorking onQuote={quote} besideOpen={!!quoteTo} onBeside={() => setOpen(null)} />}
           </div>
         </Popover>
       ) : null}
