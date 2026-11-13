@@ -155,7 +155,7 @@ export function ShipCheckCard({
           <h3 className="text-[13px] font-medium text-content">Ship check</h3>
           <p className="mt-0.5 text-[12px] text-content/60" data-ship-check-summary>
             {running ? (
-              "Running now. The checks, the real-app check and the review can take a few minutes."
+              "Running now. The checks, the real-app check, the end-to-end check and the review can take a few minutes."
             ) : record && outcome ? (
               <>
                 <span className="font-medium text-content" data-ship-check-outcome={outcome}>
