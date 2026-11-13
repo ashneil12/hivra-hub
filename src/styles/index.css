@@ -4521,3 +4521,25 @@ html.theme-light .confirm-cancel-ring:focus {
     opacity: 0;
   }
 }
+
+/* A Needs you answer landing (needs/ui/NeedDetail.tsx AnsweredLine): the line that takes the card's place rises in. */
+@keyframes need-answered-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.need-answered-in {
+  animation: need-answered-in 200ms var(--motion-ease-out) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .need-answered-in {
+    animation: none;
+  }
+}

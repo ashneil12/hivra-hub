@@ -248,7 +248,9 @@ test("a team's settings are in Settings, Teams, not in its chat", async ({ page 
   await expect(row.locator("[data-hub-room-lead]")).toBeVisible();
 });
 
-test("the Inbox leads with the Needs you list, each row with its own answer", async ({ page }) => {
+// Ash, 13 Nov: a row "only gives you one option" and he "didn't even know you can click on it". A row now says how many
+// answers it offers and the asker's pick, with an arrow that says it opens; the one tap stays on Home.
+test("the Inbox leads with the Needs you list, each row saying what it offers", async ({ page }) => {
   await home(page);
   await page.getByRole("button", { name: /^Inbox/ }).first().click();
   // The Inbox's own list. The sidebar's count beside Inbox carries the same data-inbox-needs mark (WP-210), so the bare
@@ -258,7 +260,9 @@ test("the Inbox leads with the Needs you list, each row with its own answer", as
   const count = Number(await needs.getAttribute("data-inbox-needs"));
   expect(count).toBeGreaterThan(0);
   await expect(needs.locator("[data-inbox-need]")).toHaveCount(count);
-  await expect(needs.locator("[data-needs-answer]").first()).toBeVisible();
+  await expect(needs.locator("[data-inbox-need='question']").filter({ hasText: "Which take for the boss music?" }).locator("[data-need-summary]")).toHaveText(
+    "EXO lead · 2 answers · Suggested: Take A: drums first",
+  );
   // The red count beside Inbox is the same list.
   await expect(page.getByRole("button", { name: `Inbox, ${count} need you` })).toBeVisible();
 });
@@ -293,7 +297,9 @@ test("the Inbox shows All, only Asks or one source, and a row opens its card wit
   await expect(card.locator("[data-need-kind]")).toHaveText("Question");
   await expect(card.locator("[data-need-sentence]")).toHaveText("Which take for the boss music?");
   await expect(card.locator("[data-need-from]")).toContainText("EXO lead");
-  await expect(card.locator("[data-need-answer]").first()).toHaveText("Take A: drums first");
+  // Every answer it offers, lettered, the asker's pick marked (Ash, 13 Nov), and a box for his own words.
+  await expect(card.locator("[data-need-choice]")).toHaveCount(2);
+  await expect(card.locator("[data-need-choice][data-suggested]")).toContainText("Take A: drums first");
   await expect(card.locator("[data-need-open]")).toHaveText("Open chat");
   await expect(card.getByRole("textbox", { name: "Reply to EXO lead" })).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("inbox-ask-card.png") });

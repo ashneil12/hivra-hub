@@ -151,3 +151,60 @@ test("a chat says how many side questions it has kept, and they come back as tab
   await side.click();
   await expect(page.getByRole("tablist", { name: "Side questions" }).getByRole("tab").first()).toContainText("Example: which rooms are in Area 3");
 });
+
+// Ash, 13 Nov: Needs you "only gives you one option ... How can you actually send your own reply there ... I didn't
+// even know you can click on it", and "the animation for it can be better".
+test("one chat: a Needs you row opens under itself with every answer, and the answer is seen to land", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  await page.locator('[data-chief-chip="needs"]').click();
+  const list = page.locator("[data-chief-needs]");
+  const row = list.locator("[data-inbox-need]").filter({ hasText: "Which waitlist headline?" });
+  await expect(row.locator("[data-need-summary]")).toContainText("2 answers · Suggested: Ship more, decide less");
+  const opener = row.getByRole("button", { name: /Which waitlist headline\?\. Open to answer\./ });
+  await expect(opener).toHaveAttribute("aria-expanded", "false");
+  await opener.click();
+  await expect(opener).toHaveAttribute("aria-expanded", "true");
+  const card = row.locator("[data-need-detail]");
+  await expect(card.locator("[data-need-choice]")).toHaveCount(2);
+  await expect(card.locator("[data-need-choice][data-suggested]")).toContainText("Ship more, decide less");
+  await expect(card.getByRole("textbox", { name: "Reply to Hivra lead" })).toHaveAttribute("placeholder", /^Or answer in your own words/);
+  await page.screenshot({ path: test.info().outputPath("needs-open.png") });
+  await card.locator('[data-need-choice="a"]').click();
+  await expect(list.locator("[data-need-answered]")).toHaveText("Answered: Your agents, one captain. Hivra lead has it.");
+  await expect(list.locator("[data-inbox-need]").filter({ hasText: "Which waitlist headline?" })).toHaveCount(0);
+
+  // His own words answer another question the same way.
+  const boss = list.locator("[data-inbox-need]").filter({ hasText: "Which take for the boss music?" });
+  await boss.getByRole("button", { name: /Open to answer/ }).click();
+  await boss.getByRole("textbox", { name: "Reply to EXO lead" }).fill("Example: try both in the playtest");
+  await boss.getByRole("button", { name: "Send" }).click();
+  await expect(list.locator("[data-need-answered]")).toHaveText("Answered: Example: try both in the playtest. EXO lead has it.");
+});
+
+// Ash, 13 Nov: "everything here, you should be able to like quote it in the chat ... whether it's working, needs you,
+// or you asked".
+test("one chat: any Needs you, You asked or Working row quotes into the chat's box, not sent", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  const box = page.locator("textarea[placeholder^='Ask, build']:visible");
+  await page.locator('[data-chief-chip="working"]').click();
+  const job = page.locator("[data-chief-job]").filter({ hasText: "Light the Area 3 boss arena" });
+  await job.hover();
+  await job.getByRole("button", { name: /^Quote in the chat/ }).click();
+  await expect(page.locator("[data-chief-working]")).toHaveCount(0);
+  await expect(box).toHaveValue("> Working · EXO · EXO lead: Light the Area 3 boss arena (Working)\n\n");
+
+  await page.locator('[data-chief-chip="needs"]').click();
+  const need = page.locator("[data-chief-needs] [data-inbox-need]").filter({ hasText: "Which take for the boss music?" });
+  await need.hover();
+  await need.getByRole("button", { name: /^Quote in the chat/ }).click();
+  await expect(box).toHaveValue(/\n\n> Needs you · Question · EXO · EXO lead: Which take for the boss music\? \(Suggested: Take A: drums first\)\n\n$/);
+
+  await page.locator('[data-chief-chip="asked"]').click();
+  const asked = page.locator("[data-chief-asked] li").first();
+  await asked.hover();
+  await asked.getByRole("button", { name: /^Quote in the chat/ }).click();
+  await expect(box).toHaveValue(/\n\n> You asked: .+\n\n$/);
+  await page.screenshot({ path: test.info().outputPath("quoted.png") });
+});

@@ -151,3 +151,99 @@ it("a page asking for access has no chat behind it: no reply box, and Open leads
   expect(container.querySelector("[data-need-reply]")).toBeNull();
   expect(container.querySelector("[data-need-open]")?.textContent).toBe("Open the hub");
 });
+
+// Ash, 13 Nov: "right now it only gives you one option ... How can you actually send your own reply there".
+it("shows every answer, lettered, with the asker's pick marked, and no separate one tap", async () => {
+  const sent: string[] = [];
+  await show(
+    need({
+      choices: ["Take A: drums first", "Take B: choir first"],
+      suggested: "Take A: drums first",
+      answer: async (words) => {
+        sent.push(words);
+        return undefined;
+      },
+      actions: [{ label: "Take A: drums first", run: () => sent.push("one tap") }],
+    }),
+  );
+  const rows = [...container.querySelectorAll("[data-need-choice]")] as HTMLButtonElement[];
+  expect(rows.map((row) => row.getAttribute("data-need-choice"))).toEqual(["a", "b"]);
+  expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual(["a: Take A: drums first, suggested", "b: Take B: choir first"]);
+  expect(rows[0]?.hasAttribute("data-suggested")).toBe(true);
+  expect(container.querySelector("[data-need-answer]")).toBeNull();
+  await act(async () => rows[1]?.click());
+  expect(sent).toEqual(["Take B: choir first"]);
+  expect(container.querySelector("[data-need-choices]")?.getAttribute("data-need-choices")).toBe("answered");
+  expect(rows[1]?.getAttribute("aria-pressed")).toBe("true");
+  expect(container.querySelector("[data-need-choice-state]")?.textContent).toBe("Sent. Example lead has it.");
+  // Answered once: the other row can't send a second answer.
+  await act(async () => rows[0]?.click());
+  expect(sent).toEqual(["Take B: choir first"]);
+});
+
+it("a letter key picks that answer, and a refusal says why and lets him pick again", async () => {
+  const sent: string[] = [];
+  let refuse = true;
+  await show(
+    need({
+      choices: ["Yes", "No"],
+      answer: async (words) => {
+        sent.push(words);
+        return refuse ? "That changed while you were looking." : undefined;
+      },
+    }),
+  );
+  const group = container.querySelector("[data-need-choices]") as HTMLElement;
+  await act(async () => group.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true })));
+  expect(sent).toEqual(["No"]);
+  expect(container.querySelector("[data-need-choice-state]")?.textContent).toBe("That changed while you were looking.");
+  refuse = false;
+  await act(async () => group.dispatchEvent(new KeyboardEvent("keydown", { key: "a", bubbles: true })));
+  expect(sent).toEqual(["No", "Yes"]);
+  await act(async () => group.dispatchEvent(new KeyboardEvent("keydown", { key: "z", bubbles: true })));
+  expect(sent).toEqual(["No", "Yes"]);
+});
+
+it("his own words answer the question itself when the row can, not as a loose chat message", async () => {
+  const answered: string[] = [];
+  const chat: string[] = [];
+  undo.push(
+    setWaitingChatsHost({
+      liveQuestion: () => undefined,
+      respond: () => {},
+      open: () => {},
+      send: async (_id, text) => {
+        chat.push(text);
+        return true;
+      },
+    }),
+  );
+  await show(
+    need({
+      choices: ["Yes", "No"],
+      answer: async (words) => {
+        answered.push(words);
+        return undefined;
+      },
+    }),
+  );
+  const box = container.querySelector("textarea") as HTMLTextAreaElement;
+  expect(box.placeholder).toMatch(/^Or answer in your own words/);
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(box, "Only if it ships today.");
+    box.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => button("Send")?.click());
+  expect(answered).toEqual(["Only if it ships today."]);
+  expect(chat).toEqual([]);
+  expect(container.querySelector("[data-need-reply-state]")?.textContent).toBe("Sent. Example lead has it.");
+});
+
+it("opened under its row it leaves the ask to the row, and keeps the answers, the box and the way to the chat", async () => {
+  await act(async () => {
+    root.render(createElement(NeedDetail, { item: need({ choices: ["Yes", "No"], answer: async () => undefined }), now: 13 * HOUR, compact: true }));
+  });
+  expect(container.querySelector("[data-need-sentence]")).toBeNull();
+  expect(container.querySelectorAll("[data-need-choice]")).toHaveLength(2);
+  expect(container.querySelector("[data-need-reply] [data-need-open]")?.textContent).toBe("Open chat");
+});
