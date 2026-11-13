@@ -427,7 +427,48 @@ pub(crate) fn run_check(
     }
 }
 
+/// SC-3b: a check that exited cleanly but whose log says its runner ran zero tests tested nothing: it could not be
+/// exercised and is never a pass. SC-3a put this rule in the gates' reading of a step (`gates::step_evidence`); the
+/// verify stage and the ship check get it here. A step that failed, one that could not run for another reason and one
+/// whose log holds no test summary (a build, a lint) keep their word. The whole log is read, not its tail.
+pub(crate) fn downgrade_zero_tests(mut step: StepResult) -> StepResult {
+    if step.outcome != Outcome::Passed {
+        return step;
+    }
+    let Some(log) = step
+        .log_path
+        .as_deref()
+        .and_then(|path| std::fs::read(path).ok())
+    else {
+        return step;
+    };
+    if let Some(note) = crate::firstmate::gates::zero_tests_note(&String::from_utf8_lossy(&log)) {
+        step.outcome = Outcome::CouldNotExercise;
+        step.detail = note;
+    }
+    step
+}
+
 pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<VerifyRecord, String> {
+    run_kept(app, cwd, paths, true)
+}
+
+/// SC-3b: the same run, left out of the project's verify history. The ship check runs this over a commit range and keeps
+/// its own record, so the "Check this turn" card's latest verdict stays the last turn's, not a range's.
+pub(crate) fn run_unrecorded(
+    app: &AppHandle,
+    cwd: &Path,
+    paths: Vec<String>,
+) -> Result<VerifyRecord, String> {
+    run_kept(app, cwd, paths, false)
+}
+
+fn run_kept(
+    app: &AppHandle,
+    cwd: &Path,
+    paths: Vec<String>,
+    keep: bool,
+) -> Result<VerifyRecord, String> {
     let (main, checkout) = project_actions::checkout_of_project(cwd)?;
     let data = project_file::data_dir(app)?;
     let id = uuid::Uuid::new_v4().to_string();
@@ -455,7 +496,9 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
                 .into()
         };
         record.ended_at = now_ms();
-        let _ = save(&record);
+        if keep {
+            let _ = save(&record);
+        }
         return Ok(record);
     };
     let verify = file.verify.clone();
@@ -471,7 +514,8 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
             if !touched {
                 continue;
             }
-            record.steps.push(run_check(
+            // SC-3b: a check whose runner ran zero tests could not be exercised, not passed.
+            record.steps.push(downgrade_zero_tests(run_check(
                 app,
                 &main,
                 &checkout,
@@ -479,7 +523,7 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
                 &check.name,
                 &check.command,
                 check.timeout_seconds(),
-            ));
+            )));
         }
         for folder in changed_folders(&checkout, &changed) {
             if !verify
@@ -583,7 +627,7 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
     record.outcome = VerifyRecord::aggregate(&record.steps);
     record.summary = summary_of(&record);
     record.ended_at = now_ms();
-    let saved = save(&record);
+    let saved = if keep { save(&record) } else { Ok(()) };
     if let Err(error) = saved {
         record.summary = format!(
             "{} (the record could not be saved: {error})",
@@ -946,5 +990,59 @@ mod tests {
             .unwrap()
             .contains("\"r1\""));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A passed check with its log on disk.
+    fn passed_with_log(log: &str) -> (StepResult, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("verify-zero-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("run.log");
+        std::fs::write(&path, log).unwrap();
+        let mut found = step("check", Outcome::Passed);
+        found.detail = "ran and passed".into();
+        found.log_path = Some(path.to_string_lossy().into_owned());
+        (found, dir)
+    }
+
+    #[test]
+    fn a_check_that_ran_zero_tests_could_not_be_exercised() {
+        let zero = "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let (found, dir) = passed_with_log(zero);
+        let found = downgrade_zero_tests(found);
+        assert_eq!(found.outcome, Outcome::CouldNotExercise);
+        assert!(
+            found.detail.starts_with("ran zero tests"),
+            "{}",
+            found.detail
+        );
+        // Beside a passing check it must not read as a pass.
+        assert_eq!(
+            VerifyRecord::aggregate(&[step("web", Outcome::Passed), found]),
+            Outcome::CouldNotExercise
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_check_that_ran_tests_or_has_no_summary_keeps_its_word() {
+        // 500 tests in the library, then the empty doc-tests: the last summary is not the run's.
+        let ran = "running 500 tests\ntest result: ok. 500 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 4.2s\n   Doc-tests tally\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let (found, dir) = passed_with_log(ran);
+        assert_eq!(downgrade_zero_tests(found).outcome, Outcome::Passed);
+        let (found, other) = passed_with_log("Compiling tally\nFinished dev profile\n");
+        assert_eq!(downgrade_zero_tests(found).outcome, Outcome::Passed);
+        // A failed step, and a passed one whose log is gone, are not touched.
+        let mut failed = step("check", Outcome::Failed);
+        failed.log_path = Some("/nonexistent/run.log".into());
+        assert_eq!(downgrade_zero_tests(failed).outcome, Outcome::Failed);
+        let mut gone = step("check", Outcome::Passed);
+        gone.log_path = Some("/nonexistent/run.log".into());
+        assert_eq!(downgrade_zero_tests(gone).outcome, Outcome::Passed);
+        assert_eq!(
+            downgrade_zero_tests(step("check", Outcome::Passed)).outcome,
+            Outcome::Passed
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
     }
 }
