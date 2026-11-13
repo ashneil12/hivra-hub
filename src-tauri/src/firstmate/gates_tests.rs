@@ -139,6 +139,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             now: 1,
             gate_owns_checks: false,
             facts: None,
+            mode: None,
         },
         fake,
     )
@@ -279,6 +280,42 @@ fn ratchet_fails_when_tests_go_and_passes_when_they_grow() {
     .unwrap();
     let record = round(&f.copy, &p, &fake);
     assert_eq!(gate(&record, GateKind::Ratchet).outcome, Outcome::Passed);
+}
+
+#[test]
+fn the_ratchet_does_not_count_an_ignored_rust_test_as_a_test() {
+    assert_eq!(count_tests("a.rs", "#[test]\n#[ignore]\nfn a() {}\n"), 0);
+    assert_eq!(
+        count_tests(
+            "a.rs",
+            "#[test]\n#[ignore = \"slow\"]\nfn a() {}\n#[test]\nfn b() {}\n"
+        ),
+        1
+    );
+    let f = fixture("ratchet-ignore");
+    // The project already holds two Rust tests when the copy starts from it.
+    std::fs::write(
+        f.project.join("lib.rs"),
+        "#[test]\nfn one() {}\n#[test]\nfn two() {}\n",
+    )
+    .unwrap();
+    sh(&f.project, &["add", "-A"]);
+    sh(&f.project, &["commit", "-q", "-m", "tests"]);
+    sh(&f.copy, &["merge", "-q", "main"]);
+    let fake = Fake::default();
+    let p = plan(&[GateKind::Ratchet]);
+    let untouched = round(&f.copy, &p, &fake);
+    assert_eq!(gate(&untouched, GateKind::Ratchet).outcome, Outcome::Passed);
+    // Ignoring one is a test lost, though its line is still there.
+    std::fs::write(
+        f.copy.join("lib.rs"),
+        "#[test]\nfn one() {}\n#[test]\n#[ignore]\nfn two() {}\n",
+    )
+    .unwrap();
+    let record = round(&f.copy, &p, &fake);
+    let ratchet = gate(&record, GateKind::Ratchet);
+    assert_eq!(ratchet.outcome, Outcome::Failed, "{}", ratchet.detail);
+    assert!(ratchet.detail.contains("2 → 1"), "{}", ratchet.detail);
 }
 
 #[test]
@@ -536,6 +573,7 @@ fn a_brief_without_a_definition_of_done_is_unsure() {
             now: 1,
             gate_owns_checks: false,
             facts: None,
+            mode: None,
         },
         &fake,
     );
@@ -576,6 +614,7 @@ fn fact_gaps_fail_the_claim_without_asking_the_model() {
             now: 1,
             gate_owns_checks: false,
             facts: Some(&facts),
+            mode: None,
         },
         &fake,
     );
@@ -724,9 +763,18 @@ fn only_its_first_mate_decides_an_unsure_one_and_only_once() {
         crate::delegations::set_gate_verdict(&mut conn, &row.id, GateVerdict::PASSED, "x", None, 4)
             .unwrap();
     assert!(!late.applied);
-    assert!(decide(&mut conn, "someone-else", &row.id, true, None, 4)
-        .unwrap_err()
-        .contains("isn't one of yours"));
+    // SC-3a: an accept names its reason first (see `accepting_an_unsure_result_needs_a_reason...`), so this one does,
+    // and what it checks is still that someone else's accept is refused.
+    assert!(decide(
+        &mut conn,
+        "someone-else",
+        &row.id,
+        true,
+        Some("the diff is right"),
+        4
+    )
+    .unwrap_err()
+    .contains("isn't one of yours"));
     assert!(decide(&mut conn, "lead-1", &row.id, false, None, 4)
         .unwrap_err()
         .contains("Say why"));
@@ -958,6 +1006,7 @@ fn r2_a_completed_settle_does_not_clear_a_failed_plan_gate_nothing_reran() {
             now: 2,
             gate_owns_checks: false,
             facts: Some(&facts),
+            mode: None,
         },
         &failing,
     );
@@ -1017,4 +1066,712 @@ fn a_missing_fact_turn_does_not_clear_a_send_back() {
         planless_facts(Some(&stale_facts()), None),
         PlanlessFacts::Gaps
     );
+}
+
+// ---- SC-3a: zero tests is could-not-run, in every mode ----------------------------------------------------------------
+
+#[test]
+fn a_checks_step_that_ran_zero_tests_could_not_run_and_is_never_a_pass() {
+    let f = fixture("zero");
+    std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+    let p = plan(&[GateKind::Checks]);
+    for said in [
+        " No test files found, exiting with code 1",
+        "      Tests  no tests\n",
+        "      Tests  3 skipped (3)\n",
+        "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s",
+        "     Starting 0 tests across 1 binary (5 skipped)\n",
+        "# tests 0\n# pass 0\n# fail 0\n# skipped 0\n",
+        "============ no tests ran in 0.01s ============",
+        "collected 0 items\n",
+        "?   \texample.com/a\t[no test files]\n",
+        "Error: No tests found.\n",
+    ] {
+        let fake = Fake {
+            checks: Some(Ok(vec![run("npm test", Outcome::Passed, said)])),
+            ..Default::default()
+        };
+        let record = round(&f.copy, &p, &fake);
+        let checks = gate(&record, GateKind::Checks);
+        assert_eq!(checks.outcome, Outcome::NotRun, "{said:?}");
+        assert!(checks.detail.contains("ran zero tests"), "{}", checks.detail);
+        assert!(checks.detail.contains("npm test"), "{}", checks.detail);
+        assert_eq!(checks.evidence[0].outcome, Outcome::NotRun, "{said:?}");
+        assert_eq!(record.verdict, Verdict::Unsure, "{said:?}");
+        assert!(record.summary.contains("ran zero tests"), "{}", record.summary);
+        assert!(
+            fake.prompts.borrow().is_empty(),
+            "a check that couldn't run does not ask the model"
+        );
+    }
+}
+
+#[test]
+fn a_step_with_no_test_summary_or_a_real_run_keeps_todays_rule() {
+    let f = fixture("zero-keeps");
+    std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+    let p = plan(&[GateKind::Checks]);
+    let check = |steps: Vec<CommandEvidence>| {
+        let fake = Fake {
+            checks: Some(Ok(steps)),
+            ..Default::default()
+        };
+        round(&f.copy, &p, &fake)
+    };
+    // A build or a lint step prints no summary: it passes on its exit code, as before.
+    let build = check(vec![run("npm run build", Outcome::Passed, "Done in 2s")]);
+    assert_eq!(gate(&build, GateKind::Checks).outcome, Outcome::Passed);
+    assert_eq!(build.verdict, Verdict::Passed);
+    // A real run passes.
+    let real = check(vec![run(
+        "npm test",
+        Outcome::Passed,
+        "      Tests  3 passed (3)\n",
+    )]);
+    assert_eq!(gate(&real, GateKind::Checks).outcome, Outcome::Passed);
+    // A failing step stays failed, whatever it printed.
+    let failed = check(vec![run(
+        "npm test",
+        Outcome::Failed,
+        "No test files found, exiting with code 1",
+    )]);
+    assert_eq!(gate(&failed, GateKind::Checks).outcome, Outcome::Failed);
+    // A step that could not run stays as it was, with its own words.
+    let not_run = check(vec![run(
+        "Real path",
+        Outcome::NotRun,
+        "the dev copy couldn't start",
+    )]);
+    assert_eq!(gate(&not_run, GateKind::Checks).outcome, Outcome::NotRun);
+    assert!(!gate(&not_run, GateKind::Checks)
+        .detail
+        .contains("zero tests"));
+    // One empty test step among passing ones is the whole gate not run, and only that step is named.
+    let mixed = check(vec![
+        run("npm run build", Outcome::Passed, "Done in 2s"),
+        run("npm test", Outcome::Passed, "No test files found"),
+    ]);
+    let mixed_checks = gate(&mixed, GateKind::Checks);
+    assert_eq!(mixed_checks.outcome, Outcome::NotRun);
+    assert!(
+        mixed_checks.detail.contains("npm test"),
+        "{}",
+        mixed_checks.detail
+    );
+    assert!(
+        !mixed_checks.detail.contains("npm run build"),
+        "{}",
+        mixed_checks.detail
+    );
+    assert_eq!(mixed_checks.evidence[0].outcome, Outcome::Passed);
+}
+
+#[test]
+fn a_cut_log_is_not_read_for_a_count_because_its_empty_doc_tests_line_would_say_zero() {
+    let f = fixture("zero-tail");
+    std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+    // `gates::tail` marks a cut with a leading ellipsis. What follows it is the end of a longer log.
+    let cut = "…ed in 0.3s\n\nDoc-tests tally\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s";
+    let fake = Fake {
+        checks: Some(Ok(vec![run("cargo test", Outcome::Passed, cut)])),
+        ..Default::default()
+    };
+    let record = round(&f.copy, &plan(&[GateKind::Checks]), &fake);
+    assert_eq!(gate(&record, GateKind::Checks).outcome, Outcome::Passed);
+}
+
+fn log_file(name: &str, text: &str) -> (PathBuf, PathBuf) {
+    let dir = std::env::temp_dir().join(format!(
+        "hivra-gates-log-{name}-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("step.log");
+    std::fs::write(&path, text).unwrap();
+    (dir, path)
+}
+
+fn step(name: &str, log: &Path) -> crate::verify_stage::StepResult {
+    crate::verify_stage::StepResult {
+        kind: "check".into(),
+        id: "check".into(),
+        name: name.into(),
+        outcome: crate::verify_stage::Outcome::Passed,
+        detail: "passed".into(),
+        run_id: None,
+        log_path: Some(log.to_string_lossy().into_owned()),
+        seconds: 0.5,
+    }
+}
+
+#[test]
+fn a_step_log_is_read_whole_so_empty_doc_tests_at_its_end_do_not_make_it_zero() {
+    let f = fixture("zero-log");
+    std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+    // 500 tests ran in the library; the log is far longer than the evidence tail, which ends on the empty doc-tests.
+    let noise = "   Compiling dep v1.0.0\n".repeat(400);
+    let log = format!(
+        "{noise}running 500 tests\ntest result: ok. 500 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 4.2s\n{noise}   Doc-tests tally\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+    );
+    let (dir, path) = log_file("many", &log);
+    let evidence = step_evidence(step("Rust checks", &path));
+    assert_eq!(evidence.outcome, Outcome::Passed);
+    assert!(evidence.output.len() <= OUTPUT_MAX + 4);
+    let fake = Fake {
+        checks: Some(Ok(vec![evidence])),
+        ..Default::default()
+    };
+    let record = round(&f.copy, &plan(&[GateKind::Checks]), &fake);
+    assert_eq!(gate(&record, GateKind::Checks).outcome, Outcome::Passed);
+    let _ = std::fs::remove_dir_all(dir);
+
+    // The same log with nothing run anywhere is zero.
+    let empty = format!(
+        "{noise}running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n{noise}   Doc-tests tally\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n"
+    );
+    let (dir, path) = log_file("none", &empty);
+    let evidence = step_evidence(step("Rust checks", &path));
+    assert_eq!(evidence.outcome, Outcome::NotRun);
+    assert_eq!(evidence.exit_code, Some(0), "it did exit cleanly");
+    assert!(
+        evidence.output.starts_with("ran zero tests"),
+        "{}",
+        evidence.output
+    );
+    assert!(
+        evidence.output.contains("cargo test"),
+        "the runner is named"
+    );
+    let fake = Fake {
+        checks: Some(Ok(vec![evidence])),
+        ..Default::default()
+    };
+    let record = round(&f.copy, &plan(&[GateKind::Checks]), &fake);
+    let checks = gate(&record, GateKind::Checks);
+    assert_eq!(checks.outcome, Outcome::NotRun);
+    assert!(checks.detail.contains("Rust checks"), "{}", checks.detail);
+    assert!(
+        checks.detail.contains("ran zero tests"),
+        "{}",
+        checks.detail
+    );
+    let _ = std::fs::remove_dir_all(dir);
+
+    // A step that failed keeps its own word, and a build log with no summary passes.
+    let (dir, path) = log_file(
+        "build",
+        "   Compiling tally v0.1.0\n    Finished dev in 2.1s\n",
+    );
+    assert_eq!(step_evidence(step("Build", &path)).outcome, Outcome::Passed);
+    let mut failed = step("Tests", &path);
+    failed.outcome = crate::verify_stage::Outcome::Failed;
+    failed.detail = "failed (exit 1)".into();
+    assert_eq!(step_evidence(failed).outcome, Outcome::Failed);
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+// ---- SC-3a: accepting an unsure result needs a reason ---------------------------------------------------------------------
+
+#[test]
+fn accepting_an_unsure_result_needs_a_reason_and_the_reason_stays_on_the_row() {
+    use crate::firstmate::status::Status;
+    let mut conn = store();
+    let row = record_row(&mut conn);
+    crate::delegations::set_gate_verdict(
+        &mut conn,
+        &row.id,
+        GateVerdict::UNSURE,
+        "unsure",
+        None,
+        2,
+    )
+    .unwrap();
+    let row = settle_done(&mut conn, &row);
+    assert_eq!(row.status, Status::Working);
+    for blank in [None, Some(""), Some("   "), Some("\n\t ")] {
+        assert_eq!(
+            decide(&mut conn, "lead-1", &row.id, true, blank, 4).unwrap_err(),
+            "Say why you accept it without a pass (reason), in one plain line.",
+            "{blank:?}"
+        );
+    }
+    // Nothing was written: it is still unsure, and still its first mate's to decide.
+    let still = crate::delegations::get(&conn, &row.id).unwrap().unwrap();
+    assert_eq!(still.gate_verdict.as_deref(), Some(GateVerdict::UNSURE));
+    let accepted = decide(
+        &mut conn,
+        "lead-1",
+        &row.id,
+        true,
+        Some("  the diff is right  "),
+        5,
+    )
+    .unwrap()
+    .row
+    .unwrap();
+    assert_eq!(accepted.status, Status::Done);
+    assert_eq!(
+        accepted.status_notice.as_deref(),
+        Some("Accepted without a pass: the diff is right"),
+        "the reason shows on the row"
+    );
+    // Refusing still needs its reason, as before.
+    let mut conn = store();
+    let row = record_row(&mut conn);
+    crate::delegations::set_gate_verdict(
+        &mut conn,
+        &row.id,
+        GateVerdict::UNSURE,
+        "unsure",
+        None,
+        2,
+    )
+    .unwrap();
+    let row = settle_done(&mut conn, &row);
+    assert!(decide(&mut conn, "lead-1", &row.id, false, Some(" "), 4)
+        .unwrap_err()
+        .contains("Say why it isn't done"));
+}
+
+// ---- SC-3a: gates chosen from the diff, by the project's mode -------------------------------------------------------------
+
+use crate::delivery::settings::TestingMode;
+use crate::firstmate::testing_mode::{self, ModePlan};
+
+/// The mode's plan for what the copy changed so far, chosen the way `firstmate_run_gates` chooses it.
+fn moded(dir: &Path, mode: TestingMode, stored: Option<&GatePlan>) -> ModePlan {
+    let changed = Repo::open(dir).changed().unwrap();
+    testing_mode::gates_for(mode, stored, &changed, testing_mode::code_changed(&changed))
+}
+
+fn moded_round(
+    dir: &Path,
+    chosen: &ModePlan,
+    fake: &Fake,
+    facts: Option<&crate::firstmate::fact_gaps::FactTurn>,
+) -> GateRecord {
+    run_round(
+        &RoundInput {
+            delegation_id: "d-1",
+            round: 1,
+            checkout: dir,
+            plan: &chosen.gate_plan(),
+            brief: "Add a b export to app.ts.",
+            done_when: "app.ts exports b",
+            report: "## Report\nSummary: it was harder than it looked. I added b to app.ts.",
+            now: 1,
+            gate_owns_checks: false,
+            facts,
+            mode: Some(chosen),
+        },
+        fake,
+    )
+}
+
+fn kinds(record: &GateRecord) -> Vec<GateKind> {
+    record.gates.iter().map(|g| g.gate).collect()
+}
+
+/// The copy with `app.ts` changed and committed.
+fn built() -> Fixture {
+    let f = fixture("mode");
+    std::fs::write(f.copy.join("app.ts"), "export const b = 2;\n").unwrap();
+    sh(&f.copy, &["add", "-A"]);
+    sh(&f.copy, &["commit", "-q", "-m", "work"]);
+    f
+}
+
+fn failed_check_facts() -> crate::firstmate::fact_gaps::FactTurn {
+    use crate::firstmate::fact_gaps::{FactCheck, FactTurn};
+    FactTurn {
+        checks: vec![FactCheck {
+            command: "npm test".into(),
+            status: "failed".into(),
+            at: 3.0,
+        }],
+        ..Default::default()
+    }
+}
+
+fn open_todo_facts() -> crate::firstmate::fact_gaps::FactTurn {
+    use crate::firstmate::fact_gaps::{FactTodo, FactTurn};
+    FactTurn {
+        todos: vec![FactTodo {
+            text: "wire the button".into(),
+            open: true,
+        }],
+        ..Default::default()
+    }
+}
+
+#[test]
+fn at_ship_passes_a_built_task_without_checks_or_the_model_and_says_so() {
+    let f = built();
+    let fake = Fake::default();
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    let record = moded_round(&f.copy, &chosen, &fake, None);
+    assert_eq!(kinds(&record), vec![GateKind::Diff, GateKind::Committed]);
+    assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+    assert!(record.check.is_none(), "no verdict model in this mode");
+    assert!(fake.prompts.borrow().is_empty());
+    assert_eq!(record.note.as_deref(), Some("Built, not tested yet"));
+    assert_eq!(record.testing_mode.as_deref(), Some("at-ship"));
+    assert_eq!(record.label, None, "nothing was verified");
+    assert_eq!(
+        record.summary.lines().next(),
+        Some("Built, not tested yet"),
+        "the first line is what the task's row shows: {}",
+        record.summary
+    );
+    assert!(record.summary.contains("Change made"), "{}", record.summary);
+    // The note and the mode are on the record as the webview reads it.
+    let json = serde_json::to_value(&record).unwrap();
+    assert_eq!(json["note"], "Built, not tested yet");
+    assert_eq!(json["testingMode"], "at-ship");
+}
+
+#[test]
+fn at_ship_ignores_the_briefs_own_plan_and_never_asks_the_checks() {
+    let f = built();
+    let fake = Fake {
+        // If the checks gate ran it would fail, and the round would fail with it.
+        checks: Some(Ok(vec![run("npm test", Outcome::Failed, "1 failed")])),
+        ..Default::default()
+    };
+    let stored = GatePlan {
+        gates: vec![GateKind::Diff, GateKind::Checks, GateKind::Ratchet],
+        checks: vec!["unit".into()],
+    };
+    let chosen = moded(&f.copy, TestingMode::AtShip, Some(&stored));
+    let record = moded_round(&f.copy, &chosen, &fake, None);
+    assert_eq!(kinds(&record), vec![GateKind::Diff, GateKind::Committed]);
+    assert_eq!(record.verdict, Verdict::Passed);
+}
+
+#[test]
+fn at_ship_still_catches_the_obvious_slips() {
+    // Debris left in the diff is a finding in at-ship...
+    let f = built();
+    std::fs::write(f.copy.join("debug.log"), "scratch\n").unwrap();
+    sh(&f.copy, &["add", "-A"]);
+    sh(&f.copy, &["commit", "-q", "-m", "more"]);
+    let fake = Fake::default();
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    let record = moded_round(&f.copy, &chosen, &fake, None);
+    assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
+    assert!(!record.findings.is_empty());
+    assert!(record.summary.contains("debug.log"), "{}", record.summary);
+    // The mode is on the record; the note belongs to a pass, and this isn't one.
+    assert_eq!(record.testing_mode.as_deref(), Some("at-ship"));
+    assert_eq!(record.note, None);
+    // ...and so is work left uncommitted.
+    let f = built();
+    std::fs::write(f.copy.join("later.ts"), "export const l = 1;\n").unwrap();
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    let record = moded_round(&f.copy, &chosen, &Fake::default(), None);
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert_eq!(gate(&record, GateKind::Committed).outcome, Outcome::Failed);
+}
+
+#[test]
+fn off_runs_only_the_change_and_commit_gates() {
+    let f = built();
+    std::fs::write(f.copy.join("debug.log"), "scratch\n").unwrap();
+    sh(&f.copy, &["add", "-A"]);
+    sh(&f.copy, &["commit", "-q", "-m", "more"]);
+    let fake = Fake::default();
+    let chosen = moded(&f.copy, TestingMode::Off, None);
+    // Not even a leftover file or a failed check in the turn holds it back.
+    let facts = failed_check_facts();
+    let record = moded_round(&f.copy, &chosen, &fake, Some(&facts));
+    assert_eq!(kinds(&record), vec![GateKind::Diff, GateKind::Committed]);
+    assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+    assert!(record.findings.is_empty());
+    assert!(fake.prompts.borrow().is_empty());
+    assert_eq!(record.note.as_deref(), Some("Not tested"));
+    assert_eq!(record.testing_mode.as_deref(), Some("off"));
+    assert_eq!(record.summary.lines().next(), Some("Not tested"));
+    // Uncommitted work and a change that isn't there still fail.
+    std::fs::write(f.copy.join("later.ts"), "export const l = 1;\n").unwrap();
+    let chosen = moded(&f.copy, TestingMode::Off, None);
+    assert_eq!(
+        moded_round(&f.copy, &chosen, &fake, None).verdict,
+        Verdict::Failed
+    );
+    let untouched = fixture("off-empty");
+    let stored = plan(&[GateKind::Diff]);
+    let chosen = moded(&untouched.copy, TestingMode::Off, Some(&stored));
+    let record = moded_round(&untouched.copy, &chosen, &fake, None);
+    assert_eq!(gate(&record, GateKind::Diff).outcome, Outcome::Failed);
+    assert_eq!(record.verdict, Verdict::Failed);
+}
+
+#[test]
+fn at_ship_counts_a_failed_check_and_an_open_todo_but_not_the_gaps_that_assume_testing() {
+    let f = built();
+    let chosen = moded(&f.copy, TestingMode::AtShip, None);
+    // A check that went stale after the last edit is not held against it here.
+    let stale = stale_facts();
+    let record = moded_round(&f.copy, &chosen, &Fake::default(), Some(&stale));
+    assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+    // A failed check is.
+    let failed = failed_check_facts();
+    let record = moded_round(&f.copy, &chosen, &Fake::default(), Some(&failed));
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(
+        record
+            .summary
+            .starts_with("Sent back: a check failed this turn (npm test)."),
+        "{}",
+        record.summary
+    );
+    // So is an open to-do.
+    let todo = open_todo_facts();
+    let record = moded_round(&f.copy, &chosen, &Fake::default(), Some(&todo));
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(record.summary.contains("open to-do"), "{}", record.summary);
+    // In light, the stale check counts too.
+    let light = moded(&f.copy, TestingMode::Light, None);
+    let record = moded_round(&f.copy, &light, &Fake::default(), Some(&stale));
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(record.summary.contains("went stale"), "{}", record.summary);
+}
+
+#[test]
+fn light_runs_the_checks_the_ratchet_and_the_model_for_changed_code() {
+    let f = built();
+    let fake = Fake::default();
+    let chosen = moded(&f.copy, TestingMode::Light, None);
+    let record = moded_round(&f.copy, &chosen, &fake, None);
+    assert_eq!(
+        kinds(&record),
+        vec![
+            GateKind::Diff,
+            GateKind::Checks,
+            GateKind::Committed,
+            GateKind::Ratchet
+        ]
+    );
+    assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+    assert_eq!(
+        fake.prompts.borrow().len(),
+        1,
+        "the quick review reads the diff"
+    );
+    assert_eq!(record.note, None);
+    assert_eq!(record.testing_mode.as_deref(), Some("light"));
+    assert!(record.label.is_some());
+    assert!(record
+        .summary
+        .contains("the quick check says the brief was met"));
+    // Full is light for now.
+    let full = moded(&f.copy, TestingMode::Full, None);
+    let record = moded_round(&f.copy, &full, &Fake::default(), None);
+    assert_eq!(record.testing_mode.as_deref(), Some("full"));
+    assert_eq!(record.verdict, Verdict::Passed);
+}
+
+#[test]
+fn light_with_a_failing_or_empty_test_run_is_not_a_pass() {
+    let f = built();
+    let chosen = moded(&f.copy, TestingMode::Light, None);
+    let failing = Fake {
+        checks: Some(Ok(vec![run("npm test", Outcome::Failed, "1 failed")])),
+        ..Default::default()
+    };
+    assert_eq!(
+        moded_round(&f.copy, &chosen, &failing, None).verdict,
+        Verdict::Failed
+    );
+    let empty = Fake {
+        checks: Some(Ok(vec![run(
+            "npm test",
+            Outcome::Passed,
+            "No test files found",
+        )])),
+        ..Default::default()
+    };
+    let record = moded_round(&f.copy, &chosen, &empty, None);
+    assert_eq!(record.verdict, Verdict::Unsure);
+    assert!(empty.prompts.borrow().is_empty());
+}
+
+#[test]
+fn light_honours_the_briefs_named_checks_and_gates() {
+    struct Named(RefCell<Vec<Vec<String>>>);
+    impl Runners for Named {
+        fn checks(
+            &self,
+            _checkout: &Path,
+            named: &[String],
+            _changed: &[String],
+        ) -> Result<Vec<CommandEvidence>, String> {
+            self.0.borrow_mut().push(named.to_vec());
+            Ok(vec![run("lint", Outcome::Passed, "ok")])
+        }
+        fn routes(&self, _checkout: &Path) -> Option<CommandEvidence> {
+            None
+        }
+        fn verdict(&self, _prompt: &str) -> Result<String, String> {
+            Ok(r#"{"verdict":"met","why":"ok"}"#.into())
+        }
+    }
+    let f = built();
+    let stored = GatePlan {
+        gates: vec![GateKind::Checks, GateKind::Routes],
+        checks: vec!["unit".into()],
+    };
+    let chosen = moded(&f.copy, TestingMode::Light, Some(&stored));
+    let named = Named(RefCell::new(Vec::new()));
+    let record = run_round(
+        &RoundInput {
+            delegation_id: "d-1",
+            round: 1,
+            checkout: &f.copy,
+            plan: &chosen.gate_plan(),
+            brief: "Add a b export to app.ts.",
+            done_when: "app.ts exports b",
+            report: "Done.",
+            now: 1,
+            gate_owns_checks: false,
+            facts: None,
+            mode: Some(&chosen),
+        },
+        &named,
+    );
+    assert_eq!(named.0.borrow().as_slice(), &[vec!["unit".to_string()]]);
+    // The brief named `routes` and this project has none: that gate could not run, as it always has.
+    assert!(kinds(&record).contains(&GateKind::Routes));
+    assert_eq!(gate(&record, GateKind::Routes).outcome, Outcome::NotRun);
+    assert_eq!(record.verdict, Verdict::Unsure);
+}
+
+#[test]
+fn light_with_docs_only_runs_no_checks_but_still_reviews() {
+    let f = fixture("docs-only");
+    std::fs::create_dir_all(f.copy.join("docs")).unwrap();
+    std::fs::write(f.copy.join("docs").join("guide.md"), "# Guide\n").unwrap();
+    sh(&f.copy, &["add", "-A"]);
+    sh(&f.copy, &["commit", "-q", "-m", "docs"]);
+    let fake = Fake::default();
+    let chosen = moded(&f.copy, TestingMode::Light, None);
+    let record = moded_round(&f.copy, &chosen, &fake, None);
+    assert_eq!(kinds(&record), vec![GateKind::Diff, GateKind::Committed]);
+    assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+    assert_eq!(fake.prompts.borrow().len(), 1);
+    // At ship, a docs change is checked the same way as code: for slips.
+    let at_ship = moded(&f.copy, TestingMode::AtShip, None);
+    assert_eq!(
+        moded_round(&f.copy, &at_ship, &Fake::default(), None)
+            .note
+            .as_deref(),
+        Some("Built, not tested yet")
+    );
+}
+
+#[test]
+fn the_routes_check_runs_in_every_mode() {
+    for mode in TestingMode::ALL {
+        let f = built();
+        let chosen = moded(&f.copy, mode, None);
+        let failing = Fake {
+            routes: Some(run(
+                "Routes check",
+                Outcome::Failed,
+                "DELETE /x answers 404",
+            )),
+            ..Default::default()
+        };
+        let record = moded_round(&f.copy, &chosen, &failing, None);
+        assert_eq!(
+            gate(&record, GateKind::Routes).outcome,
+            Outcome::Failed,
+            "{mode:?}"
+        );
+        assert_eq!(record.verdict, Verdict::Failed, "{mode:?}");
+        let passing = Fake {
+            routes: Some(run("Routes check", Outcome::Passed, "ok")),
+            ..Default::default()
+        };
+        let record = moded_round(&f.copy, &chosen, &passing, None);
+        assert_eq!(
+            gate(&record, GateKind::Routes).outcome,
+            Outcome::Passed,
+            "{mode:?}"
+        );
+    }
+}
+
+#[test]
+fn a_copy_that_is_not_a_checkout_is_not_a_pass_in_any_mode() {
+    let dir = std::env::temp_dir().join(format!(
+        "hivra-gates-nogit-{}-{}",
+        std::process::id(),
+        uuid::Uuid::new_v4()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    for mode in TestingMode::ALL {
+        // The diff couldn't be read, so the caller runs the gates as if code changed.
+        let chosen = testing_mode::gates_for(mode, None, &[], true);
+        let record = moded_round(&dir, &chosen, &Fake::default(), None);
+        assert_eq!(
+            gate(&record, GateKind::Diff).outcome,
+            Outcome::NotRun,
+            "{mode:?}"
+        );
+        assert_eq!(record.verdict, Verdict::Unsure, "{mode:?}");
+    }
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[test]
+fn a_record_from_before_the_modes_still_reads() {
+    let old = serde_json::json!({
+        "delegationId": "d-1", "round": 1, "at": 1, "verdict": "passed",
+        "gates": [], "check": null, "summary": "Change made passed; the quick check says the brief was met."
+    });
+    let record: GateRecord = serde_json::from_value(old).unwrap();
+    assert_eq!(record.testing_mode, None);
+    assert_eq!(record.note, None);
+    // And one without a mode writes neither field.
+    let json = serde_json::to_value(&record).unwrap();
+    assert!(json.get("testingMode").is_none());
+    assert!(json.get("note").is_none());
+}
+
+// ---- SC-3a: a pass reads Done with its note, never a bare Done ---------------------------------------------------------
+
+#[test]
+fn a_task_that_passed_without_being_tested_reads_done_with_that_said() {
+    use crate::firstmate::status::Status;
+    for (summary, notice) in [
+        (
+            "Built, not tested yet\nChange made, Work committed passed.",
+            Some("Built, not tested yet"),
+        ),
+        ("Not tested\nChange made passed.", Some("Not tested")),
+        (
+            "Change made, Project checks passed; the quick check says the brief was met.",
+            None,
+        ),
+        // Only the exact note counts: a line that merely starts with it is not one.
+        ("Built, not tested yet or so\nChange made passed.", None),
+        ("", None),
+    ] {
+        let mut conn = store();
+        let row = record_row(&mut conn);
+        crate::delegations::set_gate_verdict(
+            &mut conn,
+            &row.id,
+            GateVerdict::PASSED,
+            summary,
+            None,
+            2,
+        )
+        .unwrap();
+        let settled = settle_done(&mut conn, &row);
+        assert_eq!(settled.status, Status::Done, "{summary:?}");
+        assert_eq!(settled.status_notice.as_deref(), notice, "{summary:?}");
+    }
 }

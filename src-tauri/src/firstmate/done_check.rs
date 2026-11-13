@@ -4,7 +4,9 @@
 //!
 //! - **False scope**: the report says only some files were touched, and the diff touches others.
 //! - **Scope creep**: a file outside the scope the report or the brief declared, that neither of them names.
-//! - **Weakened test**: a test file with fewer asserts than before, or a test newly skipped.
+//! - **Weakened test**: a test file with fewer asserts than before, a test newly skipped (`#[ignore]` included), or an
+//!   existing test whose assertions changed (a changed expected value) when the brief names neither the test nor the file.
+//!   A Rust source's `#[cfg(test)]` blocks are test code too (`test_code`).
 //! - **Debris**: a leftover file (`.orig`, `.rej`, `.log`, a scratch or debug file) or an added debug print
 //!   (`console.log` outside scripts, a `DEBUG` print, `dbg!`, `debugger`, a breakpoint).
 //! - **Outward action**: the report says it pushed, opened a pull request, posted, sent or deployed, and the brief holds
@@ -24,6 +26,8 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+pub mod test_code; // SC-3a: test code inside source files (`#[cfg(test)]`), and the tests in it
 
 /// The most claims read from one report.
 const MAX_CLAIMS: usize = 12;
@@ -302,6 +306,26 @@ fn mentions(text: &str, path: &str) -> bool {
         || text.contains(path)
 }
 
+/// Whether the brief names a test: its name as a whole word (a fn name, or the title of an `it("...")`), so `adds`
+/// does not match `addsup`.
+fn names_test(brief: &str, name: &str) -> bool {
+    if name.trim().is_empty() {
+        return false;
+    }
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(at) = brief[from..].find(name) {
+        let (start, end) = (from + at, from + at + name.len());
+        let before_ok = !brief[..start].chars().next_back().is_some_and(word);
+        let after_ok = !brief[end..].chars().next().is_some_and(word);
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + brief[start..].chars().next().map_or(1, char::len_utf8);
+    }
+    false
+}
+
 /// A test file by its name: `test_x.py`, `x_test.go`, `x.test.ts`, `x.spec.js`, a `tests/` folder, Rust `tests.rs`.
 pub fn is_test_path(path: &str) -> bool {
     let name = basename(path).to_ascii_lowercase();
@@ -558,34 +582,89 @@ pub fn code_findings(
         }
     }
 
-    // Weakened tests: fewer asserts than before, or a test newly skipped.
-    for file in files.iter().filter(|file| is_test_path(&file.path)) {
-        let Some(before) = file.before.as_deref() else {
+    // Weakened tests: fewer asserts than before, a test newly skipped (`#[ignore]` included), or an existing test whose
+    // assertions changed without the brief naming it. SC-3a: a Rust source file's `#[cfg(test)]` blocks are test code,
+    // and so is a file another source declares as its tests (`#[cfg(test)] #[path = "x.rs"] mod tests;`).
+    let mut declared: BTreeSet<String> = BTreeSet::new();
+    for file in files.iter().filter(|file| file.path.ends_with(".rs")) {
+        for text in [file.before.as_deref(), file.after.as_deref()]
+            .into_iter()
+            .flatten()
+        {
+            declared.extend(test_code::declared_test_files(&file.path, text));
+        }
+    }
+    let is_test_file =
+        |path: &str| is_test_path(path) || declared.contains(&path.replace('\\', "/"));
+    // The asserts in test files this change adds. Tests moved out of a source file's block land in them.
+    let new_test_asserts: usize = files
+        .iter()
+        .filter(|file| file.before.is_none() && is_test_file(&file.path))
+        .filter_map(|file| file.after.as_deref())
+        .map(|text| count_lines(text, is_assert_line))
+        .sum();
+    for file in files {
+        let whole = is_test_file(&file.path);
+        if !whole && !file.path.ends_with(".rs") {
+            continue;
+        }
+        let Some(before_text) = file.before.as_deref() else {
             continue;
         };
-        let after = file.after.as_deref().unwrap_or("");
+        let (before, after) = if whole {
+            (
+                before_text.to_string(),
+                file.after.clone().unwrap_or_default(),
+            )
+        } else {
+            // A source file deleted with its tests is the code going, not a test being weakened.
+            let Some(after_text) = file.after.as_deref() else {
+                continue;
+            };
+            let blocks = test_code::rust_test_blocks(before_text);
+            // No test block before: nothing to weaken.
+            if blocks.is_empty() {
+                continue;
+            }
+            (blocks, test_code::rust_test_blocks(after_text))
+        };
         let (was, now) = (
-            count_lines(before, is_assert_line),
-            count_lines(after, is_assert_line),
+            count_lines(&before, is_assert_line),
+            count_lines(&after, is_assert_line),
         );
+        let moved = if whole { 0 } else { new_test_asserts };
         if file.after.is_none() && was > 0 {
             out.push(CodeFinding {
                 kind: FindingKind::WeakenedTest,
                 file: Some(file.path.clone()),
                 detail: format!("{} was deleted with its {was} asserts.", file.path),
             });
-        } else if now < was {
+        } else if now < was && was - now > moved {
             out.push(CodeFinding {
                 kind: FindingKind::WeakenedTest,
                 file: Some(file.path.clone()),
                 detail: format!("{} has {now} asserts where it had {was}.", file.path),
             });
         }
-        if skip_count(after) > skip_count(before) {
+        if skip_count(&after) > skip_count(&before) {
             out.push(CodeFinding {
                 kind: FindingKind::WeakenedTest,
                 file: Some(file.path.clone()),
                 detail: format!("{} skips a test it ran before.", file.path),
+            });
+        }
+        // An existing test now asserts something else. Fine when the brief names the test or the file.
+        for name in test_code::changed_assertions(&file.path, &before, &after) {
+            if mentions(brief, &file.path) || names_test(brief, &name) {
+                continue;
+            }
+            out.push(CodeFinding {
+                kind: FindingKind::WeakenedTest,
+                file: Some(file.path.clone()),
+                detail: format!(
+                    "{}: the test {name} changed what it checks; the brief does not name it.",
+                    file.path
+                ),
             });
         }
     }

@@ -32,6 +32,13 @@
 //! the copy's files (`tree`); accepting an unsure verdict or delivering the copy re-reads it, and a change since voids
 //! the verdict (`verdict_tree_holds`).
 //!
+//! SC-3a (`testing_mode`): the gates are chosen from what the copy changed and the project's testing mode (Settings > Crew),
+//! not from whether the brief said `code`. A task that changed nothing and stored no plan settles as before; any other gets
+//! the mode's gates (`gates_for`): `at-ship` (the default) runs `diff` and `committed` and the code's findings and passes as
+//! "Built, not tested yet", `off` runs `diff` and `committed` and passes as "Not tested", `light` and `full` add `checks`,
+//! `ratchet`, the brief's own plan and the verdict model. A step that exited cleanly and ran zero tests could not run
+//! (`zero_tests_is_not_a_pass`), and accepting an unsure result needs a reason (`decide`).
+//!
 //! Ideas from Puppetmaster's gates (`require_diff`, `command`, `committed`, `ratchet`; MIT) and Raven's "finished is not
 //! succeeded" verdict gate (Apache-2.0, ideas only). No code is vendored.
 
@@ -46,6 +53,7 @@ use serde_json::Value;
 
 use super::done_check::{self, ChangedFile, ClaimRow, ClaimStatus, CodeFinding};
 use super::status::GateVerdict;
+use super::testing_mode::{self, ModePlan};
 
 /// The longest output tail kept per command.
 pub const OUTPUT_MAX: usize = 2_000;
@@ -322,6 +330,14 @@ pub struct GateRecord {
     pub tree: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checkout: Option<String>,
+    /// SC-3a: the project's testing mode this round ran under (`at-ship`, `light`, `full`, `off`). None for a round
+    /// from before the modes, and for a task that changed nothing and stored no plan.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub testing_mode: Option<String>,
+    /// SC-3a: what a pass says about how far the task was tested ("Built, not tested yet", "Not tested"). None when the
+    /// task was tested as far as its mode asks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl GateRecord {
@@ -366,6 +382,9 @@ pub struct RoundInput<'a> {
     pub gate_owns_checks: bool,
     /// WP-145: this turn's checks, edits and to-dos. Absent means the fact layer does not run.
     pub facts: Option<&'a super::fact_gaps::FactTurn>,
+    /// SC-3a: the project's testing mode, chosen from the diff (`testing_mode::gates_for`). `plan` is its gates. Absent
+    /// is the round as it was before the modes: every finding, every fact gap, the verdict model.
+    pub mode: Option<&'a ModePlan>,
 }
 
 pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
@@ -411,14 +430,22 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         None => {}
     }
     let overall = Outcome::aggregate(gates.iter().map(|g| g.outcome));
+    // SC-3a: what the project's testing mode asks of this round. No mode is the round as it was before the modes:
+    // every finding, every fact gap and the verdict model.
+    let run_findings = input.mode.is_none_or(|mode| mode.run_findings);
+    let run_verdict = input.mode.is_none_or(|mode| mode.run_verdict);
     // WP-145: a fact gap fails the claim. The model is not asked, and a gap is not "unsure".
     let gaps = input
         .facts
         .map(|turn| super::fact_gaps::done_gaps_in(turn, Some(input.checkout)))
         .unwrap_or_default();
+    let gaps = match input.mode {
+        Some(mode) => mode.fact_gap_filter.keep(gaps),
+        None => gaps,
+    };
     // WP-249: the report's claims against the diff, in code, before any model.
     let claims = done_check::claims_of(input.report);
-    let (files, unread) = if repo.why_not.is_none() {
+    let (files, unread) = if run_findings && repo.why_not.is_none() {
         match repo.changed_files() {
             Ok(files) => (files, None),
             Err(why) => (Vec::new(), Some(why)),
@@ -426,34 +453,54 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     } else {
         (Vec::new(), None)
     };
-    let findings = done_check::code_findings(input.brief, input.report, &claims, &files);
+    let findings = if run_findings {
+        done_check::code_findings(input.brief, input.report, &claims, &files)
+    } else {
+        Vec::new()
+    };
     let checks_run = match gates.iter().find(|gate| gate.gate == GateKind::Checks) {
         Some(gate) if gate.outcome == Outcome::Passed => done_check::ChecksRun::Passed,
         Some(gate) if gate.outcome == Outcome::Failed => done_check::ChecksRun::Failed,
         _ => done_check::ChecksRun::None,
     };
     let code_rows = done_check::code_rows(&claims, &findings, checks_run);
-    let check = (gaps.is_empty() && (overall == Outcome::Passed || gates.is_empty()))
-        .then(|| verdict_check(input, &repo, &gates, &claims, &findings, runners));
+    let check =
+        (run_verdict && gaps.is_empty() && (overall == Outcome::Passed || gates.is_empty()))
+            .then(|| verdict_check(input, &repo, &gates, &claims, &findings, runners));
     let verdict = match (overall, gaps.is_empty(), check.as_ref().map(|c| c.answer)) {
         (Outcome::Failed, _, _) | (_, false, _) | (_, _, Some(Answer::NotMet)) => Verdict::Failed,
         _ if !findings.is_empty() => Verdict::Failed,
         // A checkout whose changed files couldn't be read had its claims checked by no one: never a pass.
         _ if unread.is_some() => Verdict::Unsure,
         (_, _, Some(Answer::Met)) => Verdict::Passed,
+        // SC-3a: a mode with no verdict model passes on its gates alone: the task was built, and not tested.
+        (Outcome::Passed, _, None) if !run_verdict => Verdict::Passed,
         _ => Verdict::Unsure,
     };
     let claims = merged_rows(code_rows, check.as_ref());
     let label = label_of(verdict, &findings, &claims, check.as_ref());
-    let mut summary = summary_of(
-        &gates,
-        check.as_ref(),
-        verdict,
-        &gaps,
-        &findings,
-        label,
-        &claims,
-    );
+    // Nothing read a pass that no verdict model saw: it verified nothing.
+    let label = if run_verdict || verdict != Verdict::Passed {
+        label
+    } else {
+        None
+    };
+    let note = input
+        .mode
+        .and_then(|mode| mode.note)
+        .filter(|_| verdict == Verdict::Passed);
+    let mut summary = match note {
+        Some(note) => built_summary(&gates, note),
+        None => summary_of(
+            &gates,
+            check.as_ref(),
+            verdict,
+            &gaps,
+            &findings,
+            label,
+            &claims,
+        ),
+    };
     if let Some(why) = &unread {
         summary.push_str(&format!(
             "\nThe report's claims couldn't be checked against the diff: {why}."
@@ -477,6 +524,23 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         claims,
         tree,
         checkout: Some(input.checkout.to_string_lossy().into_owned()),
+        testing_mode: input.mode.map(|mode| mode.mode.as_str().to_string()),
+        note: note.map(str::to_string),
+    }
+}
+
+/// SC-3a: the summary of a task that passed on its gates alone. The first line is what the task's row shows, so a pass
+/// never reads as a bare Done: it says it was built and not tested.
+fn built_summary(gates: &[GateResult], note: &str) -> String {
+    let names: Vec<&str> = gates
+        .iter()
+        .filter(|gate| gate.outcome == Outcome::Passed)
+        .map(|gate| gate.gate.name())
+        .collect();
+    if names.is_empty() {
+        note.to_string()
+    } else {
+        format!("{note}\n{} passed.", names.join(", "))
     }
 }
 
@@ -987,10 +1051,13 @@ fn committed_gate(repo: &Repo) -> GateResult {
 /// Test declarations in one file, by its kind: Rust `#[test]`, JS/TS `it(`/`test(`, Python `def test_`, Go `func Test`.
 pub fn count_tests(path: &str, text: &str) -> usize {
     let ext = path.rsplit('.').next().unwrap_or("");
+    // SC-3a: a Rust test marked `#[ignore]` does not run, so it is not a test.
+    if ext == "rs" {
+        return done_check::test_code::count_active_rust_tests(text);
+    }
     text.lines()
         .map(str::trim_start)
         .filter(|line| match ext {
-            "rs" => line.starts_with("#[test]") || line.starts_with("#[tokio::test"),
             "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "mts" | "cts" => {
                 ["it(", "test(", "it.", "test."].iter().any(|start| {
                     line.starts_with(start)
@@ -1086,6 +1153,9 @@ fn checks_gate(
             evidence: Vec::new(),
         },
         Ok(runs) => {
+            // SC-3a: a step that exited cleanly and ran zero tests could not run.
+            let runs: Vec<CommandEvidence> =
+                runs.into_iter().map(zero_tests_is_not_a_pass).collect();
             let outcome = Outcome::aggregate(runs.iter().map(|r| r.outcome));
             let detail = match outcome {
                 Outcome::Passed => format!("{} check(s) ran and passed.", runs.len()),
@@ -1098,12 +1168,23 @@ fn checks_gate(
                     format!("{} failed.", failed.join(", "))
                 }
                 Outcome::NotRun => {
-                    let skipped: Vec<&str> = runs
+                    let (empty, skipped): (Vec<&CommandEvidence>, Vec<&CommandEvidence>) = runs
                         .iter()
                         .filter(|r| r.outcome == Outcome::NotRun)
-                        .map(|r| r.command.as_str())
-                        .collect();
-                    format!("{} couldn't run.", skipped.join(", "))
+                        .partition(|r| r.output.starts_with(ZERO_TESTS));
+                    let mut parts = Vec::new();
+                    if !skipped.is_empty() {
+                        let names: Vec<&str> = skipped.iter().map(|r| r.command.as_str()).collect();
+                        parts.push(format!("{} couldn't run.", names.join(", ")));
+                    }
+                    if !empty.is_empty() {
+                        let names: Vec<&str> = empty.iter().map(|r| r.command.as_str()).collect();
+                        parts.push(format!("{} couldn't run: {ZERO_TESTS}.", names.join(", ")));
+                    }
+                    if parts.is_empty() {
+                        parts.push("The checks couldn't run.".to_string());
+                    }
+                    parts.join(" ")
                 }
                 Outcome::Held => "The no-mistakes layer runs this check before GitHub.".into(),
             };
@@ -1472,12 +1553,24 @@ fn step_evidence(step: crate::verify_stage::StepResult) -> CommandEvidence {
             .nth(1)
             .and_then(|rest| rest.trim_end_matches(')').trim().parse().ok()),
     };
-    let output = step
+    let log = step
         .log_path
         .as_deref()
         .and_then(|path| std::fs::read(path).ok())
-        .map(|bytes| crate::gates::tail(&String::from_utf8_lossy(&bytes), OUTPUT_MAX))
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned());
+    let mut output = log
+        .as_deref()
+        .map(|text| crate::gates::tail(text, OUTPUT_MAX))
         .unwrap_or_else(|| step.detail.clone());
+    // SC-3a: the whole log is read for the test count, not the tail kept as evidence: cargo's last summary is the
+    // empty doc-tests, which would read a library that ran 500 tests as one that ran none.
+    let mut outcome = outcome;
+    if outcome == Outcome::Passed {
+        if let Some(note) = log.as_deref().and_then(zero_tests_note) {
+            outcome = Outcome::NotRun;
+            output = format!("{note}\n{output}");
+        }
+    }
     CommandEvidence {
         command: step.name,
         outcome,
@@ -1485,6 +1578,39 @@ fn step_evidence(step: crate::verify_stage::StepResult) -> CommandEvidence {
         output,
         seconds: step.seconds,
     }
+}
+
+/// SC-3a: what a step says when it passed but its runner reports that no test ran.
+const ZERO_TESTS: &str = "ran zero tests";
+
+/// The first words of a step's output when its log shows no test ran: `ran zero tests`, then which runner said so.
+/// `None` when the log holds no test summary (a build or a lint step) or tests ran.
+fn zero_tests_note(log: &str) -> Option<String> {
+    let found = crate::test_summary::parse(log)?;
+    (found.total == 0).then(|| {
+        format!(
+            "{ZERO_TESTS}: {} reported {} passed, {} failed, {} skipped.",
+            found.runner.name(),
+            found.passed,
+            found.failed,
+            found.skipped
+        )
+    })
+}
+
+/// SC-3a: a step that exited cleanly but ran zero tests did not test anything. It could not run, and is never a pass.
+/// A step that failed, one that couldn't run for another reason and one with no test summary keep their word. An
+/// output `gates::tail` has cut (it starts with an ellipsis) is the end of a longer log, so a count read from it
+/// isn't the run's: `step_evidence` has already read the whole log.
+fn zero_tests_is_not_a_pass(mut run: CommandEvidence) -> CommandEvidence {
+    if run.outcome != Outcome::Passed || run.output.starts_with('…') {
+        return run;
+    }
+    if let Some(note) = zero_tests_note(&run.output) {
+        run.outcome = Outcome::NotRun;
+        run.output = format!("{note}\n{}", run.output);
+    }
+    run
 }
 
 impl Runners for AppRunners {
@@ -1877,6 +2003,8 @@ fn fact_only_record(
         claims: Vec::new(),
         tree: None,
         checkout: None,
+        testing_mode: None,
+        note: None,
     })
 }
 
@@ -1894,7 +2022,7 @@ pub async fn firstmate_run_gates(
             .facts
             .as_ref()
             .map(super::fact_gaps::fact_turn_from_value);
-        let (plan, row, gate_owns_checks) = {
+        let (plan, row, gate_owns_checks, mode) = {
             let conn = store.lock_conn()?;
             let plan = plan_of(&conn, &input.delegation_id)?;
             let row = delegations::tree(&conn, &input.delegation_id)?
@@ -1905,15 +2033,40 @@ pub async fn firstmate_run_gates(
                     crate::delivery_gate::owns_project_checks(&conn, project, &input.delegation_id)
                 })
             });
-            (plan, row, gate_owns_checks)
+            // SC-3a: the project's testing mode, read with the plan so a change in another window can't split them.
+            let mode = row
+                .as_ref()
+                .and_then(|row| row.project.as_deref())
+                .map(|project| crate::delivery::settings::testing_mode_for(&conn, project))
+                .unwrap_or_default();
+            (plan, row, gate_owns_checks, mode)
         };
         let Some(row) = row else {
             return Ok(None);
         };
         let checkout = crate::fs::expand_home(&input.checkout);
-        // No stored plan. Missing facts are not a clean turn: a send-back stays, and the row is not marked pending.
+        // SC-3a: the gates come from what the copy changed and the project's mode, not from whether the brief said
+        // `code`. A copy that isn't a checkout has no diff to read; one whose diff couldn't be read is treated as
+        // changed, so the gates run and say they couldn't rather than skip.
+        let (changed, code_changed) = {
+            let repo = Repo::open(&checkout);
+            if repo.why_not.is_some() {
+                (Vec::new(), false)
+            } else {
+                match repo.changed() {
+                    Ok(files) => {
+                        let code = testing_mode::code_changed(&files);
+                        (files, code)
+                    }
+                    Err(_) => (Vec::new(), true),
+                }
+            }
+        };
+        let moded = testing_mode::gates_for(mode, plan.as_ref(), &changed, code_changed);
+        // Nothing changed and no plan was stored (a research or answer task): the task settles as it always did.
+        // Missing facts are not a clean turn: a send-back stays, and the row is not marked pending.
         // A present turn with no gap clears a send-back, or the delivered row stays failed.
-        if plan.is_none() {
+        if moded.as_today {
             match planless_facts(facts.as_ref(), Some(checkout.as_path())) {
                 PlanlessFacts::Clear => {
                     if row.gate_verdict.as_deref() == Some(GateVerdict::FAILED)
@@ -1965,24 +2118,25 @@ pub async fn firstmate_run_gates(
                 .unwrap_or_else(|| "haiku".into()),
         };
         let now = now_millis();
-        let record = if let Some(plan) = &plan {
+        let record = if !moded.as_today {
             run_round(
                 &RoundInput {
                     delegation_id: &row.id,
                     round,
                     checkout: &checkout,
-                    plan,
+                    plan: &moded.gate_plan(),
                     brief: row.brief.as_deref().unwrap_or(""),
                     done_when: row.goal.as_deref().unwrap_or(""),
                     report: &input.report,
                     now,
                     gate_owns_checks,
                     facts: facts.as_ref(),
+                    mode: Some(&moded),
                 },
                 &runners,
             )
         } else {
-            // Checked above: a plan-less turn only reaches here when the facts have a gap.
+            // Checked above: a task that changed nothing and stored no plan only reaches here when the facts have a gap.
             // A second empty read returns nothing rather than marking the row failed.
             let Some(turn) = facts.as_ref() else {
                 return Ok(None);
@@ -2048,6 +2202,8 @@ pub fn firstmate_gates_decide(
     accept: bool,
     reason: Option<String>,
 ) -> Result<delegations::Change, String> {
+    // SC-3a: asked first, so a missing reason is refused before the whole copy is read again.
+    reason_needed(accept, reason.as_deref())?;
     // WP-249: an accept is of the files that were checked; a later change voids the verdict.
     if accept {
         let newest = records_of(&*store.lock_conn()?, &id)?.pop();
@@ -2069,6 +2225,19 @@ pub fn firstmate_gates_decide(
     })
 }
 
+/// SC-3a: refusing a task and accepting one without a pass both say why, in every testing mode. A reason that is only
+/// blanks is none.
+fn reason_needed(accept: bool, reason: Option<&str>) -> Result<(), String> {
+    if reason.is_some_and(|reason| !reason.trim().is_empty()) {
+        return Ok(());
+    }
+    Err(if accept {
+        "Say why you accept it without a pass (reason), in one plain line.".into()
+    } else {
+        "Say why it isn't done (reason), in one plain line.".into()
+    })
+}
+
 pub fn decide(
     conn: &mut Connection,
     owner: &str,
@@ -2078,14 +2247,13 @@ pub fn decide(
     now: i64,
 ) -> Result<delegations::Change, String> {
     let reason = reason.map(str::trim).filter(|r| !r.is_empty());
-    if !accept && reason.is_none() {
-        return Err("Say why it isn't done (reason), in one plain line.".into());
-    }
+    reason_needed(accept, reason)?;
     let (verdict, summary) = if accept {
         (
             GateVerdict::PASSED,
             format!(
-                "its first mate accepted it{}",
+                "{}{}",
+                super::status::ACCEPTED_LEAD,
                 reason.map(|r| format!(": {r}")).unwrap_or_default()
             ),
         )
@@ -2096,6 +2264,17 @@ pub fn decide(
         )
     };
     let change = delegations::set_gate_verdict(conn, id, verdict, &summary, Some(owner), now)?;
+    if change.applied && accept {
+        // SC-3a: an accept without a pass is on the record twice: the row's own log (the gates line, with the reason)
+        // and the process log, so a run of them can be found afterwards. One line, cut short.
+        let said: String = reason
+            .unwrap_or_default()
+            .chars()
+            .filter(|c| !c.is_control())
+            .take(200)
+            .collect();
+        eprintln!("task {id} accepted without a pass by {owner}: {said}");
+    }
     if !change.applied {
         return Err(match change.row {
             None => "There's no task with that id.".into(),
