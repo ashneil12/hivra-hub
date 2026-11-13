@@ -199,6 +199,16 @@ itself; `src/features/hub/model/hivraLayout.test.ts` fails if a merge drops the 
   scripts: `npm run check:guards`. They fail only with `--strict`, at the release pass. See
   [docs/hivra/shipping-guards.md](docs/hivra/shipping-guards.md).
 
+## When a test goes red
+
+Classify it first: a real bug (fix the code), an out-of-date test (update it in the same commit and say which
+behaviour changed), or flaky (passes on a rerun of the same commit). Spend at most 10 minutes or 2 attempts. Then
+quarantine a non-critical test with an end date in `docs/hivra/quarantine.json` and move on; never wrap it in
+retries or sleeps. Never weaken an assertion, delete a test or loosen a check to get green. Tests marked critical,
+golden files and formal specs are read-only for agents: changing one needs the owner's say. Whoever lands a change
+owns the red it causes and fixes forward or reverts it. At most 3 review rounds on one change, then step back and
+rethink the approach. The tiers and the always-gated paths are in [docs/testing-policy.md](docs/testing-policy.md).
+
 ## Development basics
 
 - Work in a worktree or a branch; never edit the installed app in place.
