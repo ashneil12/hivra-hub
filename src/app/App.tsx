@@ -127,6 +127,7 @@ import { isolatedCompaction, useMonoTrees } from "./hooks/useMonoTrees";
 import { useAskLedger } from "../features/asks/hooks/useAskLedger";
 import { askMateFor } from "../features/asks/model/askMate";
 import { openAsksKey, openAsksNote } from "../features/asks/model/askNotes";
+import { useNeedsRollup } from "../features/needs/hooks/useNeedsRollup";
 import { askStore } from "../features/asks/model/askStore";
 import { askForMate, isOpen as isOpenAsk, mateAskStatus } from "../features/asks/model/asks";
 import { MEMORY_BATCH_NOW_EVENT, useMemoryCurator } from "./hooks/useMemoryCurator";
@@ -11280,6 +11281,17 @@ function Workspace({
     },
   });
   delegationsRef.current = delegations;
+  // What newly needs Ash, as one app line in the Chief of Staff's own chat (needs/model/needsRollup.ts). No model turn.
+  useNeedsRollup({
+    note: (chatId, block) =>
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === chatId && !session.blocks.some((entry) => entry.id === block.id)
+            ? { ...session, blocks: [...session.blocks, block] }
+            : session,
+        ),
+      ),
+  });
   // Briefs queued behind or steered into a busy chat, and leadership briefs to a Lead: reported by watching the chat.
   useFollowedBriefs({
     tracker: delegations,
