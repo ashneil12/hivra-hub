@@ -7,6 +7,7 @@ import type { AgentAppTasksHost } from "../../agent-app/model/agentAppTasks";
 import type { FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
 import { backendFrom, cancelHeld, heldWaiting, reviewBeforeCrew } from "../../fresh-eyes/model/gate";
 import { decideGateVerdict, saveGatePlan } from "../../firstmate/model/completionGates";
+import { briefStampOf, keepBriefOnRow, testingModeOf } from "../../firstmate/host/briefChecksHost"; // SC-4
 import type { Session } from "../../sessions/model/session";
 import type { UserQuestionReply } from "../../sessions/model/userQuestion";
 import type { QuestionRouter, TaskWaits } from "./delegationQuestions";
@@ -213,6 +214,10 @@ export function delegationTasksHost(deps: DelegationTasksDeps): AgentAppTasksHos
     // WP-40: the brief's gates stay with the task, and its first mate accepts an unsure one.
     saveGates: (id, request, folder) => saveGatePlan(id, request, folder),
     decideGates: (owner, id, accept, reason) => decideGateVerdict(owner, id, accept, reason),
+    // SC-4: the brief's own check lines, stamp and do-not-touch list (firstmate/host/briefChecksHost.ts).
+    testingMode: testingModeOf,
+    briefStamp: briefStampOf,
+    keepBrief: keepBriefOnRow,
     ...(deps.hubProjectId ? { hubProjectId: deps.hubProjectId } : {}),
     ...(deps.hubProjectFolder ? { hubProjectFolder: deps.hubProjectFolder } : {}),
     ...(deps.hubProjectRoots ? { hubProjectRoots: deps.hubProjectRoots } : {}),

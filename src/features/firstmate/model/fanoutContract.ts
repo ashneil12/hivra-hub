@@ -20,6 +20,7 @@
 // - Paths are held inside the project, a name has one provider, and a path has one owner.
 import { gateRequest, type GateRequest } from "./completionGates";
 import { briefProblems } from "./brief";
+import { isCodeBrief, leaveList, splitChecks, type CheckLine } from "./briefChecks"; // SC-4
 
 /** The most tasks one fan-out holds: a first mate runs at most this many at once (src-tauri/src/firstmate/mod.rs MAX_FANOUT). */
 export const FANOUT_MAX_TASKS = 8;
@@ -73,7 +74,10 @@ export type FanoutTaskInput = {
   owns?: string[];
   provides?: { kind: string; name: string; in?: string; shape?: string }[];
   requires?: string[];
-  checks?: string[];
+  /** Ids of the project's own checks, and (SC-4) lines {what, command, expect} of the task's own. */
+  checks?: (string | CheckLine)[];
+  /** SC-4: paths this task must not change. */
+  leave?: string[];
   files?: string[];
   project?: string;
   model?: string;
@@ -103,6 +107,12 @@ export type ParsedTask = {
   files: string[];
   /** The gates this task needs, including the checks gate when it declared a check. */
   gates?: GateRequest;
+  /** SC-4: the task's own check lines (its `checks` entries that are not the project's ids). */
+  checkLines: CheckLine[];
+  /** SC-4: the paths it must not change. */
+  leave: string[];
+  /** SC-4: whether the task is a code brief by the full-mode rule (`code`, named gates or in-scope paths). */
+  codeBrief: boolean;
   /** Fields passed to `tasks.delegate` as they are (delegate checks them again). */
   passthrough: Record<string, unknown>;
 };
@@ -123,7 +133,7 @@ const MAX_PATHS = 30;
 const MAX_NAME_CHARS = 200;
 const TASK_KEYS = new Set([
   "name", "brief", "goal", "title", "intent", "owns", "provides", "requires", "checks", "files",
-  "project", "model", "effort", "heavy", "hard", "scope", "asks", "gates", "code", "role",
+  "project", "model", "effort", "heavy", "hard", "scope", "asks", "gates", "code", "role", "leave",
 ]);
 const PROVIDE_KEYS = new Set(["kind", "name", "in", "shape"]);
 /** WP-141 LOW 8: a task's role goes to tasks.delegate with the rest, so a role row applies to a wave too. */
@@ -405,12 +415,37 @@ export function parseFanout(input: unknown): ParsedFanout {
     contract.provides.push(...provides);
     wanted.set(name, names(raw.requires, "requires", name, MAX_CONTRACT_PROVIDES));
 
-    const checks = names(raw.checks, "checks", name, 20);
+    // SC-4: `checks` holds the ids of the project's own checks (as ever) and, now, the task's own lines. A list of plain
+    // names reads exactly as it did.
+    const briefOwn = (read: () => void): void => {
+      try {
+        read();
+      } catch (error) {
+        fail(`Task ${name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    };
+    let checkIds: unknown = raw.checks;
+    let checkLines: CheckLine[] = [];
+    let leave: string[] = [];
+    briefOwn(() => {
+      if (Array.isArray(raw.checks) && raw.checks.some((item) => typeof item !== "string")) {
+        const split = splitChecks(raw.checks);
+        checkIds = split.ids;
+        checkLines = split.lines;
+      }
+      leave = leaveList(raw.leave);
+    });
+    const checks = names(checkIds, "checks", name, 20);
     for (const id of checks) contract.checks.push({ task: name, id });
     const gateWords = [...new Set([...names(raw.gates, "gates", name, 5), ...(checks.length ? ["checks"] : [])])];
     let gates: GateRequest | undefined;
     try {
-      gates = gateRequest({ gates: gateWords.length ? gateWords : undefined, checks: checks.length ? checks : undefined, code: raw.code });
+      gates = gateRequest({
+        gates: gateWords.length ? gateWords : undefined,
+        checks: checks.length ? checks : undefined,
+        // SC-4: a task with lines of its own is a code task, like a delegate_task with them.
+        code: (raw.code === undefined || raw.code === false) && checkLines.length ? true : raw.code,
+      });
     } catch (error) {
       return fail(`Task ${name}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -427,6 +462,11 @@ export function parseFanout(input: unknown): ParsedFanout {
       goal: (raw.goal as string).trim(),
       files: [...new Set([...declared, ...owned])],
       ...(gates ? { gates } : {}),
+      checkLines,
+      leave,
+      // Read from what `delegate` will be handed (the derived gates and the scope), so the plan's one refusal and each
+      // task's own agree.
+      codeBrief: isCodeBrief({ code: gates?.code, gates: gates?.gates, scope: raw.scope }),
       passthrough: Object.fromEntries(PASSTHROUGH.filter((key) => raw[key] !== undefined).map((key) => [key, raw[key]])),
     });
   }

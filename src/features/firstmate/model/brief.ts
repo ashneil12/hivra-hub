@@ -10,6 +10,7 @@
 // rewrite: Hivra has no status file and no inbox directory, so the worker uses task_cannot and this chat.
 import { WORKER_ASK_TEST } from "./askTest";
 import { briefSkillsSection, type BriefTask } from "./briefSkills";
+import { checksSection, leaveSection, stampSection, type CheckLine } from "./briefChecks"; // SC-4
 import { quoteOriginalRequest } from "./originalRequest";
 
 export type BriefParts = {
@@ -212,17 +213,30 @@ export function renderBrief(
     originalRequest?: string;
     /** How long that request was before the quote budget cut it. Absent: the text's own length. */
     originalRequestChars?: number;
+    /** SC-4: the main checkout's HEAD when this brief was written. Present: the brief opens with the drift rule. */
+    stamp?: string;
+    /** SC-4: the in-scope paths the drift command lists (briefChecks.ts scopePaths). */
+    scope?: readonly string[];
+    /** SC-4: the brief's own check lines. Present and not empty: a "Checks that must pass" section. */
+    checks?: readonly CheckLine[];
+    /** SC-4: the do-not-touch paths. Present and not empty: a "Do not touch" section. */
+    leave?: readonly string[];
   },
 ): string {
   // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
   const skills = task ? briefSkillsSection(task) : undefined;
   return [
     isolationSection(isolation),
+    // SC-4: the drift rule opens the brief, right after the isolation check.
+    ...(extras?.stamp ? [stampSection(extras.stamp, extras.scope ?? [])] : []),
     `## Intent\n${parts.intent.trim()}`,
     ...(extras?.originalRequest?.trim()
       ? [`## Original request\n${quoteOriginalRequest(extras.originalRequest.trim(), extras.originalRequestChars)}`]
       : []),
     `## Spec\n${parts.spec.trim()}`,
+    // SC-4: what the worker must pass, and what it must leave alone. Written by code, in lists a line can't break out of.
+    ...(extras?.checks?.length ? [checksSection(extras.checks)] : []),
+    ...(extras?.leave?.length ? [leaveSection(extras.leave)] : []),
     ...(extras?.contract ? [`## Fan-out contract\n${extras.contract}`] : []),
     statusProtocol(isolation),
     STEERING,
@@ -245,7 +259,17 @@ export function withLegacyBriefParts(input: Record<string, unknown>, title: stri
 }
 
 /** The template's fixed section headings (written by code, never the model's words) and its two filled ones. */
-export const FIXED_SECTIONS = ["Isolation check", "Original request", "Fan-out contract", "Status protocol", "Steering", "Skills"] as const;
+export const FIXED_SECTIONS = [
+  "Isolation check",
+  "Before you start",
+  "Original request",
+  "Checks that must pass",
+  "Do not touch",
+  "Fan-out contract",
+  "Status protocol",
+  "Steering",
+  "Skills",
+] as const;
 export const FILLED_SECTIONS = ["Intent", "Spec"] as const;
 
 const FIXED_BLOCK = new RegExp(
