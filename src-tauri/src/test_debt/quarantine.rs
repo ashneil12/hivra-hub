@@ -112,9 +112,7 @@ fn resolve<'a>(test: &str, candidates: &[&'a Failing]) -> Vec<&'a Failing> {
             flat(&format!("{file} > {bare}")),
             flat(&format!("{file}::{bare}")),
         ];
-        if forms.iter().any(|form| *form == want)
-            && !hits.iter().any(|have| have.id() == failing.id())
-        {
+        if forms.contains(&want) && !hits.iter().any(|have| have.id() == failing.id()) {
             hits.push(failing);
         }
     }
@@ -553,7 +551,7 @@ mod tests {
     #[test]
     fn a_failing_test_that_is_not_the_workers_and_not_critical_is_quarantined() {
         let other = failing("src/other.test.ts", "suite > works");
-        let plan = plan_of(&[], &[other.clone()], &[]);
+        let plan = plan_of(&[], std::slice::from_ref(&other), &[]);
         for way in [
             other.id(),
             "suite > works".to_string(),
@@ -573,7 +571,7 @@ mod tests {
     fn a_test_is_named_the_way_the_run_printed_it_with_or_without_its_file() {
         // Vitest prints the file first, so that is the name the app holds.
         let printed = failing("src/other.test.ts", "src/other.test.ts > suite > works");
-        let plan = plan_of(&[], &[printed.clone()], &[]);
+        let plan = plan_of(&[], std::slice::from_ref(&printed), &[]);
         for way in [
             "src/other.test.ts > suite > works",
             "suite > works",
@@ -602,7 +600,7 @@ mod tests {
     #[test]
     fn a_test_the_workers_change_covers_is_refused_and_is_never_quarantined() {
         let mine = failing("src/a.test.ts", "suite > works");
-        let plan = plan_of(&[mine.clone()], &[], &[]);
+        let plan = plan_of(std::slice::from_ref(&mine), &[], &[]);
         let got = decide(&ask("suite > works"), &plan, &patterns(), &plain);
         let Verdict::Refused(sentence) = got else {
             panic!("{got:?}");
@@ -612,7 +610,11 @@ mod tests {
             "{sentence}"
         );
         // Even one that is already quarantined: a quarantine never excuses the task's own test.
-        let plan = plan_of(&[mine.clone()], &[], &[mine]);
+        let plan = plan_of(
+            std::slice::from_ref(&mine),
+            &[],
+            std::slice::from_ref(&mine),
+        );
         assert!(matches!(
             decide(&ask("suite > works"), &plan, &patterns(), &plain),
             Verdict::Refused(_)

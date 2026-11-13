@@ -160,7 +160,7 @@ pub fn plan(e: &Evidence) -> Plan {
     plan_with(e, true)
 }
 
-/// `light` and `full` (and a sensitive change in `at-ship`): the task is tested when it finishes, so a failing test is its to fix, and
+/// `light` and `full`: the task is tested when it finishes, so a failing test is its to fix, and
 /// the only one excused is a quarantined test that is not its own. `foreign` still names the other failing tests (a worker may ask
 /// for one of them to be quarantined), but nothing is listed and no gap is added: the fact layer's gaps stand as they are.
 pub fn plan_quarantine_only(e: &Evidence) -> Plan {

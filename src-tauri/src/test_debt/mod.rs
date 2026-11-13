@@ -31,16 +31,16 @@ pub fn applies(mode: crate::delivery::settings::TestingMode, as_today: bool) -> 
     mode == crate::delivery::settings::TestingMode::AtShip && !as_today
 }
 
-/// Whether this task's failing tests are put on the list: `applies`, and not a sensitive change. A sensitive change is tested like a
-/// `full` one even in `at-ship` (`ModePlan::sensitive`), so a failing test there is the task's to fix and nothing is diverted.
-pub fn diverts(plan: &crate::firstmate::testing_mode::ModePlan) -> bool {
-    applies(plan.mode, plan.as_today) && !plan.sensitive
-}
-
-/// Whether this task reads the project's quarantine instead (`gate::quarantine`): it is tested when it finishes (`light`, `full`, a
-/// sensitive change in a mode that tests), so its failing tests are its own to fix, except a quarantined one that is not its own.
+/// Whether this task reads the project's quarantine instead of the list (`gate::quarantine`): `light` and `full` test each task, so its
+/// failing tests are its own to fix, except a quarantined one that is not its own. A sensitive change in `at-ship` is checked in full
+/// but keeps the list: its worker was told a red test that isn't its own goes there, and its own failing tests still fail it.
 pub fn reads_quarantine(plan: &crate::firstmate::testing_mode::ModePlan) -> bool {
-    !plan.as_today && plan.tests_each_task()
+    !plan.as_today
+        && matches!(
+            plan.mode,
+            crate::delivery::settings::TestingMode::Light
+                | crate::delivery::settings::TestingMode::Full
+        )
 }
 
 /// Whether a passed task's report is read for the test fixer's decisions: in `at-ship`, whatever the task changed (a fixer that only
@@ -83,29 +83,33 @@ mod tests {
     }
 
     #[test]
-    fn a_task_is_diverted_to_the_list_in_at_ship_unless_its_change_is_sensitive() {
-        use super::{diverts, reads_quarantine};
+    fn a_task_goes_to_the_list_in_at_ship_and_reads_the_quarantine_in_light_and_full_sensitive_or_not(
+    ) {
+        use super::reads_quarantine;
         for mode in TestingMode::ALL {
             for sensitive in [false, true] {
                 // `sensitive` is only ever set in a mode that tests, as `gates_for_with` sets it.
                 let sensitive = sensitive && mode != TestingMode::Off;
                 let chosen = plan(mode, sensitive, false);
                 assert_eq!(
-                    diverts(&chosen),
-                    mode == TestingMode::AtShip && !sensitive,
+                    applies(chosen.mode, chosen.as_today),
+                    mode == TestingMode::AtShip,
                     "{mode:?} sensitive={sensitive}"
                 );
                 assert_eq!(
                     reads_quarantine(&chosen),
-                    matches!(mode, TestingMode::Light | TestingMode::Full) || sensitive,
+                    matches!(mode, TestingMode::Light | TestingMode::Full),
                     "{mode:?} sensitive={sensitive}"
                 );
-                // Exactly one way or neither: a task never both lists a failure and is tested for it.
-                assert!(!(diverts(&chosen) && reads_quarantine(&chosen)));
+                // One way or neither: a task never both lists a failure and reads a quarantine for it.
+                assert!(
+                    !(applies(chosen.mode, chosen.as_today) && reads_quarantine(&chosen)),
+                    "{mode:?}"
+                );
                 // A task that changed nothing keeps its round.
                 let nothing = plan(mode, false, true);
                 assert!(
-                    !diverts(&nothing) && !reads_quarantine(&nothing),
+                    !applies(nothing.mode, nothing.as_today) && !reads_quarantine(&nothing),
                     "{mode:?}"
                 );
             }

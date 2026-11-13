@@ -263,7 +263,7 @@ pub fn at_ship(input: &Input) -> Result<Outcome, String> {
     })
 }
 
-/// `light` and `full` (and a sensitive change in `at-ship`): a task is tested when it finishes, so nothing goes on the list and a
+/// `light` and `full`: a task is tested when it finishes, so nothing goes on the list and a
 /// failing test is the task's to fix. Two things reach it from the project's quarantine: a worker's `Quarantine: <test> | <why>` line
 /// (decided by `quarantine::decide`: not its own test, not a critical one, one of the tests its runs show failing; accepted, it is
 /// quarantined for 14 days) and the tests already quarantined, whose red run no longer fails the round. A refusal comes back as a gap

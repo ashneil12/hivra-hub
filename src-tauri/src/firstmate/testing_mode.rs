@@ -177,6 +177,8 @@ pub fn touches_risky_path(changed: &[String], protected_extra: &[String]) -> boo
 ///
 /// PT-4: `when` is the app's "When the checker runs" rule (`checker_when`), read with the mode. It decides which tasks get the
 /// running checker (`checker_when::task_checker`); `FollowMode`, the default, is what this did before it existed.
+// PT-5: `sensitive` sits beside `risky`, as asked, which makes eight; folding them into a struct would touch every caller for no gain.
+#[allow(clippy::too_many_arguments)]
 pub fn gates_for_with(
     mode: TestingMode,
     plan: Option<&GatePlan>,

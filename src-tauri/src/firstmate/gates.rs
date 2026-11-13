@@ -2736,7 +2736,7 @@ fn at_ship_debt(
     Some(outcome)
 }
 
-/// PT-5: in `light` and `full` (and for a sensitive change), the project's quarantine as it reaches a task: a test already quarantined
+/// PT-5: in `light` and `full`, the project's quarantine as it reaches a task: a test already quarantined
 /// no longer fails its round, and a `Quarantine: <test> | <why>` line in its report is decided and, if accepted, kept for 14 days. A
 /// refused request comes back as a gap. A list that can't be read or written returns `None`: the round is then as it was.
 fn quarantine_read(
@@ -2975,11 +2975,10 @@ pub async fn firstmate_run_gates(
         // SC-5: what the task's earlier rounds found, for the worker's `Dismiss <n>:` lines and the checker's prompt.
         let history = rounds::Ledger::carried(&prior).history(&prior);
         // PT-5: in `at-ship` only, a failing test that is not this task's own goes on the project's test debt list instead of
-        // sending the task back. `light` and `full` test each task, so they never come here.
-        // PT-5: a sensitive change is tested like a `full` one, so a failing test there is the task's to fix: nothing is diverted.
-        // PT-5: a task that is tested when it finishes (`light`, `full`, a sensitive change) reads the project's quarantine instead: a
-        // test already quarantined no longer fails it, and a `Quarantine:` line in its report is decided (refused for a critical test).
-        let debt_plan = if crate::test_debt::diverts(&moded) {
+        // sending the task back. A sensitive change in `at-ship` is checked in full but keeps the list: its worker was told so.
+        // PT-5: `light` and `full` test each task, so they read the project's quarantine instead: a test already quarantined no
+        // longer fails the task, and a `Quarantine:` line in its report is decided (refused for a critical test).
+        let debt_plan = if crate::test_debt::applies(moded.mode, moded.as_today) {
             at_ship_debt(&app, &row, &checkout, &changed, input.facts.as_ref())
         } else if crate::test_debt::reads_quarantine(&moded) {
             quarantine_read(

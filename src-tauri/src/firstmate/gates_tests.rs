@@ -1915,7 +1915,8 @@ fn in_light_and_full_a_quarantine_request_for_a_critical_test_is_refused_and_fai
 }
 
 #[test]
-fn a_sensitive_change_in_test_at_ship_is_tested_like_light_and_its_failing_tests_are_its_own() {
+fn a_sensitive_change_in_test_at_ship_is_checked_in_full_but_keeps_the_list_for_tests_that_are_not_its_own(
+) {
     let f = built();
     let failed = failed_check_facts();
     let changed = vec!["src/auth/login.ts".to_string()];
@@ -1930,15 +1931,11 @@ fn a_sensitive_change_in_test_at_ship_is_tested_like_light_and_its_failing_tests
         crate::firstmate::checker_when::WhenRule::FollowMode,
     );
     assert!(chosen.sensitive);
-    assert!(
-        !crate::test_debt::diverts(&chosen),
-        "nothing goes on the list"
-    );
-    assert!(crate::test_debt::reads_quarantine(&chosen));
-    // With no plan, as the app hands it for a task with nothing quarantined, a failed check is the task's to fix.
-    let record = moded_round_debt(&f.copy, &chosen, Some(&failed), None);
-    assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
-    // And the project's checks ran, which Test at ship does not do for an ordinary change.
+    // Its worker was told a red test that isn't its own goes on the list, so it still does; and the quarantine path is not its.
+    assert!(crate::test_debt::applies(chosen.mode, chosen.as_today));
+    assert!(!crate::test_debt::reads_quarantine(&chosen));
+    // The project's checks ran, which Test at ship does not do for an ordinary change.
+    let record = moded_round_debt(&f.copy, &chosen, None, None);
     assert!(
         record
             .gates
@@ -1950,6 +1947,18 @@ fn a_sensitive_change_in_test_at_ship_is_tested_like_light_and_its_failing_tests
     let ordinary = moded(&f.copy, TestingMode::AtShip, None);
     let plain = moded_round_debt(&f.copy, &ordinary, None, None);
     assert!(plain.gates.iter().all(|gate| gate.gate != GateKind::Checks));
+    // Another task's failing test goes on the list and does not send it back...
+    let data = crate::test_debt::testing::Temp::new();
+    let other = debt_plan(&data, &f.copy, &["app.ts"], VITEST_OTHER);
+    assert_eq!(other.listed, 1);
+    let record = moded_round_debt(&f.copy, &chosen, Some(&failed), Some(&other.plan));
+    assert_ne!(record.verdict, Verdict::Failed, "{}", record.summary);
+    // ...and its own failing test still does.
+    let own_data = crate::test_debt::testing::Temp::new();
+    let own = debt_plan(&own_data, &f.copy, &["src/a.ts"], VITEST_A);
+    assert_eq!(own.plan.own.len(), 1);
+    let record = moded_round_debt(&f.copy, &chosen, Some(&failed), Some(&own.plan));
+    assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
 }
 
 #[test]
