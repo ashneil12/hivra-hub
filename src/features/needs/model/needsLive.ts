@@ -2,6 +2,7 @@
 // A late read loses to a newer one. A timeout keeps the last good remote facts.
 // Only useNeedsYou publishes the list. A quiet read (Home's opening count) must not replace it.
 
+import { setAsideDoc, useSetAsideVersion, withoutSetAside } from "./setAside";
 import { requestTranscriptAsk } from "../../sessions/model/transcriptJump";
 import { useEffect, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
@@ -923,7 +924,10 @@ export function useNeedsYou(): NeedsItem[] {
       }
     };
   }, []);
-  return needsFrom(rows, delegations, Date.now());
+  // Set aside by Ash for now (setAside.ts): gone from the list and every count until it changes or a day passes.
+  useSetAsideVersion();
+  const now = Date.now();
+  return withoutSetAside(needsFrom(rows, delegations, now), setAsideDoc(), now);
 }
 
 function needsFrom(rows: readonly NeedsYouRow[], delegations: readonly NeedsDelegation[], now: number): NeedsItem[] {

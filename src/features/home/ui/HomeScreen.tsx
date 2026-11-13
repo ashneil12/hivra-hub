@@ -74,7 +74,12 @@ export type HomeNeed = {
   blocksShip?: boolean;
   actions: { label: string; title?: string; onClick: () => void }[];
   onOpen: () => void;
+  /** Puts the item away for now (needs/model/setAside.ts); it comes back when it changes or after a day. */
+  onSetAside?: () => void;
 };
+
+/** The item just set aside, and how to bring it back. */
+export type HomeSetAside = { sentence: string; onUndo: () => void; onClose: () => void };
 
 export type HomeWork = {
   key: string;
@@ -149,6 +154,22 @@ function Tag({ name }: { name?: string }) {
   );
 }
 
+function LaterButton({ row }: { row: HomeNeed }) {
+  if (!row.onSetAside) return null;
+  return (
+    <button
+      type="button"
+      data-home-action="Later"
+      title="Set aside for now. It comes back if it changes, or tomorrow."
+      aria-label="Set aside for now"
+      className="shrink-0 text-[12px] text-content/60 underline-offset-2 hover:text-content hover:underline"
+      onClick={row.onSetAside}
+    >
+      Later
+    </button>
+  );
+}
+
 function NeedRow({ row }: { row: HomeNeed }) {
   if (row.stopped) {
     const open = row.actions[0]?.onClick ?? row.onOpen;
@@ -160,6 +181,7 @@ function NeedRow({ row }: { row: HomeNeed }) {
         <button type="button" data-home-action="Open chat" className={QUIET_BUTTON} onClick={open}>
           Open chat
         </button>
+        <LaterButton row={row} />
       </div>
     );
   }
@@ -170,7 +192,7 @@ function NeedRow({ row }: { row: HomeNeed }) {
       <span className="min-w-0 flex-1">{row.sentence}</span>
     </>
   );
-  if (actions.length === 0) {
+  if (actions.length === 0 && !row.onSetAside) {
     return (
       <button
         type="button"
@@ -202,6 +224,7 @@ function NeedRow({ row }: { row: HomeNeed }) {
           {action.label}
         </button>
       ))}
+      <LaterButton row={row} />
     </div>
   );
 }
@@ -506,7 +529,10 @@ export function HomeScreen({
   title = "Home",
   headerExtra,
   extraSections = [],
+  setAside,
 }: {
+  /** The item just set aside, with its Undo, shown at the top of Needs you. */
+  setAside?: HomeSetAside | null;
   /** Home, or the project's name on a project's home. */
   title?: string;
   /** Beside the title: a project's Autopilot switch. */
@@ -570,7 +596,7 @@ export function HomeScreen({
     };
   }, [custom]);
   const filled: Record<string, boolean> = {
-    "needs-you": needs.length + builders.length > 0,
+    "needs-you": needs.length + builders.length > 0 || !!setAside,
     "moving-now": working.length > 0,
     recent: done.length > 0,
   };
@@ -820,6 +846,17 @@ export function HomeScreen({
                       >{line.target === "builders-spend" ? RAISE_LIMIT : FREE_UP_SPACE}</button>
                     </div>
                   ))}
+                  {setAside ? (
+                    <div data-home-line="set-aside" role="status" className={`${HOME_ROW} text-content/70`}>
+                      <span className="min-w-0 flex-1 truncate">Set aside: {setAside.sentence}</span>
+                      <button type="button" data-home-action="Undo" className={QUIET_BUTTON} onClick={setAside.onUndo}>
+                        Undo
+                      </button>
+                      <button type="button" aria-label="Close" className="shrink-0 text-[12px] text-content/60 hover:text-content" onClick={setAside.onClose}>
+                        Done
+                      </button>
+                    </div>
+                  ) : null}
                   {orderedNeeds.map((row) => <NeedRow key={row.key} row={row} />)}
                 </>
               ) : null}
