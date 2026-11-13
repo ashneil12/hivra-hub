@@ -98,6 +98,23 @@ describe("the pipeline the eval runs", () => {
     expect(run.totals.cancelledStillOpen).toBe(0);
   });
 
+  // sc-18 (the two hub ledgers made one): what the old hub ledger's regex caught in a hub chat must still be caught on the path
+  // the app now writes it by (hubRoute.ts), on the eval's own messages: no more asks missed in total, none worse in any message.
+  it("the combined hub path catches at least what the old hub ledger's regex alone caught, in total and in every message", async () => {
+    const old = await evaluate(corpus, { mode: "hub-old" });
+    const now = await evaluate(corpus, { mode: "hub" });
+    const heldIn = (result: { asks: Array<{ found: string }> }) => result.asks.filter((ask) => ask.found === "separate" || ask.found === "merged").length;
+    expect(now.totals.separate).toBeGreaterThanOrEqual(old.totals.separate);
+    expect(now.totals.missed).toBeLessThanOrEqual(old.totals.missed);
+    expect(now.totals.recallStrict).toBeGreaterThanOrEqual(old.totals.recallStrict);
+    for (const [index, result] of now.results.entries()) {
+      expect(heldIn(result), `${result.id}: asks held in a row`).toBeGreaterThanOrEqual(heldIn(old.results[index]));
+      expect(result.asks.filter((ask) => ask.found === "separate").length, `${result.id}: asks as their own row`).toBeGreaterThanOrEqual(
+        old.results[index].asks.filter((ask) => ask.found === "separate").length,
+      );
+    }
+  });
+
   it("mirrors MODEL_TRIES from the hook", () => {
     expect(hookSource).toContain(`const MODEL_TRIES = ${MODEL_TRIES};`);
   });
@@ -105,9 +122,9 @@ describe("the pipeline the eval runs", () => {
 
 // ---- Parity with the real hook ----------------------------------------------------------------------------------------
 
-type Shape = { n: number; id: string; quote: string; summary: string; kind: string; status: string; heardBy: string };
+type Shape = { n: number; id: string; quote: string; summary: string; kind: string; status: string; heardBy: string; quiet: boolean };
 const shape = (asks: readonly Ask[]): Shape[] =>
-  asks.map((ask) => ({ n: ask.n, id: ask.id, quote: ask.quote, summary: ask.summary, kind: ask.kind, status: ask.status, heardBy: ask.heardBy }));
+  asks.map((ask) => ({ n: ask.n, id: ask.id, quote: ask.quote, summary: ask.summary, kind: ask.kind, status: ask.status, heardBy: ask.heardBy, quiet: ask.quiet === true }));
 
 async function viaMirror(message: EvalMessage, options: AskOptions) {
   const store = createAskStore(memoryDisk(), () => 1_000);
@@ -195,12 +212,16 @@ describe("hearLikeApp is the hook's effect", () => {
     expect(markOf(real.mark)).toEqual(markOf(mirror.mark));
   });
 
-  it("a short single ask is not written down at all, by either", async () => {
+  // CHANGED by sc-18 (gap A6): this test used to assert that a lone short ask is not written down at all, by either. The Chief's
+  // "You asked" list now reads this ledger and the old hub ledger it replaced did record a lone short ask, so the ledger writes
+  // it too, quietly (no receipt under the message, nothing owed by the first mate). The mirror and the real hook still agree.
+  it("a short single ask is written down quietly, by both", async () => {
     const message: EvalMessage = { id: "short", shape: "one short ask", text: "Can you fix the login screen flicker please", asks: [] };
     const mirror = await viaMirror(message, { mode: "rules" });
     const real = await viaRealHook(message, { mode: "rules" });
-    expect(mirror.asks).toEqual([]);
-    expect(real.asks).toEqual([]);
+    expect(mirror.asks).toHaveLength(1);
+    expect(mirror.asks[0]).toMatchObject({ quote: "Can you fix the login screen flicker please", status: "heard", quiet: true });
+    expect(real.asks).toEqual(mirror.asks);
     expect(markOf(real.mark)).toEqual(markOf(mirror.mark));
   });
 });

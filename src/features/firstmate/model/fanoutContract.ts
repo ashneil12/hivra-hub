@@ -21,6 +21,7 @@
 import { gateRequest, type GateRequest } from "./completionGates";
 import { briefProblems } from "./brief";
 import { isCodeBrief, leaveList, splitChecks, type CheckLine } from "./briefChecks"; // SC-4
+import { delegationAskIds } from "../../asks/model/asks"; // sc-18
 
 /** The most tasks one fan-out holds: a first mate runs at most this many at once (src-tauri/src/firstmate/mod.rs MAX_FANOUT). */
 export const FANOUT_MAX_TASKS = 8;
@@ -450,6 +451,10 @@ export function parseFanout(input: unknown): ParsedFanout {
       return fail(`Task ${name}: ${error instanceof Error ? error.message : String(error)}`);
     }
 
+    // sc-18: the ask ids a task covers are checked here with the rest of the plan, so one bad id refuses the whole call before
+    // any task starts (delegate checks them again). A ledger id is what a job's end updates its ask by.
+    if (raw.asks !== undefined && !delegationAskIds(raw.asks, 50))
+      fail(`Task ${name}: asks must be up to 50 ask ids (ask-5-abc123, the "id" of each ask in asks.list).`);
     const owned = owns.flatMap((path) => {
       const root = ownedRoot(path);
       return root ? [root] : [];

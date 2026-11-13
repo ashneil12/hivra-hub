@@ -4,6 +4,9 @@
 
 import { memoryDisk, type LocalHubDisk } from "../../hub/model/localHub/localHub";
 import { tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
+import type { LedgerAsk } from "../../hub/model/askLedger";
+import { withHubMoved } from "./askMove";
+import { withJobs, type JobRow } from "./askJobs";
 import {
   ASK_DOC_KEY,
   askDocForDisk,
@@ -11,11 +14,14 @@ import {
   parseAskDoc,
   withAdded,
   withChange,
+  withCheck,
   withDigestMark,
+  withHandled,
   withHeard,
   type Ask,
   type AskBy,
   type AskChange,
+  type AskCheck,
   type AskDoc,
   type HearInput,
 } from "./asks";
@@ -34,6 +40,17 @@ export type AskStore = {
   add(input: { mateId: string; sessionId: string; blockId: string; text: string }): Promise<void>;
   /** Records the daily check for a first mate, so it is sent once a day from whichever window sends it. */
   markDigest(mateId: string): Promise<void>;
+  /**
+   * The delegation rows' effect on the asks they carry (askJobs.ts): started while a job works, done with its proof when it
+   * passed, back to heard with a note when it failed or was cancelled. Safe to call with the same rows again.
+   */
+  jobs(rows: readonly JobRow[]): Promise<void>;
+  /** An open ask closed by what was built, with what closed it as its proof (hub/model/askSettle.ts). */
+  handle(id: string, proof: string): Promise<void>;
+  /** The settle bookkeeping on one ask (hub/model/askSettle.ts); a key set to null is removed. */
+  check(id: string, patch: { gap?: string | null; held?: AskCheck["held"] | null; settled?: string; reopen?: string }): Promise<void>;
+  /** The old hub ledger's open rows, copied in once (askMove.ts). Resolves true when this call did the move. */
+  moveFromHub(legacy: readonly LedgerAsk[], mateOf: (chatId: string) => string | undefined): Promise<boolean>;
   subscribe(fn: () => void): () => void;
 };
 
@@ -113,6 +130,14 @@ export function createAskStore(disk: LocalHubDisk, now: () => number = Date.now)
       }),
     add: (input) => write((base) => ({ doc: withAdded(base, { ...input, now: now() }), result: undefined })),
     markDigest: (mateId) => write((base) => ({ doc: withDigestMark(base, mateId, now()), result: undefined })),
+    jobs: (rows) => write((base) => ({ doc: withJobs(base, rows, now()), result: undefined })),
+    handle: (id, proof) => write((base) => ({ doc: withHandled(base, id, proof, now()), result: undefined })),
+    check: (id, patch) => write((base) => ({ doc: withCheck(base, id, patch), result: undefined })),
+    moveFromHub: (legacy, mateOf) =>
+      write((base) => {
+        const doc = withHubMoved(base, legacy, { mateOf, now: now() });
+        return { doc, result: doc !== base };
+      }),
     subscribe(fn) {
       listeners.add(fn);
       void load().catch(() => undefined);

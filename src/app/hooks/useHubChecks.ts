@@ -14,6 +14,8 @@ import { CheckDelivery, checkMeta, checkReceipt } from "../../features/hub/model
 import { lastUserBlockId, lookAtDumps, noteDumps } from "../../features/hub/model/dumpCheck";
 import { hubEvidenceSource } from "../../features/hub/model/askEvidence";
 import { settleAsks } from "../../features/hub/model/askSettle";
+import { askMateFor } from "../../features/asks/model/askMate";
+import { routeHubDump } from "../../features/asks/model/hubRoute";
 import { canRunHarnessTextPrompt, runHarnessTextPrompt } from "../../integrations/harness";
 import { homeDir } from "../../platform/tauri/fs";
 
@@ -46,6 +48,14 @@ export type HubChecksHost = {
 };
 
 const LOOK_TIMEOUT_MS = 90_000;
+
+/**
+ * A dump noticed in a chat that is no first mate's goes into the ask ledger (asks/model/hubRoute.ts), the one ledger the
+ * Chief's "You asked" list reads. A first mate's chat is heard by the ledger's own hook, with the model.
+ */
+const routeDump = (dump: Parameters<typeof routeHubDump>[0]): void => {
+  void routeHubDump(dump, askMateFor).catch((error: unknown) => console.warn("An ask could not be written down", error));
+};
 
 async function isolatedLook(prompt: string): Promise<string> {
   if (!canRunHarnessTextPrompt("claude")) throw new Error("No engine for the dump check");
@@ -106,7 +116,7 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
   const newest = useMemo(() => host.sessions.map((session) => `${session.id}:${lastUserBlockId(session)}`).join(" "), [host.sessions]);
   useEffect(() => {
     if (!on) return;
-    noteDumps(latest.current.sessionsRef.current);
+    noteDumps(latest.current.sessionsRef.current, undefined, undefined, routeDump);
   }, [on, newest]);
 
   // A chat that went idle may be waiting for a check. Keyed on which chats are idle, not on every streamed token.
@@ -127,7 +137,7 @@ export function useHubChecks(host: HubChecksHost, enabled: boolean): void {
       latest.current.sessionsRef.current,
       latest.current.look ?? isolatedLook,
       (checks) => delivery.offer(checks),
-      { skip, source: hubEvidenceSource },
+      { skip, source: hubEvidenceSource, onNewDump: routeDump },
     ).then(() =>
       // Then every open ask is settled against what was built (I6): a "fixed" or a done claim with nothing behind it
       // stays open and one private check says what is missing.

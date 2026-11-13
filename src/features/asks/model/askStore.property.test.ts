@@ -10,6 +10,12 @@
 // maybe), a first mate trying to drop one (refused), an app restart (a new store on the same disk), a chat's history
 // compaction (the fresh session is handed every open ask) and a duplicate delivery (the same hearing again).
 //
+// And the job-finish steps (sc-18, askJobs.ts; README gap D5): a delegation row carries the ask's ledger id. A job starts
+// (the ask goes to started), a job ends (passed: the ask is done with the job's proof; failed or cancelled: back to heard
+// with a note, never silently closed) and the rows are applied again (the feed refreshes them on every change). Their model
+// is written from the rule, not from askJobs.ts: an end applies to an ask nobody has moved since, an ask waiting on Ash stays
+// waiting, Ash's "dropped" and a done ask are never touched, and a maybe is the person's to settle.
+//
 // The last property is gap A1 (README): an ask Ash adds by hand under a message must survive the model's reading of that
 // message landing. It failed until sc-17-ask-fixes (the test used to assert the failure and the shortest run, `extract,
 // add by hand, extract`); it is now the plain property.
@@ -17,6 +23,7 @@ import { fc } from "@fast-check/vitest";
 import { describe, expect, it } from "vitest";
 import { memoryDisk } from "../../hub/model/localHub/localHub";
 import { askDigest, DIGEST_STARTED_MS, openAsksNote } from "./askNotes";
+import type { JobRow } from "./askJobs";
 import { createAskStore, type AskStore } from "./askStore";
 import { ASK_STATUSES, openAsksFor, type Ask, type AskStatus, type HeardAsk } from "./asks";
 
@@ -54,11 +61,16 @@ type Model = {
   lastHear?: HearArgs;
   /** A worker crashed under a started ask. */
   crashed: Set<string>;
+  /** The delegations that carry an ask's ledger id, by slot, oldest first. */
+  jobs: Map<number, MJob[]>;
+  jobSeq: number;
 };
+/** One delegation row, as the model keeps it: open, or ended by passing, failing or being cancelled. */
+type MJob = { id: string; state: "open" | "passed" | "failed" | "cancelled"; settledAt?: number };
 type Real = { disk: ReturnType<typeof memoryDisk>; store: AskStore; clock: { t: number } };
 type HearArgs = { block: 0 | 1; asks: number[]; maybes: number[]; by: "rules" | "model" };
 
-const newModel = (): Model => ({ rows: new Map(), tries: new Map(), everTouched: new Set(), crashed: new Set() });
+const newModel = (): Model => ({ rows: new Map(), tries: new Map(), everTouched: new Set(), crashed: new Set(), jobs: new Map(), jobSeq: 0 });
 async function newReal(): Promise<Real> {
   const clock = { t: 1_800_000_000_000 };
   const disk = memoryDisk();
@@ -293,6 +305,166 @@ class Compact implements Cmd {
   toString = () => "the chat's history is compacted";
 }
 
+// ---- The job-finish steps (askJobs.ts) ---------------------------------------------------------------------------------------
+
+const JOB_TITLE = "Fix the save bug";
+const JOB_SUMMARY = "Saved rows keep their order.";
+const REPORT = JSON.stringify({ summary: JOB_SUMMARY, filesChanged: [], checks: [], evidence: [], openQuestions: [], selfAssessment: [], missing: [] });
+/** What the rule says the ask reads after each outcome (written out, not taken from askJobs.ts). */
+const START_NOTE = `Handed to a worker: ${JOB_TITLE}`;
+const PASS_PROOF = `Job "${JOB_TITLE}" finished, checks passed. ${JOB_SUMMARY}`;
+const backNote = (job: MJob) =>
+  job.state === "cancelled" ? `Its job was cancelled ("${JOB_TITLE}"): it was stopped. Back on the list.` : `Its job failed ("${JOB_TITLE}"): The checks failed. Back on the list.`;
+
+/** The delegation rows as the feed shows them, each carrying the ledger id of its slot's ask. */
+function jobRows(m: Model, real: Real): JobRow[] {
+  return [...m.jobs].flatMap(([slot, list]) => {
+    const ask = rowFor(real, slot);
+    if (!ask) return [];
+    return list.map(
+      (job): JobRow => ({
+        id: job.id,
+        askIds: [ask.id],
+        title: JOB_TITLE,
+        status: job.state === "open" ? "working" : job.state === "passed" ? "done" : "failed",
+        state: job.state === "open" ? "running" : job.state === "passed" ? "completed" : job.state,
+        gateVerdict: job.state === "passed" ? "passed" : null,
+        report: job.state === "passed" ? REPORT : null,
+        statusNotice: job.state === "failed" ? "The checks failed." : null,
+        settledAt: job.settledAt ?? null,
+        updatedAt: job.settledAt ?? 0,
+      }),
+    );
+  });
+}
+
+/** A job that is working takes an ask nobody started to started. Every other state of the ask is someone's word and stays. */
+const modelWorking = (row: MRow): MRow => (row.st === "heard" ? { st: "started", note: START_NOTE, proof: row.proof, touched: true } : row);
+
+/**
+ * A job that ended, applied to an ask nobody has moved since. Passed: an ask not started or started is done with the job's
+ * proof (one waiting on Ash stays waiting). Failed or cancelled: only an ask the job had started goes back, with a note.
+ * A done ask, Ash's dropped and a maybe are never touched.
+ */
+function modelEnded(row: MRow, job: MJob): MRow {
+  if (job.state === "passed") return row.st === "heard" || row.st === "started" ? { st: "done", note: undefined, proof: PASS_PROOF, touched: true } : row;
+  return row.st === "started" ? { st: "heard", note: backNote(job), proof: row.proof, touched: true } : row;
+}
+
+/** Every pass over the rows: a working job starts its ask. An ended job was applied when it ended and is not applied again. */
+function modelApplyRows(m: Model): void {
+  for (const [slot, list] of m.jobs) {
+    const key = keyOf(slot);
+    const row = m.rows.get(key);
+    if (!row || !list.some((job) => job.state === "open")) continue;
+    const next = modelWorking(row);
+    if (next !== row) {
+      m.rows.set(key, next);
+      m.everTouched.add(key);
+    }
+  }
+}
+
+const hasOpenJob = (m: Readonly<Model>, slot: number) => (m.jobs.get(slot) ?? []).some((job) => job.state === "open");
+
+/** A delegation that carries the ask's id starts. A maybe is the person's to settle first, so no job is made for one. */
+class JobStarts implements Cmd {
+  constructor(readonly slot: number) {}
+  check = (m: Readonly<Model>) => {
+    const row = m.rows.get(keyOf(this.slot));
+    return !!row && row.st !== "maybe" && !hasOpenJob(m, this.slot);
+  };
+  async run(m: Model, real: Real) {
+    m.jobs.set(this.slot, [...(m.jobs.get(this.slot) ?? []), { id: `job-${(m.jobSeq += 1)}`, state: "open" }]);
+    await real.store.jobs(jobRows(m, real));
+    modelApplyRows(m);
+    assertInvariants(m, real, this.toString());
+  }
+  toString = () => `a job starts on slot ${this.slot}`;
+}
+
+type Ending = "passed" | "failed" | "cancelled";
+/** The job on an ask ends. The row settles a moment after the last thing anyone did, and the app applies it. */
+class JobEnds implements Cmd {
+  constructor(
+    readonly slot: number,
+    readonly how: Ending,
+  ) {}
+  check = (m: Readonly<Model>) => hasOpenJob(m, this.slot);
+  async run(m: Model, real: Real) {
+    const list = m.jobs.get(this.slot) as MJob[];
+    const job = list.find((item) => item.state === "open") as MJob;
+    job.state = this.how;
+    job.settledAt = tick(real);
+    const key = keyOf(this.slot);
+    const before = m.rows.get(key) as MRow;
+    await real.store.jobs(jobRows(m, real));
+    const next = modelEnded(before, job);
+    if (next !== before) {
+      m.rows.set(key, next);
+      m.everTouched.add(key);
+    }
+    modelApplyRows(m);
+    // An ended job never closes an ask unless it passed, and a job that failed never leaves its ask unmarked.
+    const after = rowFor(real, this.slot) as Ask;
+    if (this.how !== "passed" && before.st !== "done") expect(after.status, `${this.toString()}: a failed job never closes an ask`).not.toBe("done");
+    if (this.how !== "passed" && before.st === "started") {
+      expect(after.status, this.toString()).toBe("heard");
+      expect(after.note, `${this.toString()}: back with a note`).toContain("Its job");
+    }
+    if (before.st === "dropped") expect(after.status, `${this.toString()}: Ash's dropped is his`).toBe("dropped");
+    assertInvariants(m, real, this.toString());
+  }
+  toString = () => `the job on slot ${this.slot} ${this.how === "passed" ? "passes" : this.how === "failed" ? "fails" : "is cancelled"}`;
+}
+
+/**
+ * After a job ended, someone moves the ask (Ash reopens it, or the first mate takes it up again) and the feed then delivers
+ * the same rows again, the old end still among them. The ask is as that last hand left it: the end is not applied again.
+ */
+class MovedAfterEnd implements Cmd {
+  constructor(
+    readonly slot: number,
+    readonly by: "ash" | "mate",
+  ) {}
+  check = (m: Readonly<Model>) => {
+    const last = (m.jobs.get(this.slot) ?? []).at(-1);
+    return !!m.rows.get(keyOf(this.slot)) && !!last && last.state !== "open";
+  };
+  async run(m: Model, real: Real) {
+    tick(real);
+    const key = keyOf(this.slot);
+    const row = m.rows.get(key) as MRow;
+    const change: Change = this.by === "ash" ? { status: "heard" } : { status: "started", note: "taking it up again myself" };
+    const out = modelChange(row, change, this.by);
+    const result = await real.store.change((rowFor(real, this.slot) as Ask).id, change, this.by);
+    if ("problem" in out) expect("problem" in result, this.toString()).toBe(true);
+    else {
+      m.rows.set(key, out.row);
+      if (out.changed) m.everTouched.add(key);
+    }
+    await real.store.jobs(jobRows(m, real));
+    modelApplyRows(m);
+    assertInvariants(m, real, this.toString());
+  }
+  toString = () => `${this.by === "ash" ? "Ash reopens" : "the first mate takes up again"} slot ${this.slot} after its job ended, then the rows are applied again`;
+}
+
+/** The feed refreshes: the same rows are applied again. Nothing that was applied is applied twice. */
+class RowsAppliedAgain implements Cmd {
+  check = (m: Readonly<Model>) => m.jobs.size > 0;
+  async run(m: Model, real: Real) {
+    await real.store.jobs(jobRows(m, real));
+    modelApplyRows(m);
+    assertInvariants(m, real, this.toString());
+    // And once more straight after: a second pass over the same rows writes nothing.
+    const revision = real.store.doc().revision;
+    await real.store.jobs(jobRows(m, real));
+    expect(real.store.doc().revision, `${this.toString()}: the second pass wrote`).toBe(revision);
+  }
+  toString = () => "the same delegation rows are applied again";
+}
+
 const subset = fc.subarray([0, 1, 2]);
 const hearArb = fc
   .record({ block: fc.constantFrom<0 | 1>(0, 1), asks: subset, maybes: subset, by: fc.constantFrom<"rules" | "model">("rules", "model") })
@@ -308,6 +480,10 @@ const supported = [
   slotArb.map((s) => new WorkerCrash(s)),
   fc.constant(new Restart()),
   fc.constant(new Compact()),
+  slotArb.map((s) => new JobStarts(s)),
+  fc.tuple(slotArb, fc.constantFrom<Ending>("passed", "failed", "cancelled")).map(([s, how]) => new JobEnds(s, how)),
+  fc.constant(new RowsAppliedAgain()),
+  fc.tuple(slotArb, fc.constantFrom<"ash" | "mate">("ash", "mate")).map(([s, by]) => new MovedAfterEnd(s, by)),
 ];
 
 describe("the ask ledger's real store, against a reference model", () => {
@@ -318,6 +494,22 @@ describe("the ask ledger's real store, against a reference model", () => {
       }),
       { numRuns: 200 },
     );
+  });
+
+  // The job-finish rules, as fixed traces too: random runs reach a late end or a reopened ask only now and then, so each rule
+  // the model states has a run that goes straight at it (broken one at a time, each of these fails).
+  const hearAll = () => new Hear({ block: 0, asks: [0, 1, 2], maybes: [], by: "model" });
+  it.each([
+    ["a pass applied again after Ash reopened the ask does not close it", () => [hearAll(), new JobStarts(0), new JobEnds(0, "passed"), new MovedAfterEnd(0, "ash")]],
+    ["a failure applied again after the first mate took the ask up itself does not send it back", () => [hearAll(), new JobStarts(0), new JobEnds(0, "failed"), new MovedAfterEnd(0, "mate")]],
+    ["a cancelled job sends a started ask back with a note, and the same rows applied again write nothing", () => [hearAll(), new JobStarts(1), new JobEnds(1, "cancelled"), new RowsAppliedAgain()]],
+    ["a job that passes while the ask waits on Ash leaves it waiting", () => [hearAll(), new MateMarks(2, "fail"), new JobStarts(2), new JobEnds(2, "passed"), new RowsAppliedAgain()]],
+    ["Ash's drop is his: neither the start nor the end of a job touches it", () => [hearAll(), new PersonTaps(0, "drop"), new JobStarts(0), new JobEnds(0, "passed"), new RowsAppliedAgain()]],
+    ["a done ask is not touched by a job that fails afterwards", () => [hearAll(), new MateMarks(0, "complete"), new JobStarts(0), new JobEnds(0, "failed"), new RowsAppliedAgain()]],
+    ["a maybe is Ash's to settle: no job is made for it, and once he settles it a job takes it on", () => [new Hear({ block: 0, asks: [], maybes: [0], by: "rules" }), new JobStarts(0), new PersonTaps(0, "settle"), new JobStarts(0), new JobEnds(0, "passed")]],
+    ["a second job on the same ask: a failure after an earlier pass sends it back, the next start takes it up again, its pass closes it", () => [hearAll(), new JobStarts(0), new JobEnds(0, "passed"), new PersonTaps(0, "reopen"), new JobStarts(0), new JobEnds(0, "failed"), new JobStarts(0), new JobEnds(0, "passed")]],
+  ])("%s", async (_name, make) => {
+    await fc.asyncModelRun(async () => ({ model: newModel(), real: await newReal() }), make());
   });
 
   it("two windows hearing the same message at once end with one copy of each ask, and none lost", async () => {
