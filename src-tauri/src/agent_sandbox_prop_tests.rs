@@ -414,7 +414,6 @@ proptest! {
     /// that cannot name a protected place must not be used (fail closed): either no profile is made, or the target is
     /// denied.
     #[test]
-    #[ignore = "SC-6 found bug: a protected place that is a link to a name with a quote, backslash or newline is skipped, not denied and not refused"]
     fn prop_a_link_target_the_profile_cannot_quote_is_not_left_open(
         place_pick in any::<Index>(),
         name in odd_name(),

@@ -223,17 +223,33 @@ fn quote_path(path: &Path) -> Result<String, String> {
         "agent sandbox: the home folder is not valid text, so the profile cannot name it"
             .to_string()
     })?;
-    if text.is_empty()
-        || text
-            .chars()
-            .any(|c| c == '"' || c == '\\' || c.is_control())
-    {
+    if !quotable(text) {
         return Err(
             "agent sandbox: the home folder path has a character the profile cannot quote"
                 .to_string(),
         );
     }
     Ok(text.to_string())
+}
+
+/// Whether `text` can sit inside the profile's double quotes as it is: not empty, and no quote, backslash or control
+/// character in it.
+fn quotable(text: &str) -> bool {
+    !text.is_empty()
+        && !text
+            .chars()
+            .any(|c| c == '"' || c == '\\' || c.is_control())
+}
+
+/// The real place a link points at, as the profile writes it. A target the profile cannot quote (not valid text, or with
+/// a quote, a backslash or a control character in it) is refused, never skipped: a deny that is left out leaves the
+/// protected place writable by the name its target has, so nothing starts. The path is not in the message, which reaches
+/// the activity log.
+fn quote_target(real: &Path) -> Result<&str, String> {
+    real.to_str().filter(|text| quotable(text)).ok_or_else(|| {
+        "agent sandbox: a protected place is a link to a path the profile cannot quote, so nothing starts"
+            .to_string()
+    })
 }
 
 /// A name as a case-insensitive regex for the profile: `.ssh` is `\.[sS][sS][hH]`, and `/` stays a path separator. Only
@@ -315,24 +331,36 @@ fn push_absolute(lines: &mut Vec<String>, path: &str, folder: bool, ops: &str) {
 }
 
 /// The real target of a place that is a link, when it lives somewhere else. Denying the target too means a write
-/// through another name (`~/.gitconfig` into a dotfiles repo) is refused. `ops` is `SECRET_OPS` or `WRITE_OPS`.
-fn push_real_target(lines: &mut Vec<String>, home: &Path, name: &str, folder: bool, ops: &str) {
-    let lexical = home.join(name);
-    if std::fs::symlink_metadata(&lexical).is_err() {
-        return;
+/// through another name (`~/.gitconfig` into a dotfiles repo) is refused. `ops` is `SECRET_OPS` or `WRITE_OPS`. A target
+/// the profile cannot quote is an error, not a skipped deny (`quote_target`).
+fn push_real_target(
+    lines: &mut Vec<String>,
+    home: &Path,
+    name: &str,
+    folder: bool,
+    ops: &str,
+) -> Result<(), String> {
+    push_real_path(lines, &home.join(name), folder, ops)
+}
+
+/// `push_real_target` for a place already spelled as a path.
+fn push_real_path(
+    lines: &mut Vec<String>,
+    lexical: &Path,
+    folder: bool,
+    ops: &str,
+) -> Result<(), String> {
+    if std::fs::symlink_metadata(lexical).is_err() {
+        return Ok(());
     }
-    let Ok(real) = std::fs::canonicalize(&lexical) else {
-        return;
+    let Ok(real) = std::fs::canonicalize(lexical) else {
+        return Ok(());
     };
     if real == lexical {
-        return;
+        return Ok(());
     }
-    if let Some(text) = real
-        .to_str()
-        .filter(|t| !t.contains('"') && !t.contains('\\') && !t.contains('\n'))
-    {
-        push_absolute(lines, text, folder, ops);
-    }
+    push_absolute(lines, quote_target(&real)?, folder, ops);
+    Ok(())
 }
 
 /// The login home from the password database, not from `HOME`. A profile built for a temporary home still names the
@@ -614,7 +642,7 @@ fn profile_scoped(
         push_ancestor_locks(&mut lines, home, data, &mut seen)?;
     }
     push_foreign_real_home(&mut lines, home)?;
-    push_tool_places(&mut lines, home);
+    push_tool_places(&mut lines, home)?;
     push_cron_tables(&mut lines);
     push_docker_sockets(&mut lines, home)?;
     push_disk_services(&mut lines);
@@ -697,12 +725,12 @@ fn push_secret_places(
             SECRET_OPS
         };
         push_home_entry(lines, forms, dir, true, ops);
-        push_real_target(lines, home, dir, true, ops);
+        push_real_target(lines, home, dir, true, ops)?;
         lock_relative(lines, home, dir, true, seen)?;
     }
     for file in &list.files {
         push_home_entry(lines, forms, file, false, SECRET_OPS);
-        push_real_target(lines, home, file, false, SECRET_OPS);
+        push_real_target(lines, home, file, false, SECRET_OPS)?;
         lock_relative(lines, home, file, false, seen)?;
     }
     for file in &list.shell_profiles {
@@ -720,7 +748,7 @@ fn push_secret_places(
             lock_relative(lines, home, file, true, seen)?;
         } else {
             push_home_entry(lines, forms, file, false, ops);
-            push_real_target(lines, home, file, false, ops);
+            push_real_target(lines, home, file, false, ops)?;
             lock_relative(lines, home, file, false, seen)?;
         }
     }
@@ -739,7 +767,7 @@ fn push_sourced_places(
 ) -> Result<(), String> {
     for (name, folder) in [(".oh-my-zsh", true), (".p10k.zsh", false), (".nvm", true)] {
         push_home_entry(lines, forms, name, folder, WRITE_OPS);
-        push_real_target(lines, home, name, folder, WRITE_OPS);
+        push_real_target(lines, home, name, folder, WRITE_OPS)?;
     }
     for form in forms {
         // `.zcompdump` and `.zcompdump-<host>-<version>`. A `*` inside one path segment is not a glob here.
@@ -801,7 +829,7 @@ fn walk_shell_sources(
         let Some(resolved) = resolve_shell_source(home, path, &operand) else {
             continue;
         };
-        deny_file_and_target(lines, &resolved);
+        deny_file_and_target(lines, &resolved)?;
         if inside_home(home, &resolved) {
             if let Some(parent) = resolved.parent() {
                 push_checkout_locks(lines, home, parent, locks)?;
@@ -1024,13 +1052,13 @@ fn push_protected_writes(
                 .collect::<Vec<_>>()
                 .join("/");
             if !concrete.is_empty() {
-                push_real_target(lines, home, &concrete, true, WRITE_OPS);
+                push_real_target(lines, home, &concrete, true, WRITE_OPS)?;
             }
             lock_relative(lines, home, relative, true, seen)?;
         } else {
-            push_real_target(lines, home, relative, false, WRITE_OPS);
+            push_real_target(lines, home, relative, false, WRITE_OPS)?;
             if relative == ".gitconfig" {
-                push_gitconfig_includes(lines, home);
+                push_gitconfig_includes(lines, home)?;
             }
             lock_relative(lines, home, relative, false, seen)?;
         }
@@ -1040,9 +1068,9 @@ fn push_protected_writes(
 
 /// `include.path` and `includeIf.*.path` from a gitconfig, as write denies, following nested includes. The files are
 /// read as text; git is not run. Eight levels is the cap, and a file already seen (by its real path) is not read again.
-fn push_gitconfig_includes(lines: &mut Vec<String>, home: &Path) {
+fn push_gitconfig_includes(lines: &mut Vec<String>, home: &Path) -> Result<(), String> {
     let mut seen = BTreeSet::new();
-    walk_gitconfig_includes(lines, home, &home.join(".gitconfig"), 0, &mut seen);
+    walk_gitconfig_includes(lines, home, &home.join(".gitconfig"), 0, &mut seen)
 }
 
 const GITCONFIG_INCLUDE_DEPTH: usize = 8;
@@ -1053,28 +1081,29 @@ fn walk_gitconfig_includes(
     path: &Path,
     depth: usize,
     seen: &mut BTreeSet<PathBuf>,
-) {
+) -> Result<(), String> {
     if depth >= GITCONFIG_INCLUDE_DEPTH {
-        return;
+        return Ok(());
     }
     let key = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     if !seen.insert(key) {
-        return;
+        return Ok(());
     }
     let Ok(meta) = std::fs::metadata(path) else {
-        return;
+        return Ok(());
     };
     if !meta.is_file() || meta.len() > 1024 * 1024 {
-        return;
+        return Ok(());
     }
     let Ok(text) = std::fs::read_to_string(path) else {
-        return;
+        return Ok(());
     };
     for include in gitconfig_include_paths(&text) {
         let resolved = resolve_include(home, path, &include);
-        deny_file_and_target(lines, &resolved);
-        walk_gitconfig_includes(lines, home, &resolved, depth + 1, seen);
+        deny_file_and_target(lines, &resolved)?;
+        walk_gitconfig_includes(lines, home, &resolved, depth + 1, seen)?;
     }
+    Ok(())
 }
 
 fn gitconfig_include_paths(text: &str) -> Vec<String> {
@@ -1127,24 +1156,23 @@ fn resolve_include(home: &Path, gitconfig: &Path, value: &str) -> PathBuf {
     prefix.join(path)
 }
 
-fn deny_file_and_target(lines: &mut Vec<String>, path: &Path) {
+/// A file the app later runs or reads outside the sandbox, by its name and, when it is a link, by its target. A name that
+/// cannot be quoted is left out as before. A link target that cannot be quoted is an error, not a skipped deny
+/// (`quote_target`).
+fn deny_file_and_target(lines: &mut Vec<String>, path: &Path) -> Result<(), String> {
     let Some(text) = path
         .to_str()
         .filter(|t| !t.is_empty() && !t.contains('"') && !t.contains('\\') && !t.contains('\n'))
     else {
-        return;
+        return Ok(());
     };
     push_absolute(lines, text, false, WRITE_OPS);
     if let Ok(real) = std::fs::canonicalize(path) {
         if real != path {
-            if let Some(text) = real
-                .to_str()
-                .filter(|t| !t.contains('"') && !t.contains('\\') && !t.contains('\n'))
-            {
-                push_absolute(lines, text, false, WRITE_OPS);
-            }
+            push_absolute(lines, quote_target(&real)?, false, WRITE_OPS);
         }
     }
+    Ok(())
 }
 
 /// The whole app data folder under home, daily and dev copy (`com.ash.monocode-hub` plus anything after it in the same
@@ -1214,7 +1242,7 @@ const TOOL_DIRS: [&str; 4] = [
     "/usr/local/Homebrew",
 ];
 
-fn push_tool_places(lines: &mut Vec<String>, home: &Path) {
+fn push_tool_places(lines: &mut Vec<String>, home: &Path) -> Result<(), String> {
     if let Ok(forms) = folder_forms(home) {
         push_home_entry(lines, &forms, ".local/bin", true, WRITE_OPS);
         push_home_entry(lines, &forms, ".cargo/bin", true, WRITE_OPS);
@@ -1264,10 +1292,10 @@ fn push_tool_places(lines: &mut Vec<String>, home: &Path) {
         let Some(path) = tool_on_path(name) else {
             continue;
         };
-        deny_file_and_target(lines, &path);
+        deny_file_and_target(lines, &path)?;
     }
-    push_searched_home_dirs(lines, home);
-    push_cli_targets(lines, home);
+    push_searched_home_dirs(lines, home)?;
+    push_cli_targets(lines, home)
 }
 
 /// A folder deny, plus the canonical directory when the path is a link. The kernel checks the resolved path.
@@ -1279,9 +1307,9 @@ fn deny_tree(lines: &mut Vec<String>, path: &str) {
 /// Home folders the app searches before the system directories, plus the resolver candidate folders that are not in
 /// the fixed list above. A planted `git` or `grok` in one of those runs outside the sandbox. The cut is the first
 /// system directory on the search path, so a home folder that appears after `/usr/bin` is not denied here.
-fn push_searched_home_dirs(lines: &mut Vec<String>, home: &Path) {
+fn push_searched_home_dirs(lines: &mut Vec<String>, home: &Path) -> Result<(), String> {
     let Ok(forms) = folder_forms(home) else {
-        return;
+        return Ok(());
     };
     for dir in ["bin", "n/bin", ".fx/bin", ".hermes", ".local/share/agy-acp"] {
         push_home_entry(lines, &forms, dir, true, WRITE_OPS);
@@ -1305,7 +1333,7 @@ fn push_searched_home_dirs(lines: &mut Vec<String>, home: &Path) {
     for dir in dirs.into_iter().take(cut) {
         // A CLI the resolvers find on the login PATH, including one outside home. The folder itself is denied below
         // only when it is under home.
-        deny_clis_in_dir(lines, &dir);
+        deny_clis_in_dir(lines, &dir)?;
         // The folder may itself be a link (fnm's multishell, a ~/bin into a dotfiles repo). The spelling deny does
         // not cover the directory it points at.
         deny_canonical_dir(lines, &dir);
@@ -1326,6 +1354,7 @@ fn push_searched_home_dirs(lines: &mut Vec<String>, home: &Path) {
         }
         push_home_entry(lines, &forms, &rel, true, WRITE_OPS);
     }
+    Ok(())
 }
 
 /// Names the resolvers search for, under the profile's home (not the login home) and on the login PATH. A link's
@@ -1374,39 +1403,41 @@ const RESOLVER_HOME_DIRS: &[&str] = &[
     "scoop/shims",
 ];
 
-fn push_cli_targets(lines: &mut Vec<String>, home: &Path) {
+fn push_cli_targets(lines: &mut Vec<String>, home: &Path) -> Result<(), String> {
     for rel in RESOLVER_HOME_DIRS {
         let dir = home.join(rel);
         deny_canonical_dir(lines, &dir);
-        deny_clis_in_dir(lines, &dir);
+        deny_clis_in_dir(lines, &dir)?;
     }
-    deny_configured_clis(lines);
+    deny_configured_clis(lines)
 }
 
-fn deny_clis_in_dir(lines: &mut Vec<String>, dir: &Path) {
+fn deny_clis_in_dir(lines: &mut Vec<String>, dir: &Path) -> Result<(), String> {
     for name in RESOLVER_CLI_NAMES {
-        deny_one_cli(lines, &dir.join(name));
+        deny_one_cli(lines, &dir.join(name))?;
     }
+    Ok(())
 }
 
-fn deny_one_cli(lines: &mut Vec<String>, candidate: &Path) {
+fn deny_one_cli(lines: &mut Vec<String>, candidate: &Path) -> Result<(), String> {
     if std::fs::symlink_metadata(candidate).is_err() {
-        return;
+        return Ok(());
     }
-    deny_file_and_target(lines, candidate);
+    deny_file_and_target(lines, candidate)?;
     let Ok(real) = std::fs::canonicalize(candidate) else {
-        return;
+        return Ok(());
     };
     let Some(root) = cli_package_root(&real) else {
-        return;
+        return Ok(());
     };
     let Some(text) = root.to_str() else {
-        return;
+        return Ok(());
     };
     if text.contains('"') || text.contains('\\') || text.contains('\n') {
-        return;
+        return Ok(());
     }
     push_absolute(lines, text, true, WRITE_OPS);
+    Ok(())
 }
 
 fn cli_package_root(file: &Path) -> Option<PathBuf> {
@@ -1492,13 +1523,14 @@ pub fn note_configured_cli(path: &Path) {
     guard.push(path.to_path_buf());
 }
 
-fn deny_configured_clis(lines: &mut Vec<String>) {
+fn deny_configured_clis(lines: &mut Vec<String>) -> Result<(), String> {
     let guard = CONFIGURED_CLI_PATHS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     for path in guard.iter() {
-        deny_one_cli(lines, path);
+        deny_one_cli(lines, path)?;
     }
+    Ok(())
 }
 
 /// `crontab` is setuid, so a copy of it cannot write the table, but the real one can. Denying the table folders closes
@@ -5529,3 +5561,8 @@ mod review_178b;
 #[cfg(all(test, unix))]
 #[path = "agent_sandbox_prop_tests.rs"]
 mod prop_tests;
+
+// SC-6f: one plain example per bug the properties found in the link and path rules. Unix only: real symlinks.
+#[cfg(all(test, unix))]
+#[path = "agent_sandbox_link_tests.rs"]
+mod link_tests;
