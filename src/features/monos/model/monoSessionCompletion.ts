@@ -633,6 +633,19 @@ export class MonoSessionCompletionBatches {
     }
   }
 
+  /**
+   * SC-19: this request's report is still waiting in a batch that hasn't reported it yet (its turn runs, or the window
+   * for the turn's other results is open). When its owner is replaced meanwhile (a reset), the batch will report it to
+   * the new owner itself, so the app doesn't queue it a second time.
+   */
+  holds(requestId: string): boolean {
+    for (const batch of this.batches.values()) {
+      const entry = batch.results.get(requestId);
+      if (entry && !entry.sent) return true;
+    }
+    return false;
+  }
+
   closeInactive(isActive: (origin: MonoCompletionOrigin) => boolean) {
     for (const [key, batch] of this.batches) {
       if (!batch.closed && !isActive(batch.origin)) batch.closed = true;

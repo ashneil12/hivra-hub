@@ -14,6 +14,7 @@ const LINES: Record<string, string> = {
   "keep going": "The app asked the chat to do the step it said it would do",
   "empty turn": "The reply came back empty, so the app asked once more",
   "report request": "The app asked for a report",
+  "moved tasks": "Tasks that were still going moved to this chat",
   "ash answered": "The app passed your answer on",
   question: "A worker asked the Lead a question",
   report: "A worker's report reached the Lead",
