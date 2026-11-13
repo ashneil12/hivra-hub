@@ -69,11 +69,14 @@ export function SettingSwitch({
   on,
   onChange,
   disabled = false,
+  dataProps,
 }: {
   label: string;
   on: boolean;
   onChange: (on: boolean) => void;
   disabled?: boolean;
+  /** PT-2: a test hook on the switch itself, e.g. `{ "data-proof-tool-switch": id }`. */
+  dataProps?: Record<`data-${string}`, string>;
 }) {
   return (
     <button
@@ -82,6 +85,7 @@ export function SettingSwitch({
       aria-label={label}
       aria-checked={on}
       disabled={disabled}
+      {...dataProps}
       onClick={() => {
         onChange(!on);
         playCue("switch");

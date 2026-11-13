@@ -724,6 +724,17 @@ describe("settings navigation", () => {
     expect(groups.flatMap((g) => g.sections).find((s) => s.id === "activity")?.label).toBe("Activity");
   });
 
+  it("PT-2: finds Proof tools in Crew, by its name and by the tools it lists", () => {
+    const entry = SETTINGS_INDEX.find((item) => item.id === "proof-tools");
+    expect(entry).toMatchObject({ section: "crew", label: "Proof tools" });
+    for (const query of ["proof tools", "fast-check", "mutation", "playwright"]) {
+      expect(
+        searchSettings(query, 20).some((result) => result.settingId === "proof-tools" && result.section === "crew"),
+        query,
+      ).toBe(true);
+    }
+  });
+
   it("points every indexed setting at a real section", () => {
     const sections = new Set(
       settingsSectionsByGroup().flatMap((group) =>

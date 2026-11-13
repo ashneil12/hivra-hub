@@ -132,6 +132,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Export and import, Backups, Secrets | existing | Works; G1 (extra chats not in the export) |
 | Advanced, Worktrees: Show code tools | `codeTools.ts` | Thin: G6 |
 | Crew: How tasks are tested (Test at ship, Light tests each task, Full checks each task, No testing), per project; from Home a project picker comes first | `TestingModeSetting.tsx` → `delivery_settings_get` (reads `testingMode`, `testingDefaulted`, `updatedAt`), `delivery_testing_mode_set` (writes on top of the `updatedAt` it read) | Works (SC-3a) |
+| Crew: Proof tools (the open-source tools that fit the project, what each proves, a per-project switch for one the project has, More: licence, repo, install line), under How tasks are tested; from Home a project picker comes first | `ProofToolsSetting.tsx` → `proof_tools_list` (reads each tool's `installed`, `status`, `off`, and the project's switch `revision`), `proof_tools_set` (writes on top of the `revision` it read; a stale one is refused in plain words) | Works (PT-2) |
 
 ### First run
 | Control | Calls or reads | State |
