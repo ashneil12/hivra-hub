@@ -93,3 +93,26 @@ No key, account or model is used. The only network call is that one file.
 small Parquet file built byte by byte in `scripts/memory-eval/testFixtures.mjs`. Nothing in the repository holds
 dataset content or anything derived from it. The tests also run a full pass over the hand-made file with the real
 policy, so the wiring is exercised without the download.
+
+## Long chats: the no-model test bed (13 Nov 2026)
+
+`npx vitest run src/features/asks/testbed` builds made-up first-mate chats of 100, 1,000 and 10,000 messages
+(`src/features/asks/testbed/fakeChat.ts`, the same chat every run) and puts them through the real no-model code:
+the ask ledger's reading of each message, `chat.search`, the tidy brief and state card, and the daily check. Each
+chat has facts planted about every 50 messages and messages with 3 to 6 unnumbered asks about every 40.
+
+| Messages | Planted asks kept | Extra lines kept | Planted facts found first | One search | Reading every message |
+| --- | --- | --- | --- | --- | --- |
+| 100 | 9/9 | 0 | 2/2 | under 0.1 ms | under 1 ms |
+| 1,000 | 106/106 | 1 | 20/20 | 0.1 ms | 16 ms |
+| 10,000 | 1089/1091 | 1 | 200/200 | 1.0 ms | 1,080 ms |
+
+What this says: with no model at all, the ledger keeps the asks in a long unnumbered message in Ash's words, a fact
+said 9,000 messages ago is one search away, and search over the chats the app already holds needs no index at this
+size. The test fails if ask recall drops under 9 in 10, if a planted fact is not the first hit, or if a tidy's
+brief grows with the chat.
+
+What it does not say. The made-up asks are plainly worded ("can you", "please", "we need to", "make sure"), so
+real messages will do worse on the rules alone; that is what the model reading of long messages is for, and it is
+not measured here. Not measured either: whether a first mate's replies honour a correction or refuse a fact that
+was never said, the LongMemEval slice, and the cost per turn. Those need a real engine and are still to do.
