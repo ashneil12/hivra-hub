@@ -325,6 +325,19 @@ fn run_command(
     action: &ProjectAction,
     env: Vec<(String, String)>,
 ) -> Result<(crate::project_actions::RunRecord, f64), String> {
+    run_command_with(app, main, checkout, action, env, false)
+}
+
+/// `run_command`, with the child's environment cleared down to the allow-list when `env_clear` is set (SC-4: a command an
+/// agent wrote runs scrubbed; the project's own checks keep the app's environment as they always did).
+fn run_command_with(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    action: &ProjectAction,
+    env: Vec<(String, String)>,
+    env_clear: bool,
+) -> Result<(crate::project_actions::RunRecord, f64), String> {
     let runs = app.state::<ActionRuns>();
     let started = std::time::Instant::now();
     // WP-178 (review r2 HIGH-2): a verify run is an agent's own command, so it runs under the sandbox while it is on.
@@ -340,7 +353,7 @@ fn run_command(
         &data.join("action-runs"),
         Some(crate::harness::cached_gui_search_path()),
         env,
-        false,
+        env_clear,
         Some(project_actions::emitter(app)),
         wrap,
     )?;
@@ -447,6 +460,43 @@ pub(crate) fn downgrade_zero_tests(mut step: StepResult) -> StepResult {
         step.detail = note;
     }
     step
+}
+
+/// SC-4: run one of a brief's own check commands in `checkout` through the same runner the project's checks use (the
+/// action runner: its process group, its timeout, its credential scrub and the agent sandbox while that is on), with the
+/// environment cleared down to the allow-list, since a brief's command is an agent's and not the project file's. Says how
+/// it ended and what it printed; whether that is a pass is the line's own judgement (`firstmate::brief_checks::judge`).
+pub(crate) fn run_brief_line(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    index: usize,
+    name: &str,
+    command: &str,
+) -> crate::firstmate::brief_checks::RawRun {
+    use crate::firstmate::brief_checks::{read_log, Ended, RawRun};
+    use crate::project_actions::RunStatus;
+    let action = action_for(
+        "brief check",
+        &format!("verify-brief-{index}"),
+        name,
+        command,
+        crate::firstmate::brief_checks::LINE_TIMEOUT_SECONDS,
+    );
+    match run_command_with(app, main, checkout, &action, Vec::new(), true) {
+        Ok((run, seconds)) => RawRun {
+            ended: match run.status {
+                RunStatus::Succeeded => Ended::Exited(Some(run.exit_code.unwrap_or(0))),
+                RunStatus::Failed => Ended::Exited(run.exit_code),
+                RunStatus::TimedOut => Ended::TimedOut,
+                RunStatus::Stopped => Ended::Stopped,
+                RunStatus::Running => Ended::Unfinished,
+            },
+            output: read_log(Path::new(&run.log_path)),
+            seconds,
+        },
+        Err(error) => RawRun::not_started(truncate(&error)),
+    }
 }
 
 pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<VerifyRecord, String> {

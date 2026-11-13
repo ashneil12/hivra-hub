@@ -39,6 +39,14 @@
 //! `ratchet`, the brief's own plan and the verdict model. A step that exited cleanly and ran zero tests could not run
 //! (`zero_tests_is_not_a_pass`), and accepting an unsure result needs a reason (`decide`).
 //!
+//! SC-4 (`brief_checks`): a brief can carry its own runnable check lines `{what, command, expect}`. In `light` and `full` the
+//! `checks` gate runs them after the project's checks, each in the worker's copy through the same runner the project's
+//! checks use (`verify_stage::run_brief_line`); a line passes when its exit code is the one asked for (0 by default) and,
+//! for text, its output contains it. One that couldn't start, ran past its time or ran zero tests could not run, and is
+//! never a pass. Each line's result goes onto the delegation row (`brief_checks::record_results`, by this module only), and
+//! its command shows on the gate's evidence beside the project's. A changed path on the brief's do-not-touch list is a
+//! finding of `done_check` (`leave_findings`), which fails the round in every mode but `off`.
+//!
 //! Ideas from Puppetmaster's gates (`require_diff`, `command`, `committed`, `ratchet`; MIT) and Raven's "finished is not
 //! succeeded" verdict gate (Apache-2.0, ideas only). No code is vendored.
 
@@ -51,6 +59,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::brief_checks::{self, BriefRound, LineResult, RawRun};
 use super::done_check::{self, ChangedFile, ClaimRow, ClaimStatus, CodeFinding};
 use super::status::GateVerdict;
 use super::testing_mode::{self, ModePlan};
@@ -338,6 +347,11 @@ pub struct GateRecord {
     /// task was tested as far as its mode asks.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// SC-4: what each of the brief's own check lines did this round, to be written onto the row's `brief_checks`
+    /// (`brief_checks::record_results`). Carried to the caller and not kept in the round's evidence: the lines are already
+    /// in the checks gate's commands.
+    #[serde(default, skip_serializing)]
+    pub brief_lines: Vec<LineResult>,
 }
 
 impl GateRecord {
@@ -366,6 +380,16 @@ pub trait Runners {
     fn routes(&self, checkout: &Path) -> Option<CommandEvidence>;
     /// One short completion: the verdict model's reply to `prompt`, or why there is none.
     fn verdict(&self, prompt: &str) -> Result<String, String>;
+    /// SC-4: run one of the brief's own check commands in `checkout` the way the project's checks run, and say how it
+    /// ended. A runner that can't says so, and the line counts as not run.
+    fn brief_line(
+        &self,
+        _checkout: &Path,
+        _index: usize,
+        _line: &brief_checks::BriefCheck,
+    ) -> RawRun {
+        RawRun::not_started("this build can't run a brief's own checks")
+    }
 }
 
 /// Everything a round reads.
@@ -385,20 +409,29 @@ pub struct RoundInput<'a> {
     /// SC-3a: the project's testing mode, chosen from the diff (`testing_mode::gates_for`). `plan` is its gates. Absent
     /// is the round as it was before the modes: every finding, every fact gap, the verdict model.
     pub mode: Option<&'a ModePlan>,
+    /// SC-4: the brief's own check lines and do-not-touch list. Absent is a round with neither.
+    pub brief_round: Option<&'a BriefRound>,
 }
 
 pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     let repo = Repo::open(input.checkout);
     let mut gates = Vec::new();
+    let mut brief_lines: Vec<LineResult> = Vec::new();
     for gate in &input.plan.gates {
         let result = match gate {
             GateKind::Diff => diff_gate(&repo),
-            GateKind::Checks => checks_gate(
-                &repo,
-                input.checkout,
-                &input.plan.checks,
+            // SC-4: the brief's own check lines run after the project's checks, in the same gate.
+            GateKind::Checks => with_brief_lines(
+                checks_gate(
+                    &repo,
+                    input.checkout,
+                    &input.plan.checks,
+                    runners,
+                    input.gate_owns_checks,
+                ),
+                input,
                 runners,
-                input.gate_owns_checks,
+                &mut brief_lines,
             ),
             GateKind::Committed => committed_gate(&repo),
             GateKind::Ratchet => ratchet_gate(&repo),
@@ -406,6 +439,26 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
             GateKind::Routes => continue,
         };
         gates.push(result);
+    }
+    // SC-4: the brief's lines are the proof it asked for, so a round with no checks gate (a docs-only change in `light`,
+    // or a plan stored without one) still runs them, on a gate of their own that says the project's checks did not run.
+    let lines_only = !gates.iter().any(|gate| gate.gate == GateKind::Checks)
+        && input
+            .brief_round
+            .is_some_and(|brief| !brief.lines.is_empty() || brief.checks_unreadable.is_some())
+        && brief_lines_wanted(input);
+    if lines_only {
+        gates.push(with_brief_lines(
+            GateResult {
+                gate: GateKind::Checks,
+                outcome: Outcome::Held,
+                detail: "The project's checks didn't run for this change.".into(),
+                evidence: Vec::new(),
+            },
+            input,
+            runners,
+            &mut brief_lines,
+        ));
     }
     // The routes check is the project's, never the brief's to leave out.
     match runners.routes(input.checkout) {
@@ -453,12 +506,43 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
     } else {
         (Vec::new(), None)
     };
-    let findings = if run_findings {
+    let mut findings = if run_findings {
         done_check::code_findings(input.brief, input.report, &claims, &files)
     } else {
         Vec::new()
     };
+    // SC-4: a changed path under the brief's do-not-touch list is a finding of its own. `off` runs no findings. The paths
+    // are listed without rename detection, so moving a file out of a protected folder is still a change to it. A list that
+    // couldn't be read is never an empty list: the round can't say it was kept to.
+    let mut unread = unread;
+    if run_findings {
+        if let Some(brief) = input.brief_round {
+            if !brief.leave.is_empty() && repo.why_not.is_none() {
+                match repo.changed_exact() {
+                    Ok(paths) => {
+                        let named: Vec<ChangedFile> = paths
+                            .into_iter()
+                            .map(|path| ChangedFile {
+                                path,
+                                before: None,
+                                after: None,
+                            })
+                            .collect();
+                        findings.extend(done_check::leave_findings(&brief.leave, &named));
+                    }
+                    Err(why) => {
+                        unread.get_or_insert(why);
+                    }
+                }
+            }
+            if unread.is_none() {
+                unread = brief.leave_unreadable.clone();
+            }
+        }
+    }
+    // A checks gate that only ran the brief's lines says nothing of the project's tests: a "tests pass" claim stays unverified.
     let checks_run = match gates.iter().find(|gate| gate.gate == GateKind::Checks) {
+        _ if lines_only => done_check::ChecksRun::None,
         Some(gate) if gate.outcome == Outcome::Passed => done_check::ChecksRun::Passed,
         Some(gate) if gate.outcome == Outcome::Failed => done_check::ChecksRun::Failed,
         _ => done_check::ChecksRun::None,
@@ -526,6 +610,7 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         checkout: Some(input.checkout.to_string_lossy().into_owned()),
         testing_mode: input.mode.map(|mode| mode.mode.as_str().to_string()),
         note: note.map(str::to_string),
+        brief_lines,
     }
 }
 
@@ -615,10 +700,16 @@ fn summary_of(
         lines.push(super::fact_gaps::fact_summary(gaps));
     }
     if !findings.is_empty() {
-        lines.push(format!(
-            "REFUTED: the report's claims don't match the diff.\n{}",
-            done_check::findings_text(findings)
-        ));
+        // SC-4: a path on the do-not-touch list is no claim of the report's.
+        let head = if findings
+            .iter()
+            .all(|finding| finding.kind == done_check::FindingKind::DoNotTouch)
+        {
+            "REFUTED: the work changes paths the brief said to leave alone."
+        } else {
+            "REFUTED: the report's claims don't match the diff."
+        };
+        lines.push(format!("{head}\n{}", done_check::findings_text(findings)));
     }
     for gate in gates {
         if gate.outcome != Outcome::Passed && gate.outcome != Outcome::Held {
@@ -767,8 +858,23 @@ impl Repo {
 
     /// Every file the copy changed since `base`: committed or not, and new files git doesn't ignore.
     fn changed(&self) -> Result<Vec<String>, String> {
+        self.changed_listing(true)
+    }
+
+    /// SC-4: `changed`, with a move or copy listed as the old path leaving and the new one arriving, not as the new one
+    /// alone: the do-not-touch list must see a file taken out of a protected folder.
+    fn changed_exact(&self) -> Result<Vec<String>, String> {
+        self.changed_listing(false)
+    }
+
+    fn changed_listing(&self, renames: bool) -> Result<Vec<String>, String> {
         let base = self.base.as_deref().unwrap_or("HEAD");
-        let (ok, tracked, _) = git(&self.dir, &["diff", "--name-only", base, "--"])?;
+        let mut args = vec!["diff", "--name-only"];
+        if !renames {
+            args.push("--no-renames");
+        }
+        args.extend([base, "--"]);
+        let (ok, tracked, _) = git(&self.dir, &args)?;
         if !ok {
             return Err("git couldn't compare the copy with where it started".into());
         }
@@ -1201,6 +1307,77 @@ fn checks_gate(
             detail: format!("It couldn't run: {why}"),
             evidence: Vec::new(),
         },
+    }
+}
+
+/// SC-4: whether this round runs the brief's own check lines at all: there is a brief to read, and the project's testing
+/// mode tests each task (`light`, `full`, or no mode). `at-ship` and `off` don't, whatever the brief carries.
+fn brief_lines_wanted(input: &RoundInput) -> bool {
+    use crate::delivery::settings::TestingMode;
+    input.brief_round.is_some()
+        && !matches!(
+            input.mode.map(|chosen| chosen.mode),
+            Some(TestingMode::Off | TestingMode::AtShip)
+        )
+}
+
+/// SC-4: the brief's own check lines, run after the project's checks and added to the checks gate: their commands are on
+/// its evidence beside the project's, and any line that failed fails the gate, any that couldn't run keeps it from
+/// passing. They run in `light` and `full` (the modes that run the checks gate on a task); `at-ship` and `off` don't test
+/// each task, whatever the brief carries. They run even when the delivery gate holds the project's own checks: those are
+/// the project's, these are the brief's. Lines that are damaged in the row are never read as none.
+fn with_brief_lines(
+    result: GateResult,
+    input: &RoundInput,
+    runners: &dyn Runners,
+    results: &mut Vec<LineResult>,
+) -> GateResult {
+    let Some(brief) = input.brief_round else {
+        return result;
+    };
+    if !brief_lines_wanted(input) {
+        return result;
+    }
+    if brief.checks_unreadable.is_some() {
+        return GateResult {
+            outcome: Outcome::aggregate([result.outcome, Outcome::NotRun]),
+            detail: format!(
+                "{} The brief's own checks couldn't be read, so they didn't run.",
+                result.detail
+            ),
+            ..result
+        };
+    }
+    if brief.lines.is_empty() {
+        return result;
+    }
+    let ran = brief_checks::run_lines(
+        &brief.lines,
+        input.now,
+        brief_checks::LINES_BUDGET,
+        &mut |index, line| runners.brief_line(input.checkout, index, line),
+    );
+    let mut evidence = result.evidence;
+    let mut outcomes = vec![result.outcome];
+    let mut unmet: Vec<String> = Vec::new();
+    for (judged, line) in &ran {
+        evidence.push(judged.evidence.clone());
+        outcomes.push(judged.outcome);
+        if judged.outcome != Outcome::Passed {
+            unmet.push(judged.detail.clone());
+        }
+        results.push(line.clone());
+    }
+    let own = if unmet.is_empty() {
+        format!("{} brief check(s) ran and passed.", ran.len())
+    } else {
+        unmet.join(" ")
+    };
+    GateResult {
+        gate: result.gate,
+        outcome: Outcome::aggregate(outcomes),
+        detail: format!("{} {own}", result.detail),
+        evidence,
     }
 }
 
@@ -1707,6 +1884,21 @@ impl Runners for AppRunners {
         }
     }
 
+    fn brief_line(&self, checkout: &Path, index: usize, line: &brief_checks::BriefCheck) -> RawRun {
+        // SC-4: the same checkout rule as the project's checks (the main checkout or one of its worktrees), the same runner.
+        match crate::project_actions::checkout_of_project(checkout) {
+            Ok((main, checkout)) => crate::verify_stage::run_brief_line(
+                &self.app,
+                &main,
+                &checkout,
+                index,
+                &line.what,
+                &line.command,
+            ),
+            Err(why) => RawRun::not_started(why),
+        }
+    }
+
     fn routes(&self, checkout: &Path) -> Option<CommandEvidence> {
         use tauri::Manager;
         let project_id = self.project_id.as_deref()?;
@@ -2005,6 +2197,7 @@ fn fact_only_record(
         checkout: None,
         testing_mode: None,
         note: None,
+        brief_lines: Vec::new(),
     })
 }
 
@@ -2022,9 +2215,11 @@ pub async fn firstmate_run_gates(
             .facts
             .as_ref()
             .map(super::fact_gaps::fact_turn_from_value);
-        let (plan, row, gate_owns_checks, mode) = {
+        let (plan, row, gate_owns_checks, mode, brief_state) = {
             let conn = store.lock_conn()?;
             let plan = plan_of(&conn, &input.delegation_id)?;
+            // SC-4: the brief's own check lines and do-not-touch list, read with the plan.
+            let brief_state = brief_checks::state_of(&conn, &input.delegation_id)?;
             let row = delegations::tree(&conn, &input.delegation_id)?
                 .into_iter()
                 .find(|r| r.id == input.delegation_id);
@@ -2039,8 +2234,9 @@ pub async fn firstmate_run_gates(
                 .and_then(|row| row.project.as_deref())
                 .map(|project| crate::delivery::settings::testing_mode_for(&conn, project))
                 .unwrap_or_default();
-            (plan, row, gate_owns_checks, mode)
+            (plan, row, gate_owns_checks, mode, brief_state)
         };
+        let brief_round = BriefRound::from(&brief_state);
         let Some(row) = row else {
             return Ok(None);
         };
@@ -2132,6 +2328,7 @@ pub async fn firstmate_run_gates(
                     gate_owns_checks,
                     facts: facts.as_ref(),
                     mode: Some(&moded),
+                    brief_round: Some(&brief_round),
                 },
                 &runners,
             )
@@ -2150,6 +2347,9 @@ pub async fn firstmate_run_gates(
         };
         let mut conn = store.lock_conn()?;
         push_record(&conn, &record)?;
+        // SC-4: each brief line's result goes onto the row, by the gates only. A write that can't land doesn't lose the
+        // round: the evidence is kept above and the verdict below.
+        let _ = brief_checks::record_results(&conn, &row.id, &record.brief_lines);
         let change = delegations::set_gate_verdict(
             &mut conn,
             &row.id,
@@ -2176,6 +2376,8 @@ pub struct GateEvidence {
     pub plan: Option<GatePlan>,
     pub records: Vec<GateRecord>,
     pub markdown: Option<String>,
+    /// SC-4: the brief's stamp, its check lines with what each did, and its do-not-touch list.
+    pub brief: brief_checks::BriefState,
 }
 
 #[tauri::command(async)]
@@ -2188,6 +2390,7 @@ pub fn firstmate_gate_evidence(
     Ok(GateEvidence {
         plan: plan_of(&conn, &id)?,
         markdown: records.last().map(evidence_markdown),
+        brief: brief_checks::state_of(&conn, &id)?,
         records,
     })
 }

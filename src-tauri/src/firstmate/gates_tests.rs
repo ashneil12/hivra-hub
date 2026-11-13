@@ -78,6 +78,10 @@ struct Fake {
     routes: Option<CommandEvidence>,
     replies: RefCell<Vec<Result<String, String>>>,
     prompts: RefCell<Vec<String>>,
+    /// SC-4: how the brief's own commands end, in order; one that runs past the list exits 0 and prints `ok`.
+    brief_runs: RefCell<Vec<crate::firstmate::brief_checks::RawRun>>,
+    /// SC-4: what ran, in order: `project checks`, then `brief: <command>` for each of the brief's lines.
+    events: RefCell<Vec<String>>,
 }
 
 fn run(command: &str, outcome: Outcome, output: &str) -> CommandEvidence {
@@ -101,9 +105,30 @@ impl Runners for Fake {
         _named: &[String],
         _changed: &[String],
     ) -> Result<Vec<CommandEvidence>, String> {
+        self.events.borrow_mut().push("project checks".into());
         self.checks
             .clone()
             .unwrap_or_else(|| Ok(vec![run("npm test", Outcome::Passed, "14 passed")]))
+    }
+    fn brief_line(
+        &self,
+        _checkout: &Path,
+        _index: usize,
+        line: &crate::firstmate::brief_checks::BriefCheck,
+    ) -> crate::firstmate::brief_checks::RawRun {
+        self.events
+            .borrow_mut()
+            .push(format!("brief: {}", line.command));
+        let mut scripted = self.brief_runs.borrow_mut();
+        if scripted.is_empty() {
+            crate::firstmate::brief_checks::RawRun {
+                ended: crate::firstmate::brief_checks::Ended::Exited(Some(0)),
+                output: "ok".into(),
+                seconds: 0.1,
+            }
+        } else {
+            scripted.remove(0)
+        }
     }
     fn routes(&self, _checkout: &Path) -> Option<CommandEvidence> {
         self.routes.clone()
@@ -140,6 +165,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             gate_owns_checks: false,
             facts: None,
             mode: None,
+            brief_round: None,
         },
         fake,
     )
@@ -574,6 +600,7 @@ fn a_brief_without_a_definition_of_done_is_unsure() {
             gate_owns_checks: false,
             facts: None,
             mode: None,
+            brief_round: None,
         },
         &fake,
     );
@@ -615,6 +642,7 @@ fn fact_gaps_fail_the_claim_without_asking_the_model() {
             gate_owns_checks: false,
             facts: Some(&facts),
             mode: None,
+            brief_round: None,
         },
         &fake,
     );
@@ -1007,6 +1035,7 @@ fn r2_a_completed_settle_does_not_clear_a_failed_plan_gate_nothing_reran() {
             gate_owns_checks: false,
             facts: Some(&facts),
             mode: None,
+            brief_round: None,
         },
         &failing,
     );
@@ -1364,6 +1393,7 @@ fn moded_round(
             gate_owns_checks: false,
             facts,
             mode: Some(chosen),
+            brief_round: None,
         },
         fake,
     )
@@ -1637,6 +1667,7 @@ fn light_honours_the_briefs_named_checks_and_gates() {
             gate_owns_checks: false,
             facts: None,
             mode: Some(&chosen),
+            brief_round: None,
         },
         &named,
     );
@@ -1774,4 +1805,673 @@ fn a_task_that_passed_without_being_tested_reads_done_with_that_said() {
         assert_eq!(settled.status, Status::Done, "{summary:?}");
         assert_eq!(settled.status_notice.as_deref(), notice, "{summary:?}");
     }
+}
+
+// ---- SC-4: the brief's own check lines and do-not-touch list -------------------------------------------------------------
+
+use crate::firstmate::brief_checks::{self, BriefCheck, BriefRound, Ended, RawRun};
+
+fn line(what: &str, command: &str, expect: Option<&str>) -> BriefCheck {
+    BriefCheck {
+        what: what.into(),
+        command: command.into(),
+        expect: expect.map(str::to_string),
+        passes: None,
+        ran_at: None,
+        output_tail: None,
+    }
+}
+
+fn ends(code: i32, output: &str) -> RawRun {
+    RawRun {
+        ended: Ended::Exited(Some(code)),
+        output: output.into(),
+        seconds: 0.2,
+    }
+}
+
+fn briefed(lines: Vec<BriefCheck>, leave: &[&str]) -> BriefRound {
+    BriefRound {
+        lines,
+        leave: leave.iter().map(|p| p.to_string()).collect(),
+        checks_unreadable: None,
+        leave_unreadable: None,
+    }
+}
+
+/// A round of `mode` over the copy with the brief's lines and list, `gate_owns_checks` as asked.
+fn brief_round_in(
+    dir: &Path,
+    mode: TestingMode,
+    stored: Option<&GatePlan>,
+    brief: &BriefRound,
+    fake: &Fake,
+    gate_owns_checks: bool,
+) -> GateRecord {
+    let chosen = moded(dir, mode, stored);
+    run_round(
+        &RoundInput {
+            delegation_id: "d-1",
+            round: 1,
+            checkout: dir,
+            plan: &chosen.gate_plan(),
+            brief: "Add a b export to app.ts.",
+            done_when: "app.ts exports b",
+            report: "## Report\nSummary: added b to app.ts.",
+            now: 42,
+            gate_owns_checks,
+            facts: None,
+            mode: Some(&chosen),
+            brief_round: Some(brief),
+        },
+        fake,
+    )
+}
+
+fn brief_round(dir: &Path, mode: TestingMode, brief: &BriefRound, fake: &Fake) -> GateRecord {
+    brief_round_in(dir, mode, None, brief, fake, false)
+}
+
+fn two_lines() -> Vec<BriefCheck> {
+    vec![
+        line("it builds", "npm run build", None),
+        line("the route answers", "curl localhost:3000/score", Some("ok")),
+    ]
+}
+
+#[test]
+fn light_runs_the_briefs_lines_after_the_projects_checks_and_shows_them_as_evidence() {
+    let f = built();
+    let fake = Fake::default();
+    let record = brief_round(
+        &f.copy,
+        TestingMode::Light,
+        &briefed(two_lines(), &[]),
+        &fake,
+    );
+    assert_eq!(
+        fake.events.borrow().as_slice(),
+        &[
+            "project checks",
+            "brief: npm run build",
+            "brief: curl localhost:3000/score"
+        ],
+        "the project's checks first, then each line in order"
+    );
+    let checks = gate(&record, GateKind::Checks);
+    assert_eq!(checks.outcome, Outcome::Passed, "{}", checks.detail);
+    let commands: Vec<&str> = checks.evidence.iter().map(|e| e.command.as_str()).collect();
+    assert_eq!(
+        commands,
+        ["npm test", "npm run build", "curl localhost:3000/score"]
+    );
+    assert!(
+        checks.detail.contains("2 brief check(s) ran and passed"),
+        "{}",
+        checks.detail
+    );
+    assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+    // The results are carried for the row.
+    assert_eq!(record.brief_lines.len(), 2);
+    assert!(record
+        .brief_lines
+        .iter()
+        .all(|r| r.passes == Some(true) && r.ran_at == 42));
+    // And they are not kept twice in the round's stored evidence.
+    assert!(serde_json::to_value(&record)
+        .unwrap()
+        .get("briefLines")
+        .is_none());
+}
+
+#[test]
+fn full_runs_them_for_a_code_diff_even_when_the_brief_named_no_gates() {
+    let f = built();
+    let fake = Fake::default();
+    // No stored plan at all: the diff is code, so `full` gives the round the checks gate, and the lines run in it.
+    let record = brief_round(
+        &f.copy,
+        TestingMode::Full,
+        &briefed(two_lines(), &[]),
+        &fake,
+    );
+    assert_eq!(fake.events.borrow().len(), 3);
+    assert_eq!(gate(&record, GateKind::Checks).evidence.len(), 3);
+    assert_eq!(record.testing_mode.as_deref(), Some("full"));
+}
+
+#[test]
+fn at_ship_and_off_never_run_the_briefs_lines() {
+    for mode in [TestingMode::AtShip, TestingMode::Off] {
+        let f = built();
+        let fake = Fake::default();
+        let stored = GatePlan {
+            gates: vec![GateKind::Diff, GateKind::Checks],
+            checks: Vec::new(),
+        };
+        let record = brief_round_in(
+            &f.copy,
+            mode,
+            Some(&stored),
+            &briefed(two_lines(), &[]),
+            &fake,
+            false,
+        );
+        assert!(fake.events.borrow().is_empty(), "{mode:?}: nothing ran");
+        assert!(record.brief_lines.is_empty(), "{mode:?}");
+        assert_eq!(
+            record.verdict,
+            Verdict::Passed,
+            "{mode:?}: {}",
+            record.summary
+        );
+    }
+}
+
+#[test]
+fn a_docs_only_change_still_runs_the_briefs_lines_on_a_gate_that_says_the_projects_checks_did_not()
+{
+    let f = fixture("brief-docs");
+    std::fs::create_dir_all(f.copy.join("docs")).unwrap();
+    std::fs::write(f.copy.join("docs/notes.md"), "# notes\n").unwrap();
+    sh(&f.copy, &["add", "-A"]);
+    sh(&f.copy, &["commit", "-q", "-m", "docs"]);
+    // No code changed, so the round has no project checks gate. The lines are the proof the brief asked for: they run.
+    let fake = Fake::default();
+    let record = brief_round(
+        &f.copy,
+        TestingMode::Light,
+        &briefed(two_lines(), &[]),
+        &fake,
+    );
+    assert_eq!(
+        fake.events.borrow().as_slice(),
+        &["brief: npm run build", "brief: curl localhost:3000/score"],
+        "the project's checks did not run, the lines did"
+    );
+    let checks = gate(&record, GateKind::Checks);
+    assert_eq!(checks.outcome, Outcome::Passed, "{}", checks.detail);
+    assert!(
+        checks
+            .detail
+            .contains("The project's checks didn't run for this change"),
+        "{}",
+        checks.detail
+    );
+    assert_eq!(checks.evidence.len(), 2);
+    assert_eq!(record.brief_lines.len(), 2);
+    // A failing line fails the round here too, and the other modes still run none of them.
+    let failing = Fake {
+        brief_runs: RefCell::new(vec![ends(1, "boom")]),
+        ..Default::default()
+    };
+    let record = brief_round(
+        &f.copy,
+        TestingMode::Light,
+        &briefed(two_lines(), &[]),
+        &failing,
+    );
+    assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
+    for mode in [TestingMode::AtShip, TestingMode::Off] {
+        let quiet = Fake::default();
+        brief_round(&f.copy, mode, &briefed(two_lines(), &[]), &quiet);
+        assert!(quiet.events.borrow().is_empty(), "{mode:?}");
+    }
+    // Lines that can't be read are not read as none on that gate either.
+    let mut damaged = briefed(Vec::new(), &[]);
+    damaged.checks_unreadable = Some("the brief's own checks couldn't be read".into());
+    let record = brief_round(&f.copy, TestingMode::Light, &damaged, &Fake::default());
+    assert_eq!(gate(&record, GateKind::Checks).outcome, Outcome::NotRun);
+    assert_eq!(record.verdict, Verdict::Unsure, "{}", record.summary);
+    // A "tests pass" claim is not verified by lines alone.
+    let said = Fake::default();
+    let claimed = run_round(
+        &RoundInput {
+            delegation_id: "d-1",
+            round: 1,
+            checkout: &f.copy,
+            plan: &moded(&f.copy, TestingMode::Light, None).gate_plan(),
+            brief: "Write the notes.",
+            done_when: "the notes exist",
+            report: "All tests pass.",
+            now: 1,
+            gate_owns_checks: false,
+            facts: None,
+            mode: Some(&moded(&f.copy, TestingMode::Light, None)),
+            brief_round: Some(&briefed(two_lines(), &[])),
+        },
+        &said,
+    );
+    assert!(
+        !claimed.claims.iter().any(|row| row
+            .observed
+            .contains("the app ran the project's checks itself: they passed")),
+        "{:?}",
+        claimed.claims
+    );
+}
+
+#[test]
+fn moving_a_file_out_of_a_do_not_touch_folder_is_still_a_change_to_it() {
+    let f = fixture("leave-rename");
+    std::fs::create_dir_all(f.project.join("src/legacy")).unwrap();
+    std::fs::write(
+        f.project.join("src/legacy/a.ts"),
+        "export const a = 1;\nexport const b = 2;\nexport const c = 3;\n",
+    )
+    .unwrap();
+    sh(&f.project, &["add", "-A"]);
+    sh(&f.project, &["commit", "-q", "-m", "legacy"]);
+    sh(&f.copy, &["merge", "-q", "main"]);
+    std::fs::create_dir_all(f.copy.join("src/new")).unwrap();
+    sh(&f.copy, &["mv", "src/legacy/a.ts", "src/new/a.ts"]);
+    sh(&f.copy, &["commit", "-q", "-m", "move it"]);
+    // With rename detection the diff names only where it went. The do-not-touch list reads the exact change.
+    let repo = Repo::open(&f.copy);
+    assert_eq!(repo.changed().unwrap(), vec!["src/new/a.ts".to_string()]);
+    let exact = repo.changed_exact().unwrap();
+    assert!(exact.contains(&"src/legacy/a.ts".to_string()), "{exact:?}");
+    let record = brief_round(
+        &f.copy,
+        TestingMode::AtShip,
+        &briefed(Vec::new(), &["src/legacy"]),
+        &Fake::default(),
+    );
+    let paths: Vec<&str> = record
+        .findings
+        .iter()
+        .filter(|finding| finding.kind == done_check::FindingKind::DoNotTouch)
+        .filter_map(|finding| finding.file.as_deref())
+        .collect();
+    assert_eq!(paths, ["src/legacy/a.ts"]);
+    assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
+    // The folder it moved to is not on the list.
+    let record = brief_round(
+        &f.copy,
+        TestingMode::AtShip,
+        &briefed(Vec::new(), &["src/other"]),
+        &Fake::default(),
+    );
+    assert!(record
+        .findings
+        .iter()
+        .all(|finding| finding.kind != done_check::FindingKind::DoNotTouch));
+}
+
+#[test]
+fn an_exit_that_is_not_the_one_asked_for_fails_the_round_without_asking_the_model() {
+    let f = built();
+    let fake = Fake {
+        brief_runs: RefCell::new(vec![ends(2, "error TS2322: bad type")]),
+        ..Default::default()
+    };
+    let record = brief_round(
+        &f.copy,
+        TestingMode::Light,
+        &briefed(two_lines(), &[]),
+        &fake,
+    );
+    let checks = gate(&record, GateKind::Checks);
+    assert_eq!(checks.outcome, Outcome::Failed);
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(record.summary.contains("it builds"), "{}", record.summary);
+    assert!(record.summary.contains("exited 2"), "{}", record.summary);
+    assert!(
+        record.summary.contains("error TS2322"),
+        "the output is in the summary: {}",
+        record.summary
+    );
+    assert_eq!(record.brief_lines[0].passes, Some(false));
+    assert_eq!(
+        record.brief_lines[1].passes,
+        Some(true),
+        "the next line still ran"
+    );
+    assert!(fake.prompts.borrow().is_empty());
+}
+
+#[test]
+fn text_the_output_does_not_contain_fails_and_exit_n_passes_on_that_exit() {
+    let f = built();
+    let fake = Fake {
+        brief_runs: RefCell::new(vec![ends(0, "built"), ends(0, "{\"status\": \"down\"}")]),
+        ..Default::default()
+    };
+    let record = brief_round(
+        &f.copy,
+        TestingMode::Light,
+        &briefed(two_lines(), &[]),
+        &fake,
+    );
+    assert_eq!(gate(&record, GateKind::Checks).outcome, Outcome::Failed);
+    assert!(
+        record.summary.contains("didn't contain"),
+        "{}",
+        record.summary
+    );
+    assert_eq!(record.brief_lines[1].passes, Some(false));
+    // A line that asks for exit 1 and gets it.
+    let fake = Fake {
+        brief_runs: RefCell::new(vec![ends(1, "1 failed")]),
+        ..Default::default()
+    };
+    let red = vec![line(
+        "the old test fails first",
+        "npm test -- old",
+        Some("exit 1"),
+    )];
+    let record = brief_round(&f.copy, TestingMode::Light, &briefed(red, &[]), &fake);
+    assert_eq!(
+        gate(&record, GateKind::Checks).outcome,
+        Outcome::Passed,
+        "{}",
+        record.summary
+    );
+}
+
+#[test]
+fn a_missing_command_could_not_run_and_the_round_is_unsure_never_passed() {
+    let f = built();
+    let fake = Fake {
+        brief_runs: RefCell::new(vec![
+            ends(127, "sh: nosuchtool: command not found"),
+            ends(0, "ok"),
+        ]),
+        ..Default::default()
+    };
+    let record = brief_round(
+        &f.copy,
+        TestingMode::Light,
+        &briefed(two_lines(), &[]),
+        &fake,
+    );
+    let checks = gate(&record, GateKind::Checks);
+    assert_eq!(checks.outcome, Outcome::NotRun, "{}", checks.detail);
+    assert!(checks.detail.contains("couldn't run"), "{}", checks.detail);
+    assert_eq!(checks.evidence[1].outcome, Outcome::NotRun);
+    assert_eq!(record.verdict, Verdict::Unsure, "{}", record.summary);
+    assert_eq!(
+        record.brief_lines[0].passes, None,
+        "neither a pass nor a failure"
+    );
+    assert!(fake.prompts.borrow().is_empty());
+    // A runner that can't start anything at all (the default) is the same.
+    struct Blind;
+    impl Runners for Blind {
+        fn checks(
+            &self,
+            _c: &Path,
+            _n: &[String],
+            _ch: &[String],
+        ) -> Result<Vec<CommandEvidence>, String> {
+            Ok(vec![run("npm test", Outcome::Passed, "14 passed")])
+        }
+        fn routes(&self, _c: &Path) -> Option<CommandEvidence> {
+            None
+        }
+        fn verdict(&self, _p: &str) -> Result<String, String> {
+            Ok(r#"{"verdict":"met","why":"ok"}"#.into())
+        }
+    }
+    let chosen = moded(&f.copy, TestingMode::Light, None);
+    let blind = run_round(
+        &RoundInput {
+            delegation_id: "d-1",
+            round: 1,
+            checkout: &f.copy,
+            plan: &chosen.gate_plan(),
+            brief: "Add b",
+            done_when: "b",
+            report: "Done.",
+            now: 1,
+            gate_owns_checks: false,
+            facts: None,
+            mode: Some(&chosen),
+            brief_round: Some(&briefed(two_lines(), &[])),
+        },
+        &Blind,
+    );
+    assert_eq!(gate(&blind, GateKind::Checks).outcome, Outcome::NotRun);
+    assert_eq!(blind.verdict, Verdict::Unsure);
+}
+
+#[test]
+fn a_line_that_ran_zero_tests_could_not_run() {
+    let f = built();
+    let zero = "running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 12 filtered out; finished in 0.00s";
+    let fake = Fake {
+        brief_runs: RefCell::new(vec![ends(0, zero)]),
+        ..Default::default()
+    };
+    let one = vec![line("the new test passes", "cargo test brand_new", None)];
+    let record = brief_round(&f.copy, TestingMode::Light, &briefed(one, &[]), &fake);
+    let checks = gate(&record, GateKind::Checks);
+    assert_eq!(checks.outcome, Outcome::NotRun);
+    assert!(
+        checks.detail.contains("ran zero tests"),
+        "{}",
+        checks.detail
+    );
+    assert_eq!(record.verdict, Verdict::Unsure);
+    assert_eq!(record.brief_lines[0].passes, None);
+}
+
+#[test]
+fn the_lines_run_even_when_the_delivery_gate_holds_the_projects_checks() {
+    let f = built();
+    let fake = Fake::default();
+    let record = brief_round_in(
+        &f.copy,
+        TestingMode::Light,
+        None,
+        &briefed(two_lines(), &[]),
+        &fake,
+        true,
+    );
+    // The project's own checks went to no-mistakes; the brief's lines are the brief's, and ran.
+    assert_eq!(
+        fake.events.borrow().as_slice(),
+        &["brief: npm run build", "brief: curl localhost:3000/score"]
+    );
+    let checks = gate(&record, GateKind::Checks);
+    assert_eq!(checks.outcome, Outcome::Passed, "{}", checks.detail);
+    assert_eq!(checks.evidence.len(), 2);
+    // A line that fails is still a failure there.
+    let fake = Fake {
+        brief_runs: RefCell::new(vec![ends(1, "no")]),
+        ..Default::default()
+    };
+    let record = brief_round_in(
+        &f.copy,
+        TestingMode::Light,
+        None,
+        &briefed(two_lines(), &[]),
+        &fake,
+        true,
+    );
+    assert_eq!(gate(&record, GateKind::Checks).outcome, Outcome::Failed);
+}
+
+#[test]
+fn lines_that_cannot_be_read_are_not_read_as_no_lines() {
+    let f = built();
+    let fake = Fake::default();
+    let mut damaged = briefed(Vec::new(), &[]);
+    damaged.checks_unreadable = Some("the brief's own checks couldn't be read".into());
+    let record = brief_round(&f.copy, TestingMode::Light, &damaged, &fake);
+    let checks = gate(&record, GateKind::Checks);
+    assert_eq!(checks.outcome, Outcome::NotRun);
+    assert!(
+        checks.detail.contains("couldn't be read"),
+        "{}",
+        checks.detail
+    );
+    assert_eq!(record.verdict, Verdict::Unsure);
+}
+
+#[test]
+fn a_brief_with_no_lines_runs_the_round_exactly_as_it_was() {
+    let f = built();
+    let fake = Fake::default();
+    let with_none = brief_round(
+        &f.copy,
+        TestingMode::Light,
+        &briefed(Vec::new(), &[]),
+        &fake,
+    );
+    assert_eq!(fake.events.borrow().as_slice(), &["project checks"]);
+    assert_eq!(gate(&with_none, GateKind::Checks).evidence.len(), 1);
+    assert_eq!(with_none.verdict, Verdict::Passed);
+}
+
+#[test]
+fn each_lines_result_lands_on_the_delegation_row_with_passes_set_by_the_gates() {
+    let f = built();
+    let mut conn = store();
+    let row = record_row(&mut conn);
+    brief_checks::keep(
+        &conn,
+        &row.id,
+        &brief_checks::KeepInput {
+            stamp: Some("0123456789abcdef0123456789abcdef01234567".into()),
+            checks: serde_json::json!([
+                { "what": "it builds", "command": "npm run build" },
+                { "what": "the route answers", "command": "curl localhost:3000/score", "expect": "ok" }
+            ]),
+            leave: serde_json::Value::Null,
+        },
+    )
+    .unwrap();
+    // The round reads the lines from the row, runs them, and its results are written back.
+    let state = brief_checks::state_of(&conn, &row.id).unwrap();
+    assert!(
+        state.checks.iter().all(|l| l.passes.is_none()),
+        "nothing has passed yet"
+    );
+    let fake = Fake {
+        brief_runs: RefCell::new(vec![ends(0, "built"), ends(0, "{\"status\": \"down\"}")]),
+        ..Default::default()
+    };
+    let record = brief_round(
+        &f.copy,
+        TestingMode::Light,
+        &BriefRound::from(&state),
+        &fake,
+    );
+    brief_checks::record_results(&conn, &row.id, &record.brief_lines).unwrap();
+    let after = brief_checks::state_of(&conn, &row.id).unwrap();
+    assert_eq!(after.checks[0].passes, Some(true));
+    assert_eq!(after.checks[1].passes, Some(false));
+    assert_eq!(after.checks[0].ran_at, Some(42));
+    assert!(after.checks[1]
+        .output_tail
+        .as_deref()
+        .unwrap()
+        .contains("\"status\": \"down\""));
+    assert_eq!(
+        after.stamp.as_deref(),
+        Some("0123456789abcdef0123456789abcdef01234567")
+    );
+    // The row still reads as it did: its own save didn't drop them.
+    crate::delegations::set_gate_verdict(&mut conn, &row.id, "failed", "no", None, 5).unwrap();
+    assert_eq!(
+        brief_checks::state_of(&conn, &row.id).unwrap().checks[1].passes,
+        Some(false)
+    );
+}
+
+#[test]
+fn a_changed_path_on_the_do_not_touch_list_fails_the_round_in_every_mode_but_off() {
+    let f = built();
+    for (mode, fails) in [
+        (TestingMode::AtShip, true),
+        (TestingMode::Light, true),
+        (TestingMode::Full, true),
+        (TestingMode::Off, false),
+    ] {
+        let fake = Fake::default();
+        let record = brief_round(&f.copy, mode, &briefed(Vec::new(), &["app.ts"]), &fake);
+        let found: Vec<&done_check::CodeFinding> = record
+            .findings
+            .iter()
+            .filter(|finding| finding.kind == done_check::FindingKind::DoNotTouch)
+            .collect();
+        if fails {
+            assert_eq!(
+                record.verdict,
+                Verdict::Failed,
+                "{mode:?}: {}",
+                record.summary
+            );
+            assert_eq!(found.len(), 1, "{mode:?}");
+            assert_eq!(
+                found[0].detail,
+                "app.ts is on the brief's do-not-touch list."
+            );
+            assert!(
+                record.summary.contains("do-not-touch"),
+                "{mode:?}: {}",
+                record.summary
+            );
+            assert!(
+                !record.summary.contains("the report's claims don't match"),
+                "{}",
+                record.summary
+            );
+        } else {
+            assert!(found.is_empty(), "{mode:?}");
+            assert_eq!(
+                record.verdict,
+                Verdict::Passed,
+                "{mode:?}: {}",
+                record.summary
+            );
+        }
+    }
+}
+
+#[test]
+fn a_do_not_touch_folder_catches_any_file_under_it_and_a_sibling_is_left_alone() {
+    let f = fixture("leave-folder");
+    std::fs::create_dir_all(f.copy.join("src/legacy")).unwrap();
+    std::fs::create_dir_all(f.copy.join("src/new")).unwrap();
+    std::fs::write(f.copy.join("src/legacy/old.ts"), "export const o = 1;\n").unwrap();
+    std::fs::write(f.copy.join("src/new/fresh.ts"), "export const n = 1;\n").unwrap();
+    sh(&f.copy, &["add", "-A"]);
+    sh(&f.copy, &["commit", "-q", "-m", "work"]);
+    let fake = Fake::default();
+    let record = brief_round(
+        &f.copy,
+        TestingMode::AtShip,
+        &briefed(Vec::new(), &["src/legacy"]),
+        &fake,
+    );
+    let paths: Vec<&str> = record
+        .findings
+        .iter()
+        .filter_map(|finding| finding.file.as_deref())
+        .collect();
+    assert!(paths.contains(&"src/legacy/old.ts"), "{paths:?}");
+    assert!(!paths.contains(&"src/new/fresh.ts"), "{paths:?}");
+    assert_eq!(record.verdict, Verdict::Failed);
+}
+
+#[test]
+fn a_do_not_touch_list_that_cannot_be_read_leaves_the_round_unsure() {
+    let f = built();
+    let fake = Fake::default();
+    let mut damaged = briefed(Vec::new(), &[]);
+    damaged.leave_unreadable = Some("the brief's do-not-touch list couldn't be read".into());
+    let record = brief_round(&f.copy, TestingMode::Light, &damaged, &fake);
+    assert_eq!(record.verdict, Verdict::Unsure, "{}", record.summary);
+    assert!(
+        record
+            .summary
+            .contains("do-not-touch list couldn't be read"),
+        "{}",
+        record.summary
+    );
+    // `off` runs no findings, so it does not look.
+    let record = brief_round(&f.copy, TestingMode::Off, &damaged, &Fake::default());
+    assert_eq!(record.verdict, Verdict::Passed);
 }

@@ -87,11 +87,14 @@ pub enum FindingKind {
     WeakenedTest,
     Debris,
     OutwardAction,
+    /// SC-4: a changed path on the brief's do-not-touch list.
+    DoNotTouch,
 }
 
 impl FindingKind {
     pub fn name(self) -> &'static str {
         match self {
+            FindingKind::DoNotTouch => "Off-limits change",
             FindingKind::FalseScope => "False scope claim",
             FindingKind::ScopeCreep => "Scope creep",
             FindingKind::WeakenedTest => "Weakened test",
@@ -516,6 +519,26 @@ fn action_stems(sentence: &str) -> Vec<&'static [&'static str]> {
         .iter()
         .copied()
         .filter(|stems| stems.iter().any(|stem| lower.contains(stem)))
+        .collect()
+}
+
+/// SC-4: a changed path under one of the brief's do-not-touch entries is a finding of its own, one per path, whatever
+/// the report or the brief's text says about it (a brief that names the file in its spec doesn't make it fair game).
+/// An entry names a file, a folder (everything under it) or a pattern; case and separators are not a way round it.
+pub fn leave_findings(leave: &[String], files: &[ChangedFile]) -> Vec<CodeFinding> {
+    files
+        .iter()
+        .filter(|file| {
+            leave
+                .iter()
+                .any(|entry| super::brief_checks::under(entry, &file.path))
+        })
+        .map(|file| CodeFinding {
+            kind: FindingKind::DoNotTouch,
+            file: Some(file.path.clone()),
+            detail: format!("{} is on the brief's do-not-touch list.", file.path),
+        })
+        .take(MAX_PER_KIND)
         .collect()
 }
 

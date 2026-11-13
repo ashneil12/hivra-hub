@@ -48,6 +48,84 @@ fn claims_are_the_checkable_sentences_and_the_story_is_dropped() {
     assert!(!claims_text(&claims).contains("misunderstanding"));
 }
 
+// ---- SC-4: the brief's do-not-touch list ---------------------------------------------------------------------------------
+
+fn leave(entries: &[&str]) -> Vec<String> {
+    entries.iter().map(|entry| entry.to_string()).collect()
+}
+
+#[test]
+fn a_changed_path_on_the_list_is_its_own_finding_in_the_briefs_words() {
+    let files = [
+        file("src/app.ts", Some("a"), Some("b")),
+        file("src/legacy/old.ts", Some("a"), Some("b")),
+    ];
+    let found = leave_findings(&leave(&["src/legacy/old.ts"]), &files);
+    assert_eq!(found.len(), 1);
+    assert_eq!(found[0].kind, FindingKind::DoNotTouch);
+    assert_eq!(found[0].file.as_deref(), Some("src/legacy/old.ts"));
+    assert_eq!(
+        found[0].detail,
+        "src/legacy/old.ts is on the brief's do-not-touch list."
+    );
+    assert_eq!(
+        found[0].line(),
+        "Off-limits change: src/legacy/old.ts is on the brief's do-not-touch list."
+    );
+    // Nothing on the list, or nothing changed, is nothing found.
+    assert!(leave_findings(&[], &files).is_empty());
+    assert!(leave_findings(&leave(&["src/legacy"]), &[]).is_empty());
+}
+
+#[test]
+fn a_folder_covers_what_is_under_it_and_a_patterns_matches_and_a_longer_name_is_left_alone() {
+    let files = [
+        file("src/legacy/a.ts", None, Some("x")),
+        file("src/legacy/deep/b.ts", Some("a"), None),
+        file("src/legacy-notes.md", Some("a"), Some("b")),
+        file("tests/x.test.ts", Some("a"), Some("b")),
+        file("Docs/My Notes/é.md", Some("a"), Some("b")),
+    ];
+    let paths = |list: &[&str]| -> Vec<String> {
+        leave_findings(&leave(list), &files)
+            .into_iter()
+            .filter_map(|finding| finding.file)
+            .collect()
+    };
+    assert_eq!(
+        paths(&["src/legacy"]),
+        ["src/legacy/a.ts", "src/legacy/deep/b.ts"]
+    );
+    assert_eq!(paths(&["tests/*.test.ts"]), ["tests/x.test.ts"]);
+    // A new or a deleted file counts as a change; case and a Windows separator don't hide one.
+    assert_eq!(paths(&["docs\\my notes"]), ["Docs/My Notes/é.md"]);
+}
+
+#[test]
+fn the_brief_naming_a_path_in_its_spec_does_not_clear_it_off_the_list() {
+    // Scope creep reads the brief's text and lets a file the brief names through. The do-not-touch list does not.
+    let files = [file("src/legacy/a.ts", Some("a"), Some("b"))];
+    let brief = "Only src/legacy/a.ts is out of scope; see src/legacy/a.ts for why.";
+    assert!(!leave_findings(&leave(&["src/legacy/a.ts"]), &files).is_empty());
+    assert!(
+        code_findings(brief, "", &[], &files)
+            .iter()
+            .all(|f| f.kind != FindingKind::ScopeCreep),
+        "the brief names it, so it is not scope creep; the list is what catches it"
+    );
+}
+
+#[test]
+fn a_do_not_touch_finding_is_capped_like_the_others() {
+    let files: Vec<ChangedFile> = (0..30)
+        .map(|n| file(&format!("legacy/f{n}.ts"), Some("a"), Some("b")))
+        .collect();
+    assert_eq!(
+        leave_findings(&leave(&["legacy"]), &files).len(),
+        MAX_PER_KIND
+    );
+}
+
 // ---- each code check ---------------------------------------------------------------------------------------------------
 
 #[test]
@@ -428,6 +506,7 @@ fn s7_round(repo: &Path, judge: &Judge) -> gates::GateRecord {
             gate_owns_checks: false,
             facts: None,
             mode: None,
+            brief_round: None,
         },
         judge,
     )
