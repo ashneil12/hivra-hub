@@ -152,4 +152,29 @@ describe("the daily check on quiet asks", () => {
     expect(askDigest(withDigestMark(doc, "chief", NOW - 1000), "chief", "app", NOW)).toBeUndefined();
     expect(askDigest({ ...emptyLedger(0), asks: [row({ n: 1, status: "waiting" })] }, "chief", "app", NOW)).toBeUndefined();
   });
+
+  // Gap A5 (sc-17-ask-fixes): the check goes to the oldest quiet ask's chat only when that chat can take it.
+  describe("when the oldest quiet ask's chat cannot take it", () => {
+    const doc = { ...emptyLedger(0), asks: [row({ n: 1, sessionId: "old" }), row({ n: 2, sessionId: "live" }), row({ n: 3, sessionId: "live" })] };
+
+    it("goes to the chat of the next quiet ask that can, and still names every quiet ask", () => {
+      const due = askDigest(doc, "chief", "app", NOW, (chatId) => chatId === "live");
+      expect(due?.chatId).toBe("live");
+      for (const n of [1, 2, 3]) expect(due?.message.text).toContain(`- ask ${n}:`);
+    });
+
+    it("prefers the oldest quiet ask's chat when it can, and is unchanged without a filter", () => {
+      expect(askDigest(doc, "chief", "app", NOW, () => true)?.chatId).toBe("old");
+      expect(askDigest(doc, "chief", "app", NOW)?.chatId).toBe("old");
+    });
+
+    it("is not due while no quiet ask's chat can take it, and the daily mark is not touched", () => {
+      expect(askDigest(doc, "chief", "app", NOW, () => false)).toBeUndefined();
+      expect(doc.nudged.chief).toBeUndefined();
+    });
+
+    it("a chat that is neither a quiet ask's chat nor open is never the address", () => {
+      expect(askDigest(doc, "chief", "app", NOW, (chatId) => chatId === "elsewhere")).toBeUndefined();
+    });
+  });
 });

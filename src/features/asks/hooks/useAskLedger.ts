@@ -171,23 +171,26 @@ export function useAskLedger(options: AskLedgerOptions): void {
         .catch(() => undefined);
     }
 
-    // The daily check: a first mate whose asks went quiet hears of it once a day, in the chat the oldest was made in.
+    // The daily check: a first mate whose asks went quiet hears of it once a day, in the chat the oldest was made in, or
+    // (A5) the next quiet ask's chat when that one can't take it.
     if (send) {
       const now = Date.now();
       const mates = new Set(doc.asks.map((item) => item.mateId));
       for (const mateId of mates) {
         if (digesting.current.has(mateId)) continue;
-        const due = askDigest(doc, mateId, "app", now);
+        // Only into a chat that is open, idle and still this first mate's; with none, nothing is marked sent and a later pass tries again.
+        const takes = (chatId: string) => {
+          const chat = options.sessions.find((session) => session.id === chatId);
+          return !!chat && !chat.busy && !chat.queuedMessages?.length && mateOf(chat.id) === mateId;
+        };
+        const due = askDigest(doc, mateId, "app", now, takes);
         if (!due) continue;
-        const chat = options.sessions.find((session) => session.id === due.chatId);
-        // Only into a chat that is open, idle and still this first mate's; otherwise it waits for a later pass.
-        if (!chat || chat.busy || chat.queuedMessages?.length || mateOf(chat.id) !== mateId) continue;
         digesting.current.add(mateId);
         void store
           .markDigest(mateId)
           .then(() => cli())
           .then((command) => {
-            const again = askDigest({ ...store.doc(), nudged: { ...store.doc().nudged, [mateId]: 0 } }, mateId, command, Date.now());
+            const again = askDigest({ ...store.doc(), nudged: { ...store.doc().nudged, [mateId]: 0 } }, mateId, command, Date.now(), takes);
             if (again) return send(again.chatId, again.message);
           })
           .catch(() => undefined)
