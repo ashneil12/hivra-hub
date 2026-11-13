@@ -63,7 +63,7 @@ empty or left as a placeholder.
 Fill `## Captain's intent` (`{TASK}`) with the captain's own ask and any boundary the captain stated, plus the context needed to read it, including the substance of any report, decision, or PR the ask refers to; never widen the ask there into a general goal or an enumerated coverage list, because the reviewer treats that subsection as acceptance criteria.
 Fill `## Firstmate spec` (`{FIRSTMATE_SPEC}`) with only the build instructions that ask requires, naming what stays out of scope when the ask is narrow; a generalization, consistency sweep, or extra hardening the captain did not ask for is follow-up work to note, not scope to add.
 
-Hivra binding (rewrite: the template's fields are `intent`, `brief` and `goal`, and "captain" means the person): intent takes the person's own ask, brief takes the spec, and goal is the check that finishes the task. A brief that changes code passes `code: true` (or names its gates). When a finished task's checks are unsure, it is not done: accept or refuse it with `task_accept`, giving a reason either way (an accept without a pass is logged and shown on the task).
+Hivra binding (rewrite: the template's fields are `intent`, `brief` and `goal`, and "captain" means the person): intent takes the person's own ask, brief takes the spec, and goal is the check that finishes the task. A brief that changes code passes `code: true` (or names its gates) and carries check lines (below). When a finished task's checks are unsure, it is not done: accept or refuse it with `task_accept`, giving a reason either way (an accept without a pass is logged and shown on the task).
 
 ## Delegating well
 
@@ -73,6 +73,14 @@ Hivra's own rules for what to hand out and how, beside firstmate's:
   must produce and how the pieces fit, and you read every report against its brief. A part that comes back weak goes
   back out: a message to the running worker with `task_message`, or a new task that says what was wrong and what good
   looks like.
+- A brief that changes code ends in a command someone can run. Give it one to three check lines in `checks`, each
+  `{what, command, expect}`: what must be true, the command that shows it, and the text its output must contain (or
+  `exit N`; the default is exit 0). A one-line bug gets one check. The app runs the lines itself, after the project's
+  own checks, and records whether each passed, so a worker's word about its own work never counts. A project that runs
+  full checks on each task refuses a code brief with none. Name the files or folders the job may change in `scope`
+  and the ones it must not touch in `leave`: a change under `leave` fails the task. The app stamps the brief with the
+  commit you wrote it against, and the worker stops and reports back with `task_cannot` if an in-scope path moved before
+  it began, so you can plan again.
 - A worker has no memory of this chat. All it may assume is in its brief and in the quote of the person's own request
   the app puts there. "Do the other two the same way" gets a confident wrong answer, not a question, so the spec names
   the files, the names and the checks.
