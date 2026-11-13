@@ -11,6 +11,7 @@ import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { memoryReadableBlocks } from "../../memory/model/privateChat";
 import { readLegacyAskLedger } from "../../hub/model/askLedger";
 import { askDigest, askNudge, isAshMessage } from "../model/askNotes";
+import { chaseOf, pendingReminders, quietCheckOnlyDue, raisedAsks, remindMessage } from "../model/askQuiet";
 import { HUB_MATE, hearMessage, hearPrompt, nothingToHear, parseHeard, rulesAsks, sentences, type HeardAsk } from "../model/asks";
 import { askStore } from "../model/askStore";
 import { wideAsks } from "../model/wideReading";
@@ -71,6 +72,8 @@ export function useAskLedger(options: AskLedgerOptions): void {
   const running = useRef(0);
   const nudged = useRef(new Set<string>());
   const digesting = useRef(new Set<string>());
+  /** Reminders (askQuiet.ts) being sent, by ask id and the time the person asked. */
+  const reminding = useRef(new Set<string>());
   // A ledger change (this window's or another's) runs the pass again with the chats as they stand.
   const [tick, setTick] = useState(0);
 
@@ -112,6 +115,12 @@ export function useAskLedger(options: AskLedgerOptions): void {
       const mateId = mateOf(session.id);
       if (!mateId) continue;
       const readable = memoryReadableBlocks(session);
+      // A message from Ash in the chat a quiet ask was raised in answers it: its Needs you row goes (askQuiet.ts).
+      for (const raised of raisedAsks(doc)) {
+        const at = chaseOf(raised)?.raisedAt ?? 0;
+        if (raised.sessionId === session.id && readable.some((block) => isAshMessage(block) && (block.startedAt ?? 0) > at))
+          void store.answered(raised.id, at).catch(() => undefined);
+      }
       let seen = baseline.current.get(session.id);
       const first = !seen;
       if (!seen) {
@@ -199,7 +208,17 @@ export function useAskLedger(options: AskLedgerOptions): void {
           return !!chat && !chat.busy && !chat.queuedMessages?.length && mateOf(chat.id) === mateId;
         };
         const due = askDigest(doc, mateId, "app", now, takes);
-        if (!due) continue;
+        if (!due) {
+          // Nothing to tell this first mate, but an ask waiting on Ash has been quiet: the check is made and only its count moves.
+          if (quietCheckOnlyDue(doc, mateId, now)) {
+            digesting.current.add(mateId);
+            void store
+              .markDigest(mateId)
+              .catch(() => undefined)
+              .finally(() => digesting.current.delete(mateId));
+          }
+          continue;
+        }
         digesting.current.add(mateId);
         void store
           .markDigest(mateId)
@@ -212,6 +231,31 @@ export function useAskLedger(options: AskLedgerOptions): void {
           })
           .catch(() => undefined)
           .finally(() => digesting.current.delete(mateId));
+      }
+
+      // A reminder the person asked for on a quiet ask (askQuiet.ts), sent once, to the ask's own chat or another of its first
+      // mate's that can take it. A busy or closed chat leaves it queued in the ledger for a later pass.
+      for (const ask of pendingReminders(doc)) {
+        const remindAt = chaseOf(ask)?.remindAt;
+        if (remindAt === undefined || reminding.current.has(`${ask.id}:${remindAt}`)) continue;
+        const takes = (chatId: string) => {
+          const chat = options.sessions.find((session) => session.id === chatId);
+          return !!chat && !chat.busy && !chat.queuedMessages?.length && mateOf(chat.id) === ask.mateId;
+        };
+        const chatId = [ask.sessionId, ...options.sessions.map((session) => session.id)].find(takes);
+        if (chatId === undefined) continue;
+        const key = `${ask.id}:${remindAt}`;
+        reminding.current.add(key);
+        void cli()
+          .then(async (command) => {
+            // The ask as it stands now: one that moved or closed while the command was fetched is not reminded of.
+            const current = store.doc().asks.find((item) => item.id === ask.id);
+            if (!current || chaseOf(current)?.remindAt !== remindAt) return;
+            await send(chatId, remindMessage(current, command, remindAt));
+            await store.reminderSent(ask.id, remindAt);
+          })
+          .catch(() => undefined)
+          .finally(() => reminding.current.delete(key));
       }
     }
   }, [on, options.sessions, tick]);
