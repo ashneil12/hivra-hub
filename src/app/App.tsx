@@ -1106,6 +1106,10 @@ import { ONE_CHAT, earlierChatIds, isOneChat, isOneChatMono, setCatchUpHost } fr
 import { currentNeedsYou } from "../features/needs/model/needsLive";
 import { tauriFirstMate } from "../features/firstmate/model/steering";
 import { buildCatchUp, catchUpBlock, catchUpNote, catchUpSince } from "../features/asks/model/catchUp";
+import { besideBlock, besideNote, setBesideChatHost } from "../features/asks/model/besideChat";
+import { needLinksKey, needLinksNote } from "../features/asks/model/needLinks";
+import { inlineNeedCard } from "../features/asks/ui/InlineNeed";
+import { setInlineLinkCard } from "../features/sessions/model/inlineLinkCards";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
 import { stampFirstMate } from "../features/monos/model/monoMate";
@@ -10306,6 +10310,28 @@ function Workspace({
             const shown = catchUpNote(current.blocks);
             if (shown) appContext.push(shown);
           }
+          // What Ash wrote to a first mate from the panel beside the Chief of Staff's chat since its last reply, so it
+          // knows he did (Ash, 13 Nov; asks/model/besideChat.ts).
+          if (!rawCommand) {
+            const beside = besideNote(current.blocks);
+            if (beside) appContext.push(beside);
+          }
+          // One chat: every open Needs you item with its link, when the list changed since this chat was last given it (and
+          // always in a fresh session), so a reply asks about one with the card Ash answers from (asks/model/needLinks.ts).
+          if (!rawCommand && isOneChat(sessionId)) {
+            const open = currentNeedsYou();
+            const key = needLinksKey(open);
+            if (key !== needLinksShown.current.get(sessionId) || !current.providerSessionId) {
+              const projects = hubData().listProjects();
+              const note = needLinksNote(open, (item) => {
+                const projectId = open.find((entry) => entry.key === item.key)?.projectId;
+                return projectId ? projects.find((project) => project.id === projectId)?.name : undefined;
+              });
+              if (note) appContext.push(note);
+              if (note && monoRotation) tidyGiven.push(note);
+            }
+            needLinksShown.current.set(sessionId, key);
+          }
           if (monoRotation && IS_HUB_BUNDLE) {
             const after = monoRotation.rotation.afterBlockId;
             const now = sessionsRef.current.find((session) => session.id === sessionId)?.blocks ?? [];
@@ -10788,8 +10814,34 @@ function Workspace({
 
   // The composer's own send is the person's turn for the spend gate. Other callers of onSubmit are automated.
   const onComposerSubmit = useCallback(
-    (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean =>
-      onSubmit(sessionId, text, attachments, { ...options, origin: "person", byOwner: true }),
+    (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean => {
+      const sent = onSubmit(sessionId, text, attachments, { ...options, origin: "person", byOwner: true });
+      // Typed into a first mate's chat open beside the Chief of Staff's: the one chat keeps a line of it, and the Chief
+      // of Staff reads it beside his next message (Ash, 13 Nov: "making sure that the chief of staff knows").
+      const viewing = monoViewIdRef.current;
+      const chief = pickCaptain(listMonos());
+      if (
+        sent &&
+        text.trim() &&
+        viewing &&
+        sessionId !== viewing &&
+        sessionId === shownMonoSessionIdRef.current &&
+        chief &&
+        monoForSession(viewing)?.id === chief.id
+      ) {
+        const to = sessionsRef.current.find((session) => session.id === sessionId);
+        const name = monoForSession(sessionId)?.name ?? (to ? sessionDisplayTitle(to.title, to.harness) : "that chat");
+        const block = besideBlock({ chatId: sessionId, to: name, text, at: Date.now() });
+        setSessions((previous) =>
+          previous.map((session) =>
+            session.id === viewing && !session.blocks.some((entry) => entry.id === block.id)
+              ? { ...session, blocks: [...session.blocks, block] }
+              : session,
+          ),
+        );
+      }
+      return sent;
+    },
     [onSubmit],
   );
 
@@ -11254,6 +11306,8 @@ function Workspace({
   const queueMonoSessionCompletionRef = useRef(queueMonoSessionCompletion);
   // The open-asks list each chat was last shown (asks/model/askNotes.ts openAsksKey), so the same list isn't sent twice.
   const askNotesShown = useRef(new Map<string, string>());
+  // The one chat's Needs you links (asks/model/needLinks.ts): what its Chief of Staff was last given, per chat.
+  const needLinksShown = useRef(new Map<string, string>());
   queueMonoSessionCompletionRef.current = queueMonoSessionCompletion;
   // WP-60: a remote project's result lands in the chat that started it, once.
   useEffect(
@@ -11325,6 +11379,21 @@ function Workspace({
         ),
       ),
   });
+  // Ash, 13 Nov: a job's or a first mate's chat opens beside the Chief of Staff's, in the panel a Mono's launched
+  // sessions open in, where he reads it and types to it without leaving the one chat (asks/model/besideChat.ts).
+  useEffect(
+    () =>
+      setBesideChatHost((chatId) => {
+        const viewing = monoViewIdRef.current;
+        const chief = pickCaptain(listMonos());
+        if (!viewing || !chief || monoForSession(viewing)?.id !== chief.id || chatId === viewing) return false;
+        void showMonoLaunchedSession(viewing, chatId);
+        return true;
+      }),
+    [showMonoLaunchedSession],
+  );
+  // One chat: a Needs you link in a reply draws as that question's own card, answered where it sits (InlineNeed.tsx).
+  useEffect(() => (ONE_CHAT ? setInlineLinkCard(inlineNeedCard) : undefined), []);
   // "Catch me up" in the one chat (asks/model/catchUp.ts): one app card from the app's own records. No model turn.
   useEffect(
     () =>

@@ -48,6 +48,15 @@ export type NeedsItem = {
   gateKey?: string;
   /** The chat that asked this decision, as the store recorded it. The card opens it on the message that asked. */
   askedBy?: string;
+  /**
+   * Every answer the asker offered, in its order (Ash, 13 Nov: "it only gives you one option"). The card shows them all,
+   * lettered, with `suggested` marked. Only on a plain question; a red line, an access ask or a person-only key has none.
+   */
+  choices?: string[];
+  /** The asker's own pick, one of `choices`. */
+  suggested?: string;
+  /** Answer it with one of `choices` or the person's own words. Resolves to why it was refused, or undefined when sent. */
+  answer?: (words: string) => Promise<string | undefined>;
 };
 
 type FactBase = {
@@ -91,6 +100,10 @@ export type QuestionFact = FactBase & {
   sessionId?: string;
   /** The chat that asked this decision. */
   askedBy?: string;
+  /** Every answer offered, the asker's pick and the way to answer in a choice or the person's words (NeedsItem). */
+  choices?: string[];
+  suggested?: string;
+  answer?: (words: string) => Promise<string | undefined>;
 };
 
 export type ApprovalFact = FactBase & {
@@ -379,6 +392,23 @@ function questionItem(fact: QuestionFact, now: number): Draft | undefined {
     decisionKey: fact.decisionKey,
     sessionId: fact.sessionId,
     askedBy: fact.askedBy,
+    ...choicesOf(fact),
+  };
+}
+
+/** A question's answers as the card shows them: unique, non-empty, the pick only when it is one of them. */
+function choicesOf(fact: Pick<QuestionFact, "choices" | "suggested" | "answer">): Pick<NeedsItem, "choices" | "suggested" | "answer"> {
+  if (!fact.answer) return {};
+  const choices: string[] = [];
+  for (const raw of fact.choices ?? []) {
+    const label = raw.replace(/\s+/g, " ").trim();
+    if (label && !choices.includes(label)) choices.push(label);
+  }
+  const pick = fact.suggested?.replace(/\s+/g, " ").trim();
+  return {
+    answer: fact.answer,
+    ...(choices.length ? { choices } : {}),
+    ...(pick && choices.includes(pick) ? { suggested: pick } : {}),
   };
 }
 
@@ -548,6 +578,9 @@ function collapse(drafts: Draft[]): NeedsItem[] {
       ...(row.decisionKey ? { decisionKey: row.decisionKey } : {}),
       ...(row.gateKey ? { gateKey: row.gateKey } : {}),
       ...(row.askedBy?.trim() ? { askedBy: row.askedBy.trim() } : {}),
+      ...(row.answer ? { answer: row.answer } : {}),
+      ...(row.answer && row.choices?.length ? { choices: row.choices } : {}),
+      ...(row.answer && row.suggested ? { suggested: row.suggested } : {}),
     }))
     .sort((a, b) => urgency(a.kind) - urgency(b.kind) || a.at - b.at || a.key.localeCompare(b.key));
 }

@@ -151,3 +151,120 @@ test("a chat says how many side questions it has kept, and they come back as tab
   await side.click();
   await expect(page.getByRole("tablist", { name: "Side questions" }).getByRole("tab").first()).toContainText("Example: which rooms are in Area 3");
 });
+
+// Ash, 13 Nov: Needs you "only gives you one option ... How can you actually send your own reply there ... I didn't
+// even know you can click on it", and "the animation for it can be better".
+test("one chat: a Needs you row opens under itself with every answer, and the answer is seen to land", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  await page.locator('[data-chief-chip="needs"]').click();
+  const list = page.locator("[data-chief-needs]");
+  const row = list.locator("[data-inbox-need]").filter({ hasText: "Which waitlist headline?" });
+  await expect(row.locator("[data-need-summary]")).toContainText("2 answers · Suggested: Ship more, decide less");
+  const opener = row.getByRole("button", { name: /Which waitlist headline\?\. Open to answer\./ });
+  await expect(opener).toHaveAttribute("aria-expanded", "false");
+  await opener.click();
+  await expect(opener).toHaveAttribute("aria-expanded", "true");
+  const card = row.locator("[data-need-detail]");
+  await expect(card.locator("[data-need-choice]")).toHaveCount(2);
+  await expect(card.locator("[data-need-choice][data-suggested]")).toContainText("Ship more, decide less");
+  await expect(card.getByRole("textbox", { name: "Reply to Hivra lead" })).toHaveAttribute("placeholder", /^Or answer in your own words/);
+  await page.screenshot({ path: test.info().outputPath("needs-open.png") });
+  await card.locator('[data-need-choice="a"]').click();
+  await expect(list.locator("[data-need-answered]")).toHaveText("Answered: Your agents, one captain. Hivra lead has it.");
+  await expect(list.locator("[data-inbox-need]").filter({ hasText: "Which waitlist headline?" })).toHaveCount(0);
+
+  // His own words answer another question the same way.
+  const boss = list.locator("[data-inbox-need]").filter({ hasText: "Which take for the boss music?" });
+  await boss.getByRole("button", { name: /Open to answer/ }).click();
+  await boss.getByRole("textbox", { name: "Reply to EXO lead" }).fill("Example: try both in the playtest");
+  await boss.getByRole("button", { name: "Send" }).click();
+  await expect(list.locator("[data-need-answered]")).toHaveText("Answered: Example: try both in the playtest. EXO lead has it.");
+});
+
+// Ash, 13 Nov: "everything here, you should be able to like quote it in the chat ... whether it's working, needs you,
+// or you asked".
+test("one chat: any Needs you, You asked or Working row quotes into the chat's box, not sent", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  const box = page.locator("textarea[placeholder^='Ask, build']:visible");
+  await page.locator('[data-chief-chip="working"]').click();
+  const job = page.locator("[data-chief-job]").filter({ hasText: "Light the Area 3 boss arena" });
+  await job.hover();
+  await job.getByRole("button", { name: /^Quote in the chat/ }).click();
+  await expect(page.locator("[data-chief-working]")).toHaveCount(0);
+  await expect(box).toHaveValue("> Working · EXO · EXO lead: Light the Area 3 boss arena (Working)\n\n");
+
+  await page.locator('[data-chief-chip="needs"]').click();
+  const need = page.locator("[data-chief-needs] [data-inbox-need]").filter({ hasText: "Which take for the boss music?" });
+  await need.hover();
+  await need.getByRole("button", { name: /^Quote in the chat/ }).click();
+  await expect(box).toHaveValue(/\n\n> Needs you · Question · EXO · EXO lead: Which take for the boss music\? \(Suggested: Take A: drums first\)\n\n$/);
+
+  await page.locator('[data-chief-chip="asked"]').click();
+  const asked = page.locator("[data-chief-asked] li").first();
+  await asked.hover();
+  await asked.getByRole("button", { name: /^Quote in the chat/ }).click();
+  await expect(box).toHaveValue(/\n\n> You asked: .+\n\n$/);
+  await page.screenshot({ path: test.info().outputPath("quoted.png") });
+});
+
+// Ash, 13 Nov: "you could be able to message the first mate from that side thing ... making sure that the chief of
+// staff knows that you've messaged the first mate".
+test("one chat: a first mate's chat opens beside the one chat, and what you send there leaves a line in it", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  await page.locator('[data-chief-chip="working"]').click();
+  await page.locator("[data-message-lead]").filter({ hasText: "EXO lead" }).first().click();
+  await expect(page.locator("[data-chief-working]")).toHaveCount(0);
+  // The one chat stays where it was, with the first mate's own chat open beside it.
+  await expect(oneChat(page)).toBeVisible();
+  const beside = page.locator('[data-session-drop]:not([data-session-drop="mockup-chat-chief"])').filter({ has: page.locator("textarea:visible") });
+  await expect(beside).toHaveCount(1);
+  await beside.locator("textarea:visible").fill("Example: do the checkpoint pass before the music");
+  await beside.locator("textarea:visible").press("Enter");
+  await expect(beside).toContainText("Example: do the checkpoint pass before the music");
+  const line = oneChat(page).locator("[data-beside-message]");
+  await expect(line).toHaveCount(1);
+  await expect(line).toContainText("You messaged EXO lead");
+  await expect(line).toContainText("the Chief of Staff knows");
+  // The app's line, not the Chief of Staff's: no name over it and no "worked" row under it.
+  const turn = page.locator('[data-transcript-turn^="beside-"]');
+  await expect(turn).toHaveCount(1);
+  await expect(turn).not.toContainText("worked");
+  await expect(turn.locator("[data-turn-actions]")).toHaveCount(0);
+  expect((await turn.innerText()).trim().startsWith("You messaged EXO lead")).toBe(true);
+  await page.screenshot({ path: test.info().outputPath("beside.png") });
+});
+
+// Ash's round 3 pick (13 Nov): a question from any project is answered inside the reply that asks it, so he never
+// leaves the one chat for Needs you.
+test("one chat: a question in the Chief of Staff's reply is its own answer card, answered where it sits", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  // Two in the reply, one in the Needs you roll-up the app posted above it.
+  const cards = oneChat(page).locator("[data-inline-need]");
+  await expect(cards).toHaveCount(3);
+  const rollup = oneChat(page).locator("[data-needs-rollup]");
+  await expect(rollup).toContainText("Needs you now");
+  await expect(rollup.locator('[data-inline-need="question:nibbii:onboarding-read"]')).toContainText("Read the onboarding copy before it goes out?");
+  // The roll-up is the app's: no agent name over it, and not folded into the reply above.
+  expect((await page.locator('[data-transcript-turn^="needs-rollup-"]').innerText()).trim().startsWith("Needs you now")).toBe(true);
+  const boss = oneChat(page).locator('[data-inline-need="question:vg-game:boss-music"]');
+  await expect(boss).toContainText("Which take for the boss music?");
+  await expect(boss).toContainText("EXO lead");
+  await expect(boss.locator('[data-need-choice="a"]')).toContainText("Take A: drums first");
+  await expect(boss.locator('[data-need-choice="a"][data-suggested]')).toHaveCount(1);
+  await expect(boss.locator('[data-need-choice="b"]')).toContainText("Take B: choir first");
+  // The card stands where the link was: never inside a paragraph, and the link itself is gone.
+  expect(await boss.evaluate((node) => !!node.closest("p"))).toBe(false);
+  await expect(oneChat(page).locator('a[href^="hivra://local/need"]')).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath("cards.png") });
+
+  await boss.locator('[data-need-choice="a"]').click();
+  const answered = oneChat(page).locator('[data-need-answered="question:vg-game:boss-music"]');
+  await expect(answered).toHaveText("Answered: Take A: drums first. EXO lead has it.");
+  await expect(oneChat(page).locator("[data-inline-need]")).toHaveCount(2);
+  await expect(oneChat(page).locator('[data-inline-need="question:hivra:waitlist-headline"]')).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("answered.png") });
+});

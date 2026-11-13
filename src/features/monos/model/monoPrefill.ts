@@ -12,7 +12,8 @@ export type MonoPrefill = { sessionId: string; text: string };
 
 const pending = new Map<string, string>();
 
-function typeInto(sessionId: string, text: string): void {
+/** Type `text` into a chat's composer (not sent): the open pane takes it at once, a closed one finds it in its draft. */
+export function typeIntoChat(sessionId: string, text: string): void {
   const draft = getComposerDraft(sessionId) ?? "";
   if (draft.includes(text)) return;
   setComposerDraft(sessionId, appendComposerInsert(draft, text));
@@ -22,7 +23,7 @@ function typeInto(sessionId: string, text: string): void {
 
 export function openMonoChatWith(monoId: string, text: string): void {
   const sessionId = findMono(monoId)?.sessionId;
-  if (sessionId) typeInto(sessionId, text);
+  if (sessionId) typeIntoChat(sessionId, text);
   else pending.set(monoId, text);
   // Straight to the chat, out of Settings (where Ask Alfred sits), with the text in its composer, not sent.
   openMonoChat(monoId, { main: true });
@@ -33,5 +34,5 @@ export function takeMonoPrefill(monoId: string, sessionId: string): void {
   const text = pending.get(monoId);
   if (text == null) return;
   pending.delete(monoId);
-  typeInto(sessionId, text);
+  typeIntoChat(sessionId, text);
 }
