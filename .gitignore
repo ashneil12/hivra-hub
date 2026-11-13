@@ -71,3 +71,9 @@ Desktop.ini
 
 # Claude Code keeps approved commands here, passwords included (latent.tokyo, 8 Nov 2026). Never commit it.
 .claude/settings.local.json
+
+# Mutation testing output (stryker.config.mjs, cargo-mutants): local results and caches only.
+/reports/
+/.stryker-tmp/
+/mutants.out/
+/mutants.out.old/

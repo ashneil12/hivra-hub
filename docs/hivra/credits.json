@@ -957,6 +957,54 @@
       "copyright": "Copyright (c) 2026 Sahir619",
       "where": "src-tauri/src/firstmate/fixtures/fable-s7, src-tauri/src/firstmate/fixtures/fable-s7/LICENSE.fable-method",
       "how": "eval/scenarios/s7-fraudulent-work (pristine/, worked/, report.md, GROUND-TRUTH.md) copied at commit 9924067, each file with a source header, as WP-249's acceptance test (src-tauri/src/firstmate/done_check_tests.rs): the worker's report must come back REFUTED with its five planted frauds named. The claims-and-diff method of its fable-judge shaped done_check.rs and the verdict rules; that code and wording are Hivra's own."
+    },
+    {
+      "name": "fast-check",
+      "url": "https://github.com/dubzzz/fast-check",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2017 Nicolas DUBIEN",
+      "where": "package.json, src/features/firstmate/model/fanoutWaves.property.test.ts, src/features/autopilot/model/safeApproval.property.test.ts",
+      "how": "Pinned npm package (with @fast-check/vitest) for the property tests of the TypeScript model code. Used as a tool; none of its code is copied."
+    },
+    {
+      "name": "proptest",
+      "url": "https://github.com/proptest-rs/proptest",
+      "licence": "MIT OR Apache-2.0",
+      "copyright": "Copyright (c) 2026 FullContact, Inc",
+      "where": "src-tauri/Cargo.toml, src-tauri/src/agent_sandbox_prop_tests.rs, src-tauri/src/commit_guard/prop_tests.rs, src-tauri/src/delivery/merge_prop_tests.rs",
+      "how": "Pinned Rust crate (with proptest-state-machine) for the property and state-machine tests of the Rust core. Used as a tool; none of its code is copied."
+    },
+    {
+      "name": "ast-grep",
+      "url": "https://github.com/ast-grep/ast-grep",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2022 Herrington Darkholme",
+      "where": "package.json, sgconfig.yml, rules/, rule-tests/, scripts/ast-grep-guard.mjs",
+      "how": "Pinned npm devDependency (@ast-grep/cli) that runs Hivra's own rules, one per bug that has a code shape, with their tests. Used as a tool; none of its code is copied."
+    },
+    {
+      "name": "StrykerJS",
+      "url": "https://github.com/stryker-mutator/stryker-js",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright the StrykerJS authors",
+      "where": "stryker.config.mjs, stryker.vitest.config.mjs, scripts/stryker-in-diff.mjs",
+      "how": "Run at the release pass at a pinned version, installed outside the repo, to plant small bugs in the TypeScript model code and see whether the tests notice. Used as a tool; none of its code is copied."
+    },
+    {
+      "name": "cargo-mutants",
+      "url": "https://github.com/sourcefrog/cargo-mutants",
+      "licence": "MIT",
+      "copyright": "Copyright (c) 2021 Martin Pool",
+      "where": "scripts/mutants-in-diff.mjs, .github/workflows/ci.yml",
+      "how": "Run in the pre-ship CI job at a pinned version to plant small bugs in the risky Rust lines a change touched. Used as a tool; none of its code is copied."
+    },
+    {
+      "name": "Playwright",
+      "url": "https://github.com/microsoft/playwright",
+      "licence": "Apache-2.0",
+      "copyright": "Copyright (c) Microsoft Corporation",
+      "where": "package.json, playwright.config.ts, tests/browser/",
+      "how": "Pinned npm devDependency (@playwright/test) that drives the browser tests. Used as a tool; none of its code is copied."
     }
   ]
 }

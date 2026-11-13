@@ -1,7 +1,7 @@
-// The ast-grep rules (rules/, rule-tests/, sgconfig.yml). ast-grep is not a dependency of this repo, so this test
-// does not run the rules: it checks that every rule file has the keys ast-grep needs, that severity is only a warning
+// The ast-grep rules (rules/, rule-tests/, sgconfig.yml). This test does not run the rules (ast-grep-guard.test.mjs
+// runs `ast-grep test` when the binary is installed): it checks that every rule file has the keys ast-grep needs, that severity is only a warning
 // or a hint, and that every rule has a test file with at least one valid and one invalid snippet.
-// To run the rules themselves: `npx @ast-grep/cli test` and `npx @ast-grep/cli scan`.
+// To run the rules themselves: `npx ast-grep test` and `npx ast-grep scan`.
 
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";

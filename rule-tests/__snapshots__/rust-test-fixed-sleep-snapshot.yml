@@ -1,0 +1,17 @@
+id: rust-test-fixed-sleep
+snapshots:
+  "mod tests {\n    fn waits() {\n        std::thread::sleep(Duration::from_millis(200));\n    }\n}\n":
+    labels:
+    - source: std::thread::sleep(Duration::from_millis(200))
+      style: primary
+      start: 37
+      end: 83
+    - source: |-
+        mod tests {
+            fn waits() {
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+      style: secondary
+      start: 0
+      end: 92

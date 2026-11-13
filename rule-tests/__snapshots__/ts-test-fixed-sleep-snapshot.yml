@@ -1,0 +1,20 @@
+id: ts-test-fixed-sleep
+snapshots:
+  "await new Promise((resolve) => setTimeout(resolve, 500));\n":
+    labels:
+    - source: new Promise((resolve) => setTimeout(resolve, 500))
+      style: primary
+      start: 6
+      end: 56
+  "await new Promise(r => setTimeout(r, 100));\n":
+    labels:
+    - source: new Promise(r => setTimeout(r, 100))
+      style: primary
+      start: 6
+      end: 42
+  "await page.waitForTimeout(250);\n":
+    labels:
+    - source: page.waitForTimeout(250)
+      style: primary
+      start: 6
+      end: 30

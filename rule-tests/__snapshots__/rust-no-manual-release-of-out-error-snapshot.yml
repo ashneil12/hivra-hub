@@ -1,0 +1,14 @@
+id: rust-no-manual-release-of-out-error
+snapshots:
+  "unsafe { CFRelease(error) };\n":
+    labels:
+    - source: CFRelease(error)
+      style: primary
+      start: 9
+      end: 25
+  "unsafe { let _: () = msg_send![error, release]; }\n":
+    labels:
+    - source: msg_send![error, release]
+      style: primary
+      start: 21
+      end: 46

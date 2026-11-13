@@ -11,6 +11,11 @@ on:
   # Hivra: the pre-ship run (`gh workflow run CI --ref main`): every job, the browser tests and the macOS jobs included.
   # Any branch can be run the same way.
   workflow_dispatch:
+    inputs:
+      mutants_base:
+        description: 'Mutants job: the commit or tag to diff from (the last shipped one). Empty means origin/main~50.'
+        required: false
+        default: ''
   schedule:
     # Hivra: nightly, on main, 03:47 UTC. The RPM jobs only; every other job skips a scheduled run. A pull request
     # that touches no packaging file builds one RPM image, so this run is what builds the second image and the
@@ -385,7 +390,53 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      # ast-grep is run through npx at the version package.json pins, because this job installs no packages.
       - run: npm run check:guards
+        env:
+          AST_GREP_CMD: npx --yes @ast-grep/cli@0.51.1
+
+  mutants:
+    # Hivra: the pre-ship run only (`gh workflow run CI --ref main -f mutants_base=<last shipped tag>`). cargo-mutants
+    # plants small bugs in the risky Rust lines the change touched and reports the ones no test noticed
+    # (docs/hivra/shipping-guards.md). Report only: `continue-on-error` means it can never block a ship.
+    if: github.event_name != 'schedule' && github.event_name == 'workflow_dispatch'
+    name: Mutants in the diff (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Linux system dependencies
+        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      # Pinned installer, pinned tools (the same installer the check job uses for nextest).
+      - name: Install cargo-mutants and cargo-nextest
+        uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
+        with:
+          tool: cargo-nextest@0.9.151,cargo-mutants@27.1.0
+      - name: Mutants in the diff
+        env:
+          MUTANTS_BASE: ${{ github.event.inputs.mutants_base }}
+        run: node scripts/mutants-in-diff.mjs --run --base "${MUTANTS_BASE:-origin/main~50}"
+      - name: Upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-out
+          path: mutants.out
+          if-no-files-found: ignore
+          retention-days: 14
 
   appimage:
     # Linux packaging is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs it again.
@@ -639,7 +690,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [release-channel, mobile, browser, host, rust-plan, check, ship, guards, appimage, rpm-changes, rpm, rpm-clean-install]
+    needs: [release-channel, mobile, browser, host, rust-plan, check, ship, guards, mutants, appimage, rpm-changes, rpm, rpm-clean-install]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
