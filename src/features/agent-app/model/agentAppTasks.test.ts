@@ -5231,3 +5231,46 @@ describe("tasks.fanout: checkpoint and resume (WP-172)", () => {
     expect(d.question).toMatch(/a repeat can do its work twice/);
   });
 });
+
+// sc-18 (README gap D5): a delegation carries the ledger ids of the asks it covers (the "id" of each ask in asks.list), so a
+// job's end can update them (asks/model/askJobs.ts). The retired Ash OS ids (a_...) are still accepted; nothing new writes them.
+describe("tasks.delegate and tasks.fanout take the ledger's ask ids in `asks`", () => {
+  const LEDGER = "ask-5-abc123def456";
+  const askIdsOf = (call: unknown[]) => (call[4] as { askIds?: string[] }).askIds;
+  const NAMES_THE_ID = /asks must be up to 50 ask ids \(ask-5-abc123/;
+
+  it("delegate records them on the job's row as given, trimmed and without repeats, beside an old Ash OS id", async () => {
+    const f = fixture([]);
+    await handleAgentApp(f.source, "k1", "tasks.delegate", { brief: "Fix the save bug.", asks: [LEDGER, ` ${LEDGER} `, "a_1020save01", "ask-12-"] }, f.host);
+    expect(askIdsOf(f.started[0])).toEqual([LEDGER, "a_1020save01", "ask-12-"]);
+    await handleAgentApp(f.source, "k2", "tasks.delegate", { brief: "Look at CI.", asks: ["a_old1"] }, f.host);
+    expect(askIdsOf(f.started[1])).toEqual(["a_old1"]);
+    await handleAgentApp(f.source, "k3", "tasks.delegate", { brief: "Look at the logs." }, f.host);
+    expect(askIdsOf(f.started[2])).toEqual([]);
+  });
+
+  it("delegate refuses any other id, a non-list, or more than fifty, before a worker starts, and says what to pass", async () => {
+    const f = fixture([]);
+    const bad: unknown[] = [["ask-"], ["ask-x-abc"], ["ask-5-abc-def"], ["ask-5-abcdefghijklm"], ["ask-1234567890-abc"], ["../etc"], ["a_"], [""], [5], ["ask-5-abc", "nope"], "ask-5-abc", { 0: "ask-5-abc" }, Array.from({ length: 51 }, (_, n) => `ask-${n + 1}-a`)];
+    for (const [n, asks] of bad.entries())
+      await expect(handleAgentApp(f.source, `bad${n}`, "tasks.delegate", { brief: "Fix the save bug.", asks }, f.host), JSON.stringify(asks)).rejects.toThrow(NAMES_THE_ID);
+    expect(f.started).toEqual([]);
+  });
+
+  it("fanout (delegate_tasks) passes each task's asks through the same check", async () => {
+    const f = fixture([]);
+    const tasks = [
+      { name: "api", brief: "Add the route.", goal: "it answers", asks: [LEDGER] },
+      { name: "docs", brief: "Write the notes.", goal: "the notes exist", asks: ["ask-6-abc123def456", "a_old2"] },
+    ];
+    await handleRaw(f.source, "fk1", "tasks.fanout", { intent: TEST_INTENT, tasks }, f.host);
+    expect(f.started).toHaveLength(2);
+    const byBrief = (text: string) => f.started.find((call) => (call[0] as { prompt: string }).prompt.includes(text))!;
+    expect(askIdsOf(byBrief("Add the route."))).toEqual([LEDGER]);
+    expect(askIdsOf(byBrief("Write the notes."))).toEqual(["ask-6-abc123def456", "a_old2"]);
+    // One bad id in any task refuses the whole plan before any task starts, and names the task.
+    const g = fixture([]);
+    await expect(handleRaw(g.source, "fk2", "tasks.fanout", { intent: TEST_INTENT, tasks: [tasks[0], { ...tasks[1], asks: ["ask-9-ok", "../x"] }] }, g.host)).rejects.toThrow(/Task docs: asks must be up to 50 ask ids/);
+    expect(g.started).toEqual([]);
+  });
+});
