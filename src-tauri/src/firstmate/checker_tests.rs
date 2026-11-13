@@ -841,6 +841,7 @@ fn mode(checker: testing_mode::Checker) -> ModePlan {
         run_verdict: checker != testing_mode::Checker::None,
         checker,
         note: None,
+        sensitive: false,
     }
 }
 

@@ -32,6 +32,7 @@ mod proof_gate; // PT-1: the "Proof tools" gate: the open-source tools a project
 pub mod protected_paths;
 pub mod report;
 pub mod rounds; // SC-5: the round cap, the rethink after two failed rounds, and the person's decision after that
+pub mod sensitive; // PT-5: always-gated sensitive paths (keys, permissions, the sandbox, billing, migrations, CI, installers)
 pub mod status;
 pub mod testing_mode; // SC-3a: the gates a finished task gets, by the project's testing mode
 

@@ -1536,12 +1536,8 @@ fn checks_gate(
 /// SC-4: whether this round runs the brief's own check lines at all: there is a brief to read, and the project's testing
 /// mode tests each task (`light`, `full`, or no mode). `at-ship` and `off` don't, whatever the brief carries.
 fn brief_lines_wanted(input: &RoundInput) -> bool {
-    use crate::delivery::settings::TestingMode;
-    input.brief_round.is_some()
-        && !matches!(
-            input.mode.map(|chosen| chosen.mode),
-            Some(TestingMode::Off | TestingMode::AtShip)
-        )
+    // PT-5: and a sensitive change in any mode that tests (`ModePlan::tests_each_task`).
+    input.brief_round.is_some() && input.mode.is_none_or(|chosen| chosen.tests_each_task())
 }
 
 /// SC-4: the brief's own check lines, run after the project's checks and added to the checks gate: their commands are on
@@ -2826,24 +2822,33 @@ pub async fn firstmate_run_gates(
         // changed, so the gates run and say they couldn't rather than skip.
         // SC-5: and whether it touches a protected or security path (a diff that couldn't be read is risky: the stricter check
         // runs and says it couldn't rather than skip).
-        let (changed, code_changed, risky) = {
+        // PT-5: and whether it touches a sensitive path (keys, permissions, the sandbox, billing, migrations, CI, installers), which is
+        // always checked in full. An unreadable diff is treated as sensitive, as it is as risky: a change that can't be judged is
+        // checked harder, not skipped.
+        let (changed, code_changed, risky, sensitive) = {
             let repo = Repo::open(&checkout);
             if repo.why_not.is_some() {
-                (Vec::new(), false, false)
+                (Vec::new(), false, false, false)
             } else {
                 match repo.changed() {
                     Ok(files) => {
                         let code = testing_mode::code_changed(&files);
                         let risky = testing_mode::touches_risky_path(&files, &protected_extra);
-                        (files, code, risky)
+                        let sensitive = super::sensitive::touches_sensitive_path(
+                            &files,
+                            &checkout,
+                            &protected_extra,
+                        );
+                        (files, code, risky, sensitive)
                     }
-                    Err(_) => (Vec::new(), true, true),
+                    Err(_) => (Vec::new(), true, true, true),
                 }
             }
         };
-        // PT-1: only in `full`, for a code diff, does it matter whether the project already has a proof tool that fits it.
+        // PT-1: only in `full` (PT-5: and for a sensitive change), for a code diff, does it matter whether the project already has a
+        // proof tool that fits it.
         // PT-2: a tool the person switched off for the project doesn't count, so a project whose tools are all off gets no gate.
-        let proof = testing_mode::proof_gate_wanted(mode, code_changed, || {
+        let proof = testing_mode::proof_gate_wanted_for(mode, sensitive, code_changed, || {
             crate::proof_tools::detect_folder_in_use(&app, &checkout)
         });
         let moded = testing_mode::gates_for_with(
@@ -2852,6 +2857,7 @@ pub async fn firstmate_run_gates(
             &changed,
             code_changed,
             risky,
+            sensitive,
             proof,
             when,
         );
@@ -2933,7 +2939,9 @@ pub async fn firstmate_run_gates(
         let history = rounds::Ledger::carried(&prior).history(&prior);
         // PT-5: in `at-ship` only, a failing test that is not this task's own goes on the project's test debt list instead of
         // sending the task back. `light` and `full` test each task, so they never come here.
-        let debt_plan = if crate::test_debt::applies(moded.mode, moded.as_today) {
+        // PT-5: a sensitive change is tested like a `full` one, so a failing test there is the task's to fix: nothing is diverted.
+        let debt_plan = if crate::test_debt::applies(moded.mode, moded.as_today) && !moded.sensitive
+        {
             at_ship_debt(&app, &row, &checkout, &changed, input.facts.as_ref())
         } else {
             None

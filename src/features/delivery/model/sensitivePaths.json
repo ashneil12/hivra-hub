@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "groups": [
+    {
+      "id": "keys",
+      "label": "Keys and secrets",
+      "patterns": ["**/*secret*", "**/*.pem", "**/*.key", ".env*"]
+    },
+    {
+      "id": "auth",
+      "label": "Auth and permissions",
+      "patterns": ["**/auth/**", "**/permissions/**", "**/*permission*"]
+    },
+    {
+      "id": "sandbox",
+      "label": "The sandbox",
+      "patterns": ["**/sandbox/**", "**/*sandbox*"]
+    },
+    {
+      "id": "billing",
+      "label": "Billing and credits",
+      "patterns": ["**/billing/**", "**/credits/**", "**/*payment*"]
+    },
+    {
+      "id": "migrations",
+      "label": "Migrations",
+      "patterns": ["**/migrations/**", "**/*.sql"]
+    },
+    {
+      "id": "ci",
+      "label": "CI and release",
+      "patterns": [".github/**", "**/release*", "**/*.release.*"]
+    },
+    {
+      "id": "installers",
+      "label": "Installers and updaters",
+      "patterns": ["**/install*", "**/updater/**", "**/*updater*"]
+    }
+  ]
+}
