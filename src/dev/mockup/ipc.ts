@@ -100,6 +100,14 @@ export function mockupIpc(cmd: string, args: Row | undefined): unknown {
     }
     case "ship_check_run":
       return shipRun(String(args?.cwd ?? ""));
+    // SC-5: the checker's family rule, kept in the page's own storage like the testing mode.
+    case "checker_family_rule_get":
+      return localStorage.getItem("monocode:mockup-checker-family") === "any" ? "any" : "different";
+    case "checker_family_rule_set": {
+      const rule = args?.rule === "any" ? "any" : "different";
+      localStorage.setItem("monocode:mockup-checker-family", rule);
+      return rule;
+    }
     case "delivery_settings_get":
       return testingRow(String(args?.project ?? ""));
     case "delivery_testing_mode_set": {

@@ -60,9 +60,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::brief_checks::{self, BriefRound, LineResult, RawRun};
+use super::checker;
+use super::checker_copy::{Guard, ReadOnlyCopy, Via};
+use super::checker_family::{self, Pick};
+use super::dismissals::{self, Dismissed, Standing};
 use super::done_check::{self, ChangedFile, ClaimRow, ClaimStatus, CodeFinding};
+use super::rounds::{self, RoundExtras, RoundHistory};
 use super::status::GateVerdict;
-use super::testing_mode::{self, ModePlan};
+use super::testing_mode::{self, Checker, ModePlan};
 
 /// The longest output tail kept per command.
 pub const OUTPUT_MAX: usize = 2_000;
@@ -276,7 +281,7 @@ pub struct VerdictResult {
 }
 
 impl VerdictResult {
-    fn plain(answer: Answer, why: impl Into<String>, said: String) -> VerdictResult {
+    pub(crate) fn plain(answer: Answer, why: impl Into<String>, said: String) -> VerdictResult {
         VerdictResult {
             answer,
             why: why.into(),
@@ -367,6 +372,10 @@ pub struct GateRecord {
     /// in the checks gate's commands.
     #[serde(default, skip_serializing)]
     pub brief_lines: Vec<LineResult>,
+    /// SC-5: the running checker's part of the evidence, the findings the worker dismissed, the task's ledger of rounds and
+    /// what happens next. Flat on the record's JSON; a record from before SC-5 has none of it.
+    #[serde(default, flatten)]
+    pub extras: RoundExtras,
 }
 
 impl GateRecord {
@@ -405,6 +414,30 @@ pub trait Runners {
     ) -> RawRun {
         RawRun::not_started("this build can't run a brief's own checks")
     }
+    /// SC-5: the checker for this task: the CLI and model the app's family rule picks for its worker, or why there is
+    /// none. A runner that has no checker says so: the round is then "could not run", never a pass.
+    fn checker_pick(&self, _delegation_id: &str) -> Result<Pick, String> {
+        Err("this build can't run the running checker".into())
+    }
+    /// SC-5: a read-only copy of `checkout` for the checker's commands, removed when it is dropped.
+    fn read_only_copy(&self, _checkout: &Path) -> Result<ReadOnlyCopy, String> {
+        Err("this build can't make a read-only copy".into())
+    }
+    /// SC-5: run one command in the read-only copy under its guard, with `timeout_seconds` to finish. `id` names the run.
+    fn copy_run(
+        &self,
+        _copy: &ReadOnlyCopy,
+        _id: &str,
+        _what: &str,
+        _command: &str,
+        _timeout_seconds: u64,
+    ) -> RawRun {
+        RawRun::not_started("this build can't run a command in a read-only copy")
+    }
+    /// SC-5: one tool-free answer to `prompt` from `cli` on `model` (empty: the CLI's own default).
+    fn checker_model(&self, _prompt: &str, _cli: &str, _model: &str) -> Result<String, String> {
+        Err("this build can't ask the checker's model".into())
+    }
 }
 
 /// Everything a round reads.
@@ -428,6 +461,9 @@ pub struct RoundInput<'a> {
     pub brief_round: Option<&'a BriefRound>,
     /// SC-7: what the "no red before the fix" gap reads. Only a bug-fix brief in `light` or `full` has it.
     pub fix: Option<&'a super::fact_gaps::FixEvidence>,
+    /// SC-5: what the task's earlier rounds found (the numbered findings a `Dismiss <n>:` line names) and the rule a rewrite
+    /// named. Absent is a task's first round.
+    pub history: Option<&'a RoundHistory>,
 }
 
 pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
@@ -567,10 +603,84 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         Some(gate) if gate.outcome == Outcome::Failed => done_check::ChecksRun::Failed,
         _ => done_check::ChecksRun::None,
     };
+    // SC-5: the findings the worker dismissed in this report, by the numbers of the round it answers. They are let go only
+    // where a running checker can re-check them with a command; anywhere else the finding stands and the record says
+    // nobody re-checked it.
+    let running = input
+        .mode
+        .is_some_and(|mode| mode.checker == Checker::Running);
+    let mut dismissed: Vec<Dismissed> = input
+        .history
+        .map(|history| {
+            dismissals::matched(&dismissals::parse(input.report), &history.last_problems)
+        })
+        .unwrap_or_default();
+    let mut let_go: Vec<CodeFinding> = Vec::new();
+    if running && !dismissed.is_empty() {
+        let (held, kept): (Vec<CodeFinding>, Vec<CodeFinding>) = findings
+            .into_iter()
+            .partition(|finding| dismissed.iter().any(|d| d.finding == finding.line()));
+        findings = kept;
+        let_go = held;
+    }
     let code_rows = done_check::code_rows(&claims, &findings, checks_run);
-    let check =
-        (run_verdict && gaps.is_empty() && (overall == Outcome::Passed || gates.is_empty()))
-            .then(|| verdict_check(input, &repo, &gates, &claims, &findings, runners));
+    let mut checker_record: Option<checker::CheckerRecord> = None;
+    let mut check = (run_verdict
+        && gaps.is_empty()
+        && (overall == Outcome::Passed || gates.is_empty()))
+    .then(|| {
+        if running {
+            // SC-5: the running checker re-runs the brief's checks in a read-only copy and asks another family.
+            let diff = if repo.why_not.is_none() {
+                repo.diff_text_max(checker::DIFF_MAX)
+            } else {
+                String::new()
+            };
+            let checked = checker::run(
+                input,
+                &diff,
+                &gates,
+                &claims,
+                &findings,
+                &dismissed,
+                input.history,
+                runners,
+            );
+            for (number, standing) in checked.standing {
+                if let Some(one) = dismissed.iter_mut().find(|d| d.number == number) {
+                    one.standing = standing;
+                }
+            }
+            checker_record = Some(checked.record);
+            checked.verdict
+        } else {
+            verdict_check(input, &repo, &gates, &claims, &findings, runners)
+        }
+    });
+    // SC-5: a dismissed finding the checker re-confirmed with a command stands again.
+    for one in dismissed
+        .iter()
+        .filter(|d| matches!(d.standing, Standing::Stands { .. }))
+    {
+        match let_go
+            .iter()
+            .position(|finding| finding.line() == one.finding)
+        {
+            Some(at) => findings.push(let_go.remove(at)),
+            None => {
+                if let Some(said) = check.as_mut() {
+                    if !said.frauds.contains(&one.finding) {
+                        said.frauds.push(one.finding.clone());
+                    }
+                    if said.answer == Answer::Met {
+                        said.answer = Answer::NotMet;
+                        said.label = Some(DoneLabel::Refuted);
+                        said.why = "a dismissed finding was re-confirmed with a command".into();
+                    }
+                }
+            }
+        }
+    }
     let verdict = match (overall, gaps.is_empty(), check.as_ref().map(|c| c.answer)) {
         (Outcome::Failed, _, _) | (_, false, _) | (_, _, Some(Answer::NotMet)) => Verdict::Failed,
         _ if !findings.is_empty() => Verdict::Failed,
@@ -610,12 +720,21 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
             "\nThe report's claims couldn't be checked against the diff: {why}."
         ));
     }
+    // SC-5: when the family rule couldn't be kept, the task's row says so ("Checked by the same family: only Claude is signed
+    // in."), on the line after the verdict.
+    if let Some(note) = checker_record
+        .as_ref()
+        .and_then(|running| running.family_note.as_deref())
+    {
+        summary.push('\n');
+        summary.push_str(note);
+    }
     let tree = if repo.why_not.is_none() {
         tree_fingerprint(input.checkout).ok()
     } else {
         None
     };
-    GateRecord {
+    let mut record = GateRecord {
         delegation_id: input.delegation_id.to_string(),
         round: input.round,
         at: input.now,
@@ -631,7 +750,22 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
         testing_mode: input.mode.map(|mode| mode.mode.as_str().to_string()),
         note: note.map(str::to_string),
         brief_lines,
+        extras: RoundExtras {
+            checker: checker_record,
+            dismissed,
+            ledger: Vec::new(),
+            next: None,
+        },
+    };
+    // SC-5: a failed round's findings are numbered, so the worker's `Dismiss <n>:` line and the next round mean the same one.
+    if record.verdict == Verdict::Failed {
+        let numbered = dismissals::numbered(&record.problems());
+        if !numbered.is_empty() {
+            record.summary.push_str("\n\n");
+            record.summary.push_str(&numbered);
+        }
     }
+    record
 }
 
 /// SC-3a: the summary of a task that passed on its gates alone. The first line is what the task's row shows, so a pass
@@ -948,6 +1082,11 @@ impl Repo {
     }
 
     fn diff_text(&self) -> String {
+        self.diff_text_max(DIFF_MAX)
+    }
+
+    /// `diff_text`, cut at `max` characters (the running checker reads more of it than the cheap check does).
+    fn diff_text_max(&self, max: usize) -> String {
         let base = self.base.as_deref().unwrap_or("HEAD");
         let stat = git(&self.dir, &["diff", "--stat", base, "--"])
             .map(|(_, out, _)| String::from_utf8_lossy(&out).to_string())
@@ -965,7 +1104,7 @@ impl Repo {
         }
         text.push('\n');
         text.push_str(&body);
-        head_of(&text, DIFF_MAX)
+        head_of(&text, max)
     }
 }
 
@@ -1442,6 +1581,28 @@ pub fn verdict_prompt(
     claims: &[done_check::Claim],
     findings: &[CodeFinding],
 ) -> String {
+    verdict_prompt_with(VERDICT_RULES, input, diff, gates, claims, findings)
+}
+
+/// SC-5: the rules the running checker reads: the cheap check's own, except the one that says it can run nothing. The app
+/// has run the brief's checks for it, and it may ask for one more command (`checker`).
+pub(crate) fn running_rules() -> String {
+    VERDICT_RULES.replacen(
+        "and you can run nothing",
+        "and the app has already re-run the brief's own checks for you in a read-only copy",
+        1,
+    )
+}
+
+/// `verdict_prompt` with the rules it opens with chosen by the caller: the cheap check's, or the running checker's.
+pub(crate) fn verdict_prompt_with(
+    rules: &str,
+    input: &RoundInput,
+    diff: &str,
+    gates: &[GateResult],
+    claims: &[done_check::Claim],
+    findings: &[CodeFinding],
+) -> String {
     let checks: Vec<String> = gates
         .iter()
         .map(|g| format!("- {}: {} ({})", g.gate.name(), g.outcome.word(), g.detail))
@@ -1457,7 +1618,7 @@ pub fn verdict_prompt(
         );
     }
     format!(
-        "{VERDICT_RULES}\n\n## Brief\n{}\n\n## Definition of done\n{}\n\n## Checks the app ran\n{}\n\n## The worker's claims\n{}\n\n## What the app's code found in the diff\n{}\n\n## Diff\n{}",
+        "{rules}\n\n## Brief\n{}\n\n## Definition of done\n{}\n\n## Checks the app ran\n{}\n\n## The worker's claims\n{}\n\n## What the app's code found in the diff\n{}\n\n## Diff\n{}",
         head_of(input.brief.trim(), REPORT_MAX),
         input.done_when.trim(),
         checks_text,
@@ -1467,17 +1628,21 @@ pub fn verdict_prompt(
     )
 }
 
-/// The model's reply as a verdict. Anything that isn't a clear verdict is unsure, never met, and a "verified" that
-/// marks any claim refuted is read as refuted.
-pub fn parse_verdict(said: &str) -> VerdictResult {
-    let found = said
-        .char_indices()
+/// The first JSON object in a model's reply, wherever it sits in the text.
+pub(crate) fn json_of(said: &str) -> Option<Value> {
+    said.char_indices()
         .filter(|(_, c)| *c == '{')
         .find_map(|(start, _)| {
             let rest = &said[start..];
             let end = rest.rfind('}')?;
             serde_json::from_str::<Value>(&rest[..=end]).ok()
-        });
+        })
+}
+
+/// The model's reply as a verdict. Anything that isn't a clear verdict is unsure, never met, and a "verified" that
+/// marks any claim refuted is read as refuted.
+pub fn parse_verdict(said: &str) -> VerdictResult {
+    let found = json_of(said);
     let said_short = crate::gates::tail(said, 500);
     let Some(value) = found else {
         return VerdictResult::plain(Answer::Unsure, "its answer couldn't be read", said_short);
@@ -1754,6 +1919,24 @@ pub fn evidence_markdown(record: &GateRecord) -> String {
             },
             check.why
         ));
+    }
+    // SC-5: who checked and what they ran, the findings the worker dismissed, and what the app did next.
+    if let Some(running) = &record.extras.checker {
+        out.push_str(&checker::evidence_lines(running));
+    }
+    for one in &record.extras.dismissed {
+        out.push_str(&format!("- {}\n", one.line()));
+    }
+    if let Some(next) = &record.extras.next {
+        let what = match next.kind {
+            rounds::StepKind::SendBack => "the findings went back to the worker",
+            rounds::StepKind::Rewrite => {
+                "a stronger model rewrote the brief and it went to the worker"
+            }
+            rounds::StepKind::Up => "a stronger model handed it to the first mate",
+            rounds::StepKind::Person => "it went to the person as a decision",
+        };
+        out.push_str(&format!("- Next: {what}.\n"));
     }
     out
 }
@@ -2047,6 +2230,74 @@ impl Runners for AppRunners {
             },
         )
     }
+
+    fn checker_pick(&self, delegation_id: &str) -> Result<Pick, String> {
+        use tauri::Manager;
+        let store = self.app.state::<SessionStore>();
+        let (rule, worker) = {
+            let conn = store.lock_conn()?;
+            (
+                checker_family::rule_of(&conn),
+                checker_family::worker_of(&conn, delegation_id),
+            )
+        };
+        checker_family::pick(rule, &worker, &crate::crew::live_presence(&self.app))
+    }
+
+    fn read_only_copy(&self, checkout: &Path) -> Result<ReadOnlyCopy, String> {
+        // The same rule as the project's checks: only the project's main checkout or one of its worktrees is ever copied, never
+        // a path the webview sent.
+        let (main, checkout) = crate::project_actions::checkout_of_project(checkout)?;
+        let data = crate::project_file::data_dir(&self.app)?;
+        let area = std::env::temp_dir().join("monocode-checker");
+        let mut copy = ReadOnlyCopy::create(&checkout, &area, Via::Prefer)?;
+        copy.project = Some(main);
+        copy.wrap = crate::agent_sandbox::read_only_wrap(Some(&data), copy.copy(), copy.scratch())?;
+        copy.guard = if copy.wrap.is_some() {
+            Guard::Sandbox
+        } else {
+            Guard::Permissions
+        };
+        Ok(copy)
+    }
+
+    fn copy_run(
+        &self,
+        copy: &ReadOnlyCopy,
+        id: &str,
+        what: &str,
+        command: &str,
+        timeout_seconds: u64,
+    ) -> RawRun {
+        let Some(main) = copy.project.as_deref() else {
+            return RawRun::not_started("the copy isn't tied to a project");
+        };
+        crate::verify_stage::run_copy_line(
+            &self.app,
+            main,
+            copy,
+            id,
+            what,
+            command,
+            timeout_seconds,
+        )
+    }
+
+    fn checker_model(&self, prompt: &str, cli: &str, model: &str) -> Result<String, String> {
+        // The same spend gate as the cheap check: an automated call is refused over the limit before it runs and noted after.
+        use tauri::Manager;
+        let now = crate::spend_ledger::now_ms();
+        crate::spend_ledger::gated_verdict(
+            &|with| {
+                let store = self.app.state::<SessionStore>();
+                let conn = store.lock_conn()?;
+                with(&conn)
+            },
+            self.project_id.as_deref(),
+            now,
+            || checker_family::checker_cli(cli, model, prompt, checker::CALL_TIMEOUT),
+        )
+    }
 }
 
 /// One Claude Code turn with no tools and no MCP servers, the prompt on stdin, in an empty folder.
@@ -2094,45 +2345,70 @@ pub fn claude_verdict(
             }
         }
     }
-    let result = (|| {
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| format!("Claude Code couldn't start: {e}"))?;
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(prompt.as_bytes());
-        }
-        let mut out = child.stdout.take();
-        let reader = std::thread::spawn(move || {
-            let mut s = String::new();
-            if let Some(o) = out.as_mut() {
-                let _ = o.read_to_string(&mut s);
-            }
-            s
-        });
-        let started = Instant::now();
-        let status = loop {
-            match child.try_wait() {
-                Ok(Some(status)) => break status,
-                Ok(None) if started.elapsed() > timeout => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(format!("it ran past {} seconds", timeout.as_secs()));
-                }
-                Ok(None) => std::thread::sleep(Duration::from_millis(100)),
-                Err(e) => return Err(e.to_string()),
-            }
-        };
-        let said = reader.join().unwrap_or_default();
-        if !status.success() {
-            return Err(format!(
-                "Claude Code exited with {}",
-                status.code().unwrap_or(-1)
-            ));
-        }
-        Ok(said)
-    })();
+    let result = run_child(cmd, Some(prompt), timeout, "Claude Code");
     let _ = std::fs::remove_dir_all(&dir);
     result
+}
+
+/// Starts `cmd` (its stdout and stdin piped), writes `prompt` to its stdin when there is one, and reads what it prints, with
+/// `timeout` to finish: past it the child is killed and that is an error in plain words, not a verdict. A non-zero exit is an
+/// error too. `name` is how errors name the program.
+pub(crate) fn run_child(
+    mut cmd: Command,
+    prompt: Option<&str>,
+    timeout: Duration,
+    name: &str,
+) -> Result<String, String> {
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("{name} couldn't start: {e}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        if let Some(prompt) = prompt {
+            let _ = stdin.write_all(prompt.as_bytes());
+        }
+        // Closed here so a program that reads to the end of its input gets the end.
+    }
+    let mut out = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(o) = out.as_mut() {
+            let _ = o.read_to_string(&mut s);
+        }
+        s
+    });
+    // What it prints on stderr is read too, so a CLI that logs a lot can't fill the pipe and stall; only its end is kept.
+    let mut err = child.stderr.take();
+    let err_reader = std::thread::spawn(move || {
+        let mut s = String::new();
+        if let Some(e) = err.as_mut() {
+            let _ = e.read_to_string(&mut s);
+        }
+        s
+    });
+    let started = Instant::now();
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if started.elapsed() > timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("it ran past {} seconds", timeout.as_secs()));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(100)),
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    let said = reader.join().unwrap_or_default();
+    let complained = err_reader.join().unwrap_or_default();
+    if !status.success() {
+        let tail = crate::gates::tail(complained.trim(), 200);
+        return Err(if tail.is_empty() {
+            format!("{name} exited with {}", status.code().unwrap_or(-1))
+        } else {
+            format!("{name} exited with {}: {tail}", status.code().unwrap_or(-1))
+        });
+    }
+    Ok(said)
 }
 
 // ---- commands -----------------------------------------------------------------------------------------------------------
@@ -2258,6 +2534,7 @@ fn fact_only_record(
         testing_mode: None,
         note: None,
         brief_lines: Vec::new(),
+        extras: RoundExtras::default(),
     })
 }
 
@@ -2335,7 +2612,7 @@ pub async fn firstmate_run_gates(
             .facts
             .as_ref()
             .map(super::fact_gaps::fact_turn_from_value);
-        let (plan, row, gate_owns_checks, mode, brief_state) = {
+        let (plan, row, gate_owns_checks, mode, brief_state, protected_extra, prior) = {
             let conn = store.lock_conn()?;
             let plan = plan_of(&conn, &input.delegation_id)?;
             // SC-4: the brief's own check lines and do-not-touch list, read with the plan.
@@ -2354,7 +2631,24 @@ pub async fn firstmate_run_gates(
                 .and_then(|row| row.project.as_deref())
                 .map(|project| crate::delivery::settings::testing_mode_for(&conn, project))
                 .unwrap_or_default();
-            (plan, row, gate_owns_checks, mode, brief_state)
+            // SC-5: the project's own protected paths (the built-in list always counts), and the task's rounds so far, read
+            // with the rest so a change in another window can't split them.
+            let protected_extra = row
+                .as_ref()
+                .and_then(|row| row.project.as_deref())
+                .and_then(|project| crate::delivery::settings::get(&conn, project).ok())
+                .map(|stored| stored.protected_extra)
+                .unwrap_or_default();
+            let prior = records_of(&conn, &input.delegation_id)?;
+            (
+                plan,
+                row,
+                gate_owns_checks,
+                mode,
+                brief_state,
+                protected_extra,
+                prior,
+            )
         };
         let brief_round = BriefRound::from(&brief_state);
         let Some(row) = row else {
@@ -2364,21 +2658,24 @@ pub async fn firstmate_run_gates(
         // SC-3a: the gates come from what the copy changed and the project's mode, not from whether the brief said
         // `code`. A copy that isn't a checkout has no diff to read; one whose diff couldn't be read is treated as
         // changed, so the gates run and say they couldn't rather than skip.
-        let (changed, code_changed) = {
+        // SC-5: and whether it touches a protected or security path (a diff that couldn't be read is risky: the stricter check
+        // runs and says it couldn't rather than skip).
+        let (changed, code_changed, risky) = {
             let repo = Repo::open(&checkout);
             if repo.why_not.is_some() {
-                (Vec::new(), false)
+                (Vec::new(), false, false)
             } else {
                 match repo.changed() {
                     Ok(files) => {
                         let code = testing_mode::code_changed(&files);
-                        (files, code)
+                        let risky = testing_mode::touches_risky_path(&files, &protected_extra);
+                        (files, code, risky)
                     }
-                    Err(_) => (Vec::new(), true),
+                    Err(_) => (Vec::new(), true, true),
                 }
             }
         };
-        let moded = testing_mode::gates_for(mode, plan.as_ref(), &changed, code_changed);
+        let moded = testing_mode::gates_for(mode, plan.as_ref(), &changed, code_changed, risky);
         // Nothing changed and no plan was stored (a research or answer task): the task settles as it always did.
         // Missing facts are not a clean turn: a send-back stays, and the row is not marked pending.
         // A present turn with no gap clears a send-back, or the delivered row stays failed.
@@ -2448,7 +2745,9 @@ pub async fn firstmate_run_gates(
         } else {
             None
         };
-        let record = if !moded.as_today {
+        // SC-5: what the task's earlier rounds found, for the worker's `Dismiss <n>:` lines and the checker's prompt.
+        let history = rounds::Ledger::carried(&prior).history(&prior);
+        let mut record = if !moded.as_today {
             run_round(
                 &RoundInput {
                     delegation_id: &row.id,
@@ -2464,6 +2763,7 @@ pub async fn firstmate_run_gates(
                     mode: Some(&moded),
                     brief_round: Some(&brief_round),
                     fix: fix_evidence.as_ref(),
+                    history: Some(&history),
                 },
                 &runners,
             )
@@ -2480,16 +2780,62 @@ pub async fn firstmate_run_gates(
             };
             record
         };
+        // SC-5: the task's ledger of rounds, and what happens after a failed one: the numbered findings go back, or a stronger
+        // model rethinks the brief (this is where its call runs, with no lock held), or the person is asked. The rounds are
+        // read again here, so a round another window recorded while the checker ran is counted once, not twice.
+        if !moded.as_today {
+            let prior = records_of(&*store.lock_conn()?, &row.id)?;
+            let diff = if record.verdict == Verdict::Failed {
+                Repo::open(&checkout).diff_text_max(checker::DIFF_MAX)
+            } else {
+                String::new()
+            };
+            let planned = rounds::plan_next(
+                &record,
+                &prior,
+                &row.id,
+                row.brief.as_deref().unwrap_or(""),
+                row.goal.as_deref().unwrap_or(""),
+                &diff,
+                &runners,
+            );
+            record.extras.ledger = planned.ledger.rows.clone();
+            record.extras.next = planned.next.clone();
+            if planned
+                .next
+                .as_ref()
+                .is_some_and(|next| next.kind == rounds::StepKind::Person)
+            {
+                record.extras.next = Some(rounds::raise_decision(
+                    &mut *store.lock_conn()?,
+                    &row,
+                    record.round,
+                    &planned.ledger,
+                    now_millis(),
+                ));
+            }
+        }
         let mut conn = store.lock_conn()?;
         push_record(&conn, &record)?;
         // SC-4: each brief line's result goes onto the row, by the gates only. A write that can't land doesn't lose the
         // round: the evidence is kept above and the verdict below.
         let _ = brief_checks::record_results(&conn, &row.id, &record.brief_lines);
+        // SC-5: a round handed up to the first mate, or to the person, is not a failed task: it waits for a decision, so the row
+        // says unsure with the words that go with it, and the first mate is the one to settle it.
+        let (stored, summary) = match record
+            .extras
+            .next
+            .as_ref()
+            .filter(|next| matches!(next.kind, rounds::StepKind::Up | rounds::StepKind::Person))
+        {
+            Some(next) => (GateVerdict::UNSURE, next.text.clone()),
+            None => (record.verdict.stored(), record.summary.clone()),
+        };
         let change = delegations::set_gate_verdict(
             &mut conn,
             &row.id,
-            record.verdict.stored(),
-            &record.summary,
+            stored,
+            &summary,
             None,
             now_millis(),
         )?;

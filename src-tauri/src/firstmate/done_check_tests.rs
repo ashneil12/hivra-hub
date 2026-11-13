@@ -508,6 +508,7 @@ fn s7_round(repo: &Path, judge: &Judge) -> gates::GateRecord {
             mode: None,
             brief_round: None,
             fix: None,
+            history: None,
         },
         judge,
     )

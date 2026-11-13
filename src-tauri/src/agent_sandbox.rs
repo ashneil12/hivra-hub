@@ -2886,6 +2886,59 @@ pub fn more_agent_wrap(
     Ok(Some(prefix))
 }
 
+/// SC-5: the rules that make a checker's read-only copy read-only: every write is denied, then the one scratch folder
+/// (in each spelling the kernel may check) and the devices a shell needs are allowed again. The later rule wins, as in
+/// `more_agent_wrap`. They are added after the agent profile's own denies, so the secret places, the app data folder and the
+/// `.git` of the copy stay denied as they are there.
+fn read_only_rules(scratch: &Path) -> Result<String, String> {
+    let mut rules = String::from("(deny file-write*)\n");
+    for form in folder_forms(scratch)? {
+        rules.push_str(&format!("(allow file-write* (subpath \"{form}\"))\n"));
+    }
+    rules.push_str(
+        "(allow file-write* (literal \"/dev/null\") (literal \"/dev/zero\") (literal \"/dev/dtracehelper\") (literal \"/dev/tty\") (regex #\"^/dev/fd/[0-9]+$\"))\n",
+    );
+    Ok(rules)
+}
+
+/// SC-5: the agent profile with `read_only_rules` after it. `copies` are the trees whose `.git` is write-denied as well.
+pub fn read_only_profile(
+    home: &Path,
+    data_dir: Option<&Path>,
+    copies: &[PathBuf],
+    scratch: &Path,
+) -> Result<String, String> {
+    let checkouts = with_project_folders(data_dir, copies)?;
+    let mut profile = profile_with_checkouts(home, data_dir, &checkouts)?;
+    profile.push_str(&read_only_rules(scratch)?);
+    Ok(profile)
+}
+
+/// SC-5: how a command starts in the checker's read-only copy on macOS: `sandbox-exec -p <profile>` in front of its shell,
+/// with every write denied outside `scratch`. Unlike `action_wrap` this does not depend on the sandbox switch: the checker's
+/// copy is read-only whatever the person chose for their own agents, and a profile that fails its self-check or preflight is
+/// an error, so the command never starts without it. `Ok(None)` off macOS, where there is no sandbox: the copy's file
+/// permissions are then all that keep a command out of it, and the record says so (`checker_copy::Guard`).
+pub fn read_only_wrap(
+    data_dir: Option<&Path>,
+    copy: &Path,
+    scratch: &Path,
+) -> Result<Option<Vec<OsString>>, String> {
+    if !cfg!(target_os = "macos") {
+        return Ok(None);
+    }
+    let home = std::env::var_os("HOME").map(PathBuf::from).ok_or_else(|| {
+        "The check did not start: HOME is not set, so the macOS sandbox cannot be built."
+            .to_string()
+    })?;
+    let profile = read_only_profile(&home, data_dir, &[copy.to_path_buf()], scratch)?;
+    self_check(Path::new(SANDBOX_EXEC))?;
+    preflight_with(Path::new(SANDBOX_EXEC), &profile, data_dir)?;
+    let mut prefix = vec![OsString::from(SANDBOX_EXEC)];
+    prefix.extend(sandbox_exec_profile_args(&profile, data_dir)?);
+    Ok(Some(prefix))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3367,6 +3420,90 @@ mod tests {
         assert_eq!(prefix[0], OsString::from("-p"));
         assert_eq!(prefix[2], OsString::from("claude"));
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    // ---- SC-5: the checker's read-only copy ---------------------------------------------------------------------------
+
+    #[cfg(unix)]
+    #[test]
+    fn the_read_only_rules_deny_every_write_then_allow_the_scratch_folder_and_the_devices_after_it()
+    {
+        let scratch = std::env::temp_dir().join("checker scratch");
+        let rules = read_only_rules(&scratch).unwrap();
+        let deny = rules.find("(deny file-write*)").expect("a blanket deny");
+        let allow = rules
+            .find(&format!(
+                "(allow file-write* (subpath \"{}\"))",
+                scratch.display()
+            ))
+            .expect("the scratch folder is allowed");
+        assert!(
+            deny < allow,
+            "the later rule wins, so the allow follows the deny"
+        );
+        assert!(rules.contains("/dev/null"));
+        // Nothing but the scratch folder and the devices is allowed.
+        let allowed: Vec<&str> = rules.lines().filter(|l| l.starts_with("(allow")).collect();
+        assert!(allowed
+            .iter()
+            .all(|l| l.contains("scratch") || l.contains("/dev/")));
+        // A scratch folder whose name the profile can't quote is refused, not escaped.
+        assert!(read_only_rules(Path::new("/tmp/a\"b")).is_err());
+        assert!(read_only_rules(Path::new("/tmp/a\\b")).is_err());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn under_the_read_only_profile_nothing_is_written_but_the_scratch_folder() {
+        let home = temp_home("read-only");
+        let copy = home.join("copy");
+        let scratch = home.join("scratch");
+        std::fs::create_dir_all(copy.join("src")).unwrap();
+        std::fs::create_dir_all(&scratch).unwrap();
+        std::fs::write(copy.join("src/app.ts"), "a").unwrap();
+        // An empty data folder has no database, so only the copy's own `.git` is locked.
+        let data = home.join("data");
+        std::fs::create_dir_all(&data).unwrap();
+        let profile =
+            read_only_profile(&home, Some(&data), std::slice::from_ref(&copy), &scratch).unwrap();
+        let run = |script: String| run_under(&profile, &copy, &home, &script);
+        // Reads are fine, and so are the devices a shell uses.
+        assert!(run("cat src/app.ts > /dev/null".into()));
+        assert!(run("echo x > /dev/null".into()));
+        // A write into the copy, a new file or folder there, a write beside it in the home folder and a rename are refused.
+        assert!(!run("echo x >> src/app.ts".into()));
+        assert!(!run("echo x > src/new.ts".into()));
+        assert!(!run("mkdir src/sub".into()));
+        assert!(!run("rm src/app.ts".into()));
+        assert!(!run("mv src/app.ts src/b.ts".into()));
+        assert!(!run(format!("echo x > '{}/note.txt'", home.display())));
+        // Putting the permissions back is not a way in: the profile denies the write itself.
+        assert!(!run("chmod u+w src/app.ts && echo x >> src/app.ts".into()));
+        // The scratch folder is the one place to write.
+        assert!(run(format!(
+            "echo ok > '{}/out.txt' && mkdir '{}/dir'",
+            scratch.display(),
+            scratch.display()
+        )));
+        assert_eq!(
+            std::fs::read_to_string(scratch.join("out.txt")).unwrap(),
+            "ok\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(copy.join("src/app.ts")).unwrap(),
+            "a"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn off_macos_the_read_only_copy_has_no_sandbox_to_wrap_it_and_says_so() {
+        // The profile is never built here; the copy's permissions are the guard, and the record names it.
+        assert!(matches!(
+            read_only_wrap(None, Path::new("/tmp/copy"), Path::new("/tmp/scratch")),
+            Ok(None)
+        ));
     }
 
     #[cfg(target_os = "macos")]

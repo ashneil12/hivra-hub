@@ -167,6 +167,7 @@ fn round(dir: &Path, plan: &GatePlan, fake: &Fake) -> GateRecord {
             mode: None,
             brief_round: None,
             fix: None,
+            history: None,
         },
         fake,
     )
@@ -603,6 +604,7 @@ fn a_brief_without_a_definition_of_done_is_unsure() {
             mode: None,
             brief_round: None,
             fix: None,
+            history: None,
         },
         &fake,
     );
@@ -646,6 +648,7 @@ fn fact_gaps_fail_the_claim_without_asking_the_model() {
             mode: None,
             brief_round: None,
             fix: None,
+            history: None,
         },
         &fake,
     );
@@ -1040,6 +1043,7 @@ fn r2_a_completed_settle_does_not_clear_a_failed_plan_gate_nothing_reran() {
             mode: None,
             brief_round: None,
             fix: None,
+            history: None,
         },
         &failing,
     );
@@ -1375,7 +1379,13 @@ use crate::firstmate::testing_mode::{self, ModePlan};
 /// The mode's plan for what the copy changed so far, chosen the way `firstmate_run_gates` chooses it.
 fn moded(dir: &Path, mode: TestingMode, stored: Option<&GatePlan>) -> ModePlan {
     let changed = Repo::open(dir).changed().unwrap();
-    testing_mode::gates_for(mode, stored, &changed, testing_mode::code_changed(&changed))
+    testing_mode::gates_for(
+        mode,
+        stored,
+        &changed,
+        testing_mode::code_changed(&changed),
+        false,
+    )
 }
 
 fn moded_round(
@@ -1410,6 +1420,7 @@ fn moded_round_fixing(
             mode: Some(chosen),
             brief_round: None,
             fix,
+            history: None,
         },
         fake,
     )
@@ -1611,11 +1622,22 @@ fn light_runs_the_checks_the_ratchet_and_the_model_for_changed_code() {
     assert!(record
         .summary
         .contains("the quick check says the brief was met"));
-    // Full is light for now.
+    // SC-5: full reads a code diff with the running checker, not the quick review. A runner that has no checker leaves the
+    // round unsure and says so: the task is never passed on a check that could not run.
     let full = moded(&f.copy, TestingMode::Full, None);
-    let record = moded_round(&f.copy, &full, &Fake::default(), None);
+    let fake = Fake::default();
+    let record = moded_round(&f.copy, &full, &fake, None);
     assert_eq!(record.testing_mode.as_deref(), Some("full"));
-    assert_eq!(record.verdict, Verdict::Passed);
+    assert_eq!(record.verdict, Verdict::Unsure);
+    assert!(
+        record.summary.contains("could not run"),
+        "{}",
+        record.summary
+    );
+    assert!(
+        fake.prompts.borrow().is_empty(),
+        "the quick review is not asked in its place"
+    );
 }
 
 #[test]
@@ -1685,6 +1707,7 @@ fn light_honours_the_briefs_named_checks_and_gates() {
             mode: Some(&chosen),
             brief_round: None,
             fix: None,
+            history: None,
         },
         &named,
     );
@@ -1761,7 +1784,7 @@ fn a_copy_that_is_not_a_checkout_is_not_a_pass_in_any_mode() {
     std::fs::create_dir_all(&dir).unwrap();
     for mode in TestingMode::ALL {
         // The diff couldn't be read, so the caller runs the gates as if code changed.
-        let chosen = testing_mode::gates_for(mode, None, &[], true);
+        let chosen = testing_mode::gates_for(mode, None, &[], true, false);
         let record = moded_round(&dir, &chosen, &Fake::default(), None);
         assert_eq!(
             gate(&record, GateKind::Diff).outcome,
@@ -1881,6 +1904,7 @@ fn brief_round_in(
             mode: Some(&chosen),
             brief_round: Some(brief),
             fix: None,
+            history: None,
         },
         fake,
     )
@@ -2058,6 +2082,7 @@ fn a_docs_only_change_still_runs_the_briefs_lines_on_a_gate_that_says_the_projec
             mode: Some(&moded(&f.copy, TestingMode::Light, None)),
             brief_round: Some(&briefed(two_lines(), &[])),
             fix: None,
+            history: None,
         },
         &said,
     );
@@ -2248,6 +2273,7 @@ fn a_missing_command_could_not_run_and_the_round_is_unsure_never_passed() {
             mode: Some(&chosen),
             brief_round: Some(&briefed(two_lines(), &[])),
             fix: None,
+            history: None,
         },
         &Blind,
     );

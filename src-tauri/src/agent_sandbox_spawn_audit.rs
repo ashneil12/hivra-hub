@@ -785,6 +785,16 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "Headless Chrome, Chromium, Edge or Brave drawing an agent's page. Not wrapped: Chrome cannot start its own renderer sandbox inside sandbox-exec (it exits 133), and --no-sandbox is never passed, so the page stays in Chrome's renderer sandbox, with no network and a throwaway profile. On macOS the binary is only one of visual_preview::BROWSER_BUNDLES under /Applications or ~/Applications (find_browser), and the agent profile write-denies exactly those bundle folders in both places, so an agent can neither change one nor create a missing one (SC-8c). Other platforms still look on PATH; the app ships for macOS only today.",
     ),
     (
+        "firstmate/checker_copy.rs",
+        "clone_tree",
+        "/bin/cp -c -R of a worker's checkout into the app's own temp area (an APFS clone for the checker's read-only copy). A fixed program; links are copied as links, never followed, and the copy is made read-only before anything runs in it.",
+    ),
+    (
+        "firstmate/gates.rs",
+        "run_child",
+        "Spawns the Command the caller built. Its callers are claude_verdict and checker_family's checker call, and each wraps that Command with action_wrap and under_wrap before handing it over.",
+    ),
+    (
         "worktree_autoclean.rs",
         "compiler_running",
         "pgrep -x cargo and pgrep -x rustc, fixed arguments, to see whether a build is running before build output is cleared. It writes nothing.",

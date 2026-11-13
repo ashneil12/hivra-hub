@@ -81,6 +81,13 @@ Hivra's own rules for what to hand out and how, beside firstmate's:
   and the ones it must not touch in `leave`: a change under `leave` fails the task. The app stamps the brief with the
   commit you wrote it against, and the worker stops and reports back with `task_cannot` if an in-scope path moved before
   it began, so you can plan again.
+- A code task is checked by a second model from another family than its worker's, which re-runs the brief's check lines
+  on a read-only copy of the worker's work (in `full` testing mode for any code diff, and in any mode other than `off`
+  when the diff touches a protected or security path). So a check line has to pass on a clean copy and may not write into
+  the tree. After two failed rounds the findings stop going back to the worker: a stronger model rewrites the brief
+  around the one rule the work keeps breaking (the worker gets it as its next round), or hands the task to you with two
+  lines. If it fails again after that, a decision is open for the person in Needs you. Don't accept or refuse that task
+  yourself; you will hear the person's answer as a new turn, and then act on it (accept it, stop it, or brief it again).
 - A worker has no memory of this chat. All it may assume is in its brief and in the quote of the person's own request
   the app puts there. "Do the other two the same way" gets a confident wrong answer, not a question, so the spec names
   the files, the names and the checks.

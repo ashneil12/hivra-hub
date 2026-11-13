@@ -1,8 +1,10 @@
 // Hivra WP-40: a finished report is done only when the gates passed. One failure goes back to the worker; the next
 // fails. Unsure, or a check that couldn't run, is not a pass and is not another fix round.
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { completionMessage, type MonoSessionCompletionResult } from "../../monos/model/monoSessionCompletion";
-import { GATE_TRIES } from "../../monos/model/workerGate";
+import { GATE_TRIES, ROUNDS_BEFORE_RETHINK } from "../../monos/model/workerGate";
 import type { Block } from "../../sessions/model/session";
 import { briefGateAction, briefGatesFor, gateRequest, type BriefGateInput, type GateRecordView } from "./completionGates";
 
@@ -154,6 +156,100 @@ describe("one round", () => {
       if (step.action !== "resend") throw new Error(summary);
       expect(step.note.line, summary).toBe(usual);
     }
+  });
+});
+
+// SC-5: after two failed rounds on one task the raw findings stop going back. Rust keeps the task's ledger of rounds and says,
+// on the record, what happens next (`next`); these read that and never count for themselves once it is there.
+describe("after two failed rounds (SC-5)", () => {
+  const failedWith = (next: GateRecordView["next"]): GateRecordView => ({
+    verdict: "failed",
+    summary: "REFUTED: the report's claims don't match the diff.\n\nFindings, numbered:\n1. Debris: a.log",
+    next,
+  });
+
+  it("a failure the ledger says to send back goes back, whatever this window has counted", () => {
+    for (const failures of [0, 1, 2, 9]) {
+      const step = briefGateAction(failedWith({ kind: "send-back", text: "" }), failures);
+      expect(step.action, String(failures)).toBe("resend");
+      if (step.action !== "resend") continue;
+      // The raw findings go back, numbered, so the worker can dismiss one.
+      expect(step.ask).toContain("Findings, numbered:\n1. Debris: a.log");
+    }
+  });
+
+  it("a rewrite sends the new brief to the worker as the next round, in Rust's words", () => {
+    const text = "[MonoCode check] The same kind of problem failed two rounds in a row.\n\nRule: Never edit a test to pass it.";
+    const step = briefGateAction(failedWith({ kind: "rewrite", text }), 1);
+    expect(step.action).toBe("resend");
+    if (step.action !== "resend") return;
+    expect(step.ask).toBe(text);
+    expect(step.note.line).toBe("Checks failed twice; a stronger model rewrote the brief and it went to the worker");
+    // If the worker can't be sent it, the first mate hears the task failed, with the findings.
+    expect(step.failed(done()).status).toBe("failed");
+  });
+
+  it("a hand-up reaches the first mate as a report it must decide, not a failure and not another round", () => {
+    const text = "The checker failed this task 2 times and a stronger model handed it to you:\nThe brief contradicts itself.\nPick one.";
+    for (const failures of [0, 1, 5]) {
+      const step = briefGateAction(failedWith({ kind: "up", text }), failures);
+      expect(step.action, String(failures)).toBe("unsure");
+      if (step.action !== "unsure") continue;
+      const lead = step.apply(done());
+      expect(lead.status).toBe("completed");
+      expect(lead.gatesNote).toBe(text);
+    }
+    const blank = briefGateAction(failedWith({ kind: "up", text: "  " }), 0);
+    if (blank.action !== "unsure") throw new Error("expected unsure");
+    expect(blank.apply(done()).gatesNote).toMatch(/decision is open/);
+  });
+
+  it("the failure after that waits for the person: the first mate is told, and nothing goes back to the worker", () => {
+    const text = "The task failed again after its rethink, so it is the person's call, not yours.";
+    for (const failures of [0, 1, 7]) {
+      const step = briefGateAction(failedWith({ kind: "person", text }), failures);
+      expect(step.action, String(failures)).toBe("unsure");
+      if (step.action !== "unsure") continue;
+      const lead = step.apply(done());
+      expect(lead.status).toBe("completed");
+      expect(lead.gatesNote).toBe(text);
+    }
+  });
+
+  it("a decision it can't read is no decision, so the old cap still applies", () => {
+    for (const next of [
+      undefined,
+      { kind: "made-up", text: "x" },
+      { kind: "rewrite", text: "" },
+      { kind: "rewrite", text: "   " },
+      { kind: "rewrite" },
+      { kind: "rewrite", text: 5 as unknown as string },
+      { kind: 5 as unknown as string, text: "x" },
+    ]) {
+      const first = briefGateAction(failedWith(next), 0);
+      expect(first.action, JSON.stringify(next)).toBe("resend");
+      const second = briefGateAction(failedWith(next), 1);
+      expect(second.action, JSON.stringify(next)).toBe("fail");
+    }
+  });
+
+  it("a decision is read only on a failed round: a pass lands, and an unsure round stays for its first mate", () => {
+    const next = { kind: "rewrite", text: "[MonoCode check] new brief" };
+    expect(briefGateAction({ verdict: "passed", summary: "ok", next }, 0)).toEqual({ action: "pass" });
+    const unsure = briefGateAction({ verdict: "unsure", summary: "couldn't tell", next }, 0);
+    expect(unsure.action).toBe("unsure");
+    if (unsure.action !== "unsure") return;
+    expect(unsure.apply(done()).gatesNote).toBe("couldn't tell");
+  });
+
+  it("two rounds is Rust's number too", () => {
+    const rust = readFileSync(
+      fileURLToPath(new URL("../../../../src-tauri/src/firstmate/rounds.rs", import.meta.url)),
+      "utf8",
+    );
+    const found = /pub const FAILED_BEFORE_RETHINK: usize = (\d+);/.exec(rust);
+    expect(found, "rounds.rs names its cap").not.toBeNull();
+    expect(Number(found?.[1])).toBe(ROUNDS_BEFORE_RETHINK);
   });
 });
 
