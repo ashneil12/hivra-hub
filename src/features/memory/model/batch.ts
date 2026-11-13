@@ -38,10 +38,14 @@ import type { SkillMode } from "../../selfBuild/model/skillMode";
 export const BATCH_SIZE = 40;
 /** A call that gets no answer is tried this many times, then its messages are passed over. */
 export const BATCH_MAX_TRIES = 3;
-/** A batch runs after this many finished first-mate turns … */
-export const BATCH_EVERY_TURNS = 20;
+/**
+ * A batch runs after this many finished first-mate turns … (6 and 2 minutes since 13 Nov 2026, was 20 and 15: Ash
+ * wants memory working from the first few messages, not once a chat is long. The hourly and daily spend limits in
+ * memoryBudget.ts still cap the calls.)
+ */
+export const BATCH_EVERY_TURNS = 6;
 /** … or after this long with no finished turn … */
-export const BATCH_IDLE_MS = 15 * 60_000;
+export const BATCH_IDLE_MS = 2 * 60_000;
 /** … or when a first-mate chat closes. One reply proposes at most this many changes. */
 export const BATCH_MAX_CHANGES = 20;
 const MESSAGE_CHARS = 4000;
@@ -194,7 +198,7 @@ function withMarks(doc: MemoryDoc, plan: BatchPlan): MemoryDoc {
   return next;
 }
 
-export type BatchContext = { now: number; via?: MemoryVia; by?: string; skills?: SkillMode };
+export type BatchContext = { now: number; via?: MemoryVia; by?: string; skills?: SkillMode; sensitiveOff?: true };
 
 /**
  * Applies one batch's reply on top of the doc it was planned from, with the repair pass, and moves the watermark in
@@ -232,6 +236,7 @@ export function applyBatch(
       ...(ctx.by ? { by: ctx.by } : {}),
       ...(ctx.via ? { via: ctx.via } : {}),
       ...(ctx.skills ? { skills: ctx.skills } : {}),
+      ...(ctx.sensitiveOff ? { sensitiveOff: true as const } : {}),
     };
     const judged = applyProposal(next, turn, op.proposal);
     next = judged.doc;

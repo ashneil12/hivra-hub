@@ -25,10 +25,11 @@ import { parseDoc, type MemoryDoc } from "../../features/memory/model/doc";
 import { markLived } from "../../features/memory/model/fade";
 import { noteOutcome } from "../../features/memory/model/health";
 import { loadSkillMode } from "../../features/selfBuild/model/skillMode";
+import { loadSensitive } from "../../features/memory/model/sensitive";
 
 /**
  * Save before a tidy: a first mate's chat is about to move to a fresh engine session (monos/model/monoRotation.ts), so
- * its messages are read by a batch now, not after 20 turns. Detail: `{ sessionId }`. The batch reads the chat, not the
+ * its messages are read by a batch now, not at the next batch. Detail: `{ sessionId }`. The batch reads the chat, not the
  * engine session, so the turn never waits on it.
  */
 export const MEMORY_BATCH_NOW_EVENT = "monocode:memory-batch-now";
@@ -281,6 +282,7 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
               now,
               via: choice.tier,
               skills: loadSkillMode(),
+              ...(loadSensitive() ? {} : { sensitiveOff: true as const }),
               ...(engine ? { by: engine } : {}),
             });
             if (result.status !== "applied" || !plan.more) break;

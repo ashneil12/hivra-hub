@@ -106,7 +106,7 @@ import {
   topicName,
   type MemoryUse,
 } from "../../monos/model/monoMemory";
-import { parseDoc } from "../../memory/model/doc";
+import { normalizeFact, parseDoc } from "../../memory/model/doc";
 import { fadeNow, livedClockOf } from "../../memory/model/fade";
 import { searchStore, type StoreSearch } from "../../memory/model/rank";
 import type { SkillRoutePorts } from "../../selfBuild/model/skillRoute";
@@ -1403,6 +1403,19 @@ async function handleMemory(
     }
     case "memory.add": {
       const fact = requiredString(input.fact, "fact");
+      // A fact the reviewed memory already keeps for this first mate, word for word, is not saved a second time: it
+      // was read back from memory, not learned (docs/specs/mono-chat-memory.md, section 5).
+      if (host.memoryDoc) {
+        try {
+          const same = normalizeFact(fact).toLowerCase();
+          const kept = parseDoc(await host.memoryDoc()).items.some(
+            (item) => item.mateId === monoId && item.action === "add" && normalizeFact(item.text).toLowerCase() === same,
+          );
+          if (kept) return { file: path, alreadyRemembered: true, note: "Memory already keeps this, so nothing was added." };
+        } catch {
+          // Memory could not be read: the note is saved as before.
+        }
+      }
       const entry = memoryEntry(fact, date, until, source.harness);
       const write = await editAgentFile(host, monoId, path, (text) => {
         const next = addMemoryEntry(text, entry);
