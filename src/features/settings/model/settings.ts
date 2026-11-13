@@ -900,6 +900,14 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Who checks the work",
     keywords: "checker second model family different claude codex grok review verify re-run read only copy",
   },
+  // PT-4: when the running checker runs.
+  {
+    id: "checker-when",
+    section: "crew",
+    label: "When the checker runs",
+    keywords:
+      "checker running checker when every code change risky only off follow testing mode ship check review second model cost quality",
+  },
 ];
 
 export type SettingsSearchResult = {

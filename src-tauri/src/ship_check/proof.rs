@@ -14,10 +14,13 @@ use super::{Outcome, Stage, Step, TAIL_MAX};
 /// The step's name, in the record the person reads.
 pub(super) const NAME: &str = "Proof tools";
 
-/// Whether this testing mode has the step at all: `at-ship` and `full`. Never `light` (each task is checked as it lands) and
-/// never `off`.
+/// Whether this testing mode has the step at all: every mode that tests anything (PT-4: `light` included, which runs no proof
+/// tool per task, so the ship check is where its tools run). Never `off`.
 pub(super) fn wanted(mode: TestingMode) -> bool {
-    matches!(mode, TestingMode::AtShip | TestingMode::Full)
+    matches!(
+        mode,
+        TestingMode::AtShip | TestingMode::Light | TestingMode::Full
+    )
 }
 
 fn names(tools: &[&crate::proof_tools::Tool]) -> String {
@@ -183,11 +186,90 @@ mod tests {
     }
 
     #[test]
-    fn only_at_ship_and_full_have_the_step() {
+    fn every_mode_that_tests_has_the_step_and_no_testing_does_not() {
         assert!(wanted(TestingMode::AtShip));
         assert!(wanted(TestingMode::Full));
-        assert!(!wanted(TestingMode::Light));
+        // PT-4: Light runs no tool per task, so the ship check is where it runs them.
+        assert!(wanted(TestingMode::Light));
         assert!(!wanted(TestingMode::Off));
+    }
+
+    #[test]
+    fn a_light_project_runs_its_installed_tools_in_the_ship_check_and_no_testing_runs_none() {
+        use crate::proof_tools::switch::test_env::OffEnv;
+        let folders = Folders::new();
+        for (mode, runs) in [
+            (TestingMode::Light, true),
+            (TestingMode::AtShip, true),
+            (TestingMode::Full, true),
+            (TestingMode::Off, false),
+        ] {
+            let env = OffEnv::new(&[], folders.1.clone());
+            let scope = crate::proof_tools::Scope {
+                base: Some("abc".into()),
+                changed: vec!["src/a.ts".into()],
+                diff: DIFF.into(),
+            };
+            let stage = step(
+                mode,
+                Ok(()),
+                "abc1234",
+                || proof_run::detect_in(&folders.0, &env),
+                |detection| {
+                    proof_run::run_installed(
+                        detection,
+                        &folders.0,
+                        &scope,
+                        &[],
+                        &env,
+                        crate::proof_tools::Pick::All,
+                    )
+                },
+            );
+            assert_eq!(
+                env.ran().iter().any(|id| id.starts_with("stryker")),
+                runs,
+                "{mode:?}"
+            );
+            assert_eq!(stage.steps.is_empty(), !runs, "{mode:?}");
+        }
+    }
+
+    #[test]
+    fn a_tool_the_person_switched_off_stays_off_in_light_too() {
+        use crate::proof_tools::switch::test_env::OffEnv;
+        let folders = Folders::new();
+        let env = OffEnv::new(&["stryker"], folders.1.clone());
+        let scope = crate::proof_tools::Scope {
+            base: Some("abc".into()),
+            changed: vec!["src/a.ts".into()],
+            diff: DIFF.into(),
+        };
+        let stage = step(
+            TestingMode::Light,
+            Ok(()),
+            "abc1234",
+            || proof_run::detect_in(&folders.0, &env),
+            |detection| {
+                proof_run::run_installed(
+                    detection,
+                    &folders.0,
+                    &scope,
+                    &[],
+                    &env,
+                    crate::proof_tools::Pick::All,
+                )
+            },
+        );
+        assert!(
+            !env.ran().iter().any(|id| id.starts_with("stryker")),
+            "{:?}",
+            env.ran()
+        );
+        assert!(stage
+            .not_tested
+            .iter()
+            .any(|line| line.contains("StrykerJS is switched off")));
     }
 
     #[test]

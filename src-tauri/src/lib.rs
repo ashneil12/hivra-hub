@@ -714,6 +714,9 @@ pub fn run() {
             // SC-5: which model family checks a finished task (the app's own setting, never a project's).
             firstmate::checker_family::checker_family_rule_get,
             firstmate::checker_family::checker_family_rule_set,
+            // PT-4: when the running checker runs (the app's own setting, beside the family rule).
+            firstmate::checker_when::checker_when_rule_get,
+            firstmate::checker_when::checker_when_rule_set,
             // SC-4: a brief's check lines, stamp and do-not-touch list. The webview keeps them; only the gates set a result.
             firstmate::brief_checks::firstmate_brief_keep,
             firstmate::brief_checks::firstmate_brief_stamp,

@@ -177,8 +177,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
-    // SC-3a: how hard the project's tasks are tested. NULL until the person picks: the gates read that as "at-ship".
-    // A word this build doesn't know reads as the default too (settings.rs).
+    // SC-3a: how hard the project's tasks are tested. NULL until the person picks: the gates read that as the default,
+    // `settings::DEFAULT_TESTING_MODE`. A word this build doesn't know reads as the default too (settings.rs).
     let has_testing: bool = conn.query_row(
         "SELECT EXISTS(SELECT 1 FROM pragma_table_info('delivery_settings') WHERE name = 'testing_mode')",
         [],

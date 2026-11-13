@@ -11,22 +11,29 @@ import { invoke } from "@tauri-apps/api/core";
 export const TESTING_MODES = ["at-ship", "light", "full", "off"] as const;
 export type TestingMode = (typeof TESTING_MODES)[number];
 
-/** What a project with no choice gets: tasks only have to build, and tests and review run once, at ship. */
+/**
+ * What a project with no choice gets: tasks only have to build, and tests and review run once, at ship. THE one place the default
+ * is named on this side (Rust's is `DEFAULT_TESTING_MODE` in src-tauri/src/delivery/settings.rs). Every fallback below reads it,
+ * so picking another default is this one line.
+ */
 export const DEFAULT_TESTING_MODE: TestingMode = "at-ship";
 
 /** The name a person reads, and one line under it. */
 export const TESTING_MODE_WORDS: Record<TestingMode, { label: string; description: string }> = {
   "at-ship": {
     label: "Test at ship",
-    description: "Tasks are checked for obvious slips only; tests and review run once, when you ship.",
+    description:
+      "Tasks only have to build, and a risky change gets a second model. Tests, proof tools, the end-to-end check and a review run once, when you ship.",
   },
   light: {
     label: "Light tests each task",
-    description: "Every task that changes code runs the project's tests and gets a quick review.",
+    description:
+      "Every task that changes code runs the project's tests and gets a quick review. Proof tools and the end-to-end check run once, when you ship.",
   },
   full: {
     label: "Full checks each task",
-    description: "Light, plus the task's own checks, the real-app check and a second reviewer.",
+    description:
+      "Light, plus the task's own checks, the real-app check, proof tools and a second model that re-runs the proof on every code change.",
   },
   off: {
     label: "No testing",
@@ -56,24 +63,28 @@ function updatedAtOf(row: Record<string, unknown>): number | null {
   return typeof row.updatedAt === "number" && Number.isFinite(row.updatedAt) ? row.updatedAt : null;
 }
 
-/** `delivery_settings_get`'s answer. `null` when it isn't an object at all: that read failed. */
-export function readEffective(value: unknown): TestingModeRead | null {
+/**
+ * `delivery_settings_get`'s answer. `null` when it isn't an object at all: that read failed. A saved choice is always kept;
+ * `fallback` (the default constant, named only so a test can show every fallback follows it) fills in where nothing is saved or
+ * the word isn't one this build knows.
+ */
+export function readEffective(value: unknown, fallback: TestingMode = DEFAULT_TESTING_MODE): TestingModeRead | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
   const mode = parseTestingMode(row.testingMode);
   return {
-    mode: mode ?? DEFAULT_TESTING_MODE,
+    mode: mode ?? fallback,
     defaulted: mode === null || row.testingDefaulted === true,
     updatedAt: updatedAtOf(row),
   };
 }
 
 /** `delivery_testing_mode_set`'s answer: the stored row, whose `testingMode` is none until the person chooses. */
-export function readStored(value: unknown): TestingModeRead | null {
+export function readStored(value: unknown, fallback: TestingMode = DEFAULT_TESTING_MODE): TestingModeRead | null {
   if (!value || typeof value !== "object") return null;
   const row = value as Record<string, unknown>;
   const mode = parseTestingMode(row.testingMode);
-  return { mode: mode ?? DEFAULT_TESTING_MODE, defaulted: mode === null, updatedAt: updatedAtOf(row) };
+  return { mode: mode ?? fallback, defaulted: mode === null, updatedAt: updatedAtOf(row) };
 }
 
 /** What a failed call says: the app's own plain words when it gave some, else the usual line. */

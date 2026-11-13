@@ -42,21 +42,35 @@ impl Mode {
     }
 }
 
+/// PT-4: what a project with no testing choice gets. THE one place the default is named on this side (the webview's is
+/// `DEFAULT_TESTING_MODE` in `src/features/delivery/model/testingMode.ts`): `TestingMode::default()` reads it, and every
+/// fallback (a project with no row, a word this build doesn't know, a database that can't be read) goes through that, so
+/// picking another default is this one line. Tasks only have to build; tests and review run in one bulk pass at ship.
+pub const DEFAULT_TESTING_MODE: TestingMode = TestingMode::AtShip;
+
 /// SC-3a: how hard a project's tasks are tested before they count as done. The gates read it when a worker says done
-/// (`firstmate::testing_mode`). The default is `AtShip`: tasks only have to build, and tests and review run in one bulk
-/// pass when the person ships.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+/// (`firstmate::testing_mode`). The default is `DEFAULT_TESTING_MODE` (`AtShip`): tasks only have to build, and tests and
+/// review run in one bulk pass when the person ships.
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub enum TestingMode {
-    /// Tasks are checked for obvious slips only; tests and review run once, at ship.
-    #[default]
+    /// Tasks only have to build, and a risky change gets a second model. Tests, proof tools, the end-to-end check and a review
+    /// run once, at ship.
     AtShip,
-    /// Every task that changes code runs the project's tests and gets a quick review.
+    /// Every task that changes code runs the project's tests and gets a quick review. Proof tools and the end-to-end check run
+    /// once, at ship.
     Light,
-    /// Light, plus the task's own checks, the real-app check and a second reviewer.
+    /// Light, plus the task's own checks, the real-app check, proof tools and a second model that re-runs the proof on every
+    /// code change.
     Full,
     /// Tasks are not tested or reviewed.
     Off,
+}
+
+impl Default for TestingMode {
+    fn default() -> TestingMode {
+        DEFAULT_TESTING_MODE
+    }
 }
 
 impl TestingMode {
@@ -342,12 +356,18 @@ pub fn set_testing_mode(
 }
 
 /// SC-3a: the testing mode the gates use for a project. A project with no row, a word this build doesn't know or a
-/// database that can't be read all give the default (`TestingMode::AtShip`), never a stricter or looser surprise.
+/// database that can't be read all give the default (`DEFAULT_TESTING_MODE`), never a stricter or looser surprise. A saved
+/// choice is always kept: the default only fills in where nothing is saved.
 pub fn testing_mode_for(conn: &Connection, project: &str) -> TestingMode {
+    testing_mode_for_with(conn, project, DEFAULT_TESTING_MODE)
+}
+
+/// `testing_mode_for` with the default named, so a test can show that every fallback follows it.
+fn testing_mode_for_with(conn: &Connection, project: &str, default: TestingMode) -> TestingMode {
     get(conn, project)
         .ok()
         .and_then(|stored| stored.testing_mode)
-        .unwrap_or_default()
+        .unwrap_or(default)
 }
 
 /// Adds paths to the project's extra list. A path already there stays, and nothing already stored is removed.
@@ -505,6 +525,11 @@ pub fn default_mode(probe: &Probe) -> Mode {
 }
 
 pub fn effective(stored: Stored, probe: &Probe) -> Effective {
+    effective_with(stored, probe, DEFAULT_TESTING_MODE)
+}
+
+/// `effective` with the default testing mode named (see `testing_mode_for_with`).
+fn effective_with(stored: Stored, probe: &Probe, default_testing: TestingMode) -> Effective {
     let (mode, defaulted) = match stored.mode {
         Some(mode) => (mode, false),
         None => (default_mode(probe), true),
@@ -524,7 +549,7 @@ pub fn effective(stored: Stored, probe: &Probe) -> Effective {
         defaulted,
         merge_without_asking: stored.merge_without_asking,
         testing_defaulted: stored.testing_mode.is_none(),
-        testing_mode: stored.testing_mode.unwrap_or_default(),
+        testing_mode: stored.testing_mode.unwrap_or(default_testing),
         protect_paths: stored.protect_paths,
         protected_extra: stored.protected_extra,
         probe: probe.clone(),
@@ -725,19 +750,19 @@ mod tests {
                 TestingMode::AtShip,
                 "at-ship",
                 "Test at ship",
-                "Tasks are checked for obvious slips only; tests and review run once, when you ship.",
+                "Tasks only have to build, and a risky change gets a second model. Tests, proof tools, the end-to-end check and a review run once, when you ship.",
             ),
             (
                 TestingMode::Light,
                 "light",
                 "Light tests each task",
-                "Every task that changes code runs the project's tests and gets a quick review.",
+                "Every task that changes code runs the project's tests and gets a quick review. Proof tools and the end-to-end check run once, when you ship.",
             ),
             (
                 TestingMode::Full,
                 "full",
                 "Full checks each task",
-                "Light, plus the task's own checks, the real-app check and a second reviewer.",
+                "Light, plus the task's own checks, the real-app check, proof tools and a second model that re-runs the proof on every code change.",
             ),
             (
                 TestingMode::Off,
@@ -746,7 +771,7 @@ mod tests {
                 "Tasks are not tested or reviewed.",
             ),
         ];
-        assert_eq!(TestingMode::default(), TestingMode::AtShip);
+        assert_eq!(TestingMode::default(), DEFAULT_TESTING_MODE);
         assert_eq!(TestingMode::ALL.len(), rows.len());
         for (mode, word, label, description) in rows {
             assert_eq!(mode.as_str(), word);
@@ -761,6 +786,102 @@ mod tests {
         }
         assert_eq!(TestingMode::parse("At-Ship"), None);
         assert!(serde_json::from_str::<TestingMode>("\"strict\"").is_err());
+    }
+
+    // ---- PT-4: one constant for the default -----------------------------------------------------------------------
+
+    #[test]
+    fn the_default_is_one_constant_and_the_default_trait_reads_it() {
+        assert_eq!(DEFAULT_TESTING_MODE, TestingMode::AtShip);
+        assert_eq!(TestingMode::default(), DEFAULT_TESTING_MODE);
+    }
+
+    #[test]
+    fn a_different_default_changes_every_fallback_and_never_a_saved_choice() {
+        for default in TestingMode::ALL {
+            // A project with no row, and one whose row has no choice: both fall back to the default.
+            let conn = conn();
+            assert_eq!(
+                testing_mode_for_with(&conn, "/work/app", default),
+                default,
+                "no row"
+            );
+            let shown =
+                effective_with(get(&conn, "/work/app").unwrap(), &Probe::default(), default);
+            assert_eq!(shown.testing_mode, default, "effective, no row");
+            assert!(shown.testing_defaulted);
+
+            // A word this build doesn't know is the default too, never a stricter or a looser surprise.
+            conn.execute(
+                "INSERT INTO delivery_settings (project, mode, merge_without_asking, testing_mode, updated_at)
+                 VALUES ('/work/odd', NULL, 0, 'strict', 1)",
+                [],
+            )
+            .unwrap();
+            assert_eq!(
+                testing_mode_for_with(&conn, "/work/odd", default),
+                default,
+                "unknown word"
+            );
+
+            // A saved choice is kept whatever the default is.
+            for saved in TestingMode::ALL {
+                set_testing_mode(&conn, "/work/kept", saved, None, 5).unwrap();
+                assert_eq!(testing_mode_for_with(&conn, "/work/kept", default), saved);
+                let shown = effective_with(
+                    get(&conn, "/work/kept").unwrap(),
+                    &Probe::default(),
+                    default,
+                );
+                assert_eq!(shown.testing_mode, saved);
+                assert!(!shown.testing_defaulted);
+                conn.execute(
+                    "DELETE FROM delivery_settings WHERE project = '/work/kept'",
+                    [],
+                )
+                .unwrap();
+            }
+        }
+    }
+
+    /// No code anywhere falls back to a mode of its own: the places that read a project's mode go through
+    /// `TestingMode::default()` or `testing_mode_for`, so `DEFAULT_TESTING_MODE` is the only thing to change.
+    #[test]
+    fn no_source_file_falls_back_to_a_named_mode_of_its_own() {
+        fn walk(dir: &std::path::Path, found: &mut Vec<String>) {
+            for entry in std::fs::read_dir(dir).unwrap().flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    walk(&path, found);
+                    continue;
+                }
+                let name = path.file_name().unwrap().to_string_lossy().into_owned();
+                if !name.ends_with(".rs") || name.contains("test") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                // What is before the file's own `#[cfg(test)]` module is the code that ships.
+                let shipped = text.split("#[cfg(test)]").next().unwrap_or("");
+                for (number, line) in shipped.lines().enumerate() {
+                    let code = line.split("//").next().unwrap_or("");
+                    if code.contains("unwrap_or(TestingMode::")
+                        || code.contains("unwrap_or(crate::delivery::settings::TestingMode::")
+                        || code.contains("unwrap_or_else(|| TestingMode::")
+                    {
+                        found.push(format!("{}:{}", path.display(), number + 1));
+                    }
+                }
+            }
+        }
+        let mut found = Vec::new();
+        walk(
+            &std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src"),
+            &mut found,
+        );
+        assert!(
+            found.is_empty(),
+            "a mode of its own as the fallback: {found:?}"
+        );
     }
 
     #[test]

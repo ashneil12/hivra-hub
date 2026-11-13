@@ -49,7 +49,7 @@ beforeEach(() => {
 describe("the words", () => {
   it("say what the section is in the spec's own sentence, and what an empty list is", () => {
     expect(PROOF_TOOLS_HINT).toBe(
-      "Open-source tools that check the work. The app uses the ones this project already has and never installs one by itself.",
+      "Open-source tools that check the work. Each one this project has is on until you switch it off, and the app never installs one by itself.",
     );
     expect(NONE_FIT_LINE).toBe("None of these tools fit this project.");
     expect(PROOF_TOOLS_TRY_AGAIN).toBe("That didn't go through. Try again.");

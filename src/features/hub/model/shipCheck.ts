@@ -38,7 +38,15 @@ export type ShipCheckRecord = {
   tested: string[];
   /** Plain lines: what did not, and why. */
   notTested: string[];
+  /**
+   * PT-4: proof tools the project could use and lacks, put forward by this run (at most three; the app decides each run afresh).
+   * Only a run's answer has them: a saved record never does. The first mate files each through PT-1's claim and ask.
+   */
+  proposals?: ShipProposal[];
 };
+
+/** A proof tool a ship check puts forward: its catalogue id and the name a person reads. */
+export type ShipProposal = { toolId: string; name: string };
 
 /** The app's side, as invokes. Answers are untrusted until `readShipCheckRecord` has read them. */
 export type ShipCheckBackend = {
@@ -125,10 +133,41 @@ function readStep(value: unknown): ShipCheckStep | null {
   };
 }
 
+/** PT-4: the end-to-end step's name, and the two reasons it may "not run" without that counting against a pass (the app's words). */
+const END_TO_END = "End-to-end";
+const END_TO_END_FINE_NOT_RUN = ["no screen to test", "switched off for this project"];
+
+/**
+ * PT-4: whether a step is the end-to-end one and did not pass for this version: it failed, could not run, or did not run for any
+ * reason but "no screen to test" or the person's own switch. The "ready to ship" hold reads a record over such a step as not passed.
+ */
+export function endToEndDidNotPass(step: ShipCheckStep): boolean {
+  if (step.name !== END_TO_END) return false;
+  if (step.outcome === "passed") return false;
+  return !(step.outcome === "notRun" && END_TO_END_FINE_NOT_RUN.includes(step.detail));
+}
+
+/** PT-4: the proof tools a run put forward, read defensively: a bad entry is dropped, at most three, each tool once. */
+export function readShipProposals(value: unknown): ShipProposal[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: ShipProposal[] = [];
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const row = entry as Record<string, unknown>;
+    const toolId = text(row.toolId)?.trim();
+    if (!toolId || !/^[a-z0-9][a-z0-9-]{0,39}$/.test(toolId) || seen.has(toolId)) continue;
+    seen.add(toolId);
+    out.push({ toolId, name: text(row.name)?.trim().slice(0, 80) ?? toolId });
+    if (out.length === 3) break;
+  }
+  return out;
+}
+
 /**
  * The app's record, checked. `null` when it isn't one: not an object, no version, or an outcome this build doesn't know.
  * A step outcome it doesn't know reads as one that could not run, and the whole record is never a pass over a step that
- * failed or could not run.
+ * failed or could not run, or over an end-to-end step that did not pass (PT-4).
  */
 export function readShipCheckRecord(value: unknown): ShipCheckRecord | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
@@ -139,10 +178,11 @@ export function readShipCheckRecord(value: unknown): ShipCheckRecord | null {
   let outcome = row.outcome as ShipCheckOutcome;
   if (outcome === "passed") {
     if (steps.some((step) => step.outcome === "failed")) outcome = "failed";
-    else if (steps.some((step) => step.outcome === "couldNotRun")) outcome = "couldNotRun";
+    else if (steps.some((step) => step.outcome === "couldNotRun" || endToEndDidNotPass(step))) outcome = "couldNotRun";
   } else if (outcome === "couldNotRun" && steps.some((step) => step.outcome === "failed")) {
     outcome = "failed";
   }
+  const proposals = readShipProposals(row.proposals);
   const covered = typeof row.commitsCovered === "number" && Number.isInteger(row.commitsCovered) ? row.commitsCovered : 0;
   return {
     project: typeof row.project === "string" ? row.project : "",
@@ -155,6 +195,7 @@ export function readShipCheckRecord(value: unknown): ShipCheckRecord | null {
     steps,
     tested: lines(row.tested),
     notTested: lines(row.notTested),
+    ...(proposals.length ? { proposals } : {}),
   };
 }
 

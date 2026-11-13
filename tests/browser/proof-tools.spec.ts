@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-const HINT = "Open-source tools that check the work. The app uses the ones this project already has and never installs one by itself.";
+const HINT = "Open-source tools that check the work. Each one this project has is on until you switch it off, and the app never installs one by itself.";
 const STALE = "That changed in another window. Look again, then set it.";
 
 // What the catalogue says fast-check proves (src/features/proofTools/model/proofTools.json), word for word.

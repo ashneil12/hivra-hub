@@ -12,7 +12,7 @@
 // person never hears "done" while work is open). Every rule shares the once-per-reason memo, the message and the note.
 import { invoke } from "@tauri-apps/api/core";
 import { loadTestingMode, type TestingMode } from "../../delivery/model/testingMode";
-import { shortSha, tauriShipCheck, type ShipCheckBackend } from "../../hub/model/shipCheck";
+import { endToEndDidNotPass, latestShipCheck, shortSha, tauriShipCheck, type ShipCheckBackend } from "../../hub/model/shipCheck";
 import { forUser } from "../../hub/model/userName";
 import { queuedWorkers } from "../../monos/model/workerPool";
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
@@ -458,7 +458,15 @@ export function holdDeps(
   return {
     mode: async (cwd) => (await loadMode(cwd)).mode,
     head: (cwd) => backend.head(cwd),
-    passed: (cwd, head) => backend.passed(cwd, head),
+    passed: async (cwd, head) => {
+      if (!(await backend.passed(cwd, head))) return false;
+      // PT-4: a pass is not a pass for this version when its end-to-end step did not pass. The app already answers so
+      // (ship_check.rs `passed_for_in`); the record is read again here because it is untrusted, and a read that fails is never a
+      // reason to hold.
+      const latest = await latestShipCheck(cwd, backend).catch(() => null);
+      const same = latest?.head.trim().toLowerCase() === head.trim().toLowerCase();
+      return !(latest && same && latest.steps.some(endToEndDidNotPass));
+    },
     work: async (chatId) => readOpenWork(await openWork(chatId)),
     waiting: (chatId) => queued().filter((job) => job.ownerSession === chatId).map((job) => ({ id: job.id, title: job.title })),
   };

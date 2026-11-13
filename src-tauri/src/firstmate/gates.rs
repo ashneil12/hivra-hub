@@ -2694,7 +2694,7 @@ pub async fn firstmate_run_gates(
             .facts
             .as_ref()
             .map(super::fact_gaps::fact_turn_from_value);
-        let (plan, row, gate_owns_checks, mode, brief_state, protected_extra, prior) = {
+        let (plan, row, gate_owns_checks, mode, brief_state, protected_extra, prior, when) = {
             let conn = store.lock_conn()?;
             let plan = plan_of(&conn, &input.delegation_id)?;
             // SC-4: the brief's own check lines and do-not-touch list, read with the plan.
@@ -2722,6 +2722,8 @@ pub async fn firstmate_run_gates(
                 .map(|stored| stored.protected_extra)
                 .unwrap_or_default();
             let prior = records_of(&conn, &input.delegation_id)?;
+            // PT-4: when the running checker runs is the app's own setting (never a project file), read with the mode.
+            let when = super::checker_when::rule_of(&conn);
             (
                 plan,
                 row,
@@ -2730,6 +2732,7 @@ pub async fn firstmate_run_gates(
                 brief_state,
                 protected_extra,
                 prior,
+                when,
             )
         };
         let brief_round = BriefRound::from(&brief_state);
@@ -2762,8 +2765,15 @@ pub async fn firstmate_run_gates(
         let proof = testing_mode::proof_gate_wanted(mode, code_changed, || {
             crate::proof_tools::detect_folder_in_use(&app, &checkout)
         });
-        let moded =
-            testing_mode::gates_for_with(mode, plan.as_ref(), &changed, code_changed, risky, proof);
+        let moded = testing_mode::gates_for_with(
+            mode,
+            plan.as_ref(),
+            &changed,
+            code_changed,
+            risky,
+            proof,
+            when,
+        );
         // Nothing changed and no plan was stored (a research or answer task): the task settles as it always did.
         // Missing facts are not a clean turn: a send-back stays, and the row is not marked pending.
         // A present turn with no gap clears a send-back, or the delivered row stays failed.

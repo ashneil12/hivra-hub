@@ -684,6 +684,80 @@ describe("doneHold: a first mate's done is held while its work is open (every te
   });
 });
 
+// ---- PT-4: a ship check whose end-to-end step did not pass is not a pass --------------------------------------------------
+
+describe("the hold and the end-to-end step", () => {
+  type Step = { name: string; outcome: string; detail: string };
+  const e2e = (outcome: string, detail: string): Step => ({ name: "End-to-end", outcome, detail });
+
+  const savedRecord = (steps: Step[], head = HEAD) => ({
+    project: "/work/app",
+    head,
+    base: null,
+    commitsCovered: 3,
+    at: 1,
+    outcome: "passed",
+    note: null,
+    steps: [{ name: "Project checks", outcome: "passed", detail: "ran and passed" }, ...steps],
+    tested: [],
+    notTested: [],
+  });
+
+  /** The app's own answers where `passed` says what the app's pass record says, and `latest` is what its newest record is. */
+  function fromApp(passed: boolean, latest: unknown) {
+    const backend = {
+      head: vi.fn(async () => HEAD),
+      passed: vi.fn(async () => passed),
+      latest: vi.fn(async () => latest),
+    };
+    return holdDeps(backend as never, vi.fn(async () => ({ mode: "at-ship" as const })), vi.fn(async () => undefined), () => []);
+  }
+
+  it("holds a ready-to-ship claim when the version's end-to-end step could not run, even if the pass record says passed", async () => {
+    const held = await doneHold(
+      claiming(),
+      fromApp(true, savedRecord([e2e("couldNotRun", "No end-to-end check is available for this project.")])),
+      new Set(),
+    );
+    expect(held?.message.text).toContain("no ship check has passed for 0123456");
+  });
+
+  it("holds when the end-to-end step failed, or did not run for a reason that is not 'no screen'", async () => {
+    for (const step of [e2e("failed", "e2e: its tests failed"), e2e("notRun", "it did not run for another reason")]) {
+      const held = await doneHold(claiming(), fromApp(true, savedRecord([step])), new Set());
+      expect(held, step.detail).toBeDefined();
+    }
+  });
+
+  it("lets a pass stand when the step passed, did not apply, or the person switched its tools off", async () => {
+    for (const step of [
+      e2e("passed", "e2e: replayed"),
+      e2e("notRun", "no screen to test"),
+      e2e("notRun", "switched off for this project"),
+    ]) {
+      expect(await doneHold(claiming(), fromApp(true, savedRecord([step])), new Set()), step.detail).toBeUndefined();
+    }
+    // A record from before the step existed has none.
+    expect(await doneHold(claiming(), fromApp(true, savedRecord([])), new Set())).toBeUndefined();
+  });
+
+  it("reads only the record for this version, and never holds because the record couldn't be read", async () => {
+    const other = savedRecord([e2e("couldNotRun", "No end-to-end check is available for this project.")], NEXT);
+    expect(await doneHold(claiming(), fromApp(true, other), new Set())).toBeUndefined();
+    const broken = {
+      head: vi.fn(async () => HEAD),
+      passed: vi.fn(async () => true),
+      latest: vi.fn(async () => {
+        throw new Error("the app is busy");
+      }),
+    };
+    const api = holdDeps(broken as never, vi.fn(async () => ({ mode: "at-ship" as const })), vi.fn(async () => undefined), () => []);
+    expect(await doneHold(claiming(), api, new Set())).toBeUndefined();
+    // And the app saying there is no pass is still a hold, whatever the record says.
+    expect(await doneHold(claiming(), fromApp(false, savedRecord([e2e("passed", "ok")])), new Set())).toBeDefined();
+  });
+});
+
 describe("holdDeps: the app's own answers", () => {
   it("reads the open work from the app and keeps a waiting worker of this chat only", async () => {
     const api = holdDeps(

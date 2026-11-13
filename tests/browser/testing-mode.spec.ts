@@ -1,9 +1,9 @@
 import { expect, test, type Page } from "@playwright/test";
 
 const WORDS = [
-  { mode: "at-ship", label: "Test at ship", description: "Tasks are checked for obvious slips only; tests and review run once, when you ship." },
-  { mode: "light", label: "Light tests each task", description: "Every task that changes code runs the project's tests and gets a quick review." },
-  { mode: "full", label: "Full checks each task", description: "Light, plus the task's own checks, the real-app check and a second reviewer." },
+  { mode: "at-ship", label: "Test at ship", description: "Tasks only have to build, and a risky change gets a second model. Tests, proof tools, the end-to-end check and a review run once, when you ship." },
+  { mode: "light", label: "Light tests each task", description: "Every task that changes code runs the project's tests and gets a quick review. Proof tools and the end-to-end check run once, when you ship." },
+  { mode: "full", label: "Full checks each task", description: "Light, plus the task's own checks, the real-app check, proof tools and a second model that re-runs the proof on every code change." },
   { mode: "off", label: "No testing", description: "Tasks are not tested or reviewed." },
 ] as const;
 

@@ -4,9 +4,11 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   commitsLine,
+  endToEndDidNotPass,
   latestShipCheck,
   outcomeWord,
   readShipCheckRecord,
+  readShipProposals,
   runShipCheck,
   shipCheckError,
   shipCheckRunning,
@@ -125,6 +127,72 @@ describe("a record read from the app", () => {
         record({ outcome: "couldNotRun", steps: [{ name: "Review", outcome: "failed", detail: "x" }] }),
       )?.outcome,
     ).toBe("failed");
+  });
+
+  // ---- PT-4: the end-to-end step -------------------------------------------------------------------------------------------
+
+  it("knows when the end-to-end step did not pass for this version", () => {
+    const step = (outcome: ShipCheckRecord["steps"][number]["outcome"], detail: string, name = "End-to-end") => ({
+      name,
+      outcome,
+      detail,
+    });
+    expect(endToEndDidNotPass(step("passed", "e2e: replayed"))).toBe(false);
+    // Not applying is not failing: no screen, or the person's own switch.
+    expect(endToEndDidNotPass(step("notRun", "no screen to test"))).toBe(false);
+    expect(endToEndDidNotPass(step("notRun", "switched off for this project"))).toBe(false);
+    // Anything else is: a failure, a run that could not happen, a screen with no check, a step that did not run for another reason.
+    expect(endToEndDidNotPass(step("failed", "e2e: its tests failed"))).toBe(true);
+    expect(endToEndDidNotPass(step("couldNotRun", "No end-to-end check is available for this project."))).toBe(true);
+    expect(endToEndDidNotPass(step("notRun", "something else"))).toBe(true);
+    expect(endToEndDidNotPass(step("notRun", ""))).toBe(true);
+    // Any other step is none of its business.
+    expect(endToEndDidNotPass(step("couldNotRun", "no answer", "Review"))).toBe(false);
+  });
+
+  it("will not show a pass over an end-to-end step that did not pass, and keeps one that passed or did not apply", () => {
+    const withStep = (outcome: ShipCheckRecord["steps"][number]["outcome"], detail: string) =>
+      readShipCheckRecord(
+        record({ steps: [...record().steps, { name: "End-to-end", outcome, detail }] }),
+      );
+    // A record that says "passed" over a screen with no check is read as a run that could not finish.
+    expect(withStep("notRun", "something else")?.outcome).toBe("couldNotRun");
+    expect(withStep("couldNotRun", "No end-to-end check is available for this project.")?.outcome).toBe("couldNotRun");
+    expect(withStep("failed", "e2e: its tests failed")?.outcome).toBe("failed");
+    expect(withStep("passed", "e2e: replayed")?.outcome).toBe("passed");
+    expect(withStep("notRun", "no screen to test")?.outcome).toBe("passed");
+    expect(withStep("notRun", "switched off for this project")?.outcome).toBe("passed");
+    // A record from before the step existed reads as it always did.
+    expect(readShipCheckRecord(record())?.outcome).toBe("passed");
+  });
+
+  // ---- PT-4: the proof tools a run puts forward ----------------------------------------------------------------------------
+
+  it("reads the proof tools a run puts forward: at most three, each once, a bad entry dropped, none when there are none", () => {
+    const got = readShipCheckRecord({
+      ...record(),
+      proposals: [
+        { toolId: "e2e", name: "e2e" },
+        { toolId: "e2e", name: "again" },
+        { toolId: "../evil", name: "x" },
+        { toolId: "Playwright", name: "wrong case" },
+        { name: "no id" },
+        null,
+        "playwright",
+        { toolId: "playwright", name: "Playwright" },
+        { toolId: "fast-check" },
+        { toolId: "stryker", name: "StrykerJS" },
+      ],
+    });
+    expect(got?.proposals).toEqual([
+      { toolId: "e2e", name: "e2e" },
+      { toolId: "playwright", name: "Playwright" },
+      { toolId: "fast-check", name: "fast-check" },
+    ]);
+    for (const none of [undefined, null, [], "e2e", {}, [{}]]) {
+      expect("proposals" in (readShipCheckRecord({ ...record(), proposals: none }) ?? {}), String(none)).toBe(false);
+    }
+    expect(readShipProposals(undefined)).toEqual([]);
   });
 
   it("falls back safely on missing or odd fields", () => {

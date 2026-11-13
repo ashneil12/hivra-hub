@@ -239,7 +239,7 @@ fn clip(text: &str, max: usize) -> String {
 }
 
 /// A command's outcome as one plain line for the two lists.
-fn exercised_line(run: &CommandEvidence) -> String {
+pub(crate) fn exercised_line(run: &CommandEvidence) -> String {
     match (run.outcome, run.exit_code) {
         (Outcome::Passed, _) => format!("Ran `{}`: it passed.", clip(&run.command, 120)),
         (Outcome::Failed, Some(code)) => {
@@ -276,7 +276,7 @@ its exact output and give the final answer. If you need no command, give the fin
 JSON above with two more keys: \"exercised\": [plain lines on what you ran or checked] and \"not_exercised\": [plain lines on what \
 you did not or could not check].";
 
-fn commands_text(commands: &[CommandEvidence], brief_has_lines: bool) -> String {
+pub(crate) fn commands_text(commands: &[CommandEvidence], brief_has_lines: bool) -> String {
     if commands.is_empty() {
         return if brief_has_lines {
             "- none ran".into()
@@ -355,7 +355,12 @@ fn first_prompt(
 }
 
 /// The second call's prompt: the first, what the checker said, and either the command's output or why it was refused.
-fn second_prompt(first: &str, said: &str, ask: &RunAsk, run: Option<&CommandEvidence>) -> String {
+pub(crate) fn second_prompt(
+    first: &str,
+    said: &str,
+    ask: &RunAsk,
+    run: Option<&CommandEvidence>,
+) -> String {
     let outcome = match (ask, run) {
         (RunAsk::Accepted { command, .. }, Some(run)) => format!(
             "## The command you asked for, run in the read-only copy\n`{command}`: {}\n```text\n{}\n```",
@@ -467,7 +472,7 @@ fn write_refused(output: &str) -> bool {
 /// A failure in the copy proves nothing about the work, and is "could not run", never a refutation, when it shows the copy
 /// refused a write (either kind of copy: the copy is read-only on purpose), or when the copy is a worktree with none of the
 /// worker's installed dependencies or build output. "Could not run" never counts as a pass.
-fn trusted_in(how: CopyHow, mut evidence: CommandEvidence) -> CommandEvidence {
+pub(crate) fn trusted_in(how: CopyHow, mut evidence: CommandEvidence) -> CommandEvidence {
     if evidence.outcome == Outcome::Failed && write_refused(&evidence.output) {
         evidence.outcome = Outcome::NotRun;
         evidence.output = format!(
@@ -487,7 +492,12 @@ fn trusted_in(how: CopyHow, mut evidence: CommandEvidence) -> CommandEvidence {
 }
 
 /// One command run in the copy, as evidence. Its outcome is the exit code (0 passes).
-fn evidence_of(what: &str, command: &str, raw: &RawRun, how: CopyHow) -> CommandEvidence {
+pub(crate) fn evidence_of(
+    what: &str,
+    command: &str,
+    raw: &RawRun,
+    how: CopyHow,
+) -> CommandEvidence {
     let judged = brief_checks::judge(
         &BriefCheck {
             what: what.to_string(),

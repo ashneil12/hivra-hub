@@ -3,6 +3,8 @@
 // any service. `undefined` means "not mine" and the stand-in answers as before.
 
 import { findProofTool } from "../../features/proofTools/model/proofTools"; // PT-2
+import { DEFAULT_TESTING_MODE } from "../../features/delivery/model/testingMode"; // PT-4
+import { DEFAULT_CHECKER_WHEN_RULE, readCheckerWhenRule } from "../../features/settings/model/checkerWhen"; // PT-4
 import { EXAMPLE } from "./data";
 
 const NOTES_KEY = "monocode:mockup-notes";
@@ -53,7 +55,7 @@ function testingRow(project: string): Row {
   const mode = typeof stored.testingMode === "string" ? stored.testingMode : null;
   return {
     project,
-    testingMode: mode ?? "at-ship",
+    testingMode: mode ?? DEFAULT_TESTING_MODE, // PT-4: the one default constant
     testingDefaulted: mode === null,
     updatedAt: typeof stored.updatedAt === "number" ? stored.updatedAt : null,
   };
@@ -173,6 +175,16 @@ export function mockupIpc(cmd: string, args: Row | undefined): unknown {
     case "checker_family_rule_set": {
       const rule = args?.rule === "any" ? "any" : "different";
       localStorage.setItem("monocode:mockup-checker-family", rule);
+      return rule;
+    }
+    // PT-4: when the running checker runs, kept in the page's own storage like the family rule.
+    case "checker_when_rule_get": {
+      const stored = localStorage.getItem("monocode:mockup-checker-when");
+      return readCheckerWhenRule(stored) ?? DEFAULT_CHECKER_WHEN_RULE;
+    }
+    case "checker_when_rule_set": {
+      const rule = readCheckerWhenRule(args?.rule) ?? DEFAULT_CHECKER_WHEN_RULE;
+      localStorage.setItem("monocode:mockup-checker-when", rule);
       return rule;
     }
     case "delivery_settings_get":

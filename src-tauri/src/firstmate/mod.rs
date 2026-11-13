@@ -20,6 +20,7 @@ pub mod brief_checks; // SC-4: a brief's runnable check lines, its commit stamp 
 pub mod checker; // SC-5: the running checker (re-runs the brief's checks in a read-only copy, on another model family)
 pub mod checker_copy; // SC-5: the read-only copy of a worker's checkout
 pub mod checker_family; // SC-5: which CLI and model checks, by the app's family rule
+pub mod checker_when; // PT-4: when the running checker runs (the app setting beside the family rule)
 pub mod checkout_guard;
 pub mod dismissals; // SC-5: a worker's dismissal of a finding, on one of five grounds
 pub mod done_check;

@@ -70,7 +70,7 @@ export function CheckerFamilySetting() {
       <div className="min-w-0">
         <h3 className="text-[13px] font-medium text-content">Who checks the work</h3>
         <p className="mt-0.5 text-[12px] text-content/60">
-          Applies to the checks on a finished task: a second model re-runs its checks on a read-only copy.
+          Picks the checker: a second model that re-runs a task's checks, and the ship check's, on a read-only copy.
         </p>
       </div>
       {rule ? (
