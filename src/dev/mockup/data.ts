@@ -85,7 +85,7 @@ function chat(id: string, title: string, cwd: string, lines: Line[], now: number
  * block at `after`: its item is answered where it sits (asks/ui/InlineNeed.tsx).
  */
 function withRollup<T extends { id: string; blocks: { id: string; role: string }[] }>(session: T, after: number, now: number): T {
-  const item = { key: "question:nibbii:onboarding-read", sentence: "Read the onboarding copy before it goes out?", where: "Nibbii", yours: false };
+  const item = { key: "question:nibbii:onboarding-read", sentence: "Read the onboarding copy before it goes out?", where: "Nibbii", projectId: "nibbii", yours: false };
   const block = {
     id: `needs-rollup-${now - 20 * 60_000}`,
     role: "system",

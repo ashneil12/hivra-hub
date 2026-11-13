@@ -268,3 +268,48 @@ test("one chat: a question in the Chief of Staff's reply is its own answer card,
   await expect(oneChat(page).locator('[data-inline-need="question:hivra:waitlist-headline"]')).toBeVisible();
   await page.screenshot({ path: test.info().outputPath("answered.png") });
 });
+
+// Ash's round 3 pick (13 Nov): the one chat narrows to one project and back, and what he types while narrowed is about
+// that project. Ash 15:25: "curious how the project filter tells things apart" (asks/model/chiefLens.ts).
+test("one chat: the project filter narrows the same chat to one project, and a message sent there stays under it", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  const lens = page.locator("[data-chief-lens]");
+  await expect(lens.locator('[data-lens-pick="all"]')).toHaveText("Everything");
+  await expect(lens.locator('[data-lens-pick="vg-game"]')).toHaveText("EXO2");
+  const turn = (id: string) => oneChat(page).locator(`[data-transcript-turn="${id}"]`);
+  const rollup = oneChat(page).locator('[data-transcript-turn^="needs-rollup-"]');
+  await expect(rollup).toBeVisible();
+
+  await lens.locator('[data-lens-pick="vg-game"]').click();
+  await expect(lens).toHaveAttribute("data-chief-lens", "vg-game");
+  await expect(page.locator("[data-lens-status]")).toContainText("Only EXO, in this same chat.");
+  // The Nibbii roll-up isn't about EXO; the reply that asks about EXO and Hivra stays, with only EXO's card.
+  await expect(rollup).toBeHidden();
+  await expect(turn("mockup-chat-chief-b2")).toBeVisible();
+  await expect(oneChat(page).locator('[data-inline-need="question:vg-game:boss-music"]')).toBeVisible();
+  await expect(oneChat(page).locator('[data-inline-need="question:hivra:waitlist-headline"]')).toBeHidden();
+  await expect(page.locator("[data-lens-composer]")).toContainText("About EXO.");
+
+  // A message that names no project, sent while narrowed, carries EXO.
+  const box = page.locator("textarea[placeholder^='Ask, build']:visible");
+  await box.fill("Example: what's left before the build?");
+  await box.press("Enter");
+  const sent = oneChat(page).locator("[data-transcript-turn]").filter({ hasText: "what's left before the build?" });
+  await expect(sent).toHaveCount(1);
+  // Its reply (the mock-up's stand-in) lands in the same turn.
+  await expect(sent).toContainText("Example reply from", { timeout: 15_000 });
+  await expect(sent).toHaveAttribute("data-turn-tags", /(^| )vg-game( |$)/);
+  await expect(sent).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("exo.png") });
+
+  await lens.locator('[data-lens-pick="hivra"]').click();
+  await expect(sent).toBeHidden();
+  await expect(oneChat(page).locator('[data-inline-need="question:hivra:waitlist-headline"]')).toBeVisible();
+
+  await page.locator("[data-lens-clear]").click();
+  await expect(lens).toHaveAttribute("data-chief-lens", "all");
+  await expect(sent).toBeVisible();
+  await expect(rollup).toBeVisible();
+  await expect(page.locator("[data-lens-composer]")).toHaveCount(0);
+});

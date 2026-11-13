@@ -137,6 +137,7 @@ import { COMPACTING_NOTE, cantRedirectTurn } from "../model/cantDo";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
 import { MONO_PREFILL_EVENT, type MonoPrefill } from "../../monos/model/monoPrefill";
 import { isOneChat, requestCatchUp } from "../../asks/model/oneChat";
+import { ChiefLensBar, ChiefLensComposerLine } from "../../asks/ui/ChiefLens";
 import { preferredModelId, resolveModel } from "../model/models";
 import { isAstraModel } from "../model/astraWelcome";
 import { isOpus55Model } from "../model/opusWelcome";
@@ -1015,6 +1016,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
           <OpusWelcome key={modelWelcome.run} onDone={dismissModelWelcome} />
         )
       ) : null}
+      {/* One chat: the project filter at its top (asks/ui/ChiefLens.tsx). */}
+      {oneChat ? <ChiefLensBar sessionId={session.id} /> : null}
       {inSplit ? (
         <div
           data-split-header=""
@@ -1554,6 +1557,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
               ) : (
                 <>
                   {session.goal ? <GoalRow goal={session.goal} /> : null}
+                  {/* One chat, narrowed to a project: who the next message is about. */}
+                  {oneChat ? <ChiefLensComposerLine /> : null}
                   {/* The owner is driving this worker's chat until he hands it back. */}
                   {delegationPane?.kind === "driving" ? (
                     <div data-driving-chat className="glass-bar mb-1.5 flex w-full items-center gap-2 rounded-2xl border border-content/10 px-4 py-2 font-sans text-[13px] text-content/60">
