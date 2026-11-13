@@ -80,6 +80,21 @@ function chat(id: string, title: string, cwd: string, lines: Line[], now: number
   };
 }
 
+/**
+ * The Needs you roll-up the app posts when something new needs Ash (needs/model/needsRollup.ts), placed after the
+ * block at `after`: its item is answered where it sits (asks/ui/InlineNeed.tsx).
+ */
+function withRollup<T extends { id: string; blocks: { id: string; role: string }[] }>(session: T, after: number, now: number): T {
+  const item = { key: "question:nibbii:onboarding-read", sentence: "Read the onboarding copy before it goes out?", where: "Nibbii", yours: false };
+  const block = {
+    id: `needs-rollup-${now - 20 * 60_000}`,
+    role: "system",
+    text: `Needs you now:\n- Nibbii: ${item.sentence}`,
+    needsRollup: { items: [item], more: 0 },
+  };
+  return { ...session, blocks: [...session.blocks.slice(0, after + 1), block, ...session.blocks.slice(after + 1)] };
+}
+
 /** A side question kept with the chat, on the message it was asked under (sessions/model/btw.ts): it comes back as a tab. */
 function withSideQuestion<T extends { id: string; blocks: { id: string; role: string }[] }>(session: T, now: number): T {
   const at = now - 30 * 60_000;
@@ -100,7 +115,7 @@ function withSideQuestion<T extends { id: string; blocks: { id: string; role: st
 
 function sessions(now: number) {
   return [
-    chat(CHAT.chief, "Chief of Staff", ROOT, [
+    withRollup(chat(CHAT.chief, "Chief of Staff", ROOT, [
       ["user", "Morning. What needs me today?"],
       [
         "assistant",
@@ -111,7 +126,13 @@ function sessions(now: number) {
         "assistant",
         "Done. The EXO lead is re-running the upload on the spare account now, and I'll remind you about the headline at 14:00.",
       ],
-    ], now, 50),
+      ["user", "Example: anything I can answer right now?"],
+      [
+        "assistant",
+        // A question answered where it sits (asks/model/needLinks.ts): each link draws as that question's own card.
+        "Two quick ones, both with a pick ready:\n\n[Which take for the boss music?](hivra://local/need/question%3Avg-game%3Aboss-music)\n\n[Which waitlist headline?](hivra://local/need/question%3Ahivra%3Awaitlist-headline)\n\nThe Nibbii read can wait until tomorrow.",
+      ],
+    ], now, 50), 3, now),
     // In the folder the mock gives the Chief of Staff's own chats (browserTauriMock.ts mono_team_dir), where a side chat lives.
     chat(CHAT.chiefEarlier, "Example: parents' newsletter wording", CHIEF_FOLDER, [
       ["user", "Example: tighten the parents' newsletter opening line."],

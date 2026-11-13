@@ -1,4 +1,5 @@
 import { syncTeleportLock } from "../../connections/model/teleportLock";
+import { keptCards } from "../../asks/model/keptCards";
 import { teleportStateOf } from "../../connections/model/teleportState";
 import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
 import { invoke } from "@tauri-apps/api/core";
@@ -1328,6 +1329,8 @@ function sanitizeBlock(
   }
   // WP-123: the last message copied into a fork; its next send carries the recap until a turn is taken.
   if (block.forkPoint === true) next.forkPoint = true;
+  // Dropwave: the one chat's app cards (a catch-up, a "You messaged …" line, a Needs you roll-up) keep their card.
+  Object.assign(next, keptCards(block));
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;
   const turnModel = sanitizeTurnModel(block.turnModel);

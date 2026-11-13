@@ -699,6 +699,23 @@ describe("groupTurns", () => {
     expect(groupTurnItems([card], { settled: true })).toEqual([{ type: "block", block: card }]);
   });
 
+  it("gives the Needs you roll-up a turn of its own, so its question cards are never folded into the work trail", () => {
+    const rollup: Block = {
+      id: "needs-rollup-3000",
+      role: "system",
+      text: "Needs you now:\n- Example: which take?",
+      needsRollup: { items: [{ key: "question:p:boss", sentence: "Example: which take?", yours: false }], more: 0 },
+    };
+    const turns = groupTurns([
+      { id: "user", role: "user", text: "Review" },
+      { id: "answer", role: "assistant", text: "Reviewed." },
+      rollup,
+      { id: "next-user", role: "user", text: "And the music?" },
+    ]);
+    expect(turns.map((turn) => turn.map((block) => block.id))).toEqual([["user", "answer"], ["needs-rollup-3000"], ["next-user"]]);
+    expect(groupTurnItems([rollup], { settled: true })).toEqual([{ type: "block", block: rollup }]);
+  });
+
   it("gives a line for a message sent beside the one chat a turn of its own, out of the work trail", () => {
     const besideMessage = { chatId: "exo-lead", to: "EXO lead", text: "Example: checkpoint first", at: 2_000 };
     const line: Block = { id: "beside-2000", role: "system", text: 'You messaged EXO lead: "Example: checkpoint first"', besideMessage };
