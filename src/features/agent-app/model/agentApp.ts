@@ -137,6 +137,8 @@ import {
 } from "./agentAppSecrets";
 import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppTimers";
 import { handleWorkLog, WORK_LOG_FIELDS, type WorkLogBackend } from "./agentAppWorkLog";
+import { handleShipCheck, SHIP_CHECK_FIELDS } from "./agentAppShipCheck"; // SC-3b
+import type { ShipCheckBackend } from "../../hub/model/shipCheck"; // SC-3b
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
 import { DOC_FIELDS, handleDocs } from "./agentDocs";
@@ -459,6 +461,8 @@ export type AgentAppHost = {
   timers?: AgentAppTimersHost;
   /** WP-157: the work log. The app's own store when absent. */
   workLog?: WorkLogBackend;
+  /** SC-3b: the ship check's run (agentAppShipCheck.ts). The app's own command when absent. */
+  shipCheck?: Pick<ShipCheckBackend, "run">;
   /**
    * WP-92: a delegated worker's keys (`delegate_task`'s `secrets`). Rust checks each name, asks the person where
    * needed, and arms the handles for the child session; no value crosses to this side.
@@ -562,6 +566,8 @@ const FIELDS = new Map<string, readonly string[]>([
   ...TIMER_FIELDS,
   // WP-157: the work log. Add and read, not the delegation tools above.
   ...WORK_LOG_FIELDS,
+  // SC-3b: the ship check a first mate runs before it says a project is ready to ship.
+  ...SHIP_CHECK_FIELDS,
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
   ...DOC_FIELDS,
@@ -1826,6 +1832,8 @@ export async function handleAgentApp(
   if (action.startsWith("timers.")) return handleTimers(source, action, input, host);
   // WP-157: the work log.
   if (action.startsWith("work_log.")) return handleWorkLog(source, action, input, host);
+  // SC-3b: the ship check. Only a first mate's own chat; the project is chosen as every other action chooses it.
+  if (action.startsWith("ship_check.")) return handleShipCheck(source, action, input, host, (session, fields) => requireProject(session, fields, host));
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
   if (action.startsWith("docs.")) {
     return handleDocs(source, requestId, action, input, host, (session, fields) => requireProject(session, fields, host));
