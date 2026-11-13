@@ -133,6 +133,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Advanced, Worktrees: Show code tools | `codeTools.ts` | Thin: G6 |
 | Crew: How tasks are tested (Test at ship, Light tests each task, Full checks each task, No testing), per project; from Home a project picker comes first | `TestingModeSetting.tsx` → `delivery_settings_get` (reads `testingMode`, `testingDefaulted`, `updatedAt`), `delivery_testing_mode_set` (writes on top of the `updatedAt` it read) | Works (SC-3a) |
 | Crew: Proof tools (the open-source tools that fit the project, what each proves, a per-project switch for one the project has, More: licence, repo, install line), under How tasks are tested; from Home a project picker comes first | `ProofToolsSetting.tsx` → `proof_tools_list` (reads each tool's `installed`, `status`, `off`, and the project's switch `revision`), `proof_tools_set` (writes on top of the `revision` it read; a stale one is refused in plain words) | Works (PT-2) |
+| Crew: When the checker runs (Follow the testing mode, Every code change, Only risky changes, Off; one line each, the cost behind More), app-wide, beside Who checks the work | `CheckerWhenSetting.tsx` → `checker_when_rule_get`, `checker_when_rule_set` (one word written whole; a word this build doesn't know is refused, and a missing one reads as Follow the testing mode) | Works (PT-4) |
 
 ### First run
 | Control | Calls or reads | State |

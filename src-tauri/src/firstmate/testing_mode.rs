@@ -14,15 +14,19 @@
 //! | `full` | as `light`, plus the brief's own check lines (SC-4; SC-7 adds the real-app recipe) and, for a code diff, the proof tools the project already has (PT-1: `proof-tools`) | yes | all | yes | done |
 //!
 //! SC-5: the verdict model is either the cheap one-turn read-only check or the running checker (a model from another
-//! family that re-runs the brief's check lines in a read-only copy: `Checker`). The running checker reads a finished
-//! task's claims in `full` when code changed, and in `light` and `at-ship` when the diff touches a protected or security
-//! path (`risky`). Never in `off`. Everything else keeps today's cheap check, or none where the mode runs none.
+//! family that re-runs the brief's check lines in a read-only copy: `Checker`). PT-4: which tasks get the running checker is
+//! the app's "When the checker runs" setting (`checker_when`). By default (it follows the mode) it reads a finished task's
+//! claims in `full` when code changed, and in `light` and `at-ship` when the diff touches a protected or security path
+//! (`risky`); "Every code change" gives it to every code diff in those three modes; "Only risky changes" to a risky one
+//! only; "Off" never. Never in `off` (No testing), whatever the setting says. Everything else keeps the cheap check, or none
+//! where the mode runs none.
 //!
 //! A task whose copy changed nothing and that stored no plan (a research or answer task) is unaffected in every mode:
 //! `as_today`, and it settles as it did before. The person's mode wins over the brief's own plan in `at-ship` and
 //! `off`; in `light` and `full` the brief's plan is added to the floor. The routes check is the project's and runs in
 //! every mode whatever this says (`gates::run_round`).
 
+use super::checker_when::{self, WhenRule};
 use super::fact_gaps;
 use super::gates::{GateKind, GatePlan};
 use crate::delivery::settings::TestingMode;
@@ -139,12 +143,15 @@ pub fn touches_risky_path(changed: &[String], protected_extra: &[String]) -> boo
 /// couldn't be read, so the gates run and say so rather than skip).
 /// SC-5: `risky` is whether the diff touches a path the project protects (its own list and the built-in one) or a security
 /// path (`delivery::merge::security_paths`; `touches_risky_path`). Pass `true` too when the diff couldn't be read, so the
-/// stricter check runs and says it couldn't rather than skip. A risky change gets the running checker in `at-ship` and
-/// `light`; `full` gives it to every code diff; `off` never.
+/// stricter check runs and says it couldn't rather than skip. With the default rule a risky change gets the running checker in
+/// `at-ship` and `light`; `full` gives it to every code diff; `off` never (PT-4: the rule below can change that).
 ///
 /// PT-1: `proof_tools` is whether the project already has an installed proof tool that fits it (`proof_tools::detect`). Only in
 /// `full`, for a code diff, it adds the `proof-tools` gate. None installed: the gate is not added (it is optional), and nothing
 /// reads as a pass.
+///
+/// PT-4: `when` is the app's "When the checker runs" rule (`checker_when`), read with the mode. It decides which tasks get the
+/// running checker (`checker_when::task_checker`); `FollowMode`, the default, is what this did before it existed.
 pub fn gates_for_with(
     mode: TestingMode,
     plan: Option<&GatePlan>,
@@ -152,6 +159,7 @@ pub fn gates_for_with(
     code_changed: bool,
     risky: bool,
     proof_tools: bool,
+    when: WhenRule,
 ) -> ModePlan {
     // A research or answer task: nothing changed and the brief asked for no gates. It settles as it did before.
     if changed.is_empty() && !code_changed && plan.is_none() {
@@ -169,28 +177,29 @@ pub fn gates_for_with(
     }
     // The brief's plan joins the floor in `light` and `full`. In `at-ship` and `off` the person's mode wins and the
     // plan is ignored: the person chose not to test each task, and a brief must not turn that back on.
-    let (mut gates, checks, run_findings, fact_gap_filter, checker, note) = match mode {
+    // PT-4: which model reads the claims comes from the rule and the mode in one place (`checker_when::task_checker`); "No
+    // testing" is never a checker.
+    let checker = checker_when::task_checker(when, mode, code_changed, risky);
+    let (mut gates, checks, run_findings, fact_gap_filter, note) = match mode {
         TestingMode::Off => (
             vec![GateKind::Diff, GateKind::Committed],
             Vec::new(),
             false,
             FactGapFilter::Nothing,
-            Checker::None,
             Some(NOTE_OFF),
         ),
-        // SC-5: a risky change is read by the running checker even here. It tested the task as far as it could, so a pass
-        // no longer says "Built, not tested yet".
+        // SC-5: a change the running checker reads is tested as far as it could be, so a pass no longer says "Built, not
+        // tested yet". Any other task in this mode only has to build.
         TestingMode::AtShip => (
             vec![GateKind::Diff, GateKind::Committed],
             Vec::new(),
             true,
             FactGapFilter::FailedCheckAndOpenTodo,
-            if risky {
-                Checker::Running
+            if checker == Checker::Running {
+                None
             } else {
-                Checker::None
+                Some(NOTE_AT_SHIP)
             },
-            if risky { None } else { Some(NOTE_AT_SHIP) },
         ),
         // SC-4: the brief's own check lines run inside the `checks` gate this adds for a code diff (`gates::with_brief_lines`),
         // in `light` and in `full`. SC-5: the running checker reads a risky diff in `light`, and any code diff in `full`;
@@ -206,13 +215,7 @@ pub fn gates_for_with(
             if mode == TestingMode::Full && code_changed && proof_tools {
                 gates.push(GateKind::ProofTools);
             }
-            let running = risky || (mode == TestingMode::Full && code_changed);
-            let checker = if running {
-                Checker::Running
-            } else {
-                Checker::Cheap
-            };
-            (gates, named, true, FactGapFilter::All, checker, None)
+            (gates, named, true, FactGapFilter::All, None)
         }
     };
     gates.sort();
@@ -244,8 +247,8 @@ pub fn proof_gate_wanted(
     mode == TestingMode::Full && code_changed && detect().has_installed()
 }
 
-/// The gates, findings, fact gaps and verdict a finished task gets, for a project with no proof tool (`gates_for_with`).
-/// What the tests that pre-date proof tools call.
+/// The gates, findings, fact gaps and verdict a finished task gets, for a project with no proof tool and the default checker
+/// rule (`gates_for_with`). What the tests that pre-date proof tools and the rule call.
 #[cfg(test)]
 pub fn gates_for(
     mode: TestingMode,
@@ -254,7 +257,15 @@ pub fn gates_for(
     code_changed: bool,
     risky: bool,
 ) -> ModePlan {
-    gates_for_with(mode, plan, changed, code_changed, risky, false)
+    gates_for_with(
+        mode,
+        plan,
+        changed,
+        code_changed,
+        risky,
+        false,
+        WhenRule::FollowMode,
+    )
 }
 
 #[cfg(test)]
@@ -724,7 +735,212 @@ mod tests {
         proof: bool,
     ) -> ModePlan {
         let changed = paths(changed);
-        gates_for_with(mode, stored, &changed, code_changed(&changed), false, proof)
+        gates_for_with(
+            mode,
+            stored,
+            &changed,
+            code_changed(&changed),
+            false,
+            proof,
+            WhenRule::FollowMode,
+        )
+    }
+
+    // ---- PT-4: "When the checker runs" ---------------------------------------------------------------------------------
+
+    fn when_pick(mode: TestingMode, when: WhenRule, changed: &[&str], risky: bool) -> ModePlan {
+        let changed = paths(changed);
+        gates_for_with(
+            mode,
+            None,
+            &changed,
+            code_changed(&changed),
+            risky,
+            false,
+            when,
+        )
+    }
+
+    #[test]
+    fn the_rule_decides_the_checker_of_each_mode_through_gates_for_with() {
+        use Checker::{Cheap, None as NoChecker, Running};
+        // (mode, rule, changed, risky) -> checker. Unset is the default, "follow the testing mode".
+        let cases: &[(TestingMode, WhenRule, &[&str], bool, Checker)] = &[
+            // The default keeps today's behaviour in every mode.
+            (
+                TestingMode::AtShip,
+                WhenRule::default(),
+                &["src/a.ts"],
+                false,
+                NoChecker,
+            ),
+            (
+                TestingMode::AtShip,
+                WhenRule::default(),
+                &["src/a.ts"],
+                true,
+                Running,
+            ),
+            (
+                TestingMode::Light,
+                WhenRule::default(),
+                &["src/a.ts"],
+                false,
+                Cheap,
+            ),
+            (
+                TestingMode::Light,
+                WhenRule::default(),
+                &["src/a.ts"],
+                true,
+                Running,
+            ),
+            (
+                TestingMode::Full,
+                WhenRule::default(),
+                &["src/a.ts"],
+                false,
+                Running,
+            ),
+            (
+                TestingMode::Full,
+                WhenRule::default(),
+                &["docs/a.md"],
+                false,
+                Cheap,
+            ),
+            // Every code change: the checker in every mode but "No testing".
+            (
+                TestingMode::AtShip,
+                WhenRule::EveryCodeChange,
+                &["src/a.ts"],
+                false,
+                Running,
+            ),
+            (
+                TestingMode::Light,
+                WhenRule::EveryCodeChange,
+                &["src/a.ts"],
+                false,
+                Running,
+            ),
+            (
+                TestingMode::Full,
+                WhenRule::EveryCodeChange,
+                &["src/a.ts"],
+                false,
+                Running,
+            ),
+            (
+                TestingMode::AtShip,
+                WhenRule::EveryCodeChange,
+                &["docs/a.md"],
+                false,
+                NoChecker,
+            ),
+            (
+                TestingMode::Off,
+                WhenRule::EveryCodeChange,
+                &["src/a.ts"],
+                true,
+                NoChecker,
+            ),
+            // Only risky changes: a risky change, and nothing else, in every mode.
+            (
+                TestingMode::Full,
+                WhenRule::RiskyOnly,
+                &["src/a.ts"],
+                false,
+                Cheap,
+            ),
+            (
+                TestingMode::Full,
+                WhenRule::RiskyOnly,
+                &["src/a.ts"],
+                true,
+                Running,
+            ),
+            (
+                TestingMode::Light,
+                WhenRule::RiskyOnly,
+                &["src/a.ts"],
+                false,
+                Cheap,
+            ),
+            (
+                TestingMode::AtShip,
+                WhenRule::RiskyOnly,
+                &["src/a.ts"],
+                true,
+                Running,
+            ),
+            // Off: the cheap one-turn check only.
+            (TestingMode::Full, WhenRule::Off, &["src/a.ts"], true, Cheap),
+            (
+                TestingMode::Light,
+                WhenRule::Off,
+                &["src/a.ts"],
+                false,
+                Cheap,
+            ),
+            (
+                TestingMode::AtShip,
+                WhenRule::Off,
+                &["src/a.ts"],
+                false,
+                NoChecker,
+            ),
+            (
+                TestingMode::AtShip,
+                WhenRule::Off,
+                &["src/a.ts"],
+                true,
+                Cheap,
+            ),
+        ];
+        for (mode, when, changed, risky, expected) in cases {
+            let chosen = when_pick(*mode, *when, changed, *risky);
+            assert_eq!(
+                chosen.checker, *expected,
+                "{mode:?} {when:?} {changed:?} risky={risky}"
+            );
+            assert_eq!(chosen.run_verdict, *expected != NoChecker);
+        }
+    }
+
+    #[test]
+    fn a_task_the_checker_reads_in_test_at_ship_no_longer_says_built_not_tested_yet() {
+        let plain = when_pick(
+            TestingMode::AtShip,
+            WhenRule::EveryCodeChange,
+            &["docs/a.md"],
+            false,
+        );
+        assert_eq!(plain.note, Some(NOTE_AT_SHIP));
+        let read = when_pick(
+            TestingMode::AtShip,
+            WhenRule::EveryCodeChange,
+            &["src/a.ts"],
+            false,
+        );
+        assert_eq!(read.checker, Checker::Running);
+        assert_eq!(read.note, None);
+        // Off reads a risky change cheaply, which is not the running checker's proof: the note stays.
+        let cheap = when_pick(TestingMode::AtShip, WhenRule::Off, &["src/a.ts"], true);
+        assert_eq!(cheap.checker, Checker::Cheap);
+        assert_eq!(cheap.note, Some(NOTE_AT_SHIP));
+    }
+
+    #[test]
+    fn no_testing_runs_no_checker_and_no_verdict_whatever_the_rule_says() {
+        for when in WhenRule::ALL {
+            for risky in [false, true] {
+                let chosen = when_pick(TestingMode::Off, when, &["src/a.ts"], risky);
+                assert_eq!(chosen.checker, Checker::None, "{when:?} risky={risky}");
+                assert!(!chosen.run_verdict);
+                assert_eq!(chosen.note, Some(NOTE_OFF));
+            }
+        }
     }
 
     #[test]

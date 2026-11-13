@@ -33,6 +33,7 @@ import { GateSetting } from "../../delivery-gate/ui/GateSetting";
 import { TestingModeSetting } from "../../delivery/ui/TestingModeSetting"; // SC-3a
 import { ProofToolsSetting } from "../../proofTools/ui/ProofToolsSetting"; // PT-2
 import { CheckerFamilySetting } from "./CheckerFamilySetting"; // SC-5
+import { CheckerWhenSetting } from "./CheckerWhenSetting"; // PT-4
 // WP-162: update a conflicting package from main. Off until the person turns it on.
 import { ProgrammeUpdateSetting } from "../../programme/ui/ProgrammeUpdateSetting";
 // WP-85: show Claude sessions started in a terminal.
@@ -844,6 +845,8 @@ export function SettingsView({
                   <ProofToolsSetting project={cwd} recents={recents} />
                   {/* SC-5: which model family checks a finished task. A different one until chosen. */}
                   <CheckerFamilySetting />
+                  {/* PT-4: when the running checker runs. It follows the testing mode until chosen. */}
+                  <CheckerWhenSetting />
                   {/* WP-162: update a conflicting package from main. Off until the person turns it on. */}
                   <ProgrammeUpdateSetting project={cwd} />
                   {/* WP-77: labelled GitHub issues become tasks. Off until the person turns it on. */}
