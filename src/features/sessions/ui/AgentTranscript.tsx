@@ -163,6 +163,7 @@ import { parseUserMessageLink } from "../model/linkPreview";
 import { briefView, type BriefView } from "../model/briefView";
 import { UserLinkPreview } from "./UserLinkPreview";
 import { AskReceipt } from "../../asks/ui/AskReceipt";
+import { ChatTidied } from "../../monos/ui/ChatTidied";
 import {
   activityPhaseTitle,
   activityStillRunning,
@@ -3072,6 +3073,7 @@ function UserMessageBlock({
           : "p-1.5 pb-4"
       }`}
     >
+      {IS_HUB_BUNDLE && chat && !block.draft ? <ChatTidied blockId={block.id} /> : null}
       <div
         className={`user-message-hover-zone min-w-0 overflow-visible ${chat ? "flex w-fit max-w-full flex-col items-end" : "w-full"}`}
       >

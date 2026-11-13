@@ -129,7 +129,9 @@ import { askMateFor } from "../features/asks/model/askMate";
 import { openAsksKey, openAsksNote } from "../features/asks/model/askNotes";
 import { askStore } from "../features/asks/model/askStore";
 import { askForMate, isOpen as isOpenAsk, mateAskStatus } from "../features/asks/model/asks";
-import { useMemoryCurator } from "./hooks/useMemoryCurator";
+import { MEMORY_BATCH_NOW_EVENT, useMemoryCurator } from "./hooks/useMemoryCurator";
+import { latestRotation, segmentStore } from "../features/monos/model/chatSegments";
+import { stateCard } from "../features/monos/model/stateCard";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recordUse } from "../features/memory/model/memoryUse";
 import { memoryUsePorts } from "../features/memory/ui/memoryUseForApp";
@@ -9319,7 +9321,8 @@ function Workspace({
       const monoRotation = monoRotationReason
         ? planRotation(
             current.blocks,
-            loadMonoRotation(sessionId),
+            // The app's database first (it survives a cleared webview), the webview's own copy until that has loaded.
+            (segmentStore().loaded() ? latestRotation(segmentStore().doc(), sessionId) : undefined) ?? loadMonoRotation(sessionId),
             monoRotationReason,
             Date.now(),
           )
@@ -10169,6 +10172,8 @@ function Workspace({
             sessionsRef.current = sessionsRef.current.map(fresh);
             setSessions((prev) => prev.map(fresh));
             saveMonoRotation(sessionId, monoRotation.rotation);
+            // Save before the tidy: memory reads this chat's messages now, beside the turn (useMemoryCurator.ts).
+            if (IS_HUB_BUNDLE) window.dispatchEvent(new CustomEvent(MEMORY_BATCH_NOW_EVENT, { detail: { sessionId } }));
           }
           // The agent's soul and memory live in its folder. A native session
           // is handed them once, and memory again only when it changes.
@@ -10205,8 +10210,30 @@ function Workspace({
               : undefined;
           if (ruleNote) appContext.push(ruleNote);
           if (options?.ashToWorker) appContext.push(ashWordsNote());
+          // What a tidied chat's fresh session is handed, kept for the "Chat tidied" line (monos/ui/ChatTidied.tsx).
+          const tidyGiven: string[] = [];
           if (monoRotation) {
-            appContext.push(monoRotation.brief(sessionId));
+            const brief = monoRotation.brief(sessionId);
+            appContext.push(brief);
+            tidyGiven.push(brief);
+            // The state card: rules, finished asks and files, from the app's own records (monos/model/stateCard.ts).
+            try {
+              const cardMate = IS_HUB_BUNDLE ? askMateFor(sessionId) : undefined;
+              const card = cardMate
+                ? stateCard({
+                    asks: askStore().doc().asks.filter((ask) => ask.mateId === cardMate),
+                    blocks: current.blocks,
+                    afterBlockId: (segmentStore().loaded() ? latestRotation(segmentStore().doc(), sessionId) : undefined)?.afterBlockId,
+                    now: Date.now(),
+                  })
+                : undefined;
+              if (card) {
+                appContext.push(card);
+                tidyGiven.push(card);
+              }
+            } catch {
+              // The brief goes without it: a tidy never fails a turn.
+            }
           }
           // A long-chat Mono's fresh conversation opens on its tree's view, ahead of the message: the system prompt
           // stays as it is, so its cache holds (monoTreeStore.ts treeContext).
@@ -10228,6 +10255,7 @@ function Workspace({
               treePick.evenWithoutSetting ? { evenWithoutSetting: true } : undefined,
             ).catch(() => undefined);
             if (treeNote) appContext.push(treeNote);
+            if (treeNote && monoRotation) tidyGiven.push(treeNote);
           }
           // The ask ledger: what Ash asked this first mate for and is still open, in his words, kept outside the chat. It
           // goes beside his message when the list changed since this chat last saw it, and always into a fresh session.
@@ -10238,8 +10266,26 @@ function Workspace({
             if (key && (askNotesShown.current.get(sessionId) !== key || !current.providerSessionId)) {
               const note = openAsksNote(ledger, askMate, appCliCommand(await invoke<string | null>("app_cli_path").catch(() => null)));
               if (note) appContext.push(note);
+              if (note && monoRotation) tidyGiven.push(note);
             }
             askNotesShown.current.set(sessionId, key);
+          }
+          if (monoRotation && IS_HUB_BUNDLE) {
+            const after = monoRotation.rotation.afterBlockId;
+            const now = sessionsRef.current.find((session) => session.id === sessionId)?.blocks ?? [];
+            const from = after ? now.findIndex((block) => block.id === after) + 1 : 0;
+            const opener = now.slice(from).find((block) => block.role === "user" && !block.internal && !block.draft);
+            void segmentStore()
+              .add({
+                sessionId,
+                at: monoRotation.rotation.at,
+                reason: monoRotation.rotation.reason,
+                ...(after ? { afterBlockId: after } : {}),
+                ...(opener ? { firstBlockId: opener.id } : {}),
+                given: tidyGiven.join("\n\n"),
+                earlier: monoRotation.rotation.earlier,
+              })
+              .catch(() => undefined);
           }
           // Habit posts land in the chat outside any turn, so the Mono's
           // session has not seen them; the next message carries them once.
@@ -11375,6 +11421,10 @@ function Workspace({
   useMonoTrees(sessions, IS_HUB_BUNDLE);
   // WP-51: after a first mate's turn, one unreviewed fact or a skill proposal.
   useMemoryCurator(sessions, IS_HUB_BUNDLE);
+  // Where each first mate's chat was tidied (monos/model/chatSegments.ts), read once so the next tidy starts from it.
+  useEffect(() => {
+    if (IS_HUB_BUNDLE) void segmentStore().load().catch(() => undefined);
+  }, []);
   // The ask ledger: every ask in a message of Ash's to a first mate is written down outside the chat (asks/model/asks.ts).
   useAskLedger({
     sessions,

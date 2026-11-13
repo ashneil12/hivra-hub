@@ -26,6 +26,13 @@ import { markLived } from "../../features/memory/model/fade";
 import { noteOutcome } from "../../features/memory/model/health";
 import { loadSkillMode } from "../../features/selfBuild/model/skillMode";
 
+/**
+ * Save before a tidy: a first mate's chat is about to move to a fresh engine session (monos/model/monoRotation.ts), so
+ * its messages are read by a batch now, not after 20 turns. Detail: `{ sessionId }`. The batch reads the chat, not the
+ * engine session, so the turn never waits on it.
+ */
+export const MEMORY_BATCH_NOW_EVENT = "monocode:memory-batch-now";
+
 /** WP-240: the one-line reply the explicit path gives, for whatever shows it. Detail: `{ sessionId, text }`. */
 export const MEMORY_REMEMBERED_EVENT = "monocode:memory-remembered";
 import { notePaused, takeBudget } from "../../features/memory/model/memoryBudget";
@@ -331,6 +338,21 @@ export function useMemoryCurator(sessions: readonly Session[], enabled: boolean)
     if (closed.length) closing.current = [...closing.current, ...closed];
     if (closed.length || turnsSince.current >= BATCH_EVERY_TURNS) void runBatches.current();
   }, [sessions, on]);
+
+  useEffect(() => {
+    if (!on || typeof window === "undefined") return;
+    const batchNow = (event: Event) => {
+      const sessionId = (event as CustomEvent<{ sessionId?: string }>).detail?.sessionId;
+      const session = sessionsRef.current.find((candidate) => candidate.id === sessionId);
+      const mateId = session ? mateForSession(session.id) : undefined;
+      if (!session || !mateId) return;
+      // The chat is busy with the turn that tidied it, so it is handed over as a snapshot, the way a closed chat is.
+      closing.current = [...closing.current.filter((chat) => chat.sessionId !== session.id), { mateId, sessionId: session.id, blocks: memoryReadableBlocks(session) }];
+      void runBatches.current();
+    };
+    window.addEventListener(MEMORY_BATCH_NOW_EVENT, batchNow);
+    return () => window.removeEventListener(MEMORY_BATCH_NOW_EVENT, batchNow);
+  }, [on]);
 
   useEffect(
     () => () => {

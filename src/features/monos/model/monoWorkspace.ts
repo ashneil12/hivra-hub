@@ -26,6 +26,7 @@ import { stampFirstMate } from "./monoMate";
 import { withMonoFast } from "./monoRun";
 import { forgetAgentContext } from "./monoFiles";
 import { forgetMonoRotation } from "./monoRotation";
+import { segmentStore } from "./chatSegments";
 import { leadWorkingFolder } from "../../hub/model/hubLeads";
 
 const openingMonos = new Map<string, Promise<Session | undefined>>();
@@ -231,6 +232,7 @@ export async function resetMonoSession(
   await host.remove(stopped);
   forgetAgentContext(current.id);
   forgetMonoRotation(current.id);
+  void segmentStore().forget(current.id).catch(() => undefined);
   // Dropwave: a project's own chat with the Mono, or one of its further chats (G2), is reset in its place; its main
   // chat is left alone.
   const projectId = monoSessionProject(current.id);
