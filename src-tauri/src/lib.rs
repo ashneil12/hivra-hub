@@ -1045,6 +1045,7 @@ pub fn run() {
             proof_tools::proof_tools_list,
             proof_tools::offers::proof_tools_propose_claim,
             proof_tools::offers::proof_tools_propose_release,
+            proof_tools::switch::proof_tools_set, // PT-2: switch a proof tool off or on for a project
             // SC-3b
             ship_check::ship_check_run,
             ship_check::ship_check_latest,

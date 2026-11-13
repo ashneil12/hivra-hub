@@ -10,6 +10,7 @@
 //! error or a service that didn't answer is "could not run", never a pass. A tool with nothing to read in this change (no
 //! changed line in a file it reads) is "did not run", which is neither.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use crate::firstmate::brief_checks::{Ended, RawRun};
@@ -47,6 +48,12 @@ pub trait Env {
     fn run(&self, id: &str, name: &str, prepared: &Prepared, timeout_seconds: u64) -> RawRun;
     /// A folder outside the project for a diff and a tool's own output. Absent: tools that need one could not run.
     fn scratch(&self) -> Option<PathBuf>;
+    /// PT-2: the ids of the tools the person switched off for this project (Settings > Proof tools). `detect_in` leaves them out
+    /// of what it returns, so every place that picks tools to run reads the switch through here and none can forget it. An Env
+    /// that can't say (or a record that can't be read) says none: every tool reads as on.
+    fn switched_off(&self) -> BTreeSet<String> {
+        BTreeSet::new()
+    }
 }
 
 struct EnvProbe<'a>(&'a dyn Env);
@@ -57,9 +64,16 @@ impl Probe for EnvProbe<'_> {
     }
 }
 
-/// Which tools fit `root` and which it has, asking `env` to probe programs.
-pub fn detect_in(root: &Path, env: &dyn Env) -> Detection {
+/// Which tools fit `root` and which it has, asking `env` to probe programs, switched-off tools included: what the Settings list
+/// shows. Nothing that runs or proposes a tool reads this; it reads `detect_in`.
+pub fn detect_all_in(root: &Path, env: &dyn Env) -> Detection {
     detect::detect(root, &EnvProbe(env))
+}
+
+/// PT-2: which tools fit `root` and which it has, minus the ones the person switched off for the project. This is the one door the
+/// gates, the ship check, the checker's replay and every run go through, so a switched-off tool never runs and is never proposed.
+pub fn detect_in(root: &Path, env: &dyn Env) -> Detection {
+    detect_all_in(root, env).without_off(&env.switched_off())
 }
 
 // ---- the change ---------------------------------------------------------------------------------------------------------
@@ -531,6 +545,7 @@ mod tests {
         probes: HashSet<Vec<String>>,
         reply: Box<dyn Fn(&Prepared) -> RawRun + Send + Sync>,
         seen: Mutex<Vec<(String, Prepared, u64)>>,
+        off: BTreeSet<String>,
     }
 
     impl FakeEnv {
@@ -543,7 +558,13 @@ mod tests {
                 probes: HashSet::new(),
                 reply: Box::new(reply),
                 seen: Mutex::new(Vec::new()),
+                off: BTreeSet::new(),
             }
+        }
+        /// PT-2: these tools are switched off for the project.
+        fn with_off(mut self, ids: &[&str]) -> FakeEnv {
+            self.off = ids.iter().map(|id| id.to_string()).collect();
+            self
         }
         fn with_probe(mut self, argv: &[&str]) -> FakeEnv {
             self.probes
@@ -568,6 +589,9 @@ mod tests {
         }
         fn scratch(&self) -> Option<PathBuf> {
             Some(self.scratch.clone())
+        }
+        fn switched_off(&self) -> BTreeSet<String> {
+            self.off.clone()
         }
     }
 
@@ -752,6 +776,84 @@ mod tests {
         );
         assert_eq!(runs[0].outcome, Outcome::NotRun);
         assert!(env.runs().is_empty());
+    }
+
+    // ---- PT-2: a tool the person switched off never runs -------------------------------------------------------------
+
+    fn web_project() -> Tmp {
+        let project = Tmp::new("web-off");
+        project.write(
+            "package.json",
+            r#"{"devDependencies":{"vite":"6","@playwright/test":"1.65.0","@stryker-mutator/core":"10.1.1","fast-check":"4"}}"#,
+        );
+        project.write("playwright.config.ts", "export default {}\n");
+        project
+    }
+
+    fn started(env: &FakeEnv) -> Vec<String> {
+        env.runs().into_iter().map(|run| run.0).collect()
+    }
+
+    #[test]
+    fn a_switched_off_tool_is_not_started_by_a_run_and_the_others_still_are() {
+        let project = web_project();
+        let scratch = Tmp::new("scratch");
+        let s = scope(&["src/a b.ts"], JS_DIFF, Some("main"));
+        let pass = |_: &Prepared| exited(0, "Running 2 tests using 1 worker\n  2 passed (1.2s)\n");
+        // Control: nothing is off, so Stryker and Playwright both start.
+        let on = FakeEnv::new(scratch.path(), pass);
+        run_all(project.path(), &s, &[], &on, Pick::All);
+        assert!(started(&on).iter().any(|id| id.starts_with("stryker")));
+        assert!(started(&on).iter().any(|id| id.starts_with("playwright")));
+        // Stryker off: it is not run and not reported, Playwright still is.
+        let off = FakeEnv::new(scratch.path(), pass).with_off(&["stryker"]);
+        let runs = run_all(project.path(), &s, &[], &off, Pick::All);
+        assert_eq!(
+            runs.iter()
+                .map(|run| run.tool.id.as_str())
+                .collect::<Vec<_>>(),
+            ["fast-check", "playwright"]
+        );
+        assert!(!started(&off).iter().any(|id| id.starts_with("stryker")));
+        assert!(started(&off).iter().any(|id| id.starts_with("playwright")));
+        // Everything off: nothing starts and nothing reads as a pass.
+        let none =
+            FakeEnv::new(scratch.path(), pass).with_off(&["stryker", "playwright", "fast-check"]);
+        let runs = run_all(project.path(), &s, &[], &none, Pick::All);
+        assert!(runs.is_empty());
+        assert!(started(&none).is_empty());
+        assert_eq!(combine(&runs), Outcome::NotRun);
+    }
+
+    #[test]
+    fn the_checkers_replay_skips_an_end_to_end_tool_that_is_switched_off() {
+        let project = web_project();
+        let scratch = Tmp::new("scratch");
+        let s = scope(&["src/a b.ts"], JS_DIFF, Some("main"));
+        let pass = |_: &Prepared| exited(0, "Running 2 tests using 1 worker\n  2 passed (1.2s)\n");
+        // The replay is `run_installed` over `detect_in`, as the checker's `proof_replay` does it.
+        let replay = |env: &FakeEnv| {
+            let detection = detect_in(project.path(), env);
+            run_installed(&detection, project.path(), &s, &[], env, Pick::Replay)
+        };
+        let on = FakeEnv::new(scratch.path(), pass);
+        assert_eq!(replay(&on).len(), 1);
+        let off = FakeEnv::new(scratch.path(), pass).with_off(&["playwright"]);
+        assert!(replay(&off).is_empty());
+        assert!(started(&off).is_empty(), "the replay started nothing");
+    }
+
+    #[test]
+    fn the_settings_list_still_sees_a_switched_off_tool_where_a_run_does_not() {
+        let project = web_project();
+        let scratch = Tmp::new("scratch");
+        let env = FakeEnv::new(scratch.path(), |_| exited(0, "")).with_off(&["stryker"]);
+        let listed = detect_all_in(project.path(), &env);
+        assert!(listed.installed().iter().any(|tool| tool.id == "stryker"));
+        assert!(listed.off.is_empty());
+        let used = detect_in(project.path(), &env);
+        assert!(!used.installed().iter().any(|tool| tool.id == "stryker"));
+        assert_eq!(used.off.len(), 1);
     }
 
     #[test]

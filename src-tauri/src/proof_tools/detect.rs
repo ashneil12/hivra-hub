@@ -461,9 +461,30 @@ pub struct Detection {
     /// The stacks found, in the enum's order.
     pub stacks: Vec<Stack>,
     pub fitting: Vec<Found>,
+    /// PT-2: tools the project has but the person switched off (`without_off`). Never in `fitting`, so nothing that picks tools to
+    /// run, or to propose, sees them; the ship check names them so "nothing ran" doesn't read as "nothing is here".
+    pub off: Vec<&'static Tool>,
 }
 
 impl Detection {
+    /// PT-2: this detection with the tools in `off` taken out of `fitting`. A tool the project has goes to `self.off`; one it
+    /// lacks is simply dropped, because a switched-off tool is never proposed either. An id that names no tool changes nothing.
+    pub fn without_off(mut self, off: &std::collections::BTreeSet<String>) -> Detection {
+        if off.is_empty() {
+            return self;
+        }
+        let (gone, kept): (Vec<Found>, Vec<Found>) = std::mem::take(&mut self.fitting)
+            .into_iter()
+            .partition(|found| off.contains(&found.tool.id));
+        self.fitting = kept;
+        self.off.extend(
+            gone.into_iter()
+                .filter(|found| found.installed)
+                .map(|found| found.tool),
+        );
+        self
+    }
+
     /// The tools that fit and that the project already has.
     pub fn installed(&self) -> Vec<&'static Tool> {
         self.fitting
@@ -503,7 +524,11 @@ pub fn detect_with(facts: &Facts, probe: &dyn Probe) -> Detection {
             installed: eval(&tool.installed, facts, probe),
         })
         .collect();
-    Detection { stacks, fitting }
+    Detection {
+        stacks,
+        fitting,
+        off: Vec::new(),
+    }
 }
 
 /// Which tools fit the checkout at `root` and which it already has. A root that isn't a folder fits nothing.
@@ -1446,5 +1471,73 @@ mod tests {
         ));
         assert!(!touches_ui(&[Stack::Web], &[]));
         assert!(!touches_ui(&[], &paths(&["src/App.tsx"])));
+    }
+
+    // ---- PT-2: a tool the person switched off -----------------------------------------------------------------------
+
+    fn off_of(ids: &[&str]) -> std::collections::BTreeSet<String> {
+        ids.iter().map(|id| id.to_string()).collect()
+    }
+
+    #[test]
+    fn a_switched_off_tool_the_project_has_leaves_what_runs_and_is_named_apart() {
+        let tmp = Tmp::new();
+        tmp.write(
+            "package.json",
+            &package(r#""fast-check":"4","@stryker-mutator/core":"10""#),
+        );
+        let whole = detect(tmp.path(), &NoProbe);
+        assert_eq!(installed_ids(&whole), ["fast-check", "stryker"]);
+        assert!(whole.off.is_empty(), "detection alone switches nothing off");
+
+        let used = whole.clone().without_off(&off_of(&["stryker"]));
+        assert_eq!(installed_ids(&used), ["fast-check"]);
+        assert!(!fitting_ids(&used).contains(&"stryker"));
+        assert_eq!(
+            used.off
+                .iter()
+                .map(|tool| tool.id.as_str())
+                .collect::<Vec<_>>(),
+            ["stryker"]
+        );
+        assert!(used.has_installed());
+
+        let all = whole.without_off(&off_of(&["stryker", "fast-check"]));
+        assert!(
+            !all.has_installed(),
+            "every tool off reads as none installed"
+        );
+        assert_eq!(all.off.len(), 2);
+    }
+
+    #[test]
+    fn a_switched_off_tool_the_project_lacks_is_never_something_to_propose() {
+        let tmp = Tmp::new();
+        tmp.write("package.json", &package(r#""vitest":"4""#));
+        let whole = detect(tmp.path(), &NoProbe);
+        assert!(whole.missing().iter().any(|tool| tool.id == "stryker"));
+        let used = whole.without_off(&off_of(&["stryker"]));
+        assert!(!used.missing().iter().any(|tool| tool.id == "stryker"));
+        assert!(
+            used.off.is_empty(),
+            "a tool the project doesn't have isn't one it switched off"
+        );
+    }
+
+    #[test]
+    fn an_id_that_names_no_tool_and_an_empty_set_change_nothing() {
+        let tmp = Tmp::new();
+        tmp.write("package.json", &package(r#""fast-check":"4""#));
+        let whole = detect(tmp.path(), &NoProbe);
+        assert_eq!(whole.clone().without_off(&off_of(&[])), whole);
+        for odd in [
+            "",
+            "FAST-CHECK",
+            "fast-check ",
+            "../fast-check",
+            "stryker\n",
+        ] {
+            assert_eq!(whole.clone().without_off(&off_of(&[odd])), whole, "{odd:?}");
+        }
     }
 }
