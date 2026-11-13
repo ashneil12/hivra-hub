@@ -31,7 +31,13 @@ fn names(tools: &[&crate::proof_tools::Tool]) -> String {
 /// No proof tool is installed: the step did not run, and the lines under "Not tested" say which would fit. Never a pass.
 pub(super) fn none_available(detection: &Detection) -> Stage {
     let missing = detection.missing();
-    let line = if missing.is_empty() {
+    // PT-2: a project that has tools but switched every one off says so, rather than that it has none.
+    let line = if !detection.off.is_empty() {
+        format!(
+            "The proof tools this project has are switched off for it: {}. Turn one on in Settings, under Proof tools, to use it.",
+            names(&detection.off)
+        )
+    } else if missing.is_empty() {
         "No proof tool is set up in this project, and none fits what was found in it.".to_string()
     } else {
         format!(
@@ -131,11 +137,25 @@ pub(super) fn step(
     if let Err(files) = clean {
         return not_clean(files, head);
     }
+    // PT-2: `detect` already leaves out the tools switched off for the project (`proof_tools::run::detect_in`), so `run` never
+    // sees one. They are named under "Not tested": a tool that is there but didn't run is not a quiet omission.
     let detection = detect();
     if !detection.has_installed() {
         return none_available(&detection);
     }
-    stage_of(&run(&detection))
+    let mut stage = stage_of(&run(&detection));
+    stage
+        .not_tested
+        .extend(detection.off.iter().copied().map(switched_off_line));
+    stage
+}
+
+/// The line under "Not tested" for a tool the project has and the person switched off.
+fn switched_off_line(tool: &crate::proof_tools::Tool) -> String {
+    format!(
+        "Proof tool {} is switched off for this project, so it didn't run.",
+        tool.name
+    )
 }
 
 #[cfg(test)]
@@ -175,6 +195,7 @@ mod tests {
         let detection = Detection {
             stacks: vec![Stack::Node, Stack::Web],
             fitting: vec![found("fast-check", false), found("stryker", false)],
+            off: Vec::new(),
         };
         let stage = none_available(&detection);
         assert_eq!(stage.steps.len(), 1);
@@ -192,6 +213,7 @@ mod tests {
         let nothing = none_available(&Detection {
             stacks: Vec::new(),
             fitting: Vec::new(),
+            off: Vec::new(),
         });
         assert!(
             nothing.not_tested[0].contains("none fits"),
@@ -297,6 +319,120 @@ mod tests {
         assert_eq!(tests[0].outcome, Ran::Passed);
         assert_eq!(tests[1].outcome, Ran::Failed);
         assert!(tests[1].output.contains("1 failed"));
+    }
+
+    // ---- PT-2: a tool the person switched off -----------------------------------------------------------------------
+
+    struct Folders(std::path::PathBuf, std::path::PathBuf);
+
+    impl Folders {
+        /// A project with fast-check and StrykerJS in it, and a scratch folder beside it.
+        fn new() -> Folders {
+            let base =
+                std::env::temp_dir().join(format!("hivra pt2 ship {}", uuid::Uuid::new_v4()));
+            let project = base.join("proj");
+            std::fs::create_dir_all(project.join("src")).unwrap();
+            std::fs::write(
+                project.join("package.json"),
+                r#"{"devDependencies":{"fast-check":"4","@stryker-mutator/core":"10.1.1"}}"#,
+            )
+            .unwrap();
+            std::fs::write(project.join("src/a.ts"), "x\n").unwrap();
+            let scratch = base.join("scratch");
+            std::fs::create_dir_all(&scratch).unwrap();
+            Folders(project, scratch)
+        }
+    }
+
+    impl Drop for Folders {
+        fn drop(&mut self) {
+            if let Some(base) = self.0.parent() {
+                let _ = std::fs::remove_dir_all(base);
+            }
+        }
+    }
+
+    const DIFF: &str =
+        "diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -3,0 +4,2 @@\n+x\n+y\n";
+
+    /// The step as the app decides it: `detect_in` for what is there, `run_installed` for what runs.
+    fn step_with(folders: &Folders, env: &crate::proof_tools::switch::test_env::OffEnv) -> Stage {
+        let scope = crate::proof_tools::Scope {
+            base: Some("abc".into()),
+            changed: vec!["src/a.ts".into()],
+            diff: DIFF.into(),
+        };
+        step(
+            TestingMode::AtShip,
+            Ok(()),
+            "abc1234",
+            || proof_run::detect_in(&folders.0, env),
+            |detection| {
+                proof_run::run_installed(
+                    detection,
+                    &folders.0,
+                    &scope,
+                    &[],
+                    env,
+                    crate::proof_tools::Pick::All,
+                )
+            },
+        )
+    }
+
+    #[test]
+    fn a_switched_off_tool_is_not_run_by_the_step_and_is_named_under_not_tested() {
+        use crate::proof_tools::switch::test_env::OffEnv;
+        let folders = Folders::new();
+        // Control: with nothing off, StrykerJS starts, so the next assertion can fail.
+        let on = OffEnv::new(&[], folders.1.clone());
+        step_with(&folders, &on);
+        assert!(
+            on.ran().iter().any(|id| id.starts_with("stryker")),
+            "{:?}",
+            on.ran()
+        );
+
+        let off = OffEnv::new(&["stryker"], folders.1.clone());
+        let stage = step_with(&folders, &off);
+        assert!(
+            !off.ran().iter().any(|id| id.starts_with("stryker")),
+            "StrykerJS was started: {:?}",
+            off.ran()
+        );
+        assert_eq!(stage.steps[0].name, "Proof tools");
+        assert!(
+            !stage.steps[0].detail.contains("StrykerJS"),
+            "{}",
+            stage.steps[0].detail
+        );
+        assert!(
+            stage.not_tested.contains(
+                &"Proof tool StrykerJS is switched off for this project, so it didn't run."
+                    .to_string()
+            ),
+            "{:?}",
+            stage.not_tested
+        );
+    }
+
+    #[test]
+    fn with_every_tool_switched_off_the_step_is_not_run_and_says_so_not_that_none_are_set_up() {
+        use crate::proof_tools::switch::test_env::OffEnv;
+        let folders = Folders::new();
+        let env = OffEnv::new(&["stryker", "fast-check"], folders.1.clone());
+        let stage = step_with(&folders, &env);
+        assert!(env.ran().is_empty(), "{:?}", env.ran());
+        assert_eq!(stage.steps[0].outcome, Outcome::NotRun);
+        assert_eq!(stage.steps[0].detail, "none available");
+        assert_eq!(
+            stage.not_tested,
+            [
+                "The proof tools this project has are switched off for it: fast-check, StrykerJS. Turn one on in Settings, under Proof tools, to use it."
+            ]
+        );
+        // Never a pass by itself.
+        assert_eq!(super::super::aggregate(&stage.steps), Outcome::CouldNotRun);
     }
 
     #[test]
