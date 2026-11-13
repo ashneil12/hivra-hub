@@ -167,9 +167,25 @@ export function subscribeAskLedger(listener: () => void): () => void {
   return () => ledgerListeners.delete(listener);
 }
 
+/**
+ * The rows to keep. Up to LEDGER_MAX, all of them. Past it, closed rows (handled, parked, dropped) go, oldest first, and
+ * an open row never does: a ledger of open asks grows past the limit rather than lose one nobody settled.
+ */
+function withinLimit(rows: readonly LedgerAsk[]): LedgerAsk[] {
+  let over = rows.length - LEDGER_MAX;
+  if (over <= 0) return [...rows];
+  return rows.filter((row) => {
+    if (over > 0 && row.status !== "open") {
+      over -= 1;
+      return false;
+    }
+    return true;
+  });
+}
+
 function writeLedger(rows: readonly LedgerAsk[]): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify(rows.slice(-LEDGER_MAX)));
+    localStorage.setItem(KEY, JSON.stringify(withinLimit(rows)));
   } catch {
     // Without storage the ledger lasts while this window lives; only a restart loses it.
   }

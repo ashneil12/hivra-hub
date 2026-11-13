@@ -107,7 +107,8 @@ export async function hearLikeApp(
     } else {
       attempt.kept = heard.length;
       const list = hearMessage(text, heard);
-      const kept = worthKeeping(text, list.asks, list.maybes);
+      // As the hook: the message is long here, so any row at all is kept (sc-17-ask-fixes).
+      const kept = list.asks.length + list.maybes.length > 0;
       await store.hear({ ...base, list: kept ? list : { asks: [], maybes: [] }, by: "model", now: now() });
     }
     trace.attempts.push(attempt);

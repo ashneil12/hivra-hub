@@ -15,17 +15,20 @@
 //
 // The knobs below say how the real code behaves TODAY (as committed). Turning one to its other value gives the design
 // the spec (docs/specs/mono-chat-memory.md section 6) promises, or a deliberately broken variant to see an invariant bite.
-// Each knob names the code it stands for.
+// Each knob names the code it stands for. HAND_ASK_REPLACED and MAYBE_CAP follow the code as fixed by sc-17-ask-fixes
+// (gaps A1 and A2); set them back to true and 1 to see those two gaps again.
 
 module asks {
   // ---- knobs ------------------------------------------------------------------------------------------------------
-  // true: a row Ash added by hand counts as "untouched" and is replaced when the model's list for its message lands
-  // (asks.ts withHeard: status heard and one history step). false: a hand-added row is kept like a touched one.
-  pure val HAND_ASK_REPLACED = true
-  // How many "maybe" rows a re-hearing may leave for one message (asks.ts MAYBE_PER_MESSAGE, 6 in the code; 1 here so
-  // two asks are enough to pass it). An ask the rules heard and the model's list left out is kept as a maybe only while
-  // there is room; past that it is gone.
-  pure val MAYBE_CAP = 1
+  // true: a row Ash added by hand counts as "untouched" and is replaced when the model's list for its message lands (the
+  // code before sc-17-ask-fixes: status heard and one history step). false: a hand-added row is kept like a touched one
+  // (asks.ts withHeard today: only rows whose every history step is by the app are replaced).
+  pure val HAND_ASK_REPLACED = false
+  // How many "maybe" rows a re-hearing may leave for one message. The code had a cap (MAYBE_PER_MESSAGE, 6) until
+  // sc-17-ask-fixes removed it: an ask the rules heard and the model's list left out is now always kept as a maybe. 9 is
+  // more than the three slots, so it never binds; 1 brings the old cap back (two asks are enough to pass it), and an ask
+  // past it is gone.
+  pure val MAYBE_CAP = 9
   // false: no path takes a stuck ask to the person. true: the app surfaces an ask (a Needs you entry) once it has sat
   // open and unseen for ESC_AFTER days, the promise of the spec's turn-end check ("in red, in Needs you").
   pure val ESCALATE = false
@@ -130,8 +133,8 @@ module asks {
 
   // The same message heard again: the model's list landing after the rules' quick one, a retry, a second window.
   // Rows nobody has touched are replaced by the new list (asks.ts withHeard). "same": the new list holds it. "omit": it
-  // does not. A heard ask the model left out becomes a maybe if there is room (hearMessage, MAYBE_PER_MESSAGE), else it is
-  // gone; Ash's hand-added row is gone when HAND_ASK_REPLACED.
+  // does not. A heard ask the model left out becomes a maybe if there is room (MAYBE_CAP; hearMessage has no cap today),
+  // else it is gone; Ash's hand-added row is gone when HAND_ASK_REPLACED.
   action rehear(i: int): bool = {
     nondet outcome = Set("same", "omit").oneOf()
     val r = rows.get(i)

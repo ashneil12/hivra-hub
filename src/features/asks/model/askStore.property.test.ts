@@ -10,10 +10,9 @@
 // maybe), a first mate trying to drop one (refused), an app restart (a new store on the same disk), a chat's history
 // compaction (the fresh session is handed every open ask) and a duplicate delivery (the same hearing again).
 //
-// The second property pins a known gap (README, gap A1): an ask Ash adds by hand under a message is thrown away when the
-// model's reading of that message lands. It is stated as the property that SHOULD hold; fast-check finds the shortest
-// run that breaks it, and the test passes only while that is still true. When the gap is fixed, that test fails: turn it
-// into a plain property then.
+// The last property is gap A1 (README): an ask Ash adds by hand under a message must survive the model's reading of that
+// message landing. It failed until sc-17-ask-fixes (the test used to assert the failure and the shortest run, `extract,
+// add by hand, extract`); it is now the plain property.
 import { fc } from "@fast-check/vitest";
 import { describe, expect, it } from "vitest";
 import { memoryDisk } from "../../hub/model/localHub/localHub";
@@ -391,7 +390,10 @@ class HearKeepsHandAdded implements GapCmd {
   toString = () => `extract(${BLOCKS[this.h.block]}, asks=[${this.h.asks}], maybes=[${this.h.maybes}], by=${this.h.by})`;
 }
 
-describe("known gap A1: an ask Ash adds by hand under a message", () => {
+// FLIPPED by sc-17-ask-fixes (gap A1). This test used to assert that the property FAILS and shrinks to
+// `extract, add by hand, extract` (seed 20261113). asks.ts withHeard now replaces only rows a hearing wrote, so the
+// property passes: the same property, the same generators, asserted to hold.
+describe("gap A1 (fixed): an ask Ash adds by hand under a message", () => {
   const property = fc.asyncProperty(
     fc.commands([hearArb.map((h) => new HearKeepsHandAdded(h)), fc.constantFrom<0 | 1>(0, 1).map((b) => new AddByHand(b))], { maxCommands: 6 }),
     async (cmds) => {
@@ -399,17 +401,11 @@ describe("known gap A1: an ask Ash adds by hand under a message", () => {
     },
   );
 
-  // The property that SHOULD hold. It does not: asks.ts withHeard treats a row with one history step and status "heard" as
-  // untouched, and Ash's hand-added row (withAdded) is exactly that, so the next hearing of its message replaces it.
-  it("is broken today, and the shortest run that breaks it is extract, add by hand, extract (pinned; flip this when fixed)", async () => {
-    // A seed, so the same run is found every time. Drop it to look for other counterexamples.
-    const details = await fc.check(property, { seed: 20261113, numRuns: 500 });
-    expect(details.failed, "a hand-added ask now survives every hearing: replace this test with the plain property").toBe(true);
-    // Shrunk to a hearing that makes a receipt, the tap on "Add one that was missed", and a hearing of that message.
-    const steps = [...((details.counterexample?.[0] ?? []) as Iterable<unknown>)].map(String);
-    expect(steps).toHaveLength(3);
-    expect(steps[0]).toMatch(/^extract\(/);
-    expect(steps[1]).toMatch(/^Ash adds an ask by hand/);
-    expect(steps[2]).toMatch(/^extract\(/);
+  it("survives every hearing of its message (random interleavings)", async () => {
+    await fc.assert(property, { numRuns: 500 });
+  });
+
+  it("the run that used to break it (seed 20261113) now passes", async () => {
+    await fc.assert(property, { seed: 20261113, numRuns: 500 });
   });
 });

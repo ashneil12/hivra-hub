@@ -69,8 +69,6 @@ export const NOTE_MAX = 300;
 export const PROOF_MAX = 300;
 /** The most asks one message can hold. A longer list is a model gone wrong. */
 export const ASKS_PER_MESSAGE = 24;
-/** The most "maybe" lines the safety net adds to one message, so a long think-aloud is not a wall of them. */
-export const MAYBE_PER_MESSAGE = 6;
 /** Closed asks are kept up to this many, oldest out first. Open ones are never dropped. */
 export const CLOSED_CAP = 2000;
 const HEARD_CAP = 4000;
@@ -327,12 +325,14 @@ export type HeardList = { asks: HeardAsk[]; maybes: HeardAsk[] };
 
 /**
  * The model's asks, plus the safety net: any sentence that reads like an ask and that none of them covers comes along
- * as a "maybe". With no model list, the rules' own reading stands as the asks.
+ * as a "maybe". With no model list, the rules' own reading stands as the asks. Every uncovered sentence comes along,
+ * with no cap: the quick reading already wrote each of them down, so a cap here would silently drop an ask the person
+ * had been shown. The receipt counts them ("7 to check") instead of hiding any.
  */
 export function hearMessage(message: string, model: readonly HeardAsk[] | undefined): HeardList {
   const rules = rulesAsks(message);
   if (!model) return { asks: rules.slice(0, ASKS_PER_MESSAGE), maybes: [] };
-  const maybes = rules.filter((ask) => !covers(model, ask.quote)).slice(0, MAYBE_PER_MESSAGE);
+  const maybes = rules.filter((ask) => !covers(model, ask.quote));
   return { asks: [...model], maybes };
 }
 
@@ -360,12 +360,15 @@ export type HearInput = {
 /**
  * The document with one message's asks written in. Heard a second time (the model's list arriving after the rules'
  * quick one), the message's rows nobody has touched yet are replaced by the better list; a row with a status, a note
- * or Ash's hand on it stays as it is. An ask that repeats one still open in the same chat bumps that one instead of
- * making a second.
+ * or Ash's hand on it stays as it is, and so does an ask Ash added by hand (withAdded), which is never a hearing's
+ * to replace. An ask that repeats one still open in the same chat bumps that one instead of making a second.
  */
 export function withHeard(doc: AskDoc, input: HearInput): AskDoc {
   const previous = doc.heard[input.blockId];
-  const untouched = (ask: Ask) => ask.blockId === input.blockId && (ask.status === "heard" || ask.status === "maybe") && ask.history.length <= 1;
+  // A row a hearing wrote has one step, by the app. Ash's hand-added row has one step too, by him: not a hearing's row.
+  const fromHearing = (ask: Ask) => ask.history.every((step) => step.by === "app");
+  const untouched = (ask: Ask) =>
+    ask.blockId === input.blockId && (ask.status === "heard" || ask.status === "maybe") && ask.history.length <= 1 && fromHearing(ask);
   const kept = doc.asks.filter((ask) => !untouched(ask));
   const mine = kept.filter((ask) => ask.blockId === input.blockId);
   let next = doc.next;
