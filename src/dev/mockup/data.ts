@@ -57,6 +57,10 @@ function roster() {
   ];
 }
 
+/** The ask in the Chief of Staff's Hivra chat that went quiet (asks() below), said three days ago. */
+const QUIET_ASK_WORDS = "Example: make sure the waitlist page works on a small phone before Friday";
+const QUIET_ASK_CHAT_MINUTES = 60 * 24 * 3 + 30;
+
 type Line = [role: "user" | "assistant", text: string];
 
 function chat(id: string, title: string, cwd: string, lines: Line[], now: number, minutesAgo: number) {
@@ -141,7 +145,9 @@ function sessions(now: number) {
     chat(CHAT.chiefHivraEarlier, "Example: waitlist plan", folderOf("hivra"), [
       ["user", "Example: what is the plan for the Hivra waitlist?"],
       ["assistant", "Example: page first, then the email. The Hivra lead has both."],
-    ], now, 60 * 30),
+      ["user", QUIET_ASK_WORDS],
+      ["assistant", "Example: noted, I'll pass it to the Hivra lead."],
+    ], now, QUIET_ASK_CHAT_MINUTES),
     withSideQuestion(chat(CHAT.exo, "EXO lead", folderOf("vg-game"), [
       ["user", "Where are we on the Area 3 build?"],
       [
@@ -419,4 +425,37 @@ function inbox(now: number) {
   ];
 }
 
-export const EXAMPLE = { projects, roster, sessions, delegations, decisions, pages, automations, rooms, notes, inbox };
+/**
+ * The ask ledger (asks/model/asks.ts) with one ask of the person's that went quiet: open since three days ago with nothing
+ * moved through two daily checks, so it is a Needs you row (asks/model/askQuiet.ts). Asked in the Chief of Staff's own Hivra chat.
+ */
+function asks(now: number) {
+  // When the chat's third message was sent (chat() puts each one a minute after the last, from the chat's start).
+  const asked = now - QUIET_ASK_CHAT_MINUTES * 60_000 + 2 * 60_000;
+  return {
+    next: 2,
+    since: now - 10 * 24 * 60 * 60_000,
+    heard: {},
+    nudged: { "chief-of-staff": now - 3 * 60 * 60_000 },
+    asks: [
+      {
+        id: "ask-1-mockup-ask-block",
+        n: 1,
+        mateId: "chief-of-staff",
+        sessionId: CHAT.chiefHivraEarlier,
+        blockId: "mockup-ask-block",
+        quote: QUIET_ASK_WORDS,
+        summary: "Check the waitlist page on a small phone",
+        kind: "do",
+        status: "heard",
+        heardBy: "model",
+        createdAt: asked,
+        updatedAt: asked,
+        history: [{ at: asked, status: "heard", by: "app" }],
+        chase: { at: asked, checks: 2, raisedAt: now - 3 * 60 * 60_000 },
+      },
+    ],
+  };
+}
+
+export const EXAMPLE = { projects, roster, sessions, delegations, decisions, pages, automations, rooms, notes, inbox, asks };

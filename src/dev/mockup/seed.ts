@@ -8,7 +8,7 @@
 import { EXAMPLE } from "./data";
 import { mockupIpc, seedMockupIpc } from "./ipc";
 
-const SEED_VERSION = "mockup-v5";
+const SEED_VERSION = "mockup-v6";
 const SEEDED_KEY = "monocode:mockup-seeded";
 
 const url = new URL(location.href);
@@ -32,6 +32,8 @@ function seed(): void {
   const now = Date.now();
   const set = (key: string, value: unknown) => localStorage.setItem(key, JSON.stringify(value));
   set("monocode:dev-local-hub:projects", { projects: EXAMPLE.projects });
+  // One ask of the person's that went quiet, so Needs you shows its row (asks/model/askQuiet.ts).
+  set("monocode:dev-local-hub:asks", EXAMPLE.asks(now));
   set("monocode:dev-roster-seed", EXAMPLE.roster());
   set("monocode:dev-sessions", EXAMPLE.sessions(now));
   set("monocode:dev-delegations", EXAMPLE.delegations(now));
