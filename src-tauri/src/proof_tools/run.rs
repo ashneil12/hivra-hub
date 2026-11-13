@@ -645,7 +645,10 @@ mod tests {
         let prepared = &seen[0].1;
         assert_eq!(prepared.argv[..3], ["npx", "--no-install", "stryker"]);
         assert!(
-            prepared.argv.iter().any(|word| word == "src/a b.ts:4-5"),
+            prepared
+                .argv
+                .iter()
+                .any(|word| word == "--mutate=src/a b.ts:4-5"),
             "{:?}",
             prepared.argv
         );

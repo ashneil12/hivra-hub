@@ -32,7 +32,7 @@
       "detect": { "stack": "node" },
       "installed": { "npmDep": "@stryker-mutator/core" },
       "install": "npm install --save-dev @stryker-mutator/core@10.1.1 @stryker-mutator/vitest-runner@10.1.1",
-      "run": "npx stryker run --mutate \"{ranges}\"",
+      "run": "npx stryker run --mutate={ranges}",
       "needsModel": false,
       "pinned": "10.1.1",
       "kind": "mutation",
@@ -144,7 +144,7 @@
         "allOf": [{ "file": "sgconfig.yml" }, { "anyOf": [{ "npmDep": "@ast-grep/cli" }, { "binary": ["ast-grep", "--version"] }] }]
       },
       "install": "npm install --save-dev @ast-grep/cli@0.51.2",
-      "run": "ast-grep scan --json=stream {files}",
+      "run": "ast-grep scan --json=stream -- {files}",
       "runAlso": ["ast-grep test"],
       "needsModel": false,
       "pinned": "0.51.2",
