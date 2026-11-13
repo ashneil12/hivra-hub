@@ -124,6 +124,21 @@ describe("proof_tools actions", () => {
     expect(store.backend.claim).not.toHaveBeenCalled();
   });
 
+  it("list marks a tool the person switched off, says not to use or propose it, and leaves the Settings revision out", async () => {
+    const { source, host, store } = fixture("mono");
+    vi.mocked(store.backend.list).mockResolvedValueOnce({
+      stacks: ["node"],
+      revision: 7,
+      tools: [{ ...LIST.tools[0], installed: true, off: true }],
+    });
+    const answer = (await handleAgentApp(source, "r1", "proof_tools.list", {}, host)) as Record<string, unknown>;
+    expect((answer.tools as { id: string; installed: boolean; off: boolean }[]).map((tool) => [tool.id, tool.installed, tool.off])).toEqual([["fast-check", true, true]]);
+    expect(String(answer.note)).toMatch(/off for this project/);
+    expect(String(answer.note)).toMatch(/don't use it/i);
+    expect(String(answer.note)).toMatch(/don't propose it/i);
+    expect("revision" in answer).toBe(false);
+  });
+
   it("a list the app can't read is an error, not an empty list", async () => {
     const { source, host, store } = fixture("mono");
     vi.mocked(store.backend.list).mockResolvedValueOnce({ nope: true });

@@ -116,10 +116,12 @@ export async function handleProofTools(
     if (input.toolId !== undefined) throw new Error("proof_tools list takes no toolId.");
     const list = readProofToolList(await backend.list(folder));
     if (!list) throw new Error("This project's proof tools couldn't be read. Nothing was changed.");
+    // PT-2: `revision` is what Settings bases a switch write on; a first mate has no use for it.
+    const { revision: _revision, ...tools } = list;
     return {
-      ...list,
+      ...tools,
       project: folder,
-      note: "These are the proof tools that fit this project. Use the ones it has. To add one it lacks, propose it (action propose, once) when it would catch something its tests miss: the person decides, and the app installs nothing.",
+      note: "These are the proof tools that fit this project. Use the ones it has. A tool marked off is switched off for this project: don't use it and don't propose it. To add one it lacks, propose it (action propose, once) when it would catch something its tests miss: the person decides, and the app installs nothing.",
     };
   }
 

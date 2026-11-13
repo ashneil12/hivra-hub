@@ -187,7 +187,37 @@ describe("readProofToolList", () => {
     for (const bad of [null, undefined, "x", 1, [], {}, { stacks: [] }, { tools: [] }, { stacks: {}, tools: [] }, { stacks: [], tools: "x" }]) {
       expect(readProofToolList(bad), String(JSON.stringify(bad))).toBeNull();
     }
-    expect(readProofToolList({ stacks: [], tools: [] })).toEqual({ stacks: [], tools: [] });
+    expect(readProofToolList({ stacks: [], tools: [] })).toEqual({ stacks: [], tools: [], revision: 0 });
+  });
+
+  // PT-2: a project's per-tool switch and the revision a write must be based on.
+  it("reads whether a tool is switched off, and an older answer with no switch reads as on", () => {
+    const list = readProofToolList({
+      stacks: ["node"],
+      tools: [view("fast-check", { installed: true, off: true }), view("stryker", { installed: true }), view("playwright", { installed: true, off: false })],
+    });
+    expect(list?.tools.map((entry) => [entry.id, entry.off])).toEqual([
+      ["fast-check", true],
+      ["stryker", false],
+      ["playwright", false],
+    ]);
+  });
+
+  it("drops an entry whose switch is not a true or false", () => {
+    const list = readProofToolList({
+      stacks: ["node"],
+      tools: [view("fast-check", { off: "yes" }), view("stryker", { off: 1 }), view("playwright", { off: null }), view("proptest", { off: true })],
+    });
+    expect(list?.tools.map((entry) => entry.id)).toEqual(["proptest"]);
+  });
+
+  it("reads the revision a write must be based on, and anything that isn't a whole number from zero is none", () => {
+    const read = (revision: unknown) => readProofToolList({ stacks: [], tools: [], revision })?.revision;
+    expect(read(7)).toBe(7);
+    expect(read(0)).toBe(0);
+    for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, 2 ** 60, "3", null, undefined, {}, []]) {
+      expect(read(bad), String(bad)).toBe(0);
+    }
   });
 
   it("drops an entry that is not one the catalogue knows, that has a kind or status it doesn't, or that repeats", () => {
@@ -225,8 +255,9 @@ describe("readProofToolList", () => {
 });
 
 describe("the brief's proof-tools section", () => {
-  const list = (installed: string[]): ProofToolList => ({
+  const list = (installed: string[], off: string[] = []): ProofToolList => ({
     stacks: ["node"],
+    revision: 0,
     tools: PROOF_TOOLS.map((entry) => ({
       id: entry.id,
       name: entry.name,
@@ -236,7 +267,17 @@ describe("the brief's proof-tools section", () => {
       external: entry.external,
       installed: installed.includes(entry.id),
       status: "open" as const,
+      off: off.includes(entry.id),
     })),
+  });
+
+  it("never names a tool the person switched off in this project", () => {
+    const lines = proofToolLines(list(["stryker", "fast-check", "playwright"], ["stryker"]));
+    expect(lines.map((line) => line.name)).toEqual(["fast-check", findProofTool("playwright")?.name]);
+    expect(proofToolsSection(lines)).not.toContain("StrykerJS");
+    // Every installed tool off: no section at all.
+    expect(proofToolLines(list(["stryker"], ["stryker"]))).toEqual([]);
+    expect(proofToolsSection(proofToolLines(list(["stryker"], ["stryker"])))).toBeUndefined();
   });
 
   it("lists the installed tools by name with what they prove and how to use them", () => {

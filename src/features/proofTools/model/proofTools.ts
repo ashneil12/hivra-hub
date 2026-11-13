@@ -284,9 +284,21 @@ export type ProofToolView = {
   installed: boolean;
   /** Whether it has been proposed to the person (once per project) and what they said. Only meaningful when not installed. */
   status: ProofToolStatus;
+  /** PT-2: the person switched it off for this project. It never runs, is never named in a brief and is never proposed. An answer with no switch reads as on. */
+  off: boolean;
 };
 
-export type ProofToolList = { stacks: ProofToolStack[]; tools: ProofToolView[] };
+export type ProofToolList = {
+  stacks: ProofToolStack[];
+  tools: ProofToolView[];
+  /** PT-2: the project's switch revision (none yet: 0). A write to a switch is based on the one last read. */
+  revision: number;
+};
+
+/** A revision as the app writes it: a whole number from zero. Anything else is none. */
+export function readRevision(value: unknown): number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : 0;
+}
 
 /**
  * What `proof_tools_list` answers, read defensively. A wrong shape is null. An entry whose id isn't in the catalogue, whose
@@ -310,6 +322,8 @@ export function readProofToolList(payload: unknown): ProofToolList | null {
     if (typeof view.kind !== "string" || view.kind !== known.kind) continue;
     if (view.status !== "open" && view.status !== "proposed" && view.status !== "declined") continue;
     if (view.external !== undefined && typeof view.external !== "boolean") continue;
+    // PT-2: no switch on the answer (an older app) reads as on; a switch that isn't true or false is not an entry.
+    if (view.off !== undefined && typeof view.off !== "boolean") continue;
     tools.push({
       id: known.id,
       name: known.name,
@@ -319,11 +333,12 @@ export function readProofToolList(payload: unknown): ProofToolList | null {
       external: known.external,
       installed: view.installed,
       status: view.status,
+      off: view.off === true,
     });
   }
   // The catalogue's order, whatever order the app listed them in.
   tools.sort((a, b) => PROOF_TOOLS.findIndex((tool) => tool.id === a.id) - PROOF_TOOLS.findIndex((tool) => tool.id === b.id));
-  return { stacks, tools };
+  return { stacks, tools, revision: readRevision(list.revision) };
 }
 
 // ---- the brief ------------------------------------------------------------------------------------------------------
@@ -335,11 +350,11 @@ function oneLine(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
-/** The tools the project already has, in the catalogue's order. None installed (or no list): none. */
+/** The tools the project already has and uses, in the catalogue's order. None installed, all switched off (or no list): none. */
 export function proofToolLines(list: ProofToolList | null | undefined): ProofToolLine[] {
   if (!list) return [];
   return list.tools
-    .filter((tool) => tool.installed)
+    .filter((tool) => tool.installed && !tool.off) // PT-2: a tool the person switched off is never named
     .map((tool) => ({ name: tool.name, proves: tool.proves, use: tool.howToUse }));
 }
 
