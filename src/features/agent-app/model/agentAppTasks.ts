@@ -102,10 +102,14 @@ import {
   checksRefusal,
   isCodeBrief,
   leaveList,
+  scopePaths,
   splitChecks,
   validStamp,
   type CheckLine,
 } from "../../firstmate/model/briefChecks";
+// PT-6: a brief's spec of record parts (firstmate/model/briefSpec.ts) and the one worker spec_start hands the draft to.
+import { SPEC_INDEX, readSpecContext, specParts, type SpecBrief, type SpecContext, type SpecPart } from "../../firstmate/model/briefSpec";
+import { readLanded, specStartInput } from "../../firstmate/model/specStart";
 import type { TestingMode } from "../../delivery/model/testingMode";
 import { proofToolLines, readProofToolList, type ProofToolLine } from "../../proofTools/model/proofTools"; // PT-1
 import { parseFanout } from "../../firstmate/model/fanoutContract";
@@ -209,8 +213,12 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "taskId",
       // SC-7: `fix` when the brief fixes a bug; the worker must show a failing run of its test first.
       "kind",
+      // PT-6: the sections of the project's spec of record this job changes (at most 3).
+      "spec",
     ],
   ],
+  // PT-6: the one worker that drafts the project's spec of record. Only when the person asked (the spec_start tool).
+  ["tasks.specStart", ["project"]],
   // WP-141: the crew's pick for a job (a CLI or a Mono) and why. Reads only; delegate_task starts the work.
   ["tasks.pick", ["role", "title", "brief", "files", "model", "effort", "lead"]],
   // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
@@ -375,6 +383,14 @@ export type AgentAppTasksHost = {
    * wins, so a retry changes nothing. A miss is not a failed start: the same call again saves them.
    */
   keepBrief?(id: string, brief: KeptBrief): Promise<unknown>;
+  /**
+   * PT-6: the current text of each section a brief's spec parts touch, and (for a brief with none) the spec files whose `paths:`
+   * cover its scope, read from the project's main checkout (firstmate_spec_context). Whatever comes back is read defensively
+   * (briefSpec.ts `readSpecContext`); a miss or a wait that runs out means the brief says to read the file first.
+   */
+  specContext?(folder: string, request: { parts: readonly SpecPart[]; scope: readonly string[] }): Promise<unknown>;
+  /** PT-6: the project's landed tasks, newest first (firstmate_spec_landed), for the spec_start draft. Absent: none. */
+  specLanded?(project: string): Promise<unknown>;
   /** Hivra WP-40: the first mate accepts or refuses an unsure verdict (firstmate_gates_decide). */
   decideGates?(owner: string, id: string, accept: boolean, reason?: string): Promise<unknown>;
   /** The running task working in this chat itself, newest first: what `tasks.cannot` with no taskId declares on. */
@@ -1152,6 +1168,10 @@ async function delegate(
   // plain words. A plain name in `checks` is still the id of one of the project's own checks.
   const own = splitChecks(input.checks);
   const leave = leaveList(input.leave);
+  // PT-6: the sections of the project's spec of record this brief changes, read before anything starts too.
+  const specs = specParts(input.spec);
+  // SC-4's test of a code brief, and PT-6's: a brief with spec parts changes behaviour, so it is one too.
+  const codeBrief = isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope }) || specs.length > 0;
   // WP-171: a task of a fan-out carries its link: the contract its brief shows, and what it waits for.
   const link = input.fanout === undefined ? undefined : parseFanoutLink(input.fanout);
   if (link && input.lead !== undefined) throw new Error("A fan-out's tasks are workers: leave out lead.");
@@ -1205,6 +1225,8 @@ async function delegate(
   // SC-4: the commit this brief was written against, read once and carried with the call, so a worker that waits for a
   // free worker (or for a review) opens with the commit the first mate saw, not the one at its start.
   let briefStamp: string | undefined;
+  /** PT-6: what the app read of the project's spec of record for this brief. Absent: it couldn't, or the project is remote. */
+  let specContext: SpecContext | undefined;
   /** What a held or queued call carries to its start: the stamp, when there is one. */
   const briefCarried = (): Record<string, unknown> => (briefStamp ? { briefStamp } : {});
   // WP-144: fresh-eyes review, off unless this project turned it on. It comes after every check that can refuse the call
@@ -1249,7 +1271,8 @@ async function delegate(
     ...input,
     checks: own.ids,
     // (Even a `code: false` that came with lines: lines are checks to run, and the checks gate comes with them.)
-    ...(own.lines.length && (input.code === undefined || input.code === false) ? { code: true } : {}),
+    // PT-6: a task with spec parts changes behaviour, so it is a code task too: its round always runs, and the diff is read.
+    ...((own.lines.length || specs.length) && (input.code === undefined || input.code === false) ? { code: true } : {}),
   });
   // Hivra WP-10: never deeper than first mate, first mate, workers.
   if (tasks.checkDepth) await tasks.checkDepth(source.id);
@@ -1264,6 +1287,11 @@ async function delegate(
     if (own.lines.length || leave.length)
       throw new Error(
         "A brief to a Lead can't carry check lines or a do-not-touch list: the Lead writes its own workers' briefs. Say in the brief what the workers must check and leave alone, and the Lead puts it in theirs.",
+      );
+    // PT-6: and so do spec parts: the Lead's workers carry the spec section their change updates, which the Lead names.
+    if (specs.length)
+      throw new Error(
+        "A brief to a Lead can't carry spec parts: the Lead writes its own workers' briefs. Say in the brief which section of the project's spec the change updates, and the Lead puts it in theirs.",
       );
     if (redoes) throw new Error("redoes is for your own workers' tasks; leave it out when you brief a Lead.");
     if (secretList.length)
@@ -1351,6 +1379,9 @@ async function delegate(
       makesOwnTeam = true;
     }
   }
+  // PT-6: a Mono's own team folder is no project and has no spec of record.
+  if (makesOwnTeam && specs.length)
+    throw new Error("Your own team's folder isn't a project with a spec of record, so a spec part has nowhere to go: leave out spec.");
   // A model the call names must be one this chat can ask for. Checked here, so a bad name is refused before a review.
   const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
   const askedModel = taskModel(input.model, source, onBridge);
@@ -1370,7 +1401,7 @@ async function delegate(
       const refusal = await fullModeRefusal(
         tasks,
         briefFolder,
-        isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope }),
+        codeBrief,
         own.lines,
       );
       if (refusal) throw new Error(refusal);
@@ -1379,6 +1410,13 @@ async function delegate(
     if (!redoes) {
       briefStamp =
         validStamp(input.briefStamp) ?? validStamp(await tasks.briefStamp?.(briefFolder).catch(() => undefined));
+    }
+    // PT-6: the project's current spec sections for this brief, from its main checkout (a remote project's files are on its host:
+    // the worker reads them there). A spec part that names another place than the project keeps its spec is refused here, with
+    // where it is kept, before anything starts.
+    if (!remoteProjectFor(briefFolder) && !remoteProjectFor(source.cwd)) {
+      specContext = await specContextFor(tasks, briefFolder, specs, scopePaths(scope).paths);
+      if (specs.length && specContext?.refusal) throw new Error(specContext.refusal);
     }
   }
   const held = await heldForReview();
@@ -1508,7 +1546,7 @@ async function delegate(
   // PT-3: in a project that checks every task fully, a code brief also names the proof skills. A mode the app can't read
   // adds nothing.
   const proofSkills =
-    isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope }) &&
+    codeBrief &&
     (await fullModeOf(tasks, briefFolderOf(source, owner, named, tasks)));
   // PT-1: and it names the proof tools the project already has. Asked only then; a miss adds nothing.
   const proofTools = proofSkills ? await proofToolLinesOf(tasks, briefFolderOf(source, owner, named, tasks)) : [];
@@ -1519,7 +1557,7 @@ async function delegate(
   // no code writes no test.
   // PT-5: and the same mode says which red-test rules it carries: every mode but "No testing" has them; "at ship" adds its sentence.
   const redTests =
-    !testFixer && isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope })
+    !testFixer && codeBrief
       ? await redTestModeOf(tasks, briefFolderOf(source, owner, named, tasks))
       : undefined;
   const atShip = redTests === "at-ship";
@@ -1531,6 +1569,8 @@ async function delegate(
     leave,
     ...(proofSkills ? { proofSkills: true } : {}),
     ...(proofTools.length ? { proofTools } : {}),
+    // PT-6: the spec of record this task changes, or the spec that covers its scope as context.
+    ...(specs.length || specContext?.related.length ? { spec: { parts: specs, context: specContext } satisfies SpecBrief } : {}),
   };
   const remoteBrief = await briefOnRemoteHost({
     paths: [folder, source.cwd],
@@ -1579,7 +1619,12 @@ async function delegate(
     // A retry after a save that didn't land keeps the same plan. A save that fails still returns the task.
     await keepGates(tasks, already.id, gates, folder);
     // SC-4: the first keep wins, so this never overwrites a result the gates already wrote.
-    const keptAgain = await keepBrief(tasks, already.id, { stamp: briefStamp, checks: own.lines, leave });
+    const keptAgain = await keepBrief(tasks, already.id, {
+      stamp: briefStamp,
+      checks: own.lines,
+      leave,
+      ...(specs.length ? { spec: specs } : {}),
+    });
     return {
       taskId: already.id,
       childSessionId: id,
@@ -1788,7 +1833,12 @@ async function delegate(
   // WP-40: the plan is kept once the row exists. A waiting worker stores `input` and this runs when it starts.
   await keepGates(tasks, row?.id, gates, folder);
   // SC-4: its check lines, do-not-touch list and the stamp its brief opens with, once the row exists.
-  const kept = await keepBrief(tasks, row?.id, { stamp: briefStamp, checks: own.lines, leave });
+  const kept = await keepBrief(tasks, row?.id, {
+    stamp: briefStamp,
+    checks: own.lines,
+    leave,
+    ...(specs.length ? { spec: specs } : {}),
+  });
   // What the Lead did about its stuck task shows on that task's card (and survives a restart: it's in its row's log).
   if (redoes && row) await tasks.redo?.(source.id, redoes, row.id).catch(() => undefined);
   return {
@@ -2207,6 +2257,8 @@ async function sendFanout(
       // SC-4: the task's own check lines go beside the project's check ids, and its do-not-touch list with them.
       ...(task.checkLines.length ? { checks: [...(task.gates?.checks ?? []), ...task.checkLines] } : {}),
       ...(task.leave.length ? { leave: task.leave } : {}),
+      // PT-6: the task's spec of record sections go to its delegation with the rest.
+      ...(task.spec?.length ? { spec: task.spec } : {}),
       ...task.passthrough,
       fanout: link,
     };
@@ -2888,14 +2940,14 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
 }
 
 /** SC-4: what a started task keeps of its brief. */
-export type KeptBrief = { stamp?: string; checks: readonly CheckLine[]; leave: readonly string[] };
+export type KeptBrief = { stamp?: string; checks: readonly CheckLine[]; leave: readonly string[]; spec?: readonly SpecPart[] };
 
 /** How many times a brief's lines are asked to be kept before the first mate is told they weren't. */
 const KEEP_TRIES = 3;
 
 /** What the first mate reads when a task's check lines or do-not-touch list could not be saved. */
 const BRIEF_NOT_KEPT =
-  "Its check lines or do-not-touch list could not be saved on the task, so the app will not run or enforce them. Send the same call again, with the same clientRequestId, to save them.";
+  "Its check lines, do-not-touch list or spec parts could not be saved on the task, so the app will not run or enforce them. Send the same call again, with the same clientRequestId, to save them.";
 
 /**
  * SC-4: keep a task's brief lines, stamp and list, trying a few times. Nothing to keep keeps nothing. A miss is not a
@@ -2903,7 +2955,7 @@ const BRIEF_NOT_KEPT =
  */
 async function keepBrief(tasks: AgentAppTasksHost, id: string | null | undefined, brief: KeptBrief): Promise<boolean> {
   if (!id || !tasks.keepBrief) return true;
-  if (!brief.stamp && !brief.checks.length && !brief.leave.length) return true;
+  if (!brief.stamp && !brief.checks.length && !brief.leave.length && !brief.spec?.length) return true;
   for (let attempt = 0; attempt < KEEP_TRIES; attempt += 1) {
     try {
       await tasks.keepBrief(id, brief);
@@ -2912,8 +2964,81 @@ async function keepBrief(tasks: AgentAppTasksHost, id: string | null | undefined
       // Try again: the store may only have been busy.
     }
   }
-  // A stamp alone is not enforced by anything the first mate relies on; lines and a list are.
-  return !(brief.checks.length || brief.leave.length);
+  // A stamp alone is not enforced by anything the first mate relies on; lines, a list and spec parts are.
+  return !(brief.checks.length || brief.leave.length || brief.spec?.length);
+}
+
+/** PT-6: how long a brief waits to hear the project's current spec (the app reads a few files). */
+const SPEC_CONTEXT_WAIT_MS = 8_000;
+
+/**
+ * PT-6: what the app reads of this project's spec of record for a brief: the current text of each section its spec parts name,
+ * and, when it has none, the spec files whose `paths:` cover its in-scope paths. Asked only when there is something to read. An
+ * answer that can't be read, an error and a wait that runs out are all "nothing read": the brief then tells the worker to read
+ * the file first, and is never held up or refused for it (the done check still holds the worker to the spec parts).
+ */
+async function specContextFor(
+  tasks: AgentAppTasksHost,
+  folder: string,
+  parts: readonly SpecPart[],
+  scope: readonly string[],
+  always = false,
+): Promise<SpecContext | undefined> {
+  const ask = tasks.specContext;
+  if (!ask || (!always && !parts.length && !scope.length)) return undefined;
+  return readSpecContext(await within(SPEC_CONTEXT_WAIT_MS, () => ask.call(tasks, folder, { parts, scope })));
+}
+
+/** PT-6: the answer of `ask`, or none when it fails or takes longer than `ms`: a timeout is not a final failure. */
+async function within(ms: number, ask: () => Promise<unknown>): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const waited = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), ms);
+    });
+    return await Promise.race([ask(), waited]);
+  } catch {
+    return undefined;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * PT-6: spec_start. The person asked for this project's spec of record to be written from what it already has: ONE worker drafts it
+ * from the project's own files and the briefs of its landed tasks (read from the delegation rows), and lands like any task.
+ * Nothing calls this but the first mate's tool. A project that already has its spec index is refused: its spec grows from the
+ * briefs that carry a spec part, and a second draft would rewrite what the person's corrections wrote.
+ */
+async function specStart(
+  source: Session,
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  const { owner, tasks } = taskOwner(source, host);
+  const named = input.project === undefined ? undefined : text(input.project, "project", 4096);
+  const folder = briefFolderOf(source, owner, named, tasks);
+  const landedAsk = tasks.specLanded;
+  // Both reads at once: each waits at most as long as a brief's own context read does.
+  const [context, landed] = await Promise.all([
+    specContextFor(tasks, folder, [], [], true),
+    landedAsk
+      ? within(SPEC_CONTEXT_WAIT_MS, () => landedAsk.call(tasks, tasks.hubProjectId?.(folder) ?? folder)).then(readLanded)
+      : Promise.resolve([]),
+  ]);
+  if (context?.home.exists && context.home.index)
+    throw new Error(
+      `This project already has a spec of record (${context.home.folder}/${SPEC_INDEX}). It grows from the briefs that carry a spec part: send the next correction with delegate_task's spec instead of starting the spec again.`,
+    );
+  return delegate(
+    source,
+    requestId,
+    specStartInput({ landed, ...(context ? { home: context.home } : {}), ...(named !== undefined ? { project: named } : {}) }),
+    host,
+    helpers,
+  );
 }
 
 /**
@@ -3161,6 +3286,9 @@ export function handleTasks(
       return delegate(source, requestId, input, host, helpers);
     case "tasks.fanout":
       return fanout(source, requestId, input, host, helpers);
+    // PT-6: spec_start: one worker that drafts the project's spec of record. Only the tool starts it, and only when asked.
+    case "tasks.specStart":
+      return specStart(source, requestId, input, host, helpers);
     case "tasks.status":
       return status(source, input, host);
     case "tasks.wait":

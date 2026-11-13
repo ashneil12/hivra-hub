@@ -3,6 +3,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { loadTestingMode, type TestingMode } from "../../delivery/model/testingMode";
 import { validStamp, type CheckLine } from "../model/briefChecks";
+import type { SpecPart } from "../model/briefSpec"; // PT-6
 
 /** The project's testing mode, or undefined when the app can't say: a read that fails never refuses a brief. */
 export async function testingModeOf(project: string): Promise<TestingMode | undefined> {
@@ -28,10 +29,16 @@ export async function briefStampOf(folder: string): Promise<string | undefined> 
  */
 export function keepBriefOnRow(
   id: string,
-  brief: { stamp?: string; checks: readonly CheckLine[]; leave: readonly string[] },
+  brief: { stamp?: string; checks: readonly CheckLine[]; leave: readonly string[]; spec?: readonly SpecPart[] },
 ): Promise<unknown> {
   return invoke("firstmate_brief_keep", {
     id,
-    input: { ...(brief.stamp ? { stamp: brief.stamp } : {}), checks: brief.checks, leave: brief.leave },
+    input: {
+      ...(brief.stamp ? { stamp: brief.stamp } : {}),
+      checks: brief.checks,
+      leave: brief.leave,
+      // PT-6: the spec parts the done check holds the worker's copy to.
+      ...(brief.spec?.length ? { spec: brief.spec } : {}),
+    },
   });
 }
