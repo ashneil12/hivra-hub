@@ -31,15 +31,26 @@ pub struct Preview {
     pub browser: String,
 }
 
-#[cfg(target_os = "macos")]
-const APP_BROWSERS: &[&str] = &[
-    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-    "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
-    "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser",
+/// The browser app bundles a preview may run, and the program inside each. One list: `find_browser` looks for exactly
+/// these under /Applications and ~/Applications, and the agent sandbox write-denies exactly these folders in both
+/// places (`agent_sandbox::push_tool_places`), so an agent can neither change one nor create a missing one (SC-8c).
+pub(crate) const BROWSER_BUNDLES: &[(&str, &str)] = &[
+    ("Google Chrome.app", "Google Chrome"),
+    ("Chromium.app", "Chromium"),
+    ("Microsoft Edge.app", "Microsoft Edge"),
+    ("Brave Browser.app", "Brave Browser"),
 ];
-#[cfg(not(target_os = "macos"))]
-const APP_BROWSERS: &[&str] = &[];
+
+/// `/Applications/<bundle>/Contents/MacOS/<program>` for each bundle, on macOS; none elsewhere.
+fn app_browsers() -> Vec<String> {
+    if !cfg!(target_os = "macos") {
+        return Vec::new();
+    }
+    BROWSER_BUNDLES
+        .iter()
+        .map(|(bundle, program)| format!("/Applications/{bundle}/Contents/MacOS/{program}"))
+        .collect()
+}
 
 const PATH_BROWSERS: &[&str] = &[
     "google-chrome",
@@ -54,13 +65,17 @@ const PATH_BROWSERS: &[&str] = &[
 /// so it has to be a file no agent can replace, and macOS's App Management guards app bundles. Elsewhere, PATH as well.
 pub fn find_browser(home: Option<&Path>, path_var: Option<&str>) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
-    for app in APP_BROWSERS {
+    for app in &app_browsers() {
         candidates.push(PathBuf::from(app));
         if let Some(home) = home {
             candidates.push(home.join(app.trim_start_matches('/')));
         }
     }
-    let path_var = if cfg!(target_os = "macos") { None } else { path_var };
+    let path_var = if cfg!(target_os = "macos") {
+        None
+    } else {
+        path_var
+    };
     for dir in path_var
         .map(|p| std::env::split_paths(p).collect::<Vec<_>>())
         .unwrap_or_default()
@@ -324,11 +339,14 @@ mod tests {
             "a browser on PATH was picked: {found:?}"
         );
         // A bundle under ~/Applications is.
-        let app = home.join(APP_BROWSERS[1].trim_start_matches('/'));
+        let app = home.join(app_browsers()[1].trim_start_matches('/'));
         fs::create_dir_all(app.parent().unwrap()).unwrap();
         fs::write(&app, "").unwrap();
         let found = find_browser(Some(&home), dir.to_str()).expect("a bundle browser");
-        assert!(found.starts_with("/Applications") || found == app, "{found:?}");
+        assert!(
+            found.starts_with("/Applications") || found == app,
+            "{found:?}"
+        );
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&home);
     }

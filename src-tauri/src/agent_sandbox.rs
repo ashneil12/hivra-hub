@@ -1334,6 +1334,28 @@ fn push_tool_places(lines: &mut Vec<String>, home: &Path) -> Result<(), String> 
             true,
             WRITE_OPS,
         );
+        // SC-8c: the visual preview runs one of these browser bundles outside the sandbox (Chrome cannot nest its own
+        // renderer sandbox), so an agent may neither change one nor create a missing one, in ~/Applications or in
+        // /Applications. A folder deny holds for a path that does not exist yet. One list with find_browser.
+        for (bundle, _) in crate::visual_preview::BROWSER_BUNDLES {
+            push_home_entry(
+                lines,
+                &forms,
+                &format!("Applications/{bundle}"),
+                true,
+                WRITE_OPS,
+            );
+        }
+        // SC-8c: the config files curl and wget read before every run, including the app's own agent-CLI installs
+        // (agent_install.rs, run outside the sandbox with home as its folder). A planted one could send the next install
+        // somewhere else.
+        for file in [".curlrc", ".config/curlrc", ".wgetrc"] {
+            push_home_entry(lines, &forms, file, false, WRITE_OPS);
+            push_real_target(lines, home, file, false, WRITE_OPS)?;
+        }
+    }
+    for (bundle, _) in crate::visual_preview::BROWSER_BUNDLES {
+        push_absolute(lines, &format!("/Applications/{bundle}"), true, WRITE_OPS);
     }
     for dir in TOOL_DIRS {
         push_absolute(lines, dir, true, WRITE_OPS);
@@ -3670,6 +3692,49 @@ mod tests {
 
     /// Review r4 (LOW): the shell profiles the list missed.
     #[cfg(unix)]
+    /// SC-8c: the browser bundles the visual preview runs outside the sandbox can neither be changed nor created, in
+    /// /Applications or ~/Applications, for every bundle find_browser accepts. Other apps there stay writable.
+    #[test]
+    fn the_preview_browser_bundles_cannot_be_written_or_created() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        for (bundle, program) in crate::visual_preview::BROWSER_BUNDLES {
+            for root in ["/Applications", "/Users/test/Applications"] {
+                for path in [
+                    format!("{root}/{bundle}"),
+                    format!("{root}/{bundle}/Contents/MacOS/{program}"),
+                    format!("{root}/{bundle}/Contents/Info.plist"),
+                ] {
+                    assert!(
+                        denies(&profile, "file-write*", &path),
+                        "{path} can be written"
+                    );
+                }
+            }
+        }
+        assert!(!denies(
+            &profile,
+            "file-write*",
+            "/Users/test/Applications/Other.app/x"
+        ));
+    }
+
+    /// SC-8c: curl's and wget's own config files, read by every install the app runs, cannot be written.
+    #[test]
+    fn the_curl_and_wget_config_files_cannot_be_written() {
+        let profile = profile_text(Path::new("/Users/test")).unwrap();
+        for path in [
+            "/Users/test/.curlrc",
+            "/Users/test/.config/curlrc",
+            "/Users/test/.wgetrc",
+            "/Users/test/.CURLRC",
+        ] {
+            assert!(
+                denies(&profile, "file-write*", path),
+                "{path} can be written"
+            );
+        }
+    }
+
     #[test]
     fn the_extra_shell_profiles_are_denied() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();

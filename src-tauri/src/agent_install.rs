@@ -20,17 +20,19 @@ const STOP_GRACE: Duration = Duration::from_secs(3);
 
 /// The official installer for each harness the app can install by itself. Harnesses missing here (fx, hermes,
 /// antigravity) get a link to their install page instead.
+/// Every curl here starts with `-q`, so it reads no ~/.curlrc or ~/.config/curlrc (SC-8c; the agent sandbox also
+/// write-denies those files). The installers these scripts fetch may run curl again without it.
 pub fn install_command(harness: &str) -> Option<&'static str> {
     Some(match harness {
-        "claude" => "curl -fsSL https://claude.ai/install.sh | bash",
+        "claude" => "curl -q -fsSL https://claude.ai/install.sh | bash",
         "codex" => "npm install -g @openai/codex",
-        "cursor" => "curl https://cursor.com/install -fsS | bash",
-        "grok" => "curl -fsSL https://x.ai/cli/install.sh | bash",
+        "cursor" => "curl -q https://cursor.com/install -fsS | bash",
+        "grok" => "curl -q -fsSL https://x.ai/cli/install.sh | bash",
         // v1 on purpose: the app's OpenCode adapter speaks 1.x; opencode.ai/v2/install replaces it with v2.
-        "opencode" => "curl -fsSL https://opencode.ai/install | bash",
+        "opencode" => "curl -q -fsSL https://opencode.ai/install | bash",
         "pi" => "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
-        "omp" => "curl -fsSL https://omp.sh/install | sh",
-        "devin" => "curl -fsSL https://cli.devin.ai/install.sh | bash",
+        "omp" => "curl -q -fsSL https://omp.sh/install | sh",
+        "devin" => "curl -q -fsSL https://cli.devin.ai/install.sh | bash",
         _ => return None,
     })
 }
@@ -265,4 +267,19 @@ pub async fn agent_cli_install(app: AppHandle, harness: String) -> Result<Instal
 #[tauri::command]
 pub fn agent_cli_install_cancel(installs: State<'_, AgentInstalls>, harness: String) -> bool {
     installs.cancel(&harness)
+}
+
+/// SC-8c: every curl in the fixed installer list ignores the person's curl config (`-q` must be its first argument).
+#[cfg(test)]
+mod sc8c_tests {
+    #[test]
+    fn every_installer_curl_starts_with_q() {
+        for harness in ["claude", "codex", "cursor", "grok", "opencode", "pi", "omp", "devin"] {
+            let command = super::install_command(harness).expect(harness);
+            for (at, _) in command.match_indices("curl ") {
+                assert!(command[at..].starts_with("curl -q "), "{harness}: {command}");
+            }
+            assert!(!command.contains("wget"), "{harness}: a wget would need --no-config: {command}");
+        }
+    }
 }
