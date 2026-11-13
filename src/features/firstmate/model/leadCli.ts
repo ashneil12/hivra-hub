@@ -22,7 +22,7 @@ export type LeadCapability = {
 
 // What a person reads in the lead strip, so no plumbing words: no MCP, host, secret or session request.
 // Ash (12 Nov): "I have no idea what this means". Say what it can and can't do, not why.
-const NO_HOST = "can chat here, but it can't hand jobs to helpers yet.";
+const NO_HOST = "does not have direct helper tools attached. It can use the app’s commands to hand off jobs.";
 const SECRET_IN_REQUEST = NO_HOST;
 /** Names a person knows, where the CLI's own short name is unclear. */
 const PLAIN_NAME: Partial<Record<HarnessId, string>> = { omp: "Oh My Pi" };

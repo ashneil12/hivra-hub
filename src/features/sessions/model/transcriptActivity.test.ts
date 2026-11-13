@@ -199,7 +199,7 @@ describe("groupMonoTurnItems", () => {
     ];
     const turns = groupMonoTurns(blocks);
     expect(turns).toHaveLength(2);
-    expect(groupMonoTurnItems(turns[1], { live: true })).toMatchObject([
+    expect(groupMonoTurnItems(turns[1])).toMatchObject([
       { type: "block", block: { id: "queued" } },
       {
         type: "activity",
@@ -235,17 +235,18 @@ describe("groupMonoTurnItems", () => {
     }
   });
 
-  it("keeps live narration compact until the turn settles", () => {
+  it("keeps completed work compact while the trailing reply streams", () => {
     const blocks = [
       note("intro", "Checking."),
       shell("first"),
       note("reply", "The result."),
     ];
-    expect(groupMonoTurnItems(blocks, { live: true })).toMatchObject([
+    expect(groupMonoTurnItems(blocks)).toMatchObject([
       {
         type: "activity",
-        blocks: [{ id: "intro" }, { id: "first" }, { id: "reply" }],
+        blocks: [{ id: "intro" }, { id: "first" }],
       },
+      { type: "block", block: { id: "reply" } },
     ]);
     expect(groupMonoTurnItems(blocks).at(-1)).toMatchObject({
       type: "block",
@@ -372,8 +373,8 @@ describe("groupMonoTurnItems", () => {
       { type: "block", block: { id: "answer" } },
     ]);
     expect(
-      groupMonoTurnItems([note("answer", "Hello.")], { live: true }),
-    ).toMatchObject([{ type: "activity", blocks: [{ id: "answer" }] }]);
+      groupMonoTurnItems([note("answer", "Hello.")]),
+    ).toMatchObject([{ type: "block", block: { id: "answer" } }]);
   });
 
   it("keeps a final answer visible when a status ping arrives after it", () => {
@@ -391,7 +392,7 @@ describe("groupMonoTurnItems", () => {
     ]);
   });
 
-  it("hides new streamed narration after a previously delivered background reply", () => {
+  it("shows the new streamed reply after a previously delivered background reply", () => {
     const background: Block = {
       ...shell("background"),
       tool: { kind: "shell", status: "completed", background: true },
@@ -404,12 +405,12 @@ describe("groupMonoTurnItems", () => {
           background,
           note("update", "It finished."),
         ],
-        { live: true },
       ),
     ).toMatchObject([
       { type: "activity", blocks: [{ id: "first" }] },
       { type: "block", block: { id: "yielded" } },
-      { type: "activity", blocks: [{ id: "background" }, { id: "update" }] },
+      { type: "activity", blocks: [{ id: "background" }] },
+      { type: "block", block: { id: "update" } },
     ]);
   });
 });

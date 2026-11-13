@@ -1260,11 +1260,11 @@ pub fn harness_spawn(
         Some(routes) => Some(crate::pi_routes::build(&routes)),
     };
     let pi_family = crate::pi_routes::is_pi_family(binary_provider.as_deref());
-    let pi_extension = match pi_routes.as_ref() {
-        Some(ready) if pi_family && !ready.env.is_empty() => {
-            Some(crate::pi_routes::write_extension()?)
-        }
-        _ => None,
+    // The extension also guards tool calls, even when no custom model routes were configured.
+    let pi_extension = if pi_family && !pi_isolated {
+        Some(crate::pi_routes::write_extension()?)
+    } else {
+        None
     };
     // Codex: one provider per saved model through config overrides, before the subcommand.
     let codex_route_args = match pi_routes.as_ref() {
@@ -1616,7 +1616,7 @@ pub fn harness_spawn(
         .is_some()
         .then_some(&recheck as &dyn Fn() -> Result<(), String>);
     let mut child = child_or_reap(
-        spawn_managed(&mut cmd, recheck_ref),
+        spawn_agent_managed(&mut cmd, recheck_ref),
         more_run,
         || app.path().app_data_dir().ok(),
         &spawn_dir,
@@ -2833,6 +2833,15 @@ fn isolate_child(cmd: &mut Command) {
     {
         let _ = cmd;
     }
+}
+
+fn spawn_agent_managed(
+    cmd: &mut Command,
+    recheck: Option<&dyn Fn() -> Result<(), String>>,
+) -> std::io::Result<std::process::Child> {
+    // Set after every sandbox/env allow-list has run. This carries no credential or app authority.
+    cmd.env("DROPWAVE_AGENT_PROCESS", "1");
+    spawn_managed(cmd, recheck)
 }
 
 fn spawn_managed(
@@ -4642,6 +4651,23 @@ mod launch_env_tests {
 #[cfg(unix)]
 #[cfg(test)]
 mod tests {
+    #[cfg(unix)]
+    #[test]
+    fn agent_provenance_reaches_a_child_after_environment_restriction() {
+        let mut cmd = std::process::Command::new("/usr/bin/env");
+        cmd.env("MONOCODE_APP_TOKEN", "must-not-leak");
+        cmd.env_clear().stdout(std::process::Stdio::piped());
+        let output = super::spawn_agent_managed(&mut cmd, None)
+            .unwrap()
+            .wait_with_output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            "DROPWAVE_AGENT_PROCESS=1\n"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn a_retired_launcher_name_is_not_accepted_as_claude() {

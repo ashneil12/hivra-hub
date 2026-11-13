@@ -65,6 +65,7 @@ project.
 2. **One chat look.** Every one-to-one chat (Chief of Staff, a Lead, any first mate, a plain chat) is the same layout:
    the chat list on the left, the same composer, tab strip and footer (`ONE_CHAT_LOOK`,
    `src/features/hub/model/hubBundle.ts`). Never give one kind of chat its own header or message box.
+   The conversation uses the same centred maximum width as its composer, with or without Overview (Ash, 13 Nov).
    **The list is the open first mate's own**: its main chat on top (marked "Main chat"), then its other chats and the
    chats it started. A two-way switch above the list (the first mate's name, Everyone) brings in the rest of the
    project's chats; the choice is kept (`src/features/hub/model/chatListScope.ts`). A chat never shows under a first

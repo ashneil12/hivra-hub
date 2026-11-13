@@ -265,6 +265,8 @@ export type LaunchedSessionView = {
   provider?: string;
   /** Waiting on another task of this fan-out, not on a free worker (WP-171). The card says so. */
   forTask?: boolean;
+  /** Exact live queue explanation, from the admission code rather than a guessed capacity limit. */
+  waitingLine?: string;
 };
 
 export function launchedSessionState(session: Session): LaunchedSessionState {

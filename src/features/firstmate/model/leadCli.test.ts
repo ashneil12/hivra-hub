@@ -58,7 +58,7 @@ describe("lead capability", () => {
         expect(row.reason.length).toBeGreaterThan(10);
         expect(hasDelegateTool(TEAM, id)).toBe(false);
         const said = leadBlockReason(id);
-        expect(said).toContain("cannot lead yet");
+        expect(said).toContain("does not have direct helper tools attached");
         expect(said).toContain(row.reason);
         expect(said).not.toMatch(/[\u2013\u2014]/);
       }
@@ -75,10 +75,10 @@ describe("lead capability", () => {
 
   it("says why a CLI cannot lead in plain words, with none of the plumbing", () => {
     expect(leadBlockReason("opencode")).toBe(
-      "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs.",
+      "OpenCode does not have direct helper tools attached. It can use the app’s commands to hand off jobs.",
     );
     expect(leadBlockReason("cursor")).toBe(
-      "Cursor cannot lead yet. The app could only give it the tools a lead uses by passing it a private key, and it does not do that yet.",
+      "Cursor does not have direct helper tools attached. It can use the app’s commands to hand off jobs.",
     );
     for (const id of HARNESSES.filter((cli) => !canLead(cli))) {
       const said = leadBlockReason(id) ?? "";
@@ -173,10 +173,10 @@ describe("lead capability", () => {
     ];
     expect(leadSwitchOffer("claude", present)).toBeNull();
     const offer = leadSwitchOffer("opencode", present);
-    expect(offer?.reason).toContain("OpenCode cannot lead yet");
+    expect(offer?.reason).toContain("OpenCode does not have direct helper tools attached");
     expect(offer?.choices.map((choice) => choice.cli)).toEqual(["claude", "codex"]);
     expect(leadSwitchOffer("pi", []).choices).toEqual([]);
-    expect(leadSwitchOffer("pi", []).reason).toContain("cannot lead yet");
+    expect(leadSwitchOffer("pi", [])?.reason).toContain("does not have direct helper tools attached");
     // A stale or unwritable pick cannot become the lead: the offer only ever names capable CLIs.
     for (const choice of offer?.choices ?? []) expect(canLead(choice.cli)).toBe(true);
     expect(applyLeadSwitch("opencode", "codex")).toBe("codex");

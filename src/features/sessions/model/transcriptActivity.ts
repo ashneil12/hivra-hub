@@ -653,15 +653,15 @@ export function groupTurnItems(
 
 /**
  * A Mono keeps its process, including the opening message, in the activity
- * trail. Live prose stays there until the user joins the running turn; replies
- * after a delivered follow-up stay visible even when more work arrives.
- * Settling reveals the trailing reply for uninterrupted turns.
+ * trail. The reply being written remains visible while it streams; prose followed
+ * by more tools joins the trail. Replies to delivered follow-ups remain visible
+ * when further work arrives.
  * Cards, notices and interjections keep their
  * own rows, and work resumed after a yielded reply does not absorb that reply.
  */
 export function groupMonoTurnItems(
   blocks: Block[],
-  options?: { live?: boolean; undeliveredMessageIds?: ReadonlySet<string> },
+  options?: { undeliveredMessageIds?: ReadonlySet<string> },
 ): TurnItem[] {
   // Read the original order before moving user bubbles above the work. Once
   // the user joins in, hiding subsequent replies makes a delivered message
@@ -699,7 +699,7 @@ export function groupMonoTurnItems(
         ? item.blocks.some(
             (block) => isToolBlock(block) || isThinkingBlock(block),
           )
-        : isToolBlock(item.block) || (options?.live && isProseBlock(item.block))
+        : isToolBlock(item.block)
     )
       end = index;
   }
