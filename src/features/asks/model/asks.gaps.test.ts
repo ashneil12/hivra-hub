@@ -1,6 +1,7 @@
-// Known gaps in the first-mate ask ledger's reducers (formal/asks/README.md, gaps A1 to A4), each as the shortest run that
-// shows it. These pin what the code does TODAY, so a change that fixes one fails its test here: update the test then
-// (and the README line). None of them is fixed by this spike.
+// Gaps in the first-mate ask ledger's reducers (formal/asks/README.md, gaps A1 to A4), each as the shortest run that
+// shows it. A1 was FIXED by sc-17-ask-fixes: its test was flipped by that fix and now asserts the correct behaviour, on
+// the same minimal trace. The others still pin what the code does TODAY, so a change that fixes one fails its test here:
+// update the test then (and the README line).
 import { describe, expect, it } from "vitest";
 import { askNudge } from "./askNotes";
 import { emptyAskDoc, hearMessage, isOwed, MAYBE_PER_MESSAGE, openAsksFor, rulesAsks, withAdded, withChange, withHeard } from "./asks";
@@ -13,18 +14,41 @@ const THREE = "Example: Can you fix the harbour invoice export. Please add a tes
 const EIGHT =
   "Example: Can you fix the harbour invoice export. Please add a test for the lantern login screen. Make sure the orchard weekly report still sends. Could you write up what changed in the compass backup job. We need to rename the granite pricing page. Also check why the velvet search box is slow. Please remove the saffron onboarding tour. Can you update the tundra release notes.";
 
-describe("KNOWN GAP A1: an ask Ash adds by hand is replaced when the model's list for that message lands", () => {
-  it("extract (rules), add by hand, extract (model): the hand-added ask is gone", () => {
+// FLIPPED by sc-17-ask-fixes (gap A1). This test used to assert that the hand-added ask was gone (3 rows left). The trace
+// is unchanged; it now asserts the ask survives. A re-hearing replaces only rows that came from a hearing.
+describe("A1 (fixed): an ask Ash adds by hand survives the model's list for that message", () => {
+  const HAND = "also the export button label is wrong on the settings page";
+
+  it("extract (rules), add by hand, extract (model): the hand-added ask is still there, once", () => {
     const quick = rulesAsks(THREE);
     expect(quick).toHaveLength(3);
     let doc = withHeard(emptyAskDoc(now), { ...base, list: { asks: quick, maybes: [] }, by: "rules", now });
-    doc = withAdded(doc, { ...base, text: "also the export button label is wrong on the settings page", now: now + 1 });
+    doc = withAdded(doc, { ...base, text: HAND, now: now + 1 });
     expect(doc.asks).toHaveLength(4);
-    // The model's reading lands with the same three asks. The hand-added row has one history step and status heard, so
-    // withHeard counts it as untouched and replaces it with the new list.
+    const added = doc.asks.find((ask) => ask.quote === HAND);
+    // The model's reading lands with the same three asks. The three rows a hearing wrote are replaced; the one Ash wrote stays as it was.
     doc = withHeard(doc, { ...base, list: hearMessage(THREE, quick), by: "model", now: now + 2 });
-    expect(doc.asks.map((ask) => ask.quote)).not.toContain("also the export button label is wrong on the settings page");
-    expect(doc.asks).toHaveLength(3);
+    expect(doc.asks.filter((ask) => ask.quote === HAND)).toEqual([added]);
+    expect(doc.asks).toHaveLength(4);
+  });
+
+  it("it survives a hearing that finds nothing, and a hearing that names it too does not make a second copy", () => {
+    const quick = rulesAsks(THREE);
+    let doc = withHeard(emptyAskDoc(now), { ...base, list: { asks: quick, maybes: [] }, by: "rules", now });
+    // Ash adds, by hand, the words of one ask the reading also holds.
+    doc = withAdded(doc, { ...base, text: quick[0].quote, now: now + 1 });
+    doc = withHeard(doc, { ...base, list: { asks: [], maybes: [] }, by: "model", now: now + 2 });
+    expect(doc.asks.map((ask) => ask.quote)).toEqual([quick[0].quote]);
+    doc = withHeard(doc, { ...base, list: hearMessage(THREE, quick), by: "model", now: now + 3 });
+    expect(doc.asks.filter((ask) => ask.quote === quick[0].quote)).toHaveLength(1);
+    expect(doc.asks.map((ask) => ask.quote).sort()).toEqual(quick.map((ask) => ask.quote).sort());
+  });
+
+  it("a hearing of another message does not touch it", () => {
+    let doc = withHeard(emptyAskDoc(now), { ...base, list: { asks: rulesAsks(THREE), maybes: [] }, by: "rules", now });
+    doc = withAdded(doc, { ...base, text: HAND, now: now + 1 });
+    doc = withHeard(doc, { ...base, blockId: "blk-2", list: { asks: [], maybes: [] }, by: "model", now: now + 2 });
+    expect(doc.asks).toHaveLength(4);
   });
 });
 

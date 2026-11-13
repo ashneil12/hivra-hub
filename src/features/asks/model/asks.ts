@@ -360,12 +360,15 @@ export type HearInput = {
 /**
  * The document with one message's asks written in. Heard a second time (the model's list arriving after the rules'
  * quick one), the message's rows nobody has touched yet are replaced by the better list; a row with a status, a note
- * or Ash's hand on it stays as it is. An ask that repeats one still open in the same chat bumps that one instead of
- * making a second.
+ * or Ash's hand on it stays as it is, and so does an ask Ash added by hand (withAdded), which is never a hearing's
+ * to replace. An ask that repeats one still open in the same chat bumps that one instead of making a second.
  */
 export function withHeard(doc: AskDoc, input: HearInput): AskDoc {
   const previous = doc.heard[input.blockId];
-  const untouched = (ask: Ask) => ask.blockId === input.blockId && (ask.status === "heard" || ask.status === "maybe") && ask.history.length <= 1;
+  // A row a hearing wrote has one step, by the app. Ash's hand-added row has one step too, by him: not a hearing's row.
+  const fromHearing = (ask: Ask) => ask.history.every((step) => step.by === "app");
+  const untouched = (ask: Ask) =>
+    ask.blockId === input.blockId && (ask.status === "heard" || ask.status === "maybe") && ask.history.length <= 1 && fromHearing(ask);
   const kept = doc.asks.filter((ask) => !untouched(ask));
   const mine = kept.filter((ask) => ask.blockId === input.blockId);
   let next = doc.next;
