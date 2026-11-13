@@ -146,7 +146,9 @@ export function useAskLedger(options: AskLedgerOptions): void {
             return;
           }
           const list = hearMessage(text, heard);
-          const keep = worthKeeping(text, list.asks, list.maybes);
+          // The message is long here, so any row at all is worth keeping, as the quick reading kept a lone rules ask: an
+          // empty list written over it would erase a row the person was shown.
+          const keep = list.asks.length + list.maybes.length > 0;
           await store.hear({ ...base, list: keep ? list : { asks: [], maybes: [] }, by: "model", now });
         })
           .catch(() => undefined)
