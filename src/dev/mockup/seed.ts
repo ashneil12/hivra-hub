@@ -40,7 +40,7 @@ function receiptReply(): string {
   ].join("\n");
 }
 
-const SEED_VERSION = "mockup-v6-one-chat";
+const SEED_VERSION = "mockup-v7-one-chat";
 const SEEDED_KEY = "monocode:mockup-seeded";
 
 const url = new URL(location.href);
@@ -152,7 +152,10 @@ Object.assign(window, {
 const startedAt = Date.now();
 let steady = 0;
 const openHome = () => {
-  if (Date.now() - startedAt > 15_000 || steady >= 8) return;
+  if (Date.now() - startedAt > 15_000 || steady >= 8) {
+    startGuide();
+    return;
+  }
   if (document.querySelector("[data-home]")) steady += 1;
   else {
     steady = 0;
@@ -164,56 +167,145 @@ const openHome = () => {
 };
 setTimeout(openHome, 500);
 
-// The mock-up's own bar (not part of the app): which direction is on, the example long message, and a fresh start.
-const DIRECTIONS: [Direction, string, string][] = [
-  ["a", "A", "One chat: the three lists are chips at the top of the chat"],
-  ["b", "B", "Board: every job beside the chat"],
-  ["c", "C", "Mix: Needs you beside the chat"],
-  ["d", "D", "Projects: today's app, a chat per project"],
-];
-function mockupBar(): void {
-  const bar = document.createElement("div");
-  bar.setAttribute("data-mockup-bar", "");
-  bar.className = "solid-panel-glass fixed bottom-12 left-[76px] z-[9999] flex w-[184px] flex-wrap items-center gap-0.5 rounded-xl p-1 font-sans text-[12px] text-content";
-  const button = (label: string, title: string, run: () => void) => {
-    const node = document.createElement("button");
-    node.type = "button";
-    node.textContent = label;
-    node.title = title;
-    node.className = "h-7 rounded-lg px-2 text-content/70 hover:bg-content/8 hover:text-content";
-    node.addEventListener("click", run);
-    bar.appendChild(node);
-    return node;
-  };
-  const label = document.createElement("span");
-  label.textContent = "Mock-up";
-  label.className = "px-1.5 text-content/60";
-  bar.appendChild(label);
-  const picks = DIRECTIONS.map(([id, name, title]) => {
-    const node = button(name, title, () => {
-      setDirection(id);
-      paint();
-    });
-    node.dataset.mockupDirection = id;
-    return node;
-  });
-  const paint = () => {
-    const on = localStorage.getItem("monocode:mockup-direction") ?? "c";
-    for (const node of picks) node.className = `h-7 rounded-lg px-2 ${node.dataset.mockupDirection === on ? "bg-content text-background-base" : "text-content/70 hover:bg-content/8 hover:text-content"}`;
-  };
-  paint();
-  button("Paste example rant", "Puts an example long message with seven asks into the open chat's box", () => {
-    const boxes = Array.from(document.querySelectorAll<HTMLTextAreaElement>("textarea.composer-field")).filter((box) => box.offsetParent !== null);
-    const box = boxes[boxes.length - 1];
-    if (!box) return;
-    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(box, RANT);
-    box.dispatchEvent(new Event("input", { bubbles: true }));
-    box.focus();
-  }).dataset.mockupRant = "";
-  button("Start over", "Puts the example data back", () => {
-    location.search = "?reset";
-  });
-  document.body.appendChild(bar);
+
+// The mock-up's own guide (not part of the app): it walks through one main chat a step at a time and does each step
+// itself, so nobody has to work out where to click. The last step offers the other three layouts.
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const tap = (selector: string) => document.querySelector<HTMLElement>(selector)?.click();
+function openChief(): void {
+  if (document.querySelector("textarea.composer-field") && document.querySelector("[data-chief-tabs], [data-chief-chips]")) return;
+  Array.from(document.querySelectorAll<HTMLButtonElement>("[data-hub-home] button, nav button, aside button"))
+    .find((button) => button.textContent?.trim() === "Chief of Staff")
+    ?.click();
 }
-if (document.body) mockupBar();
-else addEventListener("DOMContentLoaded", mockupBar);
+async function sendRant(): Promise<void> {
+  if (localStorage.getItem("monocode:mockup-rant-sent")) return;
+  const boxes = Array.from(document.querySelectorAll<HTMLTextAreaElement>("textarea.composer-field")).filter((box) => box.offsetParent !== null);
+  const box = boxes[boxes.length - 1];
+  if (!box) return;
+  Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(box, RANT);
+  box.dispatchEvent(new Event("input", { bubbles: true }));
+  box.focus();
+  await wait(400);
+  box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true }));
+  localStorage.setItem("monocode:mockup-rant-sent", "1");
+}
+type Step = { title: string; text: string; run: () => void | Promise<void> };
+const STEPS: Step[] = [
+  {
+    title: "Your one main chat",
+    text: "This is the Chief of Staff's chat. The idea: you stay here and run every project from it.",
+    run: async () => {
+      setDirection("c");
+      openChief();
+    },
+  },
+  {
+    title: "You say everything at once",
+    text: "I just sent a long example message for you, with seven different asks buried in it. Read the reply in the chat.",
+    run: async () => {
+      openChief();
+      await wait(600);
+      await sendRant();
+    },
+  },
+  {
+    title: "It says back what it heard",
+    text: "The reply numbers all seven asks and who has each. The same list now sits on the right under You asked, so a long chat can't lose one.",
+    run: () => tap("[data-chief-tab=asked]"),
+  },
+  {
+    title: "Questions come to you here",
+    text: "Needs you, on the right, collects questions from every project. I opened the first one. Answer it there without leaving this chat.",
+    run: async () => {
+      tap("[data-chief-tab=needs]");
+      await wait(400);
+      tap("[data-chief-needs] [data-inbox-need] button");
+    },
+  },
+  {
+    title: "See every job, step in if you want",
+    text: "Working lists every job in every project. Hover one and press Open, then Take over. Hand back when you're done.",
+    run: () => tap("[data-chief-tab=working]"),
+  },
+  {
+    title: "Compare the other layouts",
+    text: "That was layout C. Try the same chat in the others, then tell Claude which felt right.",
+    run: () => undefined,
+  },
+];
+const LAYOUTS: [Direction, string][] = [
+  ["c", "C: lists beside the chat"],
+  ["b", "B: jobs beside the chat"],
+  ["a", "A: lists as buttons on top"],
+  ["d", "D: today's app, no lists"],
+];
+function startGuide(): void {
+  if (document.querySelector("[data-mockup-guide]")) return;
+  let at = Number(sessionStorage.getItem("monocode:mockup-step") ?? "0") || 0;
+  const card = document.createElement("div");
+  card.setAttribute("data-mockup-guide", "");
+  card.className = "solid-panel-glass fixed bottom-12 left-[76px] z-[9999] flex w-[184px] flex-col gap-2 rounded-xl p-3 font-sans text-[12px] leading-[17px] text-content";
+  const quiet = "h-7 rounded-lg border border-content/20 px-2.5 text-[12px] text-content hover:bg-content/8 disabled:opacity-40";
+  const filled = "h-7 rounded-lg bg-content px-2.5 text-[12px] font-medium text-background-base";
+  const paint = () => {
+    const step = STEPS[at];
+    card.textContent = "";
+    const count = document.createElement("div");
+    count.className = "text-[11px] text-content/60";
+    count.textContent = `Guide, step ${at + 1} of ${STEPS.length}`;
+    const title = document.createElement("div");
+    title.className = "text-[13px] font-medium text-content";
+    title.textContent = step.title;
+    const text = document.createElement("div");
+    text.className = "text-content/80";
+    text.textContent = step.text;
+    card.append(count, title, text);
+    if (at === STEPS.length - 1) {
+      const on = localStorage.getItem("monocode:mockup-direction") ?? "c";
+      for (const [id, label] of LAYOUTS) {
+        const pick = document.createElement("button");
+        pick.type = "button";
+        pick.dataset.mockupDirection = id;
+        pick.textContent = label;
+        pick.className = `h-7 rounded-lg px-2 text-left text-[12px] ${id === on ? "bg-content text-background-base" : "text-content/80 hover:bg-content/8"}`;
+        pick.addEventListener("click", () => {
+          setDirection(id);
+          openChief();
+          paint();
+        });
+        card.append(pick);
+      }
+    }
+    const row = document.createElement("div");
+    row.className = "flex items-center gap-1.5 pt-1";
+    const back = document.createElement("button");
+    back.type = "button";
+    back.textContent = "Back";
+    back.className = quiet;
+    back.disabled = at === 0;
+    back.addEventListener("click", () => go(at - 1));
+    const next = document.createElement("button");
+    next.type = "button";
+    next.dataset.mockupNext = "";
+    next.textContent = at === STEPS.length - 1 ? "Start over" : "Next";
+    next.className = filled;
+    next.addEventListener("click", () => {
+      if (at === STEPS.length - 1) {
+        sessionStorage.removeItem("monocode:mockup-step");
+        location.search = "?reset";
+      } else go(at + 1);
+    });
+    row.append(back, next);
+    card.append(row);
+  };
+  const go = (to: number) => {
+    at = Math.max(0, Math.min(STEPS.length - 1, to));
+    sessionStorage.setItem("monocode:mockup-step", String(at));
+    if (at < STEPS.length - 1) setDirection("c");
+    paint();
+    void STEPS[at].run();
+  };
+  document.body.appendChild(card);
+  go(at);
+}
