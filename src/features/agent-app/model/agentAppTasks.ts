@@ -609,7 +609,7 @@ export function redTestRules(mode: RedTestMode): string[] {
     "When a test goes red, first say in one line which it is: a real bug, a test that is out of date because the behaviour changed on purpose, or flaky (it passes when run again on the same commit).",
     `Spend at most 10 minutes or 2 attempts on a red test that is not one of yours. ${then}`,
     "Never make a test pass by weakening it: no removed assertions, loosened expected values, skips, retries or sleeps. To delete a test, your report must say what behaviour it guarded and what covers it now.",
-    "Tests marked critical (`@critical` in the title or on the line above it, or under a path for keys, permissions, the sandbox, billing, migrations, CI or installers), golden files and formal specs are read-only for you: changing one needs your first mate.",
+    "Tests marked critical (`@critical` in the title or in a comment directly above it, or under a path for keys, permissions, the sandbox, billing, migrations, CI or installers), golden files and formal specs are read-only for you: changing one needs your first mate.",
     "The change you land owns the red it causes: a test your change turns red is yours to fix, even if you did not write it.",
     "Your change gets at most 3 review rounds, and the checks stop sending it back after the third. If the third fails, stop and rethink the approach with your first mate instead of patching again.",
   ];

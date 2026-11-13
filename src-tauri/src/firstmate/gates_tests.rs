@@ -1790,7 +1790,7 @@ fn light_and_full_never_use_the_list() {
     assert!(crate::test_debt::applies(chosen.mode, chosen.as_today));
 }
 
-const VITEST_APP: &str = " FAIL  app.test.ts > suite > works\nAssertionError: expected 1 to be 2\n\u{23af}\u{23af}\u{23af}\u{23af}\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n";
+const VITEST_APP: &str = " FAIL  app.test.ts > suite > two\nAssertionError: expected 1 to be 2\n\u{23af}\u{23af}\u{23af}\u{23af}\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n";
 const VITEST_APP_CRITICAL: &str = " FAIL  app.test.ts > suite > @critical works\nAssertionError: expected 1 to be 2\n\u{23af}\u{23af}\u{23af}\u{23af}\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n";
 
 /// What `firstmate_run_gates` does in `light` and `full`: read the task's runs and its report's `Quarantine:` lines, hand `run_round` the plan.
@@ -1817,6 +1817,7 @@ fn quarantine_plan(
         },
         report,
         &[],
+        true,
     )
     .unwrap()
 }
@@ -1830,7 +1831,7 @@ fn in_light_and_full_a_quarantined_test_no_longer_sends_a_task_back_for_a_failed
         &data,
         &f.copy,
         VITEST_APP,
-        "Done.\nQuarantine: suite > works | flaky, passes on a re-run\n",
+        "Done.\nQuarantine: suite > two | flaky, passes on a re-run\n",
     );
     assert_eq!(outcome.quarantined, 1, "{:?}", outcome.plan.add_gaps);
     for mode in [TestingMode::Light, TestingMode::Full] {

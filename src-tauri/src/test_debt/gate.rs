@@ -269,13 +269,25 @@ pub fn at_ship(input: &Input) -> Result<Outcome, String> {
 /// quarantined for 14 days) and the tests already quarantined, whose red run no longer fails the round. A refusal comes back as a gap
 /// the worker reads. A quarantine never excuses the task's own tests, and the fact layer's other gaps stand.
 ///
+/// `changed_known` is whether `input.changed` is a reading of what the task changed. When it is not (no checkout, or git would not say),
+/// nothing can be told to be the task's own, so no request is applied and no quarantine excuses anything: the round is as it was.
+///
 /// Cheap when there is nothing to do (no request, nothing quarantined): one read of the project's file. An error from the disk comes
-/// back: the caller then leaves the round as it was, so nothing is quarantined and nothing is let off on a guess.
+/// back: the caller then leaves the round as it was, so nothing is quarantined and nothing is let off on a guess (`unapplied` tells
+/// the worker, when it asked).
 pub fn quarantine(
     input: &Input,
     report: &str,
     protected_extra: &[String],
+    changed_known: bool,
 ) -> Result<Outcome, String> {
+    if !changed_known {
+        return Ok(unapplied(
+            report,
+            "what your change touches could not be read, so nothing was quarantined.",
+        )
+        .unwrap_or_default());
+    }
     let requests = super::quarantine::parse_requests(report);
     let before = store::read_checked(input.data_dir, input.project)?;
     let now = input.now;
@@ -285,13 +297,33 @@ pub fn quarantine(
     }
     let tracked = tracked_files(input.checkout);
     if tracked.len() >= TRACKED_MAX {
-        return Ok(Outcome::default());
+        return Ok(unapplied(
+            report,
+            "this project has too many files to look through, so nothing was quarantined.",
+        )
+        .unwrap_or_default());
     }
     let owner_dir = run_checks::owner_dir(input.data_dir, input.delegation_id);
     let records = run_checks::records(input.data_dir, input.delegation_id);
+    // A Rust test lives in a sibling file of the module's source and the runner names the source file: a marker may be in either.
     let read_file = |path: &str| -> Option<String> {
         let tracked_path = own::resolve_tracked(path, &tracked)?;
-        read_text(&input.checkout.join(tracked_path))
+        let mut text = read_text(&input.checkout.join(tracked_path))?;
+        for sibling in sibling_tests(tracked_path) {
+            if let Some(found) = own::resolve_tracked(&sibling, &tracked) {
+                if let Some(more) = read_text(&input.checkout.join(found)) {
+                    text.push_str("\n\n");
+                    text.push_str(&more);
+                }
+            }
+        }
+        Some(text)
+    };
+    // A runner may print a path relative to its test folder (Playwright): the sensitive patterns are read against the repository path.
+    let resolve = |file: &str| -> String {
+        own::resolve_tracked(file, &tracked)
+            .cloned()
+            .unwrap_or_else(|| file.to_string())
     };
     let read_log_of = |log: &str| read_log(&owner_dir, log);
     let plan_for = |doc: &Doc| {
@@ -315,7 +347,7 @@ pub fn quarantine(
             protected_extra,
         );
         for request in &requests.list {
-            match super::quarantine::decide(request, &first, &patterns, &read_file) {
+            match super::quarantine::decide(request, &first, &patterns, &resolve, &read_file) {
                 super::quarantine::Verdict::Quarantine(failing) => {
                     asked.push((*failing, request.why.clone()));
                 }
@@ -356,6 +388,44 @@ pub fn quarantine(
         cleared: 0,
         quarantined: count,
     })
+}
+
+/// What a worker's `Quarantine:` lines get when the app can't decide them now (the notes can't be read, the changed files are not
+/// known): the gap that tells it nothing was quarantined. `None` when the report asks for nothing.
+pub fn unapplied(report: &str, why: &str) -> Option<Outcome> {
+    let requests = super::quarantine::parse_requests(report);
+    if requests.list.is_empty() && requests.dropped == 0 {
+        return None;
+    }
+    let mut out = Outcome::default();
+    out.plan
+        .add_gaps
+        .push(format!("Quarantine not applied: {why}"));
+    Some(out)
+}
+
+/// The files that may hold a Rust module's tests: `a/b.rs` has `a/b_tests.rs` and `a/b/tests.rs`; `a/mod.rs` (or `lib.rs`, `main.rs`)
+/// has `a/tests.rs`. Other files have none.
+fn sibling_tests(path: &str) -> Vec<String> {
+    let norm = own::norm(path);
+    let Some(stem) = norm.strip_suffix(".rs") else {
+        return Vec::new();
+    };
+    let (dir, name) = stem.rsplit_once('/').unwrap_or(("", stem));
+    let join = |file: String| {
+        if dir.is_empty() {
+            file
+        } else {
+            format!("{dir}/{file}")
+        }
+    };
+    match name {
+        "mod" | "lib" | "main" => vec![join("tests.rs".to_string())],
+        _ => vec![
+            join(format!("{name}_tests.rs")),
+            join(format!("{name}/tests.rs")),
+        ],
+    }
 }
 
 /// The test fixer's report, once its task has passed its gate: its `Decision <n>` lines are applied to the list and the slot is
@@ -831,6 +901,7 @@ mod tests {
             },
             report,
             extra,
+            true,
         )
     }
 
@@ -1091,12 +1162,170 @@ mod tests {
     }
 
     #[test]
+    fn when_what_the_task_changed_is_not_known_nothing_is_quarantined_or_excused() {
+        let (data, checkout) = (Temp::new(), plain_repo());
+        let runs = [run("npx vitest run", FAIL_A)];
+        // The task's own test (it changed src/a.ts) looks like another task's when the changed list is empty.
+        let report = "Quarantine: suite > works | flaky\n";
+        let got = quarantine(
+            &Input {
+                data_dir: data.path(),
+                project: "/projects/tally",
+                delegation_id: "d1",
+                task_title: "Task",
+                checkout: checkout.path(),
+                changed: &[],
+                runs: &runs,
+                now: 1_000,
+            },
+            report,
+            &[],
+            false,
+        )
+        .unwrap();
+        assert_eq!(got.quarantined, 0);
+        assert!(got.plan.clear_gaps.is_empty());
+        assert_eq!(got.plan.add_gaps.len(), 1);
+        assert!(
+            got.plan.add_gaps[0].contains("what your change touches could not be read"),
+            "{:?}",
+            got.plan.add_gaps
+        );
+        assert!(
+            !store::path_of(data.path(), "/projects/tally").exists(),
+            "nothing was read or written"
+        );
+        // A report that asks for nothing is told nothing, and a quarantine already there excuses nothing.
+        store::update(data.path(), "/projects/tally", |doc| {
+            doc.quarantine_test("x", "n", "f", "r", 1);
+        })
+        .unwrap();
+        let quiet = quarantine(
+            &Input {
+                data_dir: data.path(),
+                project: "/projects/tally",
+                delegation_id: "d1",
+                task_title: "Task",
+                checkout: checkout.path(),
+                changed: &[],
+                runs: &runs,
+                now: 1_000,
+            },
+            "Done.",
+            &[],
+            false,
+        )
+        .unwrap();
+        assert!(quiet.plan.add_gaps.is_empty() && quiet.plan.clear_gaps.is_empty());
+    }
+
+    #[test]
+    fn a_worker_that_asked_is_told_when_the_app_could_not_decide() {
+        let out = unapplied(
+            "Done.\nQuarantine: suite > works | flaky\n",
+            "the notes could not be read.",
+        )
+        .expect("it asked");
+        assert_eq!(
+            out.plan.add_gaps,
+            vec!["Quarantine not applied: the notes could not be read.".to_string()]
+        );
+        assert_eq!(out.quarantined, 0);
+        assert!(unapplied("Done.", "why").is_none(), "it asked for nothing");
+        assert!(unapplied("", "why").is_none());
+    }
+
+    #[test]
+    fn a_rust_test_marked_critical_in_its_modules_test_file_is_refused() {
+        let (data, checkout) = (
+            Temp::new(),
+            repo_with(&[
+                ("src/feature.ts", "export {}\n"),
+                ("src/firstmate/pay.rs", "pub fn pay() {}\n"),
+                (
+                    "src/firstmate/pay_tests.rs",
+                    "#[test]\n#[doc = \"critical\"]\nfn refunds_in_full() {}\n\n#[test]\nfn rounds_cents() {}\n",
+                ),
+            ]),
+        );
+        let output = "running 2 tests\ntest firstmate::pay::tests::refunds_in_full ... FAILED\ntest firstmate::pay::tests::rounds_cents ... FAILED\n\nfailures:\n\nfailures:\n    firstmate::pay::tests::refunds_in_full\n    firstmate::pay::tests::rounds_cents\n\ntest result: FAILED. 0 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out\n";
+        let out = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("cargo test", output)],
+            "Quarantine: firstmate::pay::tests::refunds_in_full | flaky\nQuarantine: firstmate::pay::tests::rounds_cents | flaky\n",
+            1_000,
+        );
+        let told = out.plan.add_gaps.join("\n");
+        assert!(
+            told.contains("refunds_in_full is a critical test (a marker above it says critical)"),
+            "{told}"
+        );
+        let doc = store::read(data.path(), "/projects/tally");
+        assert_eq!(doc.quarantine.len(), 1, "only the unmarked one: {told}");
+        assert!(doc.quarantine[0].name.contains("rounds_cents"));
+    }
+
+    #[test]
+    fn a_runner_that_prints_a_path_relative_to_its_test_folder_is_checked_at_its_repository_path() {
+        let (data, checkout) = (
+            Temp::new(),
+            repo_with(&[
+                ("src/feature.ts", "export {}\n"),
+                (
+                    "tests/billing/checkout.spec.ts",
+                    "test('pays', async () => {});\n",
+                ),
+            ]),
+        );
+        let output = "Running 1 test using 1 worker\n\n  1) [chromium] \u{203a} checkout.spec.ts:7:5 \u{203a} pays \u{2500}\u{2500}\u{2500}\n\n  1 failed\n    [chromium] \u{203a} checkout.spec.ts:7:5 \u{203a} pays\n";
+        let out = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx playwright test", output)],
+            "Quarantine: [chromium] \u{203a} checkout.spec.ts:7:5 \u{203a} pays | flaky\n",
+            1_000,
+        );
+        // A test that sits under tests/billing is never quarantined by a worker, and the worker is told why.
+        assert_eq!(out.quarantined, 0, "{:?}", out.plan.add_gaps);
+        assert!(
+            out.plan
+                .add_gaps
+                .iter()
+                .any(|gap| gap.contains("it sits under a sensitive path")),
+            "{:?}",
+            out.plan.add_gaps
+        );
+        assert!(store::read(data.path(), "/projects/tally")
+            .quarantine
+            .is_empty());
+    }
+
+    #[test]
+    fn sibling_test_files_of_a_rust_module() {
+        assert_eq!(
+            sibling_tests("src/firstmate/gates.rs"),
+            vec![
+                "src/firstmate/gates_tests.rs",
+                "src/firstmate/gates/tests.rs"
+            ]
+        );
+        assert_eq!(sibling_tests("src/a/mod.rs"), vec!["src/a/tests.rs"]);
+        assert_eq!(sibling_tests("src\\lib.rs"), vec!["src/tests.rs"]);
+        assert_eq!(sibling_tests("main.rs"), vec!["tests.rs"]);
+        assert!(sibling_tests("src/a.ts").is_empty());
+        assert!(sibling_tests("").is_empty());
+    }
+
+    #[test]
     fn requests_from_tasks_finishing_together_all_land() {
         let files: Vec<(String, String)> = (0..6)
             .map(|n| {
                 (
                     format!("src/t{n}.test.ts"),
-                    "it(\"x\", () => {});\n".to_string(),
+                    format!("it(\"t{n}\", () => {{}});\n"),
                 )
             })
             .collect();

@@ -229,7 +229,8 @@ fn plan_with(e: &Evidence, excuse_foreign: bool) -> Plan {
                 plan.add_gaps.push(sentence.clone());
             }
             keep.insert(sentence);
-        } else if complete {
+        } else if complete && !test_summary::has_build_error(&run.output) {
+            // A run that also printed a build or type error did not fail on its tests alone: the gap stays.
             eligible.push(sentence);
         } else {
             keep.insert(sentence);
@@ -386,6 +387,26 @@ mod tests {
             &["src/a.test.ts", "src/other.test.ts"],
         );
         assert_eq!(p.clear_gaps.len(), 1);
+    }
+
+    #[test]
+    fn a_failed_run_that_also_printed_a_build_error_keeps_its_gap_in_every_mode() {
+        let with_error = format!("{FAIL_OTHER}error[E0432]: unresolved import `crate::missing`\n");
+        let runs = [run("npx vitest run; cargo check", &with_error, 1.0)];
+        // At ship: the test is another task's, but the run did not fail on its tests alone.
+        let at_ship = plan_of(&runs, &[], &["src/feature.ts"], &[]);
+        assert!(at_ship.clear_gaps.is_empty(), "{:?}", at_ship.clear_gaps);
+        // Light and full: the test is quarantined, the build error is not.
+        let q = quarantine_only_plan_of(&runs, &[], &["src/feature.ts"], &["src/other.test.ts"]);
+        assert!(q.clear_gaps.is_empty(), "{:?}", q.clear_gaps);
+        // Without the error the same run is let off, so it is the error that keeps the gap.
+        let clean = [run("npx vitest run", FAIL_OTHER, 1.0)];
+        assert_eq!(
+            quarantine_only_plan_of(&clean, &[], &["src/feature.ts"], &["src/other.test.ts"])
+                .clear_gaps
+                .len(),
+            1
+        );
     }
 
     #[test]

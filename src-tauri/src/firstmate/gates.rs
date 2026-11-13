@@ -2738,35 +2738,51 @@ fn at_ship_debt(
 
 /// PT-5: in `light` and `full`, the project's quarantine as it reaches a task: a test already quarantined
 /// no longer fails its round, and a `Quarantine: <test> | <why>` line in its report is decided and, if accepted, kept for 14 days. A
-/// refused request comes back as a gap. A list that can't be read or written returns `None`: the round is then as it was.
+/// refused request comes back as a gap. `changed` is `None` when what the task changed could not be read. A list that can't be read or
+/// written leaves the round as it was, and a worker that asked for a quarantine is told nothing was done (`gate::unapplied`).
 fn quarantine_read(
     app: &AppHandle,
     row: &delegations::Delegation,
     checkout: &Path,
-    changed: &[String],
+    changed: Option<&[String]>,
     raw_facts: Option<&serde_json::Value>,
     report: &str,
     protected_extra: &[String],
 ) -> Option<crate::test_debt::gate::Outcome> {
-    let (data, project) = debt_project(app, checkout)?;
+    use crate::test_debt::gate;
+    let Some((data, project)) = debt_project(app, checkout) else {
+        return gate::unapplied(
+            report,
+            "the project's test notes are not available here, so nothing was quarantined.",
+        );
+    };
     let (runs, _) = raw_facts
         .map(super::fact_gaps::runs_from_value)
         .unwrap_or_default();
-    let outcome = crate::test_debt::gate::quarantine(
-        &crate::test_debt::gate::Input {
+    let known = changed.is_some();
+    let outcome = match gate::quarantine(
+        &gate::Input {
             data_dir: &data,
             project: &project,
             delegation_id: &row.id,
             task_title: row.title.as_deref().unwrap_or(""),
             checkout,
-            changed,
+            changed: changed.unwrap_or(&[]),
             runs: &runs,
             now: now_millis().max(0) as u64,
         },
         report,
         protected_extra,
-    )
-    .ok()?;
+        known,
+    ) {
+        Ok(outcome) => outcome,
+        Err(_) => {
+            return gate::unapplied(
+                report,
+                "the project's test notes could not be read, so nothing was quarantined.",
+            )
+        }
+    };
     if outcome.quarantined > 0 {
         let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
     }
@@ -2862,23 +2878,27 @@ pub async fn firstmate_run_gates(
         // PT-5: and whether it touches a sensitive path (keys, permissions, the sandbox, billing, migrations, CI, installers), which is
         // always checked in full. An unreadable diff is treated as sensitive, as it is as risky: a change that can't be judged is
         // checked harder, not skipped.
-        let (changed, code_changed, risky, sensitive) = {
+        // `changed_known` is false when the list of changed files is not a reading (no checkout, or git would not say): then nothing can
+        // be told to be the task's own, so the quarantine path leaves the round as it was.
+        let (changed, code_changed, risky, sensitive, changed_known) = {
             let repo = Repo::open(&checkout);
             if repo.why_not.is_some() {
-                (Vec::new(), false, false, false)
+                (Vec::new(), false, false, false, false)
             } else {
                 match repo.changed() {
                     Ok(files) => {
                         let code = testing_mode::code_changed(&files);
                         let risky = testing_mode::touches_risky_path(&files, &protected_extra);
-                        let sensitive = super::sensitive::touches_sensitive_path(
-                            &files,
-                            &checkout,
-                            &protected_extra,
-                        );
-                        (files, code, risky, sensitive)
+                        // "No testing" tests nothing whatever the diff touches: no need to read the project's list for it.
+                        let sensitive = mode != crate::delivery::settings::TestingMode::Off
+                            && super::sensitive::touches_sensitive_path(
+                                &files,
+                                &checkout,
+                                &protected_extra,
+                            );
+                        (files, code, risky, sensitive, true)
                     }
-                    Err(_) => (Vec::new(), true, true, true),
+                    Err(_) => (Vec::new(), true, true, true, false),
                 }
             }
         };
@@ -2985,7 +3005,7 @@ pub async fn firstmate_run_gates(
                 &app,
                 &row,
                 &checkout,
-                &changed,
+                changed_known.then_some(changed.as_slice()),
                 input.facts.as_ref(),
                 &input.report,
                 &protected_extra,

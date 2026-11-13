@@ -11,9 +11,10 @@
 //!      installers, the project's protected paths and its `docs/hivra/sensitive-paths.json`), or
 //!   2. its name or title carries `@critical` (`it("@critical: charges the card", ...)`), or
 //!   3. a marker is attached to the line that declares it: `// @critical`, `# @critical`, `/* @critical */`, or the Rust attribute
-//!      `#[doc = "critical"]`, directly above it (other comment and attribute lines may sit between; a blank line ends it).
-//!
-//!    A test whose file can't be told, or can't be read, is not known to be anything else, so it is refused too.
+//!      `#[doc = "critical"]`, directly above it (other comment and attribute lines, and the lines of a call that goes on over
+//!      several, may sit between; a blank line or the end of the statement before ends it).
+//! - a test whose file can't be told or read, or whose declaration can't be found in it (a generated title, a name too short to look
+//!   for), is not known to be anything else, so it is refused too.
 //!
 //! What the app can't enforce (that the worker made no more than two attempts, or that the test is really flaky) is the brief's to say.
 //! A request that is refused, or that names no failing test, is put to the worker as a gap in its round, so it knows; one that is
@@ -154,7 +155,8 @@ fn is_marker_line(line: &str) -> bool {
     comment && has_tag(trimmed)
 }
 
-/// The last part of a test's name: what its source line is written with.
+/// The last part of a test's name: what its source line is written with. A pytest parameter list (`test_refund[usd]`) is not in the
+/// source, so it is cut.
 fn leaf(name: &str) -> String {
     let mut leaf = name;
     for sep in [" > ", " \u{203a} ", "::"] {
@@ -162,7 +164,11 @@ fn leaf(name: &str) -> String {
             leaf = &leaf[at + sep.len()..];
         }
     }
-    leaf.trim().to_string()
+    let leaf = leaf.trim();
+    match leaf.find('[') {
+        Some(at) if at >= 2 => leaf[..at].trim().to_string(),
+        _ => leaf.to_string(),
+    }
 }
 
 /// A line that is part of what is written above a declaration: a comment, or an attribute or decorator (`#[test]`, `@pytest.mark.slow`).
@@ -175,29 +181,52 @@ fn is_attached(line: &str) -> bool {
             .any(|lead| trimmed.starts_with(lead))
 }
 
-/// Whether a marker line is attached to a line of `source` that names the test: walking up from it through at most `MARKER_LINES`
-/// comment and attribute lines, one of them is a marker. Any line that names it counts (a test mentioned twice is critical if either is
-/// marked, the stricter reading), but a comment that mentions it does not.
-fn marked_above(source: &str, name: &str) -> bool {
+enum Marked {
+    Yes,
+    No,
+    /// No line of the source names the test (a generated title, a name that is too short to look for): it can't be checked.
+    NotFound,
+}
+
+/// Whether a marker is attached to a line of `source` that names the test. Walking up from that line, through at most `MARKER_LINES`
+/// lines, a marker (`is_marker_line`) is found before a blank line or the end of the statement before it (`;`, `}` or `{`); comment and
+/// attribute lines, and the lines of a call that goes on over several (`it(`, the title on the next line), are walked through. Any line
+/// that names the test counts (a test mentioned twice is critical if either is marked, the stricter reading), but a comment that
+/// mentions it does not.
+fn marked_above(source: &str, name: &str) -> Marked {
     let leaf = leaf(name);
     if leaf.chars().count() < 2 {
-        return false;
+        return Marked::NotFound;
     }
     let lines: Vec<&str> = source.lines().collect();
-    lines.iter().enumerate().any(|(at, line)| {
+    let mut found = false;
+    for (at, line) in lines.iter().enumerate() {
         if !line.contains(&leaf) || is_attached(line) {
-            return false;
+            continue;
         }
+        found = true;
         for above in lines[..at].iter().rev().take(MARKER_LINES) {
             if is_marker_line(above) {
-                return true;
+                return Marked::Yes;
             }
-            if !is_attached(above) {
+            let trimmed = above.trim();
+            if is_attached(above) {
+                continue;
+            }
+            if trimmed.is_empty()
+                || trimmed.ends_with(';')
+                || trimmed.ends_with('}')
+                || trimmed.ends_with('{')
+            {
                 break;
             }
         }
-        false
-    })
+    }
+    if found {
+        Marked::No
+    } else {
+        Marked::NotFound
+    }
 }
 
 const BY_PATH: &str = "it sits under a sensitive path";
@@ -205,6 +234,7 @@ const BY_NAME: &str = "its name says @critical";
 const BY_MARKER: &str = "a marker above it says critical";
 const UNKNOWN_FILE: &str = "its file can't be told, so it can't be checked";
 const UNREADABLE: &str = "its file can't be read, so it can't be checked";
+const NOT_FOUND: &str = "it can't be found in its file, so it can't be checked";
 
 /// Why a test is critical, or `None` when nothing says it is. `patterns` are the project's sensitive patterns
 /// (`sensitive::patterns_for`); `read_file` reads a tracked file's text.
@@ -224,8 +254,11 @@ pub fn critical_reason(
         return Some(BY_PATH);
     }
     match read_file(file) {
-        Some(source) if marked_above(&source, name) => Some(BY_MARKER),
-        Some(_) => None,
+        Some(source) => match marked_above(&source, name) {
+            Marked::Yes => Some(BY_MARKER),
+            Marked::No => None,
+            Marked::NotFound => Some(NOT_FOUND),
+        },
         None => Some(UNREADABLE),
     }
 }
@@ -247,10 +280,13 @@ fn shown(name: &str) -> String {
 }
 
 /// What to do with one request, from what the worker's runs show failing (`plan` is `divert::plan_quarantine_only` over them).
+/// `repo_path` turns the file a runner printed (Playwright prints it relative to its test folder) into the repository path the sensitive
+/// patterns are matched against.
 pub fn decide(
     request: &Request,
     plan: &Plan,
     patterns: &[String],
+    repo_path: &dyn Fn(&str) -> String,
     read_file: &dyn Fn(&str) -> Option<String>,
 ) -> Verdict {
     let all: Vec<&Failing> = plan
@@ -278,7 +314,8 @@ pub fn decide(
             shown(&failing.name)
         ));
     }
-    if let Some(why) = critical_reason(&failing.file, &failing.name, patterns, read_file) {
+    let file = repo_path(&failing.file);
+    if let Some(why) = critical_reason(&file, &failing.name, patterns, read_file) {
         return Verdict::Refused(format!(
             "Quarantine refused: {} is a critical test ({why}). A critical test is read-only for a worker: ask your first mate.",
             shown(&failing.name)
@@ -330,6 +367,24 @@ mod tests {
 
     fn plain(_: &str) -> Option<String> {
         Some("it(\"works\", () => {});\n".into())
+    }
+
+    /// A source with one `it(...)` line for the last part of each name, so the declarations can be found.
+    fn source_with(names: &[&str]) -> String {
+        names
+            .iter()
+            .map(|name| format!("it(\"{}\", () => {{}});\n", leaf(name)))
+            .collect()
+    }
+
+    /// `decide` with the file a runner printed taken as the repository path (what most runners print).
+    fn decide(
+        request: &Request,
+        plan: &Plan,
+        patterns: &[String],
+        read_file: &dyn Fn(&str) -> Option<String>,
+    ) -> Verdict {
+        super::decide(request, plan, patterns, &|file| file.to_string(), read_file)
     }
 
     // ---- the line -------------------------------------------------------------------------------------------------------------
@@ -458,19 +513,121 @@ mod tests {
                 "{name}"
             );
         }
-        for name in [
+        let others = [
             "suite > @criticality of x",
             "suite > @critical_path",
             "suite > @critical-ish",
             "suite > not critical at all",
             "suite > critical",
-        ] {
+        ];
+        let source = source_with(&others);
+        let read = |_: &str| Some(source.clone());
+        for name in others {
             assert_eq!(
-                critical_reason("src/a.test.ts", name, &patterns(), &plain),
+                critical_reason("src/a.test.ts", name, &patterns(), &read),
                 None,
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn a_marker_above_a_call_that_goes_on_over_several_lines_still_counts() {
+        let src = "// @critical\nit(\n  \"charges the card\",\n  async () => {},\n);\n\nit(\n  \"shows a receipt\",\n  async () => {},\n);\n";
+        let read = |_: &str| Some(src.to_string());
+        let critical = |name: &str| critical_reason("src/pay.test.ts", name, &patterns(), &read);
+        assert_eq!(critical("pay > charges the card"), Some(BY_MARKER));
+        assert_eq!(critical("pay > shows a receipt"), None);
+        // A decorator in between is walked through too.
+        let py = "# @critical\n@pytest.mark.slow\ndef test_refund():\n    pass\n\n@pytest.mark.slow\ndef test_receipt():\n    pass\n";
+        let read = |_: &str| Some(py.to_string());
+        assert_eq!(
+            critical_reason(
+                "t/test_pay.py",
+                "t/test_pay.py::test_refund",
+                &patterns(),
+                &read
+            ),
+            Some(BY_MARKER)
+        );
+        assert_eq!(
+            critical_reason(
+                "t/test_pay.py",
+                "t/test_pay.py::test_receipt",
+                &patterns(),
+                &read
+            ),
+            None
+        );
+        // A parameter list is not in the source: `test_refund[usd]` is looked for as `test_refund`.
+        assert_eq!(
+            critical_reason(
+                "t/test_pay.py",
+                "t/test_pay.py::test_refund[usd]",
+                &patterns(),
+                &read
+            ),
+            Some(BY_MARKER)
+        );
+    }
+
+    #[test]
+    fn a_test_that_cannot_be_found_in_its_file_is_refused_not_waved_through() {
+        // A generated title, a renamed test, a name too short to look for: nothing to check a marker on.
+        let read = |_: &str| Some("it.each([1, 2])(\"charges %i\", () => {});\n".to_string());
+        for name in [
+            "pay > charges 1",
+            "pay > charges 2",
+            "pay > gone",
+            "pay > x",
+        ] {
+            assert_eq!(
+                critical_reason("src/pay.test.ts", name, &patterns(), &read),
+                Some(NOT_FOUND),
+                "{name}"
+            );
+        }
+        // A name that is in a comment only is not found either.
+        let read = |_: &str| Some("// charges the card\nit(\"x\", () => {});\n".to_string());
+        assert_eq!(
+            critical_reason(
+                "src/pay.test.ts",
+                "pay > charges the card",
+                &patterns(),
+                &read
+            ),
+            Some(NOT_FOUND)
+        );
+    }
+
+    #[test]
+    fn the_path_a_runner_printed_is_resolved_before_the_sensitive_patterns_are_read() {
+        // Playwright prints a path relative to its test folder: `checkout.spec.ts`, which is `tests/billing/checkout.spec.ts`.
+        let printed = failing(
+            "checkout.spec.ts",
+            "[chromium] \u{203a} checkout.spec.ts:7:5 \u{203a} pays",
+        );
+        let plan = plan_of(&[], std::slice::from_ref(&printed), &[]);
+        let source = "test('pays', async () => {});\n";
+        let read = |_: &str| Some(source.to_string());
+        let request = ask("[chromium] \u{203a} checkout.spec.ts:7:5 \u{203a} pays");
+        // Taken as printed it is not under a sensitive path, and nothing marks it: it would be quarantined.
+        assert!(matches!(
+            super::decide(&request, &plan, &patterns(), &|f| f.to_string(), &read),
+            Verdict::Quarantine(_)
+        ));
+        // Resolved to the repository path, it is.
+        let got = super::decide(
+            &request,
+            &plan,
+            &patterns(),
+            &|f| format!("tests/billing/{f}"),
+            &read,
+        );
+        assert!(
+            matches!(&got, Verdict::Refused(s) if s.contains("it sits under a sensitive path")),
+            "{got:?}"
+        );
     }
 
     #[test]
