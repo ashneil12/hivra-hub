@@ -61,7 +61,7 @@ pub const OUTPUT_MAX: usize = 2_000;
 const ROUNDS_KEPT: usize = 6;
 /// How much of the report and the diff the verdict model reads.
 const REPORT_MAX: usize = 6_000;
-const DIFF_MAX: usize = 12_000;
+pub(crate) const DIFF_MAX: usize = 12_000;
 /// WP-249: the changed files whose text the code checks read, and the largest one read.
 const FILES_READ_MAX: usize = 400;
 const FILE_READ_MAX: usize = 256_000;
@@ -695,7 +695,7 @@ struct Repo {
     why_not: Option<String>,
 }
 
-fn git(dir: &Path, args: &[&str]) -> Result<(bool, Vec<u8>, i32), String> {
+pub(crate) fn git(dir: &Path, args: &[&str]) -> Result<(bool, Vec<u8>, i32), String> {
     let mut cmd = crate::git_cmd::git();
     cmd.arg("-C")
         .arg(dir)
@@ -844,7 +844,7 @@ impl Repo {
 }
 
 /// A file's text for the code checks: empty when it is too large or not text.
-fn file_text(bytes: &[u8]) -> String {
+pub(crate) fn file_text(bytes: &[u8]) -> String {
     if bytes.len() > FILE_READ_MAX || bytes.contains(&0) {
         return String::new();
     }
@@ -1209,7 +1209,7 @@ fn short(sha: &str) -> &str {
 }
 
 /// The first `max` bytes of `text`, on a char boundary.
-fn head_of(text: &str, max: usize) -> String {
+pub(crate) fn head_of(text: &str, max: usize) -> String {
     if text.len() <= max {
         return text.to_string();
     }
@@ -1585,7 +1585,7 @@ const ZERO_TESTS: &str = "ran zero tests";
 
 /// The first words of a step's output when its log shows no test ran: `ran zero tests`, then which runner said so.
 /// `None` when the log holds no test summary (a build or a lint step) or tests ran.
-fn zero_tests_note(log: &str) -> Option<String> {
+pub(crate) fn zero_tests_note(log: &str) -> Option<String> {
     let found = crate::test_summary::parse(log)?;
     (found.total == 0).then(|| {
         format!(

@@ -715,6 +715,8 @@ fn sent(error: impl Into<String>) -> Failure {
 pub(crate) fn reply_seconds(action: &str, input: &Value) -> u64 {
     match action {
         "finish" => 3_660,
+        // SC-3b: a ship check runs every check the project has, so its reply waits as long as a finish does.
+        "ship_check.run" => 3_660,
         "secrets.run" => {
             let timeout = input
                 .get("timeoutSeconds")

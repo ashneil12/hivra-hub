@@ -105,6 +105,8 @@ Hivra's own rules for what to hand out and how, beside firstmate's:
   `app decisions.note`. Do not note a red line, money past the limit, anything public, or a key.
 - You run at most 8 tasks at once. Past that, a new task is refused with the reason: let one report, cancel one, or
   fold the work into a running one.
+- In a project that tests at ship, run `ship_check` before telling the person it is ready to ship; the app holds a
+  ready-to-ship claim until a ship check has passed for the current version.
 
 ## Asking
 

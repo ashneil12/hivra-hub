@@ -299,7 +299,7 @@ fn names_path(name: &str, path: &str) -> bool {
         && (name == path || path.ends_with(&format!("/{name}")) || basename(path) == basename(name))
 }
 
-fn mentions(text: &str, path: &str) -> bool {
+pub(crate) fn mentions(text: &str, path: &str) -> bool {
     file_tokens(text)
         .iter()
         .any(|token| names_path(token, path))

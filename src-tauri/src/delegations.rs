@@ -1711,6 +1711,56 @@ pub(crate) fn acceptance(conn: &Connection) -> Result<Vec<(String, bool)>, Strin
         .collect())
 }
 
+/// SC-3b: the tasks that finished and show as done (`firstmate::status::is_done`) between `from` and `to` (epoch ms, by
+/// when they settled), NEWEST first, at most `ACCEPTED_WINDOW_MAX` (a window with more keeps the newest, which are the
+/// ones the newest commits hold). `keep` says whether a row's project is the one the caller wants: it reads the project
+/// text as stored, so the caller compares it the way it compares paths. A followed brief is a message to a Lead, not a
+/// task, and never counts. The ship check reads their briefs as the definition of done for the commits between two ship
+/// checks. Only the light columns are read for every row in the window; the text of a brief is loaded for the ones kept.
+pub fn accepted_in_window(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+    mut keep: impl FnMut(&str) -> bool,
+) -> Result<Vec<Delegation>, String> {
+    let mut statement = conn
+        .prepare(
+            "SELECT id, project, state, gate_verdict FROM delegations
+             WHERE follow IS NULL AND state = 'completed' AND project IS NOT NULL
+               AND settled_at IS NOT NULL AND settled_at >= ?1 AND settled_at <= ?2
+             ORDER BY settled_at DESC, rowid DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = statement
+        .query_map([from, to], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, Option<String>>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for (id, project, state, gate) in rows {
+        if out.len() >= ACCEPTED_WINDOW_MAX {
+            break;
+        }
+        if !crate::firstmate::status::is_done(&state, gate.as_deref()) || !keep(&project) {
+            continue;
+        }
+        if let Some(row) = get(conn, &id)? {
+            out.push(row);
+        }
+    }
+    Ok(out)
+}
+
+/// The most tasks `accepted_in_window` returns.
+pub const ACCEPTED_WINDOW_MAX: usize = 200;
+
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OwnedQuery {
