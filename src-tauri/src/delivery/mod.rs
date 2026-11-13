@@ -177,6 +177,19 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
             [],
         )?;
     }
+    // SC-3a: how hard the project's tasks are tested. NULL until the person picks: the gates read that as "at-ship".
+    // A word this build doesn't know reads as the default too (settings.rs).
+    let has_testing: bool = conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('delivery_settings') WHERE name = 'testing_mode')",
+        [],
+        |row| row.get(0),
+    )?;
+    if !has_testing {
+        conn.execute(
+            "ALTER TABLE delivery_settings ADD COLUMN testing_mode TEXT",
+            [],
+        )?;
+    }
     // WP-203: the builder that did the work, recorded by the app at delivery. The security review's author.
     let has_author = conn
         .prepare("SELECT 1 FROM pragma_table_info('work_deliveries') WHERE name = 'author'")?
@@ -233,6 +246,24 @@ pub fn delivery_protect_paths_set(
         &*store.lock_conn()?,
         &project,
         on,
+        expected_updated_at,
+        now_millis(),
+    )
+}
+
+/// SC-3a: how hard this project's tasks are tested (`at-ship`, `light`, `full` or `off`). A write based on an older
+/// read than the stored row is refused, like the other delivery settings.
+#[tauri::command(async)]
+pub fn delivery_testing_mode_set(
+    store: State<'_, SessionStore>,
+    project: String,
+    mode: settings::TestingMode,
+    expected_updated_at: Option<i64>,
+) -> Result<settings::Stored, String> {
+    settings::set_testing_mode(
+        &*store.lock_conn()?,
+        &project,
+        mode,
         expected_updated_at,
         now_millis(),
     )

@@ -12,6 +12,7 @@
 //! | `question` for the first mate (the default) | working, with a notice |
 //! | `question` the first mate passed to the person | needs you |
 //! | `completed`, no gates or gates passed | done |
+//! | `completed`, gates passed on a mode that doesn't test each task (SC-3a), or accepted by its first mate | done, with a notice: "Built, not tested yet", "Not tested", "Accepted without a pass: why" |
 //! | `completed`, gates still running | working |
 //! | `completed`, gates failed | failed, and a sent-back reason when the gates left one (WP-145) |
 //! | `completed`, gates passed but the verdict check was unsure, or a gate couldn't run (WP-40) | working, with a notice: its first mate decides |
@@ -22,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::testing_mode::{NOTE_AT_SHIP, NOTE_OFF};
 use crate::delegations::{Delegation, CANCELLED, COMPLETED, FAILED, QUESTION, RUNNING};
 
 /// The only states shown anywhere.
@@ -147,6 +149,46 @@ fn sent_back_notice(row: &Delegation, gates: GateVerdict) -> Option<String> {
     sent_back_line(summary.get("summary")?.as_str()?)
 }
 
+/// How a first mate's accept starts its gates line (`gates::decide` writes it, `passed_note` reads it).
+pub(crate) const ACCEPTED_LEAD: &str = "its first mate accepted it";
+
+/// SC-3a: the longest note shown beside a done row.
+const NOTE_MAX: usize = 200;
+
+/// What a done row says about how far it was checked, from its newest gates line, so a pass never reads as a bare Done:
+/// "Built, not tested yet" or "Not tested" (a testing mode that passes a task on its gates alone), or "Accepted without
+/// a pass: <why>" (its first mate accepted an unsure result, and said why). A plain pass says nothing. The line is
+/// untrusted text from the log: only those exact openings count, and a control character or an empty reason is none.
+fn passed_note(row: &Delegation) -> Option<String> {
+    let entry = row
+        .log
+        .iter()
+        .rev()
+        .find(|entry| entry.get("event").and_then(Value::as_str) == Some("gates"))?;
+    let summary = entry.get("summary")?.as_str()?;
+    let first = summary.split(['\n', '\r']).next()?.trim();
+    if first == NOTE_AT_SHIP || first == NOTE_OFF {
+        return Some(first.to_string());
+    }
+    let rest = first.strip_prefix(ACCEPTED_LEAD)?;
+    if rest.chars().any(char::is_control) {
+        return None;
+    }
+    match rest.strip_prefix(':').map(str::trim) {
+        Some(why) if !why.is_empty() => {
+            let shown: String = why.chars().take(NOTE_MAX).collect();
+            let cut = if why.chars().count() > NOTE_MAX {
+                "…"
+            } else {
+                ""
+            };
+            Some(format!("Accepted without a pass: {shown}{cut}"))
+        }
+        None if rest.is_empty() => Some("Accepted without a pass".to_string()),
+        _ => None,
+    }
+}
+
 /// The row's status. Pure: the same row and verdict always give the same answer.
 pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
     match row.state.as_str() {
@@ -198,7 +240,9 @@ pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
             }
         }
         COMPLETED => match gates {
-            GateVerdict::NotRequired | GateVerdict::Passed => derived(Status::Done, None),
+            GateVerdict::NotRequired => derived(Status::Done, None),
+            // SC-3a: still done, with the note that says how far it was checked.
+            GateVerdict::Passed => derived(Status::Done, passed_note(row)),
             GateVerdict::Pending => {
                 derived(Status::Working, Some("Finished; checks are running".into()))
             }

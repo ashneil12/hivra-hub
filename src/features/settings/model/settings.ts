@@ -871,6 +871,14 @@ export const SETTINGS_INDEX: SettingsEntry[] = [
     label: "Spend limit",
     keywords: "measured cost usd money budget pause builders ceiling month day",
   },
+  // SC-3a: how much each task is tested before it counts as done.
+  {
+    id: "testing-mode",
+    section: "crew",
+    label: "How tasks are tested",
+    keywords:
+      "testing tests review checks quality each task ship at ship light full off no testing done gate bulk pass",
+  },
 ];
 
 export type SettingsSearchResult = {

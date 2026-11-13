@@ -11,6 +11,14 @@ The engine is Rust (`src-tauri/src/delivery/`); this folder holds the webview's 
     sends the worker one fix round with the failing log; a second red fails the delivery.
   - No choice stored: checked PR when the project has a GitHub remote and `gh` is signed in, otherwise local.
 - **Merge without asking** (firstmate's `yolo`), per project, off by default.
+- **How tasks are tested** (SC-3a), per project, beside the delivery mode (`delivery_settings.testing_mode`; Settings >
+  Crew, `ui/TestingModeSetting.tsx`, `model/testingMode.ts`). `at-ship` is the default and what a project with no
+  choice gets: a task only has to build, and tests and review run once, when the person ships. `light` runs the
+  project's tests and a quick review on every task that changes code, `full` adds the task's own checks, the real-app
+  check and a second reviewer (the extra parts arrive with SC-4, SC-5 and SC-7), and `off` tests nothing. When a worker
+  says done, `firstmate::testing_mode::gates_for` picks the gates from the diff and the mode; a task that changed
+  nothing and stored no plan is left as it was. A write goes on top of the `updatedAt` it read, so a stale window is
+  refused.
 - **One merge path** (`delivery::merge`): refuses red or pending checks, refuses while a decision on that work is
   open, asks the person unless the switch is on, and logs every merge with who allowed it (`delivery_merges`). The
   Inbox's merge button and the `pr_merge` tool both go through it.

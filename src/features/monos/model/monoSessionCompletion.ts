@@ -414,7 +414,7 @@ export function completionMessage(
   // WP-40: finished, but the checks couldn't say the brief was met. Not done until its first mate accepts or refuses it.
   const undecided = results.filter((result) => result.gatesNote);
   const gatesLine = undecided.length
-    ? ` NOT DONE: ${nameList(undecided.map((result) => result.title))} finished, but the checks couldn't say the brief was met (${undecided.map((result) => result.gatesNote).join("; ")}). Accept or refuse with task_accept; don't report it as done.`
+    ? ` NOT DONE: ${nameList(undecided.map((result) => result.title))} finished, but the checks couldn't say the brief was met (${undecided.map((result) => result.gatesNote).join("; ")}). Accept or refuse with task_accept, giving a reason either way; don't report it as done.`
     : "";
   // r55 (board I5): a done claim carries what was run and how sure it is. The Lead passes that on, never upgrades it. A
   // claim with thin evidence (likely) reaches it as "not yet confirmed", with what is missing.

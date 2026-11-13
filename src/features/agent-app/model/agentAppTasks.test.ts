@@ -1733,9 +1733,10 @@ describe("tasks.accept (WP-40)", () => {
       "Say why it isn't done (reason), in one plain line.",
     );
     expect(decideGates).not.toHaveBeenCalled();
-    await expect(handleAgentApp(source, "a2", "tasks.accept", { taskId: "t-theirs", accept: true }, host)).rejects.toThrow(
-      "No task t-theirs of yours",
-    );
+    // SC-3a: an accept names its reason first, so this one does, and what it checks is still that it isn't theirs to accept.
+    await expect(
+      handleAgentApp(source, "a2", "tasks.accept", { taskId: "t-theirs", accept: true, reason: "The diff is right." }, host),
+    ).rejects.toThrow("No task t-theirs of yours");
     expect(decideGates).not.toHaveBeenCalled();
     const refused = await handleAgentApp(source, "a3", "tasks.accept", {
       taskId: "t-held",
@@ -1744,8 +1745,22 @@ describe("tasks.accept (WP-40)", () => {
     }, host);
     expect(refused).toEqual({ taskId: "t-held", accepted: false, gateVerdict: "failed" });
     expect(decideGates).toHaveBeenCalledWith("mono-exo", "t-held", false, "The route still answers 404.");
-    const accepted = await handleAgentApp(source, "a4", "tasks.accept", { taskId: "t-held", accept: true }, host);
+    // SC-3a: accepting without a pass needs its reason too, and nothing goes to Rust without one.
+    for (const blank of [undefined, "", "   "]) {
+      await expect(
+        handleAgentApp(source, "a4", "tasks.accept", { taskId: "t-held", accept: true, ...(blank === undefined ? {} : { reason: blank }) }, host),
+      ).rejects.toThrow(blank === undefined ? "Say why you accept it without a pass (reason), in one plain line." : "reason must be a non-empty string");
+    }
+    expect(decideGates).toHaveBeenCalledTimes(1);
+    const accepted = await handleAgentApp(
+      source,
+      "a5",
+      "tasks.accept",
+      { taskId: "t-held", accept: true, reason: "  The diff does what the brief asks.  " },
+      host,
+    );
     expect(accepted).toMatchObject({ taskId: "t-held", accepted: true, gateVerdict: "passed" });
+    expect(decideGates).toHaveBeenLastCalledWith("mono-exo", "t-held", true, "The diff does what the brief asks.");
   });
 });
 
@@ -1820,7 +1835,7 @@ describe("tasks.status", () => {
     }, host)) as { tasks: Array<{ taskId: string; gates?: string }> };
     const line = (id: string) => out.tasks.find((task) => task.taskId === id)?.gates;
     expect(line("t-unsure")).toBe(
-      "Its checks need you. Accept with task_accept, or refuse with a reason. It is not done until you do.",
+      "Its checks need you. Accept with task_accept, or refuse, either way with a reason. It is not done until you do.",
     );
     expect(line("t-failed")).toBe("Its checks failed.");
     expect(line("t-pending")).toBe("Its checks are still running.");

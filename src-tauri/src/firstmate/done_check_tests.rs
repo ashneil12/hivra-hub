@@ -427,6 +427,7 @@ fn s7_round(repo: &Path, judge: &Judge) -> gates::GateRecord {
             now: 1,
             gate_owns_checks: false,
             facts: None,
+            mode: None,
         },
         judge,
     )
@@ -606,4 +607,257 @@ fn the_three_verdict_words_are_read_and_a_verified_with_a_refuted_row_is_refuted
         (Answer::NotMet, Some(DoneLabel::Refuted))
     );
     assert_eq!(read(r#"{"verdict":"unverifiable"}"#).answer, Answer::Unsure);
+}
+
+// ---- SC-3a: test code inside source files, `#[ignore]`, and changed assertions -------------------------------------------
+
+/// A Rust source file whose tests sit in its own `#[cfg(test)]` block.
+fn rust_src(tests: &str) -> String {
+    format!(
+        "pub fn add(a: i32, b: i32) -> i32 {{\n    a + b\n}}\n\n#[cfg(test)]\nmod tests {{\n    use super::*;\n\n{tests}}}\n"
+    )
+}
+
+const ADDS: &str = "    #[test]\n    fn adds() {\n        assert_eq!(add(1, 2), 3);\n    }\n";
+const SUBTRACTS: &str =
+    "    #[test]\n    fn subtracts() {\n        assert_eq!(sub(3, 2), 1);\n    }\n";
+
+#[test]
+fn a_new_ignore_on_a_rust_test_is_a_weakened_test_in_a_test_file_or_a_cfg_test_block() {
+    for ignore in ["#[ignore]", "#[ignore = \"flaky\"]"] {
+        let ignored = format!(
+            "    #[test]\n    {ignore}\n    fn adds() {{\n        assert_eq!(add(1, 2), 3);\n    }}\n"
+        );
+        // In the block of a source file.
+        let before = rust_src(ADDS);
+        let after = rust_src(&ignored);
+        let found = code_findings(
+            "",
+            "",
+            &[],
+            &[file("src/math.rs", Some(&before), Some(&after))],
+        );
+        assert_eq!(
+            kinds(&found),
+            vec![FindingKind::WeakenedTest],
+            "{ignore}: {found:?}"
+        );
+        assert!(
+            found[0].detail.contains("skips a test it ran before"),
+            "{found:?}"
+        );
+        assert_eq!(found[0].file.as_deref(), Some("src/math.rs"));
+        // In a test file of its own.
+        let unit_before = "#[test]\nfn adds() {\n    assert_eq!(add(1, 2), 3);\n}\n";
+        let unit_after =
+            format!("#[test]\n{ignore}\nfn adds() {{\n    assert_eq!(add(1, 2), 3);\n}}\n");
+        let found = code_findings(
+            "",
+            "",
+            &[],
+            &[file(
+                "src/math_tests.rs",
+                Some(unit_before),
+                Some(&unit_after),
+            )],
+        );
+        assert_eq!(
+            kinds(&found),
+            vec![FindingKind::WeakenedTest],
+            "{ignore}: {found:?}"
+        );
+        assert!(
+            found[0].detail.contains("skips a test it ran before"),
+            "{found:?}"
+        );
+    }
+    // An ignore that was already there is not new, and one outside the test block of a source file is not test code.
+    let already = rust_src(
+        "    #[test]\n    #[ignore]\n    fn adds() {\n        assert_eq!(add(1, 2), 3);\n    }\n",
+    );
+    assert!(code_findings(
+        "",
+        "",
+        &[],
+        &[file("src/math.rs", Some(&already), Some(&already))]
+    )
+    .is_empty());
+    let plain = "pub fn a() {}\n";
+    let outside = "#[ignore]\npub fn a() {}\n";
+    assert!(code_findings("", "", &[], &[file("src/a.rs", Some(plain), Some(outside))]).is_empty());
+}
+
+#[test]
+fn a_changed_expected_value_in_a_cfg_test_block_is_flagged_unless_the_brief_names_the_test() {
+    let before = rust_src(&format!("{ADDS}\n{SUBTRACTS}"));
+    let after = rust_src(&format!(
+        "{}\n{SUBTRACTS}",
+        ADDS.replace("assert_eq!(add(1, 2), 3)", "assert_eq!(add(1, 2), 4)")
+    ));
+    let changed = [file("src/math.rs", Some(&before), Some(&after))];
+    let found = code_findings("", "", &[], &changed);
+    assert_eq!(kinds(&found), vec![FindingKind::WeakenedTest], "{found:?}");
+    assert_eq!(
+        found[0].detail,
+        "src/math.rs: the test adds changed what it checks; the brief does not name it."
+    );
+    assert_eq!(found[0].file.as_deref(), Some("src/math.rs"));
+    // The brief names the test: its fn name.
+    assert!(code_findings(
+        "Change what add returns, and update the adds test to match.",
+        "",
+        &[],
+        &changed
+    )
+    .is_empty());
+    // Or the file.
+    assert!(code_findings("Rework src/math.rs and its tests.", "", &[], &changed).is_empty());
+    assert!(code_findings("Rework math.rs.", "", &[], &changed).is_empty());
+    // Naming a different test doesn't help, and a word that only contains the name isn't naming it.
+    assert_eq!(
+        code_findings("Update the subtracts test.", "", &[], &changed).len(),
+        1
+    );
+    assert_eq!(
+        code_findings("The padding addsup is wrong.", "", &[], &changed).len(),
+        1
+    );
+    // The report naming it is not the brief naming it.
+    assert_eq!(
+        code_findings("", "I updated the adds test.", &[], &changed).len(),
+        1
+    );
+}
+
+#[test]
+fn a_changed_assertion_is_one_finding_per_test_in_every_kind_of_test_file() {
+    // Two assertions changed in one test, and a second test changed too: two findings.
+    let before = "#[test]\nfn a() {\n    assert_eq!(f(1), 1);\n    assert_eq!(f(2), 2);\n}\n\n#[test]\nfn b() {\n    assert!(g());\n}\n";
+    let after = "#[test]\nfn a() {\n    assert_eq!(f(1), 9);\n    assert_eq!(f(2), 8);\n}\n\n#[test]\nfn b() {\n    assert!(!g());\n}\n";
+    let found = code_findings(
+        "",
+        "",
+        &[],
+        &[file("tests/api.rs", Some(before), Some(after))],
+    );
+    assert_eq!(
+        kinds(&found),
+        vec![FindingKind::WeakenedTest; 2],
+        "{found:?}"
+    );
+    assert!(
+        found[0]
+            .detail
+            .contains("the test a changed what it checks"),
+        "{found:?}"
+    );
+    assert!(
+        found[1]
+            .detail
+            .contains("the test b changed what it checks"),
+        "{found:?}"
+    );
+    // TypeScript: a title in the brief names it.
+    let before = "it(\"adds\", () => {\n  expect(add(1, 2)).toBe(3);\n});\n";
+    let after = "it(\"adds\", () => {\n  expect(add(1, 2)).toBe(4);\n});\n";
+    let ts = [file("src/math.test.ts", Some(before), Some(after))];
+    assert_eq!(
+        kinds(&code_findings("", "", &[], &ts)),
+        vec![FindingKind::WeakenedTest]
+    );
+    assert!(code_findings("The it(\"adds\") test should expect 4.", "", &[], &ts).is_empty());
+    assert!(code_findings("Fix math.test.ts.", "", &[], &ts).is_empty());
+    // Python.
+    let before = "def test_sum():\n    assert add(1, 2) == 3\n";
+    let after = "def test_sum():\n    assert add(1, 2) == 4\n";
+    assert_eq!(
+        kinds(&code_findings(
+            "",
+            "",
+            &[],
+            &[file("tests/test_sum.py", Some(before), Some(after))]
+        )),
+        vec![FindingKind::WeakenedTest]
+    );
+    // A new test file is not a change.
+    assert!(code_findings("", "", &[], &[file("tests/api.rs", None, Some(after))]).is_empty());
+    // A source file with no test block is not test code, whatever its asserts do.
+    let src_before = "pub fn a(x: i32) -> i32 {\n    assert!(x > 0);\n    x\n}\n";
+    let src_after = "pub fn a(x: i32) -> i32 {\n    assert!(x > 1);\n    x\n}\n";
+    assert!(code_findings(
+        "",
+        "",
+        &[],
+        &[file("src/a.rs", Some(src_before), Some(src_after))]
+    )
+    .is_empty());
+}
+
+#[test]
+fn a_test_block_that_lost_assertions_is_weakened_and_moved_tests_and_deleted_code_are_not() {
+    let two = rust_src(&format!("{ADDS}\n{SUBTRACTS}"));
+    let one = rust_src(ADDS);
+    // Fewer asserts in the block.
+    let found = code_findings("", "", &[], &[file("src/math.rs", Some(&two), Some(&one))]);
+    assert_eq!(kinds(&found), vec![FindingKind::WeakenedTest], "{found:?}");
+    assert!(
+        found[0].detail.contains("has 1 asserts where it had 2"),
+        "{found:?}"
+    );
+    // The whole block gone while the source stays.
+    let bare = "pub fn add(a: i32, b: i32) -> i32 {\n    a + b\n}\n";
+    let found = code_findings("", "", &[], &[file("src/math.rs", Some(&two), Some(bare))]);
+    assert_eq!(kinds(&found), vec![FindingKind::WeakenedTest], "{found:?}");
+    // The tests moved out to a new file: nothing was lost.
+    let moved = [
+        file("src/math.rs", Some(&two), Some(bare)),
+        file(
+            "src/math_tests.rs",
+            None,
+            Some("use super::*;\n#[test]\nfn adds() {\n    assert_eq!(add(1, 2), 3);\n}\n#[test]\nfn subtracts() {\n    assert_eq!(sub(3, 2), 1);\n}\n"),
+        ),
+    ];
+    assert!(code_findings("", "", &[], &moved).is_empty());
+    // Moved out, but fewer came with them: the rest is lost.
+    let partly = [
+        file("src/math.rs", Some(&two), Some(bare)),
+        file(
+            "src/math_tests.rs",
+            None,
+            Some("#[test]\nfn adds() {\n    assert_eq!(add(1, 2), 3);\n}\n"),
+        ),
+    ];
+    assert_eq!(
+        kinds(&code_findings("", "", &[], &partly)),
+        vec![FindingKind::WeakenedTest]
+    );
+    // The source file deleted with its tests is the code going, not a test being weakened.
+    assert!(code_findings("", "", &[], &[file("src/math.rs", Some(&two), None)]).is_empty());
+    // A test file deleted still is.
+    let gone = code_findings("", "", &[], &[file("src/math_tests.rs", Some(ADDS), None)]);
+    assert_eq!(kinds(&gone), vec![FindingKind::WeakenedTest]);
+    // A block that is new in an old file had nothing to weaken.
+    assert!(code_findings("", "", &[], &[file("src/math.rs", Some(bare), Some(&one))]).is_empty());
+}
+
+#[test]
+fn a_file_a_source_declares_as_its_tests_is_a_test_file_whatever_it_is_called() {
+    let source = "pub fn add() {}\n\n#[cfg(test)]\n#[path = \"checks_common.rs\"]\nmod tests;\n";
+    let before = "#[test]\nfn a() {\n    assert_eq!(1, 1);\n    assert_eq!(2, 2);\n}\n";
+    let after = "#[test]\nfn a() {\n    assert_eq!(1, 1);\n}\n";
+    let changed = [
+        file("src/checks.rs", Some(source), Some(source)),
+        file("src/checks_common.rs", Some(before), Some(after)),
+    ];
+    let found = code_findings("", "", &[], &changed);
+    assert_eq!(kinds(&found), vec![FindingKind::WeakenedTest], "{found:?}");
+    assert_eq!(found[0].file.as_deref(), Some("src/checks_common.rs"));
+    // Without the declaration it is an ordinary source file.
+    assert!(code_findings(
+        "",
+        "",
+        &[],
+        &[file("src/checks_common.rs", Some(before), Some(after))]
+    )
+    .is_empty());
 }

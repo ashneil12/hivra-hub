@@ -189,7 +189,18 @@ fn docs_at_checkout_root(segments: &[String]) -> bool {
         .any(|part| INTERIOR.iter().any(|name| part.eq_ignore_ascii_case(name)))
 }
 
-fn is_docs_path(path: &str) -> bool {
+/// SC-3a: a check that failed and was not run green again. `failure_gaps` makes this sentence.
+pub(crate) fn is_failed_check_gap(gap: &str) -> bool {
+    gap.starts_with("A check failed this turn (")
+}
+
+/// SC-3a: an open to-do. `gaps_before_coverage` makes these sentences.
+pub(crate) fn is_open_todo_gap(gap: &str) -> bool {
+    gap.starts_with("There is still an open to-do: ")
+        || (gap.starts_with("There are still ") && gap.ends_with(" open to-dos."))
+}
+
+pub(crate) fn is_docs_path(path: &str) -> bool {
     let segments = segments_of(path);
     if segments.is_empty() {
         return false;

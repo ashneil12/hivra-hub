@@ -24,6 +24,7 @@ pub mod mcp;
 pub mod protected_paths;
 pub mod report;
 pub mod status;
+pub mod testing_mode; // SC-3a: the gates a finished task gets, by the project's testing mode
 
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, State};
