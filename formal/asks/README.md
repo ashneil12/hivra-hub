@@ -251,7 +251,9 @@ mkdir -p /tmp/asks-bad1 && sed 's/MATE_CAN_DROP = false/MATE_CAN_DROP = true/' f
 mkdir -p /tmp/asks-bad2 && sed 's/RESTART_LOSES_WAITING = false/RESTART_LOSES_WAITING = true/' formal/asks/asks.qnt > /tmp/asks-bad2/asks.qnt  # expect inv_touchedNeverGone to fail
 ```
 
-The variants were run too: the design holds all five; `bad1` fails `inv_dropIsPersons` and `bad2` fails `inv_touchedNeverGone` (each also fails the two the default already fails), so each invariant is known to bite. The TypeScript test in B.2 does show
+**After the A1/A2 fixes (sc-17), run on 13 Nov 2026 with the new defaults:** `inv_neverGone` now holds; `inv_known`, `inv_touchedNeverGone` and `inv_dropIsPersons` still hold; `inv_noStarvation` still fails, because nothing yet takes a quiet ask to the person (A7, a follow-up). Results and seeds: `quint-output/runs-after-fixes.txt`.
+
+Before the fixes, the variants were run too: the design holds all five; `bad1` fails `inv_dropIsPersons` and `bad2` fails `inv_touchedNeverGone` (each also fails the two the default already fails), so each invariant is known to bite. The TypeScript test in B.2 does show
 the same kind of bite on the real code.
 
 ### B.2 The fast-check model-based test (`src/features/asks/model/askStore.property.test.ts`): run
