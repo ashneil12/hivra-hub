@@ -305,3 +305,8 @@ pub fn is_done(state: &str, gate_verdict: Option<&str>) -> bool {
             GateVerdict::NotRequired | GateVerdict::Passed
         )
 }
+
+// SC-6: property tests on the rule that a failed or unsure gate never reads as done (spec 4i).
+#[cfg(test)]
+#[path = "status_prop_tests.rs"]
+mod prop_tests;

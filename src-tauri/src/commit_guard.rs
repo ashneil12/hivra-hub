@@ -1511,6 +1511,9 @@ mod review_tests_r6;
 mod review_tests_r8;
 #[cfg(test)]
 mod review_tests_wp200b;
+// SC-6: property tests on the rule that no push or commit carries a secret or an agent file (spec 4i).
+#[cfg(test)]
+mod prop_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
