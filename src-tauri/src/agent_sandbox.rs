@@ -3690,10 +3690,9 @@ mod tests {
         );
     }
 
-    /// Review r4 (LOW): the shell profiles the list missed.
-    #[cfg(unix)]
     /// SC-8c: the browser bundles the visual preview runs outside the sandbox can neither be changed nor created, in
     /// /Applications or ~/Applications, for every bundle find_browser accepts. Other apps there stay writable.
+    #[cfg(unix)]
     #[test]
     fn the_preview_browser_bundles_cannot_be_written_or_created() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -3719,6 +3718,7 @@ mod tests {
     }
 
     /// SC-8c: curl's and wget's own config files, read by every install the app runs, cannot be written.
+    #[cfg(unix)]
     #[test]
     fn the_curl_and_wget_config_files_cannot_be_written() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
@@ -3735,6 +3735,8 @@ mod tests {
         }
     }
 
+    /// Review r4 (LOW): the shell profiles the list missed.
+    #[cfg(unix)]
     #[test]
     fn the_extra_shell_profiles_are_denied() {
         let profile = profile_text(Path::new("/Users/test")).unwrap();
