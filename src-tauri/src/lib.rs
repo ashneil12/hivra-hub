@@ -708,6 +708,9 @@ pub fn run() {
             firstmate::gates::firstmate_run_gates,
             firstmate::gates::firstmate_gate_evidence,
             firstmate::gates::firstmate_gates_decide,
+            // SC-5: which model family checks a finished task (the app's own setting, never a project's).
+            firstmate::checker_family::checker_family_rule_get,
+            firstmate::checker_family::checker_family_rule_set,
             // SC-4: a brief's check lines, stamp and do-not-touch list. The webview keeps them; only the gates set a result.
             firstmate::brief_checks::firstmate_brief_keep,
             firstmate::brief_checks::firstmate_brief_stamp,
