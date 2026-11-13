@@ -11,7 +11,7 @@
 //! | `at-ship` (default) | `diff`, `committed` | yes | a failed check, an open to-do | no | done, "Built, not tested yet" |
 //! | `light`, code changed | `diff`, `checks`, `committed`, `ratchet`, and the brief's plan | yes | all | yes | done |
 //! | `light`, docs only | `diff`, `committed`, and the brief's plan | yes | all | yes | done |
-//! | `full` | as `light`, plus the brief's own check lines (SC-4; SC-7 adds the real-app recipe) | yes | all | yes | done |
+//! | `full` | as `light`, plus the brief's own check lines (SC-4; SC-7 adds the real-app recipe) and, for a code diff, the proof tools the project already has (PT-1: `proof-tools`) | yes | all | yes | done |
 //!
 //! SC-5: the verdict model is either the cheap one-turn read-only check or the running checker (a model from another
 //! family that re-runs the brief's check lines in a read-only copy: `Checker`). The running checker reads a finished
@@ -141,12 +141,17 @@ pub fn touches_risky_path(changed: &[String], protected_extra: &[String]) -> boo
 /// path (`delivery::merge::security_paths`; `touches_risky_path`). Pass `true` too when the diff couldn't be read, so the
 /// stricter check runs and says it couldn't rather than skip. A risky change gets the running checker in `at-ship` and
 /// `light`; `full` gives it to every code diff; `off` never.
-pub fn gates_for(
+///
+/// PT-1: `proof_tools` is whether the project already has an installed proof tool that fits it (`proof_tools::detect`). Only in
+/// `full`, for a code diff, it adds the `proof-tools` gate. None installed: the gate is not added (it is optional), and nothing
+/// reads as a pass.
+pub fn gates_for_with(
     mode: TestingMode,
     plan: Option<&GatePlan>,
     changed: &[String],
     code_changed: bool,
     risky: bool,
+    proof_tools: bool,
 ) -> ModePlan {
     // A research or answer task: nothing changed and the brief asked for no gates. It settles as it did before.
     if changed.is_empty() && !code_changed && plan.is_none() {
@@ -197,6 +202,10 @@ pub fn gates_for(
             }
             let named = plan.map(|plan| plan.checks.clone()).unwrap_or_default();
             gates.extend(plan.map(|plan| plan.gates.clone()).unwrap_or_default());
+            // PT-1: the tools the project already has, in `full` only, for a code diff.
+            if mode == TestingMode::Full && code_changed && proof_tools {
+                gates.push(GateKind::ProofTools);
+            }
             let running = risky || (mode == TestingMode::Full && code_changed);
             let checker = if running {
                 Checker::Running
@@ -221,6 +230,19 @@ pub fn gates_for(
         checker,
         note,
     }
+}
+
+/// The gates, findings, fact gaps and verdict a finished task gets, for a project with no proof tool (`gates_for_with`).
+/// What the tests that pre-date proof tools call.
+#[cfg(test)]
+pub fn gates_for(
+    mode: TestingMode,
+    plan: Option<&GatePlan>,
+    changed: &[String],
+    code_changed: bool,
+    risky: bool,
+) -> ModePlan {
+    gates_for_with(mode, plan, changed, code_changed, risky, false)
 }
 
 #[cfg(test)]
@@ -679,6 +701,69 @@ mod tests {
                 "{mode:?}: the mode that asks for it is the one that keeps every gap"
             );
         }
+    }
+
+    // ---- PT-1: the proof tools gate ------------------------------------------------------------------------------------
+
+    fn with_proof(
+        mode: TestingMode,
+        stored: Option<&GatePlan>,
+        changed: &[&str],
+        proof: bool,
+    ) -> ModePlan {
+        let changed = paths(changed);
+        gates_for_with(mode, stored, &changed, code_changed(&changed), false, proof)
+    }
+
+    #[test]
+    fn the_proof_tools_gate_is_added_only_in_full_for_a_code_diff_with_an_installed_tool() {
+        let chosen = with_proof(TestingMode::Full, None, &["src/app.ts"], true);
+        assert_eq!(
+            chosen.gates,
+            vec![Diff, Checks, Committed, Ratchet, GateKind::ProofTools],
+            "it sorts last, after the gates it reads"
+        );
+        // The brief's own plan (routes) joins the floor, and the proof tools still come last.
+        let stored = plan(&[Routes], &[]);
+        let with_routes = with_proof(TestingMode::Full, Some(&stored), &["src/app.ts"], true);
+        assert_eq!(with_routes.gates.last(), Some(&GateKind::ProofTools));
+        assert!(with_routes.gates.contains(&Routes));
+    }
+
+    #[test]
+    fn no_installed_tool_means_no_gate_and_nothing_reads_as_a_pass() {
+        let chosen = with_proof(TestingMode::Full, None, &["src/app.ts"], false);
+        assert!(!chosen.gates.contains(&GateKind::ProofTools));
+        // It is exactly the gates `gates_for` always chose.
+        assert_eq!(chosen, pick(TestingMode::Full, None, &["src/app.ts"]));
+    }
+
+    #[test]
+    fn no_other_mode_and_no_docs_only_change_gets_the_proof_tools_gate() {
+        for mode in [TestingMode::Off, TestingMode::AtShip, TestingMode::Light] {
+            let chosen = with_proof(mode, None, &["src/app.ts"], true);
+            assert!(!chosen.gates.contains(&GateKind::ProofTools), "{mode:?}");
+            assert_eq!(chosen, pick(mode, None, &["src/app.ts"]), "{mode:?}");
+        }
+        let docs = with_proof(TestingMode::Full, None, &["docs/a.md"], true);
+        assert!(
+            !docs.gates.contains(&GateKind::ProofTools),
+            "docs only is not a code diff"
+        );
+        let nothing = with_proof(TestingMode::Full, None, &[], true);
+        assert!(
+            nothing.as_today && nothing.gates.is_empty(),
+            "a research task is left as it is"
+        );
+    }
+
+    #[test]
+    fn a_brief_cannot_name_the_proof_tools_gate_and_it_serialises_by_its_name() {
+        assert_eq!(GateKind::parse("proof-tools"), None);
+        assert_eq!(
+            serde_json::to_string(&GateKind::ProofTools).unwrap(),
+            "\"proof-tools\""
+        );
     }
 
     #[test]

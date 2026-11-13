@@ -27,6 +27,7 @@ pub mod fact_gaps;
 pub mod gates;
 pub mod mcp;
 pub mod open_work; // SC-7: what is still open under a first mate, for the hold on its "done"
+mod proof_gate; // PT-1: the "Proof tools" gate: the open-source tools a project already has, run on a task's change
 pub mod protected_paths;
 pub mod report;
 pub mod rounds; // SC-5: the round cap, the rethink after two failed rounds, and the person's decision after that

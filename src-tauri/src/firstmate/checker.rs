@@ -572,6 +572,18 @@ pub fn run(
         }
     }
 
+    // PT-1: in `full`, a task that changed the interface also has the project's end-to-end tests replayed in the copy (e2e's
+    // strict-cache replay, Playwright's changed tests) when the project already has them. They come after the brief's own
+    // commands (`brief_line_count` counts those first), and a write the copy refuses stays "did not run" (`trusted_in`).
+    if input
+        .mode
+        .is_some_and(|mode| mode.mode == crate::delivery::settings::TestingMode::Full)
+    {
+        for run in runners.proof_replay(input.checkout, &copy) {
+            commands.push(trusted_in(how, super::proof_gate::evidence(&run)));
+        }
+    }
+
     // 2. The first call.
     let told = Told {
         commands: &commands,

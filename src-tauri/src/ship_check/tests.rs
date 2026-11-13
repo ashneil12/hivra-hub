@@ -1420,3 +1420,246 @@ fn the_ranges_first_window_is_thirty_commits() {
     assert_eq!(commits_word(1), "1 commit");
     assert_eq!(commits_word(30), "30 commits");
 }
+
+// ---- PT-1: the "Proof tools" step ------------------------------------------------------------------------------------------
+
+mod proof_step {
+    use super::*;
+    use crate::delivery::settings::TestingMode;
+    use crate::proof_tools::detect::{Detection, Found};
+    use crate::proof_tools::{catalogue, Outcome as Ran, Stack, ToolRun};
+
+    /// The ship check's own steps from `Stub`, and the proof step decided by the same function the app uses.
+    struct WithProof {
+        inner: Stub,
+        mode: TestingMode,
+        installed: Vec<&'static str>,
+        missing: Vec<&'static str>,
+        runs: Vec<ToolRun>,
+        detected: Cell<u32>,
+        started: Cell<u32>,
+    }
+
+    impl WithProof {
+        fn new(mode: TestingMode, installed: &[&'static str], runs: Vec<ToolRun>) -> WithProof {
+            WithProof {
+                inner: Stub::all(Outcome::Passed),
+                mode,
+                installed: installed.to_vec(),
+                missing: vec!["fast-check", "stryker"],
+                runs,
+                detected: Cell::new(0),
+                started: Cell::new(0),
+            }
+        }
+    }
+
+    impl Steps for WithProof {
+        fn checks(&self, main: &Path, changed: &[String]) -> Stage {
+            self.inner.checks(main, changed)
+        }
+        fn briefs(&self, main: &Path, range: &Range) -> Result<Vec<Brief>, String> {
+            self.inner.briefs(main, range)
+        }
+        fn guard(&self, main: &Path, range: &Range, changes: &[Change], briefs: &[Brief]) -> Stage {
+            self.inner.guard(main, range, changes, briefs)
+        }
+        fn review(&self, main: &Path, range: &Range, briefs: &[Brief]) -> Stage {
+            self.inner.review(main, range, briefs)
+        }
+        fn proof_tools(
+            &self,
+            _main: &Path,
+            range: &Range,
+            _changes: &[Change],
+            _earlier: &[Step],
+            clean: bool,
+        ) -> Stage {
+            proof::step(
+                self.mode,
+                if clean { Ok(()) } else { Err(Some(1)) },
+                short(&range.head),
+                || {
+                    self.detected.set(self.detected.get() + 1);
+                    let found = |id: &str, installed: bool| Found {
+                        tool: catalogue::find(id).unwrap(),
+                        installed,
+                    };
+                    Detection {
+                        stacks: vec![Stack::Node],
+                        fitting: self
+                            .installed
+                            .iter()
+                            .map(|id| found(id, true))
+                            .chain(
+                                self.missing
+                                    .iter()
+                                    .filter(|id| !self.installed.contains(id))
+                                    .map(|id| found(id, false)),
+                            )
+                            .collect(),
+                    }
+                },
+                |_| {
+                    self.started.set(self.started.get() + 1);
+                    self.runs.clone()
+                },
+            )
+        }
+    }
+
+    fn run_of(id: &str, outcome: Ran, detail: &str, lines: &[&str]) -> ToolRun {
+        ToolRun {
+            tool: catalogue::find(id).unwrap(),
+            outcome,
+            detail: detail.into(),
+            lines: lines.iter().map(|line| line.to_string()).collect(),
+            command: None,
+            tail: None,
+            seconds: 0.0,
+        }
+    }
+
+    fn step_named<'a>(record: &'a ShipCheckRecord, name: &str) -> Option<&'a Step> {
+        record.steps.iter().find(|step| step.name == name)
+    }
+
+    #[test]
+    fn only_at_ship_and_full_have_a_proof_tools_step_and_the_others_never_look_for_a_tool() {
+        for mode in [
+            TestingMode::Off,
+            TestingMode::Light,
+            TestingMode::AtShip,
+            TestingMode::Full,
+        ] {
+            let (_tmp, root, dir) = fixture("ship-proof-modes");
+            land(&root, "a.txt", "one");
+            let steps = WithProof::new(
+                mode,
+                &["stryker"],
+                vec![run_of("stryker", Ran::Passed, "no survivors", &[])],
+            );
+            let record = run_in(&dir, &root, &steps).unwrap();
+            let has = step_named(&record, "Proof tools").is_some();
+            assert_eq!(
+                has,
+                matches!(mode, TestingMode::AtShip | TestingMode::Full),
+                "{mode:?}"
+            );
+            if !has {
+                assert_eq!(steps.detected.get(), 0, "{mode:?}: no program probed");
+                assert_eq!(steps.started.get(), 0, "{mode:?}: no tool started");
+            }
+        }
+    }
+
+    #[test]
+    fn with_no_tool_installed_the_step_is_not_run_none_available_and_never_a_pass() {
+        let (_tmp, root, dir) = fixture("ship-proof-none");
+        land(&root, "a.txt", "one");
+        let steps = WithProof::new(TestingMode::AtShip, &[], Vec::new());
+        let record = run_in(&dir, &root, &steps).unwrap();
+        let proof = step_named(&record, "Proof tools").expect("the step is there");
+        assert_eq!(proof.outcome, Outcome::NotRun);
+        assert_eq!(proof.detail, "none available");
+        assert_eq!(steps.started.get(), 0);
+        assert!(
+            record
+                .not_tested
+                .iter()
+                .any(|line| line.starts_with("Proof tools did not run: none available")),
+            "{:?}",
+            record.not_tested
+        );
+        assert!(
+            record
+                .not_tested
+                .iter()
+                .any(|line| line.contains("fast-check, StrykerJS") && line.contains("would fit")),
+            "{:?}",
+            record.not_tested
+        );
+        assert!(
+            !record
+                .tested
+                .iter()
+                .any(|line| line.contains("Proof tools")),
+            "{:?}",
+            record.tested
+        );
+    }
+
+    #[test]
+    fn a_passing_failing_and_could_not_run_tool_set_the_record_the_honest_way() {
+        let cases: [(Vec<ToolRun>, Outcome); 3] = [
+            (
+                vec![run_of("stryker", Ran::Passed, "no survivors", &[])],
+                Outcome::Passed,
+            ),
+            (
+                vec![run_of(
+                    "stryker",
+                    Ran::Failed,
+                    "2 mutants survived",
+                    &["src/a.ts:5: survived"],
+                )],
+                Outcome::Failed,
+            ),
+            (
+                vec![run_of(
+                    "stryker",
+                    Ran::CouldNotRun,
+                    "it ran past its time limit",
+                    &[],
+                )],
+                Outcome::CouldNotRun,
+            ),
+        ];
+        for (runs, expected) in cases {
+            let (_tmp, root, dir) = fixture("ship-proof-runs");
+            land(&root, "a.txt", "one");
+            let steps = WithProof::new(TestingMode::Full, &["stryker"], runs);
+            let record = run_in(&dir, &root, &steps).unwrap();
+            assert_eq!(
+                step_named(&record, "Proof tools").unwrap().outcome,
+                expected
+            );
+            assert_eq!(record.outcome, expected, "{:?}", record.steps);
+            assert_eq!(steps.started.get(), 1);
+            match expected {
+                Outcome::Passed => assert!(record
+                    .tested
+                    .iter()
+                    .any(|line| line.starts_with("Proof tools:"))),
+                Outcome::Failed => {
+                    assert!(record
+                        .tested
+                        .iter()
+                        .any(|line| line.contains("Proof tools ran and failed")))
+                }
+                _ => assert!(record
+                    .not_tested
+                    .iter()
+                    .any(|line| line.contains("could not run"))),
+            }
+        }
+    }
+
+    #[test]
+    fn a_checkout_that_is_not_what_head_is_runs_no_tool() {
+        let (_tmp, root, dir) = fixture("ship-proof-dirty");
+        land(&root, "a.txt", "one");
+        write(&root, "a.txt", "changed after the commit");
+        let steps = WithProof::new(
+            TestingMode::AtShip,
+            &["stryker"],
+            vec![run_of("stryker", Ran::Passed, "ok", &[])],
+        );
+        let record = run_in(&dir, &root, &steps).unwrap();
+        let proof = step_named(&record, "Proof tools").expect("the step says why it did not run");
+        assert_eq!(proof.outcome, Outcome::CouldNotRun);
+        assert!(proof.detail.contains("uncommitted"), "{}", proof.detail);
+        assert_eq!(steps.started.get(), 0);
+        assert_eq!(steps.detected.get(), 0);
+    }
+}

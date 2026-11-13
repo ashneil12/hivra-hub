@@ -25,6 +25,7 @@
 //! project is no record. One check runs at a time per project: a second asks to wait instead of overwriting the first.
 
 pub mod mcp;
+mod proof; // PT-1: the "Proof tools" step: the open-source tools the project already has, over the range
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -208,6 +209,19 @@ pub trait Steps {
     fn guard(&self, main: &Path, range: &Range, changes: &[Change], briefs: &[Brief]) -> Stage;
     /// The verdict model over the combined diff and the briefs.
     fn review(&self, main: &Path, range: &Range, briefs: &[Brief]) -> Stage;
+    /// PT-1: the proof tools the project already has, over the range, in `at-ship` and `full` only. `earlier` are the steps so
+    /// far (the project's checks, where a property library's properties run) and `clean` says the checkout is what HEAD is.
+    /// A stand-in that has none adds no step.
+    fn proof_tools(
+        &self,
+        _main: &Path,
+        _range: &Range,
+        _changes: &[Change],
+        _earlier: &[Step],
+        _clean: bool,
+    ) -> Stage {
+        Stage::default()
+    }
 }
 
 // ---- small helpers --------------------------------------------------------------------------------------------------
@@ -1138,6 +1152,13 @@ pub fn run_in(dir: &Path, main: &Path, steps: &dyn Steps) -> Result<ShipCheckRec
         all.extend(checks.steps);
         not_tested.extend(checks.not_tested);
 
+        // PT-1: the proof tools the project already has, over the same range. Like the checks, they read the checkout as it is
+        // on disk, so it must be what HEAD is.
+        let clean = matches!(&dirty, Ok(files) if files.is_empty());
+        let proof = steps.proof_tools(main, &range, &changes, &all, clean);
+        all.extend(proof.steps);
+        not_tested.extend(proof.not_tested);
+
         // The tasks that landed in the range: their briefs are the guard's excuse list and the review's definition of done.
         let briefs = steps.briefs(main, &range);
         let held: &[Brief] = briefs.as_deref().unwrap_or(&[]);
@@ -1354,6 +1375,51 @@ impl Steps for AppSteps {
         review_step(range, briefs, &diff, &|prompt| {
             gates::Runners::verdict(&runners, prompt)
         })
+    }
+
+    fn proof_tools(
+        &self,
+        main: &Path,
+        range: &Range,
+        changes: &[Change],
+        earlier: &[Step],
+        clean: bool,
+    ) -> Stage {
+        use crate::proof_tools::{app_env::AppEnv, run as proof_run, Pick};
+        // The project's testing mode, read the way the task gates read it: a project with no row, or a store that can't be read,
+        // is `at-ship`. Only `at-ship` and `full` have the step.
+        let mode = match self
+            .app
+            .state::<crate::session_store::SessionStore>()
+            .lock_conn()
+        {
+            Ok(conn) => crate::delivery::settings::testing_mode_for(&conn, &path_to_js(main)),
+            Err(_) => crate::delivery::settings::TestingMode::default(),
+        };
+        let env = AppEnv::checkout(&self.app, main, main);
+        let clean = if clean {
+            Ok(())
+        } else {
+            Err(tracked_changes(main).ok().map(|files| files.len()))
+        };
+        proof::step(
+            mode,
+            clean,
+            short(&range.head),
+            || proof_run::detect_in(main, &env),
+            |detection| {
+                let (from, to) = ends(range);
+                let scope = proof_run::scope_of_range(
+                    main,
+                    range.base.as_deref(),
+                    &from,
+                    &to,
+                    &changed_paths(changes),
+                );
+                let tests = proof::tests_from(earlier);
+                proof_run::run_installed(detection, main, &scope, &tests, &env, Pick::All)
+            },
+        )
     }
 }
 

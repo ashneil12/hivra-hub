@@ -156,6 +156,9 @@ struct Lab {
     copies_made: RefCell<u32>,
     /// How often the cheap check was asked: never, when the running checker runs.
     cheap_asked: RefCell<u32>,
+    /// PT-1: the end-to-end replay the project's proof tools give back, and how often it was asked for.
+    replay: RefCell<Vec<crate::proof_tools::ToolRun>>,
+    replayed: RefCell<u32>,
 }
 
 impl Lab {
@@ -169,6 +172,8 @@ impl Lab {
             runs: RefCell::new(Vec::new()),
             copies_made: RefCell::new(0),
             cheap_asked: RefCell::new(0),
+            replay: RefCell::new(Vec::new()),
+            replayed: RefCell::new(0),
         }
     }
 
@@ -234,6 +239,14 @@ impl Runners for Lab {
         } else {
             runs.remove(0)
         }
+    }
+    fn proof_replay(
+        &self,
+        _checkout: &Path,
+        _copy: &ReadOnlyCopy,
+    ) -> Vec<crate::proof_tools::ToolRun> {
+        *self.replayed.borrow_mut() += 1;
+        self.replay.borrow().clone()
     }
     fn checker_model(&self, prompt: &str, cli: &str, model: &str) -> Result<String, String> {
         self.asked
@@ -1134,4 +1147,148 @@ fn a_plain_assertion_failure_in_the_clone_is_still_failed() {
     );
     let evidence = evidence_of("the tests pass", "cargo test", &raw, CopyHow::Clone);
     assert_eq!(evidence.outcome, Outcome::Failed);
+}
+
+// ---- PT-1: a UI task's end-to-end replay in the copy -----------------------------------------------------------------------
+
+fn e2e_replay(
+    outcome: crate::proof_tools::Outcome,
+    detail: &str,
+    tail: Option<&str>,
+) -> crate::proof_tools::ToolRun {
+    crate::proof_tools::ToolRun {
+        tool: crate::proof_tools::catalogue::find("e2e").expect("e2e is in the catalogue"),
+        outcome,
+        detail: detail.into(),
+        lines: Vec::new(),
+        command: Some("npx --no-install e2e run --strict-cache".into()),
+        tail: tail.map(str::to_string),
+        seconds: 1.0,
+    }
+}
+
+/// One round with a testing mode, the way the gates hand it to the checker.
+fn check_in(mode: Option<&ModePlan>, lab: &Lab) -> Checked {
+    let plan = GatePlan {
+        gates: vec![GateKind::Diff],
+        checks: Vec::new(),
+    };
+    let brief = briefed(Vec::new());
+    let input = RoundInput {
+        delegation_id: "d-1",
+        round: 1,
+        checkout: Path::new("/work/tally"),
+        plan: &plan,
+        brief: "Change the button.",
+        done_when: "the button says Save",
+        report: "Done. I changed the button.",
+        now: 7,
+        gate_owns_checks: false,
+        facts: None,
+        mode,
+        brief_round: Some(&brief),
+        fix: None,
+        history: None,
+    };
+    let claims = done_check::claims_of(input.report);
+    run(
+        &input,
+        "diff --git a/src/App.tsx b/src/App.tsx\n+Save\n",
+        &[],
+        &claims,
+        &[],
+        &[],
+        None,
+        lab,
+    )
+}
+
+fn mode_plan(mode: crate::delivery::settings::TestingMode) -> ModePlan {
+    let changed = vec!["src/App.tsx".to_string()];
+    testing_mode::gates_for(mode, None, &changed, true, false)
+}
+
+#[test]
+fn in_full_the_projects_end_to_end_replay_runs_in_the_copy_and_is_kept_with_the_other_commands() {
+    use crate::delivery::settings::TestingMode;
+    let lab = Lab::new().says(&[VERIFIED]);
+    *lab.replay.borrow_mut() = vec![e2e_replay(
+        crate::proof_tools::Outcome::Passed,
+        "replayed 3 steps",
+        None,
+    )];
+    let got = check_in(Some(&mode_plan(TestingMode::Full)), &lab);
+    assert_eq!(*lab.replayed.borrow(), 1, "the replay was asked for once");
+    let replay = got
+        .record
+        .commands
+        .iter()
+        .find(|run| {
+            run.command
+                .starts_with("e2e: npx --no-install e2e run --strict-cache")
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the replay is a command of the record: {:?}",
+                got.record.commands
+            )
+        });
+    assert_eq!(replay.outcome, Outcome::Passed);
+}
+
+#[test]
+fn a_replay_the_copy_would_not_let_write_stays_did_not_run_and_is_not_a_refutation() {
+    use crate::delivery::settings::TestingMode;
+    let lab = Lab::new().says(&[VERIFIED]);
+    *lab.replay.borrow_mut() = vec![e2e_replay(
+        crate::proof_tools::Outcome::Failed,
+        "1 step failed",
+        Some("EACCES: permission denied, open '.e2e/cache/run.json'"),
+    )];
+    let got = check_in(Some(&mode_plan(TestingMode::Full)), &lab);
+    let replay = got
+        .record
+        .commands
+        .iter()
+        .find(|run| run.command.starts_with("e2e:"))
+        .expect("the replay is kept");
+    assert_eq!(replay.outcome, Outcome::NotRun, "{}", replay.output);
+    assert!(
+        replay
+            .output
+            .contains("could not write inside the read-only copy"),
+        "{}",
+        replay.output
+    );
+    assert_ne!(
+        got.verdict.answer,
+        Answer::NotMet,
+        "a refused write proves nothing about the work"
+    );
+}
+
+#[test]
+fn outside_full_the_checker_replays_nothing() {
+    use crate::delivery::settings::TestingMode;
+    for mode in [
+        Some(mode_plan(TestingMode::Light)),
+        Some(mode_plan(TestingMode::AtShip)),
+        None,
+    ] {
+        let lab = Lab::new().says(&[VERIFIED]);
+        *lab.replay.borrow_mut() = vec![e2e_replay(
+            crate::proof_tools::Outcome::Passed,
+            "replayed",
+            None,
+        )];
+        let got = check_in(mode.as_ref(), &lab);
+        assert_eq!(*lab.replayed.borrow(), 0, "{mode:?}");
+        assert!(
+            got.record
+                .commands
+                .iter()
+                .all(|run| !run.command.starts_with("e2e:")),
+            "{mode:?}"
+        );
+    }
 }
