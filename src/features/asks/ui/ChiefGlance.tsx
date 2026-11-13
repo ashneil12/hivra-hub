@@ -1,6 +1,8 @@
 // One main chat (Ash, 13 Nov: "i like a"): the Chief of Staff's chat carries three chips beside its own buttons, each
-// opening over the chat. Needs you is the Inbox's own list and card; You asked is the ask ledger (hub/model/askLedger.ts),
-// so nothing he asked for is lost in a long chat; Working is every job in every project, with the way in to take one over.
+// opening over the chat. Needs you is the Inbox's own list and card; You asked is the ask ledger (asks/model/asks.ts, the
+// one ledger the first mates work on, read through askedView.ts), so nothing he asked for is lost in a long chat and what
+// a first mate or a finished job says about an ask shows here; Working is every job in every project, with the way in to
+// take one over.
 import { useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Popover } from "../../../shared/ui/Popover";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
@@ -12,29 +14,25 @@ import { handBack, hasJumpedIn, useDelegationRows, useDelegationsVersion } from 
 import { InboxNeeds } from "../../needs/ui/InboxNeeds";
 import { NeedDetail, useShownNeed } from "../../needs/ui/NeedDetail";
 import { useNeedsYou } from "../../needs/model/needsLive";
-import { readAskLedger, subscribeAskLedger, type LedgerAsk } from "../../hub/model/askLedger";
+import { askStore } from "../model/askStore";
+import { askedOpenCount, askedRows, type AskedRow } from "../model/askedView";
 import { JOB_WORD, jobGroups, jobStatus, openJobCount } from "../model/chiefJobs";
 
-let ledgerVersion = 0;
-subscribeAskLedger(() => {
-  ledgerVersion += 1;
-});
+const subscribeAsks = (fn: () => void): (() => void) => askStore().subscribe(fn);
+const asksNow = () => askStore().doc();
 
 /** The asks he made that are still on the list (dropped ones are gone), newest first. */
-function useAsked(): LedgerAsk[] {
-  const version = useSyncExternalStore(subscribeAskLedger, () => ledgerVersion, () => 0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  return useMemo(() => readAskLedger().filter((row) => row.status !== "dropped").reverse(), [version]);
+function useAsked(): AskedRow[] {
+  const doc = useSyncExternalStore(subscribeAsks, asksNow, asksNow);
+  return useMemo(() => askedRows(doc), [doc]);
 }
-
-const ASKED_WORD: Record<LedgerAsk["status"], string> = { open: "Open", handled: "Done", parked: "Set aside", dropped: "Dropped" };
 
 const HINT = "px-2 py-2 text-[12px] leading-4 text-content/60";
 const QUIET = "shrink-0 rounded-md px-1.5 py-0.5 text-[12px] text-content/70 hover:bg-content/8 hover:text-content";
 
 export function useChiefCounts(): { needs: number; asked: number; working: number } {
   const needs = useNeedsYou().length;
-  const asked = useAsked().filter((item) => item.status === "open").length;
+  const asked = askedOpenCount(useAsked());
   const working = openJobCount(useDelegationRows());
   return { needs, asked, working };
 }
@@ -53,30 +51,27 @@ export function ChiefNeeds() {
   );
 }
 
-/** Everything the owner asked for, newest first: still open, done (with what closed it) or set aside. */
+/** Everything the owner asked for, newest first: still open, working, done (with what closed it) or waiting on him. */
 export function ChiefAsked() {
   const asked = useAsked();
   if (asked.length === 0) return <p className={HINT}>What you ask for shows here, so nothing gets lost in a long chat.</p>;
   return (
     <ul data-chief-asked className="flex flex-col">
-      {asked.map((item, index) => {
-        const note = item.status === "handled" ? item.evidence : item.gap;
-        return (
-          <li key={item.id} data-asked={item.status} className={`flex items-start gap-2 px-2 py-2${index ? " border-t border-stroke" : ""}`}>
-            <span className="mt-0.5">
-              <CircleWord circle={item.status === "open" && item.gap ? "red" : "grey"} word={ASKED_WORD[item.status]} ringOnly />
+      {asked.map((item, index) => (
+        <li key={item.id} data-asked={item.open ? "open" : "handled"} data-asked-status={item.status} className={`flex items-start gap-2 px-2 py-2${index ? " border-t border-stroke" : ""}`}>
+          <span className="mt-0.5">
+            <CircleWord circle={item.red ? "red" : "grey"} word={item.word} ringOnly />
+          </span>
+          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+            <span className={`text-[13px] leading-[18px] ${item.open ? "text-content" : "text-content/60"}`}>{item.title}</span>
+            <span className="text-[11px] leading-4 text-content/60">
+              {item.word}
+              {item.said ? ` · said ${item.said} times` : ""}
+              {item.note ? ` · ${item.note}` : ""}
             </span>
-            <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-              <span className={`text-[13px] leading-[18px] ${item.status === "open" ? "text-content" : "text-content/60"}`}>{item.title}</span>
-              <span className="text-[11px] leading-4 text-content/60">
-                {ASKED_WORD[item.status]}
-                {item.said && item.said > 1 ? ` · said ${item.said} times` : ""}
-                {note ? ` · ${note}` : ""}
-              </span>
-            </span>
-          </li>
-        );
-      })}
+          </span>
+        </li>
+      ))}
     </ul>
   );
 }

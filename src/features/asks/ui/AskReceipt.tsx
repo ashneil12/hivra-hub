@@ -5,7 +5,7 @@
 import { Check, ChevronRight, Plus, RotateCcw, X } from "../../../shared/ui/icons";
 import { useState, useSyncExternalStore, type ReactNode } from "react";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
-import { asksForBlock, receiptLine, STATUS_WORD, type Ask } from "../model/asks";
+import { asksForBlock, isQuiet, receiptLine, STATUS_WORD, type Ask } from "../model/asks";
 import { askStore } from "../model/askStore";
 
 function subscribe(fn: () => void): () => void {
@@ -161,7 +161,8 @@ export function AskReceipt({ blockId }: { blockId: string }) {
   const doc = useSyncExternalStore(subscribe, snapshot, snapshot);
   const [open, setOpen] = useState(false);
   const asks = asksForBlock(doc, blockId);
-  if (!asks.length) return null;
+  // A quiet ask (a lone short ask, answered by the reply) is on the Chief's list but gets no receipt until someone moves it.
+  if (!asks.length || asks.every(isQuiet)) return null;
   const waiting = asks.some((ask) => ask.status === "waiting");
   return (
     <div data-ask-receipt={blockId} className="mt-1 w-full max-w-[36rem] font-sans" onClick={(event) => event.stopPropagation()}>

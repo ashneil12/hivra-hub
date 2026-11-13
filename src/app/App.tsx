@@ -125,6 +125,7 @@ import { leadMemoryBlock, leadStandingBlock } from "../features/hub/model/hubMem
 import { longChatOn, treeContext, treeDate, treeGrep, treeZoom } from "../features/monos/model/monoTreeStore";
 import { isolatedCompaction, useMonoTrees } from "./hooks/useMonoTrees";
 import { useAskLedger } from "../features/asks/hooks/useAskLedger";
+import { useAskJobs } from "../features/asks/hooks/useAskJobs";
 import { askMateFor } from "../features/asks/model/askMate";
 import { openAsksKey, openAsksNote } from "../features/asks/model/askNotes";
 import { useNeedsRollup } from "../features/needs/hooks/useNeedsRollup";
@@ -11510,6 +11511,8 @@ function Workspace({
     send: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
     cli: async () => appCliCommand(await invoke<string | null>("app_cli_path")),
   });
+  // A job's end reaches the ask it covers: started while it works, done with its proof, or back to heard (asks/model/askJobs.ts).
+  useAskJobs(IS_HUB_BUNDLE);
   // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
   useHubChecks(
     {

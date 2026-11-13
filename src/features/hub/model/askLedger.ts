@@ -1,16 +1,18 @@
-// Ash's asks, written down when the message arrives (B5, I6): one row per thing he asked for, in whichever hub chat he
-// said it, kept in the webview's own storage so a quit, a crash or a restart loses nothing. A row keeps his exact words,
-// who owns it, and how it ended: open, handled (with what closed it), parked or dropped. Saying the same thing again
-// lands on the same row instead of making a second one.
+// What reads Ash's asks out of a message, and what checks a "done" against what was built (B5, I6). This file used to be
+// the hub ledger: its own rows in the webview's storage. It is no longer a store. The asks of every chat are in Ledger A
+// (asks/model/asks.ts, the one ask ledger; asks/model/askedView.ts is how the list and the dump check read it), and the
+// old key is only read, once, to move its open rows there (readLegacyAskLedger, asks/model/askMove.ts).
 //
-// The ledger is also where "done" is checked against what was built (I6): evidence is the commits in the chat's folder
-// (whoever made them), the files those commits changed, the Bot changes rows, and the tool calls the turn made. The
-// reply's prose is never evidence on its own. askSettle.ts compares the two and reopens an ask the build does not cover.
+// What stays here is pure: the regex reading of a message (extractAsks, which asks/model/wideReading.ts folds into the
+// ledger's own reading so nothing this found is lost), and the evidence: the commits in the chat's folder (whoever made
+// them), the files those commits changed, the Bot changes rows, and the tool calls the turn made. The reply's prose is
+// never evidence on its own. askSettle.ts compares the two and reopens an ask the build does not cover.
 import { isStatusQuestion } from "../../monos/model/statusReply";
 import type { BotChange } from "./botChanges";
 
 export type AskStatus = "open" | "handled" | "parked" | "dropped";
 
+/** A row of the old hub ledger, as the key left it. Only the one-time move reads these (askMove.ts). */
 export type LedgerAsk = {
   id: string;
   chatId: string;
@@ -42,8 +44,8 @@ export type LedgerAsk = {
 /** One ask as it came out of a message. */
 export type AskText = { title: string; words: string };
 
+/** The old hub ledger's key. Read once (readLegacyAskLedger), never written. */
 const KEY = "monocode:hub-ask-ledger";
-const LEDGER_MAX = 400;
 const ASKS_PER_MESSAGE = 6;
 const TITLE_MAX = 90;
 const WORDS_MAX = 500;
@@ -124,27 +126,32 @@ export function extractAsks(text: string): AskText[] {
   return out;
 }
 
-function fnv(text: string): string {
-  let hash = 0x811c9dc5;
-  for (let i = 0; i < text.length; i++) {
-    hash ^= text.charCodeAt(i);
-    hash = Math.imul(hash, 0x01000193) >>> 0;
-  }
-  return hash.toString(36);
-}
-
 const STATUSES: readonly AskStatus[] = ["open", "handled", "parked", "dropped"];
 
-/** Every row, oldest first. Read fresh each time, so a restart reads what the last window wrote. */
-export function readAskLedger(): LedgerAsk[] {
-  let parsed: unknown = [];
+/**
+ * The rows the old hub ledger left in this webview, oldest first. READ ONLY: since the ledgers were made one
+ * (asks/model/askMove.ts) nothing writes this key and nothing reads it but the one-time move into Ledger A
+ * (asks/model/askStore.ts moveFromHub). It is kept as it is for one release, so a move that needs another look still has
+ * the rows; the next release deletes it. `ok` is false when the key holds something that is not a list: the move then
+ * leaves itself undone for the next start, so a row it could not read is never lost to a move that marked itself done.
+ */
+export function readLegacyAskLedger(): { rows: LedgerAsk[]; ok: boolean } {
+  let raw: string | null;
   try {
-    parsed = JSON.parse(localStorage.getItem(KEY) ?? "[]");
+    raw = localStorage.getItem(KEY);
   } catch {
-    return [];
+    // No storage: nothing here to move, and nothing to lose.
+    return { rows: [], ok: true };
   }
-  if (!Array.isArray(parsed)) return [];
-  return parsed.filter((row): row is LedgerAsk => {
+  if (raw === null) return { rows: [], ok: true };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { rows: [], ok: false };
+  }
+  if (!Array.isArray(parsed)) return { rows: [], ok: false };
+  const rows = parsed.filter((row): row is LedgerAsk => {
     if (!row || typeof row !== "object") return false;
     const r = row as Record<string, unknown>;
     return (
@@ -157,142 +164,7 @@ export function readAskLedger(): LedgerAsk[] {
       STATUSES.includes(r.status as AskStatus)
     );
   });
-}
-
-const ledgerListeners = new Set<() => void>();
-
-/** Hears every write to the ledger in this window (the Chief of Staff's "You asked" list reads it live). */
-export function subscribeAskLedger(listener: () => void): () => void {
-  ledgerListeners.add(listener);
-  return () => ledgerListeners.delete(listener);
-}
-
-/**
- * The rows to keep. Up to LEDGER_MAX, all of them. Past it, closed rows (handled, parked, dropped) go, oldest first, and
- * an open row never does: a ledger of open asks grows past the limit rather than lose one nobody settled.
- */
-function withinLimit(rows: readonly LedgerAsk[]): LedgerAsk[] {
-  let over = rows.length - LEDGER_MAX;
-  if (over <= 0) return [...rows];
-  return rows.filter((row) => {
-    if (over > 0 && row.status !== "open") {
-      over -= 1;
-      return false;
-    }
-    return true;
-  });
-}
-
-function writeLedger(rows: readonly LedgerAsk[]): void {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(withinLimit(rows)));
-  } catch {
-    // Without storage the ledger lasts while this window lives; only a restart loses it.
-  }
-  for (const listener of ledgerListeners) listener();
-}
-
-/**
- * Write down the asks in one of Ash's messages. A repeated ask lands on its existing row (moved to the latest words and
- * opened again if it had been closed) and is counted, never duplicated. Returns this message's rows.
- */
-export function recordAskText(chatId: string, blockId: string, text: string, at = Date.now()): LedgerAsk[] {
-  const asks = extractAsks(text);
-  if (!asks.length) return [];
-  const rows = readAskLedger();
-  const out: LedgerAsk[] = [];
-  let changed = false;
-  for (const ask of asks) {
-    const id = `ask-${fnv(`${chatId}\0${askKey(ask.words)}`)}`;
-    const index = rows.findIndex((row) => row.id === id);
-    if (index < 0) {
-      const row: LedgerAsk = { id, chatId, blockId, title: ask.title, words: ask.words, at, status: "open", said: 1 };
-      rows.push(row);
-      out.push(row);
-      changed = true;
-      continue;
-    }
-    const existing = rows[index];
-    if (existing.blockId === blockId) {
-      out.push(existing);
-      continue;
-    }
-    const reopened = existing.status !== "open";
-    const next: LedgerAsk = {
-      ...existing,
-      blockId,
-      title: ask.title,
-      words: ask.words,
-      at,
-      said: (existing.said ?? 1) + 1,
-    };
-    if (reopened) {
-      next.status = "open";
-      delete next.evidence;
-      delete next.closedAt;
-      delete next.gap;
-      delete next.held;
-      delete next.settledCheck;
-      delete next.reopenCheck;
-    }
-    rows[index] = next;
-    out.push(next);
-    changed = true;
-  }
-  if (changed) writeLedger(rows);
-  return out;
-}
-
-/** This chat's rows for one of his messages. */
-export function asksFor(chatId: string, blockId: string): LedgerAsk[] {
-  return readAskLedger().filter((row) => row.chatId === chatId && row.blockId === blockId);
-}
-
-/** The rows still waiting, oldest first (one chat's when a chat is named). */
-export function openAsks(chatId?: string): LedgerAsk[] {
-  return readAskLedger().filter((row) => row.status === "open" && (!chatId || row.chatId === chatId));
-}
-
-/** One row changed in place; nothing when it is gone. */
-export function patchAsk(id: string, patch: Partial<LedgerAsk>): LedgerAsk | undefined {
-  const rows = readAskLedger();
-  const index = rows.findIndex((row) => row.id === id);
-  if (index < 0) return undefined;
-  const next = { ...rows[index], ...patch };
-  rows[index] = next;
-  writeLedger(rows);
-  return next;
-}
-
-/** Close an ask with the evidence that closed it. */
-export function handleAsk(id: string, evidence: string, at = Date.now()): LedgerAsk | undefined {
-  return patchAsk(id, { status: "handled", evidence, closedAt: at, gap: undefined, held: undefined });
-}
-
-/** Open a closed ask again, with the gap in plain words. */
-export function reopenAsk(id: string, gap: string): LedgerAsk | undefined {
-  return patchAsk(id, { status: "open", gap, closedAt: undefined, evidence: undefined, held: undefined });
-}
-
-/** Take it off the list without pretending it was done. */
-export function parkAsk(id: string, why?: string): LedgerAsk | undefined {
-  return patchAsk(id, { status: "parked", gap: why });
-}
-
-/** The same, when he dropped it himself. */
-export function dropAsk(id: string, why?: string): LedgerAsk | undefined {
-  return patchAsk(id, { status: "dropped", gap: why });
-}
-
-/**
- * The one quiet line a check card shows under its finding: the asks from that message that are still open. Empty when
- * there are none, so a check about chatter adds nothing.
- */
-export function openAskLine(blockId: string): string {
-  const rows = readAskLedger().filter((row) => row.blockId === blockId && row.status === "open");
-  if (!rows.length) return "";
-  const titles = rows.slice(0, 3).map((row) => row.title);
-  return `Still open: ${titles.join("; ")}${rows.length > 3 ? ` (+${rows.length - 3} more)` : ""}`;
+  return { rows, ok: true };
 }
 
 // --- evidence ---------------------------------------------------------------------------------------------------

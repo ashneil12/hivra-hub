@@ -2,7 +2,10 @@
 // The light checker (Ash, 21 Oct): one cheap look after a dump, a private check only when something looks missed.
 // B5 + I6 (22 Oct): any hub chat, a plain New-session one included; the dump is written down when it arrives; the look
 // sees what the chat actually built, not only what its reply says.
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { askStore, setAskStore } from "../../asks/model/askStore";
+import { routeHubDump } from "../../asks/model/hubRoute";
+import { freshAskStore, openAsksIn as openAsks } from "../../asks/testbed/hubAsks";
 import type { Block, Session } from "../../sessions/model/session";
 import {
   builtEvidence,
@@ -17,10 +20,14 @@ import {
   readDumpNotes,
   replyAfter,
 } from "./dumpCheck";
-import { openAsks } from "./askLedger";
 import { CHECK_PREFIX } from "./hubChecks";
 
-beforeEach(() => localStorage.clear());
+// The asks go into the one ask ledger (asks/model/asks.ts); this file holds the dump check's own notes and looks.
+beforeEach(() => {
+  localStorage.clear();
+  freshAskStore();
+});
+afterEach(() => setAskStore(undefined));
 
 const DUMP =
   "ok so: the footer is cramped, the save button should say when it worked\nand we said fridays for the board review right? also dark mode some day maybe\nalso the settings panel needs a tidy";
@@ -118,13 +125,27 @@ it("checks one short ask in a plain New-session chat, and writes it into the led
     block("u1", "user", "fix the save bug", { startedAt: asked }),
     block("a1", "assistant", "Where does it fail?"),
   ]);
-  await lookAtDumps([chat], look, (checks) => offered.push(...checks));
+  // The dump noticed for the first time is written into the ask ledger (the app hands it to hubRoute.ts), with the time he sent it.
+  const routed: Promise<unknown>[] = [];
+  await lookAtDumps([chat], look, (checks) => offered.push(...checks), { onNewDump: (dump) => routed.push(routeHubDump(dump, () => undefined, askStore())) });
+  await Promise.all(routed);
   expect(look).toHaveBeenCalledTimes(1);
   expect(offered).toHaveLength(1);
   expect((offered[0] as { id: string }).id).toBe("dc-u1");
   const rows = openAsks("chat-1");
   expect(rows).toHaveLength(1);
   expect(rows[0]).toMatchObject({ blockId: "u1", title: "fix the save bug", words: "fix the save bug", at: asked });
+});
+
+it("hands each dump to the ask ledger once, when it is first noticed, and never writes an ask of its own", () => {
+  const now = Date.now();
+  const seen: unknown[] = [];
+  const chat = session("chat-1", [block("u1", "user", DUMP, { startedAt: now - 5_000 })], { busy: true });
+  noteDumps([chat], now, undefined, (dump) => seen.push(dump));
+  noteDumps([chat], now + 1000, undefined, (dump) => seen.push(dump));
+  expect(seen).toEqual([{ chatId: "chat-1", blockId: "u1", text: DUMP, at: now - 5_000 }]);
+  // The dump check keeps its notes and nothing else: the old hub ledger's key is never written.
+  expect(localStorage.getItem("monocode:hub-ask-ledger")).toBeNull();
 });
 
 it("leaves chats alone while they are busy or queued, and never checks a worker or the checker's own chat", async () => {

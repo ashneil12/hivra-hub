@@ -1,23 +1,17 @@
 // @vitest-environment happy-dom
-// Ash's asks, written down when they arrive (B5, I6): what a message asked for, one row each, kept across a restart,
-// a repeated ask on its own row. And the evidence an ask is judged against: the commits in the chat's folder (whoever
-// made them) and the files they changed, read here from a real temporary git repository so the parsing is proven.
+// Ash's asks, read out of a message (B5, I6): what a message asked for, in his order. And the evidence an ask is judged
+// against: the commits in the chat's folder (whoever made them) and the files they changed, read here from a real
+// temporary git repository so the parsing is proven.
+//
+// This file used to also test the hub ledger's own rows (recordAskText, handleAsk, a restart, a repeated ask). That ledger
+// is folded into the one ask ledger and no longer written, so those tests moved with it: a repeated ask on its own row,
+// across a restart, is in asks/model/hubRoute.test.ts ("saying it again"); what a done ask keeps is in askedView.test.ts.
 import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import {
-  askCovered,
-  doneClaimOf,
-  evidenceSince,
-  extractAsks,
-  handleAsk,
-  openAsks,
-  recordAskText,
-  type EvidenceCommit,
-  type EvidenceSource,
-} from "./askLedger";
+import { beforeEach, expect, it } from "vitest";
+import { askCovered, doneClaimOf, evidenceSince, extractAsks, type EvidenceCommit, type EvidenceSource } from "./askLedger";
 
 beforeEach(() => localStorage.clear());
 
@@ -42,28 +36,9 @@ it("takes the asks out of a message in his order and leaves chatter out", () => 
   expect(extractAsks("fix the save bug. Please fix the save bug.")).toHaveLength(1);
 });
 
-it("keeps the ledger across a restart, and lands a repeated ask on its row instead of a second one", async () => {
-  const first = Date.now() - 60_000;
-  const [row] = recordAskText("chat-1", "u1", "fix the save bug", first);
-  expect(row).toMatchObject({ chatId: "chat-1", blockId: "u1", status: "open", said: 1, at: first });
-  handleAsk(row.id, "answered right as it is");
-
-  // A restart: the module is loaded fresh, and the row is still there exactly as it was closed.
-  vi.resetModules();
-  const again = await import("./askLedger");
-  const kept = again.readAskLedger();
-  expect(kept).toHaveLength(1);
-  expect(kept[0]).toMatchObject({ id: row.id, status: "handled", evidence: "answered right as it is" });
-
-  // He says it again later: the same row, moved to the newest words and open again, not a copy.
-  const later = Date.now();
-  const [repeat] = again.recordAskText("chat-1", "u3", "Please fix the save bug!", later);
-  const rows = again.readAskLedger();
-  expect(rows).toHaveLength(1);
-  expect(repeat.id).toBe(row.id);
-  expect(rows[0]).toMatchObject({ id: row.id, blockId: "u3", at: later, status: "open", said: 2 });
-  expect(rows[0].evidence).toBeUndefined();
-  expect(openAsks("chat-1")).toHaveLength(1);
+it("writes nothing to the old hub ledger's key: reading a message and judging evidence touch no storage", () => {
+  extractAsks("fix the save bug");
+  expect(localStorage.getItem("monocode:hub-ask-ledger")).toBeNull();
 });
 
 it("reads the commits inside his window from the chat's folder, whoever made them, with the files they changed", async () => {

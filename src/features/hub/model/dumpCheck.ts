@@ -9,15 +9,9 @@
 // rest of the hub reads (checkpointEdits.ts, soulTamper.ts), not just the reply's prose.
 import type { Block, Session } from "../../sessions/model/session";
 import { isEditTool, isExecuteTool } from "../../../integrations/harness/core/preview";
-import {
-  asksFor,
-  coveringEvidence,
-  evidenceSince,
-  extractAsks,
-  handleAsk,
-  recordAskText,
-  type EvidenceSource,
-} from "./askLedger";
+import { askStore } from "../../asks/model/askStore";
+import { askedFor } from "../../asks/model/askedView";
+import { coveringEvidence, evidenceSince, extractAsks, type EvidenceSource } from "./askLedger";
 import { CHECK_RULES } from "./checkerRules";
 import { CHECK_PREFIX, type HubCheck } from "./hubChecks";
 import { forUser } from "./userName";
@@ -79,6 +73,9 @@ function recentDumps(
 /** One dump, written down when it arrives: what Ash asked and which chat owns it. */
 export type DumpNote = { chatId: string; blockId: string; text: string; at: number };
 
+/** A dump noticed for the first time: its text in full, and the time Ash sent it (not the time it was noticed). */
+export type NewDump = { chatId: string; blockId: string; text: string; at: number };
+
 const NOTES_KEY = "monocode:hub-dump-asks";
 const NOTES_MAX = 100;
 const NOTE_TEXT_MAX = 8_000;
@@ -117,11 +114,16 @@ function writeDumpNotes(notes: readonly DumpNote[]): void {
  * checked after a quit, a crash or a restart that cut its answer. An unanswered dump is always noted; an answered one
  * only while it is recent (two hours), so upgrading doesn't sweep the whole backlog. A worker (`app-...`) and any chat
  * the caller says no to are never noted: they never own a check.
+ *
+ * Each dump noted for the first time is handed to `onNew` at that moment, with the time Ash sent it: that is where the
+ * app writes its asks into the ask ledger for a chat no first mate's hearing covers (asks/model/hubRoute.ts). This file
+ * keeps no ledger of its own any more (askLedger.ts), so nothing is written twice.
  */
 export function noteDumps(
   sessions: readonly Pick<Session, "id" | "blocks" | "busy">[],
   now = Date.now(),
   skip?: (sessionId: string) => boolean,
+  onNew?: (dump: NewDump) => void,
 ): DumpNote[] {
   const notes = readDumpNotes();
   const known = new Set(notes.map((note) => note.blockId));
@@ -136,8 +138,8 @@ export function noteDumps(
         text: (found.block.text ?? "").slice(0, NOTE_TEXT_MAX),
         at: now,
       });
-      // The same moment the note is written, his asks go into the ledger (B5): a repeated ask lands on its row.
-      recordAskText(session.id, found.block.id, found.block.text ?? "", found.block.startedAt ?? found.block.sentAt ?? now);
+      // The same moment the note is written, his asks are handed on to be written down (B5).
+      onNew?.({ chatId: session.id, blockId: found.block.id, text: found.block.text ?? "", at: found.block.startedAt ?? found.block.sentAt ?? now });
       known.add(found.block.id);
       added = true;
     }
@@ -285,6 +287,8 @@ export type DumpCheckOptions = {
   skip?: (sessionId: string) => boolean;
   /** Where commits and Bot changes come from (askEvidence.ts); the look compares them too, not only the reply. */
   source?: EvidenceSource;
+  /** Each dump noticed for the first time, to be written into the ask ledger (see noteDumps). */
+  onNewDump?: (dump: NewDump) => void;
 };
 
 /**
@@ -301,7 +305,7 @@ export async function lookAtDumps(
   offer: (checks: HubCheck[]) => unknown,
   options: DumpCheckOptions = {},
 ): Promise<void> {
-  noteDumps(sessions, options.now, options.skip);
+  noteDumps(sessions, options.now, options.skip, options.onNewDump);
   const byId = new Map(sessions.map((session) => [session.id, session]));
   for (const note of readDumpNotes()) {
     const session = byId.get(note.chatId);
@@ -334,10 +338,11 @@ export async function lookAtDumps(
       continue;
     }
     // Nothing missed: close the asks the build visibly covers, leaving any the look could not tie to work open.
-    for (const ask of asksFor(session.id, note.blockId)) {
-      if (ask.status !== "open") continue;
+    const store = askStore();
+    for (const ask of askedFor(await store.load(), session.id, note.blockId)) {
+      if (!ask.open || ask.kind === "idea") continue;
       const cover = coveringEvidence(ask, evidence);
-      if (cover) handleAsk(ask.id, `looked, and the build shows: ${cover}`);
+      if (cover) await store.handle(ask.id, `looked, and the build shows: ${cover}`);
     }
   }
 }

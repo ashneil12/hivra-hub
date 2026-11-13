@@ -1,9 +1,12 @@
-// Settle Ash's asks against what was built (B5, I6). askLedger.ts keeps the rows; this file walks the open ones and
-// asks the same question every time: does the build cover his words? Only a "right" answer closes an ask, a "fixed"
-// whose build lines up with it, or a done claim with something behind it. A "fixed" or a done claim with nothing behind
-// it leaves the row open, says in plain words what is missing, and sends one private check to the owning chat through
-// the usual delivery (hubChecks.ts) so its card shows the still-open asks beside the verification line.
+// Settle Ash's asks against what was built (B5, I6). The ask ledger (asks/model/asks.ts, Ledger A: the one ledger, read
+// here through asks/model/askedView.ts) keeps the rows; this file walks the open ones and asks the same question every
+// time: does the build cover his words? Only a "right" answer closes an ask, a "fixed" whose build lines up with it, or a
+// done claim with something behind it. A "fixed" or a done claim with nothing behind it leaves the row open, says in plain
+// words what is missing, and sends one private check to the owning chat through the usual delivery (hubChecks.ts) so its
+// card shows the still-open asks beside the verification line.
 import type { Block, Session } from "../../sessions/model/session";
+import { askStore } from "../../asks/model/askStore";
+import { openAskRows, type AskedRow } from "../../asks/model/askedView";
 import { CHECK_RULES } from "./checkerRules";
 import {
   askCovered,
@@ -12,11 +15,7 @@ import {
   evidenceSince,
   nowClaimOf,
   gapLine,
-  handleAsk,
-  openAsks,
-  patchAsk,
   type EvidenceSource,
-  type LedgerAsk,
 } from "./askLedger";
 import { builtEvidence } from "./dumpCheck";
 import { CHECK_PREFIX, checkVerdict, type HubCheck } from "./hubChecks";
@@ -50,7 +49,7 @@ function checkTurnFor(blocks: readonly Block[], blockId: string): Block[] | unde
 }
 
 /** The private check sent into the chat that owns an ask. */
-function askCheck(ask: LedgerAsk, finding: string, body: string, id: string, rules: string = CHECK_RULES): HubCheck {
+function askCheck(ask: AskedRow, finding: string, body: string, id: string, rules: string = CHECK_RULES): HubCheck {
   return {
     id,
     dumpId: ask.blockId,
@@ -63,8 +62,8 @@ function askCheck(ask: LedgerAsk, finding: string, body: string, id: string, rul
 }
 
 /** A "fixed" the build does not back up: it stays open and the chat is asked once. */
-function holdFixed(ask: LedgerAsk, gap: string): HubCheck {
-  patchAsk(ask.id, { gap, held: undefined });
+async function holdFixed(ask: AskedRow, gap: string): Promise<HubCheck> {
+  await askStore().check(ask.id, { gap, held: null });
   return askCheck(
     ask,
     `- "${ask.title}" was answered fixed, but nothing built since it lines up`,
@@ -74,8 +73,8 @@ function holdFixed(ask: LedgerAsk, gap: string): HubCheck {
 }
 
 /** A done claim with an open ask behind it: the claim is not recorded, and the card shows what is still open. */
-function holdClaim(ask: LedgerAsk, claim: string, gap: string): HubCheck {
-  patchAsk(ask.id, { gap, held: { claim, at: Date.now() } });
+async function holdClaim(ask: AskedRow, claim: string, gap: string): Promise<HubCheck> {
+  await askStore().check(ask.id, { gap, held: { claim, at: Date.now() } });
   return askCheck(
     ask,
     `- "${ask.title}" was called done with nothing built for it`,
@@ -94,8 +93,8 @@ function holdClaim(ask: LedgerAsk, claim: string, gap: string): HubCheck {
  */
 export const EARLY_RULES = `Reply in one plain line, with no "Right:" or "Fixed:" label: it's a correction, not a fix.`;
 
-function holdEarly(ask: LedgerAsk, claim: string, jobs: readonly string[]): HubCheck {
-  patchAsk(ask.id, { held: { claim, at: Date.now() } });
+async function holdEarly(ask: AskedRow, claim: string, jobs: readonly string[]): Promise<HubCheck> {
+  await askStore().check(ask.id, { held: { claim, at: Date.now() } });
   const named = jobs.slice(0, 3).map((title) => `"${title}"`).join(", ");
   return askCheck(
     ask,
@@ -122,7 +121,8 @@ export async function settleAsks(
     openJobs?: (sessionId: string) => readonly string[];
   } = {},
 ): Promise<void> {
-  const asks = openAsks();
+  const store = askStore();
+  const asks = openAskRows(await store.load());
   if (!asks.length) return;
   const byId = new Map(sessions.map((session) => [session.id, session]));
   const checks: HubCheck[] = [];
@@ -141,19 +141,19 @@ export async function settleAsks(
     const checkId = turn?.[0].monoCheck?.id ?? "";
     if (verdict) {
       // One answer settles an ask once, however often the chat is read.
-      if (ask.settledCheck === checkId) continue;
-      patchAsk(ask.id, { settledCheck: checkId });
+      if (ask.check?.settled === checkId) continue;
+      await store.check(ask.id, { settled: checkId });
       if (verdict === "right") {
-        handleAsk(ask.id, evidenceLineOf(ask, evidence, "answered right as it is"));
+        await store.handle(ask.id, evidenceLineOf(ask, evidence, "answered right as it is"));
         continue;
       }
       if (askCovered(ask, evidence)) {
-        handleAsk(ask.id, evidenceLineOf(ask, evidence, "answered fixed, and the build shows"));
+        await store.handle(ask.id, evidenceLineOf(ask, evidence, "answered fixed, and the build shows"));
         continue;
       }
-      if (ask.reopenCheck === checkId) continue;
-      patchAsk(ask.id, { reopenCheck: checkId });
-      checks.push(holdFixed(ask, gapLine(ask, evidence)));
+      if (ask.check?.reopen === checkId) continue;
+      await store.check(ask.id, { reopen: checkId });
+      checks.push(await holdFixed(ask, gapLine(ask, evidence)));
       continue;
     }
     const reply = replyUntil(session.blocks, index);
@@ -161,24 +161,24 @@ export async function settleAsks(
     // r85: while its job is still out, "now does X" counts as a claim too, and the check says to wait for the report.
     const early = jobs.length ? (doneClaimOf(reply) ?? nowClaimOf(reply)) : undefined;
     if (early && !askCovered(ask, evidence)) {
-      if (ask.held?.claim !== early) checks.push(holdEarly(ask, early, jobs));
+      if (ask.check?.held?.claim !== early) checks.push(await holdEarly(ask, early, jobs));
       continue;
     }
     const claim = doneClaimOf(reply);
     if (!claim) continue;
     if (askCovered(ask, evidence)) {
-      handleAsk(ask.id, evidenceLineOf(ask, evidence, "called done, and the build shows"));
+      await store.handle(ask.id, evidenceLineOf(ask, evidence, "called done, and the build shows"));
       continue;
     }
     // The same claim already held: nothing new to say until the chat answers.
-    if (ask.held?.claim === claim) continue;
-    checks.push(holdClaim(ask, claim, gapLine(ask, evidence)));
+    if (ask.check?.held?.claim === claim) continue;
+    checks.push(await holdClaim(ask, claim, gapLine(ask, evidence)));
   }
   if (checks.length) await offer(checks);
 }
 
 /** "…: committed abc123 fixed the save (src/save.ts)", or just the plain words when nothing lines up. */
-function evidenceLineOf(ask: LedgerAsk, evidence: readonly string[], how: string): string {
+function evidenceLineOf(ask: AskedRow, evidence: readonly string[], how: string): string {
   const cover = coveringEvidence(ask, evidence);
   return cover ? `${how}: ${cover}` : how;
 }
