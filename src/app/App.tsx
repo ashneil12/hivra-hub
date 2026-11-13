@@ -778,6 +778,7 @@ import {
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 // Hivra WP-10: a first mate reads and never edits (features/firstmate/).
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
+import { useFirstMateDoneHold } from "../features/firstmate/hooks/useFirstMateDoneHold"; // SC-3b
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { crewLaunch } from "../features/crew/model/crewSession";
@@ -18333,6 +18334,24 @@ function Workspace({
   // r30h: which chats run a turn now, so a worker that declared it cannot go on goes to Ash once its Lead's turn ended.
   useBusyChatsFeed(sessions, liveBusySessionIds);
   useFirstMateCheckoutGuard(sessions);
+  // SC-3b: in an at-ship project a first mate's "ready to ship" is held until a ship check has passed for this version.
+  useFirstMateDoneHold({
+    sessions,
+    ask: (chatId, message) => {
+      // queueMonoSessionCompletion drops a message for a chat that isn't an orchestrator chat without saying so. Refusing
+      // here keeps the hold from adding its "Held" note for a message that was never queued, and gives its memo back.
+      if (!isOrchestratorChat(chatId)) throw new Error("This chat does not take app messages.");
+      return queueMonoSessionCompletionRef.current(chatId, message);
+    },
+    note: (chatId, block) =>
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === chatId && !session.blocks.some((entry) => entry.id === block.id)
+            ? { ...session, blocks: [...session.blocks, block] }
+            : session,
+        ),
+      ),
+  });
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
   useHubDataVersion();
