@@ -131,6 +131,7 @@ never reads it, so "example data" is not a state any real screen is in.
 | Decisions, Activity, Work log, Changes, Chat history | existing | Works |
 | Export and import, Backups, Secrets | existing | Works; G1 (extra chats not in the export) |
 | Advanced, Worktrees: Show code tools | `codeTools.ts` | Thin: G6 |
+| Crew: How tasks are tested (Test at ship, Light tests each task, Full checks each task, No testing), per project; from Home a project picker comes first | `TestingModeSetting.tsx` → `delivery_settings_get` (reads `testingMode`, `testingDefaulted`, `updatedAt`), `delivery_testing_mode_set` (writes on top of the `updatedAt` it read) | Works (SC-3a) |
 
 ### First run
 | Control | Calls or reads | State |
