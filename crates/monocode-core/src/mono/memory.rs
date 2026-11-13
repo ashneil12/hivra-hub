@@ -8,7 +8,7 @@ pub const MAX_LINES: usize = 200;
 pub const MAX_BYTES: usize = 24 * 1024;
 static SECRETS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     [
-        r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----",
+        r"(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----.*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----",
         r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}",
         r"\bgh[pousr]_[A-Za-z0-9]{20,}",
         r"\bgithub_pat_[A-Za-z0-9_]{20,}",
