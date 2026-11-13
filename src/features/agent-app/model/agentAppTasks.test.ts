@@ -1951,6 +1951,22 @@ describe("tasks.delegate gates (WP-40)", () => {
     expect(saveGates).toHaveBeenLastCalledWith(first.taskId, { code: true, checks: ["lint"] }, PROJECT);
   });
 
+  // SC-7: a bug fix keeps its kind with the task, with no gates named, so the round can ask for the failing run first.
+  it("keeps a bug fix's kind on the task even when no gate was named, and refuses another kind before anything starts", async () => {
+    const { source, host, started, api } = fixture();
+    const saveGates = vi.fn(async () => undefined);
+    api.saveGates = saveGates;
+    const out = (await handleAgentApp(source, "r-fix", "tasks.delegate", { brief: "The save loses a note.", kind: "fix" }, host)) as {
+      taskId: string;
+    };
+    expect(started).toHaveLength(1);
+    expect(saveGates).toHaveBeenCalledWith(out.taskId, { kind: "fix" }, PROJECT);
+    await expect(
+      handleAgentApp(source, "r-feature", "tasks.delegate", { brief: "Add delete.", kind: "feature" }, host),
+    ).rejects.toThrow(`"feature" isn't a kind of brief. Use fix, or leave kind out.`);
+    expect(started).toHaveLength(1);
+  });
+
   it("does not keep gates on a task that is only waiting", async () => {
     const { source, host, api } = fixture();
     api.saveGates = vi.fn(async () => undefined);

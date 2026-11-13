@@ -1822,6 +1822,22 @@ pub fn owned(conn: &Connection, input: OwnedQuery) -> Result<Vec<Delegation>, St
     Ok(rows)
 }
 
+/// SC-7: the most rows `of_owner` reads.
+const OF_OWNER_MAX: i64 = 200;
+
+/// SC-7: every row one chat owns, in any state, oldest first, the newest `OF_OWNER_MAX` of them. The hold on a first mate's
+/// "done" reads what is still open among them (firstmate/open_work.rs). Only that chat's rows: a blank id is refused.
+pub fn of_owner(conn: &Connection, owner_session: &str) -> Result<Vec<Delegation>, String> {
+    let owner = session_id(owner_session, "owner session")?;
+    let mut rows = query(
+        conn,
+        "WHERE owner_session = ?1 ORDER BY created_at DESC, rowid DESC LIMIT ?2",
+        &[&owner, &OF_OWNER_MAX],
+    )?;
+    rows.reverse();
+    Ok(rows)
+}
+
 /// The followed-brief rows (any state) behind briefs waiting in one chat's queue, by their request ids: the app checks
 /// a waiting brief against its row before it goes in, so one cancelled meanwhile (task_cancel, a cascade Stop) never
 /// does, even when the queue that still held it was saved before the cancel.

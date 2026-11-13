@@ -20,6 +20,8 @@ export type GateRequest = {
   gates?: string[];
   checks?: string[];
   code?: boolean;
+  /** SC-7: `fix` when the brief fixes a bug; the worker must then show a failing run of its test first (gates.rs). */
+  kind?: "fix";
 };
 
 /**
@@ -30,17 +32,30 @@ export function gateRequest(input: {
   gates?: unknown;
   checks?: unknown;
   code?: unknown;
+  kind?: unknown;
 }): GateRequest | undefined {
   if (input.code !== undefined && typeof input.code !== "boolean")
     throw new Error("code must be true or false");
   const gates = wordList(input.gates, "gates");
   const checks = checkList(input.checks);
-  if (!input.code && !gates?.length && !checks?.length) return undefined;
+  const kind = kindOf(input.kind);
+  if (!input.code && !gates?.length && !checks?.length && !kind) return undefined;
   return {
     ...(gates?.length ? { gates } : {}),
     ...(checks?.length ? { checks } : {}),
     ...(input.code ? { code: true } : {}),
+    ...(kind ? { kind } : {}),
   };
+}
+
+/** SC-7: the kind a brief may name is `fix`; blank is none. Refused in the words Rust uses (gates.rs `check_kind`). */
+function kindOf(value: unknown): "fix" | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("kind must be fix");
+  const kind = value.trim();
+  if (!kind) return undefined;
+  if (kind.toLowerCase() === "fix") return "fix";
+  throw new Error(`"${kind.slice(0, 40)}" isn't a kind of brief. Use fix, or leave kind out.`);
 }
 
 /** A gate name, trimmed. An unknown word is refused with the original text, as Rust does. */
