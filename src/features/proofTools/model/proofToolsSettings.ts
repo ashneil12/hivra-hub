@@ -14,9 +14,12 @@ import {
   type ProofToolView,
 } from "./proofTools";
 
-/** The line under the heading: what the section is, and that the app never installs a tool by itself. */
+/**
+ * The line under the heading: what the section is, that every tool the project has is on until it is switched off (PT-4), and
+ * that the app never installs a tool by itself.
+ */
 export const PROOF_TOOLS_HINT =
-  "Open-source tools that check the work. The app uses the ones this project already has and never installs one by itself.";
+  "Open-source tools that check the work. Each one this project has is on until you switch it off, and the app never installs one by itself.";
 /** A project where nothing in the catalogue fits. */
 export const NONE_FIT_LINE = "None of these tools fit this project.";
 /** The line shown when a read or a write didn't go through and the app said nothing a person can use. */
