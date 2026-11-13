@@ -3,7 +3,7 @@
 //! A project that looks like a web or mobile app is offered the plugin. Installing still waits for the person's OK.
 //! Proof left under the worker's `.e2e/` is attached to that worker's report.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs::OpenOptions;
 use std::io::Read;
 use std::path::{Component, Path, PathBuf};
@@ -122,9 +122,67 @@ pub struct DeclineResult {
 }
 
 #[derive(Serialize, serde::Deserialize, Clone, Debug, Default, PartialEq, Eq)]
-struct Offers {
-    revision: u64,
-    declined: BTreeSet<String>,
+pub(crate) struct Offers {
+    pub(crate) revision: u64,
+    pub(crate) declined: BTreeSet<String>,
+    /// PT-1: which proof tool a first mate proposed for a folder, and whether the person said not now (per folder, per
+    /// tool id; src-tauri/src/proof_tools/offers.rs). It shares this file, its lock and its `revision`, so one writer at a
+    /// time and a stale writer loses. A file written before this existed has none, and reads as it always did.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "lenient_tools"
+    )]
+    pub(crate) tools: BTreeMap<String, BTreeMap<String, ToolOffer>>,
+}
+
+/// PT-1: the `tools` record is read entry by entry. An entry that isn't one (a state this build doesn't know, a hand edit)
+/// is left out, so it can never make the whole offer list unreadable and take the Verify offer down with it.
+fn lenient_tools<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<BTreeMap<String, BTreeMap<String, ToolOffer>>, D::Error> {
+    let value = <Value as serde::Deserialize>::deserialize(deserializer)?;
+    let mut out = BTreeMap::new();
+    let Some(folders) = value.as_object() else {
+        return Ok(out);
+    };
+    for (folder, tools) in folders {
+        let Some(tools) = tools.as_object() else {
+            continue;
+        };
+        let kept: BTreeMap<String, ToolOffer> = tools
+            .iter()
+            .filter_map(|(id, offer)| {
+                serde_json::from_value::<ToolOffer>(offer.clone())
+                    .ok()
+                    .map(|offer| (id.clone(), offer))
+            })
+            .collect();
+        if !kept.is_empty() {
+            out.insert(folder.clone(), kept);
+        }
+    }
+    Ok(out)
+}
+
+/// PT-1: what is on record about one proof tool in one folder. A tool with no record is open to be proposed.
+#[derive(Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum ToolState {
+    /// A first mate put it to the person. It is never proposed again for this folder.
+    Proposed,
+    /// The person said not now (or turned it down in Settings). Never proposed again.
+    Declined,
+}
+
+#[derive(Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ToolOffer {
+    pub(crate) state: ToolState,
+    /// The store's `revision` right after the proposal was recorded. Undoing a proposal that could not be asked (`release`)
+    /// must match it, so a late undo of an older proposal never touches a newer one.
+    #[serde(default)]
+    pub(crate) claimed_at: u64,
 }
 
 struct PackageMeta {
@@ -592,7 +650,7 @@ fn installed(host: &Host) -> Result<bool, String> {
     Ok(registry::read(host)?.plugins.contains_key(PLUGIN_NAME))
 }
 
-fn folder_key(folder: &str) -> Result<PathBuf, String> {
+pub(crate) fn folder_key(folder: &str) -> Result<PathBuf, String> {
     let folder = folder.trim();
     if folder.is_empty() {
         return Err("Name a project folder.".into());
@@ -679,7 +737,8 @@ pub(crate) fn surfaces_of(root: &Path) -> Vec<String> {
     surfaces
 }
 
-fn dep_names(package: &Value) -> BTreeSet<String> {
+// PT-1: `pub(crate)` so proof-tool detection reads package.json the way the Verify offer does.
+pub(crate) fn dep_names(package: &Value) -> BTreeSet<String> {
     let mut names = BTreeSet::new();
     for field in ["dependencies", "devDependencies"] {
         let Some(object) = package.get(field).and_then(Value::as_object) else {
@@ -704,18 +763,18 @@ fn flutter_pubspec(text: &str) -> bool {
     })
 }
 
-fn has_project_file(root: &Path, parts: &[&str]) -> bool {
+pub(crate) fn has_project_file(root: &Path, parts: &[&str]) -> bool {
     project_file(root, parts).is_some()
 }
 
 /// A known relative file inside `root`, or nothing. Links are not followed: a `package.json` that points somewhere
 /// else is not this project's manifest.
-fn read_project_file(root: &Path, parts: &[&str]) -> Option<String> {
+pub(crate) fn read_project_file(root: &Path, parts: &[&str]) -> Option<String> {
     let path = project_file(root, parts)?;
     read_capped(&path)
 }
 
-fn project_file(root: &Path, parts: &[&str]) -> Option<PathBuf> {
+pub(crate) fn project_file(root: &Path, parts: &[&str]) -> Option<PathBuf> {
     if parts.is_empty() {
         return None;
     }
@@ -738,7 +797,7 @@ fn project_file(root: &Path, parts: &[&str]) -> Option<PathBuf> {
     canon.starts_with(&root).then_some(canon)
 }
 
-fn read_capped(path: &Path) -> Option<String> {
+pub(crate) fn read_capped(path: &Path) -> Option<String> {
     let file = std::fs::File::open(path).ok()?;
     let mut bytes = Vec::new();
     file.take(READ_CAP + 1).read_to_end(&mut bytes).ok()?;
@@ -753,7 +812,7 @@ fn offers_path(host: &Host) -> PathBuf {
     host.root.join(OFFERS_FILE)
 }
 
-fn read_offers(host: &Host) -> Result<Offers, String> {
+pub(crate) fn read_offers(host: &Host) -> Result<Offers, String> {
     match std::fs::read_to_string(offers_path(host)) {
         Ok(text) => serde_json::from_str(&text)
             .map_err(|_| "The offer list can't be read. Nothing was changed.".to_string()),
@@ -762,13 +821,13 @@ fn read_offers(host: &Host) -> Result<Offers, String> {
     }
 }
 
-fn write_offers(host: &Host, offers: &Offers) -> Result<(), String> {
+pub(crate) fn write_offers(host: &Host, offers: &Offers) -> Result<(), String> {
     std::fs::create_dir_all(&host.root).map_err(|e| e.to_string())?;
     let text = serde_json::to_string_pretty(offers).map_err(|e| e.to_string())?;
     fsutil::write_atomic(&offers_path(host), text.as_bytes())
 }
 
-struct Lock(PathBuf);
+pub(crate) struct Lock(PathBuf);
 
 impl Drop for Lock {
     fn drop(&mut self) {
@@ -778,7 +837,7 @@ impl Drop for Lock {
 
 /// One writer at a time. A lock left by a dead window is taken after it goes stale; a live one is a reason to try
 /// again, not a final failure.
-fn exclusive(host: &Host) -> Result<Lock, String> {
+pub(crate) fn exclusive(host: &Host) -> Result<Lock, String> {
     std::fs::create_dir_all(&host.root).map_err(|e| e.to_string())?;
     let path = host.root.join(LOCK_FILE);
     for _ in 0..LOCK_TRIES {

@@ -92,6 +92,9 @@ pub enum GateKind {
     Committed,
     Ratchet,
     Routes,
+    /// PT-1: the open-source proof tools the project already has (`proof_tools`). Added by `testing_mode::gates_for` in
+    /// `full` for a code diff when one is installed; a brief can't name it. Last, so it sorts after the gates it reads.
+    ProofTools,
 }
 
 impl GateKind {
@@ -114,6 +117,7 @@ impl GateKind {
             GateKind::Committed => "Work committed",
             GateKind::Ratchet => "Tests kept",
             GateKind::Routes => "Routes check",
+            GateKind::ProofTools => "Proof tools",
         }
     }
 }
@@ -438,6 +442,24 @@ pub trait Runners {
     fn checker_model(&self, _prompt: &str, _cli: &str, _model: &str) -> Result<String, String> {
         Err("this build can't ask the checker's model".into())
     }
+    /// PT-1: run the proof tools the project already has over what the checkout changed. `tests` are this round's runs of the
+    /// project's own tests, where a property library's properties run. `Err`: they could not be started, in plain words.
+    fn proof_tools(
+        &self,
+        _checkout: &Path,
+        _tests: &[crate::proof_tools::TestRun],
+    ) -> Result<Vec<crate::proof_tools::ToolRun>, String> {
+        Err("this build can't run proof tools".into())
+    }
+    /// PT-1: in the running checker's read-only copy, replay the project's end-to-end tests (e2e, Playwright) for a task that
+    /// changed the interface. Nothing to replay, or a build that can't, is an empty list.
+    fn proof_replay(
+        &self,
+        _checkout: &Path,
+        _copy: &ReadOnlyCopy,
+    ) -> Vec<crate::proof_tools::ToolRun> {
+        Vec::new()
+    }
 }
 
 /// Everything a round reads.
@@ -490,6 +512,12 @@ pub fn run_round(input: &RoundInput, runners: &dyn Runners) -> GateRecord {
             GateKind::Ratchet => ratchet_gate(&repo),
             // Run below for every brief whose project has one.
             GateKind::Routes => continue,
+            // PT-1: it reads the project's test run above, so it sorts after the checks gate. A change none of the tools
+            // had anything to read in adds no result: it is neither a pass nor a problem.
+            GateKind::ProofTools => match super::proof_gate::run(input, runners, &gates) {
+                Some(result) => result,
+                None => continue,
+            },
         };
         gates.push(result);
     }
@@ -1106,6 +1134,21 @@ impl Repo {
         text.push_str(&body);
         head_of(&text, max)
     }
+}
+
+/// PT-1: the change a proof tool is scoped to, read from the worker's checkout the way the diff gate reads it: what changed
+/// since the copy started, committed or not, and its diff at zero context.
+pub(crate) fn proof_scope(checkout: &Path) -> Result<crate::proof_tools::Scope, String> {
+    let repo = Repo::open(checkout);
+    if let Some(why) = &repo.why_not {
+        return Err(format!("the worker's checkout can't be compared: {why}"));
+    }
+    let changed = repo.changed()?;
+    Ok(crate::proof_tools::run::scope_of(
+        &repo.dir,
+        repo.base.as_deref(),
+        &changed,
+    ))
 }
 
 /// A file's text for the code checks: empty when it is too large or not text.
@@ -2298,6 +2341,45 @@ impl Runners for AppRunners {
             || checker_family::checker_cli(cli, model, prompt, checker::CALL_TIMEOUT),
         )
     }
+
+    fn proof_tools(
+        &self,
+        checkout: &Path,
+        tests: &[crate::proof_tools::TestRun],
+    ) -> Result<Vec<crate::proof_tools::ToolRun>, String> {
+        // The same checkout rule as the project's checks (the main checkout or one of its worktrees), the same runner.
+        let (main, checkout) = crate::project_actions::checkout_of_project(checkout)?;
+        let scope = proof_scope(&checkout)?;
+        let env = crate::proof_tools::app_env::AppEnv::checkout(&self.app, &main, &checkout);
+        Ok(crate::proof_tools::run::run_all(
+            &checkout,
+            &scope,
+            tests,
+            &env,
+            crate::proof_tools::Pick::All,
+        ))
+    }
+
+    fn proof_replay(
+        &self,
+        checkout: &Path,
+        copy: &ReadOnlyCopy,
+    ) -> Vec<crate::proof_tools::ToolRun> {
+        use crate::proof_tools::{app_env::AppEnv, detect, run, Pick};
+        let Some(main) = copy.project.as_deref() else {
+            return Vec::new();
+        };
+        let Ok(scope) = proof_scope(checkout) else {
+            return Vec::new();
+        };
+        let env = AppEnv::copy(&self.app, main, copy);
+        let detection = run::detect_in(copy.copy(), &env);
+        // Only a task that changed the interface is replayed.
+        if !detect::touches_ui(&detection.stacks, &scope.changed) {
+            return Vec::new();
+        }
+        run::run_installed(&detection, copy.copy(), &scope, &[], &env, Pick::Replay)
+    }
 }
 
 /// One Claude Code turn with no tools and no MCP servers, the prompt on stdin, in an empty folder.
@@ -2675,7 +2757,12 @@ pub async fn firstmate_run_gates(
                 }
             }
         };
-        let moded = testing_mode::gates_for(mode, plan.as_ref(), &changed, code_changed, risky);
+        // PT-1: only in `full`, for a code diff, does it matter whether the project already has a proof tool that fits it.
+        let proof = mode == crate::delivery::settings::TestingMode::Full
+            && code_changed
+            && crate::proof_tools::detect_folder(&app, &checkout).has_installed();
+        let moded =
+            testing_mode::gates_for_with(mode, plan.as_ref(), &changed, code_changed, risky, proof);
         // Nothing changed and no plan was stored (a research or answer task): the task settles as it always did.
         // Missing facts are not a clean turn: a send-back stays, and the row is not marked pending.
         // A present turn with no gap clears a send-back, or the delivered row stays failed.

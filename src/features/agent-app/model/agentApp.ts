@@ -139,6 +139,7 @@ import { handleTimers, TIMER_FIELDS, type AgentAppTimersHost } from "./agentAppT
 import { handleWorkLog, WORK_LOG_FIELDS, type WorkLogBackend } from "./agentAppWorkLog";
 import { handleShipCheck, SHIP_CHECK_FIELDS } from "./agentAppShipCheck"; // SC-3b
 import { handleRunChecks, RUN_CHECKS_FIELDS, type RunChecksBackend } from "./agentAppRunChecks"; // SC-7
+import { handleProofTools, PROOF_TOOLS_FIELDS, type ProofToolsBackend } from "./agentAppProofTools"; // PT-1
 import type { ShipCheckBackend } from "../../hub/model/shipCheck"; // SC-3b
 import { handleRooms, ROOM_FIELDS, type AgentAppRoomsHost } from "./agentAppRooms";
 import { handleSelfBuild, SELF_BUILD_FIELDS } from "./agentAppSelfBuild";
@@ -466,6 +467,8 @@ export type AgentAppHost = {
   shipCheck?: Pick<ShipCheckBackend, "run">;
   /** SC-7: the run_checks tool's run (agentAppRunChecks.ts). The app's own command when absent. */
   runChecks?: RunChecksBackend;
+  /** PT-1: the proof tools a project has and a once-per-project proposal (agentAppProofTools.ts). The app's own commands when absent. */
+  proofTools?: ProofToolsBackend;
   /**
    * WP-92: a delegated worker's keys (`delegate_task`'s `secrets`). Rust checks each name, asks the person where
    * needed, and arms the handles for the child session; no value crosses to this side.
@@ -572,6 +575,7 @@ const FIELDS = new Map<string, readonly string[]>([
   // SC-3b: the ship check a first mate runs before it says a project is ready to ship.
   ...SHIP_CHECK_FIELDS,
   ...RUN_CHECKS_FIELDS, // SC-7
+  ...PROOF_TOOLS_FIELDS, // PT-1
   ...ROOM_FIELDS,
   ...SELF_BUILD_FIELDS,
   ...DOC_FIELDS,
@@ -1840,6 +1844,16 @@ export async function handleAgentApp(
   if (action.startsWith("ship_check.")) return handleShipCheck(source, action, input, host, (session, fields) => requireProject(session, fields, host));
   // SC-7: the project's tests for what changed. A worker in its own copy, or a first mate in its project.
   if (action.startsWith("run_checks.")) return handleRunChecks(source, action, input, host, (session, fields) => requireProject(session, fields, host));
+  // PT-1: the proof tools that fit the project, and one proposal to the person through the existing ask path (tasks.ask).
+  if (action.startsWith("proof_tools."))
+    return handleProofTools(
+      source,
+      action,
+      input,
+      host,
+      (session, fields) => requireProject(session, fields, host),
+      (askInput) => handleTasks(source, `${requestId}-ask`, "tasks.ask", askInput, host, { startLaunch, fileStarted }),
+    );
   if (action.startsWith("rooms.") || action === "monos.message") return handleRooms(source, requestId, action, input, host);
   if (action.startsWith("docs.")) {
     return handleDocs(source, requestId, action, input, host, (session, fields) => requireProject(session, fields, host));

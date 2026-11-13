@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { PROOF_SKILLS_SECTION, checkBrief, renderBrief, sectionProblem, specOf, withLegacyBriefParts, withoutTemplate, LEGACY_GOAL } from "./brief";
+import { PROOF_SKILLS_SECTION, checkBrief, renderBrief, sectionProblem, specOf, withLegacyBriefParts, withoutTemplate, LEGACY_GOAL, type BriefIsolation } from "./brief";
 import { briefView } from "../../sessions/model/briefView";
 import { FIRST_MATE_CONTRACT } from "./contract";
 import { goalFromBrief } from "../../../integrations/harness/providers/claude/claudeGoal";
@@ -324,5 +324,41 @@ describe("PT-3: proof skills in a fully checked project", () => {
     expect(writing).not.toContain("## Proof skills");
     const notFull = renderBrief({ intent: "Ash: add b", spec: "Add b." }, { kind: "shared", folder: "/w" }, "code");
     expect(notFull).not.toContain("## Proof skills");
+  });
+});
+
+describe("PT-1: the proof tools a project already has", () => {
+  const tools = [
+    { name: "fast-check", proves: "Properties hold for generated inputs, not just the examples.", use: "Write a property test with fast-check next to the code you change." },
+    { name: "StrykerJS", proves: "The tests fail when the code is changed on purpose.", use: "Run Stryker on the lines you changed." },
+  ];
+  const shared: BriefIsolation = { kind: "shared", folder: "/w" };
+
+  it("a code or bug-fix brief lists each installed tool by name, with what it proves and how to use it, after the proof skills", () => {
+    const code = renderBrief({ intent: "Ash: add b", spec: "Add b." }, shared, "code", { proofSkills: true, proofTools: tools });
+    expect(code).toContain("## Proof tools here\n- fast-check: Properties hold for generated inputs, not just the examples. Write a property test with fast-check");
+    expect(code).toContain("- StrykerJS: The tests fail when the code is changed on purpose. Run Stryker on the lines you changed.");
+    expect(code.indexOf("## Proof tools here")).toBeGreaterThan(code.indexOf("## Proof skills"));
+    const debug = renderBrief({ intent: "Ash: fix", spec: "Fix it." }, shared, "debug", { proofTools: tools });
+    expect(debug).toContain("## Proof tools here");
+  });
+
+  it("no section for another kind of brief, for no tools, or for none given", () => {
+    const writing = renderBrief({ intent: "Ash: docs", spec: "Write it." }, shared, "writing", { proofTools: tools });
+    expect(writing).not.toContain("Proof tools here");
+    const noTask = renderBrief({ intent: "Ash: add b", spec: "Add b." }, shared, undefined, { proofTools: tools });
+    expect(noTask).not.toContain("Proof tools here");
+    for (const extras of [{ proofTools: [] }, {}, undefined]) {
+      expect(renderBrief({ intent: "Ash: add b", spec: "Add b." }, shared, "code", extras)).not.toContain("Proof tools here");
+    }
+  });
+
+  it("the section is the template's own, so it is stripped from what a person reads of the brief", () => {
+    const text = renderBrief({ intent: "Ash: add b", spec: "Add b." }, shared, "code", { proofSkills: true, proofTools: tools });
+    const model = withoutTemplate(text);
+    expect(model).toContain("Add b.");
+    expect(model).not.toContain("Proof tools here");
+    expect(model).not.toContain("fast-check");
+    expect(specOf(text)).toBe("Add b.");
   });
 });

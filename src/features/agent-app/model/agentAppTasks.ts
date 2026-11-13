@@ -107,6 +107,7 @@ import {
   type CheckLine,
 } from "../../firstmate/model/briefChecks";
 import type { TestingMode } from "../../delivery/model/testingMode";
+import { proofToolLines, readProofToolList, type ProofToolLine } from "../../proofTools/model/proofTools"; // PT-1
 import { parseFanout } from "../../firstmate/model/fanoutContract";
 import {
   createCheckpoint,
@@ -359,6 +360,12 @@ export type AgentAppTasksHost = {
    * line. Absent or undefined: the app couldn't say, and the brief is not refused for it.
    */
   testingMode?(project: string): Promise<TestingMode | undefined>;
+  /**
+   * PT-1: the proof tools that fit this folder and which it already has (`proof_tools_list`), as the app answers it. Asked
+   * only for a code brief in a project that checks every task fully. Absent: the app's own command is called. Whatever
+   * comes back is read defensively (proofTools.ts `readProofToolList`); a miss means no section, never a held-up brief.
+   */
+  proofTools?(folder: string): Promise<unknown>;
   /** SC-4: the HEAD of the project's main checkout, to stamp a brief with (firstmate_brief_stamp). Undefined: none. */
   briefStamp?(folder: string): Promise<string | undefined>;
   /**
@@ -1466,6 +1473,8 @@ async function delegate(
   const proofSkills =
     isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope }) &&
     (await fullModeOf(tasks, briefFolderOf(source, owner, named, tasks)));
+  // PT-1: and it names the proof tools the project already has. Asked only then; a miss adds nothing.
+  const proofTools = proofSkills ? await proofToolLinesOf(tasks, briefFolderOf(source, owner, named, tasks)) : [];
   const workerExtras = {
     ...extras,
     ...(briefStamp ? { stamp: briefStamp } : {}),
@@ -1473,6 +1482,7 @@ async function delegate(
     checks: own.lines,
     leave,
     ...(proofSkills ? { proofSkills: true } : {}),
+    ...(proofTools.length ? { proofTools } : {}),
   };
   const remoteBrief = await briefOnRemoteHost({
     paths: [folder, source.cwd],
@@ -2887,6 +2897,31 @@ async function fullModeOf(tasks: AgentAppTasksHost, folder: string): Promise<boo
   if (!tasks.testingMode) return false;
   const project = tasks.hubProjectId?.(folder) ?? folder;
   return (await tasks.testingMode(project).catch(() => undefined)) === "full";
+}
+
+/** PT-1: how long a brief waits to hear which proof tools the project has (the app may run a program to find out). */
+const PROOF_TOOLS_WAIT_MS = 8_000;
+
+/**
+ * PT-1: the proof tools this project already has, as lines for the brief. The app's own command answers (`proof_tools_list`),
+ * unless the host has its own. An answer that can't be read, an error and a wait that runs out are all "no section": a
+ * timeout is not a failure of the task, and a brief is never held up or refused for it.
+ */
+async function proofToolLinesOf(tasks: AgentAppTasksHost, folder: string): Promise<ProofToolLine[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const ask = tasks.proofTools
+      ? tasks.proofTools(folder)
+      : import("@tauri-apps/api/core").then(({ invoke }) => invoke<unknown>("proof_tools_list", { folder }));
+    const waited = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), PROOF_TOOLS_WAIT_MS);
+    });
+    return proofToolLines(readProofToolList(await Promise.race([ask, waited])));
+  } catch {
+    return [];
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /** Keep a task's gates. A miss is not a failed start: the same call again saves them. */

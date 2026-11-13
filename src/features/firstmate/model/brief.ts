@@ -12,6 +12,7 @@ import { WORKER_ASK_TEST } from "./askTest";
 import { briefSkillsSection, type BriefTask } from "./briefSkills";
 import { checksSection, leaveSection, stampSection, type CheckLine } from "./briefChecks"; // SC-4
 import { quoteOriginalRequest } from "./originalRequest";
+import { proofToolsSection, type ProofToolLine } from "../../proofTools/model/proofTools"; // PT-1
 
 export type BriefParts = {
   /** The person's own ask, in their words, with the context needed to read it. */
@@ -235,12 +236,16 @@ export function renderBrief(
     leave?: readonly string[];
     /** PT-3: the project checks every task fully, so a code or bug-fix brief also names the proof skills. */
     proofSkills?: boolean;
+    /** PT-1: the proof tools this project already has (proofTools.ts `proofToolLines`). Absent or empty: no section. */
+    proofTools?: readonly ProofToolLine[];
   },
 ): string {
   // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
   const skills = task ? briefSkillsSection(task) : undefined;
   // PT-3: in a project that checks every task fully, a code or bug-fix brief also names the proof skills.
   const proof = extras?.proofSkills && (task === "code" || task === "debug") ? PROOF_SKILLS_SECTION : undefined;
+  // PT-1: the same kinds of brief name the proof tools the project already has, each by name with how to use it here.
+  const tools = task === "code" || task === "debug" ? proofToolsSection(extras?.proofTools) : undefined;
   return [
     isolationSection(isolation),
     // SC-4: the drift rule opens the brief, right after the isolation check.
@@ -258,6 +263,7 @@ export function renderBrief(
     STEERING,
     ...(skills ? [skills] : []),
     ...(proof ? [proof] : []),
+    ...(tools ? [tools] : []),
   ].join("\n\n");
 }
 
@@ -286,6 +292,7 @@ export const FIXED_SECTIONS = [
   "Status protocol",
   "Steering",
   "Skills",
+  "Proof tools here", // PT-1
 ] as const;
 export const FILLED_SECTIONS = ["Intent", "Spec"] as const;
 

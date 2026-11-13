@@ -158,6 +158,7 @@ mod project_actions;
 mod project_file;
 mod project_logo;
 mod project_tests;
+pub(crate) mod proof_tools; // PT-1: the open-source proof tools a project already has, run on a change; a first mate may propose one
 mod provider_session_transfer;
 mod pty;
 #[cfg(target_os = "macos")]
@@ -1040,6 +1041,10 @@ pub fn run() {
             verify_stage::verify_stage_status,
             verify_stage::verify_stage_run,
             verify_stage::verify_stage_latest,
+            // PT-1: the proof tools a project has, and a first mate's once-per-project proposal
+            proof_tools::proof_tools_list,
+            proof_tools::offers::proof_tools_propose_claim,
+            proof_tools::offers::proof_tools_propose_release,
             // SC-3b
             ship_check::ship_check_run,
             ship_check::ship_check_latest,
