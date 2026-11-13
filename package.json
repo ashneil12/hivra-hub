@@ -19,6 +19,8 @@
     "test:host": "vitest run --config host/vitest.config.ts",
     "check": "npm run check:web && npm run check:scripts && npm run check:rust",
     "check:web": "vitest run && tsc --noEmit",
+    "check:guards": "node scripts/test-guard.mjs && node scripts/quarantine.mjs && node scripts/escapes.mjs",
+    "check:guards:strict": "node scripts/test-guard.mjs --strict && node scripts/quarantine.mjs --strict && node scripts/escapes.mjs --strict",
     "check:affected": "node scripts/affected-tests.mjs local",
     "check:scripts": "node --disable-warning=ExperimentalWarning --test scripts/*.test.cjs scripts/*.test.mjs scripts/memory-eval/*.test.mjs",
     "memory:eval": "node scripts/memory-eval.mjs",

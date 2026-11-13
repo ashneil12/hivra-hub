@@ -188,6 +188,9 @@ itself; `src/features/hub/model/hivraLayout.test.ts` fails if a merge drops the 
   `allowNetworkForThisTest()` and says why in a comment.
 - Before handoff, report the exact commands run, their result counts, skips and warnings, what could not be checked
   and why. Passing tests is not the same as verified in the app.
+- Shipping guards (a fix needs a test, no silent skips, zero tests is not a pass, the escape ledger) are report-only
+  scripts: `npm run check:guards`. They fail only with `--strict`, at the release pass. See
+  [docs/hivra/shipping-guards.md](docs/hivra/shipping-guards.md).
 
 ## Development basics
 

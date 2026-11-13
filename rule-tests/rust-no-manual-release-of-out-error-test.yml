@@ -1,0 +1,13 @@
+id: rust-no-manual-release-of-out-error
+valid:
+  - |
+    let (ok, wrote_error) = with_out_error(|error| -> bool {
+        unsafe { msg_send![manager, registerAndReturnError: error] }
+    });
+  - |
+    unsafe { CFRelease(string_ref) };
+invalid:
+  - |
+    unsafe { CFRelease(error) };
+  - |
+    unsafe { let _: () = msg_send![error, release]; }

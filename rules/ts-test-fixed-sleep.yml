@@ -1,0 +1,20 @@
+id: ts-test-fixed-sleep
+language: typescript
+severity: warning
+message: >-
+  A fixed sleep in a test. It passes on a fast machine and fails under load (PR #301, #308).
+note: >-
+  Wait for the thing the test needs instead: poll until it is true with a deadline, `expect.poll`, a locator
+  assertion, or `vi.waitFor`. If time itself is the subject, use fake timers.
+files:
+  - "**/*.test.ts"
+  - "tests/browser/**/*.spec.ts"
+rule:
+  any:
+    - pattern: $PAGE.waitForTimeout($N)
+    - pattern: new Promise($R => setTimeout($R, $N))
+    - pattern: new Promise(($R) => setTimeout($R, $N))
+    - pattern: new Promise(($R) => { setTimeout($R, $N); })
+constraints:
+  N:
+    kind: number
