@@ -10,7 +10,7 @@ found are documented with a minimal trace and pinned by a test; none is fixed.
 | Step 0, the map (below) | Done. Each claim is tagged: **[T]** pinned by a test in this PR, **[E]** measured by the eval run, **[R]** read by me in the code, **[M]** reported by a read-only mapper and not re-checked by me. |
 | A. Extraction eval (`eval/`) | Done and run (`node formal/asks/eval/run.mjs`). The "recorded" model replies are **simulated**, not captured from the app's engine (see A.3). |
 | B.2 fast-check model-based test | Done and run against the real store. Passes; bites on two deliberately broken reducers (B.2). |
-| B.1 Quint model (`asks.qnt`) | **Written, not typechecked, not run.** `npx @informalsystems/quint` needs an approval that was not available in the session that wrote this. The file was desk-checked only. Run the commands in B.1 before relying on it. Apalache: not tried. |
+| B.1 Quint model (`asks.qnt`) | **Typechecked and run on 13 Nov 2026** (`quint run`, rust backend, 20,000 samples per invariant). Every result matches the table in B.1; outputs and seeds in `quint-output/`. Apalache `verify`: not tried. |
 
 ## Run it
 
@@ -18,7 +18,7 @@ found are documented with a minimal trace and pinned by a test; none is fixed.
 node formal/asks/eval/run.mjs                      # extraction recall, offline (the saved output is eval/REPORT.md)
 npx vitest run src/features/asks/testbed/askEval.test.ts src/features/asks/model/askStore.property.test.ts \
   src/features/asks/model/asks.gaps.test.ts src/features/asks/hooks/useAskLedger.gaps.test.ts src/features/hub/model/askLedger.gaps.test.ts
-npx @informalsystems/quint typecheck formal/asks/asks.qnt                       # not run yet, see B.1
+npx @informalsystems/quint typecheck formal/asks/asks.qnt                       # passes
 npx @informalsystems/quint run --max-samples 20000 --invariant inv_touchedNeverGone formal/asks/asks.qnt
 ```
 
@@ -204,7 +204,7 @@ What it says:
 
 ## B. Tracking until resolved
 
-### B.1 The Quint model (`asks.qnt`): written, **not run**
+### B.1 The Quint model (`asks.qnt`): typechecked and run
 
 Three actors (person, first mate with its crew, app) on one message with three asks (slot 3 is one both extractors miss). It
 follows 0.5: rows `heard maybe started waiting done dropped`, replacement on a re-hearing, the maybe cap, the turn-end nudge,
@@ -221,7 +221,7 @@ npx @informalsystems/quint run --max-samples 20000 --invariant inv_noStarvation 
 npx @informalsystems/quint verify --invariant inv_neverGone formal/asks/asks.qnt      # Apalache and Java
 ```
 
-**What I expect, worked out by hand and NOT confirmed by a run:**
+**Worked out by hand first, then confirmed by a run on 13 Nov 2026** (every row below matched; `quint-output/runs.txt` has each result and its seed, `quint-output/counterexamples.txt` the two violating traces):
 
 | Invariant | Code as it is (default) | Shortest trace I expect |
 | --- | --- | --- |
@@ -246,7 +246,7 @@ mkdir -p /tmp/asks-bad1 && sed 's/MATE_CAN_DROP = false/MATE_CAN_DROP = true/' f
 mkdir -p /tmp/asks-bad2 && sed 's/RESTART_LOSES_WAITING = false/RESTART_LOSES_WAITING = true/' formal/asks/asks.qnt > /tmp/asks-bad2/asks.qnt  # expect inv_touchedNeverGone to fail
 ```
 
-The two `bad` variants exist so each invariant is known to bite. They have **not** been run. The TypeScript test in B.2 does show
+The variants were run too: the design holds all five; `bad1` fails `inv_dropIsPersons` and `bad2` fails `inv_touchedNeverGone` (each also fails the two the default already fails), so each invariant is known to bite. The TypeScript test in B.2 does show
 the same kind of bite on the real code.
 
 ### B.2 The fast-check model-based test (`src/features/asks/model/askStore.property.test.ts`): run
