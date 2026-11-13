@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkBrief, renderBrief, sectionProblem, specOf, withLegacyBriefParts, withoutTemplate, LEGACY_GOAL } from "./brief";
+import { PROOF_SKILLS_SECTION, checkBrief, renderBrief, sectionProblem, specOf, withLegacyBriefParts, withoutTemplate, LEGACY_GOAL } from "./brief";
 import { briefView } from "../../sessions/model/briefView";
 import { FIRST_MATE_CONTRACT } from "./contract";
 import { goalFromBrief } from "../../../integrations/harness/providers/claude/claudeGoal";
@@ -312,3 +312,17 @@ describe("the brief's stamp, checks and do-not-touch list (SC-4)", () => {
   });
 });
 
+describe("PT-3: proof skills in a fully checked project", () => {
+  it("a code or bug-fix brief names them after the pstack skills; other kinds and other modes don't", () => {
+    const code = renderBrief({ intent: "Ash: add b", spec: "Add b." }, { kind: "shared", folder: "/w" }, "code", { proofSkills: true });
+    expect(code).toContain(PROOF_SKILLS_SECTION);
+    expect(code.indexOf("## Proof skills")).toBeGreaterThan(code.indexOf("## Skills"));
+    for (const name of ["test-driven-development", "verification-before-completion", "rpi-tdd"]) expect(code).toContain(name);
+    const debug = renderBrief({ intent: "Ash: fix", spec: "Fix it." }, { kind: "shared", folder: "/w" }, "debug", { proofSkills: true });
+    expect(debug).toContain("## Proof skills");
+    const writing = renderBrief({ intent: "Ash: docs", spec: "Write it." }, { kind: "shared", folder: "/w" }, "writing", { proofSkills: true });
+    expect(writing).not.toContain("## Proof skills");
+    const notFull = renderBrief({ intent: "Ash: add b", spec: "Add b." }, { kind: "shared", folder: "/w" }, "code");
+    expect(notFull).not.toContain("## Proof skills");
+  });
+});
