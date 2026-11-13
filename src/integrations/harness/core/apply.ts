@@ -537,6 +537,8 @@ type UserTurnExtra = {
   monoNote?: Block["monoNote"];
   /** WP-243: Ash typed it himself. Never kept on a hidden turn. */
   byOwner?: true;
+  /** Dropwave: sent in the one chat while it was narrowed to this project (asks/model/chiefLens.ts). */
+  lensProject?: string;
 };
 
 function userTurnFields(extra?: UserTurnExtra) {
@@ -546,6 +548,7 @@ function userTurnFields(extra?: UserTurnExtra) {
     ...(extra?.ciContext ? { ciContext: extra.ciContext } : {}),
     ...(extra?.internal ? { internal: true } : {}),
     ...(extra?.byOwner && !extra.internal ? { byOwner: true as const } : {}),
+    ...(extra?.lensProject && extra.byOwner && !extra.internal ? { lensProject: extra.lensProject } : {}),
     ...(extra?.monocode ? { monocode: true } : {}),
     ...(extra?.intent ? { intent: extra.intent } : {}),
     ...(extra?.appRequestId ? { appRequestId: extra.appRequestId } : {}),

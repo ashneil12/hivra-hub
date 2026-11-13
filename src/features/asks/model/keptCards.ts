@@ -88,13 +88,19 @@ export function keptRollup(value: unknown): RollupCard | undefined {
     const key = text(row.key);
     const sentence = text(row.sentence);
     if (!key || !sentence) return undefined;
-    return optional({ key, sentence, where: str(row.where), yours: row.yours === true });
+    return optional({ key, sentence, where: str(row.where), projectId: text(row.projectId), yours: row.yours === true });
   });
   return items.length ? { items, more: count(value.more) } : undefined;
 }
 
-/** The one chat's cards on a system block, checked, to copy onto the block the store keeps. */
-export function keptCards(block: Pick<Block, "role" | "catchUp" | "besideMessage" | "needsRollup">): Pick<Block, "catchUp" | "besideMessage" | "needsRollup"> {
+/** The one chat's cards on a system block, and the project filter's mark on his message, checked, to copy onto the block the store keeps. */
+export function keptCards(
+  block: Pick<Block, "role" | "catchUp" | "besideMessage" | "needsRollup" | "lensProject">,
+): Pick<Block, "catchUp" | "besideMessage" | "needsRollup" | "lensProject"> {
+  if (block.role === "user") {
+    const lensProject = text(block.lensProject)?.slice(0, 200);
+    return lensProject ? { lensProject } : {};
+  }
   if (block.role !== "system") return {};
   const catchUp = keptCatchUp(block.catchUp);
   const besideMessage = keptBesideMessage(block.besideMessage);

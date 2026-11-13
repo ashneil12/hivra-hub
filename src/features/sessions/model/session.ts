@@ -606,6 +606,8 @@ export type Block = {
   besideMessage?: import("../../asks/model/besideChat").BesideMessage;
   /** Dropwave: the Needs you roll-up in the one chat (needs/model/needsRollup.ts): the items it named, each answered where it sits. */
   needsRollup?: import("../../needs/model/needsRollup").RollupCard;
+  /** Dropwave: on Ash's message in the one chat, the project the chat was narrowed to when he sent it (asks/model/chiefLens.ts). */
+  lensProject?: string;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
   stillRunning?: { taskIds: string[]; briefId?: string };
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */

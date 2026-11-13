@@ -731,6 +731,7 @@ import {
   projectName,
   rebasePath,
   resolveWorkspacePath,
+  projectKey,
 } from "../shared/lib/paths";
 import {
   rebaseProjectData,
@@ -1113,6 +1114,8 @@ import { besideBlock, besideNote, setBesideChatHost } from "../features/asks/mod
 import { needLinksKey, needLinksNote } from "../features/asks/model/needLinks";
 import { inlineNeedCard } from "../features/asks/ui/InlineNeed";
 import { setInlineLinkCard } from "../features/sessions/model/inlineLinkCards";
+import { chiefLens, lensLookupFrom, lensNote, lensTag, turnProjects, type LensLookup } from "../features/asks/model/chiefLens";
+import { setTurnTagger } from "../features/sessions/model/turnTags";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
 import { stampFirstMate } from "../features/monos/model/monoMate";
@@ -9308,6 +9311,7 @@ function Workspace({
               ? { appRequestId: options.appRequestId }
               : {}),
             ...(byOwner ? { byOwner: true as const } : {}),
+            ...(byOwner && isOneChat(sessionId) && chiefLens() ? { lensProject: chiefLens()! } : {}),
           });
         });
         sessionsRef.current = nextSessions;
@@ -9494,6 +9498,8 @@ function Workspace({
           : {}),
         // WP-243: Ash's own words, typed in the composer. Never on a hidden turn, a CI repair or a handoff card.
         ...(byOwner && !ciContext && !card ? { byOwner: true as const } : {}),
+        // Sent in the one chat while it is narrowed to a project: his message carries it (asks/model/chiefLens.ts).
+        ...(byOwner && !ciContext && !card && isOneChat(sessionId) && chiefLens() ? { lensProject: chiefLens()! } : {}),
         ...(options?.monoNote ? { monoNote: options.monoNote } : {}),
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
@@ -10394,6 +10400,12 @@ function Workspace({
               if (note && monoRotation) tidyGiven.push(note);
             }
             needLinksShown.current.set(sessionId, key);
+          }
+          // One chat narrowed to a project (asks/model/chiefLens.ts): this message is about that project.
+          if (!rawCommand && isOneChat(sessionId)) {
+            const narrowed = chiefLens();
+            const project = narrowed ? hubData().listProjects().find((entry) => entry.id === narrowed) : undefined;
+            if (project) appContext.push(lensNote(project));
           }
           if (monoRotation && IS_HUB_BUNDLE) {
             const after = monoRotation.rotation.afterBlockId;
@@ -11463,6 +11475,26 @@ function Workspace({
   );
   // One chat: a Needs you link in a reply draws as that question's own card, answered where it sits (InlineNeed.tsx).
   useEffect(() => (ONE_CHAT ? setInlineLinkCard(inlineNeedCard) : undefined), []);
+  // One chat: each turn says which projects it is about, for the project filter (asks/model/chiefLens.ts). What the
+  // filter reads is built at most once a second, not once per turn.
+  useEffect(() => {
+    if (!ONE_CHAT) return undefined;
+    let cached: { at: number; lookup: LensLookup } | undefined;
+    const lookup = (): LensLookup => {
+      const now = Date.now();
+      if (cached && now - cached.at < 1_000) return cached.lookup;
+      const next = lensLookupFrom({
+        projects: hubData().listProjects(),
+        monos: listMonos(),
+        needs: currentNeedsYou(),
+        chatFolder: (chatId) => sessionsRef.current.find((session) => session.id === chatId)?.cwd,
+        key: projectKey,
+      });
+      cached = { at: now, lookup: next };
+      return next;
+    };
+    return setTurnTagger((sessionId, turn) => (isOneChat(sessionId) ? turnProjects(turn, lookup()).map(lensTag).join(" ") : undefined));
+  }, []);
   // "Catch me up" in the one chat (asks/model/catchUp.ts): one app card from the app's own records. No model turn.
   useEffect(
     () =>

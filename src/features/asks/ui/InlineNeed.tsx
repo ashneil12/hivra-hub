@@ -12,6 +12,7 @@ import { useNeedsYou } from "../../needs/model/needsLive";
 import type { RollupCard } from "../../needs/model/needsRollup";
 import { AnsweredLine, NeedDetail } from "../../needs/ui/NeedDetail";
 import { findNeed, needKeyOf } from "../model/needLinks";
+import { lensTag } from "../model/chiefLens";
 
 function flat(text: string): string {
   return text.replace(/\s+/g, " ").trim();
@@ -39,6 +40,7 @@ export function InlineNeed({ needKey, label, number }: { needKey: string; label:
   return (
     <div
       data-inline-need={item.key}
+      data-inline-need-project={item.projectId ? lensTag(item.projectId) : undefined}
       className="my-2 flex max-w-[640px] flex-col rounded-lg border border-stroke bg-surface font-sans text-content"
     >
       <div className="flex flex-col gap-1 px-3 pt-2.5">
