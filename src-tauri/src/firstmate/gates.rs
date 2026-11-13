@@ -2810,6 +2810,37 @@ fn fixer_report_read(
     }
 }
 
+/// What a task's copy changed, as the gates read it: `(files, code_changed, risky, sensitive, known)`. Read in one place so a test can
+/// say what the round will decide from a real repository.
+///
+/// A copy that isn't a checkout has no diff to read (`known` false, nothing changed). A diff git would not give is treated as a code
+/// change that is risky and sensitive: a change that can't be judged is checked harder, not skipped.
+///
+/// The risky and sensitive reads see the exact change (`changed_exact`: a move is the old path leaving and the new one arriving). With
+/// rename detection a sensitive or protected file moved to a plain name, with an edit, lists only the plain name, which no pattern
+/// matches. The list of files stays the rename-detected one the other gates have always read.
+fn read_change(
+    checkout: &Path,
+    mode: crate::delivery::settings::TestingMode,
+    protected_extra: &[String],
+) -> (Vec<String>, bool, bool, bool, bool) {
+    let repo = Repo::open(checkout);
+    if repo.why_not.is_some() {
+        return (Vec::new(), false, false, false, false);
+    }
+    match (repo.changed(), repo.changed_exact()) {
+        (Ok(files), Ok(exact)) => {
+            let code = testing_mode::code_changed(&files);
+            let risky = testing_mode::touches_risky_path(&exact, protected_extra);
+            // "No testing" tests nothing whatever the diff touches: no need to read the project's list for it.
+            let sensitive = mode != crate::delivery::settings::TestingMode::Off
+                && super::sensitive::touches_sensitive_path(&exact, checkout, protected_extra);
+            (files, code, risky, sensitive, true)
+        }
+        _ => (Vec::new(), true, true, true, false),
+    }
+}
+
 /// Runs a finished worker's gates and verdict check. `None`: its brief has no gates and the turn's facts show no
 /// gap (the routes check alone runs as before, through `run_worker_gate`).
 #[tauri::command]
@@ -2880,28 +2911,8 @@ pub async fn firstmate_run_gates(
         // checked harder, not skipped.
         // `changed_known` is false when the list of changed files is not a reading (no checkout, or git would not say): then nothing can
         // be told to be the task's own, so the quarantine path leaves the round as it was.
-        let (changed, code_changed, risky, sensitive, changed_known) = {
-            let repo = Repo::open(&checkout);
-            if repo.why_not.is_some() {
-                (Vec::new(), false, false, false, false)
-            } else {
-                match repo.changed() {
-                    Ok(files) => {
-                        let code = testing_mode::code_changed(&files);
-                        let risky = testing_mode::touches_risky_path(&files, &protected_extra);
-                        // "No testing" tests nothing whatever the diff touches: no need to read the project's list for it.
-                        let sensitive = mode != crate::delivery::settings::TestingMode::Off
-                            && super::sensitive::touches_sensitive_path(
-                                &files,
-                                &checkout,
-                                &protected_extra,
-                            );
-                        (files, code, risky, sensitive, true)
-                    }
-                    Err(_) => (Vec::new(), true, true, true, false),
-                }
-            }
-        };
+        let (changed, code_changed, risky, sensitive, changed_known) =
+            read_change(&checkout, mode, &protected_extra);
         // PT-1: only in `full` (PT-5: and for a sensitive change), for a code diff, does it matter whether the project already has a
         // proof tool that fits it.
         // PT-2: a tool the person switched off for the project doesn't count, so a project whose tools are all off gets no gate.
