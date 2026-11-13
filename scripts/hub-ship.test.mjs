@@ -397,6 +397,20 @@ function bundleAt(app, { sha, branch = "hub/test", dirty = false, identifier = H
   return app;
 }
 
+/**
+ * The hub:check-all record for `sha` as it is written now (SC-2): the unit checks passed, the built app launched and
+ * stayed up under a temporary HOME, and hub:verify-live has a recorded pass for the commit.
+ */
+function passRecord(sha, more = {}) {
+  return {
+    sha,
+    ok: true,
+    launch: { ok: true, upSeconds: 30, at: "2026-11-13T10:00:00.000Z" },
+    verifyLive: { ok: true, verdict: "evidence/20261113-100000-ab12/verdict.json", at: "2026-11-13T09:50:00.000Z" },
+    ...more,
+  };
+}
+
 /** A temporary HOME with an installed old app and its data, a clean checkout, and a new bundle built from its HEAD. */
 function world({ newBehavior = "commit", oldBehavior = "old", oldQuitDelayMs = 0, newBundle = {} } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-ship-test-")));
@@ -420,7 +434,7 @@ function world({ newBehavior = "commit", oldBehavior = "old", oldQuitDelayMs = 0
   git("commit", "-q", "-m", "fixture");
   const sha = git("rev-parse", "HEAD");
   fs.mkdirSync(path.join(repo, "target/hub-checks"), { recursive: true });
-  fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
+  fs.writeFileSync(path.join(repo, "target/hub-checks", `${sha}.json`), JSON.stringify(passRecord(sha)));
   const paths = homePaths(home);
   const app = bundleAt(paths.app, { sha: SHA_A, behavior: oldBehavior, root, quitDelayMs: oldQuitDelayMs });
   const bundle = bundleAt(path.join(repo, "target/release/bundle/macos/MonoCode Hub.app"), {
@@ -448,7 +462,7 @@ function nextBuild(w, behavior) {
   w.git("add", ".");
   w.git("commit", "-q", "-m", "a change");
   const sha = w.git("rev-parse", "HEAD");
-  fs.writeFileSync(path.join(w.repo, "target/hub-checks", `${sha}.json`), JSON.stringify({ sha, ok: true }));
+  fs.writeFileSync(path.join(w.repo, "target/hub-checks", `${sha}.json`), JSON.stringify(passRecord(sha)));
   bundleAt(w.bundle, { sha, behavior, root: w.root });
   return sha;
 }
@@ -1022,6 +1036,90 @@ test("refusals change nothing: dirty tree, commit mismatch, wrong identity, ad-h
     assert.deepEqual(fs.readFileSync(path.join(w.app, "Contents/MacOS/monocode")), before, `${what}: app untouched`);
     assert.equal(sha256File(path.join(w.data, "monocode.db")), w.before.db, `${what}: database untouched`);
   }
+});
+
+// SC-2: hub:check-all's record now also says the built app launched and stayed up under a temporary HOME, and that
+// hub:verify-live has a pass for the commit. A record without both is refused, and so is every record written before.
+test("SC-2: a check pass that doesn't say the built app launched and verify-live passed is refused", () => {
+  const without = (w, field) => {
+    const record = passRecord(w.sha);
+    delete record[field];
+    return record;
+  };
+  const cases = [
+    [
+      "a record written before the launch check existed",
+      (w) => ({ sha: w.sha, ok: true }),
+      /This commit's checks passed but the built app was not launched; run npm run hub:check-all again\./,
+    ],
+    ["a record with no launch", (w) => without(w, "launch"), /built app was not launched/],
+    ["a launch that did not pass", (w) => passRecord(w.sha, { launch: { ok: false, upSeconds: 3, at: "x" } }), /built app was not launched/],
+    ["a launch.ok that is the string true", (w) => passRecord(w.sha, { launch: { ok: "true", upSeconds: 30, at: "x" } }), /built app was not launched/],
+    ["a launch that is not an object", (w) => passRecord(w.sha, { launch: true }), /built app was not launched/],
+    ["a launch that is null", (w) => passRecord(w.sha, { launch: null }), /built app was not launched/],
+    [
+      "a record with no verify-live pass",
+      (w) => without(w, "verifyLive"),
+      /checks passed but no verify-live pass was recorded; run npm run hub:check-all again\./,
+    ],
+    ["a verify-live that did not pass", (w) => passRecord(w.sha, { verifyLive: { ok: false, verdict: "x", at: "x" } }), /no verify-live pass was recorded/],
+    ["a verify-live.ok that is 1", (w) => passRecord(w.sha, { verifyLive: { ok: 1 } }), /no verify-live pass was recorded/],
+    ["a record for another commit", () => passRecord("c".repeat(40)), /No passing npm run hub:check-all/],
+    ["a record that didn't pass", (w) => passRecord(w.sha, { ok: false }), /No passing npm run hub:check-all/],
+    ["a record naming another commit inside", (w) => passRecord(w.sha, { sha: "c".repeat(40) }), /No passing npm run hub:check-all/],
+  ];
+  for (const [what, record, expected] of cases) {
+    const w = world();
+    fs.writeFileSync(path.join(w.repo, "target/hub-checks", `${w.sha}.json`), JSON.stringify(record(w)));
+    const { code, answer } = ship(w, ["--dry-run"]);
+    assert.equal(code, 1, what);
+    assert.equal(answer.ok, false, what);
+    assert.ok(
+      answer.refusals.some((refusal) => expected.test(refusal)),
+      `${what}: ${JSON.stringify(answer.refusals)}`,
+    );
+    assert.equal(fs.existsSync(path.join(w.data, "ship")), false, `${what}: nothing staged`);
+  }
+  // A record that is not JSON is no record.
+  const broken = world();
+  fs.writeFileSync(path.join(broken.repo, "target/hub-checks", `${broken.sha}.json`), "{ not json");
+  const refused = ship(broken, ["--dry-run"]);
+  assert.equal(refused.code, 1);
+  assert.ok(refused.answer.refusals.some((refusal) => /No passing npm run hub:check-all/.test(refusal)), JSON.stringify(refused.answer.refusals));
+});
+
+test("SC-2: a full record (unit checks, launch, verify-live) is accepted", () => {
+  const w = world();
+  const { code, answer } = ship(w, ["--dry-run"]);
+  assert.equal(code, 0, JSON.stringify(answer));
+  assert.equal(answer.facts.checks.launch.ok, true);
+  assert.equal(answer.facts.checks.verifyLive.ok, true);
+});
+
+test("SC-2: --skip-tests still ships with no check record, and with one from before the launch check", async () => {
+  const w = world();
+  const record = path.join(w.repo, "target/hub-checks", `${w.sha}.json`);
+  // With no record, the normal path refuses and the fast loop doesn't.
+  fs.rmSync(record);
+  assert.equal(ship(w, ["--dry-run"]).code, 1);
+  const none = ship(w, ["--skip-tests", "--dry-run"]);
+  assert.equal(none.code, 0, JSON.stringify(none.answer));
+  assert.deepEqual(none.answer.facts.checks, { skipped: true });
+  assert.ok(none.answer.warnings.some((warning) => /--skip-tests/.test(warning)), "it still warns, loudly");
+  // The same with a record written before the launch check existed.
+  fs.writeFileSync(record, JSON.stringify({ sha: w.sha, ok: true }));
+  assert.equal(ship(w, ["--dry-run"]).code, 1);
+  const old = ship(w, ["--skip-tests", "--dry-run"]);
+  assert.equal(old.code, 0, JSON.stringify(old.answer));
+  assert.deepEqual(old.answer.facts.checks, { skipped: true });
+  // And it really ships: every other check, the backup and the trial run as before.
+  const { code, answer } = ship(w, ["--skip-tests"]);
+  assert.equal(code, 0, JSON.stringify(answer));
+  const dir = answer.shipDir;
+  await until("the commit", settled(dir, "committed"));
+  remember(dir);
+  assert.equal(stampOf(w.app).sha, w.sha, "the new build is in the app's place");
+  assert.equal(sha256File(path.join(dir, "backup/monocode.db")), w.before.db);
 });
 
 // WP-131c: the kill switch lets the setting decide, so a Mac bundle without the helper does not ship. Elsewhere the

@@ -12,7 +12,7 @@
 // `npm run hub:ship`, the `app.ship` action and (later) a button all run this file.
 //
 // 1. Checks, before anything changes: the checkout is clean and the bundle's stamp is its HEAD; `hub:check-all` passed
-//    for that commit; the bundle is the daily identity, signed with a real certificate (not ad hoc) and the same one
+//    for that commit and its record says the built app launched and a verify-live pass exists (SC-2); the bundle is the daily identity, signed with a real certificate (not ad hoc) and the same one
 //    as the installed app, which can take a ship; there is room on the disk; and the new build's
 //    `monocode healthcheck` migrates a copy of the live database.
 // 2. Stage: the bundle is copied with ditto to <data>/ship/<id>/staged/, state.json says "staged", and the runner
@@ -28,7 +28,7 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { HUB_IDENTIFIER, kindOf, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+import { HUB_IDENTIFIER, defaultBundlePath, kindOf, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
 import { helperCheckApplies, helperProblemsFor } from "./hub-dictation-helper.mjs";
 // WP-09: install location, copy and the non-macOS runner. macOS paths stay homePathsFor("darwin").
 import {
@@ -227,6 +227,12 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
     const record = readJson(path.join(repo, "target/hub-checks", `${facts.head}.json`));
     if (!record || record.ok !== true || record.sha !== facts.head)
       refusals.push(`No passing npm run hub:check-all for ${facts.head.slice(0, 7)}. Run it, then ship.`);
+    // SC-2: a pass now also says the built app launched and stayed up under a temporary HOME, and that hub:verify-live
+    // passed for the commit. A record written before that (neither field) is refused the same way.
+    else if (record.launch?.ok !== true)
+      refusals.push("This commit's checks passed but the built app was not launched; run npm run hub:check-all again.");
+    else if (record.verifyLive?.ok !== true)
+      refusals.push("This commit's checks passed but no verify-live pass was recorded; run npm run hub:check-all again.");
     else facts.checks = record;
   }
   // A real signature, the same as the installed app's.
@@ -775,7 +781,8 @@ export async function main(argv = process.argv.slice(2)) {
   } catch {
     repo = path.resolve(options.repo ?? process.cwd());
   }
-  const bundle = path.resolve(options.bundle ?? path.join(repo, "target/release/bundle/macos", APP_NAME));
+  // SC-2: hub:check-all finds the bundle it launches the same way (hub-bundle.mjs).
+  const bundle = path.resolve(options.bundle ?? defaultBundlePath(repo));
 
   if (options.legacy) {
     const result = legacyInstall({ bundle, paths });

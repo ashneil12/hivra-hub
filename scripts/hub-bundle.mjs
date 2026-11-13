@@ -13,6 +13,11 @@ export const DEV_IDENTIFIER_PREFIX = "com.ash.monocode-hub.dev.";
 export const SANDBOX_IDENTIFIER = "com.ash.monocode-hub.sandbox";
 export const UPSTREAM_IDENTIFIER = "com.monocode.desktop";
 
+/** Where `npm run hub:build` leaves the bundle, under a checkout. hub:ship and hub:check-all both look here. */
+export const BUNDLE_DIR = "target/release/bundle/macos";
+export const BUNDLE_NAME = "MonoCode Hub.app";
+export const defaultBundlePath = (repo) => path.join(repo, BUNDLE_DIR, BUNDLE_NAME);
+
 const STAMP_MARKER = Buffer.from("MONOCODE-STAMP:{");
 
 /** The same kind table as src-tauri/src/instance.rs: "daily", "dev", or null for anything else. */

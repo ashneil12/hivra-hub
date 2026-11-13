@@ -95,6 +95,11 @@ phone access, the notification prompt and the global shortcut.
 4. **`npm run hub:check-all`** then **`npm run hub:ship`** installs into `~/Applications/MonoCode Hub.app`
    with a safety net (see "Ship" below). `npm run hub:install` is now only the one-time `--legacy` install of the
    first build that can ship (it keeps the old app under `~/Archive/monocode/ships/legacy-*`, never deletes it).
+   `hub:check-all` does more than the unit checks (SC-2): it builds the bundle when none is this commit's, **launches
+   it under a temporary HOME** (`npm run hub:launch-check`: a copy at `<tmp HOME>/Applications/MonoCode Hub.app`, up
+   30 s with `running.json` and `monocode.db` in the temporary data folder, then stopped by its own pid; the real
+   data folder is only read to prove nothing touched it) and needs a recorded **`hub:verify-live` pass for the commit**
+   (it runs one when none exists). Expect a window to open briefly while it runs.
 
 ## Ship (Phase 1b WP3: `scripts/hub-ship.mjs`, `scripts/hub-ship-runner.mjs`, `src-tauri/src/ship.rs`)
 
@@ -103,7 +108,9 @@ uses `app app.ship` instead (same code; its own running turn doesn't block the r
 receipt).
 
 1. **Checks, before anything changes:** clean tree; the bundle's stamp is HEAD; a `hub:check-all` pass record
-   (`target/hub-checks/<sha>.json`) for that commit; daily identity; a real signature (not ad hoc) matching the
+   (`target/hub-checks/<sha>.json`) for that commit that says the built app launched (`launch.ok`) and verify-live
+   passed (`verifyLive.ok`; an older record without them is refused, and `--skip-tests` skips this one check as
+   before); daily identity; a real signature (not ad hoc) matching the
    installed app's; the installed app can take a ship; disk space; `monocode healthcheck` on a copy of the live
    database. Any refusal leaves everything as it was.
 2. **Stage:** `ditto` into `<data>/ship/<id>/staged/`, `state.json`, and the runner as a one-shot LaunchAgent
