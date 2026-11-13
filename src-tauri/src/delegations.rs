@@ -198,6 +198,14 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
              ALTER TABLE delegations ADD COLUMN brief_leave TEXT;",
         )?;
     }
+    // PT-6 (firstmate/spec_record.rs): the brief's spec parts (JSON): the sections of the project's spec of record it asks
+    // for. Null on a row from before, and on a brief with none.
+    let has_spec = conn
+        .prepare("SELECT 1 FROM pragma_table_info('delegations') WHERE name = 'brief_spec'")?
+        .exists([])?;
+    if !has_spec {
+        conn.execute_batch("ALTER TABLE delegations ADD COLUMN brief_spec TEXT;")?;
+    }
     Ok(())
 }
 

@@ -89,12 +89,15 @@ pub enum FindingKind {
     OutwardAction,
     /// SC-4: a changed path on the brief's do-not-touch list.
     DoNotTouch,
+    /// PT-6: a spec part of the brief that the worker's copy doesn't carry (spec_record.rs `findings`).
+    SpecNotUpdated,
 }
 
 impl FindingKind {
     pub fn name(self) -> &'static str {
         match self {
             FindingKind::DoNotTouch => "Off-limits change",
+            FindingKind::SpecNotUpdated => "Spec not updated",
             FindingKind::FalseScope => "False scope claim",
             FindingKind::ScopeCreep => "Scope creep",
             FindingKind::WeakenedTest => "Weakened test",

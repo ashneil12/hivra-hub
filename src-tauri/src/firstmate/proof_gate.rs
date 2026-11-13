@@ -293,6 +293,7 @@ mod tests {
             leave: Vec::new(),
             checks_unreadable: None,
             leave_unreadable: None,
+            ..BriefRound::default()
         };
         let done = [checks_gate(
             Outcome::Failed,

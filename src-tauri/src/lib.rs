@@ -721,6 +721,8 @@ pub fn run() {
             // SC-4: a brief's check lines, stamp and do-not-touch list. The webview keeps them; only the gates set a result.
             firstmate::brief_checks::firstmate_brief_keep,
             firstmate::brief_checks::firstmate_brief_stamp,
+            firstmate::spec_record::firstmate_spec_context, // PT-6
+            firstmate::spec_record::firstmate_spec_landed,  // PT-6
             // Hivra WP-12: delivery modes and the one merge path.
             delivery::delivery_settings_get,
             delivery::delivery_settings_set,

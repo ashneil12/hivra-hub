@@ -33,6 +33,8 @@ pub mod protected_paths;
 pub mod report;
 pub mod rounds; // SC-5: the round cap, the rethink after two failed rounds, and the person's decision after that
 pub mod sensitive; // PT-5: always-gated sensitive paths (keys, permissions, the sandbox, billing, migrations, CI, installers)
+pub mod spec_mcp; // PT-6: spec_start, the one tool that starts a project's spec of record (only when the person asks)
+pub mod spec_record; // PT-6: a brief's spec parts: the project's spec of record, updated before the code
 pub mod status;
 pub mod testing_mode; // SC-3a: the gates a finished task gets, by the project's testing mode
 
