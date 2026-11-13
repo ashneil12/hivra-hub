@@ -58,8 +58,48 @@ function testingRow(project: string): Row {
   };
 }
 
+// SC-3b: the ship check (ship_check.rs). Example answers; the last result is kept per project in this page's storage.
+const SHIP_KEY = "monocode:mockup-ship-check";
+const SHIP_HEAD = "9f215499a3c0de77b1c2d3e4f5061728394a5b6c";
+
+function shipStore(): Record<string, Row> {
+  try {
+    const value = JSON.parse(localStorage.getItem(SHIP_KEY) ?? "{}");
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function shipRun(project: string): Row {
+  const record: Row = {
+    project,
+    head: SHIP_HEAD,
+    base: null,
+    commitsCovered: 7,
+    at: Date.now(),
+    outcome: "passed",
+    note: "Example: first ship check, covered the last 7 commits.",
+    steps: [{ name: "Project checks", outcome: "passed", detail: "Example: ran and passed" }],
+    tested: ["Example: the project's checks passed.", "Example: no test was weakened or switched off."],
+    notTested: ["Example: no review, because no task briefs landed in this range."],
+  };
+  localStorage.setItem(SHIP_KEY, JSON.stringify({ ...shipStore(), [project]: record }));
+  return record;
+}
+
 export function mockupIpc(cmd: string, args: Row | undefined): unknown {
   switch (cmd) {
+    case "ship_check_head":
+      return SHIP_HEAD;
+    case "ship_check_latest":
+      return shipStore()[String(args?.cwd ?? "")] ?? null;
+    case "ship_check_passed": {
+      const found = shipStore()[String(args?.cwd ?? "")];
+      return found?.outcome === "passed" && found.head === args?.head;
+    }
+    case "ship_check_run":
+      return shipRun(String(args?.cwd ?? ""));
     case "delivery_settings_get":
       return testingRow(String(args?.project ?? ""));
     case "delivery_testing_mode_set": {
