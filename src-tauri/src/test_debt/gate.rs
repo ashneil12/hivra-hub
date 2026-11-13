@@ -46,6 +46,8 @@ pub struct Outcome {
     pub full: usize,
     /// Tests that left the list: they ran green.
     pub cleared: usize,
+    /// Tests a worker's request put into quarantine this time (`quarantine`; `light` and `full`).
+    pub quarantined: usize,
 }
 
 fn tracked_files(checkout: &Path) -> Vec<String> {
@@ -257,6 +259,102 @@ pub fn at_ship(input: &Input) -> Result<Outcome, String> {
         listed,
         full,
         cleared,
+        quarantined: 0,
+    })
+}
+
+/// `light` and `full` (and a sensitive change in `at-ship`): a task is tested when it finishes, so nothing goes on the list and a
+/// failing test is the task's to fix. Two things reach it from the project's quarantine: a worker's `Quarantine: <test> | <why>` line
+/// (decided by `quarantine::decide`: not its own test, not a critical one, one of the tests its runs show failing; accepted, it is
+/// quarantined for 14 days) and the tests already quarantined, whose red run no longer fails the round. A refusal comes back as a gap
+/// the worker reads. A quarantine never excuses the task's own tests, and the fact layer's other gaps stand.
+///
+/// Cheap when there is nothing to do (no request, nothing quarantined): one read of the project's file. An error from the disk comes
+/// back: the caller then leaves the round as it was, so nothing is quarantined and nothing is let off on a guess.
+pub fn quarantine(
+    input: &Input,
+    report: &str,
+    protected_extra: &[String],
+) -> Result<Outcome, String> {
+    let requests = super::quarantine::parse_requests(report);
+    let before = store::read_checked(input.data_dir, input.project)?;
+    let now = input.now;
+    let live = before.quarantine.iter().any(|entry| now < entry.ends_at);
+    if requests.list.is_empty() && requests.dropped == 0 && !live {
+        return Ok(Outcome::default());
+    }
+    let tracked = tracked_files(input.checkout);
+    if tracked.len() >= TRACKED_MAX {
+        return Ok(Outcome::default());
+    }
+    let owner_dir = run_checks::owner_dir(input.data_dir, input.delegation_id);
+    let records = run_checks::records(input.data_dir, input.delegation_id);
+    let read_file = |path: &str| -> Option<String> {
+        let tracked_path = own::resolve_tracked(path, &tracked)?;
+        read_text(&input.checkout.join(tracked_path))
+    };
+    let read_log_of = |log: &str| read_log(&owner_dir, log);
+    let plan_for = |doc: &Doc| {
+        let quarantined = |id: &str| doc.quarantined(id, now);
+        divert::plan_quarantine_only(&Evidence {
+            runs: input.runs,
+            records: &records,
+            changed: input.changed,
+            tracked: &tracked,
+            read_log: &read_log_of,
+            read_file: &read_file,
+            quarantined: &quarantined,
+        })
+    };
+    let first = plan_for(&before);
+    let mut told: Vec<String> = Vec::new();
+    let mut asked: Vec<(own::Failing, String)> = Vec::new();
+    if !requests.list.is_empty() {
+        let patterns = crate::firstmate::sensitive::patterns_for(
+            Some(Path::new(input.project)),
+            protected_extra,
+        );
+        for request in &requests.list {
+            match super::quarantine::decide(request, &first, &patterns, &read_file) {
+                super::quarantine::Verdict::Quarantine(failing) => {
+                    asked.push((*failing, request.why.clone()));
+                }
+                super::quarantine::Verdict::Already => {}
+                super::quarantine::Verdict::Refused(sentence) => told.push(sentence),
+            }
+        }
+    }
+    if requests.dropped > 0 {
+        told.push(super::quarantine::dropped_sentence(requests.dropped));
+    }
+    let mut count = 0;
+    let mut after = before;
+    if !asked.is_empty() {
+        count = store::update(input.data_dir, input.project, |doc| {
+            for (failing, why) in &asked {
+                let why = if why.is_empty() {
+                    "asked for by the task"
+                } else {
+                    why.as_str()
+                };
+                doc.quarantine_test(&failing.id(), &failing.name, &failing.file, why, now);
+            }
+            asked.len()
+        })?;
+        after = store::read_checked(input.data_dir, input.project)?;
+    }
+    let mut plan = plan_for(&after);
+    for sentence in told {
+        if !plan.add_gaps.contains(&sentence) {
+            plan.add_gaps.push(sentence);
+        }
+    }
+    Ok(Outcome {
+        plan,
+        listed: 0,
+        full: 0,
+        cleared: 0,
+        quarantined: count,
     })
 }
 
@@ -685,6 +783,346 @@ mod tests {
         assert_eq!(
             store::read(data.path(), "/projects/tally").items[0].first_commit,
             ""
+        );
+    }
+
+    // ---- light and full: a worker's quarantine request --------------------------------------------------------------------
+
+    use crate::test_debt::doc::QUARANTINE_MS;
+
+    /// A repository whose tracked files hold the given text.
+    fn repo_with(files: &[(&str, &str)]) -> Temp {
+        let dir = Temp::new();
+        git(dir.path(), &["init", "-q"]);
+        for (file, text) in files {
+            let path = dir.path().join(file);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, text).unwrap();
+        }
+        git(dir.path(), &["add", "."]);
+        git(dir.path(), &["commit", "-q", "-m", "first"]);
+        dir
+    }
+
+    fn failure_in(file: &str, name: &str) -> String {
+        format!(" FAIL  {file} > {name}\nAssertionError: expected 1 to be 2\n\u{23af}\u{23af}\u{23af}\u{23af}\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n")
+    }
+
+    fn ask_with(
+        data: &Temp,
+        checkout: &Temp,
+        changed: &[&str],
+        runs: &[FactRun],
+        report: &str,
+        extra: &[String],
+        now: u64,
+    ) -> Result<Outcome, String> {
+        let changed: Vec<String> = changed.iter().map(|s| (*s).to_string()).collect();
+        quarantine(
+            &Input {
+                data_dir: data.path(),
+                project: "/projects/tally",
+                delegation_id: "d1",
+                task_title: "Task",
+                checkout: checkout.path(),
+                changed: &changed,
+                runs,
+                now,
+            },
+            report,
+            extra,
+        )
+    }
+
+    fn ask(
+        data: &Temp,
+        checkout: &Temp,
+        changed: &[&str],
+        runs: &[FactRun],
+        report: &str,
+        now: u64,
+    ) -> Outcome {
+        ask_with(data, checkout, changed, runs, report, &[], now).unwrap()
+    }
+
+    fn plain_repo() -> Temp {
+        repo_with(&[
+            ("src/feature.ts", "export {}\n"),
+            ("src/a.ts", "export {}\n"),
+            ("src/a.test.ts", "it(\"works\", () => {});\n"),
+            ("src/other.test.ts", "it(\"works\", () => {});\n"),
+        ])
+    }
+
+    #[test]
+    fn a_request_for_a_test_that_is_not_the_tasks_own_or_critical_is_quarantined_for_14_days() {
+        let (data, checkout) = (Temp::new(), plain_repo());
+        let out = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", FAIL_OTHER)],
+            "Done.\nQuarantine: suite > works | flaky, passes on a re-run\n",
+            1_000,
+        );
+        assert_eq!(out.quarantined, 1);
+        assert_eq!(
+            out.plan.clear_gaps,
+            vec![crate::firstmate::fact_gaps::failed_check_gap_for(
+                "npx vitest run"
+            )]
+        );
+        assert!(out.plan.add_gaps.is_empty());
+        let doc = store::read(data.path(), "/projects/tally");
+        assert_eq!(doc.quarantine.len(), 1);
+        assert_eq!(doc.quarantine[0].ends_at, 1_000 + QUARANTINE_MS);
+        assert_eq!(doc.quarantine[0].reason, "flaky, passes on a re-run");
+        assert!(doc.items.is_empty(), "nothing is listed in light or full");
+        // The next task of the project needs no request: the red run of a quarantined test no longer fails it. Nothing is written.
+        let rev = doc.rev;
+        let later = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", FAIL_OTHER)],
+            "Done.",
+            2_000,
+        );
+        assert_eq!(later.quarantined, 0);
+        assert_eq!(later.plan.clear_gaps.len(), 1);
+        assert_eq!(store::read(data.path(), "/projects/tally").rev, rev);
+        // After the 14 days it is a failing test again.
+        let expired = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", FAIL_OTHER)],
+            "Done.",
+            1_000 + QUARANTINE_MS,
+        );
+        assert!(expired.plan.clear_gaps.is_empty());
+    }
+
+    #[test]
+    fn a_request_for_a_critical_test_is_refused_and_the_worker_is_told() {
+        // By its path.
+        let (data, checkout) = (
+            Temp::new(),
+            repo_with(&[
+                ("src/feature.ts", "export {}\n"),
+                (
+                    "src/features/auth/login.test.ts",
+                    "it(\"logs in\", () => {});\n",
+                ),
+            ]),
+        );
+        let fail = failure_in("src/features/auth/login.test.ts", "suite > logs in");
+        let out = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", &fail)],
+            "Quarantine: suite > logs in | flaky\n",
+            1_000,
+        );
+        assert_eq!(out.quarantined, 0);
+        assert!(
+            out.plan.clear_gaps.is_empty(),
+            "the failed check still fails the round"
+        );
+        assert_eq!(out.plan.add_gaps.len(), 1);
+        assert!(
+            out.plan.add_gaps[0].starts_with("Quarantine refused: ")
+                && out.plan.add_gaps[0].contains("suite > logs in is a critical test (it sits under a sensitive path). A critical test is read-only for a worker: ask your first mate."),
+            "{}",
+            out.plan.add_gaps[0]
+        );
+        assert!(store::read(data.path(), "/projects/tally")
+            .quarantine
+            .is_empty());
+        // By a marker line above it in its source.
+        let (data, checkout) = (
+            Temp::new(),
+            repo_with(&[
+                ("src/feature.ts", "export {}\n"),
+                (
+                    "src/pay.test.ts",
+                    "describe(\"pay\", () => {\n  // @critical\n  it(\"charges\", () => {});\n});\n",
+                ),
+            ]),
+        );
+        let fail = failure_in("src/pay.test.ts", "pay > charges");
+        let out = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", &fail)],
+            "Quarantine: pay > charges | flaky\n",
+            1_000,
+        );
+        assert_eq!(out.quarantined, 0);
+        assert!(
+            out.plan.add_gaps[0].contains("a marker above it says critical"),
+            "{:?}",
+            out.plan.add_gaps
+        );
+        assert!(store::read(data.path(), "/projects/tally")
+            .quarantine
+            .is_empty());
+        // By a path the project protects.
+        let (data, checkout) = (
+            Temp::new(),
+            repo_with(&[
+                ("src/feature.ts", "export {}\n"),
+                ("src/ledger/sum.test.ts", "it(\"adds\", () => {});\n"),
+            ]),
+        );
+        let fail = failure_in("src/ledger/sum.test.ts", "suite > adds");
+        let runs = [run("npx vitest run", &fail)];
+        let report = "Quarantine: suite > adds | flaky\n";
+        let plain = ask_with(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &runs,
+            report,
+            &[],
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(
+            plain.quarantined, 1,
+            "not critical until the project protects it"
+        );
+        let (data, checkout2) = (Temp::new(), checkout);
+        let protected = vec!["src/ledger/".to_string()];
+        let out = ask_with(
+            &data,
+            &checkout2,
+            &["src/feature.ts"],
+            &runs,
+            report,
+            &protected,
+            1_000,
+        )
+        .unwrap();
+        assert_eq!(out.quarantined, 0);
+        assert!(out.plan.add_gaps[0].contains("critical test"));
+    }
+
+    #[test]
+    fn a_request_for_the_tasks_own_test_or_for_a_test_that_is_not_failing_is_not_applied() {
+        let (data, checkout) = (Temp::new(), plain_repo());
+        // Its own: it changed a.ts and a.test.ts fails.
+        let out = ask(
+            &data,
+            &checkout,
+            &["src/a.ts"],
+            &[run("npx vitest run", FAIL_A)],
+            "Quarantine: suite > works | flaky\n",
+            1_000,
+        );
+        assert_eq!(out.quarantined, 0);
+        assert!(out.plan.clear_gaps.is_empty());
+        assert!(
+            out.plan.add_gaps[0].contains("is a test your change covers"),
+            "{:?}",
+            out.plan.add_gaps
+        );
+        // Not failing in its runs.
+        let out = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", FAIL_OTHER)],
+            "Quarantine: suite > passes | flaky\n",
+            1_000,
+        );
+        assert_eq!(out.quarantined, 0);
+        assert!(out.plan.clear_gaps.is_empty());
+        assert!(out.plan.add_gaps[0].contains("is not one of the failing tests your runs show"));
+        assert!(store::read(data.path(), "/projects/tally")
+            .quarantine
+            .is_empty());
+    }
+
+    #[test]
+    fn nothing_asked_and_nothing_quarantined_reads_one_file_and_writes_nothing() {
+        let (data, checkout) = (Temp::new(), plain_repo());
+        let out = ask(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", FAIL_OTHER)],
+            "Done. Quarantine would be wrong here.",
+            1_000,
+        );
+        assert_eq!(out.quarantined, 0);
+        assert!(out.plan.clear_gaps.is_empty() && out.plan.add_gaps.is_empty());
+        assert!(
+            out.plan.own.is_empty() && out.plan.foreign.is_empty(),
+            "nothing was read"
+        );
+        assert!(!store::path_of(data.path(), "/projects/tally").exists());
+    }
+
+    #[test]
+    fn a_list_that_cannot_be_read_is_never_taken_for_an_empty_one_and_nothing_is_quarantined() {
+        let (data, checkout) = (Temp::new(), plain_repo());
+        let path = store::path_of(data.path(), "/projects/tally");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let newer = format!("{{\"version\": {}}}", crate::test_debt::doc::VERSION + 1);
+        std::fs::write(&path, &newer).unwrap();
+        let got = ask_with(
+            &data,
+            &checkout,
+            &["src/feature.ts"],
+            &[run("npx vitest run", FAIL_OTHER)],
+            "Quarantine: suite > works | flaky\n",
+            &[],
+            1_000,
+        );
+        assert!(got.is_err(), "{got:?}");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            newer,
+            "left as it was"
+        );
+    }
+
+    #[test]
+    fn requests_from_tasks_finishing_together_all_land() {
+        let files: Vec<(String, String)> = (0..6)
+            .map(|n| {
+                (
+                    format!("src/t{n}.test.ts"),
+                    "it(\"x\", () => {});\n".to_string(),
+                )
+            })
+            .collect();
+        let mut listed: Vec<(&str, &str)> = vec![("src/feature.ts", "export {}\n")];
+        listed.extend(files.iter().map(|(f, t)| (f.as_str(), t.as_str())));
+        let (data, checkout) = (Temp::new(), repo_with(&listed));
+        std::thread::scope(|scope| {
+            for n in 0..6usize {
+                let (data, checkout) = (&data, &checkout);
+                scope.spawn(move || {
+                    let fail = failure_in(&format!("src/t{n}.test.ts"), &format!("suite > t{n}"));
+                    let out = ask(
+                        data,
+                        checkout,
+                        &["src/feature.ts"],
+                        &[run("npx vitest run", &fail)],
+                        &format!("Quarantine: suite > t{n} | flaky\n"),
+                        1_000,
+                    );
+                    assert_eq!(out.quarantined, 1, "t{n}");
+                });
+            }
+        });
+        assert_eq!(
+            store::read(data.path(), "/projects/tally").quarantine.len(),
+            6
         );
     }
 

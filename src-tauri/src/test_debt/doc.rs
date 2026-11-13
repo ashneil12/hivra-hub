@@ -508,9 +508,28 @@ impl Doc {
             return false;
         };
         let item = self.items.remove(at);
+        self.quarantine_entry(item.id, item.name, item.file, reason, now);
+        true
+    }
+
+    /// A worker's request in `light` or `full`: the test is quarantined for `QUARANTINE_MS` from now, whether or not it is on the list
+    /// (those modes keep no list). A test already on the list stays there until the fixer sorts it; a quarantined test is never listed
+    /// again. Asking again starts the 14 days over.
+    pub fn quarantine_test(&mut self, id: &str, name: &str, file: &str, reason: &str, now: u64) {
+        // The reason is the worker's own words, kept and shown: it goes through the scrubber like a failure's text does.
+        self.quarantine_entry(
+            id.to_string(),
+            tidy_line(name, NAME_MAX),
+            tidy_line(&file.replace('\\', "/"), FILE_MAX),
+            &scrubbed(reason),
+            now,
+        );
+    }
+
+    fn quarantine_entry(&mut self, id: String, name: String, file: String, reason: &str, now: u64) {
         self.quarantine.retain(|entry| entry.id != id);
-        // A full quarantine makes room by letting the entry that ends soonest go: a test the fixer called flaky is never quietly not
-        // quarantined.
+        // A full quarantine makes room by letting the entry that ends soonest go: a test that was called flaky, or that a worker asked
+        // to have quarantined, is never quietly not quarantined.
         while self.quarantine.len() >= QUARANTINE_MAX {
             let Some(soonest) = self
                 .quarantine
@@ -524,14 +543,13 @@ impl Doc {
             self.quarantine.remove(soonest);
         }
         self.quarantine.push(Quarantined {
-            id: item.id,
-            name: item.name,
-            file: item.file,
+            id,
+            name,
+            file,
             reason: tidy_line(reason, LINE_MAX),
             added_at: now,
             ends_at: now.saturating_add(QUARANTINE_MS),
         });
-        true
     }
 
     /// Quarantine entries past their end date: they come back. Removed, and returned so the ship check lists each once.
@@ -1142,6 +1160,72 @@ mod tests {
         assert_ne!(test_id("vitest", "a|b", "c"), test_id("vitest", "a", "b|c"));
         // Whitespace around a name is not part of it.
         assert_eq!(test_id("vitest", "a", "b"), test_id("vitest", "a", "  b "));
+    }
+
+    #[test]
+    fn a_workers_request_quarantines_a_test_that_was_never_listed_for_14_days_and_asking_again_starts_over(
+    ) {
+        let mut doc = Doc::default();
+        let id = test_id("vitest", "src\\other.test.ts", "suite > works");
+        doc.quarantine_test(
+            &id,
+            "suite > works",
+            "src\\other.test.ts",
+            "flaky\n on re-run",
+            1_000,
+        );
+        assert_eq!(doc.quarantine.len(), 1);
+        let entry = &doc.quarantine[0];
+        assert_eq!(entry.id, id);
+        assert_eq!(entry.file, "src/other.test.ts");
+        assert_eq!(entry.reason, "flaky on re-run");
+        assert_eq!(entry.ends_at, 1_000 + QUARANTINE_MS);
+        assert!(doc.quarantined(&id, 1_000 + QUARANTINE_MS - 1));
+        assert!(!doc.quarantined(&id, 1_000 + QUARANTINE_MS));
+        // Never listed while it is quarantined.
+        let noted = doc.note_failure(
+            &Candidate {
+                runner: "vitest".into(),
+                file: "src/other.test.ts".into(),
+                name: "suite > works".into(),
+                failure: "boom".into(),
+                command: "npx vitest run".into(),
+                first_commit: "abc1234".into(),
+                delegation_id: "d1".into(),
+                task_title: "t".into(),
+            },
+            2_000,
+        );
+        assert_eq!(noted, Noted::Quarantined);
+        assert!(doc.items.is_empty());
+        // Asking again is one entry with a new end date, not two.
+        doc.quarantine_test(&id, "suite > works", "src/other.test.ts", "again", 9_000);
+        assert_eq!(doc.quarantine.len(), 1);
+        assert_eq!(doc.quarantine[0].ends_at, 9_000 + QUARANTINE_MS);
+        // A secret in the worker's words is never kept.
+        let mut leaky = Doc::default();
+        leaky.quarantine_test(
+            "y",
+            "n",
+            "f",
+            "flaky, saw ghp_0123456789abcdefghijklmnopqrstuvwxyz in the log",
+            1,
+        );
+        assert!(
+            !leaky.quarantine[0].reason.contains("ghp_0123"),
+            "{}",
+            leaky.quarantine[0].reason
+        );
+        assert!(leaky.quarantine[0].reason.starts_with("flaky, saw"));
+        // A test already on the list stays there until it is sorted.
+        let mut listed = Doc::default();
+        listed.items.push(Item {
+            id: "x".into(),
+            ..Item::default()
+        });
+        listed.quarantine_test("x", "n", "f", "r", 1);
+        assert_eq!(listed.items.len(), 1);
+        assert!(listed.quarantined("x", 2));
     }
 
     #[test]

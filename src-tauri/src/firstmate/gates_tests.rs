@@ -1790,6 +1790,168 @@ fn light_and_full_never_use_the_list() {
     assert!(crate::test_debt::applies(chosen.mode, chosen.as_today));
 }
 
+const VITEST_APP: &str = " FAIL  app.test.ts > suite > works\nAssertionError: expected 1 to be 2\n\u{23af}\u{23af}\u{23af}\u{23af}\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n";
+const VITEST_APP_CRITICAL: &str = " FAIL  app.test.ts > suite > @critical works\nAssertionError: expected 1 to be 2\n\u{23af}\u{23af}\u{23af}\u{23af}\n Test Files  1 failed (1)\n      Tests  1 failed | 2 passed (3)\n";
+
+/// What `firstmate_run_gates` does in `light` and `full`: read the task's runs and its report's `Quarantine:` lines, hand `run_round` the plan.
+fn quarantine_plan(
+    data: &crate::test_debt::testing::Temp,
+    copy: &Path,
+    output: &str,
+    report: &str,
+) -> crate::test_debt::gate::Outcome {
+    crate::test_debt::gate::quarantine(
+        &crate::test_debt::gate::Input {
+            data_dir: data.path(),
+            project: "/projects/tally",
+            delegation_id: "d-1",
+            task_title: "Add b",
+            checkout: copy,
+            changed: &["other.ts".to_string()],
+            runs: &[crate::firstmate::fact_gaps::FactRun {
+                command: "npm test".into(),
+                at: 3.0,
+                output: output.into(),
+            }],
+            now: 5,
+        },
+        report,
+        &[],
+    )
+    .unwrap()
+}
+
+#[test]
+fn in_light_and_full_a_quarantined_test_no_longer_sends_a_task_back_for_a_failed_check() {
+    let f = built();
+    let failed = failed_check_facts();
+    let data = crate::test_debt::testing::Temp::new();
+    let outcome = quarantine_plan(
+        &data,
+        &f.copy,
+        VITEST_APP,
+        "Done.\nQuarantine: suite > works | flaky, passes on a re-run\n",
+    );
+    assert_eq!(outcome.quarantined, 1, "{:?}", outcome.plan.add_gaps);
+    for mode in [TestingMode::Light, TestingMode::Full] {
+        let chosen = moded(&f.copy, mode, None);
+        // Without the quarantine the failed check is the task's to fix, as it always was.
+        assert_eq!(
+            moded_round_debt(&f.copy, &chosen, Some(&failed), None).verdict,
+            Verdict::Failed,
+            "{mode:?}"
+        );
+        let record = moded_round_debt(&f.copy, &chosen, Some(&failed), Some(&outcome.plan));
+        // Not sent back for the failed check. (In `full` the running checker can't run in this fixture, so that round reads "unsure"
+        // rather than passed; light has the cheap check and passes.)
+        assert_ne!(
+            record.verdict,
+            Verdict::Failed,
+            "{mode:?}: {}",
+            record.summary
+        );
+        assert!(
+            !record.summary.to_lowercase().contains("check failed"),
+            "{mode:?}: {}",
+            record.summary
+        );
+        if mode == TestingMode::Light {
+            assert_eq!(record.verdict, Verdict::Passed, "{}", record.summary);
+        }
+        // The rest of the round is as it was: the gates ran, and nothing was put on the list.
+        assert!(!record.gates.is_empty(), "{mode:?}");
+    }
+    let doc = crate::test_debt::store::read(data.path(), "/projects/tally");
+    assert!(doc.items.is_empty());
+    assert_eq!(doc.quarantine.len(), 1);
+    // An open to-do still sends it back.
+    let mut with_todo = failed_check_facts();
+    with_todo.todos = open_todo_facts().todos;
+    let chosen = moded(&f.copy, TestingMode::Light, None);
+    let record = moded_round_debt(&f.copy, &chosen, Some(&with_todo), Some(&outcome.plan));
+    assert_eq!(record.verdict, Verdict::Failed);
+    assert!(record.summary.contains("open to-do"), "{}", record.summary);
+}
+
+#[test]
+fn in_light_and_full_a_quarantine_request_for_a_critical_test_is_refused_and_fails_the_round() {
+    let f = built();
+    let data = crate::test_debt::testing::Temp::new();
+    let outcome = quarantine_plan(
+        &data,
+        &f.copy,
+        VITEST_APP_CRITICAL,
+        "Done.\nQuarantine: suite > @critical works | flaky\n",
+    );
+    assert_eq!(outcome.quarantined, 0);
+    assert!(
+        crate::test_debt::store::read(data.path(), "/projects/tally")
+            .quarantine
+            .is_empty(),
+        "nothing was quarantined"
+    );
+    // The check did not even fail in the transcript: the refusal alone sends the task back, and says why.
+    let clean = crate::firstmate::fact_gaps::FactTurn::default();
+    for mode in [TestingMode::Light, TestingMode::Full] {
+        let chosen = moded(&f.copy, mode, None);
+        let record = moded_round_debt(&f.copy, &chosen, Some(&clean), Some(&outcome.plan));
+        assert_eq!(
+            record.verdict,
+            Verdict::Failed,
+            "{mode:?}: {}",
+            record.summary
+        );
+        assert!(
+            record.summary.to_lowercase().contains("quarantine refused"),
+            "{mode:?}: {}",
+            record.summary
+        );
+        assert!(
+            record.summary.contains("ask your first mate"),
+            "{}",
+            record.summary
+        );
+    }
+}
+
+#[test]
+fn a_sensitive_change_in_test_at_ship_is_tested_like_light_and_its_failing_tests_are_its_own() {
+    let f = built();
+    let failed = failed_check_facts();
+    let changed = vec!["src/auth/login.ts".to_string()];
+    let chosen = crate::firstmate::testing_mode::gates_for_with(
+        TestingMode::AtShip,
+        None,
+        &changed,
+        true,
+        false,
+        true,
+        false,
+        crate::firstmate::checker_when::WhenRule::FollowMode,
+    );
+    assert!(chosen.sensitive);
+    assert!(
+        !crate::test_debt::diverts(&chosen),
+        "nothing goes on the list"
+    );
+    assert!(crate::test_debt::reads_quarantine(&chosen));
+    // With no plan, as the app hands it for a task with nothing quarantined, a failed check is the task's to fix.
+    let record = moded_round_debt(&f.copy, &chosen, Some(&failed), None);
+    assert_eq!(record.verdict, Verdict::Failed, "{}", record.summary);
+    // And the project's checks ran, which Test at ship does not do for an ordinary change.
+    assert!(
+        record
+            .gates
+            .iter()
+            .any(|gate| gate.gate == GateKind::Checks),
+        "{:?}",
+        kinds(&record)
+    );
+    let ordinary = moded(&f.copy, TestingMode::AtShip, None);
+    let plain = moded_round_debt(&f.copy, &ordinary, None, None);
+    assert!(plain.gates.iter().all(|gate| gate.gate != GateKind::Checks));
+}
+
 #[test]
 fn light_runs_the_checks_the_ratchet_and_the_model_for_changed_code() {
     let f = built();

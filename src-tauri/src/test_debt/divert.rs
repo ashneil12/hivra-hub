@@ -155,12 +155,25 @@ fn names(list: &[&Failing]) -> String {
     }
 }
 
+/// `at-ship`: the failures that are not the task's own go to the list, so only its own fail the round.
 pub fn plan(e: &Evidence) -> Plan {
+    plan_with(e, true)
+}
+
+/// `light` and `full` (and a sensitive change in `at-ship`): the task is tested when it finishes, so a failing test is its to fix, and
+/// the only one excused is a quarantined test that is not its own. `foreign` still names the other failing tests (a worker may ask
+/// for one of them to be quarantined), but nothing is listed and no gap is added: the fact layer's gaps stand as they are.
+pub fn plan_quarantine_only(e: &Evidence) -> Plan {
+    plan_with(e, false)
+}
+
+fn plan_with(e: &Evidence, excuse_foreign: bool) -> Plan {
     let rust = rust_files(e.tracked);
     let mut plan = Plan::default();
     let mut seen: HashSet<String> = HashSet::new();
 
-    // Sorts one run's failing tests. Returns the ones that are the task's own (also when an earlier source already named them).
+    // Sorts one run's failing tests. Returns the ones that fail the round: the task's own (also when an earlier source already named
+    // them) and, when `excuse_foreign` is off, every other test that is not quarantined.
     let mut sort = |failing: Vec<Failing>, plan: &mut Plan| -> Vec<Failing> {
         let mut mine = Vec::new();
         for f in failing {
@@ -176,8 +189,13 @@ pub fn plan(e: &Evidence) -> Plan {
                 if first {
                     plan.quarantined.push(f);
                 }
-            } else if first {
-                plan.foreign.push(f);
+            } else {
+                if !excuse_foreign {
+                    mine.push(f.clone());
+                }
+                if first {
+                    plan.foreign.push(f);
+                }
             }
         }
         mine
@@ -206,8 +224,10 @@ pub fn plan(e: &Evidence) -> Plan {
         let mine = sort(failing, &mut plan);
         if !mine.is_empty() {
             // The task's own failing test fails the round even when the fact layer saw no failed check (a run that exited 0, or
-            // whose status it could not read): the gap is made here.
-            plan.add_gaps.push(sentence.clone());
+            // whose status it could not read): the gap is made here. Only in `at-ship`: elsewhere the fact layer's gaps stand.
+            if excuse_foreign {
+                plan.add_gaps.push(sentence.clone());
+            }
             keep.insert(sentence);
         } else if complete {
             eligible.push(sentence);
@@ -224,7 +244,7 @@ pub fn plan(e: &Evidence) -> Plan {
     for record in live_red(e.records) {
         let (failing, complete) = failing_of_record(record, e, &rust);
         let mine = sort(failing, &mut plan);
-        if !mine.is_empty() || !complete {
+        if excuse_foreign && (!mine.is_empty() || !complete) {
             let detail = if mine.is_empty() {
                 "some of the failing tests could not be read".to_string()
             } else {
@@ -287,6 +307,117 @@ mod tests {
             read_file: &|_| None,
             quarantined: &|id| quarantined.iter().any(|q| id.contains(q.as_str())),
         })
+    }
+
+    fn quarantine_only_plan_of(
+        runs: &[FactRun],
+        records: &[Record],
+        changed: &[&str],
+        quarantined: &[&str],
+    ) -> Plan {
+        let changed: Vec<String> = changed.iter().map(|s| (*s).to_string()).collect();
+        let quarantined: Vec<String> = quarantined.iter().map(|s| (*s).to_string()).collect();
+        plan_quarantine_only(&Evidence {
+            runs,
+            records,
+            changed: &changed,
+            tracked: &[],
+            read_log: &|_| None,
+            read_file: &|_| None,
+            quarantined: &|id| quarantined.iter().any(|q| id.contains(q.as_str())),
+        })
+    }
+
+    // ---- light and full: only a quarantined test is excused ---------------------------------------------------------------
+
+    #[test]
+    fn in_light_and_full_a_failing_test_that_is_not_quarantined_keeps_its_gap_whoever_wrote_it() {
+        let runs = [run("npx vitest run", FAIL_OTHER, 1.0)];
+        let p = quarantine_only_plan_of(&runs, &[], &["src/feature.ts"], &[]);
+        assert!(
+            p.clear_gaps.is_empty(),
+            "the task is tested: its gap stands"
+        );
+        assert!(p.add_gaps.is_empty(), "no gap is made here");
+        // It is still named, so a worker's request to quarantine it can be matched.
+        assert_eq!(p.foreign.len(), 1);
+        assert_eq!(p.foreign[0].file, "src/other.test.ts");
+        assert!(p.own.is_empty() && p.quarantined.is_empty());
+    }
+
+    #[test]
+    fn in_light_and_full_a_quarantined_test_that_is_not_the_tasks_own_no_longer_fails_the_round() {
+        let runs = [run("npx vitest run", FAIL_OTHER, 1.0)];
+        let p = quarantine_only_plan_of(&runs, &[], &["src/feature.ts"], &["src/other.test.ts"]);
+        assert_eq!(
+            p.clear_gaps,
+            vec![fact_gaps::failed_check_gap_for("npx vitest run")]
+        );
+        assert_eq!(p.quarantined.len(), 1);
+        assert!(p.foreign.is_empty() && p.own.is_empty() && p.add_gaps.is_empty());
+    }
+
+    #[test]
+    fn in_light_and_full_a_quarantine_never_excuses_the_tasks_own_test() {
+        let runs = [run("npx vitest run", FAIL_A, 1.0)];
+        let p = quarantine_only_plan_of(&runs, &[], &["src/a.ts"], &["src/a.test.ts"]);
+        assert!(p.clear_gaps.is_empty(), "a signal, never excused");
+        assert_eq!(p.own.len(), 1);
+        assert!(p.quarantined.is_empty());
+        assert!(
+            p.add_gaps.is_empty(),
+            "the fact layer's own gap is the one that stands"
+        );
+    }
+
+    #[test]
+    fn in_light_and_full_one_test_not_quarantined_keeps_the_gap_of_a_run_that_also_failed_a_quarantined_one(
+    ) {
+        let runs = [run("npx vitest run", FAIL_BOTH, 1.0)];
+        let p = quarantine_only_plan_of(&runs, &[], &["src/feature.ts"], &["src/a.test.ts"]);
+        assert!(p.clear_gaps.is_empty());
+        assert_eq!(p.quarantined.len(), 1);
+        assert_eq!(p.foreign.len(), 1);
+        // Both quarantined: the gap goes.
+        let p = quarantine_only_plan_of(
+            &runs,
+            &[],
+            &["src/feature.ts"],
+            &["src/a.test.ts", "src/other.test.ts"],
+        );
+        assert_eq!(p.clear_gaps.len(), 1);
+    }
+
+    #[test]
+    fn in_light_and_full_a_run_cut_before_it_named_every_failure_keeps_its_gap_even_if_the_named_one_is_quarantined(
+    ) {
+        let cut = " FAIL  src/other.test.ts > suite > works\nboom\n Test Files  3 failed (3)\n      Tests  3 failed | 0 passed (3)\n";
+        let p = quarantine_only_plan_of(
+            &[run("npx vitest run", cut, 1.0)],
+            &[],
+            &["src/feature.ts"],
+            &["src/other.test.ts"],
+        );
+        assert!(p.clear_gaps.is_empty());
+    }
+
+    #[test]
+    fn in_light_and_full_a_red_run_checks_record_adds_no_gap_of_its_own() {
+        let records = [record(
+            "affected",
+            TestOutcome::Red,
+            &["src/a.test.ts > suite > works"],
+            5,
+        )];
+        let own_red = quarantine_only_plan_of(&[], &records, &["src/a.ts"], &[]);
+        assert_eq!(own_red.own.len(), 1);
+        assert!(own_red.add_gaps.is_empty());
+        // At ship the same record is a gap: that is the difference between the two.
+        assert_eq!(plan_of(&[], &records, &["src/a.ts"], &[]).add_gaps.len(), 1);
+        let unread = [record("affected", TestOutcome::Red, &[], 5)];
+        assert!(quarantine_only_plan_of(&[], &unread, &["src/a.ts"], &[])
+            .add_gaps
+            .is_empty());
     }
 
     #[test]

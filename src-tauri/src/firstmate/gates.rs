@@ -2736,6 +2736,43 @@ fn at_ship_debt(
     Some(outcome)
 }
 
+/// PT-5: in `light` and `full` (and for a sensitive change), the project's quarantine as it reaches a task: a test already quarantined
+/// no longer fails its round, and a `Quarantine: <test> | <why>` line in its report is decided and, if accepted, kept for 14 days. A
+/// refused request comes back as a gap. A list that can't be read or written returns `None`: the round is then as it was.
+fn quarantine_read(
+    app: &AppHandle,
+    row: &delegations::Delegation,
+    checkout: &Path,
+    changed: &[String],
+    raw_facts: Option<&serde_json::Value>,
+    report: &str,
+    protected_extra: &[String],
+) -> Option<crate::test_debt::gate::Outcome> {
+    let (data, project) = debt_project(app, checkout)?;
+    let (runs, _) = raw_facts
+        .map(super::fact_gaps::runs_from_value)
+        .unwrap_or_default();
+    let outcome = crate::test_debt::gate::quarantine(
+        &crate::test_debt::gate::Input {
+            data_dir: &data,
+            project: &project,
+            delegation_id: &row.id,
+            task_title: row.title.as_deref().unwrap_or(""),
+            checkout,
+            changed,
+            runs: &runs,
+            now: now_millis().max(0) as u64,
+        },
+        report,
+        protected_extra,
+    )
+    .ok()?;
+    if outcome.quarantined > 0 {
+        let _ = app.emit(crate::test_debt::CHANGED, serde_json::json!({}));
+    }
+    Some(outcome)
+}
+
 /// PT-5: the test fixer's report, when this task is the fixer: its decisions are applied to the list and its slot is freed.
 fn fixer_report_read(
     app: &AppHandle,
@@ -2940,9 +2977,20 @@ pub async fn firstmate_run_gates(
         // PT-5: in `at-ship` only, a failing test that is not this task's own goes on the project's test debt list instead of
         // sending the task back. `light` and `full` test each task, so they never come here.
         // PT-5: a sensitive change is tested like a `full` one, so a failing test there is the task's to fix: nothing is diverted.
-        let debt_plan = if crate::test_debt::applies(moded.mode, moded.as_today) && !moded.sensitive
-        {
+        // PT-5: a task that is tested when it finishes (`light`, `full`, a sensitive change) reads the project's quarantine instead: a
+        // test already quarantined no longer fails it, and a `Quarantine:` line in its report is decided (refused for a critical test).
+        let debt_plan = if crate::test_debt::diverts(&moded) {
             at_ship_debt(&app, &row, &checkout, &changed, input.facts.as_ref())
+        } else if crate::test_debt::reads_quarantine(&moded) {
+            quarantine_read(
+                &app,
+                &row,
+                &checkout,
+                &changed,
+                input.facts.as_ref(),
+                &input.report,
+                &protected_extra,
+            )
         } else {
             None
         };
