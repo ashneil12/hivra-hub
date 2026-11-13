@@ -1,3 +1,4 @@
+import { hasInlineLinkCard, inlineLinkCard } from "../model/inlineLinkCards";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -384,6 +385,9 @@ function MarkdownLink({
   if (allowRemoteMedia && href && isInboxMediaUrl(href)) {
     return <InboxMedia src={href} alt={label} />;
   }
+  // Dropwave: a hivra link that draws as a card (a question answered where it is: asks/ui/InlineNeed.tsx).
+  const card = inlineLinkCard(href, label);
+  if (card !== undefined) return <>{card}</>;
 
   const link = (
     <WorkspaceLink href={href} file={file} {...props}>
@@ -663,8 +667,36 @@ function MarkdownPictureSource() {
   return null;
 }
 
+type HastNode = { type?: string; tagName?: string; value?: string; properties?: { href?: unknown }; children?: HastNode[] };
+
+/** A paragraph that is only a link drawn as a card: the card stands in its place, not inside a <p>. */
+function cardLinkOnly(node: HastNode | undefined): boolean {
+  const parts = (node?.children ?? []).filter((child) => !(child.type === "text" && !child.value?.trim()));
+  const [only] = parts;
+  return (
+    parts.length === 1 &&
+    only.type === "element" &&
+    only.tagName === "a" &&
+    typeof only.properties?.href === "string" &&
+    hasInlineLinkCard(only.properties.href)
+  );
+}
+
+/** Streamdown's own paragraph, plus the card case: an image or a code block alone isn't wrapped in a <p> either. */
+function MarkdownParagraph({ node, children, ...props }: ComponentProps<"p"> & { node?: unknown }) {
+  if (cardLinkOnly(node as HastNode | undefined)) return <div data-inline-card-block>{children}</div>;
+  const parts = (Array.isArray(children) ? children : [children]).filter((part) => part != null && part !== "");
+  if (parts.length === 1 && isValidElement<{ node?: HastNode; "data-block"?: unknown }>(parts[0])) {
+    const only = parts[0].props;
+    if (only.node?.tagName === "img") return <>{children}</>;
+    if (only.node?.tagName === "code" && "data-block" in only) return <>{children}</>;
+  }
+  return <p {...props}>{children}</p>;
+}
+
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
+  p: MarkdownParagraph,
   code: MarkdownCode,
   img: MarkdownImage,
   source: MarkdownPictureSource,

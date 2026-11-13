@@ -12,6 +12,13 @@ import type { NeedsItem } from "./needsYou";
 export const ROLLUP_NAMED = 5;
 const SENTENCE_MAX = 140;
 
+/** What the roll-up named, kept on its block so each item is answered where it sits and reads the same later. */
+export type RollupCard = {
+  items: { key: string; sentence: string; where?: string; yours: boolean }[];
+  /** How many more are in Needs you than it names. */
+  more: number;
+};
+
 export type RollupState = {
   /** Every item mark (key and words) the chat has already been told about, or that was there when it started. */
   told: ReadonlySet<string>;
@@ -60,8 +67,12 @@ export function rollupLine(
   const more = fresh.length - named.length;
   const head = fresh.length === 1 ? "Needs you now" : `Needs you now (${fresh.length} new)`;
   const text = [`${head}${yours.length ? ", Ash" : ""}:`, ...lines.map((line) => `- ${line}`), ...(more > 0 ? [`- and ${more} more in Needs you`] : [])].join("\n");
+  const card: RollupCard = {
+    items: named.map((item) => ({ key: item.key, sentence: short(item.sentence), where: label(item), yours: isAshsCall(item) })),
+    more: Math.max(0, more),
+  };
   return {
-    block: { id: `needs-rollup-${now}`, role: "system", text } as Block,
+    block: { id: `needs-rollup-${now}`, role: "system", text, needsRollup: card } as Block,
     state: { told },
   };
 }

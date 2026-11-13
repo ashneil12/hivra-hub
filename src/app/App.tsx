@@ -1107,6 +1107,9 @@ import { currentNeedsYou } from "../features/needs/model/needsLive";
 import { tauriFirstMate } from "../features/firstmate/model/steering";
 import { buildCatchUp, catchUpBlock, catchUpNote, catchUpSince } from "../features/asks/model/catchUp";
 import { besideBlock, besideNote, setBesideChatHost } from "../features/asks/model/besideChat";
+import { needLinksKey, needLinksNote } from "../features/asks/model/needLinks";
+import { inlineNeedCard } from "../features/asks/ui/InlineNeed";
+import { setInlineLinkCard } from "../features/sessions/model/inlineLinkCards";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
 import { stampFirstMate } from "../features/monos/model/monoMate";
@@ -10313,6 +10316,22 @@ function Workspace({
             const beside = besideNote(current.blocks);
             if (beside) appContext.push(beside);
           }
+          // One chat: every open Needs you item with its link, when the list changed since this chat was last given it (and
+          // always in a fresh session), so a reply asks about one with the card Ash answers from (asks/model/needLinks.ts).
+          if (!rawCommand && isOneChat(sessionId)) {
+            const open = currentNeedsYou();
+            const key = needLinksKey(open);
+            if (key !== needLinksShown.current.get(sessionId) || !current.providerSessionId) {
+              const projects = hubData().listProjects();
+              const note = needLinksNote(open, (item) => {
+                const projectId = open.find((entry) => entry.key === item.key)?.projectId;
+                return projectId ? projects.find((project) => project.id === projectId)?.name : undefined;
+              });
+              if (note) appContext.push(note);
+              if (note && monoRotation) tidyGiven.push(note);
+            }
+            needLinksShown.current.set(sessionId, key);
+          }
           if (monoRotation && IS_HUB_BUNDLE) {
             const after = monoRotation.rotation.afterBlockId;
             const now = sessionsRef.current.find((session) => session.id === sessionId)?.blocks ?? [];
@@ -11287,6 +11306,8 @@ function Workspace({
   const queueMonoSessionCompletionRef = useRef(queueMonoSessionCompletion);
   // The open-asks list each chat was last shown (asks/model/askNotes.ts openAsksKey), so the same list isn't sent twice.
   const askNotesShown = useRef(new Map<string, string>());
+  // The one chat's Needs you links (asks/model/needLinks.ts): what its Chief of Staff was last given, per chat.
+  const needLinksShown = useRef(new Map<string, string>());
   queueMonoSessionCompletionRef.current = queueMonoSessionCompletion;
   // WP-60: a remote project's result lands in the chat that started it, once.
   useEffect(
@@ -11371,6 +11392,8 @@ function Workspace({
       }),
     [showMonoLaunchedSession],
   );
+  // One chat: a Needs you link in a reply draws as that question's own card, answered where it sits (InlineNeed.tsx).
+  useEffect(() => (ONE_CHAT ? setInlineLinkCard(inlineNeedCard) : undefined), []);
   // "Catch me up" in the one chat (asks/model/catchUp.ts): one app card from the app's own records. No model turn.
   useEffect(
     () =>

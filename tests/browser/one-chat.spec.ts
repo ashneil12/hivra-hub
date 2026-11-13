@@ -236,3 +236,35 @@ test("one chat: a first mate's chat opens beside the one chat, and what you send
   expect((await turn.innerText()).trim().startsWith("You messaged EXO lead")).toBe(true);
   await page.screenshot({ path: test.info().outputPath("beside.png") });
 });
+
+// Ash's round 3 pick (13 Nov): a question from any project is answered inside the reply that asks it, so he never
+// leaves the one chat for Needs you.
+test("one chat: a question in the Chief of Staff's reply is its own answer card, answered where it sits", async ({ page }) => {
+  await home(page);
+  await chiefRow(page).click();
+  // Two in the reply, one in the Needs you roll-up the app posted above it.
+  const cards = oneChat(page).locator("[data-inline-need]");
+  await expect(cards).toHaveCount(3);
+  const rollup = oneChat(page).locator("[data-needs-rollup]");
+  await expect(rollup).toContainText("Needs you now");
+  await expect(rollup.locator('[data-inline-need="question:nibbii:onboarding-read"]')).toContainText("Read the onboarding copy before it goes out?");
+  // The roll-up is the app's: no agent name over it, and not folded into the reply above.
+  expect((await page.locator('[data-transcript-turn^="needs-rollup-"]').innerText()).trim().startsWith("Needs you now")).toBe(true);
+  const boss = oneChat(page).locator('[data-inline-need="question:vg-game:boss-music"]');
+  await expect(boss).toContainText("Which take for the boss music?");
+  await expect(boss).toContainText("EXO lead");
+  await expect(boss.locator('[data-need-choice="a"]')).toContainText("Take A: drums first");
+  await expect(boss.locator('[data-need-choice="a"][data-suggested]')).toHaveCount(1);
+  await expect(boss.locator('[data-need-choice="b"]')).toContainText("Take B: choir first");
+  // The card stands where the link was: never inside a paragraph, and the link itself is gone.
+  expect(await boss.evaluate((node) => !!node.closest("p"))).toBe(false);
+  await expect(oneChat(page).locator('a[href^="hivra://local/need"]')).toHaveCount(0);
+  await page.screenshot({ path: test.info().outputPath("cards.png") });
+
+  await boss.locator('[data-need-choice="a"]').click();
+  const answered = oneChat(page).locator('[data-need-answered="question:vg-game:boss-music"]');
+  await expect(answered).toHaveText("Answered: Take A: drums first. EXO lead has it.");
+  await expect(oneChat(page).locator("[data-inline-need]")).toHaveCount(2);
+  await expect(oneChat(page).locator('[data-inline-need="question:hivra:waitlist-headline"]')).toBeVisible();
+  await page.screenshot({ path: test.info().outputPath("answered.png") });
+});

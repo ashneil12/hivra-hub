@@ -120,6 +120,13 @@ project.
     catch-up's Open) opens **beside** it, in the panel next to the chat, never in its place (`asks/model/besideChat.ts`).
     What the person sends there leaves one quiet line in the one chat ("You messaged EXO lead: … · the Chief of Staff
     knows.", `asks/ui/BesideMessageLine.tsx`): the app's line, with no agent name over it and no turn row under it.
+    A question is answered **inside the one chat** (`asks/ui/InlineNeed.tsx`): a reply links a Needs you item on a line
+    of its own (`hivra://local/need/<key>`, `asks/model/needLinks.ts`) and the chat draws it as that item's own card
+    (the same `NeedDetail` the Inbox opens: every answer lettered, the pick marked, a box for his words, Open chat
+    beside). The app's Needs you roll-up shows its items the same way, numbered, under a quiet "Needs you now". Once an
+    item stops waiting the card folds to one line ("Answered: … EXO lead has it." or "No longer needs you: …"). The
+    chat store keeps these cards, the catch-up card and the "You messaged" line through a relaunch
+    (`asks/model/keptCards.ts`).
 15. **A flow asks one thing a step.** First run (`HubOnboarding.tsx`) goes welcome, the first project, its first
     mates, the coding tools, a look, done; each step has one heading and one choice, nothing is required, and the
     last step says back what was chosen before anything opens. A list a person chooses from says what each choice

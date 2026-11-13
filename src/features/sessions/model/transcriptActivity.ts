@@ -195,7 +195,7 @@ export function isActivityBlock(block: Block): boolean {
   if (block.role === "system") {
     // An agent-to-agent note keeps its own line in the chat, never folded into the work trail (Ash 21 Oct 20:45).
     // A catch-up card (asks/model/catchUp.ts) is something Ash asked to read: its own row too.
-    return !block.interjection && !isNoticeBlock(block) && !block.agentNote && !block.catchUp && !block.besideMessage;
+    return !block.interjection && !isNoticeBlock(block) && !block.agentNote && !block.catchUp && !block.besideMessage && !block.needsRollup;
   }
   if (block.role !== "tool" && block.role !== "approval") return false;
   if (
@@ -450,7 +450,7 @@ function groupTranscriptTurns(
     }
     // A catch-up card (asks/model/catchUp.ts) stands alone too: joined to the turn above, it would vanish with a quiet
     // check's turn.
-    if (block.role === "handoff" || block.monoHabit || block.catchUp || block.besideMessage) {
+    if (block.role === "handoff" || block.monoHabit || block.catchUp || block.besideMessage || block.needsRollup) {
       if (current.length > 0) turns.push(current);
       turns.push([block]);
       current = [];

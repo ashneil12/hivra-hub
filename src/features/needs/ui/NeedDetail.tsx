@@ -14,6 +14,7 @@ import { NeedChoices } from "./NeedChoices";
 import { answeredLine, noteAnswered, useLastAnswered, type AnsweredNeed } from "../model/answeredNeeds";
 import { Check } from "../../../shared/ui/icons";
 import { MOD } from "../../../platform/tauri/platform";
+import { openBesideChief } from "../../asks/model/besideChat";
 
 const BUTTON = "inline-flex h-7 items-center rounded-md px-2.5 text-[12px] leading-none transition-transform duration-[120ms] ease-[var(--motion-ease-out)] active:scale-[0.97] motion-reduce:transition-none";
 const FILLED = `${BUTTON} bg-accent font-medium text-black`;
@@ -54,6 +55,8 @@ export function NeedDetail({ item, now = Date.now(), compact = false }: { item: 
             // The same chat the reply box sends to. When the decision names it as the chat that asked, the time it was
             // asked can find the message; in the first mate's other chat only the ask's own words can.
             markAsked(chatId, item, item.askedBy?.trim() === chatId);
+            // From the Chief of Staff's one chat the asking chat opens beside it, so he never leaves (besideChat.ts).
+            if (openBesideChief(chatId)) return;
             openFromHome({ kind: "chat", id: chatId, projectId: item.projectId ?? "" });
           },
         }
