@@ -30,7 +30,7 @@ export function memoryDate(now = new Date()): string {
 }
 
 const SECRETS: RegExp[] = [
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+  /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
   /\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}/g,
   /\bgh[pousr]_[A-Za-z0-9]{20,}/g,
   /\bgithub_pat_[A-Za-z0-9_]{20,}/g,

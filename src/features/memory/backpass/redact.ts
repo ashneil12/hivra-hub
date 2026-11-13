@@ -29,7 +29,7 @@ const PATTERNS: [RegExp, string][] = [
   // Temporary AWS keys carry the ASIA prefix where a long-lived key has AKIA.
   [/\b((?:AKIA|ASIA)[0-9A-Z]{16})\b/g, "AWS_ACCESS_KEY_ID"],
   [/\b(eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,})/g, "JWT"],
-  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "PRIVATE_KEY"],
+  [/-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g, "PRIVATE_KEY"],
   [
     // An unquoted value stops at whitespace, a quote, or a comma, so one argument in
     // `max_output_tokens:12000,yield_time_ms:1000` can never swallow the next. A closed

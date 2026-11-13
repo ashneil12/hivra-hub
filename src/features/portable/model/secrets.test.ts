@@ -18,6 +18,22 @@ it("scrubs the same secrets the Rust side does, and leaves mere mentions alone",
   expect(findSecrets(`postgres://ash:hunter2pass@db.example.com/x`)).toEqual(["Password in a link"]);
 });
 
+// A PGP block ends `PRIVATE KEY BLOCK-----` and `SSH2` has a digit in it: the header words are letters, digits and
+// spaces. The Rust side tests the same samples (src-tauri/src/commit_guard/tests.rs).
+it("scrubs a PGP private key block and an SSH2 private key, but not a public key", () => {
+  const pgp = "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBGPLANTEDbody\n-----END PGP PRIVATE KEY BLOCK-----";
+  const ssh2 = "-----BEGIN SSH2 ENCRYPTED PRIVATE KEY-----\nAAAAPLANTEDbody\n-----END SSH2 ENCRYPTED PRIVATE KEY-----";
+  for (const key of [pgp, ssh2, PRIVATE_KEY]) {
+    expect(findSecrets(key), key).toEqual(["Private key"]);
+    expect(redactText(`before\n${key}\nafter`)).toEqual({ text: `before\n${SECRET_MARKER}\nafter`, count: 1 });
+  }
+  // The block is found whole when its line breaks are escaped or CRLF.
+  expect(redactText(pgp.replace(/\n/g, "\\n")).text).toBe(SECRET_MARKER);
+  expect(redactText(pgp.replace(/\n/g, "\r\n")).text).toBe(SECRET_MARKER);
+  const publicKey = "-----BEGIN PGP PUBLIC KEY BLOCK-----\n\nmQENBGPLANTEDbody\n-----END PGP PUBLIC KEY BLOCK-----";
+  expect(redactText(publicKey)).toEqual({ text: publicKey, count: 0 });
+});
+
 // WP-102 item 3: shapes this scrubber used to miss. Made up, in each token's documented shape (prefix, separators,
 // lengths); ordinary words that merely name the service must not match.
 const GITLAB = "glpat-PLANTEDtoken0123456789ab";

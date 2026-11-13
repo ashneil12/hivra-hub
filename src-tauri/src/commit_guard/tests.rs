@@ -266,6 +266,79 @@ fn a_private_key_block_across_added_lines_is_caught_at_its_first_line() {
 }
 
 #[test]
+fn a_pgp_private_key_block_across_added_lines_is_caught_at_its_first_line() {
+    // The header ends `PRIVATE KEY BLOCK-----`, not `PRIVATE KEY-----`.
+    let patch = patch_lines(
+        "keys/secret.asc",
+        1,
+        &[
+            "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+            "",
+            "lQOYBGfakebody",
+            "-----END PGP PRIVATE KEY BLOCK-----",
+        ],
+    );
+    let err = scan_patch(&patch).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in keys/secret.asc:1"),
+        "{err}"
+    );
+    assert!(!err.contains("lQOYBGfakebody"), "the key leaked: {err}");
+}
+
+#[test]
+fn an_ssh2_encrypted_private_key_block_is_caught() {
+    // The `2` in `SSH2` is a digit, which a letters-and-spaces header word does not allow.
+    let patch = patch_lines(
+        "keys/deploy.key",
+        1,
+        &[
+            "-----BEGIN SSH2 ENCRYPTED PRIVATE KEY-----",
+            "AAAAfakebody",
+            "-----END SSH2 ENCRYPTED PRIVATE KEY-----",
+        ],
+    );
+    let err = scan_patch(&patch).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in keys/deploy.key:1"),
+        "{err}"
+    );
+}
+
+#[test]
+fn an_openssh_private_key_block_is_still_caught() {
+    let patch = patch_lines(
+        "keys/id_ed25519",
+        1,
+        &[
+            "-----BEGIN OPENSSH PRIVATE KEY-----",
+            "b3BlbnNzaC1rZXktdjEAAAAAfake",
+            "-----END OPENSSH PRIVATE KEY-----",
+        ],
+    );
+    let err = scan_patch(&patch).unwrap_err();
+    assert!(
+        err.starts_with("Possible secret in keys/id_ed25519:1"),
+        "{err}"
+    );
+}
+
+#[test]
+fn a_pgp_public_key_block_is_not_a_private_key() {
+    let patch = patch_lines(
+        "keys/public.asc",
+        1,
+        &[
+            "-----BEGIN PGP PUBLIC KEY BLOCK-----",
+            "",
+            "mQENBGfakebody",
+            "-----END PGP PUBLIC KEY BLOCK-----",
+        ],
+    );
+    scan_patch(&patch).expect("a public key is not a secret");
+}
+
+#[test]
 fn a_refusal_changes_no_ignore_file_on_disk() {
     let repo = Repo::new("ignore");
     repo.write("README.md", "hello\n");

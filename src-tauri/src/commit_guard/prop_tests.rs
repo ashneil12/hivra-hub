@@ -585,9 +585,8 @@ proptest! {
     }
 
     /// A PGP private key block is a private key. Its BEGIN line ends `PRIVATE KEY BLOCK-----`, which the "Private key"
-    /// pattern (`PRIVATE KEY-----` right after the words) does not match, so it passes.
+    /// pattern used to miss (it wanted `PRIVATE KEY-----` right after the words).
     #[test]
-    #[ignore = "SC-6 found bug: a PGP private key block (-----BEGIN PGP PRIVATE KEY BLOCK-----) is not matched by the Private key pattern"]
     fn prop_a_pgp_private_key_block_is_found(
         raw in raw_commits(),
         commit_pick in any::<Index>(),
