@@ -1314,7 +1314,11 @@ async function ensureLive(input: HarnessSessionInput): Promise<Live> {
       input.sessionId,
       buildControlRequest(nextControlId(live), { subtype: "initialize" }),
     );
-    await waitForInit(live, INIT_TIMEOUT_MS);
+    // A fresh conversation has nothing to be missing, so its prompt does not wait for the answer: the CLI reads
+    // stdin in order and handles the prompt as soon as it is up. Waiting cost 1.1 to 1.3 s (measured, 5 runs each
+    // side) of dead time before the prompt left the app. A resumed one still waits, because the answer is what
+    // says whether the saved conversation is gone, and that must be known before the prompt is written.
+    if (canResume) await waitForInit(live, INIT_TIMEOUT_MS);
     if (live.deadConversation) {
       throw new DeadConversationError(
         live.deadConversation,
