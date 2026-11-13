@@ -683,6 +683,22 @@ describe("groupTurns", () => {
     ]);
   });
 
+  it("gives a catch-up card a turn of its own, so it never vanishes into a hidden app turn or the work trail", () => {
+    const catchUp = { since: 0, at: 1_000, finished: [], finishedMore: 0, decided: [], decidedMore: 0, needs: [], needsMore: 0, running: 0 };
+    const card: Block = { id: "catch-up-1000", role: "system", text: "Nothing new came back.", catchUp };
+    const turns = groupTurns([
+      { id: "user", role: "user", text: "Review" },
+      { id: "answer", role: "assistant", text: "Reviewed." },
+      // A check the app wrote: its prompt is dropped and its quiet answer joins the turn above.
+      { id: "check", role: "user", text: "[MonoCode] still there?", internal: true },
+      { id: "quiet", role: "assistant", text: "Nothing new." },
+      card,
+      { id: "next-user", role: "user", text: "Do the first one" },
+    ]);
+    expect(turns.map((turn) => turn.map((block) => block.id))).toEqual([["user", "answer", "quiet"], ["catch-up-1000"], ["next-user"]]);
+    expect(groupTurnItems([card], { settled: true })).toEqual([{ type: "block", block: card }]);
+  });
+
   it("folds an orchestration turn the app wrote into the turn above", () => {
     const turns = groupTurns([
       { id: "u1", role: "user", text: "Review the changes" },

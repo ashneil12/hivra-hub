@@ -2,10 +2,11 @@
 // main Home), and "Chief of Staff" opens its chat: on Home its own chat with everything in view, in a project its own
 // chat for that project, geared to it. Both are the same one-to-one chat layout as any agent's.
 import { useSyncExternalStore } from "react";
-import { DashboardSquare, Sparkles } from "../../../shared/ui/icons";
+import { DashboardSquare, Pin, Sparkles } from "../../../shared/ui/icons";
 import { RailAction } from "../../../app/shell/RailAction";
 import { listMonos, monosSnapshot, subscribeMonos } from "../../monos/model/mono";
 import { openChiefChat, pickChief } from "../../home/model/chief";
+import { ONE_CHAT } from "../../asks/model/oneChat";
 import { hubData, useHubDataVersion } from "../model/hubData";
 import { PROJECT_HOME_ITEM, monoTeamInView, openMonoChat, openMonoSettings, showAppItem, showProjectHome, useHubSelection } from "../model/hubNav";
 
@@ -42,10 +43,33 @@ export function HubTopNav({
     !!chief && !!project && !!openSessionId && chief.projectSessions?.[project.id] === openSessionId;
   const chiefOpen = project ? projectChiefOpen : homeChiefOpen;
   const onHome = home ? sel.item === "home" : sel.item === PROJECT_HOME_ITEM;
+  // One chat (Ash, 13 Nov): the Chief of Staff's one chat is pinned first in every sidebar, on Home and in a project,
+  // and always opens the same chat. A project's own first mates stay in its "First mates" list.
   return (
     <div className="flex flex-col gap-px" data-hub-top-nav>
+      {ONE_CHAT && chief ? (
+        <div className="relative" data-chief-pinned>
+          <RailAction
+            label={(chief.name ?? "").trim() || "Chief of Staff"}
+            icon={Sparkles}
+            // Lit for the one chat, and for a chat it had before that is open from the "Earlier chats" list.
+            active={homeChiefOpen && !covered}
+            ariaLabel="Chief of Staff, your one chat for everything"
+            // Ash (12 Nov): right-click opens its settings, where its model is chosen.
+            onOpenContextMenu={() => {
+              onLeaveCovers?.();
+              openMonoSettings(chief.id);
+            }}
+            onClick={() => {
+              onLeaveCovers?.();
+              openChiefChat(chief.id);
+            }}
+          />
+          <Pin aria-hidden className="pointer-events-none absolute right-2 top-1/2 size-3 -translate-y-1/2 text-content/40" strokeWidth={1.75} />
+        </div>
+      ) : null}
       {project ? (
-        <div className="truncate px-2 pb-1 text-xs leading-5 text-content/50" data-hub-top-project>
+        <div className={`truncate px-2 pb-1 text-xs leading-5 text-content/50${ONE_CHAT && chief ? " pt-2" : ""}`} data-hub-top-project>
           {project.name}
         </div>
       ) : null}
@@ -60,7 +84,7 @@ export function HubTopNav({
           else showAppItem("home");
         }}
       />
-      {chief ? (
+      {chief && !ONE_CHAT ? (
         <RailAction
           label={(chief.name ?? "").trim() || "Chief of Staff"}
           icon={Sparkles}

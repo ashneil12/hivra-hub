@@ -8,7 +8,7 @@
 import { EXAMPLE } from "./data";
 import { mockupIpc, seedMockupIpc } from "./ipc";
 
-const SEED_VERSION = "mockup-v4";
+const SEED_VERSION = "mockup-v5";
 const SEEDED_KEY = "monocode:mockup-seeded";
 
 const url = new URL(location.href);

@@ -146,7 +146,9 @@ export function useAskLedger(options: AskLedgerOptions): void {
             return;
           }
           const list = hearMessage(text, heard);
-          const keep = worthKeeping(text, list.asks, list.maybes);
+          // The message is long here, so any row at all is worth keeping, as the quick reading kept a lone rules ask: an
+          // empty list written over it would erase a row the person was shown.
+          const keep = list.asks.length + list.maybes.length > 0;
           await store.hear({ ...base, list: keep ? list : { asks: [], maybes: [] }, by: "model", now });
         })
           .catch(() => undefined)
@@ -171,24 +173,29 @@ export function useAskLedger(options: AskLedgerOptions): void {
         .catch(() => undefined);
     }
 
-    // The daily check: a first mate whose asks went quiet hears of it once a day, in the chat the oldest was made in.
+    // The daily check: a first mate whose asks went quiet hears of it once a day, in the chat the oldest was made in, or
+    // (A5) the next quiet ask's chat when that one can't take it.
     if (send) {
       const now = Date.now();
       const mates = new Set(doc.asks.map((item) => item.mateId));
       for (const mateId of mates) {
         if (digesting.current.has(mateId)) continue;
-        const due = askDigest(doc, mateId, "app", now);
+        // Only into a chat that is open, idle and still this first mate's; with none, nothing is marked sent and a later pass tries again.
+        const takes = (chatId: string) => {
+          const chat = options.sessions.find((session) => session.id === chatId);
+          return !!chat && !chat.busy && !chat.queuedMessages?.length && mateOf(chat.id) === mateId;
+        };
+        const due = askDigest(doc, mateId, "app", now, takes);
         if (!due) continue;
-        const chat = options.sessions.find((session) => session.id === due.chatId);
-        // Only into a chat that is open, idle and still this first mate's; otherwise it waits for a later pass.
-        if (!chat || chat.busy || chat.queuedMessages?.length || mateOf(chat.id) !== mateId) continue;
         digesting.current.add(mateId);
         void store
           .markDigest(mateId)
           .then(() => cli())
           .then((command) => {
+            // The chat was chosen above, with the chats as they stood. Only the text is made again (it needs the command and
+            // the asks as they stand now); asked about the chats a second time it could find none and drop a check already marked.
             const again = askDigest({ ...store.doc(), nudged: { ...store.doc().nudged, [mateId]: 0 } }, mateId, command, Date.now());
-            if (again) return send(again.chatId, again.message);
+            if (again) return send(due.chatId, again.message);
           })
           .catch(() => undefined)
           .finally(() => digesting.current.delete(mateId));

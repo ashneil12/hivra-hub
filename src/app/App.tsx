@@ -1102,6 +1102,10 @@ import { noteMonoChat, pickMonoChat, type MonoChatScope } from "../features/mono
 import { projectFront, setProjectFront, useProjectFrontVersion } from "../features/hub/model/projectFront";
 import { pickChief as pickCaptain } from "../features/home/model/chief";
 import { chiefListsOpenPanel, useChiefLists } from "../features/asks/model/chiefLists";
+import { ONE_CHAT, earlierChatIds, isOneChat, isOneChatMono, setCatchUpHost } from "../features/asks/model/oneChat";
+import { currentNeedsYou } from "../features/needs/model/needsLive";
+import { tauriFirstMate } from "../features/firstmate/model/steering";
+import { buildCatchUp, catchUpBlock, catchUpNote, catchUpSince } from "../features/asks/model/catchUp";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
 import { stampFirstMate } from "../features/monos/model/monoMate";
@@ -1692,6 +1696,18 @@ function Workspace({
   useEffect(() => {
     if (chiefListsOpenPanel(chiefListsPlace, monoViewId, pickCaptain(listMonos())?.sessionId)) setMonoOverviewOpen(true);
   }, [chiefListsPlace, monoViewId]);
+  // One chat: the Chief of Staff's chat has no list of chats beside it, so no Chats panel and no toggle for one.
+  const oneChatOpen = isOneChat(monoViewId);
+  // The chats it had before are kept: their list opens from the same toggle, closed until asked for, and nothing in
+  // it starts a new one. With none there is no list and no toggle.
+  const oneChatEarlier = oneChatOpen ? earlierChatIds().length : 0;
+  const [oneChatListOpen, setOneChatListOpen] = useState(false);
+  useEffect(() => {
+    if (!oneChatOpen) setOneChatListOpen(false);
+  }, [oneChatOpen]);
+  const onToggleOneChatList = useCallback(() => setOneChatListOpen((open) => !open), []);
+  // Any chat of the Chief of Staff's, an earlier one included: no "New chat" beside it.
+  const chiefChatOpen = isOneChatMono(monoViewId ? monoForSession(monoViewId)?.id : undefined);
   const monoOverviewOpenRef = useRef(monoOverviewOpen);
   monoOverviewOpenRef.current = monoOverviewOpen;
   const monoOverviewTabRef = useRef(monoOverviewTab);
@@ -5938,7 +5954,10 @@ function Workspace({
 
   /** A Mono's conversation is a view over the existing workspace tabs. */
   const onOpenMono = useCallback(
-    async (monoId: string, options: { inTeam?: boolean; leaveSettings?: boolean; project?: string; main?: boolean } = {}) => {
+    async (monoId: string, asked: { inTeam?: boolean; leaveSettings?: boolean; project?: string; main?: boolean } = {}) => {
+      // One chat (asks/model/oneChat.ts): the Chief of Staff has no chat of its own per project and no side chats to
+      // come back to, so every way in lands in its one chat.
+      const options = isOneChatMono(monoId) ? { ...asked, project: undefined, main: true } : asked;
       // WP-06: held until the focus from uncovering the project pane has passed (onFocusPane).
       const opening = ++openingMonoGen.current;
       openingMono.current = true;
@@ -7836,7 +7855,8 @@ function Workspace({
   useEffect(
     () =>
       setMonoChatOpener((monoId, target) => {
-        if (target?.project) return void onOpenMono(monoId, { project: target.project, leaveSettings: true, main: target.main });
+        // One chat: a project's way in to the Chief of Staff opens the same chat as Home's does.
+        if (target?.project && !isOneChatMono(monoId)) return void onOpenMono(monoId, { project: target.project, leaveSettings: true, main: target.main });
         const open = () => void onOpenMono(monoId, { inTeam: true, leaveSettings: true, main: target?.main });
         if (!codingTeamsOn() || leadFor(monoId) || monoTeam(monoId)) return open();
         void ensureMonoTeam(monoId).catch(() => undefined).then(open);
@@ -10280,6 +10300,12 @@ function Workspace({
             }
             askNotesShown.current.set(sessionId, key);
           }
+          // One chat: a catch-up card the app showed Ash since the Chief of Staff's last reply rides beside his
+          // message, so it knows what he was shown (asks/model/catchUp.ts).
+          if (!rawCommand && isOneChat(sessionId)) {
+            const shown = catchUpNote(current.blocks);
+            if (shown) appContext.push(shown);
+          }
           if (monoRotation && IS_HUB_BUNDLE) {
             const after = monoRotation.rotation.afterBlockId;
             const now = sessionsRef.current.find((session) => session.id === sessionId)?.blocks ?? [];
@@ -11299,6 +11325,35 @@ function Workspace({
         ),
       ),
   });
+  // "Catch me up" in the one chat (asks/model/catchUp.ts): one app card from the app's own records. No model turn.
+  useEffect(
+    () =>
+      setCatchUpHost(async (chatId) => {
+        const chat = sessionsRef.current.find((session) => session.id === chatId);
+        if (!chat) return;
+        // Open ones and the newest answered: enough to cover a long day without reading the whole history.
+        const decisions = await tauriFirstMate.decisions(200).catch(() => []);
+        const now = Date.now();
+        const block = catchUpBlock(
+          buildCatchUp({
+            rows: delegationRows(),
+            decisions,
+            needs: currentNeedsYou(),
+            projects: hubData().listProjects(),
+            since: catchUpSince(sessionsRef.current.find((session) => session.id === chatId)?.blocks ?? chat.blocks, now),
+            now,
+          }),
+        );
+        setSessions((previous) =>
+          previous.map((session) =>
+            session.id === chatId && !session.blocks.some((entry) => entry.id === block.id)
+              ? { ...session, blocks: [...session.blocks, block] }
+              : session,
+          ),
+        );
+      }),
+    [],
+  );
   // Briefs queued behind or steered into a busy chat, and leadership briefs to a Lead: reported by watching the chat.
   useFollowedBriefs({
     tracker: delegations,
@@ -13823,6 +13878,8 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       };
+      // One chat (Ash, 13 Nov): whatever box it was typed in, a message to the Chief of Staff goes into its one chat.
+      if (isOneChatMono(monoId)) return ensureMonoSession(monoId, sessionHost);
       // Dropwave: a project home's box starts in the Chief of Staff's own chat for that project.
       const project = projectId ? hubData().listProjects().find((entry) => entry.id === projectId) : undefined;
       if (project) return ensureMonoProjectSession(monoId, project, sessionHost);
@@ -18657,7 +18714,7 @@ function Workspace({
       cwd={sidebarCwd}
       viewTitle={hubShown && hubSel.item === "new-project" ? "New project" : undefined}
       projectRailOpen={projectRailOpen}
-      sessionSidebarOpen={sessionSidebarOpen}
+      sessionSidebarOpen={oneChatOpen ? oneChatListOpen : sessionSidebarOpen}
       compactRail={!insetLayout && compactTitleNavigation}
       inset={insetLayout}
       rightPanelOpen={rightPanelOpen}
@@ -18671,7 +18728,7 @@ function Workspace({
       onGoBack={onRailBack}
       onGoForward={onRailForward}
       onToggleSidebar={onToggleSidebar}
-      onToggleSessionSidebar={onToggleSessionSidebar}
+      onToggleSessionSidebar={oneChatOpen ? (oneChatEarlier ? onToggleOneChatList : undefined) : onToggleSessionSidebar}
       onSelect={onSelectTitleTab}
       onNewTerminal={onNewTerminal}
       onNewSession={
@@ -18712,8 +18769,10 @@ function Workspace({
   // Dropwave: the Chief of Staff's own chat for the project is the one pinned on top, unless Ash opened the project's
   // Lead there last (projectFront.ts).
   const projectFrontVersion = useProjectFrontVersion();
+  // One chat (asks/model/oneChat.ts): the Chief of Staff has no chat of its own in a project any more, so the
+  // project's Lead is always the one on top.
   const teamCaptain =
-    teamProject && projectFront(teamProject.id) === "captain" ? pickCaptain(listMonos()) : undefined;
+    !ONE_CHAT && teamProject && projectFront(teamProject.id) === "captain" ? pickCaptain(listMonos()) : undefined;
   const teamLeadMono = teamProject
     ? (teamCaptain ?? leadMono(leadSpecFor(teamProject)))
     : ownTeamShown
@@ -18739,7 +18798,9 @@ function Workspace({
     !!(teamLeadSessionId && liveBusySessionIds.has(teamLeadSessionId));
   // The project's chats are shared by two: the Chief of Staff (its own chat for the project) and the project's Lead.
   // The one not on top is offered in the list's "Everyone" view (Ash, 11 Nov), and opening it puts it on top.
-  const teamOtherCaptain = teamProject && !teamCaptain ? pickCaptain(listMonos()) : undefined;
+  // One chat: only a chat the Chief of Staff already had for this project is still offered there, as an earlier chat.
+  const teamOtherChief = teamProject && !teamCaptain ? pickCaptain(listMonos()) : undefined;
+  const teamOtherCaptain = !ONE_CHAT || (teamProject && teamOtherChief?.projectSessions?.[teamProject.id]) ? teamOtherChief : undefined;
   const teamOtherFound = teamProject ? (teamCaptain ? leadMono(leadSpecFor(teamProject)) : teamOtherCaptain) : undefined;
   const teamOtherMono = teamOtherFound && teamOtherFound.id !== teamLeadMono?.id ? teamOtherFound : undefined;
   const teamOtherSessionId =
@@ -18823,9 +18884,12 @@ function Workspace({
                     ),
                     active: false,
                     busy: teamOtherBusy,
-                    statusLabel: teamOtherCaptain ? "Captain" : "Lead",
+                    statusLabel: teamOtherCaptain ? (ONE_CHAT ? "Earlier chat" : "Captain") : "Lead",
                     onOpen: () =>
-                      void onOpenMono(teamOtherMono.id, teamOtherCaptain ? { project: teamProject.id } : { inTeam: true }),
+                      // One chat: this row is the chat it had here before, opened as it is; nothing new is made.
+                      ONE_CHAT && teamOtherCaptain && teamOtherSessionId
+                        ? void openMonoSideChatRef.current(teamOtherSessionId)
+                        : void onOpenMono(teamOtherMono.id, teamOtherCaptain ? { project: teamProject.id } : { inTeam: true }),
                   },
                 }
               : {}),
@@ -18927,6 +18991,8 @@ function Workspace({
     // "New chat" beside a first mate's chat is a new chat with that first mate, not a plain one (Ash: "it's not clear
     // what first mate you're talking to when you're on a first mate and you create a new chat").
     const open = monoViewIdRef.current ? monoForSession(monoViewIdRef.current) : undefined;
+    // One chat: there is no new chat with the Chief of Staff, from its one chat or from one it had before.
+    if (isOneChatMono(open?.id)) return;
     if (open && ONE_CHAT_LOOK) {
       const folder = sidebarCwdRef.current;
       void startMonoSideChat(
@@ -19006,8 +19072,10 @@ function Workspace({
           : undefined
       }
       explorerRootLabel={explorerRootLabel}
-      open={sessionSidebarOpen}
-      onToggleOpen={onToggleSessionSidebar}
+      open={oneChatOpen ? oneChatListOpen && oneChatEarlier > 0 : sessionSidebarOpen}
+      onToggleOpen={oneChatOpen ? onToggleOneChatList : onToggleSessionSidebar}
+      chatsTitle={oneChatOpen ? "Earlier chats" : undefined}
+      noNewChat={chiefChatOpen}
       tab={insetLayout ? "sessions" : sidebarTab}
       onTabChange={setSidebarTab}
       rightPanel={

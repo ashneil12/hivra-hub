@@ -4,7 +4,7 @@ Small plain-Node scripts from `docs/specs/shipping-confidence-gap-spec.md`. Ever
 its findings, writes a GitHub step summary when `GITHUB_STEP_SUMMARY` is set, and exits 0. Only `--strict` turns a
 finding into exit 1, and that is for the release pass. No guard changes `hub:ship --skip-tests`, and none edits a test.
 
-`npm run check:guards` runs the first three and the ast-grep guard in report mode. `npm run check:guards:strict` runs
+`npm run check:guards` runs the first three, the ast-grep guard and the sensitive-path report in report mode. `npm run check:guards:strict` runs
 them with `--strict`. The CI job `guards` runs the report-mode command on pull requests with `continue-on-error`, so it
 cannot block a merge.
 
@@ -19,12 +19,16 @@ cannot block a merge.
 | `scripts/mutants-in-diff.mjs` | The `cargo mutants --in-diff` command for risky Rust paths; reads `mutants.out/outcomes.json` | `node scripts/mutants-in-diff.mjs [--run]` |
 | `scripts/ast-grep-guard.mjs` | What the ast-grep rules find in the code (`vendor/` left out); skipped with one line when ast-grep is absent | `node scripts/ast-grep-guard.mjs [--strict]` |
 | `scripts/stryker-in-diff.mjs` | The StrykerJS command for the changed files on the TypeScript mutation list (`stryker.config.mjs`); `--run` installs the pinned Stryker into the temp folder, runs it and sums killed, survived and timed out | `node scripts/stryker-in-diff.mjs [--base origin/main] [--run]` |
+| `scripts/sensitive-paths.mjs` | Which changed files are on the always-gated list `docs/hivra/sensitive-paths.json` (keys, sandbox, schema, CI, ship, updater, identity). `npm run check:sensitive`; part of `check:guards`, not of `check:guards:strict` | `node scripts/sensitive-paths.mjs [--base origin/main] [--json] [--strict]` |
+| `scripts/test-diet.mjs` | Test files edited 3 or more times in the last N days, most edited first: rewrite or delete candidates. Reads `git log` only, always exits 0. `npm run check:test-diet` | `node scripts/test-diet.mjs [--days 90] [--min 3] [--json]` |
 
 `--strict` per script: test-guard fails on any finding or an unreadable diff; quarantine fails on a bad shape or an
 expired entry; escapes fails on an invalid line (and, with `--replay`, a missing test file); zero-tests-guard fails on
 zero tests or output it cannot read; stress-new-tests fails when a test failed at least once; mutants-in-diff fails on
 a missed or timed-out mutant; ast-grep-guard fails on a finding in a file changed since `--base` (older findings, 451 on 13 Nov 2026, are a backlog it only counts); stryker-in-diff fails on a surviving, uncovered or
-timed-out mutant. merge-train has no strict mode.
+timed-out mutant; sensitive-paths fails when a changed file is on the list (so it stays out of `check:guards:strict`); test-diet has no strict mode. merge-train has no strict mode.
+
+The policy these serve is in [docs/testing-policy.md](../testing-policy.md).
 
 ## Quarantine and the older flaky list
 

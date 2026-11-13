@@ -48,7 +48,7 @@ never reads it, so "example data" is not a state any real screen is in.
 |---|---|---|
 | Search | the app's search view | Works |
 | Home | `showAppItem("home")` or `showProjectHome` | Works |
-| Chief of Staff | On Home: `openChiefChat` → `ensureMonoSession`. In a project: `openProjectChief` → `ensureMonoProjectSession` | Works; G1, G3 |
+| Chief of Staff (pinned first, on Home and in a project) | One chat (`asks/model/oneChat.ts`): every way in is `openChiefChat` → `ensureMonoSession`, its one chat. `openProjectChief`, Home's box and a project home's box are turned to it in `App.tsx` (`onOpenMono`, `setMonoChatOpener`, `setHomeChiefHost`); a project home's message is prefixed "About <project>:" (`aboutProject`). Chats it had before are kept: its side chats under "Earlier chats" beside the one chat, a project chat under Everyone in that project's list | Works; G1 |
 | Inbox, red count | `onOpenInbox`; count is `useNeedsYou().length` | Works |
 | Notes | `NotesView` (`notes_list`, `notes_get`, `notes_delete`, …) | Works |
 | Automations | automations view (`automations_*`, `automation_runs_*`); WP-244's "Only run when this changes" is kept in the local store document `schedule-watches` (`plugin:hub|local_hub_read`/`_write`) and read through `page_http_fetch`, `git_github_work_items` or `read_text_file` | Works (off in a dev copy by design) |
@@ -87,7 +87,8 @@ never reads it, so "example data" is not a state any real screen is in.
 | Composer: model picker | existing; the flyout fix is in `shared/lib/popover.ts` | Works |
 | Composer: permission mode | existing | Works |
 | Composer: Compare | `FanOutPicker` → `planFanOut` (WP-135). Hidden on a compact composer and before the first message, as on main | Works |
-| Copy prompt link, Side question | existing | Works |
+| Copy prompt link, Side question | existing. Side questions are kept on the message they were asked under (`Block.btwThreads`, saved with the chat); the button says how many are kept and they come back as tabs | Works |
+| Catch me up (the Chief of Staff's one chat only, beside Side question) | `requestCatchUp` (`asks/model/oneChat.ts`) → the host in `App.tsx` builds one app card (`asks/model/catchUp.ts`: `delegationRows()`, `decisions_list`, `currentNeedsYou()`) and appends it to the chat as a block (`Block.catchUp`, saved with the chat, drawn by `asks/ui/CatchUpCard.tsx`). No model turn. Each card starts where the last one in the chat ended. What Ash was shown rides beside his next message (`catchUpNote`) | Works |
 | Right panel (Sessions, notes, history, changes) | existing | Works |
 
 ### Team chat (group chat)

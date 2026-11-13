@@ -21,6 +21,7 @@ import { localDay, readLines, type WorkLogLine } from "../../workLog/model/workL
 import { hideSection, pinPanel, showSection, unpin, withCardOrder } from "../model/arrangement";
 import { addChiefOfStaff, chiefScopeLine, openChiefChat, pickChief } from "../model/chief";
 import { openProjectChief } from "../../hub/ui/HubTopNav";
+import { aboutProject, isOneChatMono } from "../../asks/model/oneChat";
 import { needActions } from "../model/needActions";
 import { needTarget } from "../model/needTarget";
 import { openNeed } from "../../needs/model/needContext";
@@ -452,6 +453,13 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
         // The box is a starting point: the conversation carries on in the Chief of Staff's own chat. In a project that is
         // the project's own Chief of Staff chat, geared to it; on Home, its chat with everything in view.
         // On Home each ask is a new chat with the Chief of Staff (Ash, 12 Nov); the earlier ones stay in its chat list.
+        // One chat (Ash, 13 Nov): every box goes into the Chief of Staff's one chat; from a project's home the message
+        // says which project it is about.
+        if (isOneChatMono(chiefMono.id)) {
+          openChiefChat(chiefMono.id);
+          void sendHomeTurn(chiefMono.id, aboutProject(text, scoped?.name));
+          return;
+        }
         if (scoped) openProjectChief(scoped.id);
         else openChiefChat(chiefMono.id);
         void sendHomeTurn(chiefMono.id, text, scoped?.id, scoped ? undefined : { fresh: true }).then((result) => {

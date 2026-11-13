@@ -12,8 +12,9 @@ reason for it. Check them against the code before leaning on a file name: files 
 
 - **The owner** (the person) owns the work and sees about 1% of the decisions.
 - **The Chief of Staff** is the first mate that reads every project. It is who the owner asks for anything, and it
-  makes most of the calls. There is one, with one chat on Home (everything in view) and one chat per project (geared to
-  that project).
+  makes most of the calls. There is one, and it has **one chat** for everything (Ash, 13 Nov: "literally just one main
+  chat ... full port one chat for everything"): no side chats, no "New chat", no chat of its own per project
+  (`src/features/asks/model/oneChat.ts`). The owner should never need to go below it.
 - **First mates** each run one line of work (a project's Lead runs its code; Design review reviews screens). A first
   mate has its own crew of workers and can have several chats.
 - **Teams** are optional group chats of first mates inside a project. Council is a mode of a team's chat, not a place.
@@ -42,7 +43,8 @@ Example text in a mockup or a test starts with "Example:" and never contains a r
    count, then +. Home is selected whenever Home or Home's Chief of Staff chat is open (`homeInView`,
    `src/features/hub/model/homeScope.ts`).
 2. **Sidebar** (`src/app/shell/ProjectRail.tsx`), always in this order:
-   Search; **Home**; **Chief of Staff** (`HubTopNav.tsx`); Inbox; Notes; Automations; Hubs; pinned hubs;
+   Search; **Chief of Staff** (pinned first, on Home and in every project; `HubTopNav.tsx`); **Home**; Inbox; Notes;
+   Automations; Hubs; pinned hubs;
    **First mates** (`MonoRailSection.tsx`, inside a project only: "no first mates on Home"; its + is "New first
    mate": a name and what it looks after, or one already made added to this project. A project starts with the Chief
    of Staff and its lead; every other first mate is the person's choice); **Teams**
@@ -52,7 +54,8 @@ Example text in a mockup or a test starts with "Example:" and never contains a r
    hidden until Settings turns "Show code tools" on.
 
 Home is a place of its own. From Home, nothing from the last project shows: not its teams, not its first mates, not its
-name. Opening the Chief of Staff from Home keeps Home selected.
+name. Opening the Chief of Staff keeps Home selected, from Home and from inside a project: its one chat belongs to no
+project.
 
 ## 4. Rules that hold on every screen
 
@@ -66,6 +69,11 @@ name. Opening the Chief of Staff from Home keeps Home selected.
    chats it started. A two-way switch above the list (the first mate's name, Everyone) brings in the rest of the
    project's chats; the choice is kept (`src/features/hub/model/chatListScope.ts`). A chat never shows under a first
    mate it does not belong to.
+   **The Chief of Staff's one chat is the exception to the list**: it has no chat list and no "New chat". Whatever box
+   a message to it is typed in (Home's, a project home's), it lands in that one chat. Beside its composer sits
+   "Catch me up", always there: one app card of what finished, what was decided for him and what needs him since the
+   last one (`src/features/asks/model/catchUp.ts`), read from the app's records, never written by a model. Chats it
+   had before one chat are kept and stay reachable ("Earlier chats"), but nothing starts another.
 3. **Always say who you are talking to.** A chat's header, its row in the list and its empty state carry the first
    mate's name and mascot, never a model name or the word "Chat" alone.
 4. **The gallery look for list screens** (Hubs, Automations, Settings lists): full width with `px-6 pt-5 pb-10

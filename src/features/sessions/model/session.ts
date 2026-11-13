@@ -600,6 +600,8 @@ export type Block = {
     | "teleport-freeze-asked";
   /** An agent-to-agent note on a system block (who messaged whom, got stuck, reported; monos/model/agentNotes.ts). */
   agentNote?: import("../../monos/model/agentNotes").AgentNote;
+  /** Dropwave: a "Catch me up" card in the one chat (asks/model/catchUp.ts): what it showed, kept so it reads the same later. */
+  catchUp?: import("../../asks/model/catchUp").CatchUp;
   /** On a still-running note: the tasks it named, and the brief that stays open (one note per task and per brief). */
   stillRunning?: { taskIds: string[]; briefId?: string };
   /** On an interrupt note: the ship (update) whose restart cut the turn. Its receipt rides on the resume note. */

@@ -130,12 +130,23 @@ export function staleAsks(doc: AskDoc, mateId: string, now: number): Ask[] {
 /**
  * The daily check: once a day, when a first mate has asks of Ash's that went quiet, it gets one app message naming
  * them and what closed since yesterday, and tells Ash where they stand. Nothing when nothing is stale, so a first
- * mate that keeps its list moving is never interrupted. `chatId` is the chat the oldest stale ask was made in.
+ * mate that keeps its list moving is never interrupted. `chatId` is the chat the oldest stale ask was made in; when
+ * `canTake` says that chat can't take it now (closed, busy, no longer this first mate's), the chat of the next stale ask
+ * that can. Undefined while none can, so nothing is marked sent and a later pass tries again. The message names every
+ * stale ask either way: the first mate can act on one from any chat.
  */
-export function askDigest(doc: AskDoc, mateId: string, cli: string, now: number): { chatId: string; message: QueuedMessage } | undefined {
+export function askDigest(
+  doc: AskDoc,
+  mateId: string,
+  cli: string,
+  now: number,
+  canTake?: (chatId: string) => boolean,
+): { chatId: string; message: QueuedMessage } | undefined {
   if (now - (doc.nudged[mateId] ?? 0) < DIGEST_EVERY_MS) return undefined;
   const stale = staleAsks(doc, mateId, now);
   if (!stale.length) return undefined;
+  const chatId = canTake ? stale.find((ask) => canTake(ask.sessionId))?.sessionId : stale[0].sessionId;
+  if (chatId === undefined) return undefined;
   const shown = stale.slice(0, NOTE_MAX_ASKS);
   const closed = doc.asks
     .filter((ask) => ask.mateId === mateId && ask.status === "done" && now - ask.updatedAt < DIGEST_HEARD_MS)
@@ -143,7 +154,7 @@ export function askDigest(doc: AskDoc, mateId: string, cli: string, now: number)
     .slice(0, NOTE_MAX_ASKS);
   const day = new Date(now).toISOString().slice(0, 10);
   return {
-    chatId: stale[0].sessionId,
+    chatId,
     message: {
       id: `asks-digest-${mateId}-${day}`,
       attachments: [],
