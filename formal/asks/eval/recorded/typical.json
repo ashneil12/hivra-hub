@@ -1,0 +1,107 @@
+{
+  "provenance": "SIMULATED, not captured from the app's engine. Hand-written to look like what a decent model replies to hearPrompt(): quotes copied word for word, the odd implicit ask missed, a withdrawn ask still listed, a repeated ask listed twice. It measures how the app's code treats a reply (the quote check, the safety net, the numbering), not how good any model is. To record real replies: node formal/asks/eval/run.mjs --mode live --live-cmd 'claude -p' --record formal/asks/eval/recorded/live.json",
+  "answers": {
+    "m01-polish-list": {
+      "note": "Misses a3, the typo on the settings page (an implicit ask).",
+      "items": [
+        { "quote": "The invoice export still drops the last row when there are more than fifty lines, can you fix that", "summary": "Fix the invoice export dropping the last row", "kind": "do" },
+        { "quote": "make it only show once per install", "summary": "Show the onboarding tour once per install", "kind": "do" },
+        { "quote": "I want it to go out Monday at 8 instead of Sunday night", "summary": "Send the weekly report on Monday at 8", "kind": "do" },
+        { "quote": "please don't touch the pricing page", "summary": "Leave the pricing page alone", "kind": "rule" },
+        { "quote": "tell me which of these you think is the riskiest", "summary": "Say which change is riskiest", "kind": "answer" }
+      ]
+    },
+    "m02-mobile-build": {
+      "note": "Lists the withdrawn iOS bump, misses the decision to leave iOS alone, lists the repeated Android ask a second time.",
+      "items": [
+        { "quote": "check why the Android build is failing on CI", "summary": "Find out why the Android build fails", "kind": "do" },
+        { "quote": "bump the minimum iOS version to 16", "summary": "Raise the minimum iOS version to 16", "kind": "do" },
+        { "quote": "Swap it for the new one in the brand folder please", "summary": "Use the new logo on the splash screen", "kind": "do" },
+        { "quote": "Yeah so check that, it blocks everything", "summary": "Check the failing Android build", "kind": "do" },
+        { "quote": "can we get a nightly build going", "summary": "Set up a nightly build", "kind": "do" },
+        { "quote": "tell me roughly what that costs", "summary": "Say what it costs", "kind": "answer" }
+      ]
+    },
+    "m03-complaints": {
+      "note": "Hears four of five; misses the undo-delete wish.",
+      "items": [
+        { "quote": "the search is slow", "summary": "Make search faster", "kind": "do" },
+        { "quote": "why the dashboard shows yesterday's numbers in the morning", "summary": "Explain the stale dashboard numbers", "kind": "answer" },
+        { "quote": "It would be great if the export remembered my last folder", "summary": "Remember the last export folder", "kind": "do" },
+        { "quote": "the dark theme is too bright in the sidebar", "summary": "Dim the sidebar in the dark theme", "kind": "do" }
+      ]
+    },
+    "m04-run-on": {
+      "note": "A good reading of the run-on: all seven, the last as an idea.",
+      "items": [
+        { "quote": "we need the billing page to show the VAT number", "summary": "Show the VAT number on the billing page", "kind": "do" },
+        { "quote": "the receipt PDF has to use the company logo not the old one", "summary": "Use the company logo on the receipt PDF", "kind": "do" },
+        { "quote": "look at why the refund button does nothing on Safari", "summary": "Find out why refund does nothing on Safari", "kind": "do" },
+        { "quote": "I want an email to go to finance when a refund is over five hundred", "summary": "Email finance on refunds over 500", "kind": "do" },
+        { "quote": "make sure the audit log keeps who clicked it", "summary": "Audit log keeps who clicked refund", "kind": "do" },
+        { "quote": "rename Refund to Reverse payment everywhere in the UI", "summary": "Rename Refund to Reverse payment", "kind": "do" },
+        { "quote": "letting customers download all their invoices as one zip", "summary": "Later: zip download of all invoices", "kind": "idea" }
+      ]
+    },
+    "m05-releases": {
+      "note": "Hears all six and folds the repeat into one.",
+      "items": [
+        { "quote": "let's automate the release notes from the merged PR titles", "summary": "Automate release notes from PR titles", "kind": "do" },
+        { "quote": "post them to the changelog page automatically", "summary": "Later: post notes to the changelog page", "kind": "idea" },
+        { "quote": "The tagging should happen when I say 'ship it' in chat and not before", "summary": "Tag only when told ship it", "kind": "rule" },
+        { "quote": "the channel post should tag whoever is on call", "summary": "Tag the on-call person in the channel post", "kind": "do" },
+        { "quote": "always run the full checks before any tag", "summary": "Always run full checks before tagging", "kind": "rule" },
+        { "quote": "tell me what you'd need from me to set up the on-call tagging", "summary": "Say what on-call tagging needs", "kind": "answer" }
+      ]
+    },
+    "m06-change-of-plan": {
+      "note": "Lists the withdrawn colour ask as if still wanted.",
+      "items": [
+        { "quote": "Make the funnel chart colours match the brand palette", "summary": "Match funnel colours to the brand palette", "kind": "do" },
+        { "quote": "Build the funnel view first and put the revenue chart after it", "summary": "Funnel view first, revenue chart after", "kind": "do" },
+        { "quote": "set up the weekly digest email to include the top five pages by views", "summary": "Weekly digest with top five pages", "kind": "do" },
+        { "quote": "remind me on Thursday to review the draft, make it recurring", "summary": "Recurring Thursday reminder", "kind": "do" },
+        { "quote": "what's the actual difference between a Page and a hub in this app", "summary": "Explain Page versus hub", "kind": "answer" }
+      ]
+    },
+    "m07-pasted-customer": {
+      "note": "Hears exactly Ash's four and ignores the customer's quoted requests; the safety net then adds the pasted sentences as maybes.",
+      "items": [
+        { "quote": "reply to Dana today and say we're on it and give her a date by Friday", "summary": "Reply to Dana with a date", "kind": "do" },
+        { "quote": "look into the export timeouts", "summary": "Look into the export timeouts", "kind": "do" },
+        { "quote": "check whether any other big accounts have hit it", "summary": "Check other big accounts", "kind": "do" },
+        { "quote": "write me a short summary of what happened that I can forward to her account manager", "summary": "Write a summary for the account manager", "kind": "do" }
+      ]
+    },
+    "m08-dictation": {
+      "note": "Hears all three in the dictated run-on.",
+      "items": [
+        { "quote": "get the thing working where when I tap the bell icon it shows the notifications", "summary": "Bell icon opens the notifications", "kind": "do" },
+        { "quote": "the unread count is wrong it says nine when there are two", "summary": "Fix the unread count", "kind": "do" },
+        { "quote": "we should just remove the sound for now", "summary": "Remove the sound for now", "kind": "do" }
+      ]
+    },
+    "m09-call-notes": {
+      "note": "Misses a4, the ask that depends on earlier context ('the same fix on the other page').",
+      "items": [
+        { "quote": "We're going with Postgres, not SQLite, for the team plan", "summary": "Team plan uses Postgres", "kind": "decide" },
+        { "quote": "put the ticket number at the start of every commit message", "summary": "Ticket number first in every commit message", "kind": "rule" },
+        { "quote": "What's the status of the migration script, is it ready or not", "summary": "Say if the migration script is ready", "kind": "answer" },
+        { "quote": "find out what that would take and tell me", "summary": "Find out what SSO by March takes", "kind": "do" },
+        { "quote": "tidy up the old branches", "summary": "Tidy the old branches, no rush", "kind": "do" }
+      ]
+    },
+    "m10-week-notes": {
+      "note": "Lists every dashed item including the withdrawn docs one, and the certificate question.",
+      "items": [
+        { "quote": "backup job: it failed twice, find out why", "summary": "Find out why the backup job failed", "kind": "do" },
+        { "quote": "add a retry to the nightly sync", "summary": "Add a retry to the nightly sync", "kind": "do" },
+        { "quote": "the empty state on the Needs screen is dull, give it something to say", "summary": "Better empty state on Needs", "kind": "do" },
+        { "quote": "can we show how long each job has been running", "summary": "Show how long each job has run", "kind": "do" },
+        { "quote": "ask Theo if the staging box is still needed", "summary": "Ask Theo about the staging box", "kind": "do" },
+        { "quote": "docs for the new import flow", "summary": "Docs for the new import flow", "kind": "do" },
+        { "quote": "did the thing with the certificate expire yet", "summary": "Say if the certificate expired", "kind": "answer" }
+      ]
+    }
+  }
+}
