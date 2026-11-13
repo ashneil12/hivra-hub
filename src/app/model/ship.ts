@@ -48,6 +48,8 @@ export const NO_SHIP: ShipStatus = {
 };
 
 export const SHIP_CHANGED = "ship:changed";
+/** How long after an update the bar asks whether it works. */
+export const ASK_FRESH_MS = 2 * 60 * 60 * 1000;
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -246,7 +248,11 @@ export function shipCardView(status: ShipStatus, appVersion?: string): ShipCardV
   // receipt was already read: nothing calls a ship accepted until he answers yes, and "pending" is the default.
   const answer = current.acceptance;
   // r63 (Critiquito): no commit, branch or ship id in the ask, just the version Ash is now on.
-  if (current.phase === "committed" && answer.state === "pending") {
+  // Ash 13 Nov: the ask sat there for hours over many fast ships of the same version. It asks only while the update is
+  // fresh (two hours); after that, silence means it works.
+  const shippedAt = Date.parse(current.updatedAt ?? current.createdAt ?? "");
+  const fresh = !Number.isFinite(shippedAt) || Date.now() - shippedAt < ASK_FRESH_MS;
+  if (current.phase === "committed" && answer.state === "pending" && fresh) {
     const version = appVersion && appVersion !== "0.0.0" ? appVersion.trim() : "";
     return {
       id: current.id,
