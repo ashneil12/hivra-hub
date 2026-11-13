@@ -629,3 +629,34 @@ fn the_pstack_snapshot_for_the_session_test_is_current() {
         "the pstack wiring changed: rerun with UPDATE_PLUGIN_WIRING_SNAPSHOT=1 and check the TS session test"
     );
 }
+
+/// PT-3: the proof skills ship in the phase pack, run by name only, each with its MIT licence and a credit in the NOTICE.
+#[test]
+fn the_proof_skills_ship_with_their_licence_and_credit() {
+    let skills = skills_in(&carried("hivra-rpi").join("skills"));
+    let notice = std::fs::read_to_string(carried("hivra-rpi").join("NOTICE")).unwrap();
+    for name in ["test-driven-development", "verification-before-completion"] {
+        assert!(
+            skills.iter().any(|skill| skill == name),
+            "{name} is not in the pack: {skills:?}"
+        );
+        let dir = carried("hivra-rpi").join("skills").join(name);
+        let licence = std::fs::read_to_string(dir.join("LICENSE")).unwrap();
+        assert!(licence.starts_with("MIT License"), "{name}");
+        assert!(
+            licence.contains("Copyright (c) 2025 Jesse Vincent"),
+            "{name}"
+        );
+        let skill = std::fs::read_to_string(dir.join("SKILL.md")).unwrap();
+        assert!(skill.starts_with(&format!("---\nname: {name}\n")), "{name}");
+        assert!(
+            notice.contains(name),
+            "{name} is not credited in the NOTICE"
+        );
+    }
+    assert!(notice.contains(
+        "https://github.com/obra/superpowers @ 22f0b463e7a5e579904dd6211a520321035526f7"
+    ));
+    // Matt Pocock's TDD skill was already in the pack.
+    assert!(skills.iter().any(|skill| skill == "rpi-tdd"));
+}

@@ -20,7 +20,7 @@ import { loadPhaseSettings, savePhaseSettings, seedWork, taskForCrew, workFor } 
 import { handleAgentApp as handleRaw, type AgentAppHost } from "./agentApp";
 import { redoLinkRefusal } from "./agentAppTasks";
 import { handleWithBriefParts as handleAgentApp, TEST_GOAL, TEST_INTENT } from "../../firstmate/testing/briefParts";
-import { renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+import { PROOF_SKILLS_SECTION, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
 import { FULL_MODE_NEEDS_CHECKS } from "../../firstmate/model/briefChecks";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import {
@@ -386,12 +386,31 @@ describe("tasks.delegate carries the brief's check lines, stamp and do-not-touch
     expect(f.started).toHaveLength(5);
   });
 
-  it("does not read the mode unless a code brief has no line", async () => {
+  it("does not read the mode for a brief that isn't code", async () => {
     const f = fixture([]);
     f.api.testingMode = vi.fn(async () => "full" as const);
     await handleAgentApp(f.source, "n1", "tasks.delegate", { brief: "Look at CI." }, f.host);
-    await handleAgentApp(f.source, "n2", "tasks.delegate", { brief: "Add it.", code: true, checks: [line] }, f.host);
     expect(f.api.testingMode).not.toHaveBeenCalled();
+    // PT-3: a code brief with a line reads it once more, to name the proof skills (it is never refused for it).
+    await handleAgentApp(f.source, "n2", "tasks.delegate", { brief: "Add it.", code: true, checks: [line] }, f.host);
+    expect(f.api.testingMode).toHaveBeenCalledWith("vg-game");
+    expect(f.started).toHaveLength(2);
+  });
+
+  it("a code brief in a project that checks every task fully names the proof skills, and no other brief does", async () => {
+    const f = fixture([]);
+    f.api.testingMode = vi.fn(async () => "full" as const);
+    await handleAgentApp(f.source, "q1", "tasks.delegate", { brief: "Add the score route.", code: true, checks: [line] }, f.host);
+    expect(promptOf(f.started[0])).toContain(PROOF_SKILLS_SECTION);
+    // Not for a brief that isn't code, and not in any other mode or one the app could not read.
+    await handleAgentApp(f.source, "q2", "tasks.delegate", { brief: "Look at the CI failure and report." }, f.host);
+    expect(promptOf(f.started[1])).not.toContain("## Proof skills");
+    let n = 2;
+    for (const mode of ["at-ship", "light", "off", undefined] as const) {
+      f.api.testingMode = vi.fn(async () => mode);
+      await handleAgentApp(f.source, `q${(n += 1)}`, "tasks.delegate", { brief: "Add the score route.", code: true }, f.host);
+      expect(promptOf(f.started[n - 1]), String(mode)).not.toContain("## Proof skills");
+    }
   });
 
   it("a worker's brief opens with the stamp and the drift command, and lists its checks and do-not-touch paths", async () => {
@@ -559,7 +578,9 @@ describe("tasks.delegate carries the brief's check lines, stamp and do-not-touch
     f.api.testingMode = vi.fn(async () => "full" as const);
     f.api.briefStamp = vi.fn(async () => OTHER_SHA);
     await handleAgentApp(f.source, "w1", "tasks.delegate", markAppDelegate(stored), f.host);
-    expect(f.api.testingMode).not.toHaveBeenCalled();
+    // Not refused for having no line: it started. PT-3: it reads the mode now only to name the proof skills.
+    expect(f.started).toHaveLength(1);
+    expect(promptOf(f.started[0])).toContain("## Proof skills");
     expect(promptOf(f.started[0])).toContain(`commit ${SHA}`);
     expect(promptOf(f.started[0])).not.toContain(OTHER_SHA);
   });

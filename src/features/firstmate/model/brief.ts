@@ -199,6 +199,18 @@ const STEERING = [
 ].join("\n");
 
 /**
+ * PT-3: the proof skills a fully checked project's code brief names, from the hivra-rpi pack (run by name only): Jesse
+ * Vincent's test-driven-development and verification-before-completion, and Matt Pocock's TDD (rpi-tdd). MIT, credited in
+ * src-tauri/plugins/hivra-rpi/NOTICE.
+ */
+export const PROOF_SKILLS = ["test-driven-development", "verification-before-completion", "rpi-tdd"] as const;
+
+export const PROOF_SKILLS_SECTION = [
+  "## Proof skills",
+  `This project checks every task fully. Before you change the code, read these skills by name and follow them: ${PROOF_SKILLS.join(", ")}.`,
+].join("\n");
+
+/**
  * The brief's body from the template: the fixed sections around the model's intent and spec. The definition of done
  * goes last in the whole prompt (briefPrompt), so it is not repeated here.
  */
@@ -221,10 +233,14 @@ export function renderBrief(
     checks?: readonly CheckLine[];
     /** SC-4: the do-not-touch paths. Present and not empty: a "Do not touch" section. */
     leave?: readonly string[];
+    /** PT-3: the project checks every task fully, so a code or bug-fix brief also names the proof skills. */
+    proofSkills?: boolean;
   },
 ): string {
   // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
   const skills = task ? briefSkillsSection(task) : undefined;
+  // PT-3: in a project that checks every task fully, a code or bug-fix brief also names the proof skills.
+  const proof = extras?.proofSkills && (task === "code" || task === "debug") ? PROOF_SKILLS_SECTION : undefined;
   return [
     isolationSection(isolation),
     // SC-4: the drift rule opens the brief, right after the isolation check.
@@ -241,6 +257,7 @@ export function renderBrief(
     statusProtocol(isolation),
     STEERING,
     ...(skills ? [skills] : []),
+    ...(proof ? [proof] : []),
   ].join("\n\n");
 }
 
