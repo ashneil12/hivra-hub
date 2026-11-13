@@ -49,7 +49,9 @@ const PATH_BROWSERS: &[&str] = &[
     "microsoft-edge",
 ];
 
-/// A Chrome-family browser: the Mac's apps first (also under ~/Applications), then one on PATH.
+/// A Chrome-family browser. On macOS only an app bundle under /Applications or ~/Applications, never one on PATH (SC-8):
+/// the app runs it outside the agent sandbox, because Chrome cannot start its own renderer sandbox inside sandbox-exec,
+/// so it has to be a file no agent can replace, and macOS's App Management guards app bundles. Elsewhere, PATH as well.
 pub fn find_browser(home: Option<&Path>, path_var: Option<&str>) -> Option<PathBuf> {
     let mut candidates: Vec<PathBuf> = Vec::new();
     for app in APP_BROWSERS {
@@ -58,6 +60,7 @@ pub fn find_browser(home: Option<&Path>, path_var: Option<&str>) -> Option<PathB
             candidates.push(home.join(app.trim_start_matches('/')));
         }
     }
+    let path_var = if cfg!(target_os = "macos") { None } else { path_var };
     for dir in path_var
         .map(|p| std::env::split_paths(p).collect::<Vec<_>>())
         .unwrap_or_default()
@@ -243,7 +246,7 @@ pub async fn visual_preview(app: tauri::AppHandle, document: String) -> Result<P
         .join("visual-previews");
     let path = std::env::var("PATH").ok();
     let browser = find_browser(dirs::home_dir().as_deref(), path.as_deref()).ok_or(
-        "No Chrome, Chromium, Edge or Brave on this Mac to draw the preview. Send the visual reply without one.",
+        "No Chrome, Chromium, Edge or Brave in Applications on this Mac, so there is no preview. Tell the person, and send the visual reply without one.",
     )?;
     let id = format!(
         "{}",
@@ -303,6 +306,34 @@ mod tests {
         assert!(render(browser, &huge, &dir, "ok", Duration::from_secs(1)).is_err());
     }
 
+    /// SC-8: on macOS a browser on PATH is never picked; only an Applications bundle is.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_browser_on_path_is_not_picked_on_macos() {
+        let dir = std::env::temp_dir().join(format!("hivra-sc8-path-{}", std::process::id()));
+        let home = std::env::temp_dir().join(format!("hivra-sc8-home-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+        fs::create_dir_all(&dir).unwrap();
+        for name in PATH_BROWSERS {
+            fs::write(dir.join(name), "").unwrap();
+        }
+        let found = find_browser(Some(&home), dir.to_str());
+        assert!(
+            found.as_deref().map_or(true, |p| !p.starts_with(&dir)),
+            "a browser on PATH was picked: {found:?}"
+        );
+        // A bundle under ~/Applications is.
+        let app = home.join(APP_BROWSERS[1].trim_start_matches('/'));
+        fs::create_dir_all(app.parent().unwrap()).unwrap();
+        fs::write(&app, "").unwrap();
+        let found = find_browser(Some(&home), dir.to_str()).expect("a bundle browser");
+        assert!(found.starts_with("/Applications") || found == app, "{found:?}");
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&home);
+    }
+
+    #[cfg(not(target_os = "macos"))]
     #[test]
     fn the_browser_is_found_on_path() {
         let dir = std::env::temp_dir().join(format!("hivra-wp254-find-{}", std::process::id()));

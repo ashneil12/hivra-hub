@@ -1444,6 +1444,8 @@ const RESOLVER_CLI_NAMES: &[&str] = &[
     "git-lfs",
     "node",
     "docker",
+    // SC-8: the computer-use sidecar. The app runs it (Settings' check, and each chat's computer-use tools).
+    "open-computer-use",
 ];
 
 const RESOLVER_HOME_DIRS: &[&str] = &[

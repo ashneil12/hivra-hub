@@ -753,6 +753,42 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "read_capped",
         "Spawns a Command the caller built (the commit guard's own git reads and iconv) with a time and size cap. The callers are their own sites.",
     ),
+    // SC-8: the starts that came in with WP-254, WP-255, the agent installer (#318) and SC-4, each read before listing.
+    (
+        "agent_install.rs",
+        "shell_command",
+        "Builds /bin/zsh -lc <script> for run_install. The script is one of install_command's fixed strings, chosen by a harness id; nothing an agent writes reaches it.",
+    ),
+    (
+        "agent_install.rs",
+        "run_install",
+        "A CLI's official installer from install_command's fixed list, started only by Ash's tap in Settings > Providers (agent_cli_install is a webview command, not an agent action). It must write ~/.local/bin and npm's global folder, which the agent sandbox denies, so it cannot run inside it. Its PATH is gui_search_path, whose home folders are write-denied to agents.",
+    ),
+    (
+        "computer_use/proxy.rs",
+        "start",
+        "Starts the open-computer-use sidecar from monocode computer-use, a chat's own MCP server: it runs inside that chat's Claude Code process tree, which the agent sandbox already wraps when it is on (a second sandbox-exec cannot nest). The sidecar's file is write-denied to agents (RESOLVER_CLI_NAMES).",
+    ),
+    (
+        "computer_use/sensitive.rs",
+        "bundle_names",
+        "/usr/bin/plutil -convert json -o - <Info.plist>, a fixed system program that reads an app's plist to stdout. It writes nothing.",
+    ),
+    (
+        "firstmate/brief_checks.rs",
+        "head_of_main_checkout",
+        "Spawns git_cmd::git() (the container profile while the sandbox is on, no hooks) for rev-parse --verify -q HEAD in the project's main checkout, to stamp a brief. A fixed read.",
+    ),
+    (
+        "visual_preview.rs",
+        "run",
+        "Headless Chrome, Chromium, Edge or Brave drawing an agent's page. Not wrapped: Chrome cannot start its own renderer sandbox inside sandbox-exec (it exits 133), and --no-sandbox is never passed, so the page stays in Chrome's renderer sandbox, with no network and a throwaway profile. On macOS the binary is only an app bundle under /Applications or ~/Applications (find_browser), which App Management keeps agents from replacing. Other platforms still look on PATH; the app ships for macOS only today.",
+    ),
+    (
+        "worktree_autoclean.rs",
+        "compiler_running",
+        "pgrep -x cargo and pgrep -x rustc, fixed arguments, to see whether a build is running before build output is cleared. It writes nothing.",
+    ),
 ];
 
 struct Site {
