@@ -107,3 +107,52 @@ export function askNudge(chat: Session, doc: AskDoc, mateId: string, cli: string
       .join("\n")}\nFor each: if your reply already covered it, mark it done with proof "answered in this chat". If it is small, do it now. Otherwise start it or hand it to a worker and mark it started, or mark it waiting with what you need from Ash. ${how(cli)} Then tell Ash in a line or two what you picked up. This is an app notification, not a new message from Ash.`,
   };
 }
+
+const HOUR_MS = 60 * 60 * 1000;
+/** The daily check is sent at most this often per first mate. */
+export const DIGEST_EVERY_MS = 20 * HOUR_MS;
+/** An ask with no status this long after Ash asked is overdue for a word. */
+export const DIGEST_HEARD_MS = 24 * HOUR_MS;
+/** An ask marked started that has not moved in this long is worth a look. */
+export const DIGEST_STARTED_MS = 3 * 24 * HOUR_MS;
+
+/** The asks a first mate's daily check is about: no status after a day, or started and quiet for three. */
+export function staleAsks(doc: AskDoc, mateId: string, now: number): Ask[] {
+  return doc.asks
+    .filter(
+      (ask) =>
+        ask.mateId === mateId &&
+        ((isOwed(ask) && now - ask.createdAt >= DIGEST_HEARD_MS) || (ask.status === "started" && now - ask.updatedAt >= DIGEST_STARTED_MS)),
+    )
+    .sort((a, b) => a.n - b.n);
+}
+
+/**
+ * The daily check: once a day, when a first mate has asks of Ash's that went quiet, it gets one app message naming
+ * them and what closed since yesterday, and tells Ash where they stand. Nothing when nothing is stale, so a first
+ * mate that keeps its list moving is never interrupted. `chatId` is the chat the oldest stale ask was made in.
+ */
+export function askDigest(doc: AskDoc, mateId: string, cli: string, now: number): { chatId: string; message: QueuedMessage } | undefined {
+  if (now - (doc.nudged[mateId] ?? 0) < DIGEST_EVERY_MS) return undefined;
+  const stale = staleAsks(doc, mateId, now);
+  if (!stale.length) return undefined;
+  const shown = stale.slice(0, NOTE_MAX_ASKS);
+  const closed = doc.asks
+    .filter((ask) => ask.mateId === mateId && ask.status === "done" && now - ask.updatedAt < DIGEST_HEARD_MS)
+    .sort((a, b) => a.n - b.n)
+    .slice(0, NOTE_MAX_ASKS);
+  const day = new Date(now).toISOString().slice(0, 10);
+  return {
+    chatId: stale[0].sessionId,
+    message: {
+      id: `asks-digest-${mateId}-${day}`,
+      attachments: [],
+      waitForIdle: true,
+      text: `${ASK_NUDGE_PREFIX} Daily check from the app: ${stale.length === 1 ? "this ask of Ash's has" : `these ${stale.length} asks of Ash's have`} gone quiet (no status for a day, or started and not moved for three):\n${shown
+        .map(line)
+        .join("\n")}${stale.length > shown.length ? `\n(and ${stale.length - shown.length} more)` : ""}${
+        closed.length ? `\nFinished since yesterday:\n${closed.map((ask) => `- ask ${ask.n}: ${ask.summary}${ask.proof ? ` (${ask.proof})` : ""}`).join("\n")}` : ""
+      }\nFor each quiet one: do it now if it is small, otherwise start it or hand it to a worker, or mark it waiting with what you need from Ash. ${how(cli)} Then tell Ash in two or three lines where his open asks stand. This is an app notification, not a new message from Ash.`,
+    },
+  };
+}

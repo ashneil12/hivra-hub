@@ -9,7 +9,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef, useState } from "react";
 import type { QueuedMessage, Session } from "../../sessions/model/session";
 import { memoryReadableBlocks } from "../../memory/model/privateChat";
-import { askNudge, isAshMessage } from "../model/askNotes";
+import { askDigest, askNudge, isAshMessage } from "../model/askNotes";
 import { hearMessage, hearPrompt, nothingToHear, parseHeard, rulesAsks, sentences, type HeardAsk } from "../model/asks";
 import { askStore } from "../model/askStore";
 
@@ -66,6 +66,7 @@ export function useAskLedger(options: AskLedgerOptions): void {
   const waiting = useRef<Array<() => void>>([]);
   const running = useRef(0);
   const nudged = useRef(new Set<string>());
+  const digesting = useRef(new Set<string>());
   // A ledger change (this window's or another's) runs the pass again with the chats as they stand.
   const [tick, setTick] = useState(0);
 
@@ -168,6 +169,30 @@ export function useAskLedger(options: AskLedgerOptions): void {
           if (message) return send(session.id, message);
         })
         .catch(() => undefined);
+    }
+
+    // The daily check: a first mate whose asks went quiet hears of it once a day, in the chat the oldest was made in.
+    if (send) {
+      const now = Date.now();
+      const mates = new Set(doc.asks.map((item) => item.mateId));
+      for (const mateId of mates) {
+        if (digesting.current.has(mateId)) continue;
+        const due = askDigest(doc, mateId, "app", now);
+        if (!due) continue;
+        const chat = options.sessions.find((session) => session.id === due.chatId);
+        // Only into a chat that is open, idle and still this first mate's; otherwise it waits for a later pass.
+        if (!chat || chat.busy || chat.queuedMessages?.length || mateOf(chat.id) !== mateId) continue;
+        digesting.current.add(mateId);
+        void store
+          .markDigest(mateId)
+          .then(() => cli())
+          .then((command) => {
+            const again = askDigest({ ...store.doc(), nudged: { ...store.doc().nudged, [mateId]: 0 } }, mateId, command, Date.now());
+            if (again) return send(again.chatId, again.message);
+          })
+          .catch(() => undefined)
+          .finally(() => digesting.current.delete(mateId));
+      }
     }
   }, [on, options.sessions, tick]);
 }
