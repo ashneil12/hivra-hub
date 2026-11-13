@@ -2079,6 +2079,9 @@ mod test_debt_step {
             let flaky = doc.items[1].id.clone();
             doc.mark_code_wrong(&bug, "tax is ignored", 2);
             doc.mark_flaky(&flaky, "passed on a re-run", 3);
+            // The person chose to ship with the bug (their Ship anyway on its row).
+            let key = crate::test_debt::doc::Doc::bug_key(&doc.items[0]);
+            assert!(doc.ship_bug_anyway(&key, 4));
         })
         .unwrap();
         let record = run_in(&dir, &root, &steps).unwrap();
@@ -2089,11 +2092,48 @@ mod test_debt_step {
         assert_eq!(value["findings"][0]["kind"], "code-wrong");
         assert_eq!(
             value["findings"][0]["line"],
-            "totals add up fails because the code is wrong: tax is ignored"
+            "totals add up fails because the code is wrong: tax is ignored You chose to ship anyway."
         );
         assert!(passed_for_in(&dir, &record.project, &landed));
         // Read back from disk: the findings survive.
         assert_eq!(latest_in(&dir, &record.project).unwrap().findings.len(), 2);
+    }
+
+    #[test]
+    fn a_real_bug_waiting_on_the_person_holds_the_version_until_they_answer_or_the_test_passes() {
+        let (_tmp, root, dir) = fixture("ship-debt-bug-waits");
+        let landed = land(&root, "a.txt", "one");
+        let steps = WithDebt::new();
+        list(&steps, &root, &["totals add up"]);
+        store::update(steps.data.path(), &path_to_js(&root), |doc| {
+            let bug = doc.items[0].id.clone();
+            doc.mark_code_wrong(&bug, "tax is ignored", 2);
+        })
+        .unwrap();
+        let record = run_in(&dir, &root, &steps).unwrap();
+        assert_eq!(record.outcome, Outcome::CouldNotRun);
+        let step = record.steps.iter().find(|s| s.name == "Test debt").unwrap();
+        assert_eq!(
+            step.detail,
+            "1 test named as a real bug, waiting on you: totals add up"
+        );
+        assert_eq!(record.findings.len(), 1, "it is still named");
+        assert!(
+            !passed_for_in(&dir, &record.project, &landed),
+            "the hold treats it as not passed"
+        );
+        // Their answer, then another ship check: it passes, with the finding saying they chose it.
+        store::update(steps.data.path(), &path_to_js(&root), |doc| {
+            let key = crate::test_debt::doc::Doc::bug_key(&doc.items[0]);
+            assert!(doc.ship_bug_anyway(&key, 5));
+        })
+        .unwrap();
+        let again = run_in(&dir, &root, &steps).unwrap();
+        assert_eq!(again.outcome, Outcome::Passed);
+        assert!(again.findings[0]
+            .line
+            .ends_with("You chose to ship anyway."));
+        assert!(passed_for_in(&dir, &again.project, &landed));
     }
 
     #[test]

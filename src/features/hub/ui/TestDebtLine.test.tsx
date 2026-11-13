@@ -152,6 +152,26 @@ describe("the test debt line", () => {
     expect(popover()?.textContent).toContain("Flaky");
   });
 
+  it("labels a real bug the person chose to ship with, apart from one that still waits on them", async () => {
+    await show(
+      folder(),
+      api(() => ({
+        count: 1,
+        sorting: false,
+        items: [
+          item({ id: "a" }),
+          item({ id: "b", state: "real-bug", test: "adds a row" }),
+          item({ id: "c", state: "shipping-anyway", test: "totals" }),
+        ],
+      })),
+    );
+    await openMore();
+    const rows = [...(popover()?.querySelectorAll("[data-test-debt-item]") ?? [])];
+    expect(rows.map((row) => row.getAttribute("data-test-debt-item"))).toEqual(["to-sort", "real-bug", "shipping-anyway"]);
+    expect(rows[1]?.querySelector("[data-test-debt-state]")?.textContent).toBe("Real bug");
+    expect(rows[2]?.querySelector("[data-test-debt-state]")?.textContent).toBe("Real bug, shipping anyway");
+  });
+
   it("shows nothing when the answer is not one it can read", async () => {
     await show(folder(), api(() => ({ count: "lots", sorting: false, items: "x" })));
     expect(line()).toBeNull();

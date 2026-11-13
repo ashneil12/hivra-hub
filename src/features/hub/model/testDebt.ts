@@ -14,7 +14,11 @@ export const TEST_DEBT_CHANGED = "test-debt://changed";
 /** At most this many items are read from one answer. */
 export const TEST_DEBT_ITEM_CAP = 100;
 
-export type TestDebtState = "to-sort" | "real-bug" | "flaky";
+/**
+ * `real-bug` waits on the person (fix the code, or Ship anyway); `shipping-anyway` is a real bug they chose to ship with; `flaky` is
+ * quarantined; `to-sort` waits for the test fixer.
+ */
+export type TestDebtState = "to-sort" | "real-bug" | "shipping-anyway" | "flaky";
 
 export type TestDebtItem = {
   id: string;
@@ -44,7 +48,7 @@ export const tauriTestDebt: TestDebtBackend = {
   summary: (cwd) => invoke("test_debt_summary", { cwd }),
 };
 
-const STATES: readonly string[] = ["to-sort", "real-bug", "flaky"];
+const STATES: readonly string[] = ["to-sort", "real-bug", "shipping-anyway", "flaky"];
 const LIMITS = { id: 80, test: 200, file: 300, task: 120 } as const;
 /** The largest epoch ms a JavaScript Date can hold. */
 const MAX_EPOCH_MS = 8.64e15;
@@ -105,6 +109,11 @@ export function readTestDebtSummary(value: unknown): TestDebtSummary | null {
 /** How many listed tests are waiting to be sorted (not the real bugs or the flaky ones). */
 export function testDebtToSort(items: readonly TestDebtItem[]): number {
   return items.filter((item) => item.state === "to-sort").length;
+}
+
+/** How many listed tests are real bugs still waiting on the person (not the ones they chose to ship with). */
+export function testDebtBugs(items: readonly { state: string }[]): number {
+  return items.filter((item) => item.state === "real-bug").length;
 }
 
 /**

@@ -119,6 +119,19 @@ describe("keys only the person answers", () => {
     }
   });
 
+  // PT-5 follow-up: a real bug's row on the test debt list (decisions.rs person_only): "Ship anyway" is the person's alone.
+  it("reads a real bug's test debt row as the person's alone, and the rewrite-or-delete one as ordinary", () => {
+    for (const key of [
+      "test-debt-bug-0123456789abcdef-fedcba9876543210",
+      "Test-Debt-Bug-0123456789abcdef-fedcba9876543210",
+      `${String.fromCodePoint(0xff34)}est-debt-bug-0123456789abcdef-fedcba9876543210`,
+      `test-debt${String.fromCodePoint(0x200b)}-bug-0123456789abcdef`,
+    ]) {
+      expect(isPersonOnlyDecisionKey(key), JSON.stringify(key)).toBe(true);
+    }
+    expect(isPersonOnlyDecisionKey("test-debt-score-0123456789abcdef")).toBe(false);
+  });
+
   it("leaves an ordinary key to anyone", () => {
     expect(isPersonOnlyDecisionKey("copy/headline")).toBe(false);
     expect(isPersonOnlyDecisionKey("retention-policy")).toBe(false);
