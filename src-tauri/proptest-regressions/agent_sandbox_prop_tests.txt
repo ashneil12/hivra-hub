@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc b31d7cf7bd6dd3a0ad3d53ac2699f5e9a142acb0dadd9101c040c2970e947b1f # shrinks to target_name = "(", segments = ["_"]
+cc c7740d7510bb58d202bfec046728ab177bfcf46e178a5a38a36aa613d6b4c312 # shrinks to target_name = "a", suffix = "", below = ["_"]
+cc 8e0ad4d4a3238fac35417bc3d466093962773a0f9840489b0d3a7fdb15d1abe3 # shrinks to name = "a", via_link = false, noise = [1], hook = "_"
+cc fbbf9754888042ee4cd6b03258ebdfa2261ef0941b3f3b7f152f240d602c1629 # shrinks to place_pick = Index(7094901566811366007), name = "?", bad = '"', at = Index(0), segments = ["0"]

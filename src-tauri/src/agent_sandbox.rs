@@ -5523,3 +5523,9 @@ mod review_r7_repro;
 #[cfg(test)]
 #[path = "agent_sandbox_review_178b.rs"]
 mod review_178b;
+
+// SC-6: property tests on the rule that no protected place is writable, however it is spelled or linked (spec 4i). Unix
+// only: they use real symlinks, and the profile is a macOS one.
+#[cfg(all(test, unix))]
+#[path = "agent_sandbox_prop_tests.rs"]
+mod prop_tests;
