@@ -18,6 +18,7 @@
 // - A finished result read through tasks.status counts as received: the row is acknowledged and its report turn
 //   dropped.
 import { monoHomeFence } from "../../hub/model/hubMcp";
+import { isCaptainMono } from "../../chief/model/charter";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
 import { modelEffortLabel, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
 import { isCustomModelId } from "../../sessions/model/customModels";
@@ -900,6 +901,18 @@ function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tas
   return { owner, tasks: host.tasks };
 }
 
+/**
+ * The Chief of Staff hands work on and never starts crew itself (chief/model/charter.ts). Its only road to a worker is
+ * a brief to a project's Lead (captain.handoff, or tasks.delegate with `lead`); a worker of its own is refused here.
+ */
+export const CAPTAIN_NO_CREW =
+  "The Chief of Staff hands work on and never starts workers itself. Use captain.handoff (or tasks.delegate with lead) so the project's first mate runs the work.";
+
+function refuseCaptainCrew(source: Session, host: AgentAppHost, toLead: boolean): void {
+  if (toLead || !host.isMono(source.id)) return;
+  if (isCaptainMono(host.monoOf?.(source.id) as Parameters<typeof isCaptainMono>[0])) throw new Error(CAPTAIN_NO_CREW);
+}
+
 /** The caller's rows by id, in the order asked; one that isn't the caller's reads exactly like one that doesn't exist. */
 async function ownRows(
   source: Session,
@@ -1078,6 +1091,7 @@ async function delegate(
   helpers: TaskHelpers,
 ) {
   const { owner, tasks } = taskOwner(source, host);
+  refuseCaptainCrew(source, host, input.lead !== undefined);
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
     throw new Error(
       "request ID must use letters, digits, underscores or hyphens (up to 100)",
@@ -1940,6 +1954,8 @@ async function fanout(
   host: AgentAppHost,
   helpers: TaskHelpers,
 ) {
+  // A fan-out's tasks are all workers, so the Chief of Staff never sends one.
+  refuseCaptainCrew(source, host, false);
   if (input.resume !== undefined) {
     if (input.tasks !== undefined)
       throw new Error("A resume carries on a plan already sent: leave out tasks (name the stopped ones in confirm).");
