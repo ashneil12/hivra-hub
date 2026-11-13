@@ -923,7 +923,7 @@ mod tests {
         assert_eq!(first.revision, 1);
         assert_eq!(
             first.question,
-            "Add fast-check to catch properties hold for generated inputs, not just the examples?"
+            "Add fast-check to catch inputs that break the code the examples missed?"
         );
         assert_eq!(first.options, ["Add it", "Not now"]);
         assert_eq!(first.recommended, "Add it");

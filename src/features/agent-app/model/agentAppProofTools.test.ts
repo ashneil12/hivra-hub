@@ -16,7 +16,7 @@ type Status = "open" | "proposed" | "declined";
 type Who = "mono" | "team" | "worker" | "habit" | "habit-mono" | "checker" | "mono-two";
 
 const KEY = "proof-tools/fast-check/0123456789ab";
-const QUESTION = "Add fast-check to catch properties hold for generated inputs, not just the examples?";
+const QUESTION = "Add fast-check to catch inputs that break the code the examples missed?";
 const INSTALL = "npm install --save-dev fast-check@4.10.2";
 
 const LIST = {
