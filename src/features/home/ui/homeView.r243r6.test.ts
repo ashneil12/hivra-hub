@@ -19,6 +19,8 @@ import type { HubProject } from "../../hub/model/types";
 import { noteChats, resetWaitingChats, setWaitingChatsHost, setWorkerQuestionRouter } from "../../hub/model/waitingChats";
 import { setHomeOpener, type HomeOpenTarget } from "../model/opener";
 import { HomeView } from "./HomeView";
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const HUB_PROJECTS: HubProject[] = [
   { id: "tally", name: "Tally", shortName: "Tally", iconShape: "folder", folder: "/Users/ash/Projects/tally" },
@@ -67,4 +69,29 @@ it("clicking a chat question's sentence on Home opens that chat", async () => {
   expect(sentence).toBeDefined();
   act(() => sentence!.click());
   expect(opened).toEqual([{ kind: "chat", id: "tally-lead", projectId: "tally" }]);
+});
+
+it("lets a pending Home read finish when task changes arrive during the read", async () => {
+  const callbacks = new Map<string, () => void>();
+  let finish: (value: unknown) => void = () => undefined;
+  let catalogs = 0;
+  vi.mocked(listen).mockImplementation(async (event, handler) => {
+    callbacks.set(String(event), () => handler({ payload: {} } as never));
+    return () => undefined;
+  });
+  vi.mocked(invoke).mockImplementation(async (cmd) => {
+    if (cmd === "panels_catalog" && ++catalogs === 1) return new Promise((resolve) => { finish = resolve; });
+    return /list|cards|decisions|tasks|docs|habits|programme/i.test(cmd) ? [] : null;
+  });
+  await act(async () => root.render(createElement(HomeView)));
+  expect(container.querySelector("[data-home-loading]")?.textContent).toContain("Loading Home");
+  await act(async () => {
+    callbacks.get("tasks://changed")?.();
+    callbacks.get("tasks://changed")?.();
+  });
+  expect(catalogs).toBe(1);
+  await act(async () => finish([]));
+  expect(container.querySelector("[data-home-loading]")).toBeNull();
+  expect(container.querySelector("[data-home-action=customize]")).not.toBeNull();
+  expect(catalogs).toBe(2);
 });

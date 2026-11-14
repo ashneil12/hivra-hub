@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { memoryDisk } from "../../hub/model/localHub/localHub";
 import { LateHomeLoad, createHomeLoader, fetchHome, loadNeedsYouCount, mergeHomeLoad, type HomeSource } from "./load";
 import type { HomeStorage } from "./store";
@@ -136,4 +136,16 @@ it("keeps the morning summary switch when the store times out", async () => {
   const settled = { ...snap, storeUnavailable: false as const };
   const timed = { ...kept, summaryOff: false };
   expect(mergeHomeLoad(settled, timed).snap.summaryOff).toBe(true);
+});
+
+it("a native read that never answers times out instead of leaving Home blank forever", async () => {
+  vi.useFakeTimers();
+  try {
+    const loader = createHomeLoader(source({ catalog: () => new Promise(() => {}) }));
+    const result = expect(loader.load()).rejects.toThrow(/too long/i);
+    await vi.advanceTimersByTimeAsync(11000);
+    await result;
+  } finally {
+    vi.useRealTimers();
+  }
 });

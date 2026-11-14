@@ -119,7 +119,8 @@ export type MonoSessionCompletionResult = {
 export function monoSessionCompletionResult(
   options: CompletionOptions,
 ): MonoSessionCompletionResult {
-  const { requestId, sessionId, project, prompt, outcome, session } = options;
+  const { requestId, sessionId, project, prompt, session } = options;
+  let outcome = options.outcome;
   const title = session ? completionTitle(session) : "Agent session";
   const start = !session || options.reply !== undefined
     ? -1
@@ -145,8 +146,15 @@ export function monoSessionCompletionResult(
     }
   }
   const own = reply || outcome.text;
+  // Some CLI versions emit their refusal as an assistant line, followed by a successful process exit.
+  // This exact one-line provider message is a blocked request, never a completed work report.
+  const refused = outcome.status === "completed" && /^(?:you['’]ve|you have) hit your (?:(?:usage|weekly|daily|monthly) )?limit(?:[.!]|\s*[·—-]\s*resets[^\n]*)?$/i.test(own.trim());
+  if (refused) {
+    outcome = { status: "failed", text: "", error: own.trim(), errorClass: "usage_limit", retryable: true,
+      ...(session?.usageLimit?.resetsAt != null ? { resetsAt: session.usageLimit.resetsAt } : {}) };
+  }
   const result = options.earlierReport ? withEarlierReport(options.earlierReport, own) : own;
-  const claim = reply ? claimEvidenceOf(result, turn) : undefined;
+  const claim = reply && !refused ? claimEvidenceOf(result, turn) : undefined;
   return {
     sessionId,
     project,
@@ -368,7 +376,7 @@ function saveRehanded(list: Rehanded[]): void {
  * to Ash. Remembers which worker failed on which job, so only a different worker's failure is told apart as the second.
  */
 export function rehandLine(results: readonly MonoSessionCompletionResult[], now = Date.now()): string {
-  const failed = results.filter((r) => r.status === "failed" && r.retryable !== false);
+  const failed = results.filter((r) => r.status === "failed" && r.retryable !== false && r.errorClass !== "usage_limit");
   if (!failed.length) return "";
   const seen = rehandedJobs(now);
   const again = failed.filter((r) => seen.some((e) => e.job === jobKey(r) && e.session !== r.sessionId));

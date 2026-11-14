@@ -1,11 +1,12 @@
 // r101 (5, B5 571a: the Lead said nothing from +360s to +2050s while its worker ran): a Lead with work out for about
-// ten minutes gets one grey app line saying what moved ("Still working: 2 of 5 jobs done."). It carries no Needs you,
-// badge or rail count (a plain system block), and only appears when something moved since the last one.
+// five minutes gets a factual app update, including when no new report arrived. It carries no Needs you or badge.
+import { isBackgroundMessage } from "../../sessions/model/backgroundMessage";
+import { isStatusQuestion } from "./statusReply";
 import type { Block, Session } from "../../sessions/model/session";
 import { isOpenDelegation, type Delegation } from "./delegations";
 
 export const PROGRESS_PREFIX = "progress-";
-export const PROGRESS_QUIET_MS = 10 * 60_000;
+export const PROGRESS_QUIET_MS = 5 * 60_000;
 
 const said = (block: Block) =>
   (block.role === "assistant" && !block.tool && !block.internal && !!block.text.trim()) || block.id.startsWith(PROGRESS_PREFIX);
@@ -47,34 +48,54 @@ export function progressNote(
   workerLine: (childSession: string) => WorkerLine | undefined = () => undefined,
 ): Block | undefined {
   // Its jobs since Ash's last message: the work in hand.
-  const ask = [...chat.blocks].reverse().find((b) => b.role === "user" && !b.draft && !b.monoNote && !/^\s*\[MonoCode /.test(b.text));
+  const requests = chat.blocks.filter((b) => b.role === "user" && !b.draft && !b.monoNote && !/^\s*\[MonoCode /.test(b.text) && !isBackgroundMessage(b.text) && !isStatusQuestion(b.text));
+  const ask = requests[requests.length - 1];
   const since = ask?.startedAt ?? ask?.sentAt ?? 0;
-  const own = rows.filter((row) => row.ownerSession === chat.id && row.createdAt >= since);
-  if (!own.some((row) => isOpenDelegation(row))) return undefined;
+  const owners = rows.filter((row) => row.ownerSession === chat.id && row.state !== "cancelled");
+  const active = owners.filter(isOpenDelegation);
+  if (!active.length) return undefined;
+  // A later "how is it going?" does not detach work already running from its owner.
+  const earliest = Math.min(...active.map((row) => row.createdAt));
+  const anchor = [...requests].reverse().find((block) => (block.startedAt ?? block.sentAt ?? 0) <= earliest);
+  const from = Math.min(since, anchor?.startedAt ?? anchor?.sentAt ?? earliest);
+  const batches = new Set(active.map((row) => row.batchId).filter(Boolean));
+  const roots = new Set(active.map((row) => row.rootId).filter(Boolean));
+  const own = owners.filter((row) => row.createdAt >= from || (!!row.batchId && batches.has(row.batchId)) || (!!row.rootId && roots.has(row.rootId)));
   const total = own.length;
   const done = own.filter((row) => row.state === "completed").length;
   const prev = lastNote(chat);
   // r102 (5, 05bc/d241: 14 to 18 quiet minutes on one long job, still 0 of 1): with one job out and none back, the note
-  // says what it is doing, but only when the worker's own words moved since the last note.
+  // quotes new worker words when available, otherwise reports that no new report arrived.
   const single = total === 1 && done === 0 ? own[0]! : undefined;
   const line = single ? workerLine(single.childSession) : undefined;
   const moved = !!line && keyOf(line.text) !== prev?.worker && line.at > (prev?.at ?? 0);
-  // Nothing moved: silent. Before any note, nothing moved until a job came back.
-  if (!moved && (prev ? prev.done === done && prev.total === total : done === 0)) return undefined;
-  // Quiet for about ten minutes: no word from the Lead and no note since.
+  const unchanged = !moved && (prev ? prev.done === done && prev.total === total : done === 0);
+  // Quiet for the reporting interval: no word from the Lead and no note since.
   const lastSaid = Math.max(
     prev?.at ?? 0,
     ...own.map((row) => row.createdAt),
     ...chat.blocks.filter(said).map((b) => b.startedAt ?? b.sentAt ?? 0),
   );
   if (now - lastSaid < PROGRESS_QUIET_MS) return undefined;
+  if (unchanged) {
+    const waiting = active.filter((row) => row.state === "question").length;
+    const running = active.length - waiting;
+    return {
+      id: `${PROGRESS_PREFIX}${done}-${total}-${now}${prev?.worker ? `-w${prev.worker}` : ""}`,
+      role: "system",
+      notice: "still-running",
+      text: `No new worker report yet: ${done} of ${total} jobs finished; ${running} running${waiting ? `, ${waiting} waiting for an answer` : ""}.`,
+      startedAt: now,
+    };
+  }
   if (moved && single && line) {
     const what = single.title?.trim();
     return {
       id: `${PROGRESS_PREFIX}${done}-${total}-${now}-w${keyOf(line.text)}`,
       role: "system",
+      notice: "still-running",
       text: `Still working${what ? ` on ${what}` : ""}: ${firstSentence(line.text)}.`,
     };
   }
-  return { id: `${PROGRESS_PREFIX}${done}-${total}-${now}`, role: "system", text: `Still working: ${done} of ${total} jobs done.` };
+  return { id: `${PROGRESS_PREFIX}${done}-${total}-${now}`, role: "system", notice: "still-running", startedAt: now, text: `Still working: ${done} of ${total} jobs done.` };
 }

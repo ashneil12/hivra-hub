@@ -111,7 +111,7 @@ const API_ERROR_CLASS = new Map<string, ProviderErrorClass>([
   ["usage_limit_reached", "usage_limit"],
 ]);
 
-const USAGE_LIMIT_TEXT = /hit your (?:usage )?limit|usage limit reached/i;
+const USAGE_LIMIT_TEXT = /hit your (?:(?:usage|weekly|daily|monthly) )?limit|usage limit reached/i;
 const BILLING_TEXT =
   /credit balance is too low|insufficient[_ ](?:credits?|funds|balance|quota)|payment required|out of credits|requires more credits/i;
 const AUTH_TEXT =

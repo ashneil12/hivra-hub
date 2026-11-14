@@ -13,9 +13,12 @@ const STATUS =
 export function isStatusQuestion(text: string): boolean {
   const t = text.trim();
   if (!t || t.length > 120 || /^\s*\[MonoCode /.test(t)) return false;
+  // "Add a progress bar" and "Fix the status badge" are work, not requests for a progress report.
+  const updateMe = /^(?:(?:please|can you|could you)\s+)?update\s+(?:me|us)\b/i.test(t);
+  if (!updateMe && /^(?:(?:please|can you|could you)\s+)?(?:add|build|create|fix|implement|make|remove|rename|update|change|write)\s+\S/i.test(t)) return false;
   // A list (several lines, or numbered asks) is work, not a status question.
   if (t.split("\n").filter((line) => line.trim()).length > 1 || /^\s*\d{1,3}[.)]?\s/.test(t)) return false;
-  return STATUS.test(t);
+  return updateMe || STATUS.test(t);
 }
 
 /**

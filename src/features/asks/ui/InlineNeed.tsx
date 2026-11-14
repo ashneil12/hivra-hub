@@ -3,7 +3,6 @@
 // reply links it (asks/model/needLinks.ts) and the Needs you roll-up names its items this way. Once it no longer
 // waits on Ash it folds to one quiet line.
 import { useRef } from "react";
-import { Check } from "../../../shared/ui/icons";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
 import { useLastAnswered } from "../../needs/model/answeredNeeds";
@@ -31,8 +30,7 @@ export function InlineNeed({ needKey, label, number }: { needKey: string; label:
     const words = flat(label);
     return (
       <p data-inline-need="settled" className="my-1.5 flex items-center gap-2 font-sans text-[12px] leading-5 text-content/60">
-        <Check aria-hidden className="size-3.5 shrink-0" strokeWidth={1.75} />
-        <span className="min-w-0">{words ? `No longer needs you: ${words}` : "No longer needs you."}</span>
+        <span className="min-w-0">{words ? `Earlier request: ${words}` : "Earlier request."}</span>
       </p>
     );
   }
@@ -76,18 +74,25 @@ export function inlineNeedCard(href: string, label: string) {
  * numbered, so he answers them where he reads them.
  */
 export function NeedsRollupCard({ card, embedded = false }: { card: RollupCard; embedded?: boolean }) {
-  const many = card.items.length > 1;
+  const needs = useNeedsYou();
+  const active = card.items.filter((item) => findNeed(needs, item.key));
+  const earlier = card.items.filter((item) => !findNeed(needs, item.key));
+  const many = active.length > 1;
   return (
-    <section aria-label="Needs you now" data-needs-rollup={card.items.length} className={`${embedded ? "" : "px-4"} py-2 font-sans`}>
-      <h3 className="flex items-center gap-1.5 text-[12px] leading-5 text-content/60">
+    <section aria-label={active.length ? "Needs you now" : "Earlier requests"} data-needs-rollup={active.length} className={`${embedded ? "" : "px-4"} py-2 font-sans`}>
+      {active.length ? <h3 className="flex items-center gap-1.5 text-[12px] leading-5 text-content/60">
         <span aria-hidden className="size-1.5 rounded-full" style={{ background: NEEDS_YOU_RED }} />
         Needs you now
-        {many ? <span className="text-content/45">{card.items.length}</span> : null}
-      </h3>
-      {card.items.map((item, index) => (
+        {many ? <span className="text-content/45">{active.length}</span> : null}
+      </h3> : null}
+      {active.map((item, index) => (
         <InlineNeed key={item.key} needKey={item.key} label={item.sentence} number={many ? index + 1 : undefined} />
       ))}
-      {card.more > 0 ? <p className="text-[12px] leading-5 text-content/60">And {card.more} more in Needs you.</p> : null}
+      {active.length > 0 && card.more > 0 ? <p className="text-[12px] leading-5 text-content/60">And {card.more} more in Needs you.</p> : null}
+      {earlier.length ? <details data-earlier-needs className="text-[12px] text-content/50">
+        <summary className="cursor-pointer">Earlier requests ({earlier.length})</summary>
+        {earlier.map((item) => <InlineNeed key={item.key} needKey={item.key} label={item.sentence} />)}
+      </details> : null}
     </section>
   );
 }

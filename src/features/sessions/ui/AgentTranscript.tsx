@@ -2291,11 +2291,11 @@ function TurnDuration({
         </span>
       )}
       {completedAt != null ? (
-        <span className="flex shrink-0 items-center gap-2.5">
+        <span data-message-time className="flex shrink-0 items-center gap-2.5">
           {dot}
-          <span className="shrink-0 text-content/35">
+          <time dateTime={new Date(completedAt).toISOString()} title={new Date(completedAt).toLocaleString()} className="shrink-0 text-content/50">
             {formatClockTime(completedAt)}
-          </span>
+          </time>
         </span>
       ) : null}
     </div>
@@ -3256,7 +3256,7 @@ function UserMessageBlock({
         </div>
         {deliveryControl}
         {IS_HUB_BUNDLE && chat && !block.draft ? <AskReceipt blockId={block.id} /> : null}
-        {!compactFollowUp &&
+        {(!compactFollowUp || messageAt != null) &&
         (text || brief || block.attachments?.length || messageAt != null || onEdit) ? (
           <div className="user-message-actions flex items-center gap-1 px-3 pt-1">
             {text || brief || block.attachments?.length ? (

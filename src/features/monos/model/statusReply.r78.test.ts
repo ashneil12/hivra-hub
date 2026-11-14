@@ -71,3 +71,8 @@ describe("statusReplyChange (r80: nothing stale stays showing)", () => {
     expect(statusReplyChange(chat([...asked, first, tool]), [], 0, 200)).not.toEqual({ remove: first.id });
   });
 });
+
+it("does not mistake work on a status control for a status question", () => {
+  for (const text of ["Add a progress bar", "Fix the status badge", "Please update the progress display", "Can you build a status page?"]) expect(isStatusQuestion(text)).toBe(false);
+  for (const text of ["status?", "Any progress?", "How is it going?", "Can you update me on progress?", "Please update me on the status", "Update us on the work"]) expect(isStatusQuestion(text)).toBe(true);
+});

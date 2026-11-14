@@ -325,3 +325,12 @@ describe("Mono session completion notifications", () => {
     expect(message.text.length).toBeLessThan(13_100);
   });
 });
+
+it("a CLI weekly-limit sentence cannot become a completed job just because its process exited successfully", () => {
+  const result = monoSessionCompletionResult({ ...options, reply: "You've hit your weekly limit · resets Nov 17 at 1am (Europe/London)" });
+  expect(result).toMatchObject({status: "failed", errorClass: "usage_limit", retryable: true});
+  expect(result.error).toContain("weekly limit");
+  expect(result.claim).toBeUndefined();
+  const explanation = monoSessionCompletionResult({ ...options, reply: "The weekly limit prevented the optional provider check. The local export is fixed and verified." });
+  expect(explanation.status).toBe("completed");
+});

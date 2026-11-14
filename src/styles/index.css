@@ -1120,12 +1120,15 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
     top: 100%;
     right: 0;
     z-index: 1;
-    opacity: 0;
     transition: opacity 120ms ease;
   }
 
-  .user-message-row:hover .user-message-actions,
-  .user-message-row:focus-within .user-message-actions {
+  .user-message-actions > :not(time) {
+    opacity: 0;
+  }
+
+  .user-message-row:hover .user-message-actions > :not(time),
+  .user-message-row:focus-within .user-message-actions > :not(time) {
     opacity: 1;
   }
 }
@@ -1150,8 +1153,11 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
     height: 1.5rem;
     padding-top: 0;
     padding-bottom: 0;
-    opacity: 0;
     transition: opacity 120ms ease;
+  }
+
+  .turn-actions-hover > :not([data-message-time]) {
+    opacity: 0;
   }
 
   /* The reply's actions answer to the reply: hovering the prompt above it,
@@ -1159,9 +1165,9 @@ html.has-chat-background.chat-background-effect-ready.chat-background-gradient-b
   .transcript-turn:hover:not(
       :has([data-prompt-anchor]:hover, [data-day-separator]:hover)
     )
-    > .turn-actions-hover,
-  .turn-actions-hover:focus-within,
-  .turn-actions-hover:has([aria-expanded="true"]) {
+    > .turn-actions-hover > :not([data-message-time]),
+  .turn-actions-hover:focus-within > :not([data-message-time]),
+  .turn-actions-hover:has([aria-expanded="true"]) > :not([data-message-time]) {
     opacity: 1;
   }
 }

@@ -331,3 +331,7 @@ describe("claudeRetryFromMessage", () => {
     ).toBeNull();
   });
 });
+
+it("classifies the CLI's weekly-limit wording as a usage refusal", () => {
+  expect(claudeFailureFromResult(apiErrorResult(null, "You've hit your weekly limit · resets Nov 17 at 1am (Europe/London)"))).toMatchObject({errorClass: "usage_limit", retryable: true});
+});
