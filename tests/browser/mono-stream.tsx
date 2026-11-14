@@ -12,6 +12,9 @@ function Example() {
       id: "example-user",
       role: "user",
       text: "Example: check the invoice dates",
+      sentAt: 1794610000000,
+      startedAt: 1794610000000,
+      durationMs: stage === 2 ? 1500 : undefined,
     },
     {
       id: "example-tool",

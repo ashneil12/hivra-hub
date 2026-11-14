@@ -467,3 +467,12 @@ describe("briefCancelled", () => {
     expect(briefCancelled([], "app-cos-lead-4")).toBe(false);
   });
 });
+
+it("a followed leadership handoff reports the CLI's weekly limit as failed work, not completed work", () => {
+  const r = row({ follow: "lead" });
+  const result = followStep(r, {
+    chat: chat("lead-chat", [user(r.brief!, r.requestId), said("You've hit your weekly limit · resets Nov 17 at 1am (Europe/London)")]),
+    children: [], now: 99_000,
+  });
+  expect(result).toMatchObject({kind: "settle", result: {status: "failed", errorClass: "usage_limit"}});
+});

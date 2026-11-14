@@ -50,3 +50,7 @@ describe("r65 #12: a worker that dies on a fault is re-handed once, then reporte
     expect(message.text).toContain("Hand Fix login page to one fresh worker");
   });
 });
+
+it("does not hand a known usage-limit refusal to another worker on the same exhausted account", () => {
+  expect(rehandLine([failed("Example: fix chat", {errorClass: "usage_limit", retryable: true})])).toBe("");
+});

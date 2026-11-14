@@ -139,9 +139,19 @@ export function createHomeLoader(source: HomeSource, now: () => number = Date.no
     },
     async load(): Promise<HomeSnapshot> {
       const gen = ++generation;
-      const snapshot = await fetchHome(source, now);
-      if (gen !== generation) throw new LateHomeLoad();
-      return snapshot;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const snapshot = await Promise.race([
+          fetchHome(source, now),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Home took too long to load")), 10_000);
+          }),
+        ]);
+        if (gen !== generation) throw new LateHomeLoad();
+        return snapshot;
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }

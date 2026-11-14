@@ -15,7 +15,7 @@ it("says what the one job is doing once its worker said something new", () => {
   expect(note.text).toBe("Still working on the hub screen fixes: Independent screen fixes are in.");
   expect(note.role).toBe("system");
   // The same words again: silent.
-  expect(progressNote(chat([note]), [job], T0 + 3 * PROGRESS_QUIET_MS, () => said)).toBeUndefined();
+  expect(progressNote(chat([note]), [job], T0 + 3 * PROGRESS_QUIET_MS, () => said)?.text).toBe("No new worker report yet: 0 of 1 jobs finished; 1 running.");
   // New words after the note: a new line.
   const later = { text: "All twelve are committed; wiring the App changes.", at: T0 + 2 * PROGRESS_QUIET_MS };
   expect(progressNote(chat([note]), [job], T0 + 3 * PROGRESS_QUIET_MS, () => later)?.text).toBe(
@@ -23,8 +23,8 @@ it("says what the one job is doing once its worker said something new", () => {
   );
 });
 
-it("stays silent at 0 of 1 when the worker has said nothing", () => {
-  expect(progressNote(chat(), [job], T0 + PROGRESS_QUIET_MS + 5, () => undefined)).toBeUndefined();
+it("reports that no worker report has arrived at 0 of 1", () => {
+  expect(progressNote(chat(), [job], T0 + PROGRESS_QUIET_MS + 5, () => undefined)?.text).toBe("No new worker report yet: 0 of 1 jobs finished; 1 running.");
 });
 
 it("reads the worker's newest finished words, not a tool row or a streaming one", () => {

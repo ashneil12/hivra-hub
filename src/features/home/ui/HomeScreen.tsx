@@ -971,7 +971,7 @@ export function HomeScreen({
           : null}
         </div>
         {!known && failed ? <p data-home-retry className="text-[13px] text-content/70">Couldn't load home. Trying again.</p> : null}
-        {!known && !failed ? <div data-home-loading className="h-8" /> : null}
+        {!known && !failed ? <p data-home-loading role="status" className="text-[13px] text-content/70">Loading Home…</p> : null}
       </div>
     </div>
   );

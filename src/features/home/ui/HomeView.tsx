@@ -137,7 +137,14 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
     let unlistenHub: (() => void) | undefined;
     let taskTimer = 0;
     let hubTimer = 0;
+    let loading = false;
+    let reload = false;
     const run = () => {
+      if (loading) {
+        reload = true;
+        return;
+      }
+      loading = true;
       window.clearTimeout(timer);
       const mine = ++token.current;
       loader.current.invalidate();
@@ -152,6 +159,12 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
         if (stopped || mine !== token.current || error instanceof LateHomeLoad) return;
         setFailed(true);
         timer = window.setTimeout(run, RETRY_MS);
+      }).finally(() => {
+        loading = false;
+        if (reload && !stopped) {
+          reload = false;
+          run();
+        }
       });
     };
     run();

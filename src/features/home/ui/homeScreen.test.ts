@@ -577,3 +577,10 @@ it("a card is picked up by its title row, and Ask for a new card puts the words 
   expect(container.querySelector("[data-home-customize]")).toBeNull();
   expect(container.querySelector<HTMLInputElement>("input[aria-label='Ask']")!.value).toBe("Add a card to Home that shows ");
 });
+
+it("shows loading and failed-load states instead of a blank Home body", () => {
+  draw({ known: false });
+  expect(container.querySelector('[role="status"]')?.textContent).toBe("Loading Home…");
+  draw({ known: false, failed: true });
+  expect(container.querySelector('[data-home-retry]')?.textContent).toContain("Trying again");
+});
