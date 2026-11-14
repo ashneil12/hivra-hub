@@ -78,11 +78,12 @@ describe("You asked", () => {
     await settle();
     const rows = [...container.querySelectorAll("[data-chief-asked] li")];
     // Each row is a mark, then a column with the title first and the status line under it.
-    expect(rows.map((row) => row.querySelector(":scope > span:nth-of-type(2) > span:first-child")?.textContent)).toEqual(["rename the pricing page heading", "make the footer less cramped", "fix the save bug on the settings page"]);
-    expect(rows.map((row) => row.getAttribute("data-asked"))).toEqual(["open", "handled", "open"]);
+    expect(rows.map((row) => row.querySelector("[data-asked-title]")?.textContent)).toEqual(["rename the pricing page heading", "fix the save bug on the settings page", "make the footer less cramped"]);
+    expect(rows.map((row) => row.getAttribute("data-asked"))).toEqual(["open", "open", "handled"]);
     expect(rows[0].textContent).toContain("Open · nothing has been committed, changed or checked since he asked");
-    expect(rows[1].textContent).toContain("Done · answered right as it is");
-    expect(rows[2].textContent).toContain("Open · said 2 times");
+    expect(rows[2].textContent).toContain("Done · answered right as it is");
+    expect(container.querySelector("[data-asked-finished]")?.hasAttribute("open")).toBe(false);
+    expect(rows[1].textContent).toContain("Open · said 2 times");
     expect(countsOf(container).asked).toBe(2);
     expect(save.said).toBe(2);
   });

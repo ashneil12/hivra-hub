@@ -62,3 +62,11 @@ describe("an app note in the chat", () => {
     expect(text).toContain("is the rollover right?");
   });
 });
+
+it("renders a stored runner envelope as a collapsed result rather than Ash's message", () => {
+  const text = "<system-notice>Background job has completed. Command timed out after 300 seconds.</system-notice>";
+  act(() => root.render(createElement(AgentTranscript, { blocks: [{ id: "example-background", role: "user", text }], busy: false, layout: "chat" })));
+  expect(container.querySelector('[data-background-result] summary')?.textContent).toContain("timed out");
+  expect(container.querySelector('[data-chat-message="example-background"]')).toBeNull();
+  expect(container.querySelector('[data-background-result]')?.hasAttribute("open")).toBe(false);
+});

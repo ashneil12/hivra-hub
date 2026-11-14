@@ -343,6 +343,7 @@ test("the dev environment shares the Rust build cache and drops what an enclosin
   assert.equal(asked.MONOCODE_HUB_MEMORY_ROOT, "/tmp/fixture-memory");
   // SH-3: started from a chat inside the daily app, hub:dev's shell carries that chat's app and control credentials.
   const agent = {
+    DROPWAVE_AGENT_PROCESS: "1",
     MONOCODE_APP_ENDPOINT: "127.0.0.1:49152",
     MONOCODE_APP_TOKEN: "daily-app-grant",
     MONOCODE_CONTROL_ENDPOINT: "127.0.0.1:49152",

@@ -18,9 +18,10 @@ export function quoteNeed(item: Pick<NeedsItem, "kind" | "sentence" | "who" | "s
 }
 
 /** "You asked: Fix the Safari export button (Open · said 2 times)" */
-export function quoteAsked(ask: { title: string; status: string; note?: string; said?: number }): string {
+export function quoteAsked(ask: { title: string; status: string; note?: string; said?: number; words?: string; id?: string; chatId?: string; blockId?: string }): string {
   const tail = [ask.status, ask.said && ask.said > 1 ? `said ${ask.said} times` : "", ask.note ?? ""].filter((part) => part.trim()).join(" · ");
-  return line(["You asked"], ask.title, tail || undefined);
+  const quote = line(["You asked"], ask.words ?? ask.title, tail || undefined);
+  return ask.id && ask.chatId && ask.blockId ? `${quote}\nSource: ask ${ask.id}; chat ${ask.chatId}; message ${ask.blockId}` : quote;
 }
 
 /** "Working · EXO · EXO lead: Light the Area 3 boss arena (Working)" */

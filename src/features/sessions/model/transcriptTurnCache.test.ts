@@ -125,7 +125,8 @@ describe("transcript turn cache", () => {
       { id: "reply", role: "assistant", text: "Done" },
     ];
     const live = cache.turnItems(turn, false, { inlineWork: true });
-    expect(live[1]).toEqual({ type: "activity", blocks: turn.slice(1) });
+    expect(live[1]).toEqual({ type: "activity", blocks: turn.slice(1, 3) });
+    expect(live[2]).toEqual({ type: "block", block: turn[3] });
     const settled = cache.turnItems(turn, true, { inlineWork: true });
     expect(settled[2]).toEqual({ type: "block", block: turn[3] });
     const ordinary = cache.turnItems(turn, false);
@@ -146,7 +147,7 @@ describe("transcript turn cache", () => {
       inlineWork: true,
       undeliveredMessageIds: new Set(["follow-up"]),
     });
-    expect(pending).not.toContainEqual({ type: "block", block: turn[3] });
+    expect(pending).toContainEqual({ type: "block", block: turn[3] });
     const delivered = cache.turnItems(turn, false, { inlineWork: true });
     expect(delivered).toContainEqual({ type: "block", block: turn[3] });
     expect(cache.turnItems(turn, false, { inlineWork: true })).toBe(delivered);

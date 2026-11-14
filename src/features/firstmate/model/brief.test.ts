@@ -48,6 +48,7 @@ describe("the brief scaffold (Hivra WP-10)", () => {
       "## Isolation check",
       "## Intent",
       "## Spec",
+      "## Runtime and evidence",
       "## Status protocol",
       "## Steering",
     ]);
@@ -131,6 +132,7 @@ describe("the brief scaffold (Hivra WP-10)", () => {
       "## Isolation check",
       "## Intent",
       "## Spec",
+      "## Runtime and evidence",
       "## Fan-out contract",
       "## Status protocol",
       "## Steering",

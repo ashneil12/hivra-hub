@@ -73,7 +73,7 @@ describe("the lead strip", () => {
     saveChosenClis(["claude", "cursor", "pi"]);
     show("opencode");
     expect(container.querySelector("[data-lead-cli-reason]")?.textContent).toContain(
-      "OpenCode cannot lead yet",
+      "OpenCode does not have direct helper tools attached",
     );
     expect(offered()).toEqual(["claude"]);
   });
@@ -83,7 +83,7 @@ describe("the lead strip", () => {
     saveChosenClis(["opencode", "cursor"]);
     show("opencode");
     expect(offered()).toEqual([]);
-    expect(container.querySelector("[data-lead-cli-reason]")?.textContent).toContain("cannot lead yet");
+    expect(container.querySelector("[data-lead-cli-reason]")?.textContent).toContain("does not have direct helper tools attached");
     expect(container.textContent).not.toContain("Switch this chat");
   });
 
@@ -148,21 +148,21 @@ describe("the lead strip", () => {
     show("opencode");
     const text = container.textContent ?? "";
     expect(container.querySelector("[data-lead-cli-reason]")?.textContent).toBe(
-      "OpenCode cannot lead yet. The app has no way to give it the tools a lead uses to hand out jobs. Switch this chat to one that can. Its history stays.",
+      "OpenCode does not have direct helper tools attached. It can use the app’s commands to hand off jobs. For direct helper tools, switch this chat (its history stays):",
     );
     expect(text).not.toContain("Switch the lead");
     expect(text).not.toMatch(/\b(?:MCP|host|secret|session request|lead table)\b/i);
     expect(text).not.toMatch(/[\u2013\u2014]/);
   });
 
-  it("names the crew only when this chat has one", () => {
+  it("does not claim delegation is unavailable after this chat has delegated", () => {
     installedHere(["claude"]);
     saveChosenClis(["claude"]);
     show("opencode");
-    expect(container.textContent).toContain("Its history stays.");
+    expect(container.textContent).toContain("its history stays");
     expect(container.textContent).not.toMatch(/crew|workers/i);
     show("opencode", { hasCrew: true });
-    expect(container.textContent).toContain("Its workers and history stay.");
+    expect(container.querySelector("[data-lead-cli-notice]")).toBeNull();
     expect(container.textContent).not.toContain("crew");
   });
 

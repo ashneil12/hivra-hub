@@ -1,3 +1,4 @@
+import { BackgroundResultNotice } from "./BackgroundResultNotice";
 import { plainCommandRow } from "../../../shared/lib/plainCommand";
 import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import {
@@ -2016,10 +2017,10 @@ function TranscriptContent({
     );
   }
   return (
-    // A Mono's 1:1 fills the window like a room (GroupChatView: px-6, xl:px-8 with the rows' own px-4); only the plain
-    // reply text keeps a reading limit (chat-reading-limit, index.css). Critiquito 22 Oct. pb-14: the last line rests
+    // Keep the conversation aligned with its composer when Overview is closed. Plain reply text also keeps
+    // its reading limit (chat-reading-limit, index.css). pb-14: the last line rests
     // above the band kept clear for "Jump to latest" (mono-transcript-fades), so the button never covers it.
-    <div className="chat-reading-limit flex min-h-full w-full min-w-0 flex-col justify-end overflow-clip px-2 pb-14 xl:px-4">
+    <div className="chat-reading-limit mx-auto flex min-h-full w-full min-w-0 max-w-4xl flex-col justify-end overflow-clip px-2 pb-14 xl:px-4">
       <div
         data-transcript-content
         className="flex min-w-0 shrink-0 flex-col gap-1"
@@ -2631,6 +2632,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   onForkFromHere?: (blockId: string) => void;
 }) {
   if (block.role === "user") {
+    if (/^\s*<system-notice(?:\s|>)/i.test(block.text)) return <BackgroundResultNotice text={block.text} />;
     // r93: the app's note to the chat is one small neutral line, never a bubble in Ash's name.
     const appNote = appNoteLine(block);
     if (appNote)
@@ -4799,6 +4801,7 @@ function ActivityInterjectionRow({ block }: { block: Block }) {
   const [open, setOpen] = useState(false);
   const meta = block.interjection;
   if (!meta) return null;
+  if (meta.customType === "async-result") return <BackgroundResultNotice text={block.text} />;
   const chrome = interjectionChrome(meta);
   const summary = proseSummary(block.text);
   const label = (
@@ -5764,6 +5767,7 @@ function InterjectionDivider({ block }: { block: Block }) {
 
   const meta = block.interjection;
   if (!meta) return null;
+  if (meta.customType === "async-result") return <BackgroundResultNotice text={block.text} />;
   const { label, severityText, severityClass } = interjectionChrome(meta);
   return (
     <div className="px-4 py-4">

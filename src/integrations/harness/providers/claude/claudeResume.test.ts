@@ -405,3 +405,20 @@ describe("background work with ids, for the resume note", () => {
     expect(render(events).cutWork).toBeUndefined();
   });
 });
+
+describe("a fresh conversation", () => {
+  it("writes the prompt without waiting for the initialize answer", async () => {
+    const events: HarnessEvent[] = [];
+    const turn = start("go on", events);
+    // The CLI has not answered initialize yet, and the prompt is already on its way: the CLI reads stdin in
+    // order, so waiting for the answer only delayed the turn (measured 1.1 to 1.3 s).
+    await waitFor(() => prompts().length === 1, "the prompt");
+    expect(initializes()).toBe(1);
+    expect(prompts()).toEqual(["go on"]);
+    answerInitialize();
+    finishTurn(argAfter(spawned[0], "--session-id")!);
+    await turn;
+    expect(events.filter((e) => e.type === "session.error")).toEqual([]);
+    expect(events.some((e) => e.type === "session.started")).toBe(true);
+  });
+});

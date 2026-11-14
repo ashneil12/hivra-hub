@@ -117,31 +117,15 @@ it("says when the answer couldn't be recorded, instead of doing nothing", async 
   expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Yes, it works", "Something's wrong"]);
 });
 
-it("a committed update shows once: plain words, marked read as soon as it shows, no Done, and it stays until the bar leaves", async () => {
+it("records a successful update as seen without a persistent chat bar", async () => {
   ship.status = readShipStatus({
     enabled: true,
     current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: false, log: "/ship/runner.log", ...builds },
   });
   ship.markShipSeen.mockResolvedValue(undefined);
   await act(async () => root.render(createElement(ShipNotice)));
-  expect(container.textContent).toContain("MonoCode Hub was updated.");
-  expect(container.textContent).not.toMatch(/@|bbbbbbb|hub\//);
-  expect([...container.querySelectorAll("button")].map((b) => b.textContent)).toEqual(["Show the log"]);
-  expect(ship.markShipSeen).toHaveBeenCalledTimes(1);
+  expect(container.querySelector("[data-hub-ship]")).toBeNull();
   expect(ship.markShipSeen).toHaveBeenCalledWith(ID);
-  // The app now says it's read: the bar stays while it is on screen...
-  ship.status = readShipStatus({
-    enabled: true,
-    current: { id: ID, phase: "committed", accepted: true, acceptance: { state: "yes" }, committed: true, seen: true, log: "/ship/runner.log", ...builds },
-  });
-  await act(async () => root.render(createElement(ShipNotice)));
-  expect(container.textContent).toContain("MonoCode Hub was updated.");
-  expect(ship.markShipSeen).toHaveBeenCalledTimes(1);
-  // ...and the next time the bar mounts it is gone.
-  act(() => root.unmount());
-  root = createRoot(container);
-  await act(async () => root.render(createElement(ShipNotice)));
-  expect(container.textContent).toBe("");
 });
 
 // r63 (PM's G2 on 0.16.3): the app-wide ask showed in a project Ash had just made.

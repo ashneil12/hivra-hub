@@ -34,6 +34,7 @@ type BriefSource = {
   title?: string | null;
   parentId?: string | null;
   status?: unknown;
+  state?: unknown;
   createdAt?: number;
 };
 
@@ -46,7 +47,7 @@ export function crewBriefLines(
   if (!owner) return [];
   const unique = new Map<string, BriefSource>();
   for (const row of rows) {
-    if (!row?.id || row.ownerSession !== owner || row.follow !== "lead") continue;
+    if (!row?.id || row.ownerSession !== owner || row.follow !== "lead" || row.state === "cancelled") continue;
     if (!unique.has(row.id)) unique.set(row.id, row);
   }
   return [...unique.values()]

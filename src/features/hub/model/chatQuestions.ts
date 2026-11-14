@@ -6,6 +6,7 @@
 //   taking it sends Ash's go as the next message in that chat.
 // Pure functions only: the store that lists and answers them is waitingChats.ts.
 import { toSecondPerson } from "../../../shared/text/askMarkers";
+import { isBackgroundMessage } from "../../sessions/model/backgroundMessage";
 import { ASH_ANSWERED_PREFIX } from "../../monos/model/ashAnswersWorker";
 import { plainCommandQuestion } from "./plainCommand";
 import {
@@ -449,7 +450,7 @@ export function lastTurnText(blocks: readonly Pick<Block, "role" | "text" | "int
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i];
     // A hidden app prompt (a report-back, an orchestration nudge) is not Ash speaking: keep looking past it.
-    if (b.role === "user" && !b.internal && !b.monoSessionCompletion) break;
+    if (b.role === "user" && !b.internal && !b.monoSessionCompletion && !isBackgroundMessage(b.text)) break;
     if (b.role === "assistant" && b.text) parts.unshift(b.text);
   }
   return parts.join("\n\n");
@@ -711,6 +712,7 @@ const LEAVES_IT_TO_ASH =
 
 export function asksByMeaning(sentence: string): boolean {
   const s = sentence.trim();
+  if (/\bwhich is still your pick\b/i.test(s) && !/\bor\b/i.test(s)) return false;
   if (LEAVES_IT_TO_ASH.test(s)) return true;
   // "Do you want A, or B." / "Should I keep it, or drop it." written with a full stop.
   return /^(?:do you want|would you (?:like|rather|prefer)|should i\b|shall i\b|want me to|which\b)/i.test(s);
@@ -756,8 +758,7 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
           };
         })
       : undefined;
-  if (chat.busy && !marker) return null;
-  const secret = marker ? undefined : secretActionTried(chat.blocks);
+  const secret = marker || chat.busy ? undefined : secretActionTried(chat.blocks);
   if (secret)
     return {
       source: "marker",
@@ -767,8 +768,20 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
       flag: "provide",
       provide: `the key or secret action it tried (\`${secret}\`)`,
     };
-  if (!marker && !chat.busy && chat.plainQuestions) {
-    const plain = plainQuestionToAsh(lastTurnText(shown));
+  if (!marker && chat.plainQuestions) {
+    // Background work can add another assistant reply without answering the person's question.
+    // Search completed replies back to the last real user message, not just the newest paragraph.
+    let plain: string | undefined;
+    for (let i = shown.length - 1; i >= 0; i--) {
+      const block = shown[i];
+      if (block.role === "user" && !block.internal && !block.monoSessionCompletion && !isBackgroundMessage(block.text)) break;
+      if (block.role !== "assistant" || block.tool || block.internal || block.streaming) continue;
+      const candidate = plainQuestionToAsh(block.text);
+      if (candidate && !notes.some((note) => answerSettles(note, candidate))) {
+        plain = candidate;
+        break;
+      }
+    }
     if (plain && !notes.some((note) => answerSettles(note, plain))) {
       const options = orOptions(plain);
       return { source: "marker", plain: true, question: plain, more: 0, ...(options.length ? { options } : {}), redLine: false };

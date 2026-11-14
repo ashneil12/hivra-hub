@@ -3,6 +3,7 @@
 // nudge (monos/model/promiseNudge.ts): at most twice in a row, then the asks stay open for Ash to see.
 
 import type { Block, QueuedMessage, Session } from "../../sessions/model/session";
+import { isBackgroundMessage } from "../../sessions/model/backgroundMessage";
 import { isOwed, openAsksFor, STATUS_WORD, type Ask, type AskDoc } from "./asks";
 
 export const ASK_NUDGE_PREFIX = "[MonoCode asks]";
@@ -25,6 +26,7 @@ export function isAshMessage(block: Block): boolean {
     !block.monoSessionCompletion &&
     !block.monoCheck &&
     !isAppMessage(block) &&
+    !isBackgroundMessage(block.text) &&
     !!block.text?.trim()
   );
 }

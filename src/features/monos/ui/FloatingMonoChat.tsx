@@ -1,3 +1,5 @@
+import { queuedWorkers, useWorkerPoolVersion } from "../model/workerPool";
+import { useDelegationRows } from "../model/delegationStore";
 import {
   useCallback,
   useEffect,
@@ -188,8 +190,10 @@ export function FloatingMonoChat({ onShown }: { onShown: () => void }) {
     },
     [view.monoId],
   );
+  const crewRows = useDelegationRows();
+  useWorkerPoolVersion();
   const state = view.session
-    ? monoState(view.session)
+    ? monoState(view.session, crewRows, queuedWorkers())
     : { status: "idle" as const };
   const failure = error ?? view.error;
   const loading = !mono || !view.session;

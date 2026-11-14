@@ -43,7 +43,7 @@ export function LeadCliNotice({
   useSyncExternalStore(subscribeLeadStrip, leadStripVersion, () => 0);
   const present = chosenLeadPresence((cli) => isHarnessAvailable(cli));
   const offer = leadSwitchOffer(harness, present);
-  if (!offer || leadStripDismissed(sessionId)) return null;
+  if (!offer || hasCrew || leadStripDismissed(sessionId)) return null;
   const choices = offer.choices;
   return (
     <div
@@ -53,8 +53,8 @@ export function LeadCliNotice({
       <p data-lead-cli-reason="">
         {offer.reason}
         {choices.length > 0
-          ? ` To let it, switch this chat (${hasCrew ? "its helpers and history stay" : "its history stays"}):`
-          : null}
+          ? ` For direct helper tools, switch this chat (${hasCrew ? "its helpers and history stay" : "its history stays"}):`
+          : " You can change its coding engine in this chat’s settings."}
       </p>
       {choices.length > 0 ? (
         <div data-lead-cli-picker="" className="flex flex-wrap gap-1">
