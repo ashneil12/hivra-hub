@@ -787,6 +787,7 @@ import { useFirstMateDoneHold } from "../features/firstmate/hooks/useFirstMateDo
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { crewLaunch } from "../features/crew/model/crewSession";
+import { engineCrewChat, type EngineCrewStart } from "../features/crew/model/engineCrew";
 // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
 import {
   commitIdleCompactBusy,
@@ -8663,6 +8664,9 @@ function Workspace({
     [invalidateLoadedSession],
   );
 
+  /** Opens the chat of a crew member the engine started itself; set once the quick launch below exists. */
+  const openEngineCrewRef = useRef<(ownerId: string, start: EngineCrewStart) => void>(() => undefined);
+
   const submitSession = useCallback(
     (
       sessionId: string,
@@ -10028,6 +10032,10 @@ function Workspace({
         };
         const routeTurnEvent = (event: HarnessEvent) => {
           if (turnGen.current.get(sessionId) !== gen) return;
+          if (event.type === "crew.started") {
+            openEngineCrewRef.current(sessionId, event);
+            return;
+          }
           if (editedResend && !editedResend.isAccepted()) {
             pendingEditedEvents.push(event);
             return;
@@ -11797,6 +11805,26 @@ function Workspace({
   useQuickComposerLaunches(launchQuickSession);
   const launchQuickSessionRef = useRef(launchQuickSession);
   launchQuickSessionRef.current = launchQuickSession;
+  // A crew member the engine started for a first mate (a T3 child conversation): its chat opens quietly under that
+  // first mate, with a card on the turn that asked for it. The engine runs it; the chat's first turn only follows.
+  openEngineCrewRef.current = (ownerId, start) => {
+    const owner = sessionsRef.current.find((session) => session.id === ownerId);
+    if (!owner || !isMonoSession(ownerId)) return;
+    const chat = engineCrewChat(owner, start, sessionsRef.current, groupMonoTurns(owner.blocks));
+    if (!chat) return;
+    void launchQuickSession(chat.launch, start.sessionId, undefined, undefined, false)
+      .then(() => {
+        const turnId = chat.turnId;
+        if (!turnId) return;
+        const next = sessionsRef.current.map((session) =>
+          session.id === ownerId ? recordMonoSpawnedSession(session, turnId, chat.card) : session,
+        );
+        if (next.every((session, index) => session === sessionsRef.current[index])) return;
+        sessionsRef.current = next;
+        setSessions(next);
+      })
+      .catch((error: unknown) => console.debug("[monocode] engine crew chat", error));
+  };
   const submitSessionRef = useRef(submitSession);
   submitSessionRef.current = submitSession;
   const saveDraftRef = useRef(onSaveDraft);

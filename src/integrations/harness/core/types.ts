@@ -147,6 +147,12 @@ export type HarnessEvent =
    * that prints nothing is not read as a stall. Never sent by the app itself.
    */
   | { type: "tool.progress"; callId: string; elapsedMs?: number }
+  /**
+   * The engine started a crew member for this chat as a conversation of its own (a T3 child thread). `sessionId` is
+   * the id its chat takes here: the adapter already follows that conversation under it, so the chat's first turn
+   * plays what the crew member does instead of starting anything.
+   */
+  | { type: "crew.started"; callId: string; sessionId: string; title: string; brief: string }
   /** Something a subagent did, mirrored onto its parent Agent tool call. */
   | {
       type: "agent.step";

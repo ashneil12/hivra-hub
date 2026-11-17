@@ -14,6 +14,9 @@ function fakeEngine(projects = [{ id: "project-1", workspaceRoot: "/example" }],
   let feed: ((frame: unknown) => Promise<void>) | undefined;
   let subscribed: (() => void) | undefined;
   const ready = new Promise<void>((resolve) => (subscribed = resolve));
+  /** Every open stream by its thread, for a test that has more than one going. */
+  const feeds = new Map<string, (frame: unknown) => Promise<void>>();
+  const waiters = new Map<string, Array<() => void>>();
   const rpc: T3Rpc = {
     call: async (tag, payload) => {
       // What the engine has is only read; `calls` keeps what it was asked to do.
@@ -24,11 +27,18 @@ function fakeEngine(projects = [{ id: "project-1", workspaceRoot: "/example" }],
     stream: (tag, payload, onValue, signal) =>
       new Promise<void>((resolve) => {
         calls.push({ tag, payload: payload as Record<string, unknown> });
-        signal?.addEventListener("abort", () => resolve());
-        feed = async (frame) => {
-          if ((await onValue(frame)) === false) resolve();
+        const threadId = String((payload as { threadId?: unknown }).threadId ?? "");
+        const close = () => {
+          if (feeds.get(threadId) === feed) feeds.delete(threadId);
+          resolve();
         };
+        signal?.addEventListener("abort", close);
+        feed = async (frame) => {
+          if ((await onValue(frame)) === false) close();
+        };
+        feeds.set(threadId, feed);
         subscribed?.();
+        waiters.get(threadId)?.splice(0).forEach((wake) => wake());
       }),
     get: async () => ({ projects }) as never,
     close: () => undefined,
@@ -37,8 +47,14 @@ function fakeEngine(projects = [{ id: "project-1", workspaceRoot: "/example" }],
     await ready;
     await feed?.(frame);
   };
+  /** Feeds the stream open on one thread, waiting for it to be opened first. */
+  const sayTo = async (threadId: string, frame: unknown) => {
+    if (!feeds.has(threadId))
+      await new Promise<void>((resolve) => waiters.set(threadId, [...(waiters.get(threadId) ?? []), resolve]));
+    await feeds.get(threadId)?.(frame);
+  };
   const commands = () => calls.filter((call) => call.tag === "orchestration.dispatchCommand").map((call) => call.payload);
-  return { rpc, calls, say, commands };
+  return { rpc, calls, say, sayTo, commands };
 }
 
 function turn(sessionId: string, text: string, events: HarnessEvent[], accepted: string[] = []): SendTurnInput {
@@ -292,6 +308,107 @@ describe("the T3 adapter's provider and model", () => {
     await createT3Adapter("claude", ENGINE, fakeEngine().rpc).refreshCatalog?.();
     expect(modelsFor("codex")).toEqual(untouched);
     expect(modelsFor("claude").length).toBeGreaterThan(2);
+  });
+});
+
+describe("the T3 adapter's crew", () => {
+  const CHILD = "thread:subagent:example";
+  const member = (status: string, extra: Record<string, unknown> = {}) => ({
+    id: "item-crew-1",
+    type: "subagent",
+    status,
+    title: "Example: count the lines",
+    prompt: "Example: count the lines of README.md\nand say how you counted.",
+    childThreadId: CHILD,
+    result: null,
+    ...extra,
+  });
+
+  /** A first mate's turn that has started one crew member; gives back the chat id the member was given. */
+  async function started() {
+    const engine = fakeEngine();
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+    const events: HarnessEvent[] = [];
+    const mate = adapter.sendTurn(turn("mate-1", "Example: count the lines", events));
+    await engine.say(snapshot([], [{ id: "run-1", status: "running" }]));
+    const mateThread = String(engine.calls[0].payload.threadId);
+    await engine.sayTo(mateThread, event("turn-item.updated", member("running")));
+    await engine.sayTo(mateThread, event("turn-item.updated", member("running", { progress: "Example: reading" })));
+    const asked = events.flatMap((item) => (item.type === "crew.started" ? [item] : []));
+    return { engine, adapter, events, mate, mateThread, asked };
+  }
+
+  it("gives a crew member with a conversation of its own a chat, once, named by its title and carrying its brief", async () => {
+    const { asked, events } = await started();
+    expect(asked).toEqual([
+      {
+        type: "crew.started",
+        callId: "item-crew-1",
+        sessionId: expect.stringMatching(/^[A-Za-z0-9_-]+$/),
+        title: "Example: count the lines",
+        brief: "Example: count the lines of README.md\nand say how you counted.",
+      },
+    ]);
+    expect(events.some((item) => item.type === "tool.started" && item.kind === "agent")).toBe(true);
+
+    // A helper the provider runs inside the same conversation has no chat of its own.
+    const engine = fakeEngine();
+    const inline: HarnessEvent[] = [];
+    const done = createT3Adapter("claude", ENGINE, engine.rpc).sendTurn(turn("mate-2", "Example", inline));
+    await engine.say(snapshot([member("completed", { childThreadId: null })], [{ id: "run-1", status: "completed" }]));
+    await done;
+    expect(inline.some((item) => item.type === "crew.started")).toBe(false);
+  });
+
+  it("plays the member's own conversation in its chat without sending anything, and ends when the first mate has its report", async () => {
+    const { engine, adapter, mateThread, asked } = await started();
+    const before = engine.calls.length;
+    const events: HarnessEvent[] = [];
+    const accepted: string[] = [];
+    const chat = adapter.sendTurn(turn(asked[0].sessionId, asked[0].brief, events, accepted));
+    await engine.sayTo(CHILD, snapshot([{ id: "u1", type: "user_message", status: "completed", text: "Example: brief" }], []));
+    await engine.sayTo(CHILD, event("turn-item.updated", { id: "c1", type: "command_execution", status: "completed", input: "wc -l README.md", output: "3" }));
+    await engine.sayTo(mateThread, event("turn-item.updated", member("completed", { result: "Example: 3 lines." })));
+    // What the member said last is read once more after the follow closes.
+    await engine.sayTo(CHILD, snapshot([message("m1", "Example: README.md has 3 lines.", true)], []));
+    await chat;
+
+    expect(accepted).toEqual([asked[0].sessionId]);
+    expect(engine.calls.slice(before).map((call) => [call.tag, call.payload.threadId])).toEqual([
+      ["orchestration.subscribeThread", CHILD],
+      ["orchestration.subscribeThread", CHILD],
+    ]);
+    expect(events).toEqual([
+      { type: "session.providerBound", providerSessionId: CHILD },
+      { type: "session.started" },
+      { type: "tool.started", callId: "c1", title: "wc -l README.md", kind: "execute", status: "completed", command: "wc -l README.md" },
+      { type: "tool.updated", callId: "c1", detail: "3" },
+      { type: "message.delta", text: "Example: README.md has 3 lines." },
+      { type: "message.completed" },
+    ]);
+  });
+
+  it("shows the report the member handed back when it wrote no reply of its own, also for one that finished first", async () => {
+    const { engine, adapter, mateThread, asked } = await started();
+    await engine.sayTo(mateThread, event("turn-item.updated", member("completed", { result: " Example: 3 lines. " })));
+    const events: HarnessEvent[] = [];
+    const chat = adapter.sendTurn(turn(asked[0].sessionId, asked[0].brief, events));
+    await engine.sayTo(CHILD, snapshot([], []));
+    await chat;
+    expect(events.slice(2)).toEqual([{ type: "message.delta", text: "Example: 3 lines." }, { type: "message.completed" }]);
+  });
+
+  it("sends a later message typed in the crew chat to the member's own conversation", async () => {
+    const { engine, adapter, mateThread, asked } = await started();
+    await engine.sayTo(mateThread, event("turn-item.updated", member("completed", { result: "Example: done." })));
+    const first = adapter.sendTurn(turn(asked[0].sessionId, asked[0].brief, []));
+    await engine.sayTo(CHILD, snapshot([], []));
+    await first;
+    const next = adapter.sendTurn(turn(asked[0].sessionId, "Example: and the words?", []));
+    await engine.sayTo(CHILD, snapshot([], []));
+    expect(engine.commands().at(-1)).toMatchObject({ type: "message.dispatch", threadId: CHILD, text: "Example: and the words?" });
+    await engine.sayTo(CHILD, event("run.created", { id: "run-9", status: "completed" }));
+    await next;
   });
 });
 

@@ -7,7 +7,7 @@ import type { HarnessId, RuntimeMode } from "../../../../features/sessions/model
 import type { HarnessAdapter } from "../../core/registry";
 import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/types";
 import { modelsFor, nativeModelId, setHarnessModels } from "../../../../features/sessions/model/models";
-import { markT3ItemSeen, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
+import { markT3ItemSeen, t3CrewTitle, t3ItemDone, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
 import { T3_DRIVER, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Provider } from "./t3Models";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
 
@@ -58,6 +58,12 @@ type T3Frame =
 
 type Live = { threadId: string; runId?: string; abort: AbortController };
 
+/**
+ * A crew member the engine started in a conversation of its own, and the chat that shows it here. The chat's first
+ * turn follows that conversation; `end` closes the follow once the first mate's side says the member is done.
+ */
+type CrewChat = { threadId: string; followed: boolean; done: boolean; result?: string; end?: () => void };
+
 const uuid = () => crypto.randomUUID();
 
 /** Two selections that run the same model the same way, whatever order their options come in. */
@@ -88,6 +94,19 @@ export function createT3Adapter(
   const asks = new Map<number, { threadId: string; requestId: string }>();
   const askNumbers = new Map<string, number>();
   let projects: Promise<Array<{ id: string; workspaceRoot: string }>> | undefined;
+  /** Crew chats by their chat id, and the chat each child conversation already has. */
+  const crew = new Map<string, CrewChat>();
+  const crewChatOf = new Map<string, string>();
+
+  /** The number this app's question and approval cards go by, for a request on a thread. */
+  const askNumber = (threadId: string, requestId: string): number => {
+    const known = askNumbers.get(requestId);
+    if (known !== undefined) return known;
+    const number = askNumbers.size + 1;
+    askNumbers.set(requestId, number);
+    asks.set(number, { threadId, requestId });
+    return number;
+  };
 
   const dispatch = (command: Record<string, unknown>) =>
     rpc.call("orchestration.dispatchCommand", { commandId: uuid(), ...command });
@@ -147,19 +166,108 @@ export function createT3Adapter(
     if (models.length > 0) setHarnessModels(id, models);
   }
 
+  /**
+   * A crew member with a conversation of its own gets a chat here, once: the app opens it under the first mate. When
+   * the member finishes, the chat's follow is told so it can end.
+   */
+  function crewMember(item: T3Item, emit: (event: HarnessEvent) => void): void {
+    const childThreadId = item.childThreadId;
+    if (item.type !== "subagent" || !childThreadId) return;
+    let sessionId = crewChatOf.get(childThreadId);
+    if (!sessionId) {
+      sessionId = uuid();
+      crewChatOf.set(childThreadId, sessionId);
+      crew.set(sessionId, { threadId: childThreadId, followed: false, done: false });
+      threads.set(sessionId, childThreadId);
+      emit({ type: "crew.started", callId: item.id, sessionId, title: t3CrewTitle(item), brief: item.prompt ?? "" });
+    }
+    const chat = crew.get(sessionId);
+    if (chat && !chat.done && t3ItemDone(item)) {
+      chat.done = true;
+      chat.result = item.result?.trim() || undefined;
+      chat.end?.();
+    }
+  }
+
+  /**
+   * A crew chat's first turn: nothing is sent. It plays what the crew member has done and goes on doing, until the
+   * member's own run ends or the first mate's side says it is done; then what is left is read once more, so nothing
+   * said at the very end is lost. A member that wrote no reply of its own shows the report it handed back.
+   */
+  async function followCrew(input: SendTurnInput, chat: CrewChat): Promise<void> {
+    chat.followed = true;
+    const abort = new AbortController();
+    const state: Live = { threadId: chat.threadId, abort };
+    live.set(input.sessionId, state);
+    const seen = new Map<string, T3Seen>();
+    let said = false;
+    const emit = (event: HarnessEvent) => {
+      if (event.type === "message.delta") said = true;
+      input.onEvent(event);
+    };
+    const ask = (requestId: string) => askNumber(chat.threadId, requestId);
+    const play = (item: T3Item) => t3ItemEvents(item, seen, ask).forEach(emit);
+    const snapshot = (frame: T3Frame) =>
+      frame.kind === "snapshot" && "projection" in frame ? frame.projection : undefined;
+    let ended = false;
+    chat.end = () => {
+      ended = true;
+      abort.abort();
+    };
+    try {
+      emit({ type: "session.providerBound", providerSessionId: chat.threadId });
+      input.onAccepted?.();
+      emit({ type: "session.started" });
+      await rpc.stream(
+        "orchestration.subscribeThread",
+        { threadId: chat.threadId },
+        (value) => {
+          const frame = value as T3Frame;
+          const whole = snapshot(frame);
+          if (whole) {
+            whole.turnItems.forEach(play);
+            const runs = whole.runs;
+            return !chat.done && !(runs.length > 0 && runs.every((run) => RUN_ENDED.has(run.status)));
+          }
+          if (frame.kind !== "event" || !("event" in frame)) return true;
+          const { type, payload } = frame.event;
+          if (type === "turn-item.updated") play(payload as T3Item);
+          else if (type === "run.created" || type === "run.updated") {
+            const run = payload as T3Run;
+            if (state.runId !== run.id) state.runId = run.id;
+            return !RUN_ENDED.has(run.status);
+          }
+          return true;
+        },
+        abort.signal,
+      );
+      if (ended) {
+        // The first mate heard the report; the member's last lines may have arrived after the follow was closed.
+        await rpc.stream("orchestration.subscribeThread", { threadId: chat.threadId }, (value) => {
+          snapshot(value as T3Frame)?.turnItems.forEach(play);
+          return false;
+        });
+      }
+    } catch (error) {
+      if (!chat.done) emit({ type: "session.error", message: error instanceof Error ? error.message : String(error) });
+    } finally {
+      chat.end = undefined;
+      if (!said && chat.result) {
+        emit({ type: "message.delta", text: chat.result });
+        emit({ type: "message.completed" });
+      }
+      if (live.get(input.sessionId) === state) live.delete(input.sessionId);
+    }
+  }
+
   async function sendTurn(input: SendTurnInput): Promise<void> {
+    const waiting = crew.get(input.sessionId);
+    if (waiting && !waiting.followed) return followCrew(input, waiting);
     const abort = new AbortController();
     const seen = new Map<string, T3Seen>();
     const oldRuns = new Set<string>();
     const emit = (event: HarnessEvent) => input.onEvent(event);
-    const ask = (requestId: string) => {
-      const known = askNumbers.get(requestId);
-      if (known !== undefined) return known;
-      const number = askNumbers.size + 1;
-      askNumbers.set(requestId, number);
-      asks.set(number, { threadId, requestId });
-      return number;
-    };
+    const ask = (requestId: string) => askNumber(threadId, requestId);
     const existing = threads.get(input.sessionId);
     const threadId = existing ?? uuid();
     const state: Live = { threadId, abort };
@@ -188,7 +296,10 @@ export function createT3Adapter(
       }
       emit({ type: "session.started" });
 
-      const item = (value: T3Item) => t3ItemEvents(value, seen, ask).forEach(emit);
+      const item = (value: T3Item) => {
+        t3ItemEvents(value, seen, ask).forEach(emit);
+        crewMember(value, emit);
+      };
       /** False once the run this turn started has ended. */
       const run = (value: T3Run, created: boolean): boolean => {
         if (oldRuns.has(value.id)) return true;
@@ -316,6 +427,7 @@ export function createT3Adapter(
     forgetSession: async (sessionId) => {
       await stopSession(sessionId);
       threads.delete(sessionId);
+      crew.delete(sessionId);
     },
     bindSession: (sessionId, providerSessionId) => void threads.set(sessionId, providerSessionId),
   };

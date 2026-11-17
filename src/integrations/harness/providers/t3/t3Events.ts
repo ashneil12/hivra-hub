@@ -27,6 +27,8 @@ export type T3Item = {
   /** A crew member's latest word on how it is going, and what it reported at the end. */
   progress?: string;
   result?: string | null;
+  /** The conversation of its own a crew member runs in, when the engine gave it one. */
+  childThreadId?: string | null;
   reason?: string;
   questions?: Array<{
     id: string;
@@ -42,6 +44,15 @@ export type T3Item = {
 export type T3Seen = { text: number; started: boolean; done: boolean; progress?: string };
 
 const DONE = new Set(["completed", "failed", "cancelled", "interrupted"]);
+
+/** True once the item has stopped changing. */
+export const t3ItemDone = (item: Pick<T3Item, "status">): boolean => DONE.has(item.status);
+
+/** A crew member's name in the chat: its title, else the first line of its brief. */
+export function t3CrewTitle(item: Pick<T3Item, "title" | "prompt">): string {
+  const brief = (item.prompt ?? "").trim().split("\n", 1)[0];
+  return item.title || (brief.length > 80 ? `${brief.slice(0, 79)}…` : brief) || "Crew member";
+}
 
 /** Everything in a thread before this turn: already on screen, so nothing about it is said again. */
 export function markT3ItemSeen(item: T3Item, seen: Map<string, T3Seen>): void {
@@ -98,8 +109,7 @@ export function t3ItemEvents(
       break;
     case "subagent": {
       // A crew member the agent started: one row in the chat, its progress and its report as that row's own trail.
-      const brief = (item.prompt ?? "").trim().split("\n", 1)[0];
-      tool(item.title || (brief.length > 80 ? `${brief.slice(0, 79)}…` : brief) || "Crew member", "agent");
+      tool(t3CrewTitle(item), "agent");
       if (!done && item.progress && item.progress !== was.progress) {
         out.push({
           type: "agent.step",
