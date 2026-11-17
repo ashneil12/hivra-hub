@@ -27,8 +27,9 @@ export type T3Item = {
   /** A crew member's latest word on how it is going, and what it reported at the end. */
   progress?: string;
   result?: string | null;
-  /** The conversation of its own a crew member runs in, when the engine gave it one. */
+  /** The conversation of its own a crew member runs in, when the engine gave it one, and its node there. */
   childThreadId?: string | null;
+  subagentId?: string;
   reason?: string;
   questions?: Array<{
     id: string;

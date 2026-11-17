@@ -313,6 +313,7 @@ describe("the T3 adapter's provider and model", () => {
 
 describe("the T3 adapter's crew", () => {
   const CHILD = "thread:subagent:example";
+  const NODE = "node:example:crew-1";
   const member = (status: string, extra: Record<string, unknown> = {}) => ({
     id: "item-crew-1",
     type: "subagent",
@@ -320,6 +321,7 @@ describe("the T3 adapter's crew", () => {
     title: "Example: count the lines",
     prompt: "Example: count the lines of README.md\nand say how you counted.",
     childThreadId: CHILD,
+    subagentId: NODE,
     result: null,
     ...extra,
   });
@@ -398,17 +400,103 @@ describe("the T3 adapter's crew", () => {
     expect(events.slice(2)).toEqual([{ type: "message.delta", text: "Example: 3 lines." }, { type: "message.completed" }]);
   });
 
-  it("sends a later message typed in the crew chat to the member's own conversation", async () => {
+  it("takes no later message in the crew chat: the engine runs the member for its first mate, so nothing is sent", async () => {
     const { engine, adapter, mateThread, asked } = await started();
     await engine.sayTo(mateThread, event("turn-item.updated", member("completed", { result: "Example: done." })));
     const first = adapter.sendTurn(turn(asked[0].sessionId, asked[0].brief, []));
     await engine.sayTo(CHILD, snapshot([], []));
     await first;
-    const next = adapter.sendTurn(turn(asked[0].sessionId, "Example: and the words?", []));
+    const before = engine.calls.length;
+    const events: HarnessEvent[] = [];
+    const accepted: string[] = [];
+    await adapter.sendTurn(turn(asked[0].sessionId, "Example: and the words?", events, accepted));
+    expect(engine.calls.length).toBe(before);
+    expect(accepted).toEqual([]);
+    expect(events).toEqual([
+      {
+        type: "session.error",
+        message: "This crew member is run by its first mate and can't take messages. Message the first mate instead.",
+        retryable: false,
+      },
+    ]);
+  });
+
+  it("ends a crew member's chat when its first mate's turn is stopped, and says it was stopped", async () => {
+    const { engine, adapter, mate, mateThread, asked } = await started();
+    const events: HarnessEvent[] = [];
+    const chat = adapter.sendTurn(turn(asked[0].sessionId, asked[0].brief, events));
     await engine.sayTo(CHILD, snapshot([], []));
-    expect(engine.commands().at(-1)).toMatchObject({ type: "message.dispatch", threadId: CHILD, text: "Example: and the words?" });
-    await engine.sayTo(CHILD, event("run.created", { id: "run-9", status: "completed" }));
-    await next;
+    await adapter.cancelTurn("mate-1");
+    expect(engine.commands().at(-1)).toMatchObject({ type: "run.interrupt", threadId: mateThread, runId: "run-1" });
+    // The engine ends the first mate's run; the member's own item never says it ended.
+    await engine.sayTo(mateThread, event("run.updated", { id: "run-1", status: "interrupted" }));
+    await mate;
+    await engine.sayTo(CHILD, snapshot([], []));
+    await chat;
+    expect(events.slice(2)).toEqual([{ type: "notice", text: "Stopped before it finished." }]);
+
+    // A member whose chat was never opened reads as stopped when it is.
+    const later = await started();
+    await later.engine.sayTo(later.mateThread, event("run.updated", { id: "run-1", status: "failed" }));
+    await later.mate;
+    const opened: HarnessEvent[] = [];
+    const late = later.adapter.sendTurn(turn(later.asked[0].sessionId, later.asked[0].brief, opened));
+    await later.engine.sayTo(CHILD, snapshot([], []));
+    await late;
+    expect(opened.slice(2)).toEqual([{ type: "notice", text: "Stopped before it finished." }]);
+  });
+
+  it("leaves the crew working when the first mate's own turn finished before they did", async () => {
+    const { engine, adapter, mate, mateThread, asked } = await started();
+    await engine.sayTo(mateThread, event("run.updated", { id: "run-1", status: "completed" }));
+    await mate;
+    const events: HarnessEvent[] = [];
+    const chat = adapter.sendTurn(turn(asked[0].sessionId, asked[0].brief, events));
+    await engine.sayTo(CHILD, snapshot([], []));
+    await engine.sayTo(CHILD, event("node.updated", { id: NODE, status: "completed" }));
+    await engine.sayTo(CHILD, event("turn-item.updated", message("m1", "Example: 3 lines.", true)));
+    await chat;
+    expect(events.slice(2)).toEqual([{ type: "message.delta", text: "Example: 3 lines." }, { type: "message.completed" }]);
+  });
+
+  it("ends the chat on what the member's own conversation says: stopped, or finished with its closing message", async () => {
+    // Stopped: the member's node says so, in the stream or already in what the conversation holds.
+    const stopped = await started();
+    const events: HarnessEvent[] = [];
+    const chat = stopped.adapter.sendTurn(turn(stopped.asked[0].sessionId, stopped.asked[0].brief, events));
+    await stopped.engine.sayTo(CHILD, snapshot([], []));
+    const before = stopped.engine.calls.length;
+    await stopped.engine.sayTo(CHILD, event("node.updated", { id: "node-of-another", status: "interrupted" }));
+    await stopped.engine.sayTo(CHILD, event("node.updated", { id: NODE, status: "running" }));
+    await stopped.engine.sayTo(CHILD, event("node.updated", { id: NODE, status: "interrupted" }));
+    await chat;
+    expect(events.slice(2)).toEqual([{ type: "notice", text: "Stopped before it finished." }]);
+    expect(stopped.engine.calls.length).toBe(before);
+
+    const held = await started();
+    const heldEvents: HarnessEvent[] = [];
+    const heldChat = held.adapter.sendTurn(turn(held.asked[0].sessionId, held.asked[0].brief, heldEvents));
+    await held.engine.sayTo(CHILD, {
+      kind: "snapshot",
+      projection: { turnItems: [], runs: [], nodes: [{ id: NODE, status: "failed" }] },
+    });
+    await heldChat;
+    expect(heldEvents.slice(2)).toEqual([{ type: "notice", text: "Stopped before it finished." }]);
+
+    // Finished: the node completes, then the closing message arrives, and the chat ends without the first mate's side.
+    const done = await started();
+    const doneEvents: HarnessEvent[] = [];
+    const doneChat = done.adapter.sendTurn(turn(done.asked[0].sessionId, done.asked[0].brief, doneEvents));
+    await done.engine.sayTo(CHILD, snapshot([], []));
+    await done.engine.sayTo(CHILD, event("turn-item.updated", message("m0", "Example: counting.", true)));
+    await done.engine.sayTo(CHILD, event("node.updated", { id: NODE, status: "completed" }));
+    await done.engine.sayTo(CHILD, event("turn-item.updated", message("m1", "Example: 3 lines.", true)));
+    await doneChat;
+    expect(doneEvents.filter((item) => item.type === "message.delta")).toEqual([
+      { type: "message.delta", text: "Example: counting." },
+      { type: "message.delta", text: "Example: 3 lines." },
+    ]);
+    expect(doneEvents.some((item) => item.type === "notice")).toBe(false);
   });
 });
 

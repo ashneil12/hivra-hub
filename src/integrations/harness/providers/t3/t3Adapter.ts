@@ -51,8 +51,9 @@ type T3Run = { id: string; status: string };
 type T3Selection = { instanceId: string; model: string; options?: Array<{ id: string; value: string | boolean }> };
 /** What the thread is set to, as its snapshot says. */
 type T3Thread = { runtimeMode?: string; modelSelection?: T3Selection };
+type T3Node = { id?: string; status?: string };
 type T3Frame =
-  | { kind: "snapshot"; projection: { turnItems: T3Item[]; runs: T3Run[]; thread?: T3Thread } }
+  | { kind: "snapshot"; projection: { turnItems: T3Item[]; runs: T3Run[]; thread?: T3Thread; nodes?: T3Node[] } }
   | { kind: "event"; event: { type: string; payload: unknown } }
   | { kind: string };
 
@@ -62,7 +63,23 @@ type Live = { threadId: string; runId?: string; abort: AbortController };
  * A crew member the engine started in a conversation of its own, and the chat that shows it here. The chat's first
  * turn follows that conversation; `end` closes the follow once the first mate's side says the member is done.
  */
-type CrewChat = { threadId: string; followed: boolean; done: boolean; result?: string; end?: () => void };
+type CrewChat = {
+  threadId: string;
+  /** The member's node in the engine: its own conversation says through it when the member ends. */
+  nodeId?: string;
+  /** The first mate's chat that started it. */
+  owner: string;
+  followed: boolean;
+  done: boolean;
+  /** It ended without finishing: stopped with its first mate, interrupted or failed. */
+  stopped?: boolean;
+  result?: string;
+  end?: () => void;
+};
+
+/** How a crew member's node reads when it ended without finishing. */
+const CREW_STOPPED = new Set(["interrupted", "failed", "cancelled", "rolled_back"]);
+const CREW_READ_ONLY = "This crew member is run by its first mate and can't take messages. Message the first mate instead.";
 
 const uuid = () => crypto.randomUUID();
 
@@ -170,29 +187,41 @@ export function createT3Adapter(
    * A crew member with a conversation of its own gets a chat here, once: the app opens it under the first mate. When
    * the member finishes, the chat's follow is told so it can end.
    */
-  function crewMember(item: T3Item, emit: (event: HarnessEvent) => void): void {
+  function crewMember(owner: string, item: T3Item, emit: (event: HarnessEvent) => void): void {
     const childThreadId = item.childThreadId;
     if (item.type !== "subagent" || !childThreadId) return;
     let sessionId = crewChatOf.get(childThreadId);
     if (!sessionId) {
       sessionId = uuid();
       crewChatOf.set(childThreadId, sessionId);
-      crew.set(sessionId, { threadId: childThreadId, followed: false, done: false });
+      crew.set(sessionId, { threadId: childThreadId, nodeId: item.subagentId, owner, followed: false, done: false });
       threads.set(sessionId, childThreadId);
       emit({ type: "crew.started", callId: item.id, sessionId, title: t3CrewTitle(item), brief: item.prompt ?? "" });
     }
     const chat = crew.get(sessionId);
     if (chat && !chat.done && t3ItemDone(item)) {
       chat.done = true;
+      chat.stopped = item.status !== "completed";
       chat.result = item.result?.trim() || undefined;
+      chat.end?.();
+    }
+  }
+
+  /** A first mate's turn that was stopped or failed takes its crew with it: no member is left reading as working. */
+  function stopCrewOf(owner: string): void {
+    for (const chat of crew.values()) {
+      if (chat.owner !== owner || chat.done) continue;
+      chat.done = true;
+      chat.stopped = true;
       chat.end?.();
     }
   }
 
   /**
    * A crew chat's first turn: nothing is sent. It plays what the crew member has done and goes on doing, until the
-   * member's own run ends or the first mate's side says it is done; then what is left is read once more, so nothing
-   * said at the very end is lost. A member that wrote no reply of its own shows the report it handed back.
+   * first mate's side says it is done or the member's own conversation does (its node ends; a child conversation has
+   * no runs of its own); then what is left is read once more, so nothing said at the very end is lost. A member that
+   * wrote no reply of its own shows the report it handed back; one that was stopped says so.
    */
   async function followCrew(input: SendTurnInput, chat: CrewChat): Promise<void> {
     chat.followed = true;
@@ -214,6 +243,17 @@ export function createT3Adapter(
       ended = true;
       abort.abort();
     };
+    /** The member's own node finished: its closing message is the next thing its conversation sends. */
+    let closing = false;
+    /** False once the member's node says it ended without finishing. */
+    const node = (value: T3Node): boolean => {
+      if (!chat.nodeId || value.id !== chat.nodeId || !value.status) return true;
+      if (value.status === "completed") closing = true;
+      if (!CREW_STOPPED.has(value.status)) return true;
+      chat.done = true;
+      chat.stopped = true;
+      return false;
+    };
     try {
       emit({ type: "session.providerBound", providerSessionId: chat.threadId });
       input.onAccepted?.();
@@ -227,12 +267,20 @@ export function createT3Adapter(
           if (whole) {
             whole.turnItems.forEach(play);
             const runs = whole.runs;
-            return !chat.done && !(runs.length > 0 && runs.every((run) => RUN_ENDED.has(run.status)));
+            const going = (whole.nodes ?? []).every(node);
+            return going && !chat.done && !(runs.length > 0 && runs.every((run) => RUN_ENDED.has(run.status)));
           }
           if (frame.kind !== "event" || !("event" in frame)) return true;
           const { type, payload } = frame.event;
-          if (type === "turn-item.updated") play(payload as T3Item);
-          else if (type === "run.created" || type === "run.updated") {
+          if (type === "node.updated") return node(payload as T3Node);
+          if (type === "turn-item.updated") {
+            const item = payload as T3Item;
+            play(item);
+            if (closing && item.type === "assistant_message" && t3ItemDone(item)) {
+              chat.done = true;
+              return false;
+            }
+          } else if (type === "run.created" || type === "run.updated") {
             const run = payload as T3Run;
             if (state.runId !== run.id) state.runId = run.id;
             return !RUN_ENDED.has(run.status);
@@ -255,7 +303,7 @@ export function createT3Adapter(
       if (!said && chat.result) {
         emit({ type: "message.delta", text: chat.result });
         emit({ type: "message.completed" });
-      }
+      } else if (!said && chat.stopped) emit({ type: "notice", text: "Stopped before it finished." });
       if (live.get(input.sessionId) === state) live.delete(input.sessionId);
     }
   }
@@ -263,6 +311,11 @@ export function createT3Adapter(
   async function sendTurn(input: SendTurnInput): Promise<void> {
     const waiting = crew.get(input.sessionId);
     if (waiting && !waiting.followed) return followCrew(input, waiting);
+    if (waiting) {
+      // The engine runs this member for its first mate; its conversation takes no messages.
+      input.onEvent({ type: "session.error", message: CREW_READ_ONLY, retryable: false });
+      return;
+    }
     const abort = new AbortController();
     const seen = new Map<string, T3Seen>();
     const oldRuns = new Set<string>();
@@ -273,6 +326,8 @@ export function createT3Adapter(
     const state: Live = { threadId, abort };
     live.set(input.sessionId, state);
     let sent = false;
+    /** The turn's run completed; anything else (a stop, a failure, a dropped connection) takes the crew with it. */
+    let finished = false;
 
     try {
       const selection = await selectionFor(input);
@@ -298,7 +353,7 @@ export function createT3Adapter(
 
       const item = (value: T3Item) => {
         t3ItemEvents(value, seen, ask).forEach(emit);
-        crewMember(value, emit);
+        crewMember(input.sessionId, value, emit);
       };
       /** False once the run this turn started has ended. */
       const run = (value: T3Run, created: boolean): boolean => {
@@ -307,6 +362,7 @@ export function createT3Adapter(
           state.runId = value.id;
           emit({ type: "turn.started", providerTurnId: value.id });
         }
+        if (value.id === state.runId && value.status === "completed") finished = true;
         return !RUN_ENDED.has(value.status);
       };
 
@@ -357,6 +413,7 @@ export function createT3Adapter(
         emit({ type: "session.error", message: error instanceof Error ? error.message : String(error) });
     } finally {
       if (live.get(input.sessionId) === state) live.delete(input.sessionId);
+      if (!finished) stopCrewOf(input.sessionId);
     }
   }
 
