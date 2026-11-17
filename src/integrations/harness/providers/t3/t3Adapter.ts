@@ -3,10 +3,11 @@
 // already draws (t3Events.ts), over T3's own client wire (t3Rpc.ts). Nothing above the adapter changes.
 //
 // For now only a dev page that names an engine in its address uses it (`t3Engine`); the installed app is unchanged.
-import type { HarnessId, RuntimeMode } from "../../../../features/sessions/model/session";
+import type { Attachment, HarnessId, RuntimeMode } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
 import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/types";
 import { modelsFor, nativeModelId, setHarnessModels } from "../../../../features/sessions/model/models";
+import { t3AttachmentParts, type T3Attachment } from "./t3Attachments";
 import { t3Message } from "./t3Context";
 import { markT3ItemSeen, t3CrewTitle, t3ItemDone, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
 import { T3_DRIVER, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Provider } from "./t3Models";
@@ -320,6 +321,23 @@ export function createT3Adapter(
     }
   }
 
+  /**
+   * A message as the engine takes it: the person's words, the app's context beside them, and what was attached
+   * (pictures are uploaded to the engine first, under the message's id).
+   */
+  async function outgoing(threadId: string, input: { text: string; attachments?: Attachment[] }) {
+    const messageId = uuid();
+    const { text, uploads } = t3AttachmentParts(input.text, input.attachments ?? []);
+    const held = uploads.length
+      ? await rpc.call<{ attachments?: T3Attachment[] }>("assets.persistChatAttachments", {
+          threadId,
+          messageId,
+          attachments: uploads,
+        })
+      : undefined;
+    return { messageId, ...t3Message(text), attachments: held?.attachments ?? [] };
+  }
+
   async function sendTurn(input: SendTurnInput): Promise<void> {
     const waiting = crew.get(input.sessionId);
     if (waiting && !waiting.followed) return followCrew(input, waiting);
@@ -344,6 +362,7 @@ export function createT3Adapter(
     try {
       const selection = await selectionFor(input);
       await liveText();
+      const message = await outgoing(threadId, input);
       const runtimeMode = T3_RUNTIME_MODE[input.runtimeMode] ?? "approval-required";
       if (!existing) {
         await rpc.call("orchestration.launchThread", {
@@ -355,7 +374,7 @@ export function createT3Adapter(
           runtimeMode,
           interactionMode: "default",
           workspaceStrategy: { type: "root" },
-          initialMessage: { ...t3Message(input.text), attachments: [] },
+          initialMessage: message,
         });
         threads.set(input.sessionId, threadId);
         sent = true;
@@ -401,9 +420,7 @@ export function createT3Adapter(
             await dispatch({
               type: "message.dispatch",
               threadId,
-              messageId: uuid(),
-              ...t3Message(input.text),
-              attachments: [],
+              ...message,
               ...(switched ? { modelSelection: selection } : {}),
               dispatchMode: { type: "queue_after_active" },
               createdBy: "user",
@@ -437,9 +454,7 @@ export function createT3Adapter(
     await dispatch({
       type: "message.dispatch",
       threadId: state.threadId,
-      messageId: uuid(),
-      ...t3Message(input.text),
-      attachments: [],
+      ...(await outgoing(state.threadId, input)),
       dispatchMode: { type: "steer_active", targetRunId: state.runId },
       createdBy: "user",
       creationSource: "web",

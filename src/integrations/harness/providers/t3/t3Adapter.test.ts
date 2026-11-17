@@ -34,6 +34,10 @@ function fakeEngine(
         return {} as never;
       }
       calls.push({ tag, payload: payload as Record<string, unknown> });
+      if (tag === "assets.persistChatAttachments") {
+        const sent = (payload as { attachments: Array<Record<string, unknown>> }).attachments;
+        return { attachments: sent.map(({ dataUrl: _data, ...kept }, index) => ({ ...kept, id: `held-${index + 1}` })) } as never;
+      }
       return {} as never;
     },
     stream: (tag, payload, onValue, signal) =>
@@ -245,6 +249,40 @@ describe("the T3 adapter", () => {
     expect(engine.commands().at(-1)).toMatchObject({ type: "message.dispatch", text: link, context: { records: [record] } });
     await engine.sayTo(threadId, event("run.created", { id: "run-2", status: "completed" }));
     await next;
+  });
+
+  it("uploads an attached picture under the message's id and sends it with the message; a file goes as its path", async () => {
+    const engine = fakeEngine();
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+    const done = adapter.sendTurn({
+      ...turn("chat-1", "Example: compare these.", []),
+      attachments: [
+        { id: "a1", name: "shot.png", mimeType: "image/png", kind: "image", size: 70, data: "AAAA" },
+        { id: "a2", name: "notes.pdf", mimeType: "application/pdf", kind: "file", size: 900, path: "/example/notes.pdf" },
+      ],
+    });
+    await engine.say(snapshot([], [{ id: "run-1", status: "completed" }]));
+    await done;
+    const [upload, launch] = engine.calls;
+    expect(upload).toMatchObject({
+      tag: "assets.persistChatAttachments",
+      payload: { threadId: launch.payload.threadId, attachments: [{ type: "image", name: "shot.png", dataUrl: "data:image/png;base64,AAAA" }] },
+    });
+    expect(launch.payload.initialMessage).toEqual({
+      messageId: upload.payload.messageId,
+      text: 'Example: compare these.\n\nAttached file (read from disk): "/example/notes.pdf"',
+      attachments: [{ type: "image", id: "held-1", name: "shot.png", mimeType: "image/png", sizeBytes: 70 }],
+    });
+
+    // An attachment with nothing to hand over is said in the chat, and nothing is started.
+    const none = fakeEngine();
+    const events: HarnessEvent[] = [];
+    await createT3Adapter("claude", ENGINE, none.rpc).sendTurn({
+      ...turn("chat-2", "Example: read it", events),
+      attachments: [{ id: "a3", name: "gone.pdf", mimeType: "application/pdf", kind: "file", size: 9 }],
+    });
+    expect(none.calls).toEqual([]);
+    expect(events).toEqual([expect.objectContaining({ type: "session.error", message: expect.stringContaining("gone.pdf") })]);
   });
 
   it("tells the chat when the engine has no project for its folder or cannot be reached", async () => {
