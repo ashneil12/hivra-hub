@@ -4938,19 +4938,19 @@ function ProviderRow({
             `${models.length} ${models.length === 1 ? "model" : "models"} available.`
           )
         ) : turnOn.failed ? (
-          `${harnessUnavailableHint(harness)} It could not be turned on: ${turnOn.failed}`
+          `${harnessUnavailableHint(harness)} It could not be ${engine?.setUp ? "set up" : "turned on"}: ${turnOn.failed}`
         ) : (
           harnessUnavailableHint(harness)
         )
       }
       below={install ? <AgentInstallLog harness={harness} state={install} /> : undefined}
     >
-      {!available && engine?.off ? (
+      {!available && (engine?.off || engine?.setUp) ? (
         <SecondaryButton data-engine-turn-on={harness} onClick={onTurnOn} disabled={turnOn.busy}>
-          {turnOn.busy ? "Turning on…" : "Turn on"}
+          {engine.setUp ? (turnOn.busy ? "Setting up…" : "Set up") : turnOn.busy ? "Turning on…" : "Turn on"}
         </SecondaryButton>
       ) : null}
-      {!available && !engine?.off && canInstallAgent(harness) ? (
+      {!available && !engine?.off && !engine?.setUp && canInstallAgent(harness) ? (
         installing ? (
           <SecondaryButton
             data-agent-install-cancel={harness}
@@ -4969,7 +4969,7 @@ function ProviderRow({
           </SecondaryButton>
         )
       ) : null}
-      {!available && !engine?.off && installPage ? (
+      {!available && !engine?.off && !engine?.setUp && installPage ? (
         <SecondaryButton
           data-agent-install-page={harness}
           onClick={() => void openUrl(installPage).catch(() => undefined)}

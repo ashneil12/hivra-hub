@@ -5,9 +5,10 @@
 import { HARNESSES, HARNESS_TITLE } from "../../../../features/sessions/model/session";
 import { probeHarnessAvailability, setHarnessAvailabilitySource } from "../../core/availability";
 import { setHarnessEngineTurnOn } from "../../core/availabilityState";
+import { resolveDevinBinary, resolveHermesBinary } from "../../core/child";
 import type { HarnessAdapter } from "../../core/registry";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
-import { t3Availability, t3Provider, t3TurnOn, type T3Provider } from "./t3Models";
+import { t3Availability, t3Provider, t3SetUp, t3TurnOn, type T3Provider } from "./t3Models";
 import { ENGINE_BRIEFING_TAG } from "../../../../features/crew/model/engineMates";
 import { ENGINE_ANSWER_TAG } from "../../../../features/crew/model/engineAnswer";
 import { setT3ThreadChats } from "./t3Links";
@@ -93,8 +94,18 @@ export function t3DevPageAdapters(
   setHarnessEngineTurnOn(async (harness) => {
     const config = await rpc.call<Config>("server.getConfig", {});
     const provider = t3Provider(harness, config?.providers ?? [], engine.provider);
-    if (!provider) throw new Error(`The engine has no provider set up for ${HARNESS_TITLE[harness]}.`);
-    await rpc.call("server.updateSettings", t3TurnOn(provider, config?.settings?.providerInstances?.[provider.instanceId]));
+    // No provider for it: one that runs the tool's own command, at the place this app finds the tool when it can.
+    const found = provider
+      ? undefined
+      : await (harness === "hermes" ? resolveHermesBinary() : harness === "devin" ? resolveDevinBinary() : Promise.reject())
+          // Not found, or a page with no native side to look: the engine looks the command up by name.
+          .then((binary) => (typeof binary?.path === "string" ? binary.path : undefined))
+          .catch(() => undefined);
+    const change = provider
+      ? t3TurnOn(provider, config?.settings?.providerInstances?.[provider.instanceId])
+      : t3SetUp(harness, found);
+    if (!change) throw new Error(`The engine has no provider set up for ${HARNESS_TITLE[harness]}.`);
+    await rpc.call("server.updateSettings", change);
     await probeHarnessAvailability({ force: true });
   });
   return HARNESSES.map((id) => {

@@ -98,11 +98,51 @@ export function t3Availability(
     if (problem) why[harness] = problem;
     if (provider && !provider.enabled) facts[harness] = { off: true };
     else if (provider && !problem) facts[harness] = t3ProviderFacts(provider);
+    else if (!provider && !named && T3_LOCAL_AGENT[harness]) facts[harness] = { setUp: true };
   }
   return { available, why, facts };
 }
 
-export type T3ProviderFacts = { version?: string; signedIn?: boolean; plan?: string; email?: string; note?: string; off?: boolean };
+export type T3ProviderFacts = {
+  version?: string;
+  signedIn?: boolean;
+  plan?: string;
+  email?: string;
+  note?: string;
+  off?: boolean;
+  setUp?: boolean;
+};
+
+/**
+ * Tools the engine has no driver for that speak the agent protocol its generic driver runs (ACP): the command that
+ * starts each, as this app's own adapter starts it. Set up, each is an engine provider named after the tool.
+ */
+export const T3_LOCAL_AGENT: Partial<Record<HarnessId, { name: string; command: string; args: string[] }>> = {
+  hermes: { name: "Hermes Agent", command: "hermes", args: ["acp"] },
+  devin: { name: "Devin", command: "devin", args: ["acp"] },
+};
+
+/** The engine's settings call that gives such a tool its provider; nothing for a tool that is not one of them. */
+export function t3SetUp(
+  harness: HarnessId,
+  /** Where the tool is on this machine, when this app found it; else the engine looks it up by name. */
+  commandPath?: string,
+): { patch: Record<string, never>; providerInstanceMutation: { operation: "create"; instanceId: string; instance: Record<string, unknown> } } | undefined {
+  const agent = T3_LOCAL_AGENT[harness];
+  if (!agent) return undefined;
+  return {
+    patch: {},
+    providerInstanceMutation: {
+      operation: "create",
+      instanceId: harness,
+      instance: {
+        driver: "acpRegistry",
+        displayName: agent.name,
+        config: { source: "local", commandPath: commandPath?.trim() || agent.command, commandArgs: agent.args },
+      },
+    },
+  };
+}
 
 /**
  * The engine's settings call that switches one provider on. It names that provider only: the engine's settings patch

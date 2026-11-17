@@ -34,6 +34,8 @@ export type HarnessEngineFacts = {
   note?: string;
   /** Switched off in the engine: nothing to install, it only has to be turned on there. */
   off?: boolean;
+  /** The engine has no provider for it yet and can be given one that runs the tool's own command. */
+  setUp?: boolean;
 };
 let engineFacts: Partial<Record<HarnessId, HarnessEngineFacts>> = {};
 
@@ -48,12 +50,15 @@ export function setHarnessEngineFacts(next: Partial<Record<HarnessId, HarnessEng
 
 let engineTurnOn: ((id: HarnessId) => Promise<void>) | null = null;
 
-/** How a tool the engine has switched off is turned on there; set by whatever connects this copy to an engine. */
+/**
+ * How a tool the engine has switched off is turned on there, or one it has no provider for is given one; set by
+ * whatever connects this copy to an engine.
+ */
 export function setHarnessEngineTurnOn(next: ((id: HarnessId) => Promise<void>) | null): void {
   engineTurnOn = next;
 }
 
-/** Turns the tool on in the engine and looks again. Rejects with the engine's reason when it would not. */
+/** Turns the tool on (or sets it up) in the engine and looks again. Rejects with the engine's reason when it would not. */
 export function turnOnInEngine(id: HarnessId): Promise<void> {
   return engineTurnOn ? engineTurnOn(id) : Promise.reject(new Error("No engine runs this copy's chats."));
 }

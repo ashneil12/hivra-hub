@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentModel } from "../../../../features/sessions/model/models";
-import { t3Availability, t3ProviderFacts, t3TurnOn, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Model, type T3Provider } from "./t3Models";
+import { t3Availability, t3ProviderFacts, t3SetUp, t3TurnOn, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Model, type T3Provider } from "./t3Models";
 
 const reasoning = {
   id: "effort",
@@ -130,6 +130,8 @@ describe("the picker's list from the engine", () => {
       claude: { version: "2.1.50", signedIn: true, plan: "Claude Max", email: "example@example.com" },
       // Switched off is not "install it": the row offers to turn it on.
       codex: { off: true },
+      // No driver for it in the engine, but it speaks the protocol the engine's generic driver runs.
+      hermes: { setUp: true },
     });
     expect(t3ProviderFacts(provider("codex", "codex", { status: "error", message: "Example: the CLI is too old.", auth: { status: "unauthenticated" } }))).toEqual({
       signedIn: false,
@@ -149,5 +151,25 @@ describe("the picker's list from the engine", () => {
     // What the engine keeps for it stays.
     const kept = { driver: "acpRegistry", displayName: "Example agent", enabled: false, config: { commandPath: "/usr/local/bin/example" } };
     expect(t3TurnOn(provider("example", "acpRegistry", { enabled: false }), kept).providerInstanceMutation.instance).toEqual({ ...kept, enabled: true });
+  });
+
+  it("gives a tool the engine has no driver for a provider that runs the tool's own command", () => {
+    expect(t3SetUp("hermes", "/Users/example/.local/bin/hermes")).toEqual({
+      patch: {},
+      providerInstanceMutation: {
+        operation: "create",
+        instanceId: "hermes",
+        instance: {
+          driver: "acpRegistry",
+          displayName: "Hermes Agent",
+          config: { source: "local", commandPath: "/Users/example/.local/bin/hermes", commandArgs: ["acp"] },
+        },
+      },
+    });
+    // Not found by this app: the engine looks the command up by name.
+    expect((t3SetUp("devin")?.providerInstanceMutation.instance.config as { commandPath: string }).commandPath).toBe("devin");
+    expect(t3SetUp("claude")).toBeUndefined();
+    // Once set up, the provider named after the tool is the one its chats run on.
+    expect(t3Provider("hermes", [provider("hermes", "acpRegistry")])?.instanceId).toBe("hermes");
   });
 });
