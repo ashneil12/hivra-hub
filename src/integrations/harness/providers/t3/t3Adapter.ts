@@ -6,7 +6,7 @@
 import type { HarnessId, RuntimeMode } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
 import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/types";
-import { modelsFor, setHarnessModels } from "../../../../features/sessions/model/models";
+import { modelsFor, nativeModelId, setHarnessModels } from "../../../../features/sessions/model/models";
 import { markT3ItemSeen, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
 import { T3_DRIVER, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Provider } from "./t3Models";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
@@ -128,7 +128,8 @@ export function createT3Adapter(
       const problem = t3ProviderProblem(engine.provider ?? id, provider);
       if (problem) throw new Error(problem);
     }
-    const wanted = engine.model ?? input.model;
+    // The chat names its model by this app's key (`claude:opus-5-5`); the engine knows the provider's own id.
+    const wanted = engine.model ?? nativeModelId(input.model);
     const model = t3Model(provider, wanted);
     const options = t3Options(model, input.modelSettings);
     return {

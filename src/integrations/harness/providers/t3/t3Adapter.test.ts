@@ -220,6 +220,25 @@ describe("the T3 adapter's provider and model", () => {
     });
   });
 
+  it("sends the engine the provider's own model id for the key the picker keeps, also for a model only the engine lists", async () => {
+    resetHarnessModelOverlays();
+    const launched = async (model: string) => {
+      const engine = fakeEngine(undefined, providers);
+      const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+      await adapter.refreshCatalog?.();
+      const done = adapter.sendTurn({ ...turn("chat-1", "Example: hello", []), model });
+      await engine.say(snapshot([], [{ id: "run-1", status: "completed" }]));
+      await done;
+      return (engine.calls[0].payload.modelSelection as { model: string }).model;
+    };
+    expect(modelsFor("claude").map((model) => model.id)).not.toContain("claude:claude-example-9");
+    expect(await launched("claude:claude-example-9")).toBe("claude-example-9");
+    expect(await launched("claude:opus")).toBe("claude-opus-5-5");
+    expect(await launched("claude:opus-5-5")).toBe("claude-opus-5-5");
+    expect(await launched("claude:sonnet")).toBe("sonnet");
+    resetHarnessModelOverlays();
+  });
+
   it("says so in the chat when the engine has that provider switched off, and starts nothing", async () => {
     const engine = fakeEngine(undefined, providers);
     const events: HarnessEvent[] = [];
