@@ -7,6 +7,7 @@ import type { HarnessId, RuntimeMode } from "../../../../features/sessions/model
 import type { HarnessAdapter } from "../../core/registry";
 import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/types";
 import { modelsFor, nativeModelId, setHarnessModels } from "../../../../features/sessions/model/models";
+import { t3Message } from "./t3Context";
 import { markT3ItemSeen, t3CrewTitle, t3ItemDone, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
 import { T3_DRIVER, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Provider } from "./t3Models";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
@@ -354,7 +355,7 @@ export function createT3Adapter(
           runtimeMode,
           interactionMode: "default",
           workspaceStrategy: { type: "root" },
-          initialMessage: { text: input.text, attachments: [] },
+          initialMessage: { ...t3Message(input.text), attachments: [] },
         });
         threads.set(input.sessionId, threadId);
         sent = true;
@@ -401,7 +402,7 @@ export function createT3Adapter(
               type: "message.dispatch",
               threadId,
               messageId: uuid(),
-              text: input.text,
+              ...t3Message(input.text),
               attachments: [],
               ...(switched ? { modelSelection: selection } : {}),
               dispatchMode: { type: "queue_after_active" },
@@ -437,7 +438,7 @@ export function createT3Adapter(
       type: "message.dispatch",
       threadId: state.threadId,
       messageId: uuid(),
-      text: input.text,
+      ...t3Message(input.text),
       attachments: [],
       dispatchMode: { type: "steer_active", targetRunId: state.runId },
       createdBy: "user",

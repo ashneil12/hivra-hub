@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { monoTurn } from "../../../../features/monos/model/monoFiles";
 import { modelsFor, resetHarnessModelOverlays } from "../../../../features/sessions/model/models";
 import type { HarnessEvent, SendTurnInput } from "../../core/types";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
@@ -224,6 +225,26 @@ describe("the T3 adapter", () => {
     await done;
     expect(events.some((event) => event.type === "session.error")).toBe(false);
     expect(events).toContainEqual({ type: "message.delta", text: "Example: hi" });
+  });
+
+  it("sends what the app put ahead of a message as a context record, in a new chat and in a later message", async () => {
+    const engine = fakeEngine();
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+    const sent = monoTurn("Example: hello", ["Example: you are the first mate."]);
+    const record = { kind: "dropwave-context", payload: expect.stringContaining("Example: you are the first mate.") };
+    const link = "[Dropwave context](t3-context://v1/dropwave-context/dropwave_context)\n\nExample: hello";
+
+    const first = adapter.sendTurn(turn("chat-1", sent, []));
+    await engine.say(snapshot([], [{ id: "run-1", status: "completed" }]));
+    await first;
+    expect(engine.calls[0].payload.initialMessage).toMatchObject({ text: link, context: { version: 1, records: [record] } });
+
+    const threadId = String(engine.calls[0].payload.threadId);
+    const next = adapter.sendTurn(turn("chat-1", sent, []));
+    await engine.sayTo(threadId, snapshot([], [{ id: "run-1", status: "completed" }]));
+    expect(engine.commands().at(-1)).toMatchObject({ type: "message.dispatch", text: link, context: { records: [record] } });
+    await engine.sayTo(threadId, event("run.created", { id: "run-2", status: "completed" }));
+    await next;
   });
 
   it("tells the chat when the engine has no project for its folder or cannot be reached", async () => {
