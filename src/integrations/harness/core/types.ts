@@ -49,6 +49,11 @@ export type HarnessEvent =
   | { type: "turn.ready" }
   /** The engine ended the turn before it finished, on purpose (its first mate was stopped). Nothing resumes it. */
   | { type: "turn.stopped"; text: string }
+  /**
+   * The engine kept this turn going while the app was closed and now plays it again whole: the chat goes back to the
+   * message that began it (`providerTurnId`; the chat's first message without one). See `SendTurnInput.resume`.
+   */
+  | { type: "turn.rejoined"; providerTurnId?: string }
   | {
       type: "session.configChanged";
       model?: string;
@@ -301,6 +306,13 @@ export type SendTurnInput = HarnessSessionInput & {
    * around `text`. Without it the fresh conversation gets `text` alone.
    */
   resumeFallback?: (text: string) => string;
+  /**
+   * The app's own resume of a turn a quit, an update or a reload cut (its automatic resume, or Continue).
+   * `providerTurnId` is the turn the chat saw start, when it did. A provider this app starts takes `text` as the
+   * next message; an engine that kept the turn running while the app was closed picks the turn up instead
+   * (`turn.rejoined`) and sends nothing.
+   */
+  resume?: { providerTurnId?: string };
 };
 
 export type CompactContextInput = HarnessSessionInput;

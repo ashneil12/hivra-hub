@@ -4,6 +4,7 @@ import { modelsFor, resetHarnessModelOverlays } from "../../../../features/sessi
 import type { HarnessEvent, SendTurnInput } from "../../core/types";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
 import { quietAppTurns, t3DevPageAdapters } from "./t3DevPage";
+import { t3AppId } from "./t3Ids";
 import type { T3Provider } from "./t3Models";
 import type { T3Rpc } from "./t3Rpc";
 
@@ -490,7 +491,7 @@ describe("the T3 adapter's crew", () => {
       ["orchestration.subscribeThread", CHILD],
     ]);
     expect(events).toEqual([
-      { type: "session.providerBound", providerSessionId: CHILD },
+      { type: "session.providerBound", providerSessionId: t3AppId(CHILD) },
       { type: "session.started" },
       { type: "tool.started", callId: "c1", title: "wc -l README.md", kind: "execute", status: "completed", command: "wc -l README.md" },
       { type: "tool.updated", callId: "c1", detail: "3" },
@@ -609,6 +610,125 @@ describe("the T3 adapter's crew", () => {
   });
 });
 
+describe("the T3 adapter after a restart", () => {
+  const inRun = (runId: string, item: Record<string, unknown>) => ({ ...item, runId });
+
+  it("picks a cut turn up where the engine is, sends nothing, and follows it to its end", async () => {
+    const CUT = "run:thread-1:2";
+    const engine = fakeEngine();
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+    adapter.bindSession("chat-1", "thread-1", "/example");
+    const events: HarnessEvent[] = [];
+    const accepted: string[] = [];
+    const done = adapter.sendTurn({
+      ...turn("chat-1", "Continue from where you left off.", events, accepted),
+      // The chat kept the run's id in the form it can save.
+      resume: { providerTurnId: t3AppId(CUT) },
+    });
+    await engine.say(
+      snapshot(
+        [
+          inRun("run-1", message("m1", "Example: an earlier answer.", true)),
+          inRun(CUT, { id: "u2", type: "user_message", status: "completed", text: "Example: count" }),
+          inRun(CUT, message("m2", "Example: counting, 1", false)),
+        ],
+        [
+          { id: "run-1", status: "completed" },
+          { id: CUT, status: "running" },
+        ],
+      ),
+    );
+    await engine.say(event("turn-item.updated", inRun(CUT, message("m2", "Example: counting, 1, 2.", true))));
+    // The engine's own next run is not this chat's turn.
+    await engine.say(event("run.created", { id: "run-3", status: "running" }));
+    await engine.say(event("run.updated", { id: CUT, status: "completed" }));
+    await done;
+
+    expect(engine.commands()).toEqual([]);
+    expect(accepted).toEqual(["chat-1"]);
+    expect(events).toEqual([
+      { type: "session.started" },
+      { type: "turn.rejoined", providerTurnId: t3AppId(CUT) },
+      { type: "message.delta", text: "Example: counting, 1" },
+      { type: "message.delta", text: ", 2." },
+      { type: "message.completed" },
+    ]);
+  });
+
+  it("shows what the engine finished while the app was closed, and says when it was stopped", async () => {
+    for (const [status, last] of [
+      ["completed", { type: "message.completed" }],
+      ["interrupted", { type: "turn.stopped", text: "Stopped before it finished." }],
+    ] as const) {
+      const engine = fakeEngine();
+      const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+      adapter.bindSession("chat-1", "thread-1", "/example");
+      const events: HarnessEvent[] = [];
+      const done = adapter.sendTurn({ ...turn("chat-1", "Continue from where you left off.", events), resume: { providerTurnId: "run-1" } });
+      await engine.say(
+        snapshot([inRun("run-1", message("m1", "Example: all done.", true))], [{ id: "run-1", status }]),
+      );
+      await done;
+      expect(engine.commands()).toEqual([]);
+      expect(events.slice(1, 4)).toEqual([
+        { type: "turn.rejoined", providerTurnId: "run-1" },
+        { type: "message.delta", text: "Example: all done." },
+        { type: "message.completed" },
+      ]);
+      expect(events.at(-1)).toEqual(last);
+    }
+  });
+
+  it("sends the resume as a message when the engine never had the cut turn", async () => {
+    const engine = fakeEngine();
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+    adapter.bindSession("chat-1", "thread-1", "/example");
+    const events: HarnessEvent[] = [];
+    const done = adapter.sendTurn({ ...turn("chat-1", "Example: sent again", events), resume: {} });
+    await engine.say(snapshot([inRun("run-1", message("m1", "Example: an earlier answer.", true))], [{ id: "run-1", status: "completed" }]));
+    await engine.say(event("run.created", { id: "run:thread-1:2", status: "running" }));
+    await engine.say(event("run.updated", { id: "run:thread-1:2", status: "completed" }));
+    await done;
+    expect(engine.commands()).toMatchObject([{ type: "message.dispatch", threadId: "thread-1", text: "Example: sent again" }]);
+    // The new turn's id reaches the chat in a form it can keep, so a later cut can name it.
+    expect(events).toEqual([{ type: "session.started" }, { type: "turn.started", providerTurnId: t3AppId("run:thread-1:2") }]);
+  });
+
+  it("follows a crew member's chat again from the top, and still takes no message for it", async () => {
+    const CHILD = "thread:subagent:example";
+    const engine = fakeEngine();
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+    // The chat kept the conversation's id in the form it can save.
+    adapter.bindSession("crew-chat", t3AppId(CHILD), "/example");
+    const events: HarnessEvent[] = [];
+    const done = adapter.sendTurn({ ...turn("crew-chat", "Continue from where you left off.", events), resume: {} });
+    await engine.sayTo(CHILD, {
+      kind: "snapshot",
+      projection: {
+        turnItems: [message("c1", "Example: 3 lines", false)],
+        runs: [],
+        nodes: [{ id: "node-1", kind: "subagent", status: "running" }],
+      },
+    });
+    await engine.sayTo(CHILD, event("node.updated", { id: "node-1", status: "completed" }));
+    await engine.sayTo(CHILD, event("turn-item.updated", message("c1", "Example: 3 lines.", true)));
+    await done;
+    expect(events).toEqual([
+      { type: "session.providerBound", providerSessionId: t3AppId(CHILD) },
+      { type: "session.started" },
+      { type: "turn.rejoined" },
+      { type: "message.delta", text: "Example: 3 lines" },
+      { type: "message.delta", text: "." },
+      { type: "message.completed" },
+    ]);
+
+    const typed: HarnessEvent[] = [];
+    await adapter.sendTurn(turn("crew-chat", "Example: also count the words", typed));
+    expect(typed).toMatchObject([{ type: "session.error", retryable: false }]);
+    expect(engine.commands()).toEqual([]);
+  });
+});
+
 describe("the dev page's engine", () => {
   it("is named in the address with its token, and not without one", () => {
     expect(t3Engine("?t3=http://127.0.0.1:13773/&t3token=abc&t3provider=devReplay&t3model=showcase")).toEqual({
@@ -645,6 +765,13 @@ describe("the dev page's engine", () => {
       await engine.say(snapshot([], [{ id: "run-1", status: "completed" }]));
       await typed;
       expect(engine.calls[0].tag).toBe("orchestration.launchThread");
+
+      // The app's resume of a cut turn reaches the engine too: that turn is the engine's to pick up.
+      const resumed = adapter.sendTurn({ ...turn("chat-1", "[app resume]", []), origin: undefined, resume: { providerTurnId: "run-1" } });
+      await engine.sayTo(String(engine.calls[0].payload.threadId), snapshot([], [{ id: "run-1", status: "completed" }]));
+      await resumed;
+      expect(engine.calls.filter((call) => call.tag === "orchestration.subscribeThread")).toHaveLength(2);
+      expect(engine.commands()).toEqual([]);
     }
   });
 });

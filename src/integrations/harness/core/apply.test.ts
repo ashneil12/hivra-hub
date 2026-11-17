@@ -146,6 +146,35 @@ describe("turn duration", () => {
     expect(session.blocks.find((block) => block.role === "assistant")?.streaming).toBeFalsy();
   });
 
+  it("goes back to the message that began a turn the engine kept running, and keeps what was sent into it", () => {
+    let session = appendUser(newSession("claude", "/tmp"), "Example: an earlier question");
+    session = applyHarnessEvent(session, { type: "turn.started", providerTurnId: "run-1" });
+    session = applyHarnessEvent(session, { type: "message.delta", text: "Example: an earlier answer" });
+    session = applyHarnessEvent(session, { type: "message.completed" });
+    session = appendUser(session, "Example: count the lines");
+    session = applyHarnessEvent(session, { type: "turn.started", providerTurnId: "run-2" });
+    session = applyHarnessEvent(session, { type: "message.delta", text: "Example: coun" });
+    const steer = { id: "steer-1", role: "user" as const, text: "Example: and the words", sentAt: 1 };
+    const cut = { id: "cut-1", role: "system" as const, text: "Turn interrupted when MonoCode quit.", notice: "interrupt" as const };
+    session = { ...session, blocks: [...session.blocks, steer, cut] };
+    session = appendUser(session, "Continue from where you left off.");
+
+    const rejoined = applyHarnessEvent(session, { type: "turn.rejoined", providerTurnId: "run-2" });
+    expect(rejoined.blocks.map((block) => block.text)).toEqual([
+      "Example: an earlier question",
+      "Example: an earlier answer",
+      "Example: count the lines",
+      "Example: and the words",
+    ]);
+    // A turn the chat never saw start leaves it as it is.
+    expect(applyHarnessEvent(session, { type: "turn.rejoined", providerTurnId: "run-9" })).toBe(session);
+    // A chat that only follows (a crew member's) goes back to its first message.
+    expect(applyHarnessEvent(session, { type: "turn.rejoined" }).blocks.map((block) => block.text)).toEqual([
+      "Example: an earlier question",
+      "Example: and the words",
+    ]);
+  });
+
   it("marks orphaned subagent work failed when the provider dies", () => {
     let session = appendUser(newSession("codex", "/tmp"), "delegate it");
     session = applyHarnessEvent(session, {

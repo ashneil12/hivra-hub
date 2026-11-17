@@ -288,6 +288,23 @@ export function applyHarnessEvent(
         text: event.text,
         notice: "stopped",
       });
+    case "turn.rejoined": {
+      const start = event.providerTurnId
+        ? lastMatchingBlock(
+            session.blocks,
+            (block) => block.role === "user" && block.providerTurnId === event.providerTurnId,
+          )
+        : session.blocks.findIndex((block) => block.role === "user");
+      if (start < 0) return session;
+      // The engine plays everything after that message again. What Ash sent into the turn, or has waiting, stays.
+      const waiting = new Set(session.queuedMessages?.map((message) => message.blockId));
+      const blocks = session.blocks.filter(
+        (block, index) =>
+          index <= start ||
+          (block.role === "user" && (block.sentAt !== undefined || block.draft === true || waiting.has(block.id))),
+      );
+      return blocks.length === session.blocks.length ? session : { ...session, blocks };
+    }
     case "goal.updated": {
       if (event.goal) return { ...session, goal: event.goal };
       if (!session.goal) return session;

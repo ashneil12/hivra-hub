@@ -232,6 +232,25 @@ export function wasTurnInterrupted(session: Session): boolean {
 }
 
 /**
+ * The provider turn a quit or reload cut, when the chat saw it start: the turn of the message that began it (one
+ * sent into a turn already running, or still waiting, did not begin it). Read while the cut note is the last thing
+ * in the chat but for the resume itself, so a turn that has since gone on is never taken for the cut one.
+ */
+export function cutTurnId(session: Pick<Session, "blocks" | "queuedMessages">): string | undefined {
+  const blocks = session.blocks;
+  let cut = blocks.length - 1;
+  while (cut >= 0 && blocks[cut].role === "user") cut -= 1;
+  if (cut < 0 || !lastBlockIsInterrupt({ blocks: blocks.slice(0, cut + 1) })) return undefined;
+  const waiting = new Set(session.queuedMessages?.map((message) => message.blockId));
+  for (let index = cut - 1; index >= 0; index -= 1) {
+    const block = blocks[index];
+    if (block.role !== "user" || block.sentAt !== undefined || block.draft || waiting.has(block.id)) continue;
+    return block.providerTurnId;
+  }
+  return undefined;
+}
+
+/**
  * Provider thread exists and the quit note is still the last block.
  * A Continue (or any later user turn) appends after it, so this stays one-shot.
  */

@@ -9,6 +9,7 @@ import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/typ
 import { modelsFor, nativeModelId, setHarnessModels } from "../../../../features/sessions/model/models";
 import { t3AttachmentParts, type T3Attachment } from "./t3Attachments";
 import { t3Message } from "./t3Context";
+import { t3AppId, t3EngineId } from "./t3Ids";
 import { markT3ItemSeen, t3CrewTitle, t3ItemDone, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
 import { T3_DRIVER, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Provider } from "./t3Models";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
@@ -53,7 +54,7 @@ type T3Run = { id: string; status: string };
 type T3Selection = { instanceId: string; model: string; options?: Array<{ id: string; value: string | boolean }> };
 /** What the thread is set to, as its snapshot says. */
 type T3Thread = { runtimeMode?: string; modelSelection?: T3Selection };
-type T3Node = { id?: string; status?: string };
+type T3Node = { id?: string; status?: string; kind?: string };
 type T3Frame =
   | { kind: "snapshot"; projection: { turnItems: T3Item[]; runs: T3Run[]; thread?: T3Thread; nodes?: T3Node[] } }
   | { kind: "event"; event: { type: string; payload: unknown } }
@@ -81,6 +82,11 @@ type CrewChat = {
 
 /** How a crew member's node reads when it ended without finishing. */
 const CREW_STOPPED = new Set(["interrupted", "failed", "cancelled", "rolled_back"]);
+/** How the engine names a conversation it started for a crew member. */
+const CREW_THREAD = /^thread:subagent:/;
+/** How a run reads when it ended without finishing and without an error of its own to show. */
+const RUN_STOPPED = new Set(["interrupted", "cancelled", "rolled_back"]);
+const STOPPED_LINE = "Stopped before it finished.";
 const CREW_READ_ONLY = "This crew member is run by its first mate and can't take messages. Message the first mate instead.";
 
 const uuid = () => crypto.randomUUID();
@@ -220,6 +226,9 @@ export function createT3Adapter(
       emit({ type: "crew.started", callId: item.id, sessionId, title: t3CrewTitle(item), brief: item.prompt ?? "" });
     }
     const chat = crew.get(sessionId);
+    // A chat restored after a restart learns its first mate here.
+    if (chat && !chat.owner) chat.owner = owner;
+    if (chat && !chat.nodeId && item.subagentId) chat.nodeId = item.subagentId;
     if (chat && !chat.done && t3ItemDone(item)) {
       chat.done = true;
       chat.stopped = item.status !== "completed";
@@ -242,7 +251,8 @@ export function createT3Adapter(
    * A crew chat's first turn: nothing is sent. It plays what the crew member has done and goes on doing, until the
    * first mate's side says it is done or the member's own conversation does (its node ends; a child conversation has
    * no runs of its own); then what is left is read once more, so nothing said at the very end is lost. A member that
-   * wrote no reply of its own shows the report it handed back; one that was stopped says so.
+   * wrote no reply of its own shows the report it handed back; one that was stopped says so. After a restart the
+   * follow starts again from the top (`rejoin`): the engine went on while the app was closed.
    */
   async function followCrew(input: SendTurnInput, chat: CrewChat): Promise<void> {
     chat.followed = true;
@@ -276,9 +286,10 @@ export function createT3Adapter(
       return false;
     };
     try {
-      emit({ type: "session.providerBound", providerSessionId: chat.threadId });
+      emit({ type: "session.providerBound", providerSessionId: t3AppId(chat.threadId) });
       input.onAccepted?.();
       emit({ type: "session.started" });
+      if (input.resume) emit({ type: "turn.rejoined" });
       await rpc.stream(
         "orchestration.subscribeThread",
         { threadId: chat.threadId },
@@ -288,6 +299,8 @@ export function createT3Adapter(
           if (whole) {
             whole.turnItems.forEach(play);
             const runs = whole.runs;
+            // A restored chat no longer knows its member's node: the conversation's own says.
+            chat.nodeId ??= whole.nodes?.find((candidate) => candidate.kind === "subagent")?.id;
             const going = (whole.nodes ?? []).every(node);
             return going && !chat.done && !(runs.length > 0 && runs.every((run) => RUN_ENDED.has(run.status)));
           }
@@ -324,7 +337,7 @@ export function createT3Adapter(
       if (!said && chat.result) {
         emit({ type: "message.delta", text: chat.result });
         emit({ type: "message.completed" });
-      } else if (chat.stopped) emit({ type: "turn.stopped", text: "Stopped before it finished." });
+      } else if (chat.stopped) emit({ type: "turn.stopped", text: STOPPED_LINE });
       if (live.get(input.sessionId) === state) live.delete(input.sessionId);
     }
   }
@@ -348,7 +361,7 @@ export function createT3Adapter(
 
   async function sendTurn(input: SendTurnInput): Promise<void> {
     const waiting = crew.get(input.sessionId);
-    if (waiting && !waiting.followed) return followCrew(input, waiting);
+    if (waiting && (!waiting.followed || input.resume)) return followCrew(input, waiting);
     if (waiting) {
       // The engine runs this member for its first mate; its conversation takes no messages.
       input.onEvent({ type: "session.error", message: CREW_READ_ONLY, retryable: false });
@@ -366,6 +379,8 @@ export function createT3Adapter(
     let sent = false;
     /** The turn's run completed; anything else (a stop, a failure, a dropped connection) takes the crew with it. */
     let finished = false;
+    /** The app was closed mid-turn and this is its resume: the engine's turn is picked up, nothing is sent. */
+    let rejoined = false;
 
     try {
       const selection = await selectionFor(input);
@@ -386,7 +401,7 @@ export function createT3Adapter(
         });
         threads.set(input.sessionId, threadId);
         sent = true;
-        emit({ type: "session.providerBound", providerSessionId: threadId });
+        emit({ type: "session.providerBound", providerSessionId: t3AppId(threadId) });
         input.onAccepted?.();
       }
       emit({ type: "session.started" });
@@ -398,9 +413,12 @@ export function createT3Adapter(
       /** False once the run this turn started has ended. */
       const run = (value: T3Run, created: boolean): boolean => {
         if (oldRuns.has(value.id)) return true;
-        if (state.runId !== value.id && (created || state.runId === undefined)) {
+        // A rejoined turn follows the run it found and keeps the turn id the chat knows it by.
+        if (rejoined) {
+          if (value.id !== state.runId) return true;
+        } else if (state.runId !== value.id && (created || state.runId === undefined)) {
           state.runId = value.id;
-          emit({ type: "turn.started", providerTurnId: value.id });
+          emit({ type: "turn.started", providerTurnId: t3AppId(value.id) });
         }
         if (value.id === state.runId && value.status === "completed") finished = true;
         return !RUN_ENDED.has(value.status);
@@ -417,9 +435,34 @@ export function createT3Adapter(
               frame.projection.turnItems.forEach(item);
               return frame.projection.runs.every((candidate) => run(candidate, false));
             }
+            const runs = frame.projection.runs;
+            const cutId = input.resume?.providerTurnId;
+            const cut = cutId ? runs.findIndex((candidate) => candidate.id === t3EngineId(cutId)) : -1;
+            if (cut >= 0) {
+              // The app was closed and the engine went on with the turn: nothing is sent. The chat goes back to the
+              // turn's message, hears all of it again from the engine, and follows whatever is still running.
+              const again = new Set(runs.slice(cut).map((candidate) => candidate.id));
+              rejoined = true;
+              emit({ type: "turn.rejoined", providerTurnId: cutId });
+              for (const old of frame.projection.turnItems) {
+                if (old.runId && again.has(old.runId)) item(old);
+                else markT3ItemSeen(old, seen);
+              }
+              const last = runs[runs.length - 1];
+              for (const old of runs) if (old !== last || RUN_ENDED.has(old.status)) oldRuns.add(old.id);
+              sent = true;
+              input.onAccepted?.();
+              if (!RUN_ENDED.has(last.status)) {
+                state.runId = last.id;
+                return true;
+              }
+              finished = last.status === "completed";
+              if (RUN_STOPPED.has(last.status)) emit({ type: "turn.stopped", text: STOPPED_LINE });
+              return false;
+            }
             // An older thread: what is there is already on screen. Then the message goes in.
             for (const old of frame.projection.turnItems) markT3ItemSeen(old, seen);
-            for (const old of frame.projection.runs) oldRuns.add(old.id);
+            for (const old of runs) oldRuns.add(old.id);
             // The picker or the permission mode changed since the thread last ran: the thread follows.
             const set = frame.projection.thread;
             if (set?.runtimeMode && set.runtimeMode !== runtimeMode)
@@ -522,6 +565,13 @@ export function createT3Adapter(
       threads.delete(sessionId);
       crew.delete(sessionId);
     },
-    bindSession: (sessionId, providerSessionId) => void threads.set(sessionId, providerSessionId),
+    bindSession: (sessionId, providerSessionId) => {
+      const threadId = t3EngineId(providerSessionId);
+      threads.set(sessionId, threadId);
+      if (!CREW_THREAD.test(threadId) || crew.has(sessionId)) return;
+      // A crew member's chat from before a restart: it still takes no messages, and a cut follow starts again.
+      crew.set(sessionId, { threadId, owner: "", followed: true, done: false });
+      crewChatOf.set(threadId, sessionId);
+    },
   };
 }

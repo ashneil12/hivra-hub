@@ -1298,6 +1298,7 @@ import {
   CONTINUE_PROMPT,
   RESUME_STOPPED_MESSAGE,
   canAutoContinue,
+  cutTurnId,
   interruptingShip,
   inFlightRefs,
   inFlightSnapshotKey,
@@ -10224,6 +10225,10 @@ function Workspace({
                 submittedText,
               ),
               attachments: turnAttachments,
+              // A turn a quit or reload cut: an engine that kept it running picks it up instead of taking a message.
+              ...(options?.autoResume || text.trim() === CONTINUE_PROMPT
+                ? { resume: { providerTurnId: cutTurnId(sessionsRef.current.find((s) => s.id === sessionId) ?? current) } }
+                : {}),
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
               // A conversation whose saved transcript is gone starts again from the chat's own brief.
               resumeFallback: (prompt) =>

@@ -9,6 +9,8 @@ export type T3Item = {
   id: string;
   type: string;
   status: string;
+  /** The run it belongs to. */
+  runId?: string | null;
   title?: string | null;
   text?: string;
   streaming?: boolean;

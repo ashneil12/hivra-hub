@@ -14,7 +14,8 @@ export function quietAppTurns(adapter: HarnessAdapter): HarnessAdapter {
   return {
     ...adapter,
     sendTurn: async (input) => {
-      if (input.origin === "person") return adapter.sendTurn(input);
+      // The app's resume of a turn a quit cut is not one of those: the engine has that turn and the chat rejoins it.
+      if (input.origin === "person" || input.resume) return adapter.sendTurn(input);
       input.onEvent({ type: "session.started" });
       input.onAccepted?.();
       input.onEvent({ type: "message.delta", text: "Right: nothing new since your last message." });

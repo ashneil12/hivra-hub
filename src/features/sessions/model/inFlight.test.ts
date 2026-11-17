@@ -12,6 +12,7 @@ import {
   RESUME_STOPPED_MESSAGE,
   UPDATE_INTERRUPT_MESSAGE,
   canAutoContinue,
+  cutTurnId,
   cutWorkLabel,
   cutWorkNote,
   inFlightSnapshotKey,
@@ -246,6 +247,28 @@ describe("workspaceFromResumed", () => {
 
   it("returns null when there is nothing to restore", () => {
     expect(workspaceFromResumed([])).toBeNull();
+  });
+});
+
+describe("cutTurnId", () => {
+  it("names the turn a quit cut by the message that began it, not one sent into it", () => {
+    let session = appendUser(chat("/tmp/a", { providerSessionId: "p1" }), "Example: count the lines");
+    session = { ...session, blocks: session.blocks.map((block) => ({ ...block, providerTurnId: "run-2" })) };
+    session = {
+      ...session,
+      busy: true,
+      blocks: [...session.blocks, { id: "steer-1", role: "user", text: "Example: and the words", sentAt: 1 }],
+    };
+    // Still running: nothing was cut.
+    expect(cutTurnId(session)).toBeUndefined();
+    const interrupted = markTurnInterrupted(session);
+    expect(cutTurnId(interrupted)).toBe("run-2");
+    // The resume itself may already be in the chat.
+    const resumed = appendUser(interrupted, "Continue from where you left off.");
+    expect(cutTurnId(resumed)).toBe("run-2");
+    // Once the chat has gone on, the old cut names nothing.
+    const later = { ...resumed, blocks: [...resumed.blocks, { id: "a-1", role: "assistant" as const, text: "Example: 3" }] };
+    expect(cutTurnId(later)).toBeUndefined();
   });
 });
 
