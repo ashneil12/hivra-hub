@@ -272,7 +272,8 @@ daily app. Its window says `Hivra Dev - <branch> @ <sha>` and carries a DEV ribb
   of the fork (`github.com/ashneil12/dropwave`, Node 26; `DROPWAVE_ENGINE_NODE` names the binary when `node` is
   another version). The script starts the engine's server on the slot's port + 5 with its data in
   `~/.monocode-hub-dev/engine/<slot>` (never `~/.t3`, nothing copied from it, telemetry off), issues a token and tells
-  only vite (`VITE_DROPWAVE_ENGINE`, `VITE_DROPWAVE_ENGINE_TOKEN`), so every chat of that dev copy runs through
+  only vite, through a file only you can read (`target/hub-dev/<slot>.engine.json`, gone when the run ends; the token
+  is in no command line or log), so every chat of that dev copy runs through
   `src/integrations/harness/providers/t3/`. The engine stops with the dev copy. Without the flag nothing changes.
 
 - **Frontend change** (`src/**`): saves and appears in the open window within a second. No restart, no rebuild.
