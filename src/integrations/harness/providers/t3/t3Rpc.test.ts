@@ -27,7 +27,11 @@ function fakeServer() {
   };
   const say = (frame: unknown) => socket?.onmessage?.({ data: JSON.stringify(frame) });
   const requests = () => sent.filter((frame) => frame._tag === "Request");
-  const settle = () => new Promise((resolve) => setTimeout(resolve, 5));
+  // Turns of the event loop, not milliseconds: the ticket, the socket opening and the send each take one, however
+  // busy the machine is.
+  const settle = async () => {
+    for (let turn = 0; turn < 20; turn += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
   return { rpc: connectT3("http://127.0.0.1:13773", "token-1", { fetch: fetcher, socket: open, pingMs: 60_000 }), sent, asked, sockets, say, requests, settle, drop: () => socket?.onclose?.({}) };
 }
 

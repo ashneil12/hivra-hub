@@ -1,19 +1,23 @@
 import { describe, expect, it } from "vitest";
+import { modelsFor, resetHarnessModelOverlays } from "../../../../features/sessions/model/models";
 import type { HarnessEvent, SendTurnInput } from "../../core/types";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
 import { quietAppTurns, t3DevPageAdapters } from "./t3DevPage";
+import type { T3Provider } from "./t3Models";
 import type { T3Rpc } from "./t3Rpc";
 
 const ENGINE: T3Engine = { origin: "http://127.0.0.1:13773", token: "token-1" };
 
 /** A T3 engine in the test's hands: what it was asked, and the thread stream to feed frame by frame. */
-function fakeEngine(projects = [{ id: "project-1", workspaceRoot: "/example" }]) {
+function fakeEngine(projects = [{ id: "project-1", workspaceRoot: "/example" }], providers?: T3Provider[]) {
   const calls: Array<{ tag: string; payload: Record<string, unknown> }> = [];
   let feed: ((frame: unknown) => Promise<void>) | undefined;
   let subscribed: (() => void) | undefined;
   const ready = new Promise<void>((resolve) => (subscribed = resolve));
   const rpc: T3Rpc = {
     call: async (tag, payload) => {
+      // What the engine has is only read; `calls` keeps what it was asked to do.
+      if (tag === "server.getConfig") return (providers ? { providers } : {}) as never;
       calls.push({ tag, payload: payload as Record<string, unknown> });
       return {} as never;
     },
@@ -183,6 +187,92 @@ describe("the T3 adapter", () => {
     const failed: HarnessEvent[] = [];
     await createT3Adapter("claude", ENGINE, down.rpc).sendTurn(turn("chat-2", "Example", failed));
     expect(failed).toEqual([{ type: "session.error", message: "The engine could not be reached." }]);
+  });
+});
+
+describe("the T3 adapter's provider and model", () => {
+  const effort = { id: "effort", label: "Reasoning", type: "select", options: [{ id: "medium", label: "Medium", isDefault: true }, { id: "high", label: "High" }] };
+  const providers: T3Provider[] = [
+    {
+      instanceId: "claudeAgent",
+      driver: "claudeAgent",
+      displayName: "Claude",
+      enabled: true,
+      installed: true,
+      models: [
+        { slug: "claude-opus-5-5", name: "Claude Opus 5.5", aliases: ["opus"], capabilities: { optionDescriptors: [effort] } },
+        { slug: "claude-example-9", name: "Claude Example 9" },
+      ],
+    },
+    { instanceId: "codex", driver: "codex", displayName: "Codex", enabled: false, installed: false },
+  ];
+
+  it("starts a chat on the engine's own model for the picker's name, with the chat's reasoning level", async () => {
+    const engine = fakeEngine(undefined, providers);
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+    const done = adapter.sendTurn({ ...turn("chat-1", "Example: hello", []), modelSettings: { effort: "high", thinking: "true" } });
+    await engine.say(snapshot([], [{ id: "run-1", status: "completed" }]));
+    await done;
+    expect(engine.calls[0].payload.modelSelection).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-opus-5-5",
+      options: [{ id: "effort", value: "high" }],
+    });
+  });
+
+  it("says so in the chat when the engine has that provider switched off, and starts nothing", async () => {
+    const engine = fakeEngine(undefined, providers);
+    const events: HarnessEvent[] = [];
+    await createT3Adapter("codex", ENGINE, engine.rpc).sendTurn(turn("chat-1", "Example", events));
+    expect(events).toEqual([{ type: "session.error", message: "Codex is switched off in the engine." }]);
+    expect(engine.calls).toEqual([]);
+  });
+
+  it("moves a thread to the picker's model and permission mode when they changed, and leaves it alone when not", async () => {
+    const thread = (runtimeMode: string, model: string) => ({
+      kind: "snapshot",
+      projection: { turnItems: [], runs: [], thread: { runtimeMode, modelSelection: { instanceId: "claudeAgent", model } } },
+    });
+    const send = async (frame: unknown) => {
+      const engine = fakeEngine(undefined, providers);
+      const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+      adapter.bindSession("chat-1", "thread-9", "/example");
+      const done = adapter.sendTurn(turn("chat-1", "Example: next", []));
+      await engine.say(frame);
+      await engine.say(event("run.created", { id: "run-2", status: "completed" }));
+      await done;
+      return engine.commands();
+    };
+
+    const changed = await send(thread("full-access", "claude-example-9"));
+    expect(changed).toMatchObject([
+      { type: "thread.runtime-mode.set", threadId: "thread-9", runtimeMode: "approval-required" },
+      { type: "message.dispatch", threadId: "thread-9", modelSelection: { instanceId: "claudeAgent", model: "claude-opus-5-5" } },
+    ]);
+
+    const same = await send(thread("approval-required", "claude-opus-5-5"));
+    expect(same).toHaveLength(1);
+    expect(same[0]).toMatchObject({ type: "message.dispatch", threadId: "thread-9" });
+    expect(same[0]).not.toHaveProperty("modelSelection");
+  });
+
+  it("fills the model picker with what the engine can run, under this app's own names", async () => {
+    resetHarnessModelOverlays();
+    const before = modelsFor("claude").find((model) => model.nativeId === "claude-opus-5-5");
+    await createT3Adapter("claude", ENGINE, fakeEngine(undefined, providers).rpc).refreshCatalog?.();
+    expect(modelsFor("claude").map((model) => [model.id, model.name])).toEqual([
+      ["claude:opus", "Claude Opus"],
+      [before?.id, before?.name],
+      ["claude:claude-example-9", "Claude Example 9"],
+    ]);
+    resetHarnessModelOverlays();
+
+    // An engine that will not say what it has, or has the provider switched off, leaves the picker as it was.
+    const untouched = modelsFor("codex");
+    await createT3Adapter("codex", ENGINE, fakeEngine(undefined, providers).rpc).refreshCatalog?.();
+    await createT3Adapter("claude", ENGINE, fakeEngine().rpc).refreshCatalog?.();
+    expect(modelsFor("codex")).toEqual(untouched);
+    expect(modelsFor("claude").length).toBeGreaterThan(2);
   });
 });
 

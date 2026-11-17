@@ -6,7 +6,9 @@
 import type { HarnessId, RuntimeMode } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
 import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/types";
+import { modelsFor, setHarnessModels } from "../../../../features/sessions/model/models";
 import { markT3ItemSeen, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
+import { T3_DRIVER, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Provider } from "./t3Models";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
 
 export type T3Engine = {
@@ -35,9 +37,6 @@ export function t3Engine(search: string = typeof location === "undefined" ? "" :
   };
 }
 
-/** T3's name for each provider this app knows. One without a T3 provider of its own keeps its name. */
-const T3_PROVIDER: Partial<Record<HarnessId, string>> = { claude: "claudeAgent" };
-
 /** T3's word for each permission mode. */
 const T3_RUNTIME_MODE: Record<RuntimeMode, string> = {
   supervised: "approval-required",
@@ -49,14 +48,24 @@ const T3_RUNTIME_MODE: Record<RuntimeMode, string> = {
 const RUN_ENDED = new Set(["completed", "failed", "interrupted", "cancelled", "rolled_back"]);
 
 type T3Run = { id: string; status: string };
+type T3Selection = { instanceId: string; model: string; options?: Array<{ id: string; value: string | boolean }> };
+/** What the thread is set to, as its snapshot says. */
+type T3Thread = { runtimeMode?: string; modelSelection?: T3Selection };
 type T3Frame =
-  | { kind: "snapshot"; projection: { turnItems: T3Item[]; runs: T3Run[] } }
+  | { kind: "snapshot"; projection: { turnItems: T3Item[]; runs: T3Run[]; thread?: T3Thread } }
   | { kind: "event"; event: { type: string; payload: unknown } }
   | { kind: string };
 
 type Live = { threadId: string; runId?: string; abort: AbortController };
 
 const uuid = () => crypto.randomUUID();
+
+/** Two selections that run the same model the same way, whatever order their options come in. */
+function sameSelection(a: T3Selection, b: T3Selection): boolean {
+  const options = (selection: T3Selection) =>
+    JSON.stringify([...(selection.options ?? [])].sort((x, y) => x.id.localeCompare(y.id)));
+  return a.instanceId === b.instanceId && a.model === b.model && options(a) === options(b);
+}
 
 /** The chat's name in T3's own list until the app passes its real one: its id, made readable. */
 function chatTitle(sessionId: string): string {
@@ -101,6 +110,42 @@ export function createT3Adapter(
     return project.id;
   }
 
+  /** The engine's providers and their models, or nothing when it will not say. */
+  const engineProviders = () =>
+    rpc
+      .call<{ providers?: T3Provider[] }>("server.getConfig", {})
+      .then((config) => (Array.isArray(config?.providers) ? config.providers : undefined))
+      .catch(() => undefined);
+
+  /**
+   * The engine's provider, model and options for what the chat's picker says. A provider the engine has switched off
+   * or never installed is said here, in the chat, instead of as a run that fails.
+   */
+  async function selectionFor(input: { model: string; modelSettings?: Record<string, string> }): Promise<T3Selection> {
+    const providers = await engineProviders();
+    const provider = providers ? t3Provider(id, providers, engine.provider) : undefined;
+    if (providers) {
+      const problem = t3ProviderProblem(engine.provider ?? id, provider);
+      if (problem) throw new Error(problem);
+    }
+    const wanted = engine.model ?? input.model;
+    const model = t3Model(provider, wanted);
+    const options = t3Options(model, input.modelSettings);
+    return {
+      instanceId: provider?.instanceId ?? engine.provider ?? T3_DRIVER[id] ?? id,
+      model: model?.slug ?? wanted,
+      ...(options.length > 0 ? { options } : {}),
+    };
+  }
+
+  /** The picker shows what the engine can run for this provider. */
+  async function refreshCatalog(): Promise<void> {
+    const provider = t3Provider(id, (await engineProviders()) ?? []);
+    if (!provider || !provider.enabled) return;
+    const models = t3PickerModels(id, provider, modelsFor(id));
+    if (models.length > 0) setHarnessModels(id, models);
+  }
+
   async function sendTurn(input: SendTurnInput): Promise<void> {
     const abort = new AbortController();
     const seen = new Map<string, T3Seen>();
@@ -121,17 +166,16 @@ export function createT3Adapter(
     let sent = false;
 
     try {
+      const selection = await selectionFor(input);
+      const runtimeMode = T3_RUNTIME_MODE[input.runtimeMode] ?? "approval-required";
       if (!existing) {
         await rpc.call("orchestration.launchThread", {
           commandId: uuid(),
           threadId,
           projectId: await projectFor(input.cwd),
           title: chatTitle(input.sessionId),
-          modelSelection: {
-            instanceId: engine.provider ?? T3_PROVIDER[id] ?? id,
-            model: engine.model ?? input.model,
-          },
-          runtimeMode: T3_RUNTIME_MODE[input.runtimeMode] ?? "approval-required",
+          modelSelection: selection,
+          runtimeMode,
           interactionMode: "default",
           workspaceStrategy: { type: "root" },
           initialMessage: { text: input.text, attachments: [] },
@@ -168,12 +212,18 @@ export function createT3Adapter(
             // An older thread: what is there is already on screen. Then the message goes in.
             for (const old of frame.projection.turnItems) markT3ItemSeen(old, seen);
             for (const old of frame.projection.runs) oldRuns.add(old.id);
+            // The picker or the permission mode changed since the thread last ran: the thread follows.
+            const set = frame.projection.thread;
+            if (set?.runtimeMode && set.runtimeMode !== runtimeMode)
+              await dispatch({ type: "thread.runtime-mode.set", threadId, runtimeMode });
+            const switched = set?.modelSelection && !sameSelection(set.modelSelection, selection);
             await dispatch({
               type: "message.dispatch",
               threadId,
               messageId: uuid(),
               text: input.text,
               attachments: [],
+              ...(switched ? { modelSelection: selection } : {}),
               dispatchMode: { type: "queue_after_active" },
               createdBy: "user",
               creationSource: "web",
@@ -241,6 +291,7 @@ export function createT3Adapter(
     id,
     live: true,
     sendTurn,
+    refreshCatalog,
     steerTurn,
     cancelTurn,
     respondApproval: (_sessionId, requestId, decision) =>
