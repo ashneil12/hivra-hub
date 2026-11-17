@@ -19,6 +19,21 @@ function mockupChunk(id: string): string | undefined {
 }
 
 export default defineConfig(async ({ mode }) => {
+  // A dev slot started with an engine (`npm run hub:dev -- --engine`, scripts/hub-dev-engine.mjs): where the engine is
+  // and its token come from the slot's own file, never from the command line, which Tauri prints.
+  const engineSlot = env.MONOCODE_DEV_ENGINE_SLOT;
+  if (engineSlot && /^[a-z0-9-]+$/.test(engineSlot)) {
+    try {
+      const { readFileSync } = await import("node:fs");
+      const engine = JSON.parse(readFileSync(`target/hub-dev/${engineSlot}.engine.json`, "utf8")) as { origin?: string; token?: string };
+      if (engine.origin && engine.token) {
+        env.VITE_DROPWAVE_ENGINE = engine.origin;
+        env.VITE_DROPWAVE_ENGINE_TOKEN = engine.token;
+      }
+    } catch {
+      // No file: the page runs without an engine.
+    }
+  }
   const stable = mode === "stable";
   // The design mockup (src/dev/mockup, `npm run mockup:build`): the real app as static files with every native call
   // stubbed, served from any folder.

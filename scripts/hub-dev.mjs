@@ -311,15 +311,16 @@ export function devCsp(baseCsp, port, more = []) {
  */
 export function slotConfig({ slot, port, base, overlay, engine }) {
   const devCommand = overlay?.build?.beforeDevCommand ?? base?.build?.beforeDevCommand ?? "npm run dev";
-  // Both origin and token are checked before they get here (hub-dev-engine.mjs): they go into a shell command.
-  const engineVars = engine ? `VITE_DROPWAVE_ENGINE=${engine.origin} VITE_DROPWAVE_ENGINE_TOKEN=${engine.token} ` : "";
+  // Only the slot's name is in the command: vite reads the engine's address and token from the slot's own file
+  // (hub-dev-engine.mjs `engineFile`). Tauri prints this command, so a token in it would be in the terminal and in logs.
+  const engineVars = engine ? `MONOCODE_DEV_ENGINE_SLOT=${slot} ` : "";
   const engineSources = engine ? [engine.origin, engine.origin.replace(/^http/, "ws")] : [];
   return {
     identifier: slotIdentifier(slot),
     productName: DEV_PRODUCT,
     build: {
       // In the command, not the app's environment: the dev copy's own terminals and agents must not inherit the port
-      // or the engine's token.
+      // or find the engine.
       beforeDevCommand: `MONOCODE_VITE_PORT=${port} ${engineVars}${devCommand}`,
       devUrl: `http://localhost:${port}`,
     },
@@ -412,9 +413,7 @@ export function writeSlotConfig(plan, root = ROOT, engine) {
     engine,
   });
   fs.mkdirSync(path.dirname(plan.configFile), { recursive: true });
-  // With an engine the file holds its token: this user only. It goes when the run ends (hub-doctor.mjs reapRun).
-  fs.writeFileSync(plan.configFile, `${JSON.stringify(config, null, 2)}\n`, engine ? { mode: 0o600 } : {});
-  if (engine) fs.chmodSync(plan.configFile, 0o600);
+  fs.writeFileSync(plan.configFile, `${JSON.stringify(config, null, 2)}\n`);
   return config;
 }
 
@@ -584,18 +583,22 @@ async function main() {
   registerSlot(plan);
   let engine;
   if (options.engine) {
-    const { startEngine } = await import("./hub-dev-engine.mjs");
+    const { startEngine, engineFile } = await import("./hub-dev-engine.mjs");
     console.log(`hub:dev: starting the engine in ${tilde(path.resolve(options.engine))} ...`);
     engine = await startEngine({ dir: options.engine, slot: plan.slot, slotPort: plan.port });
+    engine.file = engineFile(plan.slot, ROOT);
   }
   const stopEngine = async () => {
     if (!engine) return;
+    // Its token goes with it.
+    fs.rmSync(engine.file, { force: true });
     const left = await sweep(signalTree(engine.child.pid, "SIGTERM"));
     if (left.length) console.error(`hub:dev: the engine was still running: ${left.map(({ pid }) => pid).join(", ")}`);
     engine = undefined;
   };
   let code;
   try {
+    if (engine) (await import("./hub-dev-engine.mjs")).writeEngineFile(engine.file, engine);
     writeSlotConfig(plan, ROOT, engine);
 
     console.log(`hub:dev  slot ${plan.slot} (${plan.reason}${plan.clashWith ? `: ${tilde(plan.clashWith)} has the plain name` : ""})`);

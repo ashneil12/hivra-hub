@@ -5,7 +5,11 @@
 // - Port: the slot's vite port + 5. Slots are 10 apart, so no slot's vite or engine port is another's.
 // - Data: ~/.monocode-hub-dev/engine/<slot>, kept between runs so a chat finds its conversation again. Never ~/.t3,
 //   the folder a T3 Code Ash installed for himself uses; nothing is copied from it either (--no-seed).
-// - Sign-in: a session token issued for that data folder, handed to the page through vite (hub-dev.mjs `slotConfig`).
+// - Sign-in: a session token issued for that data folder. It reaches the page through vite, which reads it from a file
+//   only this user can read (target/hub-dev/<slot>.engine.json, gone when the run ends). It is in no command line: Tauri
+//   prints the dev command it runs, and a token there ended up in the terminal and in logs (Mac run, 17 Nov).
+// - Node: the engine's own runner starts its server with whatever `node` is first on PATH, so the folder of the chosen
+//   Node goes first there.
 // - The engine's server lets the dev copy's page in by its origin and sends no telemetry.
 import { execFile, execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
@@ -15,7 +19,7 @@ import path from "node:path";
 
 export const ENGINE_PORT_OFFSET = 5;
 const DEV_HOME = ".monocode-hub-dev";
-/** A token goes into a shell command (the slot's beforeDevCommand): only what a token is made of may. */
+/** Only what a token is made of is passed on. */
 const TOKEN = /^[A-Za-z0-9._~+/=-]{16,4096}$/;
 
 export function enginePort(slotPort) {
@@ -28,6 +32,19 @@ export function engineHome(slot, home = os.homedir()) {
 
 export function engineOrigin(port) {
   return `http://127.0.0.1:${port}`;
+}
+
+/** Where vite finds the slot's engine (vite.config.ts reads it when the dev command names the slot). */
+export function engineFile(slot, root) {
+  return path.join(root, "target/hub-dev", `${slot}.engine.json`);
+}
+
+/** Writes where the engine is and its token, for this user only. */
+export function writeEngineFile(file, { origin, token }) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.rmSync(file, { force: true });
+  fs.writeFileSync(file, `${JSON.stringify({ origin, token })}\n`, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
 }
 
 /** What the dev copy's page must be allowed to connect to (hub-dev.mjs `devCsp`). */
@@ -44,11 +61,15 @@ export function tokenArgs(home) {
   return ["apps/server/src/bin.ts", "auth", "session", "issue", "--token-only", "--base-dir", home];
 }
 
-/** The environment the engine runs with: its own tools first on PATH, nothing of an enclosing engine or vite. */
-export function engineEnvironment({ dir, pageOrigin, env = process.env }) {
+/**
+ * The environment the engine runs with: its own tools first on PATH, then the folder of the Node it was started with
+ * (`node`, when that is a path), so the server its runner starts is that Node too. Nothing of an enclosing engine or vite.
+ */
+export function engineEnvironment({ dir, pageOrigin, node, env = process.env }) {
   const next = { ...env };
   for (const key of Object.keys(next)) if (key.startsWith("T3CODE_") || key.startsWith("VITE_")) delete next[key];
-  next.PATH = [path.join(dir, "node_modules/.bin"), env.PATH].filter(Boolean).join(path.delimiter);
+  const nodeDir = node && path.isAbsolute(node) ? path.dirname(node) : undefined;
+  next.PATH = [path.join(dir, "node_modules/.bin"), nodeDir, env.PATH].filter(Boolean).join(path.delimiter);
   next.T3CODE_TELEMETRY_ENABLED = "false";
   next.T3CODE_NO_BROWSER = "1";
   next.T3CODE_AUTO_BOOTSTRAP_PROJECT_FROM_CWD = "0";
@@ -80,6 +101,12 @@ export function engineProblem(dir, nodeVersion) {
   return null;
 }
 
+/** `~/x` as a path: the variable is often set in front of the command, where the shell leaves a quoted `~` alone. */
+export function expandHome(value, home = os.homedir()) {
+  if (!value) return value;
+  return value === "~" ? home : value.startsWith("~/") ? path.join(home, value.slice(2)) : value;
+}
+
 const answers = (origin) =>
   new Promise((resolve) => {
     const request = http.get(origin, { timeout: 1000 }, (response) => {
@@ -99,7 +126,7 @@ const answers = (origin) =>
  */
 export async function startEngine({ dir, slot, slotPort, home = os.homedir(), env = process.env, wait = 180_000, log = () => {} }) {
   const folder = path.resolve(dir);
-  const node = env.DROPWAVE_ENGINE_NODE || "node";
+  const node = expandHome(env.DROPWAVE_ENGINE_NODE, home) || "node";
   let nodeVersion = "";
   try {
     nodeVersion = execFileSync(node, ["--version"], { encoding: "utf8" }).trim();
@@ -116,7 +143,7 @@ export async function startEngine({ dir, slot, slotPort, home = os.homedir(), en
   fs.mkdirSync(data, { recursive: true });
   const logFile = path.join(data, "engine.log");
   const out = fs.openSync(logFile, "a");
-  const engineEnv = engineEnvironment({ dir: folder, pageOrigin: `http://localhost:${slotPort}`, env });
+  const engineEnv = engineEnvironment({ dir: folder, pageOrigin: `http://localhost:${slotPort}`, node, env });
   const child = spawn(node, engineArgs({ port, home: data }), { cwd: folder, env: engineEnv, stdio: ["ignore", out, out] });
   let exited = null;
   child.on("exit", (code, signal) => (exited = code ?? signal ?? 1));

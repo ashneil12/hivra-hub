@@ -323,16 +323,15 @@ test("a slot started with an engine lets the page reach it and tells only vite w
   const { slotConfig, devCsp, devEnvironment, parseArgs } = await load("hub-dev.mjs");
   const engine = { origin: "http://127.0.0.1:1465", token: "example.token-1_2" };
   const slot = slotConfig({ slot: "hub-x", port: 1460, base, overlay: hub, engine });
-  assert.match(
-    slot.build.beforeDevCommand,
-    /^MONOCODE_VITE_PORT=1460 VITE_DROPWAVE_ENGINE=http:\/\/127\.0\.0\.1:1465 VITE_DROPWAVE_ENGINE_TOKEN=example\.token-1_2 /,
-  );
+  // The command names the slot and nothing else: Tauri prints it, so the token is in no part of the config.
+  assert.match(slot.build.beforeDevCommand, /^MONOCODE_VITE_PORT=1460 MONOCODE_DEV_ENGINE_SLOT=hub-x /);
+  assert.ok(!JSON.stringify(slot).includes(engine.token));
   assert.ok(slot.build.beforeDevCommand.includes(HUB_FLAG));
   const connect = slot.app.security.devCsp.split("; ").find((d) => d.startsWith("connect-src ")).split(" ");
   for (const source of ["http://127.0.0.1:1465", "ws://127.0.0.1:1465", "http://localhost:1460"]) assert.ok(connect.includes(source), source);
   // Without an engine nothing about one is in the config, and the CSP is what it always was.
   const plain = slotConfig({ slot: "hub-x", port: 1460, base, overlay: hub });
-  assert.ok(!JSON.stringify(plain).includes("DROPWAVE_ENGINE"));
+  assert.ok(!JSON.stringify(plain).includes("ENGINE"));
   assert.equal(plain.app.security.devCsp, devCsp(base.app.security.devCsp, 1460));
   // The token never rides in the app's environment, where the dev copy's agents and terminals would inherit it.
   const env = devEnvironment({ slot: "hub-x", env: { PATH: "/usr/bin" } });
@@ -359,6 +358,34 @@ test("the engine gets the slot's own port and data folder, its page's origin, an
   // Nothing of an engine or page this was started from: never its data folder, port or baked-in addresses.
   for (const key of ["T3CODE_HOME", "T3CODE_PORT", "VITE_HTTP_URL"]) assert.equal(env[key], undefined, key);
   assert.equal(env.HOME, "/Users/example");
+});
+
+test("the engine's token is kept in a file only this user can read, where vite's config looks for it", async () => {
+  const engine = await load("hub-dev-engine.mjs");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "engine-file-"));
+  try {
+    const file = engine.engineFile("hub-x", root);
+    assert.equal(file, path.join(root, "target/hub-dev/hub-x.engine.json"));
+    engine.writeEngineFile(file, { origin: "http://127.0.0.1:1465", token: "example.token-1_2", child: {} });
+    assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+    assert.deepEqual(JSON.parse(fs.readFileSync(file, "utf8")), { origin: "http://127.0.0.1:1465", token: "example.token-1_2" });
+    // vite.config.ts reads this very path for the slot the dev command names.
+    const vite = fs.readFileSync(path.join(__dirname, "..", "vite.config.ts"), "utf8");
+    assert.ok(vite.includes("MONOCODE_DEV_ENGINE_SLOT"));
+    assert.ok(vite.includes("target/hub-dev/${engineSlot}.engine.json"));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("the engine's server runs on the Node it was started with, wherever plain node points", async () => {
+  const engine = await load("hub-dev-engine.mjs");
+  const env = engine.engineEnvironment({ dir: "/work/dropwave", pageOrigin: "http://localhost:1460", node: "/opt/node-26/bin/node", env: { PATH: "/usr/bin" } });
+  assert.equal(env.PATH, ["/work/dropwave/node_modules/.bin", "/opt/node-26/bin", "/usr/bin"].join(path.delimiter));
+  // A bare `node` is whatever PATH already finds.
+  assert.equal(engine.engineEnvironment({ dir: "/work/dropwave", pageOrigin: "x", node: "node", env: { PATH: "/usr/bin" } }).PATH, ["/work/dropwave/node_modules/.bin", "/usr/bin"].join(path.delimiter));
+  assert.equal(engine.expandHome("~/node/bin/node", "/Users/example"), "/Users/example/node/bin/node");
+  assert.equal(engine.expandHome("/abs/node", "/Users/example"), "/abs/node");
 });
 
 test("a folder that is not an installed engine checkout, or the wrong Node, is refused with what to do", async () => {
