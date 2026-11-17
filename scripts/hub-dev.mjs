@@ -593,7 +593,7 @@ async function main() {
     // Its token goes with it.
     fs.rmSync(engine.file, { force: true });
     const left = await sweep(signalTree(engine.child.pid, "SIGTERM"));
-    if (left.length) console.error(`hub:dev: the engine was still running: ${left.map(({ pid }) => pid).join(", ")}`);
+    if (left.length) console.error(`hub:dev: stopped what was left of the engine: ${left.map(({ pid }) => pid).join(", ")}`);
     engine = undefined;
   };
   let code;
