@@ -31,6 +31,36 @@ export function onT3OutsideTurn(listener: Listener): () => void {
 
 const tellApp: Listener = (turn) => [...listeners].map((listener) => listener(turn)).some(Boolean);
 
+/**
+ * A first mate's answer to a job another chat handed it through the engine, which that chat never heard: it had
+ * stopped waiting (the engine ends one wait after about 45 seconds, and an agent gives up after a few) and nothing in
+ * the engine wakes it when the job ends later.
+ */
+export type T3UnheardAnswer = {
+  /** The chat that handed the job over. */
+  sessionId: string;
+  /** The chat that did it. */
+  fromSessionId: string;
+  /** The job's run in that chat, as the chat keeps it. */
+  providerTurnId: string;
+  /** Its last words in that run; empty when it wrote none. */
+  text: string;
+  /** False when the run was stopped or failed. */
+  finished: boolean;
+};
+
+/** False when the chat that handed the job over is not open: the watch offers the answer again later. */
+type AnswerListener = (answer: T3UnheardAnswer) => boolean;
+const answerListeners = new Set<AnswerListener>();
+
+/** The app hears of every answer the chat that asked did not. Returns how to stop hearing. */
+export function onT3UnheardAnswer(listener: AnswerListener): () => void {
+  answerListeners.add(listener);
+  return () => void answerListeners.delete(listener);
+}
+
+const tellAnswer: AnswerListener = (answer) => [...answerListeners].map((listener) => listener(answer)).some(Boolean);
+
 const REQUEST = "engine-turn-";
 
 /** The request id of the app's turn that follows an engine's own run. A queued message keeps it, so the follow is never sent as a message. */
@@ -49,8 +79,15 @@ type ShellFrame =
   | { kind: "thread.updated"; thread?: ShellThread }
   | { kind: string };
 /** The message that began a run, as the conversation's record keeps it (a turn item of it exists only once the run starts). */
-type Message = { role?: string; runId?: string | null; text?: string; senderThreadId?: string; scheduledTaskId?: string };
-type ThreadFrame = { kind: string; projection?: { messages?: Message[]; runs?: Array<{ id: string }> } };
+type Message = { role?: string; runId?: string | null; text?: string; createdAt?: string; senderThreadId?: string; scheduledTaskId?: string };
+/** A tool call as the conversation keeps it. The engine's own tools for another conversation name it in `input`. */
+type ToolItem = { type?: string; toolName?: string; input?: { threadId?: unknown } | null; completedAt?: string | null };
+type Projection = { messages?: Message[]; runs?: Array<{ id: string; status?: string; completedAt?: string | null }>; turnItems?: ToolItem[] };
+type ThreadFrame = { kind: string; projection?: Projection };
+
+const RUN_ENDED = new Set(["completed", "failed", "interrupted", "cancelled", "rolled_back"]);
+/** The engine's tools an agent hears another conversation's answer with. */
+const HEARS = /t3_thread_(?:wait|read)$/;
 
 export type T3Watch = {
   /** A chat and its conversation in the engine. */
@@ -71,7 +108,7 @@ export type T3Watch = {
  * already ended (it ran while the app was closed) is told only when the app cannot have sent it: another conversation
  * or a scheduled task did, or it has no message at all. The app drops any run the chat already shows.
  */
-export function createT3Watch(rpc: T3Rpc, tell: Listener = tellApp): T3Watch {
+export function createT3Watch(rpc: T3Rpc, tell: Listener = tellApp, tellUnheard: AnswerListener = tellAnswer): T3Watch {
   const chats = new Map<string, string>();
   const threadOf = new Map<string, string>();
   const own = new Set<string>();
@@ -81,6 +118,9 @@ export function createT3Watch(rpc: T3Rpc, tell: Listener = tellApp): T3Watch {
   const refused = new Map<string, string>();
   /** The engine's last word per conversation: the run going now, and the newest one. */
   const state = new Map<string, { active?: string; latest?: string }>();
+  /** Jobs one chat handed another through the engine, by the run that does the job, until their answer is heard. */
+  const handed = new Map<string, { threadId: string; sender: string }>();
+  const settling = new Set<string>();
   let listening = false;
 
   const listen = () => {
@@ -99,12 +139,69 @@ export function createT3Watch(rpc: T3Rpc, tell: Listener = tellApp): T3Watch {
           if (!thread.id) continue;
           state.set(thread.id, { active: thread.activeRunId ?? undefined, latest: thread.latestRunId ?? undefined });
           look(thread.id);
+          settle(thread.id);
         }
         return true;
       })
       .catch(() => undefined)
       // The connection dropped or the engine went away: the next chat that is known starts the watch again.
       .finally(() => (listening = false));
+  };
+
+  const read = async (threadId: string): Promise<Projection | undefined> => {
+    let projection: Projection | undefined;
+    await rpc.stream("orchestration.subscribeThread", { threadId }, (value) => {
+      const frame = value as ThreadFrame;
+      if (frame.kind !== "snapshot" || !frame.projection) return true;
+      projection = frame.projection;
+      return false;
+    });
+    return projection;
+  };
+
+  /**
+   * A handed job whose run has ended while the chat that handed it over is doing nothing: did that chat hear the
+   * answer? It did when one of its waits on (or reads of) the job's conversation ended at or after the job did; a wait
+   * that gave up ended before. An answer nobody heard is told to the app once.
+   */
+  const settle = (changed: string) => {
+    for (const [runId, job] of handed) {
+      if ((job.threadId !== changed && job.sender !== changed) || settling.has(runId)) continue;
+      if (state.get(job.threadId)?.active === runId || state.get(job.sender)?.active) continue;
+      settling.add(runId);
+      void (async () => {
+        const sessionId = chats.get(job.sender);
+        const fromSessionId = chats.get(job.threadId);
+        if (!sessionId || !fromSessionId) return void handed.delete(runId);
+        const theirs = await read(job.threadId);
+        const run = theirs?.runs?.find((candidate) => candidate.id === runId);
+        if (!run) return void handed.delete(runId);
+        if (!RUN_ENDED.has(run.status ?? "")) return;
+        const endedAt = Date.parse(run.completedAt ?? "");
+        const heard = ((await read(job.sender))?.turnItems ?? []).some(
+          (item) =>
+            item.type === "dynamic_tool" &&
+            HEARS.test(item.toolName ?? "") &&
+            item.input?.threadId === job.threadId &&
+            (!item.completedAt || Date.parse(item.completedAt) >= endedAt),
+        );
+        if (heard) return void handed.delete(runId);
+        const said = (theirs?.messages ?? [])
+          .filter((message) => message.role === "assistant" && message.runId === runId)
+          .sort((a, b) => (a.createdAt ?? "").localeCompare(b.createdAt ?? ""))
+          .pop();
+        const taken = tellUnheard({
+          sessionId,
+          fromSessionId,
+          providerTurnId: t3AppId(runId),
+          text: said?.text ?? "",
+          finished: run.status === "completed",
+        });
+        if (taken) handed.delete(runId);
+      })()
+        .catch(() => undefined)
+        .finally(() => settling.delete(runId));
+    }
   };
 
   /** Never awaited by the list's own stream: reading a conversation must not hold the list back. */
@@ -134,6 +231,11 @@ export function createT3Watch(rpc: T3Rpc, tell: Listener = tellApp): T3Watch {
         const scheduled = !!first?.scheduledTaskId;
         if (!going && first && !sender && !scheduled) return;
         const fromSessionId = sender ? chats.get(sender) : undefined;
+        // A job a chat here handed over: its answer is watched until that chat has heard it.
+        if (sender && fromSessionId) {
+          handed.set(runId, { threadId, sender });
+          settle(threadId);
+        }
         const taken = tell({
           sessionId,
           providerTurnId: t3AppId(runId),

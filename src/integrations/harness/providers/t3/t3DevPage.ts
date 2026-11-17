@@ -6,6 +6,7 @@ import { HARNESSES } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
 import { ENGINE_BRIEFING_TAG } from "../../../../features/crew/model/engineMates";
+import { ENGINE_ANSWER_TAG } from "../../../../features/crew/model/engineAnswer";
 import { setT3ThreadChats } from "./t3Links";
 import { createT3Watch } from "./t3Outside";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
@@ -21,8 +22,15 @@ export function quietAppTurns(adapter: HarnessAdapter): HarnessAdapter {
     sendTurn: async (input) => {
       // The app's resume of a turn a quit cut is not one of those, nor is its follow of a turn the engine began: the
       // engine has that turn and nothing is sent. Its briefing of a first mate (crew/model/engineMates.ts) is part of
-      // what the walk shows: without it a first mate the Chief of Staff writes to does not know who it is.
-      if (input.origin === "person" || input.resume || input.follow || input.text.includes(ENGINE_BRIEFING_TAG))
+      // what the walk shows: without it a first mate the Chief of Staff writes to does not know who it is. So is a
+      // first mate's answer passed back to the chat that handed it the job (crew/model/engineAnswer.ts).
+      if (
+        input.origin === "person" ||
+        input.resume ||
+        input.follow ||
+        input.text.includes(ENGINE_BRIEFING_TAG) ||
+        input.text.includes(ENGINE_ANSWER_TAG)
+      )
         return adapter.sendTurn(input);
       input.onEvent({ type: "session.started" });
       input.onAccepted?.();

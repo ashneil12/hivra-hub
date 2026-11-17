@@ -1,4 +1,5 @@
 import { engineMateBriefing } from "../../../../features/crew/model/engineMates";
+import { ENGINE_ANSWER_TAG } from "../../../../features/crew/model/engineAnswer";
 import { describe, expect, it } from "vitest";
 import { monoTurn } from "../../../../features/monos/model/monoFiles";
 import { modelsFor, resetHarnessModelOverlays } from "../../../../features/sessions/model/models";
@@ -790,6 +791,13 @@ describe("the dev page's engine", () => {
       await engine.sayTo(String(engine.calls[0].payload.threadId), event("run.created", { id: "run-2", status: "completed" }));
       await briefed;
       expect(engine.commands()).toMatchObject([{ type: "message.dispatch" }]);
+
+      // And a first mate's answer passed back to the chat that handed it the job, which never heard it.
+      const passed = adapter.sendTurn({ ...turn("chat-1", `${ENGINE_ANSWER_TAG}EXO lead]\nExample: 6 lines.`, []), origin: undefined });
+      await engine.sayTo(String(engine.calls[0].payload.threadId), snapshot([], [{ id: "run-2", status: "completed" }]));
+      await engine.sayTo(String(engine.calls[0].payload.threadId), event("run.created", { id: "run-3", status: "completed" }));
+      await passed;
+      expect(engine.commands()).toMatchObject([{ type: "message.dispatch" }, { type: "message.dispatch" }]);
     }
   });
 

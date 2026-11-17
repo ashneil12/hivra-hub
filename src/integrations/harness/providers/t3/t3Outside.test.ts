@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { createT3Watch, engineTurnOf, engineTurnRequestId, type T3OutsideTurn } from "./t3Outside";
+import { createT3Watch, engineTurnOf, engineTurnRequestId, type T3OutsideTurn, type T3UnheardAnswer } from "./t3Outside";
 import type { T3Rpc } from "./t3Rpc";
 
 /** An engine's list of conversations and each conversation's snapshot, in the test's hands. */
-function fakeEngine(conversations: Record<string, { messages: unknown[]; runs: unknown[] }>) {
+function fakeEngine(conversations: Record<string, { messages: unknown[]; runs: unknown[]; turnItems?: unknown[] }>) {
   let shell: ((frame: unknown) => boolean | Promise<boolean>) | undefined;
   const reads: string[] = [];
   const rpc: T3Rpc = {
@@ -22,16 +22,24 @@ function fakeEngine(conversations: Record<string, { messages: unknown[]; runs: u
   };
   const told: T3OutsideTurn[] = [];
   const takes = { now: true };
-  const watch = createT3Watch(rpc, (turn) => {
-    told.push(turn);
-    return takes.now;
-  });
+  const unheard: T3UnheardAnswer[] = [];
+  const watch = createT3Watch(
+    rpc,
+    (turn) => {
+      told.push(turn);
+      return takes.now;
+    },
+    (answer) => {
+      unheard.push(answer);
+      return takes.now;
+    },
+  );
   /** The engine says where a conversation stands; everything the watch does about it has settled on return. */
   const says = async (id: string, activeRunId: string | null, latestRunId: string | null = activeRunId) => {
     await shell?.({ kind: "thread.updated", thread: { id, activeRunId, latestRunId } });
     await new Promise((resolve) => setTimeout(resolve, 0));
   };
-  return { watch, told, says, reads, takes };
+  return { watch, told, unheard, says, reads, takes };
 }
 
 const sent = (runId: string, text: string, more: Record<string, unknown> = {}) => ({ role: "user", runId, text, ...more });
@@ -127,5 +135,91 @@ describe("turns the engine starts in a chat by itself", () => {
     engine.watch.forget("chat-1");
     await engine.says("thread-1", "run:9");
     expect(engine.told).toEqual([]);
+  });
+  describe("a handed job's answer", () => {
+    const JOB = "run:thread-mate:2";
+    const wait = (completedAt: string, more: Record<string, unknown> = {}) => ({
+      type: "dynamic_tool",
+      toolName: "mcp__t3-code__t3_thread_wait",
+      input: { threadId: "thread-mate", timeoutMs: 300000 },
+      status: "completed",
+      completedAt,
+      ...more,
+    });
+    const handed = (chief: unknown[], job: Record<string, unknown> = { status: "completed", completedAt: "2026-11-17T19:17:00.019Z" }) =>
+      fakeEngine({
+        "thread-mate": {
+          runs: [{ id: "run:thread-mate:1", status: "completed" }, { id: JOB, ...job }],
+          messages: [
+            sent(JOB, "Example: count the lines", { senderThreadId: "thread-chief" }),
+            { role: "assistant", runId: "run:thread-mate:1", text: "Ready.", createdAt: "2026-11-17T19:13:29.165Z" },
+            { role: "assistant", runId: JOB, text: "Example: checking.", createdAt: "2026-11-17T19:16:00.000Z" },
+            { role: "assistant", runId: JOB, text: "Example: notes.txt has 6 lines.", createdAt: "2026-11-17T19:16:59.447Z" },
+          ],
+        },
+        "thread-chief": { runs: [{ id: "run:thread-chief:1", status: "completed" }], messages: [], turnItems: chief },
+      });
+    const start = async (engine: ReturnType<typeof fakeEngine>) => {
+      engine.watch.know("chat-chief", "thread-chief");
+      engine.watch.know("chat-mate", "thread-mate");
+      await engine.says("thread-chief", "run:thread-chief:1");
+      await engine.says("thread-mate", JOB);
+    };
+
+    it("is told to the app once when every wait of the chat that handed it over had given up before the job ended", async () => {
+      const engine = handed([wait("2026-11-17T19:14:18.856Z"), wait("2026-11-17T19:15:52.146Z")]);
+      await start(engine);
+      // The job is still going, and so is the chat that handed it over: nothing to say yet.
+      expect(engine.unheard).toEqual([]);
+      await engine.says("thread-chief", null, "run:thread-chief:1");
+      expect(engine.unheard).toEqual([]);
+      await engine.says("thread-mate", null, JOB);
+      // The answer goes by the same id the job's own turn in the first mate's chat was told with.
+      const job = engine.told.find((turn) => turn.sessionId === "chat-mate")?.providerTurnId;
+      expect(job).toEqual(expect.any(String));
+      expect(engine.unheard).toEqual([
+        { sessionId: "chat-chief", fromSessionId: "chat-mate", providerTurnId: job, text: "Example: notes.txt has 6 lines.", finished: true },
+      ]);
+      await engine.says("thread-mate", null, JOB);
+      await engine.says("thread-chief", null, "run:thread-chief:1");
+      expect(engine.unheard).toHaveLength(1);
+    });
+
+    it("is not told when a wait or a read of that conversation ended at or after the job did", async () => {
+      for (const heard of [
+        wait("2026-11-17T19:17:00.119Z"),
+        { ...wait("2026-11-17T19:20:06.916Z"), toolName: "mcp__t3-code__t3_thread_read", input: { threadId: "thread-mate" } },
+      ]) {
+        const engine = handed([wait("2026-11-17T19:14:18.856Z"), heard]);
+        await start(engine);
+        await engine.says("thread-mate", null, JOB);
+        await engine.says("thread-chief", null, "run:thread-chief:1");
+        expect(engine.unheard).toEqual([]);
+      }
+      // A wait on some other conversation hears nothing of this one.
+      const other = handed([wait("2026-11-17T19:18:00.000Z", { input: { threadId: "thread-other" } })]);
+      await start(other);
+      await other.says("thread-mate", null, JOB);
+      await other.says("thread-chief", null, "run:thread-chief:1");
+      expect(other.unheard).toHaveLength(1);
+    });
+
+    it("waits for the chat that handed it over to finish what it is doing, says when the job was stopped, and offers it again when the app could not take it", async () => {
+      const engine = handed([], { status: "interrupted", completedAt: "2026-11-17T19:17:00.019Z" });
+      await start(engine);
+      await engine.says("thread-mate", null, JOB);
+      // The answer goes by the same id the job's own turn in the first mate's chat was told with.
+      const job = engine.told.find((turn) => turn.sessionId === "chat-mate")?.providerTurnId;
+      expect(job).toEqual(expect.any(String));
+      expect(engine.unheard).toEqual([]);
+      engine.takes.now = false;
+      await engine.says("thread-chief", null, "run:thread-chief:1");
+      expect(engine.unheard).toMatchObject([{ finished: false, text: "Example: notes.txt has 6 lines." }]);
+      engine.takes.now = true;
+      await engine.says("thread-chief", null, "run:thread-chief:1");
+      expect(engine.unheard).toHaveLength(2);
+      await engine.says("thread-chief", null, "run:thread-chief:1");
+      expect(engine.unheard).toHaveLength(2);
+    });
   });
 });

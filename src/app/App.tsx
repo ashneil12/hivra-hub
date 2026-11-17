@@ -793,8 +793,9 @@ import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { crewLaunch } from "../features/crew/model/crewSession";
 import { engineCrewChat, type EngineCrewStart } from "../features/crew/model/engineCrew";
 import { engineTurnFor } from "../features/crew/model/engineTurn";
+import { engineAnswerFor } from "../features/crew/model/engineAnswer";
 import { engineBriefingId, engineMateBriefing, engineMatesNote, type EngineMate } from "../features/crew/model/engineMates";
-import { engineTurnOf, onT3OutsideTurn } from "../integrations/harness/providers/t3/t3Outside";
+import { engineTurnOf, onT3OutsideTurn, onT3UnheardAnswer } from "../integrations/harness/providers/t3/t3Outside";
 import { runsOnEngine } from "../integrations/harness/providers/t3/t3DevPage";
 import { t3EngineId } from "../integrations/harness/providers/t3/t3Ids";
 // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
@@ -11958,6 +11959,39 @@ function Workspace({
         else
           void Promise.resolve(
             submitSessionRef.current(turn.sessionId, made.text, [], { monoNote: note, appRequestId: made.appRequestId }),
+          ).then((taken) => {
+            if (!taken) wait();
+          });
+        return true;
+      }),
+    [],
+  );
+  // A first mate's answer to a job the Chief of Staff handed it through the engine, when the Chief of Staff had
+  // stopped waiting before the job ended: nothing in the engine wakes it, so the app passes the answer back as it
+  // passes back the answer to a private message (useRoomRunner, relayReplies).
+  useEffect(
+    () =>
+      onT3UnheardAnswer((answer) => {
+        const chat = sessionsRef.current.find((session) => session.id === answer.sessionId);
+        if (!chat) return false;
+        const mono = monoForSession(answer.fromSessionId);
+        const name = mono?.name?.trim() || sessionsRef.current.find((session) => session.id === answer.fromSessionId)?.title || "";
+        const made = engineAnswerFor(answer, chat, { name, ...(mono ? { ref: mono.id } : {}) });
+        // The chat already has it.
+        if (!made) return true;
+        const wait = () => {
+          const next = sessionsRef.current.map((session) =>
+            session.id === answer.sessionId
+              ? queueMonoNote(session, { id: made.appRequestId, text: made.text, note: made.monoNote, waitForIdle: true })
+              : session,
+          );
+          sessionsRef.current = next;
+          setSessions(next);
+        };
+        if (!monoTakesRoomTurnNow(chat)) wait();
+        else
+          void Promise.resolve(
+            submitSessionRef.current(answer.sessionId, made.text, [], { monoNote: made.monoNote, appRequestId: made.appRequestId }),
           ).then((taken) => {
             if (!taken) wait();
           });
