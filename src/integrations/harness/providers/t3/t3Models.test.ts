@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentModel } from "../../../../features/sessions/model/models";
-import { t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Model, type T3Provider } from "./t3Models";
+import { t3Availability, t3ProviderFacts, t3TurnOn, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Model, type T3Provider } from "./t3Models";
 
 const reasoning = {
   id: "effort",
@@ -112,5 +112,42 @@ describe("the picker's list from the engine", () => {
     expect(list.map((model) => model.id)).toEqual(["claude:opus", "claude:opus-5-5", "claude:claude-opus-5-4"]);
     expect(list[0]).toMatchObject({ name: "Claude Opus", nativeId: "opus", aliasTarget: "claude-opus-5-5" });
     expect(list[0].settings?.map((setting) => setting.id)).toEqual(["effort", "ultracode", "fastMode"]);
+  });
+
+  it("says which of this app's providers the engine can run, and why not for the rest", () => {
+    const signedIn = { ...claude, version: "2.1.50", status: "ready", auth: { status: "authenticated", label: "Claude Max", email: "example@example.com" } };
+    const providers = [signedIn, provider("codex", "codex", { displayName: "Codex", enabled: false }), provider("cursor", "cursor", { installed: false })];
+    const title = (harness: string) => ({ claude: "Claude Code", hermes: "Hermes" })[harness] ?? harness;
+    const said = t3Availability(["claude", "codex", "cursor", "hermes"], providers, title);
+    expect(said.available).toEqual({ claude: true, codex: false, cursor: false, hermes: false });
+    expect(said.why).toEqual({
+      codex: "Codex is switched off in the engine.",
+      cursor: "cursor is not installed for the engine to use.",
+      hermes: "The engine has no provider set up for Hermes.",
+    });
+    // What Settings says on the row of one it can run.
+    expect(said.facts).toEqual({
+      claude: { version: "2.1.50", signedIn: true, plan: "Claude Max", email: "example@example.com" },
+      // Switched off is not "install it": the row offers to turn it on.
+      codex: { off: true },
+    });
+    expect(t3ProviderFacts(provider("codex", "codex", { status: "error", message: "Example: the CLI is too old.", auth: { status: "unauthenticated" } }))).toEqual({
+      signedIn: false,
+      note: "Example: the CLI is too old.",
+    });
+    expect(t3ProviderFacts(provider("pi", "pi", { status: "ready", message: "Example: fine.", auth: { status: "unknown" } }))).toEqual({});
+    // A dev page that names one provider runs every chat on it.
+    const replay = t3Availability(["claude", "hermes"], [...providers, provider("devReplay", "devReplay")], title, "devReplay");
+    expect(replay).toEqual({ available: { claude: true, hermes: true }, why: {}, facts: { claude: {}, hermes: {} } });
+  });
+
+  it("switches one provider on without sending the engine a list that would replace the others", () => {
+    expect(t3TurnOn(provider("grok", "grok", { enabled: false }), undefined)).toEqual({
+      patch: {},
+      providerInstanceMutation: { operation: "upsert", instanceId: "grok", instance: { driver: "grok", enabled: true } },
+    });
+    // What the engine keeps for it stays.
+    const kept = { driver: "acpRegistry", displayName: "Example agent", enabled: false, config: { commandPath: "/usr/local/bin/example" } };
+    expect(t3TurnOn(provider("example", "acpRegistry", { enabled: false }), kept).providerInstanceMutation.instance).toEqual({ ...kept, enabled: true });
   });
 });

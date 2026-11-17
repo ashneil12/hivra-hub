@@ -20,10 +20,12 @@ import {
   harnessAvailabilityProbedAt,
   markHarnessAvailabilityProbed,
   setHarnessAvailability,
+  setHarnessEngineFacts,
   type HarnessAvailability,
+  type HarnessEngineFacts,
 } from "./availabilityState";
 
-export type { HarnessAvailability } from "./availabilityState";
+export type { HarnessAvailability, HarnessEngineFacts } from "./availabilityState";
 export {
   getHarnessAvailabilitySnapshot,
   hasProbedHarnessAvailability,
@@ -71,7 +73,31 @@ let inflight: Promise<void> | null = null;
  */
 const PROBE_TTL_MS = 30_000;
 
+/**
+ * Who else can say which tools can run: the engine, when this copy's chats run on one. It starts each tool itself, so
+ * what this app finds on disk is beside the point there. No answer (the engine did not say) leaves it to this app's
+ * own look.
+ */
+export type HarnessAvailabilitySource = () => Promise<
+  | {
+      available: HarnessAvailability;
+      why: Partial<Record<HarnessId, string>>;
+      facts?: Partial<Record<HarnessId, HarnessEngineFacts>>;
+    }
+  | undefined
+>;
+let source: HarnessAvailabilitySource | null = null;
+let why: Partial<Record<HarnessId, string>> = {};
+
+export function setHarnessAvailabilitySource(next: HarnessAvailabilitySource | null): void {
+  source = next;
+  why = {};
+  setHarnessEngineFacts({});
+}
+
 export function harnessUnavailableHint(id: HarnessId): string {
+  const said = why[id];
+  if (said) return said;
   const { name, install } = CLI[id];
   const how = install ? ` (\`${install}\`)` : "";
   return `${name} not found${how}. Install it, or restart MonoCode if it is already installed.`;
@@ -85,7 +111,26 @@ export function probeHarnessAvailability(
   if (!options?.force && lastProbe > 0 && Date.now() - lastProbe < PROBE_TTL_MS) {
     return Promise.resolve();
   }
-  inflight = Promise.all(
+  inflight = (source ? source().catch(() => undefined) : Promise.resolve(undefined))
+    .then((engine) => {
+      why = engine?.why ?? {};
+      setHarnessEngineFacts(engine?.facts ?? {});
+      return engine?.available ?? ownProbe();
+    })
+    .then((next) => {
+      setHarnessAvailability(next);
+      emitHarnessAvailability();
+    })
+    .finally(() => {
+      markHarnessAvailabilityProbed();
+      inflight = null;
+    });
+  return inflight;
+}
+
+/** This app's own look for each tool on disk. */
+function ownProbe(): Promise<HarnessAvailability> {
+  return Promise.all(
     HARNESSES.map(async (id) => {
       if (!isLiveHarness(id)) return [id, false] as const;
       if (id === "cursor") {
@@ -178,16 +223,9 @@ export function probeHarnessAvailability(
       }
       return [id, false] as const;
     }),
-  )
-    .then((entries) => {
-      const next = {} as HarnessAvailability;
-      for (const [id, ok] of entries) next[id] = ok;
-      setHarnessAvailability(next);
-      emitHarnessAvailability();
-    })
-    .finally(() => {
-      markHarnessAvailabilityProbed();
-      inflight = null;
-    });
-  return inflight;
+  ).then((entries) => {
+    const next = {} as HarnessAvailability;
+    for (const [id, ok] of entries) next[id] = ok;
+    return next;
+  });
 }

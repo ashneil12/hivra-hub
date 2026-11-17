@@ -2,9 +2,12 @@
 // real screens can be walked on T3 before the app itself ships with it. Never part of the installed app's start.
 // A dev copy started with an engine (`npm run hub:dev -- --engine <folder>`, scripts/hub-dev-engine.mjs) is told
 // where it is by vite instead of by its address.
-import { HARNESSES } from "../../../../features/sessions/model/session";
+import { HARNESSES, HARNESS_TITLE } from "../../../../features/sessions/model/session";
+import { probeHarnessAvailability, setHarnessAvailabilitySource } from "../../core/availability";
+import { setHarnessEngineTurnOn } from "../../core/availabilityState";
 import type { HarnessAdapter } from "../../core/registry";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
+import { t3Availability, t3Provider, t3TurnOn, type T3Provider } from "./t3Models";
 import { ENGINE_BRIEFING_TAG } from "../../../../features/crew/model/engineMates";
 import { ENGINE_ANSWER_TAG } from "../../../../features/crew/model/engineAnswer";
 import { setT3ThreadChats } from "./t3Links";
@@ -76,6 +79,24 @@ export function t3DevPageAdapters(
   // One watch for the engine: a chat's conversation is the same whichever provider's adapter runs its turns.
   const watch = createT3Watch(rpc);
   setT3ThreadChats(watch.chatOf);
+  // The engine starts each tool, so it says which ones can run (and why one cannot), not this app's look on disk.
+  type Config = { providers?: T3Provider[]; settings?: { providerInstances?: Record<string, Record<string, unknown>> } };
+  setHarnessAvailabilitySource(() =>
+    rpc
+      .call<Config>("server.getConfig", {})
+      .then((config) =>
+        Array.isArray(config?.providers)
+          ? t3Availability(HARNESSES, config.providers, (harness) => HARNESS_TITLE[harness], engine.provider)
+          : undefined,
+      ),
+  );
+  setHarnessEngineTurnOn(async (harness) => {
+    const config = await rpc.call<Config>("server.getConfig", {});
+    const provider = t3Provider(harness, config?.providers ?? [], engine.provider);
+    if (!provider) throw new Error(`The engine has no provider set up for ${HARNESS_TITLE[harness]}.`);
+    await rpc.call("server.updateSettings", t3TurnOn(provider, config?.settings?.providerInstances?.[provider.instanceId]));
+    await probeHarnessAvailability({ force: true });
+  });
   return HARNESSES.map((id) => {
     const adapter = createT3Adapter(id, engine, rpc, watch);
     return page ? quietAppTurns(adapter) : adapter;

@@ -258,6 +258,7 @@ import {
   probeHarnessAvailability,
   subscribeHarnessAvailability,
 } from "../../../integrations/harness/core/availability";
+import { harnessEngineFacts, turnOnInEngine } from "../../../integrations/harness/core/availabilityState";
 import {
   inspectHarnessBinary,
   type HarnessBinaryInspection,
@@ -341,6 +342,7 @@ import {
   useProviderAccountIdentities,
 } from "../../providers/model/providerAccountIdentity";
 import { ProviderAccountSubtitle } from "../../providers/ui/ProviderAccountSubtitle";
+import { EngineProviderLine } from "../../providers/ui/EngineProviderLine";
 import { AccountOrderControls, AccountWaterfallSwitch } from "../../providers/ui/AccountWaterfall";
 import { orderedAccounts } from "../../providers/model/accountWaterfall";
 import { signInOptions } from "../../providers/model/providerSignIn";
@@ -4898,6 +4900,16 @@ function ProviderRow({
   const install = useAgentInstall(harness);
   const installing = install?.status === "running";
   const installPage = agentInstallPage(harness);
+  // Dropwave on T3: the engine runs the tool, so the row says what the engine knows of it.
+  const engine = harnessEngineFacts(harness);
+  const [turnOn, setTurnOn] = useState<{ busy?: boolean; failed?: string }>({});
+  const onTurnOn = () => {
+    setTurnOn({ busy: true });
+    void turnOnInEngine(harness).then(
+      () => setTurnOn({}),
+      (error) => setTurnOn({ failed: error instanceof Error ? error.message : String(error) }),
+    );
+  };
 
   useEffect(() => {
     if (!available || hasLiveCatalog(harness)) return;
@@ -4919,13 +4931,26 @@ function ProviderRow({
         </span>
       }
       description={
-        available
-          ? `${models.length} ${models.length === 1 ? "model" : "models"} available.`
-          : harnessUnavailableHint(harness)
+        available ? (
+          engine ? (
+            <EngineProviderLine models={models.length} facts={engine} />
+          ) : (
+            `${models.length} ${models.length === 1 ? "model" : "models"} available.`
+          )
+        ) : turnOn.failed ? (
+          `${harnessUnavailableHint(harness)} It could not be turned on: ${turnOn.failed}`
+        ) : (
+          harnessUnavailableHint(harness)
+        )
       }
       below={install ? <AgentInstallLog harness={harness} state={install} /> : undefined}
     >
-      {!available && canInstallAgent(harness) ? (
+      {!available && engine?.off ? (
+        <SecondaryButton data-engine-turn-on={harness} onClick={onTurnOn} disabled={turnOn.busy}>
+          {turnOn.busy ? "Turning on…" : "Turn on"}
+        </SecondaryButton>
+      ) : null}
+      {!available && !engine?.off && canInstallAgent(harness) ? (
         installing ? (
           <SecondaryButton
             data-agent-install-cancel={harness}
@@ -4944,7 +4969,7 @@ function ProviderRow({
           </SecondaryButton>
         )
       ) : null}
-      {!available && installPage ? (
+      {!available && !engine?.off && installPage ? (
         <SecondaryButton
           data-agent-install-page={harness}
           onClick={() => void openUrl(installPage).catch(() => undefined)}
@@ -5479,7 +5504,7 @@ function Row({
   /** Matches a `SETTINGS_INDEX` id so search can scroll here. */
   id?: string;
   label: ReactNode;
-  description?: string;
+  description?: ReactNode;
   children?: ReactNode;
   /** Full-width content under the row (an install's log). */
   below?: ReactNode;

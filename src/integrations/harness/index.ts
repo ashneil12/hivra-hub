@@ -169,6 +169,8 @@ export {
   probeHarnessAvailability,
   subscribeHarnessAvailability,
 } from "./core/availability";
+// Kept apart from the probe, so a test that stands in for the probe still has it.
+export { harnessEngineFacts, type HarnessEngineFacts } from "./core/availabilityState";
 export {
   getHarness,
   requireHarness,

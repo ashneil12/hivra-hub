@@ -26,6 +26,11 @@ export type T3Provider = {
   displayName?: string;
   enabled: boolean;
   installed: boolean;
+  version?: string | null;
+  /** "ready", "warning", "error" or "disabled", with the engine's word on it in `message`. */
+  status?: string;
+  message?: string;
+  auth?: { status?: string; label?: string; email?: string };
   models?: T3Model[];
 };
 
@@ -66,6 +71,69 @@ export function t3ProviderProblem(name: string, provider: T3Provider | undefined
   if (!provider.enabled) return `${shown} is switched off in the engine.`;
   if (!provider.installed) return `${shown} is not installed for the engine to use.`;
   return undefined;
+}
+
+/**
+ * Which of this app's providers the engine can run, with its reason for each one it cannot: what the model picker and
+ * Settings show instead of this app's own look for each tool on disk.
+ */
+export function t3Availability(
+  harnesses: readonly HarnessId[],
+  providers: T3Provider[],
+  name: (harness: HarnessId) => string,
+  /** The one provider a dev page runs every chat on, when its address names one. */
+  named?: string,
+): {
+  available: Record<HarnessId, boolean>;
+  why: Partial<Record<HarnessId, string>>;
+  facts: Partial<Record<HarnessId, T3ProviderFacts>>;
+} {
+  const available = {} as Record<HarnessId, boolean>;
+  const why: Partial<Record<HarnessId, string>> = {};
+  const facts: Partial<Record<HarnessId, T3ProviderFacts>> = {};
+  for (const harness of harnesses) {
+    const provider = t3Provider(harness, providers, named);
+    const problem = t3ProviderProblem(named ?? name(harness), provider);
+    available[harness] = !problem;
+    if (problem) why[harness] = problem;
+    if (provider && !provider.enabled) facts[harness] = { off: true };
+    else if (provider && !problem) facts[harness] = t3ProviderFacts(provider);
+  }
+  return { available, why, facts };
+}
+
+export type T3ProviderFacts = { version?: string; signedIn?: boolean; plan?: string; email?: string; note?: string; off?: boolean };
+
+/**
+ * The engine's settings call that switches one provider on. It names that provider only: the engine's settings patch
+ * replaces its whole list of providers, so a patch with one in it would drop the rest (seen: it dropped the replay
+ * provider). What the engine already keeps for the provider (a name, a command) is kept.
+ */
+export function t3TurnOn(
+  provider: T3Provider,
+  stored: Record<string, unknown> | undefined,
+): { patch: Record<string, never>; providerInstanceMutation: { operation: "upsert"; instanceId: string; instance: Record<string, unknown> } } {
+  return {
+    patch: {},
+    providerInstanceMutation: {
+      operation: "upsert",
+      instanceId: provider.instanceId,
+      instance: { ...(stored ?? { driver: provider.driver }), enabled: true },
+    },
+  };
+}
+
+/** What the engine knows of a provider it can run: its version, who is signed in, and its word when it is not well. */
+export function t3ProviderFacts(provider: T3Provider): T3ProviderFacts {
+  const auth = provider.auth?.status;
+  const unwell = provider.status === "warning" || provider.status === "error";
+  return {
+    ...(provider.version ? { version: provider.version } : {}),
+    ...(auth === "authenticated" ? { signedIn: true } : auth === "unauthenticated" ? { signedIn: false } : {}),
+    ...(provider.auth?.label ? { plan: provider.auth.label } : {}),
+    ...(provider.auth?.email ? { email: provider.auth.email } : {}),
+    ...(unwell && provider.message ? { note: provider.message } : {}),
+  };
 }
 
 /** The engine's model for the name this app sends: its own id, or one of its other names (`opus`). */

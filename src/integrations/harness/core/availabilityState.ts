@@ -22,6 +22,41 @@ let availability: HarnessAvailability = {
 };
 let version = 0;
 let probedAt = 0;
+
+/** What the engine knows of a tool it runs: Settings says it on the tool's row. */
+export type HarnessEngineFacts = {
+  version?: string;
+  /** Unset when the engine cannot tell. */
+  signedIn?: boolean;
+  plan?: string;
+  email?: string;
+  /** The engine's own word on a tool that is not well. */
+  note?: string;
+  /** Switched off in the engine: nothing to install, it only has to be turned on there. */
+  off?: boolean;
+};
+let engineFacts: Partial<Record<HarnessId, HarnessEngineFacts>> = {};
+
+/** Nothing when no engine runs this copy's chats, or it has not said yet. */
+export function harnessEngineFacts(id: HarnessId): HarnessEngineFacts | undefined {
+  return engineFacts[id];
+}
+
+export function setHarnessEngineFacts(next: Partial<Record<HarnessId, HarnessEngineFacts>>): void {
+  engineFacts = next;
+}
+
+let engineTurnOn: ((id: HarnessId) => Promise<void>) | null = null;
+
+/** How a tool the engine has switched off is turned on there; set by whatever connects this copy to an engine. */
+export function setHarnessEngineTurnOn(next: ((id: HarnessId) => Promise<void>) | null): void {
+  engineTurnOn = next;
+}
+
+/** Turns the tool on in the engine and looks again. Rejects with the engine's reason when it would not. */
+export function turnOnInEngine(id: HarnessId): Promise<void> {
+  return engineTurnOn ? engineTurnOn(id) : Promise.reject(new Error("No engine runs this copy's chats."));
+}
 const listeners = new Set<() => void>();
 
 export function emitHarnessAvailability() {
@@ -65,6 +100,7 @@ export function markHarnessAvailabilityProbed(): void {
 
 /** Puts the probe back to "not run yet" and every CLI to not installed. */
 export function resetHarnessAvailabilityForTests(): void {
+  engineFacts = {};
   availability = {
     claude: false,
     codex: false,
