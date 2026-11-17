@@ -114,7 +114,7 @@ export function probeHarnessAvailability(
   inflight = (source ? source().catch(() => undefined) : Promise.resolve(undefined))
     .then((engine) => {
       why = engine?.why ?? {};
-      setHarnessEngineFacts(engine?.facts ?? {});
+      setHarnessEngineFacts(engine?.facts ?? {}, !!engine);
       return engine?.available ?? ownProbe();
     })
     .then((next) => {

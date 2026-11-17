@@ -21,7 +21,7 @@ vi.mock("./registry", () => ({ isLiveHarness: () => true }));
 
 import { harnessUnavailableHint, isHarnessAvailable, probeHarnessAvailability, setHarnessAvailabilitySource, type HarnessAvailability } from "./availability";
 import { HARNESSES } from "../../../features/sessions/model/session";
-import { harnessEngineFacts, resetHarnessAvailabilityForTests } from "./availabilityState";
+import { engineSaysWhichToolsRun, harnessEngineFacts, resetHarnessAvailabilityForTests } from "./availabilityState";
 
 const all = (value: boolean) => Object.fromEntries(HARNESSES.map((id) => [id, value])) as HarnessAvailability;
 
@@ -40,6 +40,7 @@ describe("which coding tools can run, when an engine starts them", () => {
     await probeHarnessAvailability({ force: true });
     expect(harnessEngineFacts("claude")).toEqual({ version: "2.1.50", signedIn: true });
     expect(harnessEngineFacts("hermes")).toBeUndefined();
+    expect(engineSaysWhichToolsRun()).toBe(true);
     expect(isHarnessAvailable("claude")).toBe(true);
     expect(isHarnessAvailable("hermes")).toBe(false);
     expect(harnessUnavailableHint("hermes")).toBe("The engine has no provider set up for Hermes.");
@@ -52,6 +53,7 @@ describe("which coding tools can run, when an engine starts them", () => {
       expect(isHarnessAvailable("hermes")).toBe(true);
       expect(harnessUnavailableHint("hermes")).toContain("Hermes Agent CLI not found");
       expect(harnessEngineFacts("claude")).toBeUndefined();
+      expect(engineSaysWhichToolsRun()).toBe(false);
     }
   });
 });

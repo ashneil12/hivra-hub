@@ -5,6 +5,7 @@ import { connectionRows, type ConnectionPill } from "../../providers/model/conne
 import { HARNESSES, HARNESS_TITLE } from "../../sessions/model/session";
 import { useCustomModels } from "../../sessions/ui/CustomModels";
 import {
+  engineSaysWhichToolsRun,
   getHarnessAvailabilitySnapshot,
   isHarnessAvailable,
   subscribeHarnessAvailability,
@@ -60,7 +61,10 @@ export function ModelConnectionsSetting() {
         )}
       </div>
       {missing.length > 0 ? (
-        <p className="m-0 mt-2 text-[12px] text-content/60">Not installed: {missing.join(", ")}.</p>
+        <p className="m-0 mt-2 text-[12px] text-content/60">
+          {/* On the engine a tool can be installed and still not run: switched off there, or with no provider. */}
+          {engineSaysWhichToolsRun() ? "Not ready on the engine" : "Not installed"}: {missing.join(", ")}.
+        </p>
       ) : null}
     </section>
   );

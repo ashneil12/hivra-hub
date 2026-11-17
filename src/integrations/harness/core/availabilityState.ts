@@ -46,8 +46,16 @@ export function harnessEngineFacts(id: HarnessId): HarnessEngineFacts | undefine
   return engineFacts[id];
 }
 
-export function setHarnessEngineFacts(next: Partial<Record<HarnessId, HarnessEngineFacts>>): void {
+export function setHarnessEngineFacts(next: Partial<Record<HarnessId, HarnessEngineFacts>>, said = false): void {
   engineFacts = next;
+  engineSaid = said;
+}
+
+let engineSaid = false;
+
+/** True when which tools can run is an engine's answer: one that cannot is then not simply "not installed". */
+export function engineSaysWhichToolsRun(): boolean {
+  return engineSaid;
 }
 
 let engineTurnOn: ((id: HarnessId) => Promise<void>) | null = null;
@@ -108,6 +116,7 @@ export function markHarnessAvailabilityProbed(): void {
 /** Puts the probe back to "not run yet" and every CLI to not installed. */
 export function resetHarnessAvailabilityForTests(): void {
   engineFacts = {};
+  engineSaid = false;
   availability = {
     claude: false,
     codex: false,
