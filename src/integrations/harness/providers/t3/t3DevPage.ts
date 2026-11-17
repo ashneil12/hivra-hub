@@ -5,15 +5,12 @@ import type { HarnessAdapter } from "../../core/registry";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
 
-/** T3's replay provider plays a fixed script, one recorded turn per message. */
-const REPLAY_PROVIDER = "devReplay";
-
 /**
- * With the replay provider, the app's own background turns (a done check, an inbox count: nothing the person typed)
- * get a quiet line here, so they do not use up the script. A real provider takes every turn.
+ * The dev page is for walking what a person types. The app's own background turns (a done check, an inbox count, a
+ * catch-up: nothing the person typed) get a quiet line here and never reach the engine: on a replay provider they
+ * would use up the script, and on a real model they start runs nobody asked for and the typed message lands in one.
  */
-export function quietForReplay(adapter: HarnessAdapter, engine: T3Engine): HarnessAdapter {
-  if (engine.provider !== REPLAY_PROVIDER) return adapter;
+export function quietAppTurns(adapter: HarnessAdapter): HarnessAdapter {
   return {
     ...adapter,
     sendTurn: async (input) => {
@@ -33,5 +30,5 @@ export function t3DevPageAdapters(engine: T3Engine | null = t3Engine()): Harness
     fetch: (input, init) => fetch(input, init),
     socket: (url) => new WebSocket(url) as unknown as T3Socket,
   });
-  return HARNESSES.map((id) => quietForReplay(createT3Adapter(id, engine, rpc), engine));
+  return HARNESSES.map((id) => quietAppTurns(createT3Adapter(id, engine, rpc)));
 }

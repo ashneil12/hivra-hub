@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { HarnessEvent, SendTurnInput } from "../../core/types";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
-import { quietForReplay, t3DevPageAdapters } from "./t3DevPage";
+import { quietAppTurns, t3DevPageAdapters } from "./t3DevPage";
 import type { T3Rpc } from "./t3Rpc";
 
 const ENGINE: T3Engine = { origin: "http://127.0.0.1:13773", token: "token-1" };
@@ -201,16 +201,27 @@ describe("the dev page's engine", () => {
     expect(t3DevPageAdapters(null)).toEqual([]);
   });
 
-  it("keeps the app's own background turns off a replay script, and only then", async () => {
-    const engine = fakeEngine();
-    const replay = { ...ENGINE, provider: "devReplay" };
-    const adapter = quietForReplay(createT3Adapter("claude", replay, engine.rpc), replay);
-    const events: HarnessEvent[] = [];
-    await adapter.sendTurn({ ...turn("chat-1", "[app check]", events), origin: "automated" });
-    expect(engine.calls).toEqual([]);
-    expect(events.map((item) => item.type)).toEqual(["session.started", "message.delta", "message.completed"]);
+  it("keeps the app's own background turns off the engine, whatever model it runs, and sends what the person types", async () => {
+    for (const provider of ["devReplay", undefined]) {
+      const engine = fakeEngine();
+      const adapter = quietAppTurns(createT3Adapter("claude", { ...ENGINE, provider }, engine.rpc));
+      const events: HarnessEvent[] = [];
+      await adapter.sendTurn({ ...turn("chat-1", "[app check]", events), origin: "automated" });
+      await adapter.sendTurn({ ...turn("chat-1", "[app note]", events), origin: undefined });
+      expect(engine.calls).toEqual([]);
+      expect(events.map((item) => item.type)).toEqual([
+        "session.started",
+        "message.delta",
+        "message.completed",
+        "session.started",
+        "message.delta",
+        "message.completed",
+      ]);
 
-    const real = createT3Adapter("claude", ENGINE, engine.rpc);
-    expect(quietForReplay(real, ENGINE)).toBe(real);
+      const typed = adapter.sendTurn(turn("chat-1", "Example: hello", []));
+      await engine.say(snapshot([], [{ id: "run-1", status: "completed" }]));
+      await typed;
+      expect(engine.calls[0].tag).toBe("orchestration.launchThread");
+    }
   });
 });
