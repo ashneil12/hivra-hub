@@ -9,6 +9,8 @@ import { ensureOmpRegistered } from "../providers/omp/ompAdapter";
 import { ensurePiRegistered } from "../providers/pi/piAdapter";
 import { ensureAntigravityRegistered } from "../providers/antigravity/antigravityAdapter";
 import { ensureDevinRegistered } from "../providers/devin/devinAdapter";
+import { createT3Adapter, t3EngineUrl } from "../providers/t3/t3Adapter";
+import { registerHarness } from "./registry";
 
 /** Register all known live harness adapters. Idempotent. */
 export function registerBuiltinHarnesses(): void {
@@ -23,4 +25,7 @@ export function registerBuiltinHarnesses(): void {
   ensureHermesRegistered();
   ensureAntigravityRegistered();
   ensureDevinRegistered();
+  // Dropwave on T3 (spike): a dev page that names a T3 engine (`?t3`) sends Claude chats through it instead.
+  const engine = import.meta.env.DEV || import.meta.env.MODE === "mockup" ? t3EngineUrl() : null;
+  if (engine) registerHarness(createT3Adapter("claude", engine));
 }
