@@ -236,6 +236,7 @@ is served from vite, so HMR applies it where it stands:
 ```bash
 npm run hub:dev                   # this worktree's dev copy (tauri dev + HMR) in its own slot
 npm run hub:dev -- --seed         # first copy a cleaned backup of the daily chats into the slot (opt-in)
+npm run hub:dev -- --engine <dir> # this slot's chats run on the new engine checked out in <dir> (see below)
 npm run hub:dev -- --print        # which slot, port and config it would use; changes nothing
 npm run hub:doctor                # the identity guard, then every bundle, data folder, running copy, slot and worktree
 npm run hub:clean                 # what a finished run left behind (stale slots, old configs, merged worktrees); removes nothing
@@ -267,6 +268,12 @@ daily app. Its window says `Hivra Dev - <branch> @ <sha>` and carries a DEV ribb
   a slot a running copy holds (its lock), a slot that already has chats (`--replace` moves them aside) and a source
   newer than the checkout's schema. It never writes back. Without a seed a slot starts empty.
 - One copy per slot: starting a slot that is already running says so and exits 75.
+- **Engine (`--engine <dir>`, `scripts/hub-dev-engine.mjs`):** Dropwave on T3 Code. `<dir>` is an installed checkout
+  of the fork (`github.com/ashneil12/dropwave`, Node 26; `DROPWAVE_ENGINE_NODE` names the binary when `node` is
+  another version). The script starts the engine's server on the slot's port + 5 with its data in
+  `~/.monocode-hub-dev/engine/<slot>` (never `~/.t3`, nothing copied from it, telemetry off), issues a token and tells
+  only vite (`VITE_DROPWAVE_ENGINE`, `VITE_DROPWAVE_ENGINE_TOKEN`), so every chat of that dev copy runs through
+  `src/integrations/harness/providers/t3/`. The engine stops with the dev copy. Without the flag nothing changes.
 
 - **Frontend change** (`src/**`): saves and appears in the open window within a second. No restart, no rebuild.
 - **Rust change** (`src-tauri/**`): `tauri dev` recompiles and relaunches the app by itself; the window

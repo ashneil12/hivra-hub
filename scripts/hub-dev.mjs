@@ -8,6 +8,8 @@
 //   npm run hub:dev -- --slot my-name    # pick the slot name yourself (a branch name like hub/x is fine)
 //   npm run hub:dev -- --memory <dir>    # read project memory from <dir> for Export (default: the slot's own
 //                                        # <data>/agent-memory; the app never writes the real ~/agent-memory from a dev copy)
+//   npm run hub:dev -- --engine <folder> # run this slot's chats on the new engine checked out in <folder>
+//                                        # (github.com/ashneil12/dropwave; scripts/hub-dev-engine.mjs)
 //   npm run hub:dev -- --print           # show the slot, port and config this would use; change nothing
 //   npm run hub:dev -- -- --release      # anything after a lone `--` goes to `tauri dev`
 //
@@ -284,9 +286,12 @@ export async function pickPort(slot, { isFree = isPortFree } = {}) {
 
 const DEV_SERVER_SOURCE = /^(?:https?|wss?):\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/;
 
-/** The base devCsp with its dev-server sources (port 1420) swapped for this slot's port. */
-export function devCsp(baseCsp, port) {
-  const own = [`http://localhost:${port}`, `ws://localhost:${port}`, `http://127.0.0.1:${port}`, `ws://127.0.0.1:${port}`];
+/**
+ * The base devCsp with its dev-server sources (port 1420) swapped for this slot's port. `more` is what else the page
+ * may connect to: the slot's engine (--engine).
+ */
+export function devCsp(baseCsp, port, more = []) {
+  const own = [`http://localhost:${port}`, `ws://localhost:${port}`, `http://127.0.0.1:${port}`, `ws://127.0.0.1:${port}`, ...more];
   const directives = String(baseCsp)
     .split(";")
     .map((part) => part.trim())
@@ -300,18 +305,25 @@ export function devCsp(baseCsp, port) {
   return directives.map((parts) => parts.join(" ")).join("; ");
 }
 
-/** target/hub-dev/<slot>.conf.json: merged after the Hub overlay (src-tauri/tauri.hub.conf.json). */
-export function slotConfig({ slot, port, base, overlay }) {
+/**
+ * target/hub-dev/<slot>.conf.json: merged after the Hub overlay (src-tauri/tauri.hub.conf.json). With `engine`
+ * ({ origin, token }, hub-dev-engine.mjs) the page is told where the slot's engine is and may connect to it.
+ */
+export function slotConfig({ slot, port, base, overlay, engine }) {
   const devCommand = overlay?.build?.beforeDevCommand ?? base?.build?.beforeDevCommand ?? "npm run dev";
+  // Both origin and token are checked before they get here (hub-dev-engine.mjs): they go into a shell command.
+  const engineVars = engine ? `VITE_DROPWAVE_ENGINE=${engine.origin} VITE_DROPWAVE_ENGINE_TOKEN=${engine.token} ` : "";
+  const engineSources = engine ? [engine.origin, engine.origin.replace(/^http/, "ws")] : [];
   return {
     identifier: slotIdentifier(slot),
     productName: DEV_PRODUCT,
     build: {
-      // In the command, not the app's environment: the dev copy's own terminals must not inherit the port.
-      beforeDevCommand: `MONOCODE_VITE_PORT=${port} ${devCommand}`,
+      // In the command, not the app's environment: the dev copy's own terminals and agents must not inherit the port
+      // or the engine's token.
+      beforeDevCommand: `MONOCODE_VITE_PORT=${port} ${engineVars}${devCommand}`,
       devUrl: `http://localhost:${port}`,
     },
-    app: { security: { devCsp: devCsp(base?.app?.security?.devCsp ?? "", port) } },
+    app: { security: { devCsp: devCsp(base?.app?.security?.devCsp ?? "", port, engineSources) } },
   };
 }
 
@@ -391,15 +403,18 @@ export async function planSlot({ worktree = ROOT, requested, home = os.homedir()
   };
 }
 
-export function writeSlotConfig(plan, root = ROOT) {
+export function writeSlotConfig(plan, root = ROOT, engine) {
   const config = slotConfig({
     slot: plan.slot,
     port: plan.port,
     base: readJson(path.join(root, "src-tauri/tauri.conf.json")),
     overlay: readJson(path.join(root, "src-tauri/tauri.hub.conf.json")),
+    engine,
   });
   fs.mkdirSync(path.dirname(plan.configFile), { recursive: true });
-  fs.writeFileSync(plan.configFile, `${JSON.stringify(config, null, 2)}\n`);
+  // With an engine the file holds its token: this user only. It goes when the run ends (hub-doctor.mjs reapRun).
+  fs.writeFileSync(plan.configFile, `${JSON.stringify(config, null, 2)}\n`, engine ? { mode: 0o600 } : {});
+  if (engine) fs.chmodSync(plan.configFile, 0o600);
   return config;
 }
 
@@ -520,6 +535,8 @@ export function parseArgs(argv) {
     reseed: own.includes("--reseed") || own.includes("--replace"),
     print: own.includes("--print"),
     memory: value("memory"),
+    // The folder of the engine's checkout: this slot's chats run on it (scripts/hub-dev-engine.mjs).
+    engine: value("engine"),
     // No terminal attached means an agent started it: keep the window from taking focus unless --foreground.
     background: own.includes("--background") || (!own.includes("--foreground") && !process.stdout.isTTY),
     extra,
@@ -534,7 +551,12 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const plan = await planSlot({ requested: options.slot });
   if (options.print) {
-    console.log(JSON.stringify(plan, null, 2));
+    let engine;
+    if (options.engine) {
+      const { enginePort, engineOrigin, engineHome } = await import("./hub-dev-engine.mjs");
+      engine = { dir: path.resolve(options.engine), origin: engineOrigin(enginePort(plan.port)), data: engineHome(plan.slot) };
+    }
+    console.log(JSON.stringify(engine ? { ...plan, engine } : plan, null, 2));
     return 0;
   }
   // I8: at most once a day, reap what earlier runs left behind (scripts/hub-doctor.mjs). Imported here because the
@@ -560,47 +582,66 @@ async function main() {
     console.log(`hub:dev: seeded ${report.sessions} chats into ${tilde(plan.dataDir)} (cleared ${JSON.stringify(report.cleared)})`);
   }
   registerSlot(plan);
-  writeSlotConfig(plan);
-
-  console.log(`hub:dev  slot ${plan.slot} (${plan.reason}${plan.clashWith ? `: ${tilde(plan.clashWith)} has the plain name` : ""})`);
-  console.log(`  identifier  ${plan.identifier}`);
-  console.log(`  data        ${tilde(plan.dataDir)}`);
-  console.log(`  vite        http://localhost:${plan.port}`);
-  console.log(`  rust cache  ${tilde(plan.buildDir)}`);
-  if (options.memory) console.log(`  memory      ${tilde(path.resolve(options.memory))} (read for Export)`);
-  console.log(`  config      ${path.relative(ROOT, plan.configFile)}`);
-
-  const tauri = path.join(ROOT, "node_modules/.bin/tauri");
-  const child = spawn(tauri, tauriArgs(plan.configFile, options.extra), {
-    cwd: ROOT,
-    stdio: "inherit",
-    env: devEnvironment({ slot: plan.slot, memory: options.memory, background: options.background }),
-  });
-  const signalled = new Map();
-  for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
-    process.on(signal, () => {
-      for (const entry of signalTree(child.pid, signal)) signalled.set(entry.pid, entry);
-    });
-  const code = await new Promise((resolve) => {
-    child.on("exit", (exitCode, signal) => resolve(exitCode ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1)));
-    child.on("error", (error) => {
-      console.error(`hub:dev: couldn't start ${tauri}: ${error.message}`);
-      resolve(1);
-    });
-  });
-  if (signalled.size) {
-    const left = await sweep([...signalled.values()]);
-    if (left.length) console.error(`hub:dev: stopped what was still running: ${left.map(({ pid }) => pid).join(", ")}`);
+  let engine;
+  if (options.engine) {
+    const { startEngine } = await import("./hub-dev-engine.mjs");
+    console.log(`hub:dev: starting the engine in ${tilde(path.resolve(options.engine))} ...`);
+    engine = await startEngine({ dir: options.engine, slot: plan.slot, slotPort: plan.port });
   }
-  // I8: this run's own scratch goes now: its generated config, a throwaway token an older run left and, when the main checkout already
-  // has the branch, its target/. Never its data folder, its registry entry or the worktree.
+  const stopEngine = async () => {
+    if (!engine) return;
+    const left = await sweep(signalTree(engine.child.pid, "SIGTERM"));
+    if (left.length) console.error(`hub:dev: the engine was still running: ${left.map(({ pid }) => pid).join(", ")}`);
+    engine = undefined;
+  };
+  let code;
   try {
-    const { reapRun } = await import("./hub-doctor.mjs");
-    const { removed, problems } = reapRun(plan);
-    if (removed.length) console.log(`hub:dev: cleaned up ${removed.join(", ")}.`);
-    for (const problem of problems) console.error(`hub:dev: cleanup left ${problem}`);
-  } catch (error) {
-    console.error(`hub:dev: cleanup skipped: ${error.message}`);
+    writeSlotConfig(plan, ROOT, engine);
+
+    console.log(`hub:dev  slot ${plan.slot} (${plan.reason}${plan.clashWith ? `: ${tilde(plan.clashWith)} has the plain name` : ""})`);
+    console.log(`  identifier  ${plan.identifier}`);
+    console.log(`  data        ${tilde(plan.dataDir)}`);
+    console.log(`  vite        http://localhost:${plan.port}`);
+    console.log(`  rust cache  ${tilde(plan.buildDir)}`);
+    if (options.memory) console.log(`  memory      ${tilde(path.resolve(options.memory))} (read for Export)`);
+    if (engine) console.log(`  engine      ${engine.origin}, data ${tilde(engine.data)}, log ${tilde(engine.logFile)}`);
+    console.log(`  config      ${path.relative(ROOT, plan.configFile)}`);
+
+    const tauri = path.join(ROOT, "node_modules/.bin/tauri");
+    const child = spawn(tauri, tauriArgs(plan.configFile, options.extra), {
+      cwd: ROOT,
+      stdio: "inherit",
+      env: devEnvironment({ slot: plan.slot, memory: options.memory, background: options.background }),
+    });
+    const signalled = new Map();
+    for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"])
+      process.on(signal, () => {
+        for (const entry of signalTree(child.pid, signal)) signalled.set(entry.pid, entry);
+      });
+    code = await new Promise((resolve) => {
+      child.on("exit", (exitCode, signal) => resolve(exitCode ?? (signal ? 128 + (os.constants.signals[signal] ?? 0) : 1)));
+      child.on("error", (error) => {
+        console.error(`hub:dev: couldn't start ${tauri}: ${error.message}`);
+        resolve(1);
+      });
+    });
+    if (signalled.size) {
+      const left = await sweep([...signalled.values()]);
+      if (left.length) console.error(`hub:dev: stopped what was still running: ${left.map(({ pid }) => pid).join(", ")}`);
+    }
+    // I8: this run's own scratch goes now: its generated config, a throwaway token an older run left and, when the main checkout already
+    // has the branch, its target/. Never its data folder, its registry entry or the worktree.
+    try {
+      const { reapRun } = await import("./hub-doctor.mjs");
+      const { removed, problems } = reapRun(plan);
+      if (removed.length) console.log(`hub:dev: cleaned up ${removed.join(", ")}.`);
+      for (const problem of problems) console.error(`hub:dev: cleanup left ${problem}`);
+    } catch (error) {
+      console.error(`hub:dev: cleanup skipped: ${error.message}`);
+    }
+  } finally {
+    // Whatever happened to the app, the engine this run started goes with it.
+    await stopEngine();
   }
   return code;
 }

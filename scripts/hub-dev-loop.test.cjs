@@ -317,6 +317,69 @@ test("the slot's devCsp carries the slot's port, not 1420, and leaves every othe
   assert.match(devCsp("default-src 'self'", 1470), /connect-src 'self' http:\/\/localhost:1470/);
 });
 
+// ---- the engine (--engine) ---------------------------------------------------------------------------------------------------
+
+test("a slot started with an engine lets the page reach it and tells only vite where it is", async () => {
+  const { slotConfig, devCsp, devEnvironment, parseArgs } = await load("hub-dev.mjs");
+  const engine = { origin: "http://127.0.0.1:1465", token: "example.token-1_2" };
+  const slot = slotConfig({ slot: "hub-x", port: 1460, base, overlay: hub, engine });
+  assert.match(
+    slot.build.beforeDevCommand,
+    /^MONOCODE_VITE_PORT=1460 VITE_DROPWAVE_ENGINE=http:\/\/127\.0\.0\.1:1465 VITE_DROPWAVE_ENGINE_TOKEN=example\.token-1_2 /,
+  );
+  assert.ok(slot.build.beforeDevCommand.includes(HUB_FLAG));
+  const connect = slot.app.security.devCsp.split("; ").find((d) => d.startsWith("connect-src ")).split(" ");
+  for (const source of ["http://127.0.0.1:1465", "ws://127.0.0.1:1465", "http://localhost:1460"]) assert.ok(connect.includes(source), source);
+  // Without an engine nothing about one is in the config, and the CSP is what it always was.
+  const plain = slotConfig({ slot: "hub-x", port: 1460, base, overlay: hub });
+  assert.ok(!JSON.stringify(plain).includes("DROPWAVE_ENGINE"));
+  assert.equal(plain.app.security.devCsp, devCsp(base.app.security.devCsp, 1460));
+  // The token never rides in the app's environment, where the dev copy's agents and terminals would inherit it.
+  const env = devEnvironment({ slot: "hub-x", env: { PATH: "/usr/bin" } });
+  assert.ok(!Object.keys(env).some((key) => key.includes("ENGINE")));
+  assert.equal(parseArgs(["--engine", "/tmp/dropwave"]).engine, "/tmp/dropwave");
+  assert.throws(() => parseArgs(["--engine"]), /--engine needs a value/);
+});
+
+test("the engine gets the slot's own port and data folder, its page's origin, and no telemetry", async () => {
+  const engine = await load("hub-dev-engine.mjs");
+  assert.equal(engine.enginePort(1460), 1465);
+  assert.equal(engine.engineOrigin(1465), "http://127.0.0.1:1465");
+  assert.equal(engine.engineHome("hub-x", "/Users/example"), "/Users/example/.monocode-hub-dev/engine/hub-x");
+  assert.deepEqual(engine.engineArgs({ port: 1465, home: "/h" }), ["scripts/dev-runner.ts", "dev:server", "--no-seed", "--port", "1465", "--home-dir", "/h"]);
+  assert.deepEqual(engine.tokenArgs("/h"), ["apps/server/src/bin.ts", "auth", "session", "issue", "--token-only", "--base-dir", "/h"]);
+  const env = engine.engineEnvironment({
+    dir: "/e",
+    pageOrigin: "http://localhost:1460",
+    env: { PATH: "/usr/bin", T3CODE_HOME: "/Users/example/.t3", T3CODE_PORT: "3773", VITE_HTTP_URL: "http://x", HOME: "/Users/example" },
+  });
+  assert.equal(env.PATH, `/e/node_modules/.bin${path.delimiter}/usr/bin`);
+  assert.equal(env.T3CODE_TELEMETRY_ENABLED, "false");
+  assert.equal(env.T3CODE_DEV_ALLOWED_ORIGINS, "http://localhost:1460");
+  // Nothing of an engine or page this was started from: never its data folder, port or baked-in addresses.
+  for (const key of ["T3CODE_HOME", "T3CODE_PORT", "VITE_HTTP_URL"]) assert.equal(env[key], undefined, key);
+  assert.equal(env.HOME, "/Users/example");
+});
+
+test("a folder that is not an installed engine checkout, or the wrong Node, is refused with what to do", async () => {
+  const engine = await load("hub-dev-engine.mjs");
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "engine-"));
+  try {
+    assert.match(engine.engineProblem(dir, "v26.13.1"), /is not a checkout of the engine/);
+    fs.mkdirSync(path.join(dir, "scripts"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "apps/server/src"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "scripts/dev-runner.ts"), "");
+    fs.writeFileSync(path.join(dir, "apps/server/src/bin.ts"), "");
+    assert.match(engine.engineProblem(dir, "v26.13.1"), /no node_modules yet/);
+    fs.mkdirSync(path.join(dir, "node_modules"));
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ engines: { node: "26.13.1" } }));
+    assert.equal(engine.engineProblem(dir, "v26.13.1"), null);
+    assert.match(engine.engineProblem(dir, "v22.11.0"), /needs Node 26 and this is v22\.11\.0\. Set DROPWAVE_ENGINE_NODE/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 // ---- the environment ----------------------------------------------------------------------------------------------------------
 
 test("the dev environment shares the Rust build cache and drops what an enclosing shell set for another copy", async (t) => {

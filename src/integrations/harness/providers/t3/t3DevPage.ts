@@ -1,5 +1,7 @@
 // The dev page's way in to a T3 engine (`?t3=<origin>&t3token=<token>`): every provider's chats run through it, so the
 // real screens can be walked on T3 before the app itself ships with it. Never part of the installed app's start.
+// A dev copy started with an engine (`npm run hub:dev -- --engine <folder>`, scripts/hub-dev-engine.mjs) is told
+// where it is by vite instead of by its address.
 import { HARNESSES } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
@@ -24,8 +26,15 @@ export function quietAppTurns(adapter: HarnessAdapter): HarnessAdapter {
   };
 }
 
+/** The engine a dev copy was started with, as vite was told (`VITE_DROPWAVE_ENGINE`, `VITE_DROPWAVE_ENGINE_TOKEN`). */
+export function t3BuiltEngine(env: Record<string, unknown> = import.meta.env): T3Engine | null {
+  const origin = typeof env.VITE_DROPWAVE_ENGINE === "string" ? env.VITE_DROPWAVE_ENGINE.replace(/\/+$/, "") : "";
+  const token = typeof env.VITE_DROPWAVE_ENGINE_TOKEN === "string" ? env.VITE_DROPWAVE_ENGINE_TOKEN : "";
+  return origin && token ? { origin, token } : null;
+}
+
 /** One adapter per provider, all on one connection to the engine the page names; none when it names no engine. */
-export function t3DevPageAdapters(engine: T3Engine | null = t3Engine()): HarnessAdapter[] {
+export function t3DevPageAdapters(engine: T3Engine | null = t3Engine() ?? t3BuiltEngine()): HarnessAdapter[] {
   if (!engine) return [];
   const rpc: T3Rpc = connectT3(engine.origin, engine.token, {
     fetch: (input, init) => fetch(input, init),

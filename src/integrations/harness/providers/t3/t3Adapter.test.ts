@@ -3,7 +3,7 @@ import { monoTurn } from "../../../../features/monos/model/monoFiles";
 import { modelsFor, resetHarnessModelOverlays } from "../../../../features/sessions/model/models";
 import type { HarnessEvent, SendTurnInput } from "../../core/types";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
-import { quietAppTurns, t3DevPageAdapters } from "./t3DevPage";
+import { quietAppTurns, t3BuiltEngine, t3DevPageAdapters } from "./t3DevPage";
 import { t3AppId } from "./t3Ids";
 import type { T3Provider } from "./t3Models";
 import type { T3Rpc } from "./t3Rpc";
@@ -742,6 +742,15 @@ describe("the dev page's engine", () => {
     expect(t3Engine("?t3=http://127.0.0.1:13773")).toBeNull();
     expect(t3Engine("?local&fakeClaude")).toBeNull();
     expect(t3DevPageAdapters(null)).toEqual([]);
+  });
+
+  it("reads the engine a dev copy was started with from what vite was told", () => {
+    expect(t3BuiltEngine({ VITE_DROPWAVE_ENGINE: "http://127.0.0.1:1445/", VITE_DROPWAVE_ENGINE_TOKEN: "token-1" })).toEqual({
+      origin: "http://127.0.0.1:1445",
+      token: "token-1",
+    });
+    expect(t3BuiltEngine({ VITE_DROPWAVE_ENGINE: "http://127.0.0.1:1445" })).toBeNull();
+    expect(t3BuiltEngine({})).toBeNull();
   });
 
   it("keeps the app's own background turns off the engine, whatever model it runs, and sends what the person types", async () => {
