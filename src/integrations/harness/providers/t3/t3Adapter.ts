@@ -303,7 +303,7 @@ export function createT3Adapter(
       if (!said && chat.result) {
         emit({ type: "message.delta", text: chat.result });
         emit({ type: "message.completed" });
-      } else if (!said && chat.stopped) emit({ type: "notice", text: "Stopped before it finished." });
+      } else if (chat.stopped) emit({ type: "turn.stopped", text: "Stopped before it finished." });
       if (live.get(input.sessionId) === state) live.delete(input.sessionId);
     }
   }

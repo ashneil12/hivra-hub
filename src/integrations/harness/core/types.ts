@@ -47,6 +47,8 @@ export type HarnessEvent =
   | { type: "session.providerLost"; providerSessionId: string; text: string }
   | { type: "turn.started"; providerTurnId: string }
   | { type: "turn.ready" }
+  /** The engine ended the turn before it finished, on purpose (its first mate was stopped). Nothing resumes it. */
+  | { type: "turn.stopped"; text: string }
   | {
       type: "session.configChanged";
       model?: string;

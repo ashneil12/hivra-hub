@@ -1467,6 +1467,7 @@ function sanitizeBlock(
     if (
       block.notice === "error" ||
       block.notice === "interrupt" ||
+      block.notice === "stopped" ||
       block.notice === "resume-stopped" ||
       block.notice === "recovered" ||
       block.notice === "still-running" ||

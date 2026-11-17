@@ -433,7 +433,7 @@ describe("the T3 adapter's crew", () => {
     await mate;
     await engine.sayTo(CHILD, snapshot([], []));
     await chat;
-    expect(events.slice(2)).toEqual([{ type: "notice", text: "Stopped before it finished." }]);
+    expect(events.slice(2)).toEqual([{ type: "turn.stopped", text: "Stopped before it finished." }]);
 
     // A member whose chat was never opened reads as stopped when it is.
     const later = await started();
@@ -443,7 +443,7 @@ describe("the T3 adapter's crew", () => {
     const late = later.adapter.sendTurn(turn(later.asked[0].sessionId, later.asked[0].brief, opened));
     await later.engine.sayTo(CHILD, snapshot([], []));
     await late;
-    expect(opened.slice(2)).toEqual([{ type: "notice", text: "Stopped before it finished." }]);
+    expect(opened.slice(2)).toEqual([{ type: "turn.stopped", text: "Stopped before it finished." }]);
   });
 
   it("leaves the crew working when the first mate's own turn finished before they did", async () => {
@@ -470,7 +470,7 @@ describe("the T3 adapter's crew", () => {
     await stopped.engine.sayTo(CHILD, event("node.updated", { id: NODE, status: "running" }));
     await stopped.engine.sayTo(CHILD, event("node.updated", { id: NODE, status: "interrupted" }));
     await chat;
-    expect(events.slice(2)).toEqual([{ type: "notice", text: "Stopped before it finished." }]);
+    expect(events.slice(2)).toEqual([{ type: "turn.stopped", text: "Stopped before it finished." }]);
     expect(stopped.engine.calls.length).toBe(before);
 
     const held = await started();
@@ -481,7 +481,7 @@ describe("the T3 adapter's crew", () => {
       projection: { turnItems: [], runs: [], nodes: [{ id: NODE, status: "failed" }] },
     });
     await heldChat;
-    expect(heldEvents.slice(2)).toEqual([{ type: "notice", text: "Stopped before it finished." }]);
+    expect(heldEvents.slice(2)).toEqual([{ type: "turn.stopped", text: "Stopped before it finished." }]);
 
     // Finished: the node completes, then the closing message arrives, and the chat ends without the first mate's side.
     const done = await started();
@@ -496,7 +496,7 @@ describe("the T3 adapter's crew", () => {
       { type: "message.delta", text: "Example: counting." },
       { type: "message.delta", text: "Example: 3 lines." },
     ]);
-    expect(doneEvents.some((item) => item.type === "notice")).toBe(false);
+    expect(doneEvents.some((item) => item.type === "turn.stopped")).toBe(false);
   });
 });
 

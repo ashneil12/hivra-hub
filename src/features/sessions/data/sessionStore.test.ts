@@ -860,6 +860,15 @@ describe("sanitizeSessionForPersist", () => {
     });
   });
 
+  it("keeps the line that says the engine stopped a turn, so the chat still reads as stopped after a restart", () => {
+    const session = newSession("claude", "/tmp/project");
+    session.blocks = [{ id: "s1", role: "system", text: "Stopped before it finished.", notice: "stopped" }];
+    expect(sanitizeSessionForPersist(session).blocks[0]).toMatchObject({
+      text: "Stopped before it finished.",
+      notice: "stopped",
+    });
+  });
+
   it("keeps a second-opinion card on the user turn", () => {
     const session = newSession("codex", "/tmp/project");
     session.blocks = [

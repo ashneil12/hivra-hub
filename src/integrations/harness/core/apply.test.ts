@@ -133,6 +133,19 @@ describe("turn duration", () => {
     expect(session.blocks[0]?.durationMs).toBe(7_000);
   });
 
+  it("ends a turn the engine stopped with a line that is neither an error nor a quit's interrupt", () => {
+    let session = appendUser(newSession("claude", "/tmp"), "Example: count the lines");
+    session = applyHarnessEvent(session, { type: "message.delta", text: "Example: counting" });
+    session = applyHarnessEvent(session, { type: "turn.stopped", text: "Stopped before it finished." });
+    expect(session.busy).toBe(false);
+    expect(session.blocks.at(-1)).toMatchObject({
+      role: "system",
+      text: "Stopped before it finished.",
+      notice: "stopped",
+    });
+    expect(session.blocks.find((block) => block.role === "assistant")?.streaming).toBeFalsy();
+  });
+
   it("marks orphaned subagent work failed when the provider dies", () => {
     let session = appendUser(newSession("codex", "/tmp"), "delegate it");
     session = applyHarnessEvent(session, {

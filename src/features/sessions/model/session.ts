@@ -574,6 +574,11 @@ export type Block = {
   notice?:
     | "error"
     | "interrupt"
+    /**
+     * The engine ended this turn before it finished, on purpose: a crew member whose first mate was stopped. Unlike
+     * `interrupt` (a quit cut the turn) nothing resumes it.
+     */
+    | "stopped"
     /** The app restarted three times under this turn, so it stopped resuming it (`inFlight.ts`); Needs you. */
     | "resume-stopped"
     /** The provider's saved conversation was gone; a fresh one started from the chat's brief (`claude.ts`). */

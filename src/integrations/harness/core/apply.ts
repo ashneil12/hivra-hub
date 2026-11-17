@@ -281,6 +281,13 @@ export function applyHarnessEvent(
       return event.key
         ? upsertKeyedStatus(session, event.key, event.text)
         : appendStatus(session, event.text);
+    case "turn.stopped":
+      return appendBlock(stopStreaming(session), {
+        id: crypto.randomUUID(),
+        role: "system",
+        text: event.text,
+        notice: "stopped",
+      });
     case "goal.updated": {
       if (event.goal) return { ...session, goal: event.goal };
       if (!session.goal) return session;

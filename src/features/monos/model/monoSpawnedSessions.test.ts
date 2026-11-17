@@ -313,6 +313,13 @@ it("reads a launched session's state for its card", () => {
       { id: "i", role: "system", text: "Stopped", notice: "interrupt" },
     ]),
   ).toBe("stopped");
+  // The engine ended it with the first mate that ran it: stopped too, and never read as done.
+  expect(
+    ran([
+      prompt,
+      { id: "t", role: "system", text: "Stopped before it finished.", notice: "stopped" },
+    ]),
+  ).toBe("stopped");
   // Stopped resuming itself after restarts: someone has to look.
   expect(
     ran([
