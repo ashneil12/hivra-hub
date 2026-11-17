@@ -57,6 +57,12 @@ describe("the T3 wire", () => {
     expect(server.sockets).toHaveLength(1);
     server.say({ _tag: "Exit", requestId: "2", exit: { _tag: "Failure", cause: [{ _tag: "Fail", error: { message: "Example: no such thread" } }] } });
     await expect(second).rejects.toThrow("Example: no such thread");
+
+    const third = server.rpc.call("projects.mutate", {});
+    await server.settle();
+    const wrapped = { message: "Example: failed to change the project.", cause: { cause: { message: "Example: no such folder" } } };
+    server.say({ _tag: "Exit", requestId: "3", exit: { _tag: "Failure", cause: [{ _tag: "Fail", error: wrapped }] } });
+    await expect(third).rejects.toThrow("Example: failed to change the project. Example: no such folder");
   });
 
   it("hands a stream's values over in order, acknowledges each chunk and stops when told to", async () => {

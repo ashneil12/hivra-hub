@@ -53,6 +53,18 @@ type Exit =
   | { _tag: "Success"; value: unknown }
   | { _tag: "Failure"; cause: Array<{ _tag: string; error?: unknown; defect?: unknown }> };
 
+/** The innermost reason an error of the engine carries, when it wraps one. */
+function rootReason(error: object): string | undefined {
+  let reason: string | undefined;
+  let at: unknown = (error as { cause?: unknown }).cause;
+  for (let depth = 0; depth < 8 && at && typeof at === "object"; depth += 1) {
+    const message = (at as { message?: unknown }).message;
+    if (typeof message === "string" && message) reason = message;
+    at = (at as { cause?: unknown }).cause;
+  }
+  return reason;
+}
+
 /** What a failed call says, in words a chat can show. */
 export function t3FailureMessage(exit: Exit): string {
   if (exit._tag !== "Failure") return "";
@@ -61,7 +73,11 @@ export function t3FailureMessage(exit: Exit): string {
     if (typeof value === "string" && value) return value;
     if (value && typeof value === "object") {
       const message = (value as { message?: unknown }).message;
-      if (typeof message === "string" && message) return message;
+      if (typeof message === "string" && message) {
+        // The engine wraps its reason ("Failed to mutate project." around "Workspace root does not exist: ...").
+        const reason = rootReason(value);
+        return reason && reason !== message ? `${message} ${reason}` : message;
+      }
       const tag = (value as { _tag?: unknown })._tag;
       if (typeof tag === "string") return tag;
     }

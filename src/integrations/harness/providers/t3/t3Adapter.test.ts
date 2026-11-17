@@ -285,10 +285,25 @@ describe("the T3 adapter", () => {
     expect(events).toEqual([expect.objectContaining({ type: "session.error", message: expect.stringContaining("gone.pdf") })]);
   });
 
-  it("tells the chat when the engine has no project for its folder or cannot be reached", async () => {
+  it("makes the chat's folder a project when the engine has none for it, and starts the chat there", async () => {
+    const engine = fakeEngine([{ id: "project-9", workspaceRoot: "/another" }]);
+    const done = createT3Adapter("claude", ENGINE, engine.rpc).sendTurn(turn("chat-1", "Example", []));
+    await engine.say(snapshot([], [{ id: "run-1", status: "completed" }]));
+    await done;
+    const [made, launch] = engine.calls;
+    expect(made).toMatchObject({
+      tag: "projects.mutate",
+      payload: { type: "project.create", title: "example", workspaceRoot: "/example" },
+    });
+    expect(launch).toMatchObject({ tag: "orchestration.launchThread", payload: { projectId: made.payload.projectId } });
+  });
+
+  it("tells the chat when a dev page's own project is not in the engine, or the engine cannot be reached", async () => {
     const events: HarnessEvent[] = [];
-    await createT3Adapter("claude", ENGINE, fakeEngine([]).rpc).sendTurn(turn("chat-1", "Example", events));
+    const named = fakeEngine([]);
+    await createT3Adapter("claude", { ...ENGINE, project: "/example-project" }, named.rpc).sendTurn(turn("chat-1", "Example", events));
     expect(events).toEqual([{ type: "session.error", message: "The engine has no project for /example." }]);
+    expect(named.calls).toEqual([]);
 
     const down = fakeEngine();
     down.rpc.call = async () => {

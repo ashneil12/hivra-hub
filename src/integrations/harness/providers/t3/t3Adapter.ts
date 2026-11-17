@@ -141,11 +141,19 @@ export function createT3Adapter(
     const project =
       known.find((candidate) => candidate.workspaceRoot === cwd) ??
       known.find((candidate) => candidate.workspaceRoot === engine.project);
-    if (!project) {
-      projects = undefined;
-      throw new Error(`The engine has no project for ${cwd}.`);
-    }
-    return project.id;
+    if (project) return project.id;
+    projects = undefined;
+    // A dev page that names its project runs there or not at all; otherwise a chat's folder becomes a project.
+    if (engine.project || !/^(\/|[A-Za-z]:[\\/])/.test(cwd)) throw new Error(`The engine has no project for ${cwd}.`);
+    const projectId = uuid();
+    await rpc.call("projects.mutate", {
+      type: "project.create",
+      commandId: uuid(),
+      projectId,
+      title: cwd.split(/[\\/]/).filter(Boolean).pop() ?? cwd,
+      workspaceRoot: cwd,
+    });
+    return projectId;
   }
 
   /** The engine's providers and their models, or nothing when it will not say. */
