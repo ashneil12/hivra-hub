@@ -443,7 +443,7 @@ export function createT3Adapter(
           commandId: uuid(),
           threadId,
           projectId: await projectFor(input.cwd),
-          title: chatTitle(input.sessionId),
+          title: input.title?.trim() || chatTitle(input.sessionId),
           modelSelection: selection,
           runtimeMode,
           interactionMode: "default",

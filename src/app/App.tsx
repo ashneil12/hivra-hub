@@ -10240,6 +10240,8 @@ function Workspace({
               ...(options?.autoResume || text.trim() === CONTINUE_PROMPT
                 ? { resume: { providerTurnId: cutTurnId(sessionsRef.current.find((s) => s.id === sessionId) ?? current) } }
                 : {}),
+              // An engine that lists conversations names a Mono's by the Mono.
+              ...(mono && monoForSession(sessionId)?.name?.trim() ? { title: monoForSession(sessionId)!.name!.trim() } : {}),
               // A turn the engine began in this chat by itself: the chat follows that run and nothing is sent.
               ...(engineTurnOf(options?.appRequestId)
                 ? { follow: { providerTurnId: engineTurnOf(options?.appRequestId)! } }

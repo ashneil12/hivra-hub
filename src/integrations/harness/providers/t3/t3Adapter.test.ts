@@ -802,6 +802,7 @@ describe("the dev page's engine", () => {
       began: (chat: string) => void marks.push(`began ${chat}`),
       ended: (chat: string) => void marks.push(`ended ${chat}`),
       own: (run: string) => void marks.push(`own ${run}`),
+      chatOf: () => undefined,
     };
     const adapter = createT3Adapter("claude", ENGINE, engine.rpc, watch);
     adapter.bindSession("chat-1", "thread-1", "/example");
@@ -848,7 +849,7 @@ describe("the dev page's engine", () => {
   it("opens a conversation for a chat with nothing sent, once, and the chat's first message goes into it", async () => {
     const engine = fakeEngine();
     const known: string[] = [];
-    const watch = { know: (chat: string, thread: string) => void known.push(`${chat} ${thread}`), forget: () => undefined, began: () => undefined, ended: () => undefined, own: () => undefined };
+    const watch = { know: (chat: string, thread: string) => void known.push(`${chat} ${thread}`), forget: () => undefined, began: () => undefined, ended: () => undefined, own: () => undefined, chatOf: () => undefined };
     const adapter = createT3Adapter("claude", ENGINE, engine.rpc, watch);
     const open = { sessionId: "chat-mate", cwd: "/example", model: "opus", runtimeMode: "supervised" as const, title: "Example lead" };
     const [first, again] = await Promise.all([adapter.openConversation!(open), adapter.openConversation!(open)]);
@@ -873,7 +874,7 @@ describe("the dev page's engine", () => {
   it("leaves a run another message began behind its own to the watch: not its turn, none of it shown", async () => {
     const engine = fakeEngine();
     const marks: string[] = [];
-    const watch = { know: () => undefined, forget: () => undefined, began: () => undefined, ended: () => undefined, own: (run: string) => void marks.push(run) };
+    const watch = { know: () => undefined, forget: () => undefined, began: () => undefined, ended: () => undefined, own: (run: string) => void marks.push(run), chatOf: () => undefined };
     const adapter = createT3Adapter("claude", ENGINE, engine.rpc, watch);
     adapter.bindSession("chat-1", "thread-1", "/example");
     const events: HarnessEvent[] = [];

@@ -62,6 +62,8 @@ export type T3Watch = {
   ended(sessionId: string): void;
   /** A run a chat's own turn started or follows. */
   own(runId: string): void;
+  /** The chat a conversation of the engine belongs to, when it is one this app shows. */
+  chatOf(threadId: string): string | undefined;
 };
 
 /**
@@ -169,5 +171,6 @@ export function createT3Watch(rpc: T3Rpc, tell: Listener = tellApp): T3Watch {
       if (threadId) look(threadId, true);
     },
     own: (runId) => void own.add(runId),
+    chatOf: (threadId) => chats.get(threadId),
   };
 }

@@ -6,6 +6,7 @@ import { HARNESSES } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
 import { ENGINE_BRIEFING_TAG } from "../../../../features/crew/model/engineMates";
+import { setT3ThreadChats } from "./t3Links";
 import { createT3Watch } from "./t3Outside";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
 
@@ -66,6 +67,7 @@ export function t3DevPageAdapters(
   const rpc = connect(engine);
   // One watch for the engine: a chat's conversation is the same whichever provider's adapter runs its turns.
   const watch = createT3Watch(rpc);
+  setT3ThreadChats(watch.chatOf);
   return HARNESSES.map((id) => {
     const adapter = createT3Adapter(id, engine, rpc, watch);
     return page ? quietAppTurns(adapter) : adapter;

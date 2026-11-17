@@ -3,6 +3,7 @@
 // delta, a tool that started, a question asked). `t3ItemEvents` turns one into the other and remembers, per turn, what
 // it has already said about each item, so an update becomes only what is new.
 import type { HarnessEvent } from "../../core/types";
+import { t3ShownText } from "./t3Links";
 
 /** A T3 turn item, as far as this app reads it (`OrchestrationV2TurnItem` in T3's contracts). Unknown types pass. */
 export type T3Item = {
@@ -60,7 +61,8 @@ export function t3CrewTitle(item: Pick<T3Item, "title" | "prompt">): string {
 
 /** Everything in a thread before this turn: already on screen, so nothing about it is said again. */
 export function markT3ItemSeen(item: T3Item, seen: Map<string, T3Seen>): void {
-  seen.set(item.id, { text: (item.text ?? "").length, started: true, done: true });
+  const text = item.type === "assistant_message" ? t3ShownText(item.text ?? "", true) : (item.text ?? "");
+  seen.set(item.id, { text: text.length, started: true, done: true });
 }
 
 /**
@@ -88,8 +90,8 @@ export function t3ItemEvents(
   switch (item.type) {
     case "assistant_message":
     case "reasoning": {
-      const text = item.text ?? "";
       const reasoning = item.type === "reasoning";
+      const text = reasoning ? (item.text ?? "") : t3ShownText(item.text ?? "", done || item.streaming === false);
       if (text.length > was.text)
         out.push({ type: reasoning ? "reasoning.delta" : "message.delta", text: text.slice(was.text) });
       now.text = Math.max(was.text, text.length);

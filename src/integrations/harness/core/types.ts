@@ -297,6 +297,8 @@ export type OpenConversationInput = Pick<SendTurnInput, "sessionId" | "cwd" | "m
 };
 
 export type SendTurnInput = HarnessSessionInput & {
+  /** The name an engine that lists conversations gives this chat's, when the turn starts one (a first mate's name). */
+  title?: string;
   /** WP-176: who started the turn. Only the composer sends "person"; omitted is automated. */
   origin?: "person" | "automated";
   /**
