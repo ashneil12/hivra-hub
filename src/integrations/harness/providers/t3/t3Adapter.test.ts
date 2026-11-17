@@ -742,7 +742,7 @@ describe("the dev page's engine", () => {
     expect(t3Engine("?t3&t3token=abc")?.origin).toBe("http://127.0.0.1:13773");
     expect(t3Engine("?t3=http://127.0.0.1:13773")).toBeNull();
     expect(t3Engine("?local&fakeClaude")).toBeNull();
-    expect(t3DevPageAdapters(null)).toEqual([]);
+    expect(t3DevPageAdapters(null, null)).toEqual([]);
   });
 
   it("reads the engine a dev copy was started with from what vite was told", () => {
@@ -783,5 +783,20 @@ describe("the dev page's engine", () => {
       expect(engine.calls.filter((call) => call.tag === "orchestration.subscribeThread")).toHaveLength(2);
       expect(engine.commands()).toEqual([]);
     }
+  });
+
+  it("sends the app's own turns to the engine a dev copy was started with, and keeps them quiet on the page's", async () => {
+    const own = { ...turn("chat-1", "[app check]", []), origin: "automated" as const };
+    const copy = fakeEngine();
+    const [started] = t3DevPageAdapters(null, ENGINE, () => copy.rpc);
+    const sent = started.sendTurn(own);
+    await copy.say(snapshot([], [{ id: "run-1", status: "completed" }]));
+    await sent;
+    expect(copy.calls[0].tag).toBe("orchestration.launchThread");
+
+    const page = fakeEngine();
+    const [walked] = t3DevPageAdapters(ENGINE, ENGINE, () => page.rpc);
+    await walked.sendTurn(own);
+    expect(page.calls).toEqual([]);
   });
 });

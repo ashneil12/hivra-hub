@@ -33,12 +33,25 @@ export function t3BuiltEngine(env: Record<string, unknown> = import.meta.env): T
   return origin && token ? { origin, token } : null;
 }
 
-/** One adapter per provider, all on one connection to the engine the page names; none when it names no engine. */
-export function t3DevPageAdapters(engine: T3Engine | null = t3Engine() ?? t3BuiltEngine()): HarnessAdapter[] {
+/**
+ * One adapter per provider, all on one connection to the engine; none when no engine is named. An engine the page's
+ * address names is the dev page's walk, so the app's own turns stay quiet. An engine a dev copy was started with is
+ * that copy's engine as the app will have it: every turn runs on it, the app's own included.
+ */
+export function t3DevPageAdapters(
+  page: T3Engine | null = t3Engine(),
+  built: T3Engine | null = t3BuiltEngine(),
+  connect: (engine: T3Engine) => T3Rpc = (engine) =>
+    connectT3(engine.origin, engine.token, {
+      fetch: (input, init) => fetch(input, init),
+      socket: (url) => new WebSocket(url) as unknown as T3Socket,
+    }),
+): HarnessAdapter[] {
+  const engine = page ?? built;
   if (!engine) return [];
-  const rpc: T3Rpc = connectT3(engine.origin, engine.token, {
-    fetch: (input, init) => fetch(input, init),
-    socket: (url) => new WebSocket(url) as unknown as T3Socket,
+  const rpc = connect(engine);
+  return HARNESSES.map((id) => {
+    const adapter = createT3Adapter(id, engine, rpc);
+    return page ? quietAppTurns(adapter) : adapter;
   });
-  return HARNESSES.map((id) => quietAppTurns(createT3Adapter(id, engine, rpc)));
 }
