@@ -61,6 +61,8 @@ import {
 import {
   acknowledgeMonoMessage,
   enqueueMonoMessage,
+  monoTakesRoomTurnNow,
+  queueMonoNote,
 } from "../features/monos/model/monoMessaging";
 import {
   dismissQueuedMonoSessionCompletion,
@@ -143,6 +145,7 @@ import { memoryUsePorts } from "../features/memory/ui/memoryUseForApp";
 import { recalledFence } from "../features/memory/ui/recallForTurn";
 import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
+import { isCaptainMono } from "../features/chief/model/charter";
 import { ensureMorningHabit } from "../features/chief/model/habit";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
 import { leadFor, leadMono, leadSpecFor, leadWorkingFolder } from "../features/hub/model/hubLeads";
@@ -788,6 +791,8 @@ import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { crewLaunch } from "../features/crew/model/crewSession";
 import { engineCrewChat, type EngineCrewStart } from "../features/crew/model/engineCrew";
+import { engineTurnFor } from "../features/crew/model/engineTurn";
+import { engineTurnOf, onT3OutsideTurn } from "../integrations/harness/providers/t3/t3Outside";
 // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
 import {
   commitIdleCompactBusy,
@@ -10229,6 +10234,10 @@ function Workspace({
               ...(options?.autoResume || text.trim() === CONTINUE_PROMPT
                 ? { resume: { providerTurnId: cutTurnId(sessionsRef.current.find((s) => s.id === sessionId) ?? current) } }
                 : {}),
+              // A turn the engine began in this chat by itself: the chat follows that run and nothing is sent.
+              ...(engineTurnOf(options?.appRequestId)
+                ? { follow: { providerTurnId: engineTurnOf(options?.appRequestId)! } }
+                : {}),
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
               // A conversation whose saved transcript is gone starts again from the chat's own brief.
               resumeFallback: (prompt) =>
@@ -11836,6 +11845,55 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // A turn the engine began in a chat by itself (the Chief of Staff's message to a first mate through the engine's
+  // own thread tools, a scheduled task, a wake after background work): the chat shows it under a quiet note that says
+  // who it came from and follows the engine's run. Only a chat that is not open is offered it again.
+  useEffect(
+    () =>
+      onT3OutsideTurn((turn) => {
+        const chat = sessionsRef.current.find((session) => session.id === turn.sessionId);
+        if (!chat) return false;
+        const made = engineTurnFor(turn, chat, (sessionId) => {
+          const mono = monoForSession(sessionId);
+          const name = mono?.name?.trim() || sessionsRef.current.find((session) => session.id === sessionId)?.title;
+          // The Chief of Staff's message to another chat is a job handed down.
+          const leads = isCaptainMono(mono) && !isCaptainMono(monoForSession(turn.sessionId));
+          return name ? { name, ...(mono ? { ref: mono.id } : {}), ...(leads ? { leads } : {}) } : undefined;
+        });
+        // The chat already shows that run.
+        if (!made) return true;
+        const note = made.monoNote;
+        // A brief behind the chat's own work waits its turn as any brief does.
+        if (!note) {
+          void submitSessionRef.current(turn.sessionId, made.text, [], {
+            appRequestId: made.appRequestId,
+            followsUp: true,
+            waitForIdle: true,
+          });
+          return true;
+        }
+        // A note behind the chat's own work waits hidden, like another first mate's message does, and goes in as a
+        // turn of its own once the chat is free.
+        const wait = () => {
+          const next = sessionsRef.current.map((session) =>
+            session.id === turn.sessionId
+              ? queueMonoNote(session, { id: made.appRequestId, text: made.text, note, waitForIdle: true })
+              : session,
+          );
+          sessionsRef.current = next;
+          setSessions(next);
+        };
+        if (!monoTakesRoomTurnNow(chat)) wait();
+        else
+          void Promise.resolve(
+            submitSessionRef.current(turn.sessionId, made.text, [], { monoNote: note, appRequestId: made.appRequestId }),
+          ).then((taken) => {
+            if (!taken) wait();
+          });
+        return true;
+      }),
+    [],
+  );
   // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
   const mobileApprovalRef = useRef<
     (sessionId: string, requestId: number, decision: ApprovalDecision) => boolean

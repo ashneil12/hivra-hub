@@ -5,6 +5,7 @@
 import { HARNESSES } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
+import { createT3Watch } from "./t3Outside";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
 
 /**
@@ -16,8 +17,9 @@ export function quietAppTurns(adapter: HarnessAdapter): HarnessAdapter {
   return {
     ...adapter,
     sendTurn: async (input) => {
-      // The app's resume of a turn a quit cut is not one of those: the engine has that turn and the chat rejoins it.
-      if (input.origin === "person" || input.resume) return adapter.sendTurn(input);
+      // The app's resume of a turn a quit cut is not one of those, nor is its follow of a turn the engine began: the
+      // engine has that turn and nothing is sent.
+      if (input.origin === "person" || input.resume || input.follow) return adapter.sendTurn(input);
       input.onEvent({ type: "session.started" });
       input.onAccepted?.();
       input.onEvent({ type: "message.delta", text: "Right: nothing new since your last message." });
@@ -50,8 +52,10 @@ export function t3DevPageAdapters(
   const engine = page ?? built;
   if (!engine) return [];
   const rpc = connect(engine);
+  // One watch for the engine: a chat's conversation is the same whichever provider's adapter runs its turns.
+  const watch = createT3Watch(rpc);
   return HARNESSES.map((id) => {
-    const adapter = createT3Adapter(id, engine, rpc);
+    const adapter = createT3Adapter(id, engine, rpc, watch);
     return page ? quietAppTurns(adapter) : adapter;
   });
 }

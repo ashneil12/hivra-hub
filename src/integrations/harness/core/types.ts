@@ -313,6 +313,11 @@ export type SendTurnInput = HarnessSessionInput & {
    * (`turn.rejoined`) and sends nothing.
    */
   resume?: { providerTurnId?: string };
+  /**
+   * A turn the engine began in this chat by itself (another chat's message to it, a scheduled task, a wake after
+   * background work). Nothing is sent: the chat's turn is that run, heard from its start.
+   */
+  follow?: { providerTurnId: string };
 };
 
 export type CompactContextInput = HarnessSessionInput;

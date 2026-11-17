@@ -785,6 +785,92 @@ describe("the dev page's engine", () => {
     }
   });
 
+  it("follows a turn the engine began by itself: nothing is sent, the chat's turn is that one run", async () => {
+    const engine = fakeEngine();
+    const marks: string[] = [];
+    const watch = {
+      know: (chat: string) => void marks.push(`know ${chat}`),
+      forget: () => undefined,
+      began: (chat: string) => void marks.push(`began ${chat}`),
+      ended: (chat: string) => void marks.push(`ended ${chat}`),
+      own: (run: string) => void marks.push(`own ${run}`),
+    };
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc, watch);
+    adapter.bindSession("chat-1", "thread-1", "/example");
+    const events: HarnessEvent[] = [];
+    const run = "run:thread-1:2";
+    const followed = adapter.sendTurn({ ...turn("chat-1", "Example: count the lines", events), origin: "automated", follow: { providerTurnId: t3AppId(run) } });
+    await engine.sayTo(
+      "thread-1",
+      snapshot(
+        [
+          { ...message("m1", "Example: an earlier answer.", true), runId: "run:thread-1:1" },
+          { id: "u2", type: "user_message", status: "completed", runId: run, text: "Example: count the lines", senderThreadId: "thread-chief" },
+          { ...message("m2", "Example: 3", false), runId: run },
+        ],
+        [{ id: "run:thread-1:1", status: "completed" }, { id: run, status: "running" }],
+      ),
+    );
+    await engine.sayTo("thread-1", event("turn-item.updated", { ...message("m2", "Example: 3 lines.", true), runId: run }));
+    await engine.sayTo("thread-1", event("run.updated", { id: run, status: "completed" }));
+    await followed;
+    expect(engine.commands()).toEqual([]);
+    expect(engine.calls.map((call) => call.tag)).toEqual(["orchestration.subscribeThread"]);
+    expect(events).toEqual([
+      { type: "session.started" },
+      { type: "turn.started", providerTurnId: t3AppId(run) },
+      { type: "message.delta", text: "Example: 3" },
+      { type: "message.delta", text: " lines." },
+      { type: "message.completed" },
+    ]);
+    expect(marks).toEqual(["know chat-1", "began chat-1", `own ${run}`, "ended chat-1"]);
+
+    // A run the engine no longer has: the follow ends with nothing shown and nothing sent in its place.
+    const gone: HarnessEvent[] = [];
+    const none = adapter.sendTurn({ ...turn("chat-1", "Example: lost", gone), origin: "automated", follow: { providerTurnId: "run-gone" } });
+    await engine.sayTo("thread-1", snapshot([], [{ id: "run:thread-1:1", status: "completed" }]));
+    await none;
+    expect(engine.commands()).toEqual([]);
+    expect(gone).toEqual([{ type: "session.started" }]);
+    // And in a chat the engine has no conversation for, there is nothing to follow.
+    await adapter.sendTurn({ ...turn("chat-new", "Example: lost", gone), follow: { providerTurnId: "run-gone" } });
+    expect(engine.calls.filter((call) => call.tag === "orchestration.launchThread")).toEqual([]);
+  });
+
+  it("leaves a run another message began behind its own to the watch: not its turn, none of it shown", async () => {
+    const engine = fakeEngine();
+    const marks: string[] = [];
+    const watch = { know: () => undefined, forget: () => undefined, began: () => undefined, ended: () => undefined, own: (run: string) => void marks.push(run) };
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc, watch);
+    adapter.bindSession("chat-1", "thread-1", "/example");
+    const events: HarnessEvent[] = [];
+    const done = adapter.sendTurn(turn("chat-1", "Example: build it", events));
+    await engine.say(snapshot([], [{ id: "run-1", status: "completed", userMessageId: "m-old" }]));
+    const mine = (engine.commands()[0] as { messageId: string }).messageId;
+    await engine.say(event("run.created", { id: "run-2", status: "running", userMessageId: mine }));
+    // The Chief of Staff's message lands while this turn works: the engine queues a run for it.
+    await engine.say(event("run.created", { id: "run-3", status: "queued", userMessageId: "message:mcp:thread-send:1" }));
+    await engine.say(event("turn-item.updated", { ...message("m3", "Example: not this turn's.", true), runId: "run-3" }));
+    // What was steered into this turn is this turn's, and so is the engine carrying its run on in a new one.
+    await adapter.steerTurn({ sessionId: "chat-1", cwd: "/example", model: "opus", text: "Example: also the tests" });
+    const steered = (engine.commands()[1] as { messageId: string }).messageId;
+    await engine.say(event("run.created", { id: "run-4", status: "queued", userMessageId: steered }));
+    await engine.say(event("run.created", { id: "run-5", status: "running", userMessageId: "m-engine", restartContinuationOfRunId: "run-4" }));
+    await engine.say(event("turn-item.updated", { ...message("m5", "Example: built.", true), runId: "run-5" }));
+    await engine.say(event("run.updated", { id: "run-3", status: "queued", userMessageId: "message:mcp:thread-send:1" }));
+    await engine.say(event("run.updated", { id: "run-5", status: "completed", userMessageId: "m-engine", restartContinuationOfRunId: "run-4" }));
+    await done;
+    expect(marks).toEqual(["run-2", "run-4", "run-5"]);
+    expect(events).toEqual([
+      { type: "session.started" },
+      { type: "turn.started", providerTurnId: "run-2" },
+      { type: "turn.started", providerTurnId: "run-4" },
+      { type: "turn.started", providerTurnId: "run-5" },
+      { type: "message.delta", text: "Example: built." },
+      { type: "message.completed" },
+    ]);
+  });
+
   it("sends the app's own turns to the engine a dev copy was started with, and keeps them quiet on the page's", async () => {
     const own = { ...turn("chat-1", "[app check]", []), origin: "automated" as const };
     const copy = fakeEngine();
