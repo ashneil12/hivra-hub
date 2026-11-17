@@ -22,7 +22,11 @@ export type T3Item = {
   message?: string;
   requestId?: string;
   requestKind?: string;
+  /** An approval's question, or the brief a crew member was given. */
   prompt?: string;
+  /** A crew member's latest word on how it is going, and what it reported at the end. */
+  progress?: string;
+  result?: string | null;
   reason?: string;
   questions?: Array<{
     id: string;
@@ -35,7 +39,7 @@ export type T3Item = {
 };
 
 /** What the turn has already told the chat about one item. */
-export type T3Seen = { text: number; started: boolean; done: boolean };
+export type T3Seen = { text: number; started: boolean; done: boolean; progress?: string };
 
 const DONE = new Set(["completed", "failed", "cancelled", "interrupted"]);
 
@@ -92,9 +96,25 @@ export function t3ItemEvents(
     case "web_search":
       tool(item.patterns?.length ? `Search the web: ${item.patterns.join(", ")}` : "Search the web", "fetch");
       break;
-    case "subagent":
-      tool(item.title || "Crew member", "agent");
+    case "subagent": {
+      // A crew member the agent started: one row in the chat, its progress and its report as that row's own trail.
+      const brief = (item.prompt ?? "").trim().split("\n", 1)[0];
+      tool(item.title || (brief.length > 80 ? `${brief.slice(0, 79)}…` : brief) || "Crew member", "agent");
+      if (!done && item.progress && item.progress !== was.progress) {
+        out.push({
+          type: "agent.step",
+          callId: item.id,
+          stepId: `${item.id}:progress`,
+          kind: "tool",
+          text: item.progress,
+          status: "in_progress",
+        });
+        now.progress = item.progress;
+      }
+      if (done && !was.done && item.result?.trim())
+        out.push({ type: "agent.step", callId: item.id, stepId: `${item.id}:report`, kind: "message", text: item.result });
       break;
+    }
     case "dynamic_tool":
       tool(item.title || "Tool", "other");
       break;

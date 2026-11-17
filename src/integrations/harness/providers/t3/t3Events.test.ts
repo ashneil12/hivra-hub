@@ -46,6 +46,25 @@ describe("t3ItemEvents", () => {
     ]);
   });
 
+  it("shows a crew member as one row with its progress and, at the end, its report", () => {
+    const seen = new Map<string, T3Seen>();
+    const crew = (fields: Partial<T3Item>) =>
+      item({ id: "s2", type: "subagent", prompt: "Example: point the pricing page at plans.ts\nand delete the old list", ...fields });
+    expect(t3ItemEvents(crew({ progress: "Example: reading pricing.tsx" }), seen, ask)).toEqual([
+      { type: "tool.started", callId: "s2", title: "Example: point the pricing page at plans.ts", kind: "agent", status: "in_progress" },
+      { type: "agent.step", callId: "s2", stepId: "s2:progress", kind: "tool", text: "Example: reading pricing.tsx", status: "in_progress" },
+    ]);
+    expect(t3ItemEvents(crew({ progress: "Example: reading pricing.tsx" }), seen, ask)).toEqual([]);
+    expect(t3ItemEvents(crew({ progress: "Example: running the tests" }), seen, ask)).toEqual([
+      { type: "agent.step", callId: "s2", stepId: "s2:progress", kind: "tool", text: "Example: running the tests", status: "in_progress" },
+    ]);
+    expect(t3ItemEvents(crew({ status: "completed", result: "Example: done, 4 tests pass." }), seen, ask)).toEqual([
+      { type: "tool.updated", callId: "s2", status: "completed" },
+      { type: "agent.step", callId: "s2", stepId: "s2:report", kind: "message", text: "Example: done, 4 tests pass." },
+    ]);
+    expect(t3ItemEvents(crew({ status: "completed", result: "Example: done, 4 tests pass." }), seen, ask)).toEqual([]);
+  });
+
   it("turns T3's plan steps into the chat's task list", () => {
     const steps = [
       { id: "1", text: "Example: read", status: "completed" },
