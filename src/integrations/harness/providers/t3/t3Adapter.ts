@@ -1,95 +1,268 @@
-// Dropwave on T3 Code (spike, 17 Nov 2026): the same screens, another engine. A chat's turns go to a T3 Code server
-// instead of a CLI this app starts itself: one chat is one T3 thread, and what the thread does comes back as the
-// harness events every screen already draws (t3Events.ts). Nothing above the adapter changes.
+// Dropwave on T3 Code: the same screens, another engine. A chat's turns go to a T3 Code server instead of a CLI this
+// app starts itself. One chat is one T3 thread; what the thread does comes back as the harness events every screen
+// already draws (t3Events.ts), over T3's own client wire (t3Rpc.ts). Nothing above the adapter changes.
 //
-// The spike reaches T3 through a small loopback bridge (t3code `scripts/dropwave-engine-bridge.ts`) that speaks T3's
-// own RPC; the real build speaks that RPC from here. Only a dev page that names an engine in its address (`?t3`) uses it.
-import type { HarnessId } from "../../../../features/sessions/model/session";
+// For now only a dev page that names an engine in its address uses it (`t3Engine`); the installed app is unchanged.
+import type { HarnessId, RuntimeMode } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
-import type { HarnessEvent, SendTurnInput } from "../../core/types";
-import { parseT3Lines } from "./t3Events";
+import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/types";
+import { markT3ItemSeen, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
+import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
 
-const DEFAULT_ENGINE = "http://127.0.0.1:4620";
+export type T3Engine = {
+  /** The T3 server, e.g. http://127.0.0.1:13773. */
+  origin: string;
+  /** A session token for it (`t3 auth session issue`). The desktop shell will hand this over itself. */
+  token: string;
+  /** Run every chat on this T3 provider and model instead of its own (the dev page's replay provider). */
+  provider?: string;
+  model?: string;
+  /** The T3 project (its folder) for a chat whose folder T3 does not know. */
+  project?: string;
+};
 
-/** The T3 engine this page was asked to use (`?t3` or `?t3=<url>`), or null. Never set in the installed app. */
-export function t3EngineUrl(): string | null {
-  if (typeof location === "undefined") return null;
-  const params = new URLSearchParams(location.search);
-  if (!params.has("t3")) return null;
-  return params.get("t3") || DEFAULT_ENGINE;
+/** The engine this dev page was asked to use: `?t3=<origin>&t3token=<token>` (+ t3provider, t3model, t3project). */
+export function t3Engine(search: string = typeof location === "undefined" ? "" : location.search): T3Engine | null {
+  const params = new URLSearchParams(search);
+  const token = params.get("t3token");
+  if (!params.has("t3") || !token) return null;
+  return {
+    origin: (params.get("t3") || "http://127.0.0.1:13773").replace(/\/+$/, ""),
+    token,
+    provider: params.get("t3provider") || undefined,
+    model: params.get("t3model") || undefined,
+    project: params.get("t3project") || undefined,
+  };
 }
 
-export function createT3Adapter(id: HarnessId, engine: string, fetcher: typeof fetch = fetch): HarnessAdapter {
-  /** Chat -> T3 thread, as T3 named it on the first turn (kept by the app as the provider session id). */
+/** T3's name for each provider this app knows. One without a T3 provider of its own keeps its name. */
+const T3_PROVIDER: Partial<Record<HarnessId, string>> = { claude: "claudeAgent" };
+
+/** T3's word for each permission mode. */
+const T3_RUNTIME_MODE: Record<RuntimeMode, string> = {
+  supervised: "approval-required",
+  "auto-accept-edits": "auto-accept-edits",
+  auto: "auto",
+  "full-access": "full-access",
+};
+
+const RUN_ENDED = new Set(["completed", "failed", "interrupted", "cancelled", "rolled_back"]);
+
+type T3Run = { id: string; status: string };
+type T3Frame =
+  | { kind: "snapshot"; projection: { turnItems: T3Item[]; runs: T3Run[] } }
+  | { kind: "event"; event: { type: string; payload: unknown } }
+  | { kind: string };
+
+type Live = { threadId: string; runId?: string; abort: AbortController };
+
+const uuid = () => crypto.randomUUID();
+
+/** The chat's name in T3's own list until the app passes its real one: its id, made readable. */
+function chatTitle(sessionId: string): string {
+  const words = sessionId.trim().replace(/[-_]+/g, " ") || "Chat";
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+export function createT3Adapter(
+  id: HarnessId,
+  engine: T3Engine,
+  rpc: T3Rpc = connectT3(engine.origin, engine.token, {
+    fetch: (input, init) => fetch(input, init),
+    socket: (url) => new WebSocket(url) as unknown as T3Socket,
+  }),
+): HarnessAdapter {
+  /** Chat -> T3 thread. The app keeps the thread id as the chat's provider session id and hands it back on relaunch. */
   const threads = new Map<string, string>();
-  const running = new Map<string, AbortController>();
-  const post = (path: string, body: unknown, signal?: AbortSignal) =>
-    fetcher(`${engine}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal,
+  const live = new Map<string, Live>();
+  /** This app names a question or approval by a number; T3 by a request id on a thread. */
+  const asks = new Map<number, { threadId: string; requestId: string }>();
+  const askNumbers = new Map<string, number>();
+  let projects: Promise<Array<{ id: string; workspaceRoot: string }>> | undefined;
+
+  const dispatch = (command: Record<string, unknown>) =>
+    rpc.call("orchestration.dispatchCommand", { commandId: uuid(), ...command });
+
+  async function projectFor(cwd: string): Promise<string> {
+    projects ??= rpc
+      .get<{ projects: Array<{ id: string; workspaceRoot: string }> }>("/api/orchestration/shell")
+      .then((shell) => shell.projects);
+    const known = await projects.catch((error: unknown) => {
+      projects = undefined;
+      throw error;
     });
+    const project =
+      known.find((candidate) => candidate.workspaceRoot === cwd) ??
+      known.find((candidate) => candidate.workspaceRoot === engine.project);
+    if (!project) {
+      projects = undefined;
+      throw new Error(`The engine has no project for ${cwd}.`);
+    }
+    return project.id;
+  }
 
   async function sendTurn(input: SendTurnInput): Promise<void> {
     const abort = new AbortController();
-    running.set(input.sessionId, abort);
-    const forward = (event: HarnessEvent) => {
-      if (event.type === "session.providerBound") threads.set(input.sessionId, event.providerSessionId);
-      // The registry tells the chat the turn is ready when the provider accepts it.
-      if (event.type === "turn.ready") return input.onAccepted?.();
-      input.onEvent(event);
+    const seen = new Map<string, T3Seen>();
+    const oldRuns = new Set<string>();
+    const emit = (event: HarnessEvent) => input.onEvent(event);
+    const ask = (requestId: string) => {
+      const known = askNumbers.get(requestId);
+      if (known !== undefined) return known;
+      const number = askNumbers.size + 1;
+      askNumbers.set(requestId, number);
+      asks.set(number, { threadId, requestId });
+      return number;
     };
+    const existing = threads.get(input.sessionId);
+    const threadId = existing ?? uuid();
+    const state: Live = { threadId, abort };
+    live.set(input.sessionId, state);
+    let sent = false;
+
     try {
-      const response = await post(
-        "/send",
-        { sessionId: input.sessionId, text: input.text, origin: input.origin, threadId: threads.get(input.sessionId) },
+      if (!existing) {
+        await rpc.call("orchestration.launchThread", {
+          commandId: uuid(),
+          threadId,
+          projectId: await projectFor(input.cwd),
+          title: chatTitle(input.sessionId),
+          modelSelection: {
+            instanceId: engine.provider ?? T3_PROVIDER[id] ?? id,
+            model: engine.model ?? input.model,
+          },
+          runtimeMode: T3_RUNTIME_MODE[input.runtimeMode] ?? "approval-required",
+          interactionMode: "default",
+          workspaceStrategy: { type: "root" },
+          initialMessage: { text: input.text, attachments: [] },
+        });
+        threads.set(input.sessionId, threadId);
+        sent = true;
+        emit({ type: "session.providerBound", providerSessionId: threadId });
+        input.onAccepted?.();
+      }
+      emit({ type: "session.started" });
+
+      const item = (value: T3Item) => t3ItemEvents(value, seen, ask).forEach(emit);
+      /** False once the run this turn started has ended. */
+      const run = (value: T3Run, created: boolean): boolean => {
+        if (oldRuns.has(value.id)) return true;
+        if (state.runId !== value.id && (created || state.runId === undefined)) {
+          state.runId = value.id;
+          emit({ type: "turn.started", providerTurnId: value.id });
+        }
+        return !RUN_ENDED.has(value.status);
+      };
+
+      await rpc.stream(
+        "orchestration.subscribeThread",
+        { threadId },
+        async (value) => {
+          const frame = value as T3Frame;
+          if (frame.kind === "snapshot" && "projection" in frame) {
+            if (sent) {
+              // A thread this turn just started: all of it is this turn.
+              frame.projection.turnItems.forEach(item);
+              return frame.projection.runs.every((candidate) => run(candidate, false));
+            }
+            // An older thread: what is there is already on screen. Then the message goes in.
+            for (const old of frame.projection.turnItems) markT3ItemSeen(old, seen);
+            for (const old of frame.projection.runs) oldRuns.add(old.id);
+            await dispatch({
+              type: "message.dispatch",
+              threadId,
+              messageId: uuid(),
+              text: input.text,
+              attachments: [],
+              dispatchMode: { type: "queue_after_active" },
+              createdBy: "user",
+              creationSource: "web",
+            });
+            sent = true;
+            input.onAccepted?.();
+            return true;
+          }
+          if (frame.kind !== "event" || !("event" in frame)) return true;
+          const { type, payload } = frame.event;
+          if (type === "turn-item.updated") item(payload as T3Item);
+          else if (type === "run.created" || type === "run.updated") return run(payload as T3Run, type === "run.created");
+          return true;
+        },
         abort.signal,
       );
-      if (!response.ok || !response.body) throw new Error(`The T3 engine answered ${response.status}.`);
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let rest = "";
-      for (;;) {
-        const { done, value } = await reader.read();
-        const parsed = parseT3Lines(rest + decoder.decode(value, { stream: !done }), done);
-        rest = parsed.rest;
-        parsed.events.forEach(forward);
-        if (done) break;
-      }
     } catch (error) {
       if (!abort.signal.aborted)
-        input.onEvent({ type: "session.error", message: error instanceof Error ? error.message : String(error) });
+        emit({ type: "session.error", message: error instanceof Error ? error.message : String(error) });
     } finally {
-      if (running.get(input.sessionId) === abort) running.delete(input.sessionId);
+      if (live.get(input.sessionId) === state) live.delete(input.sessionId);
     }
   }
 
-  async function stop(sessionId: string): Promise<void> {
-    running.get(sessionId)?.abort();
-    running.delete(sessionId);
-    await post("/stop", { sessionId }).catch(() => undefined);
+  /** A follow-up while the agent works goes into the running turn. */
+  async function steerTurn(input: SteerTurnInput): Promise<void> {
+    const state = live.get(input.sessionId);
+    if (!state?.runId) throw new Error("Nothing is running in this chat to steer.");
+    await dispatch({
+      type: "message.dispatch",
+      threadId: state.threadId,
+      messageId: uuid(),
+      text: input.text,
+      attachments: [],
+      dispatchMode: { type: "steer_active", targetRunId: state.runId },
+      createdBy: "user",
+      creationSource: "web",
+    });
   }
+
+  /** Stops the run and lets the turn end by itself when T3 says the run was interrupted. */
+  async function cancelTurn(sessionId: string): Promise<void> {
+    const state = live.get(sessionId);
+    if (!state) return;
+    if (state.runId) await dispatch({ type: "run.interrupt", threadId: state.threadId, runId: state.runId });
+    else state.abort.abort();
+  }
+
+  async function stopSession(sessionId: string): Promise<void> {
+    const state = live.get(sessionId);
+    if (!state) return;
+    await rpc.call("orchestration.forceStopThread", { threadId: state.threadId }).catch(() => undefined);
+    state.abort.abort();
+    live.delete(sessionId);
+  }
+
+  const respond = (requestId: number, answer: Record<string, unknown>, type = "runtime-request.respond") => {
+    const asked = asks.get(requestId);
+    if (!asked) return false;
+    void dispatch({ type, threadId: asked.threadId, requestId: asked.requestId, ...answer }).catch(() => undefined);
+    return true;
+  };
 
   return {
     id,
     live: true,
-    canSteer: false,
     sendTurn,
-    steerTurn: async () => {
-      throw new Error("A follow-up waits for the reply in this spike.");
-    },
-    cancelTurn: stop,
-    respondApproval: (_sessionId, requestId, decision) => {
-      void post("/answer", { requestId, decision }).catch(() => undefined);
-    },
+    steerTurn,
+    cancelTurn,
+    respondApproval: (_sessionId, requestId, decision) =>
+      respond(requestId, { decision: decision === "allow" ? "accept" : "decline" }),
     respondQuestion: (_sessionId, requestId, reply) => {
-      const answer = reply.kind === "skipped" ? { skipped: true } : { answers: reply.answers, custom: reply.custom };
-      void post("/answer", { requestId, ...answer }).catch(() => undefined);
+      if (reply.kind === "skipped") return void respond(requestId, {}, "thread.user-input.dismiss");
+      // T3 takes each answer as the picked label, or a list when several were picked or one was typed too.
+      const answers = Object.fromEntries(
+        Object.entries(reply.answers).map(([questionId, picked]) => {
+          const typed = reply.custom?.[questionId];
+          const all = typed ? [...picked, typed] : picked;
+          return [questionId, all.length === 1 ? all[0] : all];
+        }),
+      );
+      for (const [questionId, typed] of Object.entries(reply.custom ?? {})) {
+        if (!(questionId in answers) && typed) answers[questionId] = typed;
+      }
+      respond(requestId, { answers });
     },
-    stopSession: stop,
+    stopSession,
     forgetSession: async (sessionId) => {
-      await stop(sessionId);
+      await stopSession(sessionId);
       threads.delete(sessionId);
     },
     bindSession: (sessionId, providerSessionId) => void threads.set(sessionId, providerSessionId),
