@@ -9,8 +9,13 @@ import type { T3Rpc } from "./t3Rpc";
 const ENGINE: T3Engine = { origin: "http://127.0.0.1:13773", token: "token-1" };
 
 /** A T3 engine in the test's hands: what it was asked, and the thread stream to feed frame by frame. */
-function fakeEngine(projects = [{ id: "project-1", workspaceRoot: "/example" }], providers?: T3Provider[]) {
+function fakeEngine(
+  projects = [{ id: "project-1", workspaceRoot: "/example" }],
+  providers?: T3Provider[],
+  refusesSettings = false,
+) {
   const calls: Array<{ tag: string; payload: Record<string, unknown> }> = [];
+  const settings: Array<Record<string, unknown>> = [];
   let feed: ((frame: unknown) => Promise<void>) | undefined;
   let subscribed: (() => void) | undefined;
   const ready = new Promise<void>((resolve) => (subscribed = resolve));
@@ -21,6 +26,12 @@ function fakeEngine(projects = [{ id: "project-1", workspaceRoot: "/example" }],
     call: async (tag, payload) => {
       // What the engine has is only read; `calls` keeps what it was asked to do.
       if (tag === "server.getConfig") return (providers ? { providers } : {}) as never;
+      // A setting of the engine itself, not something a chat asked for.
+      if (tag === "server.updateSettings") {
+        settings.push(payload as Record<string, unknown>);
+        if (refusesSettings) throw new Error("Example: unknown streaming mode");
+        return {} as never;
+      }
       calls.push({ tag, payload: payload as Record<string, unknown> });
       return {} as never;
     },
@@ -54,7 +65,7 @@ function fakeEngine(projects = [{ id: "project-1", workspaceRoot: "/example" }],
     await feeds.get(threadId)?.(frame);
   };
   const commands = () => calls.filter((call) => call.tag === "orchestration.dispatchCommand").map((call) => call.payload);
-  return { rpc, calls, say, sayTo, commands };
+  return { rpc, calls, say, sayTo, commands, settings };
 }
 
 function turn(sessionId: string, text: string, events: HarnessEvent[], accepted: string[] = []): SendTurnInput {
@@ -189,6 +200,30 @@ describe("the T3 adapter", () => {
     ]);
     await engine.say(event("run.updated", { id: "run-1", status: "completed" }));
     await done;
+  });
+
+  it("asks the engine once for text as it is written, and carries on when the engine has no such mode", async () => {
+    const engine = fakeEngine();
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc);
+    for (const [sessionId, threadId] of [
+      ["chat-1", "thread-1"],
+      ["chat-2", "thread-2"],
+    ]) {
+      adapter.bindSession(sessionId, threadId, "/example");
+      const done = adapter.sendTurn(turn(sessionId, "Example: hello", []));
+      await engine.sayTo(threadId, snapshot([], []));
+      await engine.sayTo(threadId, event("run.created", { id: "run-1", status: "completed" }));
+      await done;
+    }
+    expect(engine.settings).toEqual([{ patch: { responseStreamingMode: "live" } }]);
+
+    const plain = fakeEngine(undefined, undefined, true);
+    const events: HarnessEvent[] = [];
+    const done = createT3Adapter("claude", ENGINE, plain.rpc).sendTurn(turn("chat-3", "Example: hello", events));
+    await plain.say(snapshot([message("m1", "Example: hi", true)], [{ id: "run-1", status: "completed" }]));
+    await done;
+    expect(events.some((event) => event.type === "session.error")).toBe(false);
+    expect(events).toContainEqual({ type: "message.delta", text: "Example: hi" });
   });
 
   it("tells the chat when the engine has no project for its folder or cannot be reached", async () => {

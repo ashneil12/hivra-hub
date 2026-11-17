@@ -154,6 +154,17 @@ export function createT3Adapter(
       .catch(() => undefined);
 
   /**
+   * These screens draw a reply as it is written. Dropwave's engine can deliver it that way (its "live" mode); asked
+   * once, and an engine without that mode keeps its own.
+   */
+  let liveTextAsked: Promise<void> | undefined;
+  const liveText = () =>
+    (liveTextAsked ??= rpc.call("server.updateSettings", { patch: { responseStreamingMode: "live" } }).then(
+      () => undefined,
+      () => undefined,
+    ));
+
+  /**
    * The engine's provider, model and options for what the chat's picker says. A provider the engine has switched off
    * or never installed is said here, in the chat, instead of as a run that fails.
    */
@@ -331,6 +342,7 @@ export function createT3Adapter(
 
     try {
       const selection = await selectionFor(input);
+      await liveText();
       const runtimeMode = T3_RUNTIME_MODE[input.runtimeMode] ?? "approval-required";
       if (!existing) {
         await rpc.call("orchestration.launchThread", {
