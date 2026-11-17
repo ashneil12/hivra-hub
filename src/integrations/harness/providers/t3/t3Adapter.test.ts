@@ -79,6 +79,19 @@ describe("the T3 adapter", () => {
     expect(engine.asked.map((ask) => ask.body.threadId)).toEqual([undefined, "thread-1", "thread-9"]);
   });
 
+  it("sends an answer to a question card, a skip and an approval back to the engine", async () => {
+    const engine = fakeEngine([]);
+    const adapter = createT3Adapter("claude", "http://127.0.0.1:4620", engine.fetcher);
+    adapter.respondQuestion?.("chat-1", 3, { kind: "answered", answers: { pick: ["Example: A"] } });
+    adapter.respondQuestion?.("chat-1", 4, { kind: "skipped" });
+    adapter.respondApproval("chat-1", 5, "deny");
+    expect(engine.asked).toEqual([
+      { path: "/answer", body: { requestId: 3, answers: { pick: ["Example: A"] } } },
+      { path: "/answer", body: { requestId: 4, skipped: true } },
+      { path: "/answer", body: { requestId: 5, decision: "deny" } },
+    ]);
+  });
+
   it("shows an engine that cannot be reached as the chat's error, and a stop as nothing", async () => {
     const down = (async () => {
       throw new Error("Example: connection refused");

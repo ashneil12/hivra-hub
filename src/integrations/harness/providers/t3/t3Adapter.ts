@@ -80,7 +80,13 @@ export function createT3Adapter(id: HarnessId, engine: string, fetcher: typeof f
       throw new Error("A follow-up waits for the reply in this spike.");
     },
     cancelTurn: stop,
-    respondApproval: () => undefined,
+    respondApproval: (_sessionId, requestId, decision) => {
+      void post("/answer", { requestId, decision }).catch(() => undefined);
+    },
+    respondQuestion: (_sessionId, requestId, reply) => {
+      const answer = reply.kind === "skipped" ? { skipped: true } : { answers: reply.answers, custom: reply.custom };
+      void post("/answer", { requestId, ...answer }).catch(() => undefined);
+    },
     stopSession: stop,
     forgetSession: async (sessionId) => {
       await stop(sessionId);
