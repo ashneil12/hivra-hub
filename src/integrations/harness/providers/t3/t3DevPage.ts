@@ -60,6 +60,52 @@ export function runsOnEngine(): boolean {
   return (import.meta.env.DEV || import.meta.env.MODE === "mockup") && !!(t3Engine() ?? t3BuiltEngine());
 }
 
+const TOOLS_CHANGED = new Set(["providerStatuses", "providerStatusDeltas", "settingsUpdated", "snapshot"]);
+
+/**
+ * Keeps what this app says of the engine's tools true. The engine checks a tool for a while after it is turned on
+ * (seen on a Mac: the row read "Checking … availability" for good, the engine long since ready), and tools change
+ * behind this app's back, so every word from the engine that its providers or settings changed is a reason to look
+ * again. One look at a time, and one more when word came during a look.
+ */
+export function engineToolsWatch(rpc: Pick<T3Rpc, "stream">, look: () => Promise<void>): { listen(): void; lookAgain(): void } {
+  let looking = false;
+  let again = false;
+  const lookAgain = (): void => {
+    if (looking) {
+      again = true;
+      return;
+    }
+    looking = true;
+    void look()
+      .catch(() => undefined)
+      .then(() => {
+        looking = false;
+        if (!again) return;
+        again = false;
+        lookAgain();
+      });
+  };
+  let listening = false;
+  const listen = (): void => {
+    if (listening) return;
+    listening = true;
+    // The first word is what the engine has now, which whoever opened the stream has just asked for.
+    let heard = false;
+    void rpc
+      .stream("subscribeServerConfig", {}, (value) => {
+        const type = (value as { type?: unknown } | null)?.type;
+        if (heard && typeof type === "string" && TOOLS_CHANGED.has(type)) lookAgain();
+        heard = true;
+        return true;
+      })
+      .catch(() => undefined)
+      // The connection dropped: the next look starts listening again.
+      .finally(() => (listening = false));
+  };
+  return { listen, lookAgain };
+}
+
 /**
  * One adapter per provider, all on one connection to the engine; none when no engine is named. An engine the page's
  * address names is the dev page's walk, so the app's own turns stay quiet. An engine a dev copy was started with is
@@ -82,15 +128,18 @@ export function t3DevPageAdapters(
   setT3ThreadChats(watch.chatOf);
   // The engine starts each tool, so it says which ones can run (and why one cannot), not this app's look on disk.
   type Config = { providers?: T3Provider[]; settings?: { providerInstances?: Record<string, Record<string, unknown>> } };
-  setHarnessAvailabilitySource(() =>
-    rpc
+  const tools = engineToolsWatch(rpc, () => probeHarnessAvailability({ force: true }));
+  setHarnessAvailabilitySource(() => {
+    // Listening starts with the first screen that asks, and again after a dropped connection.
+    tools.listen();
+    return rpc
       .call<Config>("server.getConfig", {})
       .then((config) =>
         Array.isArray(config?.providers)
           ? t3Availability(HARNESSES, config.providers, (harness) => HARNESS_TITLE[harness], engine.provider)
           : undefined,
-      ),
-  );
+      );
+  });
   setHarnessEngineTurnOn(async (harness) => {
     const config = await rpc.call<Config>("server.getConfig", {});
     const provider = t3Provider(harness, config?.providers ?? [], engine.provider);
@@ -106,7 +155,7 @@ export function t3DevPageAdapters(
       : t3SetUp(harness, found);
     if (!change) throw new Error(`The engine has no provider set up for ${HARNESS_TITLE[harness]}.`);
     await rpc.call("server.updateSettings", change);
-    await probeHarnessAvailability({ force: true });
+    tools.lookAgain();
   });
   return HARNESSES.map((id) => {
     const adapter = createT3Adapter(id, engine, rpc, watch);

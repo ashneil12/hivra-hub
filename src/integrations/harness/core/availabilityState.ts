@@ -36,6 +36,8 @@ export type HarnessEngineFacts = {
   off?: boolean;
   /** The engine has no provider for it yet and can be given one that runs the tool's own command. */
   setUp?: boolean;
+  /** The engine has no way to run it at all, so installing it would change nothing. */
+  noRoute?: boolean;
 };
 let engineFacts: Partial<Record<HarnessId, HarnessEngineFacts>> = {};
 

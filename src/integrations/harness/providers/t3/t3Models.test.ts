@@ -118,12 +118,13 @@ describe("the picker's list from the engine", () => {
     const signedIn = { ...claude, version: "2.1.50", status: "ready", auth: { status: "authenticated", label: "Claude Max", email: "example@example.com" } };
     const providers = [signedIn, provider("codex", "codex", { displayName: "Codex", enabled: false }), provider("cursor", "cursor", { installed: false })];
     const title = (harness: string) => ({ claude: "Claude Code", hermes: "Hermes" })[harness] ?? harness;
-    const said = t3Availability(["claude", "codex", "cursor", "hermes"], providers, title);
-    expect(said.available).toEqual({ claude: true, codex: false, cursor: false, hermes: false });
+    const said = t3Availability(["claude", "codex", "cursor", "hermes", "omp"], providers, title);
+    expect(said.available).toEqual({ claude: true, codex: false, cursor: false, hermes: false, omp: false });
     expect(said.why).toEqual({
       codex: "Codex is switched off in the engine.",
       cursor: "cursor is not installed for the engine to use.",
       hermes: "The engine has no provider set up for Hermes.",
+      omp: "The engine has no provider set up for omp.",
     });
     // What Settings says on the row of one it can run.
     expect(said.facts).toEqual({
@@ -132,6 +133,8 @@ describe("the picker's list from the engine", () => {
       codex: { off: true },
       // No driver for it in the engine, but it speaks the protocol the engine's generic driver runs.
       hermes: { setUp: true },
+      // No way to run it on the engine at all: installing it would change nothing, so the row does not offer to.
+      omp: { noRoute: true },
     });
     expect(t3ProviderFacts(provider("codex", "codex", { status: "error", message: "Example: the CLI is too old.", auth: { status: "unauthenticated" } }))).toEqual({
       signedIn: false,

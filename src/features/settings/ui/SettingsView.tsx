@@ -4902,6 +4902,8 @@ function ProviderRow({
   const installPage = agentInstallPage(harness);
   // Dropwave on T3: the engine runs the tool, so the row says what the engine knows of it.
   const engine = harnessEngineFacts(harness);
+  // What stands between the tool and a chat is in the engine, not a missing CLI: Install would change nothing.
+  const engineOnly = !!(engine?.off || engine?.setUp || engine?.noRoute);
   const [turnOn, setTurnOn] = useState<{ busy?: boolean; failed?: string }>({});
   const onTurnOn = () => {
     setTurnOn({ busy: true });
@@ -4950,7 +4952,7 @@ function ProviderRow({
           {engine.setUp ? (turnOn.busy ? "Setting up…" : "Set up") : turnOn.busy ? "Turning on…" : "Turn on"}
         </SecondaryButton>
       ) : null}
-      {!available && !engine?.off && !engine?.setUp && canInstallAgent(harness) ? (
+      {!available && !engineOnly && canInstallAgent(harness) ? (
         installing ? (
           <SecondaryButton
             data-agent-install-cancel={harness}
@@ -4969,7 +4971,7 @@ function ProviderRow({
           </SecondaryButton>
         )
       ) : null}
-      {!available && !engine?.off && !engine?.setUp && installPage ? (
+      {!available && !engineOnly && installPage ? (
         <SecondaryButton
           data-agent-install-page={harness}
           onClick={() => void openUrl(installPage).catch(() => undefined)}

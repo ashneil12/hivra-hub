@@ -98,7 +98,7 @@ export function t3Availability(
     if (problem) why[harness] = problem;
     if (provider && !provider.enabled) facts[harness] = { off: true };
     else if (provider && !problem) facts[harness] = t3ProviderFacts(provider);
-    else if (!provider && !named && T3_LOCAL_AGENT[harness]) facts[harness] = { setUp: true };
+    else if (!provider && !named) facts[harness] = T3_LOCAL_AGENT[harness] ? { setUp: true } : { noRoute: true };
   }
   return { available, why, facts };
 }
@@ -111,6 +111,7 @@ export type T3ProviderFacts = {
   note?: string;
   off?: boolean;
   setUp?: boolean;
+  noRoute?: boolean;
 };
 
 /**

@@ -5,7 +5,7 @@ import { monoTurn } from "../../../../features/monos/model/monoFiles";
 import { modelsFor, resetHarnessModelOverlays } from "../../../../features/sessions/model/models";
 import type { HarnessEvent, SendTurnInput } from "../../core/types";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
-import { quietAppTurns, t3BuiltEngine, t3DevPageAdapters } from "./t3DevPage";
+import { engineToolsWatch, quietAppTurns, t3BuiltEngine, t3DevPageAdapters } from "./t3DevPage";
 import { t3AppId } from "./t3Ids";
 import type { T3Provider } from "./t3Models";
 import type { T3Rpc } from "./t3Rpc";
@@ -928,3 +928,46 @@ describe("the dev page's engine", () => {
     expect(page.calls).toEqual([]);
   });
 });
+
+describe("what this app says of the engine's tools", () => {
+  it("is looked at again whenever the engine says its providers changed, one look at a time", async () => {
+    let say: ((value: unknown) => boolean | Promise<boolean>) | undefined;
+    let end: (() => void) | undefined;
+    let opened = 0;
+    const rpc = {
+      stream: (_tag: string, _payload: unknown, onValue: (value: unknown) => boolean | Promise<boolean>) => {
+        opened += 1;
+        say = onValue;
+        return new Promise<void>((resolve) => (end = resolve));
+      },
+    };
+    const done: Array<() => void> = [];
+    const look = () => new Promise<void>((resolve) => done.push(resolve));
+    const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+    const tools = engineToolsWatch(rpc, look);
+    tools.listen();
+    tools.listen();
+    expect(opened).toBe(1);
+    // The first word is what the engine has now: whoever opened the stream has just asked for that.
+    await say?.({ type: "snapshot" });
+    expect(done).toHaveLength(0);
+    // A tool turned on is checked for a while: each word on the way is a look, never two at once.
+    await say?.({ type: "providerStatuses" });
+    await say?.({ type: "providerStatusDeltas" });
+    await say?.({ type: "settingsUpdated" });
+    await say?.({ type: "keybindingsUpdated" });
+    expect(done).toHaveLength(1);
+    done[0]();
+    await settled();
+    expect(done).toHaveLength(2);
+    done[1]();
+    await settled();
+    expect(done).toHaveLength(2);
+    // A dropped connection is listened to again at the next look.
+    end?.();
+    await settled();
+    tools.listen();
+    expect(opened).toBe(2);
+  });
+});
+
