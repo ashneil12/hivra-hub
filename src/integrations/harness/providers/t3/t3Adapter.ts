@@ -9,7 +9,7 @@ import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/typ
 import { modelsFor, nativeModelId, setHarnessModels } from "../../../../features/sessions/model/models";
 import { t3AttachmentParts, type T3Attachment } from "./t3Attachments";
 import { t3Message } from "./t3Context";
-import { t3AppId, t3EngineId } from "./t3Ids";
+import { crewChatId, t3AppId, t3EngineId } from "./t3Ids";
 import { markT3ItemSeen, t3CrewTitle, t3ItemDone, t3ItemEvents, type T3Item, type T3Seen } from "./t3Events";
 import { T3_DRIVER, t3Model, t3Options, t3PickerModels, t3Provider, t3ProviderProblem, type T3Provider } from "./t3Models";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
@@ -219,7 +219,7 @@ export function createT3Adapter(
     if (item.type !== "subagent" || !childThreadId) return;
     let sessionId = crewChatOf.get(childThreadId);
     if (!sessionId) {
-      sessionId = uuid();
+      sessionId = crewChatId(owner, uuid());
       crewChatOf.set(childThreadId, sessionId);
       crew.set(sessionId, { threadId: childThreadId, nodeId: item.subagentId, owner, followed: false, done: false });
       threads.set(sessionId, childThreadId);

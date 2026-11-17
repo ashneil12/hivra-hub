@@ -24,3 +24,12 @@ export function t3EngineId(id: string): string {
     return id;
   }
 }
+
+/**
+ * The chat a crew member the engine started gets: the app's own name for a chat another chat started
+ * (`app-<that chat>-<request>`), so every screen and check treats it as a worker under its first mate. Its brief is
+ * then never read as Ash's asks and it is sent no check of its own. A first mate whose id can't be kept gets a bare id.
+ */
+export function crewChatId(owner: string, request: string): string {
+  return isPersistableId(owner) && isPersistableId(request) ? `app-${owner}-${request}` : request;
+}

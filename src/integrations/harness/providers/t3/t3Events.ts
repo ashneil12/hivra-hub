@@ -47,6 +47,7 @@ export type T3Item = {
 export type T3Seen = { text: number; started: boolean; done: boolean; progress?: string };
 
 const DONE = new Set(["completed", "failed", "cancelled", "interrupted"]);
+const CUT = new Set(["cancelled", "interrupted"]);
 
 /** True once the item has stopped changing. */
 export const t3ItemDone = (item: Pick<T3Item, "status">): boolean => DONE.has(item.status);
@@ -75,10 +76,12 @@ export function t3ItemEvents(
   const now: T3Seen = { ...was };
   const out: HarnessEvent[] = [];
   const done = DONE.has(item.status);
-  const status = item.status === "failed" ? "failed" : done ? "completed" : "in_progress";
-  const tool = (title: string, kind: string, extra: { command?: string; paths?: string[] } = {}) => {
+  // A step cut short (its turn or its crew member was stopped) did not finish: the chat draws it as not done.
+  const status = item.status === "failed" ? "failed" : CUT.has(item.status) ? "cancelled" : done ? "completed" : "in_progress";
+  /** One row for the step. Its end is always said on its own, with what it printed, so the row stops running. */
+  const tool = (title: string, kind: string, extra: { command?: string; paths?: string[] } = {}, detail?: string) => {
     if (!was.started) out.push({ type: "tool.started", callId: item.id, title, kind, status, ...extra });
-    else if (done && !was.done) out.push({ type: "tool.updated", callId: item.id, status });
+    if (done && !was.done) out.push({ type: "tool.updated", callId: item.id, status, ...(detail ? { detail } : {}) });
     now.started = true;
   };
 
@@ -98,8 +101,7 @@ export function t3ItemEvents(
       return out;
     }
     case "command_execution":
-      tool(item.input || "Command", "execute", item.input ? { command: item.input } : {});
-      if (done && !was.done && item.output) out.push({ type: "tool.updated", callId: item.id, detail: item.output });
+      tool(item.input || "Command", "execute", item.input ? { command: item.input } : {}, item.output || undefined);
       break;
     case "file_change":
       tool(`Edit ${item.fileName ?? "file"}`, "edit", item.fileName ? { paths: [item.fileName] } : {});

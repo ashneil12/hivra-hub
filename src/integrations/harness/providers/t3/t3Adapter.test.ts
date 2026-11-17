@@ -456,7 +456,8 @@ describe("the T3 adapter's crew", () => {
       {
         type: "crew.started",
         callId: "item-crew-1",
-        sessionId: expect.stringMatching(/^[A-Za-z0-9_-]+$/),
+        // The app's own name for a chat another chat started, so it is a worker under its first mate everywhere.
+        sessionId: expect.stringMatching(/^app-mate-1-[A-Za-z0-9_-]+$/),
         title: "Example: count the lines",
         brief: "Example: count the lines of README.md\nand say how you counted.",
       },
@@ -494,7 +495,7 @@ describe("the T3 adapter's crew", () => {
       { type: "session.providerBound", providerSessionId: t3AppId(CHILD) },
       { type: "session.started" },
       { type: "tool.started", callId: "c1", title: "wc -l README.md", kind: "execute", status: "completed", command: "wc -l README.md" },
-      { type: "tool.updated", callId: "c1", detail: "3" },
+      { type: "tool.updated", callId: "c1", status: "completed", detail: "3" },
       { type: "message.delta", text: "Example: README.md has 3 lines." },
       { type: "message.completed" },
     ]);

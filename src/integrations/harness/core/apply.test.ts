@@ -146,6 +146,15 @@ describe("turn duration", () => {
     expect(session.blocks.find((block) => block.role === "assistant")?.streaming).toBeFalsy();
   });
 
+  it("stops drawing a step as running once the engine says it was cut short, while the turn goes on", () => {
+    let session = appendUser(newSession("claude", "/tmp"), "Example: count the lines");
+    session = applyHarnessEvent(session, { type: "tool.started", callId: "s1", title: "Example: test runner", kind: "agent", status: "in_progress" });
+    session = applyHarnessEvent(session, { type: "tool.updated", callId: "s1", status: "cancelled" });
+    const row = session.blocks.find((block) => block.tool?.callId === "s1");
+    expect(row?.streaming).toBe(false);
+    expect(row?.tool?.status).toBe("cancelled");
+  });
+
   it("goes back to the message that began a turn the engine kept running, and keeps what was sent into it", () => {
     let session = appendUser(newSession("claude", "/tmp"), "Example: an earlier question");
     session = applyHarnessEvent(session, { type: "turn.started", providerTurnId: "run-1" });

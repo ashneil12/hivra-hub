@@ -107,7 +107,7 @@ export function applyHarnessEvent(
         detail: event.detail,
         preview: event.preview,
         paths: event.paths,
-        streaming: event.status !== "completed" && event.status !== "failed",
+        streaming: !FINISHED_TOOL.has(event.status?.toLowerCase() ?? ""),
         agentModel: event.agentModel,
         command: event.command,
       });

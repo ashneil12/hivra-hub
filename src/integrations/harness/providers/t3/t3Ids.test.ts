@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { isPersistableId } from "../../../../features/sessions/model/persistableId";
-import { t3AppId, t3EngineId } from "./t3Ids";
+import { crewChatId, t3AppId, t3EngineId } from "./t3Ids";
 
 describe("the engine's ids in a saved chat", () => {
   it("gives the chat an id it can keep and reads the engine's own back from it", () => {
@@ -15,5 +15,12 @@ describe("the engine's ids in a saved chat", () => {
     const thread = "0b6f7c1e-1f0a-4a55-9a43-7f0d2c3b4a5e";
     expect(t3AppId(thread)).toBe(thread);
     expect(t3EngineId(thread)).toBe(thread);
+  });
+
+  it("names a crew member's chat as a chat its first mate started, and falls back to a bare id", () => {
+    const id = crewChatId("mate-1", "0b6f7c1e-1f0a-4a55-9a43-7f0d2c3b4a5e");
+    expect(id).toBe("app-mate-1-0b6f7c1e-1f0a-4a55-9a43-7f0d2c3b4a5e");
+    expect(isPersistableId(id)).toBe(true);
+    expect(crewChatId("council:room:1", "abc")).toBe("abc");
   });
 });
