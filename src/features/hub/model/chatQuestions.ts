@@ -710,9 +710,14 @@ export function plainQuestionToAsh(text: string): string | undefined {
 const LEAVES_IT_TO_ASH =
   /\b(?:(?:still |that's |it's |this is )?your (?:call|decision|choice|pick)|up to you|you decide|let me know (?:if|whether|which|what|how)|tell me (?:if|whether|which|what)|say (?:if|whether|which)|(?:i|we) need (?:your|a) (?:answer|decision|yes or no|go-ahead|ok))\b/i;
 
+/** "Nothing needs your decision", "this doesn't need your call": the same words, saying he is not asked. */
+const NOT_ASKED =
+  /\b(?:nothing|none of (?:it|this|that|them)|no(?: one|body)?|not|never|doesn['’]t|does not|don['’]t|do not|didn['’]t|won['’]t)\b[^.!?;:,]*\bneed(?:s|ed|ing)?\s+your (?:call|decision|choice|pick)\b|\b(?:isn['’]t|aren['’]t|(?:is|are) not|not) your (?:call|decision|choice|pick)\b/i;
+
 export function asksByMeaning(sentence: string): boolean {
   const s = sentence.trim();
   if (/\bwhich is still your pick\b/i.test(s) && !/\bor\b/i.test(s)) return false;
+  if (NOT_ASKED.test(s)) return false;
   if (LEAVES_IT_TO_ASH.test(s)) return true;
   // "Do you want A, or B." / "Should I keep it, or drop it." written with a full stop.
   return /^(?:do you want|would you (?:like|rather|prefer)|should i\b|shall i\b|want me to|which\b)/i.test(s);
