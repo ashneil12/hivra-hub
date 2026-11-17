@@ -16,6 +16,7 @@ const LINES: Record<string, string> = {
   "report request": "The app asked for a report",
   "moved tasks": "Tasks that were still going moved to this chat",
   "ash answered": "The app passed your answer on",
+  briefing: "The app told this first mate how work reaches it",
   question: "A worker asked the Lead a question",
   report: "A worker's report reached the Lead",
   landed: "The app told the Lead what landed",

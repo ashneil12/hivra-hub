@@ -1,3 +1,4 @@
+import { engineMateBriefing } from "../../../../features/crew/model/engineMates";
 import { describe, expect, it } from "vitest";
 import { monoTurn } from "../../../../features/monos/model/monoFiles";
 import { modelsFor, resetHarnessModelOverlays } from "../../../../features/sessions/model/models";
@@ -782,6 +783,13 @@ describe("the dev page's engine", () => {
       await resumed;
       expect(engine.calls.filter((call) => call.tag === "orchestration.subscribeThread")).toHaveLength(2);
       expect(engine.commands()).toEqual([]);
+
+      // And so does the app's briefing of a first mate: the Chief of Staff writes to it through the engine.
+      const briefed = adapter.sendTurn({ ...turn("chat-1", engineMateBriefing("Chief of Staff"), []), origin: undefined });
+      await engine.sayTo(String(engine.calls[0].payload.threadId), snapshot([], [{ id: "run-1", status: "completed" }]));
+      await engine.sayTo(String(engine.calls[0].payload.threadId), event("run.created", { id: "run-2", status: "completed" }));
+      await briefed;
+      expect(engine.commands()).toMatchObject([{ type: "message.dispatch" }]);
     }
   });
 
@@ -835,6 +843,31 @@ describe("the dev page's engine", () => {
     // And in a chat the engine has no conversation for, there is nothing to follow.
     await adapter.sendTurn({ ...turn("chat-new", "Example: lost", gone), follow: { providerTurnId: "run-gone" } });
     expect(engine.calls.filter((call) => call.tag === "orchestration.launchThread")).toEqual([]);
+  });
+
+  it("opens a conversation for a chat with nothing sent, once, and the chat's first message goes into it", async () => {
+    const engine = fakeEngine();
+    const known: string[] = [];
+    const watch = { know: (chat: string, thread: string) => void known.push(`${chat} ${thread}`), forget: () => undefined, began: () => undefined, ended: () => undefined, own: () => undefined };
+    const adapter = createT3Adapter("claude", ENGINE, engine.rpc, watch);
+    const open = { sessionId: "chat-mate", cwd: "/example", model: "opus", runtimeMode: "supervised" as const, title: "Example lead" };
+    const [first, again] = await Promise.all([adapter.openConversation!(open), adapter.openConversation!(open)]);
+    const launches = engine.calls.filter((call) => call.tag === "orchestration.launchThread");
+    expect(launches).toHaveLength(1);
+    expect(launches[0].payload).toMatchObject({ title: "Example lead", workspaceStrategy: { type: "root" } });
+    expect(launches[0].payload).not.toHaveProperty("initialMessage");
+    expect(first).toBe(t3AppId(launches[0].payload.threadId));
+    expect(again).toBe(first);
+    expect(known).toEqual([`chat-mate ${launches[0].payload.threadId}`]);
+    expect(await adapter.openConversation!(open)).toBe(first);
+
+    const events: HarnessEvent[] = [];
+    const done = adapter.sendTurn(turn("chat-mate", "Example: hello", events));
+    await engine.sayTo(launches[0].payload.threadId, snapshot([], []));
+    expect(engine.calls.filter((call) => call.tag === "orchestration.launchThread")).toHaveLength(1);
+    expect(engine.commands()).toMatchObject([{ type: "message.dispatch", threadId: launches[0].payload.threadId, text: "Example: hello" }]);
+    await engine.sayTo(launches[0].payload.threadId, event("run.created", { id: "run-1", status: "completed" }));
+    await done;
   });
 
   it("leaves a run another message began behind its own to the watch: not its turn, none of it shown", async () => {

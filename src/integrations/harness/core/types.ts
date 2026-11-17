@@ -288,6 +288,14 @@ export type HarnessSessionInput = {
   onEvent: (event: HarnessEvent) => void;
 };
 
+/**
+ * What an engine needs to give a chat a conversation before any message goes into it (`HarnessAdapter.openConversation`):
+ * the chat's own folder, model and permission mode, and the name the engine lists the conversation by.
+ */
+export type OpenConversationInput = Pick<SendTurnInput, "sessionId" | "cwd" | "model" | "modelSettings" | "runtimeMode"> & {
+  title?: string;
+};
+
 export type SendTurnInput = HarnessSessionInput & {
   /** WP-176: who started the turn. Only the composer sends "person"; omitted is automated. */
   origin?: "person" | "automated";

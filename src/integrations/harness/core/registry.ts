@@ -29,6 +29,7 @@ import type {
   HarnessEvent,
   LiveSettingsInput,
   LiveSettingsOutcome,
+  OpenConversationInput,
   RewindLastTurnInput,
   RewindLastTurnResult,
   SendTurnInput,
@@ -80,6 +81,12 @@ export type HarnessAdapter = {
   applySettings?(input: LiveSettingsInput): Promise<LiveSettingsOutcome>;
   /** Rewind provider state so the last user turn can be replaced. */
   rewindLastTurn?(input: RewindLastTurnInput): Promise<RewindLastTurnResult>;
+  /**
+   * Gives the chat a conversation in the engine without sending it anything, and returns the id the chat keeps for it
+   * (its provider session id); the one it already has, when it has one. Only an engine whose chats can write to each
+   * other has a use for it: the Chief of Staff reaches a first mate by its conversation, also before its first message.
+   */
+  openConversation?(input: OpenConversationInput): Promise<string | undefined>;
   steerTurn(input: SteerTurnInput): Promise<void>;
   cancelTurn(sessionId: string): Promise<void>;
   /** Returns true only when a live call took the decision. Adapters that cannot confirm return nothing. */
@@ -617,6 +624,14 @@ export function rewindHarnessLastTurn(
       scheduleIdlePark(input.harness, input.sessionId);
     }
   });
+}
+
+/** The chat's conversation in its engine, opened when it has none; nothing on an engine that has no such thing. */
+export async function openHarnessConversation(
+  harness: HarnessId,
+  input: OpenConversationInput,
+): Promise<string | undefined> {
+  return getHarness(harness)?.openConversation?.(input);
 }
 
 export function steerHarnessTurn(

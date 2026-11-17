@@ -5,6 +5,7 @@
 import { HARNESSES } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
 import { createT3Adapter, t3Engine, type T3Engine } from "./t3Adapter";
+import { ENGINE_BRIEFING_TAG } from "../../../../features/crew/model/engineMates";
 import { createT3Watch } from "./t3Outside";
 import { connectT3, type T3Rpc, type T3Socket } from "./t3Rpc";
 
@@ -18,8 +19,10 @@ export function quietAppTurns(adapter: HarnessAdapter): HarnessAdapter {
     ...adapter,
     sendTurn: async (input) => {
       // The app's resume of a turn a quit cut is not one of those, nor is its follow of a turn the engine began: the
-      // engine has that turn and nothing is sent.
-      if (input.origin === "person" || input.resume || input.follow) return adapter.sendTurn(input);
+      // engine has that turn and nothing is sent. Its briefing of a first mate (crew/model/engineMates.ts) is part of
+      // what the walk shows: without it a first mate the Chief of Staff writes to does not know who it is.
+      if (input.origin === "person" || input.resume || input.follow || input.text.includes(ENGINE_BRIEFING_TAG))
+        return adapter.sendTurn(input);
       input.onEvent({ type: "session.started" });
       input.onAccepted?.();
       input.onEvent({ type: "message.delta", text: "Right: nothing new since your last message." });
@@ -33,6 +36,15 @@ export function t3BuiltEngine(env: Record<string, unknown> = import.meta.env): T
   const origin = typeof env.VITE_DROPWAVE_ENGINE === "string" ? env.VITE_DROPWAVE_ENGINE.replace(/\/+$/, "") : "";
   const token = typeof env.VITE_DROPWAVE_ENGINE_TOKEN === "string" ? env.VITE_DROPWAVE_ENGINE_TOKEN : "";
   return origin && token ? { origin, token } : null;
+}
+
+/**
+ * True when this copy's chats run on an engine (a dev page that names one, a dev copy started with one). What reaches
+ * an agent through Claude Code's own launch in the app (the note on its system prompt, the app's delegate tool) does
+ * not reach one the engine starts.
+ */
+export function runsOnEngine(): boolean {
+  return (import.meta.env.DEV || import.meta.env.MODE === "mockup") && !!(t3Engine() ?? t3BuiltEngine());
 }
 
 /**

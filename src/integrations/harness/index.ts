@@ -176,6 +176,7 @@ export {
   sendHarnessTurn,
   compactHarnessContext,
   canCompactHarnessContext,
+  openHarnessConversation,
   steerHarnessTurn,
   canSteerHarness,
   harnessCannotSteer,

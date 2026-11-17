@@ -5,7 +5,7 @@
 // For now only a dev page that names an engine in its address uses it (`t3Engine`); the installed app is unchanged.
 import type { Attachment, HarnessId, RuntimeMode } from "../../../../features/sessions/model/session";
 import type { HarnessAdapter } from "../../core/registry";
-import type { HarnessEvent, SendTurnInput, SteerTurnInput } from "../../core/types";
+import type { HarnessEvent, OpenConversationInput, SendTurnInput, SteerTurnInput } from "../../core/types";
 import { modelsFor, nativeModelId, setHarnessModels } from "../../../../features/sessions/model/models";
 import { t3AttachmentParts, type T3Attachment } from "./t3Attachments";
 import { t3Message } from "./t3Context";
@@ -371,6 +371,38 @@ export function createT3Adapter(
     return { messageId, ...t3Message(text), attachments: held?.attachments ?? [] };
   }
 
+  const opening = new Map<string, Promise<string>>();
+
+  /** A conversation for a chat that has none yet, with nothing sent into it: other chats can then write to it. */
+  async function openConversation(input: OpenConversationInput): Promise<string | undefined> {
+    if (crew.has(input.sessionId)) return undefined;
+    const existing = threads.get(input.sessionId);
+    if (existing) return t3AppId(existing);
+    const pending = opening.get(input.sessionId);
+    if (pending) return pending;
+    const open = (async () => {
+      const threadId = uuid();
+      await rpc.call("orchestration.launchThread", {
+        commandId: uuid(),
+        threadId,
+        projectId: await projectFor(input.cwd),
+        title: input.title?.trim() || chatTitle(input.sessionId),
+        modelSelection: await selectionFor(input),
+        runtimeMode: T3_RUNTIME_MODE[input.runtimeMode] ?? "approval-required",
+        interactionMode: "default",
+        workspaceStrategy: { type: "root" },
+      });
+      // A message the chat sent meanwhile started a conversation of its own: that one stays.
+      const now = threads.get(input.sessionId);
+      if (now) return t3AppId(now);
+      threads.set(input.sessionId, threadId);
+      watch?.know(input.sessionId, threadId);
+      return t3AppId(threadId);
+    })().finally(() => opening.delete(input.sessionId));
+    opening.set(input.sessionId, open);
+    return open;
+  }
+
   async function sendTurn(input: SendTurnInput): Promise<void> {
     const waiting = crew.get(input.sessionId);
     if (waiting && (!waiting.followed || input.resume)) return followCrew(input, waiting);
@@ -384,6 +416,9 @@ export function createT3Adapter(
     const oldRuns = new Set<string>();
     const emit = (event: HarnessEvent) => input.onEvent(event);
     const ask = (requestId: string) => askNumber(threadId, requestId);
+    // A conversation being opened for this chat is the one its message goes into.
+    const pending = opening.get(input.sessionId);
+    if (pending) await pending.catch(() => undefined);
     const existing = threads.get(input.sessionId);
     // A turn the engine began by itself can only be followed in a conversation the engine has.
     if (input.follow && !existing) return;
@@ -612,6 +647,7 @@ export function createT3Adapter(
       crew.delete(sessionId);
       watch?.forget(sessionId);
     },
+    openConversation,
     bindSession: (sessionId, providerSessionId) => {
       const threadId = t3EngineId(providerSessionId);
       threads.set(sessionId, threadId);

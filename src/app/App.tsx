@@ -631,6 +631,7 @@ import {
   keepHarnessQuestionOpen,
   runHarnessTextPrompt,
   sendHarnessTurn,
+  openHarnessConversation,
   steerHarnessTurn,
   startHarnessBridge,
   stopHarnessSession,
@@ -792,7 +793,10 @@ import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
 import { crewLaunch } from "../features/crew/model/crewSession";
 import { engineCrewChat, type EngineCrewStart } from "../features/crew/model/engineCrew";
 import { engineTurnFor } from "../features/crew/model/engineTurn";
+import { engineBriefingId, engineMateBriefing, engineMatesNote, type EngineMate } from "../features/crew/model/engineMates";
 import { engineTurnOf, onT3OutsideTurn } from "../integrations/harness/providers/t3/t3Outside";
+import { runsOnEngine } from "../integrations/harness/providers/t3/t3DevPage";
+import { t3EngineId } from "../integrations/harness/providers/t3/t3Ids";
 // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
 import {
   commitIdleCompactBusy,
@@ -8673,6 +8677,8 @@ function Workspace({
   /** Opens the chat of a crew member the engine started itself; set once the quick launch below exists. */
   const openEngineCrewRef = useRef<(ownerId: string, start: EngineCrewStart) => void>(() => undefined);
 
+  /** What a Mono on the engine is told about its first mates' conversations; set once the chats can be opened. */
+  const engineMatesRef = useRef<(monoId: string) => Promise<string | undefined>>(async () => undefined);
   const submitSession = useCallback(
     (
       sessionId: string,
@@ -10312,7 +10318,8 @@ function Workspace({
           // Who it is counts as part of its soul: a rename or a change to its
           // projects is handed over too, and so is a change to the fixed rules.
           // The delegate tool's rules come with the tool (hubMcp.ts): a change of harness hands them over again.
-          const delegateTool = mono && hasDelegateTool(sessionId, current.harness);
+          // An agent the engine starts has the engine's thread tools, not the app's delegate tool.
+          const delegateTool = mono && !runsOnEngine() && hasDelegateTool(sessionId, current.harness);
           const handedFiles = agentFiles &&
             agentLook && {
               ...agentFiles,
@@ -10457,6 +10464,11 @@ function Workspace({
           // r66: Chief of Staff reads the live Mono list every turn (retired ones are off it), never from memory.
           const monosNow = mono && !rawCommand ? liveMonosNote(monoForSession(sessionId)?.id) : undefined;
           if (monosNow) appContext.push(monosNow);
+          // On the engine a Mono reaches a project's first mate by its conversation there (crew/model/engineMates.ts):
+          // read every turn, since a first mate's conversation can be a new one.
+          const briefer = mono && !rawCommand && runsOnEngine() ? monoForSession(sessionId)?.id : undefined;
+          const engineMates = briefer && briefsLeads(briefer) ? await engineMatesRef.current(briefer) : undefined;
+          if (engineMates) appContext.push(engineMates);
           // G3: a Mono's own chat for one project (the Chief of Staff's, in a project) reads that project's brief every
           // turn: name, one line, folder, first mates, open needs. Its chat on Home gets none (projectChatBrief.ts).
           const projectBrief = mono && !rawCommand ? projectChatBrief(sessionId) : undefined;
@@ -10464,7 +10476,8 @@ function Workspace({
           // On Claude Code the hub's note, soul and memory go on Claude Code's own system prompt (hubNote.ts); another
           // engine reads them ahead of the message. A memory change reaches a running Claude Code in the message.
           // WP-04: this is the engine alone; it used to ride on "has the Ash OS tools", which no chat has any more.
-          const appended = appendsHubNote(current.harness, !!rawCommand);
+          // The engine starts Claude Code itself, so there the note goes ahead of the message as for any other.
+          const appended = appendsHubNote(current.harness, !!rawCommand) && !runsOnEngine();
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
             // WP-41: the contract is part of the note, and the key changes with the plain-English switch.
@@ -11845,6 +11858,62 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  engineMatesRef.current = async (monoId) => {
+    const from = findMono(monoId);
+    const projects = hubData().listProjects();
+    const mates = await Promise.all(
+      leadTargetsFor(monoId, projects).map(async (target): Promise<EngineMate | undefined> => {
+        try {
+          const opened = await ensureMonoSession(target.leadId, {
+            home: homeDir,
+            load: (id) => ensureOpenSessionRef.current(id),
+            create: (path) => newDefaultSession(path),
+            add: (created) => {
+              sessionsRef.current = [...sessionsRef.current, created];
+              setSessions(sessionsRef.current);
+            },
+          });
+          const chat = opened && (sessionsRef.current.find((session) => session.id === opened.id) ?? opened);
+          if (!chat) return undefined;
+          // A first mate that never spoke on the engine gets its conversation now, so there is one to write to.
+          const conversation =
+            chat.providerSessionId ??
+            (await openHarnessConversation(chat.harness, {
+              sessionId: chat.id,
+              cwd: sessionWorkCwd(chat),
+              model: chat.model,
+              modelSettings: chat.modelSettings,
+              runtimeMode: chat.runtimeMode,
+              title: target.leadName,
+            }));
+          if (!conversation) return undefined;
+          if (!chat.providerSessionId) {
+            sessionsRef.current = sessionsRef.current.map((session) =>
+              session.id === chat.id && !session.providerSessionId ? { ...session, providerSessionId: conversation } : session,
+            );
+            setSessions(sessionsRef.current);
+          }
+          // Once per conversation the app tells the first mate how work reaches it here. As that conversation's first
+          // turn of the app's it also hands the first mate its soul and memory, which a job the engine delivers cannot.
+          const briefing = engineBriefingId(conversation);
+          const told =
+            chat.blocks.some((block) => block.appRequestId === briefing) ||
+            chat.queuedMessages?.some((message) => message.appRequestId === briefing);
+          if (!told)
+            void submitSessionRef.current(chat.id, engineMateBriefing(from ? monoLook(from).name : "The Chief of Staff"), [], {
+              appRequestId: briefing,
+              followsUp: true,
+              waitForIdle: true,
+            });
+          const project = projects.find((candidate) => candidate.id === target.projectId);
+          return { name: target.leadName, project: project?.name ?? target.projectId, threadId: t3EngineId(conversation) };
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+    return engineMatesNote(mates.filter((mate): mate is EngineMate => !!mate));
+  };
   // A turn the engine began in a chat by itself (the Chief of Staff's message to a first mate through the engine's
   // own thread tools, a scheduled task, a wake after background work): the chat shows it under a quiet note that says
   // who it came from and follows the engine's run. Only a chat that is not open is offered it again.
