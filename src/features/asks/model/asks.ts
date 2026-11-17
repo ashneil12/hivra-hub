@@ -76,6 +76,11 @@ export type Ask = {
   moved?: boolean;
   /** The jobs (delegation ids) that took it on (askJobs.ts). */
   jobs?: string[];
+  /**
+   * The project the person put it under on the "You asked" board (askBoard.ts). Unset, the board works the project out
+   * from the ask's jobs, its first mate, its chat and the names in its words.
+   */
+  project?: string;
   check?: AskCheck;
   /** The daily checks that found it open with nothing moved (askQuiet.ts). */
   chase?: Chase;
@@ -180,6 +185,7 @@ function readAsk(raw: unknown): Ask | undefined {
   const jobs = [...new Set((Array.isArray(value.jobs) ? value.jobs : []).filter((job): job is string => typeof job === "string" && ID.test(job)))].slice(-JOBS_PER_ASK);
   const check = readCheck(value.check);
   const chase = readChase(value.chase);
+  const project = projectId(value.project);
   return {
     id,
     n,
@@ -200,9 +206,18 @@ function readAsk(raw: unknown): Ask | undefined {
     ...(value.quiet === true ? { quiet: true } : {}),
     ...(value.moved === true ? { moved: true } : {}),
     ...(jobs.length ? { jobs } : {}),
+    ...(project ? { project } : {}),
     ...(check ? { check } : {}),
     ...(chase ? { chase } : {}),
   };
+}
+
+/** A project's id as the ledger keeps it: one line of at most 200 characters, or nothing. */
+function projectId(raw: unknown): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const value = raw.trim();
+  // eslint-disable-next-line no-control-regex
+  return value && value.length <= 200 && !/[\u0000-\u001f\u007f]/.test(value) ? value : undefined;
 }
 
 /** The count of quiet checks of a row read from disk: a time and a whole number, else none. */
@@ -489,13 +504,15 @@ export function withHeard(doc: AskDoc, input: HearInput): AskDoc {
   const previous = doc.heard[input.blockId];
   // A row a hearing wrote has one step, by the app. Ash's hand-added row has one step too, by him: not a hearing's row.
   const fromHearing = (ask: Ask) => ask.history.every((step) => step.by === "app");
-  // A row moved over from the old hub ledger, or one the dump check keeps a note on, is never a hearing's to replace.
+  // A row moved over from the old hub ledger, one the person put under a project, or one the dump check keeps a note on,
+  // is never a hearing's to replace.
   const untouched = (ask: Ask) =>
     ask.blockId === input.blockId &&
     (ask.status === "heard" || ask.status === "maybe") &&
     ask.history.length <= 1 &&
     fromHearing(ask) &&
     !ask.moved &&
+    !ask.project &&
     !ask.check;
   const kept = doc.asks.filter((ask) => !untouched(ask));
   const mine = kept.filter((ask) => ask.blockId === input.blockId);
@@ -636,6 +653,20 @@ export function withCheck(doc: AskDoc, id: string, patch: { gap?: string | null;
   if (same) return doc;
   const { check: _old, ...rest } = ask;
   const changed: Ask = Object.keys(next).length ? { ...rest, check: next } : rest;
+  return { ...doc, asks: doc.asks.map((item) => (item.id === id ? changed : item)) };
+}
+
+/**
+ * One ask put under a project on the board, or taken off it (`null`). Like the settle bookkeeping it is a note on the
+ * ask, not a move: no history step and no new time, so a quiet ask stays quiet and no first mate is nudged by it.
+ */
+export function withProject(doc: AskDoc, id: string, project: string | null): AskDoc {
+  const ask = doc.asks.find((item) => item.id === id);
+  if (!ask) return doc;
+  const next = project === null ? undefined : projectId(project);
+  if (next === ask.project || (project !== null && !next)) return doc;
+  const { project: _old, ...rest } = ask;
+  const changed: Ask = next ? { ...rest, project: next } : rest;
   return { ...doc, asks: doc.asks.map((item) => (item.id === id ? changed : item)) };
 }
 

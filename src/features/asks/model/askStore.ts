@@ -18,6 +18,7 @@ import {
   withCheck,
   withHandled,
   withHeard,
+  withProject,
   type Ask,
   type AskBy,
   type AskChange,
@@ -58,6 +59,8 @@ export type AskStore = {
   handle(id: string, proof: string): Promise<void>;
   /** The settle bookkeeping on one ask (hub/model/askSettle.ts); a key set to null is removed. */
   check(id: string, patch: { gap?: string | null; held?: AskCheck["held"] | null; settled?: string; reopen?: string }): Promise<void>;
+  /** Puts one ask under a project on the "You asked" board, or takes it off it (`null`). A note on the ask, not a move. */
+  place(id: string, project: string | null): Promise<void>;
   /** The old hub ledger's open rows, copied in once (askMove.ts). Resolves true when this call did the move. */
   moveFromHub(legacy: readonly LedgerAsk[], mateOf: (chatId: string) => string | undefined): Promise<boolean>;
   subscribe(fn: () => void): () => void;
@@ -157,6 +160,7 @@ export function createAskStore(disk: LocalHubDisk, now: () => number = Date.now)
     jobs: (rows) => write((base) => ({ doc: withJobs(base, rows, now()), result: undefined })),
     handle: (id, proof) => write((base) => ({ doc: withHandled(base, id, proof, now()), result: undefined })),
     check: (id, patch) => write((base) => ({ doc: withCheck(base, id, patch), result: undefined })),
+    place: (id, project) => write((base) => ({ doc: withProject(base, id, project), result: undefined })),
     moveFromHub: (legacy, mateOf) =>
       write((base) => {
         const doc = withHubMoved(base, legacy, { mateOf, now: now() });

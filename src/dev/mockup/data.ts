@@ -61,6 +61,26 @@ function roster() {
 const QUIET_ASK_WORDS = "Example: make sure the waitlist page works on a small phone before Friday";
 const QUIET_ASK_CHAT_MINUTES = 60 * 24 * 3 + 30;
 
+/**
+ * A long list said in one message to the Chief of Staff (the seventh line of its chat). Each sentence is one ask in the
+ * ledger, in these words (asks() below).
+ */
+const DUMP = {
+  music: "The boss music in EXO is too quiet under the hits, fix that.",
+  dodge: "Move dodge to the right bumper.",
+  upload: "Get tonight's playtest build uploaded.",
+  phone: "The waitlist page has to load fast on a phone.",
+  headline: "Pick a headline for the Hivra waitlist, I keep going back and forth.",
+  icons: "Redraw the Nibbii tab bar icons so they match.",
+  email: "Draft the parents' launch email for SafeTube.",
+  spam: "Find out why our sign-in emails land in spam.",
+  reward: "Maybe a referral reward one day, not now.",
+  pricing: "And the pricing thing from Friday's call.",
+} as const;
+const DUMP_WORDS = `Example: a few things before I forget. ${Object.values(DUMP).join(" ")}`;
+/** Where that message sits in the Chief of Staff's chat (chat() numbers the lines from 0). */
+const DUMP_LINE = 6;
+
 type Line = [role: "user" | "assistant", text: string];
 
 function chat(id: string, title: string, cwd: string, lines: Line[], now: number, minutesAgo: number) {
@@ -136,6 +156,15 @@ function sessions(now: number) {
         // A question answered where it sits (asks/model/needLinks.ts): each link draws as that question's own card.
         "Two quick ones, both with a pick ready:\n\n[Which take for the boss music?](hivra://local/need/question%3Avg-game%3Aboss-music)\n\n[Which waitlist headline?](hivra://local/need/question%3Ahivra%3Awaitlist-headline)\n\nThe Nibbii read can wait until tomorrow.",
       ],
+      // A long list said in one go (asks() below writes each line into the ask ledger): the "You asked" board beside the
+      // chat stacks them per project (asks/ui/AskBoard.tsx).
+      ["user", DUMP_WORDS],
+      [
+        "assistant",
+        // No word here reads as a "done" claim (hub/model/askLedger.ts doneClaimOf), so the app's own check of this
+        // reply leaves the example asks where asks() put them.
+        "Example: sorted. Eight asks and one idea, each on the board beside this chat under its project. Five are with their first mates, and the Nibbii icons were merged an hour ago. Two wait on you: the boss music take and the waitlist headline. Tonight's upload ran out of credits again, and two lines I could not place are under Not sorted yet.",
+      ],
     ], now, 50), 3, now),
     // In the folder the mock gives the Chief of Staff's own chats (browserTauriMock.ts mono_team_dir), where a side chat lives.
     chat(CHAT.chiefEarlier, "Example: parents' newsletter wording", CHIEF_FOLDER, [
@@ -201,6 +230,8 @@ type Row = {
   result?: string;
   error?: string;
   errorClass?: string;
+  /** The asks of the person's it covers (asks() below), by ledger id. */
+  asks?: string[];
 };
 
 function delegation(r: Row, now: number) {
@@ -220,7 +251,7 @@ function delegation(r: Row, now: number) {
     title: r.title,
     brief: r.title,
     goal: null,
-    askIds: [],
+    askIds: r.asks ?? [],
     state: r.state,
     errorClass: r.errorClass ?? null,
     error: r.error ?? null,
@@ -245,14 +276,14 @@ function delegation(r: Row, now: number) {
 function delegations(now: number) {
   const rows: Row[] = [
     { id: "exo-arena", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Light the Area 3 boss arena", state: "running", status: "working", minutesAgo: 40 },
-    { id: "exo-pad", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Move dodge to the right bumper", state: "running", status: "working", minutesAgo: 25 },
-    { id: "exo-upload", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Upload the playtest build", state: "failed", status: "needs-you", minutesAgo: 8, error: "Example: out of credits on the build service", errorClass: "billing", notice: "Out of credits on the build service" },
+    { id: "exo-pad", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Move dodge to the right bumper", state: "running", status: "working", minutesAgo: 25, asks: [dumpAskId("dodge")] },
+    { id: "exo-upload", owner: CHAT.exo, mono: "vg-game-lead", project: "vg-game", title: "Upload the playtest build", state: "failed", status: "needs-you", minutesAgo: 8, error: "Example: out of credits on the build service", errorClass: "billing", notice: "Out of credits on the build service", asks: [dumpAskId("upload")] },
     { id: "hv-layout", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Waitlist page layout and copy slots", state: "running", status: "working", minutesAgo: 18 },
     { id: "hv-email", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Email capture and thank-you note", state: "running", status: "working", minutesAgo: 16 },
-    { id: "hv-speed", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Speed check on phones", state: "running", status: "paused", minutesAgo: 15, notice: "Waits for the page layout" },
+    { id: "hv-speed", owner: CHAT.hivra, mono: "hivra-lead", project: "hivra", title: "Speed check on phones", state: "running", status: "paused", minutesAgo: 15, notice: "Waits for the page layout", asks: [dumpAskId("phone")] },
     { id: "nb-copy", owner: CHAT.nibbii, mono: "nibbii-lead", project: "nibbii", title: "First-run onboarding copy", state: "completed", status: "done", minutesAgo: 150, result: "Merged: four onboarding screens." },
-    { id: "nb-icons", owner: CHAT.nibbii, mono: "nibbii-lead", project: "nibbii", title: "Redraw the tab bar icons", state: "completed", status: "done", minutesAgo: 95, result: "Merged: five icons, light and dark." },
-    { id: "st-email", owner: CHAT.safetube, mono: "safetube-lead", project: "safetube", title: "Draft the parents' launch email", state: "running", status: "working", minutesAgo: 60 },
+    { id: "nb-icons", owner: CHAT.nibbii, mono: "nibbii-lead", project: "nibbii", title: "Redraw the tab bar icons", state: "completed", status: "done", minutesAgo: 95, result: "Merged: five icons, light and dark.", asks: [dumpAskId("icons")] },
+    { id: "st-email", owner: CHAT.safetube, mono: "safetube-lead", project: "safetube", title: "Draft the parents' launch email", state: "running", status: "working", minutesAgo: 60, asks: [dumpAskId("email")] },
   ];
   return rows.map((r) => delegation(r, now));
 }
@@ -425,17 +456,46 @@ function inbox(now: number) {
   ];
 }
 
+/** The order the dump's asks were heard in: their numbers follow the one ask that was already on the list. */
+const DUMP_ORDER = Object.keys(DUMP) as (keyof typeof DUMP)[];
+const DUMP_BLOCK = `${CHAT.chief}-b${DUMP_LINE}`;
+/** An ask of the dump's by its ledger id (asks/model/asks.ts askId: the number, then the end of the message's id). */
+function dumpAskId(key: keyof typeof DUMP): string {
+  return `ask-${DUMP_ORDER.indexOf(key) + 2}-${DUMP_BLOCK.slice(-12).replace(/[^A-Za-z0-9]/g, "")}`;
+}
+
 /**
- * The ask ledger (asks/model/asks.ts) with one ask of the person's that went quiet: open since three days ago with nothing
- * moved through two daily checks, so it is a Needs you row (asks/model/askQuiet.ts). Asked in the Chief of Staff's own Hivra chat.
+ * The ask ledger (asks/model/asks.ts): one ask of the person's that went quiet (open since three days ago with nothing
+ * moved through two daily checks, so it is a Needs you row, asks/model/askQuiet.ts; asked in the Chief of Staff's own
+ * Hivra chat), and the ten lines of the long list he said in the one chat, each where a day's work would have left it:
+ * with a worker, waiting on him, done, an idea kept, a line the safety net was not sure of, and one nothing places.
+ * Every other example message is marked as heard with nothing in it, so the board shows these and no more.
  */
 function asks(now: number) {
   // When the chat's third message was sent (chat() puts each one a minute after the last, from the chat's start).
   const asked = now - QUIET_ASK_CHAT_MINUTES * 60_000 + 2 * 60_000;
+  const said = now - 50 * 60_000 + DUMP_LINE * 60_000;
+  type Seed = { summary: string; kind?: string; status?: string; note?: string; proof?: string; jobs?: string[]; by?: "ash" | "mate" | "app"; rules?: boolean };
+  const dump: Record<keyof typeof DUMP, Seed> = {
+    music: { summary: "Make the boss music louder under the hits", status: "waiting", note: "Which take for the boss music?", by: "mate" },
+    dodge: { summary: "Move dodge to the right bumper", status: "started", note: "Handed to a worker: Move dodge to the right bumper", jobs: ["exo-pad"] },
+    upload: { summary: "Upload tonight's playtest build", status: "started", note: "Handed to a worker: Upload the playtest build", jobs: ["exo-upload"] },
+    phone: { summary: "Make the waitlist page load fast on a phone", status: "started", note: "Handed to a worker: Speed check on phones", jobs: ["hv-speed"] },
+    headline: { summary: "Pick the waitlist headline", kind: "decide", status: "waiting", note: "Which waitlist headline?", by: "mate" },
+    icons: { summary: "Redraw the Nibbii tab bar icons to match", status: "done", proof: 'Job "Redraw the tab bar icons" finished, no checks were needed. Merged: five icons, light and dark.', jobs: ["nb-icons"] },
+    email: { summary: "Draft the parents' launch email", status: "started", note: "Handed to a worker: Draft the parents' launch email", jobs: ["st-email"] },
+    spam: { summary: "Find out why sign-in emails land in spam", status: "waiting", note: "Which project is this for?", by: "mate" },
+    reward: { summary: "A referral reward, one day", kind: "idea" },
+    pricing: { summary: "The pricing thing from Friday's call", status: "maybe", rules: true },
+  };
+  const heard: Record<string, { at: number; by: string; tries: number }> = {};
+  for (const session of sessions(now))
+    for (const block of session.blocks) if (block.role === "user") heard[block.id] = { at: now, by: "none", tries: 1 };
+  heard[DUMP_BLOCK] = { at: said, by: "model", tries: 1 };
   return {
-    next: 2,
+    next: DUMP_ORDER.length + 2,
     since: now - 10 * 24 * 60 * 60_000,
-    heard: {},
+    heard,
     nudged: { "chief-of-staff": now - 3 * 60 * 60_000 },
     asks: [
       {
@@ -454,6 +514,32 @@ function asks(now: number) {
         history: [{ at: asked, status: "heard", by: "app" }],
         chase: { at: asked, checks: 2, raisedAt: now - 3 * 60 * 60_000 },
       },
+      ...DUMP_ORDER.map((key, index) => {
+        const seed = dump[key];
+        const status = seed.status ?? "heard";
+        const moved = said + (index + 2) * 60_000;
+        return {
+          id: dumpAskId(key),
+          n: index + 2,
+          mateId: "chief-of-staff",
+          sessionId: CHAT.chief,
+          blockId: DUMP_BLOCK,
+          quote: DUMP[key],
+          summary: seed.summary,
+          kind: seed.kind ?? "do",
+          status,
+          ...(seed.note ? { note: seed.note } : {}),
+          ...(seed.proof ? { proof: seed.proof } : {}),
+          heardBy: seed.rules ? "rules" : "model",
+          createdAt: said,
+          updatedAt: status === "heard" || status === "maybe" ? said : moved,
+          history: [
+            { at: said, status: status === "maybe" ? "maybe" : "heard", by: "app" },
+            ...(status === "heard" || status === "maybe" ? [] : [{ at: moved, status, by: seed.by ?? "app", ...(seed.note ? { note: seed.note } : {}) }]),
+          ],
+          ...(seed.jobs ? { jobs: seed.jobs } : {}),
+        };
+      }),
     ],
   };
 }

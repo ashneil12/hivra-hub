@@ -1,10 +1,9 @@
 // One main chat (Ash, 13 Nov: "i like a"): the Chief of Staff's chat carries three chips beside its own buttons, each
 // opening over the chat. Needs you is the Inbox's own list and card; You asked is the ask ledger (asks/model/asks.ts, the
-// one ledger the first mates work on, read through askedView.ts), so nothing he asked for is lost in a long chat and what
-// a first mate or a finished job says about an ask shows here; Working is every job in every project, with the way in to
-// take one over.
-import { useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { Check } from "../../../shared/ui/icons";
+// one ledger the first mates work on, read through askedView.ts) as notes stacked per project (AskBoard.tsx), so nothing
+// he asked for is lost in a long chat and what a first mate or a finished job says about an ask shows here; Working is
+// every job in every project, with the way in to take one over.
+import { useRef, useState } from "react";
 import { Popover } from "../../../shared/ui/Popover";
 import { NEEDS_YOU_RED } from "../../hub/ui/StatusMark";
 import { hubData, useHubDataVersion } from "../../hub/model/hubData";
@@ -20,32 +19,18 @@ import {
 import { InboxNeeds } from "../../needs/ui/InboxNeeds";
 import { AnsweredLine, NeedDetail } from "../../needs/ui/NeedDetail";
 import { useLastAnswered } from "../../needs/model/answeredNeeds";
-import {
-  quoteAsked,
-  quoteInChat,
-  quoteJob,
-  quoteNeed,
-} from "../model/quoteInChat";
+import { quoteInChat, quoteJob, quoteNeed } from "../model/quoteInChat";
 import { openBesideChief } from "../model/besideChat";
 import { useNeedsYou } from "../../needs/model/needsLive";
-import { askStore } from "../model/askStore";
-import { askedOpenCount, askedRows, type AskedRow } from "../model/askedView";
+import { askedOpenCount } from "../model/askedView";
+import { useAsked } from "../model/useAsked";
+import { AskBoard } from "./AskBoard";
 import {
   JOB_WORD,
   jobGroups,
   jobStatus,
   openJobCount,
 } from "../model/chiefJobs";
-
-const subscribeAsks = (fn: () => void): (() => void) =>
-  askStore().subscribe(fn);
-const asksNow = () => askStore().doc();
-
-/** The asks he made that are still on the list (dropped ones are gone), newest first. */
-function useAsked(): AskedRow[] {
-  const doc = useSyncExternalStore(subscribeAsks, asksNow, asksNow);
-  return useMemo(() => askedRows(doc), [doc]);
-}
 
 const HINT = "px-2 py-2 text-[12px] leading-4 text-content/60";
 const QUIET =
@@ -97,149 +82,9 @@ export function ChiefNeeds({
   );
 }
 
-/** Everything the owner asked for, newest first: still open, working, done (with what closed it) or waiting on him. */
-export function ChiefAsked({
-  onQuote,
-}: { onQuote?: (text: string) => void } = {}) {
-  const asked = useAsked();
-  const [problem, setProblem] = useState<string | null>(null);
-  const [busy, setBusy] = useState<string | null>(null);
-  const change = async (
-    item: AskedRow,
-    status: "done" | "dropped" | "heard",
-  ) => {
-    setBusy(item.id);
-    setProblem(null);
-    try {
-      const result = await askStore().change(
-        item.id,
-        {
-          status,
-          ...(status === "done"
-            ? { proof: "Marked done by you." }
-            : status === "heard"
-              ? { proof: "", note: "" }
-              : {}),
-        },
-        "ash",
-      );
-      if ("problem" in result) setProblem(result.problem);
-    } catch {
-      setProblem("Couldn't save the change. Please try again.");
-    } finally {
-      setBusy(null);
-    }
-  };
-  if (asked.length === 0)
-    return (
-      <p className={HINT}>
-        What you ask for shows here, so nothing gets lost in a long chat.
-      </p>
-    );
-  const rows = (items: AskedRow[]) => (
-    <ul data-chief-asked className="flex flex-col">
-      {items.map((item, index) => (
-        <li
-          key={item.id}
-          data-asked={item.open ? "open" : "handled"}
-          data-asked-status={item.status}
-          className={`group flex items-start gap-2 px-2 py-2${index ? " border-t border-stroke" : ""}`}
-        >
-          <button
-            type="button"
-            disabled={busy !== null}
-            aria-label={`${item.open ? "Mark done" : "Reopen"}: ${item.title}`}
-            className="mt-0.5 shrink-0 rounded focus-visible:outline focus-visible:outline-2"
-            onClick={() => void change(item, item.open ? "done" : "heard")}
-          >
-            {item.open ? (
-              <CircleWord
-                circle={item.red ? "red" : "grey"}
-                word={item.word}
-                ringOnly
-              />
-            ) : (
-              <Check
-                aria-hidden
-                className="size-3.5 text-content/60"
-                strokeWidth={1.75}
-              />
-            )}
-          </button>
-          <span className="flex min-w-0 flex-1 flex-col gap-0.5">
-            <span
-              data-asked-title
-              className={`text-[13px] leading-[18px] ${item.open ? "text-content" : "text-content/60"}`}
-            >
-              {item.title}
-            </span>
-            <span className="text-[11px] leading-4 text-content/60">
-              {item.word}
-              {item.said ? ` · said ${item.said} times` : ""}
-              {item.note ? ` · ${item.note}` : ""}
-            </span>
-            <span className="flex gap-2">
-              {onQuote ? (
-                <button
-                  type="button"
-                  data-quote-asked={item.id}
-                  aria-label={`Quote in the chat: ${item.title}`}
-                  className={`${QUIET} ${REVEAL}`}
-                  onClick={() =>
-                    onQuote(
-                      quoteAsked({
-                        title: item.title,
-                        status: item.word,
-                        note: item.note,
-                        said: item.said,
-                        words: item.words,
-                        id: item.id,
-                        chatId: item.chatId,
-                        blockId: item.blockId,
-                      }),
-                    )
-                  }
-                >
-                  Quote
-                </button>
-              ) : null}
-              {item.open ? (
-                <button
-                  type="button"
-                  disabled={busy !== null}
-                  aria-label={`Not an ask: ${item.title}`}
-                  className={`${QUIET} ${REVEAL}`}
-                  onClick={() => void change(item, "dropped")}
-                >
-                  Not an ask
-                </button>
-              ) : null}
-            </span>
-          </span>
-        </li>
-      ))}
-    </ul>
-  );
-  const open = asked.filter((item) => item.open);
-  const closed = asked.filter((item) => !item.open);
-  return (
-    <div>
-      {problem ? (
-        <p role="alert" className={HINT}>
-          {problem}
-        </p>
-      ) : null}
-      {open.length ? rows(open) : <p className={HINT}>Nothing left open.</p>}
-      {closed.length ? (
-        <details data-asked-finished className="border-t border-stroke">
-          <summary className={`${HINT} cursor-pointer`}>
-            Finished ({closed.length})
-          </summary>
-          {rows(closed)}
-        </details>
-      ) : null}
-    </div>
-  );
+/** Everything the owner asked for, as notes stacked per project (AskBoard.tsx): open, working, waiting on him, or done. */
+export function ChiefAsked({ onQuote }: { onQuote?: (text: string) => void } = {}) {
+  return <AskBoard onQuote={onQuote} />;
 }
 
 /** Every job in every project, grouped by project, with the way in to take one over. */

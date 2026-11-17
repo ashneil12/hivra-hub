@@ -33,6 +33,12 @@ export type AskedRow = {
   red: boolean;
   /** The checks (hub/model/askSettle.ts) already acted on for this ask. */
   check?: Ask["check"];
+  /** The first mate whose chat he said it in. */
+  mateId: string;
+  /** The jobs that took it on, oldest first. */
+  jobs?: string[];
+  /** The project he put it under on the board (askBoard.ts works it out when he has not). */
+  project?: string;
 };
 
 const TITLE_MAX = 90;
@@ -79,6 +85,9 @@ export function askedRow(ask: Ask): AskedRow {
     ...(ask.said && ask.said > 1 ? { said: ask.said } : {}),
     red: ask.status === "waiting" || (open && !!gap),
     ...(ask.check ? { check: ask.check } : {}),
+    mateId: ask.mateId,
+    ...(ask.jobs?.length ? { jobs: ask.jobs } : {}),
+    ...(ask.project ? { project: ask.project } : {}),
   };
 }
 

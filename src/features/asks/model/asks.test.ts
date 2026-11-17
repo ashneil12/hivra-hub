@@ -11,6 +11,7 @@ import {
   rulesAsks,
   withChange,
   withHeard,
+  withProject,
 } from "./asks";
 
 const RANT =
@@ -102,6 +103,34 @@ describe("the ledger", () => {
   it("says what was heard in one line", () => {
     const doc = heard();
     expect(receiptLine(doc.asks)).toBe(`Heard ${doc.asks.length} asks`);
+  });
+
+  it("keeps the project he put an ask under, quietly, through disk and a later reading", () => {
+    let doc = heard();
+    const first = doc.asks[0];
+    doc = withProject(doc, first.id, "exo");
+    const placed = doc.asks.find((ask) => ask.id === first.id)!;
+    expect(placed.project).toBe("exo");
+    // Placing is not a step in the ask's life: no new time, no history, so a quiet ask stays quiet.
+    expect({ ...placed, project: undefined }).toEqual({ ...first, project: undefined });
+    expect(parseAskDoc(JSON.parse(JSON.stringify(askDocForDisk(doc))), 3, 99).asks.find((ask) => ask.id === first.id)?.project).toBe("exo");
+    // The model's reading landing afterwards replaces only rows nobody touched: a placed one stays.
+    const again = withHeard(doc, { ...base, list: hearMessage(RANT, []), by: "model", now: 30 });
+    expect(again.asks.find((ask) => ask.id === first.id)?.project).toBe("exo");
+    expect(withProject(doc, first.id, null).asks.find((ask) => ask.id === first.id)?.project).toBeUndefined();
+  });
+
+  it("changes nothing for the same project, an ask it does not hold, or a name that is no id", () => {
+    const doc = withProject(heard(), heard().asks[0].id, "exo");
+    const id = doc.asks[0].id;
+    expect(withProject(doc, id, "exo")).toBe(doc);
+    expect(withProject(doc, "no-such-ask", "hivra")).toBe(doc);
+    expect(withProject(doc, id, "  ")).toBe(doc);
+    expect(withProject(doc, id, "two\nlines")).toBe(doc);
+    expect(withProject(doc, id, "x".repeat(201))).toBe(doc);
+    const raw = JSON.parse(JSON.stringify(askDocForDisk(doc)));
+    raw.asks[0].project = 7;
+    expect(parseAskDoc(raw, 3, 99).asks[0].project).toBeUndefined();
   });
 });
 

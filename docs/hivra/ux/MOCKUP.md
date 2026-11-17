@@ -13,6 +13,9 @@ npx vite --mode mockup        # or look at it live with HMR: http://localhost:14
 - The example data is in `src/dev/mockup/data.ts`: four projects, a Chief of Staff, a lead per project, two crew Monos,
   their chats, nine workers (working, stopped, done) and decisions (open, and decided by the Chief of Staff).
 - The page seeds once per `SEED_VERSION` (seed.ts) and keeps what was clicked; `?reset` starts it over.
+- `?lists=side` (or `?lists=off`) sets where the Chief of Staff's lists show, as Settings does: beside the chat, or not
+  at all. A build that should open that way with no query (a page shared as a link) takes
+  `VITE_MOCKUP_CHIEF_LISTS=side npm run mockup:build`. The default stays the buttons above the chat.
 - To show screens that are still in open pull requests, build from a local merge of main and those branches; the
   mockup files themselves only need main.
 - `page.html` is for a host that wraps a page in its own skeleton (a claude.ai Artifact): publish it with

@@ -44,7 +44,10 @@ import { MonoSidebar, MonoSidebarHeader } from "./MonoSidebar";
 import type { SessionChangeTotals } from "../../sessions/ui/SessionReview";
 import { MonoChangesView, type MonoChangesRequest } from "./MonoChangesView";
 import { ChiefAsked, ChiefNeeds, ChiefWorking, useChiefCounts } from "../../asks/ui/ChiefGlance";
-import { chiefListsTab, useChiefLists } from "../../asks/model/chiefLists";
+import { chiefListsPop, chiefListsTab, useChiefLists } from "../../asks/model/chiefLists";
+import { askStore } from "../../asks/model/askStore";
+import { askedOpenCount } from "../../asks/model/askedView";
+import { useAsked } from "../../asks/model/useAsked";
 
 export type MonoOverviewTab =
   "activity" | "needs" | "asked" | "working" | "sessions" | "habits" | "documents" | "changes";
@@ -152,12 +155,38 @@ export function MonoOverview({
   const chiefTabs = chief && chiefPlace === "side";
   const tabs = TABS;
   const chiefRow = chiefTabs ? CHIEF_TABS : [];
+  const asked = useAsked();
+  // Which list leads depends on the ask ledger, so the first tab is picked once it has been read (or could not be:
+  // then nothing he asked for is known, and Needs you leads as it always did).
+  const [asksRead, setAsksRead] = useState(() => askStore().loaded());
   useEffect(() => {
-    const next = chiefListsTab(chiefTabs, tab);
+    if (asksRead) return;
+    let live = true;
+    const done = () => {
+      if (live) setAsksRead(true);
+    };
+    void askStore().load().then(done, done);
+    return () => {
+      live = false;
+    };
+  }, [asksRead]);
+  useEffect(() => {
+    if (chiefTabs && !asksRead) return;
+    const next = chiefListsTab(chiefTabs, tab, askedOpenCount(asked));
     if (next) onTabChange(next);
-    // Only when the choice or the first mate changes.
+    // Only when the choice or the first mate changes, or the ledger has just been read.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [chiefTabs]);
+  }, [chiefTabs, asksRead]);
+  // A list he just said lands as notes on "You asked": the panel moves there from another list, so they are seen to
+  // arrive (asks/model/chiefLists.ts chiefListsPop).
+  const newestAsk = asked[0]?.at ?? 0;
+  const seenAsk = useRef(newestAsk);
+  useEffect(() => {
+    if (chiefTabs && chiefListsPop(tab, newestAsk, seenAsk.current, Date.now())) onTabChange("asked");
+    seenAsk.current = Math.max(seenAsk.current, newestAsk);
+    // Only when a newer ask arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [newestAsk]);
   const lock = useLockOverscroll<HTMLDivElement>();
   const habits = useHabits(monoId, state.status);
   const actions = habitActions(monoId);

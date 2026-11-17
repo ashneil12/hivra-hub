@@ -48,6 +48,28 @@ export function useChiefLens(): string | null {
   return useSyncExternalStore(subscribe, chiefLens, () => null);
 }
 
+let lookupSource: (() => LensLookup) | undefined;
+
+/**
+ * The app lends what the filter reads (App.tsx builds it from its chats, at most once a second), so the "You asked"
+ * board (askBoard.ts) tells projects apart exactly as the filter does.
+ */
+export function setLensLookupSource(next: (() => LensLookup) | undefined): () => void {
+  lookupSource = next;
+  return () => {
+    if (lookupSource === next) lookupSource = undefined;
+  };
+}
+
+/** What the filter reads right now; undefined outside the app (a test, a preview with no shell). */
+export function lensLookupNow(): LensLookup | undefined {
+  try {
+    return lookupSource?.();
+  } catch {
+    return undefined;
+  }
+}
+
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const patterns = new Map<string, RegExp>();
 

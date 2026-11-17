@@ -139,6 +139,20 @@ project.
     several, and makes the next message about it ("About EXO." above the box, with Show everything). How a turn is told
     apart is in `asks/model/chiefLens.ts`: his message sent while narrowed, the app's cards, linked questions and chats,
     then project and first mate names in the words.
+    **You asked is a board of notes per project** (`asks/ui/AskBoard.tsx`, the rules in `asks/model/askBoard.ts`), so a
+    long list typed into the one chat reads as a few short stacks beside it, not as six chats. Every ask is one note:
+    his own words (the one-line summary leads only when his words are long), then where it stands. Notes sit under
+    the project they are for; what no project claims waits on top under "Not sorted yet" with one tap to place it
+    (Place in a project, a `Popover` menu), an idea for later that belongs to no project waits last, and finished
+    asks are tucked under "Finished (N)". Inside a stack the red notes come first, then the newest. A note is red
+    only when it waits on a Needs you item, and it opens that item's own card where it sits (the same `NeedDetail`,
+    under `Reveal`); once answered the note reads "Open · Answered: Take A. EXO lead has it." and is red no longer.
+    A stack's line says the first mate, the count and "2 need you" in the Needs you red, and that count is the one
+    the project filter and the strip show. A note's smaller actions (Open, Quote, Move, Not an ask) show over the end
+    of its last line while the pointer or the keyboard is on it, never over his words. With the lists beside the chat
+    the panel arrives on You asked while anything he asked for is open, and a new ask heard while he looks at Needs
+    you or Working brings it there (`asks/model/chiefLists.ts`); a page he opened on purpose never moves. With one
+    project the board is the plain list it always was.
 15. **A flow asks one thing a step.** First run (`HubOnboarding.tsx`) goes welcome, the first project, its first
     mates, the coding tools, a look, done; each step has one heading and one choice, nothing is required, and the
     last step says back what was chosen before anything opens. A list a person chooses from says what each choice

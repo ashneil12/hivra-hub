@@ -8,7 +8,7 @@
 import { EXAMPLE } from "./data";
 import { mockupIpc, seedMockupIpc } from "./ipc";
 
-const SEED_VERSION = "mockup-v6";
+const SEED_VERSION = "mockup-v7";
 const SEEDED_KEY = "monocode:mockup-seeded";
 
 const url = new URL(location.href);
@@ -32,7 +32,8 @@ function seed(): void {
   const now = Date.now();
   const set = (key: string, value: unknown) => localStorage.setItem(key, JSON.stringify(value));
   set("monocode:dev-local-hub:projects", { projects: EXAMPLE.projects });
-  // One ask of the person's that went quiet, so Needs you shows its row (asks/model/askQuiet.ts).
+  // What the person asked for: a long list said in one go, and one ask that went quiet, so Needs you shows its row
+  // (asks/model/askQuiet.ts).
   set("monocode:dev-local-hub:asks", EXAMPLE.asks(now));
   set("monocode:dev-roster-seed", EXAMPLE.roster());
   set("monocode:dev-sessions", EXAMPLE.sessions(now));
@@ -44,6 +45,10 @@ function seed(): void {
   seedMockupIpc(now);
   // The Inbox on Home reads every project the app has opened: the example projects' folders, so it has items to show.
   set("monocode.recentProjects", EXAMPLE.projects.flatMap((project) => (project.folder ? [{ path: project.folder, openedAt: now }] : [])));
+  // Where the Chief of Staff's lists show (asks/model/chiefLists.ts): the app's own default unless this build or the
+  // address asks for them beside the chat (`VITE_MOCKUP_CHIEF_LISTS=side npm run mockup:build`, or `?lists=side`).
+  const lists = url.searchParams.get("lists") ?? (import.meta.env.VITE_MOCKUP_CHIEF_LISTS as string | undefined);
+  if (lists === "side" || lists === "off") localStorage.setItem("monocode.chiefLists", lists);
   localStorage.setItem("monocode:hub-nav", JSON.stringify({ project: "", item: "home" }));
   localStorage.setItem(SEEDED_KEY, SEED_VERSION);
 }
@@ -107,8 +112,12 @@ Object.assign(window, {
       .filter((part) => part && !part.startsWith("[MonoCode ") && !part.startsWith("Note: MonoCode"))
       .join(" ");
     const me = /^- (.+?) \(you\)/m.exec(prompt)?.[1];
+    // No word that claims the work is finished: the app would take it at its word and close what he just asked for
+    // (hub/model/askSettle.ts), and a list typed here has to stay on the board as notes.
     if (typed && me)
-      return `Example reply from ${me}: got it. I'll take it from here and tell you in this chat when it's done. (This is the mockup, so nothing really runs.)`;
+      return `Example reply from ${me}: got it. I'll take it from here and tell you in this chat how it goes. (This is the mockup, so nothing really runs.)`;
+    // The app's own note about asks with no status yet (asks/model/askNotes.ts), sent after he places one on the board.
+    if (prompt.includes("[MonoCode asks]")) return "Example: picked up. I passed it to that project's first mate.";
     if (/From the app, not Ash|\[MonoCode /.test(prompt)) return "\n\nRight: nothing new since your last message.";
     return "This is the mockup, so nothing is wired: I can't do the work here. The screens and buttons are the real app's; tell Claude in the thread what you'd change about them.";
   },

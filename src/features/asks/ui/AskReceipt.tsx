@@ -173,8 +173,10 @@ export function AskReceipt({ blockId }: { blockId: string }) {
         className="ml-auto flex h-6 items-center gap-1 rounded px-1.5 text-xs text-content/60 hover:bg-content/8 hover:text-content focus-visible:outline focus-visible:outline-1 focus-visible:outline-content/40"
       >
         <ChevronRight className={`size-3 shrink-0 transition-transform ${open ? "rotate-90" : ""}`} strokeWidth={1.75} />
-        <span>{receiptLine(asks)}</span>
-        {waiting ? <span style={{ color: NEEDS_YOU_RED }}>, waiting on you</span> : null}
+        <span>
+          {receiptLine(asks)}
+          {waiting ? <span style={{ color: NEEDS_YOU_RED }}>, waiting on you</span> : null}
+        </span>
       </button>
       {open ? (
         <div className="mt-1 rounded-lg border border-stroke py-1 text-left">

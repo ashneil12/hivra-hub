@@ -1115,7 +1115,7 @@ import { besideBlock, besideNote, setBesideChatHost } from "../features/asks/mod
 import { needLinksKey, needLinksNote } from "../features/asks/model/needLinks";
 import { inlineNeedCard } from "../features/asks/ui/InlineNeed";
 import { setInlineLinkCard } from "../features/sessions/model/inlineLinkCards";
-import { chiefLens, lensLookupFrom, lensNote, lensTag, turnProjects, type LensLookup } from "../features/asks/model/chiefLens";
+import { chiefLens, lensLookupFrom, lensNote, lensTag, setLensLookupSource, turnProjects, type LensLookup } from "../features/asks/model/chiefLens";
 import { setTurnTagger } from "../features/sessions/model/turnTags";
 import { isImportedChatId } from "../features/chatImport/model/convert";
 import { importedChatTaker } from "../features/chatImport/model/takeover";
@@ -11495,7 +11495,13 @@ function Workspace({
       cached = { at: now, lookup: next };
       return next;
     };
-    return setTurnTagger((sessionId, turn) => (isOneChat(sessionId) ? turnProjects(turn, lookup()).map(lensTag).join(" ") : undefined));
+    // The "You asked" board places each ask under a project with the same lookup (asks/model/askBoard.ts).
+    const offLookup = setLensLookupSource(lookup);
+    const offTagger = setTurnTagger((sessionId, turn) => (isOneChat(sessionId) ? turnProjects(turn, lookup()).map(lensTag).join(" ") : undefined));
+    return () => {
+      offLookup();
+      offTagger();
+    };
   }, []);
   // "Catch me up" in the one chat (asks/model/catchUp.ts): one app card from the app's own records. No model turn.
   useEffect(
