@@ -5,6 +5,8 @@ mod account_identity;
 mod hivra_cloud;
 // WP-78: the activity log.
 mod activity;
+// WP-166: pinned upstream repos and the weekly check.
+mod repo_watch;
 // WP-157: the work log. Not a numbered migration.
 mod work_log;
 // WP-86: commit attribution. Not a numbered migration.
@@ -1414,6 +1416,13 @@ pub fn run() {
             project_logo::forget_logo_file,
             // WP-78: Settings → Activity.
             activity::activity_list,
+            // WP-166: project pin list and the upstream check.
+            repo_watch::repo_watch_load,
+            repo_watch::repo_watch_cas,
+            repo_watch::repo_watch_fetch,
+            repo_watch::repo_watch_write_summary,
+            repo_watch::repo_watch_drafts_load,
+            repo_watch::repo_watch_drafts_cas,
             // WP-86: commits on a task, and the agents behind a pull request.
             attribution::attribution_for_task,
             attribution::attribution_for_commits,

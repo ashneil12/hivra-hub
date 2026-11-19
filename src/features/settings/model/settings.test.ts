@@ -712,7 +712,7 @@ describe("settings navigation", () => {
       ["general", "appearance", "keybindings", "usage"],
       ["monos", "teams", "chat"],
       ["providers", "skills", "connectors", "connected", "memory"],
-      ["decisions", "activity", "work-log", "changes", "history"],
+      ["decisions", "activity", "work-log", "repo-watch", "changes", "history"],
       // WP-92: the key vault.
       ["portable", "backups", "secrets"],
       ["connections", "mcp", "plugins", "crew", "inbox", "dashboards", "archive", "trash", "worktrees"],

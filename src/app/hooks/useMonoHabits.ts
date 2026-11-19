@@ -39,6 +39,8 @@ import {
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
+import { REPO_WATCH_HABIT_ID } from "../../features/repoWatch/model/habit";
+import { runRepoWatchHabit } from "../../features/repoWatch/model/run";
 // WP-244: a habit that watches something skips the model when it hasn't changed; one run of a habit at a time.
 import {
   appWatchReader,
@@ -242,6 +244,42 @@ export function useMonoHabits(
       const record = findMono(monoId);
       if (!habit || stopped || !record) return;
       const look = monoLook(record);
+      if (habit.id === REPO_WATCH_HABIT_ID) {
+        // WP-166: compare pinned repos. This does not start a model turn.
+        setHabitRunning(habit.id, now);
+        let watched;
+        try {
+          watched = await runRepoWatchHabit({
+            projectRoot: mono.cwd,
+            monoId,
+            monoName: look.name,
+            actorId: monoId,
+            signal: { get aborted() { return stopped; } },
+          });
+        } catch {
+          watched = { outcome: "failed" as const, reply: "", error: "The check did not finish." };
+        }
+        setHabitRunning(habit.id);
+        if (stopped || watched.cancelled) return;
+        const report = watched.outcome === "posted" ? habitReport(watched.reply) : undefined;
+        if (report) host.post(monoSessionId, habit, report, look.name);
+        await updateHabits(monoId, (habits) => ({
+          habits: habits.map((entry) =>
+            entry.id === habit.id
+              ? afterRun(entry, Date.now(), {
+                  kind: watched.outcome === "failed" ? "failed" : watched.outcome,
+                  ...(watched.outcome === "failed"
+                    ? { error: watched.error ?? "The check did not finish." }
+                    : {}),
+                  ...(report ? { report } : {}),
+                  startedAt: now,
+                })
+              : entry,
+          ),
+          result: undefined,
+        }));
+        return;
+      }
       // WP-244: look at what it watches first. Unchanged since a run that went well: no session, no model call. A
       // person's Run now still runs, with the before and after.
       let watched: WatchDecision | undefined;

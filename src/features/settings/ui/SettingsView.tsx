@@ -9,6 +9,8 @@ import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { ActivityPage } from "../../activity/ui/ActivityPage";
 import { WorkLogPanel } from "../../workLog/ui/WorkLogPanel";
+// WP-166: Settings, Repo watch. The pin list for this project.
+import { RepoWatchSettings } from "../../repoWatch/ui/RepoWatchSettings";
 // WP-108: Settings, Usage. Counts and names only.
 import { UsagePage } from "../../usage/ui/UsagePage";
 // WP-79: Settings → Connected apps.
@@ -798,6 +800,10 @@ export function SettingsView({
               {section === "work-log" ? (
                 // WP-157: Settings → Work log.
                 <WorkLogPanel />
+              ) : null}
+              {section === "repo-watch" ? (
+                // WP-166: project pin list and the weekly repo watch.
+                <RepoWatchSettings projectRoot={cwd} />
               ) : null}
               {section === "usage" ? (
                 // WP-108: token and cost history. Read only.

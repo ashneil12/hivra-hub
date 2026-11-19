@@ -40,6 +40,7 @@ export type SettingsSectionId =
   | "decisions"
   | "activity"
   | "work-log"
+  | "repo-watch"
   | "usage"
   | "connected"
   | "dashboards"
@@ -61,7 +62,7 @@ export const SETTINGS_GROUPS: { id: SettingsGroupId; label: string; folded?: boo
   // Who works for you, then what they can use (Ash, 11 Nov round 5: first mates by that name, and only useful things).
   { id: "agents", label: "Your team", sections: ["monos", "teams", "chat"] },
   { id: "tools", label: "What they can use", sections: ["providers", "skills", "connectors", "connected", "memory"] },
-  { id: "record", label: "What happened", sections: ["decisions", "activity", "work-log", "changes", "history"] },
+  { id: "record", label: "What happened", sections: ["decisions", "activity", "work-log", "repo-watch", "changes", "history"] },
   { id: "data", label: "Your data", sections: ["portable", "backups", "secrets"] },
   {
     id: "workspace",
@@ -136,6 +137,14 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
     label: "Work log",
     description: "What got done, grouped by day. One project, or every project.",
     keywords: "work log today outcomes decisions",
+  },
+  {
+    id: "repo-watch",
+    group: "record",
+    label: "Repo watch",
+    description:
+      "Pinned upstream repositories for this project, and a weekly check for what changed.",
+    keywords: "repo watch pin upstream github import licence",
   },
   {
     id: "usage",
