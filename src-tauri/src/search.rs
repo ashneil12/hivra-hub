@@ -437,7 +437,6 @@ fn pathspecs(include: &Option<String>, exclude: &Option<String>) -> Vec<String> 
 mod tests {
     use super::*;
     use std::io::ErrorKind;
-    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -471,7 +470,7 @@ mod tests {
     }
 
     fn git(dir: &Path, args: &[&str]) -> bool {
-        Command::new("git")
+        crate::git_cmd::git()
             .args(args)
             .current_dir(dir)
             .status()

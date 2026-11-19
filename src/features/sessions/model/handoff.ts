@@ -2,6 +2,7 @@ import { isEditTool } from "../../../integrations/harness/core/preview";
 import { specOf } from "../../firstmate/model/brief";
 import { compactCiRepairContext } from "../../inbox/model/ciRepair";
 import { limitSection } from "../../../shared/lib/jsonText";
+import { buildPortableTranscript } from "./midThreadSwitch";
 import { displayPath } from "../../../shared/lib/paths";
 import { sameProviderAccountId } from "../../providers/model/providerAccounts";
 import {
@@ -118,6 +119,8 @@ export function planComposerSwitch(
 export function sessionChildHarnesses(session: Session): HarnessId[] {
   const ids = new Set<HarnessId>([session.harness]);
   if (session.pendingSwitch) ids.add(session.pendingSwitch.from);
+  // WP-121: the old CLI stays live until the next send, so Stop, close and detach must reach it.
+  if (session.portableResume) ids.add(session.portableResume.from);
   const last = lastHandoffBlock(session.blocks)?.handoff;
   if (last?.status === "preparing") ids.add(last.from);
   return [...ids];
@@ -410,6 +413,46 @@ export function wrapRecoveredPrompt(brief: string, text: string): string {
   return `${lead}\n\n<chat_brief>\n${body}\n</chat_brief>\n\n${text}`;
 }
 
+/**
+ * WP-177: the first prompt of a moved chat that has no provider conversation yet. The newest saved messages are kept
+ * whole, up to the portable bound, under a lead that says the chat moved. Recovery of a lost transcript stays on
+ * wrapRecoveredPrompt. Once the provider has a session id the turn resumes it, so nothing is added.
+ */
+/** The machine named on the move-back note, or the one stored with the chat. */
+function movedFromName(session: Session): string {
+  const stored = session.movedFrom?.trim();
+  if (stored) return stored;
+  for (let index = session.blocks.length - 1; index >= 0; index -= 1) {
+    const line = (session.blocks[index]?.text ?? "").split("\n").find((part) => part.startsWith("From: "));
+    const name = line?.slice("From: ".length).trim();
+    if (name) return name;
+  }
+  return "another machine";
+}
+
+export function movedChatPrompt(session: Session, text: string, request: string = text): string {
+  if (!session.moveBriefOwed || session.providerSessionId) return text;
+  // A moved chat keeps the newest messages whole, up to the portable bound. Recovery of a lost transcript stays on the smaller brief.
+  // The turn being sent is not part of the chat so far, when it was already saved as the last user message.
+  const prior = session.blocks.filter((block, index) => {
+    const last = index === session.blocks.length - 1;
+    return !(last && block.role === "user" && block.text.trim() === request.trim());
+  });
+  const transcript = buildPortableTranscript(prior, undefined, undefined, session.id);
+  const lead = `You are continuing this chat, moved from ${movedFromName(session)}. This is not a new task. The messages below are the chat so far. Continue from them and do not say you have no prior context.`;
+  if (!transcript.trim()) return `${lead}\n\n${text}`;
+  return `${lead}\n\n<chat_so_far>\n${transcript}\n</chat_so_far>\n\n${text}`;
+}
+
+/**
+ * The chat so far, rebuilt from the saved messages, then the turn's text: the one fallback prompt the desktop's recovery
+ * (App.tsx resumeFallback) and a moved chat's first turn (movedChatPrompt, host and desktop) both send. `request` is the
+ * turn's own message, which the brief leaves out of its prior-messages list (defaults to the text).
+ */
+export function recoveredChatPrompt(session: Session, text: string, request: string = text): string {
+  return wrapRecoveredPrompt(buildDeterministicHandoff(session, request), text);
+}
+
 export function wrapHandoffPrompt(
   brief: string,
   from: HarnessId,
@@ -433,8 +476,44 @@ export function wrapHandoffPrompt(
 Prior conversation from ${fromTitle} — this is the thread you are joining, not optional background:
 
 <handoff>
-${body}
+${escapeFenceTag(body, "handoff")}
 </handoff>`;
+}
+
+/**
+ * Stops transcript text from closing its own fence early: a literal `<tag` or `</tag` inside the body
+ * is written with an escaped `<`, so only the wrapper's own closing tag ends the fence.
+ */
+function escapeFenceTag(body: string, tag: string): string {
+  return body.replace(new RegExp(`<(\\/?\\s*${tag})`, "gi"), "&lt;$1");
+}
+
+/**
+ * WP-123: the first prompt of a forked chat. Its messages up to the fork point were copied in, but its provider
+ * conversation is new, so the recap carries them. It says so as a fork, on the same agent: not a switch or a handoff.
+ * `earlierRequests` are messages typed in the fork before a first send that went through.
+ */
+export function wrapForkPrompt(
+  brief: string,
+  userText: string,
+  earlierRequests: string[] = [],
+): string {
+  const request = userText.trim();
+  const body = stripGoalSections(brief).trim();
+  const earlier = earlierRequests.map((text) => text.trim()).filter(Boolean);
+  const earlierBlock =
+    earlier.length > 0
+      ? `\n\nSince this chat was forked, before this message, the user also sent:\n\n${earlier.join("\n\n")}`
+      : "";
+  const lead = `This chat was forked from an earlier one. Its messages up to the fork point were copied here, but this is a new conversation, so you have not seen them. This is not a new task. Do not say you have no prior context.\n\n${request}${earlierBlock}`;
+  if (!body) return lead;
+  return `${lead}
+
+The chat up to the fork point is the thread you are continuing, not optional background:
+
+<chat_before_fork>
+${escapeFenceTag(body, "chat_before_fork")}
+</chat_before_fork>`;
 }
 
 function appendHandoffBlock(

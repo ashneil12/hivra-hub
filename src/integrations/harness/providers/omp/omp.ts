@@ -5,6 +5,7 @@ import {
   forgetSession,
   respondApproval,
   rewindLastTurn,
+  hasBackgroundWork,
   sendTurn,
   setPiBinaryResolver as setFlavorBinaryResolver,
   steerTurn,
@@ -58,6 +59,10 @@ export function cancelOmpTurn(sessionId: string): Promise<void> {
 
 export function stopOmpSession(sessionId: string): Promise<void> {
   return stopSession(OMP_FLAVOR, sessionId);
+}
+
+export function ompHasBackgroundWork(sessionId: string): boolean {
+  return hasBackgroundWork(OMP_FLAVOR, sessionId);
 }
 
 export function forgetOmpSession(sessionId: string): Promise<void> {

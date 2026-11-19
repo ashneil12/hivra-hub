@@ -1,0 +1,21 @@
+id: rust-test-fixed-sleep
+valid:
+  - |
+    mod tests {
+        fn polls() {
+            while !ready() {
+                std::thread::sleep(step);
+            }
+        }
+    }
+  - |
+    fn production() {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+invalid:
+  - |
+    mod tests {
+        fn waits() {
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }

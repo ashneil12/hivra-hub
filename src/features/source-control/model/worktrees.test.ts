@@ -5,10 +5,12 @@ import {
   sessionInWorktree,
   detachSessionWorktree,
   assertWorktreeFilesClosed,
+  listedWorktreeFor,
   worktreeDeletedExternally,
   worktreeSessionIds,
   type Worktree,
 } from "./worktrees";
+import { resetWorktreeIncludeNotes, worktreeIncludeLines } from "./worktreeIncludeNote";
 
 const dirs = vi.hoisted(() => new Set<string>());
 vi.mock("@tauri-apps/api/core", () => ({
@@ -79,6 +81,57 @@ describe("working-copy context", () => {
     expect(main.worktreeCwd).toBeUndefined();
     expect(main.id).toBe(session.id);
     expect(sessionWorkCwd(main)).toBe("/repo");
+  });
+
+  it("keeps the include note on the chat that moved into the new worktree", () => {
+    resetWorktreeIncludeNotes();
+    const session = newSession("codex", "/repo");
+    const secret = "SECRET-VALUE-do-not-leak";
+    const selected = sessionInWorktree(session, {
+      ...tree,
+      includeNote: "1 file named in .worktreeinclude is in this worktree.",
+      includeWarning: `Left hello.txt as it was.\n${secret}`,
+    });
+    expect(selected.includeNote).toContain("is in this worktree.");
+    expect(selected.includeNote).not.toContain("CLI");
+    expect(selected.includeWarning).toBe("Left hello.txt as it was.");
+    expect(selected.includeWarning).not.toContain(secret);
+    const listed = sessionInWorktree(
+      { ...selected, includeNote: undefined, includeWarning: undefined },
+      tree,
+    );
+    expect(listed.worktreeCwd).toBe(tree.path);
+    expect(
+      worktreeIncludeLines({ id: session.id, worktreeCwd: tree.path }).note,
+    ).toContain("is in this worktree.");
+    resetWorktreeIncludeNotes();
+  });
+
+  it("carries a create result's note and failed-copy warning over the fresh listing a picker reads", () => {
+    resetWorktreeIncludeNotes();
+    const secret = "SECRET-VALUE-do-not-leak";
+    const created: Worktree = {
+      ...tree,
+      includeNote: "1 file named in .worktreeinclude is in this worktree.",
+      includeWarning: `Could not copy .env into this worktree.\n${secret}`,
+    };
+    // The listing the picker re-reads has no note: this is what used to be lost.
+    const target = listedWorktreeFor(
+      [{ ...tree, path: "/repo", branch: "main", isMain: true }, { ...tree, head: "def" }],
+      created,
+    )!;
+    expect(target.head).toBe("def");
+    expect(target.includeNote).toBe(created.includeNote);
+    expect(target.includeWarning).toBe("Could not copy .env into this worktree.");
+    const session = newSession("codex", "/repo");
+    const selected = sessionInWorktree(session, target);
+    expect(selected.includeWarning).toBe("Could not copy .env into this worktree.");
+    expect(selected.includeNote).toBe(created.includeNote);
+    // A tree picked from the list has nothing to carry, and a missing one is not found.
+    expect(listedWorktreeFor([tree], tree)).toBe(tree);
+    expect(listedWorktreeFor([{ ...tree, missing: true }], created)).toBeUndefined();
+    expect(listedWorktreeFor([], created)).toBeUndefined();
+    resetWorktreeIncludeNotes();
   });
 
   it("starts a separate session on main without changing the worktree conversation", () => {

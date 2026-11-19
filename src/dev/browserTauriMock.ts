@@ -107,6 +107,140 @@ function emulateNativeGlass(a: GlassArgs | undefined) {
 // The hub plugin's stand-in: the local store's documents in this page's localStorage (src-tauri/src/local_hub.rs keeps
 // them in the app's database). Everything else on the plugin (connectors, model keys) answers nothing here.
 export const LOCAL_HUB_PREFIX = "monocode:dev-local-hub:";
+
+// WP-92: the vault's stand-in for a browser preview. Values live in this page's memory and never in localStorage, the
+// same promise the real vault keeps; the page's storage therefore holds metadata only.
+const DEV_SECRETS: {
+  rows: Array<Record<string, unknown>>;
+  values: Map<string, string>;
+  requests: Array<Record<string, unknown>>;
+} = { rows: [], values: new Map(), requests: [] };
+const secretKey = (scope: unknown, name: unknown) => `${String(scope)}\u0000${String(name)}`;
+function secretSlug(name: string): string {
+  return name.trim().toLowerCase().replace(/[ _]/g, "-");
+}
+function secretRow(scope: string, name: string, label: string, value: string) {
+  const last4 = value.length >= 12 ? value.slice(-4) : null;
+  return {
+    scope,
+    name,
+    label: label || name,
+    last4,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+    lastUsedAt: null,
+    version: 1,
+    approved: [],
+    executables: [],
+    envFiles: [],
+    needsValue: false,
+  };
+}
+function secretsIpc(cmd: string, args: Record<string, unknown> | undefined): unknown {
+  const a = args ?? {};
+  switch (cmd) {
+    case "plugin:hub|secrets_list":
+      return DEV_SECRETS.rows.map((row) => ({
+        ...row,
+        approved: [],
+        executables: [],
+        envFiles: [],
+        needsValue: !DEV_SECRETS.values.has(secretKey(row.scope, row.name)),
+      }));
+    case "plugin:hub|secrets_requests":
+    case "plugin:hub|secrets_pending":
+      return DEV_SECRETS.requests.filter((row) => row.state === "open");
+    case "plugin:hub|secrets_slug":
+      return secretSlug(String(a.name ?? ""));
+    case "plugin:hub|secrets_save_new": {
+      const scope = String(a.scope ?? "global");
+      const name = String(a.name ?? "");
+      const value = String(a.value ?? "");
+      DEV_SECRETS.values.set(secretKey(scope, name), value);
+      const row = secretRow(scope, name, String(a.label ?? ""), value);
+      const at = DEV_SECRETS.rows.findIndex((r) => r.scope === scope && r.name === name);
+      if (at >= 0) DEV_SECRETS.rows[at] = row;
+      else DEV_SECRETS.rows.push(row);
+      return row;
+    }
+    case "plugin:hub|secrets_begin_save": {
+      const row = DEV_SECRETS.requests.find((r) => r.id === a.id);
+      if (!row || row.state !== "open") throw new Error("That key was already saved.");
+      row.state = "saving";
+      return { request: row, token: `dev-token-${row.id}` };
+    }
+    case "plugin:hub|secrets_save": {
+      const row = DEV_SECRETS.requests.find((r) => r.id === a.id);
+      if (!row || row.state !== "saving") throw new Error("That key was already saved.");
+      const scope = String(row.scope);
+      const name = String(row.name);
+      const value = String(a.value ?? "");
+      DEV_SECRETS.values.set(secretKey(scope, name), value);
+      const saved = secretRow(scope, name, String(a.label ?? row.name), value);
+      const at = DEV_SECRETS.rows.findIndex((r) => r.scope === scope && r.name === name);
+      if (at >= 0) DEV_SECRETS.rows[at] = saved;
+      else DEV_SECRETS.rows.push(saved);
+      row.state = "filled";
+      return saved;
+    }
+    case "plugin:hub|secrets_decline": {
+      const row = DEV_SECRETS.requests.find((r) => r.id === a.id);
+      if (row) row.state = "declined";
+      return null;
+    }
+    case "plugin:hub|secrets_rename": {
+      const row = DEV_SECRETS.rows.find((r) => r.scope === a.scope && r.name === a.name);
+      if (!row) throw new Error("That key isn't here any more.");
+      row.label = String(a.label ?? row.name);
+      row.version = Number(row.version) + 1;
+      row.updatedAt = Date.now();
+      return row;
+    }
+    case "plugin:hub|secrets_rotate": {
+      const scope = String(a.scope ?? "");
+      const name = String(a.name ?? "");
+      const value = String(a.value ?? "");
+      if (!DEV_SECRETS.values.has(secretKey(scope, name))) throw new Error("That key isn't here any more.");
+      DEV_SECRETS.values.set(secretKey(scope, name), value);
+      const row = DEV_SECRETS.rows.find((r) => r.scope === scope && r.name === name)!;
+      row.last4 = value.length >= 12 ? value.slice(-4) : null;
+      row.version = Number(row.version) + 1;
+      row.updatedAt = Date.now();
+      return { secret: row, updated: [], leftAlone: [] };
+    }
+    case "plugin:hub|secrets_delete": {
+      const at = DEV_SECRETS.rows.findIndex((r) => r.scope === a.scope && r.name === a.name);
+      if (at >= 0) DEV_SECRETS.rows.splice(at, 1);
+      DEV_SECRETS.values.delete(secretKey(a.scope, a.name));
+      return { removedGrants: 0, removedEnvLines: [] };
+    }
+    case "plugin:hub|secrets_reveal": {
+      const value = DEV_SECRETS.values.get(secretKey(a.scope, a.name));
+      if (value === undefined) throw new Error("That key isn't in your keychain any more.");
+      return value;
+    }
+    case "plugin:hub|secrets_grants":
+      return [];
+    case "plugin:hub|secrets_revoke_grant":
+      return 0;
+    case "plugin:hub|secrets_index":
+      return {
+        secrets: DEV_SECRETS.rows.map((row) => ({
+          name: row.name,
+          scope: row.scope,
+          label: row.label,
+          last4: row.last4,
+          createdAt: row.createdAt,
+        })),
+      };
+    case "plugin:hub|secrets_env_write":
+    case "plugin:hub|secrets_env_remove":
+      return null;
+    default:
+      return undefined;
+  }
+}
+
 function hubIpc(cmd: string, args: Record<string, unknown> | undefined): unknown {
   const key = String(args?.key ?? "");
   // A document's revision sits beside it (`<key>#rev`); a seeded document with none is at revision 1.
@@ -126,6 +260,14 @@ function hubIpc(cmd: string, args: Record<string, unknown> | undefined): unknown
     return current + 1;
   }
   if (cmd === "plugin:hub|local_hub_make_folder") return `/Users/example/Projects/${String(args?.id ?? "project")}`;
+  if (cmd.startsWith("plugin:hub|secrets_")) {
+    const answer = secretsIpc(cmd, args);
+    if (answer !== undefined) return answer;
+  }
+  if (cmd === "git_worktrees") {
+    const cwd = String((args as { cwd?: string } | undefined)?.cwd ?? "/Users/example/Projects/tally");
+    return { worktrees: [{ path: cwd, branch: "main", isMain: true }], defaultRoot: cwd };
+  }
   if (cmd === "plugin:hub|ash_os_import_fetch") return { state: "absent", message: "No Ash OS in the browser preview.", projects: [], memberships: [], pages: [] };
   return null;
 }
@@ -142,6 +284,12 @@ mockIPC(
       (window as unknown as { __ipc: string[] }).__ipc = [...seen];
     }
     if (cmd.startsWith("plugin:hub|")) return hubIpc(cmd, args as Record<string, unknown> | undefined);
+    // The design mockup's own example answers (src/dev/mockup/ipc.ts): the Inbox's sources, Notes, the changes card.
+    const mockup = (window as unknown as { __mockupIpc?: (cmd: string, args?: Record<string, unknown>) => unknown }).__mockupIpc?.(
+      cmd,
+      args as Record<string, unknown> | undefined,
+    );
+    if (mockup !== undefined) return mockup;
     if (cmd === "set_window_glass_enabled") {
       emulateNativeGlass(args as GlassArgs);
       return true;
@@ -176,7 +324,7 @@ mockIPC(
     }
     // Dev only: chats a browser test seeds (`monocode:dev-sessions`, as session_list_by_project returns them) for their
     // folder; session_get reads one back with an empty transcript, so opening it from the list works.
-    if (cmd === "session_list_by_project" || cmd === "session_get") {
+    if (cmd === "session_list_by_project" || cmd === "session_get" || cmd === "mono_session_get") {
       let seeded: Array<Record<string, unknown>> = [];
       try {
         seeded = JSON.parse(localStorage.getItem("monocode:dev-sessions") ?? "[]");
@@ -184,7 +332,7 @@ mockIPC(
         seeded = [];
       }
       const a = args as { cwd?: string; sessionId?: string };
-      if (cmd === "session_get") {
+      if (cmd === "session_get" || cmd === "mono_session_get") {
         const found = seeded.find((entry) => entry.id === a.sessionId);
         return found ? { modelSettings: {}, blocks: [], ...found } : null;
       }
@@ -231,6 +379,34 @@ mockIPC(
     if (cmd === "decisions_list") return seededList("monocode:dev-decisions");
     if (cmd === "delivery_list") return seededList("monocode:dev-deliveries");
     if (cmd === "pr_watch_list") return seededList("monocode:dev-pr-watches");
+    if (cmd === "automations_list") return seededList("monocode:dev-automations");
+    // A project with no project file: no actions, no runs (the generic list answer below is an array, not a listing).
+    if (cmd === "project_actions_list") {
+      const cwd = (args as { cwd?: string } | undefined)?.cwd ?? "";
+      return {
+        status: { projectRoot: cwd, path: `${cwd}/.monocode/project.json`, state: "none", error: null, fileHash: null, file: null, trustedHash: null, trusted: null, importedAt: null },
+        actions: [],
+        runs: [],
+      };
+    }
+    // WP-210: answering a seeded decision clears it on the one Needs you list.
+    if (cmd === "decisions_answer") {
+      const input = (args ?? {}) as { project?: string; key?: string; answer?: string };
+      const stored = "monocode:dev-decisions";
+      const rows = seededList(stored);
+      const now = Date.now();
+      let decision: unknown = null;
+      const next = rows.map((row) => {
+        if (!row || typeof row !== "object") return row;
+        const item = row as { project?: string; decisionKey?: string };
+        if (item.project !== input.project || item.decisionKey !== input.key) return row;
+        decision = { ...item, state: "answered", answer: input.answer ?? null, answeredAt: now };
+        return decision;
+      });
+      localStorage.setItem(stored, JSON.stringify(next));
+      void emit("hivra:decisions-changed", {});
+      return { applied: decision != null, decision, released: [], releasedTasks: [] };
+    }
     // WP-06: a browser spec seeds a ship summary (`monocode:dev-ship`). Missing or bad JSON is no ship.
     if (cmd === "ship_status") {
       try {

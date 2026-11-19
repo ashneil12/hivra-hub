@@ -15,11 +15,26 @@ export function rankSkills(
   skills: Skill[],
   query: string,
   limit = MAX_PICKER,
+  // WP-182: a Mono's own skills and commands lead the list. Nothing is removed.
+  preferred?: readonly string[],
 ): Skill[] {
+  const preferAt = new Map<string, number>();
+  for (const [index, name] of (preferred ?? []).entries()) {
+    if (!preferAt.has(name)) preferAt.set(name, index);
+  }
+  const preferRank = (name: string) => preferAt.get(name) ?? Number.POSITIVE_INFINITY;
+  // Infinity minus Infinity is NaN, and a NaN sort result shuffles rows that have no preference.
+  const preferFirst = (a: string, b: string) => {
+    const left = preferRank(a);
+    const right = preferRank(b);
+    return left === right ? 0 : left - right;
+  };
   const needle = query.trim().toLowerCase();
   if (!needle) {
     return [...skills]
       .sort((a, b) => {
+        const pref = preferFirst(a.name, b.name);
+        if (pref !== 0) return pref;
         const rank = scopeRank(a) - scopeRank(b);
         if (rank !== 0) return rank;
         return a.name.localeCompare(b.name);
@@ -47,6 +62,8 @@ export function rankSkills(
     scored.push({ skill, score });
   }
   scored.sort((a, b) => {
+    const pref = preferFirst(a.skill.name, b.skill.name);
+    if (pref !== 0) return pref;
     if (b.score !== a.score) return b.score - a.score;
     return a.skill.name.localeCompare(b.skill.name);
   });

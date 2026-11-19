@@ -12,6 +12,7 @@
 //   Bot changes row with Undo and Redo says what changed.
 // The souls' home stays out of every chat's write reach (hubMcp.ts monoHomeDeniedTools); this action is the app's own
 // hash-checked write (mono.rs check_write behind it).
+import { refuseAddedCharter } from "../../chief/model/charter";
 import { listMonos } from "../../monos/model/mono";
 import type { AgentFilePath } from "../../monos/model/monoFiles";
 import { recordBotChange } from "./botChanges";
@@ -125,6 +126,7 @@ export async function mergeSoul(
   if (soul.text == null) throw new SoulMergeRefused(`${t.name} has no soul yet.`);
   if (soul.hash !== input.expectedHash)
     throw new SoulMergeRefused(forUser`${t.name}'s soul changed since you read it (Ash may be editing it). Nothing was saved; read it again with souls.read.`);
+  refuseAddedCharter(listMonos().find((m) => m.id === input.mono), soul.text, input.text);
   const problem = checkMergedSoul(soul.text, t.template, input.text);
   if (problem) throw new SoulMergeRefused(`${problem} Nothing was saved.`);
   const tag = `merge-${templateFingerprint(input.text)}`;

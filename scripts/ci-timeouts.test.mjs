@@ -48,12 +48,34 @@ function stepTimeout(text, needle) {
 test("hung CI jobs stop well under the six hour default", () => {
   assert.match(workflow, /360 minutes/);
   const jobs = jobTimeouts(workflow);
-  assert.equal(jobs.browser, 25);
+  // #171: the browser job keeps its OS packages between runs; a cold install can take its full 15 minutes plus the
+  // 8 minute retry, so the job allows 35.
+  assert.equal(jobs.browser, 35);
   assert.equal(jobs.host, 10);
   assert.equal(jobs.check, 30);
   assert.equal(jobs.ship, 10);
   assert.equal(jobs.rpm, 25);
-  assert.equal(stepTimeout(workflow, "npx playwright install --with-deps chromium webkit"), 8);
+  // WP-154 and #171: the install runs through the cached installer script, 15 minutes for the first attempt (it may
+  // install the OS packages too) and 8 for the retry.
+  assert.equal(stepTimeout(workflow, "node scripts/ci-playwright-install.mjs --cache-hit"), 15);
+  assert.equal(stepTimeout(workflow, "name: Retry Playwright browser install"), 8);
   assert.equal(stepTimeout(workflow, "hub:ship -- --drill-rollback under a temporary HOME"), 10);
   for (const minutes of Object.values(jobs)) assert.ok(minutes < 360);
+});
+
+test("the rpm jobs drop a slow package mirror before their first dnf call", () => {
+  // 11 Nov 2026: a crawling AlmaLinux mirror ran the rpm job into its 25 minute limit in "Install git".
+  const lines = workflow.split("\n");
+  for (const job of ["rpm", "rpm-clean-install"]) {
+    const start = lines.findIndex((line) => line === `  ${job}:`);
+    assert.notEqual(start, -1, job);
+    let end = start + 1;
+    while (end < lines.length && !/^ {2}[A-Za-z0-9-]+:\s*$/.test(lines[end])) end += 1;
+    const body = lines.slice(start, end);
+    const skip = body.findIndex((line) => line.includes("name: Skip slow package mirrors"));
+    const firstDnf = body.findIndex((line) => !line.trim().startsWith("#") && /\bdnf (install|makecache)\b/.test(line));
+    assert.notEqual(skip, -1, `${job} has no slow-mirror step`);
+    assert.ok(skip < firstDnf, `${job} calls dnf before it drops slow mirrors`);
+    assert.match(body.slice(skip, firstDnf).join("\n"), /minrate=100k/);
+  }
 });

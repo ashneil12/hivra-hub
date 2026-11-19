@@ -9,14 +9,41 @@ import {
   saveThemeSaturation,
 } from "../../settings/model/appearance";
 import { setStripBackdrop } from "./stripBackdrop";
+import { listMonos } from "../../monos/model/mono";
+import { hubData } from "./hubData";
 
 const KEY = "monocode:hub-onboarded";
 
+/**
+ * A first launch: nothing says the welcome was finished, and nothing is here yet. The finished mark lives in the
+ * webview's storage, which can be cleared apart from the app's data, so an install that already has a first mate (the
+ * roster comes back from the Monos' home on disk) or a project (the app's database) is never greeted as new: the mark
+ * is written back instead.
+ */
 export function needsOnboarding(): boolean {
   if (new URLSearchParams(window.location.search).has("onboarding")) return true;
   try {
-    return localStorage.getItem(KEY) !== "1";
+    if (localStorage.getItem(KEY) === "1") return false;
   } catch {
+    return false;
+  }
+  if (alreadySetUp()) {
+    finishOnboarding();
+    return false;
+  }
+  return true;
+}
+
+function alreadySetUp(): boolean {
+  try {
+    if (listMonos().length > 0) return true;
+  } catch {
+    /* the roster is not readable: decide on the projects alone */
+  }
+  try {
+    return hubData().listProjects().length > 0;
+  } catch {
+    /* the store is not up yet: nothing known, so this is a first launch */
     return false;
   }
 }

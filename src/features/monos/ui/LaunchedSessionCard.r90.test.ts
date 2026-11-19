@@ -56,6 +56,6 @@ it("r92/r95 (s15 dcf4): squeezed beside 'Stalled', the card clips and the title 
   const card = host.querySelector("[data-launched-session]")!;
   expect(card.className).toContain("overflow-hidden");
   const title = host.querySelector("[data-launched-title]")!.className.split(/\s+/);
-  expect(title).toEqual(expect.arrayContaining(["flex-1", "min-w-0", "whitespace-normal", "break-words"]));
+  expect(title).toEqual(expect.arrayContaining(["flex-1", "min-w-[min(10rem,100%)]", "whitespace-normal", "break-words"]));
   expect(title).not.toContain("truncate");
 });

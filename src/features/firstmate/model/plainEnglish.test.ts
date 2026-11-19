@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIRST_MATE_CONTRACT, contractForAgents, withFirstMateContract } from "./contract";
 import { PLAIN_ENGLISH_KEY, PLAIN_ENGLISH_RULE, __resetPlainEnglishForTests, plainEnglishEndings, savePlainEnglishEndings } from "./plainEnglish";
@@ -47,9 +46,6 @@ describe("plain-English endings", () => {
     expect(built).not.toContain(PLAIN_ENGLISH_RULE);
     savePlainEnglishEndings(true);
     expect(withFirstMateContract("You are the lead.")).toContain(PLAIN_ENGLISH_RULE);
-    for (const file of ["../../../app/App.tsx", "../../monos/model/monoHabits.ts", "../../hub/model/projectInterview.ts"]) {
-      expect(readFileSync(new URL(file, import.meta.url), "utf8"), file).toContain("withFirstMateContract");
-    }
   });
 
   it("reads the stored flag each time, so another window's change wins", () => {

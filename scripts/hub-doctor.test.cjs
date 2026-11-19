@@ -277,9 +277,14 @@ test("I8: --clean plans a stale slot, an old config and a finished worktree, the
   const roots = [path.join(home, "Worktrees")];
   const report = () => collect({ home, repo, worktreeRoots: roots, sizes: false, isAlive: alive });
 
-  // Three more worktrees: one its main checkout already has, one with work in it, one not merged yet.
+  // Three more worktrees: one its main checkout already has (merged, as a pull request lands), one with work in it, one
+  // not merged yet.
   const merged = path.join(home, "Worktrees/feat-b");
   git(repo, "worktree", "add", "-q", "-b", "feat/b", merged);
+  fs.writeFileSync(path.join(merged, "b.txt"), "finished work");
+  git(merged, "add", ".");
+  git(merged, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "b");
+  git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", "Merge feat/b", "feat/b");
   const dirty = path.join(home, "Worktrees/feat-c");
   git(repo, "worktree", "add", "-q", "-b", "feat/c", dirty);
   fs.writeFileSync(path.join(dirty, "unfinished.txt"), "work in progress");
@@ -323,7 +328,7 @@ test("I8: --clean plans a stale slot, an old config and a finished worktree, the
   assert.ok(fs.existsSync(path.join(worktree, "target/hub-dev/old-name.conf.json")));
   assert.ok(fs.existsSync(merged));
 
-  const result = applyClean(plan);
+  const result = applyClean(plan, { busy: [] });
   assert.deepEqual(result.problems, []);
   assert.deepEqual(result.removed, { slots: 2, configs: 1, worktrees: 1, bundles: 0, pruned: 1 });
   assert.match(renderClean(plan, { removed: result.removed }), /^Cleaned: 2 slots, 1 config, 1 worktree, git pruned in 1 checkout/);
@@ -335,7 +340,7 @@ test("I8: --clean plans a stale slot, an old config and a finished worktree, the
   assert.ok(!fs.existsSync(merged), "the finished worktree is gone");
   assert.ok(fs.existsSync(path.join(dirty, "unfinished.txt")), "the dirty worktree is untouched");
   assert.ok(fs.existsSync(path.join(unmerged, "done.txt")), "the unmerged worktree is untouched");
-  assert.equal(git(repo, "rev-parse", "--verify", "feat/b"), git(repo, "rev-parse", "main"), "its branch is kept");
+  assert.equal(git(repo, "rev-parse", "--verify", "feat/b"), git(repo, "rev-parse", "main^2"), "its branch is kept");
   assert.ok(!git(repo, "worktree", "list").includes("feat-x"), "git's record of the vanished worktree is pruned");
 
   const registry = JSON.parse(fs.readFileSync(path.join(home, ".monocode-hub-dev/slots.json"), "utf8"));
@@ -406,4 +411,187 @@ test("hub:doctor --clean without --yes lists what it would reap and leaves the f
   assert.match(result.stdout, /config .*old-name\.conf\.json/);
   assert.equal(snapshot(), before);
   assert.ok(fs.existsSync(path.join(home, "Library/Application Support", `${DEV}orphan`)));
+});
+
+test("disk: --clean clears the build output of a pushed, clean worktree, and keeps dirty, unpushed, linked and main-checkout output", { skip }, async (t) => {
+  const { collect, cleanPlan, applyClean, renderClean, buildOutputOf } = await load();
+  const { home, repo } = fixture(t);
+  const roots = [path.join(home, "Worktrees")];
+  const report = () => collect({ home, repo, worktreeRoots: roots, sizes: false, isAlive: alive });
+  const origin = path.join(home, "origin.git");
+  git(home, "init", "-q", "--bare", origin);
+  git(repo, "remote", "add", "origin", origin);
+  // As the real .gitignore does: build output is not a change.
+  fs.writeFileSync(path.join(repo, ".git/info/exclude"), "target/\ntest-results/\nplaywright-report/\nnode_modules\n");
+  const commit = (dir, name) => {
+    fs.writeFileSync(path.join(dir, name), name);
+    git(dir, "add", name);
+    git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name);
+  };
+  const output = (dir, names) => {
+    for (const name of names) {
+      fs.mkdirSync(path.join(dir, name, "deps"), { recursive: true });
+      fs.writeFileSync(path.join(dir, name, "deps/blob"), "x");
+    }
+  };
+  const tree = (name, branch) => {
+    const dir = path.join(home, "Worktrees", name);
+    git(repo, "worktree", "add", "-q", "-b", branch, dir);
+    return dir;
+  };
+  // Pushed and clean, with real build output and a real node_modules.
+  const pushed = tree("feat-e", "feat/e");
+  commit(pushed, "e.txt");
+  git(pushed, "push", "-q", "origin", "feat/e");
+  output(pushed, ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"]);
+  // Pushed and clean, but node_modules is a link to the main checkout's.
+  const linked = tree("feat-f", "feat/f");
+  commit(linked, "f.txt");
+  git(linked, "push", "-q", "origin", "feat/f");
+  output(linked, ["target"]);
+  fs.mkdirSync(path.join(repo, "node_modules/pkg"), { recursive: true });
+  fs.writeFileSync(path.join(repo, "node_modules/pkg/index.js"), "main checkout's");
+  fs.symlinkSync(path.join(repo, "node_modules"), path.join(linked, "node_modules"));
+  // A commit that is only here.
+  const unpushed = tree("feat-g", "feat/g");
+  commit(unpushed, "g.txt");
+  output(unpushed, ["target"]);
+  // Pushed, then work left uncommitted.
+  const dirty = tree("feat-h", "feat/h");
+  commit(dirty, "h.txt");
+  git(dirty, "push", "-q", "origin", "feat/h");
+  output(dirty, ["target"]);
+  fs.writeFileSync(path.join(dirty, "wip.txt"), "unfinished");
+  // The main checkout's own build output.
+  output(repo, ["target"]);
+
+  assert.deepEqual(buildOutputOf(linked), ["target"], "a linked node_modules is not build output");
+  const plan = cleanPlan(await report(), { current: repo });
+  assert.deepEqual(
+    plan.buildOutputs.map((row) => [path.basename(row.path), row.folders]),
+    [
+      ["feat-e", ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"]],
+      ["feat-f", ["target"]],
+    ],
+  );
+  assert.match(renderClean(plan), /build output .*feat-e \(target, src-tauri\/target/);
+
+  const result = applyClean(plan, { busy: [] });
+  assert.deepEqual(result.problems, []);
+  assert.equal(result.removed.buildOutputs, 6);
+  for (const name of ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"])
+    assert.ok(!fs.existsSync(path.join(pushed, name)), `feat-e ${name} is gone`);
+  assert.ok(fs.existsSync(path.join(pushed, "e.txt")), "its code stays");
+  assert.ok(fs.existsSync(path.join(pushed, "src-tauri")), "only target/ inside src-tauri goes");
+  assert.ok(fs.lstatSync(path.join(linked, "node_modules")).isSymbolicLink(), "the link stays");
+  assert.ok(fs.existsSync(path.join(repo, "node_modules/pkg/index.js")), "the main checkout's node_modules is untouched");
+  assert.ok(fs.existsSync(path.join(unpushed, "target/deps/blob")), "unpushed work keeps its build output");
+  assert.ok(fs.existsSync(path.join(dirty, "target/deps/blob")), "a dirty worktree keeps its build output");
+  assert.ok(fs.existsSync(path.join(repo, "target/deps/blob")), "the main checkout keeps its build output");
+});
+
+// 11 Nov 2026: hub:clean listed a brand-new branch (made from main, a builder about to start in it) and a worktree a
+// Grok round was working in as finished, because their commit was already on main. `git worktree remove --force` would
+// have taken both. Plain git, no bundles, so this runs off the Mac too (not on Windows: the clean reads pgrep and lsof).
+test("clean: a branch just made from main is not finished, a worktree something runs in is kept, --output-only removes no worktree", { skip: process.platform === "win32" && "hub:clean is a Mac tool (pgrep, lsof)" }, async (t) => {
+  const { cleanPlan, applyClean, renderClean } = await load();
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-clean-")));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  const repo = path.join(home, "Projects/monocode-hub");
+  fs.mkdirSync(repo, { recursive: true });
+  git(repo, "init", "-q", "-b", "main");
+  const commit = (dir, name) => {
+    fs.writeFileSync(path.join(dir, name), name);
+    git(dir, "add", name);
+    git(dir, "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", name);
+  };
+  const tree = (name, branch) => {
+    const dir = path.join(home, "Worktrees", name);
+    git(repo, "worktree", "add", "-q", "-b", branch, dir);
+    return dir;
+  };
+  const land = (branch) => git(repo, "-c", "user.name=t", "-c", "user.email=t@t", "merge", "-q", "--no-ff", "-m", `Merge ${branch}`, branch);
+  commit(repo, "init.txt");
+  const fresh = tree("fresh", "wp/fresh");
+  commit(repo, "later.txt");
+  const freshAtTip = tree("fresh-tip", "wp/fresh-tip");
+  const merged = tree("merged", "wp/merged");
+  commit(merged, "m.txt");
+  land("wp/merged");
+  const busy = tree("busy", "wp/busy");
+  commit(busy, "b.txt");
+  land("wp/busy");
+  commit(repo, "after.txt");
+  const row = (dir, branch) => ({ path: dir, branch, commit: git(dir, "rev-parse", "--short=7", "HEAD"), kind: "worktree", target: null, slot: null });
+  const report = {
+    home,
+    slots: [],
+    worktrees: [
+      { path: repo, branch: "main", commit: git(repo, "rev-parse", "--short=7", "HEAD"), kind: "main checkout (this one)", target: null, slot: null },
+      row(fresh, "wp/fresh"),
+      row(freshAtTip, "wp/fresh-tip"),
+      row(merged, "wp/merged"),
+      row(busy, "wp/busy"),
+    ],
+  };
+
+  const plan = cleanPlan(report, { current: repo });
+  assert.deepEqual(plan.worktrees.map((row) => path.basename(row.path)).sort(), ["busy", "merged"]);
+  const kept = Object.fromEntries(plan.kept.map((keep) => [path.basename(keep.path), keep.why]));
+  assert.match(kept.fresh, /nothing of its own yet/, "a branch made from an older main is not finished");
+  assert.match(kept["fresh-tip"], /nothing of its own yet/, "nor one made from main's tip");
+  assert.match(renderClean(plan), /kept .*fresh-tip {2}it has nothing of its own yet/);
+
+  // A build (or an agent) working inside `busy` keeps it, whatever the plan said.
+  const result = applyClean(plan, { busy: [path.join(busy, "src-tauri")] });
+  assert.equal(result.removed.worktrees, 1);
+  assert.equal(result.problems.length, 1, result.problems.join("\n"));
+  assert.match(result.problems[0], /busy: something is running in it, worktree kept/);
+  assert.ok(fs.existsSync(path.join(busy, "b.txt")), "the busy worktree stays");
+  assert.ok(!fs.existsSync(merged), "the finished, idle worktree goes");
+  assert.ok(fs.existsSync(fresh) && fs.existsSync(freshAtTip), "the fresh worktrees stay");
+
+  // --output-only: the same finished worktree is kept; nothing but build output is ever listed.
+  const only = cleanPlan({ ...report, worktrees: report.worktrees.filter((row) => row.path !== merged) }, { current: repo, outputOnly: true });
+  assert.deepEqual([only.worktrees, only.slots, only.configs, only.prunes], [[], [], [], []]);
+  assert.match(Object.fromEntries(only.kept.map((keep) => [path.basename(keep.path), keep.why])).busy, /only its build output goes \(--output-only\)/);
+});
+
+test("WP-248: the doctor warns about a project whose own ignore file lets the approvals file through, or that tracks one", async (t) => {
+  const { APPROVALS_FILE, approvalsCheck, approvalsWarnings, knownProjects, renderApprovals } = await load();
+  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "hub-doctor-approvals-")));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  // A global excludes file that ignores it, as Claude Code writes on Ash's Mac: the check must not count it.
+  const globalIgnore = path.join(home, "global-ignore");
+  fs.writeFileSync(globalIgnore, "**/.claude/settings.local.json\n");
+  const project = (name, ignore) => {
+    const dir = path.join(home, "Projects", name);
+    fs.mkdirSync(dir, { recursive: true });
+    git(dir, "init", "-q", "-b", "main");
+    git(dir, "config", "core.excludesFile", globalIgnore);
+    if (ignore !== null) fs.writeFileSync(path.join(dir, ".gitignore"), ignore);
+    return dir;
+  };
+  const covered = project("covered", `node_modules\n${APPROVALS_FILE}\n`);
+  const bare = project("bare", "node_modules\n");
+  const none = project("none", null);
+  const leaked = project("leaked", `${APPROVALS_FILE}\n`);
+  fs.mkdirSync(path.join(leaked, ".claude"));
+  fs.writeFileSync(path.join(leaked, APPROVALS_FILE), "{}\n");
+  git(leaked, "add", "-f", APPROVALS_FILE);
+  fs.mkdirSync(path.join(home, "Projects", "not-a-repo"));
+
+  const projects = knownProjects({ home }).sort();
+  assert.deepEqual(projects, [bare, covered, leaked, none].sort());
+  assert.deepEqual(approvalsCheck(covered), { path: covered, ignored: true, tracked: false });
+  assert.deepEqual(approvalsCheck(bare), { path: bare, ignored: false, tracked: false });
+  assert.equal(approvalsCheck(leaked).tracked, true);
+
+  const rows = approvalsWarnings(projects);
+  assert.deepEqual(rows.map((row) => path.basename(row.path)).sort(), ["bare", "leaked", "none"]);
+  const text = renderApprovals(rows);
+  assert.match(text, /bare {2}its \.gitignore does not ignore it: add the line \.claude\/settings\.local\.json/);
+  assert.match(text, /leaked {2}tracks it: untrack it \(git rm --cached\), then change any password it held/);
+  assert.doesNotMatch(text, /covered/);
+  assert.match(renderApprovals([]), /every known project's ignore file covers it/);
 });

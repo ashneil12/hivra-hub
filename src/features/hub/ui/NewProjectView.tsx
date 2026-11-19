@@ -9,6 +9,7 @@ import { createProject, defaultProjectFolder, projectSlug } from "../model/proje
 import { clearProjectDraft, projectDraft, saveProjectDraft, type DraftCode } from "../model/projectDraft";
 import { PROJECT_SHAPES, SHAPE_LABEL } from "../model/projectShapes";
 import { setTemplate, TEMPLATES, type TemplateId } from "../model/templates";
+import { joinShownStripGroup } from "../model/stripGroups";
 import { askChiefOfStaff, NoInterviewRuntime, type InterviewLine, type InterviewReply } from "../model/projectInterview";
 import type { HubProject, ProjectIconShape } from "../model/types";
 import { SHAPES, StripButton } from "./ProjectStrip";
@@ -116,6 +117,8 @@ export function NewProjectView() {
     if (code === "existing" && !folder) return setProblem("Choose the folder first, or pick another option.");
     const finish = (project: HubProject) => {
       setTemplate(project.id, tpl);
+      // WP-137: made while this window shows only one group, it joins that group, so it shows on the strip.
+      joinShownStripGroup(project.id);
       ended.current = true;
       clearProjectDraft();
       // WP-20: a project with code opens on its coding team. WP-06: one without is the no-code page, not Today.

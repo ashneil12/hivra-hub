@@ -1,0 +1,18 @@
+id: rust-spawn-own-process-group
+snapshots:
+  "mod tests {\n    use std::process::Command;\n    fn runs_git() {\n        Command::new(\"git\").arg(\"status\").spawn().unwrap();\n    }\n}\n":
+    labels:
+    - source: Command::new("git")
+      style: primary
+      start: 71
+      end: 90
+    - source: |-
+        mod tests {
+            use std::process::Command;
+            fn runs_git() {
+                Command::new("git").arg("status").spawn().unwrap();
+            }
+        }
+      style: secondary
+      start: 0
+      end: 130

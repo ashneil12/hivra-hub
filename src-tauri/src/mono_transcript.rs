@@ -69,6 +69,21 @@ pub(crate) fn is_indexed(conn: &Connection, id: &str) -> rusqlite::Result<bool> 
     )
 }
 
+/// Every user block of an indexed transcript, oldest first (the usage history reads their turn counts).
+pub(crate) fn user_blocks(conn: &Connection, id: &str) -> rusqlite::Result<Vec<Value>> {
+    let mut statement = conn.prepare(
+        "SELECT block_json FROM mono_blocks WHERE session_id = ?1 AND is_user = 1 ORDER BY seq",
+    )?;
+    let rows = statement.query_map([id], |row| row.get::<_, String>(0))?;
+    let mut blocks = Vec::new();
+    for raw in rows {
+        if let Ok(block) = serde_json::from_str::<Value>(&raw?) {
+            blocks.push(block);
+        }
+    }
+    Ok(blocks)
+}
+
 pub(crate) fn matching_blocks(
     conn: &Connection,
     id: &str,

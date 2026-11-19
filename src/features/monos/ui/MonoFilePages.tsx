@@ -27,6 +27,7 @@ import {
   MemoryGauge,
   PageHeader,
 } from "./monoPanelParts";
+import { CAPTAIN_CHARTER, ensureCaptainCharter, hasCaptainCharter } from "../../chief/model/charter";
 
 const dateFormat = new Intl.DateTimeFormat(undefined, {
   month: "short",
@@ -64,21 +65,31 @@ export function SoulPage({
   files: MonoFiles | undefined;
   onBack?: () => void;
 }) {
+  const charter = files && hasCaptainCharter(files.soul) ? CAPTAIN_CHARTER : null;
+  const editable = files ? (charter ? files.soul.replace(charter, "").replace(/\n{3,}/g, "\n\n") : files.soul) : "";
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-mono-soul>
       <PageHeader title="Soul" onBack={onBack} />
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-none">
         {files ? (
-          <FileField
-            key={`${monoId}:soul`}
-            monoId={monoId}
-            file="soul"
-            value={files.soul}
-            hash={files.soulHash}
-            label={`${agent.name} soul`}
-            author={agent.name}
-            placeholder="Who it is, and what it should always keep in mind"
-          />
+          <>
+            {charter ? (
+              <p className="px-3 pb-2 pt-3 text-[12px] leading-5 text-content/60" data-captain-charter>
+                {charter}
+              </p>
+            ) : null}
+            <FileField
+              key={`${monoId}:soul`}
+              monoId={monoId}
+              file="soul"
+              value={editable}
+              hash={files.soulHash}
+              label={`${agent.name} soul`}
+              author={agent.name}
+              placeholder="Who it is, and what it should always keep in mind"
+              compose={charter ? (draft) => ensureCaptainCharter(draft) : undefined}
+            />
+          </>
         ) : (
           <Empty>Loading…</Empty>
         )}

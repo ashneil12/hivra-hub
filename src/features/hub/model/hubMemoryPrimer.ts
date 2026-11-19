@@ -120,6 +120,22 @@ export async function leadMemoryBlock(
 }
 
 /**
+ * WP-156: a project's standing answers for a fresh conversation (monoFiles.ts `standingAnswers`), read for the chat's own
+ * project (the same one the memory primer reads). `read` asks the app (`decisions_standing_brief`), which answers ""
+ * while standing answers are off, so the note stays as it was. The app filters protected keys and caps the rows.
+ * Undefined: no project, nothing active, or the setting is off. A failed read rejects; the caller leaves the note as it was.
+ */
+export async function leadStandingBlock(
+  sessionId: string,
+  read: (project: string) => Promise<unknown>,
+): Promise<string | undefined> {
+  const [project] = chatProjects(sessionId);
+  if (!project) return undefined;
+  const value = await read(project);
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+/**
  * A worker's brief (agentAppTasks.ts): the project of the chat that delegates it (a worker inherits its Lead's,
  * hubMcp.ts), on the worker's own engine. Undefined when that chat has no project.
  */

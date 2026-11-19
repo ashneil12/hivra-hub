@@ -121,7 +121,7 @@ function resolveTeamProjects(wanted: readonly string[]): string[] {
         p.name.toLowerCase() === lower ||
         projectKey(p.folder) === projectKey(want),
     );
-    if (!found) throw new Error(`Unknown project ${want}: name one of the hub's projects.`);
+    if (!found) throw new Error(`Unknown project ${want}: name one of the app's projects.`);
     return found.id;
   });
   return [...new Set(ids)];

@@ -7,7 +7,8 @@ type RemoteActions = {
   saveDraft: (text: string, attachments: Attachment[]) => boolean | void;
   stop: () => void;
   compact: () => boolean;
-  approve: (requestId: number, decision: ApprovalDecision) => void;
+  /** True when the decision was sent to the remote run. */
+  approve: (requestId: number, decision: ApprovalDecision) => boolean;
   answer: (requestId: number, reply: UserQuestionReply) => void;
 };
 

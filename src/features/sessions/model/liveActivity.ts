@@ -110,7 +110,7 @@ function toolStep(block: Block, cwd?: string, detail: StepDetail = "full"): stri
   const path = rawPath ? (detail === "name" ? fileName(rawPath) : shortPath(rawPath)) : undefined;
   const title = block.text || block.tool?.title || "";
   const delegate = delegateToolName(block);
-  if (delegate === "delegate_task") return HANDING_OUT;
+  if (delegate === "delegate_task" || delegate === "delegate_tasks") return HANDING_OUT;
   if (delegate === "task_wait" || delegate === "task_status") return "Waiting on a worker";
   const command = block.tool?.command?.replace(/\s+/g, " ").trim();
   switch (toolCategory(block)) {

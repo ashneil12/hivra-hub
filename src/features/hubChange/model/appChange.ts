@@ -15,7 +15,7 @@ export const HUB_PROJECT = "hub";
 export const APP_CHANGE_NOTE =
   "To change how a screen looks or works, ask here too: a Mono changes it in the app itself and you see it before it goes in. Anything in the engine (the Rust side, providers, the chat engine) goes to the MonoCode Hub lead, who builds it in a copy of the app for you to try, then ships it when you say so.";
 export const APP_CHANGE_WHY =
-  "Change the hub moves what's in your hub: the sidebar's order, names and shapes, and what's on Today. How a screen looks or works is the app's own code: a Mono changes that in the app itself, one commit per part, and nothing goes in until you press Apply. Anything in the engine (the Rust side, providers, the chat engine) is different, because it has to be built and checked before it lands: that goes to the MonoCode Hub lead, who makes it in its own copy of the app, you try that copy, and it ships when you say so.";
+  "Change the app moves what's in your app: the sidebar's order, names and shapes, and what's on Today. How a screen looks or works is the app's own code: a Mono changes that in the app itself, one commit per part, and nothing goes in until you press Apply. Anything in the engine (the Rust side, providers, the chat engine) is different, because it has to be built and checked before it lands: that goes to the MonoCode Hub lead, who makes it in its own copy of the app, you try that copy, and it ships when you say so.";
 /** Ash OS's words for it: "<Mono> says this is a change to the app itself: <why>". */
 export function isAppChange(message: string): boolean {
   return /\bis a change to the app itself\b/i.test(message);
@@ -33,10 +33,10 @@ export function hubLeadMono(): Mono | undefined {
 /** What the Lead is told: Ash's words, and how MonoCode changes itself. */
 export function appChangeBrief(prompt: string): string {
   return [
-    forUser`Ash asked in Change the hub: “${prompt.trim()}”`,
+    forUser`Ash asked in Change the app: “${prompt.trim()}”`,
     forUser("That changes the app itself in a way that needs a real build and check (the engine, or more than its look), so it's yours: make it in a worktree, show Ash a dev copy of the app to try, and Ship it when he says so."),
     "",
-    "(sent from Change the hub)",
+    "(sent from Change the app)",
   ].join("\n");
 }
 

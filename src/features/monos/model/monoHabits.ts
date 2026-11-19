@@ -9,6 +9,9 @@ import type { Block, MonoSpawnedSession } from "../../sessions/model/session";
 import { USAGE_LIMIT_RESUME_GRACE_MS } from "../../sessions/model/usageLimit";
 import { withFirstMateContract } from "../../firstmate/model/contract";
 import type { MonoLook } from "./mono";
+import { unkeptPromise } from "../vendor/unkeptPromise";
+import { parseSeen, parseWatch, type ScheduleWatch, type WatchSeen } from "../../automations/model/quietWatch";
+import { checklistNotice, openParts, openPartsNudge, routineParts } from "../vendor/routineChecklist";
 import {
   MonoFileConflict,
   monoContext,
@@ -52,6 +55,13 @@ export type Habit = {
   runRequested?: boolean;
   /** The suggestion card in the chat it was started from. */
   fromCard?: string;
+  /**
+   * WP-244: the one thing this habit watches (a web address, a GitHub query, a file). When it is unchanged since a run
+   * that went well, the run is skipped without a model call. Opt-in: a habit without one always runs.
+   */
+  watch?: ScheduleWatch;
+  /** What the app saw on the last look (4 KB at most), for the next run's "Before". */
+  watchSeen?: WatchSeen;
 };
 
 export type HabitOutcome = "posted" | "quiet" | "failed";
@@ -64,6 +74,8 @@ export type HabitRun = {
   /** What it told the user, when it did. */
   report?: string;
   error?: string;
+  /** WP-244: quiet because its watch hadn't changed: no model was called. */
+  unchanged?: true;
 };
 
 /** Runs kept per habit. */
@@ -142,9 +154,23 @@ export function parseHabits(text: string | null | undefined): Habit[] {
       ...(Array.isArray(value.runs) ? { runs: parseRuns(value.runs) } : {}),
       ...(value.runRequested === true ? { runRequested: true } : {}),
       ...(isString(value.fromCard) ? { fromCard: value.fromCard } : {}),
+      ...watchFields(value),
     });
   }
   return habits;
+}
+
+/** A watch the app can no longer read is dropped: the habit runs as it did before it had one. */
+function watchFields(value: Record<string, unknown>): Pick<Habit, "watch" | "watchSeen"> {
+  let watch: ScheduleWatch | undefined;
+  try {
+    watch = parseWatch(value.watch);
+  } catch {
+    return {};
+  }
+  if (!watch) return {};
+  const seen = parseSeen(value.watchSeen);
+  return { watch, ...(seen ? { watchSeen: seen } : {}) };
 }
 
 function parseRuns(value: unknown[]): HabitRun[] {
@@ -164,6 +190,7 @@ function parseRuns(value: unknown[]): HabitRun[] {
       outcome,
       ...(isString(run.report) ? { report: run.report } : {}),
       ...(isString(run.error) ? { error: run.error } : {}),
+      ...(run.unchanged === true ? { unchanged: true as const } : {}),
     });
   }
   return runs.slice(0, HABIT_RUNS_KEPT);
@@ -214,13 +241,15 @@ export function habitSchedule(value: unknown): HabitSchedule {
 }
 
 /** What it takes to start a habit, from the CLI or the panel. */
-export type HabitDraft = Pick<Habit, "name" | "instructions" | "schedule">;
+export type HabitDraft = Pick<Habit, "name" | "instructions" | "schedule"> & Partial<Pick<Habit, "watch">>;
 
 /** A new, enabled habit first due at its next time after `now`. */
 export function newHabit(draft: HabitDraft, now: number): Habit {
+  const { watch, ...rest } = draft;
   return {
     id: crypto.randomUUID(),
-    ...draft,
+    ...rest,
+    ...(watch ? { watch } : {}),
     enabled: true,
     createdAt: now,
     nextRunAt: nextHabitRunAt(draft.schedule, now),
@@ -289,6 +318,10 @@ export function afterRun(
     startedAt?: number;
     /** No run before this (usageLimitHold): the next is the first one after. */
     notBefore?: number;
+    /** WP-244: skipped because its watch hadn't changed. */
+    unchanged?: boolean;
+    /** WP-244: what to keep of the watch's last look (undefined keeps what is there). */
+    watchSeen?: WatchSeen;
   },
 ): Habit {
   const { runRequested, ...scheduled } = habit;
@@ -315,9 +348,11 @@ export function afterRun(
       ? { report: outcome.report.slice(0, REPORT_KEPT_CHARS) }
       : {}),
     ...(outcome.error ? { error: outcome.error } : {}),
+    ...(outcome.unchanged ? { unchanged: true as const } : {}),
   };
   return {
     ...rest,
+    ...(outcome.watchSeen && rest.watch ? { watchSeen: outcome.watchSeen } : {}),
     lastRunAt: now,
     lastOutcome: outcome.kind,
     ...(outcome.error ? { lastError: outcome.error } : {}),
@@ -367,6 +402,9 @@ export function habitRunPrompt(
   files: MonoFiles,
   habit: Habit,
   now: number,
+  /** Text the app adds after the habit's instructions: for the morning habit, what finished yesterday and the notable
+   * events still waiting (WP-157, WP-164). Other runs pass none. */
+  extra?: string,
 ): string {
   const lastRun = habit.lastRunAt
     ? ` It last ran ${new Date(habit.lastRunAt).toLocaleString()}${
@@ -384,9 +422,37 @@ You are running one of your habits on your own; the user did not just message yo
 
 Habit: ${habit.name}
 ${habit.instructions.trim()}
-
-Do the work now with your tools and the app CLI. Then reply with exactly the message you would send the user in your chat: short, in your own voice, only what they would want to know, with no preamble about running a habit. If there is nothing worth telling them, reply with exactly ${QUIET_MARKER} and nothing else; silence is the right answer more often than not. Save anything worth remembering with the memory actions before you reply.
+${extra?.trim() ? `\n${extra.trim()}\n` : ""}
+${habitChecklist(habit.instructions)}${UNATTENDED_RULES}
+Do the work now with your tools and the app CLI. Then reply with exactly the message you would send the user in your chat: short, in your own voice, only what they would want to know, with no preamble about running a habit. Put the result first, with any assumption you made said first; then, only if there are any, a part headed "What I could not confirm" giving each gap with its reason; then questions that still matter now the work is done; then the changes you made, each with a link or path. If there is nothing worth telling them, reply with exactly ${QUIET_MARKER} and nothing else; silence is the right answer more often than not. Save anything worth remembering with the memory actions before you reply.
 </habit_run>`);
+}
+
+/**
+ * How an unattended habit run works. (Adapted from OpenBot by CopilotKit, MIT, shared/bot-prompt.ts ROUTINE_RUN_LINES,
+ * commit 558cba6.)
+ */
+const UNATTENDED_RULES = `Nobody is watching this run, and nobody can answer a question until it ends. The user set up this habit and approved its steps, so carry them out without asking. Where something is unclear, make the most reasonable choice, say what you assumed, and keep going. The app still asks the user before anything it gates; that is not a question for you to ask. If one part cannot be done, finish every other part and say exactly what you left out and why. Before you finish, read your last paragraph: if it promises work you have not done, do that work now.
+`;
+
+/** A habit written as a list gets a numbered checklist to close. Empty when it is one job. */
+function habitChecklist(instructions: string): string {
+  const parts = routineParts(instructions);
+  return parts.length ? `${checklistNotice(parts)}\n\n` : "";
+}
+
+/**
+ * The one message a finished habit run is sent back with, or nothing: parts of its list still open, or its last words
+ * promising work it did not do. A quiet run is finished. The caller sends it once per run. (OpenBot by CopilotKit, MIT:
+ * openPartsNudge and the unkept-promise check.)
+ */
+export function habitFollowUp(instructions: string, reply: string): string | undefined {
+  if (!reply.trim() || habitReport(reply) === undefined) return undefined;
+  const open = openParts(routineParts(instructions), reply);
+  if (open.length) return openPartsNudge(open);
+  const promise = unkeptPromise(reply);
+  if (promise) return `Your answer ended on "${promise}" with no step after it, so nothing is running. Do that step now, or finish with what is done, what is missing and why.`;
+  return undefined;
 }
 
 /** What to post, or nothing when the run chose to stay quiet. */
@@ -397,6 +463,13 @@ export function habitReport(text: string): string | undefined {
   // A run that narrated before deciding to stay quiet ends on the marker.
   if (trimmed.endsWith(QUIET_MARKER) && trimmed.length < 400) return undefined;
   return trimmed.replace(new RegExp(`\\s*${QUIET_MARKER}\\s*$`), "").trim();
+}
+
+/** WP-244: the one line a failed run posts to the chat, so a habit never fails without a word. */
+export function habitFailedLine(name: string, error: string | undefined): string {
+  const reason = (error ?? "").split("\n").map((line) => line.trim()).find(Boolean) ?? "the run did not finish";
+  const short = reason.length > 200 ? `${reason.slice(0, 199)}…` : reason;
+  return `My habit "${name}" couldn't finish: ${short.replace(/[.\s]+$/, "")}.`;
 }
 
 /** The habit posts that the Mono's own session has not seen yet. */

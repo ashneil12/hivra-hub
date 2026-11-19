@@ -28,6 +28,7 @@ import {
   type OpenCodePart,
 } from "./opencodeProtocol";
 import { resolveOpenCodeV2Service } from "./opencodeService";
+import { judgeV2Session } from "../../../../features/crew/model/host";
 
 const TEXT_CHILD_ID = "monocode-opencode-text";
 const SERVER_TIMEOUT_MS = 30_000;
@@ -167,6 +168,8 @@ async function startLive(
   const version = parseOpenCodeVersion(versionOut);
   const generation = assertSupportedOpenCodeVersion(version);
 
+  // Round 7: the text helper starts the same OpenCode 2.x service as a chat, so it is judged the same way first.
+  if (generation === "v2") await judgeV2Session({ sessionId: crypto.randomUUID(), folder: cwd });
   const service =
     generation === "v2"
       ? await resolveOpenCodeV2Service(path, cwd)

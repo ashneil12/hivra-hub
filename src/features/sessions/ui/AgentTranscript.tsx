@@ -1,4 +1,6 @@
+import { BackgroundResultNotice } from "./BackgroundResultNotice";
 import { plainCommandRow } from "../../../shared/lib/plainCommand";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import {
   ArrowUp,
   Check,
@@ -19,6 +21,7 @@ import {
   X,
 } from "../../../shared/ui/icons";
 import { appNoteLine } from "../model/appNote";
+import { UNCERTAIN_LINE, coveredByLine } from "../model/approvalAction";
 import { isNoReplyPrefix, withoutNoReply } from "../../../shared/text/noReply";
 import { withoutEmDashes } from "../../../shared/text/noEmDash";
 import { plainErrorText } from "../../../shared/text/plainErrorText";
@@ -30,6 +33,9 @@ import { withCountLineChecked } from "../../../shared/text/countLine";
 import { isApiErrorLine, plainChatError } from "../../monos/model/turnFailure";
 import { STILL_RUNNING_CLASS, stillRunningText } from "../../monos/model/leadFlow";
 import { AgentNoteGroup, AgentNoteRow } from "../../monos/ui/AgentNoteRow";
+import { BesideMessageLine } from "../../asks/ui/BesideMessageLine";
+import { NeedsRollupCard } from "../../asks/ui/InlineNeed";
+import { CatchUpCard } from "../../asks/ui/CatchUpCard";
 import { WorkerDefaultUndo } from "../../crew/ui/WorkerDefaultUndo";
 import { noteRuns } from "../../monos/model/agentNoteView";
 import {
@@ -48,7 +54,11 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { AttachmentChip } from "./AttachmentChip";
+import { ChildApprovalNote } from "./ChildApprovalNote";
+import { ForkFromHereButton } from "./ForkFromHereButton";
 import { GeneratedImage } from "./GeneratedImage";
+import { LineageList } from "./LineageList";
+import type { Lineage } from "../model/subagentLineage";
 import { MonocodeSparkles } from "./MonocodeSparkles";
 import { OrchestratorConstellation } from "./OrchestratorConstellation";
 import { PlanStepsBurst } from "./PlanStepsBurst";
@@ -64,6 +74,7 @@ import {
   useToolDetail,
 } from "./useToolDetail";
 import { HistoryTurn } from "./HistoryTurn";
+import { turnTags } from "../model/turnTags";
 import { streamMeasurement } from "../model/streamingPerformance";
 import { useReplyReflowAnchor } from "./useReplyReflowAnchor";
 import { FilePreview } from "../../files/ui/FilePreview";
@@ -156,6 +167,8 @@ import { TranscriptSelectionMenu } from "./TranscriptSelectionMenu";
 import { parseUserMessageLink } from "../model/linkPreview";
 import { briefView, type BriefView } from "../model/briefView";
 import { UserLinkPreview } from "./UserLinkPreview";
+import { AskReceipt } from "../../asks/ui/AskReceipt";
+import { ChatTidied } from "../../monos/ui/ChatTidied";
 import {
   activityPhaseTitle,
   activityStillRunning,
@@ -250,6 +263,8 @@ const HISTORY_TRIM_DELAY_MS = 2000;
 
 type Props = {
   blocks: Block[];
+  /** WP-122: the native subagents this thread started. Drawn at the top of the scroll content, never beside it. */
+  lineage?: Lineage | null;
   /** Archived messages render immediately, even when first loaded in this visit. */
   historicalBlockIds?: ReadonlySet<string>;
   initialTurns?: number;
@@ -311,6 +326,8 @@ type Props = {
   onSecondOpinion?: (target: ModelTarget, turn: Block[]) => void;
   onHandoff?: (target: ModelTarget, turn: Block[]) => void;
   onEditLastTurn?: () => void;
+  /** WP-123: copy this chat up to the chosen message. */
+  onForkFromHere?: (blockId: string) => void;
   editingLastTurn?: boolean;
   onJumpToBottomChange?: (show: boolean) => void;
 
@@ -332,6 +349,11 @@ type Props = {
   /** Saved session that omitted tool output is fetched from. */
   sessionId?: string;
   /**
+   * The saved chat whose records say which folders its local images and videos may come from (a Mono chat's
+   * `localMedia`). Absent for a chat on a connected machine, which shows its own files through the machine.
+   */
+  mediaSessionId?: string;
+  /**
    * Stops a workflow run, for a view of a session another window runs (the
    * floating chat). Without it, only the window running the session stops one.
    */
@@ -340,6 +362,7 @@ type Props = {
 
 function AgentTranscriptComponent({
   blocks: sourceBlocks,
+  lineage,
   historicalBlockIds,
   initialTurns = INITIAL_TURNS,
   pageSize = TURN_PAGE_SIZE,
@@ -384,6 +407,7 @@ function AgentTranscriptComponent({
   onSecondOpinion,
   onHandoff,
   onEditLastTurn,
+  onForkFromHere,
   editingLastTurn = false,
   onJumpToBottomChange,
   onJumpToBottomReady,
@@ -396,6 +420,7 @@ function AgentTranscriptComponent({
   onScrollerChange,
   managed = false,
   sessionId,
+  mediaSessionId,
   onStopWorkflow: stopWorkflowElsewhere,
 }: Props) {
   const isMonoChat = !!agentMascot;
@@ -1253,8 +1278,11 @@ function AgentTranscriptComponent({
             </button>
           </div>
         ) : null}
+        {lineage ? <LineageList lineage={lineage} /> : null}
         {visibleTurns.map((turn, turnIndex) => {
           // A checker's note and the answer to it: one quiet line (an approval it waits on still shows as usual).
+          // Ash 12 Nov: the checker's note is between the two AIs; in Hivra it doesn't show in his chat at all.
+          if (isMonoCheckPrompt(turn[0]) && !turn.some(needsApproval) && IS_HUB_BUNDLE) return null;
           if (isMonoCheckPrompt(turn[0]) && !turn.some(needsApproval))
             return (
               <CheckTurnCard
@@ -1456,8 +1484,11 @@ function AgentTranscriptComponent({
             items.some(
               (item) => item.type === "block" && !!item.block.monoReaction,
             );
+          // Dropwave: a catch-up card, a Needs you roll-up or a "You messaged …" line is the app's, not the agent's: no name over it.
+          const appOnly = turn.every((block) => !!(block.catchUp || block.besideMessage || block.needsRollup));
           const showFoldLine =
             !reactedOnly &&
+            !appOnly &&
             (!!habit ||
               standaloneReply ||
               live ||
@@ -1583,6 +1614,7 @@ function AgentTranscriptComponent({
                 layout={transcriptLayout}
                 bubbleTail={!!agentMascot}
                 localMedia={isMonoChat}
+                mediaSessionId={mediaSessionId}
                 compactFollowUp={isCompactFollowUp(item, itemIndex)}
                 stackedOnPrevious={
                   itemIndex === 0
@@ -1628,6 +1660,13 @@ function AgentTranscriptComponent({
                   editingLastTurn &&
                   item.block.role === "user" &&
                   item.block.id === editableUserBlockId
+                }
+                onForkFromHere={
+                  onForkFromHere &&
+                  !item.block.internal &&
+                  (item.block.role === "user" || item.block.role === "assistant")
+                    ? onForkFromHere
+                    : undefined
                 }
               />
             );
@@ -1729,6 +1768,7 @@ function AgentTranscriptComponent({
             <HistoryTurn
               key={turn[0].id}
               id={turnId}
+              tags={turnTags(sessionId, turn)}
               // A stacked message sits as close as one in the same turn, so
               // the gap between turns gives way.
               className={`transcript-turn flex min-w-0 flex-col${inlineWork && !reactedOnly ? " transcript-turn-mono" : ""}${stacksIntoNextTurn ? " -mb-1" : ""}${
@@ -1892,6 +1932,7 @@ function AgentTranscriptComponent({
                 : null}
               {settled &&
               !reactedOnly &&
+              !appOnly &&
               (durationMs != null ||
                 standaloneReply ||
                 (inlineWork && firstWork >= 0)) ? (
@@ -1976,10 +2017,10 @@ function TranscriptContent({
     );
   }
   return (
-    // A Mono's 1:1 fills the window like a room (GroupChatView: px-6, xl:px-8 with the rows' own px-4); only the plain
-    // reply text keeps a reading limit (chat-reading-limit, index.css). Critiquito 22 Oct. pb-14: the last line rests
+    // Keep the conversation aligned with its composer when Overview is closed. Plain reply text also keeps
+    // its reading limit (chat-reading-limit, index.css). pb-14: the last line rests
     // above the band kept clear for "Jump to latest" (mono-transcript-fades), so the button never covers it.
-    <div className="chat-reading-limit flex min-h-full w-full min-w-0 flex-col justify-end overflow-clip px-2 pb-14 xl:px-4">
+    <div className="chat-reading-limit mx-auto flex min-h-full w-full min-w-0 max-w-4xl flex-col justify-end overflow-clip px-2 pb-14 xl:px-4">
       <div
         data-transcript-content
         className="flex min-w-0 shrink-0 flex-col gap-1"
@@ -2533,6 +2574,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   embedded = false,
   cwd,
   localMedia = false,
+  mediaSessionId,
   onApproval,
   onSaveNote,
   onSendDraft,
@@ -2547,6 +2589,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings,
   onEditLastTurn,
   editing = false,
+  onForkFromHere,
   askedBefore,
 }: {
   /** r99: questions an earlier reply already asked (one per line, a string so memo holds); left out of this one. */
@@ -2569,6 +2612,8 @@ const TranscriptBlock = memo(function TranscriptBlock({
   cwd?: string;
   /** Show local images and videos a reply links to, as Mono chats do. */
   localMedia?: boolean;
+  /** The chat they are shown for: Rust works out from its records which folders they may come from. */
+  mediaSessionId?: string;
   onApproval?: (requestId: number, decision: ApprovalDecision) => void;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -2583,8 +2628,11 @@ const TranscriptBlock = memo(function TranscriptBlock({
   planModelSettings?: Record<string, string>;
   onEditLastTurn?: () => void;
   editing?: boolean;
+  /** WP-123: copy this chat up to this message. */
+  onForkFromHere?: (blockId: string) => void;
 }) {
   if (block.role === "user") {
+    if (/^\s*<system-notice(?:\s|>)/i.test(block.text)) return <BackgroundResultNotice text={block.text} />;
     // r93: the app's note to the chat is one small neutral line, never a bubble in Ash's name.
     const appNote = appNoteLine(block);
     if (appNote)
@@ -2611,6 +2659,7 @@ const TranscriptBlock = memo(function TranscriptBlock({
         cwd={cwd}
         onEdit={onEditLastTurn}
         editing={editing}
+        onFork={onForkFromHere}
         onSaveNote={onSaveNote}
         onSendDraft={onSendDraft}
         onRemoveDraft={onRemoveDraft}
@@ -2703,6 +2752,12 @@ const TranscriptBlock = memo(function TranscriptBlock({
     }
     // Agent-to-agent notes (monos/model/agentNotes.ts): a small line that opens that agent's chat when there is one.
     if (block.agentNote) return <AgentNoteRow note={block.agentNote} embedded={embedded} />;
+    // Dropwave: a "Catch me up" card in the one chat (asks/model/catchUp.ts).
+    if (block.catchUp) return <CatchUpCard doc={block.catchUp} embedded={embedded} />;
+    // Dropwave: what Ash sent to a first mate from the panel beside the one chat (asks/model/besideChat.ts).
+    if (block.besideMessage) return <BesideMessageLine message={block.besideMessage} embedded={embedded} />;
+    // Dropwave: what newly needs Ash, each item answered where it sits (needs/model/needsRollup.ts).
+    if (block.needsRollup) return <NeedsRollupCard card={block.needsRollup} embedded={embedded} />;
     if (block.notice === "still-running") {
       return (
         <div className={`${embedded ? "" : "px-4"} py-2`}>
@@ -2745,9 +2800,16 @@ const TranscriptBlock = memo(function TranscriptBlock({
         cwd={cwd}
         onOpenFile={onOpenFile}
         localMedia={localMedia}
+        mediaSessionId={mediaSessionId}
+        visualReplies
       />
       {/* WP-89: Undo sits under the line. The line is the message, so it is not repeated. */}
       {block.monoCard?.type === "worker-default" ? <WorkerDefaultUndo card={block.monoCard} /> : null}
+      {onForkFromHere && !block.streaming ? (
+        <div className="user-message-actions flex items-center gap-1 pt-1">
+          <ForkFromHereButton blockId={block.id} onFork={onForkFromHere} />
+        </div>
+      ) : null}
     </div>
   );
 });
@@ -2814,6 +2876,7 @@ function UserMessageBlock({
   stickyIndex,
   onEdit,
   editing = false,
+  onFork,
   cwd,
   onSaveNote,
   onSendDraft,
@@ -2830,6 +2893,7 @@ function UserMessageBlock({
   stickyIndex: number;
   onEdit?: () => void;
   editing?: boolean;
+  onFork?: (blockId: string) => void;
   cwd?: string;
   onSaveNote?: (text: string) => void | Promise<void>;
   onSendDraft?: (block: Block) => boolean | void;
@@ -2957,8 +3021,13 @@ function UserMessageBlock({
     if (overflows) setExpanded((value) => !value);
   };
 
+  // WP-245: a message still waiting says why, in one quiet line under it.
   const deliveryControl =
-    delivery && delivery.status !== "pending" ? (
+    delivery?.status === "pending" && delivery.waitReason ? (
+      <div className="flex max-w-full items-center gap-2 px-3 pt-1 font-sans text-xs text-content/60" data-message-wait>
+        <span role="status">{delivery.waitReason}</span>
+      </div>
+    ) : delivery && delivery.status !== "pending" ? (
       <div className="flex max-w-full items-center gap-2 px-3 pt-1 font-sans text-xs text-content/50">
         <span role={delivery.error ? "alert" : "status"}>
           {delivery.error ? `Not sent · ${delivery.error}` : "Not sent"}
@@ -3021,6 +3090,7 @@ function UserMessageBlock({
           : "p-1.5 pb-4"
       }`}
     >
+      {IS_HUB_BUNDLE && chat && !block.draft ? <ChatTidied blockId={block.id} /> : null}
       <div
         className={`user-message-hover-zone min-w-0 overflow-visible ${chat ? "flex w-fit max-w-full flex-col items-end" : "w-full"}`}
       >
@@ -3185,6 +3255,7 @@ function UserMessageBlock({
           )}
         </div>
         {deliveryControl}
+        {IS_HUB_BUNDLE && chat && !block.draft ? <AskReceipt blockId={block.id} /> : null}
         {!compactFollowUp &&
         (text || brief || block.attachments?.length || messageAt != null || onEdit) ? (
           <div className="user-message-actions flex items-center gap-1 px-3 pt-1">
@@ -3194,6 +3265,9 @@ function UserMessageBlock({
                 attachments={block.attachments}
                 label="Copy message"
               />
+            ) : null}
+            {onFork ? (
+              <ForkFromHereButton blockId={block.id} onFork={onFork} />
             ) : null}
             {onEdit ? (
               <EditLastTurnButton onEdit={onEdit} editing={editing} />
@@ -3210,6 +3284,10 @@ function UserMessageBlock({
                 {formatClockTime(messageAt)}
               </time>
             ) : null}
+          </div>
+        ) : compactFollowUp && onFork ? (
+          <div className="user-message-actions flex items-center gap-1 px-3 pt-1">
+            <ForkFromHereButton blockId={block.id} onFork={onFork} />
           </div>
         ) : null}
       </div>
@@ -4723,6 +4801,7 @@ function ActivityInterjectionRow({ block }: { block: Block }) {
   const [open, setOpen] = useState(false);
   const meta = block.interjection;
   if (!meta) return null;
+  if (meta.customType === "async-result") return <BackgroundResultNotice text={block.text} />;
   const chrome = interjectionChrome(meta);
   const summary = proseSummary(block.text);
   const label = (
@@ -5011,9 +5090,11 @@ function ActivityToolRow({
           {pending ? null : <ToolCallStatusIcon state={state} />}
         </div>
       )}
+      <ExactAction block={block} />
       {pending ? (
         <ApprovalControls block={block} onApproval={onApproval} />
       ) : null}
+      <ActionNotes block={block} />
       {errorOpen && errorDetail ? (
         <pre
           className={`min-w-0 whitespace-pre-wrap break-words py-1 font-mono text-[12px] leading-5 text-red-400/80 ${bare ? "" : "pl-5"}`}
@@ -5349,7 +5430,9 @@ function ToolCall({
           {expanded}
         </pre>
       ) : null}
+      <ExactAction block={block} />
       <ApprovalControls block={block} onApproval={onApproval} />
+      <ActionNotes block={block} />
     </div>
   );
 }
@@ -5503,6 +5586,44 @@ function ToolCallIcon({ state }: { state: ToolCallState }) {
   return null;
 }
 
+/** WP-243: an open card shows the exact command an Allow runs, whole (the row above it may cut it short). */
+function ExactAction({ block }: { block: Block }) {
+  const approval = block.approval;
+  const command = approval && !approval.decided ? approval.call?.command : undefined;
+  if (!command) return null;
+  return (
+    <pre
+      data-approval-exact
+      className="max-h-32 min-w-0 overflow-auto whitespace-pre-wrap break-all py-1 pl-5 font-mono text-[12px] leading-5 text-content/70"
+    >
+      {command}
+    </pre>
+  );
+}
+
+/**
+ * WP-243: why a call ran without a tap (Ash's own words covered it), and a call a restart cut while it may have been
+ * running.
+ */
+function ActionNotes({ block }: { block: Block }) {
+  const covered = block.approval?.decided === "allow" ? block.approval.coveredBy : undefined;
+  if (!covered && !block.tool?.uncertain) return null;
+  return (
+    <>
+      {covered ? (
+        <p data-approval-covered className="min-w-0 break-words pl-5 font-sans text-[12px] leading-5 text-content/60">
+          {coveredByLine(covered)}
+        </p>
+      ) : null}
+      {block.tool?.uncertain ? (
+        <p data-tool-uncertain className="min-w-0 pl-5 font-sans text-[12px] leading-5 text-content/60">
+          {UNCERTAIN_LINE}
+        </p>
+      ) : null}
+    </>
+  );
+}
+
 function ApprovalControls({
   block,
   onApproval,
@@ -5512,7 +5633,7 @@ function ApprovalControls({
 }) {
   const approval = block.approval;
   if (!approval || approval.decided || !onApproval) return null;
-  return (
+  const controls = (
     <div data-approval-controls className="mt-1.5 flex gap-2 font-sans">
       <button
         type="button"
@@ -5531,6 +5652,14 @@ function ApprovalControls({
       <span className="self-center text-[11px] text-content/50">Waiting for approval</span>
     </div>
   );
+  // WP-122: a child's ask is named here. The buttons stay the parent's.
+  if (!approval.child) return controls;
+  return (
+    <>
+      <ChildApprovalNote name={approval.child.name} detail={approval.child.detail} />
+      {controls}
+    </>
+  );
 }
 
 function HandoffDivider({ block }: { block: Block }) {
@@ -5538,7 +5667,12 @@ function HandoffDivider({ block }: { block: Block }) {
   if (!meta) return null;
 
   const preparing = meta.status === "preparing";
-  const label = preparing ? "Preparing a handoff" : HARNESS_TITLE[meta.to];
+  const marker = meta.switchTo;
+  const label = marker
+    ? marker.label
+    : preparing
+      ? "Preparing a handoff"
+      : HARNESS_TITLE[meta.to];
 
   return (
     <div className="px-4 py-5">
@@ -5547,10 +5681,13 @@ function HandoffDivider({ block }: { block: Block }) {
         <div
           role="separator"
           aria-label={
-            preparing
-              ? `Preparing a handoff to ${HARNESS_TITLE[meta.to]}`
-              : `Continued with ${label}`
+            marker
+              ? marker.label
+              : preparing
+                ? `Preparing a handoff to ${HARNESS_TITLE[meta.to]}`
+                : `Continued with ${label}`
           }
+          data-switch-marker={marker ? "" : undefined}
           className="flex max-w-[min(100%,20rem)] items-center gap-1.5 px-1.5 font-sans text-[12px] text-content/55"
         >
           {preparing ? (
@@ -5561,6 +5698,7 @@ function HandoffDivider({ block }: { block: Block }) {
           ) : (
             <>
               <HarnessIcon harness={meta.to} className="size-3.5 shrink-0" />
+              {marker ? <span>{marker.label}</span> : null}
             </>
           )}
         </div>
@@ -5629,6 +5767,7 @@ function InterjectionDivider({ block }: { block: Block }) {
 
   const meta = block.interjection;
   if (!meta) return null;
+  if (meta.customType === "async-result") return <BackgroundResultNotice text={block.text} />;
   const { label, severityText, severityClass } = interjectionChrome(meta);
   return (
     <div className="px-4 py-4">

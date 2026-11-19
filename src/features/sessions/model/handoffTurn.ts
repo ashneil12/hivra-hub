@@ -6,6 +6,8 @@ import {
   sendHarnessTurn,
 } from "../../../integrations/harness/core/registry";
 import { mergeStream } from "../../../integrations/harness/core/streamText";
+import { sessionRoute } from "../../../integrations/harness/core/registry";
+import { moreAgentOfSession } from "../../../integrations/harness/moreAgents/moreAgentAdapter";
 import type { HarnessId } from "./session";
 
 const HANDOFF_TIMEOUT_MS = 45_000;
@@ -19,6 +21,9 @@ export async function requestOutgoingHandoff(input: {
   providerAccountId?: string;
   userRequest: string;
 }): Promise<string> {
+  // WP-134b: a More agents chat never asks one of the eleven for a brief. Without its route the caller falls back to
+  // the deterministic packet.
+  if (moreAgentOfSession(input.sessionId) && !sessionRoute(input.sessionId)) return "";
   let brief = "";
   const timer = setTimeout(() => {
     void cancelHarnessTurn(input.harness, input.sessionId);

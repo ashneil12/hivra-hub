@@ -1,3 +1,6 @@
+import { syncTeleportLock } from "../../connections/model/teleportLock";
+import { keptCards } from "../../asks/model/keptCards";
+import { teleportStateOf } from "../../connections/model/teleportState";
 import { isCliNotice } from "../../../integrations/harness/core/cliNotices";
 import { invoke } from "@tauri-apps/api/core";
 import { boundaryFromDisk } from "../../memory/model/privateChat";
@@ -15,6 +18,7 @@ import { recoverCursorSubagents } from "../../../integrations/harness/providers/
 import { dropHarnessSession } from "../../../integrations/harness/core/registry";
 import { isProviderErrorClass } from "../../../integrations/harness/core/providerFailure";
 import { persistableAttachment } from "../model/attachments";
+import { isPersistableId } from "../model/persistableId";
 import { ARTIFACT_KINDS } from "../../artifacts/artifacts";
 import type { ContextUsage } from "../model/contextUsage";
 import {
@@ -123,6 +127,11 @@ type SessionRecord = {
   automationId?: string | null;
   /** The open /goal saved with the chat (session_store.rs `goal_json`). */
   goal?: unknown;
+  /** WP-177: the moved chat still owes its first turn the chat so far. */
+  moveBriefOwed?: boolean;
+  movedFrom?: string;
+  /** WP-134: the More agents entry this chat belongs to. Absent on a chat saved before the column existed. */
+  registryAgentId?: string | null;
   archived?: boolean;
   createdAt: number;
   updatedAt: number;
@@ -153,6 +162,10 @@ type SessionUpsertPayload = {
   linkedWorkItem?: LinkedWorkItem;
   automationId?: string;
   goal?: SessionGoal;
+  moveBriefOwed?: boolean;
+  movedFrom?: string;
+  /** WP-134: the More agents entry. Omitted when this save does not know it, which keeps the stored one. */
+  registryAgentId?: string;
 };
 
 /** Only real chats belong in project history — blank tabs stay ephemeral. */
@@ -162,15 +175,21 @@ export function shouldPersistSession(session: Session): boolean {
     !session.inboxAsk &&
     !isRemoteProjectPath(session.cwd) &&
     session.cwd !== "~" &&
-    (session.blocks.some((block) => block.role === "user") ||
+    // WP-177: a chat moved to another machine is saved as its marker alone, so the release survives a reload.
+    (teleportStateOf(session).moved ||
+      session.blocks.some((block) => block.role === "user") ||
       (isMonoSession(session.id) &&
         (session.blocks.length > 0 || !!session.monoTranscript)))
   );
 }
 
-/** Matches Rust `validate_id` — a path here fails the whole upsert. */
-export function isPersistableId(value: string): boolean {
-  return /^[A-Za-z0-9_-]+$/.test(value);
+const REGISTRY_AGENT_ID = /^[a-z0-9][a-z0-9-]{0,47}$/;
+
+/** An entry id from the row or a save. A harness id or a bad slug is not one. */
+function registryAgentFromRow(value: unknown): string | undefined {
+  if (typeof value !== "string" || !REGISTRY_AGENT_ID.test(value)) return undefined;
+  if ((HARNESSES as readonly string[]).includes(value)) return undefined;
+  return value;
 }
 
 function persistableMeta(
@@ -181,6 +200,7 @@ function persistableMeta(
   const queuedMessages = includeQueue
     ? sanitizeQueuedMessages(session.queuedMessages)
     : [];
+  const registryAgentId = registryAgentFromRow(session.registryAgentId);
   return {
     id: session.id,
     cwd: normalizeProjectPath(session.cwd),
@@ -220,6 +240,12 @@ function persistableMeta(
       : {}),
     // Only a goal still open is saved; a met, cleared or stopped one is dropped from the row, so it never comes back.
     ...(openGoal(session.goal) ? { goal: openGoal(session.goal) } : {}),
+    // WP-177: without these the stored row forgets that the next turn must carry the chat so far.
+    ...(session.moveBriefOwed === true ? { moveBriefOwed: true } : {}),
+    ...(session.movedFrom && session.movedFrom.trim()
+      ? { movedFrom: session.movedFrom.trim().slice(0, 200) }
+      : {}),
+    ...(registryAgentId ? { registryAgentId } : {}),
   };
 }
 
@@ -387,6 +413,8 @@ function sanitizeQueuedMessages(value: unknown): QueuedMessage[] {
           ? { appRequestId: message.appRequestId }
           : {}),
         ...(message.waitForIdle === true ? { waitForIdle: true } : {}),
+        // WP-243: Ash typed it himself. Never on an app note.
+        ...(message.byOwner === true && !monoNote && !completion ? { byOwner: true } : {}),
         ...(monoNote ? { monoNote } : {}),
         ...(["default", "plan", "build", "orchestrate"].includes(
           message.intent ?? "",
@@ -476,12 +504,77 @@ function enqueueSessionWrite<T>(
   return run;
 }
 
+/**
+ * WP-177: the chats saved as moved to another machine. A save of an older, pre-move copy of one of them is refused, so
+ * no writer (quit, a queue drain, a stale window) can bring a chat back to life on this Mac. A chat returns only with its
+ * "teleported-back" notice. Filled when a chat is read, so the guard holds after a restart too.
+ */
+const movedSessionIds = new Map<string, number>();
+
+/** Test-only reset: a new process starts with no moved rows known, and reads fill the set again. */
+export function forgetMovedRowsForTests(): void {
+  movedSessionIds.clear();
+}
+
+/** When a chat was moved away (the marker's time), or 0 when the row does not say. */
+function movedAtOf(session: Session): number {
+  const moved = session.blocks.find((b) => b.notice === "teleported");
+  return moved?.startedAt ?? 0;
+}
+
+/** A "Moved back" notice counts only when it is newer than the move away it answers (M3). */
+function returnedAfterMove(session: Session, movedAt: number): boolean {
+  return session.blocks.some((b) => b.notice === "teleported-back" && (b.startedAt ?? 0) > movedAt);
+}
+
+/** One step of a chat move (WP-177). The store checks that the step makes only its own change. */
+export type TeleportStep = {
+  moveId: string;
+  op:
+    | "freeze"
+    | "thaw"
+    | "release"
+    | "incoming"
+    | "discard"
+    | "activate"
+    | "abort"
+    | "freeze-ask"
+    | "clear-freeze-ask"
+    | "settle";
+};
+
+/** The store refused a move step because the chat is not in the state the step needs (another move holds it). */
+export class TeleportConflict extends Error {}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * A reply saved after a move step read the row. Release and activate send a new transcript on purpose; every other
+ * step keeps a block the stored row gained and the step's copy does not have.
+ */
+function withRepliesSavedSince(stored: Block[], stepBlocks: Block[]): Block[] {
+  const seen = new Set(stepBlocks.map((block) => block.id));
+  const extra = stored.filter(
+    (block) => !(block.notice ?? "").startsWith("teleport") && !seen.has(block.id),
+  );
+  return extra.length === 0 ? stepBlocks : [...stepBlocks, ...extra];
+}
+
 export async function upsertSession(
   session: Session,
+  teleport?: TeleportStep,
 ): Promise<SessionSummary | null> {
   if (!shouldPersistSession(session) || deletedSessionIds.has(session.id)) {
     return null;
   }
+  const moved = teleportStateOf(session).moved;
+  const returning = returnedAfterMove(session, movedSessionIds.get(session.id) ?? 0);
+  // A move step is checked by the store itself (session_upsert's guard). Only an ordinary save uses this window's copy.
+  if (!teleport && movedSessionIds.has(session.id) && !moved && !returning) return null;
+  if (moved) movedSessionIds.set(session.id, movedAtOf(session));
+  else if (returning) movedSessionIds.delete(session.id);
   const mono = !!session.monoTranscript || isMonoSession(session.id);
   const snapshot = mono
     ? session.blocks.filter((block) => monoPersistedBlock(block) !== null)
@@ -530,17 +623,61 @@ export async function upsertSession(
       monoSavedBlocks.set(session.id, snapshot);
       return summary;
     }
-    return invoke<SessionSummary>("session_upsert", {
-      session: {
-        ...payload,
-        blocks: (payload as SessionUpsertPayload).blocks.map((block) =>
-          block.orchestrationLeadId &&
-          deletedSessionIds.has(block.orchestrationLeadId)
-            ? { ...block, orchestrationLeadId: undefined }
-            : block,
-        ),
-      },
+    // WP-177: a step is applied to the row as it is now, inside this write, so a reply saved since the step read
+    // the row is not overwritten. An ordinary save is not read first; the store keeps the move notes itself.
+    if (teleport && teleport.op !== "release" && teleport.op !== "activate") {
+      try {
+        const stored = await readSession(session.id);
+        if (stored) {
+          (payload as SessionUpsertPayload).blocks = withRepliesSavedSince(
+            stored.blocks,
+            (payload as SessionUpsertPayload).blocks,
+          );
+        }
+      } catch {
+        // A failed read leaves the step as the caller built it.
+      }
+    }
+    // Queueing, editing or steering a message, a rename or a model switch changes only the chat's header. When this
+    // window last saved exactly these blocks, the transcript is not sent again: on a long chat that copy was megabytes
+    // through the bridge and a parse, merge and rewrite in the store for every queue edit (taken from T3 Code #29521).
+    const leadKey = session.orchestrationLeadId ?? "";
+    const keep = !teleport && sameSavedBlocks(savedBlocks.get(session.id), session.blocks, leadKey);
+    const send = (keepBlocks: boolean) =>
+      invoke<SessionSummary>("session_upsert", {
+        session: {
+          ...payload,
+          blocks: keepBlocks
+            ? []
+            : (payload as SessionUpsertPayload).blocks.map((block) =>
+                block.orchestrationLeadId &&
+                deletedSessionIds.has(block.orchestrationLeadId)
+                  ? { ...block, orchestrationLeadId: undefined }
+                  : block,
+              ),
+          ...(teleport ? { teleport: { moveId: teleport.moveId, op: teleport.op } } : {}),
+        },
+        ...(keepBlocks ? { blocksUnchanged: true } : {}),
+      });
+    const saved = await send(keep).catch((error: unknown) => {
+      const message = errorText(error);
+      // The store has no copy to keep (the row went away): send the whole chat once.
+      if (keep && message.startsWith("blocks-missing")) {
+        savedBlocks.delete(session.id);
+        return send(false);
+      }
+      throw error;
+    }).catch((error: unknown) => {
+      savedBlocks.delete(session.id);
+      // The store's own guard (WP-177): a conflict is the move's answer; a refused ordinary save is dropped, not an error.
+      const message = errorText(error);
+      if (message.startsWith("teleport-conflict")) throw new TeleportConflict(message);
+      if (message.startsWith("teleport-refused")) return null;
+      throw error;
     });
+    if (saved && !teleport) savedBlocks.set(session.id, { blocks: session.blocks.slice(), leadKey });
+    else savedBlocks.delete(session.id);
+    return saved;
   });
   return summary ? normalizeSummary(summary) : null;
 }
@@ -588,6 +725,12 @@ export async function listSessionsByProject(
   const rows = await invoke<SessionSummary[]>("session_list_by_project", {
     cwd: normalizeProjectPath(cwd),
   });
+  return rows.map(normalizeSummary);
+}
+
+/** Chats that have no folder (an import cleared it, docs/PORTABLE.md): the sidebar's "Needs a folder" group. */
+export async function listFolderlessSessions(): Promise<SessionSummary[]> {
+  const rows = await invoke<SessionSummary[]>("session_list_folderless");
   return rows.map(normalizeSummary);
 }
 
@@ -652,6 +795,20 @@ export function cancelSessionSearch(searchOwner: string): Promise<void> {
 }
 
 const monoSavedBlocks = new Map<string, Block[]>();
+
+/** The blocks this window last saved for an ordinary chat, and the lead id the first one carried then. */
+const savedBlocks = new Map<string, { blocks: Block[]; leadKey: string }>();
+
+/** Blocks are replaced, never mutated, so the same objects in the same order are the same transcript. */
+function sameSavedBlocks(
+  saved: { blocks: Block[]; leadKey: string } | undefined,
+  blocks: Block[],
+  leadKey: string,
+): boolean {
+  if (!saved || saved.leadKey !== leadKey || saved.blocks.length !== blocks.length) return false;
+  for (let i = 0; i < blocks.length; i++) if (saved.blocks[i] !== blocks[i]) return false;
+  return true;
+}
 const monoBlockPayloads = new WeakMap<Block, Block | null>();
 function monoPersistedBlock(block: Block): Block | null {
   if (monoBlockPayloads.has(block)) return monoBlockPayloads.get(block)!;
@@ -701,6 +858,31 @@ export async function getSession(sessionId: string): Promise<Session | null> {
   return session ? repairSession(session) : null;
 }
 
+/**
+ * WP-177: the row a move hashes. The sidebar read drops tool output over 512 bytes, which would make a plan taken from
+ * the window disagree with the move. This read keeps that output. A build or a test double without the command falls
+ * back to the sidebar read, so both sides of the move still hash the same bytes.
+ */
+export async function readSessionForMove(sessionId: string): Promise<Session | null> {
+  try {
+    const record = await invoke<SessionRecord | null>("session_get_for_move", { sessionId });
+    if (record && typeof record === "object" && typeof record.id === "string") {
+      const session = recordToSession(record);
+      syncTeleportLock(session);
+      if (teleportStateOf(session).moved) movedSessionIds.set(session.id, movedAtOf(session));
+      return repairSession(session);
+    }
+  } catch {
+    // Test doubles and older builds have no full-row command.
+  }
+  try {
+    return await getSession(sessionId);
+  } catch {
+    // No desktop store here (the browser fixture). The caller keeps the chat it already holds.
+    return null;
+  }
+}
+
 /** Read the saved conversation without waiting for optional provider-log repairs. */
 export async function readSession(sessionId: string): Promise<Session | null> {
   const record = await invoke<SessionRecord | null>(
@@ -712,6 +894,9 @@ export async function readSession(sessionId: string): Promise<Session | null> {
   if (!record) return null;
   const session = recordToSession(record);
   if (session.monoTranscript) monoSavedBlocks.set(sessionId, session.blocks);
+  // WP-177: every read of a saved chat sets its send lock (moved or frozen), so a restart keeps it.
+  syncTeleportLock(session);
+  if (teleportStateOf(session).moved) movedSessionIds.set(session.id, movedAtOf(session));
   return session;
 }
 
@@ -928,6 +1113,7 @@ export async function deleteSession(
       invoke<void>("session_delete", { sessionId, imagePaths }),
     );
     monoSavedBlocks.delete(sessionId);
+    savedBlocks.delete(sessionId);
     // A deleted session is no longer a Mono's running or Done work (the Sessions badge counts those marks).
     forgetWorkSession(sessionId);
     // What the harness kept for this chat past forgetting it (a goal for a rotation) has nothing left to serve.
@@ -951,6 +1137,7 @@ export async function discardDraftSessionRecord(
     invoke<void>("session_delete", { sessionId, imagePaths: [] }),
   );
   monoSavedBlocks.delete(sessionId);
+  savedBlocks.delete(sessionId);
 }
 
 export async function setSessionArchived(
@@ -1140,6 +1327,10 @@ function sanitizeBlock(
       // A card that doesn't parse is dropped. The words stay.
     }
   }
+  // WP-123: the last message copied into a fork; its next send carries the recap until a turn is taken.
+  if (block.forkPoint === true) next.forkPoint = true;
+  // Dropwave: the one chat's app cards (a catch-up, a "You messaged …" line, a Needs you roll-up) keep their card.
+  Object.assign(next, keptCards(block));
   if (block.role === "user" && typeof block.sentAt === "number")
     next.sentAt = block.sentAt;
   const turnModel = sanitizeTurnModel(block.turnModel);
@@ -1172,6 +1363,10 @@ function sanitizeBlock(
   // Without this the transcript would show the app's orchestration turns as
   // the user's own after a reload.
   if (block.role === "user" && block.internal) next.internal = true;
+  // WP-243: Ash typed it himself. Only exactly `true`, and never on a hidden turn.
+  if (block.role === "user" && block.byOwner === true && !block.internal) next.byOwner = true;
+  // WP-243: a withdrawn turn stays withdrawn after a restart.
+  if (block.role === "user" && (block.withdrawn === "stopped" || block.withdrawn === "failed")) next.withdrawn = block.withdrawn;
   const completion = sanitizeMonoSessionCompletion(block.monoSessionCompletion);
   if (block.role === "user" && block.internal && completion)
     next.monoSessionCompletion = completion;
@@ -1186,9 +1381,18 @@ function sanitizeBlock(
   if (block.role === "user" && turnMetrics) next.turnMetrics = turnMetrics;
   if (block.tool) next.tool = block.tool;
   if (block.approval?.decided) {
+    const covered = block.approval.coveredBy;
     next.approval = {
       requestId: block.approval.requestId,
       decided: block.approval.decided,
+      // WP-243: the words that allowed it, kept so "Because you said" survives a restart.
+      ...(block.approval.decided === "allow" &&
+      covered &&
+      (covered.source === "message" || covered.source === "rule" || covered.source === "routine") &&
+      typeof covered.quote === "string" &&
+      covered.quote.trim()
+        ? { coveredBy: { source: covered.source, quote: covered.quote.slice(0, 300) } }
+        : {}),
     };
   } else if (block.approval && !block.approval.decided) {
     // Drop stale live approval prompts; request ids don't survive restarts.
@@ -1267,7 +1471,14 @@ function sanitizeBlock(
       block.notice === "recovered" ||
       block.notice === "still-running" ||
       block.notice === "account-moved" ||
-      block.notice === "waiting-on-you"
+      block.notice === "waiting-on-you" ||
+block.notice === "teleported" ||
+block.notice === "teleported-back" ||
+block.notice === "teleport-frozen" ||
+block.notice === "teleport-incoming" ||
+block.notice === "teleport-aborted" ||
+      block.notice === "teleport-release-owed" ||
+      block.notice === "teleport-freeze-asked"
     ) {
       next.notice = block.notice;
     }
@@ -1442,13 +1653,14 @@ function sanitizeGeneratedImage(
     return undefined;
   }
   const record = value as Record<string, unknown>;
-  const path = typeof record.path === "string" ? record.path.trim() : "";
+  // An empty path is kept: it says the picture's file is not on this Mac (a chat imported from another one).
+  const path = typeof record.path === "string" ? record.path.trim() : null;
   const name = typeof record.name === "string" ? record.name.trim() : "";
   const mimeType =
     typeof record.mimeType === "string" ? record.mimeType.trim() : "";
   const size = record.size;
   if (
-    !path ||
+    path === null ||
     !name ||
     !mimeType.startsWith("image/") ||
     typeof size !== "number" ||
@@ -1703,6 +1915,8 @@ function recordToSession(record: SessionRecord): Session {
   const linkedWorkItem = sanitizeLinkedWorkItem(record.linkedWorkItem);
   const queuedMessages = sanitizeQueuedMessages(record.queuedMessages);
   const goal = openGoal(record.goal);
+  // WP-134: the entry id is on the row. Browser storage is not read. The stored harness stays one of the eleven.
+  const registryAgentId = registryAgentFromRow(record.registryAgentId);
   return {
     id: record.id,
     sidebarHidden: record.sidebarHidden === true || undefined,
@@ -1712,6 +1926,7 @@ function recordToSession(record: SessionRecord): Session {
       : {}),
     cwd: record.cwd,
     harness: asHarness(record.harness),
+    ...(registryAgentId ? { registryAgentId } : {}),
     // WP-16: the retired Grok model id reads as the default Claude model. Nothing is written back.
     model: readRetiredGrokModel(record.model, defaultModelId("claude")),
     modelSettings:
@@ -1729,6 +1944,10 @@ function recordToSession(record: SessionRecord): Session {
     }),
     // Its /goal, if one was still open: the Goal row is back, and the harness carries on with it once bound.
     ...(goal ? { goal } : {}),
+    ...(record.moveBriefOwed === true ? { moveBriefOwed: true } : {}),
+    ...(typeof record.movedFrom === "string" && record.movedFrom.trim()
+      ? { movedFrom: record.movedFrom.trim().slice(0, 200) }
+      : {}),
     ...(record.monoTranscript ? { monoTranscript: record.monoTranscript } : {}),
     busy: false,
     orchestrationLeadId:

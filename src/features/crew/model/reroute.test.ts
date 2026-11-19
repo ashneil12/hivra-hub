@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { decide, type Attempt } from "./reroute";
 import type { Presence } from "./resolve";
 
+const signed = (...clis: string[]): Presence[] => clis.map((cli) => ({ cli, installed: true, signedIn: true }));
+
 const present: Presence[] = [
   { cli: "claude", installed: true, signedIn: true },
   { cli: "codex", installed: true, signedIn: true },
@@ -34,7 +36,7 @@ describe("reroute", () => {
       ledger: [rerouted("claude", "codex")],
     });
     expect(second.action).toBe("first-mate");
-    expect(second.reason).toBe("no other worker can take it");
+    expect(second.reason).toBe("No other worker can take it");
   });
 
   it("never reroutes a task failure, and does not spend the budget on it", () => {
@@ -59,7 +61,7 @@ describe("reroute", () => {
       ledger: [rerouted("claude", "codex"), { ...rerouted("codex", "hermes"), at: 2 }],
     });
     expect(twice.action).toBe("first-mate");
-    expect(twice.reason).toBe("the retry budget is spent");
+    expect(twice.reason).toBe("The retry budget is spent");
     expect(failure({ budget: 0 }).action).toBe("first-mate");
     expect(failure({ budget: true }).action).toBe("reroute");
     expect(failure({ budget: "abort" }).action).toBe("first-mate");
@@ -114,7 +116,7 @@ describe("pause then resume", () => {
   it("sends a usage limit with no reset and no other CLI to the first mate", () => {
     const stuck = failure({ errorClass: "usage_limit", present: alone });
     expect(stuck.action).toBe("first-mate");
-    expect(stuck.reason).toBe("no other worker can take it");
+    expect(stuck.reason).toBe("No other worker can take it");
   });
 
   it("a pause does not use up a reroute", () => {
@@ -124,5 +126,120 @@ describe("pause then resume", () => {
       present,
     });
     expect(later.action).toBe("reroute");
+  });
+});
+
+describe("fallback order and the lock", () => {
+  it("walks the person's fallback order, and an empty policy still names the account", () => {
+    const ordered = failure({
+      present: signed("claude", "codex", "grok"),
+      policy: { lockDefault: false, neverUse: [], fallback: ["grok", "codex"] },
+    });
+    expect(ordered.action).toBe("reroute");
+    if (ordered.action === "reroute") expect(ordered.to).toBe("grok");
+    expect(ordered.reason).toBe("Claude Code can't take it, so this uses Grok.");
+    expect(ordered.skipped).toEqual([]);
+    const plain = failure();
+    expect(plain.action).toBe("reroute");
+    if (plain.action === "reroute") expect(plain.to).toBe("codex");
+    expect(plain.reason).toBe("the account can't take it");
+  });
+
+  it("skips a banned entry, one that is not signed in, and one that is not installed", () => {
+    const moved = failure({
+      present: [
+        { cli: "claude", installed: true, signedIn: true },
+        { cli: "codex", installed: true, signedIn: true },
+        { cli: "cursor", installed: true, signedIn: false },
+        { cli: "grok", installed: true, signedIn: true },
+      ],
+      policy: { lockDefault: false, neverUse: ["codex"], fallback: ["codex", "cursor", "pi", "grok", "nope\ncli"] },
+    });
+    expect(moved.action).toBe("reroute");
+    if (moved.action === "reroute") expect(moved.to).toBe("grok");
+    expect(moved.reason).toBe(
+      "Codex is on Never use, so it was skipped. Cursor isn't signed in, so it was skipped. Pi isn't installed here, so it was skipped. Claude Code can't take it, so this uses Grok.",
+    );
+    expect(moved.skipped.map((row) => row.outcome)).toEqual(["skipped", "skipped", "skipped"]);
+    expect(moved.skipped.map((row) => row.errorClass)).toEqual([
+      "Codex is on Never use, so it was skipped.",
+      "Cursor isn't signed in, so it was skipped.",
+      "Pi isn't installed here, so it was skipped.",
+    ]);
+  });
+
+  it("does not leave the fallback list for a signed-in CLI that was not listed", () => {
+    const stuck = failure({
+      present: signed("claude", "codex"),
+      policy: { fallback: ["grok"] },
+    });
+    expect(stuck.action).toBe("first-mate");
+    expect(stuck.reason).toBe("Grok isn't installed here, so it was skipped. No other worker can take it");
+  });
+
+  it("a ban on the presence walk is not silent", () => {
+    const moved = failure({
+      present: signed("claude", "codex", "grok"),
+      policy: { neverUse: ["codex"] },
+    });
+    expect(moved.action).toBe("reroute");
+    if (moved.action === "reroute") expect(moved.to).toBe("grok");
+    expect(moved.reason).toBe("Codex is on Never use, so it was skipped. Claude Code can't take it, so this uses Grok.");
+    const itself = failure({
+      present: signed("claude", "grok"),
+      policy: { neverUse: ["claude"] },
+    });
+    expect(itself.reason).toBe("Claude Code is on Never use, so it was skipped. Claude Code can't take it, so this uses Grok.");
+    const repeated = failure({
+      present: signed("claude", "grok"),
+      policy: { neverUse: ["claude"] },
+      ledger: itself.skipped,
+    });
+    expect(repeated.skipped.map((row) => row.errorClass)).toEqual(["Claude Code is on Never use, so it was skipped."]);
+  });
+
+  it("the lock pauses on a known reset, and wakes the first mate when there is none", () => {
+    const paused = failure({
+      errorClass: "quota",
+      resetsAt: 5_000,
+      now: 1_000,
+      present: signed("claude", "codex"),
+      policy: { lockDefault: true, neverUse: ["cursor"], fallback: ["codex"] },
+    });
+    expect(paused.action).toBe("pause");
+    if (paused.action === "pause") expect(paused.until).toBe(5_000);
+    expect(paused.reason).toBe("Always use my default is on, so another CLI was not used.");
+    expect(paused.attempt.outcome).toBe("paused");
+    const woken = failure({
+      errorClass: "quota",
+      present: signed("claude", "codex"),
+      policy: { lockDefault: true },
+    });
+    expect(woken.action).toBe("first-mate");
+    expect(woken.reason).toBe("Always use my default is on, so another CLI was not used.");
+    const alone = failure({
+      errorClass: "usage_limit",
+      resetsAt: 5_000,
+      now: 1_000,
+      present: signed("claude"),
+      policy: { lockDefault: true },
+    });
+    expect(alone.action).toBe("pause");
+    expect(alone.reason).toBe("Waiting for a usage limit to reset");
+    const due = failure({
+      errorClass: "usage_limit",
+      resetsAt: 1_000,
+      now: 1_000,
+      present: signed("claude", "codex"),
+      policy: { lockDefault: true },
+    });
+    expect(due.action).toBe("resume");
+    expect(due.reason).toBe("The usage limit has reset");
+  });
+
+  it("a timeout still retries the same CLI while the lock is on", () => {
+    const again = failure({ errorClass: "timeout", policy: { lockDefault: true }, present: signed("claude", "codex") });
+    expect(again.action).toBe("again");
+    expect(again.reason).toBe("the CLI didn't answer");
   });
 });

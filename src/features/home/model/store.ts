@@ -4,7 +4,7 @@
 
 import type { LocalHubDisk } from "../../hub/model/localHub/localHub";
 import { tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
-import { parseArrangement, type HomeArrangement } from "./arrangement";
+import { parseArrangement, withCardOrder, type HomeArrangement } from "./arrangement";
 import { parseChat, type HomeChat } from "./lines";
 
 export const HOME_DOC_KEY = "home";
@@ -34,9 +34,13 @@ export type HomeDoc = {
 export type HomeStorage = {
   get(key: string): string | null;
   set(key: string, value: string): void;
+  /** Let a key go (the old card order, once it is in the hub document). */
+  remove?(key: string): void;
 };
 
-export function browserStorage(storage: Pick<Storage, "getItem" | "setItem"> = localStorage): HomeStorage {
+export function browserStorage(
+  storage: Pick<Storage, "getItem" | "setItem"> & Partial<Pick<Storage, "removeItem">> = localStorage,
+): HomeStorage {
   return {
     get(key) {
       try {
@@ -50,6 +54,13 @@ export function browserStorage(storage: Pick<Storage, "getItem" | "setItem"> = l
         storage.setItem(key, value);
       } catch {
         /* the hub document is the record; the mirror is best effort */
+      }
+    },
+    remove(key) {
+      try {
+        storage.removeItem?.(key);
+      } catch {
+        /* read again next time; an order already in the document wins */
       }
     },
   };
@@ -95,11 +106,11 @@ function stamp(doc: HomeDoc, now: number): HomeDoc {
 
 function sameBody(a: HomeDoc, b: HomeDoc): boolean {
   return JSON.stringify({
-    arrangement: { order: a.arrangement.order, hidden: a.arrangement.hidden },
+    arrangement: { order: a.arrangement.order, hidden: a.arrangement.hidden, cards: a.arrangement.cards ?? null },
     recent: a.recent,
     dailySummary: a.dailySummary === false,
   }) === JSON.stringify({
-    arrangement: { order: b.arrangement.order, hidden: b.arrangement.hidden },
+    arrangement: { order: b.arrangement.order, hidden: b.arrangement.hidden, cards: b.arrangement.cards ?? null },
     recent: b.recent,
     dailySummary: b.dailySummary === false,
   });
@@ -227,4 +238,39 @@ export async function noteOpenedChat(
     if (attempt + 1 < NOTE_TRIES) await wait(NOTE_WAIT_MS);
   }
   return null;
+}
+
+/** G5: where one window kept Home's card order before it was part of the arrangement (HomeScreen.tsx). */
+export const OLD_CARD_ORDER_KEY = "monocode:home-card-order";
+
+/**
+ * Bring the card order one window kept into the hub document, once: an order the document already has wins. The old
+ * key goes only after the document has the order (or already had one), so a store that does not answer loses nothing.
+ */
+export async function adoptOldCardOrder(
+  disk: LocalHubDisk,
+  storage: HomeStorage,
+  now: () => number = Date.now,
+): Promise<boolean> {
+  const raw = storage.get(OLD_CARD_ORDER_KEY);
+  if (raw == null) return false;
+  let old: string[] = [];
+  try {
+    old = withCardOrder(parseArrangement(null), JSON.parse(raw) as string[]).cards ?? [];
+  } catch {
+    old = [];
+  }
+  if (!old.length) {
+    storage.remove?.(OLD_CARD_ORDER_KEY);
+    return false;
+  }
+  let adopted = false;
+  const written = await changeHome(disk, storage, (doc) => {
+    if (doc.arrangement.cards?.length) return doc;
+    adopted = true;
+    return { ...doc, arrangement: withCardOrder(doc.arrangement, old) };
+  }, now).catch(() => null);
+  if (!written) return false;
+  storage.remove?.(OLD_CARD_ORDER_KEY);
+  return adopted;
 }

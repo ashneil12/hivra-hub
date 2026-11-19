@@ -1,0 +1,5 @@
+{
+  "generation": 1,
+  "state": "completed",
+  "result": "{\"hunt\":{\"builder\":\"claude\",\"candidates\":0,\"files\":[\"src-tauri/src/mobile_access.rs\"]},\"findings\":[],\"ledger\":[{\"status\":\"covered\",\"starting_paths\":[\"src-tauri/src/mobile_access.rs\"]}]}"
+}

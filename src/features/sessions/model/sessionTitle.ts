@@ -17,6 +17,9 @@ Before answering, silently reduce the request to:
 
 Title the subject and outcome. Discard incidental instructions.
 
+If the message is only a greeting, thanks or small talk and asks for nothing yet, return {"title": null, "workItem": null}.
+Never title a chat after the greeting itself (no "Casual greeting", "Hello", "Small talk").
+
 Editorial rules:
 - 3-8 words, fewer than 40 characters.
 - Use a compact noun phrase or clear action phrase.
@@ -35,6 +38,8 @@ export type GeneratedWorkItemHint = {
 export type GeneratedSessionTitle = {
   title: string;
   workItem: GeneratedWorkItemHint | null;
+  /** The message asked for nothing yet (a greeting): keep the title and try again on the next message. */
+  noTask?: boolean;
 };
 
 export function shouldGenerateSessionTitle(
@@ -76,6 +81,7 @@ export function parseGeneratedSessionTitle(
     try {
       const parsed: unknown = JSON.parse(json);
       if (parsed && typeof parsed === "object" && "title" in parsed) {
+        if ((parsed as { title: unknown }).title === null) return { title: "", workItem: null, noTask: true };
         const title = sanitizeThreadTitle(
           String((parsed as { title: unknown }).title),
         );
@@ -112,5 +118,5 @@ export function parseGeneratedSessionTitle(
 
 /** Backwards-compatible title-only parser for callers that do not need metadata. */
 export function parseGeneratedThreadTitle(raw: string): string | null {
-  return parseGeneratedSessionTitle(raw, "")?.title ?? null;
+  return parseGeneratedSessionTitle(raw, "")?.title || null;
 }

@@ -632,7 +632,28 @@ fn tool_command(program: &Path, nm_home: &Path) -> Command {
     command.env("NO_MISTAKES_NO_UPDATE_CHECK", "1");
     command.env("NO_MISTAKES_TELEMETRY", "0");
     command.stdin(Stdio::null());
-    command
+    // The daemon then runs the repo's own checks and a pipeline agent. Only its home stays writable.
+    match gate_sandbox_prefix(nm_home) {
+        Ok(prefix) => crate::agent_sandbox::under_wrap(command, prefix.as_deref()),
+        Err(_) => Command::new("/nonexistent/monocode-sandbox-refused"),
+    }
+}
+
+/// The sandbox prefix for the no-mistakes tool, or nothing when the sandbox is off.
+/// Off means the switch file in the data folder is absent, so unit tests stay plain.
+/// A profile that cannot be built refuses the start instead of running the tool unwrapped.
+fn gate_sandbox_prefix(nm_home: &Path) -> Result<Option<Vec<std::ffi::OsString>>, String> {
+    let Some(data) = nm_home.parent() else {
+        return Err("The check's home has no data folder.".into());
+    };
+    if !crate::agent_sandbox::enabled(Some(data)) {
+        return Ok(None);
+    }
+    let home = std::env::var_os("HOME")
+        .map(std::path::PathBuf::from)
+        .ok_or_else(|| "HOME is not set, so the macOS sandbox cannot be built.".to_string())?;
+    let allowed = [nm_home.to_path_buf()];
+    crate::agent_sandbox::more_agent_wrap(&home, Some(data), &[], &allowed)
 }
 
 /// Keys a check's child may see. Values are not logged.
@@ -861,7 +882,7 @@ fn invoke(
 }
 
 fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
-    let output = crate::delivery::child("git")
+    let output = crate::git_cmd::child()
         .current_dir(dir)
         .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
@@ -1126,6 +1147,9 @@ fn ask_decision(
             options: vec!["Approve".into(), "Fix".into(), "Skip".into()],
             recommended: None,
             task_ids: task_ids.clone(),
+            keys: Vec::new(),
+            force: false,
+            reason: None,
         },
         now,
     );
@@ -1141,6 +1165,9 @@ fn ask_decision(
                 options: vec!["Approve".into(), "Fix".into(), "Skip".into()],
                 recommended: None,
                 task_ids: Vec::new(),
+                keys: Vec::new(),
+                force: false,
+                reason: None,
             },
             now,
         )?;
@@ -1434,28 +1461,52 @@ fn action_of(answer: &str) -> Result<&'static str, String> {
     }
 }
 
-fn run_by_key(conn: &Connection, key: &str) -> Result<Option<RunRow>, String> {
+fn run_by_key(conn: &Connection, project: &str, key: &str) -> Result<Option<RunRow>, String> {
     conn.query_row(
-        &format!("SELECT {RUN_COLS} FROM gate_runs WHERE decision_key = ?1 ORDER BY created_at DESC LIMIT 1"),
-        [key],
+        &format!(
+            "SELECT {RUN_COLS} FROM gate_runs \
+             WHERE decision_key = ?1 AND project = ?2 ORDER BY created_at DESC LIMIT 1"
+        ),
+        params![key, project],
         run_from,
     )
     .optional()
     .map_err(|e| e.to_string())
 }
 
-/// Sends an answer the person already gave. A second send of the same answer does nothing.
+/// The project of the newest run parked under this key, for a caller that did not name one.
+fn project_for_key(conn: &Connection, key: &str) -> Result<Option<String>, String> {
+    conn.query_row(
+        "SELECT project FROM gate_runs WHERE decision_key = ?1 ORDER BY created_at DESC LIMIT 1",
+        [key],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+/// Sends an answer the person already gave, for this project's run of that key.
+/// A run in another project with the same key is left alone. A second send of the same answer does nothing.
 /// A tool that doesn't answer is not final: it can be tried again.
-pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(), String> {
-    if !key.starts_with("gate/") {
+pub fn forward_answer(
+    store: &SessionStore,
+    project: &str,
+    key: &str,
+    answer: &str,
+) -> Result<(), String> {
+    if !crate::decisions::is_gate_key(key) {
+        return Ok(());
+    }
+    let project = project.trim();
+    if project.is_empty() {
         return Ok(());
     }
     let action = action_of(answer)?;
     let data = data_dir()?;
     let home = nm_home_at(&data)?;
-    let (run_id, finding_id, project) = {
+    let (row_id, run_id, finding_id, run_project) = {
         let conn = store.lock_conn()?;
-        let Some(run) = run_by_key(&conn, key)? else {
+        let Some(run) = run_by_key(&conn, project, key)? else {
             return Ok(());
         };
         if run.responded.as_deref() == Some(action) {
@@ -1463,15 +1514,17 @@ pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(
         }
         let claimed = conn
             .execute(
-                "UPDATE gate_runs SET responded = 'sending', updated_at = ?2
-                 WHERE decision_key = ?1 AND (responded IS NULL OR responded = 'retry')",
-                params![key, now_millis()],
+                "UPDATE gate_runs SET responded = 'sending', updated_at = ?3
+                 WHERE id = ?1 AND project = ?2 AND decision_key = ?4
+                   AND (responded IS NULL OR responded = 'retry')",
+                params![run.id, project, now_millis(), key],
             )
             .map_err(|e| e.to_string())?;
         if claimed == 0 {
             return Ok(());
         }
         (
+            run.id,
             run.run_id.unwrap_or_default(),
             run.finding_id.unwrap_or_default(),
             run.project,
@@ -1482,8 +1535,9 @@ pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(
         Err(_) => {
             let conn = store.lock_conn()?;
             let _ = conn.execute(
-                "UPDATE gate_runs SET responded = 'retry', detail = ?2, updated_at = ?3 WHERE decision_key = ?1",
-                params![key, TRY_AGAIN, now_millis()],
+                "UPDATE gate_runs SET responded = 'retry', detail = ?2, updated_at = ?3
+                 WHERE id = ?1 AND project = ?4 AND decision_key = ?5 AND responded = 'sending'",
+                params![row_id, TRY_AGAIN, now_millis(), project, key],
             );
             return Err(TRY_AGAIN.into());
         }
@@ -1502,12 +1556,13 @@ pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(
         args.push("--findings".into());
         args.push(finding_id);
     }
-    match invoke(&program, &home, &args, Some(Path::new(&project))) {
+    match invoke(&program, &home, &args, Some(Path::new(&run_project))) {
         Ok(_) => {
             let conn = store.lock_conn()?;
             conn.execute(
-                "UPDATE gate_runs SET responded = ?2, updated_at = ?3 WHERE decision_key = ?1 AND responded = 'sending'",
-                params![key, action, now_millis()],
+                "UPDATE gate_runs SET responded = ?2, updated_at = ?3
+                 WHERE id = ?1 AND project = ?4 AND decision_key = ?5 AND responded = 'sending'",
+                params![row_id, action, now_millis(), project, key],
             )
             .map_err(|e| e.to_string())?;
             Ok(())
@@ -1515,8 +1570,9 @@ pub fn forward_answer(store: &SessionStore, key: &str, answer: &str) -> Result<(
         Err(_) => {
             let conn = store.lock_conn()?;
             let _ = conn.execute(
-                "UPDATE gate_runs SET responded = 'retry', detail = ?2, updated_at = ?3 WHERE decision_key = ?1",
-                params![key, TRY_AGAIN, now_millis()],
+                "UPDATE gate_runs SET responded = 'retry', detail = ?2, updated_at = ?3
+                 WHERE id = ?1 AND project = ?4 AND decision_key = ?5 AND responded = 'sending'",
+                params![row_id, TRY_AGAIN, now_millis(), project, key],
             );
             Err(TRY_AGAIN.into())
         }
@@ -1595,20 +1651,85 @@ pub fn gate_respond(
     store: State<'_, SessionStore>,
     decision_key: String,
     answer: String,
+    project: Option<String>,
 ) -> Result<(), String> {
-    let project = {
-        let conn = store.lock_conn()?;
-        run_by_key(&conn, &decision_key)?.map(|run| run.project)
+    respond(&store, &decision_key, &answer, project.as_deref())
+}
+
+/// The webview's answer to a delivery check, recorded as the person. Any other key is refused: this path must not be a
+/// way to answer a security review, a fresh-eyes review, or any other question.
+pub(crate) fn respond(
+    store: &SessionStore,
+    decision_key: &str,
+    answer: &str,
+    project: Option<&str>,
+) -> Result<(), String> {
+    if !decisions::is_gate_key(decision_key) {
+        return Err("Only a delivery check can be answered here.".into());
+    }
+    // A named project is the one the card is showing. An empty one matches nothing, so a blank folder cannot
+    // fall through onto whichever run happens to share the key. An omitted project keeps the older callers working.
+    let project = match project {
+        Some(named) => {
+            let named = named.trim();
+            if named.is_empty() {
+                return Ok(());
+            }
+            project_key(named)?
+        }
+        None => {
+            let conn = store.lock_conn()?;
+            match project_for_key(&conn, decision_key)? {
+                Some(found) => found,
+                None => return Ok(()),
+            }
+        }
     };
-    if let Some(project) = project {
-        let _ = decisions::answer(
-            &mut *store.lock_conn()?,
-            &project,
-            &decision_key,
-            &answer,
-            Some("person".into()),
-            now_millis(),
+    let _ = decisions::answer(
+        &mut *store.lock_conn()?,
+        &project,
+        decision_key,
+        answer,
+        Some("person".into()),
+        now_millis(),
+    );
+    forward_answer(store, &project, decision_key, answer)
+}
+
+/// Review r6 repro for PR #208 (WP-178), red at 520e3d4e3.
+#[cfg(test)]
+mod review_r6_repro {
+    /// HIGH (new, when a project has "Check work before it goes to GitHub" on): a crew's delivery calls `fill`, which
+    /// starts the no-mistakes daemon (`ensure_daemon`) and `axi run` (`invoke`) outside the sandbox. The daemon's
+    /// pipeline runs the repository's own test and lint commands (`npm run check` for this repo) and a pipeline agent
+    /// (claude or grok, with tools and auto-fix) in a copy of the crew's branch. Every one of those is the agents' code
+    /// or reads it, and none is wrapped. The spawn audit allows both starts for their arguments, not for what the
+    /// daemon then runs.
+    #[test]
+    fn the_gates_daemon_starts_inside_the_agent_sandbox() {
+        let source = include_str!("mod.rs");
+        let wrapped = |name: &str| -> bool {
+            let Some(start) = source.find(&format!("fn {name}(")) else {
+                return false;
+            };
+            let rest = &source[start..];
+            let body = &rest[..rest.find("\n}\n").unwrap_or(rest.len())];
+            [
+                "action_wrap",
+                "under_wrap",
+                "contained_command",
+                "sandboxed_launch",
+            ]
+            .iter()
+            .any(|marker| body.contains(marker))
+        };
+        let open: Vec<&str> = ["ensure_daemon", "tool_command"]
+            .into_iter()
+            .filter(|name| !wrapped(name))
+            .collect();
+        assert!(
+            open.len() < 2,
+            "the delivery gate's daemon, which runs the repo's checks and a pipeline agent, starts outside the sandbox"
         );
     }
-    forward_answer(&store, &decision_key, &answer)
 }

@@ -12,6 +12,8 @@
 // - quiet: busy, but no change for `quietMs` (6 min), or `longToolMs` (20 min) while a tool it started still runs;
 // - loop: the same finished step (same call, same output) `loopRepeats` (6) times in a row at the end of its turn, or the
 //   hourly progress check (workerProgress.ts, Ash's 14 Oct rule) found no real progress in its hour;
+// - loop also: `sleepWaits` (3) finished shell steps in one turn that wait by sleeping ("sleep 60, check again"), which
+//   burns a model call per check (a bookmarked Codex run spent most of a 5-hour limit this way);
 // - idle: not busy, nothing holding it (a question, a queued message, a limit it waits out), its row still running, for
 //   `idleMs`: it stopped without reporting back.
 // A chat that waits on its own workers is never stalled: its workers are judged instead.
@@ -29,6 +31,8 @@ export type StallOptions = {
   longToolMs: number;
   idleMs: number;
   loopRepeats: number;
+  /** Sleep-and-check steps in one turn before it counts as a loop: waiting this way spends a model call each time. */
+  sleepWaits?: number;
 };
 
 export const STALL_DEFAULTS: StallOptions = {
@@ -37,6 +41,7 @@ export const STALL_DEFAULTS: StallOptions = {
   longToolMs: 20 * MIN,
   idleMs: 6 * MIN,
   loopRepeats: 6,
+  sleepWaits: 3,
 };
 
 /** `final`: the self-repair gave up; its plain line wins over the watcher's own (selfRepair.ts). */
@@ -59,11 +64,16 @@ export type WorkerLook = {
   runningTool?: string;
   /** The same finished step repeated at the end of this turn. */
   repeat?: { title: string; count: number };
+  /** Finished shell steps this turn that waited by sleeping (look.ts isSleepWait). */
+  sleepWaits?: number;
   /** How many different steps this turn has taken (progress is this number growing). */
   steps: number;
   /** r87: the provider error the turn's newest step is, while nothing has followed it but retries and thinking. */
   providerError?: string;
 };
+
+/** The reason a sleep-and-poll stall carries. */
+export const SLEEP_WAIT_PREFIX = "Waiting by sleeping";
 
 /** r87 (s14 r86 run 3): the reason a provider-error stall carries; the Lead is told once, with a retry offered. */
 export const PROVIDER_STALL_PREFIX = "Provider error";
@@ -130,6 +140,12 @@ export function judgeStall(
         kind: "loop",
         reason: `Repeating the same step: ${look.repeat.title} (${look.repeat.count} times)`,
         since: presence.repeatSince ?? now,
+      };
+    if ((look.sleepWaits ?? 0) >= (options.sleepWaits ?? 3))
+      return {
+        kind: "loop",
+        reason: `${SLEEP_WAIT_PREFIX} (${look.sleepWaits} sleep steps this turn). Each check costs a model call: end the turn and report what it waits on, and its first mate sets a timer.`,
+        since: presence.repeatSince ?? presence.lastProgressAt,
       };
     const wait = look.runningTool ? options.longToolMs : options.quietMs;
     if (!look.asking && now - lastActive >= wait)

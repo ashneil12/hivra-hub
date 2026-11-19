@@ -69,7 +69,7 @@ it("connects a source to one page only, and says so when it is already there", (
 
   const again = connectSource("page-a", "https://api.example.com/v1/");
   expect(again.ok).toBe(false);
-  expect(!again.ok && again.error).toBe("The page is already connected to The API.");
+  expect(!again.ok && again.error).toBe("The hub is already connected to The API.");
 });
 
 it(`a page can be connected to ${MAX_PER_PAGE} sources at once`, () => {
@@ -106,7 +106,7 @@ it("names a source back to Ash by its host, never by its path", () => {
 it("Undo takes a source away and Redo connects it again, both as Bot changes rows", async () => {
   connectSource("page-a", "https://api.example.com/v1");
   const id = recordPageSource({ by: "Scores", pageId: "page-a", url: "https://api.example.com/v1", connected: true });
-  expect(findBotChange(id)?.line).toBe("The page “Scores” can now read api.example.com");
+  expect(findBotChange(id)?.line).toBe("The hub “Scores” can now read api.example.com");
 
   await undoBotChange([id]);
   expect(grantsFor("page-a")).toEqual([]);

@@ -8,7 +8,12 @@
 // The fixed sentences are vendored verbatim from firstmate's bin/fm-brief.sh (https://github.com/kunchenguid/firstmate,
 // Copyright (c) 2026 Kun Chen, MIT License; see vendor/firstmate-contract.md). A binding sentence after each block is the
 // rewrite: Hivra has no status file and no inbox directory, so the worker uses task_cannot and this chat.
+import { WORKER_ASK_TEST } from "./askTest";
 import { briefSkillsSection, type BriefTask } from "./briefSkills";
+import { checksSection, leaveSection, stampSection, type CheckLine } from "./briefChecks"; // SC-4
+import { specSection, type SpecBrief } from "./briefSpec"; // PT-6
+import { quoteOriginalRequest } from "./originalRequest";
+import { proofToolsSection, type ProofToolLine } from "../../proofTools/model/proofTools"; // PT-1
 
 export type BriefParts = {
   /** The person's own ask, in their words, with the context needed to read it. */
@@ -90,15 +95,20 @@ export function sectionProblem(value: unknown): string | undefined {
   return undefined;
 }
 
+/** What is wrong with each of the brief's model-written sections, one phrase each; none when it can go out. */
+export function briefProblems(parts: Partial<Record<keyof BriefParts, unknown>>): string[] {
+  return (Object.keys(LABEL) as (keyof BriefParts)[]).flatMap((key) => {
+    const problem = sectionProblem(parts[key]);
+    return problem ? [`${LABEL[key].name} (${LABEL[key].field}) ${problem}`] : [];
+  });
+}
+
 /**
  * The refusal for a brief whose model-written sections are empty or placeholders, in words the model can act on; none
  * when it can go out.
  */
 export function checkBrief(parts: Partial<Record<keyof BriefParts, unknown>>): string | undefined {
-  const problems = (Object.keys(LABEL) as (keyof BriefParts)[]).flatMap((key) => {
-    const problem = sectionProblem(parts[key]);
-    return problem ? [`${LABEL[key].name} (${LABEL[key].field}) ${problem}`] : [];
-  });
+  const problems = briefProblems(parts);
   if (!problems.length) return undefined;
   return `Not sent: ${problems.join("; ")}. Fill intent with the person's own ask, brief with the build instructions, and goal with the condition that finishes it, then send it again.`;
 }
@@ -141,6 +151,8 @@ function statusProtocol(isolation: BriefIsolation): string {
     "- Your first mate watches your work; you don't need to report progress. Speak up only when something changes what happens next.",
     question,
   ];
+  // WP-247: OpenBot's ask test, the worker's version (askTest.ts). A first mate reads the contract's own copy.
+  if (isolation.kind !== "first-mate") lines.push(`- ${WORKER_ASK_TEST}`);
   if (isolation.kind !== "first-mate") {
     // Verbatim from bin/fm-brief.sh. The binding after it is the rewrite: there is no status file.
     lines.push(
@@ -189,6 +201,18 @@ const STEERING = [
 ].join("\n");
 
 /**
+ * PT-3: the proof skills a fully checked project's code brief names, from the hivra-rpi pack (run by name only): Jesse
+ * Vincent's test-driven-development and verification-before-completion, and Matt Pocock's TDD (rpi-tdd). MIT, credited in
+ * src-tauri/plugins/hivra-rpi/NOTICE.
+ */
+export const PROOF_SKILLS = ["test-driven-development", "verification-before-completion", "rpi-tdd"] as const;
+
+export const PROOF_SKILLS_SECTION = [
+  "## Proof skills",
+  `This project checks every task fully. Before you change the code, read these skills by name and follow them: ${PROOF_SKILLS.join(", ")}.`,
+].join("\n");
+
+/**
  * The brief's body from the template: the fixed sections around the model's intent and spec. The definition of done
  * goes last in the whole prompt (briefPrompt), so it is not repeated here.
  */
@@ -196,16 +220,58 @@ export function renderBrief(
   parts: Pick<BriefParts, "intent" | "spec">,
   isolation: BriefIsolation,
   task?: BriefTask,
+  extras?: {
+    /** WP-171: a task of a fan-out carries its contract (fanoutWaves.ts fanoutSection). Absent, no section. */
+    contract?: string;
+    /** WP-171: the person's own request (originalRequest.ts originalRequestOf), quoted after the intent. Absent, no section. */
+    originalRequest?: string;
+    /** How long that request was before the quote budget cut it. Absent: the text's own length. */
+    originalRequestChars?: number;
+    /** SC-4: the main checkout's HEAD when this brief was written. Present: the brief opens with the drift rule. */
+    stamp?: string;
+    /** SC-4: the in-scope paths the drift command lists (briefChecks.ts scopePaths). */
+    scope?: readonly string[];
+    /** SC-4: the brief's own check lines. Present and not empty: a "Checks that must pass" section. */
+    checks?: readonly CheckLine[];
+    /** SC-4: the do-not-touch paths. Present and not empty: a "Do not touch" section. */
+    leave?: readonly string[];
+    /** PT-3: the project checks every task fully, so a code or bug-fix brief also names the proof skills. */
+    proofSkills?: boolean;
+    /** PT-1: the proof tools this project already has (proofTools.ts `proofToolLines`). Absent or empty: no section. */
+    proofTools?: readonly ProofToolLine[];
+    /** PT-6: the brief's spec parts and what the app read of the project's spec of record. Absent, or nothing to say: no section. */
+    spec?: SpecBrief;
+  },
 ): string {
   // WP-41: name the pstack skills for this kind of work. No task, no section, so a brief that doesn't ask stays as it was.
   const skills = task ? briefSkillsSection(task) : undefined;
+  // PT-3: in a project that checks every task fully, a code or bug-fix brief also names the proof skills.
+  const proof = extras?.proofSkills && (task === "code" || task === "debug") ? PROOF_SKILLS_SECTION : undefined;
+  // PT-1: the same kinds of brief name the proof tools the project already has, each by name with how to use it here.
+  const tools = task === "code" || task === "debug" ? proofToolsSection(extras?.proofTools) : undefined;
+  // PT-6: the spec of record this task changes (the spec first, then the code), or the spec that covers its scope as context.
+  const spec = extras?.spec ? specSection(extras.spec) : undefined;
   return [
     isolationSection(isolation),
+    // SC-4: the drift rule opens the brief, right after the isolation check.
+    ...(extras?.stamp ? [stampSection(extras.stamp, extras.scope ?? [])] : []),
     `## Intent\n${parts.intent.trim()}`,
+    ...(extras?.originalRequest?.trim()
+      ? [`## Original request\n${quoteOriginalRequest(extras.originalRequest.trim(), extras.originalRequestChars)}`]
+      : []),
     `## Spec\n${parts.spec.trim()}`,
+    "## Runtime and evidence\nUse the app's documented commands (`monocode app --help`); never invoke its binary without a command or open another daily app. Verify in an isolated dev copy. Use configured provider connections: never probe Keychain, saved credentials, or environment secrets to obtain a key. If a connection is missing, report it to your first mate. State exactly what a check exercised. Capturing or closing a test ask proves only tracking, not extraction accuracy, delegation, delivery, or the full workflow. A timeout or failed command is not successful work. Read the actual waiting explanation from tasks.status before describing a queue; never infer worker capacity from how many jobs are currently running.",
+    // PT-6: written by code from the project's own files, every line of them indented (briefSpec.ts).
+    ...(spec ? [spec] : []),
+    // SC-4: what the worker must pass, and what it must leave alone. Written by code, in lists a line can't break out of.
+    ...(extras?.checks?.length ? [checksSection(extras.checks)] : []),
+    ...(extras?.leave?.length ? [leaveSection(extras.leave)] : []),
+    ...(extras?.contract ? [`## Fan-out contract\n${extras.contract}`] : []),
     statusProtocol(isolation),
     STEERING,
     ...(skills ? [skills] : []),
+    ...(proof ? [proof] : []),
+    ...(tools ? [tools] : []),
   ].join("\n\n");
 }
 
@@ -224,7 +290,20 @@ export function withLegacyBriefParts(input: Record<string, unknown>, title: stri
 }
 
 /** The template's fixed section headings (written by code, never the model's words) and its two filled ones. */
-export const FIXED_SECTIONS = ["Isolation check", "Status protocol", "Steering", "Skills"] as const;
+export const FIXED_SECTIONS = [
+  "Isolation check",
+  "Before you start",
+  "Original request",
+  "Spec of record", // PT-6
+  "Checks that must pass",
+  "Do not touch",
+  "Fan-out contract",
+  "Runtime and evidence",
+  "Status protocol",
+  "Steering",
+  "Skills",
+  "Proof tools here", // PT-1
+] as const;
 export const FILLED_SECTIONS = ["Intent", "Spec"] as const;
 
 const FIXED_BLOCK = new RegExp(

@@ -14,7 +14,9 @@
 //   --project <key>…` entry per connector its projects (and its own choices) allow. No login is in them: the launcher
 //   re-checks the rules and reads the login from the Keychain when Claude Code starts it.
 import { setClaudeGuardArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
-import { HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { GIT_HOOK_DENY_RULES, GUARD_STORE_DENY_RULES, HUB_DB_DENY_RULES, SECRET_ACTION_DENY_RULES } from "../../../integrations/harness/core/credentialGuard";
+import { canLead, codexLeadServer } from "../../firstmate/model/leadCli";
+import { chatGetsComputerUse, computerUseServer, knownComputerUse } from "../../computerUse/model/computerUse";
 
 /** The checker's Mono id (the studio's tests and lanes use it; hubChecker.ts makes the Mono). */
 export const CHECKER_MONO_ID = "checker";
@@ -110,7 +112,7 @@ export const ASH_OS_DENIED_TOOLS = ["mcp__ash-os"];
 
 /** Everything every hub chat is denied: edits in the Monos' home, the old Mono copy, Ash's own Ash OS server (WP-04), reading a saved login by hand, the hub's database (r67), and any secret action (r69). */
 export function chatDeniedTools(): string[] {
-  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...ASH_OS_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES];
+  return [...monoHomeDeniedTools(), ...OLD_MONO_COPY_DENIED_TOOLS, ...ASH_OS_DENIED_TOOLS, ...CREDENTIAL_DENIED_TOOLS, ...HUB_DB_DENY_RULES, ...SECRET_ACTION_DENY_RULES, ...GIT_HOOK_DENY_RULES, ...GUARD_STORE_DENY_RULES];
 }
 
 /** Where the Monos' homes are: the daily home as written (`~/...`) and this copy's own, absolute, once known. */
@@ -290,6 +292,16 @@ export function getsDelegateTool(identity: HubChatIdentity): boolean {
   return (identity.kind === "mono" && identity.role !== "checker") || identity.kind === "team";
 }
 
+/**
+ * WP-255: whether this chat may get computer use at all: the chats Ash talks to (a Mono's own chat, a coding-team chat,
+ * a plain chat). Never a worker or a habit run, which run with nobody watching, and never the checker, which only reads.
+ * Settings > Computer use and the chat's own say decide the rest (computerUse.ts).
+ */
+export function getsComputerUse(identity: HubChatIdentity): boolean {
+  if (identity.kind === "mono") return identity.role !== "checker";
+  return identity.kind === "team" || identity.kind === "chat";
+}
+
 /** The `monocode` entry. `cli` is this app's own executable (`app_cli_path`). */
 export function monocodeServer(cli: string): Record<string, unknown> {
   return {
@@ -336,6 +348,10 @@ export function hubMcpArgs(
   if (servers.connectors && identity.monoId && (identity.kind === "mono" || identity.kind === "habit"))
     Object.assign(mcpServers, servers.connectors(identity.monoId));
   if (delegate) mcpServers.monocode = monocodeServer(servers.cli!);
+  // Not pre-approved: Claude Code asks before each computer-use call unless the chat runs with full access.
+  const computerUse = knownComputerUse();
+  if (servers.cli && getsComputerUse(identity) && computerUse && chatGetsComputerUse(computerUse, sessionId))
+    mcpServers.computer = computerUseServer(servers.cli, sessionId, computerUse.settingsPath);
   if (!Object.keys(mcpServers).length) return [...restrict, ...fence];
   return [
     ...restrict,
@@ -375,12 +391,24 @@ export function registeredHubMcpArgs(sessionId: string): string[] {
 }
 
 /**
- * Whether a chat's Claude Code session has the delegate tool, so its context can teach it (monoFiles.ts
- * `<delegate_rules>`). Only Claude Code sessions take the extra arguments.
+ * Whether this chat's session has the delegate tool, so its context can teach it (monoFiles.ts
+ * `<delegate_rules>`). WP-120: any CLI in the lead table, not only Claude Code. A CLI that cannot
+ * lead is a no, and the chat says why (leadBlockReason).
  */
 export function hasDelegateTool(sessionId: string, harness: string): boolean {
-  if (harness !== "claude" || !registered?.servers.cli) return false;
+  if (!canLead(harness) || !registered?.servers.cli) return false;
   return getsDelegateTool(hubChatIdentity(sessionId, registered.lookups));
+}
+
+/**
+ * Codex config for the same chats. Empty unless this chat leads and the app CLI is known.
+ * The connection is only the names MONOCODE_APP_ENDPOINT and MONOCODE_APP_TOKEN in env_vars, never a token value.
+ */
+export function registeredCodexLeadConfig(sessionId: string): Record<string, unknown> {
+  const cli = registered?.servers.cli;
+  if (!cli || !registered) return {};
+  if (!getsDelegateTool(hubChatIdentity(sessionId, registered.lookups))) return {};
+  return { mcp_servers: { monocode: codexLeadServer(cli) } };
 }
 
 /**

@@ -1,0 +1,13 @@
+id: rust-spawn-own-process-group-files
+valid:
+  - |
+    fn helper() {
+        let mut command = Command::new("git");
+        command.process_group(0);
+        command.spawn().unwrap();
+    }
+invalid:
+  - |
+    fn helper() {
+        Command::new("git").arg("status").spawn().unwrap();
+    }

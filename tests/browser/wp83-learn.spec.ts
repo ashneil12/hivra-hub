@@ -39,3 +39,21 @@ test("proposals show their quotes and are accepted or rejected one at a time", a
   await page.getByRole("button", { name: "Save opinions" }).click();
   await expect(page.getByLabel("Opinions")).toHaveValue("# Opinions\n\n## Small commits\n");
 });
+
+test("edits a work log retro left waiting show first, and are decided one at a time", async ({ page }) => {
+  await page.goto("/tests/browser/wp83-learn.html");
+  const waiting = page.getByRole("region", { name: "From the work log" });
+  await expect(waiting).toContainText("A retro suggested these. Nothing is saved until you accept one.");
+  await expect(waiting.getByRole("heading", { name: "Correction: Keep the work log line short." })).toBeVisible();
+  await expect(waiting.getByText("Agents will see this once a second log line backs it.")).toBeVisible();
+  await expect(waiting.getByText("Sent back: The brief was thin.", { exact: true })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __accepted?: string[] }).__accepted ?? [])).toEqual([]);
+
+  await waiting.getByRole("button", { name: "Accept Work sent back" }).click();
+  await expect(waiting.getByRole("heading", { name: "Work sent back" })).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __accepted: string[] }).__accepted)).toEqual(["retro:two"]);
+
+  await waiting.getByRole("button", { name: "Reject Correction: Keep the work log line short." }).click();
+  await expect(waiting).toHaveCount(0);
+  await expect.poll(() => page.evaluate(() => (window as unknown as { __rejected: string[] }).__rejected)).toEqual(["retro:one"]);
+});

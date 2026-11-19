@@ -5,7 +5,7 @@
 const KNOWN: readonly [RegExp, string][] = [
   [
     /database is locked|database table is locked|SQLITE_BUSY/i,
-    "The hub's database is busy. Nothing was lost. Try again in a moment.",
+    "The app's database is busy. Nothing was lost. Try again in a moment.",
   ],
   [
     /no space left on device|SQLITE_FULL|ENOSPC/i,
@@ -13,11 +13,11 @@ const KNOWN: readonly [RegExp, string][] = [
   ],
   [
     /read-?only database|SQLITE_READONLY/i,
-    "The hub's database is read-only, so nothing could be saved. Check the hub's folder in Settings, then try again.",
+    "The app's database is read-only, so nothing could be saved. Check the app's folder in Settings, then try again.",
   ],
   [
     /database disk image is malformed|SQLITE_CORRUPT|file is not a database/i,
-    "The hub's database looks damaged. Open Settings, then Export and import, and keep a copy before going further.",
+    "The app's database looks damaged. Open Settings, then Export and import, and keep a copy before going further.",
   ],
   [
     /access is denied|permission denied|EACCES|EPERM/i,

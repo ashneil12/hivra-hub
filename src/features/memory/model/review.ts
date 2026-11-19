@@ -4,8 +4,9 @@
 import { ftsMatch } from "../vendor/mercuryBelief";
 import { contradicts } from "./contradicts";
 import { givesOrders } from "./orderScan";
-import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, type MemoryDoc, type MemoryDispute, type MemoryItem } from "./doc";
+import { bump, memoryId, mentionsSecret, normalizeFact, parseDoc, withForgotten, type MemoryDoc, type MemoryDispute, type MemoryItem } from "./doc";
 import { touch } from "./fade";
+import { letGoCopy, withArchived } from "./letGo";
 
 /** WP-111: why a fact is parked. Shown as written. */
 export const DISPUTE_REASON = "A newer message says something different";
@@ -34,19 +35,29 @@ export function acceptItem(doc: MemoryDoc, id: string, now: number): AcceptResul
     const target = doc.items.find((candidate) => candidate.id === item.targetId && candidate.action === "add");
     const rest = doc.items.filter((candidate) => candidate.id !== item.id);
     if (!target) return { doc: bump({ ...doc, items: rest }) };
+    // WP-240: the wording it had goes onto the "Let go" list, replaced by the row that now holds the new wording.
+    const was = letGoCopy(target, "superseded", now, target.id, true);
     return {
-      doc: bump({
-        ...doc,
-        items: rest.map((candidate) =>
-          candidate.id === target.id
-            ? touch({ ...candidate, text: item.text, state: "edited" as const, updatedAt: now, support: candidate.support + 1 }, now)
-            : candidate,
+      doc: bump(
+        withArchived(
+          {
+            ...doc,
+            items: rest.map((candidate) =>
+              candidate.id === target.id
+                ? touch({ ...candidate, text: item.text, state: "edited" as const, updatedAt: now, support: candidate.support + 1 }, now)
+                : candidate,
+            ),
+          },
+          [was],
         ),
-      }),
+      ),
     };
   }
   if (item.action === "remove" && item.targetId) {
-    return { doc: bump({ ...doc, items: doc.items.filter((candidate) => candidate.id !== item.id && candidate.id !== item.targetId) }) };
+    // WP-240: the fact the person agreed was stale is let go, not lost.
+    const target = doc.items.find((candidate) => candidate.id === item.targetId);
+    const kept = { ...doc, items: doc.items.filter((candidate) => candidate.id !== item.id && candidate.id !== item.targetId) };
+    return { doc: bump(target ? withArchived(kept, [letGoCopy(target, "stale", now)]) : kept) };
   }
   return { doc };
 }
@@ -69,7 +80,11 @@ export function editItem(doc: MemoryDoc, id: string, text: string, now: number):
 export function deleteItem(doc: MemoryDoc, id: string): MemoryDoc {
   const item = doc.items.find((candidate) => candidate.id === id);
   if (!item || item.dispute) return doc;
-  return bump({ ...doc, items: doc.items.filter((candidate) => candidate.id !== id) });
+  const kept = { ...doc, items: doc.items.filter((candidate) => candidate.id !== id) };
+  // A deleted fact or lesson leaves a digest, so a passing mention later does not bring it back. A removal proposal
+  // is only a suggestion about another fact, so deleting it forgets nothing.
+  const text = item.action === "skill" ? (item.skill?.lesson ?? item.text) : item.text;
+  return bump(item.action === "remove" ? kept : withForgotten(kept, item.mateId, text));
 }
 
 function withoutDispute(item: MemoryItem): MemoryItem {
@@ -108,7 +123,8 @@ export function withContradiction(doc: MemoryDoc, item: MemoryItem): { doc: Memo
         if (!ids.has(have.id)) return have;
         if (have.state !== "confirmed" && have.state !== "edited") return have;
         const dispute: MemoryDispute = { otherId: item.id, reason, was: have.state };
-        return { ...have, state: "unreviewed", dispute };
+        // Keep the review state: a confirmed or edited fact stays in recall until the person settles the pair.
+        return { ...have, dispute };
       }),
     },
     item: { ...item, dispute: { otherId: clashes[0].id, reason } },
@@ -139,8 +155,10 @@ export function resolveDispute(doc: MemoryDoc, parkedId: string, choice: Dispute
   if (choice === "use-new") {
     if (!other) return doc;
     const replaced = touch(withoutDispute({ ...item, text: other.text, state: "edited", updatedAt: now }), now);
+    // WP-240: the old wording is let go as contradicted, by the row that now says the new one.
+    const was = letGoCopy(item, "contradicted", now, item.id, true);
     return bump({
-      ...doc,
+      ...withArchived(doc, [was]),
       items: doc.items
         .filter((candidate) => candidate.id !== other.id)
         .map((candidate) => {

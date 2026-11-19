@@ -174,6 +174,12 @@ export type HarnessEvent =
       preview?: ToolPreview;
       /** Exactly what it would run, when the provider can say. */
       call?: ApprovalCall;
+      /** WP-150: true when `call` carries every argument the tool runs with. The phone publishes only those. */
+      callComplete?: boolean;
+      /** WP-122: the child that asked, so the answer is sent to its port. */
+      child?: { name: string; sessionPort: string; detail?: string };
+      /** WP-243: the frozen action (tool name + full arguments, hashed; approvalAction.ts). Filled for a CLI that doesn't. */
+      actionHash?: string;
     }
   | {
       type: "approval.resolved";
@@ -261,10 +267,23 @@ export type HarnessSessionInput = {
    * (src/features/firstmate/model/readOnly.ts); for every CLI the app also checks the checkout after each turn.
    */
   firstMate?: boolean;
+  /**
+   * Hivra WP-143: this session is a Mono, a coding team or one of their workers (features/crew/model/crewSession.ts).
+   * Claude Code starts these on Anthropic with a cheap Explore agent passed as a flag (providers/claude/explorePin.ts).
+   */
+  crew?: boolean;
   onEvent: (event: HarnessEvent) => void;
 };
 
 export type SendTurnInput = HarnessSessionInput & {
+  /** WP-176: who started the turn. Only the composer sends "person"; omitted is automated. */
+  origin?: "person" | "automated";
+  /**
+   * WP-247 / WP-243: Ash typed this turn in the composer himself. Set by the composer's own send and nothing else; a
+   * brief, a steer from another chat, a habit or an app note never carries it. Only such a turn may set or clear the
+   * chat's goal.
+   */
+  byOwner?: boolean;
   text: string;
   attachments?: Attachment[];
   /** Called once the provider has accepted the user turn. */
@@ -297,10 +316,14 @@ export type LiveSettingsInput = {
 export type LiveSettingsOutcome = "applied" | "next-turn" | "unchanged" | "idle";
 
 export type SteerTurnInput = {
+  /** WP-176: who sent the steer. Omitted is automated. */
+  origin?: "person" | "automated";
   sessionId: string;
   cwd: string;
   model: string;
   modelSettings?: Record<string, string>;
+  /** WP-247: Ash typed this steer himself (see SendTurnInput.byOwner). */
+  byOwner?: boolean;
   text: string;
   attachments?: Attachment[];
 };

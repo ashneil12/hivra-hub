@@ -6,16 +6,37 @@
 //! - `checkout_guard`: after each first-mate turn, a change to the project's main checkout that no landing explains is
 //!   flagged and offered for revert.
 //! - `gates` (WP-40): the completion gates and the verdict check a worker's "done" has to pass.
+//! - `fact_gaps` (WP-145): session facts that fail a worker's done claim.
+//! - `done_check` (WP-249): the report's claims checked against the diff in code, before the verdict model.
 //! - the depth cap (`check_depth`): a delegation is never deeper than two (first mate, first mate, workers).
 //! - WP-14's fan-out cap (`check_fanout`): one first mate runs at most `MAX_FANOUT` tasks at once.
+//! - WP-171's `mcp`: delegate_tasks, the multi-part form of delegate_task. Its contract (what each task owns, provides,
+//!   requires and checks), the waves and the checks of what a provider made are in the webview, with the briefs.
 //!
 //! The brief scaffold and the per-CLI read-only launch live in the webview (src/features/firstmate/), where briefs are
 //! written and sessions launched. The role rules are src/features/firstmate/contract.md.
 
+pub mod brief_checks; // SC-4: a brief's runnable check lines, its commit stamp and its do-not-touch list
+pub mod checker; // SC-5: the running checker (re-runs the brief's checks in a read-only copy, on another model family)
+pub mod checker_copy; // SC-5: the read-only copy of a worker's checkout
+pub mod checker_family; // SC-5: which CLI and model checks, by the app's family rule
+pub mod checker_when; // PT-4: when the running checker runs (the app setting beside the family rule)
 pub mod checkout_guard;
+pub mod dismissals; // SC-5: a worker's dismissal of a finding, on one of five grounds
+pub mod done_check;
+pub mod fact_gaps;
 pub mod gates;
+pub mod mcp;
+pub mod open_work; // SC-7: what is still open under a first mate, for the hold on its "done"
+mod proof_gate; // PT-1: the "Proof tools" gate: the open-source tools a project already has, run on a task's change
+pub mod protected_paths;
 pub mod report;
+pub mod rounds; // SC-5: the round cap, the rethink after two failed rounds, and the person's decision after that
+pub mod sensitive; // PT-5: always-gated sensitive paths (keys, permissions, the sandbox, billing, migrations, CI, installers)
+pub mod spec_mcp; // PT-6: spec_start, the one tool that starts a project's spec of record (only when the person asks)
+pub mod spec_record; // PT-6: a brief's spec parts: the project's spec of record, updated before the code
 pub mod status;
+pub mod testing_mode; // SC-3a: the gates a finished task gets, by the project's testing mode
 
 use rusqlite::Connection;
 use tauri::{AppHandle, Emitter, State};
@@ -64,15 +85,23 @@ pub fn check_fanout(conn: &Connection, owner: &str) -> Result<usize, String> {
     Ok(open)
 }
 
+/// Depth, and the fan-out cap when a task would actually start. A pick starts nothing, so it skips the cap.
+pub fn depth_and_fanout(conn: &Connection, owner: &str, fanout: bool) -> Result<usize, String> {
+    let depth = check_depth(conn, owner)?;
+    if fanout {
+        check_fanout(conn, owner)?;
+    }
+    Ok(depth)
+}
+
 #[tauri::command(async)]
 pub fn firstmate_check_depth(
     store: State<'_, SessionStore>,
     owner_session: String,
+    fanout: Option<bool>,
 ) -> Result<usize, String> {
     let conn = store.lock_conn()?;
-    let depth = check_depth(&conn, &owner_session)?;
-    check_fanout(&conn, &owner_session)?;
-    Ok(depth)
+    depth_and_fanout(&conn, &owner_session, fanout.unwrap_or(true))
 }
 
 #[tauri::command(async)]
@@ -133,6 +162,9 @@ pub async fn firstmate_checkout_revert(
         .await
         .map_err(|e| e.to_string())?
 }
+
+#[cfg(test)]
+mod fact_gaps_red_tests; // SC-7: the "no red before the fix" gap
 
 #[cfg(test)]
 mod tests;

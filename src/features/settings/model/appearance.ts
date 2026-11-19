@@ -986,7 +986,8 @@ export function saveProjectRailOpen(value: boolean) {
 }
 
 export function loadSessionSidebarOpen(): boolean {
-  return readFlag(SESSION_SIDEBAR_OPEN_KEY) ?? true;
+  // Hivra (Ash 12 Nov): the Sessions sidebar shows only once Ash opens it, so a start with no saved choice keeps it shut.
+  return readFlag(SESSION_SIDEBAR_OPEN_KEY) ?? !HIVRA_LAYOUT_FIXED;
 }
 
 export function saveSessionSidebarOpen(value: boolean) {

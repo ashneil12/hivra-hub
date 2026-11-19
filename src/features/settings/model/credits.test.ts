@@ -1,7 +1,7 @@
 // WP-08: README, NOTICE, SOURCES.md and the Credits view must list the same sources. Edit docs/hivra/credits.json and
 // the docs together; this test names whichever one drifted.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
@@ -76,6 +76,28 @@ describe("credits", () => {
       if (!plannedAs(c)) continue;
       for (const path of c.where.split(",").map((part) => part.trim()).filter(Boolean)) {
         expect(existsSync(resolve(process.cwd(), path)), `${c.name} is copied to ${path}`).toBe(false);
+      }
+    }
+  });
+
+  it("keeps Row-Bot's LICENSE beside every file translated from it, and names it in the NOTICE and the credits", () => {
+    const licence = read("src/features/memory/model/LICENSE.row-bot");
+    expect(licence).toContain("Apache License");
+    expect(licence).toContain("Version 2.0, January 2004");
+    expect(licence).toContain("Copyright 2026 Row-Bot Contributors");
+    const notice = read("NOTICE");
+    const rowBot = CREDITED_COMPONENTS.filter((c) => c.url === "https://github.com/siddsachar/row-bot");
+    expect(rowBot.length).toBeGreaterThan(0);
+    for (const c of rowBot) {
+      const files = c.where.split(",").map((part) => part.trim()).filter(Boolean);
+      const code = files.filter((file) => !file.includes("LICENSE"));
+      expect(code.length, `${c.name} names the file it was translated into`).toBeGreaterThan(0);
+      for (const file of code) {
+        const copy = `${dirname(file)}/LICENSE.row-bot`;
+        expect(existsSync(resolve(process.cwd(), copy)), `${c.name}: ${copy} sits beside ${file}`).toBe(true);
+        expect(files, `${c.name} names ${copy} in credits.json`).toContain(copy);
+        const entry = notice.slice(notice.indexOf(`- ${c.name}\n`)).split("\n\n")[0];
+        expect(entry, `${c.name} names ${copy} in the NOTICE`).toContain(copy);
       }
     }
   });

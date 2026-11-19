@@ -44,14 +44,14 @@ afterEach(() => {
 
 it("says in plain words when a page asks for an address nobody connected", () => {
   expect(fetchRefusal("https://api.example.com/v1")).toBe(
-    "This page isn't connected to api.example.com, so it can't read it. Connect the source on the page first (Pages → the page → Connected sources).",
+    "This hub isn't connected to api.example.com, so it can't read it. Connect the source on the hub first (Hubs → the hub → Connected sources).",
   );
   expect(fetchRefusal("not a url")).toContain("https://");
 });
 
 it("refuses an address the page wasn't connected to, and never goes out", async () => {
   connectSource("page-a", "https://api.example.com/v1");
-  await expect(pageFetch("page-a", { url: "https://other.example.com" })).rejects.toThrow("This page isn't connected to other.example.com");
+  await expect(pageFetch("page-a", { url: "https://other.example.com" })).rejects.toThrow("This hub isn't connected to other.example.com");
   await expect(pageFetch("page-a", { url: "https://api.example.com/v2" })).rejects.toThrow("isn't connected");
   expect(sent).toEqual([]);
 });
@@ -124,7 +124,7 @@ it("keeps a source's token in the app's store, never in what the page sends", as
 it("gives the bridge one handler, and its refusal reads as the plain reason", async () => {
   const handlers = pageHttpHandlers("page-a");
   expect(Object.keys(handlers)).toEqual(["http.fetch"]);
-  await expect(handlers["http.fetch"]({ url: "https://api.example.com/v1" })).rejects.toThrow("This page isn't connected to api.example.com");
+  await expect(handlers["http.fetch"]({ url: "https://api.example.com/v1" })).rejects.toThrow("This hub isn't connected to api.example.com");
   connectSource("page-a", "https://api.example.com/v1");
   await expect(handlers["http.fetch"]({ url: "https://api.example.com/v1" })).resolves.toMatchObject({ status: 200 });
 });

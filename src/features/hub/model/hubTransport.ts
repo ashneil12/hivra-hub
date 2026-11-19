@@ -30,7 +30,7 @@ export function toHubError(raw: unknown): HubCallError {
       return new HubCallError(kind as HubErrorKind, message);
     }
   }
-  return new HubCallError("unreachable", raw instanceof Error && raw.message ? raw.message : "The hub couldn't be read.");
+  return new HubCallError("unreachable", raw instanceof Error && raw.message ? raw.message : "The app couldn't be read.");
 }
 
 /** One change from the transport's feed. */

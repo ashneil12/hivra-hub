@@ -1,4 +1,4 @@
-import { isOwnMessage } from "../../sessions/model/messageQueue";
+import { isOwnMessage, queueStatusOnEnqueue } from "../../sessions/model/messageQueue";
 import { cutTestOutput } from "./testOutput";
 import type { ControlOutcome } from "../../orchestration/model/orchestration";
 import {
@@ -414,7 +414,7 @@ export function completionMessage(
   // WP-40: finished, but the checks couldn't say the brief was met. Not done until its first mate accepts or refuses it.
   const undecided = results.filter((result) => result.gatesNote);
   const gatesLine = undecided.length
-    ? ` NOT DONE: ${nameList(undecided.map((result) => result.title))} finished, but the checks couldn't say the brief was met (${undecided.map((result) => result.gatesNote).join("; ")}). Accept or refuse with task_accept; don't report it as done.`
+    ? ` NOT DONE: ${nameList(undecided.map((result) => result.title))} finished, but the checks couldn't say the brief was met (${undecided.map((result) => result.gatesNote).join("; ")}). Accept or refuse with task_accept, giving a reason either way; don't report it as done.`
     : "";
   // r55 (board I5): a done claim carries what was run and how sure it is. The Lead passes that on, never upgrades it. A
   // claim with thin evidence (likely) reaches it as "not yet confirmed", with what is missing.
@@ -633,6 +633,19 @@ export class MonoSessionCompletionBatches {
     }
   }
 
+  /**
+   * SC-19: this request's report is still waiting in a batch that hasn't reported it yet (its turn runs, or the window
+   * for the turn's other results is open). When its owner is replaced meanwhile (a reset), the batch will report it to
+   * the new owner itself, so the app doesn't queue it a second time.
+   */
+  holds(requestId: string): boolean {
+    for (const batch of this.batches.values()) {
+      const entry = batch.results.get(requestId);
+      if (entry && !entry.sent) return true;
+    }
+    return false;
+  }
+
   closeInactive(isActive: (origin: MonoCompletionOrigin) => boolean) {
     for (const [key, batch] of this.batches) {
       if (!batch.closed && !isActive(batch.origin)) batch.closed = true;
@@ -830,6 +843,6 @@ export function enqueueMonoSessionCompletion(
   return {
     ...mono,
     queuedMessages: at < 0 ? [...queue, message] : [...queue.slice(0, at), message, ...queue.slice(at)],
-    queueStatus: mono.queueStatus === "paused" ? "paused" : "active",
+    queueStatus: queueStatusOnEnqueue(mono),
   };
 }

@@ -81,6 +81,11 @@ export const PALETTE_APP_ACTIONS = [
   "archive-chat",
   "stop-chat",
   "next-chat-worktree",
+  "fork-from-here",
+  "report-problem",
+  "computer-use-observe",
+  "computer-use-off",
+  "computer-use-follow",
 ] as const satisfies readonly PaletteAppAction[];
 
 const APP_ACTIONS = new Set<string>(PALETTE_APP_ACTIONS);

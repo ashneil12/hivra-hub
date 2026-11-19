@@ -1,3 +1,5 @@
+import { setChiefLists, useChiefLists } from "../../asks/model/chiefLists";
+import { setShowCodeTools, useShowCodeTools } from "../model/codeTools";
 import { activeThemeOf, allSchemes, loadActiveSchemeId, removeCustomScheme, saveActiveSchemeId, saveCustomScheme, themesOf, type SchemeTheme, type ThemeScheme } from "../model/themeSchemes";
 import { activeThemeChoice, applyOffer, discardOffer, endPreview, offeredPreviewLook, pickTheme, previewOffer, scanMonoThemes, themeOffers, themePreview, themeRefusals, useThemesVersion } from "../model/themeFiles";
 import { UserNameField } from "../../hub/ui/UserNameField";
@@ -6,6 +8,7 @@ import { applyTheme, discardTheme, MAX_THEMES_PER_SCHEME, offerTheme, pendingThe
 import { ChangesPage } from "../../hub/ui/ChangesPage";
 import { DecisionsPage } from "../../hub/ui/DecisionsPage";
 import { ActivityPage } from "../../activity/ui/ActivityPage";
+import { WorkLogPanel } from "../../workLog/ui/WorkLogPanel";
 // WP-166: Settings, Repo watch. The pin list for this project.
 import { RepoWatchSettings } from "../../repoWatch/ui/RepoWatchSettings";
 // WP-108: Settings, Usage. Counts and names only.
@@ -14,22 +17,43 @@ import { UsagePage } from "../../usage/ui/UsagePage";
 import { ConnectedApps } from "../../outside/ui/ConnectedApps";
 import { DashboardsPage } from "../../hub/ui/DashboardsPage";
 import { ConnectorsPage } from "../../hub/ui/ConnectorsPage";
+// WP-92: the keys agents ask for and use without seeing them.
+import { SecretsPage } from "../../secrets/ui/SecretsPage";
 import { PortablePage } from "../../portable/ui/PortablePage";
 // WP-75: checked backups.
 import { BackupsPage } from "../../backups/ui/BackupsPage";
 import { TrashPage } from "../../trash/ui/TrashPage";
 import { HistoryImportScreen } from "../../historyImport/ui/HistoryImportScreen";
+import { ChatImportSettings } from "../../chatImport/ui/ChatImportSettings";
 import { MemorySettingsScreen } from "../../memory/ui/MemorySettingsScreen";
 import { TeamsPage } from "../../hub/ui/TeamsPage";
 import { PluginsPage } from "../../plugins/ui/DiscoverPage";
+import { CrewDefaults } from "../../crew/ui/CrewDefaults";
 import { CrewRulesPage } from "../../crew/ui/CrewRulesPage";
+import { hubProjectIdFor } from "../../hub/model/hubData";
 import { GateSetting } from "../../delivery-gate/ui/GateSetting";
+import { TestingModeSetting } from "../../delivery/ui/TestingModeSetting"; // SC-3a
+import { ProofToolsSetting } from "../../proofTools/ui/ProofToolsSetting"; // PT-2
+import { CheckerFamilySetting } from "./CheckerFamilySetting"; // SC-5
+import { CheckerWhenSetting } from "./CheckerWhenSetting"; // PT-4
+// WP-162: update a conflicting package from main. Off until the person turns it on.
+import { ProgrammeUpdateSetting } from "../../programme/ui/ProgrammeUpdateSetting";
 // WP-85: show Claude sessions started in a terminal.
 import { TerminalSessionsSetting } from "../../terminalMirror/ui/TerminalSessionsSetting";
+// WP-134b: More agents, off until the person switches it on.
+import { MoreAgentsSettings } from "../../registry/ui/MoreAgentsSettings";
 // WP-84: the project's default phase path.
 import { PhaseSettings } from "../../phases/ui/PhaseSettings";
+// WP-104: copy diagnostics, and the health list.
+import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
+import { CommitGuardAllowsPanel } from "../../commit-guard/ui/CommitGuardAllowsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+// WP-156: standing answers stay off until this setting is on.
+import { StandingAnswersSetting } from "./StandingAnswersSetting";
+// WP-164: quiet hours for routine programme notices.
+import { QuietHoursSetting } from "../../notifications/ui/QuietHoursSetting";
+import { QUIET_HOURS_DESCRIPTION } from "../../notifications/model/quietHours";
 import { GithubIssuesSetting } from "../../github-issues/ui/GithubIssuesSetting";
 import { appIdentity, buildLine } from "../../../app/model/appIdentity";
 
@@ -41,6 +65,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { createPortal } from "react-dom";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { ConnectionsSettings } from "../../connections/ui/ConnectionsSettings";
+// WP-61: Hivra Cloud, off until the person turns it on.
+import { CloudSettings } from "../../hivraCloud/ui/CloudSettings";
 import { MobileSettings } from "../../mobile/ui/MobileSettings";
 import { ask } from "@tauri-apps/plugin-dialog";
 import {
@@ -81,7 +107,18 @@ import {
 } from "../../../shared/ui/ColorPickerPopover";
 import { Popover } from "../../../shared/ui/Popover";
 import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
+import {
+  agentInstallPage,
+  agentSignIn,
+  canInstallAgent,
+  cancelAgentInstall,
+  installAgent,
+  useAgentInstall,
+  type AgentInstallState,
+} from "../../providers/model/agentInstall";
 import { JiraSettings } from "./JiraSettings";
+import { AgentSandboxSetting } from "./AgentSandboxSetting";
+import { ComputerUseSetting } from "../../computerUse/ui/ComputerUseSetting";
 import {
   CONTEXT_CEILING_CHOICES,
   DEFAULT_CONTEXT_CEILING,
@@ -325,6 +362,13 @@ import {
   useShowRemainingUsage,
 } from "../model/displayPrefs";
 import {
+  DICTATION_SETTING_DESCRIPTION,
+  DICTATION_SETTING_LABEL,
+  dictationSettingIsShown,
+  loadDictationSetting,
+  saveDictationSetting,
+} from "../model/dictationSetting";
+import {
   accountStatus,
   accountUsageKey,
   useProviderAccountUsage,
@@ -386,11 +430,14 @@ import {
   monoLook,
   monoProjectsPhrase,
   monosSnapshot,
+  saveMonoName,
   subscribeMonos,
   updateMono,
   type Mono,
 } from "../../monos/model/mono";
 import { resetMonoDefaults } from "../../monos/model/monoFiles";
+import { ModelPicker } from "../../sessions/ui/ModelPicker";
+import { pickChief } from "../../home/model/chief";
 import { ConfirmReset } from "../../monos/ui/ConfirmReset";
 import {
   filterKeybindings,
@@ -485,6 +532,10 @@ import {
 import { SkillsPage } from "../../skills/ui/SkillsPage";
 import { ProjectNotificationSettings } from "../../notifications/ui/ProjectNotificationSettings";
 import { WorktreesPage } from "../../source-control/ui/WorktreesPage";
+// WP-129: who writes titles, commits, pull request text and branch names.
+import { TeamWorkspaceSetting } from "./TeamWorkspaceSetting";
+import { TextGenerationSetting } from "./TextGenerationSetting";
+import { ModelConnectionsSetting } from "./ModelConnectionsSetting";
 import {
   removeWorktree,
   type RemoveWorktree,
@@ -538,6 +589,29 @@ type Props = {
   collapsedProjectRailMode?: CollapsedProjectRailMode;
   onCollapsedProjectRailModeChange?: (mode: CollapsedProjectRailMode) => void;
 };
+
+/** Dropwave: the switch that brings Explorer and Changes back to a project's sidebar. */
+function CodeToolsSetting() {
+  const on = useShowCodeTools();
+  return (
+    <div data-setting-id="show-code-tools" className="mb-6 flex items-center gap-4 rounded-lg border border-stroke px-4 py-3">
+      <div className="min-w-0 flex-1">
+        <p className="text-[13px] font-medium text-content">Show code tools</p>
+        <p className="text-[12px] text-content/60">Explorer, Changes and the worktree picker in each project's sidebar. Off keeps projects simple.</p>
+      </div>
+      <button
+        type="button"
+        role="switch"
+        aria-checked={on}
+        aria-label="Show code tools"
+        onClick={() => setShowCodeTools(!on)}
+        className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${on ? "bg-accent" : "bg-content/20"}`}
+      >
+        <span className={`absolute top-0.5 size-4 rounded-full bg-white transition-[left] ${on ? "left-4.5" : "left-0.5"}`} />
+      </button>
+    </div>
+  );
+}
 
 export function SettingsView({
   section,
@@ -700,9 +774,17 @@ export function SettingsView({
               ) : null}
               {/* WP-84: how much process a task gets, for this project. */}
               {section === "general" ? <PhaseSettings projectKey={cwd} /> : null}
+              {/* WP-104: diagnostics a person can send, and the health list. */}
+              {section === "general" ? <DiagnosticsPanel /> : null}
+              {/* WP-200: the lines the secret check lets through because a person allowed them. */}
+              {section === "general" ? <CommitGuardAllowsPanel /> : null}
               {section === "connections" ? (
                 <div className="flex flex-col gap-10">
+                  {/* WP-61: Hivra Cloud, off until the person turns it on. */}
+                  <CloudSettings />
                   <ConnectionsSettings />
+                  {/* WP-80: share projects with a team's server. Off until the person turns it on. */}
+                  <TeamWorkspaceSetting />
                   <MobileSettings />
                 </div>
               ) : null}
@@ -714,6 +796,10 @@ export function SettingsView({
               {section === "activity" ? (
                 // WP-78: Settings → Activity.
                 <ActivityPage onOpenSession={onOpenSession} />
+              ) : null}
+              {section === "work-log" ? (
+                // WP-157: Settings → Work log.
+                <WorkLogPanel />
               ) : null}
               {section === "repo-watch" ? (
                 // WP-166: project pin list and the weekly repo watch.
@@ -732,14 +818,19 @@ export function SettingsView({
               {/* WP-75: checked backups, one item or everything. */}
               {section === "backups" ? <BackupsPage /> : null}
               {section === "history" ? (
-                // WP-50: past chats, only with a person's OK, drafted for review.
-                <HistoryImportScreen />
+                // WP-50: past chats, only with a person's OK, drafted for review. Above it, bringing them in as chats.
+                <div className="flex flex-col gap-10">
+                  <ChatImportSettings />
+                  <HistoryImportScreen />
+                </div>
               ) : null}
               {section === "memory" ? (
                 // WP-51: what a first mate remembers, for the person to review.
                 <MemorySettingsScreen />
               ) : null}
               {section === "connectors" ? <ConnectorsPage /> : null}
+              {/* WP-92: Settings > Secrets. */}
+              {section === "secrets" ? <SecretsPage project={cwd} /> : null}
               {section === "teams" ? <TeamsPage /> : null}
               {section === "plugins" ? (
                 // WP-32: Discover. Listing reads indexes; it never runs plugin code.
@@ -748,10 +839,22 @@ export function SettingsView({
               ) : null}
               {section === "crew" ? (
                 <>
+                  {/* WP-141: crew defaults, above the advanced rules. */}
+                  <CrewDefaults cwd={cwd} projectId={cwd ? hubProjectIdFor(cwd) : undefined} />
                   {/* WP-13: crew rules, the ordered list a person edits. */}
-                  <CrewRulesPage cwd={cwd} />
+                  <CrewRulesPage cwd={cwd} hideWorkerDefault />
                   {/* WP-81: check work before it goes to GitHub. Off until the person turns it on. */}
                   <GateSetting project={cwd} />
+                  {/* SC-3a: how much each task is tested before it counts as done. Test at ship until chosen. */}
+                  <TestingModeSetting project={cwd} recents={recents} />
+                  {/* PT-2: the open-source proof tools that fit the project, with a per-project switch for each one it has. */}
+                  <ProofToolsSetting project={cwd} recents={recents} />
+                  {/* SC-5: which model family checks a finished task. A different one until chosen. */}
+                  <CheckerFamilySetting />
+                  {/* PT-4: when the running checker runs. It follows the testing mode until chosen. */}
+                  <CheckerWhenSetting />
+                  {/* WP-162: update a conflicting package from main. Off until the person turns it on. */}
+                  <ProgrammeUpdateSetting project={cwd} />
                   {/* WP-77: labelled GitHub issues become tasks. Off until the person turns it on. */}
                   <GithubIssuesSetting project={cwd} />
                 </>
@@ -763,8 +866,15 @@ export function SettingsView({
                 <McpSettings cwd={cwd} recents={recents} />
               ) : null}
               {section === "providers" ? (
-                <ProvidersPage cwd={cwd} recents={recents} />
+                <>
+                  {/* Which coding tool runs on which sign-in or saved model, extra connections marked. */}
+                  <ModelConnectionsSetting />
+                  {/* WP-129: who writes titles, commits, pull request text and branch names. */}
+                  <TextGenerationSetting />
+                  <ProvidersPage cwd={cwd} recents={recents} />
+                </>
               ) : null}
+              {section === "worktrees" ? <CodeToolsSetting /> : null}
               {section === "worktrees" ? (
                 <WorktreesPage
                   cwd={cwd}
@@ -961,6 +1071,70 @@ function SettingsSearch({
   );
 }
 
+function ChiefListsSetting() {
+  const place = useChiefLists();
+  return (
+    <Segmented
+      label="Show the three lists"
+      value={place}
+      options={[
+        { value: "top", label: "At the top" },
+        { value: "side", label: "Beside the chat" },
+        { value: "off", label: "Off" },
+      ]}
+      onChange={setChiefLists}
+    />
+  );
+}
+
+function ChiefModelSetting() {
+  useSyncExternalStore(subscribeMonos, monosSnapshot, monosSnapshot);
+  const chief = pickChief(listMonos());
+  if (!chief) return <span className="text-[12px] text-content/45">No Chief of Staff yet</span>;
+  const engine = chief.engine && Object.prototype.hasOwnProperty.call(HARNESS_TITLE, chief.engine) ? (chief.engine as HarnessId) : undefined;
+  const last = loadLastModelChoice();
+  const harness = engine ?? last?.harness ?? "claude";
+  const model = resolveModel(harness, engine ? chief.engineModel : last?.model).id;
+  return (
+    <div className="flex items-center gap-2" data-chief-model>
+      <ModelPicker
+        harness={harness}
+        model={model}
+        values={{}}
+        hideSettings
+        hotkeys={false}
+        side="bottom"
+        onChange={(nextHarness, nextModel) =>
+          updateMono(chief.id, (current) => ({ ...current, engine: nextHarness, engineModel: resolveModel(nextHarness, nextModel).id }))
+        }
+        onSettingsChange={() => undefined}
+      />
+    </div>
+  );
+}
+
+/** What a new plain chat starts on: the same default the Providers page sets, here where Ash looks for it. */
+function NewChatModelSetting() {
+  const [choice, setChoice] = useState(loadLastModelChoice);
+  const harness = choice?.harness ?? "claude";
+  const model = resolveModel(harness, choice?.model).id;
+  return (
+    <ModelPicker
+      harness={harness}
+      model={model}
+      values={{}}
+      hideSettings
+      hotkeys={false}
+      side="bottom"
+      onChange={(nextHarness, nextModel) => {
+        saveLastModelChoice(nextHarness, nextModel);
+        setChoice(loadLastModelChoice());
+      }}
+      onSettingsChange={() => undefined}
+    />
+  );
+}
+
 function GeneralPage({
   onOpenWhatsNew,
 }: {
@@ -1050,6 +1224,21 @@ function GeneralPage({
 
   return (
     <>
+      {/* Ash (12 Nov): "There's no way to change the default runtime". First on the page. */}
+      <Group title="Models" description="What new chats start on. In a first mate's chat, Make default beside its model does the same for it.">
+        <Row id="chief-model" label="Chief of Staff" description="What its new chats run on.">
+          <ChiefModelSetting />
+        </Row>
+        <Row id="new-chat-model" label="New chats" description="What a new chat starts on.">
+          <NewChatModelSetting />
+        </Row>
+      </Group>
+      {/* Ash (13 Nov): "both a and c with customisation". Where Needs you, You asked and Working show in its chat. */}
+      <Group title="Chief of Staff's chat" description="Needs you, You asked and Working, without leaving the chat.">
+        <Row id="chief-lists" label="Show the three lists" description="As buttons at the top of the chat, or in the panel beside it.">
+          <ChiefListsSetting />
+        </Row>
+      </Group>
       <Group title="You" description="How your team of Monos addresses you.">
         <Row
           id="user-name"
@@ -1069,6 +1258,8 @@ function GeneralPage({
           <DailySummarySetting />
         </Row>
       </Group>
+      {/* WP-156: standing answers stay off until this is on. */}
+      <StandingAnswersSetting />
       <Group
         title="Alerts"
         description="How MonoCode reaches you while you are looking somewhere else."
@@ -1102,6 +1293,10 @@ function GeneralPage({
             on={notificationsEnabled}
             onChange={onNotificationsEnabled}
           />
+        </Row>
+        {/* WP-164: what waits and what comes through is spelled out in QUIET_HOURS_DESCRIPTION. */}
+        <Row id="quiet-hours" label="Quiet hours" description={QUIET_HOURS_DESCRIPTION}>
+          <QuietHoursSetting />
         </Row>
       </Group>
 
@@ -1165,6 +1360,8 @@ function GeneralPage({
             />
           </Row>
         )}
+        {IS_MAC && <AgentSandboxSetting />}
+        {IS_MAC && <ComputerUseSetting />}
         <Row
           id="working-agents"
           label="Working agents"
@@ -1213,6 +1410,17 @@ function ChatPage() {
   const [formatOnSave, setFormatOnSave] = useState(loadFormatOnSave);
   const [composerRunner, setComposerRunner] = useState(loadComposerRunner);
   const composerAutocorrect = useComposerAutocorrect();
+  // WP-131c: dictation is off until this is turned on. The app keeps the file.
+  const [dictationOn, setDictationOn] = useState(false);
+  useEffect(() => {
+    let dead = false;
+    void loadDictationSetting().then((on) => {
+      if (!dead) setDictationOn(on);
+    });
+    return () => {
+      dead = true;
+    };
+  }, []);
   // WP-113: optional settle, snooze and re-sort. Off keeps today's list.
   const chatListInbox = useChatListInbox();
   const [gridArcadeEnabled, setGridArcadeEnabled] = useState(
@@ -1383,6 +1591,22 @@ function ChatPage() {
             onChange={saveComposerAutocorrect}
           />
         </Row>
+        {dictationSettingIsShown() ? (
+          <Row
+            id="composer-dictation"
+            label={DICTATION_SETTING_LABEL}
+            description={DICTATION_SETTING_DESCRIPTION}
+          >
+            <Toggle
+              label={DICTATION_SETTING_LABEL}
+              on={dictationOn}
+              onChange={(on) => {
+                setDictationOn(on);
+                void saveDictationSetting(on).then(setDictationOn);
+              }}
+            />
+          </Row>
+        ) : null}
       </Group>
 
       <Group
@@ -4189,6 +4413,9 @@ function ProvidersPage({
         })}
       </Group>
 
+      {/* WP-134b: More agents, off until the person switches it on. */}
+      <MoreAgentsSettings cwd={cwd} />
+
       <Group title="Advanced">
         <Row
           id="idle-agents"
@@ -4674,6 +4901,9 @@ function ProviderRow({
   const available = isHarnessAvailable(harness);
   const current =
     models.length > 0 ? resolveModel(harness, selectedModel) : null;
+  const install = useAgentInstall(harness);
+  const installing = install?.status === "running";
+  const installPage = agentInstallPage(harness);
 
   useEffect(() => {
     if (!available || hasLiveCatalog(harness)) return;
@@ -4699,7 +4929,35 @@ function ProviderRow({
           ? `${models.length} ${models.length === 1 ? "model" : "models"} available.`
           : harnessUnavailableHint(harness)
       }
+      below={install ? <AgentInstallLog harness={harness} state={install} /> : undefined}
     >
+      {!available && canInstallAgent(harness) ? (
+        installing ? (
+          <SecondaryButton
+            data-agent-install-cancel={harness}
+            onClick={() => cancelAgentInstall(harness)}
+          >
+            Cancel
+          </SecondaryButton>
+        ) : (
+          <SecondaryButton
+            data-agent-install={harness}
+            onClick={() => void installAgent(harness)}
+          >
+            {install?.status === "failed" || install?.status === "cancelled"
+              ? "Try again"
+              : "Install"}
+          </SecondaryButton>
+        )
+      ) : null}
+      {!available && installPage ? (
+        <SecondaryButton
+          data-agent-install-page={harness}
+          onClick={() => void openUrl(installPage).catch(() => undefined)}
+        >
+          Open install page
+        </SecondaryButton>
+      ) : null}
       {current ? (
         <Select
           label={`${HARNESS_TITLE[harness]} model`}
@@ -4739,6 +4997,61 @@ function ProviderRow({
         </div>
       ) : null}
     </Row>
+  );
+}
+
+/** An install's last lines while it runs, then how it ended and how to sign in. */
+function AgentInstallLog({
+  harness,
+  state,
+}: {
+  harness: HarnessId;
+  state: AgentInstallState;
+}) {
+  const signIn = agentSignIn(harness);
+  const [copied, setCopied] = useState(false);
+  const showLines = state.status !== "installed" && state.lines.length > 0;
+  return (
+    <div data-agent-install-log={harness} className="space-y-2">
+      {showLines ? (
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-content/[0.04] px-3 py-2 font-mono text-[11px] leading-4 text-content/70 ring-1 ring-inset ring-content/[0.06]">
+          {state.lines.join("\n")}
+        </pre>
+      ) : null}
+      {state.status === "running" ? (
+        <p className="text-[12px] text-content/60">Installing…</p>
+      ) : state.status === "installed" ? (
+        <div className="flex flex-wrap items-center gap-2 text-[12px] text-content/60">
+          <span className="text-content">Installed.</span>
+          {signIn ? (
+            <>
+              <span>To sign in, run</span>
+              <code className="rounded bg-content/[0.06] px-1.5 py-0.5 font-mono text-[11px] text-content/80">
+                {signIn.command}
+              </code>
+              <span>in a terminal{signIn.then ? `, ${signIn.then}` : ""}.</span>
+              <SecondaryButton
+                data-agent-signin-copy={harness}
+                onClick={() => {
+                  void navigator.clipboard
+                    .writeText(signIn.command)
+                    .then(() => setCopied(true))
+                    .catch(() => undefined);
+                }}
+              >
+                {copied ? "Copied" : "Copy"}
+              </SecondaryButton>
+            </>
+          ) : null}
+        </div>
+      ) : state.status === "cancelled" ? (
+        <p className="text-[12px] text-content/60">Install cancelled.</p>
+      ) : (
+        <p className="text-[12px] text-content/60">
+          {state.error ?? "The install didn't finish."}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -4939,21 +5252,34 @@ function MonosPage() {
 
   return (
     <>
-      <Group title="Monos">
+      <Group
+        id="mono-list"
+        title="Your first mates"
+        description="Click a name to change it. The Chief of Staff can be renamed too. Add a first mate with the plus next to First mates in a project's sidebar."
+      >
+        {monos.length ? (
+          monos.map((mono) => <MonoRow key={mono.id} mono={mono} />)
+        ) : (
+          <p className="px-4 py-3.5 text-[12px] text-content/45">
+            No first mates yet.
+          </p>
+        )}
+      </Group>
+      <Group title="In the sidebar">
         <Row
           id="monos-enabled"
-          label="Show monos"
-          description="Agents of your own on the project rail. Each works on the projects you give it, remembers what matters and picks up habits it runs on its own. Turn this off to hide them."
+          label="Show first mates"
+          description="Your Chief of Staff and first mates in the sidebar. Each works on the projects you give it and remembers what matters. Turn this off to hide them."
         >
-          <Toggle label="Show monos" on={enabled} onChange={saveMonosEnabled} />
+          <Toggle label="Show first mates" on={enabled} onChange={saveMonosEnabled} />
         </Row>
         <Row
           id="rail-monos-pinned"
-          label="Pin monos to the icon rail"
-          description="When the project rail is collapsed to icons, show each Mono at the top of the rail, above a divider, instead of inside the project picker."
+          label="Pin first mates to the icon rail"
+          description="When the sidebar is collapsed to icons, show each first mate at the top of it instead of inside the project picker."
         >
           <Toggle
-            label="Pin monos to the icon rail"
+            label="Pin first mates to the icon rail"
             on={railPinned}
             onChange={saveRailMonosPinned}
             disabled={!enabled}
@@ -4963,7 +5289,7 @@ function MonosPage() {
           <Row
             id="mono-menu-bar-icon"
             label="Menu bar icon"
-            description="Chat with a Mono or open the quick composer from the macOS menu bar. Turn this off to hide the icon."
+            description="Chat with a first mate or open the quick composer from the macOS menu bar. Turn this off to hide the icon."
           >
             <Toggle
               label="Menu bar icon"
@@ -4973,46 +5299,76 @@ function MonosPage() {
           </Row>
         )}
       </Group>
-      <Group
-        id="mono-list"
-        title="Your monos"
-        description="Choose whether new sessions started by each Mono appear in the sidebar. Hidden sessions remain saved and can be opened from the Mono's chat. Add a Mono with the plus on the rail and choose its projects from its details."
-      >
-        {monos.length ? (
-          monos.map((mono) => <MonoRow key={mono.id} mono={mono} />)
-        ) : (
-          <p className="px-4 py-3.5 text-[12px] text-content/45">
-            No monos yet.
-          </p>
-        )}
-      </Group>
     </>
   );
 }
 
 function MonoRow({ mono }: { mono: Mono }) {
   const look = monoLook(mono);
+  // Rename where it is listed (Ash, 11 Nov: "somewhere to go and rename your chief of staff").
+  const [renaming, setRenaming] = useState(false);
+  const cancelled = useRef(false);
   return (
     <Row
       label={
-        <span className="flex min-w-0 items-center gap-2">
+        <span className="flex min-w-0 items-center gap-2" data-settings-mono={mono.id}>
           <PixelMascot
             name={look.mascot}
             color={look.color}
             still
             className="size-4 shrink-0"
           />
-          <span className="truncate">{look.name}</span>
+          {renaming ? (
+            <input
+              autoFocus
+              data-settings-mono-name-input
+              aria-label={`Name for ${look.name}`}
+              maxLength={40}
+              defaultValue={look.name}
+              onFocus={(event) => event.currentTarget.select()}
+              onBlur={(event) => {
+                const name = event.currentTarget.value.trim();
+                if (!cancelled.current && name && name !== look.name) saveMonoName(mono.id, name);
+                cancelled.current = false;
+                setRenaming(false);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  cancelled.current = true;
+                  event.currentTarget.blur();
+                }
+              }}
+              className="h-6 w-[220px] min-w-0 rounded bg-content/8 px-1.5 text-[13px] text-content outline-none ring-1 ring-content/25"
+            />
+          ) : (
+            <button
+              type="button"
+              data-settings-mono-rename
+              title="Rename"
+              aria-label={`Rename ${look.name}`}
+              onClick={() => setRenaming(true)}
+              className="group/name -mx-1 flex min-w-0 items-center gap-1.5 rounded px-1 hover:bg-content/8"
+            >
+              <span className="truncate">{look.name}</span>
+              <Pencil className="size-3 shrink-0 text-content/40 group-hover/name:text-content" strokeWidth={1.75} />
+            </button>
+          )}
+          {mono.captain && look.name !== "Chief of Staff" ? <span className="shrink-0 rounded bg-content/8 px-1.5 py-0.5 text-[11px] text-content/60">Chief of Staff</span> : null}
         </span>
       }
       description={
-        look.projects.length
-          ? `Works on ${monoProjectsPhrase(look.projects)}`
-          : "No projects yet"
+        mono.captain
+          ? "Runs things for you across every project"
+          : look.projects.length
+            ? `Works on ${monoProjectsPhrase(look.projects)}`
+            : "No projects yet"
       }
     >
       <span className="text-[12px] leading-5 text-content/50">
-        Show Mono spawned session on the sidebar
+        Show the chats it starts in the sidebar
       </span>
       <Toggle
         label={`Show sessions started by ${look.name} in sidebar`}
@@ -5025,11 +5381,11 @@ function MonoRow({ mono }: { mono: Mono }) {
         }
       />
       <ConfirmReset
-        label="Reset Mono"
+        label="Reset first mate"
         title={`Reset ${look.name} to its defaults?`}
         body={`Its soul goes back to the default and its name to ${defaultMonoName(look.mascot)}. Changes to its soul can't be recovered.`}
         kept="Its conversation, projects, memory and habits will be kept."
-        failure="Could not reset the Mono."
+        failure="Could not reset this first mate."
         onConfirm={() => resetMonoDefaults(mono.id)}
       >
         {(open, ref) => (
@@ -5124,23 +5480,26 @@ function Row({
   label,
   description,
   children,
+  below,
 }: {
   /** Matches a `SETTINGS_INDEX` id so search can scroll here. */
   id?: string;
   label: ReactNode;
   description?: string;
   children?: ReactNode;
+  /** Full-width content under the row (an install's log). */
+  below?: ReactNode;
 }) {
   const revealed = useContext(RevealedSetting);
   const flash = id != null && revealed === id;
 
-  return (
+  const row = (
     <div
       id={id ? settingDomId(id) : undefined}
       data-setting-id={id}
-      className={`settings-row flex items-start gap-6 border-b border-content/5 px-4 py-3.5 transition-colors last:border-b-0 ${
-        flash ? "bg-accent/10" : ""
-      }`}
+      className={`settings-row flex items-start gap-6 px-4 py-3.5 transition-colors ${
+        below ? "" : "border-b border-content/5 last:border-b-0"
+      } ${flash ? "bg-accent/10" : ""}`}
     >
       <div className="min-w-0 flex-1">
         <div className="text-[13px] font-medium text-content">{label}</div>
@@ -5153,6 +5512,13 @@ function Row({
       <div className="settings-row-control flex min-w-0 max-w-[60%] shrink-0 flex-wrap items-center justify-end gap-2">
         {children}
       </div>
+    </div>
+  );
+  if (!below) return row;
+  return (
+    <div className="border-b border-content/5 last:border-b-0">
+      {row}
+      <div className="px-4 pb-3.5">{below}</div>
     </div>
   );
 }

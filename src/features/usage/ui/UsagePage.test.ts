@@ -95,6 +95,20 @@ describe("UsagePage", () => {
     });
   }
 
+  const NOTE = "Estimated cost is what the same use would cost at API prices";
+
+  /** How many times the page-level estimate note is drawn. */
+  function noteCount(): number {
+    return [...container.querySelectorAll("p")].filter((item) => item.textContent?.includes(NOTE)).length;
+  }
+
+  /** Every leaf element that shows a dollar figure. */
+  function dollarFigures(): Element[] {
+    return [...container.querySelectorAll("*")].filter(
+      (element) => element.children.length === 0 && /\$\d/.test(element.textContent ?? ""),
+    );
+  }
+
   it("shows today, the last 7 days and the last 30 days, and never the prompt", async () => {
     await render({ sessions: seeded(), now: NOW });
 
@@ -109,6 +123,10 @@ describe("UsagePage", () => {
     expect(container.textContent).toContain("sonnet-5");
     expect(container.textContent).toContain("gpt-5");
     expect(container.textContent).toContain("$0.50");
+    expect(container.textContent).toContain("Estimated cost");
+    expect(container.textContent).toContain("what the same use would cost at API prices");
+    expect(container.textContent).toContain("flat fee");
+    expect(container.textContent).not.toContain("estimated, not your bill");
     expect(container.textContent).toContain("Cost reported for 1 of 2 turns");
     expect(container.textContent).toContain("Cost not reported by this engine");
     expect(container.textContent).not.toContain(secret);
@@ -124,6 +142,65 @@ describe("UsagePage", () => {
     await render({ sessions: [], now: NOW });
     expect(container.textContent).toContain("No turns in the last 30 days.");
     expect(container.textContent).toContain("No turns yet");
+    expect(container.textContent).not.toContain("estimated, not your bill");
+  });
+
+  it("shows a dollar figure plain under the one page note, and leaves an unpriced engine alone", async () => {
+    await render({
+      sessions: [
+        session("priced", "/work/priced", "claude", "sonnet-5", [
+          {
+            id: "b1",
+            role: "user",
+            startedAt: at(6, 9),
+            turnMetrics: { inputTokens: 10, outputTokens: 2, costUsd: 1.25 },
+          },
+        ]),
+        session("plain", "/work/plain", "codex", "gpt-5", [
+          {
+            id: "b1",
+            role: "user",
+            startedAt: at(6, 10),
+            turnMetrics: { inputTokens: 8, outputTokens: 1 },
+          },
+        ]),
+      ],
+      now: NOW,
+    });
+    const priced = [...container.querySelectorAll("td")].filter((cell) =>
+      cell.textContent?.includes("$1.25"),
+    );
+    expect(priced.length).toBeGreaterThan(0);
+    for (const cell of priced) expect(cell.textContent).toBe("$1.25");
+    const unpriced = [...container.querySelectorAll("td")].find((cell) =>
+      cell.textContent?.includes("Cost not reported by this engine"),
+    );
+    expect(unpriced?.textContent).toBe("Cost not reported by this engine");
+    expect(noteCount()).toBe(1);
+  });
+
+  it("does not repeat the estimate label next to the page note", async () => {
+    // The seeded history has a fully priced turn and a partly priced window, so both cost shapes are on the page.
+    await render({ sessions: seeded(), now: NOW });
+    expect(noteCount()).toBe(1);
+    const figures = dollarFigures();
+    expect(figures.length).toBeGreaterThan(0);
+    for (const figure of figures) {
+      expect(figure.textContent).not.toMatch(/estimat/i);
+      expect(figure.textContent).not.toMatch(/not your bill/i);
+    }
+    expect(container.textContent).not.toContain("estimated, not your bill");
+    // The cost column heading and the note say it once, in the page's own words.
+    expect(container.textContent?.match(/not your bill/g)).toHaveLength(1);
+  });
+
+  it("draws a dollar figure only where the page note is drawn", async () => {
+    await render({ sessions: [], now: NOW });
+    expect(dollarFigures()).toEqual([]);
+    expect(noteCount()).toBe(0);
+    await render({ sessions: seeded(), now: NOW });
+    expect(dollarFigures().length).toBeGreaterThan(0);
+    expect(noteCount()).toBe(1);
   });
 
   it("copies the history as CSV", async () => {
@@ -248,5 +325,68 @@ describe("UsagePage", () => {
     });
     expect(container.textContent).toContain("newer");
     expect(container.textContent).not.toContain("older");
+  });
+
+  function pick(select: HTMLSelectElement, value: string) {
+    const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!;
+    setter.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  it("filters by provider and model, and starts on all", async () => {
+    await render({ sessions: seeded(), now: NOW });
+    const provider = container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!;
+    const model = container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!;
+    expect(provider.value).toBe("");
+    expect(model.value).toBe("");
+    expect([...provider.options].map((option) => option.text)).toEqual(["All", "Claude Code", "Codex"]);
+    expect([...model.options].map((option) => option.text)).toEqual(["All", "gpt-5", "sonnet-5"]);
+
+    await act(async () => pick(provider, "codex"));
+    expect(container.textContent).toContain("gpt-5");
+    expect(container.textContent).not.toContain("sonnet-5");
+    expect(container.textContent).not.toContain("secret-project");
+    expect(
+      [...container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!.options].map(
+        (option) => option.value,
+      ),
+    ).toEqual(["", "gpt-5"]);
+
+    await act(async () => pick(container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!, ""));
+    await act(async () => pick(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!, "sonnet-5"));
+    const modelTable = [...container.querySelectorAll("table")].find(
+      (table) => table.querySelector("caption")?.textContent === "By model",
+    );
+    expect(modelTable?.textContent).toContain("sonnet-5");
+    expect(modelTable?.textContent).not.toContain("gpt-5");
+
+    await act(async () => pick(container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!, "codex"));
+    expect(container.querySelector<HTMLSelectElement>('select[aria-label="Model"]')!.value).toBe("");
+    expect(container.textContent).toContain("gpt-5");
+    expect(container.textContent).not.toContain("sonnet-5");
+  });
+
+  it("says when the chosen filter has no turns in the window", async () => {
+    await render({
+      sessions: [
+        session("old", "/work/old", "grok", "grok-1", [
+          {
+            id: "b",
+            role: "user",
+            startedAt: new Date(2020, 0, 1).getTime(),
+            turnMetrics: { inputTokens: 4 },
+            turnModel: { harness: "grok", name: "grok-1" },
+          },
+        ]),
+        ...seeded(),
+      ],
+      now: NOW,
+    });
+    await act(async () =>
+      pick(container.querySelector<HTMLSelectElement>('select[aria-label="Provider"]')!, "grok"),
+    );
+    expect(container.textContent).toContain("No turns for this filter.");
+    expect(container.textContent).not.toContain("No turns in the last 30 days.");
+    expect(container.textContent).not.toContain("secret-project");
   });
 });

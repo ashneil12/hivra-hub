@@ -16,6 +16,7 @@ import {
   type Sighting as LedgerSighting,
 } from "./ledger";
 import { isSuppressedByRejection, type RejectEdit, type Rejections } from "./rejection";
+import { refusalFor } from "./proposalGuard";
 import { foldSpace } from "./quote";
 import { scopeRefusal, type FileRole, type Scope } from "./scope";
 import { budgetGateKind, budgetStatus } from "./tokens";
@@ -144,6 +145,12 @@ export function learn(input: LearnInput): LearnResult {
   if (counted.length < MIN_SESSIONS || hunks.length === 0) {
     return { proposals: [], ledger, droppedQuotes, refused: null, written: false };
   }
+  // WP-101: what the edit adds may not bring a recipient, a link, a key or a permission grant into an agent's
+  // instructions. Only the added lines are read, so an edit that keeps what the file already had still passes.
+  const guarded = refusalFor(hunks);
+  if (guarded) {
+    return { proposals: [], ledger, droppedQuotes, refused: guarded, written: false };
+  }
 
   let projected: string;
   try {
@@ -193,9 +200,16 @@ export function learn(input: LearnInput): LearnResult {
   return { proposals: [proposal], ledger, droppedQuotes, refused: null, written: false };
 }
 
-/** Apply an accepted proposal. The caller writes the text only after the person accepts. */
+/**
+ * Apply an accepted proposal. The caller writes the text only after the person accepts. WP-101: the edit is measured
+ * again against the file as it is now, so an edit that slipped a recipient, a link, a key or a permission grant in
+ * (an edit made after the proposal was measured) throws the plain reason instead of returning text.
+ */
 export function acceptProposal(original: string, proposal: Proposal): string {
-  return applyEdit(original, { id: proposal.id, file: proposal.file, hunks: proposal.hunks });
+  const next = applyEdit(original, { id: proposal.id, file: proposal.file, hunks: proposal.hunks });
+  const guarded = refusalFor(anchoredHunks(original, next));
+  if (guarded) throw new Error(guarded);
+  return next;
 }
 
 export type LearnedState = { revision: number; ledger: GapLedger; rejections: Rejections };

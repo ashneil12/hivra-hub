@@ -21,7 +21,7 @@ export type RollupState = LaunchedSessionState | "stuck";
 
 const ROLLUP_ORDER: ReadonlyArray<[RollupState, (n: number) => string]> = [
   ["working", (n) => `${n} working`],
-  ["waiting", (n) => `${n} waiting for a free worker`],
+  ["waiting", (n) => `${n} waiting to start`],
   ["input", (n) => `${n} waiting`],
   // r30b: a stalled worker is its Lead's, never "stuck".
   ["stuck", (n) => `${n} with its Lead`],
@@ -129,6 +129,14 @@ export function waitingOn(
   return rows.filter(
     (row) => row.ownerSession === ownerSession && isOpenDelegation(row),
   ).length;
+}
+
+/** Whether a chat has handed any work out, in any state: it has a crew of workers. */
+export function ownsWork(
+  ownerSession: string,
+  rows: readonly Delegation[],
+): boolean {
+  return rows.some((row) => row.ownerSession === ownerSession);
 }
 
 /** "Waiting on 3", or nothing when it waits on none. */

@@ -470,3 +470,40 @@ it("reports why a clipboard image could not be attached", async () => {
     container.querySelector('[aria-label^="Open clipboard-image"]'),
   ).toBeNull();
 });
+
+/** A paste carrying text and an image file together, as copying from a page does. */
+function pasteTextAndImage(target: HTMLTextAreaElement, text: string) {
+  const image = new File([PNG_BYTES], "shot.png", { type: "image/png" });
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: {
+      getData: (type: string) => (type === "text/plain" ? text : ""),
+      files: [image],
+      items: [{ kind: "file", type: "image/png", getAsFile: () => image }],
+    },
+  });
+  act(() => {
+    target.dispatchEvent(event);
+  });
+  return event;
+}
+
+it("keeps an image that arrives with a paste that had hidden characters", async () => {
+  const field = render();
+  pasteTextAndImage(field, "see this\u{e0041}\u{e0042}");
+  await waitForAttachments(1);
+  expect(field.value).toBe("see this");
+});
+
+it("keeps an image that arrives with a paste of only hidden characters", async () => {
+  const field = render();
+  pasteTextAndImage(field, "\u{e0041}\u{e0042}");
+  await waitForAttachments(1);
+  expect(field.value).toBe("");
+});
+
+it("keeps an image that arrives with a large paste", async () => {
+  const field = render();
+  pasteTextAndImage(field, "x".repeat(40_000));
+  await waitForAttachments(2);
+});

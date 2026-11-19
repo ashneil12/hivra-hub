@@ -4,7 +4,7 @@ import { RestorePreview } from "./RestorePreview";
 import { FolderOpen } from "../../../shared/ui/icons";
 import { IS_MAC } from "../../../platform/tauri/platform";
 import { dismissDoneNeeds, hubData, useHubDataVersion } from "../model/hubData";
-import { appItemInView, NO_CODE_ITEM, openCodingTeam, showAppItem } from "../model/hubNav";
+import { appItemInView, NO_CODE_ITEM, PROJECT_HOME_ITEM, openCodingTeam, showAppItem } from "../model/hubNav";
 import type { HubSelection } from "../model/hubNav";
 import { GroupChatView, NewGroupChat } from "./GroupChatView";
 import { NewProjectView } from "./NewProjectView";
@@ -16,6 +16,7 @@ import { ProjectPagesView } from "./ProjectPagesView";
 import { AutopilotView } from "../../autopilot/ui/AutopilotView";
 import { HomeView } from "../../home/ui/HomeView";
 import { TasksScreen } from "../../tasks/ui/TasksScreen";
+import { AgentsBoardScreen } from "../../agents-board/ui/AgentsBoardScreen";
 
 /**
  * Main area for the hub views that are not a project's workspace: rooms, Pages, a new project, restore, autopilot.
@@ -41,10 +42,14 @@ export function HubSurface({ selection }: { selection: HubSelection }) {
   }, [home, first]);
   // WP-73: Home, before the no-project redirect and before a project's own item.
   if (selection.item === "home") return <HomeView />;
+  // WP-219: the Agents board. On by default. Not a project item.
+  if (selection.item === "agents") return <AgentsBoardScreen />;
   if (selection.item === "new-project") return <NewProjectView />;
   if (selection.item === "restore") return <RestorePreview />;
   if (selection.item === "autopilot") return <AutopilotView />;
   if (!project) return <HubHome />;
+  // Dropwave: a project opens on its own home (the Chief of Staff's box, then what this project needs and has).
+  if (selection.item === PROJECT_HOME_ITEM) return <HomeView key={project.id} projectId={project.id} />;
   if (selection.item === "leadership-team")
     return <GroupChatView key={project.id} chatId={leadershipChatId(project.id)} projectId={project.id} />;
   if (selection.item.startsWith("chat:"))
@@ -191,7 +196,7 @@ function FirstTodayEmpty() {
 /** Local views remain accessible even while the shared service is unavailable. */
 function HomeTools() {
   return <nav aria-label="Workspace shortcuts" className="flex flex-wrap gap-2" data-hub-home-tools>
-    {(["Pages", "Notes", "Automations"] as const).map((name) => <button key={name} type="button" onClick={() => window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: name.toLowerCase() }))}
+    {([["pages", "Hubs"], ["notes", "Notes"], ["automations", "Automations"]] as const).map(([open, name]) => <button key={open} type="button" onClick={() => window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: open }))}
       className="rounded-md bg-content/5 px-3 py-1.5 text-[12px] text-content/75 hover:bg-content/10">{name}</button>)}
   </nav>;
 }

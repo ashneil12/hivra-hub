@@ -1,3 +1,6 @@
+import type { QueuedWorker } from "./workerPool";
+import type { Delegation } from "./delegations";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { cleanStoredDefault } from "../../crew/model/workerDefault";
@@ -29,6 +32,7 @@ import {
 import { removeMonoBackground } from "./monoBackground";
 import { lastTurnFailure } from "./turnFailure";
 import { recordMonoChat, rosterSaved } from "./monoHome";
+import { hasCaptainCharter } from "../../chief/model/charter";
 
 /** The project palette's colors, plus indigo for a Mono's ninth preset. */
 export const MONO_COLORS = [
@@ -52,6 +56,16 @@ export type Mono = {
    * never sit in its own 1:1 chat and deleting a room conversation drops them. Its 1:1 chat stays `sessionId`.
    */
   roomSessions?: Record<string, string>;
+  /**
+   * Dropwave: its own one-to-one chat for a project, keyed by the project's id. The Chief of Staff has one per project,
+   * geared to that project; `sessionId` stays its chat on Home, with everything in view.
+   */
+  projectSessions?: Record<string, string>;
+  /**
+   * Dropwave: more one-to-one chats with this same first mate ("New chat" beside its chat), oldest first. Each is its
+   * own conversation; `sessionId` stays the one its row on the rail opens.
+   */
+  chats?: string[];
   /** Replaces the mascot's own name. */
   name?: string;
   mascot: string;
@@ -89,8 +103,20 @@ export type Mono = {
   crewRules?: CrewRule[];
   /** WP-88: may read every project on this copy. Only a real true counts. */
   everyProject?: boolean;
+  /** WP-215: the starter template this Mono was added from. The Mono's own id is never that template id. */
+  templateId?: string;
+  /** WP-215: the captain. Set by the coordinator starter, so a renamed chief still hands work on. */
+  captain?: boolean;
   /** WP-89: the CLI, model and effort its workers use, when this Mono sets one. */
   workerDefault?: WorkerPick;
+  /** WP-182: fast mode for its own chat, when the chosen model offers it. Only a real boolean counts. */
+  engineFast?: boolean;
+  /** The effort its new chats start at ("Make default" keeps the chat's effort with its model; Ash 12 Nov). */
+  engineEffort?: string;
+  /** WP-182: skill names it is offered. Absent or empty means everything installed. */
+  skills?: string[];
+  /** WP-182: slash command names it is offered. Absent or empty means everything installed. */
+  commands?: string[];
 };
 
 /** No id carries a built-in role. A Mono shows the role it was given, or none. */
@@ -245,6 +271,25 @@ function newMonoId(): string {
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
+const CARD_NAME = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+
+/** Skill or command names from a roster or an import. Paths, blanks and duplicates are dropped. */
+export function cardNames(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const seen = new Set<string>();
+  const names: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const name = item.trim();
+    if (!CARD_NAME.test(name) || name.includes("..")) continue;
+    if (seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+    if (names.length >= 64) break;
+  }
+  return names.length ? names : undefined;
+}
+
 function parseMono(value: unknown): Mono | undefined {
   const entry = record(value);
   if (typeof entry.id !== "string" || !/^[A-Za-z0-9-]+$/.test(entry.id))
@@ -260,15 +305,31 @@ function parseMono(value: unknown): Mono | undefined {
   const role = text("role");
   const crewRules = parseCrewRules(entry.crewRules);
   const workerDefault = parseWorkerDefault(entry.workerDefault);
+  const skills = cardNames(entry.skills);
+  const commands = cardNames(entry.commands);
   const roomSessions = Object.fromEntries(
     Object.entries(record(entry.roomSessions)).filter(
       (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
     ),
   );
+  const projectSessions = Object.fromEntries(
+    Object.entries(record(entry.projectSessions)).filter(
+      (pair): pair is [string, string] => typeof pair[1] === "string" && /^[A-Za-z0-9_-]+$/.test(pair[1]) && pair[1] !== sessionId,
+    ),
+  );
+  const chats = [
+    ...new Set(
+      (Array.isArray(entry.chats) ? entry.chats : []).filter(
+        (id): id is string => typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id) && id !== sessionId,
+      ),
+    ),
+  ];
   return {
     id: entry.id,
     ...(sessionId ? { sessionId } : {}),
     ...(Object.keys(roomSessions).length ? { roomSessions } : {}),
+    ...(Object.keys(projectSessions).length ? { projectSessions } : {}),
+    ...(chats.length ? { chats } : {}),
     ...(name ? { name } : {}),
     mascot: text("mascot") ?? PROJECT_MASCOTS[0].name,
     color: text("color") ?? TAB_GROUP_COLORS[1],
@@ -281,13 +342,24 @@ function parseMono(value: unknown): Mono | undefined {
       ? { showStartedSessionsInSidebar: entry.showStartedSessionsInSidebar }
       : {}),
     ...(entry.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
-    ...(entry.longChat === true ? { longChat: true } : {}),
+    // Ash 12 Nov: one chat should go on for good without losing the plot, so in Hivra every Mono keeps its long chat
+    // (UniiChat's summary tree, monoTreeStore.ts) unless it was switched off (stored as false).
+    ...(entry.longChat === true || (IS_HUB_BUNDLE && entry.longChat !== false)
+      ? { longChat: true }
+      : entry.longChat === false
+        ? { longChat: false }
+        : {}),
     ...(entry.mascotPicked === true ? { mascotPicked: true } : {}),
     // WP-21: only a real true counts. A string or 1 from a hand-edited roster is not pinned or muted.
     ...(entry.pinned === true ? { pinned: true } : {}),
     ...(entry.muted === true ? { muted: true } : {}),
     // WP-88: a string or 1 from a hand-edited roster is not a grant to read every project.
     ...(entry.everyProject === true ? { everyProject: true } : {}),
+    ...(typeof entry.templateId === "string" && /^[A-Za-z0-9-]+$/.test(entry.templateId)
+      ? { templateId: entry.templateId }
+      : {}),
+    // A soul that already carries the charter is the captain, even when an older copy wrote no flag.
+    ...(entry.captain === true || hasCaptainCharter(instructions) ? { captain: true } : {}),
     ...(crewRules ? { crewRules } : {}),
     ...(workerDefault ? { workerDefault } : {}),
     ...(instructions ? { instructions } : {}),
@@ -295,13 +367,71 @@ function parseMono(value: unknown): Mono | undefined {
     ...(engine && engineModel ? { engineModel } : {}),
     ...(legacyProject ? { legacyProject } : {}),
     ...(role !== undefined ? { role: role.slice(0, 40) } : {}),
+    // WP-182: a string or 1 is not fast mode. Empty name lists mean today's offer.
+    ...(typeof entry.engineFast === "boolean" ? { engineFast: entry.engineFast } : {}),
+    ...(engine && typeof entry.engineEffort === "string" && /^[a-z]{2,12}$/.test(entry.engineEffort) ? { engineEffort: entry.engineEffort } : {}),
+    ...(skills ? { skills } : {}),
+    ...(commands ? { commands } : {}),
   };
+}
+
+/** The stored roster text already checked. A different roster is checked again. */
+let captainFlagsDoneFor: string | null = null;
+/** saveRoster tells the window, and that can list Monos again. This stops that listing from migrating again. */
+let captainFlagsMigrating = false;
+
+function readRosterRaw(): { text: string | null; value: unknown } {
+  try {
+    const text = localStorage.getItem(ROSTER_KEY);
+    return { text, value: text ? (JSON.parse(text) as unknown) : undefined };
+  } catch {
+    return { text: null, value: undefined };
+  }
+}
+
+/**
+ * One pass over this stored roster: a Mono whose instructions already carry the charter is flagged.
+ * The same roster text is not parsed again. A different roster, or a write that did not stick, is.
+ * The write goes through the roster save, so MONOS.json and the change event happen too.
+ * Nothing else in the row is rewritten. Returns true when the stored roster was rewritten.
+ */
+function migrateCaptainFlags(text: string | null, raw: unknown): boolean {
+  if (captainFlagsMigrating || text === captainFlagsDoneFor) return false;
+  captainFlagsMigrating = true;
+  try {
+    if (!Array.isArray(raw)) return false;
+    let changed = false;
+    const next = raw.map((entry) => {
+      if (!entry || typeof entry !== "object" || Array.isArray(entry)) return entry;
+      const row = entry as Record<string, unknown>;
+      if (row.captain === true) return entry;
+      const instructions = typeof row.instructions === "string" ? row.instructions : "";
+      if (!hasCaptainCharter(instructions)) return entry;
+      changed = true;
+      return { ...row, captain: true };
+    });
+    if (!changed) {
+      captainFlagsDoneFor = text;
+      return false;
+    }
+    saveRoster(next as Mono[]);
+    const after = readRosterRaw();
+    if (JSON.stringify(after.value) === JSON.stringify(next)) {
+      captainFlagsDoneFor = after.text;
+      return true;
+    }
+    return false;
+  } finally {
+    captainFlagsMigrating = false;
+  }
 }
 
 /** Every Mono, in the order the rail shows them. */
 export function listMonos(): Mono[] {
   migrateLegacyMonoStorage();
-  const parsed = readJson(ROSTER_KEY);
+  const loaded = readRosterRaw();
+  const rewritten = migrateCaptainFlags(loaded.text, loaded.value);
+  const parsed = rewritten ? readRosterRaw().value : loaded.value;
   if (!Array.isArray(parsed)) return [];
   // Each Mono has its own conversation. A roster that names one session twice (a restored setup file, a hand-edited
   // roster, an old copy) would make both Monos answer as the first one and write its memory and soul, so only the
@@ -360,8 +490,105 @@ export function monoForSession(sessionId: string): Mono | undefined {
   const monos = listMonos();
   return (
     monos.find((mono) => mono.sessionId === sessionId) ??
-    monos.find((mono) => !!mono.roomSessions && Object.values(mono.roomSessions).includes(sessionId))
+    monos.find((mono) => !!mono.roomSessions && Object.values(mono.roomSessions).includes(sessionId)) ??
+    monos.find((mono) => !!mono.projectSessions && Object.values(mono.projectSessions).includes(sessionId)) ??
+    monos.find((mono) => !!mono.chats?.includes(sessionId))
   );
+}
+
+/** Dropwave: one of a first mate's further chats ("New chat"), not the one its row on the rail opens. */
+export function isMonoSideChat(sessionId: string): boolean {
+  return listMonos().some((mono) => !!mono.chats?.includes(sessionId));
+}
+
+/** A further chat with this first mate runs in `sessionId` from now on. Another first mate's chat is never taken. */
+export function saveMonoSideChat(monoId: string, sessionId: string): boolean {
+  if (!/^[A-Za-z0-9_-]+$/.test(sessionId) || monoForSession(sessionId)) return false;
+  return !!updateMono(monoId, (mono) => ({ ...mono, chats: [...(mono.chats ?? []), sessionId] }));
+}
+
+/** The first mate lets go of a further chat (it was deleted). Its main chat and its project chats are not touched. */
+export function forgetMonoSideChat(sessionId: string): void {
+  const owner = listMonos().find((mono) => !!mono.chats?.includes(sessionId));
+  if (!owner) return;
+  updateMono(owner.id, ({ chats = [], ...rest }) => {
+    const kept = chats.filter((id) => id !== sessionId);
+    return kept.length ? { ...rest, chats: kept } : rest;
+  });
+}
+
+/**
+ * G2: a further chat that was reset keeps its place in its first mate's list under the fresh chat's id. Only one of
+ * this first mate's own further chats is swapped, and never onto a chat any first mate already holds.
+ */
+export function replaceMonoSideChat(monoId: string, from: string, to: string): boolean {
+  if (!/^[A-Za-z0-9_-]+$/.test(to) || monoForSession(to)) return false;
+  if (!findMono(monoId)?.chats?.includes(from)) return false;
+  return !!updateMono(monoId, (mono) => ({ ...mono, chats: (mono.chats ?? []).map((id) => (id === from ? to : id)) }));
+}
+
+/**
+ * G2: every one-to-one chat of a first mate: its main chat, its further chats and its own chat in each project. A team
+ * chat's seat (roomSessions) is not one: it belongs to its conversation.
+ */
+export function monoOwnChats(monoId: string): string[] {
+  const mono = findMono(monoId);
+  if (!mono) return [];
+  return [...new Set([...(mono.sessionId ? [mono.sessionId] : []), ...(mono.chats ?? []), ...Object.values(mono.projectSessions ?? {})])];
+}
+
+/**
+ * G1: a setup import's further chats and project chats for this first mate (setupSouls.ts). Import only adds: a project
+ * that already has its chat here keeps it, and a chat any first mate here already holds is never taken or listed twice.
+ * Returns whether anything was added.
+ */
+export function adoptMonoChats(
+  monoId: string,
+  from: { chats?: readonly string[]; projectSessions?: Readonly<Record<string, string>> },
+): boolean {
+  const mono = findMono(monoId);
+  if (!mono) return false;
+  const valid = (id: unknown): id is string => typeof id === "string" && /^[A-Za-z0-9_-]+$/.test(id);
+  const taken = new Set<string>();
+  const free = (id: unknown): id is string => valid(id) && !taken.has(id) && !monoForSession(id);
+  const chats: string[] = [];
+  for (const id of from.chats ?? []) {
+    if (!free(id)) continue;
+    taken.add(id);
+    chats.push(id);
+  }
+  const projectSessions: Record<string, string> = {};
+  for (const [projectId, id] of Object.entries(from.projectSessions ?? {})) {
+    if (!projectId.trim() || mono.projectSessions?.[projectId] || !free(id)) continue;
+    taken.add(id);
+    projectSessions[projectId] = id;
+  }
+  if (!chats.length && !Object.keys(projectSessions).length) return false;
+  return !!updateMono(monoId, (current) => ({
+    ...current,
+    ...(chats.length ? { chats: [...(current.chats ?? []), ...chats] } : {}),
+    ...(Object.keys(projectSessions).length ? { projectSessions: { ...projectSessions, ...current.projectSessions } } : {}),
+  }));
+}
+
+/** Dropwave: the Mono's own chat for this project, once it has been opened there. */
+export function monoProjectSession(monoId: string, projectId: string): string | undefined {
+  return findMono(monoId)?.projectSessions?.[projectId];
+}
+
+/** The project a Mono's session is its own chat for, if it is one of those (not its chat on Home, not a room's). */
+export function monoSessionProject(sessionId: string): string | undefined {
+  for (const mono of listMonos())
+    for (const [projectId, id] of Object.entries(mono.projectSessions ?? {})) if (id === sessionId) return projectId;
+  return undefined;
+}
+
+/** This project's chat with the Mono runs in `sessionId` from now on. Another Mono's chat is never taken. */
+export function saveMonoProjectSession(monoId: string, projectId: string, sessionId: string): boolean {
+  const owner = monoForSession(sessionId);
+  if (owner && owner.id !== monoId) return false;
+  if (!projectId.trim() || findMono(monoId)?.sessionId === sessionId) return false;
+  return !!updateMono(monoId, (mono) => ({ ...mono, projectSessions: { ...mono.projectSessions, [projectId]: sessionId } }));
 }
 
 /** Where a Mono's session for one room conversation is kept (Mono.roomSessions). */
@@ -763,7 +990,9 @@ export function monoState(
   session: Pick<
     Session,
     "blocks" | "busy" | "pendingQuestion" | "worktreeRemoved" | "usageLimit" | "queuedMessages"
-  >,
+  > & Partial<Pick<Session, "id">>,
+  rows: readonly Delegation[] = [],
+  queue: readonly Pick<QueuedWorker, "ownerSession">[] = [],
 ): MonoState {
   const { blocks, pendingQuestion: question } = session;
   if (!session.worktreeRemoved && question) {
@@ -815,7 +1044,18 @@ export function monoState(
     if (asked && gateQuestion(asked).admit)
       return { status: "needs-you", activity: asked.provide ? forUser`Ash needs to provide ${asked.provide}` : asked.question };
   }
-  if (!session.busy) return { status: "idle" };
+  if (!session.busy) {
+    const latest = new Map<string, Delegation>();
+    for (const row of rows) {
+      const held = latest.get(row.id);
+      if (!held || row.version > held.version || (row.version === held.version && row.updatedAt > held.updatedAt)) latest.set(row.id, row);
+    }
+    const crew = session.id ? [...latest.values()].filter((row) => row.ownerSession === session.id && (row.state === "running" || row.state === "question")) : [];
+    const waiting = session.id ? queue.filter((job) => job.ownerSession === session.id).length : 0;
+    if (!crew.length && waiting) return { status: "paused", activity: `${waiting} ${waiting === 1 ? "job" : "jobs"} waiting to start` };
+    if (crew.length) return { status: "working", activity: `${crew.length} ${crew.length === 1 ? "job" : "jobs"} with its crew` };
+    return { status: "idle" };
+  }
   const last = blocks[blocks.length - 1];
   if (last?.role === "assistant" && !last.tool && last.streaming) {
     return { status: "working", activity: "Writing a reply" };

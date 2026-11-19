@@ -44,3 +44,10 @@ describe("brief line", () => {
     expect(briefLine("x".repeat(200), [])).toBe("x".repeat(120));
   });
 });
+
+it("does not keep a cancelled duplicate in the active brief lines", () => {
+  expect(crewBriefLines("example-lead", [
+    { id: "original", ownerSession: "example-lead", follow: "lead", title: "Example: fix the chat", state: "running" },
+    { id: "duplicate", ownerSession: "example-lead", follow: "lead", title: "Example: fix the chat", state: "cancelled" },
+  ])).toEqual([{ id: "original", text: "Example: fix the chat" }]);
+});

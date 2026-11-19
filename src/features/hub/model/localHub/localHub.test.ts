@@ -125,6 +125,29 @@ describe("two windows on one database (WP-04 review)", () => {
     expect(names).toEqual(["EXO", "Nibbii"]);
   });
 
+  it("G8: a pin from an older copy of the pages is refused on disk and made again on top of the other window's page", async () => {
+    const disk = memoryDisk();
+    const one = new LocalHub(disk);
+    await one.pageUpdate({ pageId: "pg-1", projectId: "today", spec: blocks("Builds"), kept: true });
+    const write = disk.write.bind(disk);
+    const refused: Array<number | undefined> = [];
+    let raced = false;
+    disk.write = async (key, value, rev) => {
+      if (!raced && key === "pages") {
+        raced = true;
+        // Another window keeps a page between one's read and its write.
+        await new LocalHub(disk).pageUpdate({ pageId: "pg-2", projectId: "today", spec: blocks("Costs"), kept: true });
+      }
+      const at = await write(key, value, rev);
+      if (at === null) refused.push(rev);
+      return at;
+    };
+    await one.pageUpdate({ pageId: "pg-1", pinned: true });
+    expect(refused).toEqual([1]);
+    const { pages } = await new LocalHub(disk).pages();
+    expect(pages.map((p) => [p.id, p.pinned ?? false]).sort()).toEqual([["pg-1", true], ["pg-2", false]]);
+  });
+
   it("changes in one window run in order, even when called together", async () => {
     const disk = memoryDisk();
     const hub = new LocalHub(disk);
@@ -189,7 +212,7 @@ describe("the one-time Ash OS import", () => {
     const deps = { fetch: async () => found, ask: async (q: string) => (asked.push(q), "import" as const) };
     const decision = await runAshOsImport(hub, deps);
     expect(decision).toMatchObject({ decided: "imported", added: { projects: 1, memberships: 1, pages: 1 } });
-    expect(asked[0]).toMatch(/1 project and 1 kept Page/);
+    expect(asked[0]).toMatch(/1 project and 1 kept Hub/);
     expect(await runAshOsImport(hub, deps)).toMatchObject({ decided: "imported" });
     expect(asked).toHaveLength(1);
     const again = new LocalHub(disk);
@@ -233,7 +256,7 @@ describe("the one-time Ash OS import", () => {
     await runAshOsImport(hub, { fetch: async () => found, ask: async () => "clean" });
     const again = await importFromAshOsAgain(hub, { fetch: async () => found, ask: yes });
     expect(again).toMatchObject({ decided: "imported", added: { projects: 1 } });
-    expect(importOutcome(again)).toBe("Brought over 1 project, 1 Mono's project and 1 kept Page.");
+    expect(importOutcome(again)).toBe("Brought over 1 project, 1 Mono's project and 1 kept Hub.");
     const twice = await importFromAshOsAgain(hub, { fetch: async () => found, ask: yes });
     expect(importOutcome(twice)).toBe("Everything Ash OS held is already here.");
     expect(importOutcome(await importFromAshOsAgain(hub, { fetch: async () => ({ ...found, state: "unreachable", message: "Ash OS isn't running." }), ask: yes }))).toBe(
@@ -277,5 +300,31 @@ describe("the one-time Ash OS import", () => {
     await hub.projectCreate({ name: "My EXO", project_id: "exo" });
     await runAshOsImport(hub, { fetch: async () => found, ask: yes });
     expect((await hub.projects()).projects.map((p) => p.name)).toEqual(["My EXO"]);
+  });
+});
+
+describe("sharing a project with the team (WP-80)", () => {
+  it("is a flag on the project that only the sharing call sets, and it survives a restart", async () => {
+    const disk = memoryDisk();
+    const first = new LocalHub(disk);
+    await first.projectCreate({ name: "EXO game", project_id: "exo", folder: "/tmp/exo" });
+    expect((await first.projects()).projects[0].shared).toBeUndefined();
+
+    await first.projectRename({ project_id: "exo", shared: true });
+    const again = new LocalHub(disk);
+    const [shared] = (await again.projects()).projects;
+    expect(shared.shared).toBe(true);
+    // The local folder stays on this machine; sharing does not touch it.
+    expect(shared.folder).toBe("/tmp/exo");
+
+    await again.projectRename({ project_id: "exo", shared: false });
+    expect((await again.projects()).projects[0].shared).toBe(false);
+  });
+
+  it("does not share anything on its own when a project is only renamed", async () => {
+    const hub = new LocalHub(memoryDisk());
+    await hub.projectCreate({ name: "EXO game", project_id: "exo" });
+    await hub.projectRename({ project_id: "exo", name: "EXO" });
+    expect((await hub.projects()).projects[0].shared).toBeUndefined();
   });
 });

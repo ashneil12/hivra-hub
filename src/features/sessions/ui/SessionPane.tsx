@@ -1,6 +1,10 @@
+import { TeleportHeaderBand } from "../../connections/ui/TeleportNotice";
+import { AppTeleportPanel } from "../../connections/ui/TeleportMovePanel";
+import { chatLocked, teleportStateOf } from "../../connections/model/teleportState";
+import { isChatLocked, syncTeleportLock } from "../../connections/model/teleportLock";
 import { GripVertical, X } from "../../../shared/ui/icons";
 import type { LayoutNode, SplitDir } from "../../workspace/model/layout";
-import { PaneSplitButtons } from "../../workspace/ui/PaneSplitButtons";
+import { PaneSplitButtons, PaneSplitCorner } from "../../workspace/ui/PaneSplitButtons";
 import { MonoDraftsInChat } from "../../selfBuild/ui/MonoDraftCard";
 import { TeamDraftsInChat } from "../../selfBuild/ui/TeamDraftCard";
 import { useSessionSnapshot } from "../model/sessionStateStore";
@@ -17,7 +21,13 @@ import {
 } from "react";
 import { Composer } from "./Composer";
 import { PrivateMark } from "./PrivateMark";
+import { MidThreadSwitchNotice } from "./MidThreadSwitchNotice";
+import { ChatFolderBanner } from "./ChatFolderBanner";
+import { CopyThreadLinkButton } from "./ThreadLinkActions";
+import { chatLink } from "../model/threadLinks";
 import { NewChatWorktreeBanner } from "./NewChatWorktreeBanner";
+import { LeadCliNotice } from "../../firstmate/ui/LeadCliNotice";
+import { askThreadFork } from "../model/threadForkAsk";
 import type { Worktree } from "../../source-control/model/worktrees";
 import {
   orchestrationCheckoutCwd,
@@ -31,6 +41,7 @@ import { sessionEditPaths } from "../model/checkpointEdits";
 import { PromptOutline } from "./PromptOutline";
 import {
   canCompactHarnessContext,
+  harnessCannotSteer,
   type ApprovalDecision,
   type UserQuestionReply,
 } from "../../../integrations/harness";
@@ -55,8 +66,10 @@ import {
   type ComposerTurnOptions,
 } from "../model/session";
 import { sessionHasBtwThreads, supportsBtwHarness } from "../model/btw";
+import { FanOutCompare, type FanOutCompareModel } from "./FanOutCompare";
 import { BtwSheet, useBtwConversation } from "./BtwSheet";
 import { AgentTranscript } from "./AgentTranscript";
+import { lineageForThread } from "../model/subagentLineage";
 import { PooledTranscript, type TranscriptPool } from "./TranscriptPool";
 import { TranscriptFind } from "./TranscriptFind";
 import {
@@ -74,11 +87,17 @@ import {
   monoLook,
   monosSnapshot,
   subscribeMonos,
+  monoSessionProject,
 } from "../../monos/model/mono";
+import { hubData } from "../../hub/model/hubData";
+import { IS_HUB_BUNDLE, ONE_CHAT_LOOK } from "../../hub/model/hubBundle";
 import { MonoHeader } from "../../monos/ui/MonoHeader";
 import { reportTeamOf, useDelegationPane } from "../../monos/hooks/useDelegationPane";
 import { readTeamReport } from "../../monos/model/teamReport";
+import { useDelegationRows } from "../../monos/model/delegationStore";
+import { ownsWork } from "../../monos/model/delegationView";
 import { MonoModelLine } from "../../monos/ui/MonoModelLine";
+import { SetMonoDefault } from "../../monos/ui/SetMonoDefault";
 import { isOrchestratorChat } from "../../monos/model/orchestrators";
 import { isCodingTeamChat, useCodingTeamVersion } from "../../hub/model/codingTeam";
 import {
@@ -96,6 +115,7 @@ import {
   monoPendingTranscriptBlocks,
   visibleMonoCompletionMessages,
 } from "../../monos/model/monoMessaging";
+import { queueWaitReasons } from "../model/queueWaitReason";
 import { GoalRow } from "./GoalRow";
 import { MessageQueue } from "./MessageQueue";
 import { useMonoTranscript } from "../../monos/hooks/useMonoTranscript";
@@ -113,9 +133,12 @@ import {
   loadNotesEnabled,
   subscribeNotesEnabled,
 } from "../../settings/model/settings";
+import { COMPACTING_NOTE, cantRedirectTurn } from "../model/cantDo";
 import { getComposerDraft, setComposerDraft } from "../model/draftCache";
 import { MONO_PREFILL_EVENT, type MonoPrefill } from "../../monos/model/monoPrefill";
-import { resolveModel } from "../model/models";
+import { isOneChat, requestCatchUp } from "../../asks/model/oneChat";
+import { ChiefLensBar, ChiefLensComposerLine } from "../../asks/ui/ChiefLens";
+import { preferredModelId, resolveModel } from "../model/models";
 import { isAstraModel } from "../model/astraWelcome";
 import { isOpus55Model } from "../model/opusWelcome";
 import { AstraWelcome } from "./AstraWelcome";
@@ -198,6 +221,14 @@ export type SessionPaneProps = {
     attachments: Attachment[],
     options?: ComposerTurnOptions,
   ) => boolean | void;
+  /** WP-135: start the same prompt on several models. A string is the reason nothing started. */
+  onCompareModels?: (
+    sessionId: string,
+    prompt: string,
+    targets: readonly { provider: HarnessId; model: string }[],
+  ) => boolean | string | Promise<boolean | string | void> | void;
+  /** WP-135: the compare started from this chat, when there is one. */
+  fanOutForSession?: (sessionId: string) => FanOutCompareModel | null;
   onSaveDraft: (
     sessionId: string,
     text: string,
@@ -244,6 +275,10 @@ export type SessionPaneProps = {
     reply: UserQuestionReply,
   ) => void;
   onQuestionInteraction?: (sessionId: string, requestId: number) => void;
+  /** WP-177: the stored row after a chat move, so the app's session list holds the moved state. */
+  onTeleportRow?: (row: Session) => void;
+  /** WP-177: opens a new chat (the recap) in the app. */
+  onOpenChat?: (session: Session) => void;
   onOpenFile: (path: string) => void;
   onOpenDiff: (
     path?: string,
@@ -357,6 +392,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onSaveDraft,
   onRemoveDraft,
   onSubmit,
+  onCompareModels,
+  fanOutForSession,
   onStop,
   onStopTurn,
   onCompactContext,
@@ -381,6 +418,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
   onApproval,
   onQuestionReply,
   onQuestionInteraction,
+  onTeleportRow,
+  onOpenChat,
   onOpenFile,
   onOpenDiff,
   onCommitChanges,
@@ -417,13 +456,23 @@ const LocalSessionPane = memo(function LocalSessionPane({
   );
   const title = sessionDisplayTitle(session.title, session.harness, firstAskOf(session));
   const isEmpty = session.blocks.length === 0;
+  // WP-122: native CLI children, separate from the first-mate crew. Read once per change to the blocks, not per render.
+  const lineage = useMemo(
+    () => lineageForThread(session.harness, session.blocks),
+    [session.harness, session.blocks],
+  );
   const editedPaths = useMemo(
     () => (session.busy ? undefined : sessionEditPaths(session.blocks)),
     [session.blocks, session.busy],
   );
   const messageDeliveries = useMemo(
     () => monoMessageDeliveries(session),
-    [session.queuedMessages, session.queueStatus],
+    // WP-245: the wait reason reads the chat's state too (busy, a limit, an approval or question waiting).
+    [session.queuedMessages, session.queueStatus, session.busy, session.turnReady, session.usageLimit, session.pendingQuestion, session.blocks],
+  );
+  const waitReasons = useMemo(
+    () => queueWaitReasons(session),
+    [session.queuedMessages, session.queueStatus, session.busy, session.turnReady, session.usageLimit, session.pendingQuestion, session.blocks],
   );
   const recallLastTurnRef = useRef<(() => void) | null>(null);
   const remote = remoteSession;
@@ -451,12 +500,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
   useSyncExternalStore(subscribeMonos, monosSnapshot);
   const mono = monoForSession(session.id);
   const agent = mono ? monoLook(mono) : undefined;
+  // One chat (asks/model/oneChat.ts): the Chief of Staff's one chat for everything.
+  const oneChat = isOneChat(session.id);
   // A worker's chat runs on its own; a chat Ash talks to (a Mono, or a coding-team chat) with work out reads what is
   // out ("2 working: API · 1 stuck: Tests"), with a card for each stuck worker (H4).
   useCodingTeamVersion();
   // A coding team's own chat (codingTeam.ts) sends like a Mono's: Stop in the send button, the model line above the box.
   const teamChat = !agent && isCodingTeamChat(session.id);
+  // Dropwave: a first mate's chat is written in the same box as every other chat (hubBundle.ts ONE_CHAT_LOOK).
+  const monoBox = !!agent && !ONE_CHAT_LOOK;
   const delegationPane = useDelegationPane(session.id, isOrchestratorChat(session.id), !!session.pendingQuestion);
+  // WP-120: the lead strip names the crew only when this chat has handed work out.
+  const hasCrew = ownsWork(session.id, useDelegationRows());
   // A Mono shows only its own background, never the project's or the app's.
   const projectBackground = mono
     ? monoChatBackground(mono.id)
@@ -527,6 +582,11 @@ const LocalSessionPane = memo(function LocalSessionPane({
       void orchestrator.hydrate(session.id).catch(console.error);
   }, [remote, session.id, session.inboxAsk, session.worktreeRemoved]);
   const [quoteRequest, setQuoteRequest] = useState<QuoteRequest>();
+  // Side questions are kept with the chat, on the message they were asked under (model/btw.ts).
+  const savedSideQuestions = useMemo(
+    () => session.blocks.reduce((count, block) => count + (block.btwThreads?.length ?? 0), 0),
+    [session.blocks],
+  );
   const btw = useBtwConversation({
     available:
       !remote &&
@@ -709,10 +769,24 @@ const LocalSessionPane = memo(function LocalSessionPane({
     return () => observer.disconnect();
   }, [glassDock, composerDockMotion.dockedRef]);
   const draftRef = useRef<string | undefined>(getComposerDraft(session.id));
+  const fanOutView = fanOutForSession?.(session.id) ?? null;
+  const fanOutCompare = fanOutView ? <FanOutCompare view={fanOutView} /> : null;
+  // WP-115: hide a redirect this agent cannot do, and say what to do instead.
+  const cannotRedirect = harnessCannotSteer(session.harness);
+  // The app compacting this idle chat in the background says so, and a queued
+  // message cannot be steered into a compact (it sends when that finishes).
+  const compacting = !!session.idleCompacting;
+  const steerNote = compacting
+    ? COMPACTING_NOTE
+    : session.busy && cannotRedirect
+      ? cantRedirectTurn(session.harness)
+      : undefined;
+  // WP-177: a chat frozen by a move, or moved away, takes no message here (the composer is disabled, not just refused).
+  const teleportComposerLocked = chatLocked(session) || isChatLocked(session.id);
   const composer = (
     <Composer
       key={session.id}
-      disabled={workspaceSwitchingSessionId === session.id}
+      disabled={workspaceSwitchingSessionId === session.id || teleportComposerLocked}
       remoteSession={remoteSession}
       remoteFeatures={remoteFeatures}
       allowedModelHarnesses={allowedModelHarnesses}
@@ -731,11 +805,13 @@ const LocalSessionPane = memo(function LocalSessionPane({
       compactSupported={canCompactHarnessContext(session.harness)}
       recents={recents}
       hideProjectPicker={
+        !!agent ||
         !!session.inboxAsk ||
         (hideProjectPicker ? !showDeckProjectPicker : false)
       }
-      hideBranchPicker={!!session.inboxAsk || managed}
-      hideTopBar={!!session.inboxAsk}
+      hideBranchPicker={!!agent || !!session.inboxAsk || managed}
+      // A first mate's chat has no checkout or repo to pick: its box starts at the text.
+      hideTopBar={!!agent || !!session.inboxAsk}
       context={session.context}
       quoteRequest={quoteRequest}
       initialDraft={
@@ -751,6 +827,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       inboxCard={session.inboxCard}
       noteCard={session.noteCard}
       handoffCard={session.handoffCard}
+      midThreadLine={session.midThread?.line}
       question={session.pendingQuestion}
       onQuoteRequestConsumed={acknowledgeQuote}
       onInboxCardDismiss={() => onInboxCardDismiss?.(session.id)}
@@ -767,6 +844,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           : undefined
       }
       draftWorkspace={
+        !agent &&
         !session.inboxAsk &&
         !session.worktreeRemoved &&
         !managed &&
@@ -814,10 +892,16 @@ const LocalSessionPane = memo(function LocalSessionPane({
         if (!dockComposer) composerDockMotion.captureLaunch();
         return onSubmit(session.id, text, attachments, options);
       }}
+      onCompareModels={
+        onCompareModels
+          ? (prompt, targets) => onCompareModels(session.id, prompt, targets)
+          : undefined
+      }
       onBtwCommand={btw.openWith}
       // A coding team's chat: Stop is its own turn; "Stop all" on the delegation line stops what it handed out.
       onStop={() => (teamChat ? (onStopTurn ?? onStop) : onStop)(session.id)}
       turnStop={teamChat}
+      modelExtra={<SetMonoDefault sessionId={session.id} harness={session.harness} model={session.model} values={session.modelSettings} />}
       modelLine={
         teamChat ? (
           <MonoModelLine
@@ -836,6 +920,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onPlaceInFolder={(target) => onPlaceSessionInFolder(session.id, target)}
       queuedMessages={session.queuedMessages}
       queueStatus={session.queueStatus}
+      queueWaitReasons={waitReasons}
       onDeleteQueuedMessage={(messageId) =>
         onDeleteQueuedMessage(session.id, messageId)
       }
@@ -845,8 +930,10 @@ const LocalSessionPane = memo(function LocalSessionPane({
       onQueuedMessageEditingChange={(messageId) =>
         onQueuedMessageEditingChange(session.id, messageId)
       }
-      onSteerQueuedMessage={(messageId) =>
-        onSteerQueuedMessage(session.id, messageId)
+      onSteerQueuedMessage={
+        session.busy && cannotRedirect
+          ? undefined
+          : (messageId) => onSteerQueuedMessage(session.id, messageId)
       }
       onResumeQueue={() => onResumeQueue(session.id)}
       usageLimit={session.usageLimit}
@@ -863,6 +950,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
       }
       onOpenFile={onOpenFile}
       busy={!!session.busy}
+      steerNote={steerNote}
+      steerNoteBesideBox={compacting}
       editLastTurnSupported={editLastTurnSupported}
       lastTurnRecall={turnRecall}
       onRecallLastTurnReady={(recall) => {
@@ -882,6 +971,12 @@ const LocalSessionPane = memo(function LocalSessionPane({
       />
     ) : null;
 
+  // WP-125: copy a link that opens this chat on this computer.
+  const chatUrl = chatLink(session.id);
+  const copyChatLink = chatUrl ? (
+    <CopyThreadLinkButton kind="chat" label="Copy chat link" url={chatUrl} />
+  ) : null;
+
   return (
     <div
       data-session-drop={session.id}
@@ -892,7 +987,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
       style={projectBackgroundStyle}
       className={`${
         agent && !projectBackground ? "" : "chat-pane-background "
-      }relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col`}
+      }group/pane relative isolate flex h-full min-h-0 min-w-0 flex-1 flex-col`}
       onMouseDown={() => onFocus(session.id, "pointer")}
     >
       {projectBackground?.effect === "gradient-blur" ||
@@ -902,6 +997,18 @@ const LocalSessionPane = memo(function LocalSessionPane({
         globalBackgroundEffect === "gradient-blur") ? (
         <GradientBlurBackground />
       ) : null}
+      <AppTeleportPanel session={session} onRow={onTeleportRow} onOpen={onOpenChat} />
+      {(() => {
+        const moved = teleportStateOf(session);
+        // The saved state is the truth after a restart: a moved or frozen chat stays locked, a settled one unlocks.
+        syncTeleportLock(session);
+        return moved.moved ? (
+          <TeleportHeaderBand
+            host={moved.host}
+            time={new Date(moved.at).toLocaleString()}
+          />
+        ) : null;
+      })()}
       {modelWelcome && visible ? (
         modelWelcome.kind === "astra" ? (
           <AstraWelcome key={modelWelcome.run} onDone={dismissModelWelcome} />
@@ -909,6 +1016,8 @@ const LocalSessionPane = memo(function LocalSessionPane({
           <OpusWelcome key={modelWelcome.run} onDone={dismissModelWelcome} />
         )
       ) : null}
+      {/* One chat: the project filter at its top (asks/ui/ChiefLens.tsx). */}
+      {oneChat ? <ChiefLensBar sessionId={session.id} /> : null}
       {inSplit ? (
         <div
           data-split-header=""
@@ -942,6 +1051,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
           </span>
           {/* WP-111 */}
           <PrivateMark on={session.private === true} />
+          {copyChatLink}
           {splitButtons}
           <button
             type="button"
@@ -959,23 +1069,40 @@ const LocalSessionPane = memo(function LocalSessionPane({
             <X className="size-3" strokeWidth={1.75} />
           </button>
         </div>
-      ) : session.private === true && !splitButtons ? (
-        <div className="flex h-7 shrink-0 items-center px-3">
+      ) : session.private === true ? (
+        <div className="flex h-7 shrink-0 items-center gap-1.5 px-3">
           {/* WP-111 */}
           <PrivateMark on />
+          {copyChatLink}
         </div>
-      ) : splitButtons ? (
+      ) : copyChatLink && !ONE_CHAT_LOOK ? (
+        // Dropwave (Ash, 11 Nov: "I don't see the point of that copy chat link button"): in the hub the link is in the
+        // chat's right-click menu in the chat list, not a button over the first message.
         <div
-          data-pane-header=""
-          className="flex h-9 shrink-0 items-center justify-end border-b border-stroke px-1.5"
+          className={`pointer-events-none absolute top-2 z-10 ${splitButtons ? "right-16" : "right-2"}`}
         >
-          {/* WP-111 */}
-          {session.private === true ? <PrivateMark on /> : null}
-          {splitButtons}
+          <div className="pointer-events-auto">{copyChatLink}</div>
         </div>
+      ) : null}
+      {/* A chat on its own has no header bar: its split buttons show in the corner while the pane is hovered. */}
+      {!inSplit && splitButtons ? <PaneSplitCorner>{splitButtons}</PaneSplitCorner> : null}
+      {/* A chat that came in from an export with no folder here: nothing runs until one is chosen. */}
+      {!remote ? (
+        <ChatFolderBanner session={session} onChoose={(cwd) => onCwdChange(session.id, cwd)} />
       ) : null}
       {/* WP-110: which worktree this chat runs in, and the ask line before the first send. */}
       <NewChatWorktreeBanner session={session} />
+      {/* WP-120: when this CLI cannot lead, the strip says why and offers a switch. */}
+      {session.firstMate ? (
+        <LeadCliNotice
+          harness={session.harness}
+          sessionId={session.id}
+          hasCrew={hasCrew}
+          onSwitch={(cli) => onModelChange(session.id, cli, preferredModelId(cli))}
+        />
+      ) : null}
+      {/* WP-121: continue this chat, or a labelled recap, until the next send. */}
+      <MidThreadSwitchNotice line={session.midThread?.line} place="header" />
       <div className="flex min-h-0 min-w-0 flex-1">
         <div
           className="relative flex min-h-0 min-w-0 flex-1 flex-col"
@@ -1034,7 +1161,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
             {remoteSessionLoading ? null : isEmpty ? (
               agent ? (
                 <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
-                  <MonoHeader agent={agent} greeting />
+                  <MonoHeader agent={agent} greeting project={monoProjectName(session.id)} />
                 </div>
               ) : session.inboxAsk ? (
                 <div className="scrollbar-none h-full min-h-0 overflow-y-auto">
@@ -1052,6 +1179,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         ref={composerDockMotion.centeredRef}
                         data-session-composer
                       >
+                        {fanOutCompare}
                         {composer}
                       </div>
                     )
@@ -1066,6 +1194,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                   onMouseDown={focusPane}
                 >
                   <AgentTranscript
+                    lineage={lineage}
                     blocks={
                       agent && !monoTranscript.viewingOlderPage
                         ? monoPendingTranscriptBlocks(
@@ -1075,6 +1204,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                         : monoTranscript.blocks
                     }
                     sessionId={remoteSession ? undefined : session.id}
+                    mediaSessionId={remoteSession ? undefined : session.id}
                     historicalBlockIds={monoTranscript.historicalBlockIds}
                     initialTurns={agent ? MONO_PAGE_TURNS : undefined}
                     pageSize={agent ? MONO_PAGE_TURNS : undefined}
@@ -1199,6 +1329,7 @@ const LocalSessionPane = memo(function LocalSessionPane({
                           }
                         : undefined
                     }
+                    onForkFromHere={(blockId) => askThreadFork(session.id, blockId)}
                     latestTurnAccessory={
                       // A Mono's chat: a new Mono or team it drafted sits after its reply, in the messages (r29, A6).
                       agent ? (
@@ -1277,14 +1408,15 @@ const LocalSessionPane = memo(function LocalSessionPane({
               // A Mono's composer fills the width with the room's side padding (GroupChatView).
               // A worker's glass dock floats over the transcript ([data-glass-dock] in index.css).
               data-glass-dock={glassDock || undefined}
-              className={agent ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}
+              className={monoBox ? "w-full shrink-0 px-6 xl:px-8" : "mx-auto w-full max-w-4xl shrink-0"}
             >
-              {agent ? (
+              {agent && monoBox ? (
                 <>
                   <MessageQueue
                     messages={visibleMonoCompletionMessages(session)}
                     status={session.queueStatus}
                     sendingId={session.sendingQueuedMessageId}
+                    waitReasons={waitReasons}
                     onDelete={(messageId) =>
                       onDeleteQueuedMessage(session.id, messageId)
                     }
@@ -1383,21 +1515,24 @@ const LocalSessionPane = memo(function LocalSessionPane({
                     }
                     // The model as small text above the box (port map idea 2), in place of the picker under it.
                     modelLine={
-                      <MonoModelLine
-                        harness={session.harness}
-                        model={session.model}
-                        values={session.modelSettings}
-                        allowedHarnesses={allowedModelHarnesses}
-                        project={workCwd}
-                        hotkeys={focused && !btw.open}
-                        labelClassName="@max-sm:hidden"
-                        onChange={(harness, model) =>
-                          onModelChange(session.id, harness, model)
-                        }
-                        onSettingsChange={(settings) =>
-                          onModelSettingsChange(session.id, settings)
-                        }
-                      />
+                      <>
+                        <MonoModelLine
+                          harness={session.harness}
+                          model={session.model}
+                          values={session.modelSettings}
+                          allowedHarnesses={allowedModelHarnesses}
+                          project={workCwd}
+                          hotkeys={focused && !btw.open}
+                          labelClassName="@max-sm:hidden"
+                          onChange={(harness, model) =>
+                            onModelChange(session.id, harness, model)
+                          }
+                          onSettingsChange={(settings) =>
+                            onModelSettingsChange(session.id, settings)
+                          }
+                        />
+                        <SetMonoDefault sessionId={session.id} harness={session.harness} model={session.model} values={session.modelSettings} />
+                      </>
                     }
                     busy={!!session.busy}
                     // Stop is this chat's own turn; "Stop all" on the delegation line stops what it handed out.
@@ -1422,6 +1557,24 @@ const LocalSessionPane = memo(function LocalSessionPane({
               ) : (
                 <>
                   {session.goal ? <GoalRow goal={session.goal} /> : null}
+                  {/* One chat, narrowed to a project: who the next message is about. */}
+                  {oneChat ? <ChiefLensComposerLine /> : null}
+                  {/* The owner is driving this worker's chat until he hands it back. */}
+                  {delegationPane?.kind === "driving" ? (
+                    <div data-driving-chat className="glass-bar mb-1.5 flex w-full items-center gap-2 rounded-2xl border border-content/10 px-4 py-2 font-sans text-[13px] text-content/60">
+                      <span className="min-w-0 truncate">
+                        You&apos;re driving this one. {delegationPane.ownerName} waits and carries on from your last message.
+                      </span>
+                      <button
+                        type="button"
+                        data-hand-back
+                        onClick={delegationPane.onHandBack}
+                        className="ml-auto shrink-0 rounded-lg border border-content/20 px-2 py-1 text-[12px] text-content hover:bg-content/8"
+                      >
+                        Hand back to {delegationPane.ownerName}
+                      </button>
+                    </div>
+                  ) : null}
                   {/* A coding-team chat is an orchestrator like the Lead: its stuck workers and what is out. */}
                   {delegationPane?.kind === "lead" ? (
                     <DelegationWaitingLine
@@ -1439,18 +1592,39 @@ const LocalSessionPane = memo(function LocalSessionPane({
                       crewLines={delegationPane.crewLines}
                     />
                   ) : null}
-                  {btw.canStartDraft && !btw.open ? (
-                    <div className="flex justify-end px-1.5 pb-1">
-                      <button
-                        type="button"
-                        data-side-question
-                        onClick={() => btw.openWith("")}
-                        className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/60 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
-                      >
-                        Side question
-                      </button>
+                  {(btw.canStartDraft && !btw.open) || oneChat ? (
+                    <div className="flex justify-end gap-1 px-1.5 pb-1">
+                      {/* One chat (Ash, 13 Nov): "Catch me up" is always there, beside Side question. */}
+                      {oneChat ? (
+                        <button
+                          type="button"
+                          data-catch-me-up
+                          title="What finished, what was decided for you and what needs you, since the last catch-up"
+                          onClick={() => requestCatchUp(session.id)}
+                          className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/60 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                        >
+                          Catch me up
+                        </button>
+                      ) : null}
+                      {btw.canStartDraft && !btw.open ? (
+                        <button
+                          type="button"
+                          data-side-question
+                          onClick={() => btw.openWith("")}
+                          className="inline-flex h-7 items-center rounded-md px-2.5 text-xs text-content/60 transition-colors hover:bg-content/8 hover:text-content focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-accent"
+                        >
+                          Side question
+                          {/* Saved ones come back as tabs when this opens; say so, or nobody knows they are kept. */}
+                          {IS_HUB_BUNDLE && savedSideQuestions ? (
+                            <span data-side-question-saved className="ml-1.5 tabular-nums text-content/60">
+                              {savedSideQuestions} saved
+                            </span>
+                          ) : null}
+                        </button>
+                      ) : null}
                     </div>
                   ) : null}
+                  {fanOutCompare}
                   {composer}
                 </>
               )}
@@ -1489,4 +1663,10 @@ function monoUsageProviders(harness: HarnessId): RateLimitProvider[] {
     harness === "devin"
     ? [harness]
     : [];
+}
+
+/** Dropwave: the project a Mono's chat is its own chat for (the Chief of Staff has one per project), by name. */
+function monoProjectName(sessionId: string): string | undefined {
+  const projectId = monoSessionProject(sessionId);
+  return projectId ? hubData().listProjects().find((project) => project.id === projectId)?.name : undefined;
 }

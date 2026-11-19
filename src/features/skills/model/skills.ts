@@ -18,6 +18,7 @@ import {
   CREATE_SKILL_DESCRIPTION,
   CREATE_SKILL_NAME,
 } from "./createSkill";
+import { listPluginCommands, type PluginCommand } from "./pluginCommands";
 
 export {
   rankSkills,
@@ -303,19 +304,50 @@ function startCatalogLoad(
   return promise;
 }
 
+function pluginCommandSkills(
+  commands: readonly PluginCommand[],
+  harness: HarnessId,
+  taken: ReadonlySet<string>,
+): NativeSkill[] {
+  return commands.flatMap((command) => {
+    if (!command.name || taken.has(command.name)) return [];
+    if (typeof command.description !== "string" || typeof command.file !== "string") return [];
+    return [
+      {
+        kind: "native" as const,
+        name: command.name,
+        description: command.description,
+        invocation: command.name,
+        source: harness,
+        origin: command.file,
+      },
+    ];
+  });
+}
+
 async function loadCatalog(context: SkillCatalogContext): Promise<Skill[]> {
+  // Start both before the first await. A caller can count discovery as soon as load starts.
+  const pluginsPromise = listPluginCommands(context.cwd).catch(() => [] as PluginCommand[]);
   const provider = getHarness(context.harness)?.commands;
   if (provider) {
-    const commands = await provider.discover(context);
-    return commands.map((command): NativeSkill => ({
-      kind: "native",
-      ...command,
-    }));
+    const discovered = provider.discover(context);
+    const [commands, plugins] = await Promise.all([discovered, pluginsPromise]);
+    const taken = new Set(commands.map((command) => command.name));
+    return [
+      ...commands.map((command): NativeSkill => ({
+        kind: "native",
+        ...command,
+      })),
+      ...pluginCommandSkills(plugins, context.harness, taken),
+    ];
   }
   const disabledPaths = loadDisabledSkillPaths();
-  const discovered = await listSkills(context.cwd, disabledPaths);
+  const discovered = listSkills(context.cwd, disabledPaths);
+  const [rows, plugins] = await Promise.all([discovered, pluginsPromise]);
   const disabled = disabledSkillPathSet();
-  return mergeCatalog(discovered.filter((skill) => !disabled.has(skill.path)));
+  const merged = mergeCatalog(rows.filter((skill) => !disabled.has(skill.path)));
+  const taken = new Set(merged.map((skill) => skill.name));
+  return [...merged, ...pluginCommandSkills(plugins, context.harness, taken)];
 }
 
 export function mergeCatalog(discovered: DiscoveredSkill[]): Skill[] {

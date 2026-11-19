@@ -2,7 +2,7 @@ import { act, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ModelList } from "@/features/models/ModelPicker";
+import { ModelList, ModelOptions } from "@/features/models/ModelPicker";
 import {
   useForgetChoiceOnLeave,
   useSessionChoice,
@@ -269,5 +269,87 @@ describe("account picker in the model sheet", () => {
     desktop.listModels.mockReturnValue(new Promise(() => {}));
     await render();
     expect(container.querySelector('[aria-label^="Account:"]')).toBeNull();
+  });
+});
+
+const runtimeModeNames = (names: Record<string, readonly [string, string]>) =>
+  (["supervised", "auto-accept-edits", "auto", "full-access"] as const).map((id) => ({
+    id,
+    label: names[id][0],
+    hint: names[id][1],
+    offered: true,
+  }));
+
+describe("access choices follow the chat's CLI (WP-175 MED 2)", () => {
+  let root: ReturnType<typeof createRoot>;
+  let container: HTMLDivElement;
+  const renderOptions = (next: ModelCatalog) => {
+    desktop.listModels.mockResolvedValue(next);
+    return act(async () => {
+      root.render(<ModelOptions projectId="project" sessionId={undefined} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+  };
+  beforeEach(() => {
+    vi.clearAllMocks();
+    desktop.fingerprint = "model-picker-desktop";
+    container = document.createElement("div");
+    root = createRoot(container);
+  });
+  afterEach(() => act(() => root.unmount()));
+
+  it("fx is not hidden, and offers Full access only, with the desktop's honest names", async () => {
+    const fxNames = {
+      supervised: ["fx approves its own requests", "fx runs its own code mode."],
+      "auto-accept-edits": ["fx approves its own requests", "fx runs its own code mode."],
+      auto: ["fx approves its own requests", "fx runs its own code mode."],
+      "full-access": ["Full access", "Allow commands, edits."],
+    } as const;
+    const modes = runtimeModeNames(fxNames).map((mode) => ({
+      ...mode,
+      offered: mode.id === "full-access",
+    }));
+    const fxCatalog: ModelCatalog = {
+      ...catalog,
+      models: [{ id: "fx:glm", harness: "fx", name: "GLM", settings: [] }],
+      runtimeModes: modes.filter((mode) => mode.offered),
+      runtimeModesByHarness: { fx: modes },
+      current: { ...catalog.current, harness: "fx", model: "fx:glm", runtimeMode: "supervised" },
+    };
+    // The options button names the chat's access in the desktop's words, even though fx offers one mode.
+    desktop.listModels.mockResolvedValue(fxCatalog);
+    await act(async () => {
+      root.render(<ModelList projectId="project" sessionId={undefined} query="" onOpenOptions={() => {}} />);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain("fx approves its own requests");
+    expect(container.textContent).not.toContain("An AI reviewer");
+    // The access card offers Full access alone: the other modes are not choices.
+    await renderOptions(fxCatalog);
+    expect(container.textContent).toContain("Access");
+    expect(container.textContent).toContain("Full access");
+    expect(container.textContent).not.toContain("Auto-accept edits");
+    expect(container.textContent).not.toContain("An AI reviewer");
+  });
+
+  it("Antigravity's Auto reads as the desktop names it, never as an AI reviewer", async () => {
+    const names = {
+      supervised: ["Supervised", "Ask before commands."],
+      "auto-accept-edits": ["Auto-accept edits", "Auto-approve edits."],
+      auto: ["Default (no AI review)", "Runs Antigravity's default mode."],
+      "full-access": ["Full access", "Allow commands."],
+    } as const;
+    await renderOptions({
+      ...catalog,
+      models: [{ id: "antigravity:gemini", harness: "antigravity", name: "Gemini", settings: [] }],
+      runtimeModes: runtimeModeNames(names),
+      runtimeModesByHarness: { antigravity: runtimeModeNames(names) },
+      current: { ...catalog.current, harness: "antigravity", model: "antigravity:gemini", runtimeMode: "auto" },
+    });
+    expect(container.textContent).toContain("Default (no AI review)");
+    expect(container.textContent).not.toContain("An AI reviewer");
+    expect(container.textContent).not.toMatch(/\bAuto\b:/);
   });
 });

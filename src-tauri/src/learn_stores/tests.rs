@@ -1039,3 +1039,96 @@ fn profile_files_stay_in_the_learn_folder() {
     let err = apply::profile_save(&tmp.0, "opinions", &again.opinions_sha256, &over).unwrap_err();
     assert!(err.contains("remove or merge"), "{err}");
 }
+
+fn set_mtime(path: &std::path::Path, secs: u64) {
+    let file = fs::OpenOptions::new().write(true).open(path).unwrap();
+    file.set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(secs))
+        .unwrap();
+}
+
+fn claude_stand_in(root: &std::path::Path) -> StandIn {
+    StandIn {
+        source: "claude".into(),
+        root: root.to_string_lossy().into_owned(),
+    }
+}
+
+#[test]
+fn a_capped_listing_keeps_the_newest_and_says_how_many_were_left_out() {
+    let home = Tmp::new("newest-home");
+    let root = Tmp::new("newest");
+    // Names sort the opposite way to age: "a" is the newest, "f" the oldest.
+    for (index, name) in ["a", "b", "c", "d", "e", "f"].iter().enumerate() {
+        let dir = root.0.join(format!("proj-{}", index % 2));
+        fs::create_dir_all(&dir).unwrap();
+        let file = dir.join(format!("{name}.jsonl"));
+        fs::write(&file, "{}\n").unwrap();
+        set_mtime(&file, 10_000 - index as u64 * 100);
+    }
+    let found = gate::list_report(
+        &home.0,
+        Some(&[claude_stand_in(&root.0)]),
+        false,
+        true,
+        Limits {
+            max_read: 1024,
+            max_files: 4,
+        },
+        &gate::StoreLocate::unix(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = found.chats.iter().map(|chat| chat.id.as_str()).collect();
+    assert_eq!(ids, ["a", "b", "c", "d"], "{found:?}");
+    assert_eq!(found.left_out, 2);
+    assert_eq!(found.too_big, 0);
+}
+
+#[test]
+fn newest_files_win_even_when_their_names_sort_last() {
+    let home = Tmp::new("newest-late-home");
+    let root = Tmp::new("newest-late");
+    for (index, name) in ["a", "b", "c", "z"].iter().enumerate() {
+        let file = root.0.join(format!("{name}.jsonl"));
+        fs::write(&file, "{}\n").unwrap();
+        set_mtime(&file, 1_000 + index as u64 * 10);
+    }
+    let found = gate::list_report(
+        &home.0,
+        Some(&[claude_stand_in(&root.0)]),
+        false,
+        true,
+        Limits {
+            max_read: 1024,
+            max_files: 2,
+        },
+        &gate::StoreLocate::unix(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = found.chats.iter().map(|chat| chat.id.as_str()).collect();
+    assert_eq!(ids, ["z", "c"]);
+    assert_eq!(found.left_out, 2);
+}
+
+#[test]
+fn one_file_over_the_read_cap_is_counted_and_never_fails_the_listing() {
+    let home = Tmp::new("big-home");
+    let root = Tmp::new("big");
+    fs::write(root.0.join("small.jsonl"), "{}\n").unwrap();
+    fs::write(root.0.join("huge.jsonl"), "x".repeat(200)).unwrap();
+    let found = gate::list_report(
+        &home.0,
+        Some(&[claude_stand_in(&root.0)]),
+        false,
+        true,
+        Limits {
+            max_read: 50,
+            max_files: 10,
+        },
+        &gate::StoreLocate::unix(),
+    )
+    .unwrap();
+    let ids: Vec<&str> = found.chats.iter().map(|chat| chat.id.as_str()).collect();
+    assert_eq!(ids, ["small"]);
+    assert_eq!(found.too_big, 1);
+    assert_eq!(found.left_out, 0);
+}

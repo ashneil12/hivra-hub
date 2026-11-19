@@ -18,8 +18,34 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             crate::hub_keychain::connector_login_store,
             crate::hub_keychain::connector_login_exists,
             crate::hub_keychain::connector_login_delete,
+            // WP-92: the secret vault. `secrets_reveal` is the one command that returns a value.
+            crate::secrets::commands::secrets_list,
+            crate::secrets::commands::secrets_pending,
+            crate::secrets::commands::secrets_requests,
+            crate::secrets::commands::secrets_save_new,
+            crate::secrets::commands::secrets_begin_save,
+            crate::secrets::commands::secrets_save,
+            crate::secrets::commands::secrets_decline,
+            crate::secrets::commands::secrets_request,
+            crate::secrets::commands::secrets_rename,
+            crate::secrets::commands::secrets_rotate,
+            crate::secrets::commands::secrets_delete,
+            crate::secrets::commands::secrets_reveal,
+            crate::secrets::commands::secrets_grants,
+            crate::secrets::commands::secrets_revoke_grant,
+            crate::secrets::commands::secrets_grant,
+            crate::secrets::commands::secrets_env_write,
+            crate::secrets::commands::secrets_env_remove,
+            crate::secrets::commands::secrets_slug,
+            crate::secrets::commands::secrets_index,
+            crate::secrets::commands::secrets_env_files,
+            crate::secrets::commands::secrets_worker_arm,
+            crate::secrets::commands::secrets_always_for_any_code,
+            crate::secrets::commands::secrets_set_always_for_any_code,
             crate::connectors::commands::connectors_state,
             crate::connectors::commands::connector_save_login,
+            // WP-92: one click on a connector moves its saved key into the vault.
+            crate::connectors::commands::connector_move_login_to_vault,
             crate::connectors::commands::connector_turn_on,
             crate::connectors::commands::connector_save_google_client,
             crate::connectors::commands::connector_forget_google_client,
@@ -33,12 +59,17 @@ pub fn init<R: Runtime>() -> TauriPlugin<R> {
             crate::model_router::model_key_save,
             crate::model_router::model_key_test,
             crate::model_router::model_key_delete,
+            crate::model_router::model_key_address,
             crate::model_router::model_context_window,
             // WP-22: a room's auto responder asks the quick model through this.
             crate::model_router::model_quick_pick,
             // WP-103: the cheap memory tier, and its "Test this model" check.
             crate::memory_cheap::memory_cheap_ask,
-            crate::memory_cheap::memory_cheap_test
+            crate::memory_cheap::memory_cheap_test,
+            // WP-129: short text. One completion, no tools and no path.
+            crate::text_generation::text_generation_ask,
+            crate::text_generation::text_generation_remember,
+            crate::text_generation::text_generation_forget
         ])
         // The main window is always shown at a usable size, whatever a later startup step does (launch_guard.rs).
         .on_event(|app, event| match event {

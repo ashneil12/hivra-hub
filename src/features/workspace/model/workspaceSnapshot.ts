@@ -56,6 +56,8 @@ export type WorkspaceSessionStub = {
   branch?: string;
   worktreeCwd?: string;
   worktreeRemoved?: boolean;
+  /** The person chose this folder for a new chat, so a default worktree leaves it alone. */
+  worktreeDeclined?: boolean;
 };
 
 export type WorkspaceSnapshot = {
@@ -354,7 +356,8 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
   if (!session.id) return null;
   return {
     id: session.id,
-    cwd: session.cwd || "~",
+    // Blank stays blank: a chat with no folder (docs/PORTABLE.md) must not come back as the home folder.
+    cwd: typeof session.cwd === "string" ? session.cwd : "~",
     harness: session.harness,
     model: session.model,
     modelSettings: { ...session.modelSettings },
@@ -370,6 +373,7 @@ function sessionStub(session: Session): WorkspaceSessionStub | null {
     ...(session.branch ? { branch: session.branch } : {}),
     ...(session.worktreeCwd ? { worktreeCwd: session.worktreeCwd } : {}),
     ...(session.worktreeRemoved ? { worktreeRemoved: true } : {}),
+    ...(session.worktreeDeclined ? { worktreeDeclined: true } : {}),
   };
 }
 
@@ -399,6 +403,7 @@ function sessionFromStub(stub: WorkspaceSessionStub): Session {
     ...(stub.branch ? { branch: stub.branch } : {}),
     ...(stub.worktreeCwd ? { worktreeCwd: stub.worktreeCwd } : {}),
     ...(stub.worktreeRemoved ? { worktreeRemoved: true } : {}),
+    ...(stub.worktreeDeclined ? { worktreeDeclined: true } : {}),
   };
 }
 
@@ -421,10 +426,8 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
       : {};
   return {
     id: value.id,
-    cwd:
-      typeof value.cwd === "string" && value.cwd.trim()
-        ? value.cwd.trim()
-        : "~",
+    // A snapshot that never wrote a folder is the home folder; a blank one is a chat with none.
+    cwd: typeof value.cwd === "string" ? value.cwd.trim() : "~",
     harness,
     // WP-16: the retired Grok model id reads as the default Claude model. Not written back.
     model: typeof value.model === "string" ? readRetiredGrokModel(value.model, defaultModelId("claude")) : "",
@@ -448,6 +451,7 @@ function sanitizeStub(raw: unknown): WorkspaceSessionStub | null {
       ? { worktreeCwd: value.worktreeCwd.trim() }
       : {}),
     ...(value.worktreeRemoved === true ? { worktreeRemoved: true } : {}),
+    ...(value.worktreeDeclined === true ? { worktreeDeclined: true } : {}),
   };
 }
 

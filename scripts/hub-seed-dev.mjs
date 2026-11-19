@@ -16,8 +16,9 @@
 //    is ever written back to it.
 // 4. In the copy only, clear what would make a dev copy act on Ash's behalf or resume his real Claude transcripts:
 //    in-flight turns, queued messages, the open-tab snapshot, pending worktree removals, automations and their runs,
-//    reminders, orchestration rows, delegation rows and chat bindings, autopilot switches and resumes, every chat's
-//    open /goal, and every provider_session_id.
+//    reminders, one-time schedules, orchestration rows, delegation rows and chat bindings, autopilot switches and resumes, every chat's
+//    open /goal, every provider_session_id, and the vault's index, grants, requests and .env records (Hivra WP-92:
+//    values are in the keychain, never the database, and a dev copy uses its own keychain names).
 // 5. Check the copy's integrity, move it into place, and record what was done in seeded.json beside it.
 //
 // Only monocode.db is copied: not monos/ (habits), not checkpoints, not the Keychain (a dev copy uses its own names).
@@ -123,11 +124,15 @@ export function scrub(db) {
     wipe("inFlightTurns", "in_flight_sessions");
     wipe("workspaceSnapshot", "workspace_snapshot");
     wipe("worktreeRemovals", "worktree_removals");
+    // What an import's file named for a chat's folder (src-tauri/src/portable.rs): paths from Ash's Mac, never a copy's.
+    wipe("importedChatFolders", "imported_chat_folders");
     // Runs and claims first: they reference automations.
     wipe("automationRuns", "automation_runs");
     wipe("automationEventClaims", "automation_event_claims");
     wipe("automations", "automations");
     wipe("reminders", "session_reminders");
+    // WP-128: a one-time schedule is Ash's prompt for one of his chats or projects at a set time.
+    wipe("oneTimeSchedules", "one_time_schedules");
     wipe("orchestrationRuns", "orchestration_runs");
     wipe("orchestrationSidebar", "orchestration_sidebar");
     wipe("orchestrationWorkers", "orchestration_workers");
@@ -135,6 +140,13 @@ export function scrub(db) {
     // copies of his Mono chats, and its outbox would replay them (to the stub, never the live studio).
     wipe("delegations", "delegations");
     wipe("delegationChatBinds", "delegation_chat_binds");
+    // WP-172 (src-tauri/src/fanout_checkpoint.rs): a fan-out's checkpoint names Ash's real briefs and folders. A resume
+    // in a dev copy would start those tasks again in his project folders, so the plans and their leases go.
+    wipe("fanoutCheckpoints", "fanout_checkpoints");
+    wipe("fanoutLeases", "fanout_leases");
+    // WP-250 (src-tauri/src/tasks/pickup.rs): a pickup rule hands tasks to a first mate and wakes it, so in a copy it
+    // would start Ash's first mates in his real project folders.
+    wipe("pickupRules", "task_pickup_rules");
     // Hivra WP-14 (src-tauri/src/steering.rs, decisions.rs): pending messages would be delivered into the copy's chats,
     // and decisions answered there would release them. Both belong to the daily app's work.
     wipe("steerMessages", "steer_messages");
@@ -147,6 +159,16 @@ export function scrub(db) {
     // Mono chats and make mc/pr-<n> worktrees in his real project checkouts.
     wipe("prWatchWakes", "pr_watch_wakes");
     wipe("prWatches", "pr_watches");
+    // WP-135: a compare's records name Ash's real worktrees, and Discard in a dev copy would take one of them back.
+    // WP-144: a held brief and its fresh-eyes review name Ash's real chats and folders; a dev copy would start the brief
+    // as a worker there once approved. Only those documents go; the other hub documents (projects, Pages, home) are
+    // what the seed is for.
+    if (has(db, "hub_local_docs")) {
+      cleared.fanOutCompares = count(db, "SELECT count(*) FROM hub_local_docs WHERE key = 'fan-out-compares'");
+      db.exec("DELETE FROM hub_local_docs WHERE key = 'fan-out-compares'");
+      cleared.freshEyesReviews = count(db, "SELECT count(*) FROM hub_local_docs WHERE key = 'fresh-eyes'");
+      db.exec("DELETE FROM hub_local_docs WHERE key = 'fresh-eyes'");
+    }
     if (hasColumn(db, "sessions", "queued_messages_json")) {
       cleared.queuedMessages = count(db, "SELECT count(*) FROM sessions WHERE queued_messages_json NOT IN ('', '[]')");
       db.exec("UPDATE sessions SET queued_messages_json = '[]'");
@@ -162,6 +184,14 @@ export function scrub(db) {
       cleared.providerSessionIds = count(db, "SELECT count(*) FROM sessions WHERE provider_session_id IS NOT NULL");
       db.exec("UPDATE sessions SET provider_session_id = NULL");
     }
+    // Hivra WP-92 (src-tauri/src/secrets): a dev copy has its own vault. It starts with no index, grants, requests or
+    // .env records; a value was never in the database to copy, and the keychain names it uses are its own.
+    wipe("secrets", "secrets");
+    wipe("secretGrants", "secret_grants");
+    wipe("secretRequests", "secret_requests");
+    wipe("secretEnvWrites", "secret_env_writes");
+    // The per-install choice about "Always" for programs that can run any code: a dev copy starts with it off.
+    wipe("secretSettings", "secret_settings");
     db.exec("COMMIT");
   } catch (error) {
     db.exec("ROLLBACK");

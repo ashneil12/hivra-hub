@@ -9,6 +9,7 @@ import {
   sendOpenCodeTurn,
   steerOpenCodeTurn,
   stopOpenCodeSession,
+  openCodeHasBackgroundWork,
 } from "./opencode";
 import { refreshOpenCodeCatalog } from "./opencodeCatalog";
 import {
@@ -35,6 +36,7 @@ export const openCodeAdapter: HarnessAdapter = {
   respondApproval: respondOpenCodeApproval,
   respondQuestion: respondOpenCodeQuestion,
   stopSession: stopOpenCodeSession,
+  hasBackgroundWork: openCodeHasBackgroundWork,
   forgetSession: forgetOpenCodeSession,
   bindSession: bindOpenCodeSession,
   refreshCatalog: refreshOpenCodeCatalog,

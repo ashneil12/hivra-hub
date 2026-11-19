@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Builder hold fixture</title>
+    <style>
+      html, body { margin: 0; height: 100%; background: #111; color: white; }
+      #shell { display: flex; height: 100vh; }
+      #root { display: flex; min-width: 0; flex: 1; }
+    </style>
+  </head>
+  <body>
+    <div id="shell" data-wp161-shell></div>
+    <div id="controls">
+      <button id="launch" type="button">Launch a builder</button>
+      <button id="pump" type="button">Let waiting builders try</button>
+      <button id="disk-24" type="button">Disk 24 GB free</button>
+      <button id="disk-41" type="button">Disk 41 GB free</button>
+      <button id="disk-off" type="button">Turn the disk pause off</button>
+    </div>
+    <script type="module" src="./wp161-builder-hold.tsx"></script>
+  </body>
+</html>

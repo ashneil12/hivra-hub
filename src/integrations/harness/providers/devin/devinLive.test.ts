@@ -796,3 +796,65 @@ describe("Devin live ACP sequence", () => {
     expect(events.some((event) => event.type === "approval.requested")).toBe(false);
   });
 });
+
+describe("Devin: a refused mode change follows the one rule (WP-175)", () => {
+  beforeEach(async () => {
+    sent.length = 0;
+    onLine = undefined;
+    textFiles.clear();
+    resetDevinAuthCache();
+    await forgetDevinSession("devin-thread");
+  });
+
+  const refuse = (id: number | string) =>
+    onLine!(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "Invalid mode" } }));
+
+  it("a refused change with no known mode ends the turn as waiting, without a prompt", async () => {
+    const turn = sendDevinTurn({
+      sessionId: "devin-thread",
+      cwd: "/repo",
+      model: "devin:glm-5-2",
+      runtimeMode: "supervised",
+      text: "edit a file",
+      onEvent: () => undefined,
+    });
+    await startSession();
+    await waitFor(() => !!request("session/set_mode"), "set_mode");
+    refuse(request("session/set_mode")!.id);
+    await expect(turn).rejects.toThrow(/waiting/);
+    expect(request("session/prompt")).toBeUndefined();
+  });
+
+  it("a refused upgrade keeps the current mode, says so, and the turn still runs", async () => {
+    const events: HarnessEvent[] = [];
+    const first = sendDevinTurn({
+      sessionId: "devin-thread",
+      cwd: "/repo",
+      model: "devin:glm-5-2",
+      runtimeMode: "auto-accept-edits",
+      text: "first",
+      onEvent: (e) => events.push(e),
+    });
+    await startSession();
+    await answer("session/set_mode", {});
+    await answer("session/prompt", { stopReason: "end_turn" });
+    await first;
+
+    sent.length = 0;
+    const second = sendDevinTurn({
+      sessionId: "devin-thread",
+      cwd: "/repo",
+      model: "devin:glm-5-2",
+      runtimeMode: "full-access",
+      text: "second",
+      onEvent: (e) => events.push(e),
+    });
+    await waitFor(() => !!request("session/set_mode"), "set_mode 2");
+    refuse(request("session/set_mode")!.id);
+    await answer("session/prompt", { stopReason: "end_turn" });
+    await second;
+    expect(request("session/prompt")).toBeDefined();
+    expect(events.some((e) => e.type === "notice" && /stays on Auto-accept edits/.test(e.text))).toBe(true);
+  });
+});
+

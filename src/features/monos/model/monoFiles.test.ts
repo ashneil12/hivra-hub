@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: (...args: unknown[]) => invoke(...args),
 }));
 
+import { CAPTAIN_CHARTER } from "../../chief/model/charter";
 import { createMono, findMono, HANDED_KEY, updateMono } from "./mono";
 import {
   defaultSoul,
@@ -20,6 +21,7 @@ import {
   monoTurn,
   recordAgentContext,
   resetMonoDefaults,
+  writeAgentFile,
 } from "./monoFiles";
 
 beforeEach(() => {
@@ -147,22 +149,23 @@ it("keeps the hub's note about 1 KB, with nothing about formats, recording, dige
     expect(note, gone).not.toContain(gone);
 });
 
-// Alfred's hub-note.md (hub-scenarios/slim-souls, 21 Oct), word for word, with the bundled docs path filled in.
+// Alfred's hub-note.md (hub-scenarios/slim-souls, 21 Oct), with the bundled docs path filled in. Its words follow
+// the 11 Nov rename: a page Ash keeps is a hub, and "the hub" (the app itself) is the app.
 const ALFRED_NOTE = `You're running inside MonoCode Hub, Ash's app for running a small team of agents (Monos). Otherwise you're your normal self.
 
 - Your soul file says who you are and what you own. Your memory files are yours.
 - Ash talks to you in chats and rooms. Other Monos are in the rooms too.
-- Hub tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
+- App tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a hub, and propose a change to the app. Hubs and app changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
 - When you save a memory, keep Ash's own words, credited to him. A question he asked stays a question, and nothing gets saved as further along than it was. Unapproved cards aren't decisions.
 - Deletes need Ash's own yes.
 - Name work by what it is, not task ids or paths.
-- For how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
+- For how an app feature works, read the app docs at HUB_DOCS_PATH before guessing.`;
 
 it("is Alfred's shared note word for word, the docs path filled in once known and its line left out before", () => {
   expect(HUB_NOTE_TEMPLATE).toBe(ALFRED_NOTE);
   expect(hubNote()).toBe(ALFRED_NOTE.split("\n").slice(0, -1).join("\n"));
   const look = { name: "Alfred", mascot: "skull", color: "#fff", projects: [] };
-  expect(monoContext(look, files(), { soul: true, memory: false })).not.toContain("hub docs");
+  expect(monoContext(look, files(), { soul: true, memory: false })).not.toContain("app docs");
   setHubDocsPath("/Applications/MonoCode.app/Contents/Resources/hub-docs/README.md");
   try {
     expect(hubNote()).toBe(ALFRED_NOTE.replace("HUB_DOCS_PATH", "/Applications/MonoCode.app/Contents/Resources/hub-docs/README.md"));
@@ -264,6 +267,125 @@ it("puts what the app adds ahead of the user's message, marked as its own", () =
     turn.indexOf("what is this"),
   );
   expect(turn.endsWith("</monocode_context>\n\nwhat is this")).toBe(true);
+});
+
+it("gives an existing coordinator the charter on load, and leaves anyone else alone", async () => {
+  const { id } = createMono(["/code/app"]);
+  updateMono(id, (mono) => ({ ...mono, name: "Chief of Staff" }));
+  const soul = "# Soul\n\n## Role\nI am the coordinator.\n";
+  invoke.mockImplementation(async (command: string) =>
+    command === "mono_load" ? { ...files("old"), soul, topics: [] } : "with-charter",
+  );
+  const loaded = await loadMonoFiles(id);
+  expect(loaded.soul).toContain(CAPTAIN_CHARTER);
+  expect(loaded.soul).toContain("I am the coordinator.");
+  const saves = invoke.mock.calls.filter(([command]) => command === "mono_save");
+  expect(saves).toHaveLength(1);
+  expect(String(saves[0]?.[1] && (saves[0][1] as { text?: string }).text)).toContain(`\n## Role\n${CAPTAIN_CHARTER}\n`);
+
+  invoke.mockClear();
+  const { id: missedId } = createMono(["/code/app"]);
+  updateMono(missedId, (mono) => ({ ...mono, name: "Coordinator" }));
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_load") return { ...files("old"), soul, topics: [] };
+    throw new Error("down");
+  });
+  const missed = await loadMonoFiles(missedId);
+  expect(missed.soul).toBe(soul);
+  expect(missed.soul).not.toContain(CAPTAIN_CHARTER);
+
+  invoke.mockClear();
+  const { id: plain } = createMono();
+  invoke.mockImplementation(async (command: string) =>
+    command === "mono_load" ? { ...files("plain"), soul: "# Soul\n\nBe brief.", topics: [] } : "nope",
+  );
+  const left = await loadMonoFiles(plain);
+  expect(left.soul).toBe("# Soul\n\nBe brief.");
+  expect(invoke.mock.calls.filter(([command]) => command === "mono_save")).toHaveLength(0);
+});
+
+it("flags a mono the captain on load when its soul already has the charter, whatever it is called", async () => {
+  const { id } = createMono(["/code/app"]);
+  updateMono(id, (mono) => ({ ...mono, name: "Planner" }));
+  const soul = `# Soul\n\n## Role\n${CAPTAIN_CHARTER}\n`;
+  invoke.mockImplementation(async (command: string) =>
+    command === "mono_load" ? { ...files("old"), soul, topics: [] } : "same",
+  );
+  const loaded = await loadMonoFiles(id);
+  expect(loaded.soul).toBe(soul);
+  expect(findMono(id)?.captain).toBe(true);
+  expect(invoke.mock.calls.filter(([command]) => command === "mono_save")).toHaveLength(0);
+});
+
+it("flags a stored mono whose instructions already carry the charter", () => {
+  const { id } = createMono(["/code/app"]);
+  updateMono(id, (mono) => {
+    const { captain: _captain, ...rest } = mono;
+    return { ...rest, name: "Planner", instructions: `# Soul\n${CAPTAIN_CHARTER}\n` };
+  });
+  expect(findMono(id)?.captain).toBe(true);
+  const stored = JSON.parse(localStorage.getItem("monocode:mono-roster") ?? "[]") as { id: string; captain?: boolean }[];
+  expect(stored.find((row) => row.id === id)?.captain).toBe(true);
+});
+
+it("refuses a soul save that drops the charter, and keeps it when that Mono is reset", async () => {
+  const { id } = createMono();
+  const soul = `# Soul\n\n${CAPTAIN_CHARTER}\n`;
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: soul, hash: "h1" };
+    if (command === "mono_load") return { ...files("h1"), soul, topics: [] };
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", "# Soul\n\nGone.\n", "h1")).rejects.toThrow(/charter is fixed/);
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(false);
+
+  updateMono(id, (mono) => ({ ...mono, name: "Chief of Staff" }));
+  await resetMonoDefaults(id);
+  const saves = invoke.mock.calls.filter(([command]) => command === "mono_save");
+  expect(saves).toHaveLength(1);
+  expect(String((saves[0]?.[1] as { text?: string }).text)).toContain(CAPTAIN_CHARTER);
+});
+
+it("does not save a soul when the current one could not be read", async () => {
+  const { id } = createMono();
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") throw new Error("disk");
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", "# Soul\n\nKept.\n", "h1")).rejects.toThrow(/could not be read/);
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(false);
+
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: null, hash: "h0" };
+    return "saved-new";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", "# Soul\n\nFirst.\n")).resolves.toBe("saved-new");
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(true);
+});
+
+it("refuses a soul save that adds the charter for a mono that is not the captain", async () => {
+  const { id } = createMono();
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: "# Soul\n\nBe brief.\n", hash: "h1" };
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", `# Soul\n\n${CAPTAIN_CHARTER}\n`, "h1")).rejects.toThrow(/captain/);
+  expect(invoke.mock.calls.some(([command]) => command === "mono_save")).toBe(false);
+});
+
+it("lets the captain save a soul that keeps the charter", async () => {
+  const { id } = createMono();
+  updateMono(id, (mono) => ({ ...mono, captain: true }));
+  const next = `# Soul\n\n## Role\n${CAPTAIN_CHARTER}\n\n## Personality\nShort sentences.\n`;
+  invoke.mockImplementation(async (command: string) => {
+    if (command === "mono_read") return { text: `# Soul\n\n${CAPTAIN_CHARTER}\n`, hash: "h1" };
+    return "saved";
+  });
+  await expect(writeAgentFile(id, "SOUL.md", next, "h1")).resolves.toBe("saved");
+  const saves = invoke.mock.calls.filter(([command]) => command === "mono_save");
+  expect(saves).toHaveLength(1);
+  expect(String((saves[0]?.[1] as { text?: string }).text)).toContain(CAPTAIN_CHARTER);
+  expect(String((saves[0]?.[1] as { text?: string }).text)).toContain("Short sentences.");
 });
 
 it("a whole soul given as instructions (the hub's team) is kept as it is; anything else goes under Standing instructions", () => {

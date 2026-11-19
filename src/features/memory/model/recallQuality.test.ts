@@ -98,19 +98,27 @@ describe("recall quality against the size of the store", () => {
   });
 
   it("decides a store of two thousand lines quickly", () => {
-    const store = doc([...filler(2_000 - PLANTED.length, 2_000), ...PLANTED]);
-    // One warm pass, then the fastest of five: a busy shared runner slows single runs, not the best one.
-    recallDecision({ doc: store, mateId: MATE, message: QUESTION, now: NOW, mode: "automatic" });
-    let best = Number.POSITIVE_INFINITY;
-    for (let run = 0; run < 5; run += 1) {
-      const started = performance.now();
+    // The point of this test is "the decision does not scale with the store into seconds". A fixed millisecond bound
+    // failed on a busy Mac (27 ms against 20 while builders compiled), so the store of 2,000 lines is measured against
+    // a store of 50 timed the same way in the same test, under the same load: 40 times the lines may cost at most 80
+    // times the time (a quadratic decision would cost about 1,600 times). The absolute ceiling still catches a
+    // decision that takes seconds however the machine is doing.
+    const bestOf = (size: number) => {
+      const store = doc([...filler(size - PLANTED.length, size), ...PLANTED]);
+      // One warm pass, then the fastest of five: a busy machine slows single runs, not the best one.
       recallDecision({ doc: store, mateId: MATE, message: QUESTION, now: NOW, mode: "automatic" });
-      best = Math.min(best, performance.now() - started);
-    }
-    // 20 ms on a developer machine (about 8 ms measured). CI runners are two to four times slower and
-    // noisy, and the point of the bound is "does not scale with the store into seconds", so it is loose there.
-    const bound = process.env.CI ? 150 : 20;
-    expect(best).toBeLessThan(bound);
+      let best = Number.POSITIVE_INFINITY;
+      for (let run = 0; run < 5; run += 1) {
+        const started = performance.now();
+        recallDecision({ doc: store, mateId: MATE, message: QUESTION, now: NOW, mode: "automatic" });
+        best = Math.min(best, performance.now() - started);
+      }
+      return best;
+    };
+    const small = bestOf(50);
+    const large = bestOf(2_000);
+    expect(large).toBeLessThan(Math.max(small, 0.05) * 80);
+    expect(large).toBeLessThan(1_000);
   });
 
   it("shows the same lines twice in a row for the same store and message", () => {

@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { readBinaryFile } from "../../../platform/tauri/fs";
+import { readGeneratedImage } from "../../../platform/tauri/fs";
 import { formatFileSize, sniffImageMime } from "../../files/model/filePreview";
 import { ImageLightbox } from "../../../shared/ui/ImageLightbox";
 import type { GeneratedImageMeta } from "../model/session";
@@ -7,6 +7,8 @@ import type { GeneratedImageMeta } from "../model/session";
 type State =
   | { status: "loading" }
   | { status: "ready"; url: string; size: number }
+  /** The chat names no file for this picture, or the app has none by that path (gone, or not one of its own). */
+  | { status: "missing" }
   | { status: "error" };
 
 export function GeneratedImage({ image }: { image: GeneratedImageMeta }) {
@@ -16,10 +18,20 @@ export function GeneratedImage({ image }: { image: GeneratedImageMeta }) {
   useEffect(() => {
     let cancelled = false;
     let created: string | null = null;
+    // A chat imported from another Mac keeps a picture's name but no path: there is nothing to look for.
+    if (!image.path) {
+      setState({ status: "missing" });
+      return;
+    }
     setState({ status: "loading" });
-    void readBinaryFile(image.path).then(
+    // The path comes from a saved chat. The app reads it only from its own generated-images folder.
+    void readGeneratedImage(image.path).then(
       (bytes) => {
         if (cancelled) return;
+        if (!bytes) {
+          setState({ status: "missing" });
+          return;
+        }
         const mime = sniffImageMime(bytes);
         if (!mime) {
           setState({ status: "error" });
@@ -42,6 +54,14 @@ export function GeneratedImage({ image }: { image: GeneratedImageMeta }) {
     return (
       <div className="px-4 py-3 text-xs text-content/45" role="status">
         Loading generated image…
+      </div>
+    );
+  }
+
+  if (state.status === "missing") {
+    return (
+      <div className="px-4 py-3 text-xs text-content/50" role="status">
+        This picture's file is not on this Mac{image.name ? ` (${image.name})` : ""}.
       </div>
     );
   }

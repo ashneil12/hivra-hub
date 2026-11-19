@@ -10,8 +10,8 @@ use super::report::{self, CheckOutcome};
 use super::status::{derive_status, DerivedStatus, GateVerdict, Status};
 use super::*;
 use crate::delegations::{
-    cancel, record, set_question, set_stall, settle, Delegation, RecordInput, SettleInput,
-    StallInput, COMPLETED, FAILED,
+    cancel, record, set_gate_verdict, set_question, set_stall, settle, Delegation, RecordInput,
+    SettleInput, StallInput, COMPLETED, FAILED,
 };
 use crate::session_store::SessionStore;
 
@@ -66,6 +66,23 @@ fn depth_three_is_refused_with_a_plain_reason() {
 }
 
 #[test]
+fn a_pick_at_the_fanout_cap_still_reads_the_depth() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    for n in 0..8 {
+        record(
+            &mut conn,
+            launch("mono", &format!("r{n}"), &format!("child-{n}")),
+            n + 1,
+        )
+        .unwrap();
+    }
+    let blocked = depth_and_fanout(&conn, "mono", true).unwrap_err();
+    assert!(blocked.starts_with("Not started:"), "{blocked}");
+    assert_eq!(depth_and_fanout(&conn, "mono", false).unwrap(), 1);
+}
+
+#[test]
 fn a_mono_brief_to_a_coding_team_runs_at_depth_two_and_a_third_level_is_refused() {
     let store = store();
     let mut conn = store.lock_conn().unwrap();
@@ -113,6 +130,47 @@ fn depth_counts_only_open_work_above_the_chat() {
 }
 
 // ---- derive_status -------------------------------------------------------------------------------------------------
+
+/// The worktree clean-up asks `is_done` of every row without loading it. It must say what the shown status says.
+#[test]
+fn is_done_agrees_with_the_shown_status_for_every_state_and_verdict() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let row = record(&mut conn, launch("mono", "r1", "child"), 1).unwrap();
+    let states = [
+        "running",
+        "question",
+        "completed",
+        "failed",
+        "cancelled",
+        "nonsense",
+    ];
+    let verdicts = [
+        None,
+        Some("pending"),
+        Some("passed"),
+        Some("failed"),
+        Some("unsure"),
+        Some("odd"),
+    ];
+    let mut done = 0;
+    for state in states {
+        for verdict in verdicts {
+            let mut shown = row.clone();
+            shown.state = state.into();
+            shown.gate_verdict = verdict.map(str::to_string);
+            let expected = status::status_of(&shown).status == Status::Done;
+            assert_eq!(
+                status::is_done(state, verdict),
+                expected,
+                "{state} with {verdict:?}"
+            );
+            done += usize::from(expected);
+        }
+    }
+    // Completed with no gates or passed gates: the only two that are done.
+    assert_eq!(done, 2);
+}
 
 #[test]
 fn a_running_row_is_working_and_a_judged_stall_is_only_a_notice() {
@@ -291,6 +349,105 @@ fn completed_is_done_only_once_the_gates_pass() {
         row.gate_verdict = stored.map(str::to_string);
         assert_eq!(status::status_of(&row).status, shown, "{stored:?}");
     }
+}
+
+#[test]
+fn a_sent_back_reason_is_the_notice_and_a_stall_still_wins() {
+    let store = store();
+    let mut conn = store.lock_conn().unwrap();
+    let row = record(&mut conn, launch("mono", "r-sent", "child"), 1).unwrap();
+    let reason = "Sent back: tests went stale after the last edit.";
+    let marked = set_gate_verdict(&mut conn, &row.id, GateVerdict::FAILED, reason, None, 2)
+        .unwrap()
+        .row
+        .unwrap();
+    assert_eq!(marked.state, "running");
+    assert_eq!(
+        status(&marked, GateVerdict::Failed),
+        (Status::Working, Some(reason.into())),
+        "the fix round stays working, with the reason"
+    );
+    assert_eq!(status::status_of(&marked).notice.as_deref(), Some(reason));
+    // A pass, or a check still running, does not keep showing an older failure.
+    assert_eq!(status(&marked, GateVerdict::Passed).1, None);
+    assert_eq!(status(&marked, GateVerdict::Pending).1, None);
+
+    let quiet = set_stall(
+        &mut conn,
+        StallInput {
+            id: marked.id.clone(),
+            generation: marked.generation,
+            kind: Some("quiet".into()),
+            reason: Some("no output".into()),
+            ..Default::default()
+        },
+        3,
+    )
+    .unwrap()
+    .row
+    .unwrap();
+    let (shown, notice) = status(&quiet, GateVerdict::Failed);
+    assert_eq!(shown, Status::Working);
+    assert_eq!(notice.as_deref(), Some("Quiet for a while: no output"));
+
+    let other = record(&mut conn, launch("mono", "r-done", "child-2"), 4).unwrap();
+    let listed = "Sent back: a check failed this turn (npm test). Also 1 more.\nA check failed this turn (npm test).";
+    let open = set_gate_verdict(&mut conn, &other.id, GateVerdict::FAILED, listed, None, 5)
+        .unwrap()
+        .row
+        .unwrap();
+    // The status rule itself: a completed row whose verdict is still failed shows the reason.
+    let mut held = open.clone();
+    held.state = COMPLETED.into();
+    assert_eq!(
+        status(&held, GateVerdict::Failed),
+        (
+            Status::Failed,
+            Some("Sent back: a check failed this turn (npm test). Also 1 more.".into())
+        )
+    );
+    // Delivering the fix clears that failure. The log keeps the reason.
+    let done = settle(&mut conn, finish(&open, COMPLETED), 6)
+        .unwrap()
+        .row
+        .unwrap();
+    assert_eq!(done.status, Status::Done);
+    assert!(done.status_notice.is_none());
+
+    let mut poisoned = done.clone();
+    poisoned.log.push(serde_json::json!({
+        "event": "gates",
+        "verdict": "failed",
+        "summary": "Sent back: tests\u{7}went stale."
+    }));
+    assert_eq!(
+        status(&poisoned, GateVerdict::Failed),
+        (
+            Status::Failed,
+            Some("Finished, but its checks failed".into())
+        ),
+        "a control character is not a reason"
+    );
+    let mut blank = done.clone();
+    blank.log.push(serde_json::json!({
+        "event": "gates",
+        "verdict": "failed",
+        "summary": "Sent back:   "
+    }));
+    assert_eq!(
+        status(&blank, GateVerdict::Failed).1.as_deref(),
+        Some("Finished, but its checks failed")
+    );
+    let mut long = done;
+    long.log.push(serde_json::json!({
+        "event": "gates",
+        "verdict": "failed",
+        "summary": format!("Sent back: {}", "x".repeat(200))
+    }));
+    assert_eq!(
+        status(&long, GateVerdict::Failed).1.as_deref(),
+        Some("Finished, but its checks failed")
+    );
 }
 
 #[test]
@@ -503,7 +660,7 @@ impl Drop for Repo {
 }
 
 fn run(dir: &Path, args: &[&str]) {
-    let ok = Command::new("git")
+    let ok = crate::git_cmd::git()
         .arg("-C")
         .arg(dir)
         .args([

@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 import fs from "node:fs";
-import { openLocalHub } from "./localHub";
+import { openLocalHub, openProjectLead } from "./localHub";
 
 // Idea 2 in the real app in a browser (hub-dev.html reading the app's own local store, ?fakeClaude for the Claude CLI): a coding
 // team's own chat gets the Mono chat's Stop and model line, and its turn header names the model really in use.
@@ -57,7 +57,8 @@ test("a coding team's own chat: Stop in the send spot during a turn, its own tur
   await openLocalHub(page, "&fakeClaude");
   await expect(page.locator("[data-mono-rail]").first()).toBeVisible({ timeout: 60_000 });
   await closeOffer(page);
-  await page.getByRole("button", { name: /^EXO/ }).first().click();
+  // Dropwave: the project opens on its home; its first mate, under First mates, opens the coding team's chats.
+  await openProjectLead(page);
   await page.locator(`[data-session-card="${TEAM_CHAT}"]`).click();
   const pane = page.locator("[data-composer-box]:visible").first().locator("xpath=ancestor::*[.//*[@data-mono-pick]][1]");
   const box = page.locator("[data-composer-box]:visible").first();

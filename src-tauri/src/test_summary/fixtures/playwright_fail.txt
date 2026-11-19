@@ -1,0 +1,24 @@
+Running 3 tests using 1 worker
+
+  ✓  1 [chromium] › a.spec.ts:3:5 › works (120ms)
+  ✘  2 [chromium] › a.spec.ts:7:5 › breaks (80ms)
+  ✓  3 [chromium] › a.spec.ts:12:5 › also works (60ms)
+
+
+  1) [chromium] › a.spec.ts:7:5 › breaks ──────────────────────────────────────────
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: 3
+    Received: 2
+
+       8 |   const n = add(1, 1);
+    >  9 |   expect(n).toBe(3);
+         |             ^
+      10 | });
+
+        at /repo/tests/a.spec.ts:9:15
+
+  1 failed
+    [chromium] › a.spec.ts:7:5 › breaks ───────────────────────────────────────────────
+  2 passed (2.1s)

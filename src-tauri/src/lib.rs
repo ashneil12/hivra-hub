@@ -1,10 +1,14 @@
 use tauri::Manager;
 
 mod account_identity;
+// WP-61: Hivra Cloud. Off by default; no socket is opened until Ash turns it on.
+mod hivra_cloud;
 // WP-78: the activity log.
 mod activity;
 // WP-166: pinned upstream repos and the weekly check.
 mod repo_watch;
+// WP-157: the work log. Not a numbered migration.
+mod work_log;
 // WP-86: commit attribution. Not a numbered migration.
 mod artifacts;
 mod attribution;
@@ -16,10 +20,17 @@ mod automations;
 pub mod autopilot;
 mod azure_devops;
 mod background_work;
+// WP-128: one prompt at a chosen time. Not a numbered migration, and it starts no thread.
+mod one_time_schedule;
 // WP-75: checked backups, one-item restore, and a full restore through the ship path.
 pub mod backups;
 mod chat_background;
+mod chat_folder;
+mod chat_media;
 mod checkpoint;
+// Cocoa calls with an `NSError **` out-parameter: the error belongs to the autorelease pool.
+#[cfg(target_os = "macos")]
+mod cocoa_out_error;
 mod codex_mono_store;
 pub mod connectors;
 mod control;
@@ -33,19 +44,30 @@ mod github_issues;
 // WP-91: the goal graph — a finish line proved first, write scopes, handoffs, repairs and the run verdict.
 pub mod goal_graph;
 mod tasks; // WP-70: tasks shared by the person and their agents. // WP-77: labelled GitHub issues become tasks.
+           // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
+mod programme; // WP-162: update a package branch from main, and the programme lead lease.
 
 // Hivra WP-12: delivery modes and the one merge path.
 mod delivery;
+mod git_cmd;
 // Hivra WP-81: a pinned tool, downloaded and checked, then the local gate before GitHub.
 mod delivery_gate;
 mod pinned_tool;
 // Hivra WP-13: crew rules, routing and reroute.
+mod agent_sandbox;
 mod crew;
 mod devin_config;
 mod devin_usage;
+mod spend_ledger;
+// WP-131b: desktop dictation into the composer draft; the microphone is held by a helper app, never sends.
+// WP-131c: dictation follows the saved setting. The helper is registered only while that setting is on.
+mod dictation;
 pub mod disclaim;
+mod explore_agent; // WP-143: read-only check for an Explore agent the person already defined.
 mod external_editor;
 mod firstmate;
+// Hivra WP-172: the checkpoint of a First Mate fan-out, kept so a crash mid-plan can resume.
+mod fanout_checkpoint;
 mod fs;
 mod gates;
 mod gitlab;
@@ -53,14 +75,21 @@ mod harness;
 mod harness_runs;
 mod harness_updates;
 // WP-50: read past chats, with a person's OK, into a proposal.
+mod chat_import;
 mod history_import;
 mod hub_keychain;
+// Hivra WP-92: the secret vault. A value exists in the keychain and one place the person chose.
+pub mod secrets;
 // WP-85: Claude sessions started in a terminal.
 mod terminal_mirror;
 // WP-51: memory the person reviews.
 mod memory_review;
 // WP-103: the cheap memory tier asks a model the person added, on its own key.
 mod memory_cheap;
+// WP-129: the address each saved model key belongs to, so a command sends a key only there.
+mod key_binding;
+// WP-129: one short completion for titles, commits, pull requests and branch names.
+mod text_generation;
 // WP-83: learn from past chats. Readers, and the write after an accept.
 mod learn_stores;
 // WP-04: the hub plugin (local store, import, connectors, keys); the Ash OS bridge (hub.rs) is retired.
@@ -68,11 +97,20 @@ mod hub_plugin;
 mod inbox_media;
 pub mod instance;
 // WP-07: the name a person reads. Not the bundle name.
+pub mod commit_guard;
+/// WP-255: computer use, off by default, with a block list for password apps.
+pub mod computer_use;
 mod display_name;
 mod jira;
 mod jsonc;
 mod land;
 mod launch_guard;
+/// WP-254: an agent looks at its visual reply before the person does.
+mod visual_preview;
+// WP-104: daily log and crash records.
+mod diagnostics;
+// WP-104: machine facts for the health list.
+mod health;
 mod linear;
 mod link_preview;
 mod live_turns;
@@ -93,6 +131,9 @@ mod mono;
 mod mono_chat;
 mod mono_home;
 mod mono_transcript;
+mod pi_routes;
+// WP-134: the More agents list, its approvals and the environment its child gets.
+mod more_agents;
 mod notes;
 // WP-72: docs are notes, with blocks, versions and a tree.
 pub(crate) mod docs;
@@ -102,6 +143,7 @@ mod page_http;
 mod pasteboard;
 mod pi_usage;
 // WP-76: one trash for chats, Monos, projects, notes, docs and tasks.
+mod team_workspace;
 mod trash;
 // WP-30: plugin format, registry and per-CLI wiring (src/plugins/).
 pub mod plugins;
@@ -109,12 +151,16 @@ pub mod plugins;
 pub mod browser;
 // WP-33: plugin panels, the catalog and the My panels migration.
 mod panels;
+// Reads of files this app didn't make: never through a link, a pipe, or past the size expected.
+mod agent_install;
+mod plain_file;
 mod portable;
 pub(crate) mod pr_watch;
 mod project_actions;
 mod project_file;
 mod project_logo;
 mod project_tests;
+pub(crate) mod proof_tools; // PT-1: the open-source proof tools a project already has, run on a change; a first mate may propose one
 mod provider_session_transfer;
 mod pty;
 #[cfg(target_os = "macos")]
@@ -124,6 +170,8 @@ mod reminders;
 mod remote;
 mod remote_ssh;
 mod resources;
+// WP-161: load, free memory and free disk. The command takes no path.
+mod builder_health;
 mod room_council;
 mod rooms;
 mod search;
@@ -142,7 +190,11 @@ mod proxy; // WP-90: names per worktree, and the local proxy that routes by them
 mod stack_decl;
 mod stacks;
 // Hivra WP-14: steering messages to running workers.
+mod run_checks; // SC-7: the run_checks tool: the project's tests for what changed, only the failures back
+mod ship_check; // SC-3b: the bulk check "Test at ship" needs before a first mate says ready to ship
 mod steering;
+mod test_debt; // PT-5: failing tests that are not a task's own wait on a list and are sorted once, at ship
+mod test_summary; // SC-3a: the summary line a test runner prints (zero tests is not a pass)
 mod tool_detail;
 #[cfg(target_os = "macos")]
 mod trackpad_zoom;
@@ -158,7 +210,10 @@ mod window_transfer;
 #[cfg(windows)]
 mod windows;
 mod worker_queue;
+pub mod worktree_autoclean;
 pub mod worktree_janitor;
+// WP-138: copy the files named in .worktreeinclude when a worktree is created.
+mod worktree_include;
 mod worktree_lifecycle;
 mod worktrees;
 
@@ -385,6 +440,11 @@ pub fn run() {
     }
     // Rule 3, then one app per data folder: the lock is held until this process ends.
     let claim = instance::claim(&identity, &version);
+    // WP-92: a secret run that crashed can leave its old home under the temporary folder. Clear those. The sealed
+    // home a run uses now is not in that folder, and this never deletes it.
+    secrets::run::remove_leftover_run_homes();
+    // WP-104: daily log and crash records, before the rest of startup.
+    diagnostics::install(&claim.data_dir, &version);
     // Before the database opens: finish whatever a ship's runner left (a trial, a restore), or call it off
     // (src/ship.rs). May exit.
     let boot = ship::startup(&identity, &claim.data_dir);
@@ -430,10 +490,13 @@ pub fn run() {
         .manage(harness::HarnessHost::new())
         .manage(pty::PtyHost::new())
         .manage(project_actions::ActionRuns::new())
+        .manage(agent_install::AgentInstalls::new())
         .manage(remote::RemoteConnections::default())
         .manage(window_transfer::WindowTransferState::new())
         .manage(live_turns::LiveTurns::default())
         .setup(move |app| {
+            // WP-80: while the team switch is on, pick up other members' changes every few seconds (off costs a file read).
+            team_workspace::start_polling(app.handle().clone());
             // Windows: still here, so no running copy took over this launch (instance::claim).
             if !claim.owner {
                 instance::claim_after_handoff(&identity, &version, &claim.data_dir);
@@ -446,6 +509,8 @@ pub fn run() {
                     error: format!("the app's data folder is {app_data:?}"),
                 });
             }
+            // WP-200: the person-approved allows of the commit guard live in this copy's data folder, nowhere else.
+            commit_guard::set_allow_store(claim.data_dir.join("commit-guard-allows.json"));
             // WP-90: this copy's proxy answers every stack name, loopback only. A dev copy
             // keeps its own registry and takes the next free port above 7400.
             let dev_copy = identity.kind != instance::Kind::Daily;
@@ -456,18 +521,10 @@ pub fn run() {
             ) {
                 eprintln!("WP-90: the named-app proxy did not start: {error}");
             }
-            // WP-90: a stack still marked running from the last launch keeps its names on
-            // this process; the new proxy has just pruned the previous owner's.
-            match stacks::env_from_app(app.handle()) {
-                Ok(env) => {
-                    if let Err(error) = stacks::resume_names(&env) {
-                        eprintln!("WP-90: the running stacks' names were not put back: {error}");
-                    }
-                }
-                Err(error) => {
-                    eprintln!("WP-90: the running stacks' names were not put back: {error}");
-                }
-            }
+            // WP-90 and stack-fakes (#88): the last run's fakes are stopped and a running stack's
+            // fakes and names put back, in the background. Neither the stop nor `node --version`
+            // holds the window, and a stack action that comes in waits for it.
+            stacks::resume_at_launch(app.handle(), claim.data_dir.clone());
             // WP-30: work out where plugins live (and where their skills are linked) before anything lists skills.
             let _ = plugins::host(app.handle());
             // WP-41: install and switch on the default plugins (pstack) once per data folder, in the background.
@@ -492,12 +549,17 @@ pub fn run() {
             worker_queue::init(app.handle());
             autopilot::init(app.handle(), &identity, claim.data_dir.clone());
             pr_watch::init(app.handle());
+            // A finished worktree gives its build output back (worktree_autoclean.rs); the daily app only.
+            if policy.clear_build_output {
+                worktree_autoclean::init(app.handle().clone(), claim.data_dir.clone());
+            }
             control::init(app.handle())?;
             // WP-85: the loopback port for terminal Claude sessions. A failure here does not stop the app.
             terminal_mirror::init(app.handle().clone(), claim.data_dir.clone(), identity.kind);
             outside::init(app.handle())?; // WP-79
             mobile_access::init(app.handle())?;
             reminders::init(app.handle());
+            one_time_schedule::init(app.handle()); // WP-128
             checkpoint::init(app.handle())?;
             menu::install(app.handle())?;
             #[cfg(target_os = "windows")]
@@ -537,13 +599,38 @@ pub fn run() {
         .on_menu_event(|app, event| {
             menu::dispatch(app, event.id().as_ref());
         })
+        // WP-131b: a page that starts loading again (reload, navigation) loses its dictation session.
+        .on_page_load(|webview, payload| {
+            if matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                dictation::window_lost(webview.app_handle(), webview.label());
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            // WP-131b: desktop dictation (the helper in Contents/Helpers holds the microphone).
+            // WP-131c: the setting that turns it on. Off until the file says on.
+            dictation::dictation_support,
+            dictation::dictation_start,
+            dictation::dictation_stop,
+            dictation::dictation_setting,
+            dictation::dictation_set_setting,
+            // WP-61: Hivra Cloud (off by default).
+            hivra_cloud::hivra_cloud_status,
+            hivra_cloud::hivra_cloud_save,
+            hivra_cloud::hivra_cloud_sign_in,
+            hivra_cloud::hivra_cloud_sign_out,
+            hivra_cloud::hivra_cloud_account,
+            hivra_cloud::hivra_cloud_pair,
             mobile_access::mobile_status,
+            team_workspace::team_workspace_status,
+            team_workspace::team_workspace_save,
+            team_workspace::team_workspace_accept,
+            team_workspace::team_workspace_presence,
             mobile_access::mobile_configure,
             mobile_access::mobile_invite,
             mobile_access::mobile_cancel_invite,
             mobile_access::mobile_revoke,
             mobile_access::mobile_publish,
+            mobile_access::mobile_admits,
             mobile_access::mobile_reply,
             mobile_access::mobile_push,
             remote::remote_machines,
@@ -597,6 +684,11 @@ pub fn run() {
             reminders::reminder_open,
             delegations::delegations_record,
             delegations::delegations_settle,
+            // WP-157: one work log line when checks send work back.
+            delegations::delegations_sent_back,
+            // WP-157: the first mate's work log tool.
+            work_log::work_log_add,
+            work_log::work_log_read,
             delegations::delegations_reattach,
             delegations::delegations_set_question,
             delegations::delegations_set_stall,
@@ -609,9 +701,11 @@ pub fn run() {
             delegations::delegations_tree,
             // Hivra WP-10: the first mate contract.
             firstmate::firstmate_check_depth,
+            firstmate::open_work::firstmate_open_work, // SC-7
             firstmate::firstmate_set_question_owner,
             firstmate::firstmate_parse_report,
             firstmate::firstmate_checkout_snapshot,
+            firstmate::protected_paths::firstmate_protected_fingerprints,
             firstmate::firstmate_checkout_check,
             firstmate::firstmate_checkout_revert,
             // Hivra WP-40: completion and verdict gates.
@@ -620,9 +714,24 @@ pub fn run() {
             firstmate::gates::firstmate_run_gates,
             firstmate::gates::firstmate_gate_evidence,
             firstmate::gates::firstmate_gates_decide,
+            // SC-5: which model family checks a finished task (the app's own setting, never a project's).
+            firstmate::checker_family::checker_family_rule_get,
+            firstmate::checker_family::checker_family_rule_set,
+            // PT-4: when the running checker runs (the app's own setting, beside the family rule).
+            firstmate::checker_when::checker_when_rule_get,
+            firstmate::checker_when::checker_when_rule_set,
+            // SC-4: a brief's check lines, stamp and do-not-touch list. The webview keeps them; only the gates set a result.
+            firstmate::brief_checks::firstmate_brief_keep,
+            firstmate::brief_checks::firstmate_brief_stamp,
+            firstmate::spec_record::firstmate_spec_context, // PT-6
+            firstmate::spec_record::firstmate_spec_landed,  // PT-6
             // Hivra WP-12: delivery modes and the one merge path.
             delivery::delivery_settings_get,
             delivery::delivery_settings_set,
+            // WP-158: the protected-path floor. Off until the project turns it on.
+            delivery::delivery_protect_paths_set,
+            delivery::delivery_protected_paths_add,
+            delivery::delivery_testing_mode_set, // SC-3a: how hard a project's tasks are tested
             delivery::delivery_list,
             delivery::delivery_deliver,
             delivery::delivery_fix_ask,
@@ -631,6 +740,14 @@ pub fn run() {
             delivery::delivery_merges,
             delivery::delivery_events_open,
             delivery::delivery_events_consume,
+            // WP-162: update a package branch from main, and the lead lease.
+            programme::programme_update_settings_get,
+            programme::programme_update_settings_set,
+            programme::programme_bind_checkout,
+            programme::programme_update_from_main,
+            programme::programme_lead_acquire,
+            programme::programme_lead_heartbeat,
+            programme::programme_consider_conflict,
             // Hivra WP-81: the check before work goes to GitHub.
             delivery_gate::gate_setting_get,
             delivery_gate::gate_setting_set,
@@ -655,10 +772,28 @@ pub fn run() {
             watcher::watcher_timer_cancel,
             watcher::watcher_timers,
             watcher::watcher_tick,
+            // WP-104: a check waits on a safe command, then one wake.
+            watcher::watcher_check_set,
+            watcher::watcher_check_cancel,
             // Hivra WP-13: crew rules, routing and reroute.
             crew::crew_rules_get,
+            spend_ledger::spend_ledger_append,
+            spend_ledger::spend_ledger_totals,
+            spend_ledger::spend_project_folder,
+            spend_ledger::spend_book_read,
+            spend_ledger::spend_book_write,
+            spend_ledger::spend_redo_links,
+            spend_ledger::spend_set_project_folders,
             crew::crew_rules_set,
+            // WP-141: the person's lock, never-use list and fallback order.
+            crew::crew_policy_set,
             crew::crew_route,
+            crew::crew_launch_check,
+            crew::crew_spawn_ticket,
+            crew::crew_bind_v2_session,
+            crew::crew_projects_owning,
+            crew::crew_any_lock,
+            crew::crew_pick,
             crew::crew_on_failure,
             crew::crew_note_pause,
             steering::steering_record,
@@ -667,7 +802,17 @@ pub fn run() {
             steering::steering_settle,
             decisions::decisions_ask,
             decisions::decisions_answer,
+            // WP-215: a first mate notes a call it settled.
+            decisions::decisions_note,
             decisions::decisions_list,
+            // WP-156: standing answers stay off until this setting is on.
+            decisions::decisions_standing_enabled,
+            decisions::decisions_standing_brief,
+            decisions::decisions_standing_list,
+            decisions::decisions_reuse_list,
+            decisions::decisions_set_standing_enabled,
+            decisions::decisions_retire,
+            decisions::decisions_set_standing,
             // WP-91: the goal graph's rules, its finish-line check and a worker's handoff.
             goal_graph::goal_graph_check_plan,
             goal_graph::goal_graph_check_repair,
@@ -678,8 +823,13 @@ pub fn run() {
             delegations::delegations_owned,
             delegations::delegations_reports_seen,
             delegations::delegations_bind_chat,
+            // SC-19: a retired chat's open work moves to the chat that takes its place.
+            delegations::reparent::delegations_reparent,
             // WP-70: tasks shared by the person and their agents.
             tasks::commands::tasks_list,
+            tasks::commands::tasks_pickup_rules,
+            tasks::commands::tasks_pickup_rule_put,
+            tasks::commands::tasks_pickup_rule_remove,
             tasks::commands::tasks_get,
             tasks::commands::tasks_create,
             tasks::commands::tasks_update,
@@ -688,6 +838,12 @@ pub fn run() {
             tasks::commands::tasks_views_save,
             tasks::commands::tasks_views_delete,
             tasks::commands::tasks_statuses,
+            // WP-159: the programme of packages a first mate keeps. Not the per-job worker queue.
+            programme::commands::programme_list,
+            programme::commands::programme_enqueue,
+            programme::commands::programme_set_status,
+            programme::commands::programme_park,
+            programme::commands::programme_clear,
             // WP-74: full-text search over tasks and docs.
             finder::finder_search,
             // WP-77: labelled GitHub issues become tasks. Reads only.
@@ -705,11 +861,20 @@ pub fn run() {
             worker_queue::worker_queue_import_local,
             worker_queue::worker_queue_claim,
             worker_queue::worker_queue_finish,
+            // Hivra WP-172: a fan-out's checkpoint (save, list for resume, remove when settled).
+            fanout_checkpoint::fanout_checkpoint_save,
+            fanout_checkpoint::fanout_checkpoint_list,
+            fanout_checkpoint::fanout_checkpoint_remove,
+            fanout_checkpoint::fanout_lease_acquire,
+            fanout_checkpoint::fanout_lease_renew,
+            fanout_checkpoint::fanout_lease_release,
             worker_queue::worker_settings,
             worker_queue::worker_limits_set,
             worker_queue::worker_model_set,
             // WP-89: the system-wide worker default, beside a project's own.
             worker_queue::worker_default_set,
+            // WP-161: the shared builder ceiling and the optional health pauses.
+            worker_queue::builder_scale_set,
             worker_queue::worker_heavy_mark,
             worker_queue::worker_settings_import_local,
             autopilot::autopilot_status,
@@ -757,6 +922,19 @@ pub fn run() {
             automations::automations_claim_due,
             automations::automations_claim_event,
             automations::automation_run_update,
+            // WP-128: one prompt at a chosen time.
+            one_time_schedule::one_time_schedules_list,
+            one_time_schedule::one_time_schedules_create,
+            one_time_schedule::one_time_schedules_cancel,
+            one_time_schedule::one_time_schedules_miss_closed,
+            one_time_schedule::one_time_schedules_claim,
+            one_time_schedule::one_time_schedules_remember_session,
+            one_time_schedule::one_time_schedules_ack_fired,
+            one_time_schedule::one_time_schedules_release,
+            one_time_schedule::one_time_schedules_mark_handed_off,
+            one_time_schedule::one_time_schedules_mark_undeliverable,
+            one_time_schedule::one_time_schedules_mark_late,
+            one_time_schedule::one_time_schedules_note,
             external_editor::list_external_editors,
             external_editor::open_in_external_editor,
             fs::resolve_project_location,
@@ -779,6 +957,7 @@ pub fn run() {
             fs::git_unstage_all,
             fs::git_commit,
             fs::git_locate_files,
+            fs::git_canonical_paths,
             fs::git_head_message,
             fs::git_staged_context,
             fs::git_push,
@@ -787,6 +966,10 @@ pub fn run() {
             fs::git_range_context,
             fs::git_pr_status,
             fs::git_pr_create,
+            commit_guard::commit_guard_allow,
+            commit_guard::commit_guard_allows,
+            commit_guard::commit_guard_refusal,
+            commit_guard::commit_guard_remove,
             fs::git_github_status,
             fs::github_monocode_star_status,
             fs::github_star_monocode,
@@ -859,6 +1042,8 @@ pub fn run() {
             project_file::project_file_status,
             project_file::project_file_import,
             project_file::project_file_forget,
+            agent_install::agent_cli_install,
+            agent_install::agent_cli_install_cancel,
             project_actions::project_actions_list,
             project_actions::project_action_run,
             project_actions::project_action_stop,
@@ -866,6 +1051,28 @@ pub fn run() {
             verify_stage::verify_stage_status,
             verify_stage::verify_stage_run,
             verify_stage::verify_stage_latest,
+            // PT-1: the proof tools a project has, and a first mate's once-per-project proposal
+            proof_tools::proof_tools_list,
+            proof_tools::offers::proof_tools_propose_claim,
+            proof_tools::offers::proof_tools_propose_release,
+            proof_tools::switch::proof_tools_set, // PT-2: switch a proof tool off or on for a project
+            // SC-3b
+            ship_check::ship_check_run,
+            ship_check::ship_check_latest,
+            ship_check::ship_check_passed,
+            ship_check::ship_check_head,
+            // PT-5: the test debt list, its fixer task and its Needs-you items
+            test_debt::commands::test_debt_summary,
+            test_debt::commands::test_debt_fixer_claim,
+            test_debt::commands::test_debt_fixer_started,
+            test_debt::commands::test_debt_fixer_release,
+            test_debt::commands::test_debt_claim,
+            test_debt::commands::test_debt_release,
+            test_debt::commands::test_debt_answer,
+            // SC-7
+            run_checks::run_checks_run,
+            worktree_autoclean::worktree_autoclean_status,
+            worktree_autoclean::worktree_autoclean_set,
             worktree_janitor::worktree_janitor_report,
             worktree_janitor::worktree_janitor_clean,
             worktree_janitor::worktree_janitor_remove,
@@ -879,15 +1086,19 @@ pub fn run() {
             pasteboard::clipboard_image,
             pasteboard::copy_file_to_clipboard,
             fs::clone_repo,
+            fs::resolve_existing_path,
             fs::read_file_preview,
             fs::stat_files,
             fs::inspect_paths,
             fs::read_file_base64,
             fs::read_binary_file,
             fs::read_project_image,
+            fs::read_chat_image,
             fs::allow_video_stream,
             fs::write_attachment,
             fs::save_generated_image,
+            fs::copy_generated_image,
+            fs::read_generated_image,
             fs::delete_generated_images,
             fs::read_text_file,
             fs::mobile_list_dir,
@@ -896,7 +1107,11 @@ pub fn run() {
             fs::omp_active_assistant_texts,
             fs::claude_shell_commands,
             fs::write_text_file,
+            // WP-143: is an Explore agent already defined? Reads only; nothing is written.
+            explore_agent::claude_explore_agent_defined,
             skills::list_skills,
+            // WP-182: plugin slash commands for the Mono card.
+            plugins::list_plugin_commands,
             // WP-30: plugins.
             plugins::plugins_list,
             plugins::plugins_inspect,
@@ -978,6 +1193,12 @@ pub fn run() {
             harness::harness_resolve_antigravity,
             harness::harness_free_port,
             harness::harness_spawn,
+            // WP-134: the More agents list, its approvals (src-tauri/src/more_agents.rs).
+            more_agents::more_agents_read,
+            more_agents::more_agents_write,
+            more_agents::more_agents_approve,
+            more_agents::more_agents_set_enabled,
+            more_agents::more_agents_check,
             codex_mono_store::codex_mono_store_prepare,
             codex_mono_store::codex_mono_store_copy,
             codex_mono_store::codex_mono_store_restore_agent_state,
@@ -1007,6 +1228,7 @@ pub fn run() {
             pty::pty_kill_all,
             session_store::session_upsert,
             session_store::session_list_by_project,
+            session_store::session_list_folderless,
             session_store::session_rebase_project,
             session_store::session_list_linked,
             // WP-108: counts and names only, for the usage history page.
@@ -1014,6 +1236,10 @@ pub fn run() {
             session_store::session_search,
             session_store::cancel_session_search,
             session_store::session_get,
+            // WP-177: a move reads the full row. The sidebar read still shortens tool output.
+            session_store::session_get_for_move,
+            // WP-177: recovery lists chats that still carry a move note, including one in the trash.
+            session_store::session_list_moved,
             // WP-111: ids of chats memory must not read.
             session_store::session_private_keys,
             session_store::session_tool_detail,
@@ -1026,6 +1252,8 @@ pub fn run() {
             session_store::session_set_pinned,
             // WP-111: the private flag, written on its own so a transcript save cannot clear it.
             session_store::session_set_private,
+            // WP-134: one browser link copied onto the session row, and only while the row has none.
+            session_store::session_adopt_registry_agent,
             session_store::session_set_linked_work_item,
             session_store::session_set_in_flight,
             session_store::session_list_in_flight,
@@ -1043,6 +1271,8 @@ pub fn run() {
             artifacts::artifacts_upsert,
             artifacts::artifacts_delete,
             page_frames::page_frame_put,
+            page_frames::visual_frame_put,
+            page_frames::visual_frame_drop,
             page_http::page_http_fetch,
             page_http::page_source_token_set,
             page_http::page_source_token_exists,
@@ -1087,6 +1317,10 @@ pub fn run() {
             portable::portable_mono_files,
             portable::portable_find_skills,
             portable::portable_paths_exist,
+            portable::portable_project_folder_checks,
+            portable::portable_relink_candidate,
+            portable::portable_relink_candidates,
+            portable::portable_relink_apply,
             portable::portable_session_engines,
             portable::portable_export,
             portable::portable_inspect,
@@ -1170,6 +1404,8 @@ pub fn run() {
             window_transfer::take_window_transfer,
             chat_background::save_chat_background,
             resources::resource_usage,
+            // WP-161: the health sample the builder pause reads. No path argument.
+            builder_health::builder_health,
             resources::resource_processes,
             resources::resource_stop_tool,
             chat_background::remove_chat_background,
@@ -1192,7 +1428,16 @@ pub fn run() {
             attribution::attribution_for_commits,
             // WP-89: a worker-default change, beside the activity list.
             activity::activity_note,
+            activity::activity_note_first_mate,
+            agent_sandbox::agent_sandbox_status,
+            agent_sandbox::agent_sandbox_set,
             // WP-50: past chats, only with a person's OK, drafted for review.
+            chat_import::chat_import_roots,
+            chat_import::chat_import_index,
+            chat_import::chat_import_read,
+            chat_import::chat_import_folders,
+            session_store::session_import_new,
+            session_store::session_provider_ids,
             history_import::history_import_roots,
             history_import::history_import_list,
             history_import::history_import_read,
@@ -1222,6 +1467,18 @@ pub fn run() {
             outside::outside_approve,
             outside::outside_deny,
             outside::outside_pick_new_port,
+            // WP-104: the logs folder, and the lines the copy action masks.
+            diagnostics::diagnostics_folder,
+            diagnostics::diagnostics_sources,
+            diagnostics::diagnostics_triage_folder,
+            computer_use::computer_use_get,
+            computer_use::computer_use_put,
+            computer_use::computer_use_set_chat,
+            computer_use::computer_use_activity,
+            computer_use::computer_use_check,
+            visual_preview::visual_preview,
+            // WP-104: machine facts for the health list.
+            health::health_facts,
         ])
         .build(context)
         .expect("error while building MonoCode");
@@ -1256,6 +1513,7 @@ pub fn run() {
             ..
         } => {
             window::forget_quit_window(handle, &label);
+            dictation::window_lost(handle, &label);
             let other_window = window::workspace_windows(handle)
                 .iter()
                 .any(|window| window.label() != label);
@@ -1288,6 +1546,17 @@ pub fn run() {
             reap_harness_children(handle);
             // WP-81: stop the check's daemon with the app. It is not a login item.
             crate::delivery_gate::stop_daemons();
+            // stack-fakes (#88): fake services stop with the app, not after it.
+            match crate::project_file::data_dir(handle) {
+                Ok(dir) => {
+                    if let Err(error) = stacks::stop_stand_ins(&dir) {
+                        eprintln!("WP-90: a fake service was not stopped at quit: {error}");
+                    }
+                }
+                Err(error) => {
+                    eprintln!("WP-90: the fake services were not stopped at quit: {error}");
+                }
+            }
         }
         _ => {}
     });
@@ -1302,6 +1571,9 @@ fn reap_harness_children(handle: &tauri::AppHandle) {
     }
     if let Some(runs) = handle.try_state::<project_actions::ActionRuns>() {
         runs.stop_all();
+    }
+    if let Some(installs) = handle.try_state::<agent_install::AgentInstalls>() {
+        installs.stop_all();
     }
 }
 

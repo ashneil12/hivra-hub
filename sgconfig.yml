@@ -1,0 +1,6 @@
+# ast-grep project file. `ast-grep scan` reads rules/, `ast-grep test` reads rule-tests/.
+# All three rules are warnings, never errors. See docs/hivra/shipping-guards.md.
+ruleDirs:
+  - rules
+testConfigs:
+  - testDir: rule-tests

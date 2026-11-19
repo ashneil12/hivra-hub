@@ -25,7 +25,7 @@ export class NoInterviewRuntime extends Error {}
 export function interviewNote(name: string): string {
   const id = projectSlug(name);
   return [
-    `A new project is being set up in the hub, called "${name}", and you're talking it through in this chat. When you know enough, propose it: they see your proposal as a card with Create and Cancel, and nothing exists until they press Create.`,
+    `A new project is being set up in the app, called "${name}", and you're talking it through in this chat. When you know enough, propose it: they see your proposal as a card with Create and Cancel, and nothing exists until they press Create.`,
     "",
     "Create needs:",
     `- name: "${name}", unless they want another`,

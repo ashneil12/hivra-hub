@@ -20,7 +20,8 @@ pub mod catalog;
 mod check;
 pub mod commands;
 pub mod launch;
-mod oauth;
+// WP-61 reuses its PKCE, loopback callback and token exchange for Hivra Cloud.
+pub(crate) mod oauth;
 mod remote;
 mod renew;
 pub mod secrets;

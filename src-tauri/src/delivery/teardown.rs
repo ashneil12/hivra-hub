@@ -25,7 +25,7 @@ pub enum Safe {
 }
 
 fn git_ok(dir: &Path, args: &[&str]) -> bool {
-    super::child("git")
+    crate::git_cmd::child()
         .arg("-C")
         .arg(dir)
         .args(args)
@@ -36,7 +36,7 @@ fn git_ok(dir: &Path, args: &[&str]) -> bool {
 }
 
 fn clean(worktree: &Path) -> bool {
-    super::child("git")
+    crate::git_cmd::child()
         .arg("-C")
         .arg(worktree)
         .args(["status", "--porcelain", "--untracked-files=normal"])
@@ -70,7 +70,7 @@ pub fn guard(project: &Path, worktree: &Path) -> Result<Safe, String> {
 }
 
 fn head(worktree: &Path) -> Result<String, String> {
-    let out = super::child("git")
+    let out = crate::git_cmd::child()
         .arg("-C")
         .arg(worktree)
         .args(["rev-parse", "HEAD"])

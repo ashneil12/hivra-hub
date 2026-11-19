@@ -391,6 +391,16 @@ fn supported_remote_method(method: &str) -> bool {
             | "git.index"
             | "git.fileDiff"
             | "git.action"
+            | "teleport.read"
+            | "teleport.freeze"
+            | "teleport.thaw"
+            | "teleport.canResume"
+            | "teleport.receive"
+            | "teleport.discard"
+            | "teleport.activate"
+            | "teleport.release"
+            | "teleport.holds"
+            | "teleport.abort"
     )
 }
 
@@ -691,6 +701,28 @@ mod tests {
             assert!(supported_remote_method(method), "{method}");
         }
         assert!(!supported_remote_method("git.arbitrary"));
+    }
+    #[test]
+    fn a_chat_move_reaches_the_host_only_through_its_own_calls() {
+        for method in [
+            "teleport.read",
+            "teleport.freeze",
+            "teleport.thaw",
+            "teleport.canResume",
+            "teleport.receive",
+            "teleport.discard",
+            "teleport.activate",
+            "teleport.release",
+            "teleport.holds",
+            "teleport.abort",
+        ] {
+            assert!(
+                supported_remote_method(method),
+                "{method} should be forwarded"
+            );
+        }
+        assert!(!supported_remote_method("teleport.purge"));
+        assert!(!supported_remote_method("teleport"));
     }
     #[test]
     fn endpoints_require_an_encrypted_route_and_no_embedded_secrets() {

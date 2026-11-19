@@ -11,7 +11,6 @@
 //! fork is never checked out at all (mod.rs `apply`): anyone can open one and comment to wake the owner.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 /// Where a wake's checkout stands.
@@ -76,12 +75,12 @@ fn git(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 /// git in `dir`, stopped (with what it started) if it hasn't finished within `timeout`.
 fn git_within(dir: &Path, args: &[&str], timeout: Duration) -> Result<String, String> {
-    let mut command = Command::new("git");
+    crate::git_cmd::ensure_contained(dir)?;
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
+    command.arg("-C").arg(dir);
+    crate::git_cmd::extend_readonly(&mut command, args);
     command
-        .arg("-C")
-        .arg(dir)
-        .args(args)
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("PATH", crate::harness::cached_gui_search_path());
@@ -301,13 +300,15 @@ pub const SETUP_NOT_RUN: &str = "The project's setup was not run: the checkout h
 
 /// worktrees.rs's own `git worktree add`, then `setup` (worktrees.rs `with_setup`) told never to run the project's
 /// setup: the checkout is at the pull request's head, and its package.json, build.rs or setup script is whoever wrote it.
+/// The files `.worktreeinclude` names are not copied in either, for the same reason: they are the project's secrets,
+/// and the code in this checkout could read them.
 fn make_worktree(
     root: &Path,
     branch: &str,
     commit: &str,
     setup: impl FnOnce(crate::worktrees::Worktree, Option<bool>) -> crate::worktrees::Worktree,
 ) -> Result<(PathBuf, Option<String>), String> {
-    let tree = crate::worktrees::create(root, branch, commit, false)?;
+    let tree = crate::worktrees::create_without_include(root, branch, commit, false)?;
     let tree = setup(tree, Some(false));
     Ok((PathBuf::from(tree.path), Some(SETUP_NOT_RUN.to_string())))
 }
@@ -470,7 +471,7 @@ pub(crate) mod tests {
             branch: &str,
             commit: &str,
         ) -> Result<(PathBuf, Option<String>), String> {
-            let tree = crate::worktrees::create(root, branch, commit, false)?;
+            let tree = crate::worktrees::create_without_include(root, branch, commit, false)?;
             Ok((PathBuf::from(tree.path), None))
         }
     }
@@ -645,6 +646,25 @@ pub(crate) mod tests {
         };
         let setup = setup.as_deref().unwrap_or("");
         assert!(setup.contains("setup was not run"), "{setup}");
+        let _ = std::fs::remove_dir_all(repos.dir.join("clone-worktrees"));
+    }
+
+    #[test]
+    fn a_worktree_made_for_a_wake_gets_none_of_the_files_worktreeinclude_names() {
+        let repos = Repos::new("noinclude");
+        // The project ignores `.env` and names it in `.worktreeinclude`, so a worktree the
+        // person makes would get it. The pull request's code could read it, so this one does not.
+        commit(&repos.clone, ".gitignore", ".env\n");
+        std::fs::write(repos.clone.join(".env"), "SECRET-VALUE-do-not-leak\n").unwrap();
+        std::fs::write(repos.clone.join(".worktreeinclude"), ".env\n").unwrap();
+        let person = crate::worktrees::create(&repos.clone, "mc/by-hand", "HEAD", false).unwrap();
+        assert!(Path::new(&person.path).join(".env").is_file());
+
+        let head = repos.push_pr(7, "fix", "b.txt", "two");
+        let spy = SetupSpy(Default::default());
+        let (outcome, made) = prepare(&plan(&repos, &head, None), &spy);
+        let path = made.unwrap_or_else(|| panic!("{outcome:?}"));
+        assert!(!Path::new(&path).join(".env").exists(), "{path}");
         let _ = std::fs::remove_dir_all(repos.dir.join("clone-worktrees"));
     }
 

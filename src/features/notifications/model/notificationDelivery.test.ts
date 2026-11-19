@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   announceSessionFinished,
   announceSessionInput,
@@ -8,6 +8,9 @@ import {
   setWindowFocused,
 } from "./notifications";
 import { updateNotificationPreferences } from "./notificationPreferences";
+import { flushNotableDue } from "./notableDelivery";
+import { readNotableBuffer } from "./notableEvents";
+import { saveQuietHours } from "./quietHours";
 import { newSession } from "../../sessions/model/session";
 
 const { invoke, play } = vi.hoisted(() => ({ invoke: vi.fn(), play: vi.fn() }));
@@ -99,4 +102,100 @@ it("plays the input cue only when the question banner is not sent", async () => 
   updateNotificationPreferences(["local:/work"], { mutedUntil: null });
   await announceSessionInput(session, event, false);
   expect(play).toHaveBeenCalledTimes(1);
+});
+
+describe("quiet hours on the notice path", () => {
+  const overnight = { enabled: true, start: "22:00", end: "08:00" };
+  const at = (hour: number, minute = 0, day = 10) =>
+    new Date(2026, 10, day, hour, minute, 30).getTime();
+  const banners = () =>
+    invoke.mock.calls.filter(([command]) => command === "show_notification");
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    saveQuietHours(overnight);
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("holds a finished-agent banner and its sound overnight, then sends one ping when the window ends", async () => {
+    vi.setSystemTime(at(23, 30));
+    const session = newSession("claude", "/work");
+    await announceSessionFinished(session, false);
+    expect(banners()).toEqual([]);
+    expect(play).not.toHaveBeenCalled();
+    expect(readNotableBuffer().pending.map((held) => held.kind)).toEqual(["held"]);
+
+    vi.setSystemTime(at(7, 59, 11));
+    expect(await flushNotableDue()).toBeNull();
+    expect(banners()).toEqual([]);
+
+    vi.setSystemTime(at(8, 0, 11));
+    expect(await flushNotableDue()).toBe("shown");
+    expect(banners()).toHaveLength(1);
+    expect(banners()[0][1]).toMatchObject({
+      title: "MonoCode",
+      subtitle: "While you were away",
+    });
+    expect(readNotableBuffer().pending).toEqual([]);
+    expect(await flushNotableDue()).toBeNull();
+  });
+
+  it("still shows approvals and questions overnight, and sends nothing extra at the end", async () => {
+    vi.setSystemTime(at(23, 30));
+    const session = newSession("claude", "/work");
+    await announceSessionInput(session, { kind: "question", requestId: 1 }, false);
+    expect(banners()).toHaveLength(1);
+    expect(readNotableBuffer().pending).toEqual([]);
+  });
+
+  it("shows a turn that failed overnight at once, as a failure, and does not hold it like a success", async () => {
+    vi.setSystemTime(at(23, 30));
+    const session = newSession("claude", "/work");
+    await announceSessionFinished(session, false, true);
+    expect(banners()).toHaveLength(1);
+    expect(banners()[0][1]).toMatchObject({ title: "MonoCode", body: "Claude Code stopped with an error" });
+    expect(readNotableBuffer().pending).toEqual([]);
+
+    // With the banner off, the failure still gets its sound; a success would have been silent all night.
+    saveNotificationsEnabled(false);
+    await announceSessionFinished(session, false, true);
+    expect(play).toHaveBeenCalledTimes(1);
+    play.mockClear();
+    await announceSessionFinished(session, false);
+    expect(play).not.toHaveBeenCalled();
+  });
+
+  it("lets a mute win over a failed turn, at any hour", async () => {
+    vi.setSystemTime(at(23, 30));
+    updateNotificationPreferences(["local:/muted"], { disabled: ["agentFinished"] });
+    await announceSessionFinished(newSession("claude", "/muted"), false, true);
+    expect(banners()).toEqual([]);
+    expect(play).not.toHaveBeenCalled();
+    expect(readNotableBuffer().pending).toEqual([]);
+  });
+
+  it("shows a finished-agent banner in the daytime", async () => {
+    vi.setSystemTime(at(12, 0));
+    await announceSessionFinished(newSession("claude", "/work"), false);
+    expect(banners()).toHaveLength(1);
+    expect(readNotableBuffer().pending).toEqual([]);
+  });
+
+  it("does not hold what was already muted, or what no banner would have shown", async () => {
+    vi.setSystemTime(at(23, 30));
+    updateNotificationPreferences(["local:/muted"], { disabled: ["agentFinished"] });
+    await announceSessionFinished(newSession("claude", "/muted"), false);
+    expect(readNotableBuffer().pending).toEqual([]);
+
+    const session = newSession("claude", "/work");
+    saveNotificationsEnabled(false);
+    await announceSessionFinished(session, false);
+    expect(readNotableBuffer().pending).toEqual([]);
+
+    saveNotificationsEnabled(true);
+    setWindowFocused(true);
+    await announceSessionFinished(session, true);
+    expect(readNotableBuffer().pending).toEqual([]);
+    expect(banners()).toEqual([]);
+  });
 });

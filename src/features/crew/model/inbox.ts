@@ -1,9 +1,13 @@
 // Hivra WP-15: first-mate items in the Inbox. A new kind, beside the GitHub list, not inside it.
 
 import { sameProjectPath } from "../../projects/model/recents";
+import limits from "./decisionLimits.json";
 import type { Notice } from "./digest";
 import { firstPlainLine, type CrewDeliveryInput, type CrewWorkerInput } from "./rows";
 import { knownStatus, statusWord } from "./words";
+
+/** The same cap the decision store uses. A secret card is never cut to fit it; the store refuses a longer question. */
+export const QUESTION_MAX = limits.questionMax;
 
 export type FirstMateInboxKind = "decision" | "question" | "review" | "failure" | "credential";
 
@@ -16,6 +20,10 @@ export type DecisionInput = {
   askedBy?: string | null;
   waiting?: unknown;
   state?: string | null;
+  /** The version this card was drawn from. An answer sends this, not a version a later reload stored. */
+  version?: number;
+  /** When it was asked. The wait is counted from here, never from `updatedAt`. */
+  createdAt?: number;
   updatedAt?: number;
 };
 
@@ -29,8 +37,30 @@ export type FirstMateItem = {
   workerIds: string[];
   options: string[];
   recommended: string | null;
+  /** WP-92: a line that sits under the answer buttons (a secret card's warning about "Always"). */
+  note?: string | null;
+  /** A short kind, such as "Passed up". Absent on a row that has none. */
+  chip?: string;
+  /** Where the row came from, such as the project and who passed it up. */
+  sourceLine?: string;
+  /** Words in front of the body, so the reason can name who said it. */
+  reasonLead?: string;
+  /** Actions on the right. The first primary one is the suggestion. */
+  actions?: readonly { label: string; primary?: boolean; onClick?: () => void }[];
+  /** Small chips beside the title, such as "Can wait". */
+  marks?: readonly string[];
   project: string;
   key: string | null;
+  /** The decision version this card was drawn from. Absent on a row that is not a decision. */
+  version?: number;
+  /**
+   * When this item started waiting on a person: a decision from when it was asked, a blocked row from when it got
+   * stuck, a failed or finished row from when it ended, any other row from when it was created. Zero when that start
+   * is not known. It is never the last update:
+   * a stream update or a refresh must not reset how long someone has waited.
+   */
+  since: number;
+  /** The newest change to the item. It names the item's notice for the digest, and says nothing about how long it waited. */
   updatedAt: number;
 };
 
@@ -49,6 +79,24 @@ function inProject(path: string | null | undefined, project: string): boolean {
 function firstLine(value: string | null | undefined, max: number): string {
   const line = (value ?? "").replace(/\r\n/g, "\n").split("\n")[0]?.trim() ?? "";
   return line.slice(0, max);
+}
+
+const SECRET_WARNING = "Warning: ";
+
+/**
+ * WP-92: a secret's approval card is the app's own words over several lines: a title, then the exact command and why it
+ * asks, then (when "Always" is offered for a program that can run any code) a warning for under the buttons. Only a
+ * `secret/` key is read this way; the app alone makes those (an agent's `ask_person` cannot).
+ */
+function secretCardParts(question: string | null | undefined): { title: string; body: string; note: string | null } {
+  const lines = (question ?? "").replace(/\r\n/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
+  const note = lines.find((line, at) => at > 0 && line.startsWith(SECRET_WARNING));
+  const body = lines.filter((line, at) => at > 0 && line !== note);
+  return {
+    title: (lines[0] ?? "").slice(0, 160),
+    body: body.join("\n"),
+    note: note ? note.slice(SECRET_WARNING.length) : null,
+  };
 }
 
 /** Em dashes and en dashes never reach a person. A number range keeps a hyphen. */
@@ -85,14 +133,49 @@ function waitKey(value: number): number {
   return value > 0 && Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
 }
 
+function stamp(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 0;
+}
+
+/**
+ * When a row began to wait: a blocked row from when it got stuck, a failed or finished one from when it ended (a worker
+ * made at 09:00 that fails at 12:00 has waited since 12:00), any other from when it was created.
+ */
+function rowSince(row: CrewWorkerInput): number {
+  if (row.stallKind === "blocked") {
+    const stalled = stamp(row.stalledAt);
+    if (stalled > 0) return stalled;
+  }
+  const status = knownStatus(row.status);
+  if (status === "failed" || status === "done") {
+    const ended = stamp(row.settledAt);
+    if (ended > 0) return ended;
+  }
+  return stamp(row.createdAt);
+}
+
 /** The first plain line of a failure. A stack frame or a secret is not shown. */
 export function failureWords(notice?: string | null, error?: string | null): string {
   return firstPlainLine(`${notice ?? ""}\n${error ?? ""}`) ?? "This work failed.";
 }
 
+/** A line the gate wrote. It quotes the worker's command, so "sign-in" in it is not a sign-in to do. */
+function sentBackLine(line: string): boolean {
+  return line.trim().toLowerCase().startsWith("sent back:");
+}
+
+function withoutSentBack(value: string | null | undefined): string {
+  return (value ?? "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .filter((line) => !sentBackLine(line))
+    .join("\n");
+}
+
 function credential(row: CrewWorkerInput): boolean {
   if (CREDENTIAL_CLASS.has((row.errorClass ?? "").trim())) return true;
-  const text = `${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
+  // A send-back quotes the worker's own command, in the notice or the error. A real line above it still counts.
+  const text = `${withoutSentBack(row.statusNotice)}\n${withoutSentBack(row.error)}`.toLowerCase();
   if (knownStatus(row.status) === "paused" && /usage limit|quota/.test(text)) return true;
   return /sign[- ]in|not signed in|missing cli|isn't installed|is not installed/.test(text);
 }
@@ -105,10 +188,13 @@ function credentialTitle(row: CrewWorkerInput): string {
   return "Needs a sign-in";
 }
 
-/** A needs-you row that is blocked on a permission, not on a question. */
+/**
+ * A needs-you row that is blocked on a permission, not on a question. Only the status notice and the error say so:
+ * the title is what the work is called, and "Fix the permission check" is not a permission ask.
+ */
 function permissionAsk(row: CrewWorkerInput): boolean {
   if (knownStatus(row.status) !== "needs-you") return false;
-  const text = `${row.title ?? ""}\n${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
+  const text = `${row.statusNotice ?? ""}\n${row.error ?? ""}`.toLowerCase();
   return /permission|access denied|not allowed/.test(text);
 }
 
@@ -180,11 +266,15 @@ export function inboxItems(input: {
     const choice = optionsOf(decision.options, decision.recommended);
     const waiting = waitingOf(decision.waiting);
     for (const id of waiting) waitingOnDecision.add(id);
+    const secret = key.startsWith("secret/") ? secretCardParts(decision.question) : null;
     items.push({
       id: `decision:${project}:${key}`,
       kind: "decision",
-      title: shown(firstLine(decision.question, 160)) || "A decision is waiting",
-      body: "",
+      // A secret's card is the exact command the person approves: it is not run through `shown`, which would rewrite
+      // dashes and collapse spaces. The Rust side already wrote out every character that could mislead.
+      title: (secret ? secret.title : shown(firstLine(decision.question, 160))) || "A decision is waiting",
+      body: secret ? secret.body : "",
+      note: secret ? secret.note : null,
       statusWord: "needs you",
       chatId: firstLine(decision.askedBy, 200) || null,
       workerIds: waiting,
@@ -192,6 +282,8 @@ export function inboxItems(input: {
       recommended: choice.recommended,
       project,
       key,
+      version: typeof decision.version === "number" && Number.isFinite(decision.version) ? decision.version : 0,
+      since: stamp(decision.createdAt),
       updatedAt: decision.updatedAt ?? 0,
     });
   }
@@ -218,6 +310,7 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
       continue;
@@ -235,6 +328,7 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
       continue;
@@ -252,16 +346,21 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
       continue;
     }
     if (status === "done" && !landed(delivery)) {
+      // SC-3a: a done row says how far it was checked ("Built, not tested yet", "Accepted without a pass: why"), so
+      // ready for review never reads as tested when it wasn't.
+      const checked = shown(firstPlainLine(row.statusNotice, 200) ?? "");
+      const work = shown(firstLine(row.title, 160));
       items.push({
         id: `review:${row.id}`,
         kind: "review",
         title: "Ready for review",
-        body: shown(firstLine(row.title, 160)),
+        body: checked ? (work ? `${work} · ${checked}` : checked) : work,
         statusWord: word,
         chatId: row.childSession ?? null,
         workerIds: [row.id],
@@ -269,6 +368,7 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
       continue;
@@ -288,12 +388,13 @@ export function inboxItems(input: {
         recommended: null,
         project,
         key: null,
+        since: rowSince(row),
         updatedAt: row.updatedAt ?? 0,
       });
     }
   }
   const rank: Record<FirstMateInboxKind, number> = { decision: 0, question: 0, credential: 1, failure: 2, review: 2 };
-  items.sort((a, b) => rank[a.kind] - rank[b.kind] || waitKey(a.updatedAt) - waitKey(b.updatedAt) || a.id.localeCompare(b.id));
+  items.sort((a, b) => rank[a.kind] - rank[b.kind] || waitKey(a.since) - waitKey(b.since) || a.id.localeCompare(b.id));
   return items;
 }
 

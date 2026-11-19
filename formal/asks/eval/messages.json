@@ -1,0 +1,140 @@
+{
+  "about": "Ten made-up long messages to a first mate, each with a hand-labelled list of what was asked. Written fresh as examples: no real chat, no real person. Every text starts with 'Example:'. 'anchor' is the shortest verbatim span (case, spacing and quote marks aside) that carries the ask: a row of the ledger counts as holding the ask when its quote contains the anchor (or the other way round). 'cancelled' asks are asked and then withdrawn in the same message, so they must NOT stay open. 'duplicate' marks an ask said a second time (it should be one row, not two). 'notAsks' are sentences that look like asks but are not Ash's (a pasted customer message), so they must not become rows.",
+  "messages": [
+    {
+      "id": "m01-polish-list",
+      "shape": "Unnumbered list of fixes in a chatty rant, with a tangent in the middle; one implicit ask, one rule, one question at the end.",
+      "text": "Example: ok so I've been going through the app all morning and honestly it's mostly fine but a few things are driving me up the wall. The invoice export still drops the last row when there are more than fifty lines, can you fix that. I also noticed the onboarding tour fires every single time I open a fresh window which is annoying, so make it only show once per install. Oh and while you're in there, the settings page says 'Preferances' with a typo. Anyway my sister called halfway through so I lost my train of thought, where was I. Right, the weekly report email, I want it to go out Monday at 8 instead of Sunday night because nobody reads it on Sunday. Also please don't touch the pricing page, that's frozen until Priya signs off. Last thing, tell me which of these you think is the riskiest so I know what to test first.",
+      "asks": [
+        { "id": "a1", "kind": "do", "gist": "Fix the invoice export dropping the last row past fifty lines", "anchor": "The invoice export still drops the last row when there are more than fifty lines, can you fix that" },
+        { "id": "a2", "kind": "do", "gist": "Show the onboarding tour once per install", "anchor": "make it only show once per install" },
+        { "id": "a3", "kind": "do", "implicit": true, "gist": "Fix the 'Preferances' typo on the settings page", "anchor": "the settings page says 'Preferances' with a typo" },
+        { "id": "a4", "kind": "do", "buried": true, "gist": "Send the weekly report email on Monday at 8", "anchor": "I want it to go out Monday at 8 instead of Sunday night" },
+        { "id": "a5", "kind": "rule", "gist": "Do not touch the pricing page", "anchor": "please don't touch the pricing page" },
+        { "id": "a6", "kind": "answer", "gist": "Say which change is the riskiest", "anchor": "tell me which of these you think is the riskiest" }
+      ]
+    },
+    {
+      "id": "m02-mobile-build",
+      "shape": "One ask cancelled later in the same message, one ask repeated, one decision created by the cancellation.",
+      "text": "Example: Right so about the mobile build. Can you check why the Android build is failing on CI, I think it's the signing step but I haven't looked. And bump the minimum iOS version to 16 while you're at it. Actually no wait, leave the iOS version alone, Marcus says we still have people on 15. Where was I. The splash screen is still the old logo. Swap it for the new one in the brand folder please. Did I mention the Android build is failing? Yeah so check that, it blocks everything. Also can we get a nightly build going so I stop asking you for test builds. And you should probably tell me roughly what that costs.",
+      "asks": [
+        { "id": "a1", "kind": "do", "gist": "Find out why the Android CI build fails", "anchor": "check why the Android build is failing on CI" },
+        { "id": "a2", "kind": "do", "cancelled": true, "withdrawnBy": "leave the iOS version alone, Marcus says we still have people on 15", "gist": "Bump the minimum iOS version to 16", "anchor": "bump the minimum iOS version to 16" },
+        { "id": "a3", "kind": "decide", "gist": "Leave the iOS minimum version alone", "anchor": "leave the iOS version alone" },
+        { "id": "a4", "kind": "do", "gist": "Swap the splash screen for the new logo", "anchor": "Swap it for the new one in the brand folder please" },
+        { "id": "a5", "kind": "do", "gist": "Set up a nightly build", "anchor": "can we get a nightly build going" },
+        { "id": "a6", "kind": "answer", "gist": "Say roughly what a nightly build costs", "anchor": "tell me roughly what that costs" }
+      ],
+      "duplicates": [
+        { "of": "a1", "anchor": "Yeah so check that, it blocks everything" }
+      ]
+    },
+    {
+      "id": "m03-complaints",
+      "shape": "Complaints and wishes with almost no imperative verbs: every ask is implicit.",
+      "text": "Example: honestly the search is slow. Like really slow, I typed my own name in and went and made tea. Nobody has ever explained to me why the dashboard shows yesterday's numbers in the morning. It would be great if the export remembered my last folder. And the dark theme is too bright in the sidebar, I keep squinting. Also I think we're missing a way to undo a delete, I deleted a whole page yesterday by accident and had to retype it.",
+      "asks": [
+        { "id": "a1", "kind": "do", "implicit": true, "gist": "Make search faster", "anchor": "the search is slow" },
+        { "id": "a2", "kind": "answer", "implicit": true, "gist": "Explain why the dashboard shows yesterday's numbers in the morning", "anchor": "why the dashboard shows yesterday's numbers in the morning" },
+        { "id": "a3", "kind": "do", "gist": "Make the export remember the last folder", "anchor": "It would be great if the export remembered my last folder" },
+        { "id": "a4", "kind": "do", "implicit": true, "gist": "Tone down the sidebar brightness in the dark theme", "anchor": "the dark theme is too bright in the sidebar" },
+        { "id": "a5", "kind": "do", "implicit": true, "gist": "Add undo for deleting a page", "anchor": "we're missing a way to undo a delete" }
+      ]
+    },
+    {
+      "id": "m04-run-on",
+      "shape": "One 90-word run-on sentence with no punctuation, seven asks, the last one an idea for later.",
+      "text": "Example: ok quick brain dump before I forget so we need the billing page to show the VAT number and the receipt PDF has to use the company logo not the old one and can you also look at why the refund button does nothing on Safari and I want an email to go to finance when a refund is over five hundred and make sure the audit log keeps who clicked it and while you're there rename Refund to Reverse payment everywhere in the UI oh and for later maybe think about letting customers download all their invoices as one zip but not now",
+      "asks": [
+        { "id": "a1", "kind": "do", "gist": "Show the VAT number on the billing page", "anchor": "we need the billing page to show the VAT number" },
+        { "id": "a2", "kind": "do", "gist": "Use the company logo on the receipt PDF", "anchor": "the receipt PDF has to use the company logo not the old one" },
+        { "id": "a3", "kind": "do", "gist": "Find out why the refund button does nothing on Safari", "anchor": "look at why the refund button does nothing on Safari" },
+        { "id": "a4", "kind": "do", "gist": "Email finance when a refund is over 500", "anchor": "I want an email to go to finance when a refund is over five hundred" },
+        { "id": "a5", "kind": "do", "gist": "Make the audit log record who clicked refund", "anchor": "make sure the audit log keeps who clicked it" },
+        { "id": "a6", "kind": "do", "buried": true, "gist": "Rename Refund to Reverse payment in the UI", "anchor": "rename Refund to Reverse payment everywhere in the UI" },
+        { "id": "a7", "kind": "idea", "buried": true, "gist": "Later: let customers download all invoices as one zip", "anchor": "letting customers download all their invoices as one zip" }
+      ]
+    },
+    {
+      "id": "m05-releases",
+      "shape": "Think-aloud about releases: the main ask is said twice, one idea parked for later, two standing rules, one question.",
+      "text": "Example: I was thinking on the train about how we handle releases and I think we're doing too much by hand. Every Friday I end up tagging the build, writing the notes and posting in the channel, and it eats an hour. So let's automate the release notes from the merged PR titles. Maybe, and I'm not sure about this, we could also post them to the changelog page automatically, but park that for now. The tagging should happen when I say 'ship it' in chat and not before. Related: the channel post should tag whoever is on call. I keep forgetting to tell you, always run the full checks before any tag, never skip them even if I'm in a hurry. So yeah, release notes from PR titles, that's the main one. And can you tell me what you'd need from me to set up the on-call tagging, I don't know where that list lives.",
+      "asks": [
+        { "id": "a1", "kind": "do", "gist": "Automate release notes from merged PR titles", "anchor": "let's automate the release notes from the merged PR titles" },
+        { "id": "a2", "kind": "idea", "gist": "Later: post release notes to the changelog page", "anchor": "post them to the changelog page automatically" },
+        { "id": "a3", "kind": "rule", "gist": "Tag a release only when told 'ship it'", "anchor": "The tagging should happen when I say 'ship it' in chat and not before" },
+        { "id": "a4", "kind": "do", "gist": "Tag whoever is on call in the channel post", "anchor": "the channel post should tag whoever is on call" },
+        { "id": "a5", "kind": "rule", "gist": "Always run the full checks before any tag", "anchor": "always run the full checks before any tag" },
+        { "id": "a6", "kind": "answer", "gist": "Say what is needed to set up on-call tagging", "anchor": "tell me what you'd need from me to set up the on-call tagging" }
+      ],
+      "duplicates": [
+        { "of": "a1", "anchor": "release notes from PR titles, that's the main one" }
+      ]
+    },
+    {
+      "id": "m06-change-of-plan",
+      "shape": "A change of plan: one ask withdrawn two sentences later, one order flipped, a reminder and a question.",
+      "text": "Example: Change of plan on the dashboard. Make the funnel chart colours match the brand palette, the teal and the sand. Hmm no, scratch that, I'll pick the colours myself when I see it. Build the funnel view first and put the revenue chart after it, the funnel matters more now. Can you set up the weekly digest email to include the top five pages by views. And remind me on Thursday to review the draft, make it recurring. One more thing, what's the actual difference between a Page and a hub in this app, I keep mixing them up, explain it in one paragraph.",
+      "asks": [
+        { "id": "a1", "kind": "do", "cancelled": true, "withdrawnBy": "scratch that, I'll pick the colours myself when I see it", "gist": "Match the funnel chart colours to the brand palette", "anchor": "Make the funnel chart colours match the brand palette" },
+        { "id": "a2", "kind": "do", "gist": "Build the funnel view first, the revenue chart after it", "anchor": "Build the funnel view first and put the revenue chart after it" },
+        { "id": "a3", "kind": "do", "gist": "Weekly digest email with the top five pages by views", "anchor": "set up the weekly digest email to include the top five pages by views" },
+        { "id": "a4", "kind": "do", "gist": "Recurring Thursday reminder to review the draft", "anchor": "remind me on Thursday to review the draft, make it recurring" },
+        { "id": "a5", "kind": "answer", "gist": "Explain the difference between a Page and a hub in one paragraph", "anchor": "what's the actual difference between a Page and a hub in this app" }
+      ]
+    },
+    {
+      "id": "m07-pasted-customer",
+      "shape": "A pasted customer message holds asks that are NOT Ash's; four real asks follow it.",
+      "text": "Example: Dana from Kestrel Foods wrote in and I want us to handle it properly. Her message was: 'Hi team, the export keeps timing out for our big accounts. Please fix this before month end. Can you tell us when it will be done? Thanks, Dana.' So, reply to Dana today and say we're on it and give her a date by Friday. Then look into the export timeouts, I suspect it's the same thing as last month, the query without the index. Also check whether any other big accounts have hit it, search the logs for the last two weeks. And write me a short summary of what happened that I can forward to her account manager.",
+      "asks": [
+        { "id": "a1", "kind": "do", "gist": "Reply to Dana today with a date by Friday", "anchor": "reply to Dana today and say we're on it and give her a date by Friday" },
+        { "id": "a2", "kind": "do", "gist": "Look into the export timeouts", "anchor": "look into the export timeouts" },
+        { "id": "a3", "kind": "do", "gist": "Check whether other big accounts hit the timeouts", "anchor": "check whether any other big accounts have hit it" },
+        { "id": "a4", "kind": "do", "gist": "Write a short summary to forward to the account manager", "anchor": "write me a short summary of what happened that I can forward to her account manager" }
+      ],
+      "notAsks": [
+        { "anchor": "Please fix this before month end", "why": "the customer's request, quoted" },
+        { "anchor": "Can you tell us when it will be done", "why": "the customer's question, quoted" }
+      ]
+    },
+    {
+      "id": "m08-dictation",
+      "shape": "Voice dictation: one long sentence, fillers, three asks, the last glued on with 'honestly I think'.",
+      "text": "Example: um so basically yeah can you like get the thing working where when I tap the bell icon it shows the notifications because right now it just closes the drawer and um also the unread count is wrong it says nine when there are two and honestly I think we should just remove the sound for now it's annoying everyone in the office",
+      "asks": [
+        { "id": "a1", "kind": "do", "gist": "Make the bell icon open the notifications", "anchor": "get the thing working where when I tap the bell icon it shows the notifications" },
+        { "id": "a2", "kind": "do", "implicit": true, "gist": "Fix the wrong unread count", "anchor": "the unread count is wrong it says nine when there are two" },
+        { "id": "a3", "kind": "do", "buried": true, "gist": "Remove the notification sound for now", "anchor": "we should just remove the sound for now" }
+      ]
+    },
+    {
+      "id": "m09-call-notes",
+      "shape": "Notes from a call: a decision, a standing rule, two questions, a reference to earlier context, a hedged 'no rush' ask.",
+      "text": "Example: Couple of things from the call yesterday. We're going with Postgres, not SQLite, for the team plan, that's decided so don't reopen it. From now on put the ticket number at the start of every commit message. What's the status of the migration script, is it ready or not? Do the same fix on the other page, you know the one, the one with the long table. Mia asked whether we can support single sign on by March, find out what that would take and tell me. Oh and if you get a chance sometime this week, no rush, tidy up the old branches.",
+      "asks": [
+        { "id": "a1", "kind": "decide", "gist": "Team plan uses Postgres, not SQLite", "anchor": "We're going with Postgres, not SQLite, for the team plan" },
+        { "id": "a2", "kind": "rule", "gist": "Start every commit message with the ticket number", "anchor": "put the ticket number at the start of every commit message" },
+        { "id": "a3", "kind": "answer", "gist": "Say whether the migration script is ready", "anchor": "What's the status of the migration script, is it ready or not" },
+        { "id": "a4", "kind": "do", "implicit": true, "gist": "Apply the same fix to the other page with the long table", "anchor": "Do the same fix on the other page, you know the one, the one with the long table" },
+        { "id": "a5", "kind": "do", "gist": "Find out what single sign on by March would take, and report", "anchor": "find out what that would take and tell me" },
+        { "id": "a6", "kind": "do", "buried": true, "gist": "Tidy up the old branches this week, no rush", "anchor": "tidy up the old branches" }
+      ]
+    },
+    {
+      "id": "m10-week-notes",
+      "shape": "A dashed list of week notes, then one item withdrawn and a question tacked on the end.",
+      "text": "Example: Notes for the week, in no particular order.\n- backup job: it failed twice, find out why\n- add a retry to the nightly sync\n- the empty state on the Needs screen is dull, give it something to say\n- can we show how long each job has been running\n- ask Theo if the staging box is still needed\n- docs for the new import flow\nHonestly that's too much for one week so ignore the docs bit, we'll do it later. Also, unrelated, did the thing with the certificate expire yet? I want to know before it does.",
+      "asks": [
+        { "id": "a1", "kind": "do", "gist": "Find out why the backup job failed twice", "anchor": "backup job: it failed twice, find out why" },
+        { "id": "a2", "kind": "do", "gist": "Add a retry to the nightly sync", "anchor": "add a retry to the nightly sync" },
+        { "id": "a3", "kind": "do", "gist": "Write a better empty state on the Needs screen", "anchor": "the empty state on the Needs screen is dull, give it something to say" },
+        { "id": "a4", "kind": "do", "gist": "Show how long each job has been running", "anchor": "can we show how long each job has been running" },
+        { "id": "a5", "kind": "do", "gist": "Ask Theo whether the staging box is still needed", "anchor": "ask Theo if the staging box is still needed" },
+        { "id": "a6", "kind": "do", "cancelled": true, "withdrawnBy": "ignore the docs bit, we'll do it later", "gist": "Write docs for the new import flow", "anchor": "docs for the new import flow" },
+        { "id": "a7", "kind": "answer", "gist": "Say whether the certificate has expired yet", "anchor": "did the thing with the certificate expire yet" }
+      ]
+    }
+  ]
+}

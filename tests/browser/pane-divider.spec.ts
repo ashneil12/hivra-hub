@@ -124,18 +124,41 @@ test("both split buttons focus the pane and then split", async ({ page }) => {
   ]);
 });
 
-test("a lone pane shows both split buttons", async ({ page }) => {
+test("a lone pane has no header bar, and shows both split buttons only while hovered or focused", async ({ page }) => {
   await page.goto(`${PAGE}?scenario=single`);
-  const header = page.locator("[data-pane-header]");
-  await expect(
-    header.getByRole("button", { name: "Split right", exact: true }),
-  ).toBeEnabled();
-  await expect(
-    header.getByRole("button", { name: "Split down", exact: true }),
-  ).toBeEnabled();
-  await expect(page.getByRole("separator", { name: "Resize panes" })).toHaveCount(
-    0,
-  );
+  const pane = page.locator("[data-pane-id='a']");
+  const corner = pane.locator("[data-pane-corner]");
+  const right = corner.getByRole("button", { name: "Split right", exact: true });
+  const down = corner.getByRole("button", { name: "Split down", exact: true });
+
+  // No bar: nothing of the pane's height is spent above its body.
+  await expect(page.locator("[data-pane-header]")).toHaveCount(0);
+  const paneBox = await pane.boundingBox();
+  const bodyBox = await pane.locator("[data-pane-body]").boundingBox();
+  expect(bodyBox!.y - paneBox!.y).toBeLessThan(1);
+  await expect(page.getByRole("separator", { name: "Resize panes" })).toHaveCount(0);
+
+  // Left alone, the buttons are there but not drawn.
+  await page.mouse.move(950, 780);
+  await expect(corner).toHaveCSS("opacity", "0");
+  // Over the pane, both show and work.
+  await pane.hover();
+  await expect(corner).toHaveCSS("opacity", "1");
+  await expect(right).toBeEnabled();
+  await expect(down).toBeEnabled();
+  await right.click();
+  expect(await events(page)).toEqual([
+    { kind: "focus", paneId: "a", reason: "pointer" },
+    { kind: "split", dir: "right" },
+  ]);
+
+  // A click leaves the button focused, but that alone does not keep the corner showing.
+  await page.mouse.move(950, 780);
+  await expect(corner).toHaveCSS("opacity", "0");
+  // A keyboard user reaches the buttons without the mouse: Tab onto the next one shows the corner.
+  await page.keyboard.press("Tab");
+  await expect(down).toBeFocused();
+  await expect(corner).toHaveCSS("opacity", "1");
 });
 
 test("a full row disables split right and says why", async ({ page }) => {

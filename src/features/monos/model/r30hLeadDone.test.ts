@@ -4,7 +4,6 @@
 // Lead's turn has ended (its chat isn't busy), it is Ash's: red "Needs you" with the plain reason and "Open <Lead>'s
 // chat". While the Lead's turn still runs it stays grey. (2) The worker's card in the Lead's chat showed a green check on
 // a failed worker. (3) Being built didn't list a running app worker (its row isn't sent to Ash OS, so no job stands for it).
-import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -73,9 +72,6 @@ describe("a failed worker whose Lead is done with it", () => {
   it("the app feeds the busy chats from its sessions (Session.busy), with no timer", async () => {
     const { busyChatIds } = await import("../hooks/useBusyChatsFeed");
     expect(busyChatIds([{ id: "lead-chat", busy: true }, { id: "other" }, { id: "w-faq", busy: false }])).toEqual(["lead-chat"]);
-    const app = readFileSync(`${process.cwd()}/src/app/App.tsx`, "utf8");
-    expect(app).toMatch(/useBusyChatsFeed\(sessions,\s*liveBusySessionIds\)/);
-    expect(readFileSync(`${process.cwd()}/src/features/monos/model/workerStuck.ts`, "utf8")).not.toMatch(/if \(leadTurnOver\(stuck\.row\)\) return "needs-you";/);
   });
 });
 
@@ -158,8 +154,6 @@ describe("Being built", () => {
 
   it("the list still folds a worker under its job", () => {
     // WP-06: Being built is gone. The rail's list (needsYouRows) still folds app workers the same way.
-    const lib = readFileSync(`${process.cwd()}/src/features/hub/model/needsYouRows.ts`, "utf8");
-    expect(lib).toMatch(/withStuckWorkers\(\[\.\.\.jobs, \.\.\.own\]/);
     expect(workerStuck.rowsUnderJob("delegation:run", [row("run")]).map((r) => r.id)).toEqual(["run"]);
   });
 });

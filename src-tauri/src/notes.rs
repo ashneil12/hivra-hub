@@ -6,13 +6,15 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::fs::expand_home;
+use crate::plain_file::{self, Refusal};
 use crate::session_store::{now_millis, validate_id, SessionStore};
 
 const TITLE_MAX: usize = 200;
 const BODY_MAX: usize = 1_000_000;
 const TAG_MAX: usize = 48;
 const TAGS_MAX: usize = 20;
-const IMAGE_MAX_BYTES: u64 = 20 * 1024 * 1024;
+/// The largest picture a note takes, and the most an export will read of one.
+pub(crate) const IMAGE_MAX_BYTES: u64 = 20 * 1024 * 1024;
 const IMAGE_EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "gif", "webp", "svg"];
 const NOTE_ASSET_DIR: &str = "note-assets";
 
@@ -262,13 +264,13 @@ pub fn notes_image_path(app: AppHandle, asset: String) -> Result<String, String>
 }
 
 fn note_assets_dir(app: &AppHandle, note_id: &str) -> Result<PathBuf, String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    note_assets_dir_in(&data, note_id)
+}
+
+fn note_assets_dir_in(data_dir: &Path, note_id: &str) -> Result<PathBuf, String> {
     validate_id(note_id, "note")?;
-    Ok(app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
-        .join(NOTE_ASSET_DIR)
-        .join(note_id))
+    Ok(data_dir.join(NOTE_ASSET_DIR).join(note_id))
 }
 
 fn save_note_image_sync(
@@ -276,20 +278,30 @@ fn save_note_image_sync(
     note_id: &str,
     source_path: &str,
 ) -> Result<NoteImageAsset, String> {
+    let data = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    save_note_image_into(&data, note_id, source_path)
+}
+
+fn save_note_image_into(
+    data_dir: &Path,
+    note_id: &str,
+    source_path: &str,
+) -> Result<NoteImageAsset, String> {
     let source = expand_home(source_path);
-    let meta = std::fs::metadata(&source).map_err(|e| format!("{}: {e}", source.display()))?;
-    if !meta.is_file() {
-        return Err("Not a file".into());
-    }
-    if meta.len() > IMAGE_MAX_BYTES {
-        return Err(format!(
+    let (display_name, safe_name) = note_image_names(&source)?;
+    // A picture that is a link isn't followed (it could lead to a private key, and the next export would carry the
+    // copy out), a pipe or device isn't one, and no more than the cap is ever read.
+    let bytes = plain_file::read(&source, IMAGE_MAX_BYTES).map_err(|why| match why {
+        Refusal::Link => "That image is a link. Pick the image file itself.".to_string(),
+        Refusal::NotAFile => "Not a file".to_string(),
+        Refusal::Unreadable => format!("{}: couldn't be read", source.display()),
+        Refusal::TooBig => format!(
             "Image is too large (maximum {} MB).",
             IMAGE_MAX_BYTES / 1024 / 1024
-        ));
-    }
+        ),
+    })?;
 
-    let (display_name, safe_name) = note_image_names(&source)?;
-    let dir = note_assets_dir(app, note_id)?;
+    let dir = note_assets_dir_in(data_dir, note_id)?;
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -297,12 +309,30 @@ fn save_note_image_sync(
         .as_nanos();
     let stored_name = format!("{stamp}-{safe_name}");
     let destination = dir.join(&stored_name);
-    std::fs::copy(&source, &destination).map_err(|e| format!("{}: {e}", destination.display()))?;
+    write_new_file(&destination, &bytes)
+        .map_err(|error| format!("{}: {error}", destination.display()))?;
 
     Ok(NoteImageAsset {
         name: display_name,
         markdown_path: format!("/{NOTE_ASSET_DIR}/{note_id}/{stored_name}"),
     })
+}
+
+/// `bytes` as a new file at `path`: never over one that is there, never through a link at that name. A file that
+/// couldn't be created isn't this function's to remove (it may be somebody else's); one it created and then couldn't
+/// finish writing is removed, so no half of a picture is left.
+fn write_new_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    let written = file.write_all(bytes);
+    if written.is_err() {
+        drop(file);
+        let _ = std::fs::remove_file(path);
+    }
+    written
 }
 
 fn note_image_names(source: &Path) -> Result<(String, String), String> {
@@ -1211,6 +1241,149 @@ mod tests {
         );
         assert!(validate_note_asset_path("/note-assets/note-1/../secret.png").is_err());
         assert!(validate_note_asset_path("/other/note-1/image.png").is_err());
+    }
+
+    /// A throwaway data folder with a "somewhere else" beside it, both gone at the end of the test.
+    struct Folders {
+        root: PathBuf,
+        data: PathBuf,
+        elsewhere: PathBuf,
+    }
+
+    impl Folders {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "monocode-notes-image-{}",
+                uuid::Uuid::new_v4().simple()
+            ));
+            let data = root.join("data");
+            let elsewhere = root.join("elsewhere");
+            std::fs::create_dir_all(&data).unwrap();
+            std::fs::create_dir_all(&elsewhere).unwrap();
+            Self {
+                root,
+                data,
+                elsewhere,
+            }
+        }
+
+        /// Every file under the data folder's note-assets, with what it holds.
+        fn saved(&self) -> Vec<(String, Vec<u8>)> {
+            fn walk(base: &Path, dir: &Path, out: &mut Vec<(String, Vec<u8>)>) {
+                let Ok(entries) = std::fs::read_dir(dir) else {
+                    return;
+                };
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        walk(base, &path, out);
+                    } else {
+                        let name = path.strip_prefix(base).unwrap().to_string_lossy();
+                        out.push((name.into_owned(), std::fs::read(&path).unwrap()));
+                    }
+                }
+            }
+            let mut out = Vec::new();
+            let base = self.data.join(NOTE_ASSET_DIR);
+            walk(&base, &base, &mut out);
+            out
+        }
+    }
+
+    impl Drop for Folders {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[cfg(unix)]
+    const PRIVATE_KEY: &str = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAAPLANTED\n-----END OPENSSH PRIVATE KEY-----";
+
+    #[test]
+    fn a_plain_image_is_saved_into_the_notes_folder() {
+        let folders = Folders::new();
+        let image = folders.elsewhere.join("Mock up.png");
+        std::fs::write(&image, [0x89, b'P', b'N', b'G', 1, 2, 3]).unwrap();
+        let asset =
+            save_note_image_into(&folders.data, "note-1", &image.to_string_lossy()).unwrap();
+        assert_eq!(asset.name, "Mock up.png");
+        let saved = folders.saved();
+        assert_eq!(saved.len(), 1, "{saved:?}");
+        assert_eq!(saved[0].1, [0x89, b'P', b'N', b'G', 1, 2, 3]);
+        assert!(asset
+            .markdown_path
+            .starts_with(&format!("/{NOTE_ASSET_DIR}/note-1/")));
+    }
+
+    /// Dropping `mockup.png` that is a link to a private key must not copy the key into the notes' pictures: the next
+    /// export would carry it out.
+    #[cfg(unix)]
+    #[test]
+    fn an_image_that_is_a_link_is_refused_and_its_target_never_copied() {
+        let folders = Folders::new();
+        let key = folders.elsewhere.join("id_rsa");
+        std::fs::write(&key, PRIVATE_KEY).unwrap();
+        let link = folders.elsewhere.join("mockup.png");
+        std::os::unix::fs::symlink(&key, &link).unwrap();
+
+        let result = save_note_image_into(&folders.data, "note-1", &link.to_string_lossy());
+        assert!(result.is_err(), "a link was followed: {result:?}");
+        assert_eq!(
+            folders.saved(),
+            Vec::<(String, Vec<u8>)>::new(),
+            "the key was copied into the notes' pictures"
+        );
+    }
+
+    /// A copy that finds a file already at its name fails, and the file that was there stays.
+    #[test]
+    fn a_copy_never_removes_a_file_it_did_not_create() {
+        let folders = Folders::new();
+        let taken = folders.elsewhere.join("taken.png");
+        std::fs::write(&taken, b"mine").unwrap();
+        let error = write_new_file(&taken, b"theirs").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&taken).unwrap(), b"mine");
+        // A file nobody had is written whole.
+        let fresh = folders.elsewhere.join("fresh.png");
+        write_new_file(&fresh, b"theirs").unwrap();
+        assert_eq!(std::fs::read(&fresh).unwrap(), b"theirs");
+    }
+
+    /// A pipe named `x.png` is not a picture, and reading it must not wait for a writer.
+    #[cfg(unix)]
+    #[test]
+    fn an_image_that_is_a_pipe_is_refused() {
+        let folders = Folders::new();
+        let pipe = folders.elsewhere.join("x.png");
+        let c_path = std::ffi::CString::new(pipe.to_string_lossy().as_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let data = folders.data.clone();
+        let source = pipe.to_string_lossy().into_owned();
+        std::thread::spawn(move || {
+            let _ = tx.send(save_note_image_into(&data, "note-1", &source).is_err());
+        });
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)),
+            Ok(true),
+            "a pipe was waited on or accepted"
+        );
+        assert!(folders.saved().is_empty());
+    }
+
+    /// Larger than the cap is refused, and what is refused leaves nothing behind.
+    #[test]
+    fn an_image_past_the_size_cap_is_refused_and_leaves_nothing() {
+        let folders = Folders::new();
+        let big = folders.elsewhere.join("big.png");
+        let file = std::fs::File::create(&big).unwrap();
+        file.set_len(IMAGE_MAX_BYTES + 1).unwrap();
+        drop(file);
+        let error =
+            save_note_image_into(&folders.data, "note-1", &big.to_string_lossy()).unwrap_err();
+        assert!(error.contains("too large"), "{error}");
+        assert!(folders.saved().is_empty());
     }
 
     #[test]

@@ -1,0 +1,4 @@
+# example.com/calc [example.com/calc.test]
+./calc_test.go:9:9: undefined: Sub
+FAIL	example.com/calc [build failed]
+FAIL

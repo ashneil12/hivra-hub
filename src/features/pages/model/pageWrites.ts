@@ -29,7 +29,7 @@ export function pageWriteHandlers(pageTitle: string, deps: WriteDeps = app): Bri
   return {
     "project.write": async (args) => {
       const op = typeof args.op === "string" ? args.op : "";
-      if (op !== "rename") throw new Error("A page can change a project's name. That's the one project change it makes for now.");
+      if (op !== "rename") throw new Error("A hub can change a project's name. That's the one project change it makes for now.");
       const wanted = typeof args.projectId === "string" ? args.projectId.trim() : "";
       const name = typeof args.name === "string" ? args.name.replace(/\s+/g, " ").trim() : "";
       if (!name) throw new Error("A new name can't be empty.");
@@ -41,7 +41,7 @@ export function pageWriteHandlers(pageTitle: string, deps: WriteDeps = app): Bri
       await deps.rename(project, name);
       recordPageWrite({
         by: pageTitle,
-        line: `The page “${pageTitle}” renamed ${project.name} to ${name}`,
+        line: `The hub “${pageTitle}” renamed ${project.name} to ${name}`,
         now: `Called ${project.name}`,
         after: `Called ${name}`,
         undoneText: `Undone: the project is called ${project.name} again.`,
@@ -61,7 +61,7 @@ setWriteHook(async (action, payload) => {
   const name = typeof payload.name === "string" ? payload.name : "";
   if (action === RENAME && projectId && name) {
     const project = hubData().listProjects().find((p) => p.id === projectId);
-    if (!project) throw new Error("That project isn't on the hub any more, so nothing changed.");
+    if (!project) throw new Error("That project isn't on the app any more, so nothing changed.");
     await renameProjectEverywhere(project, name);
     return;
   }

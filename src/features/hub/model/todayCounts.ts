@@ -3,14 +3,12 @@
 // (waiting.ts: stuck rows, Needs, proposals), its chats waiting on Ash (Waiting on you), its stuck workers and its Monos
 // that can't answer (the Stuck section). The baseline's Tally card said "0 needs" while Waiting on you had its question.
 import { projectKey } from "../../../shared/lib/paths";
-import { delegationRows, useDelegationsVersion } from "../../monos/model/delegationStore";
+import { delegationRows } from "../../monos/model/delegationStore";
 import { findMono, monoForSession } from "../../monos/model/mono";
-import { monoFailures, useMonoFailuresVersion, type MonoFailure } from "../../monos/model/monoFailures";
-import { stuckOwner, stuckWorkers, useStuckDismissalsVersion, type StuckWorker } from "../../monos/model/workerStuck";
+import { monoFailures, type MonoFailure } from "../../monos/model/monoFailures";
+import { stuckOwner, stuckWorkers, type StuckWorker } from "../../monos/model/workerStuck";
 import { hubData } from "./hubData";
 import { leadFor } from "./hubLeads";
-import { waitingCount } from "./waiting";
-import { useWaitingChatsVersion } from "./waitingChats";
 
 /** The hub project a Mono works for: the project it leads, else its only project. */
 export function monoProject(monoId: string | null | undefined): { id: string; name: string; shortName: string } | null {
@@ -60,17 +58,3 @@ export function stuckNeedsAsh(stuck: Pick<StuckWorker, "kind" | "row">): boolean
   return stuckOwner(stuck) === "needs-you";
 }
 
-/** Everything waiting on Ash for this project (the card and the strip badge read this one number): grey rows aren't. */
-export function attentionCount(projectId: string, now = Date.now()): number {
-  // r100 (d, B5 fc68): a failed Mono (its folder missing after a reopen) is not an ask; it stays in its own Stuck
-  // row, but the badge counts only what waits on Ash's answer, so Hivra and Nibbii no longer show a stray "1".
-  return waitingCount(projectId) + stuckWorkersFor(projectId, now).filter(stuckNeedsAsh).length;
-}
-
-/** Re-render when anything the count reads changes (the Needs and proposals have their own versions at the caller). */
-export function useAttentionVersion(): void {
-  useWaitingChatsVersion();
-  useMonoFailuresVersion();
-  useDelegationsVersion();
-  useStuckDismissalsVersion();
-}

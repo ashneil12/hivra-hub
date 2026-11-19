@@ -42,6 +42,11 @@ describe("Workers at once", () => {
     const line = () => document.querySelector("[data-project-workers-line]")?.textContent ?? "";
     expect(line()).toContain("Hivra runs up to 6 workers at once, 2 of them on heavy tests.");
     expect(line()).toContain("You can also just tell its Lead.");
+    expect(document.querySelector("[data-project-workers='workers']")?.getAttribute("aria-label")).toBe("Max builders");
+    expect(document.querySelector("[data-builder-pauses] legend")?.textContent).toContain("Pause new builders when");
+    expect(document.body.textContent).toContain("Running builders keep going.");
+    // WP-161 (#146): Max builders above is this project's own; the pauses are one setting for every project.
+    expect(document.querySelector("[data-builder-pauses]")?.textContent).toContain("These pauses apply to all projects.");
     // E7: which model the coding team starts on, and why it isn't DeepSeek yet.
     expect(document.querySelector("[data-project-model-line]")?.textContent).toContain("DeepSeek isn't set up yet");
     act(() => type(document.querySelector<HTMLInputElement>('[data-project-workers="workers"]')!, "20"));

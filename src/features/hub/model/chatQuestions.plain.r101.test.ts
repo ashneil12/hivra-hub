@@ -13,10 +13,11 @@ it("a Lead's plain question to Ash becomes an ask with its choices", () => {
   expect(q?.options).toEqual(["Decide the Stripe staging check first", "Leave all five parked"]);
 });
 
-it("not a rhetorical or mid-reply question, not for a plain coding chat, not while it works", () => {
+it("not a rhetorical or mid-reply question, not for a plain coding chat, not while the question itself is streaming", () => {
   expect(plainQuestionToAsh("Why did it fail? The key was missing.\n\nFixed it.")).toBeUndefined();
   expect(plainQuestionToAsh("Done. What changed? Only the button.")).toBeUndefined();
   expect(chatQuestion(chat(reply, false))).toBeNull();
-  expect(chatQuestion({ ...chat(reply), busy: true })).toBeNull();
+  expect(chatQuestion({ ...chat(reply), busy: true })?.question).toContain("Do you want to decide");
+  expect(chatQuestion({ busy: true, plainQuestions: true, blocks: [{ role: "assistant", text: reply, streaming: true }] })).toBeNull();
   expect(plainQuestionToAsh("All five are out.\n\nShould I ship the privacy page now?")).toBe("Should I ship the privacy page now?");
 });

@@ -1,4 +1,5 @@
 import type { BespokeSpec } from "./pageSpec";
+import { HUB_KIT_CSS, HUB_KIT_JS } from "./hubKit";
 
 /**
  * How a bespoke page is framed: an iframe with sandbox="allow-scripts" only (no same-origin, so no storage, cookies,
@@ -21,10 +22,16 @@ export function readTokens(root: Element = document.documentElement): Record<str
  * hub.block(kind, data) for bundled blocks. It also tells the host how tall the page is, so the frame fits it.
  */
 const HELPER = `(() => {
+  const NONCE = "__NONCE__";
+  // Hidden from the hub's own code, which must not learn the nonce: the host trusts only a document that knows it.
+  if (document.currentScript) document.currentScript.remove();
+  const hello = () => parent.postMessage({ type: "hub:hello", nonce: NONCE }, "*");
+  hello();
   let n = 0; const waiting = new Map(); const dataFns = []; const watches = new Map();
   window.addEventListener("message", (e) => {
     if (e.source !== parent) return;
     const m = e.data || {};
+    if (m.type === "hub:ping") hello();
     if (m.type === "hub:reply" && waiting.has(m.id)) { const w = waiting.get(m.id); waiting.delete(m.id); m.ok ? w.resolve(m.result) : w.reject(new Error(m.error)); }
     if (m.type === "hub:data") { const w = watches.get(m.watch); if (w) w.onData(m.data); dataFns.forEach((f) => f(m.data, m.call)); }
     if (m.type === "hub:watch-error") { const w = watches.get(m.watch); if (w && w.onError) w.onError(new Error(m.error)); }
@@ -35,8 +42,8 @@ const HELPER = `(() => {
   let lastHeight = 0;
   const size = () => { const h = Math.ceil(document.body ? document.body.getBoundingClientRect().height : 0); if (h && Math.abs(h - lastHeight) > 1) { lastHeight = h; parent.postMessage({ type: "hub:size", height: h }, "*"); } };
   window.addEventListener("load", () => { size(); if (window.ResizeObserver && document.body) new ResizeObserver(size).observe(document.body); });
-  // The page kit, for every built page (Critiquito 22 Oct): the app's header already shows the page's title, so the
-  // page's own first h1 is not shown twice; and a section with only its heading gets one grey line instead of a bare
+  // The hub kit, for every built hub (Critiquito 22 Oct): the app's header already shows the hub's title, so the
+  // hub's own first h1 is not shown twice; and a section with only its heading gets one grey line instead of a bare
   // heading. A section can name its line with data-empty="..."; the line goes once real content arrives.
   const HEAD = "h2,h3,h4,h5,h6,.section-title,.hub-block-title,[class*=title],[class*=heading]";
   const emptyLine = (section, head) => {
@@ -119,9 +126,15 @@ export function specKey(spec: Pick<BespokeSpec, "html" | "css" | "js">): string 
 }
 const escapeClose = (s: string, tag: string) => s.replace(new RegExp(`</${tag}`, "gi"), `<\\/${tag}`);
 
-export function bespokeSrcdoc(spec: Pick<BespokeSpec, "html" | "css" | "js">, tokens: Record<string, string>, scheme: "dark" | "light" = "dark"): string {
+/** A fresh unguessable id for one frame's document (see PageBridgeOptions.nonce). */
+export function newFrameNonce(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+export function bespokeSrcdoc(spec: Pick<BespokeSpec, "html" | "css" | "js">, tokens: Record<string, string>, scheme: "dark" | "light" = "dark", nonce = ""): string {
   const vars = Object.entries(tokens).filter(([, v]) => v && !/[;{}<>]/.test(v)).map(([k, v]) => `${k}:${v}`).join(";");
   return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${CSP}">
-<meta name="color-scheme" content="${scheme}"><style>:root{${vars};color-scheme:${scheme}}${BASE_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style><style>${KIT_CSS}</style>
-<script>${HELPER}</script></head><body>${spec.html}<script>${escapeClose(spec.js ?? "", "script")}</script></body></html>`;
+<meta name="color-scheme" content="${scheme}"><style>:root{${vars};color-scheme:${scheme}}${BASE_CSS}${HUB_KIT_CSS}</style><style>${escapeClose(spec.css ?? "", "style")}</style><style>${KIT_CSS}</style>
+<script>${HELPER.replace("__NONCE__", () => nonce.replace(/[^A-Za-z0-9-]/g, ""))}</script><script>${HUB_KIT_JS}</script></head><body>${spec.html}<script>${escapeClose(spec.js ?? "", "script")}</script></body></html>`;
 }

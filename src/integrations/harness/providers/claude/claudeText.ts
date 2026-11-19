@@ -7,6 +7,7 @@ import {
   watchChild,
   writeChild,
 } from "../../core/child";
+import { CREDENTIAL_DENY_RULES } from "../../core/credentialGuard";
 import { isAgentToolName } from "../../core/preview";
 import {
   assistantTextBlocks,
@@ -18,6 +19,8 @@ import {
   parseJsonLine,
   previewFromTool,
   resolveClaudeApiModelId,
+  SIDE_QUESTION_DENY_TOOLS,
+  SIDE_QUESTION_TOOLS,
   streamDeltaFromEvent,
   stringField,
   summarizeToolRequest,
@@ -118,12 +121,30 @@ function pickTextModel(requested?: string): string {
 }
 
 /**
+ * `args` with `tools` added to its last `--disallowedTools` list, so one deny list never replaces another. With no list
+ * to add to (the hub has registered no fence) the new one also names the saved-login rules the spawn already carries,
+ * so it holds on its own whether the CLI joins repeated lists or keeps the last.
+ */
+function withDeniedTools(args: readonly string[], tools: readonly string[]): string[] {
+  const at = args.lastIndexOf("--disallowedTools");
+  if (at < 0 || at + 1 >= args.length) return [...args, "--disallowedTools", [...CREDENTIAL_DENY_RULES, ...tools].join(",")];
+  const next = [...args];
+  next[at + 1] = [args[at + 1], ...tools].filter(Boolean).join(",");
+  return next;
+}
+
+/**
  * A call that only wants text back (a title, commit or PR text, a branch name, the room's gate: everything it needs is
- * in the prompt) starts with no tools at all. One whose answer streams into a chat ("by the way") keeps its tools. Both
- * carry the hub's fence round the Monos' home, as every Claude process the app starts does.
+ * in the prompt) starts with no tools at all. One whose answer streams into a chat ("by the way") is limited to the
+ * read tools (`--tools`, SIDE_QUESTION_TOOLS) with the ones that change things denied behind that
+ * (SIDE_QUESTION_DENY_TOOLS), the way the checker's tool list is built (hubMcp.ts checkerToolArgs). Both carry the
+ * hub's fence round the Monos' home, as every Claude process the app starts does.
  */
 export function textCallToolArgs(streams: boolean): string[] {
-  return [...(streams ? [] : ["--tools", ""]), ...claudeGuardArgs()];
+  const guard = claudeGuardArgs();
+  return streams
+    ? ["--tools", SIDE_QUESTION_TOOLS.join(","), ...withDeniedTools(guard, SIDE_QUESTION_DENY_TOOLS)]
+    : ["--tools", "", ...guard];
 }
 
 /** Stop every call still running (the app is closing, or the helpers are being reset). */

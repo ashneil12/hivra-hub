@@ -50,6 +50,10 @@ export type ModelCatalog = {
   harnesses: { id: Harness; label: string }[];
   models: CatalogModel[];
   runtimeModes: { id: RuntimeMode; label: string; hint: string }[];
+  /** Each harness's modes, named as its CLI names them (WP-175). The picker uses the chat's own harness. */
+  runtimeModesByHarness?: Partial<
+    Record<Harness, { id: RuntimeMode; label: string; hint: string; offered: boolean }[]>
+  >;
   /** Missing on desktops that predate mobile account switching. */
   accounts?: ModelAccount[];
   selectedAccounts?: Partial<Record<Harness, string>>;

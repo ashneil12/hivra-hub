@@ -7,7 +7,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChildChat } from "../model/delegationView";
 import type { Delegation } from "../model/delegations";
 import { resetSubChatFolds, subChatAttention, useSubChatFolds } from "../model/subChats";
+import { stuckOwner } from "../model/workerStuck";
 import { SubChatList } from "./SubChatList";
+
+const liveNeeds = vi.hoisted(() => ({ items: [] as { monoId?: string }[] }));
+vi.mock("../../needs/model/needsLive", () => ({
+  useNeedsYou: () => liveNeeds.items,
+}));
 
 let root: Root;
 let container: HTMLElement;
@@ -24,6 +30,7 @@ beforeEach(() => {
   root = createRoot(container);
 });
 afterEach(() => {
+  liveNeeds.items = [];
   act(() => root.unmount());
   container.remove();
   vi.unstubAllGlobals();
@@ -115,5 +122,46 @@ describe("a worker only waiting on its Lead's answer (Ash, 22 Oct: one word for 
     if (toggle.getAttribute("aria-expanded") === "true") act(() => toggle.click());
     expect(toggle.textContent).toBe("1 sub-chat · 1 waiting");
     expect(toggle.textContent).not.toContain("stuck");
+  });
+});
+
+describe("a Mono fold's Needs you count", () => {
+  function folded(owner: string, children: ChildChat[]) {
+    const attention = subChatAttention(children, NOW);
+    resetSubChatFolds();
+    act(() => root.render(createElement(SubChatList, {
+      foldKey: `mono:${owner}`, owner, children, attention, now: NOW, onOpen: vi.fn(),
+    })));
+    const toggle = container.querySelector<HTMLButtonElement>("[data-sub-chats-toggle]")!;
+    if (toggle.getAttribute("aria-expanded") === "true") act(() => toggle.click());
+    return { toggle, attention };
+  }
+
+  it("reads the one list for this Mono, and ignores a stuck worker the list does not have", () => {
+    const refused = chat("w1", NOW - 10 * 60_000, {
+      state: "failed", errorClass: "billing", error: "Billing refused", updatedAt: NOW, settledAt: NOW,
+    });
+    const quiet = folded("exo", [refused]);
+    const stuck = quiet.attention.stuck.get("w1");
+    expect(stuck).toBeDefined();
+    expect(stuckOwner(stuck!)).toBe("needs-you");
+    expect(quiet.toggle.querySelector("[data-sub-chats-needs-you]")).toBeNull();
+
+    liveNeeds.items = [{ monoId: "exo" }, { monoId: "nibbii" }];
+    const counted = folded("exo", [refused]);
+    expect(counted.toggle.querySelector("[data-sub-chats-needs-you]")!.textContent).toBe(" · 1 needs you");
+
+    const other = folded("lead-chat", [refused]);
+    expect(other.toggle.querySelector("[data-sub-chats-needs-you]")).toBeNull();
+  });
+
+  it("a team fold is keyed by the Lead's chat and still counts that Lead's items", () => {
+    localStorage.setItem("monocode:mono-roster", JSON.stringify([
+      { id: "exo", sessionId: "lead-chat", name: "EXO lead", mascot: "folder", color: "hsl(0 0% 50%)", projects: [] },
+    ]));
+    liveNeeds.items = [{ monoId: "exo" }];
+    const team = folded("lead-chat", [chat("w1", NOW)]);
+    expect(team.toggle.getAttribute("data-sub-chats-toggle")).toBe("lead-chat");
+    expect(team.toggle.querySelector("[data-sub-chats-needs-you]")!.textContent).toBe(" · 1 needs you");
   });
 });

@@ -11,16 +11,17 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { BellOff, ChevronDown, CircleAlert, Clock, Copy, ImagePlus, Loader, MoreHorizontal, Pencil, Pin, PinOff, Plus, RotateCcw, Trash2, UserGroup } from "../../shared/ui/icons";
+import { BellOff, ChevronDown, CircleAlert, Clock, Copy, ImagePlus, Loader, MoreHorizontal, Pencil, Pin, PinOff, Plus, RotateCcw, Settings, Trash2, UserGroup } from "../../shared/ui/icons";
 import { duplicateContactWithFiles, editContactProfile, setContactMuted, setContactPinned } from "../../features/monos/model/contacts";
 import { delegationActions, useDelegationRows } from "../../features/monos/model/delegationStore";
-import { childChatsByMono } from "../../features/monos/model/delegationView";
-import { needsYouCountFor, needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
+import { childChatsByMono, type ChildChat } from "../../features/monos/model/delegationView";
+import { needsYouFor, needsYouPanel } from "../../features/hub/model/needsYouRows";
 import { useNeedsYouRows } from "../../features/hub/model/useNeedsYouRows";
+import { useNeedsYou } from "../../features/needs/model/needsLive";
 import { countWork, shortSplit, useStuckDismissalsVersion, type StuckWorker, type WorkCounts } from "../../features/monos/model/workerStuck";
 import { subChatAttention, useSubChatFolds } from "../../features/monos/model/subChats";
 import { hubData, useHubDataVersion } from "../../features/hub/model/hubData";
-import { monoTeamInView, openCodingTeam, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
+import { monoTeamInView, openCodingTeam, openMonoChat, openMonoSettings, openMonoTeam, useHubSelection } from "../../features/hub/model/hubNav";
 import { teamFor, useMonoTeamsVersion, type TeamTarget } from "../../features/hub/model/monoTeams";
 import { useClock } from "../../features/monos/hooks/useStuckWorkers";
 import { failedMonoName, retryMonoFailure } from "../../features/monos/model/monoFailures";
@@ -34,6 +35,7 @@ import { MonoRailMascot } from "../../features/monos/ui/MonoRailMascot";
 import { MonoIntroCard } from "../../features/monos/ui/MonoIntro";
 import { ensureBuiltInMonos } from "../../features/hub/model/builtInMonos";
 import { RailAction } from "./RailAction";
+import { pickChief } from "../../features/home/model/chief";
 import {
   loadMonoRailCollapsed,
   saveMonoRailCollapsed,
@@ -41,6 +43,7 @@ import {
   subscribeMonoRailCollapsed,
 } from "../../features/settings/model/settings";
 import { StuckPanel } from "../../features/monos/ui/StuckPanel";
+import { monoPanelAsks } from "./monoPanelAsks";
 import { ProjectBackgroundDialog } from "../../features/projects/ui/ProjectBackgroundDialog";
 import { monoBackgroundKey } from "../../features/monos/model/monoBackground";
 import {
@@ -62,6 +65,8 @@ import {
   subscribeMonos,
   updateMono,
   monoForSession,
+  addMonoProject,
+  isProjectLeadId,
   type MonoState,
 } from "../../features/monos/model/mono";
 
@@ -73,8 +78,8 @@ export type MonoRailProps = {
   /** Replies each Mono has that the user has not looked at yet, by Mono id. */
   unseenCounts?: ReadonlyMap<string, number>;
   onOpen: (monoId: string) => void;
-  /** Creates a Mono, given these projects to start with. */
-  onCreate: (projects?: readonly string[]) => void;
+  /** Creates a Mono, given these projects to start with. With a name (the hub's "New first mate"), it is named too. */
+  onCreate: (projects?: readonly string[], profile?: { name: string; role?: string }) => void;
   onDelete: (monoId: string) => void;
   /** Deletes the Mono's 1:1 chat only (r30d): the caller asks first; the Mono, soul and memory stay. */
   onDeleteChat?: (monoId: string) => void;
@@ -107,12 +112,17 @@ export function unreadLabel(count: number): string {
  * (the hub passes its selected project; Today passes none and keeps the whole roster). The hub (`rank` set) sorts the
  * list: the default four, then every project's Lead (hubMonoRank).
  */
+/** Dropwave: Home is its own project. Its sidebar lists only the Monos that work on no project (the Chief of Staff). */
+export const HOME_MONOS = "hub:home";
+
 export function railMonos<M extends { id: string; name?: string; projects: string[]; pinned?: boolean }>(
   list: M[],
   projectFilter: string | undefined,
   rank: ((mono: M) => number) | undefined,
 ): M[] {
-  const eligible = list.filter((mono) => !projectFilter || mono.projects.includes(projectFilter));
+  const eligible = list.filter((mono) =>
+    projectFilter === HOME_MONOS ? mono.projects.length === 0 : !projectFilter || mono.projects.includes(projectFilter),
+  );
   const ordered = rank
     ? eligible.map((m, i) => ({ m, i, r: rank(m) })).sort((a, b) => a.r - b.r || a.i - b.i).map((x) => x.m)
     : eligible;
@@ -124,6 +134,14 @@ export function railMonos<M extends { id: string; name?: string; projects: strin
 }
 
 /** Open a Mono's team (monoTeams.ts): a Lead's coding team on the Lead, or a Mono's own team on its chat. */
+/**
+ * Dropwave (Ash, 11 Nov): the first mates a project could take on from the ones already made. Not the ones already on
+ * it, not the Chief of Staff (on every project already) and not another project's Lead.
+ */
+export function joinableMonos<M extends { id: string; projects: string[] }>(list: readonly M[], project: string, chiefId?: string): M[] {
+  return list.filter((mono) => !mono.projects.includes(project) && mono.id !== chiefId && !isProjectLeadId(mono.id));
+}
+
 export function openTeam(team: TeamTarget): void {
   if (team.kind === "coding") openCodingTeam(team.projectId, { lead: true });
   else openMonoTeam(team.monoId, { owner: true });
@@ -223,7 +241,8 @@ export function MonoRailSection({
   const monos = useMemo(
     () =>
       railMonos(listMonos(), projectFilter, rank).filter(
-        (mono) => !!rank || !project || monoWorksOn(mono, project),
+        // Dropwave: the Chief of Staff has its own row at the very top of the hub's sidebar, so it isn't listed again.
+        (mono) => (rank ? mono.id !== pickChief(listMonos())?.id : !project || monoWorksOn(mono, project)),
       ),
     [snapshot, projectFilter, rank, project],
   );
@@ -233,16 +252,20 @@ export function MonoRailSection({
   const collapsed = useSyncExternalStore(subscribeMonoRailCollapsed, loadMonoRailCollapsed, loadMonoRailCollapsed);
   const toggleCollapsed = () => saveMonoRailCollapsed(!collapsed);
   // "1 stuck" opens its workers beside the rail, answerable there (B6): one Mono's, or every Mono's from the folded header.
+  const [workingPick, setWorkingPick] = useState<{ anchor: HTMLElement; chats: ChildChat[] }>();
   const [stuckPanel, setStuckPanel] = useState<{ monoId?: string; anchor: HTMLElement }>();
   const toggleStuckPanel = (anchor: HTMLElement, monoId?: string) =>
     setStuckPanel((open) => (open && open.anchor === anchor ? undefined : { monoId, anchor }));
   const [menu, setMenu] = useState<{ id: string; anchor: PopoverAnchor }>();
+  // Dropwave: the project a new first mate joins. The hub names it by `projectFilter`; Home has none.
+  const addTo = rank ? (projectFilter && projectFilter !== HOME_MONOS ? projectFilter : undefined) : project;
+  const [adding, setAdding] = useState<HTMLElement>();
   const [background, setBackground] = useState<string>();
   const backgroundMono = background ? findMono(background) : undefined;
   // What each Mono has out (its workers live in its team, never listed here), read once for its line and the folded summary.
-  // "N needs you" counts the one list Being built draws its red rows from (needsYouRows.ts, Critiquito on r30: Being
-  // built showed Hivra lead two red rows while this said "1 needs you").
-  const needsYou = useNeedsYouRows();
+  // WP-210: the red number is the one Needs you list. The panel still opens the worker rows behind a stopped item.
+  const needsRows = useNeedsYouRows();
+  const needsItems = useNeedsYou();
   // r75 (blind s06, B12): a Mono's own chat waiting on Ash (a Lead that asked before starting any job) is red on its row
   // too, like Today and Being built; it opens that chat.
   useWaitingChatsVersion();
@@ -252,7 +275,7 @@ export function MonoRailSection({
     const children = childChats.get(monoId) ?? [];
     return {
       attention: subChatAttention(children, now),
-      counts: railCounts(countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now), needsYouCountFor(needsYou, monoId)),
+      counts: railCounts(countWork(children.flatMap((chat) => (chat.row ? [chat.row] : [])), now), needsItems.filter((item) => item.monoId === monoId).length),
     };
   };
   const work = new Map(monos.map((mono) => [mono.id, workOf(mono.id)] as const));
@@ -270,10 +293,11 @@ export function MonoRailSection({
   // jobs alike, so the panel's rows and header always equal the chip.
   // The folded header counts the Monos shown here, so its panel lists those Monos' rows, no more.
   const shownIds = new Set(ids);
-  const shownRows = needsYou.filter((r) => !!r.lead && shownIds.has(r.lead));
+  const shownRows = needsRows.filter((r) => !!r.lead && shownIds.has(r.lead));
   const allStuck = needsYouPanel(shownRows).workers;
-  const panel = stuckPanel ? needsYouPanel(stuckPanel.monoId ? needsYouFor(needsYou, stuckPanel.monoId) : shownRows) : undefined;
+  const panel = stuckPanel ? needsYouPanel(stuckPanel.monoId ? needsYouFor(needsRows, stuckPanel.monoId) : shownRows) : undefined;
   const panelStuck = panel?.workers ?? [];
+  const panelAsks = stuckPanel ? monoPanelAsks(needsItems, stuckPanel.monoId, shownIds) : [];
   const panelMono = stuckPanel?.monoId ? findMono(stuckPanel.monoId) : undefined;
   const menuMono = menu ? findMono(menu.id) : undefined;
   const menuTeam = rank && menuMono ? teamFor({ id: menuMono.id, name: monoLook(menuMono).name }, hubData().listProjects()) : undefined;
@@ -285,7 +309,8 @@ export function MonoRailSection({
 
   // Hub: a project with no Monos shows nothing here; its empty Leadership
   // team offers "Add a Mono" instead, so the intro card isn't doubled up.
-  if (monos.length === 0 && projectFilter) return null;
+  // Dropwave: a project keeps the heading and its "+" even with none, since first mates are the owner's to add.
+  if (monos.length === 0 && projectFilter && !(rank && addTo)) return null;
   // With no Mono yet, the card stands in for the rail's section (plain
   // Monocode only; the hub has its default team). A project with none of its
   // own offers one under the label instead.
@@ -327,7 +352,7 @@ export function MonoRailSection({
           <ChevronDown
             className={`size-3 shrink-0 transition-transform ${collapsed ? "-rotate-90" : ""}`}
           />
-          <span className="truncate">Monos</span>
+          <span className="truncate">{rank ? "First mates" : "Monos"}</span>
           {collapsed ? <span className="ml-1 text-content/35">{monos.length}</span> : null}
           {collapsed && busyText ? (
             <span className="ml-1.5 flex min-w-0 items-center gap-1 text-content/55" data-mono-rail-busy={busy.length}>
@@ -336,12 +361,15 @@ export function MonoRailSection({
             </span>
           ) : null}
         </button>
-        {monos.length ? (
+        {monos.length || rank ? (
           <button
             type="button"
-            title="New mono"
-            aria-label="New mono"
-            onClick={() => onCreate(project ? [project] : undefined)}
+            title={rank ? "New first mate" : "New mono"}
+            aria-label={rank ? "New first mate" : "New mono"}
+            aria-haspopup={rank ? "dialog" : undefined}
+            data-new-first-mate={rank ? "" : undefined}
+            // The hub asks who first (a new one, or one already made); plain MonoCode makes one straight away.
+            onClick={(event) => (rank ? setAdding(event.currentTarget) : onCreate(project ? [project] : undefined))}
             className={`grid size-5 shrink-0 place-items-center rounded-md text-content/50 hover:bg-content/8 hover:text-content${
               project ? " -mr-0.5" : ""
             }`}
@@ -408,7 +436,11 @@ export function MonoRailSection({
           project ? "" : " px-2"
         }`}
       >
-        {monos.length === 0 ? (
+        {monos.length === 0 && rank ? (
+          <p className="px-2 py-1 text-[12px] leading-4 text-content/50" data-mono-rail-empty>
+            {addTo ? "No first mates here yet. The Chief of Staff covers this project. Add one with +." : "No first mates yet. Add one with +."}
+          </p>
+        ) : monos.length === 0 ? (
           <RailAction
             label="New mono"
             icon={Plus}
@@ -468,7 +500,9 @@ export function MonoRailSection({
                 )
                   return;
                 if (sortable.consumeClick()) return;
-                onOpen(mono.id);
+                // Dropwave: in the hub every one-to-one chat opens in the same layout, the chat list beside the chat.
+                if (rank) openMonoChat(mono.id);
+                else onOpen(mono.id);
               }}
               onContextMenu={(event) => {
                 event.preventDefault();
@@ -583,11 +617,20 @@ export function MonoRailSection({
                 team={team}
                 // The work lives in its team; a Mono with none (it only briefed coding teams) opens its chat, where
                 // each brief has its line.
-                onOpen={() => (team ? openTeam(team) : onOpen(mono.id))}
+                // Ash 12 Nov: "1 working" opens that worker's chat; with several, a short list to pick from.
+                onOpen={(anchor) => {
+                  const running = (childChats.get(mono.id) ?? []).filter((chat) => chat.state === "running");
+                  if (running.length === 1)
+                    return void delegationActions()?.openChild(running[0].ownerSession, running[0].sessionId);
+                  if (running.length > 1) return setWorkingPick({ anchor, chats: running });
+                  if (team) openTeam(team);
+                  else onOpen(mono.id);
+                }}
                 onOpenStuck={(anchor) => toggleStuckPanel(anchor, mono.id)}
               />
             ) : null}
-            {(childChats.get(mono.id) ?? []).length ? (
+            {/* Dropwave: sub-chat chains show only on the Agents board, never in the hub's sidebar. */}
+            {!rank && (childChats.get(mono.id) ?? []).length ? (
               // r88 (Ash, B13): its workers' chats nest under it here too, folded under a count and opening by
               // themselves when one asks, is stuck or failed (subChats.ts); one click opens a worker's chat.
               <div data-mono-sub-chats={mono.id}>
@@ -606,12 +649,40 @@ export function MonoRailSection({
           );
         })}
       </div>
+      {workingPick ? (
+        <Popover
+          anchor={{ current: workingPick.anchor }}
+          side="bottom"
+          align="start"
+          width={260}
+          onDismiss={() => setWorkingPick(undefined)}
+          className="p-1"
+          data-working-pick
+        >
+          <p className="px-2 pb-1 pt-0.5 text-[11px] text-content/45">Open a worker's chat</p>
+          {workingPick.chats.map((chat) => (
+            <button
+              key={chat.sessionId}
+              type="button"
+              onClick={() => {
+                setWorkingPick(undefined);
+                delegationActions()?.openChild(chat.ownerSession, chat.sessionId);
+              }}
+              className="flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] text-content hover:bg-content/10"
+            >
+              <Loader aria-hidden className="size-3.5 shrink-0 animate-spin text-content/45 motion-reduce:animate-none" strokeWidth={1.75} />
+              <span className="min-w-0 truncate">{chat.title || "Worker"}</span>
+            </button>
+          ))}
+        </Popover>
+      ) : null}
       {stuckPanel ? (
         <StuckPanel
           anchor={stuckPanel.anchor}
           title={panelMono ? monoLook(panelMono).name : "Monos"}
           stuck={panelStuck}
           jobs={panel?.jobs}
+          asks={panelAsks}
           now={now}
           showLead={!stuckPanel.monoId}
           onClose={() => setStuckPanel(undefined)}
@@ -646,6 +717,9 @@ export function MonoRailSection({
           onClose={() => setMenu(undefined)}
         />
       ) : null}
+      {adding ? (
+        <NewFirstMatePanel anchor={adding} project={addTo} onCreate={onCreate} onClose={() => setAdding(undefined)} />
+      ) : null}
       {backgroundMono ? (
         <ProjectBackgroundDialog
           project={monoBackgroundKey(backgroundMono.id)}
@@ -655,6 +729,96 @@ export function MonoRailSection({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * Dropwave (Ash, 11 Nov): the "+" beside First mates. A new first mate gets its name (and what it looks after) here
+ * and joins the project in view; or one made earlier is added to this project. A project starts with only the Chief
+ * of Staff, so who else is on it is the owner's choice.
+ */
+function NewFirstMatePanel({
+  anchor,
+  project,
+  onCreate,
+  onClose,
+}: {
+  anchor: HTMLElement;
+  /** The project in view. None on a screen that belongs to no project: the new first mate starts on none. */
+  project: string | undefined;
+  onCreate: MonoRailProps["onCreate"];
+  onClose: () => void;
+}) {
+  useSyncExternalStore(subscribeMonos, monosSnapshot);
+  const [name, setName] = useState("");
+  const [role, setRole] = useState("");
+  const others = project ? joinableMonos(listMonos(), project, pickChief(listMonos())?.id) : [];
+  const field =
+    "w-full rounded-lg border border-content/10 bg-content/5 px-2.5 py-1.5 text-[13px] text-content outline-none ring-accent/40 placeholder:text-content/45 focus:ring-1";
+  return (
+    <Popover
+      anchor={anchor}
+      side="right"
+      align="start"
+      gap={4}
+      width={280}
+      constrainHeight={false}
+      onDismiss={onClose}
+      role="dialog"
+      aria-label="New first mate"
+      className="p-3"
+    >
+      <form
+        data-new-first-mate-form
+        className="flex flex-col gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          const named = name.trim();
+          if (!named) return;
+          onCreate(project ? [project] : undefined, { name: named, ...(role.trim() ? { role: role.trim() } : {}) });
+          onClose();
+        }}
+      >
+        <span className="text-[13px] font-medium text-content">New first mate</span>
+        <input autoFocus value={name} maxLength={40} placeholder="Name" aria-label="First mate's name" onChange={(event) => setName(event.target.value)} className={field} />
+        <input value={role} maxLength={40} placeholder="What it looks after (optional)" aria-label="What it looks after" onChange={(event) => setRole(event.target.value)} className={field} />
+        <button
+          type="submit"
+          disabled={!name.trim()}
+          className="h-7 self-start rounded-md bg-accent px-2.5 text-[12px] font-medium leading-none text-black disabled:opacity-40"
+        >
+          Create
+        </button>
+      </form>
+      {project && others.length ? (
+        <>
+          <div role="separator" className="my-2.5 h-px bg-content/10" />
+          <span className="px-0.5 text-[12px] text-content/50">Or add one you already have</span>
+          <ul className="mt-1 flex max-h-48 flex-col gap-px overflow-y-auto" data-new-first-mate-existing>
+            {others.map((mono) => {
+              const look = monoLook(mono);
+              return (
+                <li key={mono.id}>
+                  <button
+                    type="button"
+                    data-add-first-mate={mono.id}
+                    onClick={() => {
+                      addMonoProject(mono.id, project);
+                      onClose();
+                    }}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-[13px] text-content/85 hover:bg-content/8"
+                  >
+                    <MonoRailMascot name={look.mascot} color={look.color} status="idle" className="size-4 shrink-0" />
+                    <span className="min-w-0 shrink-0 truncate">{look.name}</span>
+                    {look.role ? <span className="min-w-0 flex-1 truncate text-[11px] text-content/45">{look.role}</span> : null}
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </>
+      ) : null}
+    </Popover>
   );
 }
 
@@ -702,7 +866,7 @@ function MonoWorkLine({
   counts: WorkCounts;
   stuck: readonly StuckWorker[];
   team?: TeamTarget;
-  onOpen: () => void;
+  onOpen: (anchor: HTMLElement) => void;
   /** "1 stuck" opens its stuck workers beside the rail, each answerable there (B6). */
   onOpenStuck: (anchor: HTMLElement) => void;
 }) {
@@ -726,7 +890,7 @@ function MonoWorkLine({
           type="button"
           title={[railSplit(counts), team ? `Open ${team.name}` : `Open ${name}`].filter(Boolean).join("\n")}
           aria-label={`${railSplit(counts) ?? short.text}. Open ${team ? team.name : name}`}
-          onClick={onOpen}
+          onClick={(event) => onOpen(event.currentTarget)}
           className={`flex min-w-0 cursor-default items-center gap-1.5 rounded-md px-1.5 text-left hover:bg-content/6 hover:text-content${
             short.stuck ? " shrink" : " flex-1"
           }`}
@@ -1034,6 +1198,20 @@ function MonoMenu({
       >
         <Pencil className="size-3.5 shrink-0" strokeWidth={1.75} />
         Edit profile
+      </button>
+      <button
+        type="button"
+        role="menuitem"
+        data-mono-menu-settings
+        onClick={() => {
+          commitName();
+          onClose();
+          openMonoSettings(monoId);
+        }}
+        className={itemClass}
+      >
+        <Settings className="size-3.5 shrink-0" strokeWidth={1.75} />
+        Settings and model
       </button>
       {team ? (
         <button
