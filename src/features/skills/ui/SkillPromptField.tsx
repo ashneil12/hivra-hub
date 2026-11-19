@@ -20,6 +20,7 @@ import {
   type SlashToken,
 } from "../model/skills";
 import { isImeComposition } from "../../../shared/lib/keyboard";
+import { stripHiddenCharacters } from "../../sessions/model/hiddenText";
 import { SkillPicker } from "./SkillPicker";
 import { Popover } from "../../../shared/ui/Popover";
 import { useComposerSkills } from "../../sessions/ui/useComposerSkills";
@@ -191,6 +192,16 @@ export function SkillPromptField({ value, harness, cwd, onChange }: Props) {
         onBlur={() => setSlash(null)}
         onChange={(event) => {
           const field = event.currentTarget;
+          // A prompt pasted from the web is the classic carrier of a hidden, persistent instruction.
+          const typed = field.value;
+          const visible = stripHiddenCharacters(typed);
+          if (visible.removed > 0) {
+            const caret = stripHiddenCharacters(
+              typed.slice(0, field.selectionStart ?? typed.length),
+            ).text.length;
+            field.value = visible.text;
+            field.setSelectionRange(caret, caret);
+          }
           resizeComposer(field, Number.POSITIVE_INFINITY);
           onChange(field.value);
           syncSlashToken(field);

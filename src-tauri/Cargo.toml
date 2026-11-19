@@ -41,6 +41,8 @@ tar = "0.4"
 flate2 = "1"
 regex = "1"
 unicode-normalization = "0.1"
+# WP-92: a secret's value is cleared from memory when it drops (`secrets::SecretValue`).
+zeroize = "1"
 uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 tauri-plugin-dialog = "2"
@@ -63,7 +65,7 @@ keyring = { version = "3.6", default-features = false, features = ["windows-nati
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = "2"
 portable-pty = { version = "0.9", path = "../vendor/portable-pty" }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Power"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_LibraryLoader", "Win32_System_Diagnostics_ToolHelp", "Win32_System_Power", "Win32_System_SystemInformation", "Win32_System_Time"] }
 tauri-winrt-notification = "0.8"
 # WinRT toast settings (Windows.UI.Notifications) to read the per-app block.
 windows = { version = "0.62", features = ["UI_Notifications"] }
@@ -72,6 +74,8 @@ windows = { version = "0.62", features = ["UI_Notifications"] }
 keyring = { version = "3.6", default-features = false, features = ["apple-native"] }
 tauri = { version = "2", features = ["tray-icon"] }
 block2 = "0.6.2"
+core-foundation = "0.10"
+security-framework = "3"
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-app-kit = { version = "0.3", features = ["NSAlert", "NSApplication", "NSAttributedString", "NSBezierPath", "NSButton", "NSColor", "NSControl", "NSDockTile", "NSEvent", "NSGraphics", "NSImage", "NSLayoutAnchor", "NSLayoutConstraint", "NSMenu", "NSMenuItem", "NSPanel", "NSPasteboard", "NSPasteboardItem", "NSResponder", "NSRunningApplication", "NSUserInterfaceItemIdentification", "NSView", "NSVisualEffectView", "NSWindow", "block2", "objc2-core-foundation"] }
 objc2-foundation = { version = "0.3", features = ["NSAttributedString", "NSDictionary", "NSGeometry", "NSError", "NSPathUtilities", "NSString"] }
@@ -89,3 +93,8 @@ tauri-plugin-updater = "2"
 
 [target.'cfg(any(target_os = "macos", windows, target_os = "linux"))'.dependencies]
 tauri-plugin-window-state = "2.4.1"
+
+[dev-dependencies]
+# SC-6: property tests on the core rules (MIT OR Apache-2.0).
+proptest = { version = "1", default-features = false, features = ["std", "bit-set"] }
+proptest-state-machine = "0.3"

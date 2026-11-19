@@ -5,7 +5,7 @@
 // Row-Bot Contributors): judge() and its opening/defect/retraction rules are kept line for line, with the store,
 // episode and signal parts left out because Hivra judges one turn at a time. What changed: the rules are JavaScript,
 // the "<row_bot_turn_context" cut stays, and Hivra adds a fact detector beside it (remember that, from now on,
-// always, never) that Row-Bot does not have.
+// always, never) that Row-Bot does not have. The licence text is LICENSE.row-bot beside this file.
 //
 // False facts are worse than missed ones, so every rule here is conservative: thanks, agreement, questions and
 // retractions never count, and a correction is only believed when the opening says the reply was wrong.
@@ -237,6 +237,19 @@ export function ruleProposal(turn: { user?: string; assistant?: string }): RuleP
   const evidence = correctionEvidence(user);
   if (!text || !evidence || mentionsSecret(evidence)) return { kind: "none" };
   return { kind: "add", text, evidence };
+}
+
+/**
+ * WP-240: only the explicit signal ("remember that …", "remember: …", "from now on …", "always …", "never …") in the
+ * person's own words, or none. This is the path that saves at once, as confirmed; everything else waits for the batch.
+ */
+export function explicitProposal(user: string): RuleProposal {
+  if (typeof user !== "string" || !user.trim()) return { kind: "none" };
+  for (const sentence of ownSentences(user)) {
+    const fact = explicitFact(sentence);
+    if (fact) return { kind: "add", text: fact, evidence: normalizeFact(sentence) };
+  }
+  return { kind: "none" };
 }
 
 /**

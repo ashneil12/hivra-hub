@@ -68,3 +68,62 @@ it("dismisses on Escape without changing permissions", () => {
   expect(onChange).not.toHaveBeenCalled();
   expect(onClose).toHaveBeenCalledOnce();
 });
+
+it("offers fx only with Full access, and names its Supervised for what fx does (WP-175 4.2)", () => {
+  act(() => root.unmount());
+  root = createRoot(container);
+  act(() =>
+    root.render(
+      createElement(QuickPermissions, {
+        value: "supervised",
+        harness: "fx",
+        onChange,
+        onClose,
+      }),
+    ),
+  );
+  const options = container.querySelectorAll<HTMLButtonElement>('[role="option"]');
+  expect(options).toHaveLength(1);
+  expect(options[0].textContent).toContain("Full access");
+  expect(container.textContent).not.toContain("Supervised");
+});
+
+it("names Antigravity's Auto for what it runs (WP-175 4.3)", () => {
+  act(() => root.unmount());
+  root = createRoot(container);
+  act(() =>
+    root.render(
+      createElement(QuickPermissions, {
+        value: "auto",
+        harness: "antigravity",
+        onChange,
+        onClose,
+      }),
+    ),
+  );
+  const options = container.querySelectorAll<HTMLButtonElement>('[role="option"]');
+  expect(options).toHaveLength(4);
+  expect(options[2].textContent).toContain("Default (no AI review)");
+  expect(options[2].textContent).not.toMatch(/\bAuto\b/);
+});
+
+it("Enter on fx's Supervised, which fx does not offer, picks nothing (WP-175 LOW 10)", () => {
+  act(() => root.unmount());
+  root = createRoot(container);
+  act(() =>
+    root.render(
+      createElement(QuickPermissions, {
+        value: "supervised",
+        harness: "fx",
+        onChange,
+        onClose,
+      }),
+    ),
+  );
+  const menu = container.querySelector('[role="listbox"]')!;
+  act(() =>
+    menu.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })),
+  );
+  expect(onChange).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+});

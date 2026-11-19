@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { Catalog } from "./resolve";
 import type { CrewRule } from "./rules";
 import {
+  describeInForce,
   crewRuleSentence,
   inForceSentence,
   planWorkerChoice,
@@ -197,5 +198,23 @@ describe("the line in force", () => {
     expect(scopeClearLine("mono")).toBe("Cleared the Mono's worker default.");
     expect(scopeClearLine("project")).toBe("Cleared this project's worker default.");
     expect(scopeClearLine("system")).toBe("Cleared the default for every worker.");
+  });
+});
+
+// WP-141 LOW 9 (L9): the in-force sentence names the lock and Never use when either is on.
+describe("the in-force sentence names the lock and Never use", () => {
+  it("says Always use my default is on, and which CLIs are on Never use", () => {
+    const sentence = describeInForce({
+      catalog: {},
+      policy: { lockDefault: true, neverUse: ["grok", "codex"] },
+    }).sentence;
+    expect(sentence).toContain("Always use my default is on");
+    expect(sentence).toContain("Never use: Grok and Codex.");
+  });
+
+  it("says nothing about the lock or Never use when neither is set", () => {
+    const sentence = describeInForce({ catalog: {}, policy: { lockDefault: false, neverUse: [] } }).sentence;
+    expect(sentence).not.toContain("Always use my default");
+    expect(sentence).not.toContain("Never use");
   });
 });

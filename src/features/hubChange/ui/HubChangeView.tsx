@@ -19,9 +19,9 @@ const btn = "rounded-md px-3 py-1.5 text-[12px] transition-colors";
 const quietBtn = `${btn} text-content/70 hover:bg-surface-raised hover:text-content`;
 const primaryBtn = `${btn} bg-content/12 text-content hover:bg-content/18`;
 const PLACEHOLDER: Record<ChangeFlow, string> = {
-  hub: "Ask for a change to the hub, like “put Hivra first in the sidebar”…",
-  today: "Ask for a change to Today, like “put my sign-ups page on Today”…",
-  connect: "Say what to connect, like “hook the EXO page up to our bug tracker”…",
+  hub: "Ask for a change to the app, like “put Hivra first in the sidebar”…",
+  today: "Ask for a change to Today, like “put my sign-ups hub on Today”…",
+  connect: "Say what to connect, like “hook the EXO hub up to our bug tracker”…",
 };
 function Side({ side }: { side: ChangeSide }) {
   if (side.image) return <img src={side.image} alt="" className="w-full rounded-lg ring-1 ring-surface-ring" />;
@@ -38,7 +38,7 @@ function Side({ side }: { side: ChangeSide }) {
 }
 
 /** The Not connected yet card says only this, with Back. */
-export const NOT_ON_COPY = "This isn't switched on yet. Once it is, you'll see your hub next to the preview.";
+export const NOT_ON_COPY = "This isn't switched on yet. Once it is, you'll see your app next to the preview.";
 
 const STATE_WORD: Record<HubChangeRecord["state"], string> = { preview: "Preview", applied: "Applied", undone: "Undone", discarded: "Thrown away" };
 
@@ -223,7 +223,7 @@ export function HubChangeContent({ flow, projectId }: { flow: ChangeFlow; projec
             </div>
           </div>
           <div className="mt-5 flex items-center gap-3 rounded-xl border border-dashed border-content/20 bg-background-base/90 px-5 py-3">
-            <span className="text-[12px] text-content/70">This is a preview build. Your live hub hasn't changed.</span>
+            <span className="text-[12px] text-content/70">This is a preview build. Your live app hasn't changed.</span>
             <span className="ml-auto" />
             <button type="button" className={quietBtn} onClick={() => { settleTodayChatPreview(r.preview.previewId); void discardChange(r.preview); setState(undefined); }}>Discard</button>
             <button type="button" className={primaryBtn} data-hub-change-apply onClick={() => void applyChange(flow, r.preview).then((done) => { if (done.status === "applied") settleTodayChatPreview(r.preview.previewId); setState(done.status === "applied" ? { ...state, applied: true } : { ...state, result: done }); })}>Apply</button>

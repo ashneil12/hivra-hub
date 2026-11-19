@@ -2,7 +2,7 @@
 // skills and engine. A Mono that isn't seated waits for Ash's OK and is never seated automatically.
 import { useSyncExternalStore } from "react";
 import { readAgentFile, writeAgentFile, type AgentFilePath } from "../../monos/model/monoFiles";
-import { addMono, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
+import { addMono, adoptMonoChats, cardNames, engineFieldsOf, findMono, listMonos, updateMono, type MonoEngine } from "../../monos/model/mono";
 import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 import { ROLE_NAMES } from "./roleNames";
@@ -34,6 +34,16 @@ export type SetupSoul = {
   topics?: Record<string, string>;
   /** WP-89: what its workers run on. Import only adds: a seated Mono that already has one keeps it. */
   workerDefault?: WorkerPick;
+  /** WP-182: fast mode for its own chat. Import only adds: a boolean already set here stays. */
+  engineFast?: boolean;
+  /** WP-182: skill names it is offered. Not the SOUL.md list. Import only adds names. */
+  offeredSkills?: string[];
+  /** WP-182: slash command names it is offered. Import only adds names. */
+  commands?: string[];
+  /** G1: its further chats, by chat id. Import only adds: a chat another Mono here holds is never taken. */
+  chats?: string[];
+  /** G1: its own chat in each project, by project id. A project that has its chat here already keeps it. */
+  projectSessions?: Record<string, string>;
 };
 
 function roster(): { id: string; name?: string; mascot?: string }[] {
@@ -168,6 +178,8 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
   const soul = readWaiting().find((s) => s.monoId === monoId);
   if (!soul) return [];
   const workerDefault = cleanStoredDefault(soul.workerDefault);
+  const offeredSkills = cardNames(soul.offeredSkills);
+  const commands = cardNames(soul.commands);
   if (!isSeated(monoId)) {
     addMono({
       id: soul.monoId,
@@ -179,40 +191,69 @@ export async function seatWaitingSoul(monoId: string, write: Writer = writeAgent
       projects: folders ?? soul.projects ?? [],
       ...engineFieldsOf(soul.engine),
       ...(workerDefault ? { workerDefault } : {}),
+      ...(typeof soul.engineFast === "boolean" ? { engineFast: soul.engineFast } : {}),
+      ...(offeredSkills ? { skills: offeredSkills } : {}),
+      ...(commands ? { commands } : {}),
     });
-  } else if (workerDefault && !findMono(monoId)?.workerDefault) {
-    // Seated while this was waiting, with no default of its own: add the file's. One already set stays.
-    updateMono(monoId, (m) => (m.workerDefault ? m : { ...m, workerDefault }));
+  } else {
+    // Seated while this was waiting. Import only adds: a value already set here stays, and skill names are unioned.
+    const current = findMono(monoId);
+    const skills = cardNames([...(current?.skills ?? []), ...(offeredSkills ?? [])]);
+    const commandNames = cardNames([...(current?.commands ?? []), ...(commands ?? [])]);
+    const addWorker = Boolean(workerDefault && !current?.workerDefault);
+    const addFast = typeof current?.engineFast !== "boolean" && typeof soul.engineFast === "boolean";
+    if (addWorker || addFast || skills || commandNames) {
+      updateMono(monoId, (m) => ({
+        ...m,
+        ...(addWorker ? { workerDefault } : {}),
+        ...(addFast ? { engineFast: soul.engineFast } : {}),
+        ...(skills ? { skills } : {}),
+        ...(commandNames ? { commands: commandNames } : {}),
+      }));
+    }
   }
+  adoptMonoChats(monoId, soul);
   const { problems } = await writeSoulFiles(monoId, soulFiles(soul), { write, read });
   if (!problems.length) saveWaiting(readWaiting().filter((s) => s.monoId !== monoId));
   return problems;
 }
 
 /**
- * For a Mono that is already seated here: adds the file's projects it lacks, its engine when it has none, and the
- * file's soul files that are missing (all of them with `replace`). Nothing of its own is overwritten otherwise.
+ * For a Mono that is already seated here: its engine when it has none, and the file's soul files that are missing (all
+ * of them with `replace`), and with `projects` the file's projects it lacks. Nothing of its own is overwritten otherwise.
  */
 export async function mergeIntoSeated(
   soul: SetupSoul,
   {
     replace = false,
+    projects = false,
     write,
     read,
     stale,
-  }: { replace?: boolean; write?: Writer; read?: Read; stale?: (path: AgentFilePath, current: string) => Promise<boolean> } = {},
+  }: { replace?: boolean; /** Also add the file's projects it lacks. Off unless asked: a folder on a Mono is where it may start sessions and actions. */ projects?: boolean; write?: Writer; read?: Read; stale?: (path: AgentFilePath, current: string) => Promise<boolean> } = {},
 ): Promise<SoulFilesResult> {
   const mono = findMono(soul.monoId);
   if (!mono) return { written: [], kept: [], problems: [] };
   const engine = engineFieldsOf(soul.engine);
   const workerDefault = cleanStoredDefault(soul.workerDefault);
-  updateMono(mono.id, (m) => ({
-    ...m,
-    projects: [...m.projects, ...(soul.projects ?? [])],
-    ...(engine.engine && (!m.engine || replace) ? engine : {}),
-    ...(soul.roleLabel !== undefined && (m.role === undefined || replace) ? { role: soul.roleLabel } : {}),
-    ...(workerDefault && (!m.workerDefault || replace) ? { workerDefault } : {}),
-  }));
+  const offeredSkills = cardNames(soul.offeredSkills);
+  const commandNames = cardNames(soul.commands);
+  updateMono(mono.id, (m) => {
+    const skills = cardNames([...(m.skills ?? []), ...(offeredSkills ?? [])]);
+    const commands = cardNames([...(m.commands ?? []), ...(commandNames ?? [])]);
+    return {
+      ...m,
+      ...(projects ? { projects: [...m.projects, ...(soul.projects ?? [])] } : {}),
+      ...(engine.engine && (!m.engine || replace) ? engine : {}),
+      ...(soul.roleLabel !== undefined && (m.role === undefined || replace) ? { role: soul.roleLabel } : {}),
+      ...(workerDefault && (!m.workerDefault || replace) ? { workerDefault } : {}),
+      // WP-182: import only adds. A fast flag or a name already here is not replaced.
+      ...(typeof m.engineFast !== "boolean" && typeof soul.engineFast === "boolean" ? { engineFast: soul.engineFast } : {}),
+      ...(skills ? { skills } : {}),
+      ...(commands ? { commands } : {}),
+    };
+  });
+  adoptMonoChats(mono.id, soul);
   return writeSoulFiles(mono.id, soulFiles(soul), { replace, ...(write ? { write } : {}), ...(read ? { read } : {}), ...(stale ? { stale } : {}) });
 }
 /** Not now: drops the waiting soul; nothing was seated or written. */

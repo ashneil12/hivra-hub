@@ -7,6 +7,7 @@ import {
   CLASSIC_LAYOUT_HIDDEN_SETTINGS,
   INSET_LAYOUT_HIDDEN_SETTINGS,
   SETTINGS_INDEX,
+  SETTINGS_SECTIONS,
   settingsSectionsByGroup,
   MODEL_CONTROLS_DEFAULT,
   DIFF_VIEWER_DEFAULT,
@@ -702,43 +703,36 @@ describe("collapsed project rail setting", () => {
 describe("settings navigation", () => {
   it("lists every section under exactly one rail group", () => {
     const groups = settingsSectionsByGroup();
-    expect(groups.map((group) => group.label)).toEqual([
-      "App",
-      "Agents",
-      "Workspace",
+    // Dropwave (Ash, 11 Nov: "the settings area is an absolute mess"): short lists, the rarely needed ones last. Who
+    // works for you ("Your team", with First mates by that name) is apart from what they can use.
+    expect(groups.map((group) => group.label)).toEqual(["App", "Your team", "What they can use", "What happened", "Your data", "Advanced"]);
+    expect(groups.flatMap((g) => g.sections).find((s) => s.id === "monos")?.label).toBe("First mates");
+    expect(groups.filter((group) => group.folded).map((group) => group.label)).toEqual(["Advanced"]);
+    expect(groups.map((group) => group.sections.map((s) => s.id))).toEqual([
+      ["general", "appearance", "keybindings", "usage"],
+      ["monos", "teams", "chat"],
+      ["providers", "skills", "connectors", "connected", "memory"],
+      ["decisions", "activity", "work-log", "changes", "history"],
+      // WP-92: the key vault.
+      ["portable", "backups", "secrets"],
+      ["connections", "mcp", "plugins", "crew", "inbox", "dashboards", "archive", "trash", "worktrees"],
     ]);
-    expect(groups.flatMap((group) => group.sections.map((s) => s.id))).toEqual([
-      "general",
-      "connections",
-      "appearance",
-      "changes",
-      "decisions",
-      "activity",
-      "usage",
-      "connected",
-      "dashboards",
-      "portable",
-      "backups",
-      "history",
-      "memory",
-      "connectors",
-      "keybindings",
-      "chat",
-      "providers",
-      "mcp",
-      "skills",
-      "plugins",
-      "crew",
-      "monos",
-      "teams",
-      "inbox",
-      "archive",
-      "trash",
-      "worktrees",
-    ]);
+    // Every section is in the order list of its own group, once.
+    expect(groups.flatMap((group) => group.sections).length).toBe(SETTINGS_SECTIONS.length);
     // SSH machines are "Remote machines"; app logins live under Connectors.
     expect(groups.flatMap((g) => g.sections).find((s) => s.id === "connections")?.label).toBe("Remote machines");
     expect(groups.flatMap((g) => g.sections).find((s) => s.id === "activity")?.label).toBe("Activity");
+  });
+
+  it("PT-2: finds Proof tools in Crew, by its name and by the tools it lists", () => {
+    const entry = SETTINGS_INDEX.find((item) => item.id === "proof-tools");
+    expect(entry).toMatchObject({ section: "crew", label: "Proof tools" });
+    for (const query of ["proof tools", "fast-check", "mutation", "playwright"]) {
+      expect(
+        searchSettings(query, 20).some((result) => result.settingId === "proof-tools" && result.section === "crew"),
+        query,
+      ).toBe(true);
+    }
   });
 
   it("points every indexed setting at a real section", () => {
@@ -790,7 +784,7 @@ describe("settings search", () => {
       settingId: "chat-list-inbox",
       label: "Settle and snooze",
     });
-    expect(searchSettings("finished")[0]).toMatchObject({
+    expect(searchSettings("finished chats")[0]).toMatchObject({
       section: "chat",
       settingId: "chat-list-inbox",
     });
@@ -811,11 +805,35 @@ describe("settings search", () => {
     });
   });
 
+  it("finds the connections card on the providers page", () => {
+    expect(searchSettings("extra connection")[0]).toMatchObject({
+      section: "providers",
+      settingId: "model-connections",
+      label: "Connections",
+    });
+  });
+
+  it("finds the short text setting on the providers page", () => {
+    expect(searchSettings("short text")[0]).toMatchObject({
+      section: "providers",
+      settingId: "text-generation",
+      label: "Short text",
+    });
+  });
+
   it("finds the new chat worktree setting on the worktrees page", () => {
     expect(searchSettings("every chat")[0]).toMatchObject({
       section: "worktrees",
       settingId: "new-chat-worktree",
       label: "New chats and worktrees",
+    });
+  });
+
+  it("finds the switch for clearing finished worktrees' build output", () => {
+    expect(searchSettings("build output")[0]).toMatchObject({
+      section: "worktrees",
+      settingId: "worktree-autoclear",
+      label: "Clear build output of finished worktrees",
     });
   });
 

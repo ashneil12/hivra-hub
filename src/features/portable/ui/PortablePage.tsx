@@ -38,7 +38,7 @@ function size(bytes: number): string {
 function summary(report: ExportReport): string {
   const c = report.counts as Record<string, number>;
   const parts: [number | undefined, string][] = [
-    [c.projects, "project"], [c.monos, "Mono"], [c.teams, "team"], [c.connectors, "connector"], [c.pages, "Page"],
+    [c.projects, "project"], [c.monos, "Mono"], [c.teams, "team"], [c.connectors, "connector"], [c.pages, "Hub"],
     [c.settings, "setting"], [c.memoryProjects, "memory folder"], [c.sessions, "chat"], [c.notes, "note"], [c.automations, "automation"],
   ];
   return parts.filter(([n]) => typeof n === "number" && n > 0).map(([n, w]) => `${n} ${w}${n === 1 ? "" : "s"}`).join(", ");
@@ -127,7 +127,7 @@ export function PortablePage() {
         <p className="px-3 pb-2 text-[13px] leading-5 text-content/60">
           Your whole setup in one file or a folder: use it on another Mac or with another coding engine, or keep it as a backup. Passwords, keys and logins never go in; anything that looks like one is scrubbed.
         </p>
-        <Choice testId="setup" on disabled title="Setup" sub="Projects, Monos with their souls, habits, skills and engines, teams, connectors (only where each login lives), Pages, settings and themes." />
+        <Choice testId="setup" on disabled title="Setup" sub="Projects, Monos with their souls, habits, skills and engines, teams, connectors (only where each login lives), Hubs, settings and themes." />
         <Choice testId="memory" on={memory} onClick={() => setMemory((v) => !v)} title="Memory"
           sub={info?.memory.length ? forYou`Ash OS project memory from ${info.memoryRoot}, and each Mono's own memory.` : info ? `No project memory found in ${info.memoryRoot || "this copy"}; each Mono's own memory still can go.` : forYou("Ash OS project memory, and each Mono's own memory.")} />
         {memory ? (

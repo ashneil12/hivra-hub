@@ -126,6 +126,19 @@ afterEach(async () => {
 });
 
 describe("settings pages", () => {
+  it("says exactly what quiet hours hold and what they let through", async () => {
+    await render("general");
+    const row = container.querySelector<HTMLElement>('[data-setting-id="quiet-hours"]');
+    expect(row).not.toBeNull();
+    const words = row!.textContent ?? "";
+    expect(words).toContain(
+      "Finished-agent banners wait until the window ends, then arrive as one notice.",
+    );
+    expect(words).toContain("Failed turns, failed checks, approvals and questions come through");
+    // only a finished-agent banner is kept: the old line promised every routine banner and sound
+    expect(words).not.toContain("Routine banners");
+  });
+
   it("shows which build this is in the footer of every page, only inside the app", async () => {
     await render("general");
     expect(container.querySelector("[data-build-stamp]")).toBeNull();
@@ -682,7 +695,7 @@ describe("settings pages", () => {
 
   it("gives every section a rail group", () => {
     const groups = new Set(SETTINGS_SECTIONS.map((section) => section.group));
-    expect([...groups]).toEqual(["app", "agents", "workspace"]);
+    expect([...groups].sort()).toEqual(["agents", "app", "data", "record", "tools", "workspace"]);
   });
 
   it("asks what the team should call you, reading and writing the onboarding name", async () => {

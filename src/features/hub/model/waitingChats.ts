@@ -36,6 +36,9 @@ import { hubData } from "./hubData";
 import { asksHowThingsStand } from "./statusAsk";
 import { leadFor } from "./hubLeads";
 import { forUser, forYou } from "./userName";
+import { questionVeto, UNREADABLE_REASON } from "../../autopilot/model/reviewerRules";
+import { captainDecide, type CaptainRule, type NamedAnswer } from "../../chief/model/captain";
+import { isPersonOnlyDecisionKey } from "./decisionKey";
 
 /** One chat waiting on Ash, as stored. */
 export type WaitingEntry = ChatQuestion & {
@@ -109,7 +112,7 @@ export type GateRecord = {
    * r80: what Ash actually answered, once he has: his own words when he typed them (they win over the agent's `pick`,
    * which is only its recommendation), the pick when he took it. Read this, never `pick`, for what was decided.
    */
-  answer?: { words: string; by: "words" | "pick"; at: number };
+  answer?: { words: string; by: "words" | "pick"; at: number; who?: string };
 };
 
 let entries: Record<string, WaitingEntry> | undefined;
@@ -429,7 +432,7 @@ async function answer(
   chat: WaitingChat,
   live: { reply: UserQuestionReply; words: string } | undefined,
   message: string,
-  given: { words: string; by: "words" | "pick" },
+  given: { words: string; by: "words" | "pick"; who?: string },
 ): Promise<TakeResult> {
   const h = host;
   if (!h) return { ok: false, reason: "The app isn't ready to answer yet. Open the chat instead." };
@@ -447,18 +450,153 @@ async function answer(
   return { ok: true, sent: message, chatName: chat.chatName };
 }
 
+export type CaptainDoorContext = {
+  decisionKey?: string;
+  /** The Chief of Staff mono. A blank, a person, or a page is not used. */
+  monoId?: string;
+  rules?: readonly CaptainRule[];
+  standing?: NamedAnswer | null;
+  learned?: NamedAnswer | null;
+  moneyOverLimit?: boolean;
+  turns?: readonly number[];
+  pendingSince?: number;
+  now?: number;
+  /** Step 5 only when this is true. A missing flag is not a confident pick. */
+  confident?: boolean;
+};
+
+/** The app, or a test, supplies standing answers and owner keys. Absent does not mark a pick confident. */
+let captainDoor: ((chat: WaitingChat) => CaptainDoorContext) | null = null;
+
+export function setCaptainDoor(next: typeof captainDoor): () => void {
+  captainDoor = next;
+  return () => {
+    if (captainDoor === next) captainDoor = null;
+  };
+}
+
+/** A captain is `captain:<mono id>`. A person, a page, or an empty id is not one. "pager" is a mono id, not a page. */
+function captainMonoId(raw: unknown): string {
+  if (typeof raw !== "string") return "chief";
+  const id = raw.trim();
+  const folded = id.toLowerCase();
+  const page = folded === "page" || folded.startsWith("page:") || folded.startsWith("page/");
+  if (!id || folded === "user" || folded === "person" || page || id.includes(":") || id.includes("/")) return "chief";
+  return id;
+}
+
 /**
- * "Take the pick": answer with the agent's recommended answer. Autopilot calls this with `by: "autopilot"`; it is
- * refused on a red line, which always waits for Ash.
+ * "Take the pick": answer with the agent's recommended answer. Autopilot calls this with `by: "autopilot"` and a Page
+ * with `by: "page"`; both are refused on a red line, which always waits for Ash.
  */
-export async function takePick(sessionId: string, options: { by?: "ash" | "autopilot" } = {}): Promise<TakeResult> {
+export async function takePick(
+  sessionId: string,
+  options: { by?: "ash" | "autopilot" | "page"; seen?: { requestId?: number; question: string; pick?: string | null } } = {},
+): Promise<TakeResult> {
   const chat = findWaitingChat(sessionId);
   if (!chat) return { ok: false, reason: "That chat isn't waiting any more." };
+  const seen = options.seen;
+  if (seen && (seen.requestId !== chat.requestId || seen.question !== chat.question || (seen.pick ?? null) !== (chat.pick ?? null))) {
+    return { ok: false, reason: "That changed while you were looking. Open the chat to see where it stands." };
+  }
   if (!chat.pick) return { ok: false, reason: "The agent didn't suggest an answer. Reply in your words or open the chat." };
-  if (options.by === "autopilot" && (chat.redLine || chat.provide)) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
+  // A Page's tap is not Ash's either (PR #235 review): a red line waits for Ash whoever else asks.
+  const notAsh = options.by === "autopilot" || options.by === "page";
+  if (notAsh && (chat.redLine || chat.provide)) return { ok: false, reason: forYou("This one touches a red line, so it waits for Ash.") };
+  // WP-101: the same rule a reviewed approval follows, on this door too. The pick is one answer, but the question
+  // it answers can be the action ("Send it to Priya?"), and so can any option the card points back to.
+  if (notAsh && chatQuestionVeto(chat))
+    return { ok: false, reason: forYou("That one sends, deletes, moves money, publishes or changes access, so it waits for Ash.") };
+  // WP-215: the captain answers inside this door, after the red checks above. Ash himself does not go through it.
+  if (options.by === "autopilot") {
+    const extra = captainDoor?.(chat) ?? {};
+    // The same person-only keys a Page is refused (PR #235). A standing answer does not override them.
+    if (typeof extra.decisionKey === "string" && isPersonOnlyDecisionKey(extra.decisionKey)) {
+      return { ok: false, reason: forYou("Only you can answer that one. Open Needs you to answer it.") };
+    }
+    const monoId = captainMonoId(extra.monoId);
+    const decided = captainDecide({
+      project: chat.projectId ?? "",
+      monoId,
+      decisionKey: extra.decisionKey,
+      question: chat.question,
+      options: chat.options,
+      recommendation: chat.pick,
+      confident: extra.confident === true,
+      rules: extra.rules,
+      standing: extra.standing ?? null,
+      learned: extra.learned ?? null,
+      moneyOverLimit: extra.moneyOverLimit === true,
+      switchOn: true,
+      now: extra.now ?? Date.now(),
+      turns: extra.turns,
+      pendingSince: extra.pendingSince,
+    });
+    if (decided.kind === "ask-owner") {
+      return { ok: false, reason: forYou(decided.line ?? decided.reason) };
+    }
+    if (decided.kind === "waiting") {
+      return { ok: false, reason: forYou(decided.reason) };
+    }
+    const who = decided.answeredBy === `captain:${monoId}` ? decided.answeredBy : `captain:${monoId}`;
+    if (decided.answer !== chat.pick) {
+      const prompt = host?.liveQuestion(sessionId);
+      const live = prompt && prompt.requestId === chat.requestId ? wordsReply(prompt, decided.answer) : undefined;
+      return answer(chat, live && { reply: live, words: decided.answer }, wordsMessage(chat, decided.answer), {
+        words: decided.answer,
+        by: "pick",
+        who,
+      });
+    }
+    const prompt = host?.liveQuestion(sessionId);
+    const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
+    return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat), { words: chat.pick, by: "pick", who });
+  }
   const prompt = host?.liveQuestion(sessionId);
   const reply = prompt && prompt.requestId === chat.requestId ? pickReply(prompt) : undefined;
   return answer(chat, reply && { reply, words: chat.pick }, pickMessage(chat), { words: chat.pick, by: "pick" });
+}
+
+/**
+ * Every option a card points back to: its own, then each row's question and options. A list it can't read is `null`,
+ * which the veto reads as a hold.
+ */
+function cardOptions(chat: Pick<ChatQuestion, "options" | "rows">): unknown[] | null {
+  const collected: unknown[] = [];
+  const take = (value: unknown): boolean => {
+    if (value === undefined || value === null) return true;
+    if (!Array.isArray(value)) return false;
+    collected.push(...value);
+    return true;
+  };
+  if (!take(chat.options)) return null;
+  if (chat.rows === undefined || chat.rows === null) return collected;
+  if (!Array.isArray(chat.rows)) return null;
+  for (const row of chat.rows) {
+    if (!row || typeof row !== "object") {
+      collected.push(row);
+      continue;
+    }
+    collected.push(row.question);
+    if (!take(row.options)) return null;
+  }
+  return collected;
+}
+
+/**
+ * Why autopilot won't answer this waiting question by itself, or null when it may (WP-101: the approval rule, here).
+ * The chat is a saved shape read back from disk, so a field it can't read holds: `autopilotMayTake` runs while a list
+ * draws, and a throw there would break the list rather than wait (WP-101 fix round 2, item F).
+ */
+export function chatQuestionVeto(chat: Pick<ChatQuestion, "question" | "pick" | "options" | "rows">): string | null {
+  try {
+    if (!chat || typeof chat !== "object") return UNREADABLE_REASON;
+    const options = cardOptions(chat);
+    if (!options) return UNREADABLE_REASON;
+    return questionVeto({ question: chat.question, recommendation: chat.pick, options });
+  } catch {
+    return UNREADABLE_REASON;
+  }
 }
 
 /** Ash's own words for the chat. */
@@ -500,9 +638,21 @@ export function rowAnswerNote(question: string, words: string): QueuedMessage {
 export const NOT_ANSWERED_YET =
   "Not answered yet: it stays on Ash's Inbox card. Don't guess or act on it; ask it again as a `Needs Ash:` line in your reply.";
 
-export async function answerRow(sessionId: string, row: AskRow, words: string, by: "words" | "pick" = "words"): Promise<TakeResult> {
+export async function answerRow(
+  sessionId: string,
+  row: AskRow,
+  words: string,
+  by: "words" | "pick" = "words",
+  seen?: { requestId?: number; question: string; pick?: string | null },
+): Promise<TakeResult> {
   const chat = findWaitingChat(sessionId);
   if (!chat?.rows?.some((r) => r.question === row.question)) return { ok: false, reason: "That chat isn't waiting any more." };
+  if (seen) {
+    const live = chat.rows?.find((r) => r.question === row.question);
+    if (seen.requestId !== chat.requestId || seen.question !== row.question || !live || (seen.pick ?? null) !== (live.pick ?? null)) {
+      return { ok: false, reason: "That changed while you were looking. Open the chat to see where it stands." };
+    }
+  }
   const text = words.trim();
   if (!text) return { ok: false, reason: "Type an answer first." };
   const h = host;
@@ -602,11 +752,18 @@ export async function answerApproval(
 }
 
 /** r77: Allow or Deny a chat's held tool call from the card, when it is still the one held. */
-export function answerPermission(sessionId: string, decision: "allow" | "deny"): TakeResult {
+export function answerPermission(
+  sessionId: string,
+  decision: "allow" | "deny",
+  seen?: { requestId?: number; question?: string },
+): TakeResult {
   const chat = findWaitingChat(sessionId);
   if (!chat || chat.source !== "permission" || chat.requestId === undefined) return { ok: false, reason: "That chat isn't waiting any more." };
+  if (seen && (seen.requestId !== chat.requestId || (seen.question !== undefined && seen.question !== chat.question))) {
+    return { ok: false, reason: "That changed while you were looking. Open the chat to see where it stands." };
+  }
   if (!host?.decide) return { ok: false, reason: "The app isn't ready to answer yet. Open the chat instead." };
-  host.decide(sessionId, chat.requestId, decision);
+  host.decide(sessionId, seen?.requestId ?? chat.requestId, decision);
   drop(sessionId);
   return { ok: true, sent: decision === "allow" ? "Allowed" : "Denied", chatName: chat.chatName };
 }
@@ -617,10 +774,16 @@ export function openWaitingChat(sessionId: string): void {
   host?.open(sessionId, e ? describe(e).projectId : null);
 }
 
-/** Autopilot may answer this one by itself: the agent suggested an answer and it is not a red line. */
-export function autopilotMayTake(chat: Pick<WaitingChat, "pick" | "redLine" | "provide">): boolean {
-  // Something only Ash can hand over (a key, access) is never Autopilot's to answer (r65).
-  return !!chat.pick && !chat.redLine && !chat.provide;
+/** Autopilot may answer this one by itself: the agent suggested an answer, it is not a red line, and it isn't a send,
+ * a delete, a payment, a publish or an account change. A shape it can't read is never taken (WP-101 fix round 2, F). */
+export function autopilotMayTake(chat: Pick<WaitingChat, "pick" | "redLine" | "provide" | "question" | "options" | "rows">): boolean {
+  try {
+    if (!chat || typeof chat !== "object") return false;
+    // Something only Ash can hand over (a key, access) is never Autopilot's to answer (r65).
+    return !!chat.pick && !chat.redLine && !chat.provide && !chatQuestionVeto(chat);
+  } catch {
+    return false;
+  }
 }
 
 // ---- the same hands, for a stuck worker (H4: monos/model/stuckActions.ts) --------------------------------------------

@@ -6,8 +6,10 @@
 
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..", "..");
+// fileURLToPath, not URL.pathname: the pathname keeps `%20` for a space and a leading slash before a Windows drive.
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const require = createRequire(path.join(root, "package.json"));
 
 const ENTRY = `

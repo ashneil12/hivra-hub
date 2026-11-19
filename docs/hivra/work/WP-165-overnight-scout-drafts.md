@@ -34,6 +34,16 @@ Tonight's overnight scout wrote WP-156 to 158 drafts for the morning. Ash wants 
 - [ ] Auth / merge / secrets drafts are `parked` with security-park.
 - [ ] No private absolute paths in committed code or docs.
 
+## How to try it
+
+In Settings → Home, choose a watch folder and turn on Overnight scout. Put a `watch.md` in that folder, with
+one line per approved suggestion: `Source name | Draft title | Optional note`. The source has to be in
+`docs/hivra/SOURCES.md` in the Chief of Staff's working folder. Leave the app running for the configured time.
+
+The morning list is on global Home. The app keeps the draft programme rows and brief text in its local Hub store,
+separate from the live worker queue. A queued draft waits for a person; it is not a runnable package. The cap
+counts drafts already saved in the same local night (noon to noon), including if a run is retried.
+
 ## Licence
 
 Product behaviour. Curates existing SOURCES. Ideas from the overnight chief-of-staff process; no new vendored tree.

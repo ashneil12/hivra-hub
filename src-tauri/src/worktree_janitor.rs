@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -174,6 +174,16 @@ impl Facts {
             build_output: Vec::new(),
             detail: None,
         }
+    }
+
+    /// Everything in the build-output folders (target/, node_modules/ ...): what this worktree holds that is rebuilt
+    /// by a build. Links are never followed, so a linked node_modules counts nothing.
+    pub fn build_output_bytes(&self) -> u64 {
+        self.build_output
+            .iter()
+            .filter(|output| !output.linked)
+            .filter_map(|output| output.bytes)
+            .sum()
     }
 
     /// Build output that "Free build output" may delete.
@@ -449,13 +459,13 @@ fn capitalize(text: &str) -> String {
 // ---- git -------------------------------------------------------------------------------------------------------------
 
 /// Read-only git: no optional locks (status never rewrites the index), no prompts, plain English.
-fn git_out(dir: &Path, args: &[&str]) -> Result<(String, bool), String> {
-    let mut command = Command::new("git");
+pub(crate) fn git_out(dir: &Path, args: &[&str]) -> Result<(String, bool), String> {
+    crate::git_cmd::ensure_contained(dir)?;
+    let mut command = crate::git_cmd::git();
     crate::hide_window_console(&mut command);
+    command.arg("-C").arg(dir);
+    crate::git_cmd::extend_readonly(&mut command, args);
     let output = command
-        .arg("-C")
-        .arg(dir)
-        .args(args)
         .env("GIT_OPTIONAL_LOCKS", "0")
         .env("GIT_TERMINAL_PROMPT", "0")
         .env("LC_ALL", "C")
@@ -477,11 +487,11 @@ fn git_out(dir: &Path, args: &[&str]) -> Result<(String, bool), String> {
     Ok((String::from_utf8_lossy(bytes).into_owned(), truncated))
 }
 
-fn git_text(dir: &Path, args: &[&str]) -> Result<String, String> {
+pub(crate) fn git_text(dir: &Path, args: &[&str]) -> Result<String, String> {
     git_out(dir, args).map(|(text, _)| text.trim().to_string())
 }
 
-fn mtime_ms(path: &Path) -> Option<u64> {
+pub(crate) fn mtime_ms(path: &Path) -> Option<u64> {
     std::fs::symlink_metadata(path)
         .ok()?
         .modified()
@@ -491,7 +501,7 @@ fn mtime_ms(path: &Path) -> Option<u64> {
         .map(|d| d.as_millis() as u64)
 }
 
-fn is_symlink(path: &Path) -> bool {
+pub(crate) fn is_symlink(path: &Path) -> bool {
     std::fs::symlink_metadata(path).is_ok_and(|meta| meta.file_type().is_symlink())
 }
 
@@ -691,13 +701,22 @@ fn first_local_ignored(
         .map(|entry| entry.to_string())
 }
 
-fn gh_merged_pr(
-    worktree: &Path,
-    branch: &str,
-    head: &str,
-    base: &str,
-) -> Result<Option<u64>, String> {
-    let mut command = Command::new("gh");
+/// One pull request `gh pr list` found for a branch.
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct GhPr {
+    pub number: u64,
+    /// OPEN, MERGED or CLOSED.
+    #[serde(default)]
+    pub state: String,
+    pub head_ref_oid: String,
+    pub base_ref_name: String,
+}
+
+/// The pull requests whose head is `branch` in `state` (`merged`, `closed`, `open` or `all`), read-only, with a
+/// timeout. Pull requests from forks are not found: only the repository's own branches.
+pub fn gh_prs_for_branch(worktree: &Path, branch: &str, state: &str) -> Result<Vec<GhPr>, String> {
+    let mut command = crate::git_cmd::contained_command("gh");
     crate::hide_window_console(&mut command);
     let mut child = command
         .current_dir(worktree)
@@ -707,9 +726,9 @@ fn gh_merged_pr(
             "--head",
             branch,
             "--state",
-            "merged",
+            state,
             "--json",
-            "number,headRefOid,baseRefName",
+            "number,state,headRefOid,baseRefName",
             "--limit",
             "20",
         ])
@@ -740,15 +759,16 @@ fn gh_merged_pr(
     if !status.success() {
         return Err("gh pr list failed".into());
     }
-    #[derive(Deserialize)]
-    #[serde(rename_all = "camelCase")]
-    struct Pr {
-        number: u64,
-        head_ref_oid: String,
-        base_ref_name: String,
-    }
-    let prs: Vec<Pr> = serde_json::from_str(&out).map_err(|e| e.to_string())?;
-    Ok(prs
+    serde_json::from_str(&out).map_err(|e| e.to_string())
+}
+
+fn gh_merged_pr(
+    worktree: &Path,
+    branch: &str,
+    head: &str,
+    base: &str,
+) -> Result<Option<u64>, String> {
+    Ok(gh_prs_for_branch(worktree, branch, "merged")?
         .into_iter()
         .find(|pr| pr.head_ref_oid == head && pr.base_ref_name == base)
         .map(|pr| pr.number))
@@ -828,7 +848,7 @@ pub fn measure(root: &Path, skip: &[PathBuf], deadline: Instant, seen: &mut Seen
 }
 
 /// Whether git ignores `relative` and tracks nothing inside it.
-fn ignored_by_git(worktree: &Path, relative: &str) -> bool {
+pub(crate) fn ignored_by_git(worktree: &Path, relative: &str) -> bool {
     git_out(
         worktree,
         &["check-ignore", "-q", "--no-index", "--", relative],
@@ -1208,6 +1228,9 @@ pub struct Report {
     pub roots: Vec<String>,
     pub entries: Vec<Entry>,
     pub total_bytes: u64,
+    /// What every worktree holds in build output (inside `total_bytes`), and how many hold any.
+    pub build_output_bytes: u64,
+    pub build_output_count: usize,
     pub remove_count: usize,
     pub remove_bytes: u64,
     pub free_count: usize,
@@ -1217,7 +1240,7 @@ pub struct Report {
     pub notes: Vec<String>,
 }
 
-fn now_ms() -> u64 {
+pub(crate) fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -1310,6 +1333,11 @@ pub fn report(
         generated_at: now,
         roots: roots.iter().map(|root| path_to_js(root)).collect(),
         total_bytes: entries.iter().filter_map(|e| e.facts.total_bytes).sum(),
+        build_output_bytes: entries.iter().map(|e| e.facts.build_output_bytes()).sum(),
+        build_output_count: entries
+            .iter()
+            .filter(|e| e.facts.build_output_bytes() > 0)
+            .count(),
         remove_count: count(Outcome::Remove),
         remove_bytes: bytes(Outcome::Remove),
         free_count: count(Outcome::Free),
@@ -1349,6 +1377,11 @@ pub fn render_text(report: &Report, now: u64) -> String {
         report.free_count,
         human_bytes(report.free_bytes),
         report.keep_count
+    ));
+    out.push_str(&format!(
+        "Build output held: {} in {}\n",
+        human_bytes(report.build_output_bytes),
+        plural(report.build_output_count as u64, "worktree", "worktrees")
     ));
     out.push_str(&format!(
         "Reclaimable with both taps: {}\n",
@@ -1394,8 +1427,12 @@ pub fn render_text(report: &Report, now: u64) -> String {
                 .as_deref()
                 .map(|branch| format!(" [{branch}]"))
                 .unwrap_or_default();
+            let output = match entry.facts.build_output_bytes() {
+                0 => String::new(),
+                bytes => format!(", build output {}", human_bytes(bytes)),
+            };
             out.push_str(&format!(
-                "  {}{branch}\n    {size}, {idle}, {}: {}\n",
+                "  {}{branch}\n    {size}{output}, {idle}, {}: {}\n",
                 pretty(&entry.facts.path),
                 entry.verdict.state,
                 entry.verdict.reason
@@ -1614,7 +1651,7 @@ fn busy_paths(
         .collect()
 }
 
-fn app_context(
+pub(crate) fn app_context(
     app: &AppHandle,
     paths: &[PathBuf],
     check_pull_requests: bool,
@@ -2333,6 +2370,20 @@ mod tests {
         let text = render_text(&report, later);
         assert!(text.contains("nothing was removed"));
         assert!(text.contains("REMOVE"));
+        // The report says how much build output each worktree holds, and the total.
+        assert_eq!(report.build_output_count, 4);
+        assert!(report.build_output_bytes >= 4 * 200_000);
+        assert_eq!(
+            report.build_output_bytes,
+            report
+                .entries
+                .iter()
+                .map(|entry| entry.facts.build_output_bytes())
+                .sum::<u64>()
+        );
+        assert!(ahead.facts.build_output_bytes() >= 200_000);
+        assert!(text.contains("Build output held:"), "{text}");
+        assert!(text.contains(", build output "), "{text}");
     }
 
     /// The tap's removal re-checks the worktree it deletes, in the same step: work that landed after the report (a new
@@ -2667,5 +2718,28 @@ mod tests {
         assert_eq!(human_age(HOUR_MS), "1 hour");
         assert_eq!(human_age(30 * HOUR_MS), "30 hours");
         assert_eq!(human_age(9 * DAY_MS), "9 days");
+    }
+}
+
+/// Review r5 repro for PR #208 (WP-178). Red at a5bc60a97.
+#[cfg(test)]
+mod review_r5_repro {
+    /// HIGH (H-E still open): round 5 moved the PR watch's and the Git panel's `gh` into `contained_command`, but the
+    /// worktree sweep (worktree_autoclean, every 15 minutes and 2 minutes after launch, no tap) still runs
+    /// `Command::new("gh")` plain, with the cached GUI PATH, in a worktree an agent wrote. Whatever `gh` that PATH finds
+    /// first, and whatever it loads, runs outside the sandbox. The seam is `contained_command`; a unit test cannot see the
+    /// container (`contain_now` is plain in tests), so this reads the function.
+    #[test]
+    fn the_sweeps_gh_pr_list_runs_contained() {
+        let source = include_str!("worktree_janitor.rs");
+        let start = source
+            .find("pub fn gh_prs_for_branch(")
+            .expect("gh_prs_for_branch");
+        let body = &source[start..start + 400];
+        assert!(
+            body.contains("contained_command"),
+            "the sweep's gh pr list starts outside the sandbox: {}",
+            body.lines().nth(1).unwrap_or("")
+        );
     }
 }

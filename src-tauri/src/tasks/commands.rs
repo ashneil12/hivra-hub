@@ -278,3 +278,42 @@ pub fn tasks_statuses(
     let conn = store.lock_conn()?;
     store::statuses(&conn, &Actor::from(actor))
 }
+
+// WP-250: which tasks each first mate picks up by itself. Only the person sets these, from the first mate's settings.
+
+fn person_only(actor: &Actor) -> Result<(), String> {
+    if actor.kind != "person" {
+        return Err("Only you can change which tasks a first mate picks up.".into());
+    }
+    Ok(())
+}
+
+#[tauri::command(async)]
+pub fn tasks_pickup_rules(
+    store: State<'_, SessionStore>,
+) -> Result<Vec<super::pickup::PickupRule>, String> {
+    let conn = store.lock_conn()?;
+    super::pickup::all(&conn)
+}
+
+#[tauri::command(async)]
+pub fn tasks_pickup_rule_put(
+    store: State<'_, SessionStore>,
+    actor: ActorBody,
+    rule: super::pickup::PickupRule,
+) -> Result<super::pickup::PickupRule, String> {
+    person_only(&Actor::from(actor))?;
+    let conn = store.lock_conn()?;
+    super::pickup::put(&conn, &rule, now_millis())
+}
+
+#[tauri::command(async)]
+pub fn tasks_pickup_rule_remove(
+    store: State<'_, SessionStore>,
+    actor: ActorBody,
+    owner_session: String,
+) -> Result<(), String> {
+    person_only(&Actor::from(actor))?;
+    let conn = store.lock_conn()?;
+    super::pickup::remove(&conn, &owner_session)
+}

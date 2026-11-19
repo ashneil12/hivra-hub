@@ -1,0 +1,659 @@
+{
+  "version": 1,
+  "about": "Commands the autopilot timer (TypeScript safeCommand plus commandNamesLogin, judged in the check's folder) and the Rust timer check (watcher/safe_cmd.rs verdict(command, folder)) must both hold or both allow. A case may name its own \"folder\"; otherwise the top-level folder is used. Read by approvalParity.test.ts and by safe_cmd.rs tests.",
+  "cases": [
+    {
+      "command": "ls -la",
+      "held": false,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "git log -n5",
+      "held": false,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "file -bfnotes.txt",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "cat src/../README.md",
+      "held": true,
+      "folder": "/Users/example/Projects/proj"
+    },
+    {
+      "command": "git status",
+      "held": false
+    },
+    {
+      "command": "git status --porcelain",
+      "held": false
+    },
+    {
+      "command": "git diff HEAD~1 -- src/app.ts",
+      "held": false
+    },
+    {
+      "command": "git log --oneline -20",
+      "held": false
+    },
+    {
+      "command": "git log --oneline -20 -- src/app.ts",
+      "held": false
+    },
+    {
+      "command": "git show HEAD:src/app.ts",
+      "held": false
+    },
+    {
+      "command": "git branch",
+      "held": false
+    },
+    {
+      "command": "git branch -a -v",
+      "held": false
+    },
+    {
+      "command": "git branch --list 'hub/*'",
+      "held": false
+    },
+    {
+      "command": "ls -la src",
+      "held": false
+    },
+    {
+      "command": "ls -R src",
+      "held": false
+    },
+    {
+      "command": "cat README.md",
+      "held": false
+    },
+    {
+      "command": "rg -n 'foo bar' src",
+      "held": false
+    },
+    {
+      "command": "rg -n token src",
+      "held": false
+    },
+    {
+      "command": "rg \"fn main\" src-tauri",
+      "held": false
+    },
+    {
+      "command": "head -50 src/app.ts",
+      "held": false
+    },
+    {
+      "command": "wc -l src/app.ts",
+      "held": false
+    },
+    {
+      "command": "pwd",
+      "held": false
+    },
+    {
+      "command": "cargo fmt --check",
+      "held": false
+    },
+    {
+      "command": "cargo fmt --all --check",
+      "held": false
+    },
+    {
+      "command": "cat src/token_store.ts",
+      "held": false
+    },
+    {
+      "command": "cat ./src/app.ts",
+      "held": false
+    },
+    {
+      "command": "grep -n TODO src/app.ts",
+      "held": false
+    },
+    {
+      "command": "rg -n TOKEN .",
+      "held": false
+    },
+    {
+      "command": "cat a:b/keep.txt",
+      "held": false
+    },
+    {
+      "command": "rg -n token src/a:b",
+      "held": false
+    },
+    {
+      "command": "rg -a -o sk-ant-api03 .",
+      "held": false
+    },
+    {
+      "command": "grep -rn TODO src",
+      "held": true
+    },
+    {
+      "command": "git log --textconv -p",
+      "held": true
+    },
+    {
+      "command": "git diff --textconv HEAD~1",
+      "held": true
+    },
+    {
+      "command": "grep -f.netrc x README.md",
+      "held": true
+    },
+    {
+      "command": "cat ./ENV~1",
+      "held": true
+    },
+    {
+      "command": "rg -n . ENV~1",
+      "held": true
+    },
+    {
+      "command": "git diff --no-index NUL ENV~1",
+      "held": true
+    },
+    {
+      "command": "cat CLAUDE~1.MD",
+      "held": true
+    },
+    {
+      "command": "cat .secrets",
+      "held": true
+    },
+    {
+      "command": "cat .tokens",
+      "held": true
+    },
+    {
+      "command": "cat .dev.vars",
+      "held": true
+    },
+    {
+      "command": "cat ~/.pi/agent/auth.json",
+      "held": true
+    },
+    {
+      "command": "cat ~/.omp/agent/auth.json",
+      "held": true
+    },
+    {
+      "command": "cat ~/.config/opencode/opencode.json",
+      "held": true
+    },
+    {
+      "command": "cat ~/.cursor/mcp.json",
+      "held": true
+    },
+    {
+      "command": "cat ~/.grok/user-settings.json",
+      "held": true
+    },
+    {
+      "command": "cat ~/.claude/settings.json",
+      "held": true
+    },
+    {
+      "command": "cat ~/.zsh_sessions/abc.history",
+      "held": true
+    },
+    {
+      "command": "ls ~/.zsh_sessions",
+      "held": true
+    },
+    {
+      "command": "cat ~/.mysql_history",
+      "held": true
+    },
+    {
+      "command": "cat ~/.node_repl_history",
+      "held": true
+    },
+    {
+      "command": "cat ~/.fly/config.yml",
+      "held": true
+    },
+    {
+      "command": "cat ~/.railway/config.json",
+      "held": true
+    },
+    {
+      "command": "cat ~/.sentryclirc",
+      "held": true
+    },
+    {
+      "command": "cat ~/.ngrok2/ngrok.yml",
+      "held": true
+    },
+    {
+      "command": "cat ~/.m2/settings.xml",
+      "held": true
+    },
+    {
+      "command": "cat \"$HOME\"/.codex/auth.json",
+      "held": true
+    },
+    {
+      "command": "cat ~/.co''dex/auth.json",
+      "held": true
+    },
+    {
+      "command": "cat .env",
+      "held": true
+    },
+    {
+      "command": "cat ./config/.env.local",
+      "held": true
+    },
+    {
+      "command": "cat ../secret.txt",
+      "held": true
+    },
+    {
+      "command": "cat secrets/token.txt",
+      "held": true
+    },
+    {
+      "command": "cat keys/server.pem",
+      "held": true
+    },
+    {
+      "command": "cat id_rsa.pub",
+      "held": true
+    },
+    {
+      "command": "cat .git/config",
+      "held": true
+    },
+    {
+      "command": "git show HEAD:.env",
+      "held": true
+    },
+    {
+      "command": "grep -rn TODO ~/Projects",
+      "held": true
+    },
+    {
+      "command": "rg --hidden foo src",
+      "held": true
+    },
+    {
+      "command": "rg -uu foo src",
+      "held": true
+    },
+    {
+      "command": "rg -e foo secrets",
+      "held": true
+    },
+    {
+      "command": "cat /etc/hosts",
+      "held": true
+    },
+    {
+      "command": "cat opencode.jsonc",
+      "held": true
+    },
+    {
+      "command": "cat rust-toolchain.toml",
+      "held": true
+    },
+    {
+      "command": "cat config/mise/config.toml",
+      "held": true
+    },
+    {
+      "command": "cat '{/etc,src}/x'",
+      "held": true
+    },
+    {
+      "command": "ls '{../..,src}'",
+      "held": true
+    },
+    {
+      "command": "rg -f/Users/me/x src",
+      "held": true
+    },
+    {
+      "command": "grep -f/etc/passwd README.md",
+      "held": true
+    },
+    {
+      "command": "cat ~/.netrc",
+      "held": true
+    },
+    {
+      "command": "cat ~/.ssh/config",
+      "held": true
+    },
+    {
+      "command": "cat /Users/me/.aws/credentials",
+      "held": true
+    },
+    {
+      "command": "cat src/.github/ci.yml",
+      "held": true
+    },
+    {
+      "command": "rg -g '.env*' TOKEN",
+      "held": true
+    },
+    {
+      "command": "git -C /elsewhere status",
+      "held": true
+    },
+    {
+      "command": "git push origin main",
+      "held": true
+    },
+    {
+      "command": "cargo test",
+      "held": true
+    },
+    {
+      "command": "npm test",
+      "held": true
+    },
+    {
+      "command": "npx vitest run",
+      "held": true
+    },
+    {
+      "command": "rg --pre=sh foo",
+      "held": true
+    },
+    {
+      "command": "git diff --output=/tmp/x",
+      "held": true
+    },
+    {
+      "command": "git log --ext-diff",
+      "held": true
+    },
+    {
+      "command": "cat 'unclosed",
+      "held": true
+    },
+    {
+      "command": "rg foo *",
+      "held": true
+    },
+    {
+      "command": "git status; rm -rf x",
+      "held": true
+    },
+    {
+      "command": "rg -n 'foo|bar' src",
+      "held": true
+    },
+    {
+      "command": "cat $(echo x)",
+      "held": true
+    },
+    {
+      "command": "cat /tmp/.zshrc",
+      "held": true
+    },
+    {
+      "command": "cat ./src/.zshrc",
+      "held": true
+    },
+    {
+      "command": "cat src/../README.md",
+      "held": true
+    },
+    {
+      "command": "cat .gitignore",
+      "held": true
+    },
+    {
+      "command": "cat etc/./shadow",
+      "held": true
+    },
+    {
+      "command": "cat Library/./Keychains/login.keychain-db",
+      "held": true
+    },
+    {
+      "command": "cat 'Library/./Application Support/com.vercel.cli/auth.json'",
+      "held": true
+    },
+    {
+      "command": "cat AppData/Roaming/./rclone/rclone.conf",
+      "held": true
+    },
+    {
+      "command": "cat proc/self/./environ",
+      "held": true
+    },
+    {
+      "command": "wc -c Library/./Cookies/Cookies.binarycookies",
+      "held": true
+    },
+    {
+      "command": "head -c 100 etc/./master.passwd",
+      "held": true
+    },
+    {
+      "command": "grep -c x AppData/Local/./Google/Chrome/x",
+      "held": true
+    },
+    {
+      "command": "rg token Library",
+      "held": true
+    },
+    {
+      "command": "rg -a sk-ant- Library",
+      "held": true
+    },
+    {
+      "command": "rg --binary -o AKIA Library",
+      "held": true
+    },
+    {
+      "command": "cat a:b/../../.zshrc",
+      "held": true
+    },
+    {
+      "command": "cat a:b:c/../../../.zshrc",
+      "held": true
+    },
+    {
+      "command": "cat a:b/../../.config/aichat/config.yaml",
+      "held": true
+    },
+    {
+      "command": "cat ~/Library/Keychains/login.keychain-db",
+      "held": true
+    },
+    {
+      "command": "cat /Users/example/proj/a:b/../../.zshrc",
+      "held": true
+    },
+    {
+      "command": "cat ~/Library/Preferences/x.plist",
+      "held": true
+    },
+    {
+      "command": "ls /Users/example/Archive/monocode/ships",
+      "held": true
+    },
+    {
+      "command": "cat /Users/example/Archive/monocode/ships/abc123/backup/monocode.db",
+      "held": true
+    },
+    {
+      "command": "grep -a -o -E 'sk-ant-\\S+' /Users/example/Archive/monocode/backups-20261110/monocode.db",
+      "held": true
+    },
+    {
+      "command": "tail -c 50000 /Users/example/Archive/monocode/ships/abc123/monocode.db-wal",
+      "held": true
+    },
+    {
+      "command": "head -c 400000 '/Users/example/Library/WebKit/com.ash.monocode-h'ub/WebsiteData/localstorage.sqlite3",
+      "held": true
+    },
+    {
+      "command": "cat Library/WebKit/com.ash.monocode-hub/WebsiteData/localstorage.sqlite3",
+      "held": true
+    },
+    {
+      "command": "cat Library/HTTPStorages/com.ash.app/cookies.binarycookies",
+      "held": true
+    },
+    {
+      "command": "cat \"Library/Group Containers/group.example/data.db\"",
+      "held": true
+    },
+    {
+      "command": "cat Library/Messages/chat.db",
+      "held": true
+    },
+    {
+      "command": "cat Library/Accounts/Accounts4.sqlite",
+      "held": true
+    },
+    {
+      "command": "cat Library/Containers/com.example.app/Data/state.db",
+      "held": true
+    },
+    {
+      "command": "cat AppData/Roaming/Mozilla/Firefox/Profiles/p1/logins.json",
+      "held": true
+    },
+    {
+      "command": "cat \"AppData/Roaming/discord/Local Storage/leveldb/000003.log\"",
+      "held": true
+    },
+    {
+      "command": "cat \"AppData/Local/BraveSoftware/Brave-Browser/User Data/Default/Network/Cookies\"",
+      "held": true
+    },
+    {
+      "command": "cat AppData/Roaming/Code/User/globalStorage/state.vscdb",
+      "held": true
+    },
+    {
+      "command": "cat ../../other/notes.txt",
+      "held": true
+    },
+    {
+      "command": "cat docs/notes.txt",
+      "held": false
+    },
+    {
+      "command": "cat /Users/example/proj/src/app.ts",
+      "held": true,
+      "folder": "/Users/example/proj"
+    },
+    {
+      "command": "rg -c -e sk-ant-api03-A .",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "rg -c sk-ant-api03-A",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "ls -R .",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "rg -c -e sk-ant-api03-A .",
+      "held": true,
+      "folder": "/Users/example/Library/Application Support/tool"
+    },
+    {
+      "command": "rg -c -e sk-ant-api03-A src",
+      "held": false,
+      "folder": "/Users/example/Projects/hivra"
+    },
+    {
+      "command": "rg -c -e fetchUser src",
+      "held": false,
+      "folder": "/Users/example/Projects/hivra"
+    },
+    {
+      "command": "cat README.md",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "grep -c X Documents/f",
+      "held": true,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "git status",
+      "held": false,
+      "folder": "/Users/example"
+    },
+    {
+      "command": "grep -c X src/app.ts",
+      "held": false,
+      "folder": "/Users/example/Projects/proj"
+    },
+    {
+      "command": "cat =git",
+      "held": true,
+      "folder": "/Users/example/Projects/proj"
+    },
+    {
+      "command": "cat proc/123/task/123/environ",
+      "held": true
+    },
+    {
+      "command": "cat proc/123/task/456/cmdline",
+      "held": true
+    },
+    {
+      "command": "cat proc/123/fd/3",
+      "held": true
+    },
+    {
+      "command": "cat proc/self/mem",
+      "held": true
+    },
+    {
+      "command": "cat /proc/123/task/123/environ",
+      "held": true
+    },
+    {
+      "command": "cat /proc/self/map_files/7f00-7f01",
+      "held": true
+    },
+    {
+      "command": "rg -L token src",
+      "held": true
+    },
+    {
+      "command": "rg --follow token src",
+      "held": true
+    },
+    {
+      "command": "rg -z token src",
+      "held": true
+    },
+    {
+      "command": "rg -nz token src",
+      "held": true
+    },
+    {
+      "command": "rg --search-zip token src",
+      "held": true
+    },
+    {
+      "command": "rg -n token src",
+      "held": false
+    }
+  ],
+  "folder": "/Users/example/Projects/proj"
+}

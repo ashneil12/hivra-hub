@@ -8,7 +8,8 @@ import {
 import { forEachConcurrent } from "../../../shared/lib/concurrent";
 import type { UnifiedFileDiff } from "../model/unifiedDiff";
 import { prepareUnifiedDiff } from "../model/diffWorker";
-import { UnifiedDiffView, type UnifiedDiffFileModel } from "./UnifiedDiffView";
+import { type UnifiedDiffFileModel } from "./UnifiedDiffView";
+import { ReviewDiff } from "./ReviewDiff";
 
 type Props = {
   cwd: string;
@@ -19,6 +20,8 @@ type Props = {
 type LoadedDiff = {
   binary: boolean;
   tooLarge: boolean;
+  original: string;
+  current: string;
   unified: UnifiedFileDiff | null;
   error?: string;
 };
@@ -93,6 +96,8 @@ export function CommitDiff({ cwd, sha, visible = true }: Props) {
                 loaded = {
                   binary: diff.binary,
                   tooLarge: diff.tooLarge,
+                  original: diff.original,
+                  current: diff.current,
                   unified,
                 };
               } catch (caught: unknown) {
@@ -100,6 +105,8 @@ export function CommitDiff({ cwd, sha, visible = true }: Props) {
                 loaded = {
                   binary: false,
                   tooLarge: false,
+                  original: "",
+                  current: "",
                   unified: null,
                   error:
                     caught instanceof Error ? caught.message : String(caught),
@@ -156,6 +163,14 @@ export function CommitDiff({ cwd, sha, visible = true }: Props) {
         additions: unified?.additions ?? file.additions,
         deletions: unified?.deletions ?? file.deletions,
         blocks: unified?.blocks ?? [],
+        beforeText:
+          loaded && !loaded.binary && !loaded.tooLarge && !loaded.error
+            ? loaded.original
+            : undefined,
+        afterText:
+          loaded && !loaded.binary && !loaded.tooLarge && !loaded.error
+            ? loaded.current
+            : undefined,
       };
     });
   }, [diffs, files]);
@@ -194,5 +209,5 @@ export function CommitDiff({ cwd, sha, visible = true }: Props) {
     );
   }
 
-  return <UnifiedDiffView files={models} totals={totals} visible={visible} />;
+  return <ReviewDiff files={models} totals={totals} visible={visible} />;
 }

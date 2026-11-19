@@ -275,3 +275,28 @@ describe("pull request links", () => {
     expect(httpsUrl("not a url")).toBeNull();
   });
 });
+
+describe("WP-141: why the crew picked a worker", () => {
+  it("shows the reason kept on the recorded line, beside the status notice, not instead of it", () => {
+    const [row] = rows([
+      worker({
+        id: "w",
+        status: "needs-you",
+        statusNotice: "Asked its first mate",
+        log: [{ event: "recorded", at: 1, by: "owner:m", why: "Builder role prefers Codex." }],
+      }),
+    ]);
+    expect(row?.why).toBe("Builder role prefers Codex.");
+    expect(row?.notice).toBe("Asked its first mate");
+  });
+
+  it("shows nothing for a row without one, and never a line that looks like a key", () => {
+    const [plain, secret] = rows([
+      worker({ id: "a", log: [{ event: "recorded", at: 1, by: "owner:m" }] }),
+      worker({ id: "b", log: [{ event: "recorded", at: 1, by: "owner:m", why: "The key is sk-live-secret" }] }),
+    ]);
+    expect(plain).not.toHaveProperty("why");
+    expect(secret).not.toHaveProperty("why");
+  });
+});
+

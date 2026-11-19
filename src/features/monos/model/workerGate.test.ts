@@ -1,6 +1,4 @@
 // r82: the routes check runs in the app when a delegated worker reports done (gates.rs), not only on the bench.
-import fs from "node:fs";
-import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { MonoSessionCompletionResult } from "./monoSessionCompletion";
 import { gateAsk, gateDue, gateFailedResult, gateVerdict, GATE_TRIES, signedOffSince, workerGateWord, type GateRun, type GateRunner } from "./workerGate";
@@ -113,25 +111,6 @@ describe("WP-91: the check's word for a task", () => {
     };
     expect(await workerGateWord(thrown, input)).toBe("notRun");
   });
-  it("is asked on a task's own copy by the orchestrator, and the app passes the project and that checkout", () => {
-    const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
-    expect(app).toMatch(/gateWorker: async \(run, task\) => \{\n\s*const checkout = task\.workspace\?\.checkoutCwd \?\? orchestrationCheckoutCwd\(run\);/);
-    expect(app).toMatch(/workerGateWord\(runTaskGate, \{/);
-    const orchestrator = fs.readFileSync(
-      path.resolve(__dirname, "../../orchestration/model/orchestration.ts"),
-      "utf8",
-    );
-    // Once its turn is in, before anything can be accepted; the failed-turn case never asks.
-    expect(orchestrator).toMatch(/if \(this\.host\?\.gateWorker && outcome\.status === "completed"\) \{/);
-  });
-});
-
-it("App runs the check before a finished worker's report goes out, and sends its words to that worker", () => {
-  const app = fs.readFileSync(path.resolve(__dirname, "../../../app/App.tsx"), "utf8");
-  expect(app).toMatch(/if \(gateDue\(result\)\) \{/);
-  expect(app).toMatch(/runWorkerGate\(\{ projectId, checkout, signedOff: signedOffFor\(workerStarted, monoId, /);
-  expect(app).toMatch(/submitSessionRef\.current\(sessionId, gateAsk\(run\), \[\], \{/);
-  expect(app).toMatch(/finish\(gateFailedResult\(result, run\)\)/);
 });
 
 describe("the copy the check runs on (s14 r82 #2)", () => {

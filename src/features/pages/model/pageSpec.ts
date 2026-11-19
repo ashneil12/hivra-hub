@@ -124,7 +124,7 @@ const arr = (v: unknown, max = 50): v is Obj[] => Array.isArray(v) && v.length <
 function validBlock(b: unknown): string | null {
   if (!b || typeof b !== "object") return "a block isn't an object";
   const x = b as Obj;
-  if (!BLOCK_KINDS.includes(x.kind as BlockKind)) return `“${String(x.kind)}” isn't a block the hub has`;
+  if (!BLOCK_KINDS.includes(x.kind as BlockKind)) return `“${String(x.kind)}” isn't a block the app has`;
   if (!str(x.title, 80)) return `a ${String(x.kind)} block has no title`;
   switch (x.kind) {
     case "status": return status(x.state) && str(x.line) && typeof x.detail === "string" ? null : "the status block is missing its state or line";
@@ -139,29 +139,29 @@ function validBlock(b: unknown): string | null {
 
 /** Check the backend's answer against the schema. Anything off comes back as one plain reason. */
 export function validatePageSpec(raw: unknown): Validated<PageSpec> {
-  if (!raw || typeof raw !== "object") return { ok: false, error: "The Mono's answer wasn't a page." };
+  if (!raw || typeof raw !== "object") return { ok: false, error: "The Mono's answer wasn't a hub." };
   const x = raw as Obj;
-  if (!str(x.title, 80)) return { ok: false, error: "The page has no title." };
+  if (!str(x.title, 80)) return { ok: false, error: "The hub has no title." };
   if (x.kind === "blocks") {
-    if (!Array.isArray(x.blocks) || x.blocks.length === 0 || x.blocks.length > 12) return { ok: false, error: "The page needs 1 to 12 blocks." };
+    if (!Array.isArray(x.blocks) || x.blocks.length === 0 || x.blocks.length > 12) return { ok: false, error: "The hub needs 1 to 12 blocks." };
     for (const b of x.blocks) {
       const why = validBlock(b);
-      if (why) return { ok: false, error: `The page doesn't fit: ${why}.` };
+      if (why) return { ok: false, error: `The hub doesn't fit: ${why}.` };
     }
     return { ok: true, value: { kind: "blocks", title: x.title, blocks: x.blocks as PageBlock[] } };
   }
   if (x.kind === "bespoke") {
-    if (!str(x.html, 200000)) return { ok: false, error: "The page has no HTML." };
-    if (x.css !== undefined && typeof x.css !== "string") return { ok: false, error: "The page's CSS isn't text." };
-    if (x.js !== undefined && typeof x.js !== "string") return { ok: false, error: "The page's script isn't text." };
-    if (!Array.isArray(x.permissions) || x.permissions.length > 30) return { ok: false, error: "The page's permissions aren't a list." };
+    if (!str(x.html, 200000)) return { ok: false, error: "The hub has no HTML." };
+    if (x.css !== undefined && typeof x.css !== "string") return { ok: false, error: "The hub's CSS isn't text." };
+    if (x.js !== undefined && typeof x.js !== "string") return { ok: false, error: "The hub's script isn't text." };
+    if (!Array.isArray(x.permissions) || x.permissions.length > 30) return { ok: false, error: "The hub's permissions aren't a list." };
     for (const p of x.permissions) {
       if (typeof p !== "string") return { ok: false, error: "A permission isn't text." };
-      if (isWall(p)) return { ok: false, error: /^monos?/i.test(p) ? "Pages can never add, rename or delete Monos." : "Pages can never reach the app directly; everything goes through the page bridge." };
-      if (p === "keys.read" || p.startsWith("keys.")) return { ok: false, error: "Pages can't read your keys: a page can't reach the network, so a key would do nothing inside one, and a key must never be in a page at all." };
-      if (!isCapability(p)) return { ok: false, error: `“${p}” isn't a permission the hub knows.` };
+      if (isWall(p)) return { ok: false, error: /^monos?/i.test(p) ? "Hubs can never add, rename or delete Monos." : "Hubs can never reach the app directly; everything goes through the hub bridge." };
+      if (p === "keys.read" || p.startsWith("keys.")) return { ok: false, error: "Hubs can't read your keys: a hub can't reach the network, so a key would do nothing inside one, and a key must never be in a hub at all." };
+      if (!isCapability(p)) return { ok: false, error: `“${p}” isn't a permission the app knows.` };
     }
     return { ok: true, value: { kind: "bespoke", title: x.title, html: x.html, css: x.css as string | undefined, js: x.js as string | undefined, permissions: [...new Set(x.permissions as Capability[])] } };
   }
-  return { ok: false, error: "The page is neither blocks nor a bespoke page." };
+  return { ok: false, error: "The hub is neither blocks nor a bespoke hub." };
 }

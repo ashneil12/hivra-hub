@@ -6,6 +6,7 @@ import {
   sendHermesTurn,
   steerHermesTurn,
   stopHermesSession,
+  hermesHasBackgroundWork,
 } from "./hermes";
 import { refreshHermesCatalog } from "./hermesCatalog";
 import { registerHarness, type HarnessAdapter } from "../../core/registry";
@@ -18,6 +19,7 @@ export const hermesAdapter: HarnessAdapter = {
   cancelTurn: cancelHermesTurn,
   respondApproval: respondHermesApproval,
   stopSession: stopHermesSession,
+  hasBackgroundWork: hermesHasBackgroundWork,
   forgetSession: forgetHermesSession,
   bindSession: bindHermesSession,
   refreshCatalog: refreshHermesCatalog,

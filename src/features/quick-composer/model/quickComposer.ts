@@ -14,6 +14,7 @@ import {
 } from "../../projects/model/recents";
 import {
   defaultSessionChoice,
+  hasListedCatalog,
   hasLiveCatalog,
   modelsFor,
   resolveModel,
@@ -170,13 +171,14 @@ export function parseQuickLaunch(value: unknown): QuickLaunch | null {
 
 /**
  * The panel is its own webview, so the catalogs a workspace window loaded
- * from each CLI are not in its memory. Only live ones travel: the built-in
- * fallback lists are already bundled on both sides.
+ * from each CLI are not in its memory. Only lists a CLI itself gave travel:
+ * the built-in fallback lists, filtered by version or not, are already
+ * bundled on both sides, and the panel would record a sent list as seen.
  */
 export function liveQuickCatalog(): QuickCatalog {
   const catalog: QuickCatalog["models"] = {};
   for (const harness of HARNESSES) {
-    if (hasLiveCatalog(harness)) catalog[harness] = modelsFor(harness);
+    if (hasListedCatalog(harness)) catalog[harness] = modelsFor(harness);
   }
   return {
     models: catalog,

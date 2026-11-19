@@ -6,13 +6,15 @@
 //! | Row | Status |
 //! | --- | --- |
 //! | `running` | working (a quiet, loop or idle stall is a notice, not a state) |
+//! | `running`, gates failed with a sent-back reason (WP-145) | working, with that reason, unless a stall is already the notice |
 //! | `running`, blocked by its first mate (`task_cannot` on its own task) | needs you |
 //! | `running`, blocked by the worker itself | working: its first mate hears it first |
 //! | `question` for the first mate (the default) | working, with a notice |
 //! | `question` the first mate passed to the person | needs you |
 //! | `completed`, no gates or gates passed | done |
+//! | `completed`, gates passed on a mode that doesn't test each task (SC-3a), or accepted by its first mate | done, with a notice: "Built, not tested yet", "Not tested", "Accepted without a pass: why" |
 //! | `completed`, gates still running | working |
-//! | `completed`, gates failed | failed |
+//! | `completed`, gates failed | failed, and a sent-back reason when the gates left one (WP-145) |
 //! | `completed`, gates passed but the verdict check was unsure, or a gate couldn't run (WP-40) | working, with a notice: its first mate decides |
 //! | `failed` on a usage limit (`resets_at`, or class `usage_limit`), not marked unretryable | paused |
 //! | `failed` otherwise | failed |
@@ -21,6 +23,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use super::testing_mode::{NOTE_AT_SHIP, NOTE_OFF};
 use crate::delegations::{Delegation, CANCELLED, COMPLETED, FAILED, QUESTION, RUNNING};
 
 /// The only states shown anywhere.
@@ -58,7 +61,12 @@ impl GateVerdict {
 
     /// The row's stored verdict. An unknown value is treated as not yet passed, never as passed.
     pub fn of(row: &Delegation) -> GateVerdict {
-        match row.gate_verdict.as_deref() {
+        Self::stored(row.gate_verdict.as_deref())
+    }
+
+    /// A stored verdict, as the row's `gate_verdict` column holds it.
+    pub fn stored(verdict: Option<&str>) -> GateVerdict {
+        match verdict {
             None => GateVerdict::NotRequired,
             Some(Self::PASSED) => GateVerdict::Passed,
             Some(Self::FAILED) => GateVerdict::Failed,
@@ -108,6 +116,79 @@ fn with_reason(lead: &str, reason: Option<&str>) -> String {
     }
 }
 
+/// The first line of a fact-gap summary, when it is a real reason. A log line is untrusted: a blank, a control
+/// character, or a line too long to show is not a reason.
+fn sent_back_line(summary: &str) -> Option<String> {
+    let line = summary.split(['\n', '\r']).next()?.trim();
+    let rest = line.strip_prefix("Sent back:")?.trim();
+    if rest.is_empty() || line.chars().count() > 180 {
+        return None;
+    }
+    if line.chars().any(char::is_control) {
+        return None;
+    }
+    Some(line.to_string())
+}
+
+/// Whether the newest gates line is a real send-back. The verdict on the row is separate: a later delivery can
+/// clear it without losing the line.
+pub(crate) fn sent_back_on(row: &Delegation) -> bool {
+    sent_back_notice(row, GateVerdict::Failed).is_some()
+}
+
+/// The newest gates summary, and only when this verdict is a failure. An older line does not outlive a later one.
+fn sent_back_notice(row: &Delegation, gates: GateVerdict) -> Option<String> {
+    if gates != GateVerdict::Failed {
+        return None;
+    }
+    let summary = row
+        .log
+        .iter()
+        .rev()
+        .find(|entry| entry.get("event").and_then(Value::as_str) == Some("gates"))?;
+    sent_back_line(summary.get("summary")?.as_str()?)
+}
+
+/// How a first mate's accept starts its gates line (`gates::decide` writes it, `passed_note` reads it).
+pub(crate) const ACCEPTED_LEAD: &str = "its first mate accepted it";
+
+/// SC-3a: the longest note shown beside a done row.
+const NOTE_MAX: usize = 200;
+
+/// What a done row says about how far it was checked, from its newest gates line, so a pass never reads as a bare Done:
+/// "Built, not tested yet" or "Not tested" (a testing mode that passes a task on its gates alone), or "Accepted without
+/// a pass: <why>" (its first mate accepted an unsure result, and said why). A plain pass says nothing. The line is
+/// untrusted text from the log: only those exact openings count, and a control character or an empty reason is none.
+fn passed_note(row: &Delegation) -> Option<String> {
+    let entry = row
+        .log
+        .iter()
+        .rev()
+        .find(|entry| entry.get("event").and_then(Value::as_str) == Some("gates"))?;
+    let summary = entry.get("summary")?.as_str()?;
+    let first = summary.split(['\n', '\r']).next()?.trim();
+    if first == NOTE_AT_SHIP || first == NOTE_OFF {
+        return Some(first.to_string());
+    }
+    let rest = first.strip_prefix(ACCEPTED_LEAD)?;
+    if rest.chars().any(char::is_control) {
+        return None;
+    }
+    match rest.strip_prefix(':').map(str::trim) {
+        Some(why) if !why.is_empty() => {
+            let shown: String = why.chars().take(NOTE_MAX).collect();
+            let cut = if why.chars().count() > NOTE_MAX {
+                "…"
+            } else {
+                ""
+            };
+            Some(format!("Accepted without a pass: {shown}{cut}"))
+        }
+        None if rest.is_empty() => Some("Accepted without a pass".to_string()),
+        _ => None,
+    }
+}
+
 /// The row's status. Pure: the same row and verdict always give the same answer.
 pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
     match row.state.as_str() {
@@ -141,7 +222,8 @@ pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
                     row.stall_reason.as_deref(),
                 )),
             ),
-            _ => derived(Status::Working, None),
+            // WP-145: a fact gap sent the work back. The row stays working for the fix round.
+            _ => derived(Status::Working, sent_back_notice(row, gates)),
         },
         QUESTION => {
             let question = row.pending_question.as_deref();
@@ -158,13 +240,18 @@ pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
             }
         }
         COMPLETED => match gates {
-            GateVerdict::NotRequired | GateVerdict::Passed => derived(Status::Done, None),
+            GateVerdict::NotRequired => derived(Status::Done, None),
+            // SC-3a: still done, with the note that says how far it was checked.
+            GateVerdict::Passed => derived(Status::Done, passed_note(row)),
             GateVerdict::Pending => {
                 derived(Status::Working, Some("Finished; checks are running".into()))
             }
             GateVerdict::Failed => derived(
                 Status::Failed,
-                Some("Finished, but its checks failed".into()),
+                Some(
+                    sent_back_notice(row, gates)
+                        .unwrap_or_else(|| "Finished, but its checks failed".into()),
+                ),
             ),
             GateVerdict::Unsure => derived(
                 Status::Working,
@@ -208,3 +295,18 @@ pub fn derive_status(row: &Delegation, gates: GateVerdict) -> DerivedStatus {
 pub fn status_of(row: &Delegation) -> DerivedStatus {
     derive_status(row, GateVerdict::of(row))
 }
+
+/// Whether a row in `state` with this stored gate verdict shows as `done`, without loading the row (the worktree
+/// clean-up asks it of every row). It is `status_of(row).status == Status::Done`; a test keeps the two together.
+pub fn is_done(state: &str, gate_verdict: Option<&str>) -> bool {
+    state == COMPLETED
+        && matches!(
+            GateVerdict::stored(gate_verdict),
+            GateVerdict::NotRequired | GateVerdict::Passed
+        )
+}
+
+// SC-6: property tests on the rule that a failed or unsure gate never reads as done (spec 4i).
+#[cfg(test)]
+#[path = "status_prop_tests.rs"]
+mod prop_tests;

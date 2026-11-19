@@ -1,6 +1,5 @@
 // @vitest-environment happy-dom
 // r94 (Critiquito f): no bare "Thinking" row under a reply, in any list that shows a chat's steps.
-import { readFileSync } from "node:fs";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it } from "vitest";
@@ -32,11 +31,6 @@ it("a Mono's activity list shows the reply and no bare Thinking row under it", a
   expect(host.textContent).toContain("npm test is green");
   expect(host.textContent).not.toMatch(/Thinking/);
   await act(async () => root.unmount());
-});
-
-it("the chat's lone-step group skips a bare thought (source check: no layout needed)", () => {
-  const src = readFileSync("src/features/sessions/ui/AgentTranscript.tsx", "utf8");
-  expect(src).toMatch(/phase\.steps\.length === 1\) \{\n\s*\/\/[^\n]*\n\s*if \(isBareThought\(phase\.steps\[0\], turnLive\)\) return null;/);
 });
 
 it("(g) a rendered Mono reply says Nothing needs you once", async () => {

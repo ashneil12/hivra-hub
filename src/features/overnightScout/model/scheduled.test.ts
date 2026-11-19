@@ -24,8 +24,9 @@ const cwd = "/work/my crew";
 const folder = "/notes/approved";
 const on = { ...SCOUT_DEFAULTS, enabled: true, maxDrafts: 2, watchFolder: folder };
 
-function reader(files: Record<string, string | Error>): (path: string) => Promise<string> {
-  return async (path) => {
+function reader(files: Record<string, string | Error>): (root: string, relative: string) => Promise<string> {
+  return async (root, relative) => {
+    const path = `${root}/${relative}`;
     if (!Object.prototype.hasOwnProperty.call(files, path)) {
       throw new Error(`${path}: No such file or directory (os error 2)`);
     }
@@ -103,11 +104,14 @@ describe("scheduled scout turn", () => {
 
     expect(await runScheduledScout({ cwd, disk, readText, now: 80 })).toEqual({ kind: "quiet" });
     const second = await saved(disk);
-    expect(second.rows.map((row) => row.title)).toEqual(["Show the queue", "Auth for the desk", "Board notes"]);
+    expect(second.rows.map((row) => row.title)).toEqual(["Show the queue", "Auth for the desk"]);
     expect(second.rows[1]?.status).toBe("parked");
     expect(second.rows[0]?.createdAt).toBe(50);
     expect(await runScheduledScout({ cwd, disk, readText, now: 90 })).toEqual({ kind: "quiet" });
     expect((await saved(disk)).rows).toEqual(second.rows);
+    const nextNight = new Date(new Date(90).getFullYear(), new Date(90).getMonth(), new Date(90).getDate() + 1, 23);
+    expect(await runScheduledScout({ cwd, disk, readText, now: nextNight.getTime() })).toEqual({ kind: "quiet" });
+    expect((await saved(disk)).rows.map((row) => row.title)).toEqual(["Show the queue", "Auth for the desk", "Board notes"]);
   });
 
   it("treats a missing file as an empty night and a bad read as unfinished", async () => {
@@ -193,7 +197,7 @@ describe("scheduled scout turn", () => {
     };
     expect(await runScheduledScout({ cwd, disk: racing, readText: reader(files), now: 50 })).toEqual({ kind: "quiet" });
     const merged = await saved(disk);
-    expect(merged.rows.map((row) => row.title)).toEqual(["Already here", "Show the queue", "Auth for the desk"]);
+    expect(merged.rows.map((row) => row.title)).toEqual(["Already here", "Show the queue"]);
     expect(merged.briefs[keptId]).toBe("Keep this brief.\n");
     expect(merged.rows[0]?.status).toBe("parked");
 

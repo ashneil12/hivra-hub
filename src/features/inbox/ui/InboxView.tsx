@@ -40,6 +40,10 @@ import { InboxConnectMenu } from "./InboxConnectMenu";
 import { InboxProviderMark } from "./InboxProviderMark";
 import { PluginApprovals } from "../../plugins/ui/PluginApprovals";
 import { FirstMateInboxPanel } from "../../crew/ui/FirstMateInboxPanel";
+import { IS_HUB_BUNDLE } from "../../hub/model/hubBundle";
+import { InboxOneList } from "../../needs/ui/InboxOneList";
+import { NeedPane } from "../../needs/ui/NeedDetail";
+import { inboxParts, setInboxShow, useInboxShow, type InboxShow } from "../../needs/model/inboxShow";
 import { ProjectLogoIcon } from "../../projects/ui/ProjectLogoIcon";
 import { ProjectMascot } from "../../projects/ui/ProjectMascot";
 import { Popover } from "../../../shared/ui/Popover";
@@ -196,7 +200,8 @@ import {
   InboxCommentForm,
   type InboxReplyTarget,
 } from "./InboxComments";
-import { InboxPrDiff } from "./InboxPrDiff";
+import { InboxPrCode } from "./InboxPrDiff";
+import { githubReviewComments } from "../model/reviewGuide";
 import { PrAttribution } from "../../attribution/ui/PrAttribution";
 import { usePrAttribution } from "../../attribution/ui/usePrAttribution";
 import {
@@ -302,10 +307,13 @@ function peekInboxForRail(recents: RecentProject[], cwd: string) {
 function InboxSourceTab({
   source,
   selected,
+  compact = false,
   onSelect,
 }: {
   source: InboxSource;
   selected: boolean;
+  /** Shows the mark alone (the name stays as the tooltip and the accessible name). */
+  compact?: boolean;
   onSelect: (source: InboxSource) => void;
 }) {
   const label = INBOX_SOURCE_LABELS[source];
@@ -314,20 +322,40 @@ function InboxSourceTab({
       type="button"
       role="tab"
       aria-selected={selected}
+      aria-label={label}
+      title={label}
       onClick={() => onSelect(source)}
-      className={`flex h-6 min-w-0 flex-1 items-center justify-center rounded-md px-2 text-[12px] leading-none ${
+      className={`flex h-6 min-w-0 items-center justify-center rounded-md px-2 text-[12px] leading-none ${compact ? "shrink-0" : "flex-1"} ${
         selected
           ? "bg-selection text-content"
           : "text-content/50 hover:bg-content/5 hover:text-content"
       }`}
     >
-      <span className="flex items-center gap-1.5">
+      <span className="flex min-w-0 items-center gap-1.5">
         <InboxProviderMark
           provider={source}
           className="block size-3.5 shrink-0"
         />
-        <span className="leading-none">{label}</span>
+        {compact ? null : <span className="min-w-0 truncate leading-none">{label}</span>}
       </span>
+    </button>
+  );
+}
+
+/** Dropwave: "All" and "Asks", ahead of the sources. */
+function InboxShowTab({ label, selected, onSelect }: { label: string; selected: boolean; onSelect: () => void }) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={selected}
+      data-inbox-show={label.toLowerCase()}
+      onClick={onSelect}
+      className={`flex h-6 shrink-0 items-center justify-center rounded-md px-2 text-[12px] leading-none ${
+        selected ? "bg-selection text-content" : "text-content/50 hover:bg-content/5 hover:text-content"
+      }`}
+    >
+      {label}
     </button>
   );
 }
@@ -380,6 +408,7 @@ type Props = {
   active?: boolean;
   onAsk: (item: InboxItem) => Promise<string>;
   onAskRestart: (item: InboxItem) => Promise<string>;
+  onAskMono?: (item: InboxItem, monoId: string) => void;
   onAskMount: (portal: InboxSessionPortal | null) => void;
   cwd: string;
   /** Shows only this project's items, plus ones not tied to any project. */
@@ -405,6 +434,7 @@ export function InboxView({
   active = true,
   onAsk,
   onAskRestart,
+  onAskMono,
   onAskMount,
   cwd,
   scopeProject,
@@ -667,6 +697,14 @@ export function InboxView({
   const connectableSources = connectableInboxSources(connections);
   const sourceAvailable = visibleSources.includes(source);
   const noSourcesConnected = visibleSources.length === 0;
+  // Dropwave (Ash, 11 Nov: "an All and then Ask and then GitHub"): which of the Inbox's two lists show. With no source
+  // connected there is nothing to choose between, so everything shows.
+  const keptShow = useInboxShow();
+  const show: InboxShow = IS_HUB_BUNDLE && !noSourcesConnected ? keptShow : "all";
+  const parts = inboxParts(show);
+  // The Needs you row whose card is open beside the list.
+  const [pickedNeed, setPickedNeed] = useState<string | null>(null);
+  const needOpen = IS_HUB_BUNDLE && pickedNeed != null;
 
   // The roster has to come from Linear, not from the fetched issues: hiding a
   // team drops its issues, so a derived list could never offer it back.
@@ -912,6 +950,12 @@ export function InboxView({
   const onSourceChange = (next: InboxSource) => {
     setSource(next);
     saveInboxSource(next);
+    // Dropwave: a source's tab shows that source's work items alone.
+    if (IS_HUB_BUNDLE) pickShow("items");
+  };
+  const pickShow = (next: InboxShow) => {
+    setInboxShow(next);
+    setPickedNeed(null);
   };
 
   const onFilterButtonClick = (event: ReactMouseEvent<HTMLButtonElement>) => {
@@ -936,14 +980,24 @@ export function InboxView({
           <div
             role="tablist"
             aria-label="Inbox source"
-            className="flex min-w-0 basis-0 items-center gap-px"
-            style={{ flexGrow: visibleSources.length }}
+            // Dropwave: with "All" and "Asks" in the row, the tabs take the width their words need and "Add
+            // connection" keeps the rest.
+            className={`flex min-w-0 items-center gap-px ${IS_HUB_BUNDLE ? "" : "basis-0"}`}
+            style={IS_HUB_BUNDLE ? undefined : { flexGrow: visibleSources.length }}
           >
+            {IS_HUB_BUNDLE ? (
+              <>
+                <InboxShowTab label="All" selected={show === "all"} onSelect={() => pickShow("all")} />
+                <InboxShowTab label="Asks" selected={show === "asks"} onSelect={() => pickShow("asks")} />
+              </>
+            ) : null}
             {visibleSources.map((option) => (
               <InboxSourceTab
                 key={option}
                 source={option}
-                selected={source === option}
+                selected={source === option && show === "items"}
+                // With four or more sources the names no longer fit a narrow list: only the open one keeps its name.
+                compact={visibleSources.length > 3 && source !== option}
                 onSelect={onSourceChange}
               />
             ))}
@@ -969,7 +1023,7 @@ export function InboxView({
           </button>
         ) : null}
       </div>
-      {noSourcesConnected ? null : (
+      {noSourcesConnected || !parts.items ? null : (
         <div className="flex h-9 shrink-0 items-center gap-1 border-b border-stroke px-2">
           <div className="relative flex h-7 min-w-0 flex-1 items-center">
             <Search className="pointer-events-none absolute left-2 size-3 shrink-0 opacity-50" />
@@ -1038,11 +1092,36 @@ export function InboxView({
         ref={setListScrollRef}
         className="min-h-0 flex-1 overflow-y-auto overscroll-none"
       >
-        {/* WP-31: plugin installs that need a yes sit with the rest of the Inbox. */}
-        <PluginApprovals />
-        {/* WP-15: first-mate decisions, results, failures and credential needs. */}
-        <FirstMateInboxPanel cwd={cwd} onOpenSession={onOpenSession} />
-        {noSourcesConnected ? (
+        {IS_HUB_BUNDLE ? (
+          // Dropwave: the one Needs you list leads the Inbox, so asks and decisions sit with the work items. A first
+          // mate's decision is one row of it; the first mate's results, failures and digest line sit under it (G10).
+          // A source's tab leaves the asks out; a row's words open its card beside the list.
+          parts.asks ? (
+            <InboxOneList
+              cwd={cwd}
+              onOpenSession={onOpenSession}
+              pick={{
+                picked: pickedNeed,
+                firstWhenNone: !parts.items,
+                onPick: (item) => {
+                  setPickedNeed(item.key);
+                  setDiscussionOpen(false);
+                },
+              }}
+            >
+              {/* WP-31: plugin installs that need a yes sit with the rest of the Inbox. */}
+              <PluginApprovals />
+            </InboxOneList>
+          ) : null
+        ) : (
+          <>
+            {/* WP-31: plugin installs that need a yes sit with the rest of the Inbox. */}
+            <PluginApprovals />
+            {/* WP-15: first-mate decisions, results, failures and credential needs. */}
+            <FirstMateInboxPanel cwd={cwd} onOpenSession={onOpenSession} />
+          </>
+        )}
+        {!parts.items ? null : noSourcesConnected ? (
           <p className="px-3 py-3 text-[12px] text-content/50">
             Add a connection to start using the Inbox.
           </p>
@@ -1082,6 +1161,14 @@ export function InboxView({
           </p>
         ) : (
           <ul className="flex flex-col gap-0.5 p-1.5">
+            {IS_HUB_BUNDLE && show === "all" ? (
+              // Under "All" no source's tab is lit, so the work items say whose they are.
+              <li data-inbox-source-heading={source} className="flex items-center gap-1.5 px-1.5 pb-0.5 pt-1 text-xs leading-5 text-content/60">
+                <InboxProviderMark provider={source} className="block size-3 shrink-0" />
+                {INBOX_SOURCE_LABELS[source]}
+                <span className="text-content/45">{visibleItems.length}</span>
+              </li>
+            ) : null}
             {shownItems.map((item) => {
               const key = inboxItemKey(item);
               const projectId = projectKey(item.projectPath);
@@ -1093,7 +1180,7 @@ export function InboxView({
                 <li key={key}>
                   <InboxCard
                     item={item}
-                    active={selected != null && key === inboxItemKey(selected)}
+                    active={selected != null && key === inboxItemKey(selected) && !needOpen}
                     logoPath={resolveTabGroupLogo(projectId, logos)}
                     mascotName={resolveTabGroupMascot(projectId, groupMascots)}
                     mascotColor={resolveTabGroupColor(
@@ -1109,6 +1196,7 @@ export function InboxView({
                         updatedAt: item.updatedAt,
                       });
                       setSelectedKey(key);
+                      setPickedNeed(null);
                     }}
                   />
                 </li>
@@ -1162,6 +1250,24 @@ export function InboxView({
       />
     ) : null;
 
+  const detail = (
+    <InboxDetailBody
+      item={selected}
+      cwd={cwd}
+      projects={projectOptions}
+      revision={refresh}
+      relatedSessions={
+        selected ? relatedSessionsForInboxItem(selected, sessions) : []
+      }
+      onDiscuss={() => setDiscussionOpen(true)}
+      onStart={onStart}
+      repairSessions={repairSessions}
+      onRepairChecks={onRepairChecks}
+      onOpenSession={onOpenSession}
+      onItemChange={updateInboxItem}
+    />
+  );
+
   return (
     <div
       role="region"
@@ -1195,26 +1301,19 @@ export function InboxView({
         {list}
         <div className="relative flex min-h-0 min-w-0 flex-1">
           <div className="min-h-0 min-w-0 flex-1">
-            <InboxDetailBody
-              item={selected}
-              cwd={cwd}
-              projects={projectOptions}
-              revision={refresh}
-              relatedSessions={
-                selected ? relatedSessionsForInboxItem(selected, sessions) : []
-              }
-              onDiscuss={() => setDiscussionOpen(true)}
-              onStart={onStart}
-              repairSessions={repairSessions}
-              onRepairChecks={onRepairChecks}
-              onOpenSession={onOpenSession}
-              onItemChange={updateInboxItem}
-            />
+            {IS_HUB_BUNDLE ? (
+              <NeedPane picked={pickedNeed} asksOnly={!parts.items}>
+                {detail}
+              </NeedPane>
+            ) : (
+              detail
+            )}
           </div>
-          {discussionOpen && selected ? (
+          {discussionOpen && selected && !needOpen && parts.items ? (
             <InboxDiscussionPanel
               onOpen={onAsk}
               onRestart={onAskRestart}
+              onAskMono={onAskMono}
               onMount={onAskMount}
               key={inboxAskKey(selected)}
               item={selected}
@@ -3001,11 +3100,22 @@ export function InboxDetail({
               ) : diffError ? (
                 <p className="text-[13px] text-content/50">{diffError}</p>
               ) : prDiff ? (
-                <InboxPrDiff
-                  key={`${item.projectPath}:${item.number}:${revision}:${diffMode}`}
+                <InboxPrCode
+                  diffKey={`${item.projectPath}:${item.number}:${revision}:${diffMode}`}
                   diff={prDiff}
                   fullFile={fullFile}
                   focusPath={diffFocusPath}
+                  guide={
+                    item.provider === "github"
+                      ? {
+                          repo: item.repo,
+                          number: item.number,
+                          title: item.title,
+                          cwd: item.projectPath || cwd,
+                          comments: githubReviewComments(thread),
+                        }
+                      : undefined
+                  }
                 />
               ) : (
                 <p className="text-[13px] text-content/45">No file changes</p>

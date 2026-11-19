@@ -87,6 +87,8 @@ pub(crate) fn ensure_tables(conn: &Connection) -> rusqlite::Result<()> {
     crate::watcher::ensure_tables(conn)?;
     // WP-71: saved views live in the same database as the tasks they show.
     super::views::ensure_tables(conn)?;
+    // WP-250: which tasks each first mate takes by itself.
+    super::pickup::ensure_tables(conn)?;
     Ok(())
 }
 
@@ -906,12 +908,16 @@ fn trash_subtree(
     Ok(())
 }
 
-/// WP-77: a GitHub task's brief keeps the issue text in a data frame. Any other task is the short line.
-fn pickup_text(source: &str, number: i64, title: &str, description: &str) -> String {
+/// WP-77: a GitHub task's brief keeps the issue text in a data frame. Any other task is the short line. Both name the
+/// task's id, because a task's number is only unique within its project.
+fn pickup_text(id: &str, source: &str, number: i64, title: &str, description: &str) -> String {
     if source == "github" {
-        crate::github_issues::brief::pickup(number, title, description)
+        format!(
+            "{}\n\nTask id: {id}",
+            crate::github_issues::brief::pickup(number, title, description)
+        )
     } else {
-        format!("pick up task #{number}")
+        format!("pick up task #{number} (id {id})")
     }
 }
 
@@ -942,6 +948,78 @@ fn wake(conn: &Connection, owner: &str, key: &str, text: &str, now: i64) -> Resu
         now,
     )?;
     Ok(())
+}
+
+/// WP-250: an unassigned task that a first mate's pickup rule matches is given to that first mate, noted in the task's
+/// activity, and wakes it once (the same wake key as a person's assignment, so it is never heard twice).
+fn pick_up_by_rule(
+    conn: &Connection,
+    id: &str,
+    now: i64,
+    changed: &mut Vec<String>,
+) -> Result<(), String> {
+    let Some(row) = load(conn, id)? else {
+        return Ok(());
+    };
+    if row.assignee.is_some() || row.delegation_id.is_some() {
+        return Ok(());
+    }
+    // A task a rule took once, or one the person unassigned, is never taken again: the person let it go on purpose.
+    let taken_before: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM task_activity WHERE task_id = ?1 AND kind IN ('pickup', 'unassigned')",
+            [&row.id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if taken_before > 0 {
+        return Ok(());
+    }
+    let status = status_name(conn, &row.status_id)?;
+    let labels = parse_labels(&row.labels);
+    let candidate = super::pickup::Candidate {
+        project: &row.project_id,
+        status: &status,
+        labels: &labels,
+        assignee: row.assignee.as_deref(),
+        trashed: row.trashed_at.is_some(),
+        needs_you: row.needs_you != 0,
+        closed: closed(&category_of(conn, &row.status_id)?),
+    };
+    let Some(owner) = super::pickup::taker(conn, &candidate)? else {
+        return Ok(());
+    };
+    let updated = conn
+        .execute(
+            "UPDATE tasks SET assignee = ?1, version = version + 1, updated_at = ?2
+             WHERE id = ?3 AND assignee IS NULL",
+            params![owner, now, row.id],
+        )
+        .map_err(|e| e.to_string())?;
+    if updated == 0 {
+        return Ok(());
+    }
+    conn.execute(
+        "INSERT INTO task_activity (id, task_id, at, kind, text, delegation_id) VALUES (?1, ?2, ?3, 'pickup', ?4, NULL)",
+        params![new_id("act"), row.id, now, "Picked up by rule"],
+    )
+    .map_err(|e| e.to_string())?;
+    if !changed.iter().any(|c| c == &row.id) {
+        changed.push(row.id.clone());
+    }
+    wake(
+        conn,
+        &owner,
+        &format!("task-pickup:{}", row.id),
+        &pickup_text(
+            &row.id,
+            &source_read(&row.source),
+            row.number,
+            &row.title,
+            &row.description,
+        ),
+        now,
+    )
 }
 
 fn delegation_parties(conn: &Connection, id: &str) -> Result<Option<(String, String)>, String> {
@@ -1235,11 +1313,12 @@ pub(crate) fn create_in(
                 conn,
                 assignee,
                 &format!("task-pickup:{id}"),
-                &pickup_text(&row.source, number, &row.title, &row.description),
+                &pickup_text(&row.id, &row.source, number, &row.title, &row.description),
                 now,
             )?;
         }
     }
+    pick_up_by_rule(conn, &row.id, now, &mut changed)?;
     let stored = load(conn, &row.id)?.ok_or_else(|| "No task with that id.".to_string())?;
     Ok(Written {
         stale: false,
@@ -1439,6 +1518,18 @@ pub(crate) fn update_in(
             changed.push(row.id.clone());
         }
     }
+    // WP-250: the person taking a task away from someone is an opt-out no pickup rule overrides later.
+    if actor.kind == "person"
+        && assignee_changed
+        && next_assignee.is_none()
+        && row.assignee.is_some()
+    {
+        conn.execute(
+            "INSERT INTO task_activity (id, task_id, at, kind, text, delegation_id) VALUES (?1, ?2, ?3, 'unassigned', ?4, NULL)",
+            params![new_id("act"), row.id, now, "Unassigned"],
+        )
+        .map_err(|e| e.to_string())?;
+    }
     if actor.kind == "person" && assignee_changed {
         if let Some(assignee) = &next_assignee {
             // WP-77: the person picking up a GitHub task ends the hold.
@@ -1456,6 +1547,7 @@ pub(crate) fn update_in(
                 assignee,
                 &format!("task-pickup:{id}"),
                 &pickup_text(
+                    &row.id,
                     &source_read(&row.source),
                     number,
                     &next_title,
@@ -1464,6 +1556,16 @@ pub(crate) fn update_in(
                 now,
             )?;
         }
+    }
+    // A write that sets or clears the assignee is the person's own choice; a rule never undoes it. Only a write to a
+    // field a rule looks at (WP-250 step 2) can start a match, so a reorder, priority or comment never does.
+    let trigger_field = input.title.is_some()
+        || input.description.is_some()
+        || input.status.is_some()
+        || input.labels.is_some()
+        || !matches!(input.due, Set::Keep);
+    if !input.trash && matches!(input.assignee, Set::Keep) && trigger_field {
+        pick_up_by_rule(conn, &row.id, now, &mut changed)?;
     }
     let stored = load(conn, &row.id)?.ok_or_else(|| "No task with that id.".to_string())?;
     Ok(Written {

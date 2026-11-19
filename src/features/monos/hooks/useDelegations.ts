@@ -74,6 +74,8 @@ export function useDelegations(options: {
   land?: (result: MonoSessionCompletionResult) => Promise<MonoSessionCompletionResult>;
   /** WP-13: an account failure is recorded. The note can name the next signed-in CLI. */
   crewFailure?: (row: Delegation, result: MonoSessionCompletionResult) => Promise<CrewFailureNote | undefined>;
+  /** SC-19: this request's report is still on its way from the app's batches (MonoSessionCompletionBatches.holds). */
+  reportHeld?: (requestId: string) => boolean;
   backend?: DelegationsBackend;
 }): DelegationTracker {
   const latest = useRef(options);
@@ -93,6 +95,7 @@ export function useDelegations(options: {
           latest.current.queueReport(monoId, message),
         quitting: () => latest.current.quitting(),
         land: (result) => latest.current.land?.(result) ?? Promise.resolve(result),
+        reportHeld: (requestId) => latest.current.reportHeld?.(requestId) ?? false,
         // WP-13: read on each settle, so a later render's callback is the one that runs.
         ...(options.crewFailure
           ? { crewFailure: (row: Delegation, result: MonoSessionCompletionResult) => latest.current.crewFailure!(row, result) }

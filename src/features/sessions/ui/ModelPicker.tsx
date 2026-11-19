@@ -46,6 +46,8 @@ import {
 import { AddModelForm, addModelEscRef, OtherModelsSection, useCustomModels } from "./CustomModels";
 import { customModelSettings, pillText, type CustomModel } from "../model/customModels";
 import { loadFoldOlderVersions, splitOlderVersions, subscribeFoldOlderVersions } from "../model/olderVersions";
+import { isModelNew } from "../model/modelFirstSeen";
+import { modelNote } from "../model/modelNotes";
 import { useModelSource, type ModelSource } from "./modelSource";
 import { HARNESSES, HARNESS_TITLE, type HarnessId } from "../model/session";
 import { useLockOverscroll } from "../../../shared/hooks/useLockOverscroll";
@@ -64,6 +66,11 @@ type Props = {
   project?: string;
   /** Hide option rows from the menu when they render as pills beside the picker. */
   hideSettings?: boolean;
+  /**
+   * Native lists instead of the menu. Same installed-CLI filter and the same
+   * settings, for a surface whose tests and layout use selects.
+   */
+  fields?: boolean;
   /** Limit provider tabs for surfaces that only support one harness. */
   allowedHarnesses?: readonly HarnessId[];
   hotkeys?: boolean;
@@ -109,6 +116,9 @@ type ModelGroup = {
   name?: string;
   models: Array<{ item: AgentModel; index: number }>;
 };
+
+const FIELD_SELECT =
+  "max-w-full rounded-lg border border-content/10 bg-content/5 px-2 py-1 text-[13px] text-content outline-none focus:border-content/30";
 
 const MENU_WIDTH = 250;
 const MODEL_MENU_WIDTH = 310;
@@ -338,6 +348,7 @@ export function ModelPicker({
   values,
   project,
   hideSettings = false,
+  fields = false,
   allowedHarnesses,
   hotkeys = false,
   side = "top",
@@ -792,6 +803,47 @@ export function ModelPicker({
     submenu != null &&
     activeRow != null &&
     activeRow.dataset.modelControlIndex === String(active);
+
+  // After every hook. Leaving `open` false means this path never probes CLIs.
+  if (fields) {
+    const cli = pickerHarnesses.includes(harness) ? pickerHarnesses : [harness, ...pickerHarnesses];
+    const listed = source.modelsFor(harness);
+    const modelOptions = listed.some((item) => item.id === current.id) ? listed : [...listed, current];
+    return (
+      <>
+        <label className="flex items-center justify-between gap-3 text-[13px] text-content/80">
+          CLI
+          <select
+            aria-label="CLI"
+            className={FIELD_SELECT}
+            value={harness}
+            onChange={(event) => onChange(event.target.value as HarnessId, current.id)}
+          >
+            {cli.map((id) => (
+              <option key={id} value={id}>
+                {HARNESS_TITLE[id] ?? id}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center justify-between gap-3 text-[13px] text-content/80">
+          Model
+          <select
+            aria-label="Model"
+            className={FIELD_SELECT}
+            value={current.id}
+            onChange={(event) => onChange(harness, event.target.value)}
+          >
+            {modelOptions.map((item) => (
+              <option key={item.id} value={item.id}>
+                {item.name}
+              </option>
+            ))}
+          </select>
+        </label>
+      </>
+    );
+  }
 
   return (
     <>
@@ -1288,9 +1340,12 @@ export function ModelSettingRows({
   model,
   values,
   side = "top",
+  fields = false,
   onSettingsChange,
   row,
 }: Pick<Props, "harness" | "model" | "values" | "side" | "onSettingsChange"> & {
+  /** Native lists for select settings. Toggles stay the plain switch. */
+  fields?: boolean;
   row: (setting: {
     id: string;
     label: string;
@@ -1319,6 +1374,23 @@ export function ModelSettingRows({
                   variant="plain"
                   onSettingsChange={onSettingsChange}
                 />
+              ) : fields ? (
+                <select
+                  aria-label={settingLabel(setting)}
+                  className={FIELD_SELECT}
+                  value={settingValue(setting, values)}
+                  onChange={(event) => {
+                    const value = event.target.value;
+                    if (setting.options.find((option) => option.value === value)?.unsupported) return;
+                    onSettingsChange({ ...values, [setting.id]: value });
+                  }}
+                >
+                  {setting.options.map((option) => (
+                    <option key={option.value} value={option.value} disabled={option.unsupported}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
               ) : (
                 <SelectPill
                   setting={setting}
@@ -1825,10 +1897,14 @@ function ModelFlyout({
                   // Provider first (OpenCode Go vs OpenCode), else harness.
                   const provenance =
                     item.provider?.name ?? HARNESS_TITLE[item.harness];
+                  const note = modelNote(item);
+                  const fresh = isModelNew(item.harness, item.id);
                   return (
                     <div
                       key={item.id}
-                      className={`group flex h-8 items-center rounded-lg px-1 ${
+                      className={`group flex rounded-lg px-1 ${
+                        note ? "items-start py-1" : "h-8 items-center"
+                      } ${
                         disabled
                           ? "text-content/30"
                           : highlighted
@@ -1851,12 +1927,32 @@ function ModelFlyout({
                         }
                         onMouseDown={(event) => event.preventDefault()}
                         onClick={() => onPick(item)}
-                        className="flex min-w-0 flex-1 items-center gap-2 px-1.5 text-left text-[13px] disabled:cursor-not-allowed"
+                        className={`flex min-w-0 flex-1 gap-2 px-1.5 text-left text-[13px] disabled:cursor-not-allowed ${
+                          note ? "flex-col items-stretch py-1" : "items-center"
+                        }`}
                       >
                         <span className="min-w-0 flex-1 truncate">
                           {item.name}
                         </span>
+                        {note ? (
+                          <span
+                            data-model-note=""
+                            className="text-[11px] font-normal leading-snug text-content/55"
+                          >
+                            {note}
+                          </span>
+                        ) : null}
                       </button>
+                      {fresh ? (
+                        <span
+                          data-model-new=""
+                          className={`shrink-0 rounded-full bg-content/10 px-1.5 py-0.5 text-[10px] font-medium text-content/60 ${
+                            note ? "mt-1.5" : ""
+                          }`}
+                        >
+                          new
+                        </span>
+                      ) : null}
                       {tab === "favorites" ? (
                         <span className="max-w-24 shrink-0 truncate text-[10px] text-content/40">
                           {provenance}

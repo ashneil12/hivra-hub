@@ -1,6 +1,7 @@
 // WP-165: the night run is code. It does not call a model, and a store that does not answer is not a finished night.
 
 import type { LocalHubDisk } from "../../hub/model/localHub/localHub";
+import { localDay } from "../../workLog/model/workLog";
 import { runScout } from "./run";
 import { fileInside, projectKeyFromCwd, SOURCES_FILE, WATCH_FILE_NAME } from "./paths";
 import { changeScoutDoc, readScoutDoc, type ScoutDoc } from "./store";
@@ -12,9 +13,17 @@ async function defaultDisk(): Promise<LocalHubDisk> {
   return tauriLocalHubDisk;
 }
 
-async function readProjectFile(path: string): Promise<string> {
-  const { readTextFile } = await import("../../../platform/tauri/fs");
-  return readTextFile(path);
+type ScoutRead = (root: string, relative: string) => Promise<string>;
+
+async function readProjectFile(root: string, relative: string): Promise<string> {
+  const { invoke } = await import("@tauri-apps/api/core");
+  return invoke("mobile_read_text_file", { root, relative });
+}
+
+function nightOf(time: number): string {
+  const date = new Date(time);
+  if (date.getHours() < 12) date.setDate(date.getDate() - 1);
+  return localDay(date);
 }
 
 /** A missing file is empty input. Anything else, including a timeout, is not. */
@@ -23,9 +32,10 @@ function missingRead(error: unknown): boolean {
   return /os error 2\b|no such file|not a file/i.test(text);
 }
 
-async function readOptional(read: (path: string) => Promise<string>, path: string): Promise<string> {
+async function readOptional(read: ScoutRead, root: string, relative: string): Promise<string> {
+  if (!fileInside(root, relative)) return "";
   try {
-    const text = await read(path);
+    const text = await read(root, relative);
     if (typeof text !== "string") throw new Error("unreadable");
     return text;
   } catch (error) {
@@ -42,7 +52,7 @@ async function readOptional(read: (path: string) => Promise<string>, path: strin
 export async function runScheduledScout(input: {
   cwd: string;
   disk?: LocalHubDisk;
-  readText?: (path: string) => Promise<string>;
+  readText?: ScoutRead;
   now?: number;
 }): Promise<ScoutTurn> {
   const disk = input.disk ?? (await defaultDisk());
@@ -53,30 +63,29 @@ export async function runScheduledScout(input: {
   } catch {
     return { kind: "retry" };
   }
-  if (doc.settings.enabled !== true) return { kind: "quiet" };
+  if (doc.settings.enabled !== true || !doc.settings.watchFolder || doc.settings.maxDrafts === 0) {
+    return { kind: "quiet" };
+  }
 
   const read = input.readText ?? readProjectFile;
   let sourcesText = "";
   let watchText = "";
   try {
-    const sourcesPath = fileInside(input.cwd, SOURCES_FILE);
-    if (sourcesPath) sourcesText = await readOptional(read, sourcesPath);
-    const folder = doc.settings.watchFolder;
-    if (folder) {
-      const watchPath = fileInside(folder, WATCH_FILE_NAME);
-      if (watchPath) watchText = await readOptional(read, watchPath);
-    }
+    sourcesText = await readOptional(read, input.cwd, SOURCES_FILE);
+    if (sourcesText) watchText = await readOptional(read, doc.settings.watchFolder, WATCH_FILE_NAME);
   } catch {
     return { kind: "retry" };
   }
 
   try {
-    await changeScoutDoc(
+    const saved = await changeScoutDoc(
       disk,
       (latest) => {
-        if (latest.settings.enabled !== true) return latest;
+        if (latest.settings.enabled !== true || latest.settings.watchFolder !== doc.settings.watchFolder) return latest;
+        const night = nightOf(now);
+        const written = latest.rows.filter((row) => row.draft && nightOf(row.createdAt) === night).length;
         const placed = runScout({
-          settings: latest.settings,
+          settings: { ...latest.settings, maxDrafts: Math.max(0, latest.settings.maxDrafts - written) },
           sourcesText,
           watchText,
           rows: latest.rows,
@@ -88,6 +97,7 @@ export async function runScheduledScout(input: {
       },
       now,
     );
+    if (saved.settings.enabled && saved.settings.watchFolder !== doc.settings.watchFolder) return { kind: "retry" };
   } catch {
     return { kind: "retry" };
   }

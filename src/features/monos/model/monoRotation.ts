@@ -207,7 +207,7 @@ export function planRotation(
   };
   const brief = (sessionId: string) => {
     const parts = [
-      `This is the same long-lived conversation with the user. It continues in a fresh session so your context stays small; nothing was lost. Pick up where it left off and do not mention the switch unless asked. For anything older or more detailed than this, read the chat itself with \`app sessions.read {"sessionId":"${sessionId}"}\` (pass nextBefore for older pages), and check memory with \`app memory.search\`.`,
+      `This is the same long-lived conversation with the user. It continues in a fresh session so your context stays small; nothing was lost. Pick up where it left off and do not mention the switch unless asked. For anything older or more detailed than this, read the chat itself with \`app sessions.read {"sessionId":"${sessionId}"}\` (pass nextBefore for older pages), find something said earlier with \`app chat.search {"query":"a few words"}\`, and check memory with \`app memory.search\`.`,
     ];
     if (earlier.length)
       parts.push(`Earlier, oldest first:\n${earlier.join("\n")}`);

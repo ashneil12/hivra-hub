@@ -296,6 +296,26 @@ fn path_in(dir: &Path, path: &Path) -> bool {
     component_prefix(&path, &dir) && path != dir
 }
 
+/// WP-91: the folder this copy's pool hands its slots out of, or none when the pool can't be kept apart from the
+/// real one (then no checkout is a slot).
+pub(crate) fn slots_dir(env: &PoolEnv) -> Option<PathBuf> {
+    paths_for(env).ok().map(|paths| paths.slots_dir)
+}
+
+/// [`slots_dir`] for the running app.
+pub(crate) fn slots_dir_for(app: &AppHandle) -> Option<PathBuf> {
+    slots_dir(&env_from_app(app))
+}
+
+/// WP-91: whether `path` is a slot of the pool that hands its slots out of `slots_dir`: a folder straight under it,
+/// by the folders' real identity. The folder itself, a folder inside a slot, and a link in it that leads to some
+/// other folder are not slots.
+pub(crate) fn is_slot_in(slots_dir: &Path, path: &Path) -> bool {
+    let (dir, path) = (resolve(slots_dir), resolve(path));
+    path.parent()
+        .is_some_and(|parent| component_prefix(parent, &dir) && component_prefix(&dir, parent))
+}
+
 pub fn env_from_app(app: &AppHandle) -> PoolEnv {
     let dev = crate::instance::kind() != crate::instance::Kind::Daily;
     let data_dir = crate::project_file::data_dir(app).unwrap_or_else(|_| {
@@ -435,7 +455,7 @@ fn check_branch(repo: &Path, branch: &str) -> Result<(), String> {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
-    let mut command = crate::delivery::child("git");
+    let mut command = crate::git_cmd::child();
     crate::hide_window_console(&mut command);
     let output = command
         .current_dir(repo)
@@ -459,7 +479,6 @@ struct Ran {
 
 fn run_tool(env: &PoolEnv, launch: &ToolLaunch, cwd: &Path, args: &[String]) -> Ran {
     let mut command = crate::delivery::child(&launch.program);
-    crate::hide_window_console(&mut command);
     command.args(&launch.args);
     command.args(args);
     command.current_dir(cwd);
@@ -467,6 +486,11 @@ fn run_tool(env: &PoolEnv, launch: &ToolLaunch, cwd: &Path, args: &[String]) -> 
     command.env("USERPROFILE", &env.home);
     command.env("GIT_TERMINAL_PROMPT", "0");
     command.env("GIT_OPTIONAL_LOCKS", "0");
+    let mut command = match pool_sandbox_prefix(&env.data_dir) {
+        Ok(prefix) => crate::agent_sandbox::under_wrap(command, prefix.as_deref()),
+        Err(_) => std::process::Command::new("/nonexistent/monocode-sandbox-refused"),
+    };
+    crate::hide_window_console(&mut command);
     match command.output() {
         Ok(output) => Ran {
             started: true,
@@ -480,6 +504,20 @@ fn run_tool(env: &PoolEnv, launch: &ToolLaunch, cwd: &Path, args: &[String]) -> 
             stdout: String::new(),
             stderr: "The worktree pool couldn't be started.".into(),
         },
+    }
+}
+
+/// Prefix for the pool tool, or nothing when the sandbox is off.
+/// Unit tests stay plain. A profile that cannot be built refuses the start.
+fn pool_sandbox_prefix(data_dir: &Path) -> Result<Option<Vec<std::ffi::OsString>>, String> {
+    #[cfg(test)]
+    {
+        let _ = data_dir;
+        Ok(None)
+    }
+    #[cfg(not(test))]
+    {
+        crate::agent_sandbox::action_wrap(Some(data_dir), &[])
     }
 }
 
@@ -1211,7 +1249,7 @@ mod tests {
     }
 
     fn git_ok(cwd: &Path, args: &[&str]) {
-        let output = std::process::Command::new("git")
+        let output = crate::git_cmd::git()
             .current_dir(cwd)
             .args(args)
             .env("GIT_AUTHOR_NAME", "Test")

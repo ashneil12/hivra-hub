@@ -37,15 +37,23 @@ export type HomeChat = {
   openedAt: number;
 };
 
-export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat";
+export type HomeLineKind = "decision" | "question" | "review" | "moving" | "doc" | "chat" | "page" | "builders" | "project" | "stopped";
 
 export type HomeLine = {
   id: string;
   kind: HomeLineKind;
   text: string;
   projectId: string;
+  /** Person-facing project name for a Needs you chip. Absent on other lines. */
+  projectName?: string;
+  /** Who asked, for the quiet line under a Needs you row. */
+  who?: string;
+  /** The Needs you kind, for its chip. The row's own kind still decides where a click goes. */
+  needsKind?: string;
   target: string;
   at: number;
+  /** At most two, primary first. A line with any is not itself a button. */
+  actions?: readonly { label: string; run: () => void; title?: string; ariaLabel?: string }[];
 };
 
 export type HomeProject = { id: string; name: string; folder: string | null };
@@ -231,6 +239,22 @@ export function needsYouLines(
   return lines;
 }
 
+/**
+ * WP-161: new builders are waiting on the disk pause. A line about the machine, not a project, so it has no project
+ * name in front. It leads Needs you: nothing new can start until the person frees space (or changes the floor).
+ * Its action opens Settings > Worktrees > Clean up (`targetFor`).
+ */
+export function builderHoldLine(need: { id: string; text: string }): HomeLine {
+  return {
+    id: `builders:${need.id}`,
+    kind: "builders",
+    text: cleanLine(need.text),
+    projectId: "",
+    target: need.id,
+    at: 0,
+  };
+}
+
 /** Agent tasks in progress, except a question (that line is in Needs you). */
 export function movingLines(tasks: readonly HomeTask[], name: (projectId: string) => string): HomeLine[] {
   const lines: HomeLine[] = [];
@@ -290,4 +314,42 @@ export function recentLines(docs: readonly HomeDoc[], chats: readonly HomeChat[]
   }
   lines.sort((a, b) => b.at - a.at || a.id.localeCompare(b.id));
   return lines.slice(0, HOME_CARD_LIMIT);
+}
+
+/**
+ * One line per project, in the strip's order: its name, then what is happening there in a few words.
+ * Needs you items on that project become a count from the same list ("Hivra · 2 need you"). Otherwise the first
+ * task moving in it, or just the name. The builder hold is not one of the items.
+ */
+export function projectLines(
+  projects: readonly HomeProject[],
+  needsYou: readonly HomeLine[],
+  moving: readonly HomeLine[],
+  tasks: readonly HomeTask[],
+): HomeLine[] {
+  const lines: HomeLine[] = [];
+  const seen = new Set<string>();
+  for (const project of projects) {
+    if (seen.has(project.id)) continue;
+    seen.add(project.id);
+    const name = cleanLine(project.name) || project.id;
+    const count = needsYou.filter((line) => line.projectId === project.id && line.kind !== "builders").length;
+    let what = "";
+    if (count > 0) {
+      what = count === 1 ? "1 needs you" : `${count} need you`;
+    } else {
+      const line = moving.find((item) => item.projectId === project.id);
+      const task = line ? tasks.find((item) => `task:${item.id}` === line.id) : undefined;
+      if (task) what = cleanLine(task.title);
+    }
+    lines.push({
+      id: `project:${project.id}`,
+      kind: "project",
+      text: what ? `${name} · ${what}` : name,
+      projectId: project.id,
+      target: project.id,
+      at: 0,
+    });
+  }
+  return lines;
 }

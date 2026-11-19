@@ -45,19 +45,25 @@ describe("the cheap tier's ask", () => {
       const answer = await cheapAsk("deepseek-def456", call(outcome))("p");
       expect(answer.ok).toBe(false);
     }
-    // Every one of them comes back as a timeout, which the curator keeps deferred: the turn is never dropped.
-    const failures: CheapOutcome[] = [
+    // A busy provider or no answer in time stays deferred; a refusal or an unreadable reply is final.
+    const later: CheapOutcome[] = [
       { ok: false, text: "", kind: "retryable", reason: "busy" },
-      { ok: false, text: "", kind: "unreachable", reason: "shape" },
       { ok: false, text: "", kind: "timeout", reason: "slow" },
+    ];
+    for (const outcome of later) {
+      const answer = await cheapAsk("deepseek-def456", call(outcome))("p");
+      expect(answer.ok ? "ok" : answer.kind, outcome.kind).toBe("timeout");
+    }
+    const final: CheapOutcome[] = [
+      { ok: false, text: "", kind: "unreachable", reason: "shape" },
       { ok: false, text: "", kind: "refused", reason: "That model turned this down." },
       { ok: false, text: "", kind: "refused", reason: "No key is saved for that model." },
       { ok: true, text: "", kind: "ok", reason: "" },
       { ok: true, text: "I think they like small commits.", kind: "ok", reason: "" },
     ];
-    for (const outcome of failures) {
+    for (const outcome of final) {
       const answer = await cheapAsk("deepseek-def456", call(outcome))("p");
-      expect(answer.ok ? "ok" : answer.kind, outcome.kind).toBe("timeout");
+      expect(answer.ok ? "ok" : answer.kind, outcome.kind).toBe("refused");
     }
   });
 

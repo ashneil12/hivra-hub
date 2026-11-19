@@ -1,6 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HarnessEvent } from "../../core/types";
+import { applyHarnessEvent } from "../../core/apply";
+import { newSession } from "../../../../features/sessions/model/session";
+import { lineageForThread } from "../../../../features/sessions/model/subagentLineage";
 import {
   parseTranscript,
   type Transcript,
@@ -392,5 +395,53 @@ describe("T3 Code's recorded Claude transcripts through the live adapter", () =>
       expect.objectContaining({ errorClass: "auth", retryable: false }),
     ]);
     expect(errorsOf(turns[1].events)).toEqual([]);
+  });
+
+  // WP-122: the list on the parent thread is read off the rows the adapter builds from these frames.
+  const lineageOf = async (name: string) => {
+    const { turns } = await replay(load(name));
+    const session = turns
+      .flatMap((turn) => turn.events)
+      .reduce(applyHarnessEvent, newSession("claude", "/repo"));
+    const lineage = lineageForThread("claude", session.blocks);
+    if (!lineage?.reported) throw new Error(`${name}: no subagents reported`);
+    return lineage.children;
+  };
+
+  it("claude_nested_subagent_model: the parent thread lists the subagent with its model and report", async () => {
+    const children = await lineageOf("claude_nested_subagent_model");
+    expect(children[0]).toMatchObject({
+      id: "toolu_015wdGtqfaZX3yxLAXJKHzxY",
+      name: "Test nested agent response",
+      model: "claude-haiku-4-5-20251001",
+      status: "done",
+    });
+    expect(children[0]!.result).toContain("NESTED_LEAF_OK");
+  });
+
+  it("claude_background_subagent_after_root: a background subagent is listed once it has finished", async () => {
+    const children = await lineageOf("claude_background_subagent_after_root");
+    expect(children.find((child) => child.id === "toolu_01AS7YtghJ9Knkp7QuuGTo7j")).toMatchObject({
+      name: "Background subagent test",
+      model: "claude-sonnet-4-6",
+      status: "done",
+    });
+  });
+
+  it("claude_subagent_resume_after_restart: the subagent Claude resumed after a restart keeps its name", async () => {
+    const children = await lineageOf("claude_subagent_resume_after_restart");
+    expect(children.find((child) => child.id === "toolu_015Qai4vD7RwbU7ctXxoebJ6")).toMatchObject({
+      name: "Audit src/math.ts",
+      model: "claude-sonnet-5",
+      status: "done",
+    });
+  });
+
+  it("claude_idle_resume: a thread that started no subagent has no list", async () => {
+    const { turns } = await replay(load("claude_idle_resume"));
+    const session = turns
+      .flatMap((turn) => turn.events)
+      .reduce(applyHarnessEvent, newSession("claude", "/repo"));
+    expect(lineageForThread("claude", session.blocks)).toBeNull();
   });
 });

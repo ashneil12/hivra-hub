@@ -1,5 +1,14 @@
+import { HOME_MONOS } from "./shell/MonoRailSection";
+import { homeInView } from "../features/hub/model/homeScope";
+import { subscribeMoreAgentsChanges } from "../features/providers/model/moreAgents";
 import { setTurnTextDecorator } from "../integrations/harness/core/registry";
 // WP-85: terminal Claude sessions in the chat list.
+import { acceptStoredTeleportRow, applyTeleportRow } from "./model/teleportSessionState";
+import { launchRecovery, needsAnotherPass } from "../features/connections/model/teleportMove";
+import { settleTeleportLock } from "../features/connections/model/teleportLock";
+import { WINDOW_OWNER } from "../features/connections/model/teleportLocal";
+import { teleportStateOf } from "../features/connections/model/teleportState";
+import { startPendingReviews, type ReviewHooks } from "../features/security-review/model/launch";
 import { mergeTerminalSessions } from "../features/terminalMirror/model/list";
 import { TerminalMirrorPane } from "../features/terminalMirror/ui/TerminalMirrorPane";
 import { useTerminalMirror } from "../features/terminalMirror/ui/useTerminalMirror";
@@ -13,29 +22,38 @@ import { appendControlEvent } from "./model/controlText";
 import { installCodingTeamDefault } from "../features/hub/model/codingTeamModel";
 import { noteSessionRuns, RUN_HEARTBEAT_MS, setProcessRunSource } from "../features/monos/model/sessionRuns";
 import { noteToolCalls, setRunToolTextSource } from "../features/hub/model/soulTamper";
-import { waitingOnYouLine } from "../features/sessions/model/approvalWait";
+import { parksForApproval } from "../features/sessions/model/approvalCarry";
+import { openActionHash } from "../features/sessions/model/approvalAction";
+import { stripHiddenCharacters } from "../features/sessions/model/hiddenText";
+import { heldLineForSend } from "../features/sessions/model/approvalWait";
 import { listHarnessRuns } from "../integrations/harness/core/child";
 import { OPEN_CONNECTOR_EVENT } from "../features/hub/model/connectors";
 import { OPEN_HUB_EVENT, OPEN_TEAMS_EVENT } from "../features/hub/model/hubTeams";
 import { focusConnector } from "../features/hub/ui/ConnectorsPage";
 import { HubOnboardingGate } from "../features/hub/ui/HubOnboardingGate";
-import { IS_HUB_BUNDLE } from "../features/hub/model/hubBundle";
+import { IS_HUB_BUNDLE, ONE_CHAT_LOOK } from "../features/hub/model/hubBundle";
 import { hubDefaultsOn } from "../features/hub/model/hubDefaults";
 import { hubMonoRank } from "../features/hub/model/hubData";
 import { liveMonosNote } from "../features/hub/model/liveMonos";
+import { projectChatBrief } from "../features/hub/model/projectChatBrief";
 import { recoverMobileUsage } from "../features/mobile/model/mobileUsageLimit";
+import { runMobilePairing } from "../features/mobile/model/mobilePairing";
 import { sessionConversationPage } from "../features/agent-app/model/sessionConversation";
 import { useMobileWorkspace } from "../features/mobile/hooks/useMobileWorkspace";
 import { hasMobileAttachments, mobileAttachments } from "../features/mobile/model/mobileAttachments";
 import {
   applyMobileChoice,
   mobileWorkspaceChoice,
-  mobileChoice,
+  applyMobileConfigure,
+  mobileCatalog,
+  mobilePrivateSessionIds,
+  publishedApprovalRows,
   mobileNewSession,
   mobileProjectId,
   mobileQuestionReply,
 } from "../features/mobile/model/mobileWorkspace";
 import { readMonoConversation } from "../features/monos/model/monoConversation";
+import { useApplyMonoCardRun } from "../features/monos/hooks/useApplyMonoCardRun";
 import {
   resumeMonoUsageLimit,
   switchMonoUsageLimitAccount,
@@ -58,13 +76,17 @@ import { gateAsk, gateAskNote, gateCheckout, gateDue, gateFailedResult, gateVerd
 import { briefGatesFor } from "../features/firstmate/model/completionGates";
 import {
   isOpenDelegation,
+  DELEGATIONS_CHANGED,
   tauriDelegations,
   type Delegation,
   type DelegationTracker,
 } from "../features/monos/model/delegations";
+// SC-19: a retired chat's open work moves to the chat that takes its place.
+import { moveOwnedWork, ownerSuccessor, type RetireKind } from "../features/monos/model/ownerMove";
 import { delegationTasksHost } from "../features/monos/model/delegationTasks";
 import { withCrewAdvice } from "../features/crew/model/advice";
-import { crewRouteFor, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { crewAnyLock, crewLaunchCheck, crewPickFor, crewPolicyForLead, crewPolicyInForce, crewRouteFor, pickMonosFrom, recordCrewFailure, recordCrewPause } from "../features/crew/model/host";
+import { cliForLeadBrief, refuseBriefedLeadHarness, refuseNeverUseLead } from "../features/crew/model/lead";
 import {
   briefCancelled,
   briefSentAt,
@@ -74,7 +96,7 @@ import {
   queueBriefForIdle,
   withoutQueuedBrief,
 } from "../features/monos/model/followedBriefs";
-import type { DelegationMeta } from "../features/agent-app/model/agentAppTasks";
+import { markAppDelegate, redoLinkRefusal, type DelegationMeta } from "../features/agent-app/model/agentAppTasks";
 import { deliverPhaseResult, isPhaseSession, phaseFinish } from "../features/phases/model/phaseBridge";
 import { chatMonoOwner, hasDelegateTool } from "../features/hub/model/hubMcp";
 import { appendsHubNote, hubNoteFor, setHubNote } from "../features/hub/model/hubNote";
@@ -101,10 +123,20 @@ import {
   useMonoTeamsVersion,
 } from "../features/hub/model/monoTeams";
 import { isOrchestratorChat } from "../features/monos/model/orchestrators";
-import { leadMemoryBlock } from "../features/hub/model/hubMemoryPrimer";
-import { longChatOn, treeContext, treeDate, treeZoom } from "../features/monos/model/monoTreeStore";
-import { useMonoTrees } from "./hooks/useMonoTrees";
-import { useMemoryCurator } from "./hooks/useMemoryCurator";
+import { leadMemoryBlock, leadStandingBlock } from "../features/hub/model/hubMemoryPrimer";
+import { longChatOn, treeContext, treeDate, treeGrep, treeZoom } from "../features/monos/model/monoTreeStore";
+import { isolatedCompaction, useMonoTrees } from "./hooks/useMonoTrees";
+import { useAskLedger } from "../features/asks/hooks/useAskLedger";
+import { useAskJobs } from "../features/asks/hooks/useAskJobs";
+import { askMateFor } from "../features/asks/model/askMate";
+import { openAsksKey, openAsksNote } from "../features/asks/model/askNotes";
+import { useNeedsRollup } from "../features/needs/hooks/useNeedsRollup";
+import { askStore } from "../features/asks/model/askStore";
+import { askForMate, isOpen as isOpenAsk, mateAskStatus } from "../features/asks/model/asks";
+import { MEMORY_BATCH_NOW_EVENT, useMemoryCurator } from "./hooks/useMemoryCurator";
+import { latestRotation, segmentStore } from "../features/monos/model/chatSegments";
+import { stateCard } from "../features/monos/model/stateCard";
+import { searchChats } from "../features/monos/model/chatSearch";
 import { pickSummaryTree } from "../features/memory/model/longChat";
 import { recordUse } from "../features/memory/model/memoryUse";
 import { memoryUsePorts } from "../features/memory/ui/memoryUseForApp";
@@ -112,11 +144,8 @@ import { recalledFence } from "../features/memory/ui/recallForTurn";
 import { compactionCount } from "../features/memory/model/shownMemory";
 import { profileNote } from "../features/memory/ui/profileForTurn";
 import { ensureMorningHabit } from "../features/chief/model/habit";
-import { syncScoutHabit } from "../features/overnightScout/model/habit";
-import { readScoutSettings } from "../features/overnightScout/model/store";
-import { tauriLocalHubDisk } from "../features/hub/model/localHub/localTransport";
 import { readsEveryProject, turnRecallWide } from "../features/chief/model/scope";
-import { leadFor, leadMono, leadSpecFor } from "../features/hub/model/hubLeads";
+import { leadFor, leadMono, leadSpecFor, leadWorkingFolder } from "../features/hub/model/hubLeads";
 import type { HubProject } from "../features/hub/model/types";
 import { useDelegations } from "../features/monos/hooks/useDelegations";
 import { useFollowedBriefs } from "../features/monos/hooks/useFollowedBriefs";
@@ -131,15 +160,22 @@ import {
   setLeadDelegator,
 } from "../features/hub/model/leadershipDelegation";
 import { bindCouncilApp } from "../features/council/model/seatSessions";
+import { bindFreshEyesApp } from "../features/fresh-eyes/model/bind";
+import { backendFrom, releaseHeld, resumeReviews, syncHeldDecisions } from "../features/fresh-eyes/model/gate";
+import { bindFreshEyesBackend, bindHeldStarter } from "../features/fresh-eyes/model/held";
+import { subscribeFreshEyes } from "../features/fresh-eyes/model/store";
 import { postLeadReport } from "../features/hub/model/roomReports";
 import { useDelegationTree } from "../features/monos/hooks/useDelegationTree";
 import { usePrWatches } from "../features/pr-watch/hooks/usePrWatches";
 // Hivra WP-11: the first mate's wake queue.
 import { useFirstMateWakes } from "../features/firstmate/hooks/useFirstMateWakes";
+import { useLeadTick } from "../features/leadTick/hooks/useLeadTick";
 // WP-43: Stop stays on screen while a browser is showing.
 import { DrivingBar } from "../features/browser/ui/DrivingBar";
 // Hivra WP-60: a remote project's report, shown in the chat that started it.
 import { bindRemoteReports, placeRemoteReport } from "../features/firstmate/host/remoteReport";
+// Hivra WP-172: the fan-out checkpoint store (src-tauri/src/fanout_checkpoint.rs).
+import { tauriFanoutCheckpoints } from "../features/firstmate/host/fanoutCheckpointStore";
 import { OPEN_CREW, openCrew } from "../features/crew/model/focus";
 import { registerCrewCancel } from "../features/crew/model/cancel";
 import { registerCrewDelegate } from "../features/crew/model/retry";
@@ -152,12 +188,20 @@ import {
 import { useHubChecks } from "./hooks/useHubChecks";
 import { inCheckTurn, withoutQuietTurns } from "../features/hub/model/hubChecks";
 import { useAutopilot } from "../features/autopilot/hooks/useAutopilot";
+import { useOwnerWords } from "../features/autopilot/hooks/useOwnerWords";
 import { acceptQuickLaunch } from "./model/quickLaunchSession";
 import { useWorkspaceNavigation } from "./hooks/useWorkspaceNavigation";
 import { useIdleSessionDetach } from "./hooks/useIdleSessionDetach";
 import { HarnessEventQueue } from "./model/harnessFlush";
 import { noteStreamApplied } from "../features/sessions/model/streamingPerformance";
 import { updateSessionState } from "./model/sessionState";
+import {
+  consumeForkPoint,
+  forkFocusedChat,
+  insertFork,
+  pendingForkBrief,
+} from "../features/sessions/model/threadFork";
+import { ThreadForkHost } from "../features/sessions/ui/ThreadForkHost";
 import { beginTabSwitch, commitTabSwitch } from "./model/navigationPerformance";
 import {
   SessionStateContext,
@@ -169,6 +213,8 @@ import {
   type AppSessionListing,
   type AppSessionPlacement,
 } from "../features/agent-app/model/agentApp";
+// WP-92: the worker route's answer, so the host call is typed without a value.
+import type { WorkerArmOutcome } from "../features/agent-app/model/agentAppSecrets";
 import { submitWithSettlement } from "./model/managedSubmission";
 import { providerFailureOf, withProviderFailure } from "./model/turnFailure";
 import {
@@ -205,6 +251,7 @@ import {
   type OrchestrationProposal,
 } from "../features/orchestration/model/orchestrationPlan";
 import { discoverOrchestrationSettings } from "../features/orchestration/model/orchestrationCatalog";
+import { watchDecisions } from "../features/orchestration/model/decisionWatch";
 import {
   attachOrchestrationWorkers,
   consolidateOrchestrationTabs,
@@ -233,11 +280,17 @@ import {
 } from "react";
 import { ProjectStrip } from "../features/hub/ui/ProjectStrip";
 import { HubProjectItems } from "../features/hub/ui/HubProjectItems";
+import { HubTopNav } from "../features/hub/ui/HubTopNav";
 import { HubSurface } from "../features/hub/ui/HubSurface";
 import { ShipNotice } from "../features/hub/ui/ShipNotice";
+// WP-92: a Mono's request for a key appears as a form card above the chat.
+import { SecretCards } from "../features/secrets/ui/SecretRequestCard";
+// WP-92: a finished turn's "Needs Ash (provide): a key" gets the same form, not the composer.
+import { SecretKeyAsk } from "../features/secrets/ui/SecretKeyAsk";
 import {
   hubData,
   hubProjectFolder,
+  hubProjectFolders,
   hubProjectIdFor,
   nameHubProject,
   useHubDataVersion,
@@ -257,9 +310,12 @@ import {
   setCodingTeamOpener,
   setHubSelection,
   setMonoChatOpener,
+  setMonoSettingsOpener,
+  openMonoChat,
   setMonoTeamOpener,
   showAppItem,
   showProjectToday,
+  showProjectHome,
   useHubSelection,
   type CodingTeamTarget,
   type MonoTeamTarget,
@@ -268,6 +324,10 @@ import { noteOpenedChat } from "../features/home/model/store";
 import { stampChat } from "../features/home/model/openedChat";
 import { useHomeOnOpen } from "../features/home/ui/useHomeOnOpen";
 import { useHomeOpener } from "../features/home/ui/useHomeOpener";
+import { notifyHomeChief, setHomeChiefHost } from "../features/home/model/homeChief";
+import { setAgentsBoardSessionStop } from "../features/agents-board/model/sessionStop";
+import { placePrompt, rememberPromptSession } from "../features/sessions/model/threadLinkOpen";
+import { ThreadLinkNotice, useThreadLinkOpener } from "../features/sessions/ui/ThreadLinkActions";
 import {
   codingTeamView,
   noteCodingTeamView,
@@ -291,6 +351,7 @@ import { ResourcePressureNotice } from "../features/notifications/ui/ResourcePre
 import { HarnessUpdateNotice } from "../features/providers/ui/HarnessUpdateNotice";
 import { NewLayoutNotice } from "./shell/NewLayoutNotice";
 import { toastStackTop } from "./shell/toastStack";
+import { setChatComputerUse } from "../features/computerUse/model/computerUse";
 import { WhatsNewDialog } from "./shell/WhatsNewDialog";
 import { ProviderSignInDialog } from "../features/sessions/ui/ProviderSignInDialog";
 import {
@@ -354,6 +415,7 @@ import {
   worktreeFocus,
 } from "../features/source-control/model/worktreeFocus";
 import { useProjectDiffStats } from "../features/source-control/hooks/useProjectDiffStats";
+import { onGuardFindingOpen } from "../features/commit-guard/model/openFinding";
 import { showWorktreeSetup } from "../features/source-control/model/worktreeSetup";
 import {
   listProjectActions,
@@ -366,8 +428,10 @@ import {
   createWorktree,
   detachSessionWorktree,
   checkWorktreeRemoval,
+  listedWorktreeFor,
   listWorktrees,
   namedWorktreeBranch,
+  temporaryWorktreeBranchName,
   orchestrationWorktreeBranchName,
   removeOrchestrationBranch,
   removeOrchestrationWorktree,
@@ -380,12 +444,14 @@ import {
 } from "../features/source-control/model/worktrees";
 import {
   attachNewChatWorktree,
-  forgetNewChatFolderChoice,
   gitRepositoryOnThisComputer,
-  newChatStaysHere,
-  noteNewChatFolderChoice,
+  newChatWorktreeOpenFor,
   openNewChatWorktree,
+  pendingNewChatOfferCheck,
+  withNewChatFolderChoice,
+  withoutNewChatFolderChoice,
 } from "../features/source-control/model/newChatWorktree";
+import { rememberWorktreeInclude } from "../features/source-control/model/worktreeIncludeNote";
 import { UsageFooter } from "./shell/UsageFooter";
 import { useProjectBranches } from "../features/source-control/hooks/useProjectBranches";
 import { useInboxActivity } from "../features/inbox/hooks/useInboxUnseen";
@@ -543,11 +609,13 @@ import {
   canCompactHarnessContext,
   canRewindHarnessLastTurn,
   canSteerHarness,
+  harnessCannotSteer,
   compactHarnessContext,
   rewindHarnessLastTurn,
   forgetHarnessSession,
-  generateHarnessTitle,
-  generateHarnessBranchName,
+  // WP-129: titles and branch names try the short text model first.
+  generateTitleWithTextModel,
+  generateBranchWithTextModel,
   migrateMonoCodexSession,
   isLiveHarness,
   latestTurnNeedsHarnessLogin,
@@ -584,15 +652,23 @@ import {
   isPreparingHandoff,
   pendingHandoff,
   pendingComposerSwitch,
-  planComposerSwitch,
   sessionChildHarnesses,
   sessionThroughTurn,
   shouldAskOutgoingAgent,
   type HandoffComposerCard,
   userMessagesAfterHandoff,
+  wrapForkPrompt,
   wrapHandoffPrompt,
-  wrapRecoveredPrompt,
+  movedChatPrompt,
+  recoveredChatPrompt,
 } from "../features/sessions/model/handoff";
+import {
+  applyMidThreadSwitch,
+  commitMidThreadSwitch,
+  buildPortableTranscript,
+  restoreUnsentPortableResume,
+  wrapPortableResume,
+} from "../features/sessions/model/midThreadSwitch";
 import { requestOutgoingHandoff } from "../features/sessions/model/handoffTurn";
 import {
   applyBtwHarnessEvent,
@@ -604,6 +680,7 @@ import {
 } from "../features/sessions/model/btw";
 
 import { isEditTool } from "../integrations/harness/core/preview";
+import { CHAT_NEEDS_FOLDER, hasChatFolder, withRelinkedFolder } from "../integrations/harness/core/chatFolder";
 import { sessionEditPaths } from "../features/sessions/model/checkpointEdits";
 import { useSessionChangeTotals } from "../features/sessions/ui/SessionReview";
 import {
@@ -654,6 +731,7 @@ import {
   projectName,
   rebasePath,
   resolveWorkspacePath,
+  projectKey,
 } from "../shared/lib/paths";
 import {
   rebaseProjectData,
@@ -705,9 +783,26 @@ import {
 import { useBusyChatsFeed } from "../features/monos/hooks/useBusyChatsFeed";
 // Hivra WP-10: a first mate reads and never edits (features/firstmate/).
 import { useFirstMateCheckoutGuard } from "../features/firstmate/hooks/useFirstMateCheckoutGuard";
+import { useFirstMateDoneHold } from "../features/firstmate/hooks/useFirstMateDoneHold"; // SC-3b
 import { useSteering } from "../features/firstmate/hooks/useSteering";
 import { firstMateLaunch } from "../features/firstmate/model/checkoutGuard";
+import { crewLaunch } from "../features/crew/model/crewSession";
+// WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+import {
+  commitIdleCompactBusy,
+  watchIdleClaudeCompaction,
+} from "../integrations/harness/providers/claude/idleCompactWatch";
+// WP-115: plain sentence when this agent cannot redirect a running turn.
+import {
+  COMPACTING_NOTE,
+  QUEUED_MESSAGE_WAITS,
+  cantRedirectTurn,
+  cantTakeFollowUp,
+  followUpWhenBusy,
+  midTurnAsk,
+} from "../features/sessions/model/cantDo";
 import { withLegacyBriefParts } from "../features/firstmate/model/brief";
+import { useFanoutHost } from "../features/firstmate/hooks/useFanoutHost";
 import { viewAfterRemoval, type RemovalOrigin } from "../features/sessions/model/sessionWorkspaceLifecycle";
 import { focusClosesMono, paneFocus } from "./model/paneFocus";
 import { useLiveTurns } from "../features/sessions/hooks/useLiveTurns";
@@ -725,7 +820,20 @@ import {
 import { firstTurnAccount, providerName, reactToLimit, workerRoom } from "../features/providers/model/accountWaterfall";
 import { claudeRunsOnSubscriptionBridge } from "../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { getCachedRateLimits } from "../features/providers/model/rateLimitsCache";
-import { waitsOnlyOnItsLead } from "../features/monos/model/workerStuck";
+import { approvalSessionIdsOf } from "../features/sessions/model/approvalSessionIds";
+import {
+  discardFanOutLoser,
+  pickFanOutInStore,
+  releaseFanOutWorktrees,
+} from "../features/sessions/model/fanOutDecide";
+import {
+  defaultWorktreeRoots,
+  fanOutJanitorPort,
+  startFanOutSetup,
+} from "../features/sessions/model/fanOutJanitor";
+import { startFanOut } from "../features/sessions/model/fanOutLaunch";
+import { listCompares, putCompare, subscribeCompares } from "../features/sessions/model/fanOutStore";
+import { fanOutCompareRows, fanOutNotStartedLines } from "../features/sessions/model/fanOutView";
 import {
   HARNESSES,
   HARNESS_LABEL,
@@ -733,7 +841,6 @@ import {
   canReplaceSessionTitle,
   formatSessionTitle,
   sessionNeedsInput,
-  hasPendingApproval,
   newDefaultSession,
   newSession,
   retargetSessionToProject,
@@ -758,7 +865,19 @@ import {
   type Session,
   type UsageLimit,
   type WorkspaceMode,
+  DEFAULT_RUNTIME_MODE,
 } from "../features/sessions/model/session";
+// WP-134b: a More agents chat never goes through the eleven CLIs.
+import { AGENT_GONE, WAITS } from "../features/registry/model/registryCopy";
+import {
+  START_REGISTRY_CHAT_EVENT,
+  loadRegistryDocument,
+  refreshRegistry,
+  reportRegistryChatRefused,
+  subscribeRegistry,
+} from "../features/registry/model/registryList";
+import { registrySendPlan, registrySessionFields } from "../features/registry/model/registryPlan";
+import { moreAgentOfSession, openMoreAgentSession } from "../integrations/harness/moreAgents/moreAgentAdapter";
 // WP-113: attention for the optional chat list inbox. Off passes no sessions.
 import { useChatListInbox } from "../features/settings/model/displayPrefs";
 import {
@@ -770,12 +889,14 @@ import {
   canDispatchQueuedHead,
   canSteerQueuedHead,
   dequeueQueuedMessage,
+  queueStatusOnEnqueue,
   isWaitingBrief,
   queuedMessageForSubmit,
   typedQuestionAnswer,
   waitsOnCutTurn,
 } from "../features/sessions/model/messageQueue";
 import { deliverQueuedFollowUp } from "../features/sessions/model/queuedFollowUp";
+import { registerSessionPersistFlush } from "../features/sessions/model/sessionPersistFlush";
 import {
   USAGE_LIMIT_RESUME_GRACE_MS,
   resumeUsageLimitedSession,
@@ -788,7 +909,6 @@ import {
   fetchCodexRateLimits,
 } from "../features/providers/model/rateLimitsFetch";
 import { exhaustedWindowResetAt } from "../features/providers/model/rateLimits";
-import { dropContextWindow } from "../features/sessions/model/contextUsage";
 import {
   discardDraftSessionRecord,
   deleteSession,
@@ -835,6 +955,7 @@ import {
   setWindowFocused,
 } from "../features/notifications/model/notifications";
 import { useInputNotifications } from "../features/notifications/hooks/useInputNotifications";
+import { useNotablePings } from "../features/notifications/hooks/useNotablePings";
 import { archiveFocusedSession } from "../features/sessions/model/archiveShortcut";
 import {
   adjacentItemId,
@@ -866,6 +987,10 @@ import {
   findMono,
   monoWorksOn,
   isMonoSession,
+  isMonoSideChat,
+  monoOwnChats,
+  forgetMonoSideChat,
+  saveMonoSideChat,
   isProjectLeadId,
   listMonos,
   loadOpenMono,
@@ -876,6 +1001,7 @@ import {
   removeMono,
   updateMono,
   saveMonoName,
+  saveMonoRole,
   saveMonoSessionId,
   saveOpenMono,
   subscribeMonos,
@@ -891,16 +1017,20 @@ import {
   monoTurn,
   readAgentFile,
   recordAgentContext,
+  standingKeyPart,
   writeAgentFile,
 } from "../features/monos/model/monoFiles";
 import { withFirstMateContract } from "../features/firstmate/model/contract";
 import { monoTurnNote } from "../features/monos/model/monoMate";
 import { plainEnglishEndings } from "../features/firstmate/model/plainEnglish";
 import { useMonoHabits } from "./hooks/useMonoHabits";
-import { appPolicy } from "./model/appIdentity";
+import { appIdentity, appPolicy } from "./model/appIdentity";
+import { buildTriageDraft } from "../features/diagnostics/model/triage";
+import { setComposerDraft } from "../features/sessions/model/draftCache";
 import {
   claimVerifyKickoff,
   pendingVerifyKickoff,
+  traceVerifyKickoff,
   verifyKickoffMono,
   verifyRun,
   watchVerifyMessages,
@@ -913,18 +1043,25 @@ import {
 } from "../features/monos/model/delegationStore";
 import {
   holdForLimit,
+  nextHealthCheck,
   nextWake,
   planHeld,
+  droppedTaskLine,
+  setQueueDependency,
   pumpWorkers,
   queuedWorkers,
   retryNow,
   setWorkerQueueBackend,
   subscribeWorkerPool,
+  useWorkerPoolVersion,
   tauriWorkerQueue,
+  projectWorkerDefault,
+  systemWorkerDefault,
   workerPoolHost,
   type HeldSeen,
   type QueuedWorker,
 } from "../features/monos/model/workerPool";
+import { subscribeSpend, type TurnOrigin } from "../features/usage/model/spendGate";
 import { noteMonoFailures, setMonoFailuresHost } from "../features/monos/model/monoFailures";
 import { failedTurnMessage } from "../features/monos/model/turnFailure";
 import {
@@ -960,10 +1097,29 @@ import {
 } from "../features/monos/model/monoRotation";
 import {
   detachMonoTabs,
+  ensureMonoProjectSession,
+  startMonoSideChat,
   ensureMonoRoomSession,
   ensureMonoSession,
   resetMonoSession,
 } from "../features/monos/model/monoWorkspace";
+import { noteMonoChat, pickMonoChat, type MonoChatScope } from "../features/monos/model/monoLastChat";
+import { projectFront, setProjectFront, useProjectFrontVersion } from "../features/hub/model/projectFront";
+import { pickChief as pickCaptain } from "../features/home/model/chief";
+import { chiefListsOpenPanel, useChiefLists } from "../features/asks/model/chiefLists";
+import { ONE_CHAT, earlierChatIds, isOneChat, isOneChatMono, setCatchUpHost } from "../features/asks/model/oneChat";
+import { currentNeedsYou } from "../features/needs/model/needsLive";
+import { tauriFirstMate } from "../features/firstmate/model/steering";
+import { buildCatchUp, catchUpBlock, catchUpNote, catchUpSince } from "../features/asks/model/catchUp";
+import { besideBlock, besideNote, setBesideChatHost } from "../features/asks/model/besideChat";
+import { needLinksKey, needLinksNote } from "../features/asks/model/needLinks";
+import { inlineNeedCard } from "../features/asks/ui/InlineNeed";
+import { setInlineLinkCard } from "../features/sessions/model/inlineLinkCards";
+import { chiefLens, lensLookupFrom, lensNote, lensTag, turnProjects, type LensLookup } from "../features/asks/model/chiefLens";
+import { setTurnTagger } from "../features/sessions/model/turnTags";
+import { isImportedChatId } from "../features/chatImport/model/convert";
+import { importedChatTaker } from "../features/chatImport/model/takeover";
+import { stampFirstMate } from "../features/monos/model/monoMate";
 // WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
 import { CREATOR_MONO_ID, landCreatorBrief, setCreatorSessionHost } from "../features/creator/model/creatorChat";
 import {
@@ -1003,6 +1159,12 @@ import {
   type Automation,
   type AutomationRun,
 } from "../features/automations/model/automations";
+import { automationRunErrorClass } from "../features/automations/model/runFailure";
+// WP-244: one run of an automation at a time, and a watched one skips the model when nothing changed.
+import { EMPTY_TURN_FAILED, EMPTY_TURN_NOTE, emptyTurnStep } from "../features/sessions/model/emptyTurn";
+import { startAutomationRun } from "../features/automations/model/automationQuiet";
+import { MissedScheduleNotice } from "../features/one-time-schedule/ui/OneTimeSchedulePanel";
+import { useOneTimeScheduleRunner } from "../features/one-time-schedule/ui/useOneTimeScheduleRunner";
 import { useQuickComposerLaunches } from "../features/quick-composer/hooks/useQuickComposerLaunches";
 import type { QuickLaunch } from "../features/quick-composer/model/quickComposer";
 import { claimInboxAutomationRuns } from "../features/automations/model/automationEvents";
@@ -1020,12 +1182,16 @@ import { SessionSurface } from "../features/sessions/ui/SessionSurface";
 import { ProjectTerminalDock } from "../features/terminal/ui/ProjectTerminalDock";
 import { lazySurface } from "../shared/ui/lazySurface";
 import { preloadNavigationWhenIdle } from "./model/preloadNavigation";
-import { requestTranscriptJump } from "../features/sessions/model/transcriptJump";
+import { requestTranscriptJump, resolveTranscriptAsks, setTranscriptAskChats } from "../features/sessions/model/transcriptJump";
 import { finderShortcutAction, routeFinderHit } from "../features/search/model/finder";
 // WP-93: the command palette reads what the app can do and runs each row.
 import type { PaletteContext } from "../features/search/model/commandRegistry";
 import { runPaletteRow } from "../features/search/model/paletteRun";
 import { runPaletteCommand } from "../features/search/model/paletteWiring";
+import {
+  focusBeforePalette,
+  paletteFocusOf,
+} from "../features/search/model/paletteFocus";
 import {
   finderFileOptions,
   requestDocFocus,
@@ -1065,6 +1231,7 @@ import {
   inboxComposerCard,
   type InboxItem,
 } from "../features/inbox/model/githubTasks";
+import { inboxItemRef } from "../features/inbox/model/githubTasks";
 import {
   linkedWorkItemFromAutomationEvent,
   linkedWorkItemFromInboxItem,
@@ -1098,6 +1265,7 @@ import {
   subscribeMonosEnabled,
   loadDiffViewer,
   loadFollowUpBehavior,
+  loadMoreAgentsEnabled,
   loadNewChatWorktree,
   loadIdleAgentLimit,
   loadKeybindingOverrides,
@@ -1110,8 +1278,7 @@ import {
   subscribeNotesEnabled,
   type CollapsedProjectRailMode,
   type SettingsSectionId,
-  type FollowUpBehavior,
-} from "../features/settings/model/settings";
+  type FollowUpBehavior, syncMoreAgentsSwitch } from "../features/settings/model/settings";
 import {
   handleEditorFindKey,
   openFindInActiveEditor,
@@ -1137,6 +1304,7 @@ import {
   claimAutoContinue,
   resumeBlocked,
   resumePrompt,
+  isTurnRunning,
   shouldWriteInFlightSnapshot,
 } from "../features/sessions/model/inFlight";
 import {
@@ -1153,8 +1321,10 @@ import {
   workspaceSnapshotKey,
 } from "../features/workspace/model/workspaceSnapshot";
 import type { InstalledUpdate } from "./model/updateNotice";
+
 import {
   bindResumedSessions,
+  bindRestoredHarness,
   closeBusyWindow,
   closeCurrentWindow,
   confirmReload,
@@ -1167,6 +1337,10 @@ import {
   setQuitWorkspace,
   type ResumedWorkspace,
 } from "./model/appLifecycle";
+import { wireSpendGate } from "../features/usage/model/spendWiring";
+
+/** WP-156: the project's standing answers as one block (the app answers "" while standing answers are off). */
+const readStandingBrief = (project: string): Promise<string> => invoke<string>("decisions_standing_brief", { project });
 
 const SearchView = lazySurface(
   async () => {
@@ -1224,6 +1398,17 @@ type LinkedWorkItemPanelState = {
 };
 
 type SubmitOptions = ComposerTurnOptions & {
+  /**
+   * Who started the turn, for the spend gate. Only the composer and the quick composer say "person". Every other caller
+   * (habits, automations, agent apps, wakes, continue prompts, first-mate steers) leaves it out, so it is automated.
+   */
+  origin?: TurnOrigin;
+  /**
+   * WP-247 / WP-243: Ash typed this turn in the composer himself. Only `onComposerSubmit` sets it (and a queued message
+   * he typed keeps it); every other caller leaves it out. Only such a turn may set or clear the chat's goal, and only its
+   * words count as Ash's own when the app checks an action against what he said.
+   */
+  byOwner?: boolean;
   ciRepair?: CiRepairRequest;
   /** Saved alongside the user turn; does not replace the submitted prompt. */
   ciContext?: string;
@@ -1260,6 +1445,8 @@ type SubmitOptions = ComposerTurnOptions & {
   refreshTitle?: boolean;
   /** Internal guard for the retry after resolving a renamed project. */
   projectLocationReady?: boolean;
+  /** WP-245: this turn is the one retry after an empty turn; empty again, it is shown as failed. */
+  emptyRetried?: boolean;
 };
 
 type Submit = (
@@ -1317,66 +1504,18 @@ function userTurnCards(
   };
 }
 
-function withHarnessChoice(
-  session: Session,
-  harness: HarnessId,
-  model: string,
-  modelSettings: Record<string, string>,
-): Session {
-  return {
-    ...session,
-    harness,
-    model,
-    modelSettings,
-    title:
-      session.blocks.length === 0
-        ? HARNESS_LABEL[harness]
-        : formatSessionTitle(
-            harness,
-            sessionDisplayTitle(session.title, session.harness),
-          ),
-    ...(session.model === model
-      ? {}
-      : { context: dropContextWindow(session.context) }),
-    ...(session.harness === harness
-      ? {}
-      : { providerSessionId: undefined, providerAccountId: undefined }),
-  };
-}
-
 function withPlanBuildTarget(
   session: Session,
   target: PlanBuildTarget,
 ): Session {
   const resolved = resolveModel(target.harness, target.model);
   const modelSettings = mergeModelSettings(resolved, target.modelSettings);
-  const plan = planComposerSwitch(session, target.harness);
-  const next = withHarnessChoice(
-    session,
-    target.harness,
-    resolved.id,
+  // WP-121: the same switch the picker uses, including a resume or a labelled recap.
+  return applyMidThreadSwitch(session, {
+    harness: target.harness,
+    model: resolved.id,
     modelSettings,
-  );
-
-  if (plan.kind === "arm") {
-    return { ...next, pendingSwitch: plan.pending };
-  }
-  if (plan.kind === "revert") {
-    return {
-      ...next,
-      pendingSwitch: undefined,
-      ...(plan.restoreProviderSessionId
-        ? { providerSessionId: plan.restoreProviderSessionId }
-        : { providerSessionId: undefined }),
-      ...(plan.restoreProviderAccountId
-        ? { providerAccountId: plan.restoreProviderAccountId }
-        : { providerAccountId: undefined }),
-    };
-  }
-  if (plan.kind === "empty") {
-    return { ...next, pendingSwitch: undefined };
-  }
-  return next;
+  }).session;
 }
 
 function openSessionIds(tabs: WorkspaceTab[]): Set<string> {
@@ -1479,6 +1618,12 @@ function leadCodingTeam(monoId: string): HubProject | undefined {
     : undefined;
 }
 
+// WP-176: the spend gate reads the hub ids and the Mono and habit registries. Wired once, at module load.
+wireSpendGate();
+
+/** Set once the first window of this launch has opened Home. */
+let openedHomeAtLaunch = false;
+
 export default function App(props: AppProps) {
   return (
     <Suspense fallback={null}>
@@ -1552,10 +1697,28 @@ function Workspace({
     () => windowTransfer?.activeTabId ?? resumed?.activeTabId ?? seed.tab.id,
   );
   const [monoViewId, setMonoViewId] = useState<string | null>(null);
-  // A Mono opens with its overview beside the chat until it is hidden.
-  const [monoOverviewOpen, setMonoOverviewOpen] = useState(true);
+  // Ash 12 Nov: a first mate's chat opens without its overview; he opens it when he wants it.
+  const [monoOverviewOpen, setMonoOverviewOpen] = useState(false);
   const [monoOverviewTab, setMonoOverviewTab] =
     useState<MonoOverviewTab>("sessions");
+  // Picking "beside the chat" for the Chief of Staff's lists opens the panel they live in.
+  const chiefListsPlace = useChiefLists();
+  // Only on the Chief of Staff's main chat: every other first mate's chat still opens without its panel.
+  useEffect(() => {
+    if (chiefListsOpenPanel(chiefListsPlace, monoViewId, pickCaptain(listMonos())?.sessionId)) setMonoOverviewOpen(true);
+  }, [chiefListsPlace, monoViewId]);
+  // One chat: the Chief of Staff's chat has no list of chats beside it, so no Chats panel and no toggle for one.
+  const oneChatOpen = isOneChat(monoViewId);
+  // The chats it had before are kept: their list opens from the same toggle, closed until asked for, and nothing in
+  // it starts a new one. With none there is no list and no toggle.
+  const oneChatEarlier = oneChatOpen ? earlierChatIds().length : 0;
+  const [oneChatListOpen, setOneChatListOpen] = useState(false);
+  useEffect(() => {
+    if (!oneChatOpen) setOneChatListOpen(false);
+  }, [oneChatOpen]);
+  const onToggleOneChatList = useCallback(() => setOneChatListOpen((open) => !open), []);
+  // Any chat of the Chief of Staff's, an earlier one included: no "New chat" beside it.
+  const chiefChatOpen = isOneChatMono(monoViewId ? monoForSession(monoViewId)?.id : undefined);
   const monoOverviewOpenRef = useRef(monoOverviewOpen);
   monoOverviewOpenRef.current = monoOverviewOpen;
   const monoOverviewTabRef = useRef(monoOverviewTab);
@@ -1634,6 +1797,11 @@ function Workspace({
   );
   const monoViewIdRef = useRef(monoViewId);
   monoViewIdRef.current = monoViewId;
+  // Ash (12 Nov): the chat on screen is the one a first mate's row opens next time (monoLastChat.ts).
+  const monoScopeRef = useRef<MonoChatScope | undefined>(undefined);
+  useEffect(() => {
+    if (monoViewId) noteMonoChat(monoViewId, monoScopeRef.current);
+  }, [monoViewId]);
   const monoViewRequest = useRef(0);
   // WP-06: opening the coding team reveals the project's own pane, and that pane taking focus would cancel the
   // Lead's open (onFocusPane). Held until the focus from this open has passed; a real chat pick still closes it.
@@ -2181,11 +2349,15 @@ function Workspace({
     canForward: false,
   });
   const turnGen = useRef(new Map<string, number>());
+  // Chats the idle compact watcher holds busy, and the turn generation it took. WP-115.
+  const idleCompactOwners = useRef(new Map<string, number>());
   const editedResends = useRef(createEditedResendCoordinator()).current;
   const lastPersisted = useRef(new Map<string, string>());
   const lastBoundProvider = useRef(new Map<string, string>());
   // Delegation rows (model/delegations.ts), set once useDelegations runs below; submitSession re-attaches through it.
   const delegationsRef = useRef<DelegationTracker | null>(null);
+  // WP-143: what marks a chat as a crew's (crewSession.ts): the rows the UI reads and the ones this window launched since.
+  const crewRows = () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])];
   // PR watches (features/pr-watch), set once usePrWatches runs below; the queue marks their wakes delivered.
   const prWatchesRef = useRef<PrWatchTracker | null>(null);
   // Hivra WP-11: the first mate's wake queue; the queue marks its drained turns delivered.
@@ -2624,7 +2796,9 @@ function Workspace({
   const nextBusySessionIds = useMemo(() => {
     const ids = new Set<string>();
     for (const session of sessions) {
-      if (session.busy) {
+      // A chat held for a background compact is not working: it must not spin
+      // in the rail, publish a live turn, or read as finished when it ends.
+      if (isTurnRunning(session)) {
         ids.add(session.id);
         if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
       }
@@ -2653,9 +2827,11 @@ function Workspace({
 
   // The footer's usage follows what is in view: under the inset layout a
   // Mono's tab keeps the footer, which then reads the Mono's model.
-  const usageSource =
-    insetLayout && monoViewSession ? monoViewSession : active;
+  // Ash (12 Nov): with a first mate's chat open over the workspace, the footer read the workspace's own tab (a Claude
+  // chat) and said "not connected" under an Oh My Pi chat. It reads the chat in view, in every layout.
+  const usageSource = monoViewSession ?? active;
   const usageProviders = useMemo(() => {
+    if (usageSource?.registryAgentId) return [];
     if (
       usageSource?.harness === "claude" ||
       usageSource?.harness === "codex" ||
@@ -2665,12 +2841,13 @@ function Workspace({
       return [usageSource.harness];
     }
     return [];
-  }, [usageSource?.harness]);
+  }, [usageSource?.harness, usageSource?.registryAgentId]);
   const usageSession = useMemo(() => {
     if (!usageSource) return undefined;
     return {
       id: usageSource.id,
       harness: usageSource.harness,
+      ...(usageSource.registryAgentId ? { registryAgentId: usageSource.registryAgentId } : {}),
       model: usageSource.model,
       authRequired: latestTurnNeedsHarnessLogin(usageSource.blocks),
       providerAccountId:
@@ -2682,6 +2859,7 @@ function Workspace({
   }, [
     usageSource?.id,
     usageSource?.harness,
+    usageSource?.registryAgentId,
     usageSource?.model,
     usageSource?.blocks,
     usageSource?.providerAccountId,
@@ -2740,32 +2918,21 @@ function Workspace({
   }, [activeTab, currentProjectDock, runningTerminals]);
 
   const approvalDelegationRows = useDelegationRows();
-  const nextApprovalSessionIds = useMemo(() => {
-    const ids = new Set<string>();
-    for (const session of sessions) {
-      // A worker only waiting on its Lead's answer is not Ash's input (D5): no "Need approval" on it or its Lead.
-      if (
-        sessionNeedsInput(session) &&
-        !waitsOnlyOnItsLead(
-          {
-            id: session.id,
-            pendingQuestion: session.pendingQuestion,
-            approvalPending: hasPendingApproval(session.blocks),
-          },
-          approvalDelegationRows,
-        )
-      ) {
-        ids.add(session.id);
-        if (session.orchestrationLeadId) ids.add(session.orchestrationLeadId);
-      }
-    }
-    return ids;
-  }, [sessions, approvalDelegationRows]);
-  const approvalSessionIdsRef = useRef(nextApprovalSessionIds);
-  if (!setsEqual(approvalSessionIdsRef.current, nextApprovalSessionIds)) {
-    approvalSessionIdsRef.current = nextApprovalSessionIds;
+  const workerQueueVersion = useWorkerPoolVersion();
+  const nextApproval = useMemo(
+    () => approvalSessionIdsOf(sessions, approvalDelegationRows),
+    [sessions, approvalDelegationRows],
+  );
+  const approvalSessionIdsRef = useRef(nextApproval.ids);
+  if (!setsEqual(approvalSessionIdsRef.current, nextApproval.ids)) {
+    approvalSessionIdsRef.current = nextApproval.ids;
   }
   const approvalSessionIds = approvalSessionIdsRef.current;
+  const approvalElsewhereSessionIdsRef = useRef(nextApproval.elsewhere);
+  if (!setsEqual(approvalElsewhereSessionIdsRef.current, nextApproval.elsewhere)) {
+    approvalElsewhereSessionIdsRef.current = nextApproval.elsewhere;
+  }
+  const approvalElsewhereSessionIds = approvalElsewhereSessionIdsRef.current;
 
   // WP-113: attention for settle, snooze and re-sort. Off passes nothing, so today's list is untouched.
   const chatListInboxOn = useChatListInbox();
@@ -2780,6 +2947,8 @@ function Workspace({
       : (monoViewSession?.id ?? active?.id);
   const activeSessionIdRef = useRef(activeSessionId);
   activeSessionIdRef.current = activeSessionId;
+  // WP-92: the chat in view, for the key ask form below its header.
+  const activeChat = sessions.find((session) => session.id === activeSessionId);
 
   // Sessions that belong in the UI: a habit's hidden run is not one of them,
   // and asks through its Mono's chat rather than on its own.
@@ -2788,6 +2957,8 @@ function Workspace({
     [sessions],
   );
   useInputNotifications(promptableSessions, activeSessionId);
+  // WP-164: held notices leave when quiet hours end; a failure waits no longer than its ping interval.
+  useNotablePings();
   // Model, effort and permission changes reach a running turn's CLI now.
   useLiveHarnessSettings(sessions);
 
@@ -3112,13 +3283,19 @@ function Workspace({
     if (lastPersisted.current.get(session.id) === fingerprint) return;
     void upsertSession(session)
       .then((summary) => {
-        if (!summary) return;
+        // WP-177: a save that does not land stays pending, so a reply is not dropped.
+        if (!summary) {
+          if (!pendingPersist.current.has(session.id)) pendingPersist.current.set(session.id, session);
+          return;
+        }
         lastPersisted.current.set(session.id, fingerprint);
         if (summary.cwd === sidebarCwdRef.current) {
           setHistory((current) => mergeProjectHistorySummary(current, summary));
         }
       })
-      .catch(() => undefined);
+      .catch(() => {
+        if (!pendingPersist.current.has(session.id)) pendingPersist.current.set(session.id, session);
+      });
   }, []);
 
   useEffect(() => {
@@ -3195,7 +3372,13 @@ function Workspace({
             const fingerprint = persistFingerprint(session);
             if (lastPersisted.current.get(session.id) === fingerprint) return;
             const summary = await upsertSession(session).catch(() => null);
-            if (!summary) return;
+            const pendingNow = pendingPersist.current.get(session.id);
+            if (pendingNow && pendingNow !== session) return;
+            // WP-177: a refused or failed save stays pending. The timer had already cleared it.
+            if (!summary) {
+              if (!pendingNow) pendingPersist.current.set(session.id, session);
+              return;
+            }
             lastPersisted.current.set(session.id, fingerprint);
             if (summary.cwd === sidebarCwdRef.current) {
               setHistory((current) =>
@@ -3208,7 +3391,38 @@ function Workspace({
     };
     observe();
     const unsubscribe = sessionState.observe(observe);
+    // WP-177: a move hashes the stored row, so this window writes its pending save for that one chat before the plan.
+    // A refused flush keeps that pending save, so the reply is not dropped.
+    const unregisterFlush = registerSessionPersistFlush(async (sessionId) => {
+      const session = pendingPersist.current.get(sessionId);
+      if (!session) return;
+      if (
+        removingSessionIds.current.has(session.id) ||
+        switchingWorktrees.current.has(session.id)
+      ) {
+        pendingPersist.current.delete(sessionId);
+        return;
+      }
+      const fingerprint = persistFingerprint(session);
+      if (lastPersisted.current.get(session.id) === fingerprint) {
+        pendingPersist.current.delete(sessionId);
+        return;
+      }
+      const summary = await upsertSession(session).catch(() => null);
+      const pendingNow = pendingPersist.current.get(sessionId);
+      if (pendingNow && pendingNow !== session) return;
+      if (!summary) {
+        if (!pendingNow) pendingPersist.current.set(sessionId, session);
+        return;
+      }
+      pendingPersist.current.delete(sessionId);
+      lastPersisted.current.set(session.id, fingerprint);
+      if (summary.cwd === sidebarCwdRef.current) {
+        setHistory((current) => mergeProjectHistorySummary(current, summary));
+      }
+    });
     return () => {
+      unregisterFlush();
       unsubscribe();
       if (timer !== undefined) window.clearTimeout(timer);
     };
@@ -3413,6 +3627,74 @@ function Workspace({
     [insertBesideActive],
   );
 
+  // WP-134b: the More agents list the chat screens read is the app's own list. Read it at start, and again whenever
+  // it changes in any window (Settings adds, allows, withdraws or removes an entry).
+  useEffect(() => {
+    // The app's copy of the switch follows the saved setting from the start, so Rust agrees with what Settings shows.
+    void syncMoreAgentsSwitch(loadMoreAgentsEnabled());
+    void refreshRegistry();
+    const unsubscribe = subscribeRegistry(() => undefined);
+    // A change made in another window (a withdraw, a removal) re-reads the list here too, so this window stops runs.
+    let stopChanges: (() => void) | undefined;
+    let disposed = false;
+    void subscribeMoreAgentsChanges(() => void refreshRegistry()).then((stop) => {
+      if (disposed) stop();
+      else stopChanges = stop;
+    });
+    return () => {
+      disposed = true;
+      unsubscribe();
+      stopChanges?.();
+    };
+  }, []);
+
+  // WP-134b: Start a chat opens a More agents session. The harness stays one of the eleven.
+  useEffect(() => {
+    const onStart = async (event: Event) => {
+      const detail = (event as CustomEvent<{ agentId?: unknown; cwd?: unknown }>).detail;
+      const agentId = typeof detail?.agentId === "string" ? detail.agentId : "";
+      // The entry may have been added or allowed a moment ago in Settings: read the app's list before deciding.
+      await refreshRegistry();
+      const plan = registrySendPlan({
+        registryAgentId: agentId,
+        enabled: loadMoreAgentsEnabled(),
+        agents: loadRegistryDocument().agents,
+        busy: false,
+      });
+      if (plan.action !== "prompt") {
+        reportRegistryChatRefused(plan.action === "refuse" ? plan.sentence : AGENT_GONE);
+        return;
+      }
+      const rawCwd = detail?.cwd;
+      const cwd =
+        typeof rawCwd === "string" && rawCwd.length > 0 && rawCwd.length <= 4096 && !/[\0\r\n]/.test(rawCwd)
+          ? rawCwd
+          : "~";
+      const session = {
+        ...newSession("claude", cwd),
+        ...registrySessionFields(plan.agent, "claude"),
+      };
+      // WP-134: the entry id is on the session and is saved with it. Browser storage is not the link.
+      const tab = newTab(session.id);
+      setSessions((prev) => [...prev, session]);
+      appendTab(tab, cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+    };
+    window.addEventListener(START_REGISTRY_CHAT_EVENT, onStart);
+    return () => window.removeEventListener(START_REGISTRY_CHAT_EVENT, onStart);
+  }, [appendTab]);
+
+  // WP-134b: a More agents chat is routed to its entry as soon as it is in the list, so its first send, compact,
+  // rewind and restore never reach the harness it was saved with. Sends still check the list and the switch.
+  useEffect(() => {
+    for (const session of sessions) {
+      if (session.registryAgentId && moreAgentOfSession(session.id) !== session.registryAgentId) {
+        openMoreAgentSession(session.id, session.registryAgentId);
+      }
+    }
+  }, [sessions]);
+
   const usageLimitAccountChangeRef = useRef<
     ((sessionId: string, accountId: string) => Promise<void>) | null
   >(null);
@@ -3526,6 +3808,68 @@ function Workspace({
     attachNewChatWorktree(session.id, cwd, setSessions);
     return session.id;
   }, [appendTab, sessionDefaults?.runtimeMode, sidebarCwd]);
+
+  // WP-123: open a forked chat. The original is not written.
+  // WP-177: once the first sessions are in App, finish or undo any chat move that stopped part way (launch recovery).
+  const launchRecoveryStarted = useRef(false);
+  useEffect(() => {
+    if (launchRecoveryStarted.current || sessions.length === 0) return;
+    launchRecoveryStarted.current = true;
+    // Every project folder the hub knows, not only the open tabs': a move's chat can sit in a project nobody has open.
+    const knownFolders = hubData()
+      .listProjects()
+      .map((project) => project.folder ?? "")
+      .filter((folder) => folder.trim() !== "");
+    // A move that is unfinished (a host offline, a young freeze, an unknown result) gets another pass, and the window
+    // tries again when the network comes back.
+    const RECOVERY_RETRY_MS = 30_000;
+    const RECOVERY_PASSES = 10;
+    const folders = [...sessions.map((session) => session.cwd), ...knownFolders];
+    const attempt = (passesLeft: number) => {
+      void launchRecovery(folders, {
+        owner: WINDOW_OWNER,
+        onRow: (row) => {
+          applyTeleportRow(sessionsRef, setSessions, row);
+        },
+      })
+        .then((lines) => {
+          if (passesLeft > 0 && needsAnotherPass(lines)) window.setTimeout(() => attempt(passesLeft - 1), RECOVERY_RETRY_MS);
+        })
+        .catch(() => {
+          if (passesLeft > 0) window.setTimeout(() => attempt(passesLeft - 1), RECOVERY_RETRY_MS);
+        });
+    };
+    attempt(RECOVERY_PASSES);
+    window.addEventListener("online", () => attempt(RECOVERY_PASSES));
+  }, [sessions]);
+  // WP-177: a chat move in another window changed a row this window holds. Take the stored row, and lock or unlock to match
+  // it, so a window that never saw the move cannot send from the chat (H2).
+  useEffect(() => {
+    const listening = listen<{ id: string }>("teleport-row-changed", (event) => {
+      const id = event.payload?.id;
+      if (!id) return;
+      void acceptStoredTeleportRow(sessionsRef, setSessions, id, getSession, settleTeleportLock).catch(() => undefined);
+    });
+    return () => {
+      void listening.then((unlisten) => unlisten());
+    };
+  }, []);
+  const openForkedSession = useCallback(
+    (session: Session) => {
+      updateSessionState(sessionsRef, setSessions, (sessions) =>
+        insertFork(sessions, session),
+      );
+      const tab = newTab(session.id);
+      appendTab(tab, session.cwd);
+      setActiveTabId(tab.id);
+      setComposerFocused(true);
+      setSearchViewOpen(false);
+      setInboxViewOpen(false);
+      setNotesViewOpen(false);
+      setAutomationsViewOpen(false);
+    },
+    [appendTab],
+  );
 
   const onSelectRemoteSession = useCallback(
     (project: string, remoteSessionId: string) => {
@@ -5108,6 +5452,8 @@ function Workspace({
   const onShowSourceControl = useCallback(() => {
     setSidebarTab("changes");
   }, []);
+  // WP-200: a commit-guard refusal asked to be shown from a card or status line opens the Changes tab.
+  useEffect(() => onGuardFindingOpen(() => setSidebarTab("changes")), []);
 
   const onToggleChanges = useCallback(() => {
     onShowSourceControl();
@@ -5317,6 +5663,11 @@ function Workspace({
         restored.providerSessionId &&
         isLiveHarness(restored.harness)
       ) {
+        // WP-134b: a More agents chat binds its saved ACP session to its entry. The route is set first, in this same
+        // call, so the bind never reaches the harness the chat was saved with.
+        if (restored.registryAgentId) {
+          openMoreAgentSession(restored.id, restored.registryAgentId);
+        }
         bindHarnessSession(
           restored.harness,
           restored.id,
@@ -5539,6 +5890,22 @@ function Workspace({
     [sidebarCwd],
   );
 
+  const onOpenMonoRef = useRef<((monoId: string) => Promise<unknown>) | undefined>(undefined);
+  // Ash 12 Nov: an Inbox item taken to one of his first mates: its own chat opens with the item ready in the box.
+  const onAskMonoAboutInboxItem = useCallback(
+    (item: InboxItem, monoId: string) => {
+      const ref = inboxItemRef(item);
+      const draft = `About ${ref}${item.title ? ` "${item.title}"` : ""}${item.url ? ` (${item.url})` : ""}: `;
+      const sessionId = findMono(monoId)?.sessionId;
+      if (sessionId) setComposerDraft(sessionId, draft);
+      void onOpenMonoRef.current?.(monoId).then(() => {
+        const opened = findMono(monoId)?.sessionId;
+        if (opened && opened !== sessionId) setComposerDraft(opened, draft);
+      });
+    },
+    [],
+  );
+
   const onRestartInboxAsk = useCallback(
     async (item: InboxItem): Promise<string> => {
       const id = await onAskInboxItem(item);
@@ -5599,7 +5966,10 @@ function Workspace({
 
   /** A Mono's conversation is a view over the existing workspace tabs. */
   const onOpenMono = useCallback(
-    async (monoId: string, options: { inTeam?: boolean; leaveSettings?: boolean } = {}) => {
+    async (monoId: string, asked: { inTeam?: boolean; leaveSettings?: boolean; project?: string; main?: boolean } = {}) => {
+      // One chat (asks/model/oneChat.ts): the Chief of Staff has no chat of its own per project and no side chats to
+      // come back to, so every way in lands in its one chat.
+      const options = isOneChatMono(monoId) ? { ...asked, project: undefined, main: true } : asked;
       // WP-06: held until the focus from uncovering the project pane has passed (onFocusPane).
       const opening = ++openingMonoGen.current;
       openingMono.current = true;
@@ -5607,11 +5977,17 @@ function Workspace({
       // A project's Lead lives in its coding team (Ash, 20 Oct: "mainly the coding team is the main place i want to
       // talk to"): opened from anywhere (the Monos rail, Being built, Today, a page), it lands there, with the
       // project's Sessions list beside its chat.
-      const team = leadCodingTeam(monoId);
+      // Dropwave: the Mono's own chat for a project (the Chief of Staff's) opens in that project's chat area the same
+      // way, pinned on top of its list.
+      const ownProject = options.project
+        ? hubData().listProjects().find((project) => project.id === options.project)
+        : undefined;
+      const team = ownProject ? (codingTeamsOn() && ownProject.folder ? ownProject : undefined) : leadCodingTeam(monoId);
       // Any other Mono opens on its own (people, not work), or inside its own team (monoTeams.ts) when asked: its
       // chat pinned on top of the team's Sessions list, as a Lead's is in its coding team.
-      const own = !team && options.inTeam && codingTeamsOn() ? monoTeam(monoId) : undefined;
+      const own = !team && !ownProject && options.inTeam && codingTeamsOn() ? monoTeam(monoId) : undefined;
       if (team?.folder) {
+        setProjectFront(team.id, ownProject ? "captain" : "lead");
         setHubSelection({ project: team.id, item: "coding-team" });
         nameHubProject(team);
         noteCodingTeamView(team.id, "lead");
@@ -5642,15 +6018,30 @@ function Workspace({
       workspaceNavigation.cancel();
       const request = ++monoViewRequest.current;
       lastMonoIdRef.current = monoId;
-      const opened = await ensureMonoSession(monoId, {
+      const sessionHost = {
         home: homeDir,
         load: ensureOpenSession,
-        create: (path) => newDefaultSession(path),
-        add: (created) => {
+        create: (path: string) => newDefaultSession(path),
+        add: (created: Session) => {
           sessionsRef.current = [...sessionsRef.current, created];
           setSessions(sessionsRef.current);
         },
-      });
+      };
+      // Ash (12 Nov): back to the chat he was last on with this first mate, else its newest; `main` asks for its own.
+      const monoNow = findMono(monoId);
+      const mainChat = ownProject ? monoNow?.projectSessions?.[ownProject.id] : monoNow?.sessionId;
+      const lastChat =
+        options.main || !monoNow
+          ? undefined
+          : pickMonoChat(monoNow, ownProject?.id, sessionsRef.current, team?.folder ?? own?.folder);
+      const resumed = lastChat && lastChat !== mainChat ? await ensureOpenSession(lastChat) : undefined;
+      if (request !== monoViewRequest.current) return;
+      monoScopeRef.current = { monoId, project: ownProject?.id };
+      const opened =
+        resumed ??
+        (ownProject
+          ? await ensureMonoProjectSession(monoId, ownProject, sessionHost)
+          : await ensureMonoSession(monoId, sessionHost));
       // WP-34: a build that started before this window's sessions existed lands its brief here.
       const session = opened && monoId === CREATOR_MONO_ID ? landCreatorBrief(opened) : opened;
       if (session && session !== opened) {
@@ -5697,6 +6088,7 @@ function Workspace({
     },
     [ensureOpenSession, workspaceNavigation.cancel],
   );
+  onOpenMonoRef.current = onOpenMono;
 
   // A Mono open when the app last closed opens again; a moved window keeps
   // what it carried.
@@ -5725,11 +6117,58 @@ function Workspace({
   }, [closeMonoView, monosEnabled, onOpenMono]);
 
   /** A new Mono opens straight away, ready to be told what it works on. */
-  const onCreateMono = useCallback((projects?: readonly string[]) => {
+  const onCreateMono = useCallback((projects?: readonly string[], profile?: { name: string; role?: string }) => {
     const monoId = createMono(projects).id;
-    setMonoSettingsFor(monoId);
+    // Dropwave's "New first mate" names it before it exists, so it opens on its chat, ready to talk to. Its look and
+    // model are in its settings, as for any first mate.
+    if (profile) {
+      saveMonoName(monoId, profile.name.trim().slice(0, 40));
+      if (profile.role?.trim()) saveMonoRole(monoId, profile.role);
+    } else setMonoSettingsFor(monoId);
     void onOpenMono(monoId);
   }, [onOpenMono]);
+
+  /** SC-19: a retired chat's open work moves to the chat that takes its place (monos/model/ownerMove.ts). */
+  const moveRetiredWork = useCallback(
+    (kind: RetireKind, from: { id: string; title?: string }, to: { id: string; monoId?: string }): void => {
+      const tracker = delegationsRef.current;
+      if (!tracker) return;
+      void moveOwnedWork({
+        tracker,
+        kind,
+        from: { chatId: from.id, ...(from.title ? { title: from.title } : {}) },
+        to: { chatId: to.id, ...(to.monoId ? { monoId: to.monoId } : {}) },
+        post: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
+      }).catch((error: unknown) => console.error("Could not move a retired chat's tasks", error));
+    },
+    [],
+  );
+
+  /** SC-19: an archived or deleted chat's work goes to its first mate's main chat, or a deleted one's project Lead. */
+  const moveRemovedChatWork = useCallback(
+    (
+      sessionId: string,
+      kind: "archive" | "delete",
+      retired: { monoId?: string; title?: string; project?: string },
+    ): void => {
+      const successor = ownerSuccessor(
+        { chatId: sessionId, kind, ...(retired.monoId ? { monoId: retired.monoId } : {}), ...(retired.project ? { project: retired.project } : {}) },
+        {
+          monoExists: (id) => !!findMono(id),
+          mainChat: (id) => findMono(id)?.sessionId,
+          leadChat: (project) => {
+            for (const mono of listMonos()) {
+              const folder = leadFor(mono.id) ? leadWorkingFolder(mono.id) : undefined;
+              if (mono.sessionId && folder && sameProjectPath(folder, project)) return { monoId: mono.id, chatId: mono.sessionId };
+            }
+            return undefined;
+          },
+        },
+      );
+      if (successor) moveRetiredWork(kind, { id: sessionId, ...(retired.title ? { title: retired.title } : {}) }, { id: successor.chatId, monoId: successor.monoId });
+    },
+    [moveRetiredWork],
+  );
 
   const onResetMono = useCallback(
     async (sessionId: string): Promise<void> => {
@@ -5796,24 +6235,33 @@ function Workspace({
               setComposerFocusToken((token) => token + 1);
             }
           },
+          // SC-19: what the reset chat still owned (running, waiting, asked, or finished and not yet told) goes to the
+          // fresh chat. Started here and not waited for: the reset is done, a busy store is retried in the background.
+          moveWork: async (old, fresh) =>
+            moveRetiredWork(
+              "reset",
+              { id: old.id, title: sessionDisplayTitle(old.title, old.harness) },
+              { id: fresh.id, monoId: monoForSession(fresh.id)?.id },
+            ),
         });
       } finally {
         removingSessionIds.current.delete(sessionId);
       }
     },
-    [invalidateLoadedSession, stopSessionForRemoval],
+    [invalidateLoadedSession, moveRetiredWork, stopSessionForRemoval],
   );
 
   const onSelectHistorySession = useCallback(
-    async (sessionId: string) => {
+    async (sessionId: string): Promise<boolean> => {
       const askedAt = Date.now();
       workspaceNavigation.cancel();
       let session = await ensureOpenSession(sessionId);
-      if (!session || session.inboxAsk) return;
+      // WP-125: false means no pane was shown (an inbox ask, or the chat is gone).
+      if (!session || session.inboxAsk) return false;
       const mono = monoForSession(session.id);
       if (mono) {
         await onOpenMono(mono.id);
-        return;
+        return true;
       }
       const parentId =
         session.orchestrationLeadId ??
@@ -5821,7 +6269,7 @@ function Workspace({
       if (parentId && parentId !== sessionId) {
         setInspectedWorkerId(sessionId);
         session = await ensureOpenSession(parentId);
-        if (!session) return;
+        if (!session) return false;
       }
       setSearchViewOpen(false);
       setSettingsOpen(false);
@@ -5836,17 +6284,18 @@ function Workspace({
       const linkedUpdate = linkedSessionUpdatesRef.current.get(session.id);
       if (focusOpenSession(session.id)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       if (replaceBlankPaneWithSession(session)) {
         if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
-        return;
+        return true;
       }
       const tab = newTab(session.id);
       appendTab(tab, session.cwd);
       setActiveTabId(tab.id);
       setComposerFocused(true);
       if (linkedUpdate) revealLinkedSessionUpdate(session.id, linkedUpdate);
+      return true;
     },
     [
       appendTab,
@@ -6231,6 +6680,9 @@ function Workspace({
         for (const session of kept) {
           const pending = session.pendingSwitch;
           if (pending?.fromProviderSessionId) {
+            if (session.registryAgentId) {
+              openMoreAgentSession(session.id, session.registryAgentId);
+            }
             bindHarnessSession(
               pending.from,
               session.id,
@@ -6272,6 +6724,8 @@ function Workspace({
         (session) => session.id === sessionId,
       );
       const summary = history.find((entry) => entry.id === sessionId);
+      // SC-19: who it belonged to, read before it goes (its owner's open work moves after the removal).
+      const retiredOwner = isOrchestratorChat(sessionId) ? { mono: monoForSession(sessionId) } : undefined;
       removingSessionIds.current.add(sessionId);
       // r69 (g): a sub-chat of another project is neither open nor in the shown history; read its saved record so the
       // confirm names it and offers its worktree (never waiting past DELETE_LOOKUP_MS).
@@ -6476,6 +6930,13 @@ function Workspace({
         const removed = await remover.remove(sessionId);
         // An archived or deleted chat no longer waits on Ash (Today's "Waiting on you").
         if (removed) forgetWaitingChat(sessionId);
+        // SC-19: its open work goes to its first mate's main chat, or (deleted) its project's Lead.
+        if (removed && retiredOwner)
+          moveRemovedChatWork(sessionId, mode, {
+            ...(retiredOwner.mono ? { monoId: retiredOwner.mono.id } : {}),
+            title: label,
+            project: retiredOwner.mono?.projects[0] ?? seed?.cwd,
+          });
         // A deleted chat leaves its project's coding team (an archived one can come back, and stays in it).
         if (removed && mode === "delete") {
           forgetCodingTeamChat(sessionId);
@@ -6514,6 +6975,7 @@ function Workspace({
       stopSessionForRemoval,
       tabCloseScope,
       onRemoveWorktree,
+      moveRemovedChatWork,
     ],
   );
 
@@ -6738,7 +7200,12 @@ function Workspace({
   );
 
   const onDeleteHistorySession = useCallback(
-    (sessionId: string) => onRemoveHistorySession(sessionId, "delete"),
+    async (sessionId: string) => {
+      const removed = await onRemoveHistorySession(sessionId, "delete");
+      // A first mate's further chat that is gone is no longer one of its chats (a cancelled delete keeps it).
+      if (removed) forgetMonoSideChat(sessionId);
+      return removed;
+    },
     [onRemoveHistorySession],
   );
 
@@ -6752,6 +7219,22 @@ function Workspace({
       // happens (monoDelete.ts). WP-76: a running chat is stopped first, and the person has already been told.
       const confirmed = await confirmDelete(name, monoDeleteDetail(!!mono.sessionId), { undoable: true });
       if (!confirmed) return;
+      // G2: its further chats and its project chats go to the trash with it, the way its main chat does, instead of
+      // staying behind as plain chats. A trash restore brings them back with the roster entry (the payload keeps them).
+      const ownChats = monoOwnChats(monoId);
+      const otherChats = ownChats
+        .filter((id) => id !== mono.sessionId)
+        .map((id) => ({
+          id,
+          busy: sessionsRef.current.some((session) => session.id === id && session.busy),
+        }));
+      const removeOtherChat = async (sessionId: string) => {
+        if (monoViewIdRef.current === sessionId) closeMonoView();
+        const listed =
+          sessionsRef.current.some((session) => session.id === sessionId) ||
+          history.some((entry) => entry.id === sessionId);
+        return !listed || (await onRemoveHistorySession(sessionId, "delete", true));
+      };
       try {
         const moved = await deleteMonoToTrash({
           confirmed: true,
@@ -6762,6 +7245,7 @@ function Workspace({
                 (session) => session.id === mono.sessionId && session.busy,
               ),
           ),
+          otherChats,
           stop: (sessionId) => stopSessionForRemoval(sessionId).then(() => undefined),
           markStopped: (sessionId) => {
             const latest = sessionsRef.current.find((session) => session.id === sessionId);
@@ -6787,10 +7271,11 @@ function Workspace({
             trashMono({
               id: monoId,
               title: name,
-              sessionIds: mono.sessionId ? [mono.sessionId] : undefined,
+              sessionIds: ownChats.length ? ownChats : undefined,
               payload: JSON.stringify(mono),
             }).then(() => undefined),
-          removeChat: async () => {
+          removeChat: async (sessionId) => {
+            if (sessionId !== mono.sessionId) return removeOtherChat(sessionId);
             if (!mono.sessionId) return true;
             if (monoViewIdRef.current === mono.sessionId) closeMonoView();
             const listed =
@@ -6907,6 +7392,14 @@ function Workspace({
     [],
   );
 
+  // Relink all gave chats their folders in the store: the open copies take the folder and nothing else (no move to
+  // another project, nothing added to the recents, no change of the chat's own work).
+  const onSessionFolderRelinked = useCallback(
+    (sessionId: string, cwd: string) =>
+      setSessions((prev) => withRelinkedFolder(prev, sessionId, cwd)),
+    [setSessions],
+  );
+
   const onCwdChange = useCallback(
     (sessionId: string, cwd: string) => {
       const normalized = normalizeProjectPath(cwd);
@@ -6954,6 +7447,7 @@ function Workspace({
       }
       setProjectCwd(normalized);
       setRecents(rememberProject(normalized));
+      const folderChanged = !previous || !sameProjectPath(previous, normalized);
       setSessions((prev) =>
         prev.map((s) => {
           if (s.id !== sessionId) return s;
@@ -6962,7 +7456,7 @@ function Workspace({
           const base = isBlankSession(s)
             ? retargetSessionToProject(s, normalized)
             : s;
-          return {
+          const moved: Session = {
             ...base,
             cwd: normalized,
             branch: undefined,
@@ -6971,13 +7465,12 @@ function Workspace({
             workspaceMode: undefined,
             worktreeBase: undefined,
           };
+          // WP-110: a choice to stay in the old folder does not carry to another one.
+          return folderChanged ? withoutNewChatFolderChoice(moved) : moved;
         }),
       );
       // WP-110: a blank chat moved to another folder follows the worktree setting.
-      if (!previous || !sameProjectPath(previous, normalized)) {
-        forgetNewChatFolderChoice(sessionId);
-        attachNewChatWorktree(sessionId, normalized, setSessions);
-      }
+      if (folderChanged) attachNewChatWorktree(sessionId, normalized, setSessions);
       // The session's project just moved in place; a group only holds tabs that
       // share one project, so drop this tab out if it no longer matches.
       setTabs((prev) => {
@@ -7025,8 +7518,6 @@ function Workspace({
 
   const onWorkspaceModeChange = useCallback(
     (sessionId: string, mode: WorkspaceMode, base?: string) => {
-      // WP-110: choosing this folder keeps this chat out of a default worktree.
-      noteNewChatFolderChoice(sessionId, mode);
       setSessions((prev) =>
         prev.map((session) => {
           if (
@@ -7036,19 +7527,22 @@ function Workspace({
           ) {
             return session;
           }
-          return mode === "worktree"
-            ? base || session.worktreeBase
-              ? {
+          const chosen: Session =
+            mode === "worktree"
+              ? base || session.worktreeBase
+                ? {
+                    ...session,
+                    workspaceMode: "worktree",
+                    worktreeBase: base || session.worktreeBase,
+                  }
+                : session
+              : {
                   ...session,
-                  workspaceMode: "worktree",
-                  worktreeBase: base || session.worktreeBase,
-                }
-              : session
-            : {
-                ...session,
-                workspaceMode: undefined,
-                worktreeBase: undefined,
-              };
+                  workspaceMode: undefined,
+                  worktreeBase: undefined,
+                };
+          // WP-110: choosing this folder keeps this chat out of a default worktree, and it is held on the chat.
+          return withNewChatFolderChoice(chosen, mode);
         }),
       );
     },
@@ -7122,10 +7616,9 @@ function Workspace({
       try {
         const listed = await listWorktrees(current.cwd);
         if (!isCurrent()) return;
-        const target = listed.worktrees.find(
-          (entry) =>
-            pathKey(entry.path) === pathKey(tree.path) && !entry.missing,
-        );
+        // WP-138: a listing has no .worktreeinclude note, so the one on the tree the picker
+        // just created is carried over and a failed copy is still seen in the chat header.
+        const target = listedWorktreeFor(listed.worktrees, tree);
         if (!target) {
           throw new Error(
             "This worktree is no longer available. Refresh the picker.",
@@ -7429,7 +7922,29 @@ function Workspace({
   );
   useEffect(() => (codingTeamsOn() ? setMonoTeamOpener(openMonoTeamView) : undefined), [openMonoTeamView]);
   // A Mono's chat opened from anywhere, Settings included (hubNav.ts openMonoChat): in its team when it has one.
-  useEffect(() => setMonoChatOpener((monoId) => void onOpenMono(monoId, { inTeam: true, leaveSettings: true })), [onOpenMono]);
+  // Dropwave: every one-to-one chat has the same layout (the chat list beside the chat), so a Mono that is no project's
+  // Lead gets its own team's folder the first time its chat opens. `project` opens its own chat for that project.
+  useEffect(
+    () =>
+      setMonoChatOpener((monoId, target) => {
+        // One chat: a project's way in to the Chief of Staff opens the same chat as Home's does.
+        if (target?.project && !isOneChatMono(monoId)) return void onOpenMono(monoId, { project: target.project, leaveSettings: true, main: target.main });
+        const open = () => void onOpenMono(monoId, { inTeam: true, leaveSettings: true, main: target?.main });
+        if (!codingTeamsOn() || leadFor(monoId) || monoTeam(monoId)) return open();
+        void ensureMonoTeam(monoId).catch(() => undefined).then(open);
+      }),
+    [onOpenMono],
+  );
+  // Ash (12 Nov): a first mate's settings from a right-click or from Settings: its chat opens with them over it.
+  useEffect(
+    () =>
+      setMonoSettingsOpener((monoId) => {
+        setSettingsOpen(false);
+        setMonoSettingsFor(monoId);
+        openMonoChat(monoId);
+      }),
+    [],
+  );
   // WP-34: the Creator screen starts the Creator Mono's chat through this window's sessions.
   useEffect(() => setCreatorSessionHost({
     home: homeDir,
@@ -7471,6 +7986,35 @@ function Workspace({
     },
     [openCodingTeam, sessionDefaults?.runtimeMode, appendTab, setActiveTabId],
   );
+
+  // WP-252: "Report a problem" opens a new chat in a fresh folder inside the app's data folder, with the triage
+  // playbook in the composer. The person picks the engine, says what went wrong and sends it.
+  const startTriageChat = useCallback(async () => {
+    let place: { folder: string; logs: string };
+    try {
+      place = await invoke<{ folder: string; logs: string }>("diagnostics_triage_folder");
+    } catch (error) {
+      console.error(error);
+      return;
+    }
+    const identity = appIdentity();
+    const session = newWorkspaceSession(place.folder, sessionDefaults?.runtimeMode);
+    sessionsRef.current = [...sessionsRef.current, session];
+    setSessions(sessionsRef.current);
+    setComposerDraft(
+      session.id,
+      buildTriageDraft({
+        build: identity
+          ? { version: identity.version, sha: identity.stamp.sha, branch: identity.stamp.branch, dirty: identity.stamp.dirty }
+          : null,
+        logs: place.logs,
+      }),
+    );
+    const tab = newTab(session.id);
+    appendTab(tab, place.folder);
+    setActiveTabId(tab.id);
+    setComposerFocused(true);
+  }, [sessionDefaults?.runtimeMode, appendTab, setActiveTabId]);
 
   const pickProject = useCallback(async () => {
     // Several folders can be taken at once; each opens as its own project, and
@@ -7943,11 +8487,14 @@ function Workspace({
   }, []);
 
   const onModelChange = useCallback(
-    (sessionId: string, harness: HarnessId, model: string) => {
+    (sessionId: string, harness: HarnessId, model: string): boolean => {
       const current = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!current) return;
-      if (isPreparingHandoff(current)) return;
+      // WP-182: false means this session did not take the model, so a card must not show it.
+      if (!current) return false;
+      if (isPreparingHandoff(current)) return false;
       const resolved = resolveModel(harness, model);
+      // Leaving fx resets the mode: fx's Full access is its only offer and must not carry to another CLI (WP-175).
+      const leavesFx = current.harness === "fx" && resolved.harness !== "fx";
       saveRecentModelChoice(resolved.harness, resolved.id);
       if (current.modelSettings) {
         saveLastModelSettings(current.modelSettings, "fill");
@@ -7956,41 +8503,49 @@ function Workspace({
         resolved,
         current.modelSettings,
       );
-      const plan = planComposerSwitch(current, harness);
       const recoverLimit =
         !current.busy &&
         !!current.usageLimit &&
         (current.harness !== harness || current.model !== resolved.id);
-      if (plan.kind === "empty") {
-        void forgetHarnessSession(plan.forget, sessionId);
-      }
-      setSessions((prev) =>
-        prev.map((s) => {
-          if (s.id !== sessionId) return s;
-          let next = withHarnessChoice(s, harness, resolved.id, modelSettings);
-          if (plan.kind === "arm") {
-            next = { ...next, pendingSwitch: plan.pending };
-          } else if (plan.kind === "revert") {
-            next = {
-              ...next,
-              pendingSwitch: undefined,
-              ...(plan.restoreProviderSessionId
-                ? { providerSessionId: plan.restoreProviderSessionId }
-                : { providerSessionId: undefined }),
-              ...(plan.restoreProviderAccountId
-                ? { providerAccountId: plan.restoreProviderAccountId }
-                : { providerAccountId: undefined }),
-            };
-          } else if (plan.kind === "empty") {
-            next = { ...next, pendingSwitch: undefined };
-          }
-          return recoverLimit
-            ? isMonoSession(sessionId)
-              ? resumeMonoUsageLimit(next)
-              : resumeUsageLimitedSession(next)
-            : next;
-        }),
+      // WP-121: keep this thread when the target can resume. A refusal still arms the recap.
+      const switched = commitMidThreadSwitch(
+        {
+          get: (id) => sessionsRef.current.find((session) => session.id === id),
+          compareAndPut: (session, seen) => {
+            let applied = false;
+            // The updater runs during render. flushSync runs it now so a refused write is visible here.
+            flushSync(() => {
+              setSessions((prev) =>
+                prev.map((s) => {
+                  if (s.id !== session.id) return s;
+                  if (
+                    s.blocks.length !== seen.blocks ||
+                    s.harness !== seen.harness ||
+                    s.model !== seen.model
+                  ) {
+                    return s;
+                  }
+                  applied = true;
+                  const next = recoverLimit
+                    ? isMonoSession(sessionId)
+                      ? resumeMonoUsageLimit(session)
+                      : resumeUsageLimitedSession(session)
+                    : session;
+                  return leavesFx ? { ...next, runtimeMode: DEFAULT_RUNTIME_MODE } : next;
+                }),
+              );
+            });
+            return applied;
+          },
+        },
+        sessionId,
+        { harness, model: resolved.id, modelSettings },
       );
+      if (switched.kind !== "ok") return false;
+      if (switched.outcome.forget) {
+        void forgetHarnessSession(switched.outcome.forget, sessionId);
+      }
+      return true;
     },
     [],
   );
@@ -8004,6 +8559,9 @@ function Workspace({
     },
     [],
   );
+
+  // WP-182: a card edit during a turn waits until that turn is idle.
+  useApplyMonoCardRun(sessions, onModelChange, onModelSettingsChange);
 
   const onRuntimeModeChange = useCallback(
     (sessionId: string, runtimeMode: RuntimeMode) => {
@@ -8108,10 +8666,21 @@ function Workspace({
   const submitSession = useCallback(
     (
       sessionId: string,
-      text: string,
+      rawText: string,
       attachments: Attachment[] = [],
       options?: SubmitOptions,
     ): SubmissionAcceptance => {
+      // Every turn is built from here: a hidden character never reaches the agent, whichever surface sent it.
+      const text = stripHiddenCharacters(rawText).text;
+      // WP-247 / WP-243: Ash's own typed turn. A turn the app wrote around it (hidden, a resume, a wake) never is.
+      const byOwner =
+        options?.byOwner === true &&
+        !options.managed &&
+        !options.monoNote &&
+        !options.monoCheck &&
+        !options.monoSessionCompletion &&
+        !options.autoResume &&
+        !options.appRequestId;
       const remote = sessionsRef.current.find(
         (session) => session.id === sessionId,
       );
@@ -8335,6 +8904,16 @@ function Workspace({
       if (isPreparingHandoff(current)) return false;
       saveRecentModelChoice(current.harness, current.model);
       const initialWorkCwd = sessionWorkCwd(current);
+      // A chat that came in from an export with no folder here asks for one before anything runs (the harness seam
+      // refuses it too, so nothing starts however the turn was reached).
+      if (!hasChatFolder(initialWorkCwd)) {
+        enqueueHarnessEvent(sessionId, {
+          type: "session.error",
+          message: CHAT_NEEDS_FOLDER,
+        });
+        flushHarnessEvents();
+        return false;
+      }
       const createDraftWorktree =
         !current.worktreeCwd && current.workspaceMode === "worktree";
       const accountProvider = supportsProviderAccounts(current.harness)
@@ -8374,6 +8953,17 @@ function Workspace({
         return false;
       }
       const submittedText = intent === "build" ? "Build approved plan" : text;
+      // Ash 12 Nov: "/login" typed into a chat failed every time. A chat runs the CLI without a screen to sign in on,
+      // so signing in happens in a terminal; say so instead of sending it.
+      if (/^\/(?:login|logout)\b/i.test(submittedText.trim())) {
+        const cli = current.harness === "claude" ? "claude" : current.harness;
+        enqueueHarnessEvent(sessionId, {
+          type: "status",
+          text: `Signing in doesn't work from inside a chat. Open Terminal, run ${cli}, then type /login there. This chat picks up the new sign-in on its next message.`,
+        });
+        flushHarnessEvents();
+        return false;
+      }
       const operatorCommand = consumeOperatorCommand(submittedText);
       if (
         operatorCommand.matched &&
@@ -8391,8 +8981,9 @@ function Workspace({
       }
       // The Mono has app access in every turn, without the command.
       const mono = isMonoSession(sessionId);
-      // So does a chat in a hub project's coding team on Claude Code: an orchestrator like the Lead, its delegate tool
-      // calls the app (codingTeam.ts). Noted before the turn, so its Claude Code starts with the tool and its project.
+      // WP-120: so does a chat in a hub project's coding team, on every CLI that can lead (not only Claude Code).
+      // An orchestrator like the Lead, its delegate tool calls the app (codingTeam.ts). Noted before the turn,
+      // so the session starts with the tool and its project.
       const team = mono ? undefined : codingTeamOf(current);
       const teamDelegates = !!team && hasDelegateTool(sessionId, current.harness);
       const queuedMonoMessage =
@@ -8422,6 +9013,22 @@ function Workspace({
         (rawCommand ? submittedText : composeNoteMessage(noteCard, promptText));
 
       const pendingSwitch = pendingComposerSwitch(current);
+      // WP-121: a resumable switch sends its portable transcript. A refusal still uses pendingSwitch.
+      // A repair is not the person's next message, so it leaves the transcript for that message.
+      const portableResume =
+        pendingSwitch || options?.ciRepair ? undefined : current.portableResume;
+      // WP-146: tell Ash why his message did not go into a turn that waits on his OK (approvalWait.ts).
+      const sayHeld = () => {
+        const heldLine = heldLineForSend(current, options);
+        if (!heldLine) return;
+        setSessions((prev) =>
+          prev.map((s) =>
+            s.id === sessionId
+              ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
+              : s,
+          ),
+        );
+      };
 
       // A Mono accepts consecutive messages before its provider is connected.
       // The pending head is delivered once ready; later messages cannot overtake it.
@@ -8490,9 +9097,13 @@ function Workspace({
           !message ||
           !canSteerQueuedHead(current) ||
           !canSteerHarness(current.harness) ||
+          current.registryAgentId ||
           operatorCommand.matched
-        )
+        ) {
+          // WP-146: Steer on a message held behind an open approval says why it stayed.
+          if (message) sayHeld();
           return false;
+        }
         const gen = turnGen.current.get(sessionId);
         const change = (update: (session: Session) => Session) => {
           const next = sessionsRef.current.map((session) =>
@@ -8522,6 +9133,7 @@ function Workspace({
           },
           steer: (prepared) =>
             steerHarnessTurn({
+              origin: options?.origin,
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -8529,7 +9141,9 @@ function Workspace({
               modelSettings: current.modelSettings,
               text: inboxAskPrompt(
                 rawCommand ? undefined : current.inboxAsk,
-                prepared.text,
+                rawCommand || message.monoNote || message.appRequestId
+                  ? prepared.text
+                  : midTurnAsk(prepared.text),
               ),
               attachments: prepared.attachments,
             }),
@@ -8567,21 +9181,11 @@ function Workspace({
         });
       }
 
-      if (current.busy && !pendingSwitch) {
-        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14).
-        const heldLine =
-          !options?.appRequestId && !options?.monoNote && !options?.queuedMessageId && !options?.monoSessionCompletion
-            ? waitingOnYouLine(current.blocks)
-            : null;
-        if (heldLine) {
-          setSessions((prev) =>
-            prev.map((s) =>
-              s.id === sessionId
-                ? { ...s, blocks: [...s.blocks, { id: crypto.randomUUID(), role: "system", text: heldLine, notice: "waiting-on-you" } as Block] }
-                : s,
-            ),
-          );
-        }
+      if (current.busy && !pendingSwitch && !portableResume) {
+        // Ash wrote to a chat held on his OK: it can't read him until he decides, so say so now (S14). WP-146: the
+        // same when he presses Steer on a message already waiting (it stays queued), and only when the message
+        // really waits (not for the background-tasks branch, which hands it over now).
+        sayHeld();
         if (
           operatorCommand.matched &&
           options?.queuedMessageId &&
@@ -8594,28 +9198,54 @@ function Workspace({
           flushHarnessEvents();
           return false;
         }
+        // WP-146: a message does not go into a turn that is still waiting on approval. The background-tasks
+        // branch keeps precedence: parksForApproval is false when only background work is left.
+        const parkForApproval = parksForApproval(current);
+        // A message already in the queue (its own Steer button) stays where it is, and the line above says why.
+        // This stays ahead of followUpWhenBusy so it is never added to the queue a second time.
+        if (parkForApproval && options?.queuedMessageId) return false;
+        // The app is compacting this idle chat in the background (WP-115). Its
+        // busy flag is ours, there is no reply to steer into, and a message
+        // written now would land inside the compact.
+        const compacting = !!current.idleCompacting;
+        // WP-134b: a More agents chat cannot be steered; its message waits for the turn to finish.
+        const registryChat = Boolean(current.registryAgentId);
         const steerable =
-          isLiveHarness(current.harness) && canSteerHarness(current.harness);
-        const followUpBehavior =
-          current.worktreePreparing ||
-          intent === "plan" ||
-          intent === "orchestrate" ||
-          operatorCommand.matched ||
-          options?.waitForIdle
-            ? "queue"
-            : // The agent has yielded and only background work is left, which
-              // may never end (a dev server). Queuing would park the message
-              // behind it, so hand it to the agent now.
-              current.backgroundTasks?.length
-              ? "steer"
-              : // Messaging a Mono mid-reply is like texting a friend twice:
-                // it reads the new message now, or right after if it can't.
-                mono
-                ? steerable
-                  ? "steer"
-                  : "queue"
-                : (options?.followUpBehavior ?? loadFollowUpBehavior());
+          isLiveHarness(current.harness) &&
+          canSteerHarness(current.harness) &&
+          !compacting &&
+          !registryChat;
+        const followUpBehavior = followUpWhenBusy({
+          setting: options?.followUpBehavior ?? loadFollowUpBehavior(),
+          mustWait: !!(
+            parkForApproval ||
+            current.worktreePreparing ||
+            intent === "plan" ||
+            intent === "orchestrate" ||
+            operatorCommand.matched ||
+            options?.waitForIdle
+          ),
+          onlyBackgroundWork: !!current.backgroundTasks?.length,
+          mono: !!mono,
+          steerable,
+          cannotRedirect: registryChat || harnessCannotSteer(current.harness),
+          compacting,
+          alreadyQueued: !!options?.queuedMessageId,
+        });
+        if (followUpBehavior === "stay") {
+          // Already in the queue and not to go in now: it stays where it is.
+          enqueueHarnessEvent(sessionId, {
+            type: "status",
+            text: QUEUED_MESSAGE_WAITS,
+          });
+          flushHarnessEvents();
+          return false;
+        }
         if (followUpBehavior === "queue") {
+          if (registryChat) {
+            enqueueHarnessEvent(sessionId, { type: "status", text: WAITS });
+            flushHarnessEvents();
+          }
           setSessions((prev) =>
             prev.map((s) =>
               s.id === sessionId
@@ -8638,10 +9268,10 @@ function Workspace({
                           ? { appRequestId: options.appRequestId }
                           : {}),
                         ...(options?.waitForIdle ? { waitForIdle: true } : {}),
+                        ...(byOwner ? { byOwner: true } : {}),
                       },
                     ],
-                    queueStatus:
-                      s.queueStatus === "paused" ? "paused" : "active",
+                    queueStatus: queueStatusOnEnqueue(s),
                   }
                 : s,
             ),
@@ -8650,11 +9280,15 @@ function Workspace({
           return true;
         }
         if (!steerable) {
-          // Harnesses that cannot steer (fx) used to drop the message on the
-          // floor here, so a follow-up sent mid-turn just vanished. Say so.
+          // WP-115: a stale button must not drop the message. A known refusal
+          // names the redirect; anything not live keeps the mid-turn line.
           enqueueHarnessEvent(sessionId, {
             type: "status",
-            text: `${current.harness} cannot take a follow-up mid-turn — wait for this turn to finish, or stop it first.`,
+            text: compacting
+              ? COMPACTING_NOTE
+              : harnessCannotSteer(current.harness)
+                ? cantRedirectTurn(current.harness)
+                : cantTakeFollowUp(current.harness),
           });
           flushHarnessEvents();
           return false;
@@ -8678,6 +9312,8 @@ function Workspace({
             ...(options?.appRequestId
               ? { appRequestId: options.appRequestId }
               : {}),
+            ...(byOwner ? { byOwner: true as const } : {}),
+            ...(byOwner && isOneChat(sessionId) && chiefLens() ? { lensProject: chiefLens()! } : {}),
           });
         });
         sessionsRef.current = nextSessions;
@@ -8691,6 +9327,8 @@ function Workspace({
               cwd: initialWorkCwd,
             });
             await steerHarnessTurn({
+              origin: options?.origin,
+              ...(byOwner ? { byOwner: true } : {}),
               harness: current.harness,
               sessionId,
               cwd: initialWorkCwd,
@@ -8698,7 +9336,9 @@ function Workspace({
               modelSettings: current.modelSettings,
               text: inboxAskPrompt(
                 rawCommand ? undefined : current.inboxAsk,
-                prompt,
+                rawCommand || options?.appRequestId || options?.origin === "automated"
+                  ? prompt
+                  : midTurnAsk(prompt),
               ),
               attachments: prepared,
             });
@@ -8784,7 +9424,8 @@ function Workspace({
       const monoRotation = monoRotationReason
         ? planRotation(
             current.blocks,
-            loadMonoRotation(sessionId),
+            // The app's database first (it survives a cleared webview), the webview's own copy until that has loaded.
+            (segmentStore().loaded() ? latestRotation(segmentStore().doc(), sessionId) : undefined) ?? loadMonoRotation(sessionId),
             monoRotationReason,
             Date.now(),
           )
@@ -8857,6 +9498,10 @@ function Workspace({
         ...(options?.managed || options?.monoSessionCompletion || options?.monoCheck || options?.monoNote
           ? { internal: true }
           : {}),
+        // WP-243: Ash's own words, typed in the composer. Never on a hidden turn, a CI repair or a handoff card.
+        ...(byOwner && !ciContext && !card ? { byOwner: true as const } : {}),
+        // Sent in the one chat while it is narrowed to a project: his message carries it (asks/model/chiefLens.ts).
+        ...(byOwner && !ciContext && !card && isOneChat(sessionId) && chiefLens() ? { lensProject: chiefLens()! } : {}),
         ...(options?.monoNote ? { monoNote: options.monoNote } : {}),
         ...(options?.monoSessionCompletion
           ? { monoSessionCompletion: options.monoSessionCompletion }
@@ -8864,11 +9509,18 @@ function Workspace({
         ...(options?.monoCheck ? { monoCheck: options.monoCheck } : {}),
       };
       const live = isLiveHarness(current.harness);
+      // WP-123: a forked chat's first send carries the chat copied into it; its provider has never seen it. That recap
+      // covers the whole copy, so it stands in for an older handoff recap that came along with the messages.
+      const queuedFork =
+        live && !pendingSwitch ? pendingForkBrief(current) : null;
       const queuedHandoff =
-        live && !pendingSwitch ? pendingHandoff(current) : null;
+        live && !pendingSwitch && !queuedFork ? pendingHandoff(current) : null;
 
-      if (pendingSwitch && current.busy) {
-        void cancelHarnessTurn(pendingSwitch.from, sessionId);
+      if (current.busy && (pendingSwitch || portableResume)) {
+        void cancelHarnessTurn(
+          (pendingSwitch ?? portableResume)!.from,
+          sessionId,
+        );
       }
 
       dismissNoticesForContinuedSession(sessionId);
@@ -8917,6 +9569,11 @@ function Workspace({
                 rawCommand || options?.ciRepair ? s.noteCard : undefined,
               handoffCard:
                 rawCommand || options?.ciRepair ? s.handoffCard : undefined,
+              // WP-121: this send consumes the switch notice. The timeline marker stays.
+              // A slash command or a repair is not that send.
+              ...(rawCommand || options?.ciRepair
+                ? {}
+                : { portableResume: undefined, midThread: undefined }),
             };
             if (editedResend) {
               next = editedResend.replace(next);
@@ -9022,14 +9679,14 @@ function Workspace({
           !shouldGenerateSessionTitle(
             isFirstTurn,
             placeholderTitle,
-            options?.refreshTitle,
+            options?.refreshTitle || !!current.titleAwaitsTask,
           )
         ) {
           return;
         }
         const titleMessage =
           harnessText || attachments.map((file) => file.name).join(", ");
-        void generateHarnessTitle(current.harness, {
+        void generateTitleWithTextModel(current.harness, {
           sessionId,
           cwd: workCwd,
           message: titleMessage,
@@ -9037,10 +9694,15 @@ function Workspace({
         })
           .then(async (generated) => {
             if (
-              options?.refreshTitle &&
+              (options?.refreshTitle || current.titleAwaitsTask) &&
               !isFirstTurn &&
               turnGen.current.get(sessionId) !== gen
             ) {
+              return;
+            }
+            // A greeting asks for nothing yet: keep the title and let the next message name the chat.
+            if (generated?.noTask) {
+              setSessions((prev) => prev.map((s) => (s.id === sessionId ? { ...s, titleAwaitsTask: true } : s)));
               return;
             }
             const linkedWorkItem = await resolveLinkedWorkItem(
@@ -9054,12 +9716,14 @@ function Workspace({
                 if (s.id !== sessionId) return s;
                 let next = s;
                 if (
-                  generated &&
+                  generated?.title &&
                   (options?.refreshTitle ||
+                    s.titleAwaitsTask ||
                     canReplaceSessionTitle(s.title, s.harness, titleSeed))
                 ) {
+                  const { titleAwaitsTask: _named, ...rest } = next;
                   next = {
-                    ...next,
+                    ...rest,
                     title: formatSessionTitle(s.harness, generated.title),
                   };
                 }
@@ -9088,7 +9752,9 @@ function Workspace({
       if (editedResend && canRewindHarnessLastTurn(current.harness)) {
         editedResends.start(sessionId);
         const locked = sessionsRef.current.map((session) =>
-          session.id === sessionId ? { ...session, busy: true } : session,
+          session.id === sessionId
+            ? { ...session, busy: true, idleCompacting: undefined }
+            : session,
         );
         sessionsRef.current = locked;
         syncDockBadge(locked);
@@ -9132,24 +9798,14 @@ function Workspace({
         // WP-110: ask and always start a new chat in a worktree. A refusal keeps
         // the creation function's own message.
         const tree = await openNewChatWorktree(
-          {
+          newChatWorktreeOpenFor(current, {
             setting: loadNewChatWorktree(),
-            firstTurn:
-              isFirstTurn &&
-              !current.worktreeCwd &&
-              !current.providerSessionId &&
-              !current.orchestrationLeadId &&
-              !current.inboxAsk &&
-              !current.worktreeRemoved &&
-              !current.automationId &&
-              !current.ephemeral,
+            isFirstTurn,
             toggleOn: createDraftWorktree,
-            declined: newChatStaysHere(sessionId),
-            cwd: current.cwd,
-            base: current.worktreeBase || "HEAD",
-          },
+          }),
           {
             gitOnThisComputer: gitRepositoryOnThisComputer,
+            offerCheck: pendingNewChatOfferCheck,
             createWorktree,
           },
         );
@@ -9164,6 +9820,8 @@ function Workspace({
             proposalDraft = { ...proposalDraft, checkoutCwd: tree.path };
           // The project's setup holds the first turn (and the queue) until it ends.
           const setupHolds = !!(tree.setup?.hold && tree.setup.run);
+          // WP-138: the include note stays with this chat. The session row does not store it.
+          const include = rememberWorktreeInclude(sessionId, tree);
           setSessions((prev) =>
             prev.map((session) =>
               session.id === sessionId
@@ -9174,6 +9832,8 @@ function Workspace({
                     workspaceMode: undefined,
                     worktreeBase: undefined,
                     worktreePreparing: setupHolds ? true : undefined,
+                    ...(include.note ? { includeNote: include.note } : {}),
+                    ...(include.warning ? { includeWarning: include.warning } : {}),
                   }
                 : session,
             ),
@@ -9182,7 +9842,7 @@ function Workspace({
 
           const branchMessage =
             harnessText || attachments.map((file) => file.name).join(", ");
-          void generateHarnessBranchName(
+          void generateBranchWithTextModel(
             pickTextHarness(current.harness),
             workCwd,
             branchMessage,
@@ -9238,13 +9898,20 @@ function Workspace({
             ),
           );
         }
-        let wrap = handoffCard
+        let wrap: {
+          from: HarnessId;
+          to: HarnessId;
+          text: string;
+          portable?: boolean;
+          /** WP-123: a fork's recap, worded as a fork's rather than a handoff's. */
+          fork?: boolean;
+        } | null = handoffCard
           ? {
               from: handoffCard.from,
               to: current.harness,
               text: handoffCard.brief,
             }
-          : queuedHandoff;
+          : (queuedFork ?? queuedHandoff);
         if (pendingSwitch) {
           let agentText = "";
           if (
@@ -9271,13 +9938,30 @@ function Workspace({
           await forgetHarnessSession(pendingSwitch.from, sessionId);
           if (turnGen.current.get(sessionId) !== gen) return;
           wrap = { from: pendingSwitch.from, to: current.harness, text: brief };
+        } else if (portableResume) {
+          if (portableResume.from !== current.harness) {
+            await forgetHarnessSession(portableResume.from, sessionId);
+          }
+          if (turnGen.current.get(sessionId) !== gen) return;
+          wrap = {
+            from: portableResume.from,
+            to: current.harness,
+            // Built now, not when the picker changed: output since the switch is in it.
+            text: buildPortableTranscript(
+              current.blocks,
+              portableResume.messageIds,
+              undefined,
+              sessionId,
+            ),
+            portable: true,
+          };
         }
 
         const revealHandoff = (brief: string) => {
           setSessions((prev) =>
             prev.map((s) => {
               if (s.id !== sessionId || !isPreparingHandoff(s)) return s;
-              return { ...completeHandoff(s, brief), busy: true };
+              return { ...completeHandoff(s, brief), busy: true, idleCompacting: undefined };
             }),
           );
         };
@@ -9316,6 +10000,8 @@ function Workspace({
           return event;
         };
 
+        // WP-121: set once the provider has accepted the portable transcript.
+        let portableDelivered = false;
         const pendingEditedEvents: HarnessEvent[] = [];
         const applyTurnEvent = (event: HarnessEvent) => {
           if (event.type === "session.providerLost") providerLost = true;
@@ -9331,6 +10017,8 @@ function Workspace({
               event.type === "session.providerBound")
           ) {
             revealHandoff(wrap.text);
+            // WP-121: the provider has the transcript. A later failure must not send it again.
+            if (wrap.portable) portableDelivered = true;
           }
           nudgeOpenEditors(event, workCwd);
           if (!orchestrator.forSession(sessionId))
@@ -9413,9 +10101,11 @@ function Workspace({
             : intent === "plan" && !rawCommand
               ? planTurnPrompt(prompt)
               : prompt;
-          const earlier = queuedHandoff
-            ? userMessagesAfterHandoff(current)
-            : [];
+          const earlier = queuedFork
+            ? queuedFork.earlier
+            : queuedHandoff
+              ? userMessagesAfterHandoff(current)
+              : [];
           if (editedResend && canRewindHarnessLastTurn(current.harness)) {
             try {
               await rewindHarnessLastTurn({
@@ -9432,6 +10122,7 @@ function Workspace({
                   operatorAccess ||
                   orchestrator.run(sessionId)?.status === "active",
                 ...firstMateLaunch(current),
+                ...crewLaunch(current, crewRows()), // WP-143
                 ...(editedProviderTurnId
                   ? { providerTurnId: editedProviderTurnId }
                   : {}),
@@ -9472,8 +10163,34 @@ function Workspace({
               return;
             }
           }
-          const sendTurn = (text: string, turnAttachments = prepared) =>
-            sendHarnessTurn({
+          const sendTurn = (text: string, turnAttachments = prepared) => {
+            // WP-134b: a More agents chat runs on its entry through the route set here, never on the placeholder
+            // CLI's own start. A refusal is not a success.
+            if (current.registryAgentId) {
+              const registryPlan = registrySendPlan({
+                registryAgentId: current.registryAgentId,
+                enabled: loadMoreAgentsEnabled(),
+                agents: loadRegistryDocument().agents,
+                busy: false,
+              });
+              if (registryPlan.action === "refuse") {
+                routeTurnEvent({
+                  type: "session.error",
+                  message: registryPlan.sentence,
+                  retryable: registryPlan.retryable,
+                });
+                return Promise.resolve();
+              }
+              if (registryPlan.action !== "prompt") {
+                routeTurnEvent({ type: "session.error", message: AGENT_GONE, retryable: false });
+                return Promise.resolve();
+              }
+              openMoreAgentSession(sessionId, registryPlan.agent.id);
+            }
+            return sendHarnessTurn({
+              // WP-176: the caller's origin. Only the composer sets "person"; an omitted origin is automated.
+              origin: options?.origin,
+              ...(byOwner ? { byOwner: true } : {}),
               harness: current.harness,
               sessionId,
               cwd: workCwd,
@@ -9491,32 +10208,50 @@ function Workspace({
                 orchestrator.run(sessionId)?.status === "active",
               appAccess: operatorAccess,
               ...firstMateLaunch(current),
-              text,
+              ...crewLaunch(current, crewRows()), // WP-143
+              // WP-177: a moved chat's first turn sends the chat so far with the text (the same brief as resumeFallback).
+              text: movedChatPrompt(
+                sessionsRef.current.find((s) => s.id === sessionId) ?? current,
+                text,
+                submittedText,
+              ),
               attachments: turnAttachments,
               ...(editedResend ? { onAccepted: acceptEditedResend } : {}),
               // A conversation whose saved transcript is gone starts again from the chat's own brief.
               resumeFallback: (prompt) =>
-                wrapRecoveredPrompt(
-                  buildDeterministicHandoff(
-                    sessionsRef.current.find((s) => s.id === sessionId) ??
-                      current,
-                    submittedText,
-                  ),
+                recoveredChatPrompt(
+                  sessionsRef.current.find((s) => s.id === sessionId) ??
+                    current,
                   prompt,
+                  submittedText,
                 ),
               onEvent: routeTurnEvent,
             });
+          };
           let sendText = orchestrator.prompt(
             sessionId,
             inboxAskPrompt(
               rawCommand ? undefined : current.inboxAsk,
               wrap && !rawCommand
-                ? wrapHandoffPrompt(
-                    wrap.text,
-                    wrap.from,
-                    turnPrompt.trim() || CONTINUE_PROMPT,
-                    earlier,
-                  )
+                ? wrap.portable
+                  ? wrapPortableResume(
+                      wrap.text,
+                      wrap.from,
+                      turnPrompt.trim() || CONTINUE_PROMPT,
+                      earlier,
+                    )
+                  : wrap.fork
+                    ? wrapForkPrompt(
+                        wrap.text,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
+                    : wrapHandoffPrompt(
+                        wrap.text,
+                        wrap.from,
+                        turnPrompt.trim() || CONTINUE_PROMPT,
+                        earlier,
+                      )
                 : turnPrompt,
             ),
           );
@@ -9542,6 +10277,8 @@ function Workspace({
             sessionsRef.current = sessionsRef.current.map(fresh);
             setSessions((prev) => prev.map(fresh));
             saveMonoRotation(sessionId, monoRotation.rotation);
+            // Save before the tidy: memory reads this chat's messages now, beside the turn (useMemoryCurator.ts).
+            if (IS_HUB_BUNDLE) window.dispatchEvent(new CustomEvent(MEMORY_BATCH_NOW_EVENT, { detail: { sessionId } }));
           }
           // The agent's soul and memory live in its folder. A native session
           // is handed them once, and memory again only when it changes.
@@ -9578,8 +10315,30 @@ function Workspace({
               : undefined;
           if (ruleNote) appContext.push(ruleNote);
           if (options?.ashToWorker) appContext.push(ashWordsNote());
+          // What a tidied chat's fresh session is handed, kept for the "Chat tidied" line (monos/ui/ChatTidied.tsx).
+          const tidyGiven: string[] = [];
           if (monoRotation) {
-            appContext.push(monoRotation.brief(sessionId));
+            const brief = monoRotation.brief(sessionId);
+            appContext.push(brief);
+            tidyGiven.push(brief);
+            // The state card: rules, finished asks and files, from the app's own records (monos/model/stateCard.ts).
+            try {
+              const cardMate = IS_HUB_BUNDLE ? askMateFor(sessionId) : undefined;
+              const card = cardMate
+                ? stateCard({
+                    asks: askStore().doc().asks.filter((ask) => ask.mateId === cardMate),
+                    blocks: current.blocks,
+                    afterBlockId: (segmentStore().loaded() ? latestRotation(segmentStore().doc(), sessionId) : undefined)?.afterBlockId,
+                    now: Date.now(),
+                  })
+                : undefined;
+              if (card) {
+                appContext.push(card);
+                tidyGiven.push(card);
+              }
+            } catch {
+              // The brief goes without it: a tidy never fails a turn.
+            }
           }
           // A long-chat Mono's fresh conversation opens on its tree's view, ahead of the message: the system prompt
           // stays as it is, so its cache holds (monoTreeStore.ts treeContext).
@@ -9601,6 +10360,71 @@ function Workspace({
               treePick.evenWithoutSetting ? { evenWithoutSetting: true } : undefined,
             ).catch(() => undefined);
             if (treeNote) appContext.push(treeNote);
+            if (treeNote && monoRotation) tidyGiven.push(treeNote);
+          }
+          // The ask ledger: what Ash asked this first mate for and is still open, in his words, kept outside the chat. It
+          // goes beside his message when the list changed since this chat last saw it, and always into a fresh session.
+          const askMate = IS_HUB_BUNDLE && !rawCommand ? askMateFor(sessionId) : undefined;
+          if (askMate && askStore().loaded()) {
+            const ledger = askStore().doc();
+            const key = openAsksKey(ledger, askMate);
+            if (key && (askNotesShown.current.get(sessionId) !== key || !current.providerSessionId)) {
+              const note = openAsksNote(ledger, askMate, appCliCommand(await invoke<string | null>("app_cli_path").catch(() => null)));
+              if (note) appContext.push(note);
+              if (note && monoRotation) tidyGiven.push(note);
+            }
+            askNotesShown.current.set(sessionId, key);
+          }
+          // One chat: a catch-up card the app showed Ash since the Chief of Staff's last reply rides beside his
+          // message, so it knows what he was shown (asks/model/catchUp.ts).
+          if (!rawCommand && isOneChat(sessionId)) {
+            const shown = catchUpNote(current.blocks);
+            if (shown) appContext.push(shown);
+          }
+          // What Ash wrote to a first mate from the panel beside the Chief of Staff's chat since its last reply, so it
+          // knows he did (Ash, 13 Nov; asks/model/besideChat.ts).
+          if (!rawCommand) {
+            const beside = besideNote(current.blocks);
+            if (beside) appContext.push(beside);
+          }
+          // One chat: every open Needs you item with its link, when the list changed since this chat was last given it (and
+          // always in a fresh session), so a reply asks about one with the card Ash answers from (asks/model/needLinks.ts).
+          if (!rawCommand && isOneChat(sessionId)) {
+            const open = currentNeedsYou();
+            const key = needLinksKey(open);
+            if (key !== needLinksShown.current.get(sessionId) || !current.providerSessionId) {
+              const projects = hubData().listProjects();
+              const note = needLinksNote(open, (item) => {
+                const projectId = open.find((entry) => entry.key === item.key)?.projectId;
+                return projectId ? projects.find((project) => project.id === projectId)?.name : undefined;
+              });
+              if (note) appContext.push(note);
+              if (note && monoRotation) tidyGiven.push(note);
+            }
+            needLinksShown.current.set(sessionId, key);
+          }
+          // One chat narrowed to a project (asks/model/chiefLens.ts): this message is about that project.
+          if (!rawCommand && isOneChat(sessionId)) {
+            const narrowed = chiefLens();
+            const project = narrowed ? hubData().listProjects().find((entry) => entry.id === narrowed) : undefined;
+            if (project) appContext.push(lensNote(project));
+          }
+          if (monoRotation && IS_HUB_BUNDLE) {
+            const after = monoRotation.rotation.afterBlockId;
+            const now = sessionsRef.current.find((session) => session.id === sessionId)?.blocks ?? [];
+            const from = after ? now.findIndex((block) => block.id === after) + 1 : 0;
+            const opener = now.slice(from).find((block) => block.role === "user" && !block.internal && !block.draft);
+            void segmentStore()
+              .add({
+                sessionId,
+                at: monoRotation.rotation.at,
+                reason: monoRotation.rotation.reason,
+                ...(after ? { afterBlockId: after } : {}),
+                ...(opener ? { firstBlockId: opener.id } : {}),
+                given: tidyGiven.join("\n\n"),
+                earlier: monoRotation.rotation.earlier,
+              })
+              .catch(() => undefined);
           }
           // Habit posts land in the chat outside any turn, so the Mono's
           // session has not seen them; the next message carries them once.
@@ -9611,6 +10435,10 @@ function Workspace({
           // r66: Chief of Staff reads the live Mono list every turn (retired ones are off it), never from memory.
           const monosNow = mono && !rawCommand ? liveMonosNote(monoForSession(sessionId)?.id) : undefined;
           if (monosNow) appContext.push(monosNow);
+          // G3: a Mono's own chat for one project (the Chief of Staff's, in a project) reads that project's brief every
+          // turn: name, one line, folder, first mates, open needs. Its chat on Home gets none (projectChatBrief.ts).
+          const projectBrief = mono && !rawCommand ? projectChatBrief(sessionId) : undefined;
+          if (projectBrief) appContext.push(projectBrief);
           // On Claude Code the hub's note, soul and memory go on Claude Code's own system prompt (hubNote.ts); another
           // engine reads them ahead of the message. A memory change reaches a running Claude Code in the message.
           // WP-04: this is the engine alone; it used to ride on "has the Ash OS tools", which no chat has any more.
@@ -9618,8 +10446,27 @@ function Workspace({
           let notedMono = false;
           if (agentFiles && agentLook && agentPlan && handedFiles) {
             // WP-41: the contract is part of the note, and the key changes with the plain-English switch.
-            const noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}`;
-            const fresh = appended ? hubNoteFor(sessionId)?.key !== noteKey : agentPlan.soul || agentPlan.memory;
+            // WP-156: the standing block is part of the key too, so a running chat picks up a change. A failed read keeps the previous token.
+            const previousNote = hubNoteFor(sessionId)?.key;
+            const readStanding = Boolean(agentPlan.soul || appended);
+            let standingAnswers: string | undefined;
+            let standingFailed = false;
+            if (readStanding) {
+              try {
+                standingAnswers = (await leadStandingBlock(sessionId, readStandingBrief)) ?? "";
+              } catch {
+                standingFailed = true;
+              }
+            }
+            const standingPart = readStanding
+              ? standingKeyPart(standingFailed ? undefined : standingAnswers, previousNote)
+              : undefined;
+            let noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}${standingPart !== undefined ? `\nstanding:${standingPart}` : ""}`;
+            const fresh = appended ? previousNote !== noteKey : agentPlan.soul || agentPlan.memory;
+            if (fresh && standingFailed) {
+              standingAnswers = undefined;
+              noteKey = `${handedFiles.soulHash}\nplain-english:${plainEnglishEndings() ? "1" : "0"}\nstanding:`;
+            }
             if (fresh) {
               // A project Lead's fresh conversation starts on its project's memory and Ash's global one (hubMemoryPrimer.ts).
               const projectMemory = agentPlan.soul || appended
@@ -9630,6 +10477,7 @@ function Workspace({
                 delegate: delegateTool,
                 cli: appCliCommand(await invoke<string | null>("app_cli_path")),
                 ...(projectMemory ? { projectMemory } : {}),
+                ...(standingAnswers ? { standingAnswers } : {}),
                 // Every Mono but a Lead briefs project Leads (monoTeams.ts).
                 ...(delegateTool && briefsLeads(monoForSession(sessionId)?.id ?? "")
                   ? {
@@ -9646,15 +10494,37 @@ function Workspace({
             }
           }
           // A coding-team chat is told who it is and its project's memory once per conversation (codingTeamContext).
-          const teamHanded =
+          // WP-156: the standing block is part of this key too. A failed read keeps the previous token.
+          const teamBase =
             team && teamDelegates && !rawCommand
-              ? { soulHash: `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`, memoryHash: "" }
+              ? `team:${team.id}:${team.folder}:${MONO_PROMPT_VERSION}:delegate:plain:${plainEnglishEndings() ? "1" : "0"}`
               : undefined;
+          const previousTeam = hubNoteFor(sessionId)?.key;
+          let teamStanding: string | undefined;
+          let teamStandingFailed = false;
+          if (teamBase) {
+            try {
+              teamStanding = (await leadStandingBlock(sessionId, readStandingBrief)) ?? "";
+            } catch {
+              teamStandingFailed = true;
+            }
+          }
+          let teamStandingPart = teamBase
+            ? standingKeyPart(teamStandingFailed ? undefined : teamStanding, previousTeam)
+            : undefined;
+          if (teamBase && teamStandingFailed && previousTeam !== `${teamBase}\nstanding:${teamStandingPart}`) {
+            teamStanding = undefined;
+            teamStandingPart = "";
+          }
+          const teamHanded = teamBase
+            ? { soulHash: `${teamBase}\nstanding:${teamStandingPart}`, memoryHash: "" }
+            : undefined;
           const teamPlan = teamHanded
             ? planAgentContext(sessionId, current.providerSessionId, teamHanded)
             : undefined;
           if (team && teamHanded && (appended ? hubNoteFor(sessionId)?.key !== teamHanded.soulHash : teamPlan?.soul)) {
             const projectMemory = await leadMemoryBlock(sessionId, current.harness).catch(() => undefined);
+            const standingAnswers = teamStanding;
             const note = withFirstMateContract(codingTeamContext(
               {
                 projectId: team.id,
@@ -9662,7 +10532,10 @@ function Workspace({
                 folder: team.folder!,
                 leadName: leadSpecFor(team).name,
               },
-              projectMemory ? { projectMemory } : {},
+              {
+                ...(projectMemory ? { projectMemory } : {}),
+                ...(standingAnswers ? { standingAnswers } : {}),
+              },
             ));
             if (appended) setHubNote(sessionId, { key: teamHanded.soulHash, text: note });
             else appContext.push(note);
@@ -9714,6 +10587,8 @@ function Workspace({
             if (profile) sendText = `${sendText}\n\n${profile}`;
           }
           await sendTurn(sendText);
+          // WP-121: the turn was handed over, so the transcript is not sent again.
+          if (wrap?.portable && !rawCommand) portableDelivered = true;
           if (teamHanded && teamPlan?.soul && !providerLost) {
             recordAgentContext(
               sessionId,
@@ -9767,7 +10642,9 @@ function Workspace({
                 ? completeHandoff(s, wrap.text)
                 : s;
               // A command owns its arguments; deliver the recap with the next chat prompt.
-              return rawCommand ? ready : consumeHandoff(ready);
+              return rawCommand
+                ? ready
+                : consumeForkPoint(consumeHandoff(ready));
             });
             setSessions(sessionsRef.current);
           }
@@ -9776,6 +10653,20 @@ function Workspace({
           recoverEditedResend();
           if (turnGen.current.get(sessionId) !== gen) return;
           if (wrap) revealHandoff(wrap.text);
+          // WP-121: a timeout or a provider that never started is not the end of the switch.
+          if (wrap?.portable && !portableDelivered && portableResume) {
+            const resume = portableResume;
+            const notice = current.midThread;
+            sessionsRef.current = sessionsRef.current.map((session) =>
+              session.id === sessionId
+                ? restoreUnsentPortableResume(session, resume, notice, {
+                    harness: current.harness,
+                    model: current.model,
+                  })
+                : session,
+            );
+            setSessions(sessionsRef.current);
+          }
           const message =
             error instanceof Error
               ? error.message
@@ -9870,6 +10761,8 @@ function Workspace({
               })
               .catch(() => undefined);
           }
+          // WP-164: a turn that failed is announced as a failure, which quiet hours never hold.
+          const turnFailed = controlOutcome.status === "failed";
           // Next tick: the flush above has rendered by then, so the banner
           // quotes the reply's final text rather than the previous batch.
           window.setTimeout(() => {
@@ -9879,7 +10772,7 @@ function Workspace({
             const visible = sessionId === activeSessionIdRef.current;
             // A habit's hidden run speaks through its Mono's chat instead; an answer to the checker stays quiet.
             if (finished && !isHabitRun(sessionId) && !inCheckTurn(finished))
-              void announceSessionFinished(finished, visible);
+              void announceSessionFinished(finished, visible, turnFailed);
           }, 0);
           notifyReviewChanged(sessionId);
           notifyGitChanged();
@@ -9925,11 +10818,51 @@ function Workspace({
         .finally(() => {
           editedResend?.reject();
           if (editedResend) editedResends.finish(sessionId);
-          options?.onSettled?.(
+          let outcome: ControlOutcome =
             turnGen.current.get(sessionId) !== gen
               ? { status: "cancelled", text: controlText }
-              : controlOutcome,
-          );
+              : controlOutcome;
+          // WP-245: a turn that ended with no words and no tool call gets one retry with a short note; empty again,
+          // it shows as failed instead of leaving a silent chat. Whoever waits on the turn hears the retry's outcome.
+          const step =
+            outcome.status === "completed"
+              ? emptyTurnStep(
+                  sessionsRef.current.find((s) => s.id === sessionId),
+                  outcome,
+                  text,
+                  !!options?.emptyRetried,
+                )
+              : "settle";
+          if (step === "retry") {
+            const settle = options?.onSettled;
+            const first = outcome;
+            window.setTimeout(() => {
+              const chat = sessionsRef.current.find((s) => s.id === sessionId);
+              if (!chat || chat.busy || chat.queuedMessages?.length) {
+                settle?.(first);
+                return;
+              }
+              const accepted = submitSessionRef.current(sessionId, EMPTY_TURN_NOTE, [], {
+                // The app's own note: an automated turn (no origin), shown as an app note line.
+                emptyRetried: true,
+                ...(settle ? { onSettled: settle } : {}),
+              });
+              if (accepted === false) settle?.(first);
+              else if (typeof accepted !== "boolean")
+                void Promise.resolve(accepted)
+                  .then((ok) => {
+                    if (!ok) settle?.(first);
+                  })
+                  .catch(() => settle?.(first));
+            }, 0);
+            return;
+          }
+          if (step === "failed") {
+            outcome = { status: "failed", text: "", error: EMPTY_TURN_FAILED };
+            enqueueHarnessEvent(sessionId, { type: "session.error", message: EMPTY_TURN_FAILED });
+            flushHarnessEvents();
+          }
+          options?.onSettled?.(outcome);
         });
       return true;
     },
@@ -9956,15 +10889,76 @@ function Workspace({
     [submitSession],
   );
 
+  // The composer's own send is the person's turn for the spend gate. Other callers of onSubmit are automated.
+  const onComposerSubmit = useCallback(
+    (sessionId: string, text: string, attachments: Attachment[] = [], options?: ComposerTurnOptions): boolean => {
+      const sent = onSubmit(sessionId, text, attachments, { ...options, origin: "person", byOwner: true });
+      // Typed into a first mate's chat open beside the Chief of Staff's: the one chat keeps a line of it, and the Chief
+      // of Staff reads it beside his next message (Ash, 13 Nov: "making sure that the chief of staff knows").
+      const viewing = monoViewIdRef.current;
+      const chief = pickCaptain(listMonos());
+      if (
+        sent &&
+        text.trim() &&
+        viewing &&
+        sessionId !== viewing &&
+        sessionId === shownMonoSessionIdRef.current &&
+        chief &&
+        monoForSession(viewing)?.id === chief.id
+      ) {
+        const to = sessionsRef.current.find((session) => session.id === sessionId);
+        const name = monoForSession(sessionId)?.name ?? (to ? sessionDisplayTitle(to.title, to.harness) : "that chat");
+        const block = besideBlock({ chatId: sessionId, to: name, text, at: Date.now() });
+        setSessions((previous) =>
+          previous.map((session) =>
+            session.id === viewing && !session.blocks.some((entry) => entry.id === block.id)
+              ? { ...session, blocks: [...session.blocks, block] }
+              : session,
+          ),
+        );
+      }
+      return sent;
+    },
+    [onSubmit],
+  );
+
+  /**
+   * The bench's way into a Mono's chat (below): open the Mono as Ash's click does, then the chat to type into, which is
+   * the Mono's own. While its chat loads, something else at startup (a tab the window restores) can take the view, which
+   * leaves the view empty or on another chat; the message still goes to the Mono it was meant for.
+   */
+  const openVerifyMonoChat = useCallback(
+    async (monoId: string) => {
+      await onOpenMono(monoId);
+      const view = monoViewIdRef.current;
+      const own = findMono(monoId)?.sessionId ?? null;
+      return { view, own, chat: own ?? view };
+    },
+    [onOpenMono],
+  );
+
   // The fake-Claude test bench (scripts/hub-verify-live.mjs): a dev copy with a verify plan opens a Mono on the plan's
   // scratch project and sends its first message, once per run. No plan reaches the daily app (src/verify_live.rs).
   const verifyKickoffStarted = useRef(false);
+  const verifyKickoffNoted = useRef(false);
   useEffect(() => {
-    if (verifyKickoffStarted.current || windowTransfer) return;
+    if (verifyKickoffStarted.current) return;
+    if (windowTransfer) {
+      traceVerifyKickoff("held-by-window-transfer");
+      return;
+    }
     const kickoff = pendingVerifyKickoff();
-    if (!kickoff) return;
+    if (!kickoff) {
+      // A plan whose kickoff this window won't send (already claimed by an earlier launch of the run, or none).
+      if (!verifyKickoffNoted.current && verifyRun()) traceVerifyKickoff("not-pending");
+      verifyKickoffNoted.current = true;
+      return;
+    }
     verifyKickoffStarted.current = true;
     claimVerifyKickoff(kickoff.runId);
+    traceVerifyKickoff("claimed", { monoId: kickoff.monoId ?? null, project: kickoff.project });
+    // Each change in what the window knows of the Mono it waits for, so a kickoff that never goes says why.
+    let seen = "";
     void verifyKickoffMono(kickoff, {
       create: (project, name) => {
         const mono = createMono([project]);
@@ -9974,18 +10968,30 @@ function Workspace({
       // A plan naming an existing Mono waits until the hub has tied it to the project.
       ready: (monoId, project) => {
         const mono = findMono(monoId);
+        const state = JSON.stringify({ found: !!mono, projects: mono?.projects ?? [], monos: listMonos().length });
+        if (state !== seen) {
+          seen = state;
+          traceVerifyKickoff("mono-state", JSON.parse(state) as Record<string, unknown>);
+        }
         return !!mono && monoWorksOn(mono, project);
       },
     }).then(async (monoId) => {
       if (!monoId) {
+        traceVerifyKickoff("gave-up", { seen });
         console.error(`verify kickoff: ${kickoff.monoId} never worked on ${kickoff.project}`);
         return;
       }
-      await onOpenMono(monoId);
-      const sessionId = monoViewIdRef.current;
-      if (sessionId) onSubmit(sessionId, kickoff.prompt);
+      traceVerifyKickoff("opening", { monoId });
+      const { view, own, chat } = await openVerifyMonoChat(monoId);
+      // "sending-to-mono-chat": the open lost the view to something else, so the send names the Mono's chat itself.
+      traceVerifyKickoff(!chat ? "no-chat-open" : chat === view ? "sending" : "sending-to-mono-chat", {
+        monoId,
+        view,
+        monoChat: own,
+      });
+      if (chat) onSubmit(chat, kickoff.prompt);
     });
-  }, [onOpenMono, onSubmit, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, windowTransfer]);
   // ...and Ash's messages the bench sends mid-run (WP-04: the plan's messages file, verify_live.rs): each into its Mono's chat, as
   // he would type it there, once per run.
   useEffect(() => {
@@ -10008,17 +11014,17 @@ function Workspace({
         if (message.newMono) {
           const mono = createMono(message.newMono.project ? [message.newMono.project] : []);
           saveMonoName(mono.id, message.newMono.name);
-          await onOpenMono(mono.id);
-          const sessionId = monoViewIdRef.current;
-          if (sessionId) onSubmit(sessionId, message.prompt);
+          const { chat } = await openVerifyMonoChat(mono.id);
+          if (!chat) throw new Error(`no chat for the new Mono ${message.newMono.name}`);
+          onSubmit(chat, message.prompt);
           return;
         }
-        await onOpenMono(message.monoId);
-        const sessionId = monoViewIdRef.current;
-        if (sessionId) onSubmit(sessionId, message.prompt);
+        const { chat } = await openVerifyMonoChat(message.monoId);
+        if (!chat) throw new Error(`no chat for ${message.monoId}`);
+        onSubmit(chat, message.prompt);
       },
     });
-  }, [onOpenMono, onSubmit, startCodingTeamChat, windowTransfer]);
+  }, [openVerifyMonoChat, onSubmit, startCodingTeamChat, windowTransfer]);
 
   // onApproval is created once; it reaches the current helper through this.
   const decideMonoBlockRef = useRef<
@@ -10149,7 +11155,13 @@ function Workspace({
         role: "approval",
         text: block.text,
         ...(block.tool ? { tool: block.tool } : {}),
-        approval: { requestId },
+        // WP-243: the run's frozen action travels with the card, so Ash's allow is bound to what the run asked.
+        approval: {
+          requestId,
+          at: Date.now(),
+          ...(block.approval?.actionHash ? { actionHash: block.approval.actionHash } : {}),
+          ...(block.approval?.call ? { call: block.approval.call } : {}),
+        },
         monoHabit: { id: habit.id, name: habit.name, at: Date.now() },
       });
     },
@@ -10178,7 +11190,17 @@ function Workspace({
         automationSessionReservations.current.delete(reservationId);
         reservationId = undefined;
       };
+      // WP-244: what the watch saw is kept once the run settles; until then no second run of it starts.
+      let finishWatch: ((ok: boolean) => Promise<void>) | undefined;
       try {
+        const start = await startAutomationRun(automation, prompt, {}, run.trigger === "manual");
+        if (start.kind === "skip") {
+          // No session, no model call: the run's line says why.
+          await updateAutomationRun(run.id, "skipped", { error: start.reason });
+          return;
+        }
+        prompt = start.prompt;
+        finishWatch = start.finish;
         const eventRun = run.trigger === "event";
         const linkedWorkItem =
           sourceWorkItem ?? linkedWorkItemFromAutomationEvent(run);
@@ -10295,17 +11317,33 @@ function Workspace({
                 : outcome.status === "cancelled"
                   ? "cancelled"
                   : "failed";
+            const errorClass = automationRunErrorClass({
+              message: outcome.error,
+              providerClass: outcome.errorClass,
+              harness: automation.harness,
+            });
+            void finishWatch?.(outcome.status === "completed");
             void updateAutomationRun(run.id, status, {
               sessionId: session.id,
               ...(outcome.error ? { error: outcome.error } : {}),
+              // WP-180a: a missing CLI becomes the crew class. Any other class stays.
+              ...(errorClass ? { errorClass } : {}),
             })
               .catch(() => undefined)
               .finally(releaseReservation);
           },
         });
       } catch (reason: unknown) {
+        const message = reason instanceof Error ? reason.message : String(reason);
+        void finishWatch?.(false);
+        // WP-180a: a launch that fails before a turn still classes a missing CLI.
+        const errorClass = automationRunErrorClass({
+          message,
+          harness: automation.harness,
+        });
         await updateAutomationRun(run.id, "failed", {
-          error: reason instanceof Error ? reason.message : String(reason),
+          error: message,
+          ...(errorClass ? { errorClass } : {}),
         }).catch(() => undefined);
         throw reason;
       } finally {
@@ -10317,10 +11355,12 @@ function Workspace({
 
   const queueMonoSessionCompletion = useCallback(
     async (
-      monoId: string,
+      requestedId: string,
       message: QueuedMessage,
       current: () => QueuedMessage | undefined = () => message,
     ) => {
+      // SC-19: a report still addressed to a chat that was reset, archived or deleted goes to the chat that took its work.
+      const monoId = delegationsRef.current?.ownerNow(requestedId) ?? requestedId;
       // A worker's report goes to the chat Ash talks to that started it: a Mono's, or a coding-team chat.
       if (!isOrchestratorChat(monoId) || removingSessionIds.current.has(monoId))
         return;
@@ -10343,6 +11383,10 @@ function Workspace({
     [ensureOpenSession],
   );
   const queueMonoSessionCompletionRef = useRef(queueMonoSessionCompletion);
+  // The open-asks list each chat was last shown (asks/model/askNotes.ts openAsksKey), so the same list isn't sent twice.
+  const askNotesShown = useRef(new Map<string, string>());
+  // The one chat's Needs you links (asks/model/needLinks.ts): what its Chief of Staff was last given, per chat.
+  const needLinksShown = useRef(new Map<string, string>());
   queueMonoSessionCompletionRef.current = queueMonoSessionCompletion;
   // WP-60: a remote project's result lands in the chat that started it, once.
   useEffect(
@@ -10369,9 +11413,11 @@ function Workspace({
   if (!monoCompletionBatches.current) {
     monoCompletionBatches.current = new MonoSessionCompletionBatches(
       async (monoId, message, current, requestIds) => {
-        // The rows learn which message carries their reports before it enters the queue.
-        await delegationsRef.current?.queued(monoId, requestIds, message.id);
-        return queueMonoSessionCompletionRef.current(monoId, message, current);
+        // The rows learn which message carries their reports before it enters the queue. SC-19: in the tracker's one
+        // line with a move of the owner (a reset), so the message never falls between the mark and the queue.
+        const send = (owner: string) => queueMonoSessionCompletionRef.current(owner, message, current);
+        const tracker = delegationsRef.current;
+        return tracker ? tracker.deliverWave(monoId, requestIds, message.id, send) : send(monoId);
       },
     );
   }
@@ -10381,6 +11427,8 @@ function Workspace({
     openSession: ensureOpenSession,
     queueReport: (monoId, message) =>
       queueMonoSessionCompletionRef.current(monoId, message),
+    // SC-19: a moved row's report the batches still hold is queued by them, not a second time.
+    reportHeld: (requestId) => monoCompletionBatches.current?.holds(requestId) ?? false,
     quitting: isAppQuitting,
     // r84 (s14): the worker Ash answered finishes in a resumed turn; its changes land like a first report's.
     land: async (result) => {
@@ -10390,14 +11438,94 @@ function Workspace({
     // WP-13: a failed task is recorded from the CLI the child actually ran.
     crewFailure: (row, result) => {
       const child = sessionsRef.current.find((session) => session.id === row.childSession);
-      return recordCrewFailure(row, result, {
-        cli: child?.harness,
-        model: child?.model,
-        effort: child?.modelSettings?.effort,
-      });
+      return recordCrewFailure(
+        row,
+        result,
+        {
+          cli: child?.harness,
+          model: child?.model,
+          effort: child?.modelSettings?.effort,
+        },
+        row.project ? hubProjectFolder(row.project) : undefined,
+      );
     },
   });
   delegationsRef.current = delegations;
+  // What newly needs Ash, as one app line in the Chief of Staff's own chat (needs/model/needsRollup.ts). No model turn.
+  useNeedsRollup({
+    note: (chatId, block) =>
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === chatId && !session.blocks.some((entry) => entry.id === block.id)
+            ? { ...session, blocks: [...session.blocks, block] }
+            : session,
+        ),
+      ),
+  });
+  // Ash, 13 Nov: a job's or a first mate's chat opens beside the Chief of Staff's, in the panel a Mono's launched
+  // sessions open in, where he reads it and types to it without leaving the one chat (asks/model/besideChat.ts).
+  useEffect(
+    () =>
+      setBesideChatHost((chatId) => {
+        const viewing = monoViewIdRef.current;
+        const chief = pickCaptain(listMonos());
+        if (!viewing || !chief || monoForSession(viewing)?.id !== chief.id || chatId === viewing) return false;
+        void showMonoLaunchedSession(viewing, chatId);
+        return true;
+      }),
+    [showMonoLaunchedSession],
+  );
+  // One chat: a Needs you link in a reply draws as that question's own card, answered where it sits (InlineNeed.tsx).
+  useEffect(() => (ONE_CHAT ? setInlineLinkCard(inlineNeedCard) : undefined), []);
+  // One chat: each turn says which projects it is about, for the project filter (asks/model/chiefLens.ts). What the
+  // filter reads is built at most once a second, not once per turn.
+  useEffect(() => {
+    if (!ONE_CHAT) return undefined;
+    let cached: { at: number; lookup: LensLookup } | undefined;
+    const lookup = (): LensLookup => {
+      const now = Date.now();
+      if (cached && now - cached.at < 1_000) return cached.lookup;
+      const next = lensLookupFrom({
+        projects: hubData().listProjects(),
+        monos: listMonos(),
+        needs: currentNeedsYou(),
+        chatFolder: (chatId) => sessionsRef.current.find((session) => session.id === chatId)?.cwd,
+        key: projectKey,
+      });
+      cached = { at: now, lookup: next };
+      return next;
+    };
+    return setTurnTagger((sessionId, turn) => (isOneChat(sessionId) ? turnProjects(turn, lookup()).map(lensTag).join(" ") : undefined));
+  }, []);
+  // "Catch me up" in the one chat (asks/model/catchUp.ts): one app card from the app's own records. No model turn.
+  useEffect(
+    () =>
+      setCatchUpHost(async (chatId) => {
+        const chat = sessionsRef.current.find((session) => session.id === chatId);
+        if (!chat) return;
+        // Open ones and the newest answered: enough to cover a long day without reading the whole history.
+        const decisions = await tauriFirstMate.decisions(200).catch(() => []);
+        const now = Date.now();
+        const block = catchUpBlock(
+          buildCatchUp({
+            rows: delegationRows(),
+            decisions,
+            needs: currentNeedsYou(),
+            projects: hubData().listProjects(),
+            since: catchUpSince(sessionsRef.current.find((session) => session.id === chatId)?.blocks ?? chat.blocks, now),
+            now,
+          }),
+        );
+        setSessions((previous) =>
+          previous.map((session) =>
+            session.id === chatId && !session.blocks.some((entry) => entry.id === block.id)
+              ? { ...session, blocks: [...session.blocks, block] }
+              : session,
+          ),
+        );
+      }),
+    [],
+  );
   // Briefs queued behind or steered into a busy chat, and leadership briefs to a Lead: reported by watching the chat.
   useFollowedBriefs({
     tracker: delegations,
@@ -10465,6 +11593,8 @@ function Workspace({
           },
         });
         if (!lead) throw new Error(`${input.target.leadName}'s chat isn't available.`);
+        // The chat exists now, so judge the CLI it will run before the brief is launched.
+        await refuseBriefedLeadHarness(lead, input.target, input.fromMonoId, crewPolicyInForce);
         const fromName = monoLook(from).name;
         const text =
           typeof input.brief === "string"
@@ -10496,7 +11626,7 @@ function Workspace({
         const delivery = deliveryFor(
           current,
           input.mode ?? "queue",
-          isLiveHarness(current.harness) && canSteerHarness(current.harness),
+          isLiveHarness(current.harness) && canSteerHarness(current.harness) && !current.registryAgentId,
         );
         const accepted = await submitSessionRef.current(lead.id, text, [], {
           appRequestId: requestId,
@@ -10525,6 +11655,12 @@ function Workspace({
     queueWake: (ownerId, message) =>
       queueMonoSessionCompletionRef.current(ownerId, message),
   });
+  // WP-160: the First Mate's lead tick, while the app is open.
+  useLeadTick({
+    sessions: () => sessionsRef.current,
+    open: async (id) => (await ensureOpenSession(id)) ?? undefined,
+    openRows: () => openDelegationRows(),
+  });
   const prWatchVersion = useSyncExternalStore(
     prWatches.subscribe,
     prWatches.snapshot,
@@ -10533,6 +11669,21 @@ function Workspace({
   useMonoTrees(sessions, IS_HUB_BUNDLE);
   // WP-51: after a first mate's turn, one unreviewed fact or a skill proposal.
   useMemoryCurator(sessions, IS_HUB_BUNDLE);
+  // Where each first mate's chat was tidied (monos/model/chatSegments.ts), read once so the next tidy starts from it.
+  useEffect(() => {
+    if (IS_HUB_BUNDLE) void segmentStore().load().catch(() => undefined);
+  }, []);
+  // The ask ledger: every ask in a message of Ash's to a first mate is written down outside the chat (asks/model/asks.ts).
+  useAskLedger({
+    sessions,
+    enabled: IS_HUB_BUNDLE,
+    mateOf: askMateFor,
+    ask: isolatedCompaction,
+    send: (chatId, message) => queueMonoSessionCompletionRef.current(chatId, message),
+    cli: async () => appCliCommand(await invoke<string | null>("app_cli_path")),
+  });
+  // A job's end reaches the ask it covers: started while it works, done with its proof, or back to heard (asks/model/askJobs.ts).
+  useAskJobs(IS_HUB_BUNDLE);
   // The checker's notes reach the chats that own Ash's messages, one quiet turn when each is idle (hub/model/hubChecks.ts).
   useHubChecks(
     {
@@ -10627,13 +11778,14 @@ function Workspace({
                   submit: (settle) =>
                     submitSession(id, text, attachments, {
                       ...options,
+                      origin: "person",
                       appRequestId: deliveryId,
                       onSettled: settle,
                     }),
                   onSettled,
                   rejectionMessage: "The monitored session could not start.",
                 })
-              : submitSession(id, text, attachments, options),
+              : submitSession(id, text, attachments, { ...options, origin: "person" }),
           saveDraft: (id, prompt, attachments, requestId) =>
             flushSync(() => onSaveDraft(id, prompt, attachments, requestId)),
         },
@@ -10651,10 +11803,14 @@ function Workspace({
   saveDraftRef.current = onSaveDraft;
   const ensureOpenSessionRef = useRef(ensureOpenSession);
   ensureOpenSessionRef.current = ensureOpenSession;
+  // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
+  const mobileApprovalRef = useRef<
+    (sessionId: string, requestId: number, decision: ApprovalDecision) => boolean
+  >(() => false);
   // Hivra WP-14: a first mate's messages to its running workers, stored first and delivered from the store.
   const steering = useSteering(sessions, {
     chat: async (id) => (await ensureOpenSessionRef.current(id)) ?? undefined,
-    canSteer: (chat) => isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
+    canSteer: (chat) => !chat.registryAgentId && isLiveHarness(chat.harness) && canSteerHarness(chat.harness),
     submit: async (id, text, { appRequestId, steer }) =>
       await submitSessionRef.current(id, text, [], steer ? { appRequestId, followsUp: true, followUpBehavior: "steer" } : { appRequestId }),
   });
@@ -10663,6 +11819,31 @@ function Workspace({
     sessions,
     defaultRuntimeMode: sessionDefaults?.runtimeMode,
     command: async (method, params, commandId) => {
+      // WP-150: inbox, crew status, and one tool call. Refused in Rust when phone access is off.
+      if (
+        method === "inbox.list" ||
+        method === "crew.status" ||
+        method === "session.approve" ||
+        method === "session.deny"
+      ) {
+        // WP-150: the inbox and an approve or deny match only the calls the catalog
+        // publishes, so a room session or unlisted chat is never offered or answered.
+        const published = await mobileCatalog(sessionsRef.current, sessionDefaults?.runtimeMode);
+        // Read after the await: the calls and chats are the window's current ones, not the ones
+        // the catalog was built from. A call decided meanwhile is no longer offered or answered.
+        const listed = new Set(published.sessions.map((session) => session.id));
+        const roster = listMonos();
+        return runMobilePairing(method, params, {
+          sessions: sessionsRef.current,
+          now: Date.now(),
+          approve: (sessionId, requestId, decision) =>
+            mobileApprovalRef.current(sessionId, requestId, decision),
+          remoteBlocked: (session) =>
+            !!remoteProjectFor(session.cwd) && !remoteSessionActions(session.id),
+          privateIds: await mobilePrivateSessionIds(sessionsRef.current),
+          approvals: (live) => publishedApprovalRows(live, listed, roster),
+        });
+      }
       const text = typeof params.text === "string" ? params.text.trim() : "";
       if (
         (method === "session.start" || method === "conversation.send") &&
@@ -10741,17 +11922,13 @@ function Workspace({
         return { sessionId: session.id };
       }
       if (method === "session.configure") {
-        // The phone's model sheet, through the same paths as the composer's
-        // pickers, so a provider switch hands off on the next send as here.
-        const choice = mobileChoice(params);
-        if (choice.harness && choice.model && (choice.harness !== session.harness || choice.model !== session.model))
-          onModelChange(session.id, choice.harness, choice.model);
-        if (choice.modelSettings) {
-          const resolved = resolveModel(choice.harness ?? session.harness, choice.model ?? session.model);
-          onModelSettingsChange(session.id, mergeModelSettings(resolved, choice.modelSettings));
-        }
-        if (choice.runtimeMode) onRuntimeModeChange(session.id, choice.runtimeMode);
-        return { sessionId: session.id };
+        // The phone's model sheet, through the same paths as the composer's pickers (mobileWorkspace.applyMobileConfigure).
+        return applyMobileConfigure(session, params, {
+          openMode: (id) => sessionsRef.current.find((current) => current.id === id)?.runtimeMode,
+          onModelChange,
+          onModelSettingsChange,
+          onRuntimeModeChange,
+        });
       }
       if (method === "session.answerQuestion" || method === "session.keepQuestionOpen") {
         // As the composer's question card; only the question still waiting,
@@ -10835,6 +12012,56 @@ function Workspace({
         });
       },
     });
+  }, []);
+  useEffect(() => {
+    // WP-144: fresh-eyes reviewers are cheap sessions with an empty history. Off until a project turns the review on.
+    let folder = "~";
+    void homeDir().then((dir) => {
+      if (dir.trim()) folder = dir;
+    });
+    return bindFreshEyesApp({
+      sessions: () => sessionsRef.current,
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      // WP-141 round 6: a reviewer is a launch like a worker: its CLI passes the crew gate before its session starts.
+      // WP-141: the chat that asked is the reviewer's parent, so that chat's grant stays in force.
+      crewGate: (session, reviewed, parentSession) =>
+        crewLaunchCheck({ cli: session.harness, folder: reviewed, sessionId: session.id, parentSession }),
+      stop: (sessionId) => {
+        void onStopRef.current(sessionId, true);
+      },
+      remove: (sessionId) => {
+        sessionsRef.current = sessionsRef.current.filter((session) => session.id !== sessionId);
+        setSessions(sessionsRef.current);
+      },
+      cwd: () => folder,
+    });
+  }, []);
+  useEffect(() => {
+    // WP-203: the reviewer session for each security review the app recorded a running row for. The finish settles the row.
+    const started = new Set<string>();
+    const hooks: ReviewHooks = {
+      add: (session) => {
+        sessionsRef.current = [...sessionsRef.current, session];
+        setSessions(sessionsRef.current);
+      },
+      submit: (sessionId, text, _history, options) => submitSessionRef.current(sessionId, text, [], options),
+      cwd: () => "~",
+    };
+    const run = () => {
+      void startPendingReviews(tauriDelegations, hooks, started).catch(() => undefined);
+    };
+    run();
+    let off: (() => void) | undefined;
+    void listen(DELEGATIONS_CHANGED, run)
+      .then((unlisten) => {
+        off = unlisten;
+      })
+      .catch(() => undefined);
+    return () => off?.();
   }, []);
   const roomsHost = useRoomRunner({
     sessions,
@@ -10931,6 +12158,81 @@ function Workspace({
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, [ensureAutomationRecovery, launchAutomation, shipHold]);
+
+  // WP-115: compact an idle Claude chat shortly before its prompt cache expires.
+  const idleCompactEvent = useRef(enqueueHarnessEvent);
+  idleCompactEvent.current = enqueueHarnessEvent;
+  useEffect(() => {
+    return watchIdleClaudeCompaction({
+      sessions: () => sessionsRef.current,
+      toInput: (session) => ({
+        sessionId: session.id,
+        cwd: sessionWorkCwd(session),
+        model: session.model,
+        modelSettings: session.modelSettings,
+        providerAccountId: supportsProviderAccounts(session.harness)
+          ? (session.providerAccountId ??
+            selectedProviderAccountId(session.harness, session.cwd))
+          : undefined,
+        runtimeMode: session.runtimeMode,
+        ephemeral: session.ephemeral === true,
+        controlsAgents:
+          isMonoSession(session.id) ||
+          operatorEnabledInThread(session.blocks) ||
+          orchestrator.run(session.id)?.status === "active",
+        ...firstMateLaunch(session),
+      }),
+      onEvent: (id, event) => idleCompactEvent.current(id, event),
+      // WP-115: hold the chat busy while compacting, so a send queues and a second look waits.
+      // Claimed once, then published. The store assigns the ref as well, so a
+      // diverged ref is put back afterwards.
+      markBusy: (sessionId, busy) => {
+        const result = commitIdleCompactBusy(
+          sessionState.snapshot(),
+          sessionsRef.current,
+          sessionId,
+          busy,
+          turnGen.current,
+          idleCompactOwners.current,
+        );
+        if (result.store !== sessionState.snapshot()) {
+          setSessions([...result.store]);
+          // Same array means the store publish already pointed the ref at it.
+          if (result.ref === result.store) return result.ok;
+        }
+        if (sessionsRef.current !== result.ref) sessionsRef.current = [...result.ref];
+        return result.ok;
+      },
+    });
+  }, []);
+  // WP-128: one prompt at a chosen time. A closed app does not run it.
+  const oneTimeSchedules = useOneTimeScheduleRunner({
+    paused: () => shipHoldRef.current,
+    sessions: () =>
+      sessionsRef.current.map((session) => ({
+        id: session.id,
+        busy: Boolean(session.busy),
+      })),
+    projectPaths: () => {
+      const paths = recents.map((recent) => recent.path);
+      if (looksLikeProject(projectCwd)) paths.push(projectCwd);
+      return paths;
+    },
+    createChat: (folder) => {
+      const session = { ...newDefaultSession(folder), title: "Scheduled prompt" };
+      const nextSessions = [...sessionsRef.current, session];
+      sessionsRef.current = nextSessions;
+      setSessions(nextSessions);
+      appendTab(newTab(session.id), folder);
+      return session.id;
+    },
+    submit: (sessionId, prompt) =>
+      submitWithSettlement({
+        submit: (onSettled) => submitSession(sessionId, prompt, [], { onSettled }),
+        rejectionMessage: "The chat did not take the prompt.",
+        onSettled: () => undefined,
+      }),
+  });
 
   const onInboxAppeared = useCallback(
     (items: Parameters<typeof claimInboxAutomationRuns>[0]) => {
@@ -11047,6 +12349,7 @@ function Workspace({
           (monoForSession(session.id) &&
             canSteerQueuedHead(session) &&
             canSteerHarness(session.harness) &&
+            !session.registryAgentId &&
             !consumeOperatorCommand(queued[0].text).matched)
         ) ||
         queueDispatchingRef.current.has(session.id)
@@ -11074,6 +12377,7 @@ function Workspace({
               (monoForSession(latest.id) &&
                 canSteerQueuedHead(latest) &&
                 canSteerHarness(latest.harness) &&
+                !latest.registryAgentId &&
                 !consumeOperatorCommand(head.text).matched)
             )
           ) {
@@ -11121,6 +12425,7 @@ function Workspace({
               head.attachments,
               {
                 queuedMessageId: head.id,
+                ...(head.byOwner ? { byOwner: true } : {}),
                 followUpBehavior: steering ? "steer" : undefined,
                 noteCard: head.noteCard,
                 handoffCard: head.handoffCard,
@@ -11260,7 +12565,11 @@ function Workspace({
                 ...session,
                 queuedMessages: session.queuedMessages?.map((message) =>
                   message.id === messageId
-                    ? { ...message, text, error: undefined }
+                    ? {
+                        ...message,
+                        text: stripHiddenCharacters(text).text,
+                        error: undefined,
+                      }
                     : message,
                 ),
                 editingQueuedMessageId: undefined,
@@ -11292,6 +12601,7 @@ function Workspace({
       onSubmit(sessionId, message.text, message.attachments, {
         followUpBehavior: "steer",
         queuedMessageId: message.id,
+        ...(message.byOwner ? { byOwner: true } : {}),
         noteCard: message.noteCard,
         handoffCard: message.handoffCard,
         intent: message.intent,
@@ -12434,6 +13744,7 @@ function Workspace({
               operatorEnabledInThread(current.blocks) ||
               orchestrator.run(sessionId)?.status === "active",
             ...firstMateLaunch(current),
+            ...crewLaunch(current, crewRows()), // WP-143
             onEvent: (event) => {
               if (turnGen.current.get(sessionId) !== gen) return;
               enqueueHarnessEvent(sessionId, event);
@@ -12545,6 +13856,9 @@ function Workspace({
     openSession: openReminderSession,
   });
   const onStopFromUser = delegationTree.stopFromUser;
+  // WP-219: a project chat or a sub-chat on the Agents board uses the Stop its own chat's button uses: on a chat with
+  // work out that is the tree Stop, so its workers stop too and their reports don't wake it again.
+  useEffect(() => setAgentsBoardSessionStop((sessionId) => onStopFromUser(sessionId)), [onStopFromUser]);
 
   // The real-Claude test bench (scripts/hub-realtest.mjs): a dev copy whose verify plan names a driver folder takes Ash's
   // scripted actions through the same handlers his composer, Stop button and rail use. No plan reaches the daily app.
@@ -12660,10 +13974,16 @@ function Workspace({
     return () => window.removeEventListener("keydown", onEscape);
   }, [onStopFromUser]);
 
+  // Returns false when the decision was not sent (the call is gone), so the phone is
+  // told the truth and the call stays answerable.
   const onApproval = useCallback(
-    (sessionId: string, requestId: number, decision: ApprovalDecision) => {
+    (sessionId: string, requestId: number, decision: ApprovalDecision, boundHash?: string): boolean => {
       const session = sessionsRef.current.find((s) => s.id === sessionId);
-      if (!session || session.worktreeRemoved) return;
+      if (!session || session.worktreeRemoved) return false;
+      // WP-243: an allow is bound to the frozen action the card shows. A caller that judged a card names its hash;
+      // a tap on the card names the card that is open under this id. The registry sends it only if that is the action
+      // still waiting.
+      const shown = boundHash ?? openActionHash(session.blocks, requestId);
       // An approval a habit's hidden run asked for, put to the user in the
       // Mono's chat: answer the run, and settle the question in the chat.
       if (isMonoSession(sessionId)) {
@@ -12675,33 +13995,35 @@ function Workspace({
           const run = relay
             ? sessionsRef.current.find((s) => s.id === relay.runId)
             : undefined;
-          if (relay && run)
+          // WP-243: the allow names the run's frozen action the card carried; the run refuses any other.
+          const sent =
+            !!(relay && run) &&
             respondHarnessApproval(
-              run.harness,
-              run.id,
-              relay.requestId,
+              run!.harness,
+              run!.id,
+              relay!.requestId,
               decision,
+              boundHash ?? asked.approval?.actionHash,
             );
           decideMonoBlockRef.current(
             sessionId,
             asked.id,
-            relay && run
-              ? decision === "deny"
-                ? "deny"
-                : "allow"
-              : "cancelled",
+            sent ? (decision === "deny" ? "deny" : "allow") : "cancelled",
           );
-          return;
+          // Nothing sent (no relay waiting, or not the action the run asked): settled as cancelled, the tool did not run.
+          return sent;
         }
       }
       if (remoteProjectFor(session.cwd)) {
-        remoteSessionActions(sessionId)?.approve(requestId, decision);
-        return;
+        const actions = remoteSessionActions(sessionId);
+        if (!actions) return false;
+        return actions.approve(requestId, decision);
       }
-      respondHarnessApproval(session.harness, sessionId, requestId, decision);
+      return respondHarnessApproval(session.harness, sessionId, requestId, decision, shown);
     },
     [],
   );
+  mobileApprovalRef.current = onApproval;
 
   const onQuestionReply = useCallback(
     (sessionId: string, requestId: number, reply: UserQuestionReply) => {
@@ -12715,6 +14037,74 @@ function Workspace({
     },
     [],
   );
+
+  // Home's box opens the fresh chat it started (openMonoSideChat is declared further down).
+  const openMonoSideChatRef = useRef<(sessionId: string) => unknown>(() => undefined);
+  // WP-212: Home's box uses the Chief of Staff's own chat, the same session the sidebar opens.
+  useEffect(() => setHomeChiefHost({
+    ensure: (monoId, projectId, options) => {
+      const sessionHost = {
+        home: homeDir,
+        load: ensureOpenSession,
+        create: (path: string) => newDefaultSession(path),
+        add: (created: Session) => {
+          sessionsRef.current = [...sessionsRef.current, created];
+          setSessions(sessionsRef.current);
+        },
+      };
+      // One chat (Ash, 13 Nov): whatever box it was typed in, a message to the Chief of Staff goes into its one chat.
+      if (isOneChatMono(monoId)) return ensureMonoSession(monoId, sessionHost);
+      // Dropwave: a project home's box starts in the Chief of Staff's own chat for that project.
+      const project = projectId ? hubData().listProjects().find((entry) => entry.id === projectId) : undefined;
+      if (project) return ensureMonoProjectSession(monoId, project, sessionHost);
+      // Home's box (Ash, 12 Nov): each ask is a new chat with the Chief of Staff, in the folder its main chat works in.
+      // It starts in the Chief of Staff's team folder, the one its chat list shows, as "New chat" there does.
+      if (options?.fresh) {
+        return (async () => {
+          const team = monoTeam(monoId) ?? (codingTeamsOn() ? await ensureMonoTeam(monoId).catch(() => undefined) : undefined);
+          const mainId = findMono(monoId)?.sessionId;
+          const main = mainId ? sessionsRef.current.find((item) => item.id === mainId) : undefined;
+          return startMonoSideChat(monoId, sessionHost, team?.folder ?? main?.cwd, main);
+        })();
+      }
+      return ensureMonoSession(monoId, sessionHost);
+    },
+    open: (sessionId) => void openMonoSideChatRef.current(sessionId),
+    submit: (sessionId, text) => submitSession(sessionId, text),
+    answer: (sessionId, requestId, reply) => onQuestionReply(sessionId, requestId, reply),
+    read: (sessionId) => {
+      const session = sessionsRef.current.find((item) => item.id === sessionId);
+      if (!session) return undefined;
+      const pending = session.pendingQuestion;
+      return {
+        id: session.id,
+        busy: session.busy,
+        blocks: session.blocks.map((block) => ({
+          role: block.role,
+          text: block.text,
+          internal: block.internal,
+          draft: block.draft,
+          streaming: block.streaming,
+          monoNote: block.monoNote,
+          monoSessionCompletion: block.monoSessionCompletion,
+          monoCheck: block.monoCheck,
+        })),
+        pendingQuestion: pending
+          ? {
+              requestId: pending.requestId,
+              questions: pending.questions.map((question) => ({
+                id: question.id,
+                prompt: question.prompt,
+                options: question.options.map((option) => ({ id: option.id, label: option.label })),
+              })),
+            }
+          : undefined,
+      };
+    },
+  }), [ensureOpenSession, submitSession, onQuestionReply, homeDir]);
+  useEffect(() => {
+    notifyHomeChief();
+  }, [sessions]);
 
   // Autopilot: covered chats take their own recommendation (red list waits for Ash), agents resume at a limit's
   // reset, and armed resumes come back after a restart (features/autopilot).
@@ -12733,6 +14123,17 @@ function Workspace({
       if (mono) void onOpenMono(mono.id);
       else if (!focusOpenSession(id)) void onSelectHistorySession(id);
     },
+  });
+  // WP-243: a card Ash's own words already cover is allowed, bound to its frozen action, with his words shown.
+  useOwnerWords({
+    sessions,
+    sessionsRef,
+    updateSession: (id, change) =>
+      updateSessionState(sessionsRef, setSessions, (all) =>
+        all.map((entry) => (entry.id === id ? change(entry) : entry)),
+      ),
+    approve: onApproval,
+    isDelegated: (id) => !!delegationsRef.current?.openRowFor(id),
   });
 
   const onQuestionInteraction = useCallback(
@@ -12767,6 +14168,12 @@ function Workspace({
     });
     return () => setTurnTextDecorator(undefined);
   }, []);
+  // An Inbox card's "Open chat" lands on the message that asked (transcriptJump.ts): a chat already loaded jumps at
+  // once, one that loads afterwards jumps when its blocks arrive.
+  useEffect(() => setTranscriptAskChats(() => sessionsRef.current), []);
+  useEffect(() => {
+    resolveTranscriptAsks(sessions);
+  }, [sessions]);
   useEffect(() => {
     if (IS_HUB_BUNDLE) noteChats(sessions);
     // A Mono whose last turn failed (out of credits, overloaded, a limit) shows on the rail, Today and Being built.
@@ -12900,6 +14307,16 @@ function Workspace({
           harness,
           models: modelsFor(harness).map(({ id, name }) => ({ id, name })),
         })),
+      // WP-141 round 6: the CLIs on Never use for a folder, so an approved card is filtered before a worker starts.
+      crewPolicy: (folder, leadId) =>
+        crewPolicyForLead(folder, leadId, {
+          project: (owner) => projectWorkerDefault(hubProjectIdFor(owner) ?? owner),
+          system: () => systemWorkerDefault(),
+          // WP-141 round 11: hub project folders, so a Lead in a worktree finds the project's worker default.
+          roots: hubProjectFolders(),
+        }),
+      // WP-91: an irreversible step's decision sits under the hub project of the run's folder, like a delegation does.
+      decisionProject: hubProjectIdFor,
       createWorker: async (run, task) => {
         const projectCwd = orchestrationProjectCwd(run);
         const leadCheckoutCwd = orchestrationCheckoutCwd(run);
@@ -12932,13 +14349,15 @@ function Workspace({
                   orchestrationWorktreeBranchName(task.id),
                   // WP-82: the crew id is the lease holder.
                   task.id,
-                ).then((tree) =>
-                  workspaceIdentity(
+                ).then((tree) => {
+                  // WP-138: the worker's header can say the include files were copied.
+                  rememberWorktreeInclude(task.sessionId, tree);
+                  return workspaceIdentity(
                     projectCwd,
                     tree.path,
                     tree.branch ?? undefined,
-                  ),
-                );
+                  );
+                });
         const checkoutCwd = workspace.checkoutCwd;
         const scratchDir = await invoke<string>("control_attach_worker", {
           leadId: run.leadId,
@@ -13021,15 +14440,8 @@ function Workspace({
               title: task.title,
             };
         const worker = { ...base, orchestrationLeadId: run.leadId };
-        if (worker.providerSessionId)
-          bindHarnessSession(
-            worker.harness,
-            worker.id,
-            worker.providerSessionId,
-            sessionWorkCwd(worker),
-            worker.providerAccountId,
-            worker.blocks,
-          );
+        // WP-134: a More agents worker is routed from the row before its saved ACP session is bound.
+        bindRestoredHarness(worker);
         await upsertSession(worker);
         const next = [...sessionsRef.current, worker];
         sessionsRef.current = next;
@@ -13222,7 +14634,8 @@ function Workspace({
           );
         if (
           !isLiveHarness(session.harness) ||
-          !canSteerHarness(session.harness)
+          !canSteerHarness(session.harness) ||
+          session.registryAgentId
         )
           throw new Error(
             `${session.harness} cannot take guidance mid-turn. Wait for the turn to finish, then use message.`,
@@ -13245,8 +14658,9 @@ function Workspace({
       },
       respondApproval: (id, requestId, decision) => {
         const session = sessionsRef.current.find((entry) => entry.id === id);
+        // WP-243: the lead's allow is bound to the worker's card it read.
         if (session)
-          respondHarnessApproval(session.harness, id, requestId, decision);
+          respondHarnessApproval(session.harness, id, requestId, decision, openActionHash(session.blocks, requestId));
       },
       answerQuestion: (id, requestId, reply) => {
         const session = sessionsRef.current.find((entry) => entry.id === id);
@@ -13277,6 +14691,16 @@ function Workspace({
     orchestrator.sync();
   }, [sessions]);
 
+  // WP-91: a decision answered anywhere (the Inbox, Home or a chat) starts the irreversible step that waited on it.
+  useEffect(
+    () =>
+      watchDecisions(
+        (event, handler) => listen(event, () => handler()),
+        () => orchestrator.decisionsChanged(),
+      ),
+    [],
+  );
+
   const stopSessionRef = useRef(onStop);
   stopSessionRef.current = onStop;
   onStopRef.current = onStop;
@@ -13302,6 +14726,14 @@ function Workspace({
     }
     return [...byId.values()].filter(isOpenDelegation);
   };
+  // WP-171: what a waiting task of a fan-out waits for (the tasks that provide what it requires, delivered and checked).
+  const fanout = useFanoutHost({
+    rows: () => [...delegationRows(), ...(delegationsRef.current?.known() ?? [])],
+    folder: (session) => sessionsRef.current.find((entry) => entry.id === session)?.cwd,
+  });
+  // WP-171: the waiting card reads the same dependency the pump does, so a held task is not labelled as a free worker.
+  setQueueDependency(fanout.dependency);
+  useEffect(() => () => setQueueDependency(undefined), [fanout]);
   const providerRoomNow = (harness: string) =>
     workerRoom(harness, {
       now: Date.now(),
@@ -13318,22 +14750,45 @@ function Workspace({
     void pumpWorkers({
       openRows: openDelegationRows,
       room: providerRoomNow,
+      dependency: fanout.dependency,
+      settle: fanout.settle,
       // A Lead's chat that isn't open in this window keeps its workers waiting until it is.
-      canStart: (job) => sessionsRef.current.some((session) => session.id === job.ownerSession),
+      // SC-19: a job this window already holds from before its owner was reset starts under the chat that took over.
+      canStart: (job) => sessionsRef.current.some((session) => session.id === (delegationsRef.current?.ownerNow(job.ownerSession) ?? job.ownerSession)),
       start: (job: QueuedWorker) => {
         // Its first ask answered "waiting"; this one starts it under the same request, so the same chat and card.
         appReceipts.current.delete(`${job.ownerSession}:${job.requestId}`);
         return controlRequestRef.current!({
           namespace: "app",
-          sessionId: job.ownerSession,
+          sessionId: delegationsRef.current?.ownerNow(job.ownerSession) ?? job.ownerSession,
           requestId: job.requestId,
           action: "tasks.delegate",
           // Hivra WP-10: a worker queued before briefs carried an intent and a goal still starts.
-          input: withLegacyBriefParts(job.input, job.title),
+          // WP-171: the link and the quoted request are the app's, not an agent's. Mark after the spread, which drops it.
+          input: markAppDelegate(withLegacyBriefParts(job.input, job.title)),
         });
       },
-      failed: (job, error) =>
-        console.warn(`A waiting worker (${job.title}) could not start`, error),
+      failed: (job, error) => {
+        console.warn(`A waiting worker (${job.title}) could not start`, error);
+        // WP-171: a waiting task that is dropped is told to the chat that asked, once. A cap refusal never gets here.
+        const line = droppedTaskLine(job, error);
+        void queueMonoSessionCompletionRef.current(job.ownerSession, {
+          id: `dropped-${job.id}`,
+          text: `[MonoCode] ${line} (this is the app, not the person.)`,
+          attachments: [],
+          monoNote: { kind: "message", from: "Tasks", line: line.length > 160 ? `${line.slice(0, 157)}...` : line },
+        });
+      },
+      // WP-171: a task that becomes held wakes the chat that asked, once per hold. A later hold uses a new id.
+      held: (_job, note) => {
+        const line = note.line;
+        void queueMonoSessionCompletionRef.current(_job.ownerSession, {
+          id: note.id,
+          text: `[MonoCode] ${line} (this is the app, not the person.)`,
+          attachments: [],
+          monoNote: { kind: "message", from: "Tasks", line: line.length > 160 ? `${line.slice(0, 157)}...` : line },
+        });
+      },
     })
       .catch(console.error)
       .finally(() => {
@@ -13345,11 +14800,14 @@ function Workspace({
   }, [sessions, pumpWorkersNow]);
   useEffect(() => {
     const offRows = subscribeDelegations(pumpWorkersNow);
-    const offPool = subscribeWorkerPool(pumpWorkersNow);
     // A provider's reset changes no row: look again then, and now and then anyway.
     let timer = 0;
     const arm = () => {
-      const wake = nextWake(providerRoomNow, Date.now());
+      // WP-161: waiting builders also look at the machine again soon, so a pause that clears starts them, and the
+      // Needs you line for a held disk reads a fresh sample.
+      const resets = nextWake(providerRoomNow, Date.now());
+      const recheck = nextHealthCheck(Date.now());
+      const wake = resets === undefined ? recheck : recheck === undefined ? resets : Math.min(resets, recheck);
       timer = window.setTimeout(
         () => {
           pumpWorkersNow();
@@ -13358,13 +14816,77 @@ function Workspace({
         Math.min(60_000, Math.max(1_000, (wake ?? Infinity) - Date.now())),
       );
     };
+    // WP-161: a builder joining the queue (or a health read landing) sets the next look again, so a wait that began
+    // after the timer was set is not left to the 60 second cap.
+    const offPool = subscribeWorkerPool(() => {
+      pumpWorkersNow();
+      window.clearTimeout(timer);
+      arm();
+    });
+    // WP-176: raising a spend limit starts a builder that was waiting on it, without waiting for the timer.
+    const offSpend = subscribeSpend(pumpWorkersNow);
     arm();
     return () => {
       offRows();
       offPool();
+      offSpend();
       window.clearTimeout(timer);
     };
   }, [pumpWorkersNow]);
+  // WP-144: a brief held for a fresh-eyes review starts when the person approves or skips it. It is the same
+  // tasks.delegate call asked again under the same request ID, with the call that was reviewed, the way a waiting
+  // worker starts, so the checks, the worker limits and the waiting line all apply. The brief is kept with the review
+  // (in the app's database), so a restart does not lose it.
+  const steeringRef = useRef(steering);
+  steeringRef.current = steering;
+  useEffect(() => {
+    const unbind = bindHeldStarter({
+      canStart: (owner) =>
+        !!controlRequestRef.current && sessionsRef.current.some((session) => session.id === owner),
+      start: (owner, requestId, input) => {
+        // Its first ask answered "waiting" and that answer is remembered; this one starts it.
+        appReceipts.current.delete(`${owner}:${requestId}`);
+        return controlRequestRef.current!({
+          namespace: "app",
+          sessionId: owner,
+          requestId,
+          action: "tasks.delegate",
+          // WP-171: a held brief starts as the app's own call, so a fan-out task can keep its link.
+          input: markAppDelegate({ ...input }),
+        });
+      },
+    });
+    // The Inbox and the chat that asked, for the review: the question, its close, the person's answer, a note to the chat.
+    const unbindBackend = bindFreshEyesBackend(backendFrom(steeringRef.current.backend));
+    const release = () => void releaseHeld();
+    const off = subscribeFreshEyes(release);
+    // What was left half done by the last run: reviewers that died with the window run again (or the person is asked),
+    // and an approved brief starts. Again every half minute, for a start that failed and for a lease that ran out.
+    const resume = () => {
+      void resumeReviews();
+      release();
+    };
+    resume();
+    const timer = window.setInterval(resume, 30_000);
+    // An answer given in the Inbox or Home reaches the review the same way a click on the crew card does. Only the
+    // person's own answer counts (gate.ts isPersonAnswer): a chat answering ask_person for them does not.
+    const offDecisions = watchDecisions(
+      (event, handler) => listen(event, () => handler()),
+      () => void syncHeldDecisions(),
+    );
+    return () => {
+      window.clearInterval(timer);
+      offDecisions();
+      off();
+      unbindBackend();
+      unbind();
+    };
+  }, []);
+  // A chat opened after a restart can take the brief it asked for.
+  const openChatIds = useMemo(() => sessions.map((session) => session.id).join("\n"), [sessions]);
+  useEffect(() => {
+    void releaseHeld();
+  }, [openChatIds]);
   // A worker the provider refused for its limit keeps its task (H8): with no other account to move to (E5), it
   // carries on by itself, once per refusal. A refusal that named no reset gets E5's (heldRetryAt): the latest usage
   // reading's, else five hours on; a fresh reading that shows room brings the retry forward.
@@ -13419,9 +14941,24 @@ function Workspace({
   }, []);
   useEffect(() => {
     // WP-89: the line in force reads this project's crew rules, and a plugin's.
-    setLineRulesSource((project) =>
-      invoke("crew_rules_get", { scope: "project", scopeId: project, project }),
-    );
+    // WP-141: the line sees the project's rules, then everything's (the project's come first, as the route reads them).
+    setLineRulesSource(async (project) => {
+      const own = await invoke<{ rules?: unknown; plugins?: unknown } | undefined>("crew_rules_get", {
+        scope: "project",
+        scopeId: project,
+        project,
+      });
+      const system = await invoke<{ rules?: unknown } | undefined>("crew_rules_get", {
+        scope: "system",
+        scopeId: "system",
+        project,
+      }).catch(() => undefined);
+      const rules = [
+        ...(Array.isArray(own?.rules) ? own.rules : []),
+        ...(Array.isArray(system?.rules) ? system.rules : []),
+      ];
+      return { rules, plugins: own?.plugins };
+    });
     return () => setLineRulesSource(undefined);
   }, []);
   const removeSessionRef = useRef(onRemoveHistorySession);
@@ -13463,7 +15000,8 @@ function Workspace({
         sessionId: ownerSession,
         requestId,
         action: "tasks.delegate",
-        input,
+        // WP-171: a retry is the app asking again, so it may carry the link and the request.
+        input: markAppDelegate({ ...input }),
       }),
     );
     // WP-15: Stop uses tasks.cancel as the row's owner, so a busy child stops and a queued worker never starts.
@@ -13612,12 +15150,19 @@ function Workspace({
             ...(delegation?.askIds.length ? { askIds: delegation.askIds } : {}),
             ...(delegation?.goal ? { goal: delegation.goal } : {}),
             ...(delegation?.taskId ? { taskId: delegation.taskId } : {}),
+            // WP-141: why the crew picked this CLI, kept on the row's first line for the Crew tab.
+            ...(delegation?.pickReason ? { pickReason: delegation.pickReason } : {}),
+            // WP-176 round 5: the redo's link is written with its row, in the same transaction, before its first turn.
+            ...(delegation?.redoes ? { redoes: delegation.redoes.id } : {}),
             // A7: written on the row, not only in the worker's brief, so the store refuses a done settle without it even
             // when the turn settles through a restart's recovery path.
             ...(delegation ? { reviewRequired: true } : {}),
             by: `owner:${monoId}`,
           });
           const row = await launch?.row;
+          // A redo whose link could not be recorded does not start: its turn would be judged without its parent.
+          const refusal = redoLinkRefusal(delegation, row);
+          if (refusal) throw new Error(refusal);
           // Dev-only (D5 scripted test): a worker started while a tester armed dev-faults/fail-next-workers runs, then
           // reports a failure. Off by default; see devFault.ts and docs/DEV-FAULTS.md.
           const fault = await takeWorkerFault();
@@ -13714,7 +15259,8 @@ function Workspace({
               return;
             }
             if (gateDue(result)) {
-              const checkout = gateCheckout(sessionsRef.current.find((session) => session.id === sessionId));
+              const session = sessionsRef.current.find((session) => session.id === sessionId);
+              const checkout = gateCheckout(session);
               const projectId = delegation?.project ?? hubProjectIdFor(project);
               // WP-40: a brief with gates is checked in code; one without keeps the routes check below.
               // No copy on hand is not a pass when a plan was stored: the id is not a checkout, so those gates
@@ -13727,6 +15273,8 @@ function Workspace({
                     signedOff: signedOffFor(workerStarted, monoId, delegation?.project ?? hubProjectIdFor(project) ?? project, delegationsRef.current?.known() ?? []),
                     report: result.result ?? "",
                     failures: gateFailures,
+                    // WP-145: this turn's checks, edits and to-dos.
+                    blocks: session?.blocks,
                   })
                 : null;
               if (briefGates?.action === "resend") {
@@ -13736,7 +15284,14 @@ function Workspace({
                   monoNote: briefGates.note,
                   onSettled: (next) => void turnEnded(next, true),
                 });
-                if (!accepted) finish(briefGates.failed(result));
+                if (accepted && row) {
+                  // WP-157: the checks sent this work back. A repeat of the same try keeps the first line.
+                  void invoke("delegations_sent_back", {
+                    id: row.id,
+                    rework: gateFailures,
+                    report: result.result,
+                  }).catch(() => undefined);
+                } else if (!accepted) finish(briefGates.failed(result));
                 return;
               }
               if (briefGates?.action === "fail" || briefGates?.action === "unsure") {
@@ -13756,7 +15311,14 @@ function Workspace({
                     monoNote: gateAskNote(run),
                     onSettled: (next) => void turnEnded(next, true),
                   });
-                  if (!accepted) finish(gateFailedResult(result, run));
+                  if (accepted && row) {
+                    // WP-157: the checks sent this work back. A repeat of the same try keeps the first line.
+                    void invoke("delegations_sent_back", {
+                      id: row.id,
+                      rework: gateFailures,
+                      report: result.result,
+                    }).catch(() => undefined);
+                  } else if (!accepted) finish(gateFailedResult(result, run));
                   return;
                 }
                 if (verdict === "deliver-failed" && run) {
@@ -14009,7 +15571,8 @@ function Workspace({
                 target,
                 mode,
                 isLiveHarness(target.harness) &&
-                  canSteerHarness(target.harness),
+                  canSteerHarness(target.harness) &&
+                  !target.registryAgentId,
               );
               if (delivery !== "started") {
                 const follow = delivery === "steered" ? "steer" : "queue";
@@ -14235,6 +15798,8 @@ function Workspace({
             worktrees: (cwd) => listWorktrees(cwd),
             ship: (input) => startShip(input),
             shipStatus: () => shipStatus().current,
+            // WP-254: a visual reply drawn off screen, for the agent's own look.
+            visualPreview: (document) => invoke("visual_preview", { document }),
             createWorktree: (cwd, branch, base, existing, options) =>
               createWorktree(cwd, branch, base, existing, options),
             projectActions: (cwd) => listProjectActions(cwd),
@@ -14324,6 +15889,37 @@ function Workspace({
               on: (monoId) => longChatOn(monoId),
               zoom: (monoId, id, n, at) => treeZoom(monoId, id, n, at),
               date: (monoId, id) => treeDate(monoId, id),
+              grep: (monoId, query) => treeGrep(monoId, query),
+            },
+            chatSearch: (mateId, query) => {
+              const out = searchChats(
+                sessionsRef.current.filter((session) => askMateFor(session.id) === mateId),
+                query,
+              );
+              return { ...out, note: 'Passages only. Read a whole message with sessions.read {"sessionId":"..."}; pass offset for more.' };
+            },
+            asks: {
+              mateOf: (id) => askMateFor(id),
+              list: async (mateId, all) => {
+                const ledger = await askStore().load();
+                return ledger.asks
+                  .filter((ask) => ask.mateId === mateId && (all || isOpenAsk(ask)))
+                  .sort((x, y) => x.n - y.n)
+                  .map(askForMate);
+              },
+              update: async (mateId, n, change) => {
+                const ledger = await askStore().load();
+                const target = ledger.asks.find((ask) => ask.n === n && ask.mateId === mateId);
+                if (!target) throw new Error(`You have no ask ${n}. asks.list shows yours.`);
+                const status = change.status === undefined ? undefined : mateAskStatus(change.status);
+                const out = await askStore().change(
+                  target.id,
+                  { ...(status ? { status } : {}), ...(change.note !== undefined ? { note: change.note } : {}), ...(change.proof !== undefined ? { proof: change.proof } : {}) },
+                  "mate",
+                );
+                if ("problem" in out) throw new Error(out.problem);
+                return { ask: askForMate(out.ask) };
+              },
             },
             // A chat in a hub project's coding team delegates and watches pull requests like the Lead (codingTeam.ts).
             codingTeamOf: (id) => {
@@ -14337,6 +15933,8 @@ function Workspace({
             },
             // WP-70: the shared task list. The handler sets who is asking.
             taskStore: (command, args) => invoke(command, args),
+            // WP-159: the programme board. The handler sets who is asking.
+            programmeStore: (command, args) => invoke(command, args),
             // WP-88: projects on this copy, the activity log, and reviewed memory.
             knownProjects: () => hubData().listProjects().map((project) => ({
               id: project.id,
@@ -14399,18 +15997,6 @@ function Workspace({
                 } catch {
                   return list;
                 }
-                // WP-165: the overnight scout stays off until its setting is on. A timeout keeps the old list.
-                try {
-                  await syncScoutHabit(
-                    monoId,
-                    loadHabits,
-                    async (id, change) => updateHabits(id, change),
-                    () => readScoutSettings(tauriLocalHubDisk),
-                    Date.now(),
-                  );
-                } catch {
-                  return list;
-                }
                 return loadHabits(monoId).catch(() => list);
               },
               update: updateHabits,
@@ -14418,6 +16004,8 @@ function Workspace({
             tasks: delegationTasksHost({
               backend: tauriDelegations,
               firstMate: steering,
+              // WP-172: the fan-out checkpoint store (a plan cut short by a crash can be resumed).
+              fanoutCheckpoints: tauriFanoutCheckpoints,
               tracker: () => delegationsRef.current,
               session: (id) =>
                 sessionsRef.current.find((session) => session.id === id),
@@ -14434,6 +16022,8 @@ function Workspace({
               questions: delegationTreeRef.current.questions,
               hubProjectId: hubProjectIdFor,
               hubProjectFolder,
+              // WP-141 round 11: hub project folders, so a worktree's session, brief and pick share the project's default.
+              hubProjectRoots: hubProjectFolders,
               unqueue: (childSession, requestId) => {
                 const next = sessionsRef.current.map((session) => {
                   if (session.id !== childSession) return session;
@@ -14459,9 +16049,13 @@ function Workspace({
                 : {}),
               // WP-13: the start of a delegated task asks which CLI, model and effort to use.
               crewRoute: (query) => crewRouteFor(query),
+              // WP-141: tasks.pick, the crew's pick across CLIs and the Leads this Mono may brief.
+              crewPick: (query) => crewPickFor(query),
+              pickMonos: (monoId) => pickMonosFrom(leadTargetsFor(monoId, hubData().listProjects()), listMonos()),
               pool: workerPoolHost({
                 openRows: openDelegationRows,
                 room: providerRoomNow,
+                dependency: fanout.dependency,
                 card: (job, launch) =>
                   rememberSession({
                     sessionId: job.id,
@@ -14475,6 +16069,33 @@ function Workspace({
                     ...(launch.cliFallback ? { cliFallback: launch.cliFallback } : {}),
                   }),
               }),
+              // The Lead a brief names must exist: asked before a fresh-eyes review, so an unknown one is never reviewed.
+              checkLead: async (_owner, mono, lead) => {
+                const target = findLeadTarget(mono.id, hubData().listProjects(), lead);
+                if (!target)
+                  throw new Error(
+                    `No Lead "${lead}" among the ones you can brief (a Lead of a project you and it are both members of).`,
+                  );
+                // WP-141 LOW 7: a Lead on Never use is not briefed, read from the Lead's own project, whatever the brief says.
+                // The CLI is the one the brief will run: the open chat, else the saved chat, else the chat a new session starts.
+                const cli = await cliForLeadBrief({
+                  mono: findMono(target.leadId),
+                  openSessions: sessionsRef.current,
+                  load: (id) => ensureOpenSessionRef.current(id),
+                  createDefault: async () => {
+                    const folder = leadWorkingFolder(target.leadId) ?? (await homeDir());
+                    return newDefaultSession(folder);
+                  },
+                });
+                await refuseNeverUseLead({ ...target, cli }, mono.id, crewPolicyInForce);
+              },
+              crewPolicy: (monoId, folder) => crewPolicyInForce(monoId, folder),
+              // WP-141: the one gate every worker and session launch passes before its process starts.
+              crewGate: (input) => crewLaunchCheck(input),
+              crewAnyLock: () => crewAnyLock(),
+              // WP-156: a Lead's brief carries that Lead's project, not the chat that writes it.
+              leadProject: (_owner, mono, lead) =>
+                findLeadTarget(mono.id, hubData().listProjects(), lead)?.projectId,
               briefLead: async (owner, mono, input) => {
                 const projects = hubData().listProjects();
                 const target = findLeadTarget(mono.id, projects, input.lead);
@@ -14510,6 +16131,9 @@ function Workspace({
               list: (ownerSession) => tauriPrWatches.list(ownerSession),
               hubProjectId: hubProjectIdFor,
             },
+            // WP-92: a worker's keys. Rust checks and asks; the values are armed for the child and never come back here.
+            secretsWorkerArm: (sessionId, request) =>
+              invoke<WorkerArmOutcome>("plugin:hub|secrets_worker_arm", { sessionId, request }),
             agentFiles: (monoId) => loadMonoFiles(monoId),
             readAgentFile: (monoId, path) => readAgentFile(monoId, path),
             writeAgentFile: (monoId, path, text, hash) =>
@@ -14773,7 +16397,7 @@ function Workspace({
             mono: {
               mascot: look.mascot,
               color: look.color,
-              status: session ? monoState(session).status : "idle",
+              status: session ? monoState(session, crewRows(), queuedWorkers()).status : "idle",
             },
             project: "",
             title: look.name,
@@ -14839,7 +16463,9 @@ function Workspace({
             ...(projectBranches?.current
               ? { branch: projectBranches.current }
               : {}),
-            ...(sidebarCwd && sidebarCwd !== "~"
+            // A first mate's own team folder (the Chief of Staff's) is the app's, not a repo: its chats carry no
+            // folder tag such as "chief-of-staff".
+            ...(sidebarCwd && sidebarCwd !== "~" && !isMonoTeamFolder(sidebarCwd)
               ? { repo: projectName(sidebarCwd) }
               : {}),
           },
@@ -14863,6 +16489,7 @@ function Workspace({
   );
   const {
     unseen: inboxUnseen,
+    markAllSeen: markInboxSeen,
     linkedSessionUpdateIds,
     linkedSessionUpdates,
   } = useInboxActivity(recents, sidebarCwd, sidebarHistory, {
@@ -14918,7 +16545,7 @@ function Workspace({
             ...(projectBranches?.current
               ? { branch: projectBranches.current }
               : {}),
-            ...(sidebarCwd && sidebarCwd !== "~"
+            ...(sidebarCwd && sidebarCwd !== "~" && !isMonoTeamFolder(sidebarCwd)
               ? { repo: projectName(sidebarCwd) }
               : {}),
           }),
@@ -14971,7 +16598,13 @@ function Workspace({
     });
   }, []);
 
+  // The palette's input takes focus as it opens, so keep what had it before.
+  const paletteFocusRef = useRef<Element | null>(null);
+  const rememberPaletteFocus = () => {
+    paletteFocusRef.current = focusBeforePalette(document.activeElement);
+  };
   const onGoToFile = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -14982,6 +16615,7 @@ function Workspace({
     setFilePickerOpen(true);
   }, []);
   const onOpenCommandPalette = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -14993,6 +16627,7 @@ function Workspace({
   }, []);
   // WP-74: ⌘K opens the same palette, ready to search every kind.
   const onOpenFinder = useCallback(() => {
+    rememberPaletteFocus();
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -15844,6 +17479,18 @@ function Workspace({
   // WP-93: the command palette's rows for what the app can do right now, and
   // the one runner that sends each row to the handler its shortcut uses.
   // Read fresh on the render that opens the palette, so "now" means now.
+  // Esc stops the Mono's chat while the Mono view is open, else the focused
+  // tab's busy chat; Stop chat in the palette reads the same way.
+  const paletteStopTarget: string | null = monoViewId
+    ? sessions.find((session) => session.id === monoViewId)?.busy
+      ? monoViewId
+      : null
+    : focusedBusyAgentSessionId(
+        activeTabId,
+        tabs,
+        sessions,
+        projectTerminalFocusedRef.current,
+      );
   const paletteContext: PaletteContext = {
     project:
       isLocalProject(sidebarCwd) || isRemoteProjectPath(sidebarCwd)
@@ -15851,46 +17498,32 @@ function Workspace({
         : null,
     terminal: isLocalProject(projectCwd),
     chat: Boolean(activeSessionId),
-    busy: Boolean(
-      activeSessionId &&
-        sessions.find((session) => session.id === activeSessionId)?.busy,
-    ),
-    // The chord treats an input, a terminal or a dialog as not the chat's.
-    control:
-      document.activeElement instanceof Element &&
-      Boolean(
-        document.activeElement.closest(
-          'input, textarea, select, [contenteditable="true"], .cm-editor, .monocode-terminal, [role="dialog"]',
-        ),
-      ),
+    busy: Boolean(paletteStopTarget),
+    ...paletteFocusOf(paletteFocusRef.current),
     editor: Boolean(activeFile && isFilesystemTab(activeFile)),
   };
-  // WP-93: the two commands that act on the chat in focus. The key handlers
-  // work these out from the event; the palette has no event, so it reads the
-  // same refs they do.
-  const paletteTargetsRef = useRef<{ archive: string | null; stop: string | null }>({
-    archive: null,
-    stop: null,
-  });
-  paletteTargetsRef.current = {
-    archive:
-      activeSessionId && !(activeFile && isFilesystemTab(activeFile))
-        ? activeSessionId
-        : null,
-    stop:
-      activeSessionId &&
-      sessions.find((session) => session.id === activeSessionId)?.busy
-        ? activeSessionId
-        : null,
-  };
+  const paletteStopTargetRef = useRef<string | null>(null);
+  paletteStopTargetRef.current = paletteStopTarget;
+  // WP-123: the chat Fork from here acts on: the one in view, and none while a file tab is.
+  const paletteForkTargetRef = useRef<string | null>(null);
+  paletteForkTargetRef.current =
+    activeSessionId && !(activeFile && isFilesystemTab(activeFile))
+      ? activeSessionId
+      : null;
   const runPaletteCommandFromFinder = useCallback(
     (row: Parameters<typeof runPaletteRow>[0]) =>
       runPaletteCommand(row, actions.current, {
         run,
-        archiveChat: () => paletteTargetsRef.current.archive,
-        stopChat: () => paletteTargetsRef.current.stop,
-        archive: (id) => void onArchiveHistorySession(id, true),
+        stopChat: () => paletteStopTargetRef.current,
         stop: (id) => onStopFromUser(id),
+        // The shortcut's own handler, as if it were pressed where focus was.
+        archiveFocused: () =>
+          onArchiveFocusedSession({
+            defaultPrevented: false,
+            target: focusBeforePalette(paletteFocusRef.current),
+            preventDefault: () => undefined,
+            stopPropagation: () => undefined,
+          } as unknown as KeyboardEvent),
         showHome: () => showAppItem("home"),
         showChanges: onShowSourceControl,
         openModelPicker: () =>
@@ -15910,8 +17543,23 @@ function Workspace({
           if (action === "replace") openReplaceInActiveEditor();
           else openFindInActiveEditor();
         },
+        // WP-123: fork the chat in focus from its latest message.
+        forkChat: () => {
+          const id = paletteForkTargetRef.current;
+          if (!id) return;
+          forkFocusedChat(sessionsRef.current.find((session) => session.id === id));
+        },
+        reportProblem: () => void startTriageChat(),
+        // WP-255: a chat with no say of its own follows Settings, so "allow" removes its entry.
+        computerUseChat: (mode) => {
+          const id = paletteForkTargetRef.current;
+          if (!id) return;
+          void setChatComputerUse(id, mode === "allow" ? null : mode).catch((error: unknown) => {
+            console.error("Couldn't change computer use for this chat", error);
+          });
+        },
       }),
-    [run, onShowSourceControl, onStopFromUser, onArchiveHistorySession],
+    [run, onShowSourceControl, onStopFromUser, onArchiveFocusedSession, startTriageChat],
   );
 
   useEffect(() => {
@@ -16435,7 +18083,7 @@ function Workspace({
           setSessions(sessionsRef.current);
         },
       }),
-    submit: onSubmit,
+    submit: onComposerSubmit,
     stop: onStopFromUser,
     approval: onApproval,
     question: onQuestionReply,
@@ -16451,7 +18099,104 @@ function Workspace({
     create: () => createMono().id,
   });
 
+  // WP-135: a discarded loser is stopped first, the same as pressing Stop in that chat.
+  const stopFanOutChild = useCallback(
+    async (childId: string) => {
+      const child = sessionsRef.current.find((session) => session.id === childId);
+      if (!child?.busy) return;
+      await onStop(childId);
+    },
+    [onStop],
+  );
+
+  // WP-135: the composer confirms the cap and the paid turns, then this starts one chat per model, each in its own
+  // worktree. A model that could not get a worktree does not start, and a compare that cannot start two, or cannot be
+  // saved, says why and gives back the worktrees it made.
+  const fanOutBusy = useRef(new Set<string>());
+  const onCompareModels = useCallback(
+    async (
+      sessionId: string,
+      prompt: string,
+      targets: readonly { provider: HarnessId; model: string }[],
+    ) => {
+      if (fanOutBusy.current.has(sessionId)) return false;
+      const source = sessionsRef.current.find((session) => session.id === sessionId);
+      if (!source || source.worktreeRemoved) return false;
+      fanOutBusy.current.add(sessionId);
+      try {
+        const takeBack = fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild);
+        const result = await startFanOut(
+          {
+            prompt,
+            targets,
+            cwd: source.cwd,
+            runtimeMode: source.runtimeMode,
+            sourceId: sessionId,
+            now: Date.now(),
+          },
+          {
+            git: gitRepositoryOnThisComputer,
+            branchName: temporaryWorktreeBranchName,
+            // The project's setup waits until two worktrees exist and the compare is saved: a setup that had already
+            // started would leave a worktree that could not be given back.
+            createWorktree: async (cwd, branch) => {
+              const tree = await createWorktree(cwd, branch, source.worktreeBase || "HEAD", false, {
+                runSetup: false,
+              });
+              return { path: tree.path, branch: tree.branch ?? branch, head: tree.head };
+            },
+            allowedRoots: defaultWorktreeRoots,
+            release: (worktrees) => releaseFanOutWorktrees(worktrees, takeBack),
+            save: putCompare,
+          },
+        );
+        if (!result.ok) return result.message;
+        const known = new Set(sessionsRef.current.map((session) => session.id));
+        const added = result.sessions.filter((session) => !known.has(session.id));
+        if (added.length === 0) return false;
+        sessionsRef.current = [...sessionsRef.current, ...added];
+        setSessions(sessionsRef.current);
+        // The project's setup starts now that the compare is saved; the chats start with the whole prompt, while the
+        // saved record keeps a capped copy.
+        for (const child of result.record.children) {
+          if (child.worktree.kind === "assigned") void startFanOutSetup(source.cwd, child.worktree.path);
+        }
+        for (const session of added) onSubmit(session.id, prompt);
+        return true;
+      } finally {
+        fanOutBusy.current.delete(sessionId);
+      }
+    },
+    [onSubmit, onRemoveWorktree, stopFanOutChild],
+  );
+
+  // WP-135: the compare sits on the chat it was started from. Picking leaves the winner's worktree.
+  const fanOutCompares = useSyncExternalStore(subscribeCompares, listCompares, listCompares);
+  const fanOutForSession = (sessionId: string) => {
+    const record = [...fanOutCompares].reverse().find((item) => item.sourceId === sessionId);
+    if (!record) return null;
+    return {
+      rows: fanOutCompareRows(record, sessionsRef.current),
+      notStarted: fanOutNotStartedLines(record),
+      onPick: (childId: string) => pickFanOutInStore(record.id, childId),
+      onDiscard: (childId: string) => {
+        const source = sessionsRef.current.find((item) => item.id === sessionId);
+        if (!source) return;
+        return discardFanOutLoser(
+          record.id,
+          childId,
+          fanOutJanitorPort(source.cwd, onRemoveWorktree, stopFanOutChild),
+        );
+      },
+    };
+  };
+
   const sessionPaneProps = {
+    // WP-177: a move's stored row goes into App's list, so the open chat and the next save see the move.
+    onTeleportRow: (row: Session) => {
+      applyTeleportRow(sessionsRef, setSessions, row);
+    },
+    onOpenChat: openForkedSession,
     workspaceSwitchingSessionId: workspaceNavigation.pending
       ? active?.id
       : undefined,
@@ -16471,7 +18216,9 @@ function Workspace({
     onRuntimeModeChange,
     onSaveDraft,
     onRemoveDraft,
-    onSubmit,
+    onSubmit: onComposerSubmit,
+    onCompareModels,
+    fanOutForSession,
     onStop: onStopFromUser,
     // A Mono's own Stop: its turn only (UniiChat stops "Unii's turn", not the agents at work).
     onStopTurn: (sessionId: string) => onStop(sessionId),
@@ -16686,7 +18433,7 @@ function Workspace({
         monoId={monoViewMono.id}
         cwd={monoViewSession.cwd}
         agent={monoLook(monoViewMono)}
-        state={monoState(monoViewSession)}
+        state={monoState(monoViewSession, crewRows(), queuedWorkers())}
         launches={monoLaunches}
         sessions={sessions}
         history={history}
@@ -16700,6 +18447,7 @@ function Workspace({
           textHarness: monoViewSession.harness,
           projects: monoViewMono.projects,
         }}
+        chief={pickCaptain(listMonos())?.id === monoViewMono.id}
         tab={monoOverviewTab}
         onTabChange={setMonoOverviewTab}
         onOpenSession={(sessionId) =>
@@ -16732,7 +18480,7 @@ function Workspace({
         key={monoViewMono.id}
         monoId={monoViewMono.id}
         agent={monoLook(monoViewMono)}
-        status={monoState(monoViewSession).status}
+        status={monoState(monoViewSession, crewRows(), queuedWorkers()).status}
         cwd={monoViewSession.cwd}
         harness={monoViewSession.harness}
         model={monoViewSession.model}
@@ -16762,7 +18510,7 @@ function Workspace({
       if (session) {
         // An idle Mono that is waiting on a pull request says so instead of nothing.
         const state = overlayLiveWorking(
-          monoState(session),
+          monoState(session, crewRows(), queuedWorkers()),
           liveBusySessionIds.has(session.id),
         );
         const waiting =
@@ -16788,6 +18536,8 @@ function Workspace({
     sessions,
     liveBusySessionIds,
     monoReplies.counts,
+    approvalDelegationRows,
+    workerQueueVersion,
     prWatches,
     prWatchVersion,
   ]);
@@ -16838,6 +18588,24 @@ function Workspace({
   // r30h: which chats run a turn now, so a worker that declared it cannot go on goes to Ash once its Lead's turn ended.
   useBusyChatsFeed(sessions, liveBusySessionIds);
   useFirstMateCheckoutGuard(sessions);
+  // SC-3b: in an at-ship project a first mate's "ready to ship" is held until a ship check has passed for this version.
+  useFirstMateDoneHold({
+    sessions,
+    ask: (chatId, message) => {
+      // queueMonoSessionCompletion drops a message for a chat that isn't an orchestrator chat without saying so. Refusing
+      // here keeps the hold from adding its "Held" note for a message that was never queued, and gives its memo back.
+      if (!isOrchestratorChat(chatId)) throw new Error("This chat does not take app messages.");
+      return queueMonoSessionCompletionRef.current(chatId, message);
+    },
+    note: (chatId, block) =>
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === chatId && !session.blocks.some((entry) => entry.id === block.id)
+            ? { ...session, blocks: [...session.blocks, block] }
+            : session,
+        ),
+      ),
+  });
   // Hub shell: the project strip, the project's items, and hub views.
   const hubSel = useHubSelection();
   useHubDataVersion();
@@ -16846,6 +18614,8 @@ function Workspace({
     .listProjects()
     .find((project) => project.id === hubSel.project);
   const closeChromeViews = () => {
+    // Dropwave (Ash, 11 Nov): picking anything in the sidebar or the project strip leaves Settings too; no Back first.
+    setSettingsOpen(false);
     setSearchViewOpen(false);
     setInboxViewOpen(false);
     setNotesViewOpen(false);
@@ -16864,7 +18634,50 @@ function Workspace({
     openNotes: () => homeOpenRef.current.onOpenNotes(),
     openSession: (id) => { void homeOpenRef.current.onSelectHistorySession(id); },
     openTeam: (projectId) => homeOpenRef.current.openCodingTeam(projectId),
+    // WP-161: a Needs you line about the machine (new builders waiting on disk) opens Settings where it says so.
+    openSettings: (section, anchor) => openSettings(section, anchor),
     projects: () => hubData().listProjects(),
+  });
+  // WP-125: a local chat or prompt link opens in this window. A missing chat is a message, not a new window.
+  // openChat is false when no pane was shown, so the opener can say the chat is not on this computer.
+  useThreadLinkOpener({
+    hasChat: (id) =>
+      sessionsRef.current.some((session) => session.id === id) ||
+      getSession(id).then((session) => session != null),
+    hasProject: (id) => hubData().listProjects().some((project) => project.id === id),
+    openChat: (id) => onSelectHistorySession(id),
+    openPrompt: (projectId, text, ticket) => {
+      placePrompt(
+        projectId,
+        text,
+        ticket,
+        {
+          projects: () => hubData().listProjects(),
+          sessions: () => sessionsRef.current,
+        },
+        {
+          openProject: (id) => {
+            openCodingTeam(id, { lead: false });
+            noteCodingTeamView(id, "chat");
+          },
+          addSession: (session) => {
+            const next = rememberPromptSession(sessionsRef.current, session);
+            if (!next) return;
+            sessionsRef.current = next;
+            setSessions(next);
+            const tab = newTab(session.id);
+            appendTab(tab, session.cwd);
+            setActiveTabId(tab.id);
+            setComposerFocused(true);
+            // A new chat from a prompt link follows the same worktree setting as New session.
+            attachNewChatWorktree(session.id, session.cwd, setSessions);
+          },
+          focusSession: (id) => {
+            void onSelectHistorySession(id);
+          },
+        },
+      );
+    },
   });
   // r63 (PM, 0.16.3): Pages (an automations-view mode) and Coding team were highlighted at once. Any view that covers
   // the main area (a Mono's 1:1, Search, Settings, Inbox, Notes, Automations or Pages) takes the highlight from the
@@ -16877,6 +18690,12 @@ function Workspace({
     automationsViewOpen ||
     monoCovers;
   const hubShown = hubSurfaceOpen(hubSel) && !hubItemsCovered;
+  // Ash 12 Nov: a fresh launch opens Home, not the chat (the Chief of Staff's) he was last in.
+  useLayoutEffect(() => {
+    if (!IS_HUB_BUNDLE || openedHomeAtLaunch) return;
+    openedHomeAtLaunch = true;
+    if (currentHubSelection().item !== "home") showAppItem("home");
+  }, []);
   // WP-06: a stored Today, Being built, Decisions or Builds item opens the project's coding team. A stored
   // coding-team item on a project with no folder is the no-code page, not the previous workspace. The folder
   // string is the dependency: the project object is a new one whenever the list is read.
@@ -16892,8 +18711,10 @@ function Workspace({
       setHubSelection(projectHomeSelection({ id: hubSel.project, folder: hubFolder }));
     }
   }, [hubSel.project, hubSel.item, hubFolder, openCodingTeam]);
-  const hubMonos = sidebarMonos
-    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
+  // Dropwave (Ash, 11 Nov): on Home there is only the Chief of Staff, so its sidebar lists no first mates.
+  const hubOnHome = homeInView(hubSel);
+  const hubMonos = sidebarMonos && !hubOnHome
+    ? { ...sidebarMonos, rank: hubMonoRank, projectFilter: hubOnHome ? HOME_MONOS : hubSel.project === NO_PROJECT ? undefined : (hubProject?.folder ?? `hub-project:${hubSel.project}`) }
     : undefined;
 
   const chromeSurfaceOpen =
@@ -17012,7 +18833,9 @@ function Workspace({
     monoTeamInView(hubSel) === monoViewMono.id &&
     sameProjectPath(sidebarCwd, monoTeam(monoViewMono.id)?.folder ?? "");
   const monoViewTeamAction =
-    monoViewMono && monoViewTeam?.kind === "mono"
+    // Dropwave (Ash, 11 Nov): every first mate's chat opens in its own chat list, so the button only shows for a chat
+    // that is somehow on its own; inside its list there is nothing to toggle and every chat's top bar reads the same.
+    monoViewMono && monoViewTeam?.kind === "mono" && !monoViewTeamOpen
       ? {
           name: monoViewTeam.name,
           open: monoViewTeamOpen,
@@ -17043,7 +18866,7 @@ function Workspace({
       }
       mono={
         monoCovers && monoViewMono && monoViewSession
-          ? { look: monoLook(monoViewMono), state: monoState(monoViewSession) }
+          ? { id: monoViewMono.id, look: monoLook(monoViewMono), state: monoState(monoViewSession, crewRows(), queuedWorkers()) }
           : undefined
       }
       // The inset layout keeps these in the Mono's pane, under its tab.
@@ -17068,7 +18891,7 @@ function Workspace({
       cwd={sidebarCwd}
       viewTitle={hubShown && hubSel.item === "new-project" ? "New project" : undefined}
       projectRailOpen={projectRailOpen}
-      sessionSidebarOpen={sessionSidebarOpen}
+      sessionSidebarOpen={oneChatOpen ? oneChatListOpen : sessionSidebarOpen}
       compactRail={!insetLayout && compactTitleNavigation}
       inset={insetLayout}
       rightPanelOpen={rightPanelOpen}
@@ -17082,7 +18905,7 @@ function Workspace({
       onGoBack={onRailBack}
       onGoForward={onRailForward}
       onToggleSidebar={onToggleSidebar}
-      onToggleSessionSidebar={onToggleSessionSidebar}
+      onToggleSessionSidebar={oneChatOpen ? (oneChatEarlier ? onToggleOneChatList : undefined) : onToggleSessionSidebar}
       onSelect={onSelectTitleTab}
       onNewTerminal={onNewTerminal}
       onNewSession={
@@ -17120,22 +18943,54 @@ function Workspace({
   const ownTeam = teamOwnerMonoId ? monoTeam(teamOwnerMonoId) : undefined;
   const ownTeamShown = !!ownTeam && sameProjectPath(sidebarCwd, ownTeam.folder);
   const teamFolder = teamProject?.folder ?? (ownTeamShown ? ownTeam.folder : undefined);
+  // Dropwave: the Chief of Staff's own chat for the project is the one pinned on top, unless Ash opened the project's
+  // Lead there last (projectFront.ts).
+  const projectFrontVersion = useProjectFrontVersion();
+  // One chat (asks/model/oneChat.ts): the Chief of Staff has no chat of its own in a project any more, so the
+  // project's Lead is always the one on top.
+  const teamCaptain =
+    !ONE_CHAT && teamProject && projectFront(teamProject.id) === "captain" ? pickCaptain(listMonos()) : undefined;
   const teamLeadMono = teamProject
-    ? leadMono(leadSpecFor(teamProject))
+    ? (teamCaptain ?? leadMono(leadSpecFor(teamProject)))
     : ownTeamShown
       ? findMono(teamOwnerMonoId!)
       : undefined;
-  const teamLeadSession = teamLeadMono?.sessionId
-    ? sessions.find((session) => session.id === teamLeadMono.sessionId)
+  const teamLeadSessionId =
+    teamCaptain && teamProject ? teamCaptain.projectSessions?.[teamProject.id] : teamLeadMono?.sessionId;
+  const teamLeadSession = teamLeadSessionId
+    ? sessions.find((session) => session.id === teamLeadSessionId)
     : undefined;
   const teamLeadLook = teamLeadMono ? monoLook(teamLeadMono) : undefined;
   const teamLeadStatus = teamLeadMono ? (monoRail.states.get(teamLeadMono.id)?.status ?? "idle") : "idle";
-  const teamLeadActive = !!teamLeadMono && monoCovers && monoViewMono?.id === teamLeadMono.id;
+  const teamLeadActive =
+    !!teamLeadMono &&
+    monoCovers &&
+    (teamCaptain
+      ? monoViewId === teamLeadSessionId
+      : monoViewMono?.id === teamLeadMono.id && !(monoViewId && isMonoSideChat(monoViewId)));
+  // One of the first mate's further chats is the open one: its own row is lit, not the pinned one.
+  const sideChatOpen = monoCovers && !!monoViewId && isMonoSideChat(monoViewId);
   const teamLeadBusy =
     !!teamLeadSession?.busy ||
-    !!(
-      teamLeadMono?.sessionId && liveBusySessionIds.has(teamLeadMono.sessionId)
-    );
+    !!(teamLeadSessionId && liveBusySessionIds.has(teamLeadSessionId));
+  // The project's chats are shared by two: the Chief of Staff (its own chat for the project) and the project's Lead.
+  // The one not on top is offered in the list's "Everyone" view (Ash, 11 Nov), and opening it puts it on top.
+  // One chat: only a chat the Chief of Staff already had for this project is still offered there, as an earlier chat.
+  const teamOtherChief = teamProject && !teamCaptain ? pickCaptain(listMonos()) : undefined;
+  const teamOtherCaptain = !ONE_CHAT || (teamProject && teamOtherChief?.projectSessions?.[teamProject.id]) ? teamOtherChief : undefined;
+  const teamOtherFound = teamProject ? (teamCaptain ? leadMono(leadSpecFor(teamProject)) : teamOtherCaptain) : undefined;
+  const teamOtherMono = teamOtherFound && teamOtherFound.id !== teamLeadMono?.id ? teamOtherFound : undefined;
+  const teamOtherSessionId =
+    teamOtherMono && teamProject
+      ? teamOtherCaptain
+        ? teamOtherMono.projectSessions?.[teamProject.id]
+        : teamOtherMono.sessionId
+      : undefined;
+  const teamOtherLook = teamOtherMono ? monoLook(teamOtherMono) : undefined;
+  const teamOtherStatus = teamOtherMono ? (monoRail.states.get(teamOtherMono.id)?.status ?? "idle") : "idle";
+  const teamOtherBusy =
+    !!teamOtherSessionId &&
+    (liveBusySessionIds.has(teamOtherSessionId) || !!sessions.find((session) => session.id === teamOtherSessionId)?.busy);
   // Kept by identity while nothing it shows changes: the Sidebar is memoized.
   const codingTeamList = useMemo<CodingTeamList | undefined>(
     () =>
@@ -17145,8 +19000,11 @@ function Workspace({
             ...(teamLeadMono && teamLeadLook
               ? {
                   lead: {
+                    monoId: teamLeadMono.id,
+                    // The project's own chats (no first mate behind them) are its Lead's, not the Chief of Staff's.
+                    plainChats: !teamCaptain,
                     session: {
-                      id: teamLeadMono.sessionId ?? `lead:${teamLeadMono.id}`,
+                      id: teamLeadSessionId ?? `lead:${teamLeadMono.id}`,
                       cwd: teamFolder,
                       harness: teamLeadSession?.harness ?? "claude",
                       model: teamLeadSession?.model ?? "",
@@ -17154,7 +19012,6 @@ function Workspace({
                       title: teamLeadLook.name,
                       createdAt: 0,
                       updatedAt: 0,
-                      pinned: true,
                     },
                     mark: (
                       <MonoRailMascot
@@ -17167,10 +19024,49 @@ function Workspace({
                     active: teamLeadActive,
                     busy: teamLeadBusy,
                     // In the time's place: what it is to the team.
-                    statusLabel: teamProject ? "Lead" : "Owner",
+                    statusLabel: teamCaptain || teamLeadMono.id === pickCaptain(listMonos())?.id ? "Captain" : teamProject ? "Lead" : "First mate",
                     // Its chat's own title, which renames as any chat's does (Sidebar.tsx renderLeadCard).
                     ...(teamLeadSession ? { chatTitle: teamLeadSession.title } : {}),
-                    onOpen: () => void onOpenMono(teamLeadMono.id, { inTeam: true }),
+                    // This row is the first mate's own chat in the list, so it opens that chat, not the last one.
+                    onOpen: () =>
+                      void onOpenMono(
+                        teamLeadMono.id,
+                        teamCaptain && teamProject ? { project: teamProject.id, main: true } : { inTeam: true, main: true },
+                      ),
+                  },
+                }
+              : {}),
+            ...(teamProject && teamOtherMono && teamOtherLook
+              ? {
+                  other: {
+                    monoId: teamOtherMono.id,
+                    plainChats: !teamOtherCaptain,
+                    session: {
+                      id: teamOtherSessionId ?? `lead:${teamOtherMono.id}`,
+                      cwd: teamFolder,
+                      harness: "claude" as const,
+                      model: "",
+                      runtimeMode: "supervised" as const,
+                      title: teamOtherLook.name,
+                      createdAt: 0,
+                      updatedAt: 0,
+                    },
+                    mark: (
+                      <MonoRailMascot
+                        name={teamOtherLook.mascot}
+                        color={teamOtherLook.color}
+                        status={teamOtherStatus}
+                        className="size-3.5 shrink-0"
+                      />
+                    ),
+                    active: false,
+                    busy: teamOtherBusy,
+                    statusLabel: teamOtherCaptain ? (ONE_CHAT ? "Earlier chat" : "Captain") : "Lead",
+                    onOpen: () =>
+                      // One chat: this row is the chat it had here before, opened as it is; nothing new is made.
+                      ONE_CHAT && teamOtherCaptain && teamOtherSessionId
+                        ? void openMonoSideChatRef.current(teamOtherSessionId)
+                        : void onOpenMono(teamOtherMono.id, teamOtherCaptain ? { project: teamProject.id } : { inTeam: true }),
                   },
                 }
               : {}),
@@ -17180,7 +19076,9 @@ function Workspace({
       teamProject,
       teamFolder,
       teamLeadMono?.id,
-      teamLeadMono?.sessionId,
+      teamLeadSessionId,
+      !!teamCaptain,
+      projectFrontVersion,
       teamLeadLook?.name,
       teamLeadLook?.mascot,
       teamLeadLook?.color,
@@ -17191,6 +19089,14 @@ function Workspace({
       teamLeadSession?.model,
       teamLeadSession?.runtimeMode,
       teamLeadSession?.title,
+      teamOtherMono?.id,
+      !!teamOtherCaptain,
+      teamOtherSessionId,
+      teamOtherLook?.name,
+      teamOtherLook?.mascot,
+      teamOtherLook?.color,
+      teamOtherStatus,
+      teamOtherBusy,
       onOpenMono,
     ],
   );
@@ -17199,7 +19105,7 @@ function Workspace({
   // From the coding team's list: another chat takes over from the Lead, and the coding team opens on it next time.
   const openTerminalSession = terminalMirror.openSession;
   const closeTerminalSession = terminalMirror.close;
-  const onSelectSessionFromList = useCallback(
+  const selectPlainSessionFromList = useCallback(
     (sessionId: string) => {
       // WP-85: a terminal session opens here, and does not start a harness chat.
       if (openTerminalSession(sessionId)) return;
@@ -17212,19 +19118,91 @@ function Workspace({
     },
     [teamProjectId, closeMonoView, onSelectHistorySession, openTerminalSession, closeTerminalSession],
   );
+  // Dropwave (Ash, 11 Nov): one of a first mate's further chats opens as that first mate's chat: its name on the tab,
+  // its row lit in the sidebar, the same list beside it.
+  const openMonoSideChat = useCallback(
+    async (sessionId: string) => {
+      const mono = monoForSession(sessionId);
+      if (!mono) return;
+      const request = ++monoViewRequest.current;
+      const session = await ensureOpenSession(sessionId);
+      if (!session || request !== monoViewRequest.current) return;
+      setMonoShownSession(null);
+      setMonoShownSessionFocused(false);
+      setMonoOverviewDocument(null);
+      setMonoActivity(null);
+      lastMonoIdRef.current = mono.id;
+      monoViewIdRef.current = session.id;
+      setMonoViewId(session.id);
+      setProjectTerminalFocused(false);
+      setComposerFocused(true);
+      setComposerFocusToken((token) => token + 1);
+    },
+    [ensureOpenSession],
+  );
+  openMonoSideChatRef.current = openMonoSideChat;
+  // Ash, 12 Nov: a chat brought in from Claude Code or Codex becomes the Chief of Staff's own when it is opened.
+  const takeOverImportedChat = useCallback(
+    async (sessionId: string, monoId: string) => {
+      const session = await ensureOpenSession(sessionId);
+      if (!session) return;
+      if (!saveMonoSideChat(monoId, sessionId)) return void selectPlainSessionFromList(sessionId);
+      persistSession(stampFirstMate(session));
+      return openMonoSideChat(sessionId);
+    },
+    [ensureOpenSession, openMonoSideChat, persistSession, selectPlainSessionFromList],
+  );
+  const onSelectSessionFromList = useCallback(
+    (sessionId: string) => {
+      if (isMonoSideChat(sessionId)) return void openMonoSideChat(sessionId);
+      const taker = importedChatTaker(sessionId, {
+        owner: isImportedChatId(sessionId) ? monoForSession(sessionId)?.id : undefined,
+        chief: isImportedChatId(sessionId) ? pickCaptain(listMonos())?.id : undefined,
+      });
+      if (taker) return void takeOverImportedChat(sessionId, taker);
+      return selectPlainSessionFromList(sessionId);
+    },
+    [openMonoSideChat, selectPlainSessionFromList, takeOverImportedChat],
+  );
   const onNewFromList = useCallback(() => {
+    // "New chat" beside a first mate's chat is a new chat with that first mate, not a plain one (Ash: "it's not clear
+    // what first mate you're talking to when you're on a first mate and you create a new chat").
+    const open = monoViewIdRef.current ? monoForSession(monoViewIdRef.current) : undefined;
+    // One chat: there is no new chat with the Chief of Staff, from its one chat or from one it had before.
+    if (isOneChatMono(open?.id)) return;
+    if (open && ONE_CHAT_LOOK) {
+      const folder = sidebarCwdRef.current;
+      void startMonoSideChat(
+        open.id,
+        {
+          home: homeDir,
+          load: ensureOpenSession,
+          create: (path: string) => newDefaultSession(path),
+          add: (created: Session) => {
+            sessionsRef.current = [...sessionsRef.current, created];
+            setSessions(sessionsRef.current);
+          },
+        },
+        folder && folder !== "~" ? folder : undefined,
+        sessionsRef.current.find((item) => item.id === monoViewIdRef.current),
+      ).then((session) => {
+        if (session) void openMonoSideChat(session.id);
+      });
+      return;
+    }
     if (teamProjectId) noteCodingTeamView(teamProjectId, "chat");
     if (monoViewIdRef.current) closeMonoView();
     return onNew();
-  }, [teamProjectId, closeMonoView, onNew]);
+  }, [teamProjectId, closeMonoView, onNew, openMonoSideChat, ensureOpenSession]);
 
   const projectStrip = (
     <ProjectStrip
       selection={hubSel}
       onPickProject={(project) => {
         closeChromeViews();
-        // WP-06: its coding team, or the no-code page when it has no folder. Not Today.
-        openCodingTeam(project.id);
+        // Dropwave: its own home, the Chief of Staff's box on top. The coding team is one of its first mates.
+        if (monoViewIdRef.current) closeMonoView();
+        showProjectHome(project.id);
       }}
       onCreateProject={pickProject}
       onLeaveCovers={closeChromeViews}
@@ -17235,6 +19213,16 @@ function Workspace({
 
   const sessionSidebar = (
     <Sidebar
+      hubTopNav={
+        <HubTopNav
+          openSessionId={monoViewId}
+          covered={searchViewOpen || settingsOpen || inboxViewOpen || notesViewOpen || automationsViewOpen}
+          onLeaveCovers={() => {
+            closeChromeViews();
+            if (monoViewIdRef.current) closeMonoView();
+          }}
+        />
+      }
       hubItems={
         <HubProjectItems
           selection={hubSel}
@@ -17261,7 +19249,10 @@ function Workspace({
           : undefined
       }
       explorerRootLabel={explorerRootLabel}
-      open={sessionSidebarOpen}
+      open={oneChatOpen ? oneChatListOpen && oneChatEarlier > 0 : sessionSidebarOpen}
+      onToggleOpen={oneChatOpen ? onToggleOneChatList : onToggleSessionSidebar}
+      chatsTitle={oneChatOpen ? "Earlier chats" : undefined}
+      noNewChat={chiefChatOpen}
       tab={insetLayout ? "sessions" : sidebarTab}
       onTabChange={setSidebarTab}
       rightPanel={
@@ -17281,12 +19272,14 @@ function Workspace({
       sessions={sidebarHistory}
       busySessionIds={liveBusySessionIds}
       approvalSessionIds={approvalSessionIds}
+      approvalElsewhereSessionIds={approvalElsewhereSessionIds}
       chatAttention={chatListAttention}
       // The coding team's Lead in view is its pinned row's; no other chat reads as the current one meanwhile.
-      activeSessionId={codingTeamList?.lead?.active ? undefined : activeSessionId}
+      activeSessionId={codingTeamList?.lead?.active ? undefined : sideChatOpen ? (monoViewId ?? undefined) : activeSessionId}
       status={historyFailed ? "error" : "idle"}
       pending={historyPending}
       onSelectSession={onSelectSessionFromList}
+      onSetSessionFolder={onSessionFolderRelinked}
       onSelectRemoteSession={onSelectRemoteSession}
       onRemoteSessionDeleted={onRemoteSessionDeleted}
       onPrefetchSession={onPrefetchHistorySession}
@@ -17338,7 +19331,7 @@ function Workspace({
       onRemoveProject={onRemoveProject}
       monos={hubMonos}
       // The coding team's Lead opens beside its Sessions list, which stays.
-      monoViewActive={monoCovers && !codingTeamList?.lead?.active}
+      monoViewActive={monoCovers && !codingTeamList?.lead?.active && !sideChatOpen}
       onNew={onNewFromList}
       openSessions={openProjectSessions}
       onNewTerminal={onNewTerminal}
@@ -17366,6 +19359,7 @@ function Workspace({
       inset={insetLayout}
       onToggleProjectRail={onToggleProjectRail}
       unseenFinishedIds={unseenFinishedIds}
+      // The red count is how many items need Ash. The tracker dot shows when that count is empty.
       inboxUnseen={inboxUnseen}
       linkedSessionUpdateIds={linkedSessionUpdateIds}
       settingsOpen={settingsOpen}
@@ -17380,9 +19374,15 @@ function Workspace({
     />
   );
 
+  const inboxOnScreen = hubDefaultsOn()
+    ? inboxViewOpen
+    : hubShown && hubSel.project !== NO_PROJECT && hubSel.item === "inbox";
+  useEffect(() => {
+    if (inboxOnScreen && inboxUnseen) markInboxSeen();
+  }, [inboxOnScreen, inboxUnseen, markInboxSeen]);
   const usageFooter =
     (chromeSurfaceOpen && !(insetLayout && activeAppView)) ||
-    (monoCovers && !insetLayout) ? null : (
+    (monoCovers && !insetLayout && !ONE_CHAT_LOOK) ? null : (
       <UsageFooter
         pressureSlot={setPressureChipHost}
         providers={usageProviders}
@@ -17394,11 +19394,12 @@ function Workspace({
         terminals={monoCovers ? undefined : runningTerminals}
         terminalOpen={!monoCovers && runningTerminalOpen}
         onToggleTerminal={onToggleRunningTerminal}
+        // Ash 12 Nov: in Hivra the footer's Terminal button lit up and opened nothing; it is gone there.
         onNewTerminal={
-          !monoCovers && isLocalProject(projectCwd) ? onNewTerminal : undefined
+          !IS_HUB_BUNDLE && !monoCovers && isLocalProject(projectCwd) ? onNewTerminal : undefined
         }
         onToggleProjectTerminal={
-          !monoCovers && isLocalProject(projectCwd)
+          !IS_HUB_BUNDLE && !monoCovers && isLocalProject(projectCwd)
             ? onToggleProjectTerminal
             : undefined
         }
@@ -17463,6 +19464,25 @@ function Workspace({
                 >
                   {/* WP-06: ship news is a slim bar at the top of the main pane, above the coding team and every hub page. It renders nothing when there is nothing to say. */}
                   <ShipNotice />
+                  {/* WP-92: a pending key request, and a finished turn's key ask, in the chat's own pane. */}
+                  <div className="px-3 pt-2 empty:hidden">
+                    <SecretCards />
+                    {/* WP-92: a project chat's key is saved for that project, where secrets_run looks first (agentAppSecrets where()). */}
+                    <SecretKeyAsk
+                      chat={activeChat}
+                      asker={(() => {
+                        if (!activeChat) return undefined;
+                        const owner = monoForSession(activeChat.id) ?? findMono(chatMonoOwner(activeChat.id) ?? "");
+                        return owner ? monoLook(owner).name : undefined;
+                      })()}
+                      project={
+                        activeChat && !(monoForSession(activeChat.id) ?? findMono(habitRunMono(activeChat.id) ?? "") ?? chatMonoOwner(activeChat.id))
+                          ? (hubData().listProjects().find((entry) => entry.id === codingTeamChatProject(activeChat.id))?.folder ??
+                            (looksLikeProject(activeChat.cwd) ? activeChat.cwd : undefined))
+                          : undefined
+                      }
+                    />
+                  </div>
                   <div
                     className={
                       searchViewOpen ||
@@ -17702,6 +19722,7 @@ function Workspace({
                                         visible &&
                                         monoViewMono ? (
                                           <MonoViewActions
+                                            monoId={monoViewMono.id}
                                             name={monoLook(monoViewMono).name}
                                             overviewOpen={monoOverviewOpen}
                                             onToggleOverview={
@@ -17864,6 +19885,7 @@ function Workspace({
                         onStart={onStartInboxItem}
                         onAsk={onAskInboxItem}
                         onAskRestart={onRestartInboxAsk}
+                        onAskMono={onAskMonoAboutInboxItem}
                         onAskMount={setInboxAskPortal}
                         sessions={inboxRelatedSessions}
                         repairSessions={repairSessions}
@@ -17920,6 +19942,10 @@ function Workspace({
                         cwd={projectCwd}
                         scopeProject={appViewScope}
                         recents={recents}
+                        chats={sessions.map((session) => ({
+                          id: session.id,
+                          title: session.title,
+                        }))}
                         onClose={onLeaveAutomations}
                         onToggleSidebar={onToggleSidebar}
                         onLaunch={(automation, run) =>
@@ -18096,7 +20122,7 @@ function Workspace({
           ) : null}
           {/* The Hub's shell is built on the classic layout, so the Hub does
               not prompt for the new one; it stays in Settings → Appearance.
-              The hub's dev page doesn't either (hubDefaultsOn). */}
+              The app's dev page doesn't either (hubDefaultsOn). */}
           {hubDefaultsOn() ? null : (
             <NewLayoutNotice
               topOffset={toastStackTop([reminderNoticesHeight, harnessUpdateHeight])}
@@ -18111,6 +20137,8 @@ function Workspace({
             chipHost={pressureChipHost}
             insetChip={insetLayout}
           />
+          {/* WP-125: a local link that cannot be opened on this computer. */}
+          <ThreadLinkNotice />
           <ApprovalToasts
             notices={IS_HUB_BUNDLE ? hubToastNotices(hiddenApprovalToasts) : hiddenApprovalToasts}
             hubView={IS_HUB_BUNDLE ? hubToastView : undefined}
@@ -18127,6 +20155,14 @@ function Workspace({
             onRetry={sessionReminders.refresh}
             onOpenSettings={() => openSettings("general", "notifications")}
             onHeightChange={setReminderNoticesHeight}
+          />
+          {/* WP-123: fork a chat from one message. */}
+          <ThreadForkHost sessionsRef={sessionsRef} onOpen={openForkedSession} />
+          {/* WP-128: a run the closed app missed, stacked with the other notices. */}
+          <MissedScheduleNotice
+            notices={oneTimeSchedules.notices}
+            onDone={oneTimeSchedules.note}
+            top={toastStackTop([reminderNoticesHeight, harnessUpdateHeight, newLayoutNoticeHeight])}
           />
           {whatsNewVersion ? (
             <WhatsNewDialog
@@ -18206,6 +20242,12 @@ function selectedCommitSha(tab: WorkspaceTab): string | undefined {
   }
 }
 
+
+/** WP-177: the machine a chat moved to, or undefined when it has not moved away. */
+function movedHostOf(session: Session): string | undefined {
+  const state = teleportStateOf(session);
+  return state.moved ? state.host : undefined;
+}
 
 function toTitleTab(
   tab: WorkspaceTab,
@@ -18310,6 +20352,8 @@ function toTitleTab(
         ? projectName(focusedFile.projectCwd ?? focusedFile.cwd)
         : "~",
     title: focused ? conversationTitle(focused) : "",
+    // WP-177: the header says where a moved chat went.
+    movedTo: focused ? movedHostOf(focused) : undefined,
     more,
     sessionCount: tabSessions.length,
     harnesses,

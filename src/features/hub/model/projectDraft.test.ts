@@ -78,7 +78,7 @@ it("the interview asks what it needs, and its proposal becomes the card; nothing
   await enter("[data-hub-new-project-name]", "Moonrise");
   expect(host.textContent).toContain("What's it about, and do you already have code for it?");
   // The first turn: the short note on what Create needs, not a script.
-  expect(harness.prompts[0]).toContain('A new project is being set up in the hub, called "Moonrise"');
+  expect(harness.prompts[0]).toContain('A new project is being set up in the app, called "Moonrise"');
   expect(harness.prompts[0]).toContain("You are a first mate.");
   expect(harness.prompts[0]).toContain("```project");
   expect(q("[data-hub-new-project-preview]")).toBeNull();

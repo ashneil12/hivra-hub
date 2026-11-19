@@ -96,6 +96,10 @@ describe("buildUsageHistory", () => {
       costUsd: 0.5,
       costTurns: 1,
       unpricedTurns: 1,
+      // WP-253: only the unpriced turn is estimated, at Sonnet 5's list price ($2 in, $10 out per million).
+      estimatedUsd: expect.closeTo(0.0002, 10),
+      estimatedTurns: 1,
+      cacheSavedUsd: 0,
     });
     expect(history.days[0].totals).toEqual(emptyTotals());
     expect(history.today).toEqual(history.days[29].totals);
@@ -156,6 +160,9 @@ describe("buildUsageHistory", () => {
       costUsd: 0,
       costTurns: 0,
       unpricedTurns: 1,
+      estimatedUsd: expect.closeTo(0.000006, 12),
+      estimatedTurns: 1,
+      cacheSavedUsd: 0,
     });
   });
 
@@ -485,3 +492,30 @@ describe("toCsv", () => {
     expect(csv).toContain('"model, ""x"""');
   });
 });
+
+describe("WP-253: list-price estimates", () => {
+  it("estimates only turns with no reported price, and counts cache savings for every listed model", () => {
+    const history = buildUsageHistory(
+      [
+        session("s1", "/work/app", "codex", "gpt-5.4", [turn("x", at(2026, 11, 6, 9), 1_000_000)]),
+        session("s2", "/work/app", "claude", "claude-opus-5-5[1m]", [
+          turn("p", at(2026, 11, 6, 10), 1_000_000, { costUsd: 9, cacheReadTokens: 1_000_000 }),
+          turn("u", at(2026, 11, 6, 11), 1_000_000, { outputTokens: 1_000_000 }),
+        ]),
+      ],
+      { now: NOW },
+    );
+    const t = history.today;
+    // gpt-5.4 has no listed price: counted as unpriced, never guessed.
+    expect(t.unpricedTurns).toBe(2);
+    expect(t.estimatedTurns).toBe(1);
+    // Opus 5.5: $4 in + $20 out for the unpriced turn. The priced turn keeps its reported $9 and is not re-priced.
+    expect(t.estimatedUsd).toBeCloseTo(24, 6);
+    expect(t.costUsd).toBe(9);
+    // A million cache reads at $0.20 instead of $4 input saved $3.80.
+    expect(t.cacheSavedUsd).toBeCloseTo(3.8, 6);
+    const codex = history.byEngine.find((group) => group.key === "codex")!;
+    expect(codex.totals.estimatedTurns).toBe(0);
+  });
+});
+

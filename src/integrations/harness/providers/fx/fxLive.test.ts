@@ -258,3 +258,70 @@ describe("fx live turn sequence", () => {
     await stopFxSession("t2");
   });
 });
+
+describe("fx: a refused mode change follows the one rule (WP-175)", () => {
+  beforeEach(() => {
+    sent.length = 0;
+  });
+
+  const baseInput = (runtimeMode: "supervised" | "full-access", events: HarnessEvent[], sessionId = "t-refuse") => ({
+    sessionId,
+    cwd: "/repo",
+    model: "fx:zai/glm-5.2",
+    modelSettings: {},
+    runtimeMode,
+    text: "hey",
+    attachments: [],
+    onEvent: (e: HarnessEvent) => events.push(e),
+  });
+
+  const refuse = (id: number) =>
+    onLine!(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "Invalid mode" } }));
+
+  async function bootTo(setModeReply: (id: number) => void) {
+    await waitFor(() => parse().some((m) => m.method === "initialize"), "initialize");
+    reply(parse().find((m) => m.method === "initialize")!.id, { protocolVersion: 1 });
+    await waitFor(() => parse().some((m) => m.method === "session/new"), "session/new");
+    reply(parse().find((m) => m.method === "session/new")!.id, {
+      sessionId: "S1",
+      configOptions: [
+        { id: "provider", category: "model", currentValue: "gateway" },
+        { id: "model", category: "model", currentValue: "zai/glm-5.2" },
+        { id: "mode", category: "mode", currentValue: "code" },
+      ],
+    });
+    await waitFor(() => parse().some((m) => m.method === "session/set_mode"), "set_mode");
+    setModeReply(parse().find((m) => m.method === "session/set_mode")!.id);
+  }
+
+  it("a refused change with no known mode ends the turn as waiting, without a prompt", async () => {
+    const events: HarnessEvent[] = [];
+    const turn = sendFxTurn(baseInput("supervised", events, "t-refuse-a") as never);
+    await bootTo((id) => refuse(id));
+    await expect(turn).rejects.toThrow(/waiting/);
+    expect(parse().some((m) => m.method === "session/prompt")).toBe(false);
+  });
+
+  it("a refused upgrade keeps the current mode, says so, and the turn still runs", async () => {
+    const events: HarnessEvent[] = [];
+    // Turn 1 succeeds on Supervised, so the current mode is known.
+    const turn1 = sendFxTurn(baseInput("supervised", events, "t-refuse-b") as never);
+    await bootTo((id) => reply(id, {}));
+    await waitFor(() => parse().some((m) => m.method === "session/prompt"), "prompt 1");
+    reply(parse().find((m) => m.method === "session/prompt")!.id, { stopReason: "end_turn" });
+    await turn1;
+
+    // Turn 2 asks for Full access; the CLI refuses the change.
+    sent.length = 0;
+    events.length = 0;
+    const turn2 = sendFxTurn(baseInput("full-access", events, "t-refuse-b") as never);
+    await waitFor(() => parse().some((m) => m.method === "session/set_mode"), "set_mode 2");
+    refuse(parse().find((m) => m.method === "session/set_mode")!.id);
+    await waitFor(() => parse().some((m) => m.method === "session/prompt"), "prompt 2");
+    reply(parse().find((m) => m.method === "session/prompt")!.id, { stopReason: "end_turn" });
+    await turn2;
+    // fx names Supervised for what it does (WP-175): both modes are fx's one code mode, so the refusal keeps it.
+    const notice = events.find((e) => e.type === "notice" && /stays on fx approves its own requests/.test(e.text));
+    expect(notice).toBeDefined();
+  });
+});

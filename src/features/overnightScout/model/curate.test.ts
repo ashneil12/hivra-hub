@@ -86,4 +86,10 @@ describe("curate", () => {
     const plain = curate(SOURCES, "MonoCode: Keep the fork");
     expect(briefText(plain[0]!).includes("Packages: none listed.")).toBe(true);
   });
+
+  it("refuses unapproved licences and local home paths", () => {
+    const sources = "| [demo](https://example.com/demo) | GPL-3.0 | queue | no copy | 1 |";
+    expect(curate(sources, "demo: Keep the queue")).toEqual([]);
+    expect(curate(SOURCES, "firstmate: Show /home/example/private")).toEqual([]);
+  });
 });

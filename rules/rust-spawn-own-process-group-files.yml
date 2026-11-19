@@ -1,0 +1,24 @@
+id: rust-spawn-own-process-group-files
+language: rust
+severity: warning
+message: >-
+  A process started in a test file or test helper is not put in its own process group, so a hang in it outlives the
+  test run (PR #304: a hung git sat on the Mac for two days).
+note: >-
+  Call `command.process_group(0)` under `#[cfg(unix)]` (use `std::os::unix::process::CommandExt`) in the same function,
+  as src-tauri/src/backups/mod.rs does, so the whole group can be killed.
+# Whole files that are test code: tests/ folders, tests.rs, *_tests.rs and *_repro.rs.
+files:
+  - "**/tests/**/*.rs"
+  - "**/tests.rs"
+  - "**/*_tests.rs"
+  - "**/*_repro.rs"
+rule:
+  pattern: Command::new($$$ARGS)
+  not:
+    inside:
+      kind: function_item
+      stopBy: end
+      has:
+        pattern: $CMD.process_group($$$GROUP)
+        stopBy: end

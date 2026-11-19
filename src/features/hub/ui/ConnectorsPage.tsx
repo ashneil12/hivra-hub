@@ -18,6 +18,7 @@ import {
   forgetGoogleClient,
   isTesting,
   monosFor,
+  moveLoginToVault,
   rowState,
   saveConnectorLogin,
   saveGoogleClient,
@@ -266,7 +267,7 @@ function SignedIn({ entry, view }: { entry: CatalogEntry; view: ConnectorsView }
           {info.status.message}
         </p>
       ) : null}
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <button
           type="button"
           disabled={testing}
@@ -284,6 +285,19 @@ function SignedIn({ entry, view }: { entry: CatalogEntry; view: ConnectorsView }
         >
           {info?.method === "none" ? "Turn off" : "Sign out"}
         </button>
+        {info?.method === "token" ? (
+          <button
+            type="button"
+            className={buttonClass}
+            data-hub-connector-move-to-vault
+            onClick={() => {
+              if (!window.confirm(`Move ${entry.name}'s saved key into the vault? The connector keeps working, and the key is managed under Settings > Secrets.`)) return;
+              void moveLoginToVault(entry.id).catch((e) => setProblem(errorText(e)));
+            }}
+          >
+            Move key to vault
+          </button>
+        ) : null}
       </div>
       {problem ? <p className="text-xs text-content/60">{problem}</p> : null}
     </div>

@@ -169,9 +169,7 @@ describe("stuck workers in the Lead's chat", () => {
     const line = container.querySelector("[data-delegation-working]")!;
     // r30b: never "stuck": the stalled one is its Lead's (grey), the billing refusal is the red needs you.
     expect(line.textContent).toBe("1 working: Job w1 · 1 waiting: Job w2 · 1 with EXO lead: Job w3");
-    const needs = container.querySelector("[data-delegation-needs-you]")!;
-    expect(needs.textContent).toBe("· 1 needs you: Job w4");
-    expect(needs.className).toContain("text-red-400");
+    expect(container.querySelector("[data-delegation-needs-you]")).toBeNull();
     expect(line.getAttribute("title")).toBe("Delegated 4: 1 working, 1 waiting, 1 with its Lead, 1 failed");
   });
 
@@ -205,7 +203,15 @@ describe("stuck workers in the Lead's chat", () => {
 
   it("sets a failure aside with Dismiss; the rest stay", () => {
     const { card } = setup();
-    act(() => card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-dismiss]")!.click());
+    const open = card("w4")!.querySelector<HTMLButtonElement>("[data-hub-open-lead]")!;
+    const dismiss = card("w4")!.querySelector<HTMLButtonElement>("[data-stuck-dismiss]")!;
+    expect(open.className).toMatch(/\bborder\b/);
+    expect(open.className).not.toMatch(/\bbg-accent\b/);
+    expect(open.className).not.toMatch(/bg-content\/8/);
+    expect(dismiss.className).toMatch(/\bborder\b/);
+    expect(dismiss.className).not.toMatch(/\bbg-accent\b/);
+    expect(dismiss.className).not.toMatch(/bg-content\/8/);
+    act(() => dismiss.click());
     expect(card("w4")).toBeNull();
     expect(card("w3")).not.toBeNull();
   });

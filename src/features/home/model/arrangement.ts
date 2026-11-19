@@ -1,6 +1,7 @@
 // How Home is arranged. Nothing is pinned until the person pins it. A saved value is untrusted.
 
-export const BUILTINS = ["needs-you", "moving-now", "recent"] as const;
+// "projects" (Ash, 5 Nov: "a general overview of all your projects that you can customize") sits under Needs you.
+export const BUILTINS = ["needs-you", "projects", "moving-now", "recent"] as const;
 export type BuiltinId = (typeof BUILTINS)[number];
 
 export type SectionRef =
@@ -11,7 +12,34 @@ export type HomeArrangement = {
   order: SectionRef[];
   hidden: string[];
   savedAt: number;
+  /**
+   * G5: the order the cards on the page were dragged into, by key (a section's key, or an extra card's such as
+   * "pinned-pages"). A card that was never dragged keeps its own place after these. Absent until a card is dragged.
+   */
+  cards?: string[];
 };
+
+/** At most this many dragged card keys are kept. */
+const CARDS_MAX = 64;
+
+/** The dragged card order as kept: strings only, trimmed, no empty, duplicate or path-like key. */
+function parseCards(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const cards: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const key = item.trim();
+    if (!key || BAD.test(key) || cards.includes(key)) continue;
+    cards.push(key);
+    if (cards.length >= CARDS_MAX) break;
+  }
+  return cards;
+}
+
+/** The arrangement with the cards in this dragged order. */
+export function withCardOrder(arr: HomeArrangement, keys: readonly string[]): HomeArrangement {
+  return { ...arr, cards: parseCards(keys) ?? [] };
+}
 
 const BAD = /[\\/\0]|\.\./;
 
@@ -46,7 +74,7 @@ function parseRef(item: unknown): SectionRef | null {
   return null;
 }
 
-/** Drop a bad, empty, duplicate or path-like section. A missing built-in goes back at the end, so a partial file cannot lose Needs you. */
+/** Drop a bad, empty, duplicate or path-like section. A missing built-in goes back (see below), so a partial file cannot lose Needs you. */
 export function parseArrangement(raw: unknown): HomeArrangement {
   const blank = defaultArrangement(0);
   if (!raw || typeof raw !== "object") return blank;
@@ -63,11 +91,16 @@ export function parseArrangement(raw: unknown): HomeArrangement {
       order.push(ref);
     }
   }
-  for (const id of BUILTINS) {
-    if (seen.has(id)) continue;
-    order.push({ kind: "builtin", id });
+  // A missing built-in goes back, never lost: right after the built-in that comes before it in BUILTINS when that one is
+  // here (so Projects, new in 0.16.14, lands under Needs you in an arrangement saved before it), else at the end.
+  BUILTINS.forEach((id, index) => {
+    if (seen.has(id)) return;
+    const before = index > 0 ? BUILTINS[index - 1] : undefined;
+    const at = before ? order.findIndex((ref) => ref.kind === "builtin" && ref.id === before) : -1;
+    if (at >= 0) order.splice(at + 1, 0, { kind: "builtin", id });
+    else order.push({ kind: "builtin", id });
     seen.add(id);
-  }
+  });
   const hidden: string[] = [];
   const hiddenSeen = new Set<string>();
   if (Array.isArray(rec.hidden)) {
@@ -80,7 +113,8 @@ export function parseArrangement(raw: unknown): HomeArrangement {
     }
   }
   const savedAt = typeof rec.savedAt === "number" && Number.isFinite(rec.savedAt) ? rec.savedAt : 0;
-  return { order, hidden, savedAt };
+  const cards = parseCards(rec.cards);
+  return { order, hidden, savedAt, ...(cards ? { cards } : {}) };
 }
 
 /** Swap with the next visible neighbour. Hidden sections stay where they are. The ends do nothing. */

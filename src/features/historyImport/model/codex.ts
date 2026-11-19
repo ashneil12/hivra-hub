@@ -14,7 +14,11 @@ import type { Conversation, TranscriptMessage } from "./types";
 import { jsonLines, parseIsoTsMs, projectName, sourceToken, truncateContent } from "./text";
 
 /** One Codex jsonl file. Null when it has no JSON objects at all. */
-export function parseCodex(sourceKey: string, text: string): Conversation | null {
+/**
+ * `whole` keeps every message's full text (bringing a chat into the app) and counts an agent message with no phase as
+ * an answer, as older Codex builds wrote it. The learner's reads stay as they were.
+ */
+export function parseCodex(sourceKey: string, text: string, whole = false): Conversation | null {
   const { rows, skipped } = jsonLines(text);
   if (rows.length === 0) return null;
   let id = sourceToken(sourceKey.replace(/\\/g, "/").split("/").pop()?.replace(/\.jsonl$/, "") ?? "", "chat");
@@ -35,7 +39,8 @@ export function parseCodex(sourceKey: string, text: string): Conversation | null
     const message = body.message;
     if (typeof message !== "string" || !message.trim()) continue;
     if (eventType === "agent_message" && body.phase === "commentary") continue;
-    const role = eventType === "user_message" ? "user" : eventType === "agent_message" && body.phase === "final_answer" ? "assistant" : null;
+    const answer = body.phase === "final_answer" || (whole && body.phase == null);
+    const role = eventType === "user_message" ? "user" : eventType === "agent_message" && answer ? "assistant" : null;
     if (!role) continue;
     const timestamp = parseIsoTsMs(row.timestamp);
     if (timestamp == null) continue;
@@ -51,7 +56,7 @@ export function parseCodex(sourceKey: string, text: string): Conversation | null
       conversationId: id,
       messageId: `m${messages.length + 1}`,
       role: turn.role,
-      content: truncateContent(full),
+      content: whole ? full : truncateContent(full),
       timestamp: turn.timestamp,
       secret,
     });
@@ -62,6 +67,7 @@ export function parseCodex(sourceKey: string, text: string): Conversation | null
     sourceKey,
     source: "codex",
     project: projectName(cwd, sourceKey),
+    ...(cwd ? { cwd } : {}),
     title: "",
     messages,
     skippedLines: skipped,

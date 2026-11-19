@@ -36,6 +36,18 @@ export type Drained = { ownerSession: string; messageId: string; through: number
 
 export type Timer = { id: string; ownerSession: string; dueAt: number; note: string; state: string; createdAt: number };
 
+/** One armed check, as watcher/checks.rs serializes it. The command's output is never in here. */
+export type Check = {
+  id: string;
+  ownerSession: string;
+  note: string;
+  intervalMs: number;
+  nextAt: number;
+  deadline: number;
+  state: string;
+  createdAt: number;
+};
+
 export type WakeQueueBackend = {
   add(input: { ownerSession: string; kind: string; key: string; delegationId?: string; generation?: number; title?: string; text: string }): Promise<{ wake: QueuedWake; fresh: boolean }>;
   open(): Promise<QueuedWake[]>;
@@ -50,6 +62,9 @@ export type WakeQueueBackend = {
   timerSet(input: { ownerSession: string; dueAt: number; note: string }): Promise<Timer>;
   timerCancel(ownerSession: string, id: string): Promise<Timer | null>;
   timers(ownerSession: string): Promise<Timer[]>;
+  /** WP-104: poll a safe command, in the chat's own folder, until it exits 0 or its text matches, then one wake. */
+  checkSet(input: { ownerSession: string; command: string; pattern: string; note: string; intervalMs: number; cwd: string }): Promise<Check>;
+  checkCancel(ownerSession: string, id: string): Promise<Check | null>;
 };
 
 export const tauriWakeQueue: WakeQueueBackend = {
@@ -64,6 +79,8 @@ export const tauriWakeQueue: WakeQueueBackend = {
   timerSet: (input) => invoke("watcher_timer_set", { input }),
   timerCancel: (ownerSession, id) => invoke("watcher_timer_cancel", { ownerSession, id }),
   timers: (ownerSession) => invoke("watcher_timers", { ownerSession }),
+  checkSet: (input) => invoke("watcher_check_set", { input }),
+  checkCancel: (ownerSession, id) => invoke("watcher_check_cancel", { ownerSession, id }),
 };
 
 /** watcher/mod.rs's event when a wake was stored. */

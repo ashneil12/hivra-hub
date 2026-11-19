@@ -199,7 +199,7 @@ describe("groupMonoTurnItems", () => {
     ];
     const turns = groupMonoTurns(blocks);
     expect(turns).toHaveLength(2);
-    expect(groupMonoTurnItems(turns[1], { live: true })).toMatchObject([
+    expect(groupMonoTurnItems(turns[1])).toMatchObject([
       { type: "block", block: { id: "queued" } },
       {
         type: "activity",
@@ -235,17 +235,18 @@ describe("groupMonoTurnItems", () => {
     }
   });
 
-  it("keeps live narration compact until the turn settles", () => {
+  it("keeps completed work compact while the trailing reply streams", () => {
     const blocks = [
       note("intro", "Checking."),
       shell("first"),
       note("reply", "The result."),
     ];
-    expect(groupMonoTurnItems(blocks, { live: true })).toMatchObject([
+    expect(groupMonoTurnItems(blocks)).toMatchObject([
       {
         type: "activity",
-        blocks: [{ id: "intro" }, { id: "first" }, { id: "reply" }],
+        blocks: [{ id: "intro" }, { id: "first" }],
       },
+      { type: "block", block: { id: "reply" } },
     ]);
     expect(groupMonoTurnItems(blocks).at(-1)).toMatchObject({
       type: "block",
@@ -372,8 +373,8 @@ describe("groupMonoTurnItems", () => {
       { type: "block", block: { id: "answer" } },
     ]);
     expect(
-      groupMonoTurnItems([note("answer", "Hello.")], { live: true }),
-    ).toMatchObject([{ type: "activity", blocks: [{ id: "answer" }] }]);
+      groupMonoTurnItems([note("answer", "Hello.")]),
+    ).toMatchObject([{ type: "block", block: { id: "answer" } }]);
   });
 
   it("keeps a final answer visible when a status ping arrives after it", () => {
@@ -391,7 +392,7 @@ describe("groupMonoTurnItems", () => {
     ]);
   });
 
-  it("hides new streamed narration after a previously delivered background reply", () => {
+  it("shows the new streamed reply after a previously delivered background reply", () => {
     const background: Block = {
       ...shell("background"),
       tool: { kind: "shell", status: "completed", background: true },
@@ -404,12 +405,12 @@ describe("groupMonoTurnItems", () => {
           background,
           note("update", "It finished."),
         ],
-        { live: true },
       ),
     ).toMatchObject([
       { type: "activity", blocks: [{ id: "first" }] },
       { type: "block", block: { id: "yielded" } },
-      { type: "activity", blocks: [{ id: "background" }, { id: "update" }] },
+      { type: "activity", blocks: [{ id: "background" }] },
+      { type: "block", block: { id: "update" } },
     ]);
   });
 });
@@ -681,6 +682,52 @@ describe("groupTurns", () => {
       ["next-report"],
       ["next-user"],
     ]);
+  });
+
+  it("gives a catch-up card a turn of its own, so it never vanishes into a hidden app turn or the work trail", () => {
+    const catchUp = { since: 0, at: 1_000, finished: [], finishedMore: 0, decided: [], decidedMore: 0, needs: [], needsMore: 0, running: 0 };
+    const card: Block = { id: "catch-up-1000", role: "system", text: "Nothing new came back.", catchUp };
+    const turns = groupTurns([
+      { id: "user", role: "user", text: "Review" },
+      { id: "answer", role: "assistant", text: "Reviewed." },
+      // A check the app wrote: its prompt is dropped and its quiet answer joins the turn above.
+      { id: "check", role: "user", text: "[MonoCode] still there?", internal: true },
+      { id: "quiet", role: "assistant", text: "Nothing new." },
+      card,
+      { id: "next-user", role: "user", text: "Do the first one" },
+    ]);
+    expect(turns.map((turn) => turn.map((block) => block.id))).toEqual([["user", "answer", "quiet"], ["catch-up-1000"], ["next-user"]]);
+    expect(groupTurnItems([card], { settled: true })).toEqual([{ type: "block", block: card }]);
+  });
+
+  it("gives the Needs you roll-up a turn of its own, so its question cards are never folded into the work trail", () => {
+    const rollup: Block = {
+      id: "needs-rollup-3000",
+      role: "system",
+      text: "Needs you now:\n- Example: which take?",
+      needsRollup: { items: [{ key: "question:p:boss", sentence: "Example: which take?", yours: false }], more: 0 },
+    };
+    const turns = groupTurns([
+      { id: "user", role: "user", text: "Review" },
+      { id: "answer", role: "assistant", text: "Reviewed." },
+      rollup,
+      { id: "next-user", role: "user", text: "And the music?" },
+    ]);
+    expect(turns.map((turn) => turn.map((block) => block.id))).toEqual([["user", "answer"], ["needs-rollup-3000"], ["next-user"]]);
+    expect(groupTurnItems([rollup], { settled: true })).toEqual([{ type: "block", block: rollup }]);
+  });
+
+  it("gives a line for a message sent beside the one chat a turn of its own, out of the work trail", () => {
+    const besideMessage = { chatId: "exo-lead", to: "EXO lead", text: "Example: checkpoint first", at: 2_000 };
+    const line: Block = { id: "beside-2000", role: "system", text: 'You messaged EXO lead: "Example: checkpoint first"', besideMessage };
+    const turns = groupTurns([
+      { id: "user", role: "user", text: "Review" },
+      { id: "answer", role: "assistant", text: "Reviewed." },
+      line,
+      { id: "next-user", role: "user", text: "And the music?" },
+    ]);
+    expect(turns.map((turn) => turn.map((block) => block.id))).toEqual([["user", "answer"], ["beside-2000"], ["next-user"]]);
+    expect(groupTurnItems([line], { settled: true })).toEqual([{ type: "block", block: line }]);
   });
 
   it("folds an orchestration turn the app wrote into the turn above", () => {

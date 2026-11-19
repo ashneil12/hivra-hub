@@ -5,7 +5,7 @@
 
 const assert = require("node:assert/strict");
 const { test } = require("node:test");
-const { execFileSync, spawn } = require("node:child_process");
+const { spawn } = require("node:child_process");
 const crypto = require("node:crypto");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -54,6 +54,8 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO workspace_snapshot VALUES (1, '{"tabs":["s1"]}', 5);
     CREATE TABLE worktree_removals (path TEXT PRIMARY KEY, sessions_json TEXT NOT NULL);
     INSERT INTO worktree_removals VALUES ('/Users/ash/Worktrees/real', '[]');
+    CREATE TABLE imported_chat_folders (session_id TEXT PRIMARY KEY, cwd TEXT NOT NULL, worktree_cwd TEXT, blocked INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO imported_chat_folders VALUES ('s1', '/Users/old/Projects/app', NULL, 0);
     CREATE TABLE automations (id TEXT PRIMARY KEY, definition_json TEXT NOT NULL, enabled INTEGER NOT NULL, next_run_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
     INSERT INTO automations VALUES ('auto-1', '{}', 1, 9, 9);
     CREATE TABLE automation_runs (id TEXT PRIMARY KEY, automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE, created_at INTEGER NOT NULL, run_json TEXT NOT NULL);
@@ -62,6 +64,8 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO automation_event_claims VALUES ('auto-1', 'e1', 9);
     CREATE TABLE session_reminders (session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE, due_at INTEGER NOT NULL CHECK (due_at > 0), fired_at INTEGER);
     INSERT INTO session_reminders VALUES ('s3', 100, NULL);
+    CREATE TABLE one_time_schedules (id TEXT PRIMARY KEY, body_json TEXT NOT NULL, status TEXT NOT NULL, run_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, claim_token TEXT, claim_until INTEGER);
+    INSERT INTO one_time_schedules VALUES ('once-1', '{}', 'scheduled', 200, 1, NULL, NULL);
     CREATE TABLE orchestration_runs (lead_id TEXT PRIMARY KEY, state TEXT NOT NULL);
     CREATE TABLE orchestration_sidebar (lead_id TEXT PRIMARY KEY, summary TEXT NOT NULL);
     CREATE TABLE orchestration_workers (session_id TEXT PRIMARY KEY, lead_id TEXT NOT NULL);
@@ -86,8 +90,31 @@ function dailyFixture(root, { schema = 19 } = {}) {
     INSERT INTO pr_watches VALUES ('w1', 's1', 'ashneil12/hivra', 42, 'watching');
     CREATE TABLE pr_watch_wakes (id TEXT PRIMARY KEY, watch_id TEXT NOT NULL, owner_session TEXT NOT NULL, delivery TEXT NOT NULL);
     INSERT INTO pr_watch_wakes VALUES ('pr-watch-w1-1', 'w1', 's1', 'pending'), ('pr-watch-w1-2', 'w1', 's1', 'delivered');
+    CREATE TABLE hub_local_docs (key TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL, rev INTEGER NOT NULL DEFAULT 0);
+    INSERT INTO hub_local_docs VALUES ('fan-out-compares', '[{"id":"compare-1"}]', 1, 3), ('fresh-eyes', '{"settings":{},"reviews":[{"requestId":"r1"}]}', 1, 3), ('home', '{"recent":[]}', 1, 2);
     CREATE TABLE notes (id TEXT PRIMARY KEY, body TEXT);
     INSERT INTO notes VALUES ('n1', 'kept');
+    -- Hivra WP-92: the vault's index (never a value: values live in the keychain).
+    CREATE TABLE secrets (scope TEXT NOT NULL, name TEXT NOT NULL, label TEXT NOT NULL, last4 TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, last_used_at INTEGER,
+      version INTEGER NOT NULL DEFAULT 1, PRIMARY KEY (scope, name));
+    INSERT INTO secrets VALUES ('global', 'stripe-api-key', 'Stripe', 'cd12', 1, 2, NULL, 3),
+      ('project./p/a', 'resend-key', 'Resend', NULL, 1, 2, NULL, 1);
+    CREATE TABLE secret_grants (scope TEXT NOT NULL, name TEXT NOT NULL, subject_kind TEXT NOT NULL,
+      subject_id TEXT NOT NULL, executable TEXT NOT NULL, mode TEXT NOT NULL, created_at INTEGER NOT NULL,
+      PRIMARY KEY (scope, name, subject_kind, subject_id, executable));
+    INSERT INTO secret_grants VALUES ('global', 'stripe-api-key', 'mono', 'tally', 'curl', 'always', 1),
+      ('global', 'stripe-api-key', 'project', '/p/a', '*', 'once', 2);
+    CREATE TABLE secret_requests (id TEXT PRIMARY KEY, chat TEXT NOT NULL, mono TEXT, project TEXT,
+      scope TEXT NOT NULL, name TEXT NOT NULL, why TEXT NOT NULL, state TEXT NOT NULL, answer_token TEXT,
+      created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+    INSERT INTO secret_requests VALUES ('req-1', 's1', 'Tally', NULL, 'global', 'resend-key', 'to send', 'open', NULL, 1, 1);
+    CREATE TABLE secret_env_writes (scope TEXT NOT NULL, name TEXT NOT NULL, worktree TEXT NOT NULL,
+      env_name TEXT NOT NULL, written_at INTEGER NOT NULL, PRIMARY KEY (scope, name, worktree));
+    INSERT INTO secret_env_writes VALUES ('project./p/a', 'resend-key', '/p/a', 'RESEND_API_KEY', 1);
+    -- The person's choice about "Always" for programs that can run any code: a dev copy starts with it off.
+    CREATE TABLE secret_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO secret_settings VALUES ('always_for_any_code', '1');
   `);
   // Leave the last writes in the WAL, as a running daily app would.
   db.exec("PRAGMA wal_autocheckpoint = 0; UPDATE sessions SET title = 'Chat one (latest)' WHERE id = 's1';");
@@ -124,15 +151,20 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
   // Out of WAL: one file, which a read-only tool can open without creating anything beside it.
   const header = fs.readFileSync(path.join(to, "monocode.db")).subarray(18, 20);
   assert.deepEqual([...header], [1, 1], "rollback-journal mode in the file header");
-  execFileSync("sqlite3", [`file:${path.join(to, "monocode.db")}?mode=ro`, "SELECT count(*) FROM sessions"]);
+  const readOnly = new DatabaseSync(path.join(to, "monocode.db"), { readOnly: true });
+  readOnly.prepare("SELECT count(*) FROM sessions").get();
+  readOnly.close();
+  assert.deepEqual(fs.readdirSync(to).sort(), ["instance-owner.sqlite", "monocode.db", "seeded.json"], "a read-only open made nothing beside it");
   assert.deepEqual(report.cleared, {
     inFlightTurns: 1,
     workspaceSnapshot: 1,
     worktreeRemovals: 1,
+    importedChatFolders: 1,
     automationRuns: 2,
     automationEventClaims: 1,
     automations: 1,
     reminders: 1,
+    oneTimeSchedules: 1,
     orchestrationRuns: 1,
     orchestrationSidebar: 1,
     orchestrationWorkers: 1,
@@ -144,9 +176,18 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     autopilotResumes: 1,
     prWatchWakes: 2,
     prWatches: 1,
+    fanOutCompares: 1,
+    freshEyesReviews: 1,
     queuedMessages: 1,
     goals: 1,
     providerSessionIds: 2,
+    // WP-92: the vault's index, grants, requests and .env records stay with the daily app; only the chats come over,
+    // and the keychain names (and so the values) are the daily app's own and never read here.
+    secrets: 2,
+    secretGrants: 2,
+    secretRequests: 1,
+    secretEnvWrites: 1,
+    secretSettings: 1,
   });
   assert.deepEqual(rows(path.join(to, "monocode.db"), "SELECT count(*) AS n FROM sessions WHERE goal_json IS NOT NULL"), [{ n: 0 }], "no chat's /goal comes along");
   const copy = path.join(to, "monocode.db");
@@ -156,15 +197,55 @@ test("a seed copies every chat, clears what would act on Ash's behalf, and never
     { id: "s2", title: "Chat two", blocks_json: '[{"role":"user","text":"yo"}]', provider_session_id: null, queued_messages_json: "[]", queue_status: null },
     { id: "s3", title: "Chat three", blocks_json: "[]", provider_session_id: null, queued_messages_json: "[]", queue_status: null },
   ]);
-  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "automations", "automation_runs", "automation_event_claims", "session_reminders", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes"])
+  for (const table of ["in_flight_sessions", "workspace_snapshot", "worktree_removals", "imported_chat_folders", "automations", "automation_runs", "automation_event_claims", "session_reminders", "one_time_schedules", "orchestration_runs", "orchestration_sidebar", "orchestration_workers", "delegations", "delegation_chat_binds", "steer_messages", "decisions", "autopilot_switches", "autopilot_resumes", "pr_watches", "pr_watch_wakes", "secrets", "secret_grants", "secret_requests", "secret_env_writes", "secret_settings"])
     assert.deepEqual(rows(copy, `SELECT count(*) AS n FROM ${table}`), [{ n: 0 }], table);
+  assert.deepEqual(
+    rows(copy, "SELECT key FROM hub_local_docs ORDER BY key"),
+    [{ key: "home" }],
+    "a held brief and its review name Ash's real chats and stay behind; the other hub documents come along",
+  );
   assert.deepEqual(rows(copy, "SELECT count(*) AS n FROM autopilot_log"), [{ n: 1 }], "the autopilot log is history and stays");
   assert.deepEqual(rows(copy, "SELECT body FROM notes"), [{ body: "kept" }], "everything else is kept");
+  assert.deepEqual(
+    rows(copy, "SELECT key FROM hub_local_docs ORDER BY key"),
+    [{ key: "home" }],
+    "a compare's records name Ash's real worktrees and stay behind; the other hub documents come along",
+  );
 
   assert.deepEqual(fingerprint(daily.file), before, "the source's database and WAL are byte for byte the same");
   assert.deepEqual(fs.readdirSync(path.dirname(daily.file)).sort(), ["monocode.db", "monocode.db-shm", "monocode.db-wal"], "nothing new beside the source");
   const seeded = JSON.parse(fs.readFileSync(path.join(to, "seeded.json"), "utf8"));
   assert.equal(seeded.from, daily.file);
+});
+
+test("a seed clears the fan-out checkpoints and leases of the daily app, so a resume in a dev copy starts nothing of Ash's", async () => {
+  const { scrub } = await load();
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE fanout_checkpoints (owner TEXT NOT NULL, id TEXT NOT NULL, revision INTEGER NOT NULL, updated_at INTEGER NOT NULL, body TEXT NOT NULL, PRIMARY KEY (owner, id));
+    CREATE TABLE fanout_leases (owner TEXT NOT NULL, id TEXT NOT NULL, holder TEXT NOT NULL, until INTEGER NOT NULL, PRIMARY KEY (owner, id));
+    INSERT INTO fanout_checkpoints VALUES ('mono-ash', 'plan-a', 2, 1, '{"tasks":[]}');
+    INSERT INTO fanout_leases VALUES ('mono-ash', 'plan-a', 'window-a', 1);
+  `);
+  const cleared = scrub(db);
+  assert.equal(cleared.fanoutCheckpoints, 1);
+  assert.equal(cleared.fanoutLeases, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM fanout_checkpoints").get().n, 0);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM fanout_leases").get().n, 0);
+  db.close();
+});
+
+test("a seed clears the pickup rules, so a task in a dev copy never wakes Ash's first mates", async () => {
+  const { scrub } = await load();
+  const db = new DatabaseSync(":memory:");
+  db.exec(`
+    CREATE TABLE task_pickup_rules (owner_session TEXT PRIMARY KEY, project_id TEXT, statuses TEXT NOT NULL DEFAULT '[]', labels TEXT NOT NULL DEFAULT '[]', enabled INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+    INSERT INTO task_pickup_rules (owner_session, project_id, labels, created_at) VALUES ('mate-1', 'app', '["bug"]', 1);
+  `);
+  const cleared = scrub(db);
+  assert.equal(cleared.pickupRules, 1);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM task_pickup_rules").get().n, 0);
+  db.close();
 });
 
 test("refuses the daily data folder, a link to it, and anything that isn't a dev slot's folder", async (t) => {

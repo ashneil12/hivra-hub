@@ -151,10 +151,98 @@ impl Service {
             id,
             &Login {
                 fields: clean,
+                refs: BTreeMap::new(),
                 oauth: None,
             },
         )?;
         self.signed_in(id, Method::Token, allow)
+    }
+
+    /// WP-92: move each saved key of a token login into the vault and leave a reference behind. One click, after one
+    /// confirm; nothing migrates silently, and the value never crosses the webview (this runs in Rust).
+    pub fn move_login_to_vault(&self, id: &str, conn: &rusqlite::Connection) -> Result<(), String> {
+        self.move_login_to_vault_with_vault(id, conn, crate::secrets::store::active())
+    }
+
+    /// The same, with the vault handed in, so tests never touch a real Keychain.
+    pub fn move_login_to_vault_with_vault(
+        &self,
+        id: &str,
+        conn: &rusqlite::Connection,
+        vault: &dyn crate::secrets::Vault,
+    ) -> Result<(), String> {
+        let entry = entry(id)?;
+        let mut login = self
+            .store
+            .get(id)?
+            .ok_or_else(|| format!("{} isn't signed in on this Mac.", entry.name))?;
+        if !login.refs.is_empty() {
+            return Err("This login already uses the vault.".into());
+        }
+        if login.oauth.is_some() {
+            return Err(format!(
+                "{} signed in on its own page, so it has no saved key to move.",
+                entry.name
+            ));
+        }
+        let fields: Vec<(String, String)> = entry
+            .auth
+            .fields
+            .iter()
+            .filter(|field| field.secret)
+            .filter_map(|field| {
+                let value = login.fields.get(&field.key)?.trim();
+                (!value.is_empty()).then(|| (field.key.clone(), value.to_string()))
+            })
+            .collect();
+        if fields.is_empty() {
+            return Err(format!("{} has no saved key to move.", entry.name));
+        }
+        let mut names = Vec::new();
+        for (field, _) in &fields {
+            let name = crate::secrets::normalize_name(&format!("{id}-{field}"))
+                .map_err(|_| "That connector's key can't be named in the vault.".to_string())?;
+            if names.contains(&name) {
+                return Err("Two of this connector's fields would get the same name.".into());
+            }
+            if crate::secrets::get_secret(conn, crate::secrets::SCOPE_GLOBAL, &name)?.is_some() {
+                return Err(format!(
+                    "There's already a key called {name}. Rename or delete it under Settings > Secrets, then move this one."
+                ));
+            }
+            names.push(name);
+        }
+        let now = crate::session_store::now_millis();
+        for ((field, value), name) in fields.iter().zip(&names) {
+            let label = format!("{} {}", entry.name, field.replace(['-', '_'], " "));
+            if let Err(why) = crate::secrets::save_value(
+                vault,
+                conn,
+                crate::secrets::SCOPE_GLOBAL,
+                name,
+                Some(&label),
+                value,
+                now,
+            ) {
+                // A partial move would leave copies in two places: take back the ones this attempt saved.
+                for saved in &names {
+                    let _ =
+                        crate::secrets::delete(vault, conn, crate::secrets::SCOPE_GLOBAL, saved);
+                }
+                return Err(why);
+            }
+        }
+        for ((field, _), name) in fields.iter().zip(&names) {
+            login.fields.remove(field);
+            login.refs.insert(field.clone(), name.clone());
+        }
+        if let Err(why) = self.store.put(id, &login) {
+            for name in &names {
+                let _ = crate::secrets::delete(vault, conn, crate::secrets::SCOPE_GLOBAL, name);
+            }
+            return Err(why);
+        }
+        Ok(())
     }
 
     /// A connector with no login (a local or public server) is simply turned on.
@@ -189,6 +277,7 @@ impl Service {
                 ("client_id".to_string(), client_id.to_string()),
                 ("client_secret".to_string(), client_secret.to_string()),
             ]),
+            refs: BTreeMap::new(),
             oauth: None,
         };
         self.store.put(GOOGLE_CLIENT, &login)?;
@@ -252,6 +341,7 @@ impl Service {
             id,
             &Login {
                 fields: BTreeMap::new(),
+                refs: BTreeMap::new(),
                 oauth: Some(tokens),
             },
         )?;
@@ -369,6 +459,18 @@ pub async fn connector_save_login(
     blocking(move |s| s.save_login(&id, fields, allow)).await
 }
 
+/// WP-92: move a connector's saved key into the vault (after the page's one confirm).
+#[tauri::command]
+pub fn connector_move_login_to_vault(
+    store: tauri::State<'_, crate::session_store::SessionStore>,
+    id: String,
+) -> Result<View, String> {
+    let service = Service::live()?;
+    let conn = store.lock_conn()?;
+    service.move_login_to_vault(&id, &conn)?;
+    service.view()
+}
+
 #[tauri::command]
 pub async fn connector_turn_on(id: String, allow: Option<Vec<String>>) -> Result<View, String> {
     blocking(move |s| s.turn_on(&id, allow)).await
@@ -437,7 +539,7 @@ pub async fn connectors_set_composio(on: bool) -> Result<View, String> {
 #[cfg(test)]
 mod tests {
     use super::super::bridge::tests::Buffer;
-    use super::super::launch::{prepare, tests::signed, Plan};
+    use super::super::launch::{prepare, prepare_with_vault, tests::signed, Plan};
     use super::super::secrets::Memory;
     use super::super::settings::{EVERYWHERE, OUTSIDE};
     use super::*;
@@ -466,6 +568,101 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn one_click_moves_a_saved_key_into_the_vault() {
+        let (svc, memory) = service();
+        std::fs::create_dir_all(&svc.dir).unwrap();
+        svc.save_login(
+            "github",
+            BTreeMap::from([("token".into(), SENTINEL.into())]),
+            Some(vec![EVERYWHERE.into()]),
+        )
+        .unwrap();
+        let vault = crate::secrets::store::Memory::new();
+        let conn = rusqlite::Connection::open(svc.dir.join("monocode.db")).unwrap();
+        crate::secrets::ensure_tables(&conn).unwrap();
+        svc.move_login_to_vault_with_vault("github", &conn, &vault)
+            .unwrap();
+
+        // The login now points at the vault; the value is in the vault, nowhere in the login's own JSON.
+        let login = memory.get("github").unwrap().unwrap();
+        assert!(login.fields.is_empty(), "{login:?}");
+        assert_eq!(login.refs["token"], "github-token");
+        assert!(vault.values().iter().any(|value| value == SENTINEL));
+        let raw = memory
+            .0
+            .lock()
+            .unwrap()
+            .get("monocode-hub:connector:github")
+            .cloned()
+            .unwrap();
+        assert!(!raw.contains(SENTINEL), "{raw}");
+        assert!(!every_file(&svc.dir).contains(SENTINEL));
+
+        // The connector keeps working, with the value filled in at launch.
+        let args = signed(memory.as_ref(), "github", "m", &[]);
+        let (_, _, plan) = prepare_with_vault(&args, &svc.dir, memory.as_ref(), &vault).unwrap();
+        let Plan::Remote { headers, .. } = plan else {
+            panic!()
+        };
+        assert!(headers.iter().any(|(_, value)| value.contains(SENTINEL)));
+
+        // A second click moves nothing: the login already uses the vault.
+        let err = svc
+            .move_login_to_vault_with_vault("github", &conn, &vault)
+            .unwrap_err();
+        assert!(err.contains("already uses the vault"), "{err}");
+
+        // Deleting the vault key is what stops the connector; the login still names it.
+        crate::secrets::delete(&vault, &conn, crate::secrets::SCOPE_GLOBAL, "github-token")
+            .unwrap();
+        let err = prepare_with_vault(&args, &svc.dir, memory.as_ref(), &vault).unwrap_err();
+        assert!(err.contains("isn't saved any more"), "{err}");
+        // Windows keeps the store's files open until the handles drop, so cleanup is best effort.
+        let _ = std::fs::remove_dir_all(svc.dir);
+    }
+
+    #[test]
+    fn moving_a_key_never_overwrites_one_already_in_the_vault() {
+        let (svc, memory) = service();
+        std::fs::create_dir_all(&svc.dir).unwrap();
+        svc.save_login(
+            "github",
+            BTreeMap::from([("token".into(), SENTINEL.into())]),
+            None,
+        )
+        .unwrap();
+        let vault = crate::secrets::store::Memory::new();
+        let conn = rusqlite::Connection::open(svc.dir.join("monocode.db")).unwrap();
+        crate::secrets::ensure_tables(&conn).unwrap();
+        crate::secrets::save_value(
+            &vault,
+            &conn,
+            crate::secrets::SCOPE_GLOBAL,
+            "github-token",
+            Some("Someone else's GitHub key"),
+            "ghp_OTHER_0123456789",
+            1_000,
+        )
+        .unwrap();
+
+        let err = svc
+            .move_login_to_vault_with_vault("github", &conn, &vault)
+            .unwrap_err();
+        assert!(err.contains("already a key called github-token"), "{err}");
+        // Nothing moved: the connector still holds its key, the vault still holds the other one.
+        let stored = memory.get("github").unwrap().unwrap();
+        assert_eq!(stored.fields["token"], SENTINEL);
+        assert!(stored.refs.is_empty());
+        assert!(vault
+            .values()
+            .iter()
+            .any(|value| value == "ghp_OTHER_0123456789"));
+        assert!(!vault.values().iter().any(|value| value == SENTINEL));
+        // Windows keeps the store's files open until the handles drop, so cleanup is best effort.
+        let _ = std::fs::remove_dir_all(svc.dir);
     }
 
     #[test]
@@ -516,7 +713,8 @@ mod tests {
             vec!["/p/hivra"],
             "projects kept for the next sign-in"
         );
-        std::fs::remove_dir_all(&svc.dir).unwrap();
+        // Windows keeps the store's files open until the handles drop, so cleanup is best effort.
+        let _ = std::fs::remove_dir_all(&svc.dir);
     }
 
     #[test]

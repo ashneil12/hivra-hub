@@ -1,5 +1,7 @@
 // @vitest-environment happy-dom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => undefined) }));
 import * as settings from "./settings";
 import * as appearance from "./appearance";
 
@@ -65,6 +67,13 @@ describe.each([
     settings.saveLiveAgentsEnabled,
     true,
     "monocode:live-agents-enabled-change",
+  ],
+  [
+    "monocode.moreAgentsEnabled",
+    settings.loadMoreAgentsEnabled,
+    settings.saveMoreAgentsEnabled,
+    false,
+    "monocode:more-agents-enabled-change",
   ],
   [
     "monocode.monosEnabled",
@@ -201,4 +210,18 @@ it("disables close-to-tray outside Windows without consulting storage", () => {
 
   expect(settings.loadCloseToTray()).toBe(false);
   expect(read).not.toHaveBeenCalled();
+});
+
+describe("the More agents switch reaches the app", () => {
+  it("tells the app when the person switches More agents on or off", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const calls: unknown[][] = [];
+    vi.mocked(invoke).mockImplementation(async (...args: unknown[]) => {
+      calls.push(args);
+      return undefined as never;
+    });
+    const { saveMoreAgentsEnabled } = await import("./settings");
+    saveMoreAgentsEnabled(true);
+    expect(calls).toContainEqual(["more_agents_set_enabled", { on: true }]);
+  });
 });

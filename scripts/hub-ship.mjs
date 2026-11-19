@@ -4,12 +4,15 @@
 //
 //   npm run hub:check-all && npm run hub:build && npm run hub:ship [-- --json]
 //   npm run hub:ship -- --drill-rollback      # the whole path, then put the old build back as if it had failed
+//   npm run hub:build && npm run hub:ship -- --skip-tests   # Ash's fast loop (12 Nov 2026): no hub:check-all record
+//                                             # needed and no version bump (a same version only warns, as app.ship
+//                                             # does); every other check, the backup and the rollback still apply
 //   npm run hub:install                       # = --legacy: the one-time install of the first build that can ship
 //
 // `npm run hub:ship`, the `app.ship` action and (later) a button all run this file.
 //
 // 1. Checks, before anything changes: the checkout is clean and the bundle's stamp is its HEAD; `hub:check-all` passed
-//    for that commit; the bundle is the daily identity, signed with a real certificate (not ad hoc) and the same one
+//    for that commit and its record says the built app launched and a verify-live pass exists (SC-2); the bundle is the daily identity, signed with a real certificate (not ad hoc) and the same one
 //    as the installed app, which can take a ship; there is room on the disk; and the new build's
 //    `monocode healthcheck` migrates a copy of the live database.
 // 2. Stage: the bundle is copied with ditto to <data>/ship/<id>/staged/, state.json says "staged", and the runner
@@ -25,7 +28,8 @@ import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { HUB_IDENTIFIER, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+import { HUB_IDENTIFIER, defaultBundlePath, kindOf, readIdentifier, readStamp, readVersion, stampLabel, verifyDailyBundle } from "./hub-bundle.mjs";
+import { helperCheckApplies, helperProblemsFor } from "./hub-dictation-helper.mjs";
 // WP-09: install location, copy and the non-macOS runner. macOS paths stay homePathsFor("darwin").
 import {
   appCommand,
@@ -179,7 +183,7 @@ export function shipInProgress(paths) {
 }
 
 /** The checks before anything changes. Every refusal is collected, not just the first. */
-export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowSameVersion = false, fromApp = false }) {
+export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowSameVersion = false, fromApp = false, skipTests = false }) {
   const refusals = [];
   const warnings = [];
   const facts = {};
@@ -198,6 +202,13 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
   const verified = verifyDailyBundle(bundle);
   facts.stamp = verified.stamp;
   for (const error of verified.errors) refusals.push(`Wrong bundle: ${error}`);
+  // WP-131b: the microphone belongs to the dictation helper inside the bundle. The same check hub:verify runs.
+  // (A bundle that isn't a Hub identity is already refused above, so there is no helper to name for it.)
+  if (helperCheckApplies({ platform: process.platform, identifier: verified.identifier, exists: exists(bundle) })) {
+    for (const problem of helperProblemsFor(bundle, { identifier: verified.identifier, codesign: codesignPath() })) {
+      refusals.push(`Dictation helper: ${problem}`);
+    }
+  }
   if (verified.stamp) {
     if (verified.stamp.dirty) refusals.push(`The build had uncommitted changes (${stampLabel(verified.stamp)}). Rebuild from a clean checkout.`);
     if (facts.head && verified.stamp.sha !== facts.head)
@@ -205,11 +216,23 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
         `The build is from ${verified.stamp.sha.slice(0, 7)} but the checkout is at ${facts.head.slice(0, 7)}. Run npm run hub:build.`,
       );
   }
-  // hub:check-all passed for exactly this commit.
-  if (facts.head) {
+  // hub:check-all passed for exactly this commit, unless the ship says it skips the tests (Ash's fast loop: the tests
+  // run once he is satisfied). Only the test gate goes: identity, signature, healthcheck, backup and rollback stay.
+  if (skipTests) {
+    facts.checks = { skipped: true };
+    warnings.push(
+      `Shipping ${facts.head ? facts.head.slice(0, 7) : "this build"} without npm run hub:check-all (--skip-tests). The trial and rollback still protect the data.`,
+    );
+  } else if (facts.head) {
     const record = readJson(path.join(repo, "target/hub-checks", `${facts.head}.json`));
     if (!record || record.ok !== true || record.sha !== facts.head)
       refusals.push(`No passing npm run hub:check-all for ${facts.head.slice(0, 7)}. Run it, then ship.`);
+    // SC-2: a pass now also says the built app launched and stayed up under a temporary HOME, and that hub:verify-live
+    // passed for the commit. A record written before that (neither field) is refused the same way.
+    else if (record.launch?.ok !== true)
+      refusals.push("This commit's checks passed but the built app was not launched; run npm run hub:check-all again.");
+    else if (record.verifyLive?.ok !== true)
+      refusals.push("This commit's checks passed but no verify-live pass was recorded; run npm run hub:check-all again.");
     else facts.checks = record;
   }
   // A real signature, the same as the installed app's.
@@ -239,7 +262,8 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
       );
   }
   // A newer version than the installed app. Refused from the command line; a ship the app itself asked for (app.ship)
-  // only warns, so its Ship button never stops on it; --allow-same-version turns the refusal into the warning.
+  // only warns, so its Ship button never stops on it; --allow-same-version turns the refusal into the warning, and so
+  // does --skip-tests: the fast loop ships every merged batch, and the runner and the app tell builds apart by sha.
   facts.version = { bundle: exists(bundle) ? readVersion(bundle) : null, installed: exists(paths.app) ? readVersion(paths.app) : null };
   const notBumped = versionProblem({
     bundleVersion: facts.version.bundle,
@@ -247,7 +271,7 @@ export function preflight({ repo, bundle, paths, skipHealthcheck = false, allowS
     bundleSha: facts.stamp?.sha,
     installedSha: facts.installed?.sha,
   });
-  if (notBumped) (allowSameVersion || fromApp ? warnings : refusals).push(notBumped);
+  if (notBumped) (allowSameVersion || fromApp || skipTests ? warnings : refusals).push(notBumped);
   // Room for the staged copy and the database backup, and a margin.
   if (exists(bundle)) {
     const dbBytes = ["monocode.db", "monocode.db-wal", "monocode.db-shm"].reduce(
@@ -696,6 +720,7 @@ function parseArgs(argv) {
     else if (arg === "--drill-rollback") options.drill = "rollback";
     else if (arg === "--dry-run") options.dryRun = true;
     else if (arg === "--allow-same-version") options.allowSameVersion = true;
+    else if (arg === "--skip-tests") options.skipTests = true;
     else if (arg === "--repo") options.repo = value();
     else if (arg === "--bundle") options.bundle = value();
     else if (arg === "--requested-by") options.requestedBy = value();
@@ -756,7 +781,8 @@ export async function main(argv = process.argv.slice(2)) {
   } catch {
     repo = path.resolve(options.repo ?? process.cwd());
   }
-  const bundle = path.resolve(options.bundle ?? path.join(repo, "target/release/bundle/macos", APP_NAME));
+  // SC-2: hub:check-all finds the bundle it launches the same way (hub-bundle.mjs).
+  const bundle = path.resolve(options.bundle ?? defaultBundlePath(repo));
 
   if (options.legacy) {
     const result = legacyInstall({ bundle, paths });
@@ -774,6 +800,7 @@ export async function main(argv = process.argv.slice(2)) {
     bundle,
     paths,
     allowSameVersion: Boolean(options.allowSameVersion),
+    skipTests: Boolean(options.skipTests),
     fromApp: Boolean(options.requestedBy) || process.env.MONOCODE_SHIP_FROM_APP === "1",
   });
   // Loud, on stderr, whatever happens next (the JSON result carries them too).

@@ -95,7 +95,7 @@ for (const ready of READY_CASES) {
     const add = host.querySelector(`[data-pages-ready-add="${ready.id}"]`) as HTMLButtonElement;
     expect(add).not.toBeNull();
     await act(async () => add.click());
-    expect(host.querySelector("[data-pages-preview]")!.textContent).toContain("Ready-made page");
+    expect(host.querySelector("[data-pages-preview]")!.textContent).toContain("Ready-made hub");
     const asks = host.querySelector("[data-page-permissions]")!.textContent!;
     for (const words of ready.words) expect(asks).toContain(words);
     const keep = host.querySelector("[data-pages-keep]") as HTMLButtonElement;
@@ -104,7 +104,8 @@ for (const ready of READY_CASES) {
     const kept = allPages().find((p) => p.request === ready.request)!;
     expect(kept).toMatchObject({ title: ready.title, by: "Ready-made", projectId: "today", permissions: ready.spec.permissions });
     expect(host.querySelector("[data-pages-open] h1")!.textContent).toBe(ready.title);
-    await act(async () => (host.querySelector("[data-pages-open] button") as HTMLButtonElement).click()); // ← All pages
+    await act(async () => (host.querySelector("[data-pages-open] [data-pages-menu-button]") as HTMLButtonElement).click());
+    await act(async () => (host.querySelector('[data-pages-menu-item="all"]') as HTMLButtonElement).click()); // All pages
     expect(host.querySelector(`[data-pages-ready-row="${ready.id}"]`)).toBeNull();
   });
 }

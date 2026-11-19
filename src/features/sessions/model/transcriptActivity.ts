@@ -194,7 +194,8 @@ export function isActivityBlock(block: Block): boolean {
   if (isThinkingBlock(block)) return true;
   if (block.role === "system") {
     // An agent-to-agent note keeps its own line in the chat, never folded into the work trail (Ash 21 Oct 20:45).
-    return !block.interjection && !isNoticeBlock(block) && !block.agentNote;
+    // A catch-up card (asks/model/catchUp.ts) is something Ash asked to read: its own row too.
+    return !block.interjection && !isNoticeBlock(block) && !block.agentNote && !block.catchUp && !block.besideMessage && !block.needsRollup;
   }
   if (block.role !== "tool" && block.role !== "approval") return false;
   if (
@@ -447,7 +448,9 @@ function groupTranscriptTurns(
       }
       continue;
     }
-    if (block.role === "handoff" || block.monoHabit) {
+    // A catch-up card (asks/model/catchUp.ts) stands alone too: joined to the turn above, it would vanish with a quiet
+    // check's turn.
+    if (block.role === "handoff" || block.monoHabit || block.catchUp || block.besideMessage || block.needsRollup) {
       if (current.length > 0) turns.push(current);
       turns.push([block]);
       current = [];
@@ -650,15 +653,15 @@ export function groupTurnItems(
 
 /**
  * A Mono keeps its process, including the opening message, in the activity
- * trail. Live prose stays there until the user joins the running turn; replies
- * after a delivered follow-up stay visible even when more work arrives.
- * Settling reveals the trailing reply for uninterrupted turns.
+ * trail. The reply being written remains visible while it streams; prose followed
+ * by more tools joins the trail. Replies to delivered follow-ups remain visible
+ * when further work arrives.
  * Cards, notices and interjections keep their
  * own rows, and work resumed after a yielded reply does not absorb that reply.
  */
 export function groupMonoTurnItems(
   blocks: Block[],
-  options?: { live?: boolean; undeliveredMessageIds?: ReadonlySet<string> },
+  options?: { undeliveredMessageIds?: ReadonlySet<string> },
 ): TurnItem[] {
   // Read the original order before moving user bubbles above the work. Once
   // the user joins in, hiding subsequent replies makes a delivered message
@@ -696,7 +699,7 @@ export function groupMonoTurnItems(
         ? item.blocks.some(
             (block) => isToolBlock(block) || isThinkingBlock(block),
           )
-        : isToolBlock(item.block) || (options?.live && isProseBlock(item.block))
+        : isToolBlock(item.block)
     )
       end = index;
   }

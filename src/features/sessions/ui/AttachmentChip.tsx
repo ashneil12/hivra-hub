@@ -23,7 +23,10 @@ export function AttachmentChip({ attachment, onRemove, photo = false }: Props) {
         className={`group relative flex min-w-0 items-center gap-1.5 rounded-md ${
           image ? "" : "bg-content/10 py-0.5 pl-1 pr-1"
         }`}
-        title={attachment.path ?? attachment.name}
+        title={
+          attachment.path ??
+          (preview ? attachment.name : `${attachment.name} (file not available)`)
+        }
       >
         {image ? (
           <button

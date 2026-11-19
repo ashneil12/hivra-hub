@@ -1,0 +1,28 @@
+    Starting 2 tests across 1 binary
+        PASS [   0.003s] foo tests::adds
+        FAIL [   0.004s] foo tests::subtracts
+
+--- STDOUT:              foo tests::subtracts ---
+
+running 1 test
+test tests::subtracts ... FAILED
+
+failures:
+
+failures:
+    tests::subtracts
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+
+--- STDERR:              foo tests::subtracts ---
+thread 'tests::subtracts' panicked at src/lib.rs:12:9:
+assertion `left == right` failed
+  left: 1
+ right: 2
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+------------
+     Summary [   0.005s] 2 tests run: 1 passed, 1 failed, 0 skipped
+        FAIL [   0.004s] foo tests::subtracts
+error: test run failed

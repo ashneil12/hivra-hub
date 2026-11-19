@@ -5,7 +5,7 @@ import { userName } from "../../hub/model/userName";
 import { projectKey } from "../../../shared/lib/paths";
 import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { listCustomModels, type CustomModel } from "../../sessions/model/customModels";
-import { defaultMonoName, listMonos, monoEngine, parseMonoEngine, type Mono, type MonoEngine } from "../../monos/model/mono";
+import { cardNames, defaultMonoName, listMonos, monoEngine, parseMonoEngine, type Mono, type MonoEngine } from "../../monos/model/mono";
 import { allKeptPages, type Page } from "../../pages/model/pages";
 import { DEFAULT_TEAM, isDefaultTeamMono } from "../../hub/model/builtInMonos";
 import { allConnectors, keychainService, loginLivesOn, type Connector } from "../../hub/model/connectors";
@@ -20,6 +20,8 @@ import type { ProjectIconChoice } from "../../hub/model/projectPrefs";
 import { findSecrets, isSecretKey, redactText, redactValue } from "./secrets";
 import { forYou } from "../../hub/model/userName";
 import { savedWorkerLimits, systemWorkerDefault, type WorkerLimits } from "../../monos/model/workerPool";
+import { SPEND_LIMITS_KEY } from "../../usage/model/spend";
+import { spendLimitsSetting } from "../../usage/model/spendGate";
 import { cleanStoredDefault } from "../../crew/model/workerDefault";
 import type { Pick as WorkerPick } from "../../crew/model/resolve";
 
@@ -60,6 +62,19 @@ export type PortableMono = {
   useSidebarFolders?: boolean;
   /** WP-89: the CLI, model and effort its workers use. Absent when this Mono sets none. */
   workerDefault?: WorkerPick;
+  /** WP-182: fast mode for its own chat. Absent when this Mono does not set it. */
+  engineFast?: boolean;
+  /** WP-182: skill names it is offered. Not SOUL.md's skill list (`skills`). Absent means everything installed. */
+  offeredSkills?: string[];
+  /** WP-182: slash command names it is offered. Absent means everything installed. */
+  commands?: string[];
+  /**
+   * G1: its further one-to-one chats (Mono.chats), by chat id. The chats themselves travel with the workspace under the
+   * same ids; an import makes them this first mate's again. Absent when it has none.
+   */
+  chats?: string[];
+  /** G1: its own chat in each project (Mono.projectSessions: the Chief of Staff's per-project chats), by project id. */
+  projectSessions?: Record<string, string>;
 };
 
 /** A team is a project's group chat and who is in it. Its conversations are workspace, not setup. */
@@ -166,6 +181,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   "monocode.autosave",
   "monocode.claudeHooks",
   "monocode.idleAgentLimit",
+  // G6: Show code tools (Settings > Advanced > Worktrees).
+  "monocode.showCodeTools",
   // How long a quiet worker may sit before it reads stalled (workerStall.ts).
   "monocode:stall-minutes",
   "monocode.keybindingOverrides",
@@ -187,6 +204,8 @@ export const PORTABLE_SETTINGS: readonly string[] = [
   // WP-89: the app-wide worker default. It lives in the app database, like the limits, so an export writes it from
   // the worker pool and an import puts it back through the pool. It is not part of the limits JSON.
   WORKER_DEFAULT_KEY,
+  // WP-176: measured-cost limits. They live beside the worker limits, and an import never raises one.
+  SPEND_LIMITS_KEY,
   MONO_TEAMS_KEY,
 ];
 const PORTABLE = new Set(PORTABLE_SETTINGS);
@@ -262,10 +281,12 @@ export function workerDefaultSetting(stored: WorkerPick | null | undefined = sys
 function withWorkerLimits(settings: Record<string, string>): Record<string, string> {
   const limits = workerLimitsSetting();
   const workerDefault = workerDefaultSetting();
+  const spend = spendLimitsSetting();
   return {
     ...settings,
     ...(limits ? { [WORKER_LIMITS_KEY]: limits } : {}),
     ...(workerDefault ? { [WORKER_DEFAULT_KEY]: workerDefault } : {}),
+    ...(spend ? { [SPEND_LIMITS_KEY]: spend } : {}),
   };
 }
 
@@ -350,6 +371,8 @@ function soulMono(s: SetupSoul, teams: PortableTeam[]): PortableMono {
   if (s.memory) files["MEMORY.md"] = s.memory;
   for (const [name, text] of Object.entries(s.topics ?? {})) files[`memory/${name}.md`] = text;
   const workerDefault = readWorkerDefault(s.workerDefault);
+  const offeredSkills = cardNames(s.offeredSkills);
+  const commands = cardNames(s.commands);
   return {
     id: s.monoId,
     name: s.name,
@@ -367,6 +390,9 @@ function soulMono(s: SetupSoul, teams: PortableTeam[]): PortableMono {
     files,
     waiting: true,
     ...(workerDefault ? { workerDefault } : {}),
+    ...(typeof s.engineFast === "boolean" ? { engineFast: s.engineFast } : {}),
+    ...(offeredSkills ? { offeredSkills } : {}),
+    ...(commands ? { commands } : {}),
   };
 }
 
@@ -384,6 +410,8 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
     const rules = files["SOUL.md"] ?? "";
     const skills = skillsOf(rules);
     const workerDefault = readWorkerDefault(m.workerDefault);
+    const offeredSkills = cardNames(m.skills);
+    const commands = cardNames(m.commands);
     return {
       id: m.id,
       name,
@@ -402,6 +430,11 @@ export function buildSetupDoc(input: BuildInput): SetupDoc {
       ...(m.showStartedSessionsInSidebar !== undefined ? { showStartedSessionsInSidebar: m.showStartedSessionsInSidebar } : {}),
       ...(m.useSidebarFolders ? { useSidebarFolders: true } : {}),
       ...(workerDefault ? { workerDefault } : {}),
+      ...(typeof m.engineFast === "boolean" ? { engineFast: m.engineFast } : {}),
+      ...(offeredSkills ? { offeredSkills } : {}),
+      ...(commands ? { commands } : {}),
+      ...(m.chats?.length ? { chats: [...m.chats] } : {}),
+      ...(m.projectSessions && Object.keys(m.projectSessions).length ? { projectSessions: { ...m.projectSessions } } : {}),
     };
   });
   const seatedIds = new Set(seated.map((m) => m.id));
@@ -540,6 +573,12 @@ function setupFilesUnscrubbed(doc: SetupDoc): Record<string, string> {
 const text = (v: unknown, fallback = ""): string => (typeof v === "string" ? v : fallback);
 const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === "string") : []);
 const record = (v: unknown): Record<string, unknown> => (v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+const CHAT_ID = /^[A-Za-z0-9_-]{1,100}$/;
+/** G1: a file's chat ids for a Mono: real ids only, each once. */
+const chatIds = (v: unknown): string[] => [...new Set(strings(v).filter((id) => CHAT_ID.test(id)))];
+/** G1: a file's project chats for a Mono: a project id and a real chat id. */
+const projectChats = (v: unknown): Record<string, string> =>
+  Object.fromEntries(Object.entries(record(v)).filter((e): e is [string, string] => !!e[0].trim() && typeof e[1] === "string" && CHAT_ID.test(e[1])));
 
 function parseJson(files: Record<string, string>, path: string): unknown {
   const raw = files[path];
@@ -591,6 +630,10 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
     : [];
   const team = m.team === "lead" || m.team === "leadership" ? m.team : "member";
   const workerDefault = readWorkerDefault(m.workerDefault);
+  const offeredSkills = cardNames(m.offeredSkills);
+  const commands = cardNames(m.commands);
+  const chats = chatIds(m.chats);
+  const projectSessions = projectChats(m.projectSessions);
   return {
     id: m.id,
     name,
@@ -610,6 +653,11 @@ function readMono(v: unknown, files: Record<string, string>, skills: unknown): P
     ...(typeof m.showStartedSessionsInSidebar === "boolean" ? { showStartedSessionsInSidebar: m.showStartedSessionsInSidebar } : {}),
     ...(m.useSidebarFolders === true ? { useSidebarFolders: true } : {}),
     ...(workerDefault ? { workerDefault } : {}),
+    ...(typeof m.engineFast === "boolean" ? { engineFast: m.engineFast } : {}),
+    ...(offeredSkills ? { offeredSkills } : {}),
+    ...(commands ? { commands } : {}),
+    ...(chats.length ? { chats } : {}),
+    ...(Object.keys(projectSessions).length ? { projectSessions } : {}),
   };
 }
 

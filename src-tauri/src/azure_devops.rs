@@ -1,7 +1,6 @@
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -1235,7 +1234,7 @@ fn git_unified_hunks(old: Option<&[u8]>, new: Option<&[u8]>) -> Option<(i64, i64
     // replace the unified output this parser expects.
     let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
     let null_file: &Path = Path::new(null_device);
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git();
     crate::hide_window_console(&mut cmd);
     let output = cmd
         .args([
@@ -1828,7 +1827,7 @@ fn encode_segment(value: &str) -> String {
 }
 
 fn azure_devops_repo_for(root: &Path, organization_url: &str) -> Result<String, String> {
-    let mut cmd = Command::new("git");
+    let mut cmd = crate::git_cmd::git();
     crate::hide_window_console(&mut cmd);
     let output = cmd
         .args(["config", "--get-regexp", r"^remote\..*\.url$"])

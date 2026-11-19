@@ -1,5 +1,6 @@
 import { HARNESS_TITLE, type HarnessId } from "../../sessions/model/session";
 import { pathKey, prettyCwd, projectName } from "../../../shared/lib/paths";
+import { estimateTurn, type TurnTokens } from "./rates";
 
 /**
  * WP-108: what a chat's turns spent, per day, project, engine and model.
@@ -55,6 +56,15 @@ export type UsageTotals = {
   costTurns: number;
   /** Turns whose counts are known but whose engine reported no price. */
   unpricedTurns: number;
+  /**
+   * WP-253: turns whose engine reported no price, at API list prices. Fills the gap beside `costUsd`; it never
+   * re-prices a turn that has a reported cost. An estimate, never a bill; spend limits never read it.
+   */
+  estimatedUsd: number;
+  /** Turns with no reported price whose model has a listed one, so they are in `estimatedUsd`. */
+  estimatedTurns: number;
+  /** WP-253: what cache reads saved against full input price, at list prices. */
+  cacheSavedUsd: number;
 };
 
 export type UsageDay = {
@@ -95,6 +105,9 @@ export function emptyTotals(): UsageTotals {
     costUsd: 0,
     costTurns: 0,
     unpricedTurns: 0,
+    estimatedUsd: 0,
+    estimatedTurns: 0,
+    cacheSavedUsd: 0,
   };
 }
 
@@ -194,7 +207,7 @@ function clampDays(value: number | undefined): number {
   return Math.min(Math.floor(value), 366);
 }
 
-function turnTotals(metrics: UsageTurnMetrics): UsageTotals {
+function turnTotals(metrics: UsageTurnMetrics, model?: string): UsageTotals {
   const inputTokens = usable(metrics.inputTokens);
   const outputTokens = usable(metrics.outputTokens);
   const cacheReadTokens = usable(metrics.cacheReadTokens);
@@ -214,7 +227,25 @@ function turnTotals(metrics: UsageTurnMetrics): UsageTotals {
     costUsd: costUsd ?? 0,
     costTurns: costUsd != null ? 1 : 0,
     unpricedTurns: costUsd == null && hasCounts ? 1 : 0,
+    ...estimateTotals(model, hasCounts, costUsd != null, {
+      inputTokens: inputTokens ?? 0,
+      outputTokens: outputTokens ?? 0,
+      cacheReadTokens: cacheReadTokens ?? 0,
+      cacheWriteTokens: cacheWriteTokens ?? 0,
+    }),
   };
+}
+
+function estimateTotals(
+  model: string | undefined,
+  hasCounts: boolean,
+  priced: boolean,
+  tokens: TurnTokens,
+): Pick<UsageTotals, "estimatedUsd" | "estimatedTurns" | "cacheSavedUsd"> {
+  const estimate = hasCounts ? estimateTurn(model, tokens) : undefined;
+  if (!estimate) return { estimatedUsd: 0, estimatedTurns: 0, cacheSavedUsd: 0 };
+  if (priced) return { estimatedUsd: 0, estimatedTurns: 0, cacheSavedUsd: estimate.cacheSavedUsd };
+  return { estimatedUsd: estimate.estimatedUsd, estimatedTurns: 1, cacheSavedUsd: estimate.cacheSavedUsd };
 }
 
 function engineLabel(id: string): string {
@@ -296,6 +327,9 @@ function addTotals(target: UsageTotals, turn: UsageTotals): void {
   target.costUsd = add(target.costUsd, turn.costUsd);
   target.costTurns = add(target.costTurns, turn.costTurns);
   target.unpricedTurns = add(target.unpricedTurns, turn.unpricedTurns);
+  target.estimatedUsd = add(target.estimatedUsd, turn.estimatedUsd);
+  target.estimatedTurns = add(target.estimatedTurns, turn.estimatedTurns);
+  target.cacheSavedUsd = add(target.cacheSavedUsd, turn.cacheSavedUsd);
 }
 
 /** A group's label, kept beside its totals so the result carries both. */
@@ -402,7 +436,7 @@ export function buildUsageHistory(
       const model =
         (typeof turnModel?.name === "string" && turnModel.name.trim()) ||
         sessionModel;
-      const totals = turnTotals(block.turnMetrics);
+      const totals = turnTotals(block.turnMetrics, model);
       if (totals.unpricedTurns === 0 && totals.costTurns === 0 && totals.turns === 0) {
         // No counts and no price: nothing was reported, so there is nothing to count.
         continue;

@@ -66,6 +66,13 @@ export function useHubSelection(): HubSelection {
  * One of the app's own views (Autopilot, New project, Restore) opens over the project Ash was last in: it is not a
  * project's item, but leaving it comes back to that project, and quitting from it opens the app there again.
  */
+/** Dropwave: a project's own home (HubSurface shows HomeView for that project). The rail opens it. */
+export const PROJECT_HOME_ITEM = "project-home";
+
+export function showProjectHome(projectId: string): void {
+  setHubSelection({ project: projectId, item: PROJECT_HOME_ITEM });
+}
+
 export function showAppItem(item: string): void {
   setHubSelection({ project: read().project, item });
 }
@@ -148,7 +155,8 @@ export function selectionLeavingOwnTeam(sel: HubSelection, monoId: string): HubS
 /** True while one of the app's own views (hubNav.showAppItem) is open: it belongs to no project, so no project tile is lit. */
 export function appItemInView(sel: HubSelection): boolean {
   // WP-73: Home is the app's own view. The project tile stays unlit, and the no-project redirect does not take it.
-  return sel.item === "home" || sel.item === "autopilot" || sel.item === "new-project" || sel.item === "restore" || !!monoTeamInView(sel);
+  // WP-219: Agents is an app view, so the no-project redirect does not take it.
+  return sel.item === "home" || sel.item === "agents" || sel.item === "autopilot" || sel.item === "new-project" || sel.item === "restore" || !!monoTeamInView(sel);
 }
 
 /** True when a hub view (not Monocode's own workspace) fills the main area: a coding team or a Mono's team is a workspace. */
@@ -207,16 +215,36 @@ export function openMonoTeam(monoId: string, target?: MonoTeamTarget): void {
  * chat shows at once, in the Mono's team when it has one. Mac round 2 (21 Oct): through openMonoTeam alone the chat
  * opened behind Settings and only showed after Back. Without the app's opener it falls back to openMonoTeam.
  */
-let monoChatOpener: ((monoId: string) => void) | undefined;
+/** Dropwave: `project` opens the Mono's own chat for that project (the Chief of Staff's, geared to it). */
+/** `main`: its own chat (the one text was typed into), not the chat Ash was last on with it. */
+export type MonoChatTarget = { project?: string; main?: boolean };
+let monoChatOpener: ((monoId: string, target?: MonoChatTarget) => void) | undefined;
 
-export function setMonoChatOpener(open: (monoId: string) => void): () => void {
+export function setMonoChatOpener(open: (monoId: string, target?: MonoChatTarget) => void): () => void {
   monoChatOpener = open;
   return () => {
     if (monoChatOpener === open) monoChatOpener = undefined;
   };
 }
 
-export function openMonoChat(monoId: string): void {
-  if (monoChatOpener) monoChatOpener(monoId);
+/** Ash (12 Nov): a first mate's settings (its model, name, permissions) from a right-click or from Settings. */
+let monoSettingsOpener: ((monoId: string) => void) | undefined;
+
+export function setMonoSettingsOpener(open: (monoId: string) => void): () => void {
+  monoSettingsOpener = open;
+  return () => {
+    if (monoSettingsOpener === open) monoSettingsOpener = undefined;
+  };
+}
+
+/** Opens the first mate's chat with its settings over it. False when the app can't (no window ready). */
+export function openMonoSettings(monoId: string): boolean {
+  if (!monoSettingsOpener || !monoId.trim()) return false;
+  monoSettingsOpener(monoId);
+  return true;
+}
+
+export function openMonoChat(monoId: string, target?: MonoChatTarget): void {
+  if (monoChatOpener) monoChatOpener(monoId, target);
   else openMonoTeam(monoId, { owner: true });
 }

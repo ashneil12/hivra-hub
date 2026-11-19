@@ -97,7 +97,11 @@ export function useSessionChoice(
   const pickAccess = (mode: RuntimeMode) => {
     set(scope, { access: mode });
     if (sessionId)
-      configureSession(sessionId, { runtimeMode: mode }).catch(failed);
+      configureSession(sessionId, { runtimeMode: mode }).catch((reason) => {
+        // The desktop kept the chat's own mode (WP-175): drop the pick, so the phone shows that mode again.
+        set(scope, { access: null });
+        failed(reason);
+      });
   };
   const pickAccount = (pick: ModelPick, name: string, accountId: string) => {
     // Account-owned provider threads stay with their original chat. Prepare a

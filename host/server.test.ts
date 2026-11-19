@@ -745,4 +745,14 @@ describe("remote host API", () => {
       (await s.call("git.index", { projectId: project.id })).value.result.files,
     ).toEqual([]);
   });
+
+  it("answers a chat move's abort step, so a failed move can be undone on this host", async () => {
+    const s = await setup();
+    // A move that fails after the host was asked (a failed receive or activation) asks the host to refuse its move id.
+    // Without a dispatch for teleport.abort the host answers "Unsupported host method" and the chat stays frozen forever.
+    const response = await s.call("teleport.abort", { chatId: "chat-abort-1", moveId: "move-abort-1" });
+    expect(response.status).toBe(200);
+    expect(response.value.error).toBeUndefined();
+    expect(response.value.result).toBe("aborted");
+  });
 });

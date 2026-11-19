@@ -80,11 +80,6 @@ export function needsYouFor(rows: readonly NeedsYouRow[], lead?: string): NeedsY
   return lead ? rows.filter((r) => r.lead === lead) : [...rows];
 }
 
-/** The rail's "N needs you" for one Lead: its rows in that one list. */
-export function needsYouCountFor(rows: readonly NeedsYouRow[], lead: string): number {
-  return needsYouFor(rows, lead).length;
-}
-
 /** The worker behind a row, when there is one (a lone worker, or the red worker a job row carries). */
 export function needsYouWorker(r: NeedsYouRow): StuckWorker | undefined {
   if (r.worker) return r.worker;

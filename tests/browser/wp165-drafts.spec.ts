@@ -10,9 +10,8 @@ test("the morning list shows drafts and the scout stays off", async ({ page }) =
   expect(errors, errors.join("\n")).toEqual([]);
 
   const quiet = page.locator("[data-quiet-home]");
-  await expect(quiet.getByText("All quiet.")).toBeVisible();
-  await expect(quiet.locator("[data-home] > div > *").first()).toHaveAttribute("data-home-start", "");
-  expect(await quiet.innerText()).not.toMatch(/\d/);
+  await expect(quiet.locator("[data-home-quiet]")).toBeVisible();
+  await expect(quiet.locator("[data-overnight-drafts]")).toHaveCount(0);
 
   const drafts = page.locator("[data-draft-home]");
   await expect(drafts.getByRole("heading", { name: "Overnight drafts" })).toBeVisible();
@@ -20,9 +19,9 @@ test("the morning list shows drafts and the scout stays off", async ({ page }) =
   await expect(drafts.getByText("Waiting for you.")).toBeVisible();
   await expect(drafts.getByText("Auth for the desk")).toBeVisible();
   await expect(drafts.locator("[data-overnight-draft='parked']")).toContainText("Parked for a security check.");
-  await expect(drafts.getByText("All quiet.")).toHaveCount(0);
-  await expect(drafts.locator("[data-home] > div > *").first()).toHaveAttribute("data-home-start", "");
-  await expect(drafts.getByRole("button", { name: /start|merge|spend|launch/i })).toHaveCount(0);
+  await expect(drafts.locator("[data-home-quiet]")).toHaveCount(0);
+  await expect(drafts.locator("[data-home-start] + [data-overnight-drafts]")).toBeVisible();
+  await expect(drafts.locator("[data-overnight-drafts]").getByRole("button")).toHaveCount(0);
   await drafts.locator("[data-overnight-draft='waiting']").getByText("Read the brief").click();
   await expect(drafts.getByText("Source: firstmate (MIT).")).toBeVisible();
 

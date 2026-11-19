@@ -38,13 +38,16 @@ const click = async (el: Element | null) => {
   });
 };
 
+/** Key deletes only: the list also reads each key's stored address on mount, which is not a removal. */
+const keyDeletes = () => invoke.mock.calls.filter(([cmd]) => cmd === "plugin:hub|model_key_delete");
+
 describe("removing a custom model", () => {
   it("asks first, then deletes the Keychain key through the existing command and drops the model", async () => {
     seed([grok, llama]);
     act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
     await click(host.querySelector('[data-remove-model="xai-1"]'));
     expect(host.querySelector('[data-remove-confirm="xai-1"]')?.textContent).toBe("Remove Grok? Its saved key is deleted too.CancelRemove");
-    expect(invoke).not.toHaveBeenCalled();
+    expect(keyDeletes()).toEqual([]);
     expect(listCustomModels()).toHaveLength(2);
 
     await click(host.querySelector("[data-remove-yes]"));
@@ -58,7 +61,7 @@ describe("removing a custom model", () => {
     act(() => root.render(createElement(OtherModelsSection, { query: "", currentModel: "", onPick: () => {}, onAdd: () => {} })));
     await click(host.querySelector('[data-remove-model="xai-1"]'));
     await click(host.querySelector("[data-remove-cancel]"));
-    expect(invoke).not.toHaveBeenCalled();
+    expect(keyDeletes()).toEqual([]);
     expect(listCustomModels()).toHaveLength(1);
   });
 
@@ -87,7 +90,7 @@ describe("removing a custom model", () => {
   it("an Ollama model has no key, so nothing is asked of the Keychain", async () => {
     seed([llama]);
     await removeCustomModel("ollama-1");
-    expect(invoke).not.toHaveBeenCalled();
+    expect(keyDeletes()).toEqual([]);
     expect(listCustomModels()).toEqual([]);
   });
 });

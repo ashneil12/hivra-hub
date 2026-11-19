@@ -117,3 +117,52 @@ describe("the last turn's trace", () => {
     expect(lastRecallFor("newest")).toBeDefined();
   });
 });
+
+describe("one decision across Monos", () => {
+  const MESSAGE = "What do you remember about writing small commits on a branch?";
+  const B = "b-lead";
+  const store = doc([
+    item("Writing small commits on every branch"),
+    item("Likes small commits"),
+    item("Writing notes for a branch"),
+    item("Remember to write small commits", { mateId: B }),
+    item("Small commits keep every branch reviewable", { mateId: B }),
+    item("Branch names follow the ticket", { mateId: B }),
+  ]);
+  const decision = () => recallDecision({ doc: store, mateId: MATE, mateIds: [MATE, B], message: MESSAGE, now: NOW, mode: "automatic" });
+
+  it("keeps a trace for each Mono it read, counting only that Mono's memories", () => {
+    const turn = decision();
+    recordRecall(turn, NOW);
+    const own = lastRecallFor(MATE)!;
+    const other = lastRecallFor(B)!;
+    const mine = turn.candidates.filter((candidate) => candidate.mateId === MATE);
+    const theirs = turn.candidates.filter((candidate) => candidate.mateId === B);
+    expect(own.picked).toBe(mine.filter((candidate) => candidate.picked).length);
+    expect(other.picked).toBe(theirs.filter((candidate) => candidate.picked).length);
+    expect(own.picked + other.picked).toBe(turn.picked.length);
+    expect(own.skipped).toBe(mine.length - own.picked);
+    expect(other.skipped).toBe(theirs.length - other.picked);
+  });
+
+  it("says the Mono that lost its line to another Mono was held back, not picked", () => {
+    recordRecall(decision(), NOW);
+    const held = [lastRecallFor(MATE)!, lastRecallFor(B)!].flatMap((trace) => trace.reasons.map((reason) => reason.label));
+    expect(held).toContain("over the three for this turn");
+  });
+
+  it("makes the Mono the turn belongs to the latest", () => {
+    recordRecall(decision(), NOW);
+    expect(latestRecall()!.mateId).toBe(MATE);
+  });
+
+  it("gives every Mono the same words when the whole turn was stopped", () => {
+    recordRecall(
+      recallDecision({ doc: store, mateId: MATE, mateIds: [MATE, B], message: "hi there", now: NOW, mode: "automatic" }),
+      NOW,
+    );
+    expect(recallSummary(lastRecallFor(B)!)).toBe("Nothing was recalled: the message was a greeting.");
+    expect(recallSummary(lastRecallFor(MATE)!)).toBe("Nothing was recalled: the message was a greeting.");
+  });
+});
+

@@ -7,6 +7,7 @@ import type { HostProvider } from "./providers";
 import { HostEngine, parseCommand } from "./engine";
 import { HostStore } from "./store";
 import { readAttachmentChunk, writeAttachmentChunk } from "./attachments";
+import { hostChatSessions } from "./teleport/sessions";
 
 const cleanups: Array<() => Promise<void> | void> = [];
 afterEach(async () => {
@@ -893,5 +894,44 @@ describe("headless session ownership", () => {
         reply: { kind: "answered", answers: { a: [42] } },
       }),
     ).toThrow();
+  });
+});
+
+describe("a chat moved to this host", () => {
+  it("sends the saved messages with its first turn, then resumes the provider session", async () => {
+    const { engine, store, turns, project } = setup("claude");
+    // The copy of a chat moved here from a Mac (WP-177): saved messages, no provider session yet.
+    store.addProject(project.cwd, "Moved from a Mac");
+    hostChatSessions(store).open(
+      {
+        chatId: "moved-chat-1",
+        provider: "claude",
+        providerSessionId: "",
+        model: "claude:test",
+        effort: "high",
+        title: "Moved chat",
+        transcript: JSON.stringify([
+          { id: "u1", role: "user", text: "Remember the codeword teal." },
+          { id: "a1", role: "assistant", text: "Noted: the codeword is teal." },
+        ]),
+        queued: [],
+      },
+      "move-1",
+    );
+    engine.command({ type: "send", commandId: "moved-turn-1", sessionId: "moved-chat-1", text: "What codeword did I ask you to remember?" });
+    await vi.waitFor(() => expect(turns).toHaveLength(1));
+    // The CLI gets the chat so far, then the turn's own text: it is not told it has no prior context.
+    expect(turns[0].input.text).toContain("Remember the codeword teal.");
+    expect(turns[0].input.text).toContain("Noted: the codeword is teal.");
+    expect(turns[0].input.text).toContain("What codeword did I ask you to remember?");
+    turns[0].input.onEvent({ type: "session.providerBound", providerSessionId: "prov-moved-1" });
+    turns[0].finish();
+    await vi.waitFor(() => expect(store.session("moved-chat-1").status).toBe("idle"));
+    expect(store.session("moved-chat-1").session.providerSessionId).toBe("prov-moved-1");
+
+    engine.command({ type: "send", commandId: "moved-turn-2", sessionId: "moved-chat-1", text: "And the next step?" });
+    await vi.waitFor(() => expect(turns).toHaveLength(2));
+    // Later turns resume the provider's own session: the brief is not sent again.
+    expect(turns[1].input.text).toBe("And the next step?");
   });
 });

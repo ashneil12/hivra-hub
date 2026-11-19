@@ -10,13 +10,13 @@ export type BridgeReply = { id: string; ok: true; result: unknown } | { id: stri
 /** What runs an approved call. The backend side lives behind the hub transport; unwired ones say so. */
 export type BridgeHandlers = Partial<Record<string, (args: Record<string, unknown>) => Promise<unknown>>>;
 
-export const WALL_REFUSAL = "Pages can't do that: changing Monos and reaching the app directly are never allowed.";
-export const KEYS_REFUSAL = "Pages can't read your keys: a page can't reach the network, so a key would do nothing inside one.";
+export const WALL_REFUSAL = "Hubs can't do that: changing Monos and reaching the app directly are never allowed.";
+export const KEYS_REFUSAL = "Hubs can't read your keys: a hub can't reach the network, so a key would do nothing inside one.";
 
 /** A page asked for this but Ash hasn't tapped Allow yet (a ready-made page, or one from a setup file). */
-export const WAITING_ALLOW = "This page is waiting for you to allow it. Tap Allow above the page to let it show this.";
+export const WAITING_ALLOW = "This hub is waiting for you to allow it. Tap Allow above the hub to let it show this.";
 /** The page never asked for this. No permission ids in the words (r65, PM's r63 run). */
-export const NOT_ASKED = "This page didn't ask to use that, so it can't.";
+export const NOT_ASKED = "This hub didn't ask to use that, so it can't.";
 
 /**
  * Why this call may not run with what is approved, in plain words; undefined when it may. `asks` is what the page's
@@ -31,11 +31,11 @@ export function refusal(call: Pick<BridgeCall, "call">, approved: readonly Capab
 
 export async function handleBridgeCall(call: BridgeCall, approved: readonly Capability[], handlers: BridgeHandlers): Promise<BridgeReply> {
   const id = typeof call?.id === "string" ? call.id : "";
-  if (!call || typeof call.call !== "string") return { id, ok: false, error: "That isn't a page call." };
+  if (!call || typeof call.call !== "string") return { id, ok: false, error: "That isn't a hub call." };
   const no = refusal(call, approved);
   if (no) return { id, ok: false, error: no };
   const run = handlers[call.call];
-  if (!run) return { id, ok: false, error: "Not connected yet: the hub can't do this for pages yet." };
+  if (!run) return { id, ok: false, error: "Not connected yet: the app can't do this for hubs yet." };
   try {
     return { id, ok: true, result: await run(call.args ?? {}) };
   } catch (e) {

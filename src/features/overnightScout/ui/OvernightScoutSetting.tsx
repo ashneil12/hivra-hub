@@ -1,11 +1,8 @@
 // WP-165: the switch in Settings. Off is the state before anything is saved.
 
 import { useEffect, useState } from "react";
-import { findMono, listMonos } from "../../monos/model/mono";
-import { loadHabits, updateHabits } from "../../monos/model/monoHabits";
-import { readsEveryProject } from "../../chief/model/scope";
+import { checkHabitsNow } from "../../monos/model/monoHabits";
 import { tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
-import { syncScoutHabit } from "../model/habit";
 import { parseScoutSettings, SCOUT_DEFAULTS, type ScoutSettings } from "../model/settings";
 import { changeScoutDoc, readScoutSettings } from "../model/store";
 
@@ -22,20 +19,6 @@ async function saveSettings(next: ScoutSettings): Promise<ScoutSettings | null> 
     return saved.settings;
   } catch {
     return null;
-  }
-}
-
-async function syncHabits(settings: ScoutSettings): Promise<void> {
-  const now = Date.now();
-  for (const mono of listMonos()) {
-    if (!readsEveryProject(findMono(mono.id) ?? mono)) continue;
-    await syncScoutHabit(
-      mono.id,
-      loadHabits,
-      async (id, change) => updateHabits(id, change),
-      async () => settings,
-      now,
-    );
   }
 }
 
@@ -70,7 +53,7 @@ export function OvernightScoutSetting() {
     setSettings(saved);
     setTime(saved.time);
     setMax(String(saved.maxDrafts));
-    await syncHabits(saved).catch(() => undefined);
+    checkHabitsNow();
   }
 
   return (

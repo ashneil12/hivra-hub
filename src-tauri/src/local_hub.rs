@@ -150,6 +150,10 @@ pub fn local_hub_write<R: Runtime>(
     let rev = write_if(&*store.lock_conn()?, &key, &value, expect_rev)?;
     if let Some(rev) = rev {
         let _ = app.emit(CHANGED_EVENT, json!({"key": key, "rev": rev}));
+        // Team workspaces (off by default): a change to the projects goes to the team's server when the switch is on.
+        if key == "projects" {
+            crate::team_workspace::sync_after_change(&app);
+        }
     }
     Ok(rev)
 }
@@ -175,11 +179,61 @@ pub(crate) fn make_project_folder(projects: &Path, id: &str) -> Result<PathBuf, 
     std::fs::write(folder.join("README.md"), format!("# {id}\n"))
         .map_err(|e| format!("Couldn't write its README: {e}"))?;
     // Git is optional: without it the folder is still a project, just not a repo yet.
-    let _ = std::process::Command::new("git")
+    let _ = crate::git_cmd::git()
         .args(["init", "-q"])
         .current_dir(&folder)
         .output();
     Ok(folder)
+}
+
+/// Absolute folders from the `projects` document. The agent sandbox locks each one's `.git`, not only the chat's
+/// folder. A missing document is no folders. A document that is not `{projects: [...]}` or a bare array is an error,
+/// so a start does not go on with only the chat folder locked. Each item is untrusted: a null, empty, relative or
+/// `..` folder is skipped, and a repeated folder is kept once.
+pub(crate) fn project_folders(conn: &Connection) -> Result<Vec<PathBuf>, String> {
+    let doc = read_doc(conn, "projects")?;
+    let Some(value) = doc.value else {
+        return Ok(Vec::new());
+    };
+    let list = if let Some(projects) = value.get("projects") {
+        projects.as_array()
+    } else {
+        value.as_array()
+    };
+    let Some(list) = list else {
+        return Err("the project list is not a list".into());
+    };
+    let mut out = Vec::new();
+    for item in list {
+        let Some(text) = item.get("folder").and_then(Value::as_str) else {
+            continue;
+        };
+        let Some(path) = absolute_project_folder(text) else {
+            continue;
+        };
+        if !out.iter().any(|have| have == &path) {
+            out.push(path);
+        }
+    }
+    Ok(out)
+}
+
+/// An absolute folder with no `..` and no null. Anything else is skipped, not trusted.
+fn absolute_project_folder(text: &str) -> Option<PathBuf> {
+    if text.is_empty() || text.contains('\0') {
+        return None;
+    }
+    let path = Path::new(text);
+    if !path.is_absolute() {
+        return None;
+    }
+    if path
+        .components()
+        .any(|part| matches!(part, std::path::Component::ParentDir))
+    {
+        return None;
+    }
+    Some(path.to_path_buf())
 }
 
 /// `local_hub_make_folder(id)`: `~/Projects/<id>` for a new project (see [`make_project_folder`]).
@@ -300,6 +354,36 @@ mod tests {
             Some(1)
         );
         assert_eq!(read_doc(&conn, "projects").unwrap().value, Some(both));
+    }
+
+    #[test]
+    fn project_folders_keep_absolute_paths_and_skip_the_rest() {
+        let store = SessionStore::open_in_memory().unwrap();
+        let conn = store.lock_conn().unwrap();
+        assert!(project_folders(&conn).unwrap().is_empty());
+        let a = std::env::temp_dir().join("proj-a");
+        let b = std::env::temp_dir().join("proj-b");
+        let parent = std::env::temp_dir().join("..").join("etc");
+        write(
+            &conn,
+            "projects",
+            &json!({"projects": [
+                {"folder": a.to_string_lossy()},
+                {"folder": a.to_string_lossy()},
+                {"folder": null},
+                {"folder": "relative"},
+                {"folder": parent.to_string_lossy()},
+                {"folder": ""},
+                {"id": "no-folder"},
+                {"folder": b.to_string_lossy()}
+            ]}),
+        )
+        .unwrap();
+        assert_eq!(project_folders(&conn).unwrap(), vec![a.clone(), b]);
+        write(&conn, "projects", &json!([{"folder": a.to_string_lossy()}])).unwrap();
+        assert_eq!(project_folders(&conn).unwrap(), vec![a]);
+        write(&conn, "projects", &json!({"projects": "nope"})).unwrap();
+        assert!(project_folders(&conn).is_err());
     }
 
     #[test]

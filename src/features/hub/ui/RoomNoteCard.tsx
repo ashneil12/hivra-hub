@@ -6,6 +6,7 @@ import type { Block } from "../../sessions/model/session";
 import { ChevronDown, ChevronRight, Loader, MessageMultiple } from "../../../shared/ui/icons";
 import { isSilent } from "../model/roomTurns";
 import { appNoteTitle } from "../model/appNoteTitle";
+import { AgentMarkdown } from "../../sessions/ui/AgentMarkdown";
 
 /** The chat's own answer: the last thing it said in the turn. */
 function finalReply(turn: readonly Block[]): string {
@@ -37,6 +38,10 @@ export function RoomNoteCard({
   const reply = finalReply(turn);
   const said = reply && !isSilent(reply) ? reply : "";
   const room = note?.kind === "room";
+  // Another Mono's answer to a message this chat sent for Ash (useRoomRunner relayReplies): what this chat makes of it
+  // is for Ash, so it shows as a normal message under the line, not inside it (Ash 12 Nov 20:42).
+  const forOwner = !room && !!turn[0].appRequestId?.endsWith("-reply");
+  const shownToOwner = forOwner && !live && !!said;
   const answeredByTool = usedTool(turn, room ? /room_post|rooms\.post/ : /mono_message|monos\.message/);
   const state = live
     ? room
@@ -45,7 +50,9 @@ export function RoomNoteCard({
     : said || answeredByTool
       ? room
         ? note?.line ?? "answered in the room"
-        : "replied"
+        : shownToOwner
+          ? "answered"
+          : "replied"
       : room
         ? "nothing new to add"
         : "no reply needed";
@@ -82,7 +89,7 @@ export function RoomNoteCard({
               {note.line}
             </p>
           ) : null}
-          {said ? (
+          {shownToOwner ? null : said ? (
             <p className="whitespace-pre-wrap">
               <span className="text-content/45">{agentName ?? "This chat"} {room ? "said in the room" : "answered"}: </span>
               {said}
@@ -90,6 +97,11 @@ export function RoomNoteCard({
           ) : (
             <p className="text-content/45">{answeredByTool ? (room ? "Its answer is in the room." : "It answered privately.") : room ? "It had nothing new for the room." : "It had nothing to say back."}</p>
           )}
+        </div>
+      ) : null}
+      {shownToOwner ? (
+        <div data-chat-message-role="assistant" className="min-w-0 pt-2 pb-1 text-content">
+          <AgentMarkdown text={said} />
         </div>
       ) : null}
     </div>

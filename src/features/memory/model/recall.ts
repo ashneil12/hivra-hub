@@ -21,6 +21,7 @@ export function recallFence(doc: MemoryDoc, picked: readonly string[], readingEn
 }
 
 function fenceFor(doc: MemoryDoc, picked: readonly string[], readingEngine?: string): string | undefined {
+  // WP-148: a memory this turn did not pick is not named. There is no index of the ones left out.
   if (!picked.length) return undefined;
   const byId = new Map(doc.items.map((item) => [item.id, item]));
   const lines = picked.flatMap((id) => {

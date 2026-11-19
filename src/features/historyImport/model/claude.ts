@@ -34,7 +34,7 @@ function textFromContent(content: unknown): string {
 
 type RawTurn = { role: "user" | "assistant"; content: string; timestamp: number };
 
-function turns(raw: RawTurn[], id: string): { messages: TranscriptMessage[]; secrets: number } {
+function turns(raw: RawTurn[], id: string, whole = false): { messages: TranscriptMessage[]; secrets: number } {
   const messages: TranscriptMessage[] = [];
   let secrets = 0;
   for (const turn of raw) {
@@ -45,7 +45,7 @@ function turns(raw: RawTurn[], id: string): { messages: TranscriptMessage[]; sec
       conversationId: id,
       messageId: `m${messages.length + 1}`,
       role: turn.role,
-      content: truncateContent(full),
+      content: whole ? full : truncateContent(full),
       timestamp: turn.timestamp,
       secret,
     });
@@ -55,7 +55,8 @@ function turns(raw: RawTurn[], id: string): { messages: TranscriptMessage[]; sec
 }
 
 /** One Claude Code jsonl file. Null when it has no JSON objects at all. */
-export function parseClaude(sourceKey: string, text: string): Conversation | null {
+/** `whole` keeps every message's full text (bringing a chat into the app); the learner's reads stay cut. */
+export function parseClaude(sourceKey: string, text: string, whole = false): Conversation | null {
   const { rows, skipped } = jsonLines(text);
   if (rows.length === 0) return null;
   let sessionId = sourceToken(sourceKey.replace(/\\/g, "/").split("/").pop() ?? "", "chat");
@@ -85,12 +86,13 @@ export function parseClaude(sourceKey: string, text: string): Conversation | nul
     if (typeof ev.cwd === "string" && ev.cwd) cwd = ev.cwd;
   }
   const id = sessionId;
-  const built = turns(raw, id);
+  const built = turns(raw, id, whole);
   return {
     id,
     sourceKey,
     source: "claude_code",
     project: projectName(cwd, sourceKey),
+    ...(cwd ? { cwd } : {}),
     title,
     messages: built.messages,
     skippedLines: skipped,

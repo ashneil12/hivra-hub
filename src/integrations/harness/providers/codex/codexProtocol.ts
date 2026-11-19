@@ -22,6 +22,7 @@ import {
 } from "../../core/preview";
 import { formatShellIntent, inferShellIntent } from "../../core/shellIntent";
 import { streamTextDelta } from "../../core/streamText";
+import { invoke } from "@tauri-apps/api/core";
 import type { HarnessEvent } from "../../core/types";
 
 /** Codex approval / sandbox settings for thread/start and turn/start. */
@@ -56,11 +57,99 @@ export function runtimeModeToCodexConfig(
   mode: RuntimeMode,
   controlsAgents?: boolean,
   firstMate?: boolean,
+  /** While Hivra's sandbox is on, Codex must not review its own approvals. */
+  hivraSandbox?: boolean,
 ): CodexThreadConfig {
   // Hivra WP-10: a first mate reads and never edits, whatever the chat's mode: Codex's read-only sandbox, with no
   // escalation, and network for the delegate tool's loopback (the same shape a plan turn runs in).
   if (firstMate) return withNetwork(FIRST_MATE_CONFIG, true);
-  return withNetwork(baseCodexConfig(mode), controlsAgents);
+  const config = baseCodexConfig(mode);
+  const reviewed =
+    hivraSandbox && (mode === "auto" || mode === "auto-accept-edits")
+      ? { ...config, approvalsReviewer: "user" as const }
+      : config;
+  return withNetwork(reviewed, controlsAgents);
+}
+
+/** Auto and auto-accept grant every permission, unless Hivra's sandbox is on. Then nothing is granted for them. */
+export function codexGrantsPermissionsAutomatically(
+  runtimeMode: RuntimeMode,
+  hivraSandbox: boolean,
+): boolean {
+  if (hivraSandbox) return false;
+  return runtimeMode === "auto" || runtimeMode === "auto-accept-edits";
+}
+
+/**
+ * Who may apply a file change without asking. While Hivra's sandbox is on, only an in-workspace change in
+ * auto-accept-edits is automatic. No paths, or a path outside the workspace, asks. `/work-secret` is not inside `/work`.
+ */
+export async function codexAutoFileChange(
+  runtimeMode: RuntimeMode,
+  hivraSandbox: boolean,
+  paths: string[] | undefined,
+  cwd: string,
+  grantRoot?: string | null,
+): Promise<"allow" | null> {
+  if (runtimeMode === "supervised" || runtimeMode === "auto") return null;
+  if (runtimeMode === "full-access") return "allow";
+  if (!hivraSandbox) return "allow";
+  // An empty or non-string grant root is not a path we can check, so it asks. A root outside the workspace
+  // would widen the write, so that asks too, even when every named path is inside. A path that cannot be
+  // resolved asks as well: never grant it.
+  if (grantRoot != null && (grantRoot === "" || !(await pathInside(grantRoot, cwd)))) return null;
+  if (!paths || paths.length === 0) return null;
+  const inside = await Promise.all(paths.map((file) => pathInside(file, cwd)));
+  if (inside.every(Boolean)) return "allow";
+  return null;
+}
+
+/** A resolved path is inside a resolved root. Drive letters and UNC shares compare without case. */
+export function resolvedPathInside(file: string, root: string): boolean {
+  const left = foldResolved(file);
+  const right = foldResolved(root);
+  if (!left || !right) return false;
+  if (left === right) return true;
+  const boundary = right.endsWith("/") ? right : `${right}/`;
+  return left.startsWith(boundary);
+}
+
+function foldResolved(path: string): string {
+  let slash = path.replace(/\\/g, "/");
+  if (slash.startsWith("//?/UNC/")) slash = `//${slash.slice("//?/UNC/".length)}`;
+  else if (slash.startsWith("//?/")) slash = slash.slice("//?/".length);
+  const drive = /^[A-Za-z]:/.test(slash);
+  const unc = slash.startsWith("//");
+  let trimmed = slash;
+  if (!(drive && slash.length <= 3) && slash !== "/" && slash !== "//") {
+    trimmed = slash.replace(/\/+$/, "");
+  }
+  if (drive && trimmed.length === 2) trimmed = `${trimmed}/`;
+  if (drive || unc) return trimmed.toLowerCase();
+  return trimmed;
+}
+
+/** `..` and `.` are applied where the file system is. A path that cannot be resolved is outside: the caller asks. */
+async function pathInside(file: string, root: string): Promise<boolean> {
+  if (!file || !root) return false;
+  try {
+    const resolvedFile = await resolveExisting(file, root);
+    const resolvedRoot = await resolveExisting(root, "/");
+    return resolvedPathInside(resolvedFile, resolvedRoot);
+  } catch {
+    return false;
+  }
+}
+
+async function resolveExisting(input: string, base: string): Promise<string> {
+  const resolved: unknown = await invoke("resolve_existing_path", {
+    path: input,
+    base,
+  });
+  if (typeof resolved !== "string" || resolved.length === 0) {
+    throw new Error("The path could not be resolved.");
+  }
+  return resolved;
 }
 
 const FIRST_MATE_CONFIG: CodexThreadConfig = {
@@ -69,6 +158,41 @@ const FIRST_MATE_CONFIG: CodexThreadConfig = {
   approvalsReviewer: "user",
   sandboxPolicy: { type: "readOnly" },
 };
+
+/**
+ * macOS refuses a sandbox inside a sandbox. A first mate and a supervised chat skip Hivra's outer wrap.
+ * While Hivra's sandbox is on, auto and auto-accept-edits keep the outer wrap. A chat with no mode, and a full
+ * access chat, keep it too. Callers that omit `hivraSandbox` keep the old skip, so a test that does not pass it
+ * still describes Codex's own sandbox.
+ */
+export function codexSkipsOuterSandbox(input: {
+  runtimeMode?: RuntimeMode;
+  firstMate?: boolean;
+  hivraSandbox?: boolean;
+}): boolean {
+  if (input.firstMate === true) return true;
+  if (input.runtimeMode === undefined) return false;
+  if (
+    input.hivraSandbox === true &&
+    (input.runtimeMode === "auto" || input.runtimeMode === "auto-accept-edits")
+  ) {
+    return false;
+  }
+  return input.runtimeMode !== "full-access";
+}
+
+/**
+ * Whether Hivra's sandbox is on. Outside the app it stays off, so a test does not ask. Inside the app, a missing
+ * status or a value that is not true or false is on: a failed read must not start the chat unsandboxed.
+ */
+export function hivraSandboxEnabled(
+  inApp: boolean,
+  status: { enabled?: unknown } | null | undefined,
+): boolean {
+  if (!inApp) return false;
+  if (status == null || typeof status.enabled !== "boolean") return true;
+  return status.enabled;
+}
 
 function baseCodexConfig(mode: RuntimeMode): CodexThreadConfig {
   switch (mode) {
@@ -115,11 +239,14 @@ export function buildThreadStartParams(input: {
   serviceTier?: string;
   /** WP-41: pstack and plain-English text. Empty adds nothing. Codex keeps what a thread started with. */
   developerInstructions?: string;
+  /** While Hivra's sandbox is on, auto modes ask Ash instead of reviewing themselves. */
+  hivraSandbox?: boolean;
 }): Record<string, unknown> {
   const config = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
     input.firstMate,
+    input.hivraSandbox,
   );
   return {
     cwd: input.cwd,
@@ -162,11 +289,14 @@ export function buildTurnStartParams(input: {
   effort?: string;
   serviceTier?: string;
   intent?: TurnIntent;
+  /** While Hivra's sandbox is on, auto modes ask Ash instead of reviewing themselves. */
+  hivraSandbox?: boolean;
 }): Record<string, unknown> {
   const runtimeConfig = runtimeModeToCodexConfig(
     input.runtimeMode,
     input.controlsAgents,
     input.firstMate,
+    input.hivraSandbox,
   );
   const config: CodexThreadConfig =
     input.intent === "plan"
@@ -872,12 +1002,15 @@ function mapToolItem(
         preview,
       };
     }
+    // WP-120: the app's own tools answer in a small JSON result, and the worker link reads its child chat from it.
+    const detail = server === "monocode" ? monocodeCallDetail(item) : undefined;
     return {
       type: "tool.updated",
       callId,
       title,
       kind: "other",
       status,
+      ...(detail ? { detail } : {}),
       preview,
     };
   }
@@ -1370,6 +1503,17 @@ function buildDiffPreview(
       ? { kind: "write", path, fileName: path.split(/[/\\]/).pop() }
       : undefined)
   );
+}
+
+/** What a finished monocode MCP call came back with: its error's words, or its result as JSON text. */
+function monocodeCallDetail(item: Record<string, unknown>): string | undefined {
+  const failure = stringField(asRecord(item.error), "message");
+  if (failure) return failure;
+  const result = asRecord(item.result);
+  if (!result) return undefined;
+  const structured = asRecord(result.structuredContent);
+  if (structured) return JSON.stringify(structured);
+  return Array.isArray(result.content) ? JSON.stringify({ content: result.content }) : undefined;
 }
 
 function mapItemStatus(status: string | undefined, completed: boolean): string {

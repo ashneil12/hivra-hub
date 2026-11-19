@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import { listen as tauriListen, type UnlistenFn } from "@tauri-apps/api/event";
+import { requireChatFolder } from "./chatFolder";
 import {
   runtimeProviderBinaryPath,
   type ConfigurableBinaryProvider,
@@ -368,12 +369,35 @@ export async function spawnChild(
   },
   /** The provider's default CLI, not a configured override. */
   defaultBinary?: boolean,
+  /** Codex only: its own sandbox is already on, and macOS refuses a sandbox inside a sandbox. */
+  skipOuterSandbox?: boolean,
+  /** Round 7: the folder the crew gate judges the process against, when it is not the folder the process runs in. */
+  crewFolder?: string,
+  /** Pi and Oh My Pi: the saved Other models, offered through the app's router (src-tauri/src/pi_routes.rs). Only
+   * the route goes; the key stays in the app. */
+  piRoutes?: readonly {
+    provider: string;
+    baseUrl: string;
+    modelId: string;
+    customModelId: string;
+  }[],
 ): Promise<void> {
+  // Every provider process starts here: none for a chat with no folder (the home folder is not a stand-in).
+  requireChatFolder(cwd);
   livePid.delete(sessionId);
   pendingExit.delete(sessionId);
   ownedChildren.add(sessionId);
   const binaryPath = binaryProvider && !defaultBinary
     ? runtimeProviderBinaryPath(binaryProvider)
+    : undefined;
+  // WP-141: an agent session's process starts only with the one-time ticket its crew gate issues, for this session, CLI and
+  // folder. The spawn refuses without it (harness_spawn). Ash's own chats have no `app-` id and need none.
+  const crewTicket = sessionId.startsWith("app-")
+    ? await invoke<string>("crew_spawn_ticket", {
+        sessionId,
+        cli: binaryProvider ?? "claude",
+        folder: crewFolder ?? cwd,
+      })
     : undefined;
   const pid = await invoke<number>("harness_spawn", {
     sessionId,
@@ -386,7 +410,24 @@ export async function spawnChild(
     ...(codexStore ? { codexStore } : {}),
     ...(devinAskEdits ? { devinAskEdits } : {}),
     ...(customRoute ? { customRoute } : {}),
+    ...(skipOuterSandbox ? { skipOuterSandbox: true } : {}),
+    ...(crewTicket ? { crewTicket } : {}),
+    ...(crewFolder ? { crewFolder } : {}),
+    ...(piRoutes && piRoutes.length > 0
+      ? {
+          piRoutes: piRoutes.map(({ provider, baseUrl, modelId, customModelId }) => ({
+            provider,
+            baseUrl,
+            modelId,
+            customModelId,
+          })),
+        }
+      : {}),
   });
+  notePid(sessionId, pid);
+}
+
+function notePid(sessionId: string, pid: unknown): void {
   if (typeof pid !== "number" || pid <= 0) return;
   livePid.set(sessionId, pid);
   const exits = pendingExit.get(sessionId);
@@ -395,6 +436,41 @@ export async function spawnChild(
   if (!exited) return;
   livePid.delete(sessionId);
   exitHandlers.get(sessionId)?.(exited.code);
+}
+
+/**
+ * WP-134: start a More agents entry. The webview names the entry only; Rust reads the saved list and runs that entry's
+ * own command and arguments through the same spawn path as the eleven CLIs (src-tauri/src/more_agents.rs).
+ */
+export async function spawnMoreAgentChild(
+  sessionId: string,
+  agentId: string,
+  cwd: string,
+): Promise<void> {
+  livePid.delete(sessionId);
+  pendingExit.delete(sessionId);
+  ownedChildren.add(sessionId);
+  let pid: unknown;
+  try {
+    // WP-141: an agent session's More agents start needs its crew ticket too, judged under the entry's own id.
+    const crewTicket = sessionId.startsWith("app-")
+      ? await invoke<string>("crew_spawn_ticket", { sessionId, cli: agentId, folder: cwd })
+      : undefined;
+    pid = await invoke<number>("harness_spawn", {
+      sessionId,
+      command: "",
+      args: [],
+      cwd,
+      moreAgent: agentId,
+      ...(crewTicket ? { crewTicket } : {}),
+    });
+  } catch (error) {
+    // A start that was refused holds no output: nothing a process printed after this is shown.
+    ownedChildren.delete(sessionId);
+    lineBuffer.delete(sessionId);
+    throw error;
+  }
+  notePid(sessionId, pid);
 }
 
 export function writeChild(sessionId: string, line: string): Promise<void> {

@@ -4,6 +4,8 @@ import { createRoot } from "react-dom/client";
 import { setHubDataSource, hubData } from "../../src/features/hub/model/hubData";
 import { openCodingTeam, setHubSelection, useHubSelection } from "../../src/features/hub/model/hubNav";
 import type { HubDataSource } from "../../src/features/hub/model/types";
+import { addStarterMono } from "../../src/features/hub/model/starterMonos";
+import { setMonoChatOpener } from "../../src/features/hub/model/hubNav";
 import { applyHomeOpen, setHomeOpener, type HomeOpenHands } from "../../src/features/home/model/opener";
 import { takeHomeDecision } from "../../src/features/home/model/pending";
 import { HomeView } from "../../src/features/home/ui/HomeView";
@@ -12,8 +14,12 @@ import { FirstMateInbox } from "../../src/features/crew/ui/FirstMateInbox";
 import type { FirstMateItem } from "../../src/features/crew/model/inbox";
 import "../../src/styles/index.css";
 import { installFakeTauri } from "./fakeTauri";
+import { importFromAshOsAgain } from "../../src/features/hub/model/localHub/ashOsImport";
+import { appHubTransport } from "../../src/features/hub/model/localHub/localTransport";
 
 const empty = new URLSearchParams(location.search).has("empty");
+// No project at all, as on a Mac whose projects are still in Ash OS: Home says why and offers the way back.
+const noProjects = new URLSearchParams(location.search).has("noprojects");
 const HUB_KEY = "wp73-home-hub";
 
 type Row = Record<string, unknown>;
@@ -63,15 +69,20 @@ const projects = [
 ];
 
 const inboxItems: FirstMateItem[] = [
-  { id: "ship", kind: "decision", title: "Should we ship?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "ship", updatedAt: 1 },
-  { id: "font", kind: "decision", title: "Which font?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "font", updatedAt: 2 },
+  { id: "ship", kind: "decision", title: "Should we ship?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "ship", since: 1, updatedAt: 1 },
+  { id: "font", kind: "decision", title: "Which font?", body: "", statusWord: null, chatId: null, workerIds: [], options: [], recommended: null, project: "C:\\work\\crew", key: "font", since: 2, updatedAt: 2 },
 ];
 
 const base = hubData();
 const src = Object.create(base) as HubDataSource;
-src.listProjects = () => projects;
+src.listProjects = () => (noProjects ? [] : projects);
 setHubDataSource(src);
 setHubSelection({ project: "crew", item: "home" });
+if (!noProjects) addStarterMono("coordinator");
+document.body.dataset.tasksCreated = "0";
+setMonoChatOpener((id) => {
+  document.body.dataset.monoChat = id;
+});
 
 const fake = installFakeTauri("home", (command, args) => {
   if (command === "tasks_list") {
@@ -81,6 +92,10 @@ const fake = installFakeTauri("home", (command, args) => {
   }
   if (command === "decisions_list") return decisions;
   if (command === "docs_list") return docs;
+  if (command === "tasks_create") {
+    document.body.dataset.tasksCreated = String(Number(document.body.dataset.tasksCreated ?? "0") + 1);
+    return { id: "filed" };
+  }
   if (command === "panels_catalog") {
     return [{
       plugin: "my-panels",
@@ -131,6 +146,7 @@ function Shell() {
       // The session open does not move the hub. applyHomeOpen does, when the project has a folder.
       openSession: (id) => setChatId(id),
       openTeam: (projectId) => openCodingTeam(projectId),
+      openSettings: () => undefined,
       projects: () => projects,
     };
     applyHomeOpen(target, hands);
@@ -149,6 +165,14 @@ function Shell() {
       </div>
     </>
   );
+}
+
+// What the start-up import leaves when Ash OS doesn't answer: nothing decided, so Home offers to try again.
+if (noProjects) {
+  void importFromAshOsAgain(appHubTransport().hub, {
+    fetch: async () => ({ state: "unreachable", message: "no answer", projects: [], memberships: [], pages: [] }),
+    ask: async () => "later",
+  });
 }
 
 createRoot(document.getElementById("shell")!).render(<Shell />);

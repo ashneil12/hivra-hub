@@ -35,7 +35,7 @@ fn managed_job() -> io::Result<&'static OwnedHandle> {
         .map_err(|code| io::Error::from_raw_os_error(*code))
 }
 
-fn create_job() -> io::Result<OwnedHandle> {
+pub(crate) fn create_job() -> io::Result<OwnedHandle> {
     unsafe {
         let raw = CreateJobObjectW(std::ptr::null(), std::ptr::null());
         if raw.is_null() {
@@ -57,10 +57,10 @@ fn create_job() -> io::Result<OwnedHandle> {
     }
 }
 
-/// The app owns the only job handle. OS handle cleanup kills registered trees
-/// after a crash; unrelated children are never enrolled in this job.
-pub(crate) fn assign_child(process: RawHandle) -> io::Result<()> {
-    if unsafe { AssignProcessToJobObject(managed_job()?.as_raw_handle(), process) } == 0 {
+/// The app owns the only handle of the managed job. OS handle cleanup kills registered trees
+/// after a crash; unrelated children are never enrolled in it.
+fn assign_to(job: &OwnedHandle, process: RawHandle) -> io::Result<()> {
+    if unsafe { AssignProcessToJobObject(job.as_raw_handle(), process) } == 0 {
         return Err(io::Error::last_os_error());
     }
     Ok(())
@@ -79,16 +79,26 @@ pub(crate) fn spawn_pty(
 pub(crate) fn spawn_managed(
     command: &mut std::process::Command,
 ) -> io::Result<std::process::Child> {
+    spawn_in_job(command, managed_job()?)
+}
+
+/// Start `command` inside `job` before its first instruction runs, so nothing it starts can
+/// be outside. `job` is one `create_job` made: it ends with its last handle, and
+/// `TerminateJobObject` ends everything in it at once.
+pub(crate) fn spawn_in_job(
+    command: &mut std::process::Command,
+    job: &OwnedHandle,
+) -> io::Result<std::process::Child> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::{
         CREATE_NEW_PROCESS_GROUP, CREATE_NO_WINDOW, CREATE_SUSPENDED,
     };
-    managed_job()?;
     // Probes can exit or create descendants before spawn returns. Enroll them
     // while suspended, then let the first thread run.
     command.creation_flags(CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | CREATE_SUSPENDED);
     let mut child = command.spawn()?;
-    if let Err(err) = assign_child(child.as_raw_handle()).and_then(|()| resume_child(child.id())) {
+    if let Err(err) = assign_to(job, child.as_raw_handle()).and_then(|()| resume_child(child.id()))
+    {
         let _ = child.kill();
         let _ = child.wait();
         return Err(err);

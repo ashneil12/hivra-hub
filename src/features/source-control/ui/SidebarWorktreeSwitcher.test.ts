@@ -226,6 +226,40 @@ it.each(["click", "Enter"])(
   },
 );
 
+it("keeps the picker open to say what copying .worktreeinclude did, and a failed copy is seen", async () => {
+  const secret = "SECRET-VALUE-do-not-leak";
+  const created = {
+    ...tree("/picker-worktrees/feature-new", "feature/new"),
+    includeNote: "1 file named in .worktreeinclude is in this worktree.",
+    includeWarning: `Could not copy a.env and b.env into this worktree.\n${secret}`,
+  };
+  vi.mocked(createWorktree).mockResolvedValue(created);
+  await render();
+  await act(async () => trigger().click());
+  await typeQuery("feature/new");
+  await act(async () => createButton()!.click());
+  // The switch happened, and the picker stays up with both lines.
+  expect(select).toHaveBeenCalledExactlyOnceWith({
+    path: created.path,
+    branch: created.branch,
+  });
+  expect(trigger().getAttribute("aria-expanded")).toBe("true");
+  const warning = document.querySelector("[data-worktree-include-warning]");
+  expect(warning?.textContent).toBe(
+    "Could not copy a.env and b.env into this worktree.",
+  );
+  expect(warning?.getAttribute("role")).toBe("alert");
+  expect(
+    document.querySelector("[data-worktree-include]")?.textContent,
+  ).toBe("1 file named in .worktreeinclude is in this worktree.");
+  expect(document.body.textContent).not.toContain(secret);
+  // Leaving and coming back does not show it again.
+  await press("Escape");
+  await act(async () => trigger().click());
+  expect(document.querySelector("[data-worktree-include-warning]")).toBeNull();
+  expect(document.querySelector("[data-worktree-include]")).toBeNull();
+});
+
 it("keeps the switcher available to create the first extra worktree", async () => {
   vi.mocked(useProjectWorktrees).mockReturnValue({
     data: {

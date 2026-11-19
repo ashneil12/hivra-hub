@@ -409,6 +409,8 @@ fn desktop_model_name(id: &str) -> Option<&'static str> {
         "claude:sonnet-5" | "claude-sonnet-5" => "Claude Sonnet 5",
         "claude:opus-5" | "claude-opus-5" => "Claude Opus 5",
         "claude:opus-5-5" | "claude-opus-5-5" => "Claude Opus 5.5",
+        "claude:fable-5-2" | "claude-fable-5-2" => "Claude Fable 5.2",
+        "claude:fable-5-1" | "claude-fable-5-1" => "Claude Fable 5.1",
         "claude:fable-5" | "claude-fable-5" => "Claude Fable 5",
         "claude:opus-4.6" | "claude-opus-4-6" => "Opus 4.6",
         "claude:sonnet-4.6" | "cursor:claude-sonnet-4-6" | "claude-sonnet-4-6" => "Sonnet 4.6",
@@ -738,6 +740,31 @@ pub fn desktop_agent(run: &AgentRun) -> Value {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn desktop_names_fable_5_2() {
+        assert_eq!(
+            desktop_model_name("claude-fable-5-2"),
+            Some("Claude Fable 5.2")
+        );
+        assert_eq!(
+            desktop_model_name("claude:fable-5-2"),
+            Some("Claude Fable 5.2")
+        );
+        assert_eq!(desktop_model_name("claude-fable-5"), Some("Claude Fable 5"));
+    }
+
+    #[test]
+    fn desktop_names_fable_5_1() {
+        assert_eq!(
+            desktop_model_name("claude-fable-5-1"),
+            Some("Claude Fable 5.1")
+        );
+        assert_eq!(
+            desktop_model_name("claude:fable-5-1"),
+            Some("Claude Fable 5.1")
+        );
+    }
+
     #[test]
     fn codex_saved_placeholders_recover_path_titles_without_losing_steps() {
         let mut block = json!({

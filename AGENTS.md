@@ -10,6 +10,11 @@ mergeable with it.
 Read this before building, installing or launching anything here. Building a Hivra work package? Start with
 [docs/hivra/README.md](docs/hivra/README.md); every rule in this file still applies.
 
+Changing anything a person sees? Read [docs/hivra/DESIGN.md](docs/hivra/DESIGN.md) first (the layout, the words, the
+rules every screen keeps) and follow the `dropwave-ui` skill in `.agents/skills/`. To give the owner a new board or
+tracker without changing the app, use the `make-a-hub` skill instead. What each screen calls is in
+[docs/hivra/work/dropwave-wiring.md](docs/hivra/work/dropwave-wiring.md).
+
 ## This repo is NOT upstream MonoCode
 
 Two apps look almost identical on this Mac. Confusing them loses Ash's conversations.
@@ -63,7 +68,8 @@ refusal shows an alert and exits:
 - a database written by a newer build is refused (exit 65).
 
 A dev copy can't reach Ash's real things: it keeps its hub data (projects, Monos per project, Pages) in its own
-database, its one-time Ash OS import reads only a stand-in a test names, never the live service or its key, and
+database, its one-time Ash OS import reads only a stand-in a test names, never the live service, its key or its record
+on disk, and
 Keychain names are `monocode-hub-dev:*`. How it runs Claude is in [CLAUDE.md](CLAUDE.md) ("The dev copy's
 Claude"). The PR watch (`src-tauri/src/pr_watch`) reads GitHub through
 the user's `gh`, reads only; under a temporary HOME there is no gh login, and `MONOCODE_PR_WATCH_GH` (read by dev copies
@@ -89,6 +95,11 @@ phone access, the notification prompt and the global shortcut.
 4. **`npm run hub:check-all`** then **`npm run hub:ship`** installs into `~/Applications/MonoCode Hub.app`
    with a safety net (see "Ship" below). `npm run hub:install` is now only the one-time `--legacy` install of the
    first build that can ship (it keeps the old app under `~/Archive/monocode/ships/legacy-*`, never deletes it).
+   `hub:check-all` does more than the unit checks (SC-2): it builds the bundle when none is this commit's, **launches
+   it under a temporary HOME** (`npm run hub:launch-check`: a copy at `<tmp HOME>/Applications/MonoCode Hub.app`, up
+   30 s with `running.json` and `monocode.db` in the temporary data folder, then stopped by its own pid; the real
+   data folder is only read to prove nothing touched it) and needs a recorded **`hub:verify-live` pass for the commit**
+   (it runs one when none exists). Expect a window to open briefly while it runs.
 
 ## Ship (Phase 1b WP3: `scripts/hub-ship.mjs`, `scripts/hub-ship-runner.mjs`, `src-tauri/src/ship.rs`)
 
@@ -97,7 +108,9 @@ uses `app app.ship` instead (same code; its own running turn doesn't block the r
 receipt).
 
 1. **Checks, before anything changes:** clean tree; the bundle's stamp is HEAD; a `hub:check-all` pass record
-   (`target/hub-checks/<sha>.json`) for that commit; daily identity; a real signature (not ad hoc) matching the
+   (`target/hub-checks/<sha>.json`) for that commit that says the built app launched (`launch.ok`) and verify-live
+   passed (`verifyLive.ok`; an older record without them is refused, and `--skip-tests` skips this one check as
+   before); daily identity; a real signature (not ad hoc) matching the
    installed app's; the installed app can take a ship; disk space; `monocode healthcheck` on a copy of the live
    database. Any refusal leaves everything as it was.
 2. **Stage:** `ditto` into `<data>/ship/<id>/staged/`, `state.json`, and the runner as a one-shot LaunchAgent
@@ -162,6 +175,10 @@ jq '.productName="MonoCode Hub" | .identifier="com.ash.monocode-hub"
 npm run hub:build && npm run hub:verify
 ```
 
+A daily scheduled check watches upstream MonoCode and every borrowed-idea repo (`docs/hivra/upstream-watch.json`,
+`node scripts/upstream-watch.mjs --state <file> --write`; it reads git only, never changes the checkout). When upstream
+has commits main lacks, it opens the merge as a PR. Add a repo to that list whenever Ash shares one.
+
 Hivra has one layout (WP-03, `src/features/hub/model/hivraLayout.ts`): Classic, fixed wherever the Hub flag is on.
 Upstream's `tests/browser/layout-opt-in.spec.ts` tests the Classic/Focused switch Hivra doesn't have and was deleted
 on purpose: when a merge brings it back (a modify/delete conflict), keep it deleted. Keep upstream's Focused code
@@ -178,13 +195,34 @@ itself; `src/features/hub/model/hivraLayout.test.ts` fails if a merge drops the 
   `allowNetworkForThisTest()` and says why in a comment.
 - Before handoff, report the exact commands run, their result counts, skips and warnings, what could not be checked
   and why. Passing tests is not the same as verified in the app.
+- Shipping guards (a fix needs a test, no silent skips, zero tests is not a pass, the escape ledger) are report-only
+  scripts: `npm run check:guards`. They fail only with `--strict`, at the release pass. See
+  [docs/hivra/shipping-guards.md](docs/hivra/shipping-guards.md).
+
+## When a test goes red
+
+Classify it first: a real bug (fix the code), an out-of-date test (update it in the same commit and say which
+behaviour changed), or flaky (passes on a rerun of the same commit). Spend at most 10 minutes or 2 attempts. Then
+quarantine a non-critical test with an end date in `docs/hivra/quarantine.json` and move on; never wrap it in
+retries or sleeps. Never weaken an assertion, delete a test or loosen a check to get green. Tests marked critical,
+golden files and formal specs are read-only for agents: changing one needs the owner's say. Whoever lands a change
+owns the red it causes and fixes forward or reverts it. At most 3 review rounds on one change, then step back and
+rethink the approach. The tiers and the always-gated paths are in [docs/testing-policy.md](docs/testing-policy.md).
 
 ## Development basics
 
 - Work in a worktree or a branch; never edit the installed app in place.
-- `npm run check` runs the web checks (`vitest run` + `tsc --noEmit`), the script tests
+- **Test what your change can reach, not everything (the default).** While you work and before you push, run
+  `npm run check:affected`: the web and script tests whose imports reach a changed file (or that read one from disk),
+  `tsc --noEmit` on everything, and the Rust check only when a change reaches it (`scripts/affected-tests.mjs`; it
+  compares with `origin/main`, uncommitted edits included). A pull request's CI does the same. A change to
+  `package.json`, the lockfile, a test, build or TypeScript config, the test setup, a `.d.ts` or CI itself runs every
+  test, and so does every run that isn't a pull request.
+- `npm run check` is the full suite: the web checks (`vitest run` + `tsc --noEmit`), the script tests
   (`node --test scripts/*.test.cjs scripts/*.test.mjs`) and the Rust checks (`cargo fmt --check`,
-  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test`). Run it before calling anything done.
+  `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test`). Main runs it after every merge and
+  `hub:check-all` runs it before a ship; run it yourself only when the work asks for it (a dependency bump, a change
+  to shared test setup, a release).
 - The hub flag `VITE_MONOCODE_HUB=1` is a **build-time** Vite variable (`src/features/hub/model/hubBundle.ts`,
   `IS_HUB_BUNDLE`). It is what makes the app open straight on the hub. Both `tauri.conf.json` and the overlay
   set it, so it is always on: in a build **and in dev** (`npm run hub:dev`; checked by
@@ -202,6 +240,7 @@ npm run hub:dev -- --print        # which slot, port and config it would use; ch
 npm run hub:doctor                # the identity guard, then every bundle, data folder, running copy, slot and worktree
 npm run hub:clean                 # what a finished run left behind (stale slots, old configs, merged worktrees); removes nothing
 npm run hub:clean -- --yes        # reap exactly that: no running copy, no uncommitted changes, never the daily app
+npm run hub:clean -- --output-only --yes  # only rebuildable build output (target/ and the like); no worktree goes
 ```
 
 **Dev slots (`scripts/hub-dev.mjs`).** Every worktree runs its own dev copy, side by side with the others and with the
@@ -213,12 +252,18 @@ daily app. Its window says `Hivra Dev - <branch> @ <sha>` and carries a DEV ribb
 - **Port:** 1430 + 10 × (hash of the slot mod 50), the next free one in that grid if taken; never 1420. The generated
   `target/hub-dev/<slot>.conf.json` sets `devUrl` and `devCsp` (the base devCsp only allows 1420) and hands vite the
   port through `MONOCODE_VITE_PORT` in its own command.
-- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev and hub:build), shared
-  by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds at once wait for each other.
+- **Rust build cache:** `CARGO_BUILD_BUILD_DIR=~/Library/Caches/monocode-hub/cargo-build` (hub:dev, hub:build and
+  `npm run check:rust`), shared by every worktree; each keeps its own `target/` for the final binary and bundle. Two builds
+  at once wait for each other. CI keeps its own `target/`; `MONOCODE_OWN_TARGET=1` does the same for one local run.
+- **Disk floor:** `check:rust` and `hub:build` refuse to start (exit 75) under 30 GB free on the home volume
+  (`scripts/disk-guard.mjs`; `MONOCODE_DISK_FLOOR_GB` changes it, 0 turns it off). On 10 Nov 2026 about 90 worktrees, each
+  with its own 9-12 GB `target/`, filled the disk. `npm run hub:clean -- --yes` also clears the build output (`target/`,
+  `src-tauri/target`, `test-results/`, `playwright-report/`, a real `node_modules`) of a worktree that is kept but clean
+  and pushed; never a linked `node_modules`, a dirty or unpushed tree, or one something is running in.
 - **Hub data:** the dev copy keeps it in its own database, like the daily app (no Ash OS; see "Ash OS is retired").
 - **Seed (`npm run hub:seed-dev`, or `hub:dev -- --seed`):** an online SQLite backup of the daily `monocode.db`, opened
   read-only, then in the copy only: in-flight turns, queued messages, the tab snapshot, pending worktree removals,
-  automations, reminders, orchestration rows, delegation rows, PR watches and every `provider_session_id` are cleared. It refuses the daily folder,
+  automations, reminders, orchestration rows, delegation rows, PR watches, the compare records (they name real worktrees) and every `provider_session_id` are cleared. It refuses the daily folder,
   a slot a running copy holds (its lock), a slot that already has chats (`--replace` moves them aside) and a source
   newer than the checkout's schema. It never writes back. Without a seed a slot starts empty.
 - One copy per slot: starting a slot that is already running says so and exits 75.
@@ -244,8 +289,23 @@ store from the page's own localStorage, `monocode:dev-local-hub:<key>`). It has 
   the file in a branch changes nothing. Agents use `app actions.list` / `app actions.run`.
 - `scripts/setup-worktree.mjs` links `node_modules` from the main checkout when the lockfiles match (else `npm ci`) and
   links missing env files; it never replaces a real file and never writes through a link.
-- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees`; nothing is removed without Ash's tap.
-  `monocode worktrees-report` prints the same report read-only. Never delete a worktree or its `target/` by hand.
+- Settings > Worktrees > Clean up reports every worktree in `~/Worktrees` (its size and how much of it is build
+  output); nothing is removed without Ash's tap. `monocode worktrees-report` prints the same report read-only. Never
+  delete a worktree or its `target/` by hand.
+- **A finished worktree gives its build output back by itself** (`src-tauri/src/worktree_autoclean.rs`; the daily app
+  only, a dev copy never runs it). Every 15 minutes, and 2 minutes after launch, it sweeps `~/Worktrees` and the
+  worktrees the app knows (chats, PR watches). A worktree is **finished** when a pull request from its branch merged or
+  closed with this exact commit as its head (the PR watch, else `gh pr list`, asked at most hourly per commit), or every
+  delegated task in it is accepted and its commit is in the branch's upstream, or its branch is merged into the mainline
+  with its commit on a remote. It must also be a linked worktree (never the main checkout) with an empty
+  `git status`, nothing running in it (an agent, terminal, project action, chat turn, dev copy, a cargo build holding
+  `.cargo-lock`, or any process of Ash's whose working folder is inside it, read with `lsof` just before the delete) and
+  untouched for 10 minutes. When those working folders can't be read (lsof fails, or on Windows, which can't say) the
+  sweep deletes nothing. Then only `target/`, `src-tauri/target/`, `test-results/`,
+  `playwright-report/` and every `node_modules/` that is a real folder go (a linked `node_modules` stays), each only
+  when git ignores it and tracks nothing in it. Each worktree is checked again under the removal reservation. The
+  switch is Settings > Worktrees > "Clear build output of finished worktrees", on by default, kept in
+  `<data>/worktree-autoclean.json` (a file it can't read means off).
 
 ## Signing (why the app kept asking for your password)
 
@@ -321,7 +381,11 @@ and checks are empty until WP-14's decision store (`localHub/decisions.ts` is th
 the app asks Ash OS, read-only (`src-tauri/src/ash_os_import.rs`), and offers once to import its projects, memberships
 and kept Pages. Only a sure answer is kept: no Ash OS on the Mac (no key file, or a dev copy with no stand-in) starts
 clean for good; Ash OS not answering this time decides nothing and the next start tries again. Settings → Export and
-import → "Bring over from Ash OS" runs it again at any time (it only adds). Every hub chat denies `mcp__ash-os`, so
+import → "Bring over from Ash OS" runs it again at any time (it only adds). When the service gives nothing (it no longer
+runs), the import reads Ash OS's record on disk instead (`ash_os_import/disk.rs`: the database and its log copied
+into a private folder and only the copy opened, plus each strip project's `project.json`) and answers in the live
+reads' shape; Ash OS's files are never written and nothing is made beside them. A dev copy reads only a stand-in
+record named by `MONOCODE_ASHOS_DB` (and `MONOCODE_ASHOS_PROJECTS`), never the real one (the daily app ignores both). Every hub chat denies `mcp__ash-os`, so
 Ash's own user-scope Ash OS server never loads in one. The local store's documents carry a revision: a window writes
 only on top of the latest one and every window hears `local-hub://changed`.
 
@@ -329,6 +393,9 @@ only on top of the latest one and every window hears `local-hub://changed`.
 
 Settings → Export and import writes the whole setup (and, if ticked, the Ash OS memory and the workspace) to one
 `.tar.gz` or a folder, and reads one back through a preview. Import only adds: imported Monos wait for Ash's OK,
-connectors and model keys are entered again, automations come back paused, delegations come back as history. Secrets
+connectors and model keys are entered again, automations come back paused, delegations come back as history. A chat
+keeps the folder its file names only when it is inside a project this copy already has (links followed); otherwise it
+has none, asks for one and starts nothing until then (`src-tauri/src/chat_folder.rs` refuses every launch without a
+folder, never falling back to the home folder, `/` or the folder the app runs in). Secrets
 never go in (one pattern list for the webview and Rust, then a final scan of the export). A dev copy keeps its memory in
 its own data folder (`npm run hub:dev -- --memory <dir>` reads another one for Export) and never writes `~/agent-memory`.

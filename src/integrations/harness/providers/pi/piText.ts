@@ -53,14 +53,23 @@ function stateFor(flavor: PiFlavor): TextState {
   return state;
 }
 
+/** A model registered by one of the app's own Pi extensions. */
+export function isAppExtensionModel(nativeId: string): boolean {
+  return /^(dropwave-[a-z0-9-]+|claude-code-cli)\//.test(nativeId.trim());
+}
+
 function pickTextModel(
   flavor: PiFlavor,
   requested?: string,
 ): string | undefined {
   const selected = requested?.trim();
   if (selected?.includes("/")) return selected;
-  const models = modelsFor(flavor.id).filter((model) =>
-    Boolean(model.nativeId?.includes("/")),
+  // Text jobs run isolated, without extensions, so a model only an app extension provides (a saved model through
+  // the app's router, or the Claude Code bridge) can't answer there (src-tauri/src/pi_routes.rs).
+  const models = modelsFor(flavor.id).filter(
+    (model) =>
+      Boolean(model.nativeId?.includes("/")) &&
+      !isAppExtensionModel(model.nativeId ?? ""),
   );
   const cheap = models.find((model) =>
     /haiku|mini|flash|nano|lite|luna/i.test(

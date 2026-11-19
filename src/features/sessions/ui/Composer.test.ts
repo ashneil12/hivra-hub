@@ -1341,7 +1341,14 @@ describe("Composer question focus", () => {
     });
     await act(async () => {
       container.querySelector("textarea")!.dispatchEvent(paste);
-      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    // Wait for the pasted file, not the recalled one: borrowed.png is there before the paste. React renders an
+    // update only when its act scope ends, so each try lets the read finish inside one and looks after it.
+    await vi.waitFor(async () => {
+      await act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      });
+      expect(container.querySelector('[aria-label="Remove owned.png"]')).not.toBeNull();
     });
 
     await act(async () =>

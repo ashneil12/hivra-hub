@@ -17,7 +17,7 @@ import { startAshOsImport } from "./localHub/ashOsImport";
 import { appIdentity } from "../../../app/model/appIdentity";
 import { makesProjectLeads } from "./hubBundle";
 import { completeLeadAdoption, ensureProjectLeads, reseedAdoptedLeadSoul } from "./hubLeads";
-import { registerClaudeGuards, registeredHubMcpArgs, setHubDocsDir, setHubMcpServers, type HubMcpServers } from "./hubMcp";
+import { registerClaudeGuards, registeredCodexLeadConfig, registeredHubMcpArgs, setHubDocsDir, setHubMcpServers, type HubMcpServers } from "./hubMcp";
 import { codingTeamChatProject } from "./codingTeam";
 import { invoke } from "@tauri-apps/api/core";
 import { habitRunMono } from "../../monos/model/monoHabits";
@@ -30,6 +30,7 @@ import { stripProjects } from "./hubProjects";
 import { defaultSoul, loadMonoFiles, readAgentFile, setHubDocsPath, writeAgentFile } from "../../monos/model/monoFiles";
 import { findMono, monoForSession } from "../../monos/model/mono";
 import { setClaudeExtraArgs } from "../../../integrations/harness/providers/claude/claudeExtraArgs";
+import { setCodexLeadConfig } from "../../../integrations/harness/providers/codex/codexLeadConfig";
 import { resourceDir } from "@tauri-apps/api/path";
 import { pathKey } from "../../../shared/lib/paths";
 import { createLiveHubData } from "./liveHubData";
@@ -37,6 +38,7 @@ import { mockHubData } from "./mockData";
 import type { HubDataSource, HubProject } from "./types";
 import { IS_HUB_BUNDLE, seedHubBundleDefaults } from "./hubBundle";
 import { connectorServersForMono, loadConnectors } from "./hubConnectors";
+import { loadComputerUse } from "../../computerUse/model/computerUse";
 import { applyProjectPrefs, projectPrefsVersion, useProjectPrefsVersion } from "./projectPrefs";
 
 // Before the first chat is made (App imports this module first): the Hub bundle starts new chats on Claude Code.
@@ -70,8 +72,13 @@ function startHubMcp(): void {
   setHubMcpServers({ cli: null }, lookups);
   const cli = invoke<string>("app_cli_path").catch(() => null);
   const connectors = loadConnectors();
-  window.addEventListener("focus", () => void loadConnectors());
-  const read = Promise.all([cli, connectors]).then(([cli]): HubMcpServers => ({ cli, connectors: connectorServersForMono }));
+  // WP-255: Settings > Computer use, so a chat started after a change gets (or loses) the computer entry.
+  const computerUse = loadComputerUse();
+  window.addEventListener("focus", () => {
+    void loadConnectors();
+    void loadComputerUse();
+  });
+  const read = Promise.all([cli, connectors, computerUse]).then(([cli]): HubMcpServers => ({ cli, connectors: connectorServersForMono }));
   const ready = Promise.race([
     read.then((servers) => {
       setHubMcpServers(servers, lookups);
@@ -82,6 +89,11 @@ function startHubMcp(): void {
   setClaudeExtraArgs(async (sessionId) => {
     await ready;
     return registeredHubMcpArgs(sessionId);
+  });
+  // WP-120: a Codex lead gets the same monocode server, once the app CLI is known.
+  setCodexLeadConfig(async (sessionId) => {
+    await ready;
+    return registeredCodexLeadConfig(sessionId);
   });
 }
 if (IS_HUB_BUNDLE) startHubMcp();
@@ -170,8 +182,20 @@ export function hubProjectIdFor(folder: string): string | undefined {
   return (override ?? choose()).source.listProjects().find((project) => project.folder && pathKey(project.folder) === key)?.id;
 }
 
+/** The hub's projects as the spend gate reads them: the id and the folder (when it has one). */
+export function hubProjectList(): Array<{ id: string; folder?: string }> {
+  return (override ?? choose()).source.listProjects().map((project) => ({ id: project.id, folder: project.folder ?? undefined }));
+}
+
 export function hubProjectFolder(id: string): string | undefined {
   return (override ?? choose()).source.listProjects().find((project) => project.id === id)?.folder ?? undefined;
+}
+
+/** WP-141 round 11: every hub project folder, so a worktree can be owned by the project it belongs to. */
+export function hubProjectFolders(): string[] {
+  return (override ?? choose()).source.listProjects().flatMap((project) =>
+    typeof project.folder === "string" && project.folder.trim() !== "" ? [project.folder] : [],
+  );
 }
 
 /**
@@ -241,11 +265,12 @@ const noSnapshot = () => undefined;
 /**
  * Call this in any component that reads `hubData()` while rendering: it re-renders when the data changes, and it is
  * what starts the live store (the first screen to subscribe) and stops it (a moment after the last one leaves).
+ * The snapshot is the return value, so a memo that reads the data can list it.
  */
-export function useHubDataVersion(): void {
+export function useHubDataVersion() {
   useProjectPrefsVersion();
   const store = (override ?? choose()).store;
-  useSyncExternalStore(store ? store.subscribe : noSubscribe, store ? store.getSnapshot : noSnapshot);
+  return useSyncExternalStore(store ? store.subscribe : noSubscribe, store ? store.getSnapshot : noSnapshot);
 }
 
 /**

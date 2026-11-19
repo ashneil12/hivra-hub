@@ -15,15 +15,19 @@ import { applyThemePreset, finishOnboarding, needsOnboarding, THEME_PRESETS, typ
 import { setupProved, snoozeSetupCard } from "../model/setupProof";
 import { DISPLAY_NAME } from "../../../app/model/displayName";
 import { HubOnboardingSetup } from "./HubOnboardingSetup";
+import { chatImportRun } from "../../chatImport/model/live";
+import { setSetupState } from "../../chatImport/model/setupStage";
+import { useImportState } from "../../chatImport/ui/ChatImportPanel";
 
 const PRIMARY = "rounded-md bg-content px-3 py-1.5 text-[13px] font-medium text-background-base hover:opacity-90";
 const QUIET = "rounded-md px-3 py-1.5 text-[13px] text-content/60 hover:bg-content/8 hover:text-content";
 
-type Step = "setup" | "welcome" | "start" | "theme" | "done";
-const CHOICES: Step[] = ["welcome", "start", "theme", "done"];
+type Step = "setup" | "welcome" | "start" | "chats" | "team" | "tools" | "theme" | "done";
+const CHOICES: Step[] = ["welcome", "start", "chats", "team", "tools", "theme", "done"];
 
 /**
- * First launch: the four setup checks (when they are not proved yet), then welcome, roles & projects, theme, done.
+ * First launch: the four setup checks (when they are not proved yet), then one thing a step (Ash, 11 Nov: it "doesn't
+ * carry you through a proper setup flow"): welcome, the first project, its first mates, the coding tools, a look, done.
  * The choices are skippable; the setup is not, because a chat cannot work without it — its "Not now" closes the card
  * without proving anything. r61: that "Not now" is remembered, so the card does not come back on the next launch.
  */
@@ -34,16 +38,33 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     const choices = needsOnboarding() ? CHOICES : [];
     return setup.length || choices.length ? [...setup, ...choices] : CHOICES;
   });
-  const [step, setStep] = useState(0);
+  const [kind, setKind] = useState<Step>(() => steps[0]);
   const [setupOk, setSetupOk] = useState(false);
-  const [start, setStart] = useState<"fresh" | "restore">("fresh");
+  const [start, setStart] = useState<"fresh" | "chats" | "restore">("fresh");
+  // An export brings its own first mates and tools, so a restore skips those two steps. Bringing chats over has its
+  // own step (which chats come in); the other two starts skip it.
+  const flow = steps.filter(
+    (item) => (item !== "chats" || start === "chats") && (start !== "restore" || (item !== "team" && item !== "tools")),
+  );
+  const importRun = chatImportRun();
+  const importState = useImportState(importRun);
+  // Read the chats that came in and suggest rules (one batch, nothing changes before each is accepted).
+  const [learnStyle, setLearnStyle] = useState(true);
+  const step = Math.max(0, flow.indexOf(kind));
+  const go = (by: number) => setKind(flow[Math.min(flow.length - 1, Math.max(0, step + by))]);
   const [restored, setRestored] = useState<string | null>(null);
   const [name, setName] = useState("");
   // WP-05: starter Monos are offered unticked. Ticking one makes an ordinary Mono. None are added otherwise.
-  const offers = starterOffers();
-  const [ticked, setTicked] = useState<string[]>([]);
+  // Dropwave: the one that reads every project (the Chief of Staff) leads the list and is marked Recommended, since
+  // Home and the top of the sidebar are built around it. Ash, 11 Nov: it starts ticked. The others stay unticked, and
+  // nothing is added for a person who skipped before seeing this list (sawTeam).
+  const offers = [...starterOffers()].sort((a, b) => Number(!!b.everyProject) - Number(!!a.everyProject));
+  const chief = offers.find((offer) => offer.everyProject);
+  const [ticked, setTicked] = useState<string[]>(() => (chief ? [chief.id] : []));
+  const sawTeam = useRef(false);
   // WP-20: the CLIs on this Mac, a project, and a group. All optional. A project lands in its coding team.
-  const [clis, setClis] = useState<string[]>([]);
+  // A setup that already proved Claude Code (installed, signed in, one real reply) starts with it ticked: a fact, not a guess.
+  const [clis, setClis] = useState<string[]>(() => (setupProved() ? ["claude"] : []));
   const [projectName, setProjectName] = useState("");
   const [group, setGroup] = useState(false);
   const [projectError, setProjectError] = useState<string | null>(null);
@@ -74,6 +95,28 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
   const done = (next: "today" | "new-project" | "restore" = "today") => {
     if (finishing.current) return;
     const choice = firstLaunchChoice({ projectName, group, clis });
+    // The first mates picked here join the first project, so they are in its list when it opens. The one that reads
+    // every project (the Chief of Staff) belongs to none.
+    let firstProject: string | undefined;
+    const addTicked = () => {
+      for (const id of ticked) {
+        const everyProject = offers.find((offer) => offer.id === id)?.everyProject;
+        addStarterMono(id, firstProject && !everyProject ? [firstProject] : []);
+      }
+    };
+    // Bringing chats over comes in parts. This first part only starts the sweep and lets the person in. The sidebar's
+    // card calls them back to choose what comes in once the chats are found, and again for the suggested rules
+    // (ImportSetupHost). Nothing comes in before they choose.
+    if (start === "chats") {
+      saveChosenClis(choice.clis);
+      finishOnboarding();
+      if (name.trim()) setUserName(name);
+      if (sawTeam.current) addTicked();
+      setSetupState({ stage: "sweep", learn: learnStyle });
+      showProjectToday();
+      onClose();
+      return;
+    }
     // WP-20: a chosen project opens on its coding team. Onboarding finishes only after that project exists.
     // A failed create stays on this card, with the name, CLIs and group still filled in.
     if (choice.projectName && start === "fresh") {
@@ -95,9 +138,12 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
                 folder: defaultProjectFolder(id),
               };
               addMockProject(made);
+              firstProject = made.folder;
               return { id, folder: made.folder };
             }
             const made = await createProject({ name: named, oneLine: named, code: true });
+            // The same name the sidebar files a project's first mates under (a folder, else its id).
+            firstProject = made.project.folder ?? `hub-project:${made.project.id}`;
             return { id: made.project.id, folder: made.project.folder };
           },
           addGroup: (projectId) => {
@@ -109,12 +155,12 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
         finishing.current = false;
         if (result !== "opened") {
           setProjectError("That project could not be made. Nothing was lost. Try again.");
-          setStep(steps.indexOf("start"));
+          setKind("start");
           return;
         }
         finishOnboarding();
         if (name.trim()) setUserName(name);
-        for (const id of ticked) addStarterMono(id);
+        if (sawTeam.current) addTicked();
         onClose();
       });
       return;
@@ -122,7 +168,7 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     saveChosenClis(choice.clis);
     finishOnboarding();
     if (name.trim()) setUserName(name);
-    if (start === "fresh") for (const id of ticked) addStarterMono(id);
+    if (start === "fresh" && sawTeam.current) addTicked();
     // A project is the unit of the hub (G1): the hub opens a project's own Today, or the first one; an app view
     // (New project, Restore) opens over it.
     if (next === "today") showProjectToday();
@@ -130,15 +176,16 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
     onClose();
   };
 
-  const kind = steps[step];
-  const last = step === steps.length - 1;
+  const last = step === flow.length - 1;
+  if (kind === "team" && start === "fresh") sawTeam.current = true;
+  const pickedMates = offers.filter((offer) => ticked.includes(offer.id));
 
   return (
     <div className="fixed inset-0 z-[200] grid place-items-center bg-background-base/75" data-hub-onboarding data-step={kind}>
       <div className="flex w-[520px] flex-col gap-6 rounded-2xl border border-content/7 dialog-glass p-8 shadow-2xl ring-0">
         <div className="flex items-center justify-between text-xs text-content/60">
           {/* One step needs no count. */}
-          {steps.length > 1 ? <span data-hub-onboarding-count>Step {step + 1} of {steps.length}</span> : <span />}
+          {flow.length > 1 ? <span data-hub-onboarding-count>Step {step + 1} of {flow.length}</span> : <span />}
           {!last && kind !== "setup" ? (
             <button type="button" data-hub-onboarding-skip onClick={() => done()} className="rounded px-1.5 py-0.5 hover:bg-content/8 hover:text-content">
               Skip
@@ -152,16 +199,16 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
 
         {kind === "welcome" ? (
           <div className="flex flex-col gap-2">
-            <h1 className="text-[18px] text-content">Welcome</h1>
+            <h1 className="text-[18px] text-content">Welcome to {DISPLAY_NAME}</h1>
             <p className="text-[13px] leading-5 text-content/75">
-              This is where your projects, your Monos and the coding team live. Each project has its own Today, Pages and work that needs your attention.
+              You own the work and your first mates do it. Each first mate runs one line of work with its own crew, and comes to you only when something needs your say.
             </p>
             <label className="mt-2 flex flex-col gap-1">
               <span className="text-xs text-content/60">What should your team call you?</span>
               <input data-hub-onboarding-name value={name} onChange={(e) => setName(e.target.value)} placeholder="Your name (optional)" maxLength={40}
                 className="rounded-md bg-content/6 px-3 py-1.5 text-[13px] text-content outline-none placeholder:text-content/40 focus:bg-content/10" />
             </label>
-            <p className="text-[13px] leading-5 text-content/60">A few quick choices. You can change all of it later in Settings.</p>
+            <p className="text-[13px] leading-5 text-content/60">A few short steps next: your first project, your first mates, your coding tools and a look. You can change all of it later in Settings.</p>
           </div>
         ) : null}
 
@@ -169,43 +216,95 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
           <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto">
             <h1 className="text-[18px] text-content">How would you like to start?</h1>
             <Group label="Start">
-              <Toggle on={start === "fresh"} onClick={() => setStart("fresh")} title="Start a new project" sub="Name it, pick a dashboard" />
+              <Toggle on={start === "fresh"} onClick={() => setStart("fresh")} title="Start a new project" sub="Name it below" />
+              <Toggle
+                on={start === "chats"}
+                onClick={() => {
+                  setStart("chats");
+                  // Finding starts now, so the count is there on the next step.
+                  if (importRun.get().phase === "idle") void importRun.find();
+                }}
+                title="Bring my chats over"
+                sub="From Claude Code and Codex"
+              />
               <Toggle on={start === "restore"} onClick={() => { setStart("restore"); void pick(); }} title="Restore from an export" sub="Your setup comes back" />
             </Group>
             <input ref={fileRef} type="file" accept="application/json,.json" className="hidden" data-hub-onboarding-file
               onChange={(e) => void onFile(e.target.files?.[0])} />
             {start === "fresh" ? (
               <>
-              <Group label="CLIs you have">
-                <p className="px-3 pb-1 text-[13px] text-content/75">Tick the ones on this Mac. None are required.</p>
-                {CLI_ORDER.map((cli) => (
-                  <Check2 key={cli} id={cli} dataAttr="data-hub-onboarding-cli" on={clis.includes(cli)}
-                    onClick={() => setClis((cur) => (cur.includes(cli) ? cur.filter((item) => item !== cli) : [...cur, cli]))}
-                    title={cliLabel(cli)} />
-                ))}
-              </Group>
               <label className="flex flex-col gap-1">
-                <span className="text-xs text-content/60">Project name</span>
-                <input data-hub-onboarding-project value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="Optional" maxLength={80}
+                <span className="text-xs text-content/60">Your first project</span>
+                <input data-hub-onboarding-project value={projectName} onChange={(e) => setProjectName(e.target.value)} placeholder="A name, like My app (optional)" maxLength={80}
                   className="rounded-md bg-content/6 px-3 py-1.5 text-[13px] text-content outline-none placeholder:text-content/40 focus:bg-content/10" />
+                <span className="text-xs leading-5 text-content/55">It gets its own home, first mates and hubs. Add more projects with the + on the left.</span>
               </label>
-              <Check2 id="group" dataAttr="data-hub-onboarding-group" on={group} onClick={() => setGroup((on) => !on)}
-                title="Add a group" sub="Only if you want one" />
               {projectError ? <p className="text-[13px] leading-5 text-content/75" data-hub-onboarding-error>{projectError}</p> : null}
-              <Group label="Your team">
-                <p className="px-3 pb-1 text-[13px] text-content/75" data-hub-onboarding-team>Add any of these. Each one is an ordinary Mono. None are added unless you tick them.</p>
-                {offers.map((offer) => (
-                  <Check2 key={offer.id} id={offer.id} on={ticked.includes(offer.id)}
-                    onClick={() => setTicked((cur) => cur.includes(offer.id) ? cur.filter((x) => x !== offer.id) : [...cur, offer.id])}
-                    title={offer.name} sub={offer.role} />
-                ))}
-              </Group>
               </>
             ) : null}
             {start === "restore" && restored ? <p className="text-[13px] text-content/75" data-hub-onboarding-restored>{restored}</p> : null}
             <p className="whitespace-nowrap text-[13px] leading-5 text-content/60" data-hub-onboarding-dashboards>
-              Built-in dashboards: Game studio, Product / SaaS, Org / ops.
+              Comes with ready-made hubs: Game studio, Product / SaaS, Org / ops.
             </p>
+          </div>
+        ) : null}
+
+        {kind === "chats" ? (
+          <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto" data-hub-onboarding-chats>
+            <h1 className="text-[18px] text-content">Bring your chats over</h1>
+            <p className="text-[13px] leading-5 text-content/75">
+              Your past Claude Code and Codex chats come in as projects and chats, grouped by the folder they ran in. Nothing in those tools' own folders changes.
+            </p>
+            <p className="text-[13px] text-content/75" data-hub-onboarding-chats-finding>
+              {importState.phase === "failed"
+                ? "Your chats couldn't be read just now. You can bring them over later in Settings, Chat history."
+                : importState.phase === "ready"
+                ? `Found ${importState.groups.reduce((sum, group) => sum + group.chats, 0).toLocaleString("en-GB")} chats so far.`
+                : `Looking through your chats${importState.seen ? `: ${importState.seen.toLocaleString("en-GB")} found so far` : ""}. This keeps going while you finish setting up.`}
+            </p>
+            <ol className="flex list-decimal flex-col gap-1 pl-5 text-[13px] leading-5 text-content/75">
+              <li>The app finds your chats while you get started.</li>
+              <li>A card in the sidebar calls you back to choose what comes in: which dates, which projects, and which look-alikes to merge.</li>
+              <li>The chats come in behind you, and you can use each project as soon as it lands.</li>
+            </ol>
+            <Check2 id="learn" dataAttr="data-hub-onboarding-learn" stacked on={learnStyle} onClick={() => setLearnStyle((on) => !on)}
+              title="Then learn how I work"
+              sub="After your chats are in, a low-cost model reads a spread of them and suggests rules for how your first mates work with you. You're called back to go through them, and nothing changes until you save a rule." />
+          </div>
+        ) : null}
+
+        {kind === "team" ? (
+          <div className="flex max-h-[60vh] flex-col gap-4 overflow-y-auto">
+            <h1 className="text-[18px] text-content">Choose your first mates</h1>
+            <p className="text-[13px] leading-5 text-content/75" data-hub-onboarding-team>
+              A first mate runs a line of work for you. {chief ? `${chief.name} is ticked to get you started. Only ticked ones are added.` : "None are added unless you tick them."}{" "}
+              {projectName.trim() ? `They join ${projectName.trim()}. ` : ""}Add or make more at any time with the + beside First mates.
+            </p>
+            <div className="flex flex-col gap-0.5">
+              {offers.map((offer) => (
+                <Check2 key={offer.id} id={offer.id} stacked on={ticked.includes(offer.id)}
+                  onClick={() => setTicked((cur) => cur.includes(offer.id) ? cur.filter((x) => x !== offer.id) : [...cur, offer.id])}
+                  title={offer.name} sub={offer.role} tag={offer.everyProject ? "Recommended" : undefined} />
+              ))}
+            </div>
+            <Check2 id="group" dataAttr="data-hub-onboarding-group" on={group} onClick={() => setGroup((on) => !on)}
+              title="Add a team chat" sub="A group chat with your first mates" />
+          </div>
+        ) : null}
+
+        {kind === "tools" ? (
+          <div className="flex flex-col gap-4">
+            <h1 className="text-[18px] text-content">Coding tools on this Mac</h1>
+            <p className="text-[13px] leading-5 text-content/75">
+              Your first mates do their work through these. Tick the ones you have installed. Claude Code alone is enough to start.
+            </p>
+            <div className="grid grid-cols-2 gap-x-2">
+              {CLI_ORDER.map((cli) => (
+                <Check2 key={cli} id={cli} dataAttr="data-hub-onboarding-cli" on={clis.includes(cli)}
+                  onClick={() => setClis((cur) => (cur.includes(cli) ? cur.filter((item) => item !== cli) : [...cur, cli]))}
+                  title={cliLabel(cli)} />
+              ))}
+            </div>
           </div>
         ) : null}
 
@@ -230,14 +329,45 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             <h1 className="text-[18px] text-content">You're set</h1>
             <p className="text-[13px] leading-5 text-content/75">
               The {THEME_PRESETS.find((t) => t.id === theme)?.label} look.{" "}
-              {start === "fresh" ? "Next, your first project." : restored ? "Next, a look at what your export brings." : "That is everything. Your projects are on the left."}
+              {start === "chats"
+                ? "Next, Home. The sidebar will call you back when your chats are found."
+                : start === "fresh"
+                ? projectName.trim()
+                  ? `Next, ${projectName.trim()} opens with its lead ready to talk.`
+                  : "Next, your first project."
+                : restored ? "Next, a look at what your export brings." : "That is everything. Your projects are on the left."}
             </p>
+            {start === "chats" ? (
+              <ul className="mt-1 flex flex-col gap-1 text-[13px] leading-5 text-content/75" data-hub-onboarding-summary>
+                <li><span className="text-content/60">Chats:</span> being found now; you choose what comes in next</li>
+                <li><span className="text-content/60">How you work:</span> {learnStyle ? "read once your chats are in, with rules for you to go through" : "not read"}</li>
+                <li><span className="text-content/60">First mates:</span> {pickedMates.length ? pickedMates.map((offer) => offer.name).join(", ") : "none yet"}</li>
+              </ul>
+            ) : null}
+            {start === "fresh" ? (
+              // What the steps set up, said back before anything opens.
+              <ul className="mt-1 flex flex-col gap-1 text-[13px] leading-5 text-content/75" data-hub-onboarding-summary>
+                <li><span className="text-content/60">Project:</span> {projectName.trim() || "none yet, you name it next"}</li>
+                <li><span className="text-content/60">First mates:</span> {pickedMates.length ? pickedMates.map((offer) => offer.name).join(", ") : "none yet"}{group ? ", with a team chat" : ""}</li>
+                <li><span className="text-content/60">Coding tools:</span> {clis.length ? clis.map((cli) => cliLabel(cli)).join(", ") : "none ticked"}</li>
+              </ul>
+            ) : null}
+            {/* Dropwave: the three places a new person needs, in one glance, before the card closes. */}
+            <ul className="mt-1 flex flex-col gap-1.5 text-[13px] leading-5 text-content/75" data-hub-onboarding-tour>
+              <li><span className="text-content">Home</span> shows what needs you, what is being worked on and what got done.</li>
+              <li>
+                <span className="text-content">Chief of Staff</span>, at the top of the sidebar, is who you ask for anything.
+                {start === "fresh" && !offers.some((offer) => offer.everyProject && ticked.includes(offer.id)) ? " You didn't add one: Home offers it whenever you want." : ""}
+              </li>
+              <li><span className="text-content">Inbox</span> collects every question and decision waiting for you.</li>
+            </ul>
           </div>
         ) : null}
 
         <div className="flex justify-end gap-2">
-          {step > 0 && !last ? (
-            <button type="button" onClick={() => setStep(step - 1)} className={QUIET}>Back</button>
+          {/* The last step says back what was chosen, so it keeps a way back to change it. */}
+          {step > 0 && (!last || kind === "done") ? (
+            <button type="button" onClick={() => go(-1)} className={QUIET}>Back</button>
           ) : null}
           {kind === "setup" ? (
             <>
@@ -247,7 +377,9 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
                 data-hub-onboarding-next
                 disabled={!setupOk}
                 onClick={() => {
-                  if (!last) return setStep(step + 1);
+                  // The checks just proved Claude Code, so it starts ticked among the coding tools.
+                  setClis((cur) => (cur.includes("claude") ? cur : ["claude", ...cur]));
+                  if (!last) return go(1);
                   // Passed and closed: remembered, so the card never opens on its own again.
                   snoozeSetupCard();
                   onClose();
@@ -259,10 +391,10 @@ export function HubOnboarding({ onClose }: { onClose: () => void }) {
             </>
           ) : last ? (
             <button type="button" data-hub-onboarding-done onClick={() => done(start === "fresh" ? "new-project" : restored ? "restore" : "today")} className={PRIMARY}>
-              {start === "fresh" ? "Create your first project" : restored ? "Review the export" : `Start using ${DISPLAY_NAME}`}
+              {start === "chats" ? `Start using ${DISPLAY_NAME}` : start === "fresh" ? (projectName.trim() ? `Open ${projectName.trim()}` : "Create your first project") : restored ? "Review the export" : `Start using ${DISPLAY_NAME}`}
             </button>
           ) : (
-            <button type="button" data-hub-onboarding-next onClick={() => setStep(step + 1)} className={PRIMARY}>
+            <button type="button" data-hub-onboarding-next onClick={() => go(1)} className={PRIMARY}>
               {kind === "welcome" ? "Get started" : "Continue"}
             </button>
           )}
@@ -294,16 +426,40 @@ function Toggle({ on, onClick, title, sub }: { on: boolean; onClick: () => void;
   );
 }
 
-/** A tick box for an optional extra (square, so it doesn't read as one of a set of choices). */
-function Check2({ on, onClick, title, sub, id, dataAttr = "data-hub-onboarding-starter" }: { on: boolean; onClick: () => void; title: string; sub?: string; id: string; dataAttr?: string }) {
+/**
+ * A tick box for an optional extra (square, so it doesn't read as one of a set of choices). `stacked` puts the line
+ * about it under its name, in full, for a list a person reads before choosing.
+ */
+function Check2({ on, onClick, title, sub, tag, id, stacked = false, dataAttr = "data-hub-onboarding-starter" }: { on: boolean; onClick: () => void; title: string; sub?: string; tag?: string; id: string; stacked?: boolean; dataAttr?: string }) {
+  const box = (
+    <span className={`grid size-4 shrink-0 place-items-center rounded ${on ? "bg-content text-background-base" : "bg-content/10"}`}>
+      {on ? <Check className="size-3" strokeWidth={2.5} /> : null}
+    </span>
+  );
+  const mark = tag ? <span className="shrink-0 rounded border border-stroke px-1.5 text-[11px] leading-4 text-content/70" data-hub-onboarding-tag>{tag}</span> : null;
+  if (stacked) {
+    return (
+      <button type="button" role="checkbox" aria-checked={on} onClick={onClick} {...{ [dataAttr]: id }}
+        className={`flex items-start gap-3 rounded-lg px-3 py-2 text-left ${on ? "bg-content/8" : "hover:bg-content/5"}`}>
+        <span className="mt-0.5">{box}</span>
+        <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+          <span className="flex items-center gap-2">
+            <span className="text-[13px] text-content">{title}</span>
+            {mark}
+          </span>
+          {sub ? <span className="text-xs leading-4 text-content/60">{sub}</span> : null}
+        </span>
+      </button>
+    );
+  }
   return (
     <button type="button" role="checkbox" aria-checked={on} onClick={onClick} {...{ [dataAttr]: id }}
       className="flex items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-content/5">
-      <span className={`grid size-4 shrink-0 place-items-center rounded ${on ? "bg-content text-background-base" : "bg-content/10"}`}>
-        {on ? <Check className="size-3" strokeWidth={2.5} /> : null}
-      </span>
-      <span className="min-w-0 flex-1 text-[13px] text-content">{title}</span>
-      {sub ? <span className="shrink-0 text-xs text-content/60">{sub}</span> : null}
+      {box}
+      {/* The name never gives way: a long role line is what shortens. */}
+      <span className="shrink-0 text-[13px] text-content">{title}</span>
+      {mark}
+      {sub ? <span className="min-w-0 flex-1 truncate text-right text-xs text-content/60" title={sub}>{sub}</span> : <span className="flex-1" />}
     </button>
   );
 }

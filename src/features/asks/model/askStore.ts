@@ -1,0 +1,188 @@
+// The ask ledger on disk: one document (`asks`) in the app's own database (src-tauri/src/local_hub.rs), so it rides
+// with the chats through a ship's backup and rollback and is nowhere near a chat's context. Every window reads the
+// same one. A write lands only on the revision just read; another window's write means read again and apply on top.
+
+import { memoryDisk, type LocalHubDisk } from "../../hub/model/localHub/localHub";
+import { tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
+import type { LedgerAsk } from "../../hub/model/askLedger";
+import { withHubMoved } from "./askMove";
+import { withJobs, type JobRow } from "./askJobs";
+import { withAnswered, withDailyCheck, withLetGo, withReminderSent, withRemind, type QuietChange } from "./askQuiet";
+import {
+  ASK_DOC_KEY,
+  askDocForDisk,
+  emptyAskDoc,
+  parseAskDoc,
+  withAdded,
+  withChange,
+  withCheck,
+  withHandled,
+  withHeard,
+  type Ask,
+  type AskBy,
+  type AskChange,
+  type AskCheck,
+  type AskDoc,
+  type HearInput,
+} from "./asks";
+
+const TRIES = 5;
+
+export type AskStore = {
+  load(): Promise<AskDoc>;
+  /** Writes the empty ledger once, so the day it began is kept and not counted again from each launch. */
+  begin(): Promise<void>;
+  /** The ledger as this window last read it. Empty until the first load. */
+  doc(): AskDoc;
+  loaded(): boolean;
+  hear(input: HearInput): Promise<void>;
+  change(id: string | number, change: AskChange, by: AskBy): Promise<{ ask: Ask } | { problem: string }>;
+  add(input: { mateId: string; sessionId: string; blockId: string; text: string }): Promise<void>;
+  /**
+   * Records the daily check for a first mate, so it is sent once a day from whichever window sends it, and counts it
+   * against every ask it names that nothing moved (askQuiet.ts): the second raises the ask as a Needs you row.
+   */
+  markDigest(mateId: string): Promise<void>;
+  /** A quiet ask's card (askQuiet.ts). Each resolves to why it was refused, or undefined when it was done. `raisedAt` is the row the card was drawn for. */
+  remind(id: string, raisedAt: number): Promise<string | undefined>;
+  letGo(id: string, raisedAt: number): Promise<string | undefined>;
+  answered(id: string, raisedAt: number): Promise<string | undefined>;
+  /** The reminder queued at `remindAt` was sent. */
+  reminderSent(id: string, remindAt: number): Promise<void>;
+  /**
+   * The delegation rows' effect on the asks they carry (askJobs.ts): started while a job works, done with its proof when it
+   * passed, back to heard with a note when it failed or was cancelled. Safe to call with the same rows again.
+   */
+  jobs(rows: readonly JobRow[]): Promise<void>;
+  /** An open ask closed by what was built, with what closed it as its proof (hub/model/askSettle.ts). */
+  handle(id: string, proof: string): Promise<void>;
+  /** The settle bookkeeping on one ask (hub/model/askSettle.ts); a key set to null is removed. */
+  check(id: string, patch: { gap?: string | null; held?: AskCheck["held"] | null; settled?: string; reopen?: string }): Promise<void>;
+  /** The old hub ledger's open rows, copied in once (askMove.ts). Resolves true when this call did the move. */
+  moveFromHub(legacy: readonly LedgerAsk[], mateOf: (chatId: string) => string | undefined): Promise<boolean>;
+  subscribe(fn: () => void): () => void;
+};
+
+/** A quiet ask's change as one revision-checked write: a refusal writes nothing and comes back as its words. */
+function quiet(
+  write: <R>(fn: (base: AskDoc) => { doc: AskDoc; result: R }) => Promise<R>,
+  change: (base: AskDoc) => QuietChange,
+): Promise<string | undefined> {
+  return write<string | undefined>((base) => {
+    const out = change(base);
+    return "problem" in out ? { doc: base, result: out.problem } : { doc: out.doc, result: undefined };
+  });
+}
+
+export function createAskStore(disk: LocalHubDisk, now: () => number = Date.now): AskStore {
+  let file: AskDoc = emptyAskDoc(now());
+  let loaded = false;
+  let watching = false;
+  let first: Promise<AskDoc> | undefined;
+  let chain: Promise<unknown> = Promise.resolve();
+  const listeners = new Set<() => void>();
+  const adopt = (next: AskDoc) => {
+    if (loaded && next.revision < file.revision) return;
+    file = next;
+    for (const fn of [...listeners]) fn();
+  };
+  const read = async () => {
+    const doc = await disk.readDoc(ASK_DOC_KEY);
+    return parseAskDoc(doc.value, doc.rev, now());
+  };
+  const refresh = async () => {
+    const next = await read();
+    adopt(next);
+    loaded = true;
+    if (!watching && disk.watch) {
+      watching = true;
+      disk.watch((key, rev) => {
+        if (key === ASK_DOC_KEY && rev > file.revision) void refresh().catch(() => undefined);
+      });
+    }
+    return file;
+  };
+  // One first read however many readers ask at once (every receipt in a long chat subscribes).
+  const load = (): Promise<AskDoc> => {
+    if (loaded) return Promise.resolve(file);
+    first ??= refresh().finally(() => {
+      first = undefined;
+    });
+    return first;
+  };
+  const write = <R>(fn: (base: AskDoc) => { doc: AskDoc; result: R }): Promise<R> => {
+    const run = chain.then(async () => {
+      for (let attempt = 0; attempt < TRIES; attempt += 1) {
+        let base: AskDoc;
+        try {
+          base = await read();
+        } catch {
+          continue;
+        }
+        const { doc, result } = fn(base);
+        if (doc === base) return result;
+        let rev: number | null;
+        try {
+          rev = await disk.write(ASK_DOC_KEY, askDocForDisk(doc), base.revision);
+        } catch {
+          continue;
+        }
+        if (rev == null) continue;
+        loaded = true;
+        adopt({ ...doc, revision: rev });
+        return result;
+      }
+      throw new Error("The ask list couldn't be saved. Try again.");
+    });
+    chain = run.catch(() => undefined);
+    return run;
+  };
+  return {
+    load,
+    begin: () => write((base) => ({ doc: base.revision === 0 ? { ...base } : base, result: undefined })),
+    doc: () => file,
+    loaded: () => loaded,
+    hear: (input) => write((base) => ({ doc: withHeard(base, input), result: undefined })),
+    change: (id, change, by) =>
+      write<{ ask: Ask } | { problem: string }>((base) => {
+        const out = withChange(base, id, change, by, now());
+        return "problem" in out ? { doc: base, result: out } : { doc: out.doc, result: { ask: out.ask } };
+      }),
+    add: (input) => write((base) => ({ doc: withAdded(base, { ...input, now: now() }), result: undefined })),
+    markDigest: (mateId) => write((base) => ({ doc: withDailyCheck(base, mateId, now()), result: undefined })),
+    remind: (id, raisedAt) => quiet(write, (base) => withRemind(base, id, raisedAt, now())),
+    letGo: (id, raisedAt) => quiet(write, (base) => withLetGo(base, id, raisedAt, now())),
+    answered: (id, raisedAt) => quiet(write, (base) => withAnswered(base, id, raisedAt)),
+    reminderSent: (id, remindAt) => write((base) => ({ doc: withReminderSent(base, id, remindAt), result: undefined })),
+    jobs: (rows) => write((base) => ({ doc: withJobs(base, rows, now()), result: undefined })),
+    handle: (id, proof) => write((base) => ({ doc: withHandled(base, id, proof, now()), result: undefined })),
+    check: (id, patch) => write((base) => ({ doc: withCheck(base, id, patch), result: undefined })),
+    moveFromHub: (legacy, mateOf) =>
+      write((base) => {
+        const doc = withHubMoved(base, legacy, { mateOf, now: now() });
+        return { doc, result: doc !== base };
+      }),
+    subscribe(fn) {
+      listeners.add(fn);
+      void load().catch(() => undefined);
+      return () => {
+        listeners.delete(fn);
+      };
+    },
+  };
+}
+
+let active: AskStore | undefined;
+
+/** The window's ledger: the app's database in the app, memory in a browser preview or a test. */
+export function askStore(): AskStore {
+  if (active) return active;
+  const inTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+  active = createAskStore(inTauri ? tauriLocalHubDisk : memoryDisk());
+  return active;
+}
+
+/** Tests hand in their own. */
+export function setAskStore(next: AskStore | undefined): void {
+  active = next;
+}

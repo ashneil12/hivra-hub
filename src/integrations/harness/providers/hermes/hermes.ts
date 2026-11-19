@@ -164,6 +164,17 @@ export async function stopHermesSession(sessionId: string): Promise<void> {
   await killChild(sessionId).catch(() => undefined);
 }
 
+/**
+ * Busy while a background delegation is still in the live map. The turn
+ * usually waits until the manifest says the task finished, and a prompt
+ * error stops the process, which clears the map.
+ */
+export function hermesHasBackgroundWork(sessionId: string): boolean {
+  const live = liveByThread.get(sessionId);
+  if (!live) return false;
+  return live.background.size > 0;
+}
+
 export async function forgetHermesSession(sessionId: string): Promise<void> {
   resumeByThread.delete(sessionId);
   await stopHermesSession(sessionId);

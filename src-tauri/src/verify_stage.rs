@@ -325,19 +325,52 @@ fn run_command(
     action: &ProjectAction,
     env: Vec<(String, String)>,
 ) -> Result<(crate::project_actions::RunRecord, f64), String> {
+    run_command_with(app, main, checkout, action, env, false)
+}
+
+/// `run_command`, with the child's environment cleared down to the allow-list when `env_clear` is set (SC-4: a command an
+/// agent wrote runs scrubbed; the project's own checks keep the app's environment as they always did).
+fn run_command_with(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    action: &ProjectAction,
+    env: Vec<(String, String)>,
+    env_clear: bool,
+) -> Result<(crate::project_actions::RunRecord, f64), String> {
+    // WP-178 (review r2 HIGH-2): a verify run is an agent's own command, so it runs under the sandbox while it is on.
+    let data = project_file::data_dir(app)?;
+    let named = checkout.to_path_buf();
+    let wrap = crate::agent_sandbox::action_wrap(Some(&data), std::slice::from_ref(&named))?;
+    run_command_wrapped(app, main, checkout, action, env, env_clear, wrap)
+}
+
+/// `run_command_with`, started under the sandbox prefix the caller chose (SC-5: the checker's read-only copy runs under a
+/// profile that denies every write outside its scratch folder, which `action_wrap` is not).
+fn run_command_wrapped(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    action: &ProjectAction,
+    env: Vec<(String, String)>,
+    env_clear: bool,
+    wrap: Option<Vec<std::ffi::OsString>>,
+) -> Result<(crate::project_actions::RunRecord, f64), String> {
     let runs = app.state::<ActionRuns>();
     let started = std::time::Instant::now();
+    let data = project_file::data_dir(app)?;
     let record = project_actions::start_command(
         &runs,
         main,
         checkout,
         action,
         "verify",
-        &project_file::data_dir(app)?.join("action-runs"),
+        &data.join("action-runs"),
         Some(crate::harness::cached_gui_search_path()),
         env,
-        false,
+        env_clear,
         Some(project_actions::emitter(app)),
+        wrap,
     )?;
     let limit = Duration::from_secs(
         action
@@ -361,13 +394,31 @@ pub(crate) fn run_check(
     command: &str,
     timeout: u64,
 ) -> StepResult {
-    let (outcome, detail, run_id, log_path, seconds) = match run_command(
+    run_check_in(app, main, checkout, id, name, command, timeout, Vec::new()).0
+}
+
+/// SC-7 (the run_checks tool): the same run, with environment variables of the caller's, and how the run ended (`None`:
+/// it could not start). `run_check` is this with none.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_check_in(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    id: &str,
+    name: &str,
+    command: &str,
+    timeout: u64,
+    env: Vec<(String, String)>,
+) -> (StepResult, Option<crate::project_actions::RunStatus>) {
+    let ran = run_command(
         app,
         main,
         checkout,
         &action_for("check", &format!("verify-{id}"), name, command, timeout),
-        Vec::new(),
-    ) {
+        env,
+    );
+    let ended = ran.as_ref().ok().map(|(run, _)| run.status);
+    let (outcome, detail, run_id, log_path, seconds) = match ran {
         Ok((run, seconds)) => match run.status {
             crate::project_actions::RunStatus::Succeeded => (
                 Outcome::Passed,
@@ -410,19 +461,197 @@ pub(crate) fn run_check(
         },
         Err(error) => (Outcome::CouldNotExercise, truncate(&error), None, None, 0.0),
     };
-    StepResult {
-        kind: "check".into(),
-        id: id.to_string(),
-        name: name.to_string(),
-        outcome,
-        detail,
-        run_id,
-        log_path,
-        seconds,
+    (
+        StepResult {
+            kind: "check".into(),
+            id: id.to_string(),
+            name: name.to_string(),
+            outcome,
+            detail,
+            run_id,
+            log_path,
+            seconds,
+        },
+        ended,
+    )
+}
+
+/// SC-3b: a check that exited cleanly but whose log says its runner ran zero tests tested nothing: it could not be
+/// exercised and is never a pass. SC-3a put this rule in the gates' reading of a step (`gates::step_evidence`); the
+/// verify stage and the ship check get it here. A step that failed, one that could not run for another reason and one
+/// whose log holds no test summary (a build, a lint) keep their word. The whole log is read, not its tail.
+pub(crate) fn downgrade_zero_tests(mut step: StepResult) -> StepResult {
+    if step.outcome != Outcome::Passed {
+        return step;
+    }
+    let Some(log) = step
+        .log_path
+        .as_deref()
+        .and_then(|path| std::fs::read(path).ok())
+    else {
+        return step;
+    };
+    if let Some(note) = crate::firstmate::gates::zero_tests_note(&String::from_utf8_lossy(&log)) {
+        step.outcome = Outcome::CouldNotExercise;
+        step.detail = note;
+    }
+    step
+}
+
+/// SC-4: run one of a brief's own check commands in `checkout` through the same runner the project's checks use (the
+/// action runner: its process group, its timeout, its credential scrub and the agent sandbox while that is on), with the
+/// environment cleared down to the allow-list, since a brief's command is an agent's and not the project file's. Says how
+/// it ended and what it printed; whether that is a pass is the line's own judgement (`firstmate::brief_checks::judge`).
+pub(crate) fn run_brief_line(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    index: usize,
+    name: &str,
+    command: &str,
+) -> crate::firstmate::brief_checks::RawRun {
+    let action = action_for(
+        "brief check",
+        &format!("verify-brief-{index}"),
+        name,
+        command,
+        crate::firstmate::brief_checks::LINE_TIMEOUT_SECONDS,
+    );
+    raw_run(run_command_with(
+        app,
+        main,
+        checkout,
+        &action,
+        Vec::new(),
+        true,
+    ))
+}
+
+/// PT-1: run one proof tool's prepared command (`proof_tools::command::Prepared`: a fixed command line that names each file,
+/// range and URL as a quoted environment word, and the variables that hold them) in `checkout` through the same runner and
+/// the same allow-listed environment a brief's check line gets. `id` names the run (`verify-proof-<id>`).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_proof_line(
+    app: &AppHandle,
+    main: &Path,
+    checkout: &Path,
+    id: &str,
+    name: &str,
+    command: &str,
+    env: Vec<(String, String)>,
+    timeout: u64,
+) -> crate::firstmate::brief_checks::RawRun {
+    let action = action_for(
+        "proof tool",
+        &format!("verify-proof-{id}"),
+        name,
+        command,
+        timeout,
+    );
+    raw_run(run_command_with(app, main, checkout, &action, env, true))
+}
+
+/// How a finished run of a command an agent wrote reads: how it ended and what it printed.
+fn raw_run(
+    ran: Result<(crate::project_actions::RunRecord, f64), String>,
+) -> crate::firstmate::brief_checks::RawRun {
+    use crate::firstmate::brief_checks::{read_log, Ended, RawRun};
+    use crate::project_actions::RunStatus;
+    match ran {
+        Ok((run, seconds)) => RawRun {
+            ended: match run.status {
+                RunStatus::Succeeded => Ended::Exited(Some(run.exit_code.unwrap_or(0))),
+                RunStatus::Failed => Ended::Exited(run.exit_code),
+                RunStatus::TimedOut => Ended::TimedOut,
+                RunStatus::Stopped => Ended::Stopped,
+                RunStatus::Running => Ended::Unfinished,
+            },
+            output: read_log(Path::new(&run.log_path)),
+            seconds,
+        },
+        Err(error) => RawRun::not_started(truncate(&error)),
     }
 }
 
+/// SC-5: run one command in the checker's read-only copy through the same runner (its process group, its timeout, its
+/// credential scrub), under the copy's own sandbox prefix and with the environment cleared down to the allow-list and
+/// `TMPDIR` set to the copy's scratch folder, the one place it may write. `main` is the project's main checkout, which the
+/// runner keys the run by; the copy is not a checkout the project knows, so the caller has already proved the worker's.
+/// `id` names the run (`verify-checker-<id>`) and `timeout` is in seconds.
+pub(crate) fn run_copy_line(
+    app: &AppHandle,
+    main: &Path,
+    copy: &crate::firstmate::checker_copy::ReadOnlyCopy,
+    id: &str,
+    name: &str,
+    command: &str,
+    timeout: u64,
+) -> crate::firstmate::brief_checks::RawRun {
+    run_copy_line_with(app, main, copy, id, name, command, timeout, Vec::new())
+}
+
+/// PT-1: `run_copy_line`, with the caller's own variables set after the scratch ones (a proof tool's arguments travel here, so
+/// no file name is ever part of the command text).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn run_copy_line_with(
+    app: &AppHandle,
+    main: &Path,
+    copy: &crate::firstmate::checker_copy::ReadOnlyCopy,
+    id: &str,
+    name: &str,
+    command: &str,
+    timeout: u64,
+    extra_env: Vec<(String, String)>,
+) -> crate::firstmate::brief_checks::RawRun {
+    let action = action_for(
+        "checker",
+        &format!("verify-checker-{id}"),
+        name,
+        command,
+        timeout,
+    );
+    // The copy is read-only. A build or a tool cache writes into the scratch folder instead, so a check that builds can run.
+    let scratch = copy.scratch();
+    let under = |name: &str| scratch.join(name).to_string_lossy().into_owned();
+    let mut env = vec![
+        ("TMPDIR".to_string(), scratch.to_string_lossy().into_owned()),
+        ("CARGO_TARGET_DIR".to_string(), under("cargo-target")),
+        ("CARGO_BUILD_BUILD_DIR".to_string(), under("cargo-build")),
+        ("npm_config_cache".to_string(), under("npm-cache")),
+        ("XDG_CACHE_HOME".to_string(), under("cache")),
+    ];
+    env.extend(extra_env);
+    raw_run(run_command_wrapped(
+        app,
+        main,
+        copy.copy(),
+        &action,
+        env,
+        true,
+        copy.wrap.clone(),
+    ))
+}
+
 pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<VerifyRecord, String> {
+    run_kept(app, cwd, paths, true)
+}
+
+/// SC-3b: the same run, left out of the project's verify history. The ship check runs this over a commit range and keeps
+/// its own record, so the "Check this turn" card's latest verdict stays the last turn's, not a range's.
+pub(crate) fn run_unrecorded(
+    app: &AppHandle,
+    cwd: &Path,
+    paths: Vec<String>,
+) -> Result<VerifyRecord, String> {
+    run_kept(app, cwd, paths, false)
+}
+
+fn run_kept(
+    app: &AppHandle,
+    cwd: &Path,
+    paths: Vec<String>,
+    keep: bool,
+) -> Result<VerifyRecord, String> {
     let (main, checkout) = project_actions::checkout_of_project(cwd)?;
     let data = project_file::data_dir(app)?;
     let id = uuid::Uuid::new_v4().to_string();
@@ -450,7 +679,9 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
                 .into()
         };
         record.ended_at = now_ms();
-        let _ = save(&record);
+        if keep {
+            let _ = save(&record);
+        }
         return Ok(record);
     };
     let verify = file.verify.clone();
@@ -466,7 +697,8 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
             if !touched {
                 continue;
             }
-            record.steps.push(run_check(
+            // SC-3b: a check whose runner ran zero tests could not be exercised, not passed.
+            record.steps.push(downgrade_zero_tests(run_check(
                 app,
                 &main,
                 &checkout,
@@ -474,7 +706,7 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
                 &check.name,
                 &check.command,
                 check.timeout_seconds(),
-            ));
+            )));
         }
         for folder in changed_folders(&checkout, &changed) {
             if !verify
@@ -578,7 +810,7 @@ pub(crate) fn run(app: &AppHandle, cwd: &Path, paths: Vec<String>) -> Result<Ver
     record.outcome = VerifyRecord::aggregate(&record.steps);
     record.summary = summary_of(&record);
     record.ended_at = now_ms();
-    let saved = save(&record);
+    let saved = if keep { save(&record) } else { Ok(()) };
     if let Err(error) = saved {
         record.summary = format!(
             "{} (the record could not be saved: {error})",
@@ -941,5 +1173,59 @@ mod tests {
             .unwrap()
             .contains("\"r1\""));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A passed check with its log on disk.
+    fn passed_with_log(log: &str) -> (StepResult, PathBuf) {
+        let dir = std::env::temp_dir().join(format!("verify-zero-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("run.log");
+        std::fs::write(&path, log).unwrap();
+        let mut found = step("check", Outcome::Passed);
+        found.detail = "ran and passed".into();
+        found.log_path = Some(path.to_string_lossy().into_owned());
+        (found, dir)
+    }
+
+    #[test]
+    fn a_check_that_ran_zero_tests_could_not_be_exercised() {
+        let zero = "running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let (found, dir) = passed_with_log(zero);
+        let found = downgrade_zero_tests(found);
+        assert_eq!(found.outcome, Outcome::CouldNotExercise);
+        assert!(
+            found.detail.starts_with("ran zero tests"),
+            "{}",
+            found.detail
+        );
+        // Beside a passing check it must not read as a pass.
+        assert_eq!(
+            VerifyRecord::aggregate(&[step("web", Outcome::Passed), found]),
+            Outcome::CouldNotExercise
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_check_that_ran_tests_or_has_no_summary_keeps_its_word() {
+        // 500 tests in the library, then the empty doc-tests: the last summary is not the run's.
+        let ran = "running 500 tests\ntest result: ok. 500 passed; 0 failed; 3 ignored; 0 measured; 0 filtered out; finished in 4.2s\n   Doc-tests tally\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n";
+        let (found, dir) = passed_with_log(ran);
+        assert_eq!(downgrade_zero_tests(found).outcome, Outcome::Passed);
+        let (found, other) = passed_with_log("Compiling tally\nFinished dev profile\n");
+        assert_eq!(downgrade_zero_tests(found).outcome, Outcome::Passed);
+        // A failed step, and a passed one whose log is gone, are not touched.
+        let mut failed = step("check", Outcome::Failed);
+        failed.log_path = Some("/nonexistent/run.log".into());
+        assert_eq!(downgrade_zero_tests(failed).outcome, Outcome::Failed);
+        let mut gone = step("check", Outcome::Passed);
+        gone.log_path = Some("/nonexistent/run.log".into());
+        assert_eq!(downgrade_zero_tests(gone).outcome, Outcome::Passed);
+        assert_eq!(
+            downgrade_zero_tests(step("check", Outcome::Passed)).outcome,
+            Outcome::Passed
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&other);
     }
 }

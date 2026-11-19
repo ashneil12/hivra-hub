@@ -48,15 +48,15 @@ it("shows who is writing with a Stop, and after Stop the team waits with Keep go
   });
   await act(async () => {
     void chat.requestReply(room.id, conv);
-    await new Promise((r) => setTimeout(r, 10));
   });
+  await act(async () => vi.waitFor(() => expect(q("[data-hub-typing]")).not.toBeNull()));
   // Not "is writing…": what it is doing, from its stream, and for how long. Nothing from the stream yet: Thinking.
   expect(q("[data-hub-typing]")!.textContent).toMatch(/Ada · Thinking(?! · 0s)/); // r96: no time under 1s
   expect(q("[data-hub-member-working]")!.textContent).toContain("Ada");
   await act(async () => {
     q("[data-hub-room-stop]")!.click();
-    await new Promise((r) => setTimeout(r, 30));
   });
+  await act(async () => vi.waitFor(() => expect(q("[data-hub-room-strip]")).not.toBeNull()));
   // The pause is the quiet strip above the composer, not a line posted in the room (AD6, AD12).
   expect(q("[data-hub-msg-system]")).toBeNull();
   expect(q("[data-hub-room-strip]")!.textContent).toBe("You stopped the room. The team waits for you.");
@@ -106,8 +106,8 @@ it("the host's answer fills in where it will stay: a live message while it write
   });
   await act(async () => {
     void chat.requestReply(room.id, conv);
-    await new Promise((r) => setTimeout(r, 10));
   });
+  await act(async () => vi.waitFor(() => expect(q("[data-hub-typing]")).not.toBeNull()));
   // Not started yet: the line above the composer says what it is doing.
   expect(q("[data-hub-typing]")!.textContent).toMatch(/Ada · Thinking(?! · 0s)/); // r96: no time under 1s
   await act(async () => step({ key: "tool:r1", label: "Reading src/app.tsx", since: Date.now() - 14_000, lastEventAt: Date.now() }));

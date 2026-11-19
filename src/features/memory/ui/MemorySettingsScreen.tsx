@@ -5,9 +5,11 @@ import { useMemo } from "react";
 import { learnSkillLesson, takeBackSkillLesson } from "../../selfBuild/model/skillLearn";
 import { parseDoc, type MemoryDoc } from "../model/doc";
 import { LearnFromChats } from "./LearnFromChats";
-import { learnPorts } from "./learnHost";
+import { sharedLearnPorts } from "./learnHost";
 import { MemoryReview, type ImportRow, type MemoryPorts } from "./MemoryReview";
 import { MemoryTierSetting } from "./MemoryTierChoice";
+import { SkillLearningSetting } from "./SkillLearningChoice";
+import { SensitiveTopicsSetting } from "./SensitiveTopics";
 
 type Loaded = { revision: number; doc: unknown };
 type Listed = { id: string; project: string; conversationId: string; source: string; status: string; markdown: string };
@@ -36,12 +38,20 @@ function realPorts(): MemoryPorts {
 export function MemorySettingsScreen() {
   const ports = useMemo(() => realPorts(), []);
   // WP-83: proposals from past chats, beside the memory review.
-  const learn = useMemo(() => learnPorts(), []);
+  const learn = useMemo(() => sharedLearnPorts(), []);
   return (
     <>
       {/* WP-103: how Hivra remembers, above what it remembers. */}
       <div className="mb-6">
         <MemoryTierSetting />
+      </div>
+      {/* WP-242: how skills are learned, one switch for both paths. */}
+      <div className="mb-6">
+        <SkillLearningSetting />
+      </div>
+      {/* Sensitive topics: remembered unless switched off (model/sensitive.ts). */}
+      <div className="mb-6">
+        <SensitiveTopicsSetting />
       </div>
       <MemoryReview ports={ports} />
       <LearnFromChats ports={learn} />

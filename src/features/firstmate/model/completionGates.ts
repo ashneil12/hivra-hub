@@ -7,6 +7,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { MonoSessionCompletionResult } from "../../monos/model/monoSessionCompletion";
 import { GATE_TRIES, gateAsk, gateFailedResult, type GateRun } from "../../monos/model/workerGate";
+import type { Block } from "../../sessions/model/session";
+import { factsFromBlocks, type FactTurn } from "./factGaps";
 
 /** The fixed set (gates.rs GateKind). */
 export const GATE_WORDS = ["diff", "checks", "committed", "ratchet", "routes"] as const;
@@ -18,6 +20,8 @@ export type GateRequest = {
   gates?: string[];
   checks?: string[];
   code?: boolean;
+  /** SC-7: `fix` when the brief fixes a bug; the worker must then show a failing run of its test first (gates.rs). */
+  kind?: "fix";
 };
 
 /**
@@ -28,17 +32,30 @@ export function gateRequest(input: {
   gates?: unknown;
   checks?: unknown;
   code?: unknown;
+  kind?: unknown;
 }): GateRequest | undefined {
   if (input.code !== undefined && typeof input.code !== "boolean")
     throw new Error("code must be true or false");
   const gates = wordList(input.gates, "gates");
   const checks = checkList(input.checks);
-  if (!input.code && !gates?.length && !checks?.length) return undefined;
+  const kind = kindOf(input.kind);
+  if (!input.code && !gates?.length && !checks?.length && !kind) return undefined;
   return {
     ...(gates?.length ? { gates } : {}),
     ...(checks?.length ? { checks } : {}),
     ...(input.code ? { code: true } : {}),
+    ...(kind ? { kind } : {}),
   };
+}
+
+/** SC-7: the kind a brief may name is `fix`; blank is none. Refused in the words Rust uses (gates.rs `check_kind`). */
+function kindOf(value: unknown): "fix" | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string") throw new Error("kind must be fix");
+  const kind = value.trim();
+  if (!kind) return undefined;
+  if (kind.toLowerCase() === "fix") return "fix";
+  throw new Error(`"${kind.slice(0, 40)}" isn't a kind of brief. Use fix, or leave kind out.`);
 }
 
 /** A gate name, trimmed. An unknown word is refused with the original text, as Rust does. */
@@ -77,10 +94,23 @@ function checkList(value: unknown): string[] | undefined {
   return checks;
 }
 
+/**
+ * SC-5: what Rust decided to do after a failed round (firstmate/rounds.rs `NextStep`), from the task's ledger of rounds:
+ * `send-back` (the numbered findings go to the worker), `rewrite` (a stronger model rewrote the brief; `text` is the message
+ * that goes to the worker as the next round), `up` (a two-line summary goes to the first mate as a new turn) or `person`
+ * (one decision is open in Needs you; `text` tells the first mate to wait for it).
+ */
+export type NextStepView = {
+  kind: string;
+  text?: string;
+};
+
 /** The verdict Rust stored, as the webview needs it. Anything else is not a pass. */
 export type GateRecordView = {
   verdict: string;
   summary?: string;
+  /** SC-5: absent on a record from before the ledger, and on one with no failed round. */
+  next?: NextStepView;
 };
 
 export type BriefGateStep =
@@ -108,24 +138,90 @@ function failedRun(summary: string | undefined): GateRun {
 }
 
 /**
- * One round. `failures` is how many failed rounds this worker already had, not counting this one. A pass lands. The
- * first failure goes back to the worker; the second is failed. Unsure never uses that fix round and never lands: the
- * row stays completed so its first mate can accept or refuse it.
+ * The first line of a fact-gap summary, when it is a real reason. A stored summary is untrusted: a blank, a control
+ * character, or a line too long to show falls back to the usual checks note.
+ */
+function sentBackLine(summary: string | undefined): string | undefined {
+  const line = summary?.split(/\r?\n/)[0]?.trim() ?? "";
+  if (!line.startsWith("Sent back:")) return undefined;
+  const rest = line.slice("Sent back:".length).trim();
+  if (!rest || line.length > 180) return undefined;
+  if (/[\u0000-\u001F\u007F]/.test(line)) return undefined;
+  return line;
+}
+
+function sentBackFailure(result: MonoSessionCompletionResult, line: string): MonoSessionCompletionResult {
+  return { ...result, status: "failed", error: `${line} Still failed after ${GATE_TRIES} tries.` };
+}
+
+const REWRITE_NOTE = {
+  kind: "message" as const,
+  from: "MonoCode",
+  line: "Checks failed twice; a stronger model rewrote the brief and it went to the worker",
+};
+
+/** What a hand-up or a decision tells the first mate when Rust gave no words. */
+const HANDED_UP = "The checks failed again and a decision is open; wait for it.";
+
+/**
+ * SC-5: what Rust decided for a failed round, or nothing when it said nothing readable. A stored record is untrusted: a
+ * kind this build doesn't know, or a rewrite with no brief to send, is read as no decision, so the old cap still applies.
+ */
+function nextOf(record: GateRecordView): { kind: "send-back" | "rewrite" | "up" | "person"; text: string } | undefined {
+  if (record.verdict !== "failed") return undefined;
+  const kind = record.next?.kind;
+  const text = typeof record.next?.text === "string" ? record.next.text.trim() : "";
+  if (kind === "send-back") return { kind, text };
+  if (kind === "rewrite") return text ? { kind, text } : undefined;
+  if (kind === "up" || kind === "person") return { kind, text: text || HANDED_UP };
+  return undefined;
+}
+
+/**
+ * One round. `failures` is how many failed rounds this worker already had, not counting this one. A pass lands. After a
+ * failure Rust's ledger of the task's rounds says what happens (`next`): the first failure's numbered findings go back to
+ * the worker; the second stops them and a stronger model rewrites the brief (the new brief goes to the worker as the next
+ * round) or hands the work up (the first mate hears it as a new turn); the failure after that waits for the person's
+ * decision, and the first mate is told to wait. A record with no `next` (from before the ledger) keeps the old cap: the
+ * first failure goes back, the second is failed. Unsure never uses a fix round and never lands: the row stays completed so
+ * its first mate can accept or refuse it.
  */
 export function briefGateAction(record: GateRecordView, failures: number): BriefGateStep {
   if (record.verdict === "passed") return { action: "pass" };
-  if (record.verdict === "failed" && failures + 1 < GATE_TRIES) {
+  const next = nextOf(record);
+  if (next?.kind === "rewrite") {
+    const run = failedRun(record.summary);
+    return {
+      action: "resend",
+      ask: next.text,
+      note: REWRITE_NOTE,
+      failed: (result) => gateFailedResult(result, run),
+    };
+  }
+  if (next?.kind === "up" || next?.kind === "person") {
+    return {
+      action: "unsure",
+      apply: (result) => ({ ...result, status: "completed", gatesNote: next.text }),
+    };
+  }
+  const sentBack = record.verdict === "failed" ? sentBackLine(record.summary) : undefined;
+  // SC-5: a failure the ledger says to send back goes back whatever this window counted: the ledger is the task's, kept
+  // across restarts and windows; the count here starts again with each report loop.
+  if (record.verdict === "failed" && (next?.kind === "send-back" || failures + 1 < GATE_TRIES)) {
     const run = failedRun(record.summary);
     return {
       action: "resend",
       ask: gateAsk(run),
-      note: RESEND_NOTE,
-      failed: (result) => gateFailedResult(result, run),
+      note: sentBack ? { kind: "message", from: "MonoCode", line: sentBack } : RESEND_NOTE,
+      failed: (result) => (sentBack ? sentBackFailure(result, sentBack) : gateFailedResult(result, run)),
     };
   }
   if (record.verdict === "failed") {
     const run = failedRun(record.summary);
-    return { action: "fail", apply: (result) => gateFailedResult(result, run) };
+    return {
+      action: "fail",
+      apply: (result) => (sentBack ? sentBackFailure(result, sentBack) : gateFailedResult(result, run)),
+    };
   }
   const summary = record.summary?.trim() || "The checks couldn't say the brief was met.";
   return {
@@ -141,17 +237,30 @@ export type BriefGateInput = {
   signedOff: boolean;
   report: string;
   failures: number;
+  /** WP-145: this turn's blocks. Facts are read from them when `facts` is absent. */
+  blocks?: readonly Block[];
+  /** WP-145: already-read facts. These win over `blocks`. */
+  facts?: FactTurn;
 };
+
+/** Facts from this turn's blocks. Missing blocks are not invented from the report. */
+function withFacts(input: BriefGateInput): BriefGateInput {
+  if (input.facts) return input;
+  if (!Array.isArray(input.blocks)) return input;
+  return { ...input, facts: factsFromBlocks(input.blocks, input.report) };
+}
 
 /** Runs the stored plan. `null`: the brief has no gates, and the routes check runs as before. */
 export async function runBriefGates(input: BriefGateInput): Promise<GateRecordView | null> {
+  const ready = withFacts(input);
   return invoke<GateRecordView | null>("firstmate_run_gates", {
     input: {
-      delegationId: input.delegationId,
-      checkout: input.checkout,
-      ...(input.projectId ? { projectId: input.projectId } : {}),
-      signedOff: input.signedOff,
-      report: input.report,
+      delegationId: ready.delegationId,
+      checkout: ready.checkout,
+      ...(ready.projectId ? { projectId: ready.projectId } : {}),
+      signedOff: ready.signedOff,
+      report: ready.report,
+      ...(ready.facts ? { facts: ready.facts } : {}),
     },
   });
 }
@@ -164,9 +273,10 @@ export async function briefGatesFor(
   input: BriefGateInput,
   run: (input: BriefGateInput) => Promise<GateRecordView | null> = runBriefGates,
 ): Promise<BriefGateStep | null> {
+  const ready = withFacts(input);
   let record: GateRecordView | null;
   try {
-    record = await run(input);
+    record = await run(ready);
   } catch {
     record = {
       verdict: "unsure",
@@ -174,7 +284,7 @@ export async function briefGatesFor(
     };
   }
   if (!record) return null;
-  return briefGateAction(record, input.failures);
+  return briefGateAction(record, ready.failures);
 }
 
 /** Keeps a started task's gates (firstmate_gates_plan). An empty plan keeps nothing. */

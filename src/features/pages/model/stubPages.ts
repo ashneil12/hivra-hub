@@ -51,7 +51,7 @@ export function stubBespoke(request: string): BespokeSpec | undefined {
   if (/faint/i.test(request))
     return { kind: "bespoke", title: "Example: release notes", permissions: ["project.read"],
       css: `${BESPOKE_BASE}\n.ghost{color:color-mix(in srgb,var(--color-content) 25%,transparent);font-size:11px}`,
-      html: `<div class="wrap"><h2>Example: release notes</h2><p class="ghost">Example: 0.14 adds Pages and schemes.</p></div>` };
+      html: `<div class="wrap"><h2>Example: release notes</h2><p class="ghost">Example: 0.14 adds Hubs and schemes.</p></div>` };
   if (/colou?rful|bright/i.test(request))
     return { kind: "bespoke", title: "Example: launch countdown", permissions: ["tasks.read"],
       css: `${BESPOKE_BASE}\n.hero{background:linear-gradient(120deg,#ff7a45,#c84bff);color:#ffffff;border-radius:12px;padding:20px;font-size:28px;font-weight:600}\n.tag{background:var(--color-status-ok);color:var(--color-background-base);padding:2px 8px;border-radius:6px;font-size:12px}`,
@@ -59,7 +59,7 @@ export function stubBespoke(request: string): BespokeSpec | undefined {
   if (/bespoke|custom|own page/i.test(request))
     return { kind: "bespoke", title: "Example: Hivra growth room", permissions: ["tasks.read", "project.read", "mono.run"],
       css: BESPOKE_BASE,
-      html: `<div class="wrap"><h2>Example: Hivra growth room</h2><div class="sub">A bespoke page: its own layout, using the hub's blocks and theme.</div><div class="grid" id="g"></div></div>`,
+      html: `<div class="wrap"><h2>Example: Hivra growth room</h2><div class="sub">A bespoke hub: its own layout, using the app's blocks and theme.</div><div class="grid" id="g"></div></div>`,
       js: `const g=document.getElementById("g");
 g.appendChild(hub.block("status",{title:"Status",state:"ok",line:"Example: sign-ups up this week"}));
 g.appendChild(hub.block("barlist",{title:"Example: where sign-ups came from",rows:[{label:"X posts",value:96},{label:"Waitlist page",value:61},{label:"Friends",value:34},{label:"Search",value:21}]}));

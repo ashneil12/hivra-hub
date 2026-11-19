@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { stripHiddenCharacters } from "../../sessions/model/hiddenText";
 import type { HarnessId, RuntimeMode } from "../../sessions/model/session";
 
 export const AUTOMATIONS_CHANGED = "monocode:automations-changed";
@@ -144,6 +145,11 @@ export type AutomationDraft = {
   triggers: AutomationTrigger[];
   missedRunGraceMinutes: number;
   enabled: boolean;
+  /**
+   * WP-244: the editor's "Only run when this changes", as typed. Saved beside the automation (automationWatches.ts),
+   * never in its definition; undefined leaves the saved one as it is.
+   */
+  watch?: string;
 };
 
 export const AUTOMATION_WEEKDAYS = [
@@ -456,7 +462,11 @@ export async function listAutomations(): Promise<Automation[]> {
 export async function saveAutomation(
   draft: AutomationDraft,
 ): Promise<Automation> {
-  const synced = applyTriggers(draft, draft.triggers);
+  // Whatever reached the draft, a saved prompt never carries hidden characters.
+  const synced = applyTriggers(
+    { ...draft, prompt: stripHiddenCharacters(draft.prompt).text },
+    draft.triggers,
+  );
   const automation: AutomationUpsert = {
     ...synced,
     id: synced.id ?? crypto.randomUUID(),
@@ -550,13 +560,15 @@ export async function claimDueAutomations(
 export async function updateAutomationRun(
   runId: string,
   status: AutomationRunStatus,
-  options: { sessionId?: string; error?: string } = {},
+  options: { sessionId?: string; error?: string; errorClass?: string } = {},
 ): Promise<AutomationRun> {
   const run = await invoke<AutomationRun>("automation_run_update", {
     runId,
     status,
     sessionId: options.sessionId ?? null,
     error: options.error ?? null,
+    // WP-180a: a known class becomes the sentence on the activity line.
+    errorClass: options.errorClass ?? null,
     now: Date.now(),
   });
   emitLocalChange();

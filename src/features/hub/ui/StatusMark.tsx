@@ -1,3 +1,4 @@
+import { SecondaryButton } from "../../../shared/ui/SecondaryButton";
 import { gaveUpAsNeedsYou } from "../model/hubWork";
 import { NEEDS_YOU, stuckChip, wireChip, type Chip, type ChipTone } from "../model/statusChip";
 import { askNeedsAsh } from "../model/askNeeds";
@@ -82,27 +83,19 @@ export function needMark(
   return { circle: chip.tone, word: chip.word };
 }
 
-/**
- * The one look for "Open <Lead>'s chat", red row or grey (Critiquito on r30: the red rows' was a plain underlined link,
- * the grey rows' a button). Being built's grey rows and StuckWorkerCard use the same class.
- */
-export const LEAD_CHAT_BUTTON = "shrink-0 cursor-default rounded-md bg-content/8 px-2.5 py-1 text-xs text-content/85 hover:bg-content/12";
-
 /** "Open Hivra lead's chat": every red Needs you carries it (r27b), so Ash can act from where he sees it. */
 export function OpenLeadLink({ name, onOpen }: { name?: string | null; onOpen: () => void }) {
   return (
-    <button
-      type="button"
+    <SecondaryButton
       data-hub-open-lead
       onClick={(e) => {
         e.stopPropagation();
         onOpen();
       }}
       onKeyDown={(e) => e.stopPropagation()}
-      className={LEAD_CHAT_BUTTON}
     >
       Open {name?.trim() || "its Lead"}&apos;s chat
-    </button>
+    </SecondaryButton>
   );
 }
 

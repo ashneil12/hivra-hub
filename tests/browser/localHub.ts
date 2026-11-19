@@ -20,3 +20,12 @@ export async function openLocalHub(page: Page, query = "", projects: SeedProject
   }, projects);
   await page.goto(`/hub-dev.html?local${query}`);
 }
+
+/**
+ * Dropwave: picking a project opens the project's own home. Its first mate's chats (what was the "Coding team" row) are
+ * one click on, under First mates in the sidebar: the first mate pinned on top of the list, its chat open beside it.
+ */
+export async function openProjectLead(page: Page, project = "EXO", lead = `${project} lead`): Promise<void> {
+  await page.getByRole("button", { name: new RegExp(`^${project}`) }).first().click();
+  await page.locator("[data-mono-rail-list]").getByText(lead, { exact: true }).first().click();
+}

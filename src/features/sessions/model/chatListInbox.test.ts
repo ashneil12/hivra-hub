@@ -224,6 +224,397 @@ describe("snooze", () => {
   });
 });
 
+describe("a settled chat comes back", () => {
+  const settled = { touch: 10, settledAt: 10 };
+  // Each need below began at 30, after the settle at 10, unless a test says otherwise.
+  const approvalAt = (at?: number) =>
+    chatAttention({
+      busy: true,
+      blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1, ...(at != null ? { at } : {}) } } as never],
+    });
+  const questionAt = (askedAt?: number) =>
+    chatAttention({ busy: false, pendingQuestion: { requestId: 1, ...(askedAt != null ? { askedAt } : {}) }, blocks: [] });
+  const failedAt = (at?: number) =>
+    chatAttention({
+      busy: false,
+      blocks: [{ id: "e", role: "system", text: "nope", notice: "error", ...(at != null ? { failure: { at } } : {}) }],
+    });
+  const limitAt = (at?: number) =>
+    chatAttention({
+      busy: false,
+      usageLimit: { resetsAt: 1 },
+      blocks: [
+        {
+          id: "e",
+          role: "system",
+          text: "limit",
+          notice: "error",
+          failure: { errorClass: "usage_limit", ...(at != null ? { at } : {}) },
+        },
+      ],
+    });
+  const approval = approvalAt(30);
+
+  it("when a need began after it was settled: an approval, a question, a failed turn or a usage limit", () => {
+    expect(shelfFor(settled, 40)).toBe("settled");
+    expect(shelfFor(settled, 40, calm)).toBe("settled");
+    expect(approval.needsApproval).toBe(true);
+    expect(approval.needAt).toBe(30);
+    expect(shelfFor(settled, 40, approval)).toBe("active");
+    expect(shelfFor(settled, 40, questionAt(30))).toBe("active");
+    expect(shelfFor(settled, 40, failedAt(30))).toBe("active");
+    expect(shelfFor(settled, 40, limitAt(30))).toBe("active");
+  });
+
+  it("not for a need that was already there when it was settled", () => {
+    // Settling a chat with a failed turn, a usage limit, an open question or an approval keeps it settled: the person
+    // settled it knowing that. Older than the settle, and the very moment of it, are both not newer.
+    for (const at of [5, 10]) {
+      expect(shelfFor(settled, 40, approvalAt(at)), `approval at ${at}`).toBe("settled");
+      expect(shelfFor(settled, 40, questionAt(at)), `question at ${at}`).toBe("settled");
+      expect(shelfFor(settled, 40, failedAt(at)), `failed turn at ${at}`).toBe("settled");
+      expect(shelfFor(settled, 40, limitAt(at)), `usage limit at ${at}`).toBe("settled");
+    }
+    // A question or failure with no time cannot be shown to be newer than the settle, like a message with no time.
+    // (An approval with no time is the exception: it is never hidden, see "an approval with no time" below.)
+    expect(shelfFor(settled, 40, questionAt())).toBe("settled");
+    expect(shelfFor(settled, 40, failedAt())).toBe("settled");
+    expect(shelfFor(settled, 40, { ...calm, needsPerson: true, needsApproval: true })).toBe("settled");
+  });
+
+  it("for the newest need when it has several, whatever an older one says", () => {
+    const old = chatAttention({
+      busy: false,
+      pendingQuestion: { requestId: 1, askedAt: 5 },
+      blocks: [{ id: "e", role: "system", text: "nope", notice: "error", failure: { at: 30 } }],
+    });
+    expect(old.needsPerson).toBe(true);
+    expect(old.needAt).toBe(30);
+    expect(shelfFor(settled, 40, old)).toBe("active");
+    // The newest of a chat's approvals counts.
+    const two = chatAttention({
+      busy: true,
+      blocks: [
+        { id: "p1", role: "approval", text: "", approval: { requestId: 1, at: 5 } },
+        { id: "p2", role: "approval", text: "", approval: { requestId: 2, at: 30 } },
+      ] as never,
+    });
+    expect(two.needAt).toBe(30);
+    expect(shelfFor(settled, 40, two)).toBe("active");
+  });
+
+  it("once settled again, a need that began before the new settle stays settled", () => {
+    expect(shelfFor(settled, 40, approval)).toBe("active");
+    const again = stripInbox(applyInbox({ rev: 1, chats: { a: settled } }, ["a"], { type: "settle", at: 50 }).doc);
+    expect(shelfFor(again.chats.a, 60, approval)).toBe("settled");
+  });
+
+  it("goes back to the shelf when that need has passed and nothing new was said", () => {
+    expect(shelfFor(settled, 40, approval)).toBe("active");
+    const decided = chatAttention({
+      busy: true,
+      blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1, at: 30, decided: "cancelled" } }],
+    });
+    expect(shelfFor(settled, 40, decided)).toBe("settled");
+    expect(shelfFor(settled, 40, calm)).toBe("settled");
+  });
+
+  it("does not come back for a need the app already ignores: a stale approval, a failure mid-turn, a removed worktree", () => {
+    const stale = chatAttention({ busy: false, blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1, at: 30 } }] });
+    expect(shelfFor(settled, 40, stale)).toBe("settled");
+    const failedWhileBusy = chatAttention({ busy: true, blocks: [{ id: "e", role: "system", text: "nope", notice: "error", failure: { at: 30 } }] });
+    expect(shelfFor(settled, 40, failedWhileBusy)).toBe("settled");
+    const removed = chatAttention({
+      busy: false,
+      worktreeRemoved: true,
+      pendingQuestion: { requestId: 1, askedAt: 30 },
+      usageLimit: { resetsAt: 1 },
+      blocks: [{ id: "e", role: "system", text: "nope", notice: "error", failure: { at: 30 } }],
+    });
+    expect(shelfFor(settled, 40, removed)).toBe("settled");
+  });
+
+  it("when the person writes after it was settled, and not for a message from before", () => {
+    const after = chatAttention({ blocks: [{ id: "u", role: "user", text: "one more thing", sentAt: 30 }] });
+    expect(shelfFor(settled, 40, after)).toBe("active");
+    const sameMoment = chatAttention({ blocks: [{ id: "u", role: "user", text: "done", startedAt: 10 }] });
+    expect(shelfFor(settled, 40, sameMoment)).toBe("settled");
+    const before = chatAttention({ blocks: [{ id: "u", role: "user", text: "old", startedAt: 5 }] });
+    expect(shelfFor(settled, 40, before)).toBe("settled");
+    // An old message with no time cannot be shown to be new, so it does not undo a settle.
+    const undated = chatAttention({ blocks: [{ id: "u", role: "user", text: "old" }] });
+    expect(undated.ownMessage).toBe("undated");
+    expect(shelfFor(settled, 40, undated)).toBe("settled");
+    // A note the app wrote into the chat is not the person writing.
+    const note = chatAttention({ blocks: [{ id: "u", role: "user", text: "note", startedAt: 30, monoNote: { from: "x" } }] });
+    expect(shelfFor(settled, 40, note)).toBe("settled");
+  });
+
+  it("when the chat gets a reply after it was settled", () => {
+    const answered = chatAttention({
+      blocks: [
+        { id: "u", role: "user", text: "q", startedAt: 5, durationMs: 40 },
+        { id: "a", role: "assistant", text: "Here you go." },
+      ],
+    });
+    expect(answered.repliedAt).toBe(45);
+    expect(shelfFor(settled, 50, answered)).toBe("active");
+    const earlier = chatAttention({
+      blocks: [
+        { id: "u", role: "user", text: "q", startedAt: 2, durationMs: 4 },
+        { id: "a", role: "assistant", text: "Here you go." },
+      ],
+    });
+    expect(shelfFor(settled, 50, earlier)).toBe("settled");
+    const streaming = chatAttention({
+      blocks: [
+        { id: "u", role: "user", text: "q", startedAt: 5, durationMs: 40 },
+        { id: "a", role: "assistant", text: "Here", streaming: true },
+      ],
+    });
+    expect(shelfFor(settled, 50, streaming)).toBe("settled");
+  });
+
+  it("not for a turn the app starts on its own, such as one a worker's report begins", () => {
+    // Only the person's own messages count as a reply (the app's notes are not), so a turn that finishes after the
+    // settle because a worker reported does not unsettle the chat. Nothing else in this chat is newer than the settle.
+    const own = { id: "u", role: "user", text: "q", startedAt: 2, durationMs: 4 };
+    const turn = (extra: Record<string, unknown>) =>
+      chatAttention({
+        blocks: [
+          own,
+          { id: "a", role: "assistant", text: "Done." },
+          { id: "r", role: "user", text: "worker report", startedAt: 30, durationMs: 20, ...extra },
+          { id: "b", role: "assistant", text: "Thanks, noted." },
+        ],
+      });
+    for (const extra of [{ monoSessionCompletion: { from: "w" } }, { monoNote: { from: "w" } }, { monoCheck: { from: "w" } }, { internal: true }]) {
+      const attention = turn(extra);
+      // The reply that counts is the one to the person's own message, which ended at 6, before the settle at 10.
+      expect(attention.repliedAt, JSON.stringify(extra)).toBe(6);
+      expect(shelfFor(settled, 60, attention), JSON.stringify(extra)).toBe("settled");
+    }
+    // The same turn begun by the person does bring it back.
+    const person = chatAttention({
+      blocks: [own, { id: "a", role: "assistant", text: "Done." }, { id: "r", role: "user", text: "and one more", startedAt: 30, durationMs: 20 }, { id: "b", role: "assistant", text: "Here." }],
+    });
+    expect(person.repliedAt).toBe(50);
+    expect(shelfFor(settled, 60, person)).toBe("active");
+  });
+
+  it("is only a view: the settle mark stays stored, and a new settle hides the chat again", () => {
+    const wrote = chatAttention({ blocks: [{ id: "u", role: "user", text: "back again", sentAt: 30 }] });
+    const doc: InboxDoc = { rev: 1, chats: { a: settled } };
+    const split = splitInboxSessions([row("a", 1), row("b", 2)], {
+      enabled: true,
+      marks: doc.chats,
+      now: 40,
+      attention: new Map([["a", wrote]]),
+    });
+    expect(split.active.map((item) => item.id).sort()).toEqual(["a", "b"]);
+    expect(split.settled).toEqual([]);
+    expect(doc.chats.a).toEqual(settled);
+    const again = stripInbox(applyInbox(doc, ["a"], { type: "settle", at: 50 }).doc);
+    expect(shelfFor(again.chats.a, 60, wrote)).toBe("settled");
+  });
+
+  it("brings back a chat that is settled and snoozed, and keeps both marks", () => {
+    const both: InboxMark = { touch: 10, settledAt: 10, snoozeAt: 10, snoozeUntil: 500 };
+    expect(shelfFor(both, 20, calm)).toBe("settled");
+    expect(shelfFor(both, 20, approval)).toBe("active");
+  });
+
+  it("stays on the shelf when the setting is off or there is no attention yet", () => {
+    const rows = [row("a", 1)];
+    const off = splitInboxSessions(rows, { enabled: false, marks: { a: settled }, now: 20, attention: new Map([["a", approval]]) });
+    expect(off.active).toEqual(rows);
+    const unknown = splitInboxSessions(rows, { enabled: true, marks: { a: settled }, now: 20 });
+    expect(unknown.settled).toEqual(rows);
+  });
+});
+
+describe("an approval with no time", () => {
+  // An approval the person must answer is never hidden. The list can be told of one from elsewhere (the Sidebar's
+  // approval ids: a Lead whose worker asks, a chat in a remote project) with no time of its own, and a card with no
+  // time is the same: it cannot be shown to be older than the settle, so it brings a settled chat back.
+  const settled = { touch: 10, settledAt: 10 };
+
+  it("brings a settled chat back when the list is told of it from elsewhere, and it goes back once answered", () => {
+    const rows = [row("a", 1), row("b", 2)];
+    const marks = { a: settled };
+    const split = (attention: ReadonlyMap<string, ChatAttention>) =>
+      splitInboxSessions(rows, { enabled: true, marks, now: 40, attention });
+    // Settled and calm: on the shelf.
+    expect(split(new Map([["a", calm]])).settled.map((item) => item.id)).toEqual(["a"]);
+    // The approval is listed: back in the list, and it carries no time.
+    const listed = attentionWithApprovals(new Map([["a", calm]]), new Set(["a"]));
+    expect(listed.get("a")).toMatchObject({ needsApproval: true, approvalUndated: true });
+    expect(listed.get("a")?.needAt).toBeUndefined();
+    expect(split(listed).active.map((item) => item.id).sort()).toEqual(["a", "b"]);
+    expect(split(listed).settled).toEqual([]);
+    // A chat the attention map has never heard of (a remote project's) comes back the same way.
+    const remote = attentionWithApprovals(new Map(), new Set(["a"]));
+    expect(split(remote).settled).toEqual([]);
+    // Answered: it is no longer listed, so it is back on the shelf (the mark stayed stored).
+    expect(split(attentionWithApprovals(new Map([["a", calm]]), new Set())).settled.map((item) => item.id)).toEqual(["a"]);
+  });
+
+  it("brings a settled chat back for a card with no time, and not for one asked before the settle", () => {
+    const undated = chatAttention({
+      busy: true,
+      blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1 } } as never],
+    });
+    expect(undated).toMatchObject({ needsApproval: true, approvalUndated: true });
+    expect(shelfFor(settled, 40, undated)).toBe("active");
+    const dated = chatAttention({
+      busy: true,
+      blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1, at: 5 } } as never],
+    });
+    expect(dated.approvalUndated).toBeFalsy();
+    expect(shelfFor(settled, 40, dated)).toBe("settled");
+    // One card with a time and one without: the one that could be new counts.
+    const mixed = chatAttention({
+      busy: true,
+      blocks: [
+        { id: "p1", role: "approval", text: "", approval: { requestId: 1, at: 5 } },
+        { id: "p2", role: "approval", text: "", approval: { requestId: 2 } },
+      ] as never,
+    });
+    expect(mixed.approvalUndated).toBe(true);
+    // A decided card has no bearing.
+    const decided = chatAttention({
+      busy: true,
+      blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1, decided: "allow" } } as never],
+    });
+    expect(decided.approvalUndated).toBeFalsy();
+  });
+
+  it("does not turn a chat's own open question into an approval from elsewhere", () => {
+    // The Sidebar's approval ids also list a chat that only has a question; its question has a time, so a settle holds.
+    const question = chatAttention({ busy: false, pendingQuestion: { requestId: 1, askedAt: 5 }, blocks: [] });
+    const listed = attentionWithApprovals(new Map([["a", question]]), new Set(["a"]));
+    expect(listed.get("a")?.approvalUndated).toBeFalsy();
+    expect(listed.get("a")?.needAt).toBe(5);
+    expect(shelfFor(settled, 40, listed.get("a"))).toBe("settled");
+  });
+
+  it("keeps a snoozed chat's early wake for an approval, listed or not", () => {
+    const snoozed = { touch: 10, snoozeAt: 10, snoozeUntil: 500 };
+    const listed = attentionWithApprovals(new Map([["a", calm]]), new Set(["a"]));
+    expect(shelfFor(snoozed, 40, calm)).toBe("snoozed");
+    expect(shelfFor(snoozed, 40, listed.get("a"))).toBe("active");
+  });
+
+  it("is why Settle is disabled, with the reason in plain words, while one waits", () => {
+    const now = new Date(2026, 5, 2, 9, 0, 0, 0);
+    const listed = attentionWithApprovals(new Map([["a", calm], ["b", calm]]), new Set(["a"]));
+    const settle = (ids: string[], attention?: ReadonlyMap<string, ChatAttention>) =>
+      inboxMenuChoices(ids, {}, now, attention).find((choice) => choice.id === "inbox-settle")!;
+    expect(settle(["a"], listed)).toMatchObject({ label: "Settle", disabled: true, description: "Answer its approval first" });
+    // Another chat is not held back, and neither is any chat when nothing is listed or attention is not known.
+    expect(settle(["b"], listed).disabled).toBeFalsy();
+    expect(settle(["b"], listed).description).toBeUndefined();
+    expect(settle(["a"]).disabled).toBeFalsy();
+    expect(settle(["a"], new Map([["a", calm]])).disabled).toBeFalsy();
+    // A selection that includes one such chat is held back as a whole, in the plural.
+    expect(settle(["a", "b"], listed)).toMatchObject({ disabled: true, description: "Answer their approvals first" });
+    // A card with no time holds it too; one with a time (asked before or after) does not, since settling it is allowed.
+    const card = (approval: object) =>
+      new Map([["c", chatAttention({ busy: true, blocks: [{ id: "p", role: "approval", text: "", approval } as never] })]]);
+    expect(settle(["c"], card({ requestId: 1 })).disabled).toBe(true);
+    expect(settle(["c"], card({ requestId: 1, at: 5 })).disabled).toBeFalsy();
+    // Snooze is not held back, and the words carry no dash.
+    const choices = inboxMenuChoices(["a"], {}, now, listed);
+    expect(choices.find((choice) => choice.id === "inbox-snooze")?.disabled).toBeFalsy();
+    expect(choices.map((choice) => `${choice.label} ${choice.description ?? ""}`).join(" ")).not.toMatch(/[—–]/);
+  });
+});
+
+describe("an approval listed from elsewhere on a chat that has its own need", () => {
+  // The Sidebar's approval ids list a chat for its own need and also a Lead whose worker asks. The second set names the
+  // ids listed because of a worker, so a Lead with an open question of its own is not mistaken for a chat that is only
+  // listed for that question: the worker's approval has no time and is never hidden.
+  const settled = { touch: 10, settledAt: 10 };
+  const now = new Date(2026, 5, 2, 9, 0, 0, 0);
+  const settleOf = (ids: string[], attention?: ReadonlyMap<string, ChatAttention>) =>
+    inboxMenuChoices(ids, {}, now, attention).find((choice) => choice.id === "inbox-settle")!;
+  const question = () => chatAttention({ busy: false, pendingQuestion: { requestId: 1, askedAt: 5 }, blocks: [] });
+
+  it("is still an approval with no time, so Settle is off and a settled chat comes back", () => {
+    const listed = attentionWithApprovals(new Map([["lead", question()]]), new Set(["lead"]), new Set(["lead"]));
+    expect(listed.get("lead")).toMatchObject({ needsApproval: true, hasQuestion: true, approvalUndated: true, needAt: 5 });
+    // Its question was asked before the settle, which on its own keeps a settled chat on the shelf; the approval does not.
+    expect(shelfFor(settled, 40, question())).toBe("settled");
+    expect(shelfFor(settled, 40, listed.get("lead"))).toBe("active");
+    expect(settleOf(["lead"], listed)).toMatchObject({
+      label: "Settle",
+      disabled: true,
+      description: "Answer its approval first",
+    });
+    // It goes back to the shelf once the approval is answered (no longer listed), and the settle is open again.
+    const answered = attentionWithApprovals(new Map([["lead", question()]]), new Set(["lead"]));
+    expect(shelfFor(settled, 40, answered.get("lead"))).toBe("settled");
+    expect(settleOf(["lead"], answered).disabled).toBeFalsy();
+  });
+
+  it("keeps a chat that is only listed for its own open question settleable", () => {
+    // Listed in the approval ids, but not because of a worker: its question has a time, so a settle holds.
+    const listed = attentionWithApprovals(new Map([["a", question()]]), new Set(["a"]), new Set());
+    expect(listed.get("a")?.approvalUndated).toBeFalsy();
+    expect(shelfFor(settled, 40, listed.get("a"))).toBe("settled");
+    expect(settleOf(["a"], listed).disabled).toBeFalsy();
+    // A worker's approval on another chat does not hold this one back.
+    const other = attentionWithApprovals(
+      new Map([["a", question()], ["lead", question()]]),
+      new Set(["a", "lead"]),
+      new Set(["lead"]),
+    );
+    expect(other.get("a")?.approvalUndated).toBeFalsy();
+    expect(settleOf(["a"], other).disabled).toBeFalsy();
+    expect(settleOf(["a", "lead"], other)).toMatchObject({ disabled: true, description: "Answer their approvals first" });
+  });
+
+  it("holds a chat back for a worker's approval on top of its own approval card with a time", () => {
+    const own = chatAttention({
+      busy: true,
+      blocks: [{ id: "p", role: "approval", text: "", approval: { requestId: 1, at: 5 } } as never],
+    });
+    expect(own.approvalUndated).toBeFalsy();
+    // Its own card alone is listed and stays settleable (asked before the settle).
+    const alone = attentionWithApprovals(new Map([["a", own]]), new Set(["a"]), new Set());
+    expect(alone.get("a")?.approvalUndated).toBeFalsy();
+    expect(shelfFor(settled, 40, alone.get("a"))).toBe("settled");
+    // A worker's approval listed on the same chat has no time, and keeps the time the chat already had.
+    const both = attentionWithApprovals(new Map([["a", own]]), new Set(["a"]), new Set(["a"]));
+    expect(both.get("a")).toMatchObject({ needsApproval: true, approvalUndated: true, needAt: 5 });
+    expect(shelfFor(settled, 40, both.get("a"))).toBe("active");
+    expect(settleOf(["a"], both).disabled).toBe(true);
+  });
+
+  it("treats a chat with a failed turn and a worker's approval as holding an approval too", () => {
+    const failed: ChatAttention = { ...calm, failed: true, needsPerson: true, needAt: 5 };
+    const listed = attentionWithApprovals(new Map([["a", failed]]), new Set(["a"]), new Set(["a"]));
+    expect(listed.get("a")).toMatchObject({ needsApproval: true, failed: true, approvalUndated: true });
+    expect(shelfFor(settled, 40, listed.get("a"))).toBe("active");
+  });
+
+  it("is the same as before for a calm Lead or an id the attention map has never heard of", () => {
+    const lead = attentionWithApprovals(new Map([["lead", calm]]), new Set(["lead"]), new Set(["lead"]));
+    expect(lead.get("lead")).toMatchObject({ needsApproval: true, approvalUndated: true });
+    const remote = attentionWithApprovals(new Map(), new Set(["r"]), new Set());
+    expect(remote.get("r")).toMatchObject({ needsApproval: true, approvalUndated: true });
+    // An id named as a worker's but not listed is not added.
+    const stray = attentionWithApprovals(new Map([["x", calm]]), new Set(["a"]), new Set(["x"]));
+    expect(stray.get("x")).toEqual(calm);
+  });
+
+  it("keeps a snoozed chat's early wake for a worker's approval on a chat with a question", () => {
+    const snoozed = { touch: 10, snoozeAt: 10, snoozeUntil: 500 };
+    const listed = attentionWithApprovals(new Map([["lead", question()]]), new Set(["lead"]), new Set(["lead"]));
+    expect(shelfFor(snoozed, 40, listed.get("lead"))).toBe("active");
+  });
+});
+
 describe("re-sort", () => {
   const rows = [
     row("newer", 100),
@@ -375,6 +766,18 @@ describe("attention from another window's approval list", () => {
     expect(merged.get("a")).toMatchObject({ needsPerson: true, repliedAt: 12 });
     expect(merged.get("b")?.needsApproval).toBe(true);
     expect(attention.get("a")?.needsPerson).toBe(false);
+  });
+
+  it("keeps the time of the need a chat already had, and adds none it does not know", () => {
+    const attention = new Map<string, ChatAttention>([
+      ["a", { ...calm, failed: true, needsPerson: true, needAt: 30 }],
+    ]);
+    const merged = attentionWithApprovals(attention, new Set(["a", "b"]));
+    expect(merged.get("a")).toMatchObject({ needsApproval: true, failed: true, needAt: 30 });
+    expect(merged.get("b")?.needAt).toBeUndefined();
+    // An approval of unknown age is never hidden: it brings back a chat that was settled.
+    expect(merged.get("b")?.approvalUndated).toBe(true);
+    expect(shelfFor({ touch: 10, settledAt: 10 }, 40, merged.get("b"))).toBe("active");
   });
 });
 

@@ -6,6 +6,7 @@
 //   npm run hub:doctor -- --no-guard   # the inventory only
 //   npm run hub:doctor -- --clean      # what a stale dev slot / finished worktree would free, changing nothing
 //   npm run hub:doctor -- --clean --yes  # reap it (I8: one dev copy and one working copy after every run)
+//   npm run hub:doctor -- --clean --output-only [--yes]  # only rebuildable build output; no worktree, slot or config
 //   npm run hub:doctor -- --hygiene    # only the install hygiene rule, non-zero when it is broken (hub:check-all runs it)
 //   npm run hub:doctor -- --daily      # first reap what a day of runs left behind (at most once a day), then the inventory
 //
@@ -15,12 +16,15 @@
 // - running copies: each data folder's running.json whose process is still alive (pid and start time);
 // - slots: ~/.monocode-hub-dev/slots.json, and dev data folders it doesn't know;
 // - worktrees: `git worktree list` of this repo, plus any MonoCode Hub checkout under ~/Worktrees;
+// - agent approvals (WP-248): each known project whose own ignore file does not ignore .claude/settings.local.json, or
+//   that tracks one (a warning; it never changes the exit code);
 // - the ship archive: ~/Archive/monocode/ships, where old ship folders go. Nothing ever deletes them, so it only grows;
 //   the doctor says how many and how big (it never prunes).
 //
 // It only reads, except with `--clean --yes`: that removes a dev slot whose worktree is gone (or one no registry knows)
-// and whose copy isn't running, a worktree whose branch its main checkout already has and that has no uncommitted
-// changes and no dev copy running, stale target/hub-dev configs, and git's records of worktrees whose folder is gone.
+// and whose copy isn't running, a worktree whose branch its main checkout already has through a merge (a branch just made
+// from the default branch is not finished) and that has no uncommitted changes and nothing running in it, stale
+// target/hub-dev configs, and git's records of worktrees whose folder is gone.
 // The daily app, its data folder and upstream are never touched (the identifier is re-checked before every removal), and
 // a worktree with uncommitted changes is named in the output and kept. It never opens a database or a lock file (sizes
 // come from du) and never launches anything; a copy's kind comes from its identifier (src-tauri/src/instance.rs,
@@ -157,6 +161,68 @@ export function findWorktrees({ repo = ROOT, worktreeRoots = [] } = {}) {
   return [...seen.values()];
 }
 
+// ---- agent approvals (WP-248) -----------------------------------------------------------------------------------------
+
+/** Where Claude Code saves "don't ask again" commands, with any password typed in them. */
+export const APPROVALS_FILE = ".claude/settings.local.json";
+
+function gitStatus(args, cwd) {
+  return spawnSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).status;
+}
+
+/**
+ * The projects to look at: each repo's main checkout (worktrees share its ignore file), and every git repository
+ * directly under ~/Projects. Ash's other projects are not in a list the doctor can read without the app's database.
+ */
+export function knownProjects({ home, worktrees = [] } = {}) {
+  const seen = new Map();
+  const add = (dir) => {
+    try {
+      const real = fs.realpathSync(dir);
+      if (!seen.has(real)) seen.set(real, real);
+    } catch {
+      /* gone */
+    }
+  };
+  for (const tree of worktrees) if (tree.main || tree.other) add(tree.path);
+  for (const dir of list(path.join(home, "Projects"))) if (fs.existsSync(path.join(dir, ".git"))) add(dir);
+  return [...seen.values()];
+}
+
+/**
+ * WP-248: whether a project's own ignore files (not the machine's global excludes, which Claude Code fills in on this
+ * Mac only, and which a fresh Mac, a temporary HOME or a Cloud box does not have) ignore the approvals file, and
+ * whether the project already tracks one (a past leak). Only reads: `git check-ignore` and `git ls-files`.
+ */
+export function approvalsCheck(dir) {
+  const ignoredCode = gitStatus(["-c", `core.excludesFile=${os.devNull}`, "check-ignore", "-q", "--no-index", APPROVALS_FILE], dir);
+  const tracked = git(["ls-files", "-z", "--", `:(glob,icase)**/${APPROVALS_FILE}`], dir);
+  return {
+    path: dir,
+    ignored: ignoredCode === 0 ? true : ignoredCode === 1 ? false : null,
+    tracked: tracked.length > 0,
+  };
+}
+
+/** The projects that need a look: not ignored (a warning), or tracked (a past leak). */
+export function approvalsWarnings(projects, check = approvalsCheck) {
+  return projects.map((dir) => check(dir)).filter((row) => row.tracked || row.ignored !== true);
+}
+
+/** The warnings as text. They never change the doctor's exit code. */
+export function renderApprovals(rows, t = (file) => file) {
+  const lines = [`Agent approvals (${APPROVALS_FILE})`];
+  if (!rows.length) lines.push("  every known project's ignore file covers it");
+  for (const row of rows) {
+    if (row.tracked)
+      lines.push(`  warning  ${t(row.path)}  tracks it: untrack it (git rm --cached), then change any password it held`);
+    else if (row.ignored === false)
+      lines.push(`  warning  ${t(row.path)}  its .gitignore does not ignore it: add the line ${APPROVALS_FILE}`);
+    else lines.push(`  warning  ${t(row.path)}  could not ask git whether it is ignored`);
+  }
+  return lines.join("\n");
+}
+
 function describeBundle(app, location) {
   const identifier = readIdentifier(app);
   const stamp = readStamp(app);
@@ -258,7 +324,10 @@ export async function collect({
   const archived = list(archive).filter((dir) => !path.basename(dir).startsWith(".") && fs.statSync(dir).isDirectory());
   const shipArchive = { path: archive, count: archived.length };
 
-  const report = { home, registry: registryPath(home), bundles, dataFolders, running, slots, worktrees: worktreeRows, shipArchive };
+  // WP-248: a project whose own ignore file lets the approvals file through, or that already tracks one.
+  const approvals = approvalsWarnings(knownProjects({ home, worktrees }));
+
+  const report = { home, registry: registryPath(home), bundles, dataFolders, running, slots, worktrees: worktreeRows, shipArchive, approvals };
   if (sizes) {
     shipArchive.size = archived.length ? await sizeOf(archive) : 0;
     const jobs = [
@@ -318,6 +387,7 @@ export function render(report) {
       : "empty";
     lines.push("", `Ship archive  ${t(where)}  ${what}`);
   }
+  if (report.approvals) lines.push("", renderApprovals(report.approvals, t));
   if (report.sharedBuildCache)
     lines.push("", `Shared Rust build cache  ${t(report.sharedBuildCache.path)}  ${report.sharedBuildCache.size == null ? "not created yet" : formatSize(report.sharedBuildCache.size)}`);
   return lines.join("\n");
@@ -346,17 +416,55 @@ function defaultBranch(repo) {
   return null;
 }
 
+/** Rebuildable build output a worktree may hold, relative to it. `node_modules` only when it is a real folder (a link
+ * from scripts/setup-worktree.mjs points at the main checkout's and is never followed). */
+export const BUILD_OUTPUT = ["target", "src-tauri/target", "test-results", "playwright-report", "node_modules"];
+
+/** The build output folders that exist in `dir` (real folders only, never links). */
+export function buildOutputOf(dir, lstat = fs.lstatSync) {
+  const found = [];
+  for (const name of BUILD_OUTPUT) {
+    try {
+      const stats = lstat(path.join(dir, name));
+      if (stats.isDirectory() && !stats.isSymbolicLink()) found.push(name);
+    } catch {
+      // not there
+    }
+  }
+  return found;
+}
+
+/** Whether `commit` sits on the default branch's own line (its first parents): a branch made from the default branch
+ * and not worked on yet. Finished work reaches the default branch through a merge, so it is off that line. */
+function onBaseLine(repo, base, commit) {
+  const full = gitResult(["rev-parse", "--verify", "--quiet", `${commit}^{commit}`], repo).stdout?.trim();
+  if (!full) return true;
+  const line = gitResult(["rev-list", "--first-parent", base], repo);
+  // Unreadable: treat it as not finished, so the worktree stays.
+  if (line.status !== 0) return true;
+  return (line.stdout ?? "").split("\n").includes(full);
+}
+
+/** Whether `commit` is on some remote branch (so nothing in the worktree exists only here). */
+function pushed(dir, commit) {
+  const result = gitResult(["branch", "-r", "--contains", commit], dir);
+  return result.status === 0 && Boolean((result.stdout ?? "").trim());
+}
+
 /**
  * What `npm run hub:doctor -- --clean` would reap, worked out without changing anything:
  * - a dev slot no copy is running on whose worktree is gone, or which no registry entry knows (its data folder and its
  *   throwaway token; the registry entry goes too), never the daily app's folder (the identifier is checked);
  * - a `target/hub-dev/<slot>.conf.json` in a worktree that is no longer that worktree's slot (and not this one's);
- * - a worktree whose main checkout already has its commit, that has no uncommitted changes and no dev copy running;
- *   each worktree that is kept instead says why (uncommitted changes, not merged yet, a copy running);
+ * - a worktree whose main checkout already has its commit through a merge, that has no uncommitted changes and no dev
+ *   copy running; each worktree that is kept instead says why (uncommitted changes, not merged yet, a copy running, or
+ *   nothing of its own yet: a branch just made from the default branch is not finished work, 11 Nov 2026);
+ * - with `outputOnly` (--output-only): only the build output below, and no worktree, slot, config or git record;
+ * - the build output (BUILD_OUTPUT) of a worktree that is kept but clean, with its commit pushed and no dev copy running;
  * - git's records of worktrees whose folder is already gone (`git worktree prune`).
  * The current worktree and the main checkout are never reaped.
  */
-export function cleanPlan(report, { current = process.cwd(), same = samePath } = {}) {
+export function cleanPlan(report, { current = process.cwd(), same = samePath, outputOnly = false } = {}) {
   const home = report.home;
   const slots = [];
   for (const slot of report.slots) {
@@ -389,6 +497,7 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
 
   const worktrees = [];
   const kept = [];
+  const buildOutputs = [];
   for (const tree of report.worktrees) {
     if (!tree.kind.startsWith("worktree") || same(tree.path, current)) continue;
     const repo = mainRepoOf(tree.path);
@@ -401,6 +510,10 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
       kept.push({ path: tree.path, why: "it has uncommitted changes" });
       continue;
     }
+    // Pushed and clean but not merged yet: the worktree stays, its rebuildable build output goes.
+    const output = buildOutputOf(tree.path);
+    if (output.length && tree.commit && pushed(tree.path, tree.commit))
+      buildOutputs.push({ path: tree.path, folders: output, why: "its commit is pushed and it has no uncommitted changes" });
     const base = defaultBranch(repo);
     if (!base || !tree.commit) {
       kept.push({ path: tree.path, why: "its main checkout's default branch could not be worked out" });
@@ -410,7 +523,20 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
       kept.push({ path: tree.path, why: `${base} does not have ${tree.branch || "its branch"} yet` });
       continue;
     }
+    // A branch made from the default branch with nothing committed yet is "in" it only because it starts there: a
+    // builder may be about to use it (11 Nov 2026: a fresh WP-215 worktree mid-round was listed as finished).
+    if (onBaseLine(repo, base, tree.commit)) {
+      kept.push({ path: tree.path, why: `it has nothing of its own yet (it starts on ${base})` });
+      continue;
+    }
+    if (outputOnly) {
+      kept.push({ path: tree.path, why: `${base} already has ${tree.branch || tree.commit}; only its build output goes (--output-only)` });
+      continue;
+    }
     worktrees.push({ path: tree.path, branch: tree.branch, repo, base, why: `${base} already has ${tree.branch || tree.commit}` });
+    // The whole worktree goes, so its build output is not listed on its own.
+    const index = buildOutputs.findIndex((row) => same(row.path, tree.path));
+    if (index >= 0) buildOutputs.splice(index, 1);
   }
 
   // Records git keeps for worktrees whose folder is gone (they don't appear in `git worktree list`, so they block the
@@ -421,14 +547,34 @@ export function cleanPlan(report, { current = process.cwd(), same = samePath } =
     if (parseWorktrees(porcelain).some((tree) => !fs.existsSync(tree.path))) prunes.push(repo);
   }
 
-  return { home, slots, configs, worktrees, kept, prunes };
+  // --output-only: rebuildable build output and nothing else (no worktree, slot data, config or git record).
+  if (outputOnly) return { home, slots: [], configs: [], worktrees: [], kept, prunes: [], buildOutputs, outputOnly };
+  return { home, slots, configs, worktrees, kept, prunes, buildOutputs };
 }
 
 /**
  * Does what `cleanPlan` listed. Every dev data folder is checked against the slot's own identifier again, so a mix-up
  * can never reach the daily app or upstream; one failure is reported and the rest carry on.
  */
-export function applyClean(plan, { home = plan.home } = {}) {
+/** Working folders of running build and test processes (cargo, rustc, node, tauri), so their output is never pulled
+ * out from under them. Empty when it can't be read (then the per-folder clean check still applies). */
+/** Processes whose working folder keeps a worktree: builds and tests, and the agent CLIs that work in one. */
+export const BUSY_PATTERN = "cargo|rustc|node|tauri|playwright|vite|claude|codex|opencode|hermes|git";
+
+function busyDirs() {
+  const pids = spawnSync("pgrep", ["-f", BUSY_PATTERN], { encoding: "utf8" }).stdout ?? "";
+  const dirs = [];
+  for (const pid of pids.split(/\s+/).filter(Boolean)) {
+    const out = spawnSync("lsof", ["-a", "-p", pid, "-d", "cwd", "-Fn"], { encoding: "utf8" }).stdout ?? "";
+    for (const line of out.split("\n")) if (line.startsWith("n/")) dirs.push(line.slice(1));
+  }
+  return dirs;
+}
+
+/** Whether any of `busy` (working folders) is `dir` or inside it. */
+const busyIn = (busy, dir) => busy.some((cwd) => cwd === dir || cwd.startsWith(`${dir}${path.sep}`));
+
+export function applyClean(plan, { home = plan.home, busy = busyDirs() } = {}) {
   const removed = { slots: 0, configs: 0, worktrees: 0, bundles: 0, pruned: 0 };
   const problems = [];
   const daily = path.join(supportDir(home), HUB_IDENTIFIER);
@@ -483,9 +629,38 @@ export function applyClean(plan, { home = plan.home } = {}) {
       problems.push(`${tree.path}: not a worktree of a checkout that is still there`);
       continue;
     }
+    // Checked again now: an agent, build or terminal working in it keeps it (the plan only knew about dev copies).
+    if (busyIn(busy, tree.path)) {
+      problems.push(`${tree.path}: something is running in it, worktree kept`);
+      continue;
+    }
+    if ((gitResult(["status", "--porcelain"], tree.path).stdout ?? "").trim()) {
+      problems.push(`${tree.path}: it has uncommitted changes now, worktree kept`);
+      continue;
+    }
     const result = gitResult(["worktree", "remove", "--force", tree.path], tree.repo);
     if (result.status === 0) removed.worktrees += 1;
     else problems.push(`${tree.path}: ${(result.stderr ?? "").trim() || "git refused to remove it"}`);
+  }
+  for (const row of plan.buildOutputs ?? []) {
+    // Checked again now: still clean, nothing building in it, and only the listed folder names.
+    if (busyIn(busy, row.path)) {
+      problems.push(`${row.path}: something is running in it, build output kept`);
+      continue;
+    }
+    if ((gitResult(["status", "--porcelain"], row.path).stdout ?? "").trim()) {
+      problems.push(`${row.path}: it has uncommitted changes now, build output kept`);
+      continue;
+    }
+    for (const name of buildOutputOf(row.path)) {
+      if (!row.folders.includes(name)) continue;
+      try {
+        fs.rmSync(path.join(row.path, name), { recursive: true, force: true });
+        removed.buildOutputs = (removed.buildOutputs ?? 0) + 1;
+      } catch (error) {
+        problems.push(`${row.path}/${name}: ${error.message}`);
+      }
+    }
   }
   for (const repo of plan.prunes) if (gitResult(["worktree", "prune"], repo).status === 0) removed.pruned += 1;
   return { removed, problems };
@@ -495,16 +670,19 @@ export function applyClean(plan, { home = plan.home } = {}) {
 export function renderClean(plan, { removed = null, problems = [] } = {}) {
   const t = tilde(plan.home);
   const lines = [];
-  const total = plan.slots.length + plan.configs.length + (plan.bundles?.length ?? 0) + plan.worktrees.length + plan.prunes.length;
+  const total =
+    plan.slots.length + plan.configs.length + (plan.bundles?.length ?? 0) + plan.worktrees.length + plan.prunes.length + (plan.buildOutputs?.length ?? 0);
   if (removed) {
     const app = removed.bundles ? `, ${removed.bundles} old app${removed.bundles === 1 ? "" : "s"}` : "";
-    lines.push(`Cleaned: ${removed.slots} slot${removed.slots === 1 ? "" : "s"}, ${removed.configs} config${removed.configs === 1 ? "" : "s"}${app}, ${removed.worktrees} worktree${removed.worktrees === 1 ? "" : "s"}, git pruned in ${removed.pruned} checkout${removed.pruned === 1 ? "" : "s"}`);
+    const output = removed.buildOutputs ? `, ${removed.buildOutputs} build output folder${removed.buildOutputs === 1 ? "" : "s"}` : "";
+    lines.push(`Cleaned: ${removed.slots} slot${removed.slots === 1 ? "" : "s"}, ${removed.configs} config${removed.configs === 1 ? "" : "s"}${app}, ${removed.worktrees} worktree${removed.worktrees === 1 ? "" : "s"}${output}, git pruned in ${removed.pruned} checkout${removed.pruned === 1 ? "" : "s"}`);
   } else lines.push(total ? "Clean (nothing is removed without --yes)" : "Clean: nothing to clean");
   for (const slot of plan.slots)
     lines.push(`  slot ${slot.slot}  ${slot.why}${slot.dataFolder ? `; data folder ${t(slot.dataFolder)}` : ""}${slot.registered ? "; its registry entry" : ""}`);
   for (const config of plan.configs) lines.push(`  config ${t(config.path)}  ${config.why}`);
   for (const bundle of plan.bundles ?? []) lines.push(`  old app ${t(bundle.path)}  ${bundle.why}`);
   for (const tree of plan.worktrees) lines.push(`  worktree ${t(tree.path)}  ${tree.why}; no uncommitted changes, no dev copy running`);
+  for (const row of plan.buildOutputs ?? []) lines.push(`  build output ${t(row.path)} (${row.folders.join(", ")})  ${row.why}`);
   for (const repo of plan.prunes) lines.push(`  git records ${t(repo)}  worktrees whose folders are gone (git worktree prune)`);
   for (const keep of plan.kept) lines.push(`  kept ${t(keep.path)}  ${keep.why}`);
   for (const problem of problems) lines.push(`  problem ${problem}`);
@@ -730,7 +908,7 @@ async function main() {
     else console.log(`${render(report)}\n\n${renderHygiene(problems)}`);
     return status;
   }
-  const plan = cleanPlan(report);
+  const plan = cleanPlan(report, { outputOnly: args.includes("--output-only") });
   const result = yes ? applyClean(plan) : null;
   console.log(renderClean(plan, result ? { removed: result.removed, problems: result.problems } : {}));
   return status;

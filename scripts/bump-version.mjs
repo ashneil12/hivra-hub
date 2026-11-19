@@ -50,10 +50,15 @@ replaceFirst(
   /("version": ")[^"]+(")/,
   `$1${version}$2`,
 );
-replaceFirst(
-  join(root, "Cargo.lock"),
-  /(name = "monocode"\nversion = ")[^"]+(")/,
-  `$1${version}$2`,
-);
+// Cargo.lock carries the version once for every workspace crate that inherits it (the app, and since WP-131b the
+// dictation helper). One left behind makes the next cargo command rewrite the lockfile, which leaves the tree dirty
+// and stops a ship.
+const members = /^members\s*=\s*\[([^\]]*)\]/m.exec(readFileSync(join(root, "Cargo.toml"), "utf8"))?.[1] ?? "";
+for (const [, member] of members.matchAll(/"([^"]+)"/g)) {
+  const manifest = readFileSync(join(root, member, "Cargo.toml"), "utf8");
+  if (!/^version\.workspace\s*=\s*true/m.test(manifest)) continue;
+  const name = /^name\s*=\s*"([^"]+)"/m.exec(manifest)?.[1];
+  replaceFirst(join(root, "Cargo.lock"), new RegExp(`(name = "${name}"\\nversion = ")[^"]+(")`), `$1${version}$2`);
+}
 
 console.log(`version ${version}`);

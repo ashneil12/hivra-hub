@@ -18,8 +18,10 @@
 // - A finished result read through tasks.status counts as received: the row is acknowledged and its report turn
 //   dropped.
 import { monoHomeFence } from "../../hub/model/hubMcp";
+import { isCaptainMono } from "../../chief/model/charter";
+import { readCrewRules } from "../../monos/model/crewRules";
 import type { QuickLaunch } from "../../quick-composer/model/quickComposer";
-import { modelEffortLabel, modelsFor, resolveModel } from "../../sessions/model/models";
+import { modelEffortLabel, modelsFor, preferredModelId, resolveModel } from "../../sessions/model/models";
 import { isCustomModelId } from "../../sessions/model/customModels";
 import {
   HARNESSES,
@@ -40,10 +42,13 @@ import {
   type DelegationState,
 } from "../../monos/model/delegations";
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
+import { formatMeasuredUsd, sanitizeSpendLimit, type SpendLimit } from "../../usage/model/spend";
+import { addSpendRedoLink, clearSpendLimit, NO_SPEND_LIMIT_TO_CLEAR, saveSpendLimit, spendFor, spendSnapshot } from "../../usage/model/spendGate";
 import { SELF_REVIEW_SHAPE, storedReview } from "../../monos/model/workerReview";
 import { waitingOnAshLine } from "../../hub/model/chatQuestions";
 import { answeredJobRefusal } from "../../monos/model/ashAnswersWorker";
 import { workerMemoryBlock } from "../../hub/model/hubMemoryPrimer";
+import { readingEntries } from "../../fresh-eyes/model/review";
 import { areasNamed, filesNamed } from "../../monos/model/workerPool";
 import { isHarnessAvailable } from "../../../integrations/harness/core/availability";
 import { sanitizeRule, type CrewRule } from "../../crew/model/rules";
@@ -52,8 +57,19 @@ import { cliFallbackLine } from "../../crew/model/cliFallback";
 import { launchCatalog } from "../../crew/model/launchCatalog";
 import { lineRulesFor } from "../../crew/model/lineRules";
 import type { Catalog, RouteDefaults } from "../../crew/model/resolve";
-import { applyCrewLaunch, callerOverride, crewLabels, crewPaths } from "../../crew/model/taskRoute";
+import {
+  applyCrewLaunch,
+  callerOverride,
+  crewLabels,
+  crewPaths,
+  crewRefusal,
+  type CrewRouteAnswer,
+} from "../../crew/model/taskRoute";
+import { routeReason } from "../../crew/model/pick";
+import { CLI_ORDER, cliLabel, isCli } from "../../crew/model/clis";
+import { crewReadRefusal, projectDefaultForFolder } from "../../crew/model/host";
 import { routeDefaults } from "../../crew/model/workerDefault";
+import { isFanoutAgainDecisionKey } from "../../hub/model/decisionKey";
 import {
   activityNoteSummary,
   crewRuleSentence,
@@ -75,18 +91,55 @@ import {
 } from "../../monos/model/workerPool";
 import { pathKey, projectName } from "../../../shared/lib/paths";
 import { forUser } from "../../hub/model/userName";
+import { delegationAskIds } from "../../asks/model/asks";
 import { judgeTask, routeWorker, type WorkerModel, type WorkerRoute } from "./taskDifficulty";
 import { phaseBeforeCrew, phaseHint } from "../../phases/model/gate";
 import { bindPhaseLauncher, unbindPhaseLauncher } from "../../phases/model/phaseCrew";
 import { bindCrew, commentId } from "../../phases/model/store";
 import { claudeRunsOnSubscriptionBridge } from "../../../integrations/harness/providers/claude/claudeDeepseekBridge";
 import { checkBrief, renderBrief, type BriefIsolation } from "../../firstmate/model/brief";
+// SC-4: a brief's own check lines, do-not-touch list and commit stamp (firstmate/model/briefChecks.ts).
+import {
+  checksRefusal,
+  isCodeBrief,
+  leaveList,
+  scopePaths,
+  splitChecks,
+  validStamp,
+  type CheckLine,
+} from "../../firstmate/model/briefChecks";
+// PT-6: a brief's spec of record parts (firstmate/model/briefSpec.ts) and the one worker spec_start hands the draft to.
+import { SPEC_INDEX, readSpecContext, specParts, type SpecBrief, type SpecContext, type SpecPart } from "../../firstmate/model/briefSpec";
+import { readLanded, specStartInput } from "../../firstmate/model/specStart";
+import type { TestingMode } from "../../delivery/model/testingMode";
+import { proofToolLines, readProofToolList, type ProofToolLine } from "../../proofTools/model/proofTools"; // PT-1
+import { parseFanout } from "../../firstmate/model/fanoutContract";
+import {
+  createCheckpoint,
+  describeResume,
+  isComplete,
+  noteQueued,
+  noteRefused,
+  noteStarted,
+  noteStarting,
+  noteStopped,
+  noteWaveDone,
+  planResume,
+  type FanoutCheckpoint,
+  type ResumePlan,
+  type RowLookup,
+} from "../../firstmate/model/fanoutCheckpoint";
+import { windowHolder, type FanoutCheckpointStore } from "../../firstmate/host/fanoutCheckpointStore";
+import { boundRequest, readOriginalRequest } from "../../firstmate/model/originalRequest";
+import { fanoutSection, parseFanoutLink, planFanout, restartRequestId, taskRequestId } from "../../firstmate/model/fanoutWaves";
 import { classifyBriefTask } from "../../firstmate/model/briefSkills";
 import { gateRequest, type GateRequest } from "../../firstmate/model/completionGates";
 import { isFirstMate } from "../../firstmate/model/checkoutGuard";
 import { briefOnRemoteHost } from "../../firstmate/host/remoteDelegate";
+import { remoteProjectFor } from "../../connections/model/remoteProjects";
 import { WORKER_REPORT_SHAPE } from "../../firstmate/model/report";
-import { askPerson, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
+import { askPerson, askPersonRecorded, taskMessage, type FirstMateTasksHost } from "../../firstmate/model/steering";
+import { sha256Hex } from "../../historyImport/model/hash";
 import { taskProjectOf } from "../../tasks/model/agentTasks";
 import {
   bridgeFamily,
@@ -103,6 +156,8 @@ export type WorkerPoolHost = {
   openRows(): Delegation[];
   /** Start this worker now, or let it wait and say why. One the app is starting from the queue always starts. */
   admit(job: AdmitInput): Admission;
+  /** WP-161: read the machine (load, memory, disk) so the next `admit` sees a fresh sample. Never throws. */
+  refreshHealth?(): Promise<void>;
   /** It waits: kept in order with what starts it later (and its card shows in the chat that asked). */
   enqueue(job: QueuedWorker, launch: QuickLaunch): void;
   /** It started: out of the queue, counted as heavy if it is, and holding the files it changes (r87). */
@@ -113,6 +168,8 @@ export type WorkerPoolHost = {
   unqueue(owner: string, id: string): boolean;
   limits(project: string): WorkerLimits;
   setLimits(project: string, next: Partial<WorkerLimits>): WorkerLimits;
+  /** WP-171: this host can hold a task of a fan-out until the tasks that provide what it requires are delivered. */
+  waitsOnProviders?: boolean;
   /** The project's own worker model (E7), when Ash chose one; else undefined for the usual Sonnet. */
   model(project: string): WorkerModel | undefined;
   /** WP-89: the project's worker default, CLI included. Absent on a host that only knows the Claude ladder. */
@@ -145,12 +202,47 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
       "gates",
       "checks",
       "code",
+      // SC-4: paths the worker must not change. (`checks` takes the brief's own lines too.)
+      "leave",
+      // WP-92: the keys a worker's environment holds (at most 3).
+      "secrets",
+      // WP-144: a short reading list the fresh-eyes reviewers see with the plan.
+      "reading",
+      // WP-141: builder, reviewer or researcher. A saved role row picks the CLI.
+      "role",
       // WP-70: the shared task this work moves. Not a worker's task id.
       "taskId",
+      // SC-7: `fix` when the brief fixes a bug; the worker must show a failing run of its test first.
+      "kind",
+      // PT-6: the sections of the project's spec of record this job changes (at most 3).
+      "spec",
     ],
   ],
+  // PT-6: the one worker that drafts the project's spec of record. Only when the person asked (the spec_start tool).
+  ["tasks.specStart", ["project"]],
+  // WP-141: the crew's pick for a job (a CLI or a Mono) and why. Reads only; delegate_task starts the work.
+  ["tasks.pick", ["role", "title", "brief", "files", "model", "effort", "lead"]],
+  // WP-171: one call for a multi-part ask whose tasks name what they own, provide, require and check.
+  ["tasks.fanout", ["intent", "tasks", "resume", "confirm"]],
   ["tasks.accept", ["taskId", "accept", "reason"]],
-  ["tasks.workers", ["project", "workers", "heavy", "scope", "cli", "model", "effort", "clear"]],
+  [
+    "tasks.workers",
+    [
+      "project",
+      "workers",
+      "heavy",
+      "scope",
+      "cli",
+      "model",
+      "effort",
+      "clear",
+      // WP-176: a measured-cost limit. scope project or system, never mono.
+      "amountUsd",
+      "period",
+      "warnAt",
+      "spendClear",
+    ],
+  ],
   ["tasks.status", ["taskIds"]],
   ["tasks.wait", ["taskIds", "timeoutSeconds"]],
   ["tasks.cancel", ["taskId", "reason"]],
@@ -158,19 +250,80 @@ export const TASK_FIELDS: ReadonlyArray<readonly [string, readonly string[]]> = 
   ["tasks.answer", ["taskId", "requestId", "answers", "skip"]],
   // Hivra WP-14 (firstmate/model/steering.ts).
   ["tasks.message", ["taskId", "text", "whenBusy"]],
-  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer"]],
+  ["tasks.ask", ["key", "question", "options", "recommended", "taskIds", "answer", "keys", "force", "reason"]],
 ];
+
+/**
+ * Fields only the app puts on a tasks.delegate replay: the queue, a fresh-eyes start, a retry.
+ * An agent's call cannot carry the mark, so it cannot set these. delegate_tasks writes them itself
+ * and calls delegate() directly, which does not go through the field list.
+ */
+// SC-4: `briefStamp` (the commit the brief was written against, carried with a queued or reviewed call) is the app's too: a
+// caller can't choose its own stamp.
+// PT-5: `testFixer` marks the one task the app itself starts to sort the test debt list: it rewrites tests where its brief says it may,
+// so it is not told the at-ship worker sentence ("carry on, never delete, skip or weaken").
+export const APP_DELEGATE_FIELDS = ["fanout", "originalRequest", "originalRequestChars", "briefStamp", "testFixer"] as const;
+
+/** Set on a tasks.delegate input by the app itself. Not enumerable, so a copy or JSON drops it. */
+export const appDelegateMark: unique symbol = Symbol("hivra.appDelegate");
+
+export function markAppDelegate(input: Record<string, unknown>): Record<string, unknown> {
+  Object.defineProperty(input, appDelegateMark, { value: true });
+  return input;
+}
+
+export function isAppDelegate(input: object): boolean {
+  return Reflect.get(input, appDelegateMark) === true;
+}
 
 /** What a delegation's row records beyond a plain monitored launch. */
 export type DelegationMeta = {
   title: string;
   askIds: string[];
+  /** WP-176 round 5: the owner's row this one redoes (its id, and its chat, which the spend gate follows). */
+  redoes?: { id: string; childSession: string };
   goal?: string;
   /** The hub project id (what Ash OS resolves), when the folder is one of the hub's projects. */
   project?: string;
   /** WP-70: the shared task this work moves. */
   taskId?: string;
+  /** WP-141: why the crew picked this CLI, one plain line kept on the row and shown on the Crew tab. */
+  pickReason?: string;
 };
+
+/** WP-141: what tasks.pick asks the crew (the crew_route fields, plus the roster and how deep this chat is). */
+export type CrewPickQuery = {
+  labels: string[];
+  paths: string[];
+  override?: { cli?: string; model?: string; effort?: string };
+  project?: string;
+  mono?: string;
+  monoRules?: CrewRule[];
+  defaults?: RouteDefaults;
+  catalog?: Catalog;
+  monos: { id: string; name?: string; role?: string }[];
+  leadMonoId?: string;
+  depth: number;
+  atCap: string[];
+  monoOverride?: string;
+};
+
+export type CrewPickAnswer = {
+  ok: boolean;
+  cli: string | null;
+  monoId: string | null;
+  model: string | null;
+  effort: string | null;
+  reason: string;
+};
+
+/**
+ * Why a delegation's start is refused, when it is a redo whose link was not recorded (round 5). A redo that is not
+ * recorded with its parent must not run: its first turn would be judged without the parent's spend. Null when it may start.
+ */
+export function redoLinkRefusal(delegation: DelegationMeta | undefined, recorded: unknown): string | null {
+  return delegation?.redoes && !recorded ? "The redo could not be recorded, so this run is not started." : null;
+}
 
 /** A worker chat as this window has it. */
 export type TaskChild = Pick<Session, "busy" | "pendingQuestion"> & {
@@ -180,6 +333,8 @@ export type TaskChild = Pick<Session, "busy" | "pendingQuestion"> & {
 
 /** The app's side of the task tools (App.tsx builds it on the delegation tracker). */
 export type AgentAppTasksHost = {
+  /** WP-172: where a fan-out keeps its checkpoint while it sends (absent: a plan is not checkpointed). */
+  fanoutCheckpoints?: FanoutCheckpointStore;
   /** The caller's own rows: by id or request, or (neither) the ones still running or owed, newest first. */
   owned(
     owner: string,
@@ -211,6 +366,32 @@ export type AgentAppTasksHost = {
    * look like the worker failed to start.
    */
   saveGates?(id: string, request: GateRequest, folder?: string): Promise<unknown>;
+  /**
+   * SC-4: how hard this project's tasks are tested (delivery_settings_get). Asked only when a code brief carries no check
+   * line. Absent or undefined: the app couldn't say, and the brief is not refused for it.
+   */
+  testingMode?(project: string): Promise<TestingMode | undefined>;
+  /**
+   * PT-1: the proof tools that fit this folder and which it already has (`proof_tools_list`), as the app answers it. Asked
+   * only for a code brief in a project that checks every task fully. Absent: the app's own command is called. Whatever
+   * comes back is read defensively (proofTools.ts `readProofToolList`); a miss means no section, never a held-up brief.
+   */
+  proofTools?(folder: string): Promise<unknown>;
+  /** SC-4: the HEAD of the project's main checkout, to stamp a brief with (firstmate_brief_stamp). Undefined: none. */
+  briefStamp?(folder: string): Promise<string | undefined>;
+  /**
+   * SC-4: keep a started task's check lines, stamp and do-not-touch list on its row (firstmate_brief_keep). The first keep
+   * wins, so a retry changes nothing. A miss is not a failed start: the same call again saves them.
+   */
+  keepBrief?(id: string, brief: KeptBrief): Promise<unknown>;
+  /**
+   * PT-6: the current text of each section a brief's spec parts touch, and (for a brief with none) the spec files whose `paths:`
+   * cover its scope, read from the project's main checkout (firstmate_spec_context). Whatever comes back is read defensively
+   * (briefSpec.ts `readSpecContext`); a miss or a wait that runs out means the brief says to read the file first.
+   */
+  specContext?(folder: string, request: { parts: readonly SpecPart[]; scope: readonly string[] }): Promise<unknown>;
+  /** PT-6: the project's landed tasks, newest first (firstmate_spec_landed), for the spec_start draft. Absent: none. */
+  specLanded?(project: string): Promise<unknown>;
   /** Hivra WP-40: the first mate accepts or refuses an unsure verdict (firstmate_gates_decide). */
   decideGates?(owner: string, id: string, accept: boolean, reason?: string): Promise<unknown>;
   /** The running task working in this chat itself, newest first: what `tasks.cannot` with no taskId declares on. */
@@ -219,7 +400,7 @@ export type AgentAppTasksHost = {
    * Hivra WP-10: how deep a delegation from this chat would sit; rejects past the cap (first mate, first mate, workers)
    * with the reason (src-tauri/src/firstmate/mod.rs check_depth).
    */
-  checkDepth?(ownerSession: string): Promise<number>;
+  checkDepth?(ownerSession: string, opts?: { fanout?: boolean }): Promise<number>;
   /** Hivra WP-14: steering messages and decisions (firstmate/model/steering.ts). */
   firstMate?: FirstMateTasksHost;
   /**
@@ -238,6 +419,8 @@ export type AgentAppTasksHost = {
   /** The hub project id of a folder, and the folder of a hub project id. */
   hubProjectId?(folder: string): string | undefined;
   hubProjectFolder?(id: string): string | undefined;
+  /** WP-141 round 11: every hub project folder, so a worktree can find the project that owns it. */
+  hubProjectRoots?(): readonly string[];
   /** The clock waits are measured on; tests pin it. */
   now?(): number;
   /** Workers per project, and the ones waiting for a free worker (H8). */
@@ -247,6 +430,11 @@ export type AgentAppTasksHost = {
    * (hub/model/hubMemoryPrimer.ts workerMemoryBlock, the default), or undefined for a chat with no project.
    */
   memoryBrief?(ownerSession: string, harness: HarnessId): Promise<string | undefined>;
+  /**
+   * WP-156: active standing answers for the project a Lead is briefed on. Empty, or a failure, leaves the brief as it
+   * was. The text is guidance, not permission.
+   */
+  standingBrief?(project: string): Promise<string | undefined>;
   /**
    * WP-13: which CLI, model and effort this task uses. Absent, or a failure, keeps the model already chosen.
    * Labels are areas such as `ui`, not `area:ui`.
@@ -267,7 +455,62 @@ export type AgentAppTasksHost = {
     cliFrom?: string | null;
     modelFrom?: string | null;
     effortFrom?: string | null;
+    /** WP-141: the matched rule's first label, and what was skipped (Never use, the lock), for the reason. */
+    ruleLabel?: string | null;
+    skipped?: { field?: string | null; from?: string | null; value?: string | null; reason?: string | null }[] | null;
+    /** WP-141: the Never use list and the lock the route was chosen under. */
+    never?: string[] | null;
+    lock?: boolean | null;
   } | null | undefined>;
+  /**
+   * WP-141: the one gate a worker or session launch passes before its process starts (crew_launch_check). It rejects
+   * with the reason when the CLI is on Never use, is not the locked default under the lock, or the policy can't be read.
+   */
+  crewGate?(input: {
+    cli: string;
+    folder?: string;
+    mono?: string;
+    lockedDefault?: string;
+    sessionId: string;
+    /** The session that started this one, so the child keeps that session's projects. */
+    parentSession?: string;
+  }): Promise<void>;
+  /** WP-141 HIGH-B: whether any saved crew policy, in any scope, has the lock on. */
+  crewAnyLock?(): Promise<boolean>;
+  /**
+   * WP-141: the crew's pick across signed-in CLIs and the Monos this chat may brief, from the person's rules, defaults,
+   * Always use my default, Never use and fallback order (`crew_pick`). Reads only.
+   */
+  crewPick?(query: CrewPickQuery): Promise<CrewPickAnswer>;
+  /** WP-141: the Monos (project Leads) this Mono may brief: `lead` is what delegate_task's `lead` takes. */
+  pickMonos?(monoId: string): { id: string; name?: string; role?: string; lead: string }[];
+  /**
+   * WP-144: fresh-eyes review before builders start. Absent means today's start.
+   * Hold only when `hold` is true.
+   */
+  freshEyes?(input: {
+    project: string;
+    requestId: string;
+    plan: string;
+    ownerSession: string;
+    reading?: unknown;
+    /** The delegate call, kept so a later approval can start this same brief. */
+    held?: Record<string, unknown>;
+  }): Promise<{ hold: boolean; why: string }>;
+  /** The Lead a brief names exists and this Mono may brief it. Throws when it does not. Checked before a review. */
+  checkLead?(source: Session, mono: { id: string; name?: string }, lead: string): void | Promise<void>;
+  /** WP-141: the lock and Never use list in force for a Mono in a folder. Read before a brief or a default change. */
+  crewPolicy?(monoId: string | undefined, folder: string | undefined): Promise<{ neverUse: string[]; lock: boolean }>;
+  /** WP-156: the project the named Lead keeps, so the brief carries that project's standing answers. */
+  leadProject?(
+    source: Session,
+    mono: { id: string; name?: string },
+    lead: string,
+  ): string | undefined | Promise<string | undefined>;
+  /** WP-144: the chat's briefs waiting on a fresh-eyes review, each named by the chat it will be. */
+  freshEyesWaiting?(ownerSession: string): Promise<{ childSessionId: string; title: string; line: string }[]>;
+  /** WP-144: the chat took back a brief waiting on a review (task_cancel). True when one matched. */
+  freshEyesCancel?(ownerSession: string, childSessionId: string): Promise<boolean>;
   /**
    * Where a Mono's work goes (hub/model/monoTeams.ts). Absent outside the hub, where a Mono starts workers in its
    * projects as before.
@@ -348,8 +591,45 @@ export function workerPort(childSession: string, taken: ReadonlySet<number> = ne
 
 /** The port a brief gave its worker (workerRules), if any. */
 export function portOfBrief(brief: string | null | undefined): number | undefined {
-  const found = /\bPORT=(\d{4,5})\b/.exec(brief ?? "");
+  // The person's quoted request (WP-171) may talk about ports of its own; only the app's own lines name this worker's.
+  const own = (brief ?? "").replace(/^## Original request\n[\s\S]*?(?=^## |(?![\s\S]))/m, "");
+  const found = /\bPORT=(\d{4,5})\b/.exec(own);
   return found ? Number(found[1]) : undefined;
+}
+
+/**
+ * PT-5: the one sentence a worker of an "at ship" project is told about tests it didn't write. The app puts a failing test that is not
+ * the task's own on the project's test debt list and sorts the list once, at the ship check; the task is not sent back for it.
+ * Never in another mode: `light` and `full` test each task, and a failing test there is the task's to fix.
+ */
+export const AT_SHIP_TESTS_RULE =
+  "This project sorts failing tests at ship: if a test you did not write and that does not cover your change fails, note it in your report and carry on; never delete, skip or weaken it. Your own tests must pass.";
+
+/** PT-5: the testing modes whose workers carry the red-test rules. "No testing" has none, and a mode the app can't read is not guessed. */
+export type RedTestMode = "at-ship" | "light" | "full";
+
+/** How long a quarantine lasts. The same 14 days as the test debt list's own (`QUARANTINE_MS`, src-tauri/src/test_debt/doc.rs). */
+export const QUARANTINE_DAYS = 14;
+
+/**
+ * PT-5: what a worker does when a test goes red, in every testing mode but "No testing". Short and plain. The app enforces what it can
+ * (a quarantine asked for a critical test is refused, a weakened, deleted or skipped test is a finding, the gates stop sending a change
+ * back after the third round); the rest is said here. In "Test at ship" a red test that is not the worker's own goes on the project's
+ * test list; in "Light" and "Full" the worker asks for a quarantine with one line of its report (`Quarantine: <test> | <why>`).
+ */
+export function redTestRules(mode: RedTestMode): string[] {
+  const then =
+    mode === "at-ship"
+      ? "Then stop and name it in your report: the app puts it on the project's test list, to be sorted at ship."
+      : `Then, if it is not a critical test, ask for a ${QUARANTINE_DAYS} day quarantine with a line "Quarantine: <test> | <why>" in your report, carry on, and name it in your report. You never quarantine a critical test: ask your first mate.`;
+  return [
+    "When a test goes red, first say in one line which it is: a real bug, a test that is out of date because the behaviour changed on purpose, or flaky (it passes when run again on the same commit).",
+    `Spend at most 10 minutes or 2 attempts on a red test that is not one of yours. ${then}`,
+    "Never make a test pass by weakening it: no removed assertions, loosened expected values, skips, retries or sleeps. To delete a test, your report must say what behaviour it guarded and what covers it now.",
+    "Tests marked critical (`@critical` in the title or in a comment directly above it, or under a path for keys, permissions, the sandbox, billing, migrations, CI or installers), golden files and formal specs are read-only for you: changing one needs your first mate.",
+    "The change you land owns the red it causes: a test your change turns red is yours to fix, even if you did not write it.",
+    "Your change gets at most 3 review rounds, and the checks stop sending it back after the third. If the third fails, stop and rethink the approach with your first mate instead of patching again.",
+  ];
 }
 
 /**
@@ -359,8 +639,8 @@ export function portOfBrief(brief: string | null | undefined): number | undefine
  * a worker whose brief said "Do not add the health route" found a sibling's landed route in its copy and removed it, and
  * its landing took the sibling's test out of the project; workers leave code they didn't write alone.
  */
-export function workerRules(port: number): string {
-  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Your checkout may already hold other workers' finished work. Never remove or rewrite code you didn't write unless your brief names it, even where your brief says not to add it: leave it, and say what looks wrong at the top of your report.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- Ash may write in your chat himself. His words decide: they outrank your brief and any pick from your Lead. A choice of his your brief already carries is settled: never ask it again; if a check disagrees with it, say that mismatch in one line.\n- Updates and reports in a few short lines: what changed, and each check as one line (\"npm test: 14 passed\"); never paste test or command output.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End with your report in exactly this shape. Checks with their results, links, files and commits are evidence; your opinion of your own work is not:\n\n${WORKER_REPORT_SHAPE}\n- Then a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${monoHomeFence()}\n</worker_rules>`;
+export function workerRules(port: number, options: { atShip?: boolean; redTests?: RedTestMode } = {}): string {
+  return `<worker_rules>\n- Other workers may be running in this project at the same time. Your port is ${port}: start any server you need (a dev server, an API, a preview) on it, with PORT=${port} or the tool's own port option, never on the project's default port.\n- Never stop, kill or restart a process you didn't start (no pkill, killall or kill of anyone else's server). If a port or a file is busy, use your own port, wait, or say so in your report.\n- Work in your own checkout, the folder you were started in.\n- Your checkout may already hold other workers' finished work. Never remove or rewrite code you didn't write unless your brief names it, even where your brief says not to add it: leave it, and say what looks wrong at the top of your report.\n- Never weaken a test, an allow list or a guard to get past a decision that isn't yours: stop and ask your Lead.\n- Ash may write in your chat himself. His words decide: they outrank your brief and any pick from your Lead. A choice of his your brief already carries is settled: never ask it again; if a check disagrees with it, say that mismatch in one line.\n- You have no memory of the chat that sent you. Everything you may assume is in this brief, including the person's own request quoted in it. If something your task depends on isn't there, say so in your report instead of guessing at the chat.\n- Never ask the person a question. Where your brief leaves a point open, take the most reasonable reading and say in your report what you assumed. A choice that is Ash's is not yours, as below.\n- If a tool call is refused because nobody can approve it for you (a path or command outside what your task allows), stop retrying it and say in your report exactly what was blocked and where, so your first mate can send the task again with that named.\n- Updates and reports in a few short lines: what changed, and each check as one line (\"npm test: 14 passed\"); never paste test or command output.\n- Test what your change can reach, not the whole suite: the project's own affected-tests command if it has one (npm run check:affected, nx affected, turbo run test --filter=...[origin/main]), else the runner's related mode on your changed files (vitest related, jest --findRelatedTests, cargo test -p <crate>, go test on the changed packages, pytest on the matching test files), plus the type check. Run the full suite only when your brief asks, when you changed what every test stands on (the package manifest, the lockfile, a test, build or TypeScript config, the test setup, CI files), or when the project's rules say so; your report says which you ran.\n- Run your tests with the run_checks tool instead of running the test command yourself: it runs the project's own tests for what you changed and returns the summary line, each failing test with its message, and the path of the full log, so there is nothing to paste. When you are fixing a bug, write the test that fails first and run it with run_checks before you change the code; a build error or zero tests is not a failing run. If the tool says the project declares no test command, run its tests yourself and say so in your report.\n- A choice that is Ash's (your brief says so or leaves it open, like which day a week starts) is not yours to settle in code: don't build one answer in. If your task can't go on without it, stop and ask your Lead.\n- If you find something that doesn't match (two copies of a type that disagree, a doc that says one thing while the code does another), or you built something differently from your brief or TODO, say so plainly at the top of your report.\n- End with your report in exactly this shape. Checks with their results, links, files and commits are evidence; your opinion of your own work is not:\n\n${WORKER_REPORT_SHAPE}\n- Then a self-review, in exactly this shape. A report without one is not recorded as done and comes straight back to you:\n\n${SELF_REVIEW_SHAPE}\n- ${monoHomeFence()}\n${options.atShip ? `- ${AT_SHIP_TESTS_RULE}\n` : ""}${options.redTests ? redTestRules(options.redTests).map((rule) => `- ${rule}\n`).join("") : ""}</worker_rules>`;
 }
 
 /**
@@ -389,18 +669,17 @@ function firstLine(brief: string): string {
   return brief.split("\n").find((line) => line.trim())!.trim().slice(0, 200);
 }
 
-/** The studio's ask id rule (ashos/hub.py ASK_ID; delegations.rs ask_id_ok): one bad id would refuse the whole copy. */
+/**
+ * The asks a job covers (delegations.rs ask_id_ok reads the same rule). A ledger id (`ask-<n>-<block>`, what `asks.list`
+ * gives as `id`) is what a job's end updates the ask by (asks/model/askJobs.ts). The retired Ash OS ids (`a_...`) are still
+ * accepted so an old row or a habit that passes one keeps working, but nothing writes them any more. One bad id would
+ * refuse the whole copy, so it is refused here first.
+ */
 function askIds(value: unknown): string[] {
   if (value === undefined) return [];
-  if (
-    !Array.isArray(value) ||
-    value.length > ASKS_MAX ||
-    !value.every((id) => typeof id === "string" && /^a_[A-Za-z0-9]{1,40}$/.test(id.trim()))
-  )
-    throw new Error(
-      forUser`asks must be up to ${ASKS_MAX} Ash OS ask ids (a_...), as ash_record returned them`,
-    );
-  return [...new Set(value.map((id: string) => id.trim()))];
+  const ids = delegationAskIds(value, ASKS_MAX);
+  if (!ids) throw new Error(forUser`asks must be up to ${ASKS_MAX} ask ids (ask-5-abc123, the "id" of each ask in asks.list)`);
+  return ids;
 }
 
 function taskIds(value: unknown): string[] | undefined {
@@ -424,6 +703,33 @@ function fileList(value: unknown): string[] {
   if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || !item.trim() || item.length > 400))
     throw new Error("files must be a list of the project's file or folder paths it will change");
   return value.slice(0, 30).map((item: string) => item.trim());
+}
+
+/** WP-92: delegate_task's `secrets`: up to 3 keys, each into one environment variable of its own, never a value. */
+const SECRETS_MAX = 3;
+function workerSecrets(value: unknown): { name: string; env: string }[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > SECRETS_MAX)
+    throw new Error(`secrets must be up to ${SECRETS_MAX} keys, each with a name and an env`);
+  const out = value.map((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item))
+      throw new Error(
+        'Each key is an object with a name and an env, like {"name": "stripe-api-key", "env": "STRIPE_API_KEY"}',
+      );
+    const row = item as Record<string, unknown>;
+    const extra = Object.keys(row).filter((key) => key !== "name" && key !== "env");
+    if (extra.length) throw new Error(`Unknown secrets fields: ${extra.join(", ")}`);
+    const name = text(row.name, "name", 64);
+    const env = text(row.env, "env", 64);
+    if (!/^[A-Z_][A-Z0-9_]{0,63}$/.test(env))
+      throw new Error("env must be capital letters, digits and underscores, like STRIPE_API_KEY");
+    return { name, env };
+  });
+  if (new Set(out.map((secret) => secret.name.toLowerCase())).size !== out.length)
+    throw new Error("Each key once: two entries name the same key");
+  if (new Set(out.map((secret) => secret.env)).size !== out.length)
+    throw new Error("Each key needs its own env name");
+  return out;
 }
 
 function scopeList(value: unknown): string[] {
@@ -541,6 +847,103 @@ function carriedMonoRules(rules: unknown): CrewRule[] {
 }
 
 /** Only a Mono's own chat or a coding-team chat has tasks; the checker only reads. */
+/** WP-141: the folder whose crew policy a launch or a pick reads: the chat's team, else the project it names, else its own. */
+/**
+ * WP-141 round 11: the worker default a session, a brief and a pick send. The same lookup as a plan
+ * (projectDefaultForFolder): the folder's own hub project, then the most specific project that owns it.
+ * Hub roots, when the host names them, are sent so a project with no crew row is still found.
+ */
+function projectDefaultFor(tasks: AgentAppTasksHost, folder: string) {
+  return projectDefaultForFolder(
+    folder,
+    (key) => tasks.pool?.projectDefault?.(tasks.hubProjectId?.(key) ?? key),
+    { roots: tasks.hubProjectRoots?.() },
+  );
+}
+
+function crewScopeFolder(owner: TaskOwner, source: Session, named: string | undefined, tasks: AgentAppTasksHost): string {
+  if (owner.team) return owner.team.folder;
+  if (named === undefined) return source.cwd;
+  // WP-141 HIGH-A: a name that is not a hub project is refused, not read as a folder. Policy and launch share one folder.
+  const hub = tasks.hubProjectFolder?.(named);
+  if (hub) return hub;
+  // A bare name the hub doesn't know (a folder's last segment, say) is refused: the policy would be read for nothing.
+  if (!named.startsWith("/") && !named.startsWith("~"))
+    throw new Error(`"${named}" is not one of the app's projects, so nothing was started.`);
+  return named;
+}
+
+/** WP-141: a reason a fallback CLI may not take the work: the lock is on, or the chat's own CLI is on Never use. */
+function fallbackRefusal(answer: CrewRouteAnswer | null | undefined, baseline: string, routed: string): string | undefined {
+  const absent = `${cliLabel(routed)} isn't installed here`;
+  if (answer?.lock === true) return `${absent}, and Always use my default is on, so no other CLI was used.`;
+  if ((answer?.never ?? []).includes(baseline))
+    return `${absent}, and ${cliLabel(baseline)} is on Never use, so no other CLI was used.`;
+  return undefined;
+}
+
+/**
+ * WP-141: the one gate a launch passes before its process starts. Without a gate (a build with none) the route alone
+ * decides; the app always wires one. The locked default is the route's CLI when the route is known.
+ */
+export async function gateCrewStart(
+  tasks: Pick<AgentAppTasksHost, "crewGate"> | undefined,
+  input: {
+    cli: string;
+    folder?: string;
+    mono?: string;
+    route?: CrewRouteAnswer | null;
+    sessionId: string;
+    parentSession?: string;
+  },
+): Promise<void> {
+  // WP-141 round 5: a build with no gate refuses. Failing open here let a launch through without a decision.
+  if (!tasks?.crewGate) throw new Error("The crew gate is unavailable, so nothing was started.");
+  await tasks.crewGate({
+    cli: input.cli,
+    ...(input.folder ? { folder: input.folder } : {}),
+    ...(input.mono ? { mono: input.mono } : {}),
+    ...(input.route?.cli ? { lockedDefault: input.route.cli } : {}),
+    sessionId: input.sessionId,
+    ...(input.parentSession ? { parentSession: input.parentSession } : {}),
+  });
+}
+
+/**
+ * WP-141 MEDIUM 5: sessions.start is gated like a worker. It has no task route, so the locked default is the route's
+ * pick for the Mono and folder with no task: a route that can't be read refuses the start.
+ */
+export async function gateSessionStart(
+  host: AgentAppHost,
+  source: Session,
+  cli: string,
+  folder: string,
+  sessionId: string,
+): Promise<void> {
+  const tasks = host.tasks;
+  if (!tasks?.crewGate) throw new Error("The crew gate is unavailable, so nothing was started.");
+  const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
+  let route: CrewRouteAnswer | null | undefined;
+  if (tasks.crewRoute) {
+    try {
+      route = await tasks.crewRoute({
+        labels: [],
+        paths: [],
+        project: folder,
+        ...(mono?.id ? { mono: mono.id } : {}),
+        defaults: routeDefaults({
+          mono: mono?.workerDefault,
+          project: await projectDefaultFor(tasks, folder),
+          system: tasks.pool?.systemDefault?.(),
+        }),
+      });
+    } catch (error) {
+      throw new Error(crewReadRefusal(error, "The crew policy could not be read, so nothing was started"));
+    }
+  }
+  await gateCrewStart(tasks, { cli, folder, mono: mono?.id, route, sessionId, parentSession: source.id });
+}
+
 function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tasks: AgentAppTasksHost } {
   const mono = host.isMono(source.id) ? host.monoOf?.(source.id) : undefined;
   const team = mono ? undefined : host.codingTeamOf?.(source.id);
@@ -557,6 +960,21 @@ function taskOwner(source: Session, host: AgentAppHost): { owner: TaskOwner; tas
     ? { name: mono.name || mono.id, mono }
     : { name: team!.name, team: { project: team!.project, folder: team!.folder } };
   return { owner, tasks: host.tasks };
+}
+
+/**
+ * The Chief of Staff hands work on and never starts crew itself (chief/model/charter.ts). Its only road to a worker is
+ * a brief to a project's Lead (captain.handoff, or tasks.delegate with `lead`); a worker of its own is refused here.
+ */
+/** steering.rs TEXT_MAX: a message to a worker over this is refused. */
+const STEER_TEXT_MAX = 8_000;
+
+export const CAPTAIN_NO_CREW =
+  "The Chief of Staff hands work on and never starts workers itself. Use captain.handoff (or tasks.delegate with lead) so the project's first mate runs the work.";
+
+function refuseCaptainCrew(source: Session, host: AgentAppHost, toLead: boolean): void {
+  if (toLead || !host.isMono(source.id)) return;
+  if (isCaptainMono(host.monoOf?.(source.id) as Parameters<typeof isCaptainMono>[0])) throw new Error(CAPTAIN_NO_CREW);
 }
 
 /** The caller's rows by id, in the order asked; one that isn't the caller's reads exactly like one that doesn't exist. */
@@ -600,7 +1018,7 @@ function gateLine(verdict: string | null | undefined): string | undefined {
   if (!verdict) return undefined;
   switch (verdict) {
     case "unsure":
-      return "Its checks need you. Accept with task_accept, or refuse with a reason. It is not done until you do.";
+      return "Its checks need you. Accept with task_accept, or refuse, either way with a reason. It is not done until you do.";
     case "failed":
       return "Its checks failed.";
     case "pending":
@@ -737,6 +1155,7 @@ async function delegate(
   helpers: TaskHelpers,
 ) {
   const { owner, tasks } = taskOwner(source, host);
+  refuseCaptainCrew(source, host, input.lead !== undefined);
   if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
     throw new Error(
       "request ID must use letters, digits, underscores or hyphens (up to 100)",
@@ -745,6 +1164,32 @@ async function delegate(
   // left as a placeholder is refused before anything starts (firstmate/model/brief.ts).
   const unfit = checkBrief({ intent: input.intent, spec: input.brief, done: input.goal });
   if (unfit) throw new Error(unfit);
+  // SC-4: the brief's own check lines and do-not-touch list are read before anything starts; a bad one is refused in
+  // plain words. A plain name in `checks` is still the id of one of the project's own checks.
+  const own = splitChecks(input.checks);
+  const leave = leaveList(input.leave);
+  // PT-6: the sections of the project's spec of record this brief changes, read before anything starts too.
+  const specs = specParts(input.spec);
+  // SC-4's test of a code brief, and PT-6's: a brief with spec parts changes behaviour, so it is one too.
+  const codeBrief = isCodeBrief({ code: input.code, gates: input.gates, scope: input.scope }) || specs.length > 0;
+  // WP-171: a task of a fan-out carries its link: the contract its brief shows, and what it waits for.
+  const link = input.fanout === undefined ? undefined : parseFanoutLink(input.fanout);
+  if (link && input.lead !== undefined) throw new Error("A fan-out's tasks are workers: leave out lead.");
+  const contract = link ? fanoutSection(link) : undefined;
+  // WP-171: every brief quotes the person's own request, cut to the quote budget at this read. A longer one is
+  // trimmed, not refused, and the cut note keeps the real length. A task that waited keeps the request it was asked
+  // under, not whatever the person said since.
+  if (input.originalRequest !== undefined && typeof input.originalRequest !== "string")
+    throw new Error("originalRequest must be the person's request, as text");
+  const supplied = typeof input.originalRequest === "string" ? input.originalRequest : "";
+  const knownChars =
+    typeof input.originalRequestChars === "number" && Number.isFinite(input.originalRequestChars)
+      ? input.originalRequestChars
+      : undefined;
+  const taken = supplied ? boundRequest(supplied, knownChars) : readOriginalRequest(source.blocks);
+  const originalRequest = taken?.text || undefined;
+  const originalRequestChars = taken && taken.chars > taken.text.length ? taken.chars : undefined;
+  const extras = { contract, originalRequest, originalRequestChars };
   const intent = text(input.intent, "intent", BRIEF_MAX);
   const brief = text(input.brief, "brief", BRIEF_MAX);
   const title =
@@ -773,25 +1218,104 @@ async function delegate(
       unbindPhaseLauncher(sharedTask);
     }
   }
+  const startedAlready = async (): Promise<boolean> => {
+    const [row] = await tasks.owned(source.id, { requestIds: [`app-${source.id}-${requestId}`] }).catch(() => [] as Delegation[]);
+    return !!row && row.state !== "cancelled";
+  };
+  // SC-4: the commit this brief was written against, read once and carried with the call, so a worker that waits for a
+  // free worker (or for a review) opens with the commit the first mate saw, not the one at its start.
+  let briefStamp: string | undefined;
+  /** PT-6: what the app read of the project's spec of record for this brief. Absent: it couldn't, or the project is remote. */
+  let specContext: SpecContext | undefined;
+  /** What a held or queued call carries to its start: the stamp, when there is one. */
+  const briefCarried = (): Record<string, unknown> => (briefStamp ? { briefStamp } : {});
+  // WP-144: fresh-eyes review, off unless this project turned it on. It comes after every check that can refuse the call
+  // cheaply (so a brief that would fail is never reviewed) and before anything starts. The review keeps the call as a
+  // waiting task; Approve (or Skip once) asks tasks.delegate again under the same request ID, with the call that was
+  // reviewed. The reviewers run after this call returns, so it never waits on them.
+  const heldForReview = async () => {
+    if (!tasks.freshEyes) return undefined;
+    // A task already started for this request is read back below, never started again: nothing to review, and a
+    // worker that was cancelled is not started again on the strength of an earlier approval.
+    if (await startedAlready()) return undefined;
+    // The reading list is capped here, so what is kept, reviewed and started is the same short list.
+    const held = {
+      ...input,
+      ...(input.reading !== undefined ? { reading: readingEntries(input.reading) } : {}),
+      ...briefCarried(),
+    };
+    const eyes = await tasks.freshEyes({
+      project: source.cwd,
+      requestId,
+      plan: brief,
+      ownerSession: source.id,
+      reading: held.reading,
+      held,
+    });
+    if (eyes?.hold !== true) return undefined;
+    return {
+      taskId: null,
+      childSessionId: `app-${source.id}-${requestId}`,
+      status: "waiting",
+      title,
+      freshEyes: true,
+      note:
+        typeof eyes.why === "string" && eyes.why.trim()
+          ? eyes.why
+          : "Fresh-eyes review: waiting on you",
+    };
+  };
   // WP-40: a bad gate is refused before a worker starts. Nothing named keeps the routes check alone.
-  const gates = gateRequest(input);
+  // SC-4: the project's own check ids go to the gates as they always did; a task with lines of its own is a code task.
+  const gates = gateRequest({
+    ...input,
+    checks: own.ids,
+    // (Even a `code: false` that came with lines: lines are checks to run, and the checks gate comes with them.)
+    // PT-6: a task with spec parts changes behaviour, so it is a code task too: its round always runs, and the diff is read.
+    ...((own.lines.length || specs.length) && (input.code === undefined || input.code === false) ? { code: true } : {}),
+  });
   // Hivra WP-10: never deeper than first mate, first mate, workers.
   if (tasks.checkDepth) await tasks.checkDepth(source.id);
+  // WP-92: the keys a worker's environment holds. Checked before anything starts.
+  const secretList = workerSecrets(input.secrets);
   // A stuck task of the caller's this one takes on (a retry, or one piece of a split): checked before anything starts.
   const redoes =
     input.redoes === undefined ? undefined : (await ownRows(source, tasks, [text(input.redoes, "redoes", 128)]))[0];
   if (input.lead !== undefined) {
+    // SC-4: check lines and a do-not-touch list belong to a worker's brief. A Lead writes its own workers' briefs, so
+    // these would be dropped; say so now rather than let them look accepted.
+    if (own.lines.length || leave.length)
+      throw new Error(
+        "A brief to a Lead can't carry check lines or a do-not-touch list: the Lead writes its own workers' briefs. Say in the brief what the workers must check and leave alone, and the Lead puts it in theirs.",
+      );
+    // PT-6: and so do spec parts: the Lead's workers carry the spec section their change updates, which the Lead names.
+    if (specs.length)
+      throw new Error(
+        "A brief to a Lead can't carry spec parts: the Lead writes its own workers' briefs. Say in the brief which section of the project's spec the change updates, and the Lead puts it in theirs.",
+      );
     if (redoes) throw new Error("redoes is for your own workers' tasks; leave it out when you brief a Lead.");
+    if (secretList.length)
+      throw new Error(
+        "secrets are for a worker you start yourself; a Lead's delegation names its own workers' keys. Leave them out here.",
+      );
     if (!owner.mono)
       throw new Error(
         "A coding-team chat hands its work to its own workers; only a Mono briefs a project's Lead. Leave out lead.",
       );
+    // Every refusal this brief can meet comes before the review: what it names, and whether that Lead exists.
+    const request = leadRequest(input, tasks);
+    await tasks.checkLead?.(source, owner.mono, request.lead);
+    // WP-156: the target Lead's project, not the chat that writes the brief.
+    const leadHome = (await tasks.leadProject?.(source, owner.mono, request.lead))?.trim();
+    const held = await heldForReview();
+    if (held) return held;
     // A Lead is a first mate: its brief comes from the same template, read-only on the project.
     // WP-41: the brief names the pstack skills for this kind of work.
     const leadBrief = renderBrief(
       { intent, spec: brief },
       { kind: "first-mate" },
       classifyBriefTask(`${intent}\n${brief}`),
+      extras,
     );
     return briefLead(source, owner.mono, tasks, {
       requestId,
@@ -799,6 +1323,8 @@ async function delegate(
       title,
       asks,
       goal,
+      // WP-156: the same project key the decision gate stores answers under (see firstMateTool).
+      standingProject: leadHome || owner.team?.project || tasks.hubProjectId?.(source.cwd) || source.cwd,
       ...(sharedTask ? { taskId: sharedTask } : {}),
       input,
       gates,
@@ -837,6 +1363,7 @@ async function delegate(
   // Every Mono but a Lead works through teams (hub/model/monoTeams.ts): a project's work goes to its coding team as a
   // brief to its Lead, and its own work to a worker in its own team's folder, made the first time.
   let ownTeam: { folder: string; name: string } | undefined;
+  let makesOwnTeam = false;
   if (owner.mono && tasks.monoWork && !tasks.monoWork.isLead(owner.mono.id)) {
     const team = named !== undefined ? tasks.monoWork.codingTeam(named) : undefined;
     if (team)
@@ -849,42 +1376,69 @@ async function delegate(
         throw new Error(
           "Your own team's folder isn't a repository, so its workers share it: leave out isolation (or use \"shared\").",
         );
-      ownTeam = await tasks.monoWork.ownTeam(owner.mono);
+      makesOwnTeam = true;
     }
   }
+  // PT-6: a Mono's own team folder is no project and has no spec of record.
+  if (makesOwnTeam && specs.length)
+    throw new Error("Your own team's folder isn't a project with a spec of record, so a spec part has nowhere to go: leave out spec.");
+  // A model the call names must be one this chat can ask for. Checked here, so a bad name is refused before a review.
+  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
+  const askedModel = taskModel(input.model, source, onBridge);
+  // A job Ash already answered in its worker's chat is his: refused before a review, as it is before a start.
+  if (tasks.freshEyes && !(await startedAlready())) {
+    const open = (await tasks.owned(source.id, {}).catch(() => [] as Delegation[])).filter(isOpenDelegation);
+    const refusal = answeredJobRefusal(open, { requestId, title, ...(redoes ? { redoes } : {}) });
+    if (refusal) throw new Error(refusal);
+  }
+  // SC-4: a code brief in a project that runs full checks on each task needs a check line, refused before a review or a
+  // start. The app's own call (marked: a queued worker starting, a reviewed brief approved, a retry) is a brief already
+  // accepted as sent, so a mode that changed meanwhile doesn't drop it. A Mono's own team folder is no project, so none
+  // of this applies there.
+  const briefFolder = briefFolderOf(source, owner, named, tasks);
+  if (!makesOwnTeam) {
+    if (!isAppDelegate(input)) {
+      const refusal = await fullModeRefusal(
+        tasks,
+        briefFolder,
+        codeBrief,
+        own.lines,
+      );
+      if (refusal) throw new Error(refusal);
+    }
+    // A redo works in the copy its first worker left, with that work in it: it has nothing to drift from.
+    if (!redoes) {
+      briefStamp =
+        validStamp(input.briefStamp) ?? validStamp(await tasks.briefStamp?.(briefFolder).catch(() => undefined));
+    }
+    // PT-6: the project's current spec sections for this brief, from its main checkout (a remote project's files are on its host:
+    // the worker reads them there). A spec part that names another place than the project keeps its spec is refused here, with
+    // where it is kept, before anything starts.
+    if (!remoteProjectFor(briefFolder) && !remoteProjectFor(source.cwd)) {
+      specContext = await specContextFor(tasks, briefFolder, specs, scopePaths(scope).paths);
+      if (specs.length && specContext?.refusal) throw new Error(specContext.refusal);
+    }
+  }
+  const held = await heldForReview();
+  if (held) return held;
+  // The Mono's own team is made now, once the brief may start: its folder is where this worker runs.
+  if (makesOwnTeam && owner.mono && tasks.monoWork) ownTeam = await tasks.monoWork.ownTeam(owner.mono);
   // E7: a worker gets the right model for its job — Sonnet for a usual one, a stronger model (and high effort when it
   // offers one) for a hard one, and a project's own worker model for any of its jobs. A model or effort the caller
   // names always wins, and the route never touches another engine or one of Ash's own models (taskDifficulty.ts).
+  // WP-141 LOW 7: the folder whose crew policy this launch reads. The pick and the launch share the same function.
+  const policyFolder = crewScopeFolder(owner, source, named, tasks);
   const folder =
     ownTeam?.folder ??
     (named !== undefined && !owner.team ? tasks.hubProjectFolder?.(named) ?? named : source.cwd);
-  // WP-60: a remote project keeps the brief on its host. A local folder is unchanged.
-  const remoteBrief = await briefOnRemoteHost({
-    paths: [folder, source.cwd],
-    launchKey: `app-${source.id}-${requestId}`,
-    ownerSession: source.id,
-    title,
-    harness: source.harness,
-    model: source.model,
-    runtimeMode: WORKER_RUNTIME_MODE,
-    startedBy: firstMate ? "first-mate" : "person",
-    promptFor: (hostCwd) =>
-      briefPrompt(
-        owner.name,
-        renderBrief(
-          { intent, spec: brief },
-          { kind: "shared", folder: hostCwd },
-          classifyBriefTask(`${intent}\n${brief}`),
-        ),
-        goal,
-      ),
-  });
-  if (remoteBrief) return remoteBrief;
+  // WP-171: a task that waits for another is held in this app's queue, which a remote project's host does not share.
+  if (link?.after.length && [folder, source.cwd].some((path) => remoteProjectFor(path)))
+    throw new Error(
+      "A task that waits for another can't be held on a remote project yet. Send the tasks that need nothing from each other, and the rest once they report.",
+    );
   const projectKey = tasks.hubProjectId?.(folder) ?? folder;
   const difficulty = judgeTask({ heavy, retry: Boolean(redoes), scope: scope.length, hard });
   // On the DeepSeek launcher a Claude name is only a label: a worker it names runs on DeepSeek.
-  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
-  const askedModel = taskModel(input.model, source, onBridge);
   // On the DeepSeek launcher another engine's model runs as DeepSeek instead, and the Lead hears why.
   const offBridgeAsk =
     onBridge && askedModel !== undefined && askedModel.harness !== "claude" ? String(input.model) : undefined;
@@ -911,30 +1465,50 @@ async function delegate(
   // WP-89: outside a bench the routed CLI may simply not be installed. The worker keeps the chat's own CLI so the
   // work still starts, and this sentence says which CLI was asked for and what it runs on instead.
   let cliFallback: string | undefined;
+  // WP-141: why the crew picked this CLI. Kept on the row and told to the Lead, so a pick is never silent.
+  let crewWhy: string | undefined;
+  // WP-141: the route forced a CLI and named none (every CLI on Never use, or the lock with none installed).
+  let crewRefused: string | undefined;
+  // WP-141: the route this launch was judged by. The gate checks the CLI it starts on against its lock.
+  let crewAnswer: CrewRouteAnswer | null | undefined;
   if (tasks.crewRoute) {
     const baseline = model?.harness ?? source.harness;
     const baselineModel = model?.model ?? source.model;
+    const roleLabel =
+      input.role === undefined ? undefined : text(input.role, "role", 40).toLowerCase();
+    // WP-141 MEDIUM 4: a route that can't be read refuses the start. It never starts on the Lead's or the chat's CLI.
     try {
       const override = callerOverride(namedModel, input.effort);
       const monoRules = carriedMonoRules(owner.mono?.crewRules);
       const defaults = routeDefaults({
         mono: owner.mono?.workerDefault,
-        project: tasks.pool?.projectDefault?.(projectKey),
+        project: await projectDefaultFor(tasks, policyFolder),
         system: tasks.pool?.systemDefault?.(),
       });
       const catalog = launchCatalog();
-      const answer = await tasks.crewRoute({
-        labels: crewLabels(areasNamed(title, brief)),
+      crewAnswer = await tasks.crewRoute({
+        labels: [
+          ...new Set([...(roleLabel ? [roleLabel] : []), ...crewLabels(areasNamed(title, brief))]),
+        ],
         paths: crewPaths(fileList(input.files), filesNamed(brief)),
         ...(override ? { override } : {}),
-        ...(folder ? { project: folder } : {}),
+        project: policyFolder,
         ...(owner.mono?.id ? { mono: owner.mono.id } : {}),
         ...(monoRules.length ? { monoRules } : {}),
         ...(defaults ? { defaults } : {}),
         ...(Object.keys(catalog).length ? { catalog } : {}),
       });
-      const next = applyCrewLaunch(answer, { harness: baseline, model: baselineModel, effort });
+    } catch (error) {
+      throw new Error(crewReadRefusal(error, "The crew policy could not be read, so no worker was started"));
+    }
+    try {
+      const answer = crewAnswer;
+      const named = { harness: baseline, model: baselineModel, effort };
+      crewRefused = crewRefusal(answer, named);
+      const next = applyCrewLaunch(answer, named);
       if (next.harness && isHarnessAvailable(next.harness)) {
+        // Only when the CLI it names is the one this worker runs on; a missing CLI says so in cliFallback instead.
+        if (answer?.cli && answer.cli === next.harness) crewWhy = routeReason(answer) || undefined;
         const moved = next.harness !== baseline || next.model !== baselineModel || next.effort !== effort;
         if (moved) {
           crewChose = next.harness !== model?.harness || next.model !== model?.model;
@@ -945,7 +1519,10 @@ async function delegate(
         }
       } else if (next.harness && next.harness !== baseline) {
         const refused = benchCliRefusal(next.harness);
+        // WP-141 HIGH 1: a fallback never starts a CLI on Never use, and never gets past the lock.
+        const stuck = fallbackRefusal(answer, baseline, next.harness);
         if (refused) benchRefusal = refused;
+        else if (stuck) crewRefused = stuck;
         else cliFallback = cliFallbackLine(next.harness, baseline);
       }
     } catch {
@@ -953,6 +1530,70 @@ async function delegate(
     }
   }
   if (benchRefusal) throw new Error(benchRefusal);
+  if (crewRefused) throw new Error(crewRefused);
+  // WP-60: a remote project keeps the brief on its host. A local folder is unchanged. WP-141: the gate judges the chat's
+  // CLI the host will run (remote briefs take the chat's harness), before anything reaches the host.
+  if ([folder, source.cwd].some((path) => remoteProjectFor(path)))
+    await gateCrewStart(tasks, {
+      cli: source.harness,
+      folder: policyFolder,
+      mono: owner.mono?.id,
+      route: crewAnswer,
+      sessionId: `app-${source.id}-${requestId}`,
+      parentSession: source.id,
+    });
+  // SC-4: what a worker's brief adds to the shared parts: the stamp, its in-scope paths, its check lines and its list.
+  // PT-3: in a project that checks every task fully, a code brief also names the proof skills. A mode the app can't read
+  // adds nothing.
+  const proofSkills =
+    codeBrief &&
+    (await fullModeOf(tasks, briefFolderOf(source, owner, named, tasks)));
+  // PT-1: and it names the proof tools the project already has. Asked only then; a miss adds nothing.
+  const proofTools = proofSkills ? await proofToolLinesOf(tasks, briefFolderOf(source, owner, named, tasks)) : [];
+  // PT-5: in a project that tests at ship, its workers are told in one sentence what to do about a failing test that isn't theirs.
+  // Not the test fixer (the app's own task, marked by the app and by no agent): its brief says what it may change.
+  const testFixer = isAppDelegate(input) && input.testFixer === true;
+  // Only a code brief reads the mode (a task that changes no code, a read or an answer, never does: SC-4), and a task that changes
+  // no code writes no test.
+  // PT-5: and the same mode says which red-test rules it carries: every mode but "No testing" has them; "at ship" adds its sentence.
+  const redTests =
+    !testFixer && codeBrief
+      ? await redTestModeOf(tasks, briefFolderOf(source, owner, named, tasks))
+      : undefined;
+  const atShip = redTests === "at-ship";
+  const workerExtras = {
+    ...extras,
+    ...(briefStamp ? { stamp: briefStamp } : {}),
+    scope,
+    checks: own.lines,
+    leave,
+    ...(proofSkills ? { proofSkills: true } : {}),
+    ...(proofTools.length ? { proofTools } : {}),
+    // PT-6: the spec of record this task changes, or the spec that covers its scope as context.
+    ...(specs.length || specContext?.related.length ? { spec: { parts: specs, context: specContext } satisfies SpecBrief } : {}),
+  };
+  const remoteBrief = await briefOnRemoteHost({
+    paths: [folder, source.cwd],
+    launchKey: `app-${source.id}-${requestId}`,
+    ownerSession: source.id,
+    title,
+    harness: source.harness,
+    model: source.model,
+    runtimeMode: WORKER_RUNTIME_MODE,
+    startedBy: firstMate ? "first-mate" : "person",
+    promptFor: (hostCwd) =>
+      briefPrompt(
+        owner.name,
+        renderBrief(
+          { intent, spec: brief },
+          { kind: "shared", folder: hostCwd },
+          classifyBriefTask(`${intent}\n${brief}`),
+          workerExtras,
+        ),
+        goal,
+      ),
+  });
+  if (remoteBrief) return remoteBrief;
   // The worker works on this chat's project (hub/model/hubMcp.ts), so its brief carries that project's memory.
   const memory = await (tasks.memoryBrief ?? workerMemoryBlock)(
     source.id,
@@ -960,21 +1601,37 @@ async function delegate(
   ).catch(
     () => undefined,
   );
+  // The first mate's own crew rules (monos/model/crewRules.ts), read fresh for each brief.
+  const crewRules = owner.mono ? await readCrewRules(owner.mono.id, owner.name) : undefined;
   const id = `app-${source.id}-${requestId}`;
   // Idempotent (H8c): a task already recorded for this request is never started a second time, so a waiting worker
   // asked again after a window died mid-start (its claim ran out) or a retried call only reads it back.
   const [already] = await tasks.owned(source.id, { requestIds: [id] }).catch(() => [] as Delegation[]);
   if (already && already.state !== "cancelled") {
     if (sharedTask) bindCrew(already.id, sharedTask);
+    // A redo's link is kept on the retry too (round 5): the gate has it at once, and the row keeps it. A refused link
+    // refuses the call.
+    if (redoes) {
+      addSpendRedoLink(id, redoes.childSession);
+      await tasks.redo?.(source.id, redoes, already.id);
+    }
     tasks.pool?.started({ id, heavy, files });
     // A retry after a save that didn't land keeps the same plan. A save that fails still returns the task.
     await keepGates(tasks, already.id, gates, folder);
+    // SC-4: the first keep wins, so this never overwrites a result the gates already wrote.
+    const keptAgain = await keepBrief(tasks, already.id, {
+      stamp: briefStamp,
+      checks: own.lines,
+      leave,
+      ...(specs.length ? { spec: specs } : {}),
+    });
     return {
       taskId: already.id,
       childSessionId: id,
       status: already.state,
       title: already.title ?? title,
       alreadyStarted: true,
+      ...(keptAgain ? {} : { briefNote: BRIEF_NOT_KEPT }),
       ...(cliFallback ? { cliFallback } : {}),
       note: `${cliFallback ? `${cliFallback} ` : ""}This task had already started; it was not started again. Its report comes back to you as its own turn.`,
     };
@@ -1007,10 +1664,11 @@ async function delegate(
             isolationOf(workspaceMode, worktreeCwd),
             // WP-41: the brief names the pstack skills for this kind of work.
             classifyBriefTask(`${intent}\n${brief}`),
+            workerExtras,
           ),
           goal,
           memory,
-          workerRules(port),
+          [workerRules(port, { atShip, ...(redTests ? { redTests } : {}) }), crewRules].filter(Boolean).join("\n\n"),
         ),
         // PM's r63 run: a worker tab was named from the brief's first line ("Ash's words, verbatim: …"); it is the job.
         title,
@@ -1049,6 +1707,40 @@ async function delegate(
     (firstMate || everyone.some((row) => (row.project ?? "") === projectOf(launch.cwd)));
   if (auto) launch = launchWith("worktree");
   const hubProject = tasks.hubProjectId?.(launch.cwd);
+  // WP-92: a worker's keys are checked, approved by the person where needed, and armed for its session before it
+  // starts. Nothing is armed unless every key is ready, and none of the words here carries a value.
+  if (secretList.length) {
+    if (!owner.mono)
+      throw new Error(
+        "A worker's key comes from a Mono's own chat: the approvals are the Mono's. A coding-team chat hands this work to its Lead, whose own delegation names the key.",
+      );
+    if (!host.secretsWorkerArm) throw new Error("Keys aren't available in this build");
+    const armed = await host.secretsWorkerArm(id, {
+      chat: source.id,
+      mono: owner.mono.id,
+      project: folder,
+      executable: launch.harness,
+      secrets: secretList,
+    });
+    if (armed.state !== "ready") {
+      const note =
+        armed.state === "waiting"
+          ? forUser`The person hasn't approved ${armed.name} for this worker yet. Tell them in one line what the worker will run, then end your turn; their answer comes back to you and you delegate again.`
+          : armed.state === "denied"
+            ? forUser`The person said no to ${armed.name}. Carry on without it, or ask again later with the reason it is needed.`
+            : forUser`No key named ${armed.name} is saved. Ask for it with secrets_request, then delegate again.`;
+      return {
+        taskId: null,
+        childSessionId: id,
+        status: armed.state === "denied" ? "refused" : "waiting",
+        title,
+        cwd: launch.cwd,
+        harness: launch.harness,
+        model: launch.model,
+        note,
+      };
+    }
+  }
   // Over the project's limit, or the provider has no account with room: it waits and starts by itself (H8).
   if (tasks.pool) {
     const job = {
@@ -1059,7 +1751,9 @@ async function delegate(
       harness: launch.harness,
       ...(files.length ? { files } : {}),
     };
-    const admission = tasks.pool.admit(job);
+    // WP-161: look at the machine first, so a pause the person set applies to the very first launch too.
+    await tasks.pool.refreshHealth?.();
+    const admission = tasks.pool.admit({ ...job, ownerSession: source.id, ...(link ? { fanout: link } : {}) });
     if (!admission.start) {
       tasks.pool.enqueue(
         {
@@ -1068,7 +1762,17 @@ async function delegate(
           requestId,
           title,
           queuedAt: (tasks.now ?? Date.now)(),
-          input,
+          input: {
+            ...input,
+            ...(originalRequest
+              ? {
+                  originalRequest,
+                  ...(originalRequestChars !== undefined ? { originalRequestChars } : {}),
+                }
+              : {}),
+            // SC-4: the stamp and the acceptance travel with the call, so its start writes the brief it was sent with.
+            ...briefCarried(),
+          },
         },
         launch,
       );
@@ -1090,20 +1794,35 @@ async function delegate(
       };
     }
   }
+  // A redo's link is known to the spend gate before the worker's first turn (round 5): its chat sums its parent's spend.
+  if (redoes) addSpendRedoLink(id, redoes.childSession);
   const meta = {
     title,
     askIds: asks,
+    ...(redoes ? { redoes: { id: redoes.id, childSession: redoes.childSession } } : {}),
     ...(goal ? { goal } : {}),
     ...(hubProject ? { project: hubProject } : {}),
     ...(sharedTask ? { taskId: sharedTask } : {}),
+    ...(crewWhy ? { pickReason: crewWhy } : {}),
   };
-  // Always monitored: a task reports back to the chat that delegated it.
+  // Always monitored: a task reports back to the chat that delegated it. WP-141: the gate runs before each start.
+  const gated = () =>
+    gateCrewStart(tasks, {
+      cli: launch.harness,
+      folder: policyFolder,
+      mono: owner.mono?.id,
+      route: crewAnswer,
+      sessionId: id,
+      parentSession: source.id,
+    });
   try {
+    await gated();
     await host.start(launch, id, undefined, source.id, meta);
   } catch (error) {
     // A checkout of its own couldn't be made (a folder that isn't a git repository): the shared one, as asked for.
     if (!auto && !(redo && !redo.path)) throw error;
     launch = launchWith("current");
+    await gated();
     await host.start(launch, id, undefined, source.id, meta);
   }
   tasks.pool?.started({ id, heavy, files });
@@ -1113,6 +1832,13 @@ async function delegate(
   if (sharedTask && row?.id) bindCrew(row.id, sharedTask);
   // WP-40: the plan is kept once the row exists. A waiting worker stores `input` and this runs when it starts.
   await keepGates(tasks, row?.id, gates, folder);
+  // SC-4: its check lines, do-not-touch list and the stamp its brief opens with, once the row exists.
+  const kept = await keepBrief(tasks, row?.id, {
+    stamp: briefStamp,
+    checks: own.lines,
+    leave,
+    ...(specs.length ? { spec: specs } : {}),
+  });
   // What the Lead did about its stuck task shows on that task's card (and survives a restart: it's in its row's log).
   if (redoes && row) await tasks.redo?.(source.id, redoes, row.id).catch(() => undefined);
   return {
@@ -1120,6 +1846,8 @@ async function delegate(
     childSessionId: id,
     status: row?.state ?? "running",
     title,
+    // SC-4: lines or a list that could not be saved are not run or enforced; the first mate is told, and can send it again.
+    ...(kept ? {} : { briefNote: BRIEF_NOT_KEPT }),
     cwd: launch.cwd,
     harness: launch.harness,
     model: launch.model,
@@ -1131,6 +1859,8 @@ async function delegate(
     ...(route && !crewChose ? { modelWhy: route.why } : {}),
     // WP-89: the CLI asked for isn't installed, so the worker runs on this chat's CLI; the Lead passes the line on.
     ...(cliFallback ? { cliFallback } : {}),
+    // WP-141: why the crew picked this CLI, in plain words the Lead can pass on.
+    ...(crewWhy ? { crewWhy } : {}),
     ...(launch.workspaceMode === "worktree" || (redo?.path && launch.worktreeCwd) ? { isolation: "worktree" } : {}),
     ...(auto && launch.workspaceMode === "worktree"
       ? {
@@ -1157,7 +1887,496 @@ async function delegate(
   };
 }
 
+/**
+ * WP-171, delegate_tasks: one call for a multi-part ask whose tasks name what each owns, provides, requires and checks.
+ * The whole contract is checked before anything starts. Then every task goes through the same `delegate` a single
+ * delegate_task does (its brief, gates, crew route, worker limits, checkout): the tasks that need nothing start, and a
+ * task that requires a name waits in the worker queue until the task that provides it is delivered and checked
+ * (fanoutWaves.ts, fanoutChecks.ts), starting by itself then. A task that cannot start holds the tasks that need it.
+ */
+/** WP-172: the plans this app is sending right now, by owner and plan id. A resume of one of them waits its turn. */
+const SENDING_PLANS = new Set<string>();
+
+/** The one plain line a second send or resume of a plan gets, from this window or another. */
+const PLAN_BUSY = "This plan is already being sent, from this window or another. Wait for its answer, then check task_status.";
+
+/** How often a window that is sending a plan renews its lease (the lease itself lasts LEASE_MS in the database). */
+const LEASE_RENEW_MS = 30_000;
+
+/**
+ * WP-172: runs one send or resume of a plan. The plan's lease in the database is taken first, so only one window of
+ * the app sends or resumes a given plan at a time; a second window is refused in plain words. The lease is renewed
+ * while the send runs and given up at the end, and a lease whose window died runs out and can be taken over.
+ */
+async function sendingPlan<T>(
+  owner: string,
+  planId: string,
+  store: FanoutCheckpointStore | undefined,
+  run: () => Promise<T>,
+): Promise<T> {
+  const key = `${owner}\n${planId}`;
+  if (SENDING_PLANS.has(key))
+    throw new Error(PLAN_BUSY);
+  SENDING_PLANS.add(key);
+  const holder = windowHolder();
+  let renew: ReturnType<typeof setInterval> | undefined;
+  let held = false;
+  try {
+    if (store) {
+      held = await store.acquire(owner, planId, holder);
+      if (!held) throw new Error(PLAN_BUSY);
+      renew = setInterval(() => void store.renew(owner, planId, holder).catch(() => false), LEASE_RENEW_MS);
+    }
+    return await run();
+  } finally {
+    if (renew !== undefined) clearInterval(renew);
+    SENDING_PLANS.delete(key);
+    if (held && store) await store.release(owner, planId, holder).catch(() => false);
+  }
+}
+
+/** Said once to the owner when a plan's progress could not be saved: it then cannot be resumed after a crash. */
+const CHECKPOINT_NOTE =
+  "Could not save this plan's progress, so it cannot be resumed if the app stops. Tell Ash in one line.";
+
+/**
+ * A checkpoint writer for one plan: each change is saved as the next revision. A failed or refused save never fails the
+ * plan by itself, but it is remembered, so the owner is told once that the plan cannot be resumed. The write answers
+ * whether it was saved, for the one caller that must not go on without it (a resume's own number).
+ */
+function planWriter(store: FanoutCheckpointStore | undefined, owner: string, first: FanoutCheckpoint | undefined) {
+  let current = first;
+  let failed = false;
+  return {
+    get: () => current,
+    /** WP-172: the checkpoint note for the result, when a write failed or was refused. */
+    note: (): { checkpointNote: string } | Record<string, never> => (failed ? { checkpointNote: CHECKPOINT_NOTE } : {}),
+    async write(change: (cp: FanoutCheckpoint) => FanoutCheckpoint): Promise<boolean> {
+      if (!store || !current) return false;
+      current = change(current);
+      const saved = await store.save(owner, current).catch(() => false);
+      if (!saved) failed = true;
+      return saved;
+    },
+    /** Once every task has started or been refused, the plan is no longer offered for a resume. */
+    async finish(): Promise<void> {
+      if (!store || !current || !isComplete(current)) return;
+      await store.remove(owner, current.id).catch(() => false);
+    },
+  };
+}
+
+/**
+ * The request id a task's last start was sent under: the plan's own id for the task, unless a start again took a new
+ * one (then the stopped row is left as it is, and the new worker has a row of its own).
+ */
+function requestOf(plan: FanoutCheckpoint, name: string): string {
+  return plan.tasks.find((task) => task.name === name)?.requestId ?? taskRequestId(plan.id, name);
+}
+
+/** The rows of a plan's tasks, read by the child session each start was given. */
+function rowsOfPlan(owner: string, plan: FanoutCheckpoint, owned: readonly Delegation[]): RowLookup {
+  return (name) => {
+    const child = `app-${owner}-${requestOf(plan, name)}`;
+    const row = owned.find((entry) => entry.childSession === child);
+    return row ? { id: row.id, childSession: row.childSession, state: row.state } : undefined;
+  };
+}
+
+/** The child session of a task's start (the app's own `app-<owner>-<request>` form). */
+function childOf(owner: string, plan: FanoutCheckpoint, name: string): string {
+  return `app-${owner}-${requestOf(plan, name)}`;
+}
+
+const PLAN_READ_FAILED = "Could not read this plan's tasks, so nothing was started or changed. Try again.";
+const RESUME_NOT_SAVED = "Could not save this plan's resume, so nothing was started again. Try again.";
+
+/**
+ * WP-172: one plan's rows, in one read: the store refuses more than 20 requests at once, so a plan is never read with
+ * another. A read that fails throws; it is never taken for "no row" (a running task would look stopped).
+ */
+async function readPlanRows(owner: string, plan: FanoutCheckpoint, tasks: AgentAppTasksHost): Promise<Delegation[]> {
+  const requestIds = plan.tasks.map((task) => `app-${owner}-${requestOf(plan, task.name)}`);
+  return tasks.owned(owner, { requestIds }).catch(() => {
+    throw new Error(PLAN_READ_FAILED);
+  });
+}
+
+/**
+ * The children still waiting in this window's worker queue, or held for review: their jobs have no row yet. A read that
+ * fails throws: a held brief taken for "no job" would look stopped, and a second worker would start for it.
+ */
+async function waitingChildren(owner: string, tasks: AgentAppTasksHost): Promise<Set<string>> {
+  const waiting = new Set<string>();
+  for (const entry of tasks.pool?.queued(owner) ?? []) waiting.add(entry.job.id);
+  if (tasks.freshEyesWaiting) {
+    const held = await tasks.freshEyesWaiting(owner).catch(() => {
+      throw new Error(HELD_READ_FAILED);
+    });
+    for (const entry of held) waiting.add(entry.childSessionId);
+  }
+  return waiting;
+}
+
+const HELD_READ_FAILED = "Could not read which tasks are held for review, so nothing was started or changed. Try again.";
+
+/** The yes and no a stopped task's decision offers (WP-14). Asked under a stable key, so asking again changes nothing. */
+const AGAIN_YES = "Start it again";
+const AGAIN_NO = "Leave it stopped";
+
+/**
+ * WP-172: the decision that starts a stopped task again. It names the plan, the task and the request id the stopped start
+ * had, so each stop asks afresh: a yes given for one stop starts nothing after a second one. The tag is a hash of the
+ * chat that owns the plan and all three names, so two chats that picked the same plan id and task name get two keys
+ * (Ash's yes for one chat never restarts the other's task). The `fanout-again/` prefix is what person_only and the
+ * ask refusals match.
+ */
+export function fanoutAgainKey(owner: string, plan: string, name: string, stopped: string): string {
+  const tag = sha256Hex(`${owner}\n${plan}\n${name}\n${stopped}`).slice(0, 16);
+  return `fanout-again/${plan}/${name}/${stopped}/${tag}`;
+}
+
+/** Whether a decision key is a restart decision (the trimmed key, as the store reads it). */
+export function isAgainKey(key: unknown): boolean {
+  return typeof key === "string" && isFanoutAgainDecisionKey(key);
+}
+
+/**
+ * WP-14: asks Ash whether a stopped task starts again, as a decision of its own. True only when Ash has answered yes, and
+ * not through a chat (a chat's answer is the model's, whatever the words); the model's `confirm` alone never starts a
+ * worker. Without a first mate's decision store, nothing can be asked.
+ */
+async function askAgain(
+  source: Session,
+  plan: FanoutCheckpoint,
+  name: string,
+  where: { mono?: string; project?: string },
+  firstMate: FirstMateTasksHost | undefined,
+): Promise<boolean> {
+  if (!firstMate) return false;
+  const question = `Start the "${name}" task again? Its worker stopped or went missing, and a repeat can do its work twice.`;
+  const { result, answeredBy, question: stored, options } = await askPersonRecorded(
+    source,
+    {
+      key: fanoutAgainKey(source.id, plan.id, name, requestOf(plan, name)),
+      question,
+      options: [AGAIN_YES, AGAIN_NO],
+      recommended: AGAIN_NO,
+    },
+    where,
+    [],
+    firstMate,
+  );
+  if (answeredBy?.startsWith("chat:")) return false;
+  // The card must be the app's own: a card made first under this key with other words is not Ash's answer to this question.
+  if (stored !== question || options.length !== 2 || options[0] !== AGAIN_YES || options[1] !== AGAIN_NO) return false;
+  return result.state === "answered" && result.answer === AGAIN_YES;
+}
+
+async function fanout(
+  source: Session,
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  // A fan-out's tasks are all workers, so the Chief of Staff never sends one.
+  refuseCaptainCrew(source, host, false);
+  if (input.resume !== undefined) {
+    if (input.tasks !== undefined)
+      throw new Error("A resume carries on a plan already sent: leave out tasks (name the stopped ones in confirm).");
+    const planId = text(input.resume, "resume", 100);
+    return sendingPlan(source.id, planId, taskOwner(source, host).tasks.fanoutCheckpoints, () =>
+      resumeFanout(source, planId, input, host, helpers),
+    );
+  }
+  return sendingPlan(source.id, requestId, taskOwner(source, host).tasks.fanoutCheckpoints, () =>
+    sendFanout(source, requestId, input, host, helpers),
+  );
+}
+
+/**
+ * WP-172: a plan an earlier run did not finish (a crash, a restart, a quit mid-plan). What never started is sent now,
+ * what started is kept as it is, and a task whose worker was stopped or has gone is sent again only when `confirm`
+ * names it. Every start keeps the plan's request id, so a task that already has a row is never started a second time.
+ */
+async function resumeFanout(
+  source: Session,
+  planId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  const { tasks } = taskOwner(source, host);
+  if (input.confirm !== undefined && (!Array.isArray(input.confirm) || input.confirm.some((name) => typeof name !== "string")))
+    throw new Error("confirm must be a list of the task names to start again");
+  const confirm = (input.confirm as string[] | undefined) ?? [];
+  const store = tasks.fanoutCheckpoints;
+  const found = store ? (await store.list(source.id).catch(() => [] as FanoutCheckpoint[])).find((cp) => cp.id === planId) : undefined;
+  if (!found) throw new Error("There is no unfinished plan with that id. Send the tasks again with delegate_tasks.");
+  const unknown = confirm.filter((name) => !found.tasks.some((task) => task.name === name));
+  if (unknown.length)
+    throw new Error(`${unknown.join(", ")} ${unknown.length === 1 ? "is" : "are"} not part of this plan.`);
+  const now = (tasks.now ?? Date.now)();
+  // Everything is read before anything is decided: a read that fails throws here, and nothing has changed yet.
+  const owned = await readPlanRows(source.id, found, tasks);
+  const waiting = await waitingChildren(source.id, tasks);
+  const rowOf = rowsOfPlan(source.id, found, owned);
+  const plan: ResumePlan = planResume(found, rowOf, (name) => waiting.has(childOf(source.id, found, name)));
+  const writer = planWriter(store, source.id, found);
+  // The resume's number is saved before anything starts. A resume whose number was not saved starts nothing: the next
+  // one would take the same number, and a start again under it could revive a row that was stopped.
+  const counted = await writer.write((cp) => ({ ...cp, resumes: cp.resumes + 1, revision: cp.revision + 1, updatedAt: now }));
+  if (!counted) throw new Error(RESUME_NOT_SAVED);
+  const generation = found.resumes + 1;
+  for (const adopted of plan.adopt)
+    await writer.write((cp) => noteStarted(cp, adopted.name, { taskId: adopted.taskId, childSession: adopted.childSession, status: adopted.state }, now));
+  const outcome = new Map<string, string>();
+  for (const name of plan.kept) outcome.set(name, "kept");
+  for (const name of plan.refused) outcome.set(name, "refused earlier, not retried");
+  for (const name of plan.waiting) {
+    outcome.set(name, "waiting for a free worker");
+    const child = childOf(source.id, found, name);
+    await writer.write((cp) => noteQueued(cp, name, child, now));
+  }
+  // WP-14: a stopped task starts again only on Ash's yes to its own decision, and only when the call names it too.
+  const { owner } = taskOwner(source, host);
+  const where = { ...(owner.mono ? { mono: owner.mono.id } : {}), project: owner.team?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd };
+  const restart = new Set<string>();
+  for (const name of plan.confirm) {
+    const yes = await askAgain(source, found, name, where, tasks.firstMate);
+    if (yes && confirm.includes(name)) {
+      restart.add(name);
+      continue;
+    }
+    outcome.set(name, yes ? "answered yes; name it in confirm to start it again" : "needs your yes");
+    await writer.write((cp) => noteStopped(cp, name, now));
+  }
+  const send = new Set([...plan.start, ...restart]);
+  // In the plan's own order, so the waves still run in order.
+  for (const task of found.tasks.filter((entry) => send.has(entry.name))) {
+    // A start again gets a request id of its own; any other start keeps the one it had (a crashed one is adopted by it).
+    const sentAs = restart.has(task.name) ? restartRequestId(found.id, task.name, generation) : requestOf(found, task.name);
+    // A start again is recorded as the stopped task it was first: a task still marked started would keep its old request
+    // id, and the tasks waiting on it would look for the stopped chat.
+    // Nothing starts unless its "starting" (and, for a start again, its "stopped") is saved: a start whose record is not
+    // there could be sent twice after a crash. With no store there is no record to keep, and the start goes on as before.
+    const stoppedSaved = restart.has(task.name) ? await writer.write((cp) => noteStopped(cp, task.name, now)) : true;
+    const startingSaved = await writer.write((cp) => noteStarting(cp, task.name, now, sentAs));
+    if (store && !(stoppedSaved && startingSaved)) {
+      outcome.set(task.name, "not started: could not save this plan's progress");
+      continue;
+    }
+    try {
+      const out = (await delegate(
+        source,
+        sentAs,
+        {
+          ...task.input,
+          ...(found.originalRequest
+            ? {
+                originalRequest: found.originalRequest,
+                ...(found.originalRequestChars !== undefined ? { originalRequestChars: found.originalRequestChars } : {}),
+              }
+            : {}),
+        },
+        host,
+        helpers,
+      )) as Record<string, unknown>;
+      if (typeof out.taskId === "string" && typeof out.childSessionId === "string") {
+        const status = typeof out.status === "string" ? out.status : undefined;
+        await writer.write((cp) =>
+          noteStarted(cp, task.name, { taskId: out.taskId as string, childSession: out.childSessionId as string, status }, now),
+        );
+      } else if (out.status === "waiting" && typeof out.childSessionId === "string") {
+        const child = out.childSessionId;
+        await writer.write((cp) => noteQueued(cp, task.name, child, now));
+      }
+      outcome.set(
+        task.name,
+        out.alreadyStarted === true ? "kept" : out.status === "waiting" ? "waiting for a free worker" : "started",
+      );
+    } catch (error) {
+      const why = error instanceof Error ? error.message : String(error);
+      await writer.write((cp) => noteRefused(cp, task.name, why, now));
+      outcome.set(task.name, `refused: ${why}`);
+    }
+  }
+  await writer.finish();
+  return {
+    plan: found.id,
+    tasks: found.tasks.map((task) => ({ name: task.name, status: outcome.get(task.name) ?? "kept" })),
+    ...writer.note(),
+    note: forUser`${describeResume(plan)} Tell Ash in one line what carried on and what waits for his yes (in plain words: never a task id, a task name or a folder path), then end your turn.`,
+  };
+}
+
+async function sendFanout(
+  source: Session,
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  const { owner, tasks } = taskOwner(source, host);
+  if (!/^[A-Za-z0-9_-]{1,100}$/.test(requestId))
+    throw new Error("request ID must use letters, digits, underscores or hyphens (up to 100)");
+  const parsed = parseFanout(input);
+  // SC-4: a code task of a project that runs full checks needs a check line. Refused for the whole plan, before any task
+  // starts, naming the task. A Mono's own team folder is no project (as in `delegate`).
+  for (const task of parsed.tasks) {
+    const named = typeof task.passthrough.project === "string" ? task.passthrough.project : undefined;
+    const ownTeamWork = !!owner.mono && !!tasks.monoWork && !tasks.monoWork.isLead(owner.mono.id) && named === undefined;
+    if (ownTeamWork) continue;
+    const refusal = await fullModeRefusal(tasks, briefFolderOf(source, owner, named, tasks), task.codeBrief, task.checkLines);
+    if (refusal) throw new Error(`Task ${task.name}: ${refusal}`);
+  }
+  const planned = planFanout(parsed, source.id, requestId, (tasks.now ?? Date.now)());
+  if (planned.links.some((link) => link.after.length) && !tasks.pool?.waitsOnProviders)
+    throw new Error(
+      "This build starts every task at once, so a task can't wait for one it needs. Send the tasks that need nothing now with delegate_task, and the rest after they report.",
+    );
+  // One request for the whole plan, read once and cut to the quote budget: the tasks that wait keep it, whatever
+  // the person says meanwhile. The real length travels with it so the cut note stays honest.
+  const takenRequest = readOriginalRequest(source.blocks);
+  const originalRequest = takenRequest?.text || undefined;
+  const originalRequestChars = takenRequest && takenRequest.chars > takenRequest.text.length ? takenRequest.chars : undefined;
+  const linkOf = new Map(planned.links.map((link) => [link.name, link]));
+  const taskOf = new Map(parsed.tasks.map((task) => [task.name, task]));
+  /** The delegate input of one task, as a resume replays it (the person's request is kept once, on the plan). */
+  const delegateInput = (name: string): Record<string, unknown> => {
+    const link = linkOf.get(name)!;
+    const task = taskOf.get(name)!;
+    return {
+      intent: task.intent,
+      brief: task.brief,
+      goal: task.goal,
+      ...(task.title ? { title: task.title } : {}),
+      ...(task.files.length ? { files: task.files } : {}),
+      ...(task.gates ?? {}),
+      // SC-4: the task's own check lines go beside the project's check ids, and its do-not-touch list with them.
+      ...(task.checkLines.length ? { checks: [...(task.gates?.checks ?? []), ...task.checkLines] } : {}),
+      ...(task.leave.length ? { leave: task.leave } : {}),
+      // PT-6: the task's spec of record sections go to its delegation with the rest.
+      ...(task.spec?.length ? { spec: task.spec } : {}),
+      ...task.passthrough,
+      fanout: link,
+    };
+  };
+  // WP-172: the plan is written before the first start, so a crash from here on can be resumed.
+  const plans = tasks.fanoutCheckpoints;
+  const writer = planWriter(
+    plans,
+    source.id,
+    plans
+      ? createCheckpoint({
+          id: requestId,
+          owner: source.id,
+          ...(originalRequest ? { originalRequest } : {}),
+          ...(originalRequestChars !== undefined ? { originalRequestChars } : {}),
+          waves: planned.waves,
+          tasks: planned.waves.flat().map((name) => ({ name, wave: linkOf.get(name)!.wave, input: delegateInput(name) })),
+          now: (tasks.now ?? Date.now)(),
+        })
+      : undefined,
+  );
+  const stamp = () => (tasks.now ?? Date.now)();
+  await writer.write((cp) => cp);
+  /** Tasks that did not start (refused, or needing one that did not), by name, with why. */
+  const notStarted = new Map<string, string>();
+  const results: Record<string, unknown>[] = [];
+  // The tasks that need nothing first, then each wave after, so the queue holds the rest in order.
+  for (const [waveIndex, wave] of planned.waves.entries()) {
+    for (const name of wave) {
+      const link = linkOf.get(name)!;
+      const blocker = link.after.find((dep) => notStarted.has(dep));
+      if (blocker) {
+        notStarted.set(name, `${blocker} did not start`);
+        results.push({ name, wave: link.wave, status: "not started", error: `It needs ${blocker}, which did not start (${notStarted.get(blocker)}).` });
+        await writer.write((cp) => noteRefused(cp, name, `It needs ${blocker}, which did not start.`, stamp()));
+        continue;
+      }
+      await writer.write((cp) => noteStarting(cp, name, stamp(), taskRequestId(requestId, name)));
+      try {
+        const out = (await delegate(
+          source,
+          taskRequestId(requestId, name),
+          {
+            ...delegateInput(name),
+            ...(originalRequest
+              ? { originalRequest, ...(originalRequestChars !== undefined ? { originalRequestChars } : {}) }
+              : {}),
+          },
+          host,
+          helpers,
+        )) as Record<string, unknown>;
+        if (typeof out.taskId === "string" && typeof out.childSessionId === "string") {
+          const status = typeof out.status === "string" ? out.status : undefined;
+          await writer.write((cp) =>
+            noteStarted(cp, name, { taskId: out.taskId as string, childSession: out.childSessionId as string, status }, stamp()),
+          );
+        } else if (out.status === "waiting" && typeof out.childSessionId === "string") {
+          // Queued (or held for review): no row yet, and its job is what a resume looks for.
+          const child = out.childSessionId;
+          await writer.write((cp) => noteQueued(cp, name, child, stamp()));
+        }
+        results.push({
+          name,
+          wave: link.wave,
+          ...Object.fromEntries(
+            ["taskId", "childSessionId", "status", "title", "waiting", "freshEyes", "modelName", "effort", "alreadyStarted"]
+              .filter((key) => out[key] !== undefined)
+              .map((key) => [key, out[key]]),
+          ),
+        });
+      } catch (error) {
+        const why = error instanceof Error ? error.message : String(error);
+        notStarted.set(name, why);
+        results.push({ name, wave: link.wave, status: "refused", error: why });
+        await writer.write((cp) => noteRefused(cp, name, why, stamp()));
+      }
+    }
+    await writer.write((cp) => noteWaveDone(cp, waveIndex + 1, stamp()));
+  }
+  // Nothing is left to send: the plan is no longer offered for a resume.
+  await writer.finish();
+  if (notStarted.size === results.length)
+    throw new Error(`Nothing started. ${results.map((entry) => `${String(entry.name)}: ${String(entry.error)}`).join(" ")}`);
+  // Said in the order the tasks were given, not the order they started.
+  const byName = new Map(results.map((entry) => [entry.name, entry]));
+  const ordered = parsed.tasks.map((task) => byName.get(task.name)!);
+  // WP-144: a task held for its fresh-eyes review waits for the person's word, not for another task.
+  const reviewed = ordered.filter((entry) => entry.status === "waiting" && entry.freshEyes === true).length;
+  const waiting = ordered.filter((entry) => entry.status === "waiting" && entry.freshEyes !== true).length;
+  const problems = ordered.filter((entry) => entry.status === "refused" || entry.status === "not started").length;
+  return {
+    waves: planned.waves,
+    tasks: ordered,
+    ...(planned.warnings.length ? { warnings: planned.warnings } : {}),
+    ...writer.note(),
+    note: forUser`${ordered.length - waiting - reviewed - problems} started now${reviewed ? `; ${reviewed} wait${reviewed === 1 ? "s" : ""} for ${reviewed === 1 ? "its" : "their"} fresh-eyes review` : ""}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for what ${waiting === 1 ? "it needs" : "they need"} to be delivered and checked, and start${waiting === 1 ? "s" : ""} by itself then` : ""}${problems ? `; ${problems} did not start (see each task's error)` : ""}. A task whose provider fails is held, not run anyway, and you hear what landed and what did not. Reports come back to you as their own turns. Tell Ash in one line what is running and what waits (in plain words: never a task id, a task name or a folder path), then end your turn.`,
+  };
+}
+
 /** delegate_task {lead}: a Mono briefs a project's Lead (double delegation); its report comes back later. */
+/** What a brief to a Lead names, checked: the Lead, no project, model, effort or isolation, and how to go in when busy. */
+function leadRequest(
+  input: Record<string, unknown>,
+  tasks: AgentAppTasksHost,
+): { lead: string; whenBusy: "queue" | "steer" } {
+  if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
+  const lead = text(input.lead, "lead", 200);
+  for (const field of ["project", "model", "effort", "isolation"] as const)
+    if (input[field] !== undefined)
+      throw new Error(
+        `A Lead works in its own chat, project and model: leave out ${field} when you name a lead`,
+      );
+  const whenBusy = input.whenBusy ?? "queue";
+  if (whenBusy !== "queue" && whenBusy !== "steer")
+    throw new Error('whenBusy must be "queue" or "steer"');
+  return { lead, whenBusy };
+}
+
 async function briefLead(
   source: Session,
   mono: { id: string; name?: string },
@@ -1172,24 +2391,26 @@ async function briefLead(
     input: Record<string, unknown>;
     gates?: GateRequest;
     gateFolder?: string;
+    standingProject: string;
   },
 ) {
-  const { input } = job;
+  const { lead, whenBusy } = leadRequest(job.input, tasks);
   if (!tasks.briefLead) throw new Error("This build can't brief a Lead");
-  const lead = text(input.lead, "lead", 200);
-  for (const field of ["project", "model", "effort", "isolation"] as const)
-    if (input[field] !== undefined)
-      throw new Error(
-        `A Lead works in its own chat, project and model: leave out ${field} when you name a lead`,
-      );
-  const whenBusy = input.whenBusy ?? "queue";
-  if (whenBusy !== "queue" && whenBusy !== "steer")
-    throw new Error('whenBusy must be "queue" or "steer"');
+  // WP-156: standing answers ride on the Lead's brief. Off, empty, or unreachable: the brief is unchanged.
+  let brief = job.brief;
+  if (tasks.standingBrief) {
+    try {
+      const block = (await tasks.standingBrief(job.standingProject))?.trim() ?? "";
+      if (block) brief = `${job.brief}\n\n${block}`;
+    } catch {
+      brief = job.brief;
+    }
+  }
   const out = await tasks.briefLead(source, mono, {
     lead,
     // The brief's id in the Lead's chat and the row's request, in the app's namespace (sessions.send's too).
     requestId: `app-${source.id}-${job.requestId}`,
-    brief: job.brief,
+    brief,
     title: job.title,
     ...(job.goal ? { goal: job.goal } : {}),
     ...(job.taskId ? { taskId: job.taskId } : {}),
@@ -1217,6 +2438,29 @@ async function briefLead(
   };
 }
 
+/** WP-172: the chat's unfinished fan-outs, each with a plain line on what carrying it on would do. */
+async function unfinishedPlans(source: Session, tasks: AgentAppTasksHost): Promise<{ plan: string; line: string }[]> {
+  const store = tasks.fanoutCheckpoints;
+  if (!store) return [];
+  const found = await store.list(source.id).catch(() => [] as FanoutCheckpoint[]);
+  if (!found.length) return [];
+  const waiting = await waitingChildren(source.id, tasks);
+  const offered: { plan: string; line: string }[] = [];
+  for (const plan of found) {
+    // One read per plan. A read that fails leaves the plan out: a running task is never taken for a stopped one.
+    const owned = await readPlanRows(source.id, plan, tasks).catch(() => undefined);
+    if (!owned) continue;
+    const planned = planResume(plan, rowsOfPlan(source.id, plan, owned), (name) => waiting.has(childOf(source.id, plan, name)));
+    // Only a plan a resume would act on is offered: what is kept or waiting in the queue needs nothing from anyone.
+    if (!planned.start.length && !planned.confirm.length) continue;
+    offered.push({
+      plan: plan.id,
+      line: `${describeResume(planned)} To carry it on, send delegate_tasks with resume "${plan.id}" (and confirm with the names of any stopped task you want started again).`,
+    });
+  }
+  return offered;
+}
+
 async function status(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
   const { tasks } = taskOwner(source, host);
   const ids = taskIds(input.taskIds);
@@ -1237,8 +2481,13 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
   );
   // Waiting for a free worker: no task yet, only the chat it will be (H8).
   const queued = ids ? [] : (tasks.pool?.queued(source.id) ?? []);
+  // WP-144: a brief held for a fresh-eyes review is waiting too, though no worker is queued for it.
+  const reviewed = ids ? [] : await (tasks.freshEyesWaiting?.(source.id) ?? Promise.resolve([])).catch(() => []);
   const team = ids ? [] : await othersOpen(source, tasks);
+  // WP-172: a plan an earlier run did not finish, so First Mate can carry it on (delegate_tasks resume).
+  const plans = ids ? [] : await unfinishedPlans(source, tasks);
   return {
+    ...(plans.length ? { unfinishedPlans: plans } : {}),
     tasks: rows.map((row, index) =>
       taskView(
         row,
@@ -1246,19 +2495,28 @@ async function status(source: Session, input: Record<string, unknown>, host: Age
         trees[index].filter((entry) => entry.parentId === row.id),
       ),
     ),
-    ...(queued.length
+    ...(queued.length || reviewed.length
       ? {
-          waiting: queued.map(({ job, line }) => ({
-            childSessionId: job.id,
-            title: job.title,
-            status: "waiting",
-            waiting: line,
-            ...(job.heavy ? { heavy: true } : {}),
-          })),
+          waiting: [
+            ...queued.map(({ job, line }) => ({
+              childSessionId: job.id,
+              title: job.title,
+              status: "waiting",
+              waiting: line,
+              ...(job.heavy ? { heavy: true } : {}),
+            })),
+            ...reviewed.map((entry) => ({
+              childSessionId: entry.childSessionId,
+              title: entry.title,
+              status: "waiting",
+              waiting: entry.line,
+              freshEyes: true,
+            })),
+          ],
         }
       : {}),
     ...(team.length ? { othersRunning: team } : {}),
-    ...(rows.length || queued.length
+    ...(rows.length || queued.length || reviewed.length
       ? {}
       : {
           note: team.length
@@ -1342,6 +2600,8 @@ async function cancel(source: Session, input: Record<string, unknown>, host: Age
     input.reason === undefined ? "Cancelled by its owner." : text(input.reason, "reason", 500);
   // One still waiting for a free worker (named by its childSessionId) never starts.
   if (tasks.pool?.unqueue(source.id, id)) return { taskId: id, status: "cancelled", stopFailed: [] };
+  // WP-144: so does one held for a fresh-eyes review.
+  if (await tasks.freshEyesCancel?.(source.id, id)) return { taskId: id, status: "cancelled", stopFailed: [] };
   const [row] = await ownRows(source, tasks, [id]);
   const { stopFailed, cancelled } = await tasks.cancel(source.id, row, reason);
   const [after] = await tasks.owned(source.id, { ids: [id] });
@@ -1451,6 +2711,19 @@ function modelCaller(source: Session, host: AgentAppHost) {
   return mono;
 }
 
+/**
+ * WP-176: a first mate's own chat may set a spend limit, and the gate decides what it may do: a first limit or a lower
+ * one only. Raising or clearing needs the person's tap in Settings. The whole-app limit is Settings only. A habit run,
+ * a worker and the checker may not write at all.
+ */
+function spendCaller(source: Session, host: AgentAppHost) {
+  const mono =
+    host.isMono(source.id) && !host.isHabitRun?.(source.id) ? host.monoOf?.(source.id) : undefined;
+  if (!mono || mono.id === CHECKER_MONO_ID)
+    throw new Error("Only a first mate sets a spend limit, from its own chat.");
+  return mono;
+}
+
 function worksOn(projects: readonly string[], folder: string, projectId: string): boolean {
   return projects.some(
     (entry) =>
@@ -1486,17 +2759,26 @@ function saveMonoDefault(
  * WP-89: scope, cli, model, effort and clear set what those workers run on.
  */
 async function workers(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
-  const choosing =
-    input.scope !== undefined ||
+  const settingSpend =
+    input.amountUsd !== undefined ||
+    input.period !== undefined ||
+    input.warnAt !== undefined ||
+    input.spendClear !== undefined;
+  const choosingModel =
     input.cli !== undefined ||
     input.model !== undefined ||
     input.effort !== undefined ||
     input.clear !== undefined;
+  // A scope on its own still means "set the model". A spend limit uses scope too, and must not ask for a model.
+  const choosing = choosingModel || (input.scope !== undefined && !settingSpend);
+  // WP-176: reading a limit needs no special caller. Setting one does, before the project is resolved.
+  const spendMono = settingSpend ? spendCaller(source, host) : undefined;
   const setter = choosing ? modelCaller(source, host) : undefined;
   const { owner, tasks } = taskOwner(source, host);
   if (!tasks.pool) throw new Error("This build starts every worker at once; it has no per-project limit.");
   const named = input.project === undefined ? undefined : text(input.project, "project", 4096);
   const folder = owner.team?.folder ?? (named !== undefined ? (tasks.hubProjectFolder?.(named) ?? named) : source.cwd);
+  const policyFolder = crewScopeFolder(owner, source, named, tasks);
   const project = owner.team?.project ?? (named !== undefined && tasks.hubProjectFolder?.(named) ? named : (tasks.hubProjectId?.(folder) ?? folder));
   const count = (value: unknown, field: string) => {
     if (value === undefined) return undefined;
@@ -1514,6 +2796,16 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   const planned = choosing ? planWorkerChoice(input, current, launchCatalog()) : undefined;
   if (planned?.scope === "project" && setter && !worksOn(setter.projects, folder, project))
     throw new Error("This Mono doesn't work on that project.");
+  // WP-141 HIGH 2: under Always use my default, no default (the Mono's, the project's or everyone's) is changed from a chat.
+  // The lock is read for the Mono, the folder and every saved scope: a change anywhere it reaches is refused.
+  // Round 6: a host with no lock hook counts as locked, never as unlocked.
+  const anyLock = planned && (tasks.crewAnyLock ? (await tasks.crewAnyLock()) === true : true);
+  if (planned && ((await tasks.crewPolicy?.(owner.mono?.id, policyFolder))?.lock || anyLock))
+    throw new Error(
+      planned.scope === "system"
+        ? "Always use my default is on, so the default for every worker can't be changed from here."
+        : "Always use my default is on, so a Mono's or project's default can't be changed from here.",
+    );
   const next = { workers: count(input.workers, "workers"), heavy: count(input.heavy, "heavy") };
   const limits =
     next.workers === undefined && next.heavy === undefined
@@ -1547,13 +2839,64 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
   const changed = [planned && !planned.pick ? scopeClearLine(planned.scope) : "", planned?.dropped ?? ""]
     .filter(Boolean)
     .join(" ");
+  // WP-141 L9: the sentence names the lock and Never use, so the person sees what a chat can and cannot change.
+  const policy = await tasks.crewPolicy?.(owner.mono?.id, policyFolder);
   const force = describeInForce({
     defaults: routeDefaults({ mono: monoPick, project: projectPick, system: systemPick }),
     catalog,
     rules,
+    ...(policy ? { policy } : {}),
   });
   const rulesLine = crewRuleSentence(rules, catalog);
-  const line = [limitsLine(projectName(folder), limits), changed, force.sentence, rulesLine].filter(Boolean).join(" ");
+  let spendNote = "";
+  if (settingSpend && spendMono) {
+    if (input.scope === undefined)
+      throw new Error("Say whether this is just this Mono, this project, or everything.");
+    if (input.scope !== "mono" && input.scope !== "project" && input.scope !== "system")
+      throw new Error('scope must be "mono", "project" or "system".');
+    if (input.scope === "mono")
+      throw new Error("A spend limit covers this project or everything, not one Mono.");
+    const period = input.period === "day" || input.period === "month" ? input.period : null;
+    if (!period) throw new Error('period must be "day" or "month".');
+    if (input.spendClear !== undefined && input.spendClear !== true) throw new Error("spendClear must be true");
+    if (input.scope === "system")
+      throw new Error("The whole-app spend limit is set in Settings.");
+    const scope = "project";
+    if (!worksOn(spendMono.projects, folder, project))
+      throw new Error("This Mono doesn't work on that project.");
+    const who = project;
+    const label = project;
+    const here = spendSnapshot().book;
+    if (input.spendClear === true) {
+      // The gate matches a limit by its project's id or folder, so the clear asks it directly (a name match here missed
+      // a limit saved under its id). What it reports decides the line: cleared, nothing there, or refused.
+      const dropped = clearSpendLimit(scope, who, period, here.revision, { by: "first-mate" });
+      if (dropped.written) spendNote = `Spend limit cleared for ${label}.`;
+      else if (dropped.reason === NO_SPEND_LIMIT_TO_CLEAR) spendNote = `There is no spend limit to clear for ${label}.`;
+      else throw new Error(dropped.reason ?? "That change didn't stick. Try again.");
+    } else {
+      const warnAt = input.warnAt === undefined ? 0.8 : input.warnAt;
+      if (typeof input.amountUsd !== "number" || !Number.isFinite(input.amountUsd) || input.amountUsd <= 0)
+        throw new Error("amountUsd must be a positive number.");
+      if (typeof warnAt !== "number" || !Number.isFinite(warnAt) || warnAt < 0.5 || warnAt > 1)
+        throw new Error("warnAt must be from 0.5 to 1.");
+      const clean = sanitizeSpendLimit({
+        scope,
+        project: who,
+        period,
+        amountUsd: input.amountUsd,
+        warnAt,
+      });
+      if (!clean) throw new Error("amountUsd must be a positive number.");
+      const saved = saveSpendLimit(clean, spendSnapshot().book.revision, { by: "first-mate" });
+      if (!saved.written) throw new Error(saved.reason ?? "That change didn't stick. Try again.");
+      const when = clean.period === "day" ? "today" : "this month";
+      spendNote = `Spend limit for ${label} is ${formatMeasuredUsd(clean.amountUsd)} ${when}.`;
+    }
+  }
+  const spendRows = spendFor(project);
+  const spend: SpendLimit[] | null = spendRows.length ? spendRows : null;
+  const line = [limitsLine(projectName(folder), limits), spendNote, changed, force.sentence, rulesLine].filter(Boolean).join(" ");
   if (planned && setter) {
     const previous = current?.cli || current?.model || current?.effort ? current : undefined;
     host.postCard?.(source.id, {
@@ -1592,7 +2935,177 @@ async function workers(source: Session, input: Record<string, unknown>, host: Ag
       project: projectPick ?? null,
       system: systemPick ?? null,
     },
+    spend,
   };
+}
+
+/** SC-4: what a started task keeps of its brief. */
+export type KeptBrief = { stamp?: string; checks: readonly CheckLine[]; leave: readonly string[]; spec?: readonly SpecPart[] };
+
+/** How many times a brief's lines are asked to be kept before the first mate is told they weren't. */
+const KEEP_TRIES = 3;
+
+/** What the first mate reads when a task's check lines or do-not-touch list could not be saved. */
+const BRIEF_NOT_KEPT =
+  "Its check lines, do-not-touch list or spec parts could not be saved on the task, so the app will not run or enforce them. Send the same call again, with the same clientRequestId, to save them.";
+
+/**
+ * SC-4: keep a task's brief lines, stamp and list, trying a few times. Nothing to keep keeps nothing. A miss is not a
+ * failed start, but a task whose lines were not saved would pass with none run: false says so, and the first mate is told.
+ */
+async function keepBrief(tasks: AgentAppTasksHost, id: string | null | undefined, brief: KeptBrief): Promise<boolean> {
+  if (!id || !tasks.keepBrief) return true;
+  if (!brief.stamp && !brief.checks.length && !brief.leave.length && !brief.spec?.length) return true;
+  for (let attempt = 0; attempt < KEEP_TRIES; attempt += 1) {
+    try {
+      await tasks.keepBrief(id, brief);
+      return true;
+    } catch {
+      // Try again: the store may only have been busy.
+    }
+  }
+  // A stamp alone is not enforced by anything the first mate relies on; lines, a list and spec parts are.
+  return !(brief.checks.length || brief.leave.length || brief.spec?.length);
+}
+
+/** PT-6: how long a brief waits to hear the project's current spec (the app reads a few files). */
+const SPEC_CONTEXT_WAIT_MS = 8_000;
+
+/**
+ * PT-6: what the app reads of this project's spec of record for a brief: the current text of each section its spec parts name,
+ * and, when it has none, the spec files whose `paths:` cover its in-scope paths. Asked only when there is something to read. An
+ * answer that can't be read, an error and a wait that runs out are all "nothing read": the brief then tells the worker to read
+ * the file first, and is never held up or refused for it (the done check still holds the worker to the spec parts).
+ */
+async function specContextFor(
+  tasks: AgentAppTasksHost,
+  folder: string,
+  parts: readonly SpecPart[],
+  scope: readonly string[],
+  always = false,
+): Promise<SpecContext | undefined> {
+  const ask = tasks.specContext;
+  if (!ask || (!always && !parts.length && !scope.length)) return undefined;
+  return readSpecContext(await within(SPEC_CONTEXT_WAIT_MS, () => ask.call(tasks, folder, { parts, scope })));
+}
+
+/** PT-6: the answer of `ask`, or none when it fails or takes longer than `ms`: a timeout is not a final failure. */
+async function within(ms: number, ask: () => Promise<unknown>): Promise<unknown> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const waited = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), ms);
+    });
+    return await Promise.race([ask(), waited]);
+  } catch {
+    return undefined;
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * PT-6: spec_start. The person asked for this project's spec of record to be written from what it already has: ONE worker drafts it
+ * from the project's own files and the briefs of its landed tasks (read from the delegation rows), and lands like any task.
+ * Nothing calls this but the first mate's tool. A project that already has its spec index is refused: its spec grows from the
+ * briefs that carry a spec part, and a second draft would rewrite what the person's corrections wrote.
+ */
+async function specStart(
+  source: Session,
+  requestId: string,
+  input: Record<string, unknown>,
+  host: AgentAppHost,
+  helpers: TaskHelpers,
+) {
+  const { owner, tasks } = taskOwner(source, host);
+  const named = input.project === undefined ? undefined : text(input.project, "project", 4096);
+  const folder = briefFolderOf(source, owner, named, tasks);
+  const landedAsk = tasks.specLanded;
+  // Both reads at once: each waits at most as long as a brief's own context read does.
+  const [context, landed] = await Promise.all([
+    specContextFor(tasks, folder, [], [], true),
+    landedAsk
+      ? within(SPEC_CONTEXT_WAIT_MS, () => landedAsk.call(tasks, tasks.hubProjectId?.(folder) ?? folder)).then(readLanded)
+      : Promise.resolve([]),
+  ]);
+  if (context?.home.exists && context.home.index)
+    throw new Error(
+      `This project already has a spec of record (${context.home.folder}/${SPEC_INDEX}). It grows from the briefs that carry a spec part: send the next correction with delegate_task's spec instead of starting the spec again.`,
+    );
+  return delegate(
+    source,
+    requestId,
+    specStartInput({ landed, ...(context ? { home: context.home } : {}), ...(named !== undefined ? { project: named } : {}) }),
+    host,
+    helpers,
+  );
+}
+
+/**
+ * SC-4: the project folder a brief's work belongs to, as `delegate` resolves it before anything starts: the project the
+ * call names (a coding-team chat's own when it names none), else the chat's own folder.
+ */
+function briefFolderOf(source: Session, owner: ReturnType<typeof taskOwner>["owner"], named: string | undefined, tasks: AgentAppTasksHost) {
+  return named !== undefined && !owner.team ? (tasks.hubProjectFolder?.(named) ?? named) : source.cwd;
+}
+
+/**
+ * SC-4: whether this project's testing mode refuses a code brief with no check line. Asked only then: a brief that carries
+ * a line, or isn't code, never reads the mode. A mode the app can't read never refuses (it would be stricter than told).
+ */
+async function fullModeRefusal(
+  tasks: AgentAppTasksHost,
+  folder: string,
+  codeBrief: boolean,
+  lines: readonly CheckLine[],
+): Promise<string | undefined> {
+  if (!codeBrief || lines.length > 0 || !tasks.testingMode) return undefined;
+  const project = tasks.hubProjectId?.(folder) ?? folder;
+  const mode = await tasks.testingMode(project).catch(() => undefined);
+  return checksRefusal(mode, codeBrief, lines);
+}
+
+/** PT-3: whether this project checks every task fully. A mode the app can't read is not full. */
+async function fullModeOf(tasks: AgentAppTasksHost, folder: string): Promise<boolean> {
+  if (!tasks.testingMode) return false;
+  const project = tasks.hubProjectId?.(folder) ?? folder;
+  return (await tasks.testingMode(project).catch(() => undefined)) === "full";
+}
+
+/**
+ * PT-5: this project's testing mode, for the rules a worker carries about red tests: "at-ship", "light" or "full". "No testing" and a mode
+ * the app can't read give nothing: the sentences are only for a project known to test, and the at-ship one for a project known to sort at ship.
+ */
+async function redTestModeOf(tasks: AgentAppTasksHost, folder: string): Promise<RedTestMode | undefined> {
+  if (!tasks.testingMode) return undefined;
+  const project = tasks.hubProjectId?.(folder) ?? folder;
+  const mode = await tasks.testingMode(project).catch(() => undefined);
+  return mode === "at-ship" || mode === "light" || mode === "full" ? mode : undefined;
+}
+
+/** PT-1: how long a brief waits to hear which proof tools the project has (the app may run a program to find out). */
+const PROOF_TOOLS_WAIT_MS = 8_000;
+
+/**
+ * PT-1: the proof tools this project already has, as lines for the brief. The app's own command answers (`proof_tools_list`),
+ * unless the host has its own. An answer that can't be read, an error and a wait that runs out are all "no section": a
+ * timeout is not a failure of the task, and a brief is never held up or refused for it.
+ */
+async function proofToolLinesOf(tasks: AgentAppTasksHost, folder: string): Promise<ProofToolLine[]> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const ask = tasks.proofTools
+      ? tasks.proofTools(folder)
+      : import("@tauri-apps/api/core").then(({ invoke }) => invoke<unknown>("proof_tools_list", { folder }));
+    const waited = new Promise<undefined>((resolve) => {
+      timer = setTimeout(() => resolve(undefined), PROOF_TOOLS_WAIT_MS);
+    });
+    return proofToolLines(readProofToolList(await Promise.race([ask, waited])));
+  } catch {
+    return [];
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /** Keep a task's gates. A miss is not a failed start: the same call again saves them. */
@@ -1607,8 +3120,9 @@ async function keepGates(
 }
 
 /**
- * task_accept: the first mate's call on a finished task whose checks are unsure. Refusing needs a reason, in the same
- * words Rust uses. Another chat's task is refused before the command runs.
+ * task_accept: the first mate's call on a finished task whose checks are unsure. Accepting and refusing both need a
+ * reason (SC-3a: an accept without a pass is logged and shown on the task's row), in the same words Rust uses. Another
+ * chat's task is refused before the command runs.
  */
 async function accept(source: Session, input: Record<string, unknown>, host: AgentAppHost) {
   const { tasks } = taskOwner(source, host);
@@ -1618,8 +3132,12 @@ async function accept(source: Session, input: Record<string, unknown>, host: Age
   const reason = typeof raw === "string" ? raw.trim() : undefined;
   if (raw !== undefined && (typeof raw !== "string" || !reason || reason.length > 500))
     throw new Error("reason must be a non-empty string under 500 characters");
-  if (!input.accept && !reason)
-    throw new Error("Say why it isn't done (reason), in one plain line.");
+  if (!reason)
+    throw new Error(
+      input.accept
+        ? "Say why you accept it without a pass (reason), in one plain line."
+        : "Say why it isn't done (reason), in one plain line.",
+    );
   const [row] = await ownRows(source, tasks, [id]);
   if (!tasks.decideGates) throw new Error("This build can't accept a task's checks.");
   await tasks.decideGates(source.id, row.id, input.accept, reason);
@@ -1642,13 +3160,116 @@ async function firstMateTool(
   if (!tasks.firstMate) throw new Error("This build can't steer workers or ask the person yet.");
   if (action === "tasks.message") {
     const [row] = await ownRows(source, tasks, [text(input.taskId, "taskId", 128)]);
-    return taskMessage(source, requestId, input, row, tasks.firstMate);
+    // The first mate's crew rules ride with every message, so a rule added since the brief reaches the running worker.
+    // A message too long to carry them still goes; the worker keeps the copy in its brief.
+    const crew = owner.mono ? await readCrewRules(owner.mono.id, owner.name) : undefined;
+    const said = typeof input.text === "string" ? input.text.trim() : "";
+    const withCrew = crew && said && said.length + crew.length + 2 <= STEER_TEXT_MAX ? { ...input, text: `${said}\n\n${crew}` } : input;
+    return taskMessage(source, requestId, withCrew, row, tasks.firstMate);
   }
+  // WP-172: the question that starts a stopped task again is the app's alone: an agent may not create it (not even
+  // without an answer), since the card would carry the words the agent chose.
+  if (action === "tasks.ask" && isAgainKey(input.key))
+    throw new Error("Only the app asks whether a stopped task starts again. Name the task in a resume instead; the person answers it in Needs.");
   const ids = taskIds(input.taskIds) ?? [];
   const rows = ids.length ? await ownRows(source, tasks, ids) : [];
-  // The project the Needs row sits under: the coding team's, else the waiting tasks', else the chat's folder's.
-  const project = owner.team?.project ?? rows.find((row) => row.project)?.project ?? tasks.hubProjectId?.(source.cwd) ?? source.cwd;
+  // The project's home is the coding team's, else the chat's folder. A task's own project is not a way to pick another.
+  const project = owner.team?.project || tasks.hubProjectId?.(source.cwd) || source.cwd;
+  if (rows.some((row) => row.project && row.project !== project)) {
+    throw new Error("That task is in another project. Ask from the chat that owns it.");
+  }
   return askPerson(source, input, { mono: owner.mono?.id, project }, rows, tasks.firstMate);
+}
+
+/**
+ * WP-141: tasks.pick. The crew's pick for a job, a signed-in CLI or a Mono this chat may brief, with a short reason.
+ * The first mate's model or Lead is an override: Always use my default drops it, and the reason says so. Nothing starts.
+ */
+async function pickWorker(source: Session, input: Record<string, unknown>, host: AgentAppHost): Promise<unknown> {
+  const { owner, tasks } = taskOwner(source, host);
+  if (!tasks.crewPick) throw new Error("This build can't pick a worker");
+  const role = input.role === undefined ? undefined : text(input.role, "role", 40).toLowerCase();
+  const title = input.title === undefined ? "" : text(input.title, "title", 200);
+  const brief = input.brief === undefined ? "" : text(input.brief, "brief", BRIEF_MAX);
+  const labels = [...new Set([...(role ? [role] : []), ...crewLabels(areasNamed(title, brief))])];
+  const paths = crewPaths(fileList(input.files), filesNamed(brief));
+  const onBridge = source.harness === "claude" && claudeRunsOnSubscriptionBridge();
+  const override = callerOverride(taskModel(input.model, source, onBridge), input.effort);
+  const roster = owner.mono && tasks.pickMonos ? tasks.pickMonos(owner.mono.id) : [];
+  let monoOverride: string | undefined;
+  if (input.lead !== undefined) {
+    const named = text(input.lead, "lead", 200);
+    const want = named.toLowerCase();
+    const hit = roster.find((mono) => [mono.id, mono.name, mono.lead].some((name) => name?.toLowerCase() === want));
+    if (!hit) throw new Error(`No Lead "${named}" among the ones you can brief.`);
+    monoOverride = hit.id;
+  }
+  // How deep this chat sits: the depth a task from it would have, less one. A pick starts nothing, so the open-task cap is not asked.
+  let depth = 0;
+  try {
+    depth = Math.max(0, ((await tasks.checkDepth?.(source.id, { fanout: false })) ?? 1) - 1);
+  } catch (error) {
+    return { ok: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+  // WP-141 LOW 7: the pick reads the same folder's policy the launch that follows reads.
+  const folder = crewScopeFolder(owner, source, undefined, tasks);
+  const projectKey = tasks.hubProjectId?.(folder) ?? folder;
+  // A CLI with no room left at its provider is not free for this job; the project's own cap is the same for every CLI.
+  const atCap = CLI_ORDER.filter((cli) => {
+    const admission = tasks.pool?.admit({ id: `pick-${source.id}-${cli}`, project: projectKey, projectName: projectName(folder), heavy: false, harness: cli });
+    return admission?.start === false && admission.reason === "limit";
+  });
+  const monoRules = carriedMonoRules(owner.mono?.crewRules);
+  const defaults = routeDefaults({
+    mono: owner.mono?.workerDefault,
+    project: await projectDefaultFor(tasks, folder),
+    system: tasks.pool?.systemDefault?.(),
+  });
+  const catalog = launchCatalog();
+  const pick = await tasks.crewPick({
+    labels,
+    paths,
+    ...(override ? { override } : {}),
+    ...(folder ? { project: folder } : {}),
+    ...(owner.mono?.id ? { mono: owner.mono.id, leadMonoId: owner.mono.id } : {}),
+    ...(monoRules.length ? { monoRules } : {}),
+    ...(defaults ? { defaults } : {}),
+    ...(Object.keys(catalog).length ? { catalog } : {}),
+    monos: roster.map(({ id, name, role: monoRole }) => ({ id, ...(name ? { name } : {}), ...(monoRole ? { role: monoRole } : {}) })),
+    depth,
+    atCap,
+    ...(monoOverride ? { monoOverride } : {}),
+  });
+  const reason = routeReasonLine(pick?.reason);
+  if (!pick?.ok) return { ok: false, reason: reason || "Nothing available can take it." };
+  const mono = pick.monoId ? roster.find((row) => row.id === pick.monoId) : undefined;
+  if (mono) {
+    return {
+      ok: true,
+      monoId: mono.id,
+      leadName: mono.name ?? mono.id,
+      reason,
+      delegateWith: { lead: mono.lead },
+      note: "Brief that Lead with delegate_task and lead as delegateWith says. Tell Ash in one line who it goes to and why.",
+    };
+  }
+  const cli = pick.cli && isCli(pick.cli) ? pick.cli : undefined;
+  if (!cli) return { ok: false, reason: reason || "Nothing available can take it." };
+  const model = pick.model ?? ((HARNESSES as readonly string[]).includes(cli) ? preferredModelId(cli as HarnessId) : undefined);
+  return {
+    ok: true,
+    cli,
+    cliName: cliLabel(cli),
+    ...(pick.model ? { model: pick.model } : {}),
+    ...(pick.effort ? { effort: pick.effort } : {}),
+    reason,
+    delegateWith: { ...(model ? { model } : {}), ...(pick.effort ? { effort: pick.effort } : {}) },
+    note: "Start it with delegate_task, passing delegateWith. Tell Ash in one line which CLI it runs on and why.",
+  };
+}
+
+function routeReasonLine(value: unknown): string {
+  return typeof value === "string" ? value.replace(/\s+/g, " ").trim().slice(0, 240) : "";
 }
 
 /** The `tasks.*` actions (agentApp.ts dispatches them here after checking their fields). */
@@ -1663,6 +3284,11 @@ export function handleTasks(
   switch (action) {
     case "tasks.delegate":
       return delegate(source, requestId, input, host, helpers);
+    case "tasks.fanout":
+      return fanout(source, requestId, input, host, helpers);
+    // PT-6: spec_start: one worker that drafts the project's spec of record. Only the tool starts it, and only when asked.
+    case "tasks.specStart":
+      return specStart(source, requestId, input, host, helpers);
     case "tasks.status":
       return status(source, input, host);
     case "tasks.wait":
@@ -1677,6 +3303,8 @@ export function handleTasks(
       return accept(source, input, host);
     case "tasks.workers":
       return Promise.resolve().then(() => workers(source, input, host));
+    case "tasks.pick":
+      return pickWorker(source, input, host);
     case "tasks.message":
     case "tasks.ask":
       return firstMateTool(source, requestId, action, input, host);

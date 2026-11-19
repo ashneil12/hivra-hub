@@ -34,7 +34,7 @@ export function AshOsImportButton({ deps }: { deps?: ImportDeps }) {
   return (
     <div className="flex flex-col gap-1 px-3 pt-3" data-ash-os-import>
       <span className="text-[13px] leading-5 text-content/60">
-        Projects, which Monos work on them, and kept Pages from Ash OS, if it still runs on this Mac. Only adds; Ash OS isn't changed.
+        Projects, which Monos work on them, and kept Hubs from Ash OS, if it still runs on this Mac. Only adds; Ash OS isn't changed.
       </span>
       <span className="flex items-center gap-2">
         <button type="button" data-ash-os-import-run onClick={() => void run()} className={BTN} disabled={busy}>

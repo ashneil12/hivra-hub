@@ -145,6 +145,8 @@ export type GithubPrDiff = {
   files: GithubPrFile[];
   patch: string;
   truncated: boolean;
+  /** The head commit, read with the files. A review guide is kept against it (WP-132). */
+  headSha?: string | null;
 };
 
 export type GithubWorkItemQuery = {

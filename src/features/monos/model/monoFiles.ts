@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { recordSavedSoul } from "./soulSaved";
 import {
+  commitRoster,
   findMono,
   HANDED_KEY,
   migrateLegacyMonoStorage,
@@ -10,6 +11,7 @@ import {
 import { CHECKER_MONO_ID } from "../../hub/model/hubMcp";
 import { CHECKER_RULES } from "../../hub/model/checkerRules";
 import { forUser } from "../../hub/model/userName";
+import { ensureCaptainCharter, hasCaptainCharter, refuseAddedCharter, withLockedRole } from "../../chief/model/charter";
 
 /**
  * The Mono's SOUL.md and MEMORY.md, kept in the app's data folder
@@ -68,7 +70,8 @@ export class MonoFileConflict extends Error {
  * rules in his words; ed's Mono answered "what are Ash's rules" without the 21 Oct "DeepSeek on high" line because
  * the note was only listed and it never read it.
  */
-export const STANDING_NOTES: readonly string[] = ["ash-asks"];
+// finished-work: its workers' finished jobs (finishedWork.ts), so a new chat knows what was done (Ash 12 Nov).
+export const STANDING_NOTES: readonly string[] = ["ash-asks", "finished-work"];
 export const STANDING_MAX_BYTES = 12 * 1024;
 
 /**
@@ -159,7 +162,7 @@ async function readMonoFilesOnly(monoId: string): Promise<MonoFiles> {
   // Once read, its old project folder is its own.
   if (findMono(monoId)?.legacyProject)
     updateMono(monoId, ({ legacyProject: _, ...mono }) => mono);
-  if (loaded.soul != null) return { ...loaded, soul: loaded.soul };
+  if (loaded.soul != null) return keepCaptainCharter(monoId, { ...loaded, soul: loaded.soul });
   const soul = defaultSoul(findMono(monoId)?.instructions);
   try {
     // Over the missing file only, so another window's seed is never replaced.
@@ -171,7 +174,7 @@ async function readMonoFilesOnly(monoId: string): Promise<MonoFiles> {
     });
     recordSavedSoul(monoId, soul, soulHash);
     updateMono(monoId, (mono) => ({ ...mono, instructions: "" }));
-    return { ...loaded, soul, soulHash };
+    return keepCaptainCharter(monoId, { ...loaded, soul, soulHash });
   } catch (error) {
     if (error !== "conflict") throw error;
     const seeded = await invoke<LoadedFiles>("mono_load", folder(monoId));
@@ -179,10 +182,53 @@ async function readMonoFilesOnly(monoId: string): Promise<MonoFiles> {
   }
 }
 
-/** Back to the default soul and name; conversation, memory and habits stay. */
+/** A coordinator whose soul predates the charter gets it on load. Anyone else's soul is left alone. */
+function coordinatorSoul(monoId: string, soul: string): boolean {
+  if (hasCaptainCharter(soul)) return false;
+  const name = (findMono(monoId)?.name ?? "").trim();
+  if (name === "Chief of Staff" || name === "Coordinator") return true;
+  return soul.includes("I am the coordinator.");
+}
+
+/** The soul already has the charter, so this Mono is the captain. A missed write is tried on the next open. */
+function flagCaptain(monoId: string): void {
+  commitRoster((roster) => {
+    const index = roster.findIndex((mono) => mono.id === monoId);
+    if (index < 0 || roster[index]?.captain === true) return null;
+    const next = roster.slice();
+    next[index] = { ...roster[index], captain: true };
+    return next;
+  });
+}
+
+async function keepCaptainCharter(monoId: string, files: MonoFiles): Promise<MonoFiles> {
+  if (hasCaptainCharter(files.soul)) {
+    flagCaptain(monoId);
+    return files;
+  }
+  if (!files.soul || !coordinatorSoul(monoId, files.soul)) return files;
+  const soul = ensureCaptainCharter(files.soul);
+  try {
+    const soulHash = await invoke<string>("mono_save", {
+      ...folder(monoId),
+      path: FILE_PATH.soul,
+      text: soul,
+      expectedHash: files.soulHash,
+    });
+    recordSavedSoul(monoId, soul, soulHash);
+    flagCaptain(monoId);
+    return { ...files, soul, soulHash };
+  } catch {
+    // A conflict or a miss is not final: the file stays as it was and the next open tries again.
+    return files;
+  }
+}
+
+/** Back to the default soul and name; conversation, memory and habits stay. The charter stays if it was there. */
 export async function resetMonoDefaults(monoId: string): Promise<void> {
   const files = await loadMonoFiles(monoId);
-  await saveMonoFile(monoId, "soul", defaultSoul(), files.soulHash);
+  const text = hasCaptainCharter(files.soul) ? ensureCaptainCharter(defaultSoul()) : defaultSoul();
+  await saveMonoFile(monoId, "soul", text, files.soulHash);
   updateMono(monoId, (mono) => ({ ...mono, name: "" }));
 }
 
@@ -238,15 +284,29 @@ export async function writeAgentFile(
   text: string,
   expectedHash?: string,
 ): Promise<string> {
+  let saving = text;
+  if (path === "SOUL.md") {
+    let current: Awaited<ReturnType<typeof readAgentFile>>;
+    try {
+      current = await readAgentFile(monoId, path);
+    } catch {
+      throw new Error("The soul could not be read, so it was not saved.");
+    }
+    refuseAddedCharter(findMono(monoId), current.text, text);
+    if (hasCaptainCharter(current.text) && !hasCaptainCharter(text)) {
+      throw new Error("The captain charter is fixed. Edit the personality beside it.");
+    }
+    if (hasCaptainCharter(text)) saving = withLockedRole(text);
+  }
   try {
     const hash = await invoke<string>("mono_save", {
       ...folder(monoId),
       path,
-      text,
+      text: saving,
       expectedHash: expectedHash ?? null,
     });
     // Every soul the app saves is the one the tamper check compares with.
-    if (path === "SOUL.md") recordSavedSoul(monoId, text, hash);
+    if (path === "SOUL.md") recordSavedSoul(monoId, saving, hash);
     window.dispatchEvent(new CustomEvent(FILES_CHANGED));
     return hash;
   } catch (error) {
@@ -410,11 +470,12 @@ export const HUB_NOTE_TEMPLATE = `You're running inside MonoCode Hub, Ash's app 
 
 - Your soul file says who you are and what you own. Your memory files are yours.
 - Ash talks to you in chats and rooms. Other Monos are in the rooms too.
-- Hub tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a page, and propose a change to the hub. Pages and hub changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
+- App tools: hand work to another Mono, post in a room, make a new Mono with Ash in chat, make a hub, and propose a change to the app. Hubs and app changes show Ash a preview first; he clicks Apply or Discard. Anything applied can be undone in Bot changes.
 - When you save a memory, keep Ash's own words, credited to him. A question he asked stays a question, and nothing gets saved as further along than it was. Unapproved cards aren't decisions.
 - Deletes need Ash's own yes.
+- When Ash asks for work, say one short natural line first ("On it: I'll get the Hivra lead to...") before you read or hand anything out, so he knows you heard him.
 - Name work by what it is, not task ids or paths.
-- For how a hub feature works, read the hub docs at HUB_DOCS_PATH before guessing.`;
+- For how an app feature works, read the app docs at HUB_DOCS_PATH before guessing.`;
 
 /** Where the hub's own docs are on this machine (the app's bundled hub-docs, hub/model/hubData.ts), once known. */
 let hubDocsPath: string | undefined;
@@ -434,7 +495,7 @@ export function hubNote(): string {
  * before its first worker started, six minutes in.
  */
 export const TEAM_CHAT_RULES = `<team_chat_rules>
-- Several asks: first one delegate_task per area, before any other tool; each: intent (his words), brief (what it may change, the check, what to report), goal. Then reply in a few lines: every ask in Ash's order (none dropped or added), your pick on any choice, and the jobs whose call returned. Nothing is "all out" or done before its report. Edit yourself only one small file.
+- Several asks: first one delegate_task per area, before any other tool; each: intent (his words), brief (what it may change, the check, what to report), goal. Then reply in a few natural lines (no tally of his asks; drop none): what started (only jobs whose call returned) and your pick on any choice. Nothing is "all out" or done before its report. Edit yourself only one small file.
 - Report each worker's check as given; done only if it passed. The app lands a finished worker's changes in the project and says so. Its checkout: Read, Grep, Glob only (shell waits on Ash).
 - Never weaken a test, allow list or guard to dodge a decision, settle one a worker stopped on, or edit code or tests to turn green a check a worker left failing or called expected: ask Ash.
 - Work only inside PROJECT_FOLDER. Never \`git worktree add\` yourself: a worker gets its own via isolation "worktree".
@@ -447,11 +508,46 @@ export type CodingTeamLook = { projectId: string; projectName: string; folder: s
  * What a chat in a project's coding team is told (Ash, 20 Oct: "I don't talk to workers. I only talk to
  * orchestrators."): the hub note, its project, the tools, and its project's memory primer.
  */
-export function codingTeamContext(team: CodingTeamLook, options: { projectMemory?: string } = {}): string {
+export function codingTeamContext(
+  team: CodingTeamLook,
+  options: { projectMemory?: string; standingAnswers?: string } = {},
+): string {
   const note = forUser`${hubNote()}\n\n- This chat is in ${team.projectName}'s coding team (project \`${team.projectId}\`), working in ${team.folder}.${team.leadName ? ` ${team.leadName} keeps the project's board.` : ""}`;
   const rules = forUser(TEAM_CHAT_RULES.split("PROJECT_FOLDER").join(team.folder));
   const withRules = `${note}\n\n${rules}`;
-  return options.projectMemory?.trim() ? `${withRules}\n\n${options.projectMemory.trim()}` : withRules;
+  const withMemory = options.projectMemory?.trim() ? `${withRules}\n\n${options.projectMemory.trim()}` : withRules;
+  return appendStandingAnswers(withMemory, options.standingAnswers);
+}
+
+/**
+ * WP-156: a project's standing answers at a fresh conversation's start, fenced after the memory. The block (from the app)
+ * says it is guidance, not permission. Empty or missing: nothing is added.
+ */
+export function appendStandingAnswers(text: string, standingAnswers: string | undefined): string {
+  const block = standingAnswers?.trim();
+  if (!block) return text;
+  // A question can contain markup. Escape it so it cannot close the fence. Escaping twice is a no-op.
+  const safe = block.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return `${text}\n\n<standing_answers>\n${safe}\n</standing_answers>`;
+}
+
+/** A short token for the standing block, so a running chat's note refreshes when the block changes. */
+export function standingNoteToken(block: string): string {
+  let hash = 5381;
+  for (let i = 0; i < block.length; i += 1) hash = Math.imul(hash, 33) + block.charCodeAt(i);
+  return (hash >>> 0).toString(16);
+}
+
+/**
+ * `undefined` is a failed read: keep the token already on the note, so a blip does not rebuild it.
+ * A successful read, including "" when standing answers are off, hashes that text.
+ */
+export function standingKeyPart(block: string | undefined, previousKey: string | undefined): string {
+  if (block === undefined) {
+    const match = previousKey?.match(/(?:^|\n)standing:([0-9a-f]*)/);
+    return match?.[1] ?? "";
+  }
+  return standingNoteToken(block);
 }
 
 /**
@@ -470,6 +566,8 @@ export function monoContext(
     /** A Mono that isn't a project's Lead: its work goes to teams. */
     teams?: boolean;
     cli?: string;
+    /** WP-156: the project's standing answers (the app's block), after the memory primer. */
+    standingAnswers?: string;
   } = {},
 ): string {
   const parts: string[] = [];
@@ -493,6 +591,8 @@ export function monoContext(
       soul,
     );
     if (options.projectMemory?.trim()) parts.push(options.projectMemory.trim());
+    const standing = appendStandingAnswers("", options.standingAnswers).trim();
+    if (standing) parts.push(standing);
   }
   return withMemory(parts, files, plan);
 }

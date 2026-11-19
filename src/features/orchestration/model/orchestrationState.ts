@@ -1,6 +1,7 @@
 import { pathKey } from "../../../shared/lib/paths";
 import type { OrchestrationChoice } from "./orchestrationPlan";
 import type { HarnessId } from "../../sessions/model/session";
+import { normalizeClosingUsage, type ClosingUsage } from "./closingUsage";
 import {
   normalizeCheckRun,
   normalizeGoalCheck,
@@ -22,6 +23,44 @@ export type TaskStatus =
   | "blocked"
   | "interrupted"
   | "cancelled";
+
+/**
+ * Every move a worker task may make, in one table. Before it, about 26 places in orchestration.ts moved a task by
+ * spreading a new `status` in, and nothing said which moves were meant. A move to the same status is always allowed
+ * (a patch that changes other fields), and a task is new in any status.
+ * - queued: it starts, its irreversible step is sent back (failed), or it is cancelled.
+ * - running: it settles (completed, failed), a Stop or a block goes through cancelling, a save failure or a stopped run
+ *   ends it at once (interrupted, cancelled), or a full worktree pool puts it back in the queue.
+ * - cancelling: the stop lands as cancelled, interrupted or blocked.
+ * - completed, failed, blocked, interrupted, cancelled: a new turn, a retry, a repair or a resume queues it again;
+ *   a Stop cancels it.
+ */
+export const TASK_MOVES: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
+  queued: ["running", "failed", "cancelled"],
+  running: ["cancelling", "completed", "failed", "blocked", "interrupted", "cancelled", "queued"],
+  cancelling: ["cancelled", "interrupted", "blocked"],
+  completed: ["queued", "cancelled"],
+  failed: ["queued", "cancelled"],
+  blocked: ["queued", "cancelled"],
+  interrupted: ["queued", "cancelled"],
+  cancelled: ["queued"],
+};
+
+export function canMoveTask(from: TaskStatus, to: TaskStatus): boolean {
+  return from === to || TASK_MOVES[from].includes(to);
+}
+
+/** The task moves from `before` to `after` that the table doesn't allow, as `id: from -> to`. */
+export function illegalTaskMoves(
+  before: readonly Pick<OrchestrationTask, "id" | "status">[],
+  after: readonly Pick<OrchestrationTask, "id" | "status">[],
+): string[] {
+  const was = new Map(before.map((task) => [task.id, task.status]));
+  return after.flatMap((task) => {
+    const from = was.get(task.id);
+    return from && !canMoveTask(from, task.status) ? [`${task.id}: ${from} -> ${task.status}`] : [];
+  });
+}
 
 export type WorkspacePolicy =
   "shared" | "isolated-child" | "isolated-top-level";
@@ -159,6 +198,9 @@ export type OrchestrationRun = {
   repairCycles?: Record<string, string[][]>;
   /** Extend rounds taken, for a re-plan that adds nodes. */
   extends?: number;
+  /** WP-148: usage the children had recorded when this run finished. Absent unless the run is finished, and absent
+   * when no child recorded a count. Never a row of zeros. */
+  closingUsage?: ClosingUsage;
 };
 
 export function workspaceIdentity(
@@ -290,6 +332,8 @@ export function normalizeOrchestrationRun(
     run.extends >= 0
       ? { extends: run.extends }
       : { extends: undefined }),
+    closingUsage:
+      run.status === "finished" ? normalizeClosingUsage(run.closingUsage) : undefined,
   };
 }
 

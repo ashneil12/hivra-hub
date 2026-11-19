@@ -2,13 +2,20 @@
 // r85 (s14 r84 run 4): "Delete now keeps a tally for 30 days so you can undo it" came 6s after Ash answered, minutes
 // before the worker built it. While the chat's own job is still out, a "now does X" or a done claim is checked once,
 // and the check says to say it's under way, not to run the work itself.
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { setAskStore } from "../../asks/model/askStore";
+import { freshAskStore, sayInHub as recordAskText } from "../../asks/testbed/hubAsks";
 import type { Block, Session } from "../../sessions/model/session";
-import { nowClaimOf, recordAskText, type EvidenceSource } from "./askLedger";
+import { nowClaimOf, type EvidenceSource } from "./askLedger";
 import { settleAsks } from "./askSettle";
 import type { HubCheck } from "./hubChecks";
 
-beforeEach(() => localStorage.clear());
+// The ask is in the one ask ledger, written the way the app writes a hub chat's asks (asks/model/hubRoute.ts).
+beforeEach(() => {
+  localStorage.clear();
+  freshAskStore();
+});
+afterEach(() => setAskStore(undefined));
 
 const block = (id: string, role: "user" | "assistant", text: string) => ({ id, role, text }) as Block;
 const session = (blocks: Block[]) => ({ id: "lead", blocks, busy: false, cwd: "/tmp/nowhere" }) as unknown as Session;
@@ -25,7 +32,7 @@ describe("a 'now does X' before its job lands", () => {
   });
 
   it("checks it once while the chat's job is out, asking it to say it's under way", async () => {
-    recordAskText("lead", "u1", ASK, Date.now() - 60_000);
+    await recordAskText("lead", "u1", ASK, Date.now() - 60_000);
     const chat = session([block("u1", "user", ASK), block("a1", "assistant", "Delete now keeps a tally for 30 days so you can undo it.")]);
     const offered: HubCheck[] = [];
     await settleAsks([chat], source, (checks) => offered.push(...checks), { openJobs: () => ["Delete tallies"] });
@@ -41,7 +48,7 @@ describe("a 'now does X' before its job lands", () => {
   });
 
   it("leaves it alone once no job is out", async () => {
-    recordAskText("lead", "u1", ASK, Date.now() - 60_000);
+    await recordAskText("lead", "u1", ASK, Date.now() - 60_000);
     const chat = session([block("u1", "user", ASK), block("a1", "assistant", "Delete now keeps a tally for 30 days so you can undo it.")]);
     const offered: HubCheck[] = [];
     await settleAsks([chat], source, (checks) => offered.push(...checks), { openJobs: () => [] });

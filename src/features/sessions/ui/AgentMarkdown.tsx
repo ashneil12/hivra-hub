@@ -1,3 +1,4 @@
+import { hasInlineLinkCard, inlineLinkCard } from "../model/inlineLinkCards";
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import {
@@ -36,6 +37,8 @@ import { FileActionError } from "../../files/ui/FileActionError";
 import { FileTypeIcon } from "../../files/ui/FileTypeIcon";
 import { boundedCode } from "../../files/editor/codeHighlightPlugin";
 import { createLazyMermaidPlugin } from "../../files/editor/mermaidPlugin";
+import { visualFenceMark } from "../model/visualReply";
+import { VisualReplyFrame } from "./VisualReplyFrame";
 import {
   displayPath,
   isExtensionlessFileName,
@@ -96,13 +99,38 @@ const mermaid = createLazyMermaidPlugin({
 
 const MARKDOWN_PLUGINS = { code: boundedCode, mermaid };
 
+type SanitizeSchema = {
+  protocols?: { href?: readonly string[] };
+};
+
+// WP-125: the default href list drops hivra:, so the link never reaches WorkspaceLink.
+function allowLocalThreadLinks(plugin: Pluggable): Pluggable {
+  if (!Array.isArray(plugin) || plugin.length < 2) return plugin;
+  const schema = plugin[1];
+  if (!schema || typeof schema !== "object") return plugin;
+  const protocols = (schema as SanitizeSchema).protocols;
+  const href = protocols?.href ?? [];
+  if (href.includes("hivra")) return plugin;
+  return [
+    plugin[0],
+    {
+      ...(schema as SanitizeSchema),
+      protocols: { ...protocols, href: [...href, "hivra"] },
+    },
+  ];
+}
+
+const MARKDOWN_SANITIZE = allowLocalThreadLinks(defaultRehypePlugins.sanitize);
+
 const MARKDOWN_HARDEN: Pluggable = [
   harden,
   {
     // MarkdownImage remains the final allowlist. The wildcard lets app-owned
     // relative note URLs reach that component without changing link parsing.
+    // WP-125: hivra: is a local link, not a web page. The colon is the URL protocol.
     allowedImagePrefixes: ["*"],
     allowedLinkPrefixes: ["*"],
+    allowedProtocols: ["hivra:"],
     allowDataImages: true,
     imageBlockPolicy: "remove" as const,
   },
@@ -110,7 +138,7 @@ const MARKDOWN_HARDEN: Pluggable = [
 
 const MARKDOWN_REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.raw,
-  defaultRehypePlugins.sanitize,
+  MARKDOWN_SANITIZE,
   MARKDOWN_HARDEN,
 ];
 
@@ -118,7 +146,7 @@ const MARKDOWN_REHYPE_PLUGINS: PluggableList = [
 // resolves them and keeps them inside the project.
 const DOCUMENT_REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.raw,
-  defaultRehypePlugins.sanitize,
+  MARKDOWN_SANITIZE,
   rehypeHoldImageSources,
   MARKDOWN_HARDEN,
   rehypeRestoreImageSources,
@@ -126,13 +154,14 @@ const DOCUMENT_REHYPE_PLUGINS: PluggableList = [
 
 const INBOX_MEDIA_REHYPE_PLUGINS: PluggableList = [
   defaultRehypePlugins.raw,
-  defaultRehypePlugins.sanitize,
+  MARKDOWN_SANITIZE,
   [
     harden,
     {
       defaultOrigin: "https://inbox.invalid",
       allowedImagePrefixes: INBOX_MEDIA_PREFIXES,
       allowedLinkPrefixes: ["*"],
+      allowedProtocols: ["hivra:"],
       allowDataImages: true,
       imageBlockPolicy: "remove" as const,
     },
@@ -164,6 +193,8 @@ type FileLinkMenu = {
 
 const FileOpenContext = createContext<{
   cwd?: string;
+  /** The saved chat whose local media is shown; Rust holds each file to that chat's folders. */
+  mediaSessionId?: string;
   onOpenFile?: OpenFileFn;
   onFileContextMenu?: (
     event: ReactMouseEvent,
@@ -178,6 +209,14 @@ const FileOpenContext = createContext<{
 }>({});
 
 const RemoteMediaContext = createContext(false);
+/**
+ * WP-130: visual fences render only where the caller opts in (an agent's own chat text). `live` says the reply streamed
+ * while this window watched, so it runs by itself; a reply loaded from history waits for the person to run it.
+ */
+const VisualRepliesContext = createContext<{ enabled: boolean; live: boolean }>({
+  enabled: false,
+  live: false,
+});
 /** Show local images and videos a reply links to, rather than the links. */
 const LocalMediaContext = createContext(false);
 
@@ -278,26 +317,21 @@ function highlightLanguageFor(language: string): string {
 
 type MarkdownLinkProps = ComponentProps<"a"> & { node?: unknown };
 
-function MarkdownLink({
+type WorkspaceFile = NonNullable<ReturnType<typeof resolveWorkspaceFileReference>>;
+
+/** A link whose target may be a workspace file, which then opens in the editor. */
+function WorkspaceLink({
   href,
+  file,
   children,
   className,
-  node: _node,
   onClick,
   onContextMenu,
   dir,
   ...props
-}: MarkdownLinkProps) {
-  const allowRemoteMedia = useContext(RemoteMediaContext);
-  const { cwd, onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
-  const file = href ? resolveWorkspaceFileReference(href, cwd) : undefined;
-  const label = textContent(children);
-  const localMedia = useContext(LocalMediaContext);
-  if (allowRemoteMedia && href && isInboxMediaUrl(href)) {
-    return <InboxMedia src={href} alt={label} />;
-  }
-
-  const link = (
+}: ComponentProps<"a"> & { file?: WorkspaceFile }) {
+  const { onOpenFile, onFileContextMenu } = useContext(FileOpenContext);
+  return (
     <a
       href={href}
       className={`text-sky-400/90 hover:text-sky-300 hover:underline ${className ?? ""}`}
@@ -309,6 +343,14 @@ function MarkdownLink({
         if (file && onOpenFile) {
           event.preventDefault();
           onOpenFile(file.path, file.navigation);
+          return;
+        }
+        // WP-125: hand a hivra link to the opener. Never open it as a web page.
+        if (href && href.toLowerCase().startsWith("hivra:")) {
+          event.preventDefault();
+          window.dispatchEvent(
+            new CustomEvent("hivra:open-thread-link", { detail: href }),
+          );
           return;
         }
         event.preventDefault();
@@ -327,10 +369,37 @@ function MarkdownLink({
       {children}
     </a>
   );
+}
+
+function MarkdownLink({
+  href,
+  children,
+  node: _node,
+  ...props
+}: MarkdownLinkProps) {
+  const allowRemoteMedia = useContext(RemoteMediaContext);
+  const { cwd, mediaSessionId, onOpenFile } = useContext(FileOpenContext);
+  const file = href ? resolveWorkspaceFileReference(href, cwd) : undefined;
+  const label = textContent(children);
+  const localMedia = useContext(LocalMediaContext);
+  if (allowRemoteMedia && href && isInboxMediaUrl(href)) {
+    return <InboxMedia src={href} alt={label} />;
+  }
+  // Dropwave: a hivra link that draws as a card (a question answered where it is: asks/ui/InlineNeed.tsx).
+  const card = inlineLinkCard(href, label);
+  if (card !== undefined) return <>{card}</>;
+
+  const link = (
+    <WorkspaceLink href={href} file={file} {...props}>
+      {children}
+    </WorkspaceLink>
+  );
   if (localMedia && file && isLocalMediaPath(file.path)) {
     return (
       <LocalMedia
         path={file.path}
+        sessionId={mediaSessionId}
+        cwd={cwd}
         label={label}
         onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
         fallback={link}
@@ -349,6 +418,7 @@ function MarkdownCode({
   onContextMenu,
   ...props
 }: MarkdownCodeProps) {
+  const visualReplies = useContext(VisualRepliesContext);
   const incomplete = useIsCodeFenceIncomplete();
   const block = Object.prototype.hasOwnProperty.call(props, "data-block");
   if (!block) {
@@ -410,6 +480,10 @@ function MarkdownCode({
     (fence.language ? fileNameForLanguage(fence.language) : "");
   const lineNumbers = !/\bnoLineNumbers\b/.test(meta);
   const code = textContent(children);
+  // WP-130: a marked visual reply renders in a sandbox. An unfinished fence stays code.
+  if (!incomplete && visualReplies.enabled && visualFenceMark(fence.language, meta)) {
+    return <VisualReplyFrame source={code} autoRun={visualReplies.live} />;
+  }
   // Keep the original label when plaintext aliases normalize to "text",
   // including the empty label of an untagged fence.
   const isPlaintextFallback = PLAINTEXT_FENCE_LANGUAGES.has(
@@ -528,7 +602,8 @@ function MarkdownImage({
 }: MarkdownImageProps) {
   const allowRemoteMedia = useContext(RemoteMediaContext);
   const localMedia = useContext(LocalMediaContext);
-  const { cwd, onOpenFile, documentImages } = useContext(FileOpenContext);
+  const { cwd, mediaSessionId, onOpenFile, documentImages } =
+    useContext(FileOpenContext);
   const url = typeof src === "string" ? src.trim() : "";
   if (url.startsWith("data:image/")) {
     return <img {...props} src={url} alt={alt ?? ""} />;
@@ -561,12 +636,20 @@ function MarkdownImage({
       ? resolveWorkspaceFileReference(url, cwd)
       : undefined;
   if (file && isLocalMediaPath(file.path)) {
+    // The reply is untrusted: a file outside the chat's folder, or one that
+    // cannot be shown, stays a link that names it, and is never loaded.
     return (
       <LocalMedia
         path={file.path}
+        sessionId={mediaSessionId}
+        cwd={cwd}
         label={alt ?? ""}
         onOpen={onOpenFile ? () => onOpenFile(file.path) : undefined}
-        fallback={null}
+        fallback={
+          <WorkspaceLink href={url} file={file}>
+            {displayPath(file.path, cwd)}
+          </WorkspaceLink>
+        }
       />
     );
   }
@@ -575,20 +658,45 @@ function MarkdownImage({
 }
 
 /**
- * A document's `<picture>` shows its `<img>`, which loads through
- * MarkdownImage. A `<source>` would make the webview fetch its own URL
- * instead, so documents drop them.
+ * A `<picture>` shows its `<img>`, which loads through MarkdownImage. A
+ * `<source srcset>` would make the webview fetch its own URL instead, and the
+ * asset protocol's scope covers the app's data folder, so a reply could show
+ * any file in it. Chat and documents alike drop the `<source>`.
  */
-function MarkdownPictureSource({
-  node: _node,
-  ...props
-}: ComponentProps<"source"> & { node?: unknown }) {
-  const { documentImages } = useContext(FileOpenContext);
-  return documentImages ? null : <source {...props} />;
+function MarkdownPictureSource() {
+  return null;
+}
+
+type HastNode = { type?: string; tagName?: string; value?: string; properties?: { href?: unknown }; children?: HastNode[] };
+
+/** A paragraph that is only a link drawn as a card: the card stands in its place, not inside a <p>. */
+function cardLinkOnly(node: HastNode | undefined): boolean {
+  const parts = (node?.children ?? []).filter((child) => !(child.type === "text" && !child.value?.trim()));
+  const [only] = parts;
+  return (
+    parts.length === 1 &&
+    only.type === "element" &&
+    only.tagName === "a" &&
+    typeof only.properties?.href === "string" &&
+    hasInlineLinkCard(only.properties.href)
+  );
+}
+
+/** Streamdown's own paragraph, plus the card case: an image or a code block alone isn't wrapped in a <p> either. */
+function MarkdownParagraph({ node, children, ...props }: ComponentProps<"p"> & { node?: unknown }) {
+  if (cardLinkOnly(node as HastNode | undefined)) return <div data-inline-card-block>{children}</div>;
+  const parts = (Array.isArray(children) ? children : [children]).filter((part) => part != null && part !== "");
+  if (parts.length === 1 && isValidElement<{ node?: HastNode; "data-block"?: unknown }>(parts[0])) {
+    const only = parts[0].props;
+    if (only.node?.tagName === "img") return <>{children}</>;
+    if (only.node?.tagName === "code" && "data-block" in only) return <>{children}</>;
+  }
+  return <p {...props}>{children}</p>;
 }
 
 const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
+  p: MarkdownParagraph,
   code: MarkdownCode,
   img: MarkdownImage,
   source: MarkdownPictureSource,
@@ -635,8 +743,10 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   onOpenFile,
   allowRemoteMedia,
   localMedia,
+  mediaSessionId,
   hardBreaks,
   documentPath,
+  visualReplies,
 }: {
   text: string;
   measurement?: StreamMeasurement;
@@ -649,6 +759,8 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   allowRemoteMedia?: boolean;
   /** Show local images and videos the text links to, in place of the links. */
   localMedia?: boolean;
+  /** With `localMedia`: the saved chat these are shown for. Rust works out its folders from the app's records. */
+  mediaSessionId?: string;
   /** Show a newline inside a block as a line break, as a document does (#591). */
   hardBreaks?: boolean;
   /**
@@ -656,8 +768,16 @@ export const AgentMarkdown = memo(function AgentMarkdown({
    * project, `cwd`.
    */
   documentPath?: string;
+  /** WP-130: this text is the agent's own reply, so a marked visual fence renders as a sandboxed frame. */
+  visualReplies?: boolean;
 }) {
   const [fileMenu, setFileMenu] = useState<FileLinkMenu | null>(null);
+  const [streamed, setStreamed] = useState(!!streaming);
+  if (streaming && !streamed) setStreamed(true);
+  const visualState = useMemo(
+    () => ({ enabled: visualReplies === true, live: streamed }),
+    [visualReplies, streamed],
+  );
   const [fileActionError, setFileActionError] = useState<string | null>(null);
   const onFileContextMenu = useCallback(
     (event: ReactMouseEvent, path: string, navigation?: EditorNavigation) => {
@@ -670,12 +790,13 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   const fileOpen = useMemo(
     () => ({
       cwd,
+      mediaSessionId,
       onOpenFile,
       onFileContextMenu,
       documentImages:
         documentPath && cwd ? { documentPath, root: cwd } : undefined,
     }),
-    [cwd, onOpenFile, onFileContextMenu, documentPath],
+    [cwd, mediaSessionId, onOpenFile, onFileContextMenu, documentPath],
   );
   const remarkPlugins = useMemo<PluggableList>(
     () => [
@@ -797,46 +918,48 @@ export const AgentMarkdown = memo(function AgentMarkdown({
   return (
     <RemoteMediaContext.Provider value={remoteMedia}>
       <LocalMediaContext.Provider value={!!localMedia}>
-        <FileOpenContext.Provider value={fileOpen}>
-          <>
-            {/* Streamdown takes no style; a contents box passes the fade timing down. */}
-            <div className="contents" style={fadeStyle}>
-              <MarkdownCommit.Provider value={blockCommitted}>
-                <Streamdown
-                  BlockComponent={DirectionalBlock}
-                  className={`agent-markdown min-w-0 font-sans text-sm leading-6 ${fading ? "word-fading" : ""} ${className ?? ""}`}
-                  components={MARKDOWN_COMPONENTS}
-                  controls={false}
-                  dir="auto"
-                  isAnimating={!!streaming || paced.revealing}
-                  parseIncompleteMarkdown={false}
-                  parseMarkdownIntoBlocksFn={parseBlocks}
-                  plugins={MARKDOWN_PLUGINS}
-                  remarkPlugins={remarkPlugins}
-                  rehypePlugins={rehypePlugins}
-                >
-                  {paced.text}
-                </Streamdown>
-              </MarkdownCommit.Provider>
-            </div>
-            {fileMenu ? (
-              <ExplorerMenu
-                x={fileMenu.x}
-                y={fileMenu.y}
-                items={fileLinkMenuItems(!!onOpenFile, !!cwd)}
-                ariaLabel="File link actions"
-                onPick={onFileMenuPick}
-                onClose={() => setFileMenu(null)}
-              />
-            ) : null}
-            {fileActionError ? (
-              <FileActionError
-                message={fileActionError}
-                onDismiss={() => setFileActionError(null)}
-              />
-            ) : null}
-          </>
-        </FileOpenContext.Provider>
+        <VisualRepliesContext.Provider value={visualState}>
+          <FileOpenContext.Provider value={fileOpen}>
+            <>
+              {/* Streamdown takes no style; a contents box passes the fade timing down. */}
+              <div className="contents" style={fadeStyle}>
+                <MarkdownCommit.Provider value={blockCommitted}>
+                  <Streamdown
+                    BlockComponent={DirectionalBlock}
+                    className={`agent-markdown min-w-0 font-sans text-sm leading-6 ${fading ? "word-fading" : ""} ${className ?? ""}`}
+                    components={MARKDOWN_COMPONENTS}
+                    controls={false}
+                    dir="auto"
+                    isAnimating={!!streaming || paced.revealing}
+                    parseIncompleteMarkdown={false}
+                    parseMarkdownIntoBlocksFn={parseBlocks}
+                    plugins={MARKDOWN_PLUGINS}
+                    remarkPlugins={remarkPlugins}
+                    rehypePlugins={rehypePlugins}
+                  >
+                    {paced.text}
+                  </Streamdown>
+                </MarkdownCommit.Provider>
+              </div>
+              {fileMenu ? (
+                <ExplorerMenu
+                  x={fileMenu.x}
+                  y={fileMenu.y}
+                  items={fileLinkMenuItems(!!onOpenFile, !!cwd)}
+                  ariaLabel="File link actions"
+                  onPick={onFileMenuPick}
+                  onClose={() => setFileMenu(null)}
+                />
+              ) : null}
+              {fileActionError ? (
+                <FileActionError
+                  message={fileActionError}
+                  onDismiss={() => setFileActionError(null)}
+                />
+              ) : null}
+            </>
+          </FileOpenContext.Provider>
+        </VisualRepliesContext.Provider>
       </LocalMediaContext.Provider>
     </RemoteMediaContext.Provider>
   );

@@ -1,0 +1,23 @@
+id: rust-spawn-own-process-group
+language: rust
+severity: warning
+message: >-
+  A process started in a test is not put in its own process group, so a hang in it outlives the test run (PR #304: a
+  hung git sat on the Mac for two days).
+note: >-
+  Call `command.process_group(0)` under `#[cfg(unix)]` (use `std::os::unix::process::CommandExt`) in the same function,
+  as src-tauri/src/backups/mod.rs does, so the whole group can be killed.
+# Inline tests: a Command::new inside `mod tests` whose function never calls process_group.
+rule:
+  pattern: Command::new($$$ARGS)
+  inside:
+    kind: mod_item
+    regex: '^mod tests\b'
+    stopBy: end
+  not:
+    inside:
+      kind: function_item
+      stopBy: end
+      has:
+        pattern: $CMD.process_group($$$GROUP)
+        stopBy: end

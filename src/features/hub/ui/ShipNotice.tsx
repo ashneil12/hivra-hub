@@ -33,14 +33,11 @@ export function ShipNotice({ inBody = false, appAsk = true }: { inBody?: boolean
   // r63 (PM's G2 on 0.16.3): "Is everything working?" is about the app, not a project, so a caller that is not the
   // app-wide bar (appAsk off) leaves that question out.
   const live = card?.accept && !appAsk ? null : card;
-  // A card shown once (a committed update) is marked read the moment it is on screen and stays put until the bar
-  // leaves, so it never comes back and never needs a Done (Critiquito/Ash, 22 Oct: "show once").
-  const [held, setHeld] = useState<typeof live>(null);
-  const view = live ?? (held && held.once ? held : null);
+  // Successful update receipts remain in update history without taking space in the conversation.
+  const view = live?.once ? null : live;
   const onceId = live?.once ? live.id : undefined;
   useEffect(() => {
     if (!onceId || !live) return;
-    setHeld(live);
     void markShipSeen(onceId).catch(() => undefined);
     // Once per receipt.
     // eslint-disable-next-line react-hooks/exhaustive-deps

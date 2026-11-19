@@ -2,14 +2,24 @@
 
 import { openDocsMode } from "../../docs/docsMode";
 import { openCodingTeam, projectHasCodeFolder, setHubSelection } from "../../hub/model/hubNav";
+import { inboxShow, setInboxShow } from "../../needs/model/inboxShow";
+import { requestOpenPage } from "../../pages/model/pages";
+import type { SettingsSectionId } from "../../settings/model/settings";
 import { queueHomeDecision, queueHomeDoc, queueHomeTask } from "./pending";
 
 export type HomeOpenTarget =
   | { kind: "inbox"; projectId: string; decisionKey: string }
+  | { kind: "needs" }
   | { kind: "task"; projectId: string; id: string }
   | { kind: "doc"; id: string }
   | { kind: "chat"; id: string; projectId: string }
-  | { kind: "coding"; projectId: string };
+  | { kind: "page"; id: string }
+  | { kind: "coding"; projectId: string }
+  | { kind: "settings"; section: SettingsSectionId; anchor: string }
+  | { kind: "url"; href: string };
+
+/** The Clean up card on Settings > Worktrees (`data-setting-id` in WorktreeCleanup.tsx). */
+export const WORKTREE_CLEANUP = "worktree-cleanup";
 
 export type HomeProjectRef = { id: string; folder?: string | null };
 
@@ -20,6 +30,8 @@ export type HomeOpenHands = {
   openNotes: () => void;
   openSession: (sessionId: string) => void;
   openTeam: (projectId: string) => void;
+  /** Settings, on a page and on the card to land on (the same call the app's own Settings links use). */
+  openSettings: (section: SettingsSectionId, anchor?: string) => void;
   projects: () => readonly HomeProjectRef[];
 };
 
@@ -36,8 +48,20 @@ function decisionProject(projectId: string, projects: readonly HomeProjectRef[])
 export function applyHomeOpen(target: HomeOpenTarget, hands: HomeOpenHands): void {
   if (target.kind === "inbox") {
     hands.closeChrome();
+    showAsks();
     queueHomeDecision(decisionProject(target.projectId, hands.projects()), target.decisionKey);
     hands.openInbox();
+    return;
+  }
+  // WP-212: Needs you, the whole list. No decision is queued, so the inbox opens on its own.
+  if (target.kind === "needs") {
+    hands.closeChrome();
+    showAsks();
+    hands.openInbox();
+    return;
+  }
+  if (target.kind === "url") {
+    openHttp(target.href);
     return;
   }
   if (target.kind === "task") {
@@ -59,8 +83,23 @@ export function applyHomeOpen(target: HomeOpenTarget, hands: HomeOpenHands): voi
     hands.openSession(target.id);
     return;
   }
+  if (target.kind === "page") {
+    requestOpenPage(target.id);
+    window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" }));
+    return;
+  }
+  if (target.kind === "settings") {
+    hands.closeChrome();
+    hands.openSettings(target.section, target.anchor);
+    return;
+  }
   hands.closeChrome();
   hands.openTeam(target.projectId);
+}
+
+/** A line that leads to an ask must find the asks there, even when the Inbox was left on one source's work items. */
+function showAsks(): void {
+  if (inboxShow() === "items") setInboxShow("all");
 }
 
 let opener: ((target: HomeOpenTarget) => void) | undefined;
@@ -90,13 +129,33 @@ export function openFromHome(target: HomeOpenTarget): void {
     queueHomeDoc(target.id);
     openDocsMode();
     window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "notes" }));
+    return;
   }
+  if (target.kind === "page") {
+    requestOpenPage(target.id);
+    window.dispatchEvent(new CustomEvent("monocode:home-open", { detail: "pages" }));
+    return;
+  }
+  if (target.kind === "url") openHttp(target.href);
+  // A settings line, or Needs you, needs the workspace's hands. Without them there is nowhere to open it.
+}
+
+/** A web link only. Any other scheme is ignored. */
+function openHttp(href: string): void {
+  if (!/^https?:\/\//i.test(href.trim())) return;
+  window.open(href.trim(), "_blank", "noopener");
 }
 
 export function targetFor(line: { kind: string; projectId: string; target: string }): HomeOpenTarget {
   if (line.kind === "decision") return { kind: "inbox", projectId: line.projectId, decisionKey: line.target };
   if (line.kind === "doc") return { kind: "doc", id: line.target };
   if (line.kind === "chat") return { kind: "chat", id: line.target, projectId: line.projectId };
-  if (line.kind === "coding") return { kind: "coding", projectId: line.projectId };
+  if (line.kind === "page") return { kind: "page", id: line.target };
+  if (line.kind === "coding" || line.kind === "project") return { kind: "coding", projectId: line.projectId };
+  // WP-176: a spend pause opens the limit. A disk pause still opens Clean up.
+  if (line.kind === "builders" && line.target === "builders-spend") {
+    return { kind: "settings", section: "crew", anchor: "spend-limit" };
+  }
+  if (line.kind === "builders") return { kind: "settings", section: "worktrees", anchor: WORKTREE_CLEANUP };
   return { kind: "task", projectId: line.projectId, id: line.target };
 }

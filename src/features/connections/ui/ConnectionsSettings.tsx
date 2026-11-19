@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { useEffect, useRef, useState } from "react";
+import { onAddMachineRequest } from "../../hivraCloud/model/addMachine";
 import { Internet, Loader, Plus, Trash2 } from "../../../shared/ui/icons";
 import {
   connectMachine,
@@ -54,6 +55,20 @@ export function ConnectionsSettings() {
         );
     };
   }, []);
+  // WP-61: Hivra Cloud fills this form. Connecting still happens here.
+  useEffect(
+    () =>
+      onAddMachineRequest((draft) => {
+        if (!alive.current || submitting.current) return;
+        setAdding(true);
+        setTarget(draft.target);
+        setName(draft.name);
+        setPort("");
+        setError("");
+        setNotice("");
+      }),
+    [],
+  );
   useEffect(() => {
     if (!jobId) return;
     let disposed = false;

@@ -21,6 +21,8 @@ export type UserQuestionPrompt = {
   requestId: number;
   title?: string;
   questions: UserQuestion[];
+  /** Epoch ms the agent asked. A settled chat comes back for a question newer than its settle (chatListInbox.ts). */
+  askedAt?: number;
   /** Deadline owned by the harness; interaction can disable automatic skipping. */
   autoResolveAt?: number;
 };

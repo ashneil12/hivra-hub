@@ -297,6 +297,21 @@ describe("rankSkills", () => {
     ]);
   });
 
+  it("puts a Mono's skills and commands first and still lists the rest", () => {
+    const ranked = rankSkills([native, review, BUILTIN_CREATE_SKILL], "", 50, [
+      "review-pr",
+      "cursor-only",
+    ]);
+    expect(ranked.map((s) => s.name)).toEqual([
+      "review-pr",
+      "cursor-only",
+      "create-skill",
+    ]);
+    const typed = rankSkills([native, review, BUILTIN_CREATE_SKILL], "c", 50, ["review-pr"]);
+    expect(typed.map((s) => s.name)).toContain("create-skill");
+    expect(typed.map((s) => s.name)).toContain("cursor-only");
+  });
+
   it("fuzzy-matches names ahead of descriptions", () => {
     const ranked = rankSkills([native, review, BUILTIN_CREATE_SKILL], "rev");
     expect(ranked[0]?.name).toBe("review-pr");

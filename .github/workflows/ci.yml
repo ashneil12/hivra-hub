@@ -8,14 +8,32 @@ on:
     # tier runs 20 jobs (5 on macOS) at once, so drafts kept the PRs that are ready waiting in the
     # queue. Marking a PR ready for review runs everything.
     types: [opened, synchronize, reopened, ready_for_review]
+  # Hivra: the pre-ship run (`gh workflow run CI --ref main`): every job, the browser tests and the macOS jobs included.
+  # Any branch can be run the same way.
+  workflow_dispatch:
+    inputs:
+      mutants_base:
+        description: 'Mutants job: the commit or tag to diff from (the last shipped one). Empty means origin/main~50.'
+        required: false
+        default: ''
+  schedule:
+    # Hivra: nightly, on main, 03:47 UTC. The RPM jobs only; every other job skips a scheduled run. A pull request
+    # that touches no packaging file builds one RPM image, so this run is what builds the second image and the
+    # clean install for everything else (a new Rust release, a moved Fedora or EPEL package). Native Preview has
+    # its own nightly run in native.yml.
+    - cron: '47 3 * * *'
 
+# Hivra: a new push to a pull request cancels its older run, and a new merge into main cancels the older main run that
+# is still waiting (every merge used to queue a full run, so the macOS runners spent the afternoon on superseded
+# commits). The pre-ship run and the nightly run keep their own group, so nothing cancels them.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || (github.event_name == 'push' && github.ref) || github.run_id }}
   cancel-in-progress: true
 
 jobs:
+  # GitHub's default job limit is 360 minutes. That is too long for a hang, so the long jobs set their own limit.
   release-channel:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Release channel isolation
     runs-on: ubuntu-latest
     permissions:
@@ -33,7 +51,7 @@ jobs:
       - run: node --test scripts/hub-dev-loop.test.cjs
 
   mobile:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Mobile checks
     runs-on: ubuntu-latest
     permissions:
@@ -59,17 +77,26 @@ jobs:
       - run: npx vitest run --config mobile/vitest.config.ts
 
   browser:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # 11 Nov 2026 (Ash): the browser tests run once before each ship, not on every PR or merge. They were the slowest
+    # and flakiest jobs and most of the wait on every PR, so a PR merges on the fast checks (Rust and the web unit
+    # tests). Before a ship, `gh workflow run CI --ref main` runs everything, these included, and a failure stops the
+    # ship until it is fixed (in bulk). Any branch can be run the same way.
+    if: github.event_name != 'schedule' && github.event_name == 'workflow_dispatch'
     # Hivra: the suite runs one test at a time (workers: 1) and took about 22 minutes as one job, the longest wait
     # on every PR. Four shards (whole spec files each) run side by side on separate runners, so nothing is shared.
-    name: browser (${{ matrix.shard }}/4)
+    # The install step is capped at 15 minutes and its retry at 8, so the job limit is 35 minutes: one full attempt
+    # plus the tests. A second attempt that also runs to the cap can meet this limit, and that still fails the hang.
+    # The OS packages' .deb files are cached as well: on 10 Nov 2026 the Ubuntu mirror was slow enough that most
+    # browser jobs hit the old 8 minute cap twice before a test ran.
+    # 11 Nov 2026: six shards. With four, two shards took 13 minutes and two took 6, so the slowest set the wait.
+    name: browser (${{ matrix.shard }}/6)
+    timeout-minutes: 35
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-latest
     # GitHub's default job timeout is 360 minutes, which is too long for a hang.
-    timeout-minutes: 25
     permissions:
       contents: read
     steps:
@@ -81,13 +108,70 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      - run: npx playwright install --with-deps chromium webkit
+      - name: Playwright browser cache directory and image
+        id: playwright-path
+        # The browsers are built for one Ubuntu release, and ubuntu-latest moves between releases while runner.os
+        # still says Linux. The runner's ImageOS names the release. The env context does not hold it (that context
+        # has only what a workflow sets), so the script reads it from the process and prints it as an output.
+        run: |
+          node scripts/ci-playwright-install.mjs --print-cache-path >> "$GITHUB_OUTPUT"
+          node scripts/ci-playwright-install.mjs --print-image-os >> "$GITHUB_OUTPUT"
+          node scripts/ci-playwright-install.mjs --print-debs-path >> "$GITHUB_OUTPUT"
+      - name: Restore Playwright browsers
+        id: playwright-cache
+        # A cache outage must not skip the browsers. An empty hit flag fails open to a full install.
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.path }}
+          key: ms-playwright-v1-${{ runner.os }}-${{ steps.playwright-path.outputs.image-os }}-${{ hashFiles('package-lock.json') }}
+      - name: Restore the browsers' OS packages
+        id: apt-debs-cache
+        # The .deb files apt-get downloaded for the browsers last time. A miss or a cache outage only means apt
+        # downloads them again.
+        continue-on-error: true
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.debs }}
+          key: apt-debs-v1-${{ steps.playwright-path.outputs.image-os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Playwright browsers
+        id: playwright-install
+        timeout-minutes: 15
+        continue-on-error: true
+        run: node scripts/ci-playwright-install.mjs --cache-hit "${{ steps.playwright-cache.outputs.cache-hit }}" --debs "${{ steps.playwright-path.outputs.debs }}"
+      - name: Retry Playwright browser install
+        id: playwright-install-retry
+        if: steps.playwright-install.outcome == 'failure'
         timeout-minutes: 8
+        run: node scripts/ci-playwright-install.mjs --cache-hit "${{ steps.playwright-cache.outputs.cache-hit }}" --debs "${{ steps.playwright-path.outputs.debs }}"
+      - name: Save Playwright browsers
+        # Four shards miss together and would all try to write one key. A lost race must not fail the tests.
+        # The save also waits until an install attempt actually succeeded, so a partial download is not cached.
+        continue-on-error: true
+        if: >-
+          steps.playwright-cache.outputs.cache-hit != 'true'
+          && steps.playwright-cache.outputs.cache-primary-key != ''
+          && (steps.playwright-install.outcome == 'success' || steps.playwright-install-retry.outcome == 'success')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.path }}
+          key: ${{ steps.playwright-cache.outputs.cache-primary-key }}
+      - name: Save the browsers' OS packages
+        # Only after an install succeeded, so the cache holds a whole set.
+        continue-on-error: true
+        if: >-
+          steps.apt-debs-cache.outputs.cache-hit != 'true'
+          && steps.apt-debs-cache.outputs.cache-primary-key != ''
+          && (steps.playwright-install.outcome == 'success' || steps.playwright-install-retry.outcome == 'success')
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.playwright-path.outputs.debs }}
+          key: ${{ steps.apt-debs-cache.outputs.cache-primary-key }}
       # WP-03: Hivra's one layout, in the app built with the Hub flag (the default config runs without it).
       - name: Hivra layout (Hub flag)
         if: matrix.shard == 1
         run: npx playwright test -c tests/browser/hivra-layout.config.ts
-      - run: npm run test:browser -- --shard=${{ matrix.shard }}/4
+      - run: npm run test:browser -- --shard=${{ matrix.shard }}/6
       - name: Upload browser failure traces
         if: failure()
         uses: actions/upload-artifact@v4
@@ -98,13 +182,15 @@ jobs:
           if-no-files-found: ignore
 
   host:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        # PRs and pushes run on Linux (fast, and no wait for the 5 macOS runners); the pre-ship run (workflow_dispatch)
+        # uses macOS. Windows is off while the app is Mac-only (Ash, 11 Nov 2026); HUB_CROSS_PLATFORM_CI=true runs all three.
+        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["ubuntu-latest","macos-latest","windows-latest"]' || github.event_name == 'workflow_dispatch' && '["macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -121,70 +207,154 @@ jobs:
           key: host-runtime-v1-${{ runner.os }}-${{ runner.arch }}-native-${{ hashFiles('host/package.mjs') }}
       - run: npm run host:package
 
-  check:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    # Hivra: the web tests and the Rust checks ran one after the other in one job (about 24 minutes on Windows).
-    # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
-    # macOS stays one job: it was already quick, and macOS runners are the scarce ones.
-    name: check (${{ matrix.os }}, ${{ matrix.part }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { os: macos-latest, part: all }
-          - { os: ubuntu-latest, part: web }
-          - { os: ubuntu-latest, part: rust }
-          - { os: windows-latest, part: web, shard: 1/2 }
-          - { os: windows-latest, part: web, shard: 2/2 }
-          - { os: windows-latest, part: rust }
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
+  # Hivra (11 Nov 2026): decides on a Linux runner whether a pull request needs the macOS Rust half
+  # (scripts/ci-rust-changed.mjs). A web-only pull request then never takes a macOS runner: before this, it waited 20 to
+  # 40 minutes in the five-runner macOS queue only to skip the Rust steps. A push, the pre-ship run and any doubt say
+  # run=true; an empty answer keeps the Rust half too.
+  rust-plan:
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.rust.outputs.run }}
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Linux system dependencies
-        if: runner.os == 'Linux' && matrix.part != 'web'
-        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
-
+        with:
+          # The pull request diff is read from the merge commit's first parent.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Does this pull request change anything the Rust checks read?
+        id: rust
+        env:
+          RUST_CHECK_EVENT: ${{ github.event_name }}
+        run: node scripts/ci-rust-changed.mjs >> "$GITHUB_OUTPUT"
+
+  check:
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    needs: rust-plan
+    # Hivra: the web tests and the Rust checks ran one after the other in one job (about 24 minutes on Windows).
+    # On Linux and Windows they now run as separate jobs, and Windows splits the web tests in two (vitest --shard).
+    # macOS stays one runner. When every OS runs, the web half and the Rust half run at the same time in that job,
+    # because a second macOS runner would sit in the queue. By default (11 Nov 2026) macOS runs only the Rust half.
+    name: check (${{ matrix.os }}, ${{ matrix.part }}${{ matrix.shard && format(' {0}', matrix.shard) || '' }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is off while the app is Mac-only (Ash, 11 Nov 2026). Set the repository variable
+        # HUB_CROSS_PLATFORM_CI to true to run it again.
+        # By default the web half (vitest and tsc, which test no OS) runs on two Linux runners and macOS runs only the
+        # Rust half. On 11 Nov 2026 the macOS job ran both halves on one 3-core runner: vitest took 25 minutes there
+        # against 6 on Linux, and the Rust tests waited behind it, so every PR waited 27 minutes for that one job.
+        # The Rust half stays on macOS: on Linux it needs the WebKitGTK packages from Ubuntu's mirror, and on
+        # 11 Nov 2026 that mirror stopped resolving from GitHub's runners for hours, failing every Linux job that
+        # installs packages. The host and ship tests need no packages, so they run on Linux on a PR.
+        include: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '[{"os":"macos-latest","part":"all"},{"os":"ubuntu-latest","part":"web"},{"os":"ubuntu-latest","part":"rust"},{"os":"windows-latest","part":"web","shard":"1/2"},{"os":"windows-latest","part":"web","shard":"2/2"},{"os":"windows-latest","part":"rust"}]' || needs.rust-plan.outputs.run == 'false' && '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"}]' || '[{"os":"ubuntu-latest","part":"web","shard":"1/2"},{"os":"ubuntu-latest","part":"web","shard":"2/2"},{"os":"macos-latest","part":"rust"}]') }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # A pull request reads the merge commit's first parent to see what it changed: the Rust half to decide whether
+          # it runs, the web half to pick the tests the change can reach (scripts/affected-tests.mjs).
+          fetch-depth: ${{ github.event_name == 'pull_request' && 2 || 1 }}
+
+      - uses: actions/setup-node@v4
+        with:
+          # 22, like the ship job: the script tests use node:sqlite, which Node 20 doesn't have.
+          node-version: 22
           cache: npm
 
+      # Hivra (11 Nov 2026): a pull request that changes only web files skips the Rust half, about 15 minutes on the
+      # macOS runner (scripts/ci-rust-changed.mjs says which web files the Rust code still reads). A push to main, the
+      # nightly run, the pre-ship run and any doubt run it. A skipped half still reports success under the same name.
+      - name: Does this pull request change anything the Rust checks read?
+        id: rust
+        if: matrix.part == 'rust'
+        env:
+          RUST_CHECK_EVENT: ${{ github.event_name }}
+        run: node scripts/ci-rust-changed.mjs >> "$GITHUB_OUTPUT"
+
+      - name: Install Linux system dependencies
+        if: runner.os == 'Linux' && matrix.part != 'web' && steps.rust.outputs.run != 'false'
+        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+
       - uses: dtolnay/rust-toolchain@stable
-        if: matrix.part != 'web'
+        if: matrix.part != 'web' && steps.rust.outputs.run != 'false'
         with:
           components: rustfmt, clippy
 
       # Saved only from main, so a PR starts from main's compiled dependencies and never evicts them with its own.
       - uses: Swatinem/rust-cache@v2
-        if: matrix.part != 'web'
+        if: matrix.part != 'web' && steps.rust.outputs.run != 'false'
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
 
+      # WP-173: pinned installer, pinned nextest. No new permissions and no secrets.
+      - name: Install cargo-nextest
+        if: matrix.part != 'web' && steps.rust.outputs.run != 'false'
+        uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
+        with:
+          tool: cargo-nextest@0.9.151
+
       - run: npm ci
-      - run: npm test ${{ matrix.shard && format('-- --shard={0}', matrix.shard) || '' }}
-        if: matrix.part != 'rust'
+        if: steps.rust.outputs.run != 'false'
+      # Hivra (11 Nov 2026): a pull request runs only the web tests its change can reach through imports, or that read a
+      # changed file from disk (the planner below). A change to package.json, the lockfile, a test or build
+      # config, the test setup, a .d.ts or CI itself runs every test, and so does anything that isn't a pull request:
+      # main's run after each merge and the pre-ship run are always the full suite. tsc below still checks every file.
+      - run: node scripts/affected-tests.mjs web ${{ matrix.shard && format('--shard={0}', matrix.shard) || '' }}
+        if: matrix.part == 'web'
+        env:
+          AFFECTED_EVENT: ${{ github.event_name }}
+      # Script tests (scripts/*.test.*) the change reaches. Blocking: the parts that need the Mac's own setup (the
+      # macOS sandbox, a dev copy's Claude login) check what they can here and leave the rest to the Mac.
+      - name: Script tests the change reaches
+        if: matrix.part == 'web' && (!matrix.shard || startsWith(matrix.shard, '1/'))
+        run: node scripts/affected-tests.mjs scripts
+        env:
+          AFFECTED_EVENT: ${{ github.event_name }}
       - run: npx tsc --noEmit
-        if: matrix.part != 'rust'
+        if: matrix.part == 'web'
       - run: cargo fmt --check
-        if: matrix.part != 'web'
+        if: matrix.part == 'rust' && steps.rust.outputs.run != 'false'
       - run: cargo clippy --workspace --all-targets -- -D warnings
-        if: matrix.part != 'web'
-      - run: cargo check
-        if: matrix.part != 'web'
-      - run: cargo test
-        if: matrix.part != 'web'
+        if: matrix.part == 'rust' && steps.rust.outputs.run != 'false'
+      - run: cargo nextest run --workspace --profile ci
+        if: matrix.part == 'rust' && steps.rust.outputs.run != 'false'
+      - name: Web and Rust checks together
+        if: matrix.part == 'all'
+        run: node scripts/ci-check-parallel.mjs
+
+      # WP-173: list flaky and twice-failed tests. The script exits 0, so it does not change the job result.
+      - name: Rust flaky tests in the job summary
+        if: always() && matrix.part != 'web' && steps.rust.outputs.run != 'false'
+        run: node scripts/ci-rust-flaky-summary.mjs
+
+      - name: Upload Rust test results
+        if: always() && matrix.part != 'web' && steps.rust.outputs.run != 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-junit-${{ matrix.os }}-${{ matrix.part }}
+          path: target/nextest/ci/junit.xml
+          retention-days: 7
+          if-no-files-found: ignore
 
   ship:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: Ship drill
+    timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        # PRs and pushes run on Linux (fast, and no wait for the 5 macOS runners); the pre-ship run (workflow_dispatch)
+        # uses macOS. Windows is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs all three.
+        os: ${{ fromJSON(vars.HUB_CROSS_PLATFORM_CI == 'true' && '["macos-latest","ubuntu-latest","windows-latest"]' || github.event_name == 'workflow_dispatch' && '["macos-latest"]' || '["ubuntu-latest"]') }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -200,8 +370,77 @@ jobs:
           USERPROFILE: ${{ runner.temp }}/monocode-hub-ship-home
         run: node --disable-warning=ExperimentalWarning --test scripts/hub-ship.test.mjs scripts/ship-platform.test.mjs
 
+  guards:
+    # Hivra: the shipping guards (docs/hivra/shipping-guards.md). Report only: they print findings to the job summary and
+    # `continue-on-error` means they can never block a merge. They need no packages, so there is no `npm ci`. On a push to
+    # main the diff against origin/main is empty, so the run is a few seconds.
+    if: github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    name: Shipping guards (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The test guard diffs against origin/main, so it needs the history.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # ast-grep is run through npx at the version package.json pins, because this job installs no packages.
+      - run: npm run check:guards
+        env:
+          AST_GREP_CMD: npx --yes @ast-grep/cli@0.51.1
+
+  mutants:
+    # Hivra: the pre-ship run only (`gh workflow run CI --ref main -f mutants_base=<last shipped tag>`). cargo-mutants
+    # plants small bugs in the risky Rust lines the change touched and reports the ones no test noticed
+    # (docs/hivra/shipping-guards.md). Report only: `continue-on-error` means it can never block a ship.
+    if: github.event_name != 'schedule' && github.event_name == 'workflow_dispatch'
+    name: Mutants in the diff (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install Linux system dependencies
+        run: bash scripts/install-linux-deps-debian.sh --sources /etc/apt/sources.list.d/ubuntu.sources
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      # Pinned installer, pinned tools (the same installer the check job uses for nextest).
+      - name: Install cargo-mutants and cargo-nextest
+        uses: taiki-e/install-action@0fd46367812ee04360509b4169d9f659d6892bb2 # v2.79.15
+        with:
+          tool: cargo-nextest@0.9.151,cargo-mutants@27.1.0
+      - name: Mutants in the diff
+        env:
+          MUTANTS_BASE: ${{ github.event.inputs.mutants_base }}
+        run: node scripts/mutants-in-diff.mjs --run --base "${MUTANTS_BASE:-origin/main~50}"
+      - name: Upload mutants.out
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutants-out
+          path: mutants.out
+          if-no-files-found: ignore
+          retention-days: 14
+
   appimage:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
+    # Linux packaging is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs it again.
+    if: vars.HUB_CROSS_PLATFORM_CI == 'true' && github.event_name != 'schedule' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
     name: AppImage host libraries
     runs-on: ubuntu-22.04
     permissions:
@@ -266,20 +505,63 @@ jobs:
         if: steps.packaging.outputs.run == 'true'
         run: bash scripts/assert-appimage-host-libs.sh
 
-  rpm:
-    if: github.event_name != 'pull_request' || !github.event.pull_request.draft
-    name: RPM build (${{ matrix.image }})
+  # Every run builds one RPM image, the image the release workflow publishes from, so a production build runs on every
+  # pull request. The full set (the second image and the clean install) runs on every push to main, every nightly run,
+  # and every pull request whose base-sha diff touches an RPM input, the same idea as the AppImage job. The script
+  # prints full=true or full=false. A missing event, a missing base or a git failure prints full=true.
+  rpm-changes:
+    # Linux packaging is off while the app is Mac-only; HUB_CROSS_PLATFORM_CI=true runs it again. The rpm build and
+    # the clean install need this job, so they skip with it.
+    if: vars.HUB_CROSS_PLATFORM_CI == 'true' && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    name: RPM packaging changes
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      full: ${{ steps.packaging.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Decide whether the full RPM set runs
+        id: packaging
+        env:
+          PACKAGING_EVENT: ${{ github.event_name }}
+          PACKAGING_BASE: ${{ github.event.pull_request.base.sha }}
+          PACKAGING_HEAD: ${{ github.sha }}
+        run: node scripts/ci-packaging-changed.mjs --kind rpm >> "$GITHUB_OUTPUT"
+
+  rpm:
+    needs: rpm-changes
+    # The production build: tauri's release build and the rpm bundle. It no longer waits for the gate's answer, only
+    # for the gate to have run. The gate's answer picks the images.
+    if: >-
+      needs.rpm-changes.result == 'success'
+      && (github.event_name != 'pull_request' || !github.event.pull_request.draft)
+    name: RPM build (${{ matrix.image }})
     timeout-minutes: 25
+    runs-on: ubuntu-latest
     container: ${{ matrix.image }}
     strategy:
       fail-fast: false
       matrix:
-        # almalinux:10 covers the Enterprise Linux path in
-        # scripts/install-linux-deps-fedora.sh (EPEL 10 + CRB), which is the
-        # only way to catch packages that are missing from EPEL 10.
-        image: [fedora:43, almalinux:10]
+        # almalinux:10 is the image release.yml builds the published rpm on, so every run builds it. It also covers
+        # the Enterprise Linux path in scripts/install-linux-deps-fedora.sh (EPEL 10 + CRB), which is the only way to
+        # catch packages that are missing from EPEL 10. fedora:43 joins it when the gate says full.
+        image: ${{ fromJSON(needs.rpm-changes.outputs.full == 'true' && '["almalinux:10","fedora:43"]' || '["almalinux:10"]') }}
     steps:
+      # 11 Nov 2026: an AlmaLinux mirror sent packages at a few KB/s and several runs hit the 25 minute limit
+      # in "Install git". dnf only drops a mirror slower than 1 KB/s; this drops one under 100 KB/s for 15 seconds and
+      # tries the next, and fetches in parallel. It changes no package, only where they come from.
+      - name: Skip slow package mirrors
+        run: |
+          grep -q '^\[main\]' /etc/dnf/dnf.conf || echo '[main]' >> /etc/dnf/dnf.conf
+          printf 'minrate=100k\ntimeout=15\nmax_parallel_downloads=10\n' >> /etc/dnf/dnf.conf
+
       # Neither fedora:43 nor almalinux:10 ships git, which actions/checkout
       # otherwise has to work around with a REST API tarball download.
       - name: Install git
@@ -330,7 +612,8 @@ jobs:
       - name: Upload rpm for the clean install check
         # Ship and test the EL 10 build. Fedora 43's glibc is newer, so a
         # fedora:43 rpm can dnf-install on AlmaLinux 10 and still fail to load.
-        if: matrix.image == 'almalinux:10'
+        # The clean install runs only for the full set, so only that run uploads.
+        if: matrix.image == 'almalinux:10' && needs.rpm-changes.outputs.full == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: rpm-package
@@ -339,7 +622,10 @@ jobs:
 
   rpm-clean-install:
     name: Clean rpm install
-    needs: rpm
+    needs: [rpm-changes, rpm]
+    # Part of the full set. A run that built only the production image has no rpm to hand over, so this skips.
+    # With no status function in the condition, a failed or skipped rpm job skips this one too.
+    if: needs.rpm-changes.outputs.full == 'true'
     runs-on: ubuntu-latest
     # Deliberately no setup script: this is the only job that can catch an rpm
     # whose Requires are missing, since everywhere else the -devel packages are
@@ -348,6 +634,14 @@ jobs:
     # binary can resolve against EL 10's glibc and runtime libraries.
     container: almalinux:10
     steps:
+      # 11 Nov 2026: an AlmaLinux mirror sent packages at a few KB/s and several runs hit the 25 minute limit
+      # in "Install git". dnf only drops a mirror slower than 1 KB/s; this drops one under 100 KB/s for 15 seconds and
+      # tries the next, and fetches in parallel. It changes no package, only where they come from.
+      - name: Skip slow package mirrors
+        run: |
+          grep -q '^\[main\]' /etc/dnf/dnf.conf || echo '[main]' >> /etc/dnf/dnf.conf
+          printf 'minrate=100k\ntimeout=15\nmax_parallel_downloads=10\n' >> /etc/dnf/dnf.conf
+
       - name: Install git
         run: dnf install -y git
 
@@ -390,12 +684,13 @@ jobs:
   # WP-105: one required check that adds up the rest, so branch protection names one job instead of
   # every job. A new job stays out of this needs list until it has been green for a week. `if: always()`
   # means a failed or cancelled dependency still runs this job, so the failure is reported here too.
-  # Skipped counts as fine: a draft PR runs no jobs, and the AppImage check skips when packaging files
-  # did not change. scripts/ci-ok.mjs prints one line naming every job and its result.
+  # Skipped counts as fine: a draft PR runs no jobs, a PR runs no browser tests, the AppImage check and the RPM full set skip when packaging
+  # files did not change, and a nightly run starts only the RPM jobs. scripts/ci-ok.mjs prints one line naming
+  # every job and its result.
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [release-channel, mobile, browser, host, check, ship, appimage, rpm, rpm-clean-install]
+    needs: [release-channel, mobile, browser, host, rust-plan, check, ship, guards, mutants, appimage, rpm-changes, rpm, rpm-clean-install]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

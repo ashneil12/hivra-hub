@@ -41,6 +41,33 @@ impl Drop for Fixture {
     }
 }
 
+/// Edited paths come from the transcript's tool rows. One that leads outside the chat's folder never reaches the
+/// turn's record, so an imported chat can't make a checkpoint read or restore a file elsewhere.
+#[test]
+fn edited_paths_outside_the_chats_folder_never_reach_the_turns_record() {
+    let f = Fixture::new();
+    f.store.begin_turn("session", f.cwd(), "first").unwrap();
+    let outside = f.dir.join("outside.txt");
+    let paths: Vec<String> = [
+        outside.to_string_lossy().into_owned(),
+        "/etc/hosts".into(),
+        "../outside.txt".into(),
+        "sub/../../outside.txt".into(),
+        "a.txt".into(),
+    ]
+    .to_vec();
+    f.store
+        .capture_turn_paths("session", f.cwd(), &paths)
+        .unwrap();
+    let review = f
+        .store
+        .matching_turn_review("session", f.cwd())
+        .unwrap()
+        .unwrap();
+    let edited: Vec<_> = review.active.unwrap().edited.into_iter().collect();
+    assert_eq!(edited, ["a.txt"]);
+}
+
 #[test]
 fn records_shell_changes_and_preserves_the_index_head_and_saved_result() {
     let f = Fixture::new();

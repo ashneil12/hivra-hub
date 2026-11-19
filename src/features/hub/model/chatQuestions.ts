@@ -6,6 +6,7 @@
 //   taking it sends Ash's go as the next message in that chat.
 // Pure functions only: the store that lists and answers them is waitingChats.ts.
 import { toSecondPerson } from "../../../shared/text/askMarkers";
+import { isBackgroundMessage } from "../../sessions/model/backgroundMessage";
 import { ASH_ANSWERED_PREFIX } from "../../monos/model/ashAnswersWorker";
 import { plainCommandQuestion } from "./plainCommand";
 import {
@@ -252,6 +253,38 @@ function lowerFirst(text: string): string {
   return /^[A-Z][a-z]/.test(text) ? text.charAt(0).toLowerCase() + text.slice(1) : text;
 }
 
+/**
+ * WP-92: a finished chat's open "Needs Ash (provide)" ask, when what it asks for is a key. The chat then offers the
+ * secret form instead of the composer, so the value never becomes a message. Nothing while the turn still runs, and
+ * nothing once Ash answered it.
+ */
+export function keyAskFor(chat: ChatLike): { ask: string; name: string } | null {
+  if (chat.busy) return null;
+  const q = chatQuestion(chat);
+  if (!q || q.source !== "marker" || !q.provide || !keyAsk(q.provide)) return null;
+  return { ask: q.provide, name: secretNameFor(q.provide) };
+}
+
+const NAME_FILLER = new Set(["a", "an", "the", "new", "fresh", "another", "my", "your", "some", "one", "please"]);
+/** Where the name ends: what the key is for, not what it is ("… for Hivra"). */
+const NAME_STOP = new Set(["for", "from", "to", "so", "in", "on", "with", "and", "or", "that", "which", "at", "into"]);
+
+/** The vault name a key ask suggests: lower-case letters, digits and dashes, 1 to 64, or "secret" when none is left. */
+export function secretNameFor(ask: string): string {
+  const words = oneLine(ask)
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter(Boolean);
+  const picked: string[] = [];
+  for (const word of words) {
+    if (picked.length && NAME_STOP.has(word)) break;
+    if (!NAME_FILLER.has(word)) picked.push(word);
+    if (picked.length >= 8) break;
+  }
+  const name = picked.join("-").slice(0, 64).replace(/^-+|-+$/g, "");
+  return name || "secret";
+}
+
 /** The last "Needs Ash:" line in an agent's text, with the "My pick:" line after it. */
 export function parseNeedsAsh(text: string): NeedsAshMarker | null {
   let found: RegExpExecArray | null = null;
@@ -417,7 +450,7 @@ export function lastTurnText(blocks: readonly Pick<Block, "role" | "text" | "int
   for (let i = blocks.length - 1; i >= 0; i--) {
     const b = blocks[i];
     // A hidden app prompt (a report-back, an orchestration nudge) is not Ash speaking: keep looking past it.
-    if (b.role === "user" && !b.internal && !b.monoSessionCompletion) break;
+    if (b.role === "user" && !b.internal && !b.monoSessionCompletion && !isBackgroundMessage(b.text)) break;
     if (b.role === "assistant" && b.text) parts.unshift(b.text);
   }
   return parts.join("\n\n");
@@ -679,6 +712,7 @@ const LEAVES_IT_TO_ASH =
 
 export function asksByMeaning(sentence: string): boolean {
   const s = sentence.trim();
+  if (/\bwhich is still your pick\b/i.test(s) && !/\bor\b/i.test(s)) return false;
   if (LEAVES_IT_TO_ASH.test(s)) return true;
   // "Do you want A, or B." / "Should I keep it, or drop it." written with a full stop.
   return /^(?:do you want|would you (?:like|rather|prefer)|should i\b|shall i\b|want me to|which\b)/i.test(s);
@@ -724,8 +758,7 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
           };
         })
       : undefined;
-  if (chat.busy && !marker) return null;
-  const secret = marker ? undefined : secretActionTried(chat.blocks);
+  const secret = marker || chat.busy ? undefined : secretActionTried(chat.blocks);
   if (secret)
     return {
       source: "marker",
@@ -735,8 +768,20 @@ export function chatQuestion(chat: ChatLike): ChatQuestion | null {
       flag: "provide",
       provide: `the key or secret action it tried (\`${secret}\`)`,
     };
-  if (!marker && !chat.busy && chat.plainQuestions) {
-    const plain = plainQuestionToAsh(lastTurnText(shown));
+  if (!marker && chat.plainQuestions) {
+    // Background work can add another assistant reply without answering the person's question.
+    // Search completed replies back to the last real user message, not just the newest paragraph.
+    let plain: string | undefined;
+    for (let i = shown.length - 1; i >= 0; i--) {
+      const block = shown[i];
+      if (block.role === "user" && !block.internal && !block.monoSessionCompletion && !isBackgroundMessage(block.text)) break;
+      if (block.role !== "assistant" || block.tool || block.internal || block.streaming) continue;
+      const candidate = plainQuestionToAsh(block.text);
+      if (candidate && !notes.some((note) => answerSettles(note, candidate))) {
+        plain = candidate;
+        break;
+      }
+    }
     if (plain && !notes.some((note) => answerSettles(note, plain))) {
       const options = orOptions(plain);
       return { source: "marker", plain: true, question: plain, more: 0, ...(options.length ? { options } : {}), redLine: false };

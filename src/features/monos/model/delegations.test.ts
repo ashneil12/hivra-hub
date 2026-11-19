@@ -25,6 +25,8 @@ import {
   type DeliveryInput,
   type OwnedQuery,
   type RecordInput,
+  type Reparented,
+  type ReparentInput,
   type SettleInput,
 } from "./delegations";
 import {
@@ -148,8 +150,10 @@ class MemoryStore implements DelegationsBackend {
   async setDelivery(input: DeliveryInput) {
     const rows = [...this.rows.values()].filter(
       (row) =>
-        input.ids?.includes(row.id) ||
-        (input.messageId && row.deliveryMessage === input.messageId),
+        (input.ids?.includes(row.id) ||
+          (input.messageId && row.deliveryMessage === input.messageId)) &&
+        // SC-19: only rows the named chat still owns move (compare-and-swap on the owner).
+        (!input.ownerSession || row.ownerSession === input.ownerSession),
     );
     const changed: Delegation[] = [];
     for (const row of rows) {
@@ -244,9 +248,33 @@ class MemoryStore implements DelegationsBackend {
     this.binds.push(input);
     return true;
   }
+
+  /** Jobs waiting for a free worker (worker_queue.rs), moved with the rows. */
+  waiting: { id: string; ownerSession: string; title: string | null }[] = [];
+
+  /** delegations/reparent.rs: every open or owed row of `from` moves to `to`, compare-and-swap on the owner. */
+  async reparent(input: ReparentInput): Promise<Reparented> {
+    if (input.from === input.to) return { rows: [], waiting: [] };
+    const rows = [...this.rows.values()].filter(
+      (row) =>
+        row.ownerSession === input.from &&
+        row.childSession !== input.to &&
+        (isOpenDelegation(row) || row.delivery === "pending" || row.delivery === "queued"),
+    );
+    for (const row of rows) {
+      row.ownerSession = input.to;
+      if (input.toMono) row.ownerMono = input.toMono;
+      this.touch(row, "moved");
+    }
+    const waiting = this.waiting.filter((job) => job.ownerSession === input.from);
+    for (const job of waiting) job.ownerSession = input.to;
+    return { rows: rows.map(this.copy), waiting: waiting.map(({ id, title }) => ({ id, title })) };
+  }
 }
 
 const MONO = "mono-exo";
+/** The chat that takes the work when MONO is reset (SC-19). */
+const FRESH = "mono-exo-fresh";
 const PROJECT = "/code/vg-game";
 
 /** One app run: its sessions, the Mono's queue, the tracker and the in-memory batches it keeps as a cache. */
@@ -267,15 +295,14 @@ class AppRun {
       session: (id) => this.sessions.get(id),
       load: async (id) => this.sessions.get(id) ?? null,
       openOwner: async (id) => this.sessions.get(id) ?? null,
-      isMono: (id) => id === MONO,
+      isMono: (id) => id === MONO || id === FRESH,
       queueReport: async (monoId, message) => this.enqueue(monoId, message),
       quitting: () => this.quitting,
+      reportHeld: (requestId) => this.batches.holds(requestId),
     });
     this.batches = new MonoSessionCompletionBatches(
-      async (monoId, message, _current, requestIds) => {
-        await this.tracker.queued(monoId, requestIds, message.id);
-        this.enqueue(monoId, message);
-      },
+      async (monoId, message, _current, requestIds) =>
+        this.tracker.deliverWave(monoId, requestIds, message.id, async (owner) => this.enqueue(owner, message)),
     );
   }
 
@@ -283,12 +310,17 @@ class AppRun {
     return this.sessions.get(MONO)!;
   }
 
+  /**
+   * Like the app's queueMonoSessionCompletion without its forward to a moved chat (the tracker names the right owner
+   * itself, and these tests hold it to that): a report for a chat that is gone is dropped, as the app drops it.
+   */
   enqueue(monoId: string, message: QueuedMessage) {
-    this.sessions.set(monoId, enqueueMonoSessionCompletion(this.sessions.get(monoId)!, message));
+    const session = this.sessions.get(monoId);
+    if (session) this.sessions.set(monoId, enqueueMonoSessionCompletion(session, message));
   }
 
-  /** The Mono's turn 1 starts a child, as the host's start path does: record, then watch. */
-  async start(requestId: string, prompt: string) {
+  /** The Mono's turn `turn` (1 unless a test says) starts a child, as the host's start path does: record, then watch. */
+  async start(requestId: string, prompt: string, turn = 1) {
     const launch = this.tracker.launch({
       ownerSession: MONO,
       ownerMono: "vg-game-lead",
@@ -300,7 +332,7 @@ class AppRun {
       brief: prompt,
     });
     const row = await launch.row;
-    const watch = this.batches.watch({ monoId: MONO, turn: 1 }, requestId, requestId, {
+    const watch = this.batches.watch({ monoId: MONO, turn }, requestId, requestId, {
       awaitAcceptance: true,
       generation: row?.generation,
     });
@@ -982,5 +1014,350 @@ describe("WP-13: a failed task is recorded for the crew", () => {
     const finished = await done.settle(report({ status: "completed", result: "Shipped.", sessionId: "child-2" }));
     expect(finished).toBeUndefined();
     expect(seen).toHaveLength(1);
+  });
+});
+
+// SC-19 (never lose an ask, gap D1): a reset chat's open work moves to the chat that takes its place, and the reports
+// it owes follow. The store's own move is covered by delegations/reparent_tests.rs; this is the app's side of it.
+describe("SC-19: a retired chat's open work moves, and its reports follow", () => {
+  const move: ReparentInput = { from: MONO, to: FRESH, toMono: "exo-chief", fromTitle: "Planning", why: "reset" };
+
+  /** Every report a chat has received or still has queued for one child. */
+  const reportsIn = (app: AppRun, chat: string, child: string): string[] => {
+    const session = app.sessions.get(chat);
+    return [
+      ...(session?.blocks ?? []).filter((b) => b.appRequestId?.startsWith("mono-completion-")).map((b) => b.text),
+      ...(session?.queuedMessages ?? []).map((m) => m.text),
+    ].filter((text) => text.includes(`"sessionId":"${child}"`));
+  };
+
+  /** The chat is reset: it, and the queue in it, are gone; the fresh chat is the Mono's. */
+  function reset(app: AppRun) {
+    app.sessions.delete(MONO);
+    app.sessions.set(FRESH, { ...newSession("claude", PROJECT), id: FRESH });
+  }
+
+  /** A row finished through the tracker alone (no batch holds its report): owed, and not yet queued anywhere. */
+  async function finishedUnreported(app: AppRun, requestId: string, title: string) {
+    const launch = app.tracker.launch({
+      ownerSession: MONO,
+      ownerMono: "vg-game-lead",
+      requestId,
+      childSession: requestId,
+      project: PROJECT,
+      title,
+      brief: title,
+    });
+    await launch.row;
+    await launch.settle(
+      monoSessionCompletionResult({
+        requestId,
+        sessionId: requestId,
+        project: PROJECT,
+        prompt: title,
+        outcome: { status: "completed", text: "Done." },
+      }),
+    );
+  }
+
+  it("moves running, queued and finished-unreported rows and only those, and the later report lands in the new chat", async () => {
+    const store = new MemoryStore();
+    store.waiting.push({ id: "w-1", ownerSession: MONO, title: "Write the docs" });
+    const app = new AppRun(store);
+    const delivered = await app.start("app-delivered", "Old job");
+    const running = await app.start("app-running", "Fix the save bug", 2);
+    const queued = await app.start("app-queued", "Pick the palette", 3);
+    delivered.finish("Old job done.");
+    queued.finish("Palette picked.");
+    app.endMonoTurn();
+    await app.settledDown();
+    // The old job's report went in as a turn; the palette's still waits in the old chat's queue.
+    expect(app.deliverHead()!.text).toContain('"sessionId":"app-delivered"');
+    await finishedUnreported(app, "app-unreported", "Tidy the tests");
+    expect(row(store, "app-queued")).toMatchObject({ state: "completed", delivery: "queued" });
+    expect(row(store, "app-unreported")).toMatchObject({ state: "completed", delivery: "pending" });
+    expect(row(store, "app-delivered").delivery).toBe("delivered");
+
+    reset(app);
+    const told: Reparented[] = [];
+    const moved = await app.tracker.reparent(move, (what) => void told.push(what));
+    await app.settledDown();
+
+    expect(moved.rows.map((r) => r.childSession).sort()).toEqual(["app-queued", "app-running", "app-unreported"]);
+    expect(moved.waiting).toEqual([{ id: "w-1", title: "Write the docs" }]);
+    expect(told).toEqual([moved]);
+    for (const child of ["app-queued", "app-running", "app-unreported"])
+      expect(row(store, child)).toMatchObject({ ownerSession: FRESH, ownerMono: "exo-chief" });
+    // What was over stays where it ran, and is not reported again.
+    expect(row(store, "app-delivered")).toMatchObject({ ownerSession: MONO, delivery: "delivered" });
+    expect(reportsIn(app, FRESH, "app-delivered")).toHaveLength(0);
+    // Both owed reports reach the new chat once (the queued one under its own message id), nothing was cancelled.
+    expect(reportsIn(app, FRESH, "app-queued")).toHaveLength(1);
+    expect(reportsIn(app, FRESH, "app-unreported")).toHaveLength(1);
+    expect(row(store, "app-queued")).toMatchObject({ state: "completed", delivery: "queued", deliveryMessage: "mono-completion-app-queued-g1" });
+    expect(row(store, "app-running").state).toBe("running");
+    expect(app.sessions.get(FRESH)!.queuedMessages).toHaveLength(2);
+
+    // The worker that was running finishes after the move: its report goes to the new chat, and nothing to the old.
+    running.finish("Fixed.");
+    await app.settledDown();
+    expect(reportsIn(app, FRESH, "app-running")).toHaveLength(1);
+    expect(row(store, "app-running")).toMatchObject({ state: "completed", delivery: "queued", ownerSession: FRESH });
+    expect(app.sessions.has(MONO)).toBe(false);
+    expect(app.sessions.get(FRESH)!.queuedMessages).toHaveLength(3);
+  });
+
+  it("moves a question too: the worker's later report still has a chat to reach", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const asking = await app.start("app-asking", "Pick the palette");
+    store.rows.get(asking.row!.id)!.state = "question";
+    reset(app);
+
+    const moved = await app.tracker.reparent(move);
+
+    expect(moved.rows.map((r) => r.state)).toEqual(["question"]);
+    expect(row(store, "app-asking")).toMatchObject({ ownerSession: FRESH, state: "question" });
+  });
+
+  it("a report on its way to the old chat while its batch still holds it is queued once, to the new chat", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const one = await app.start("app-one", "Fix the save bug");
+    const two = await app.start("app-two", "Write the docs");
+    // Both finished and settled in the store; the batch holds their reports until the launching turn ends.
+    one.finish("Fixed.");
+    two.finish("Written.");
+    await app.settledDown();
+    expect(row(store, "app-one")).toMatchObject({ state: "completed", delivery: "pending" });
+
+    reset(app);
+    await app.tracker.reparent(move);
+    // The move did not queue them itself: the batch will, and a batch's one message carries both.
+    expect(app.sessions.get(FRESH)!.queuedMessages ?? []).toHaveLength(0);
+    app.endMonoTurn();
+    await app.settledDown();
+
+    const queue = app.sessions.get(FRESH)!.queuedMessages ?? [];
+    expect(queue.map((m) => m.id)).toEqual([expect.stringMatching(/^mono-completion-batch-/)]);
+    expect(reportsIn(app, FRESH, "app-one")).toHaveLength(1);
+    expect(reportsIn(app, FRESH, "app-two")).toHaveLength(1);
+    expect(row(store, "app-one")).toMatchObject({ ownerSession: FRESH, delivery: "queued", deliveryMessage: queue[0].id });
+    expect(row(store, "app-two")).toMatchObject({ ownerSession: FRESH, delivery: "queued", deliveryMessage: queue[0].id });
+  });
+
+  it("a report already lost to the old chat when the work moves is queued again, once per report", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const one = await app.start("app-one", "Fix the save bug");
+    const two = await app.start("app-two", "Write the docs");
+    one.finish("Fixed.");
+    two.finish("Written.");
+    await app.settledDown();
+    // The reset has begun: the old chat takes nothing more. The batch reports to it anyway, and the message is dropped.
+    app.sessions.delete(MONO);
+    app.endMonoTurn();
+    await app.settledDown();
+    expect(row(store, "app-one")).toMatchObject({ ownerSession: MONO, delivery: "queued" });
+
+    app.sessions.set(FRESH, { ...newSession("claude", PROJECT), id: FRESH });
+    await app.tracker.reparent(move);
+    await app.settledDown();
+
+    expect(reportsIn(app, FRESH, "app-one")).toHaveLength(1);
+    expect(reportsIn(app, FRESH, "app-two")).toHaveLength(1);
+    expect(row(store, "app-one")).toMatchObject({ ownerSession: FRESH, delivery: "queued", deliveryMessage: "mono-completion-app-one-g1" });
+    // A second move of the same chat finds nothing, and nothing is queued twice.
+    await app.tracker.reparent(move);
+    await app.settledDown();
+    expect(app.sessions.get(FRESH)!.queuedMessages).toHaveLength(2);
+  });
+
+  it("a report waiting in the line behind the move goes to the new chat once, whichever of the two ran first", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const one = await app.start("app-one", "Fix the save bug");
+    const two = await app.start("app-two", "Write the docs");
+    one.finish("Fixed.");
+    two.finish("Written.");
+    await app.settledDown();
+    reset(app);
+
+    // The move is asked for first, and the batch reports while it is still in the line: the batch's message follows
+    // the move, so it goes to the new chat, and the move does not queue the same reports a second time.
+    const moving = app.tracker.reparent(move);
+    app.endMonoTurn();
+    await moving;
+    await app.settledDown();
+
+    const queue = app.sessions.get(FRESH)!.queuedMessages ?? [];
+    expect(queue).toHaveLength(1);
+    expect(reportsIn(app, FRESH, "app-one")).toHaveLength(1);
+    expect(reportsIn(app, FRESH, "app-two")).toHaveLength(1);
+    expect(row(store, "app-one")).toMatchObject({ ownerSession: FRESH, delivery: "queued", deliveryMessage: queue[0].id });
+  });
+
+  it("an archived chat that comes back owns its new work again: only the requests it had are followed", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    const one = await app.start("app-one", "Fix the save bug");
+    app.sessions.set(FRESH, { ...newSession("claude", PROJECT), id: FRESH });
+    // The chat is archived, so its work goes to the first mate's main chat; the archived chat stays on its own.
+    await app.tracker.reparent({ ...move, why: "archive" });
+    expect(app.tracker.ownerNow(MONO)).toBe(MONO);
+    expect(app.tracker.ownerNow(MONO, "app-one")).toBe(FRESH);
+
+    // It comes back and starts new work: that work is its own, and so are its reports.
+    const later = await app.start("app-later", "A new job", 2);
+    expect(row(store, "app-later").ownerSession).toBe(MONO);
+    later.finish("Done.");
+    one.finish("Fixed.");
+    app.endMonoTurn();
+    await app.settledDown();
+
+    expect(reportsIn(app, MONO, "app-later")).toHaveLength(1);
+    expect(reportsIn(app, FRESH, "app-later")).toHaveLength(0);
+    // The request that moved still reports to the chat it moved to.
+    expect(reportsIn(app, FRESH, "app-one")).toHaveLength(1);
+    expect(reportsIn(app, MONO, "app-one")).toHaveLength(0);
+    expect(row(store, "app-one")).toMatchObject({ ownerSession: FRESH, delivery: "queued" });
+  });
+
+  it("a launch that still names the chat that was reset is owned by the chat that took over", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await app.start("app-one", "Fix the save bug");
+    reset(app);
+    await app.tracker.reparent(move);
+
+    // Its last turn was cut after the move: the straggling launch is recorded under the new chat, and reports there.
+    const late = await app.start("app-late", "A straggler", 2);
+    expect(row(store, "app-late").ownerSession).toBe(FRESH);
+    late.finish("Done.");
+    app.endMonoTurn();
+    await app.settledDown();
+    expect(reportsIn(app, FRESH, "app-late")).toHaveLength(1);
+    expect(row(store, "app-late")).toMatchObject({ ownerSession: FRESH, delivery: "queued" });
+  });
+
+  it("a window that has not heard of the move never overwrites the move's record of a report", async () => {
+    const store = new MemoryStore();
+    const unaware = new AppRun(store);
+    const one = await unaware.start("app-one", "Fix the save bug");
+    const two = await unaware.start("app-two", "Write the docs");
+    one.finish("Fixed.");
+    two.finish("Written.");
+    await unaware.settledDown();
+
+    // Another window resets the chat and queues each report under its own receipt.
+    const mover = new AppRun(store);
+    reset(mover);
+    await mover.tracker.reparent(move);
+    await mover.settledDown();
+    expect(reportsIn(mover, FRESH, "app-one")).toHaveLength(1);
+
+    // The first window's batch now reports, to the chat it still believes in, as one message.
+    unaware.endMonoTurn();
+    await unaware.settledDown();
+    expect(row(store, "app-one")).toMatchObject({ ownerSession: FRESH, delivery: "queued", deliveryMessage: "mono-completion-app-one-g1" });
+    expect(row(store, "app-two")).toMatchObject({ ownerSession: FRESH, delivery: "queued", deliveryMessage: "mono-completion-app-two-g1" });
+  });
+
+  it("a window that reads the moved row stops looking for it under the old owner", async () => {
+    const store = new MemoryStore();
+    const unaware = new AppRun(store);
+    const one = await unaware.start("app-one", "Fix the save bug");
+    const mover = new AppRun(store);
+    reset(mover);
+    await mover.tracker.reparent(move);
+    await unaware.tracker.refresh([one.row!.id], FRESH);
+
+    const marks = vi.spyOn(store, "setDelivery");
+    await unaware.tracker.deliverWave(MONO, ["app-one"], "mono-completion-batch-z", async () => undefined);
+    expect(marks).not.toHaveBeenCalled();
+  });
+
+  it("a chat that is slow to take a report never holds up the store calls behind it", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await app.start("app-one", "Fix the save bug");
+    let release!: () => void;
+    const slow = app.tracker.deliverWave(
+      MONO,
+      ["app-one"],
+      "mono-completion-app-one-g1",
+      () => new Promise<void>((resolve) => (release = resolve)),
+    );
+    // The first report is still being queued (opening its chat takes a while); another row's calls go through.
+    const other = await app.start("app-two", "Write the docs");
+    expect(other.row?.requestId).toBe("app-two");
+    release();
+    await slow;
+  });
+
+  it("a report whose queueing failed is queued again by the next move, and the failure reaches the caller", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await finishedUnreported(app, "app-one", "Fix the save bug");
+    // The batch's message was marked queued, then the chat could not take it.
+    await expect(
+      app.tracker.deliverWave(MONO, ["app-one"], "mono-completion-batch-x", async () => {
+        throw new Error("chat closed");
+      }),
+    ).rejects.toThrow("chat closed");
+    reset(app);
+
+    await app.tracker.reparent(move);
+    await app.settledDown();
+
+    expect(reportsIn(app, FRESH, "app-one")).toHaveLength(1);
+    expect(row(store, "app-one")).toMatchObject({ ownerSession: FRESH, delivery: "queued", deliveryMessage: "mono-completion-app-one-g1" });
+  });
+
+  it("a move that finds nothing changes nothing here, and a chain of moves ends at the last chat", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    expect(await app.tracker.reparent(move)).toEqual({ rows: [], waiting: [] });
+    expect(app.tracker.ownerNow(MONO)).toBe(MONO);
+
+    await app.start("app-one", "Fix the save bug");
+    await app.tracker.reparent(move);
+    await app.tracker.reparent({ from: FRESH, to: "mono-exo-third" });
+    expect(app.tracker.ownerNow(MONO)).toBe("mono-exo-third");
+    expect(app.tracker.ownerNow(FRESH)).toBe("mono-exo-third");
+    expect(app.tracker.ownerNow("another-chat")).toBe("another-chat");
+    // The work moves back to where it started: that chat owns it again, and the chats that forwarded to it follow it.
+    await app.tracker.reparent({ from: "mono-exo-third", to: MONO });
+    expect(app.tracker.ownerNow(MONO)).toBe(MONO);
+    expect(app.tracker.ownerNow(FRESH)).toBe(MONO);
+    expect(app.tracker.ownerNow("mono-exo-third")).toBe(MONO);
+  });
+
+  it("a relaunch after the move finds the work under its new chat and drops nothing", async () => {
+    const store = new MemoryStore();
+    const app = new AppRun(store);
+    await app.start("app-running", "Fix the save bug", 2);
+    const queued = await app.start("app-queued", "Pick the palette", 3);
+    queued.finish("Palette picked.");
+    app.endMonoTurn();
+    await app.settledDown();
+    reset(app);
+    await app.tracker.reparent(move);
+    await app.settledDown();
+
+    const next = new AppRun(store, app.quit());
+    const summary = await next.tracker.boot(true);
+
+    expect(summary.drop).toBe(0);
+    expect(row(store, "app-queued")).toMatchObject({ ownerSession: FRESH, state: "completed", delivery: "queued" });
+    expect(row(store, "app-running")).toMatchObject({ ownerSession: FRESH, state: "running" });
+    expect(reportsIn(next, FRESH, "app-queued")).toHaveLength(1);
+  });
+
+  it("keeps working with a store from before the move existed: nothing moves, nothing breaks", async () => {
+    const store = new MemoryStore();
+    const bare = Object.assign(Object.create(store), { reparent: undefined }) as MemoryStore;
+    const app = new AppRun(bare);
+    expect(await app.tracker.reparent(move)).toEqual({ rows: [], waiting: [] });
   });
 });

@@ -5,6 +5,12 @@ import { defaultModelId, loadLastModelChoice, saveLastModelChoice } from "../../
 
 export const IS_HUB_BUNDLE = import.meta.env.VITE_MONOCODE_HUB === "1";
 
+/**
+ * Dropwave: one chat look. A first mate's own chat (the Chief of Staff's too) uses the same composer, tab strip and
+ * footer as any other chat, instead of the Mono view's own header and small message box.
+ */
+export const ONE_CHAT_LOOK = IS_HUB_BUNDLE;
+
 const SEEDED = "monocode:hub-bundle-seeded";
 
 /**

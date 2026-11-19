@@ -149,7 +149,7 @@ export function setPageHooks(next: PageHooks): void {
 }
 /** A kept Page: a Bot changes row whose Undo takes it away again. */
 export function recordPageChange(pageId: string, by: string, title: string): void {
-  list = [{ id: `page:${pageId}`, bot: by, day: "Today", line: `${by} added the page “${title}”`, now: "No page", after: `Page “${title}” on your Pages list`, pageId, at: Date.now() }, ...list.filter((c) => c.id !== `page:${pageId}`)];
+  list = [{ id: `page:${pageId}`, bot: by, day: "Today", line: `${by} added the hub “${title}”`, now: "No hub", after: `Hub “${title}” on your Hubs list`, pageId, at: Date.now() }, ...list.filter((c) => c.id !== `page:${pageId}`)];
   saveReal();
   changed();
 }
@@ -176,7 +176,7 @@ export function recordFlowChange(part: {
     id,
     bot: part.by,
     day: "Today",
-    line: part.line ?? `${part.by} changed the hub: ${part.title}`,
+    line: part.line ?? `${part.by} changed the app: ${part.title}`,
     now: part.now ?? "As it was",
     after: part.title,
     ...(part.undoneText ? { undoneText: part.undoneText } : {}),
@@ -220,7 +220,7 @@ export function setPinHook(next: PinHook): void {
 /** A Mono pinned or unpinned a page: a Bot changes row under that Mono. */
 export function recordPinChange(pageId: string, by: string, title: string, pinned: boolean): void {
   const id = `pin:${pageId}:${Date.now().toString(36)}`;
-  list = [{ id, bot: by, day: "Today", line: `${by} ${pinned ? "pinned" : "unpinned"} the page “${title}”`, now: pinned ? "Not pinned" : "Pinned", after: pinned ? "Pinned in the sidebar" : "Not pinned", pin: { pageId, pinned }, at: Date.now() }, ...list];
+  list = [{ id, bot: by, day: "Today", line: `${by} ${pinned ? "pinned" : "unpinned"} the hub “${title}”`, now: pinned ? "Not pinned" : "Pinned", after: pinned ? "Pinned in the sidebar" : "Not pinned", pin: { pageId, pinned }, at: Date.now() }, ...list];
   saveReal();
   changed();
 }
@@ -270,10 +270,10 @@ export function recordPageSource(part: { by: string; pageId: string; url: string
     id,
     bot: part.by,
     day: "Today",
-    line: `The page “${part.by}” ${part.connected ? `can now read ${host}` : `can't read ${host} any more`}`,
+    line: `The hub “${part.by}” ${part.connected ? `can now read ${host}` : `can't read ${host} any more`}`,
     now: part.connected ? "Not connected" : `Connected to ${host}`,
     after: part.connected ? `Connected to ${host}` : "Not connected",
-    undoneText: part.connected ? `Undone: the page can't reach ${host} any more.` : `Undone: the page can reach ${host} again.`,
+    undoneText: part.connected ? `Undone: the hub can't reach ${host} any more.` : `Undone: the hub can reach ${host} again.`,
     source: { pageId: part.pageId, url: part.url, connected: part.connected },
     at: Date.now(),
   }, ...list];
@@ -538,13 +538,13 @@ export async function undoBotChange(ids: string[]): Promise<void> {
         next = { ...c, problem: e instanceof Error ? e.message : "That Undo didn't go through." };
       }
     } else if (c.source) {
-      const refused = sourceHook ? await sourceHook(c.source.pageId, c.source.url, !c.source.connected) : "Pages isn't open yet, so nothing was undone.";
+      const refused = sourceHook ? await sourceHook(c.source.pageId, c.source.url, !c.source.connected) : "Hubs isn't open yet, so nothing was undone.";
       if (refused) next = { ...c, problem: refused };
     } else if (c.pin) {
-      const refused = pinHook ? await pinHook(c.pin.pageId, !c.pin.pinned) : "Pages isn't open yet, so nothing was undone.";
+      const refused = pinHook ? await pinHook(c.pin.pageId, !c.pin.pinned) : "Hubs isn't open yet, so nothing was undone.";
       if (refused) next = { ...c, problem: refused };
     } else if (c.pageId) {
-      const refused = pageHooks ? await pageHooks.remove(c.pageId) : "Pages isn't open yet, so nothing was undone.";
+      const refused = pageHooks ? await pageHooks.remove(c.pageId) : "Hubs isn't open yet, so nothing was undone.";
       if (refused) next = { ...c, problem: refused };
     } else if (c.retired) {
       try {
@@ -642,13 +642,13 @@ export async function redoBotChange(ids: string[]): Promise<void> {
         next = { ...c, problem: e instanceof Error ? e.message : "That Redo didn't go through." };
       }
     } else if (c.source) {
-      const refused = sourceHook ? await sourceHook(c.source.pageId, c.source.url, c.source.connected) : "Pages isn't open yet, so nothing was redone.";
+      const refused = sourceHook ? await sourceHook(c.source.pageId, c.source.url, c.source.connected) : "Hubs isn't open yet, so nothing was redone.";
       if (refused) next = { ...c, problem: refused };
     } else if (c.pin) {
-      const refused = pinHook ? await pinHook(c.pin.pageId, c.pin.pinned) : "Pages isn't open yet, so nothing was redone.";
+      const refused = pinHook ? await pinHook(c.pin.pageId, c.pin.pinned) : "Hubs isn't open yet, so nothing was redone.";
       if (refused) next = { ...c, problem: refused };
     } else if (c.pageId) {
-      const refused = pageHooks ? await pageHooks.restore(c.pageId) : "Pages isn't open yet, so nothing was redone.";
+      const refused = pageHooks ? await pageHooks.restore(c.pageId) : "Hubs isn't open yet, so nothing was redone.";
       if (refused) next = { ...c, problem: refused };
     } else if (c.retired) {
       try {

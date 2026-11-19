@@ -15,15 +15,27 @@ installFakeTauri("drafts", (command) => {
 });
 
 const quiet = {
-  needsYou: [],
-  moving: [],
-  recent: [],
+  date: "Thursday 19 November",
+  chief: {
+    missing: false,
+    name: "Example: Chief of Staff",
+    options: [],
+    onAdd: () => undefined,
+    onOpenChat: () => undefined,
+    onOption: () => undefined,
+  },
+  needs: [],
+  needsTotal: 0,
+  builders: [],
+  working: [],
+  workingTotal: 0,
+  done: [],
+  onSeeNeeds: () => undefined,
   arrangement: defaultArrangement(),
   catalog: [],
   known: true,
   failed: false,
   onOpen: () => undefined,
-  onMove: () => undefined,
   onHide: () => undefined,
   onShow: () => undefined,
   onPin: () => undefined,
@@ -51,13 +63,13 @@ if (root) {
             drafts: [
               {
                 id: "draft-auth",
-                title: "Auth for the desk",
+                title: "Example: Auth for the desk",
                 parked: true,
                 brief: "Already taken: auth.\n",
               },
               {
                 id: "draft-queue",
-                title: "Show the queue",
+                title: "Example: Show the queue",
                 parked: false,
                 brief: "Source: firstmate (MIT).\n",
               },

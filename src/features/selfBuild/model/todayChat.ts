@@ -100,7 +100,7 @@ export async function todayFromChat(input: Record<string, unknown>, me: { monoId
   return {
     previewId: p.previewId,
     title: p.title,
-    note: forUser((flow === "hub" ? "The project order is the sidebar's too, so the preview shows both. " : "") + "Ash sees it at the bottom of the window (See it opens Now beside Preview on Pages, with Apply and Discard; after Apply, Undo is in Bot changes). Tell him in one line; if he says yes in chat, call today_change with previewId and apply true."),
+    note: forUser((flow === "hub" ? "The project order is the sidebar's too, so the preview shows both. " : "") + "Ash sees it at the bottom of the window (See it opens Now beside Preview on Hubs, with Apply and Discard; after Apply, Undo is in Bot changes). Tell him in one line; if he says yes in chat, call today_change with previewId and apply true."),
   };
 }
 

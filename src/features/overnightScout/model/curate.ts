@@ -21,7 +21,13 @@ const WINDOWS_HOME = `${"\\"}Users${"\\"}`;
 
 /** A home path does not belong in a draft. */
 export function looksPrivate(text: string): boolean {
-  return text.includes(HOME) || text.includes(WINDOWS_HOME) || text.includes("\0");
+  const lower = text.toLowerCase();
+  return lower.includes(HOME.toLowerCase()) || lower.includes(WINDOWS_HOME.toLowerCase())
+    || lower.includes("/home/") || lower.includes("/root/") || text.includes("\0");
+}
+
+function allowedLicence(licence: string): boolean {
+  return /\b(?:MIT|Apache(?:[- ]2\.0)?)\b/i.test(licence);
 }
 
 /** Rows of the sources table. The vision list is not a source. */
@@ -81,7 +87,7 @@ export function curate(sourcesText: string, watchText: string): Proposal[] {
     }
     if (!label || !title || looksPrivate(title) || looksPrivate(note)) continue;
     const source = sourceFor(label, sources);
-    if (!source) continue;
+    if (!source || !allowedLicence(source.licence)) continue;
     const key = `${source.name.toLowerCase()}\0${title.toLowerCase()}`;
     if (seen.has(key)) continue;
     seen.add(key);
