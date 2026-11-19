@@ -141,6 +141,11 @@ Every item of Ash's vision maps to packages, so nothing is dropped.
 | Skills a first mate calls by name: split only for a measured reason, review a diff from a clean context, and turn a repeated correction into a check (mcode-stack, 9 Nov) | 117 |
 | A programme of packages the first mate keeps, in an order that survives a restart | 159 |
 | A timed lead pass over the programme: start the next package, read CI, merge only what is safe when allowed | 160 |
+| An optional overnight draft of the next packages, off until the person turns it on | 165 |
+
+## Overnight drafts (WP-165)
+
+WP-165 reads the sources table above and a watch summary the person approved. It drafts a package only when that summary names an MIT- or Apache-licensed source already in the table. It does not add a source or copy code.
 
 ## CI tools
 

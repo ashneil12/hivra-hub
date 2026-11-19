@@ -47,6 +47,7 @@ import { DiagnosticsPanel } from "../../diagnostics/ui/DiagnosticsPanel";
 import { CommitGuardAllowsPanel } from "../../commit-guard/ui/CommitGuardAllowsPanel";
 // WP-88: the morning note under the chat on Home.
 import { DailySummarySetting } from "../../chief/ui/DailySummarySetting";
+import { OvernightScoutSetting } from "../../overnightScout/ui/OvernightScoutSetting";
 // WP-156: standing answers stay off until this setting is on.
 import { StandingAnswersSetting } from "./StandingAnswersSetting";
 // WP-164: quiet hours for routine programme notices.
@@ -1250,6 +1251,14 @@ function GeneralPage({
           description="A few lines in the morning, when there is something to say."
         >
           <DailySummarySetting />
+        </Row>
+        {/* WP-165: overnight drafts. Off until the person turns it on. */}
+        <Row
+          id="overnight-scout"
+          label="Overnight scout"
+          description="Off until you turn it on. It writes a few draft packages at night and does not start work, merge, or spend."
+        >
+          <OvernightScoutSetting />
         </Row>
       </Group>
       {/* WP-156: standing answers stay off until this is on. */}

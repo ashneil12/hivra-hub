@@ -39,6 +39,11 @@ import {
   type Habit,
 } from "../../features/monos/model/monoHabits";
 import { appPolicy } from "../model/appIdentity";
+import { readsEveryProject } from "../../features/chief/model/scope";
+import { pickChief } from "../../features/home/model/chief";
+import { tauriLocalHubDisk } from "../../features/hub/model/localHub/localTransport";
+import { SCOUT_HABIT_ID, syncScoutHabit } from "../../features/overnightScout/model/habit";
+import { readScoutSettings } from "../../features/overnightScout/model/store";
 // WP-244: a habit that watches something skips the model when it hasn't changed; one run of a habit at a time.
 import {
   appWatchReader,
@@ -217,6 +222,33 @@ export function useMonoHabits(
       const host = hostRef.current;
       const mono = await host.open(monoSessionId);
       if (!mono || stopped || !findMono(monoId)) return;
+      if (habitId === SCOUT_HABIT_ID) {
+        const now = Date.now();
+        const claimed = await claimHabit(monoId, habitId, now);
+        if (!claimed) return;
+        const advanced = afterRun(claimed, now);
+        let finished = false;
+        try {
+          if (!stopped) {
+            const { runScheduledScout } = await import("../../features/overnightScout/model/scheduled");
+            finished = !stopped && (await runScheduledScout({ cwd: mono.cwd })).kind === "quiet";
+          }
+        } finally {
+          await updateHabits(monoId, (habits) => ({
+            habits: habits.map((entry) => {
+              if (
+                entry.id !== habitId || !entry.enabled || entry.nextRunAt !== advanced.nextRunAt ||
+                entry.schedule.time !== claimed.schedule.time || entry.runRequested
+              ) return entry;
+              return finished
+                ? { ...afterRun(entry, Date.now(), { kind: "quiet", startedAt: now }), nextRunAt: advanced.nextRunAt }
+                : { ...entry, nextRunAt: claimed.nextRunAt, ...(claimed.runRequested ? { runRequested: true } : {}) };
+            }),
+            result: undefined,
+          }));
+        }
+        return;
+      }
       const files = await loadMonoFiles(monoId);
       if (stopped || !findMono(monoId)) return;
       const now = Date.now();
@@ -406,11 +438,17 @@ export function useMonoHabits(
       running = true;
       checkAgain = false;
       try {
-        for (const { id, sessionId } of listMonos()) {
+        const roster = listMonos();
+        const scoutOwner = pickChief(roster.filter(readsEveryProject));
+        for (const { id, sessionId } of roster) {
           if (stopped) return;
           // Habits are set up in its chat, so one never opened has none.
           if (!sessionId) continue;
           const now = Date.now();
+          if (id === scoutOwner?.id) {
+            await syncScoutHabit(id, loadHabits, updateHabits, () => readScoutSettings(tauriLocalHubDisk), now)
+              .catch(() => undefined);
+          }
           const { run, skipped } = dueHabits(await loadHabits(id), now);
           if (!run.length && !skipped.length) continue;
           if (skipped.length) {
@@ -428,6 +466,7 @@ export function useMonoHabits(
           }
           for (const habit of run) {
             if (stopped) return;
+            if (habit.id === SCOUT_HABIT_ID && id !== scoutOwner?.id) continue;
             await runHabit(id, sessionId, habit.id).catch((error) =>
               console.warn(`Habit "${habit.name}" could not run`, error),
             );

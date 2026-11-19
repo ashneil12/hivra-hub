@@ -2,6 +2,7 @@
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it } from "vitest";
+import { MorningDrafts } from "../../overnightScout/ui/MorningDrafts";
 import { noteOneTapRefusal, resetOneTapRefusal } from "../../needs/model/oneTapNotice";
 import { defaultArrangement, hideSection, pinPanel } from "../model/arrangement";
 import type { HomeLine } from "../model/lines";
@@ -68,6 +69,24 @@ it("says why a one tap was refused", () => {
   noteOneTapRefusal("That chat isn't waiting any more.");
   draw();
   expect(container.querySelector("[data-needs-refusal]")?.textContent).toBe("That chat isn't waiting any more.");
+});
+
+it("shows read-only overnight drafts after the chief's chat", () => {
+  draw({
+    drafts: createElement(MorningDrafts, {
+      drafts: [
+        { id: "draft-auth", title: "Example: Auth for the desk", parked: true, brief: "<script>bad</script>" },
+        { id: "draft-queue", title: "Example: Show the queue", parked: false, brief: "Source: firstmate (MIT)." },
+      ],
+    }),
+  });
+  expect(container.querySelector("[data-home-start]")?.nextElementSibling?.hasAttribute("data-overnight-drafts")).toBe(true);
+  expect(container.querySelector("[data-home-quiet]")).toBeNull();
+  expect(container.querySelector("[data-overnight-draft='parked']")?.textContent).toContain("Parked for a security check.");
+  expect(container.querySelector("[data-overnight-draft='waiting']")?.textContent).toContain("Waiting for you.");
+  expect(container.querySelector("script")).toBeNull();
+  expect(container.textContent).toContain("<script>bad</script>");
+  expect(container.querySelector("[data-overnight-drafts] button")).toBeNull();
 });
 
 it("with nothing to show, the chief says all quiet inside the card", () => {

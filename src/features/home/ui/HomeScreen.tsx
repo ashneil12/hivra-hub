@@ -518,6 +518,7 @@ export function HomeScreen({
   catalog,
   known,
   failed,
+  drafts,
   onOpen,
   onHide,
   onShow,
@@ -553,6 +554,7 @@ export function HomeScreen({
   catalog: readonly CatalogPanel[];
   known: boolean;
   failed: boolean;
+  drafts?: ReactNode;
   onOpen: (line: HomeLine) => void;
   onHide: (key: string) => void;
   onShow: (key: string) => void;
@@ -610,7 +612,7 @@ export function HomeScreen({
   const pinned = new Set(arrangement.order.filter((ref) => ref.kind === "panel").map(sectionKey));
   const offered = catalog.filter((panel) => !pinned.has(sectionKey({ kind: "panel", plugin: panel.plugin, panelId: panel.panelId })));
   const arranged = arrangement.order.filter((ref) => !(ref.kind === "builtin" && ref.id === "projects"));
-  const quiet = known && visible.length === 0;
+  const quiet = known && visible.length === 0 && !drafts;
   const orderedNeeds = [...needs].sort((a, b) => homeNeedRank(a) - homeNeedRank(b));
   // Every card on the page, in the order it was dragged into (a card never dragged keeps its own place).
   const cardKeys = orderCards(
@@ -773,6 +775,7 @@ export function HomeScreen({
           </div>
         ) : null}
         {known ? <ChiefBox chief={chief} onAsk={onAsk} quiet={quiet} seed={askSeed} /> : null}
+        {known ? drafts : null}
         {known && !chief.missing ? (
           <div data-home-glances className="grid grid-cols-1 gap-3 sm:grid-cols-3">
             {arrangement.hidden.includes("needs-you") ? null : (

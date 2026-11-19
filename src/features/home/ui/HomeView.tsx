@@ -12,7 +12,9 @@ import { spendSnapshot, subscribeSpend } from "../../usage/model/spendGate";
 import { listMonos, monoLook } from "../../monos/model/mono";
 import { PixelMascot } from "../../projects/ui/PixelMascot";
 import { useHubDataVersion, hubData } from "../../hub/model/hubData";
-import { LOCAL_HUB_CHANGED } from "../../hub/model/localHub/localTransport";
+import { LOCAL_HUB_CHANGED, tauriLocalHubDisk } from "../../hub/model/localHub/localTransport";
+import { MorningDrafts } from "../../overnightScout/ui/MorningDrafts";
+import { useMorningDrafts } from "../../overnightScout/ui/useMorningDrafts";
 import { PanelFrame } from "../../panels/ui/PanelTabs";
 import { useNeedsYou } from "../../needs/model/needsLive";
 import { clearLastSetAside, lastSetAside, setAsideNeed, undoSetAside, useSetAsideVersion } from "../../needs/model/setAside";
@@ -98,6 +100,7 @@ function AutopilotSwitch({ projectId, name }: { projectId?: string; name: string
  * the full chat), then only this project's Needs you, Working now, Done today, pinned pages and automations.
  */
 export function HomeView({ projectId }: { projectId?: string } = {}) {
+  const morningDrafts = useMorningDrafts(tauriLocalHubDisk);
   usePagesVersion();
   const [automations, setAutomations] = useState<Automation[]>(() => peekAutomations() ?? []);
   useEffect(() => {
@@ -442,6 +445,7 @@ export function HomeView({ projectId }: { projectId?: string } = {}) {
       catalog={snap?.catalog ?? []}
       known={snap != null}
       failed={failed}
+      drafts={!projectId && morningDrafts.length > 0 ? <MorningDrafts drafts={morningDrafts} /> : undefined}
       onOpen={(line) => openFromHome(targetFor(line))}
       onHide={(key) => void update((doc) => ({ ...doc, arrangement: hideSection(doc.arrangement, key) }))}
       onShow={(key) => void update((doc) => ({ ...doc, arrangement: showSection(doc.arrangement, key) }))}

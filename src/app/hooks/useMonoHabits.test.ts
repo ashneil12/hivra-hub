@@ -3,6 +3,9 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { MORNING_HABIT_ID } from "../../features/chief/model/habit";
+import { EVERY_PROJECT_LINE } from "../../features/chief/model/scope";
+import { SCOUT_HABIT_ID } from "../../features/overnightScout/model/habit";
+import { SCOUT_DEFAULTS, type ScoutSettings } from "../../features/overnightScout/model/settings";
 import type { Habit } from "../../features/monos/model/monoHabits";
 import { localDay, shiftDay } from "../../features/workLog/model/workLog";
 import {
@@ -13,6 +16,7 @@ import type { Block, Session } from "../../features/sessions/model/session";
 
 let stored: Habit[] = [];
 let fileVersion = 0;
+let scoutSettings: ScoutSettings | undefined;
 const MONO = {
   id: "mono-1",
   sessionId: "mono",
@@ -44,7 +48,7 @@ vi.mock("../../features/hub/model/hubData", async (original) => {
 });
 vi.mock("../../features/monos/model/mono", async (original) => ({
   ...(await original<object>()),
-  listMonos: () => [MONO],
+  listMonos: () => [scoutSettings ? { ...MONO, everyProject: true, instructions: EVERY_PROJECT_LINE } : MONO],
   findMono: (id: string) => (id === MONO.id ? MONO : undefined),
   monoLook: () => ({
     name: "Skull",
@@ -83,7 +87,16 @@ vi.mock("../../features/monos/model/monoFiles", async (original) => {
   };
 });
 
+vi.mock("../../features/overnightScout/model/store", async (original) => ({
+  ...(await original<object>()),
+  readScoutSettings: async () => scoutSettings ?? SCOUT_DEFAULTS,
+}));
+vi.mock("../../features/overnightScout/model/scheduled", () => ({
+  runScheduledScout: vi.fn(),
+}));
+
 const { useMonoHabits } = await import("./useMonoHabits");
+const { runScheduledScout } = await import("../../features/overnightScout/model/scheduled");
 const { shouldPersistSession } =
   await import("../../features/sessions/data/sessionStore");
 const { checkHabitsNow, noteHabitRunLaunch, relayApproval } =
@@ -95,14 +108,15 @@ let extraRoots: Root[] = [];
 const originalWindow = window;
 beforeEach(() => {
   fileVersion = 0;
+  scoutSettings = undefined;
   extraRoots = [];
   vi.clearAllMocks();
   invokeMock.mockReset();
   // The programme board is read before every morning run: answer it with an empty board, not a failure.
-invokeMock.mockImplementation(async (command: string) => {
-  if (command === "programme_list") return [];
-  throw new Error("No native side in a test.");
-});
+  invokeMock.mockImplementation(async (command: string) => {
+    if (command === "programme_list") return [];
+    throw new Error("No native side in a test.");
+  });
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", {
@@ -110,6 +124,29 @@ invokeMock.mockImplementation(async (command: string) => {
     setItem: (key: string, value: string) => values.set(key, value),
   });
   root = createRoot(document.createElement("div"));
+});
+
+it("registers the scout from its settings without opening a model session, and retries an unfinished night", async () => {
+  scoutSettings = { ...SCOUT_DEFAULTS, enabled: true };
+  stored = [];
+  const run = vi.mocked(runScheduledScout);
+  run.mockResolvedValueOnce({ kind: "retry" }).mockResolvedValueOnce({ kind: "quiet" });
+  const host = makeHost("should not run");
+  mountHost(host);
+  await vi.waitFor(() => expect(stored[0]?.id).toBe(SCOUT_HABIT_ID));
+  const due = Date.now() - 60_000;
+  stored = [{ ...stored[0]!, nextRunAt: due }];
+  act(() => checkHabitsNow());
+  await vi.waitFor(() => {
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(stored[0]?.nextRunAt).toBe(due);
+  });
+  act(() => checkHabitsNow());
+  await vi.waitFor(() => expect(stored[0]?.lastOutcome).toBe("quiet"));
+  expect(run).toHaveBeenCalledTimes(2);
+  expect(host.run).not.toHaveBeenCalled();
+  expect(host.add).not.toHaveBeenCalled();
+  expect(host.post).not.toHaveBeenCalled();
 });
 afterEach(() => {
   vi.stubGlobal("window", originalWindow);
